@@ -2900,13 +2900,17 @@ On an issue run, nothing is lost by skipping it. The worker runs its own gate
 PR is raised. The agent's run is the expensive copy — the only one paid for out
 of the run budget.
 
-The PR-side flows are the exception. PR feedback, spelling fix and custom PR
-prompts push to a PR that already exists, so they call `buildQualityInstructions()`
-with `pushGuarantee: "pre-flight-only"` (Issue #4876). Their skip-note record
-then says the worker runs only the repository's configured pre-flight commands,
-if any, before that push, and it tells the agent to name in its note exactly
-which checks it ran. The CI-fix flow and issue runs keep the full-gate wording,
-which says the worker runs the gate again before the PR is raised.
+The push guarantee follows the flow. Issue completion runs the full worker gate
+before creating the PR. A CI fix attempts that gate when Claude leaves
+uncommitted changes after its attempt, then runs configured pre-flight commands
+before the worker push; with no such changes and no pre-flight commands, it runs no checks
+before that push. PR feedback and spelling fixes run only configured pre-flight
+commands before the worker push, if any; with none configured, they run no
+checks before that push. Custom PR prompts use the agent's pre-push hook, which
+runs changed-file checks and configured pre-flight commands when the agent
+pushes; the worker verifies that push afterwards. Each caller passes its flow to
+`buildQualityInstructions()` (Issue #4876), so a skip record names the checks
+that path runs and tells the agent to name the checks it ran.
 
 So the instruction the agent receives is budget-aware, and it comes from one
 place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
@@ -2929,8 +2933,8 @@ that passed.
 `gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it from
 about 17 minutes into an hour-long run and does not offer it again. That is the
 intended trade: on such a repo the agent could never have finished the gate and
-acted on it anyway, and on an issue run the worker runs it before the PR is
-raised regardless. A
+acted on it anyway, and issue completion runs the worker gate before the PR is
+raised. A
 repo in that position should shorten its gate or set `quality_command` to the
 subset worth running locally.
 
@@ -2941,8 +2945,12 @@ flowchart TD
     B -- "yes" --> D{"remaining ≥ gate + 180s tail?"}
     D -- "yes" --> C
     D -- "no" --> E["Targeted checks only<br/>+ skip note in the PR"]
-    C --> F["Issue run: worker gate before the PR is raised<br/>PR-side: pre-flight commands only"]
+    C --> F["Issue completion: worker gate before PR creation"]
     E --> F
+    E --> G{"push path"}
+    G --> H["CI fix: gate only if uncommitted changes remain; configured pre-flight before worker push"]
+    G --> I["Feedback / spelling: configured pre-flight before worker push, if any"]
+    G --> J["Custom PR: agent pre-push changed-file checks + configured pre-flight"]
     style E fill:#f4a261,stroke:#b5651d,color:#000
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```

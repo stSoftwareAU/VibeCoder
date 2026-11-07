@@ -131,12 +131,10 @@ export function getRepoNice(
  *   run (the baseline gate), so the guidance quotes a measurement instead of
  *   the fleet-wide assumption. `runBudgetSeconds`: the whole run's wall-clock
  *   budget, which settles the question outright for a gate that cannot fit
- *   inside it — the only budget signal the PR-side flows get, since no
- *   `.vibe-run-budget.md` is written for them. `pushGuarantee`: what the worker
- *   runs before it pushes (Issue #4876). The default `"full-gate"` (issue runs
- *   and `ci_fix`) lets the skip record say the worker runs the gate again;
- *   PR-side flows pass `"pre-flight-only"`, so the record names only the
- *   repo's configured pre-flight commands
+ *   inside it. `pushGuarantee`: what the worker or agent's push path checks
+ *   (Issue #4876). The default `"full-gate"` is for issue completion; CI fixes,
+ *   PR feedback, spelling fixes and custom PR prompts pass their own guarantee
+ *   so a skip record describes the checks that path actually runs.
  * @returns Quality instruction text for inclusion in prompts
  */
 export function buildQualityInstructions(

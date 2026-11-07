@@ -153,7 +153,10 @@ export const prCiProcessorCommand: Command = {
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           repo,
-          { runBudgetSeconds: config.ciFixTimeout || config.claudeTimeout },
+          {
+            runBudgetSeconds: config.ciFixTimeout || config.claudeTimeout,
+            pushGuarantee: "ci-fix",
+          },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,

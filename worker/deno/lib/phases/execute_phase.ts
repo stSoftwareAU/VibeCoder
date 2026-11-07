@@ -680,6 +680,7 @@ async function executeClaudeBody(
     repo,
     {
       runBudgetSeconds: config.claudeTimeout,
+      pushGuarantee: "full-gate",
       ...(state.baselineQualityDurationSeconds === undefined
         ? {}
         : { typicalGateSeconds: state.baselineQualityDurationSeconds }),

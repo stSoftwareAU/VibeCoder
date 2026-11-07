@@ -8,10 +8,10 @@
  * ten minutes left cannot finish it, cannot act on what it reports, and loses
  * the runway it needed to commit and push.
  *
- * The information is not lost by skipping: the worker runs its own gate
- * (`phases/quality_gate_remediation_phase.ts`) after the agent stops, before
- * the PR is raised. The agent's run is the expensive copy — the one paid for
- * out of the run budget.
+ * For issue completion, the information is not lost by skipping: the worker
+ * runs its own gate (`phases/quality_gate_remediation_phase.ts`) after the
+ * agent stops, before the PR is raised. Other flows describe their own push
+ * checks through `GatePushGuarantee` below.
  *
  * So the rule this module encodes is: run the gate when the remaining budget
  * covers it *and* the tail needed to fix, commit and push what it reports;
@@ -176,28 +176,31 @@ export function formatQualityGateSkipNote(
  * What the worker runs before it pushes, which decides what a skipped gate's
  * record may promise (Issue #4876).
  *
- * - `"full-gate"`: the issue flow and `ci_fix` run the full gate before the
- *   push, so the record may say the worker runs it again before the PR is
- *   raised.
- * - `"pre-flight-only"`: the PR-side flows (`pr_feedback`, `spelling_fix`,
- *   custom PR prompts) push to a PR that already exists, after running only
- *   the repository's configured pre-flight commands, if any.
+ * - `"full-gate"`: issue completion runs the full gate before PR creation.
+ * - `"ci-fix"`: the worker attempts the full gate when Claude leaves
+ *   uncommitted changes, then runs configured pre-flight commands before its
+ *   push.
+ * - `"pre-flight-only"`: PR feedback and spelling fixes run configured
+ *   pre-flight commands before the worker push, if any.
+ * - `"agent-pre-push"`: a custom PR prompt's agent hook runs changed-file
+ *   checks and configured pre-flight commands when the agent pushes.
  */
-export type GatePushGuarantee = "full-gate" | "pre-flight-only";
+export type GatePushGuarantee =
+  | "full-gate"
+  | "ci-fix"
+  | "pre-flight-only"
+  | "agent-pre-push";
 
 /**
  * The gate instruction an agent's prompt carries (Issue #1138).
  *
- * One source of truth for every prompt that has a `{{QUALITY_INSTRUCTIONS}}`
- * placeholder, so the fleet cannot drift back to "run the gate before you
- * push" in one template while another is budget-aware.
+ * One source of truth for prompts that have a `{{QUALITY_INSTRUCTIONS}}`
+ * placeholder, so the budget decision and push-path record stay together.
  *
- * Two decisions, not one. The *whole run's* budget is known here, at prompt
- * build time, and a gate that cannot fit inside it is refused outright — that
- * is the only signal the PR-side flows (`ci_fix`, `pr_feedback`,
- * `spelling_fix`, `merge_conflict`) get, because they run no progress
- * extension and so no `.vibe-run-budget.md` is ever written for them. Where
- * the gate does fit, the live notice decides mid-run.
+ * A caller may pass the whole run's budget at prompt-build time. If the gate
+ * cannot fit, it is refused outright; the record then describes the checks
+ * that caller's push path actually performs. A live budget notice can make
+ * the same decision during issue execution.
  *
  * @param command - The repository's gate command (`./quality.sh` unless the
  *   repo configured its own).
@@ -206,10 +209,14 @@ export type GatePushGuarantee = "full-gate" | "pre-flight-only";
  * @param runBudgetSeconds - The whole run's wall-clock budget, when the
  *   caller knows it.
  * @param pushGuarantee - What the worker runs before it pushes, which names
- *   what the skip record may promise: `"full-gate"` (the default: the issue
- *   flow and `ci_fix`) says the worker runs the gate again before the PR is
- *   raised; `"pre-flight-only"` (PR-side flows) says it runs only the repo's
- *   configured pre-flight commands before that push.
+ *   what the skip record may promise: `"full-gate"` (issue completion) says
+ *   the worker runs the gate before the PR is raised; `"ci-fix"` says the
+ *   worker attempts it when Claude leaves uncommitted changes, then runs configured
+ *   pre-flight commands before its push; `"pre-flight-only"` (feedback and
+ *   spelling fixes) says it runs configured pre-flight commands before its
+ *   push, if any; `"agent-pre-push"` (custom PR prompts) describes the agent's
+ *   hook, which runs changed-file checks and configured pre-flight commands
+ *   when the agent pushes.
  * @returns One prompt bullet per line, ready to join.
  */
 export function buildQualityGateBudgetLines(
@@ -231,8 +238,12 @@ export function buildQualityGateBudgetLines(
   const recordCore =
     `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have.`;
   const record = pushGuarantee === "pre-flight-only"
-    ? `${recordCore} The worker does not run the full gate before this push: the PR already exists, and it runs only the repository's configured pre-flight commands, if any. Name in your note exactly which checks you ran, and do not say the worker will run the gate.`
-    : `${recordCore} The worker runs the gate again before the PR is raised.`;
+    ? `${recordCore} This PR already exists. Before its push, the worker runs only the repository's configured pre-flight commands, if any; with none configured, it runs no checks before that push. Name exactly which checks you ran, and do not say the worker will run the full gate.`
+    : pushGuarantee === "ci-fix"
+    ? `${recordCore} The worker attempts the full gate if Claude leaves uncommitted changes after the fix; before its push, it also runs the repository's configured pre-flight commands, if any. If Claude leaves no uncommitted changes and no pre-flight commands are configured, the worker runs no checks before that push. Name exactly which checks you ran.`
+    : pushGuarantee === "agent-pre-push"
+    ? `${recordCore} This custom PR flow's agent pre-push hook runs changed-file checks and the repository's configured pre-flight commands, if any, when the agent pushes. The worker verifies the push after the agent finishes; it does not run a full gate before that push. Name exactly which checks you ran.`
+    : `${recordCore} The worker runs the full gate before the PR is raised.`;
 
   // The gate cannot fit this run at all — no live signal can rescue that, so
   // it is settled here rather than left to the agent's judgement.

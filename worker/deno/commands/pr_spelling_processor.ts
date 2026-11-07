@@ -13,7 +13,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import type { CommandResult, WorkerConfig } from "../types.ts";
 import {
   assertSafeGitRef,
   buildCheckoutArgs,
@@ -29,7 +29,7 @@ import {
   type SpellingFixResult,
   type SpellingProcessorDeps,
 } from "../lib/pr_spelling_processor.ts";
-import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
+import { createDefaultDeps, type WorkerDeps } from "../lib/issue_worker_wiring.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -41,12 +41,13 @@ export { decodeAnnotations, formatAnnotations };
 export type { CheckAnnotation, SpellingFixResult };
 
 /** The pr-spelling-processor command. */
-export const prSpellingProcessorCommand: Command = {
+export const prSpellingProcessorCommand = {
   name: "pr-spelling-processor",
   description: "Process spelling check failures on PRs (Issue #967, #1230)",
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    workerDeps?: WorkerDeps,
   ): Promise<CommandResult<SpellingFixResult>> {
     const operation = String(args["operation"] ?? "");
 
@@ -106,7 +107,7 @@ export const prSpellingProcessorCommand: Command = {
         };
       }
 
-      const deps = createDefaultDeps();
+      const deps = workerDeps ?? createDefaultDeps();
 
       // Top-level try/catch to prevent silent crashes (Issue #1230)
       try {

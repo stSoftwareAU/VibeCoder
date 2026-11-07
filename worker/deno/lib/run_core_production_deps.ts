@@ -2584,7 +2584,10 @@ export async function createProductionRunCoreDeps(
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           comment.repo,
-          { pushGuarantee: "pre-flight-only" },
+          {
+            runBudgetSeconds: reactivePhaseTimeout(config, "pr-feedback"),
+            pushGuarantee: "pre-flight-only",
+          },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,
@@ -4347,7 +4350,13 @@ export async function createProductionRunCoreDeps(
                 qualityInstructions: buildQualityInstructions(
                   config.repoConfig,
                   candidate.repo,
-                  { pushGuarantee: "pre-flight-only" },
+                  {
+                    runBudgetSeconds: reactivePhaseTimeout(
+                      config,
+                      "pr-feedback",
+                    ),
+                    pushGuarantee: "agent-pre-push",
+                  },
                 ),
                 customInstructions: getCustomInstructions(
                   config.repoConfig,
