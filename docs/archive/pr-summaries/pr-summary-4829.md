@@ -89,14 +89,15 @@ phase's existing failed-verdict path passes the failure to a repair turn.
   `worker/deno/tests/launcher_harness_reclaim_stub_test.ts` over budget. No
   timing threshold or test was changed.
 - Mutation check: it failed to run because the baseline run of seven other test
-  files (`fence_coverage_verifier_test.ts`, `quality_gate_credentials_4705_test.ts`,
-  `quality_gate_phase_test.ts`, `repo_formatters_4113_test.ts`,
-  `tool_output_treat_as_data_3046_test.ts`, `untrusted_command_env_test.ts`,
-  `untrusted_gate_spawn_test.ts`) failed in the harness. It listed no
-  unpinned mutation. Run directly, `quality_gate_phase_test.ts`,
-  `untrusted_gate_spawn_test.ts`, `repo_formatters_4113_test.ts` and
-  `fence_coverage_verifier_test.ts` pass together (115 passed, 0 failed), so
-  the failure is environmental, not a test gap in the changed lines.
+  files (`fence_coverage_verifier_test.ts`,
+  `quality_gate_credentials_4705_test.ts`, `quality_gate_phase_test.ts`,
+  `repo_formatters_4113_test.ts`, `tool_output_treat_as_data_3046_test.ts`,
+  `untrusted_command_env_test.ts`, `untrusted_gate_spawn_test.ts`) failed in the
+  harness. It listed no unpinned mutation. Run directly,
+  `quality_gate_phase_test.ts`, `untrusted_gate_spawn_test.ts`,
+  `repo_formatters_4113_test.ts` and `fence_coverage_verifier_test.ts` pass
+  together (115 passed, 0 failed), so the failure is environmental, not a test
+  gap in the changed lines.
 - No twinned matcher or gate rule was found. Other `command not found` checks
   classify different failure text and were not changed.
 
