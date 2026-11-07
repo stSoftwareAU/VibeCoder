@@ -137,6 +137,11 @@ Deno.test("CODING-STANDARDS - the over-engineering checklist flags an in-repo he
     "an in-repo helper, component or rule copied or re-implemented instead of called or imported, in tests and scripts as in product code",
     "missing from CODING-STANDARDS.md's Coding Principles section",
   );
+  assertStringIncludes(
+    body,
+    "a test's expected result is still not computed by calling the implementation it asserts",
+    "missing from CODING-STANDARDS.md's Coding Principles section",
+  );
   assert(
     !body.includes("widen its visibility"),
     "still in CODING-STANDARDS.md's Coding Principles section: " +

@@ -62,8 +62,8 @@ Version bump: `VERSION` is not touched by this change.
     expected-value sentence; absence checks for `widen its visibility`,
     `` `pub(crate)` → `pub` `` and the old trigger list.
   - `pr_feedback` Making Changes: same style of pins and absence check.
-  - `CODING-STANDARDS.md` Coding Principles: new fourth-departure wording and
-    absence check.
+  - `CODING-STANDARDS.md` Coding Principles: new fourth-departure wording,
+    independent-oracle clause and absence check.
   - Spec-reviewer brief and agent-prompt tests unchanged.
 - Removed from `worker/deno/tests/reuse_existing_owner_3084_test.ts`: pins on
   "call the existing owner", "formats, orders, ranks, validates or decides",
@@ -77,6 +77,12 @@ Version bump: `VERSION` is not touched by this change.
 - Red check: with the three docs restored to the base branch and the new test
   kept, `reuse_existing_owner_3084_test.ts` fails (AssertionError on the new
   pins); with the rewritten docs it passes (5 passed, 0 failed).
+- Review follow-up red check: removing only the independent-oracle parenthetical
+  from `CODING-STANDARDS.md` makes
+  `worker/deno/tests/reuse_existing_owner_3084_test.ts::CODING-STANDARDS - the over-engineering checklist flags an in-repo helper copied by hand`
+  fail on the missing clause; restoring it passes. The obsolete narrow reuse
+  wording remains replaced, while independent expected results remain protected
+  by this section-scoped test and the issue and feedback prompt tests above.
 - Full `./quality.sh`: the foreground run was terminated by the tool before it
   printed a verdict, so there is no overall result.
 
