@@ -796,7 +796,7 @@ Deno.test("compareBaseFailure - output a passing test prints is not part of the 
     ],
     [
       "Jest console.error block",
-      "PASS src/new.test.js\n  console.error\n    Error: disk full while writing the snapshot\n\n      at Object.<anonymous> (src/new.test.js:5:11)\n\n",
+      "PASS src/new.test.js\n  ● Console\n\n    console.error\n      Error: disk full while writing the snapshot\n\n      at Object.<anonymous> (src/new.test.js:5:11)\n\n",
     ],
     [
       "Vitest stdout block",
@@ -821,6 +821,32 @@ Deno.test("compareBaseFailure - output a passing test prints is not part of the 
     ),
     "different",
   );
+});
+
+Deno.test("compareBaseFailure - formatter compares file loci, not totals", async () => {
+  const fmt = (file: string, count: number) =>
+    `from ${file}:\nerror: Found 1 not formatted file in ${count} files\n`;
+  assertEquals(
+    await compareStates(fmt("src/a.ts", 1240), fmt("src/a.ts", 1236)),
+    "same",
+  );
+  assertEquals(
+    await compareStates(fmt("src/a.ts", 1240), fmt("src/b.ts", 1240)),
+    "different",
+  );
+  assertEquals(
+    await compareStates(
+      "error: Found 1 not formatted file in 1240 files",
+      "error: Found 1 not formatted file in 1240 files",
+    ),
+    "unreadable",
+  );
+});
+
+Deno.test("compareBaseFailure - generic npm step output is unreadable", async () => {
+  const log =
+    "##[endgroup]\n> vibe-project@1.2.3 test\n> node scripts/run-tests.js\n##[error]Process completed with exit code 1.\n";
+  assertEquals(await compareStates(log, log), "unreadable");
 });
 
 Deno.test("failureSignatureLines - an unclosed Deno output block ends at the omission marker", () => {

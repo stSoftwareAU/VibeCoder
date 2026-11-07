@@ -498,7 +498,7 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   Left out of the comparison are passing test lines in every runner format
   (`... ok`, TAP `ok <n>`, `✓`, `✔`, `√`, `--- PASS`, `PASS`, pytest `PASSED`),
   output that tests print (Deno `------- output -------` blocks, Jest
-  `console.*` blocks and Vitest `stdout |` blocks), lines made only of
+  `● Console` and `console.*` blocks and Vitest `stdout |` blocks), lines made only of
   `<count> <word>` groups whatever the noun (`1 failed, 42 passed, 3 warnings in
   0.31s`, `Deprecations: 3`, `42 examples, 1 failure`, the generic `1) Failure:`
   header), the runner's exit line, other generic assertion and command-failed
@@ -511,13 +511,13 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   by a passing test that no recognised block marks (for example inline logger
   lines in Mocha or node:test) is still compared. When the pull request has no
   such line (semgrep, shellcheck, cspell and similar checks print rule ids, not
-  failure words), the lines of the failing step's own output (between its
-  command echo and the `Process completed with exit code` line) are compared
-  instead, with standalone numbers ignored; without that step the failure is
-unreadable. A pull request whose only lines are generic is unreadable. Deno
-failure-section and Jest suite-failure headers without a test or suite locus
-are unreadable even when an assertion or exception is present.
-  matches. The comparison gives one of three signatures:
+  failure words), distinctive rule identifiers and file loci in the failing
+  step output are compared with standalone numbers ignored. Without distinctive
+  evidence the failure is unreadable. Deno formatter `from <path>:` lines
+  identify files; its file-count summary is ignored. Deno failure-section and
+  Jest suite-failure headers without a test or suite locus are unreadable even
+  when an assertion or exception is present. The comparison gives one of three
+  signatures:
   - **Same** — every comparable normalised failure line of the pull request appears in
     the base run's log, so the base is red for this failure.
   - **Different** — the base log was read and at least one comparable pull request failure

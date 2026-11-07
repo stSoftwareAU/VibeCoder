@@ -1230,6 +1230,48 @@ function semgrepLog(rule: string, line = 42): string {
 
 const SEMGREP_RULE = "javascript.lang.security.audit.detect-non-literal-regexp";
 
+Deno.test("processCiFailure - real semgrep output ignores run-specific metadata", async () => {
+  const log = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  const base = log.replaceAll(
+    "d18354c516fd14bf6d7fb665e38ad092033ead92",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  ).replaceAll(
+    "be9daca4d6743abf0d4ffa2923ba1d46ee659fe3",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  ).replace("triggering event is pull_request", "triggering event is push");
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log,
+    baseLog: base,
+  }, exitLineInput());
+  assertStringIncludes(
+    captured.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-deferred ",
+  );
+});
+
+Deno.test("processCiFailure - formatter identifies the failed file", async () => {
+  const log = (file: string, count: number) =>
+    `##[endgroup]\nfrom ${file}:\nerror: Found 1 not formatted file in ${count} files\n##[error]Process completed with exit code 1.\n`;
+  const same = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log("src/a.ts", 1240),
+    baseLog: log("src/a.ts", 1236),
+  }, exitLineInput());
+  assertStringIncludes(
+    same.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-deferred ",
+  );
+  const different = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log("src/a.ts", 1240),
+    baseLog: log("src/b.ts", 1240),
+  }, exitLineInput());
+  assertStringIncludes(
+    different.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-attempt ",
+  );
+});
+
 /** An input whose only annotation is the runner's generic exit line. */
 function exitLineInput(): CiFixInput {
   const input = makeInput();

@@ -169,6 +169,7 @@ const DENO_OUTPUT_END =
   /^-{3,}\s*(?:pre-test |post-test )?output end\s*-{3,}$/i;
 /** Jest's `console.error` header, indented; its block is the deeper lines. */
 const JEST_CONSOLE = /^console\.(?:log|info|warn|error|debug)$/;
+const JEST_CONSOLE_SECTION = /^● Console$/;
 /** Vitest's `stdout | file > test` header; its block runs to the next blank line. */
 const VITEST_OUTPUT = /^(?:stdout|stderr) \| /;
 /** The marker `summariseActionsLog` leaves where it dropped lines. */
@@ -217,7 +218,7 @@ function preparedLines(text: string, limit: number): string[] {
       denoBlock = true;
       continue;
     }
-    if (JEST_CONSOLE.test(trimmed)) {
+    if (JEST_CONSOLE_SECTION.test(trimmed) || JEST_CONSOLE.test(trimmed)) {
       blockIndent = indentOf(line);
       continue;
     }
@@ -280,6 +281,11 @@ function failingStepLines(lines: string[]): string[] {
 
 /** A standalone number in a line with no failure word, as in `42┆ new RegExp(x)`. */
 const LOOSE_NUMBER = /\b\d+\b/g;
+/** Explicit file loci and rule identifiers are evidence; step banners are not. */
+const FORMAT_LOCUS = /^from\s+\S+:$/;
+const DISTINCTIVE_LINE =
+  /^(?:from\s+\S+:|❯❱\s+\S+|(?:[\w.-]+\/)+[\w.-]+\.[a-z\d]+(?::\d+)?$|(?:sc\d{4}|md\d{3})\b|semgrep: blocking code rules fired - \S+|lint: [\w-]+$)/i;
+const FORMAT_SUMMARY = /^error: found \d+ not formatted files? in \d+ files?$/;
 
 function loosen(line: string): string {
   return line.replace(LOOSE_NUMBER, "<n>");
@@ -287,7 +293,8 @@ function loosen(line: string): string {
 
 /**
  * The comparable form of each line that passes the filters. `needsWord` asks
- * for a failure word (or a test name); the step-output fallback does not.
+ * for a failure word, test name or formatter locus; the fallback requires a
+ * distinctive rule or file locus.
  */
 function comparableLines(lines: string[], needsWord: boolean): string[] {
   const seen = new Set<string>();
@@ -302,15 +309,15 @@ function comparableLines(lines: string[], needsWord: boolean): string[] {
     if (GENERIC_LINE.test(normalised)) continue;
     if (BOILERPLATE.test(normalised)) continue;
     if (isTallyLine(normalised)) continue;
+    if (FORMAT_SUMMARY.test(normalised)) continue;
 
     if (needsWord) {
-      if (!TEST_NAME.test(normalised)) {
+      if (!TEST_NAME.test(normalised) && !FORMAT_LOCUS.test(normalised)) {
         if (normalised.length < MIN_SIGNATURE_CHARS) continue;
         if (!FAILURE_WORD.test(normalised.replace(FLAG_TOKEN, " "))) continue;
       }
     } else {
-      if (normalised.length < MIN_SIGNATURE_CHARS) continue;
-      if (!/[a-z]{3}/.test(normalised)) continue;
+      if (!DISTINCTIVE_LINE.test(normalised)) continue;
     }
     if (seen.has(normalised)) continue;
 
@@ -354,8 +361,8 @@ function failureSignature(text: string): FailureSignature {
  * passing test results, test-run tallies, command echoes and generic runner
  * output never qualify. A line qualifies when it is long enough and is a
  * failing-test name or carries a failure word outside any command-line flag.
- * When no line does, the failing step's own output qualifies, with standalone
- * numbers normalised.
+ * When no line does, distinctive rule and file loci in the failing step's
+ * output qualify, with standalone numbers normalised.
  */
 export function failureSignatureLines(text: string): string[] {
   return failureSignature(text).lines;
