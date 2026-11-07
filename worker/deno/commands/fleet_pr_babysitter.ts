@@ -292,6 +292,59 @@ export async function serialiseOnMirror(
   }
 }
 
+/** Untracked tool byproducts a repair clone must never commit (Issue #4827). */
+export const REPAIR_BYPRODUCT_EXCLUDES: readonly string[] = [
+  "*.profraw",
+  "*.profdata",
+  "lcov.info",
+  "/mutants.out/",
+  "/mutants.out.old/",
+];
+
+/**
+ * Append {@link REPAIR_BYPRODUCT_EXCLUDES} to the clone's `info/exclude`, once
+ * each (Issue #4827). The path comes from `git rev-parse --git-path`, since a
+ * lane worktree's `.git` is a file and only git knows where the exclude file
+ * lives. Errors throw, so a clone that cannot ignore byproducts is not used.
+ */
+export async function excludeRepairByproducts(
+  dir: string,
+  git: (
+    args: string[],
+    options?: { cwd?: string; timeoutSeconds?: number },
+  ) => Promise<string>,
+): Promise<void> {
+  const answer = (await git(["rev-parse", "--git-path", "info/exclude"], {
+    cwd: dir,
+  })).trim();
+  if (answer === "") {
+    throw new Error(
+      `could not resolve info/exclude in ${dir}: git printed nothing`,
+    );
+  }
+  // `--git-path` answers relative to the directory git ran in.
+  const excludePath = answer.startsWith("/") ? answer : `${dir}/${answer}`;
+  await Deno.mkdir(excludePath.slice(0, excludePath.lastIndexOf("/")), {
+    recursive: true,
+  });
+  let existing = "";
+  try {
+    existing = await Deno.readTextFile(excludePath);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  const present = new Set(existing.split("\n").map((line) => line.trim()));
+  const missing = REPAIR_BYPRODUCT_EXCLUDES.filter((line) =>
+    !present.has(line)
+  );
+  if (missing.length === 0) return;
+  const separator = existing === "" || existing.endsWith("\n") ? "" : "\n";
+  await Deno.writeTextFile(
+    excludePath,
+    `${existing}${separator}${missing.join("\n")}\n`,
+  );
+}
+
 /**
  * Clone a repository for one repair through a per-repository bare mirror under
  * the babysitter state dir (Issue #4727). The first repair downloads the mirror
@@ -302,6 +355,11 @@ export async function serialiseOnMirror(
  * mirror sits outside the agent's only write grants (the clone and scratch
  * directories, see buildBabysitterSandboxArgs). A clone may leave a partial
  * destination, so a failed clone is not retried in place.
+ *
+ * The clone's `info/exclude` also ignores the tool byproducts in
+ * {@link REPAIR_BYPRODUCT_EXCLUDES}, so an untracked `*.profraw` or `lcov.info`
+ * is never staged as the fix (Issue #4827). `info/exclude` only affects
+ * untracked paths, so a repo that tracks one of these paths is unaffected.
  */
 export async function cloneForRepair(
   repo: string,
@@ -355,6 +413,7 @@ export async function cloneForRepair(
     });
     await git(["remote", "set-url", "origin", url], { cwd: dir });
   });
+  await excludeRepairByproducts(dir, git);
 }
 
 /**
