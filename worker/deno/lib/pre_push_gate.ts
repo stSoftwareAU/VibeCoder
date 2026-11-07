@@ -38,6 +38,7 @@
 import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { checkBashCiGates } from "./bash_ci_gate_scanner.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import {
   type PreFlightRunner,
@@ -1150,6 +1151,8 @@ export async function runPrePushGate(opts: {
         cwd: opts.cwd,
         stdout: "piped",
         stderr: "piped",
+        env: buildUntrustedCommandEnv(),
+        clearEnv: true,
         signal: AbortSignal.timeout(10_000),
       }).output();
     } catch (error) {
