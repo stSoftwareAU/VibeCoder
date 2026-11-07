@@ -368,10 +368,8 @@ Deno.test("listBotPrs - admits a GitHub App author reported as app/<slug> (Issue
 });
 
 Deno.test("listBotPrs - a non-bot author is never admitted", async () => {
-  // `is_bot: false` means the author is an ordinary user, so the listing
-  // never re-spells the login (see the issue_query test). Neither a human nor
-  // an unrecognised user is admitted, and neither is logged: they are not
-  // this door's business.
+  // These ordinary user logins are not App-shaped, so neither is re-spelled,
+  // admitted or logged: they are not this door's business.
   const lines: string[] = [];
   const admitted = await listBotPrs({
     repo: REPO,

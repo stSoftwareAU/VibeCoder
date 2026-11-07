@@ -24,13 +24,14 @@ Version bump: `VERSION` is not changed by this PR.
 - `listBotPrs` also calls it. The `prs_open_all` cache is file-backed (10 min
   TTL), so a row written by the previous release can still hold `app/<slug>`.
   The persisted field stays a string, so no key bump; the old shape is read
-  instead. A cached row has no `is_bot`, so there `app/<slug>` is rewritten on
-  shape alone (a real login cannot contain `/`).
-- Other readers of `authorLogin` (`prAuthorForGate`, idle census, claimable
-  audit, `selectBranchUpdatePrs`, `provenOpenPrAuthors`) classify `app/x` and
-  `x[bot]` identically as non-fleet; `selectBranchUpdatePrs` also gains bot
-  admission. Normalising grants no authority: cross-repository, fleet-author and
-  every other rule still apply.
+  instead. At admission, every `app/<slug>` login is rewritten on shape alone
+  without consulting `is_bot` (a real user login cannot contain `/`).
+- For a fleet App configured as `<slug>[bot]`, the idle census and claimable
+  audit now count its listed PRs as fleet-owned; previously `app/<slug>` was
+  read as human. This matches `getBlockingPRForIssue` on the main scan.
+  Non-fleet Apps remain non-fleet under either spelling;
+  `selectBranchUpdatePrs` also gains bot admission. Normalising grants no
+  authority: cross-repository, fleet-author and every other rule still apply.
 - Import edge `issue_query.ts` → `trust_exclusions.ts` joins an import cycle
   that already existed through `gh_spawn.ts`; the function is pure.
 
@@ -68,5 +69,7 @@ passes).
 - `./quality.sh < /dev/null` on the code head: exit 0, "Result: PASSED (with
   skipped checks)"; config integration and checkov were skipped by the gate
   itself.
-- Not tested: an `is_bot: false` `app/<slug>` row in the stale cache is also
-  rewritten (see decision above); `gh` cannot emit it.
+- The admission fallback also rewrites an `is_bot: false` `app/<slug>` row
+  by shape; `fetchAllOpenPRs` itself leaves that row unchanged.
+- Review correction: the policy and test comment now describe the admission
+  fallback, and this summary records the fleet App classification change.
