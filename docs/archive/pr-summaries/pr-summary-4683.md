@@ -70,6 +70,15 @@ flowchart LR
 
 ## Test Plan
 
+- Review follow-up: shell quotes attached to cargo versions are removed, and
+  background operators split commands without splitting redirections. Multiline
+  quoted strings retain their state, and shell condition and timing prefixes
+  are recognised. The formerly missed installs remain findings; valid quoted
+  and parallel installs remain clean, covered by
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo shell versions and command boundaries`.
+  The shared command splitter and prefix stripper are the affected copies;
+  `docs/EXTENDING.md` now includes cargo and its lock requirement.
+
 - Added to `worker/deno/tests/ci_install_pin_scanner_test.ts`: cargo positives
   (unpinned, unlocked, pinned-but-unlocked, non-exact `--version 0.22` /
   `@^0.22.2` / `@0.22`), clean forms (`--locked` with `--version`,
@@ -112,7 +121,8 @@ flowchart LR
   `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo external findings identify sources and request locking only`.
   Quoted values and expression versions remain single cargo tokens, covered by
   `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo quoted values and expressions do not become crates`.
-  Both tests failed before the fix. The shared npm/gem tokenizer is unchanged.
+  Both tests failed before the fix. The shared command splitter also serves
+  npm and gem; the later follow-up covers its multiline quote handling.
 - Review follow-up validation: repository-wide `deno fmt --check`, `deno lint`,
   and `deno check '**/*.ts'` passed; the scanner, 4683 and template conformance
   tests passed (67 tests). The archived-summary freshness check reads commit

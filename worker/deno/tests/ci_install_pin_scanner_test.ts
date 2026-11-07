@@ -621,6 +621,33 @@ Deno.test("cargo quoted values and expressions do not become crates", () => {
   );
 });
 
+Deno.test("cargo shell versions and command boundaries", () => {
+  for (
+    const run of [
+      `cargo install --locked cargo-audit --version="$V"`,
+      `cargo install --locked cargo-audit@"$V"`,
+      `cargo install --locked cargo-audit --version='0.22.2'`,
+      `cargo install --locked cargo-audit@"0.22.2"`,
+      'cargo install --locked cargo-audit@"${{ inputs.v }}"',
+      `cargo install --locked cargo-audit@0.22.2 & cargo install --locked cargo-edit@0.13.14 & wait`,
+    ]
+  ) assertEquals(findUnpinnedInstalls(run), [], run);
+  for (
+    const run of [
+      `cargo install --locked cargo-audit@0.22.2 & cargo install other`,
+      `node -e "\n console.log(1)\n" && npm install -g pa11y-ci`,
+      `git commit -m 'chore: x\nbody' && cargo install other`,
+      `if ! command -v cargo-audit; then cargo install other; fi`,
+      `time cargo install other`,
+      `(cargo install other)`,
+    ]
+  ) {
+    assertEquals(findUnpinnedInstalls(run).map((f) => f.packageName), [
+      run.includes("pa11y") ? "pa11y-ci" : "other",
+    ], run);
+  }
+});
+
 Deno.test("cargo expressions preserve logical operators and command boundaries", () => {
   for (
     const run of [

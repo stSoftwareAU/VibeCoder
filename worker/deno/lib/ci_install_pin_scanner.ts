@@ -358,12 +358,42 @@ function joinContinuations(run: string): LogicalLine[] {
   const out: LogicalLine[] = [];
   let buffer = "";
   let anchor: string | null = null;
+  let quote = "";
+  let expression = false;
 
   for (const rawLine of run.split("\n")) {
     const line = rawLine.trim();
     if (anchor === null) anchor = line;
+    for (let i = 0; i < line.length; i++) {
+      if (expression) {
+        if (line.startsWith("}}", i)) {
+          expression = false;
+          i++;
+        }
+      } else if (line[i] === "\\" && quote !== "'") {
+        i++;
+      } else if (quote === "'" && line[i] === "'") {
+        quote = "";
+      } else if (line.startsWith("${{", i) && quote !== "'") {
+        expression = true;
+        i += 2;
+      } else if (quote && line[i] === quote) {
+        quote = "";
+      } else if (!quote && (line[i] === "'" || line[i] === '"')) {
+        quote = line[i] as string;
+      } else if (
+        !quote && line[i] === "#" &&
+        (i === 0 || /\s/.test(line[i - 1] as string))
+      ) {
+        break;
+      }
+    }
     if (line.endsWith("\\")) {
       buffer += `${line.slice(0, -1).trim()} `;
+      continue;
+    }
+    if (quote || expression) {
+      buffer += `${line} `;
       continue;
     }
     out.push({ command: `${buffer}${line}`.trim(), anchor });
@@ -388,6 +418,10 @@ function stripCommandPrefix(tokens: readonly string[]): readonly string[] {
 
   while (i < tokens.length) {
     const token = tokens[i] as string;
+    if (["then", "do", "else", "elif", "!", "time", "{"].includes(token)) {
+      i++;
+      continue;
+    }
     if (ENV_ASSIGNMENT.test(token)) {
       i++;
       continue;
@@ -449,10 +483,16 @@ function splitCommands(command: string): string[] {
     ) {
       break;
     } else if (
-      command[i] === ";" || command[i] === "|" || command.startsWith("&&", i)
+      command[i] === ";" || command[i] === "|" || command[i] === "(" ||
+      command[i] === ")" || (command[i] === "&" &&
+        command[i + 1] !== ">" && command[i - 1] !== ">" &&
+        command[i - 1] !== "<")
     ) {
       segments.push(command.slice(start, i));
-      if (command.startsWith("||", i) || command.startsWith("&&", i)) i++;
+      if (
+        command.startsWith("||", i) || command.startsWith("&&", i) ||
+        command.startsWith("|&", i)
+      ) i++;
       start = i + 1;
     }
   }
@@ -471,7 +511,12 @@ function cargoShellTokens(tokens: string[]): string[] {
       if (!redirect[1]) i++;
       continue;
     }
-    result.push(unquote(token));
+    result.push(
+      token.replace(
+        /"((?:\\.|[^"\\])*)"|'([^']*)'/g,
+        (_match, double, single) => double ?? single,
+      ),
+    );
   }
   return result;
 }

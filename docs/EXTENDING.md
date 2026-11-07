@@ -385,8 +385,10 @@ before Issue #1639. Every emitted template now carries:
 - `timeout-minutes:` on every job — 10 for scan and quality jobs, 20 for
   dependency-update jobs that open a PR;
 - an exact version pin on every `run:` install the audit's install-pin
-  pre-filer covers — npm, npx and gem (a `run:` install is not a manifest,
-  so no dependency manager applies the 24h quarantine to it);
+  pre-filer covers — npm, npx, gem and cargo (a `run:` install is not a
+  manifest, so no dependency manager applies the 24h quarantine to it).
+  A cargo install also passes `--locked`, for example
+  `cargo install --locked <crate> --version x.y.z`;
 - `set -euo pipefail` at the top of every multi-line `run:` block, so a
   failing command mid-block cannot vanish into a green step;
 - a trailing `# <version>` comment on every SHA-pinned `uses:`, rendered by
