@@ -139,7 +139,10 @@ mirror directory to force a fresh download. Codex reads the filesystem under its
 permissions profile, so it can read a mirror, but it cannot write to one because
 its write grants are only the clone and scratch directory. Mirrors are not among
 the `~/.vibe-coder/fleet-pr-babysitter*` denylist entries, so do not treat them
-as credential-protected.
+as credential-protected. Every other git command a repair runs through the
+babysitter's generic runner, including the tracking-ref fetches and the push of
+the fix, is also bounded to 30 minutes rather than the 60-second default for
+git.
 
 An optional executable `~/.vibe-coder/fleet-pr-babysitter/health-hook` receives
 the pass exit code as its sole argument. It is bounded to ten minutes; hook
