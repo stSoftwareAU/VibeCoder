@@ -54,7 +54,7 @@ flowchart TD
 - Regression wiring check: removing only the `cloneForRepair` preparation call
   made the tracked-fix and byproducts-only tests fail (118 passed, 2 failed).
 - `deno task test:unit tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_single_push_test.ts tests/fleet_babysitter_app_test.ts`
-  — 148 passed, 0 failed.
+  — 152 passed, 0 failed (after merging the latest `origin/main`).
 - `deno task test:unit tests/completion_phase_repo_formatters_test.ts` — 8
   passed, 0 failed; the earlier checkpoint's cargo-fmt failures did not
   reproduce.
