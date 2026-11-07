@@ -37,7 +37,10 @@
 import { fetchAllOpenPRs, type OpenPRWithBody } from "./issue_query.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { sanitiseLogField } from "./issue_finder_logger.ts";
-import { isBotAuthorForMaintenance } from "./trust_exclusions.ts";
+import {
+  isBotAuthorForMaintenance,
+  normaliseGhAppLogin,
+} from "./trust_exclusions.ts";
 import {
   isFleetAuthor,
   resolveFleetMaintenanceAuthorSet,
@@ -145,7 +148,8 @@ export async function listBotPrs(
     if (typeof pr.number !== "number" || seen.has(pr.number)) continue;
     seen.add(pr.number);
 
-    const login = (pr.authorLogin ?? "").trim();
+    // A row cached by the previous release may still hold gh's `app/<slug>`.
+    const login = normaliseGhAppLogin((pr.authorLogin ?? "").trim());
     if (login === "" || !isBotAuthorForMaintenance(login)) continue;
     // A fleet account's own PR arrives through the maintenance listing.
     if (isFleetAuthor(login, [...fleet])) continue;
