@@ -808,26 +808,59 @@ ${CHECKOUT_NO_CREDENTIALS}
 `,
 };
 
+// Maven and Gradle are split into separate specs so each one is keyed to its
+// own root build file and detects only its own Dependabot ecosystem entry. A
+// repo with both build files needs both `updates` entries in the one
+// .github/dependabot.yml.
 const javaDependencyUpdates: WorkflowSpec = {
   id: "java-dependency-updates",
-  name: "Java Dependency Updates",
+  name: "Java Maven Dependency Updates",
   appliesTo: ["Java"],
-  rootProjectMarkers: ["pom.xml", "build.gradle", "build.gradle.kts"],
+  rootProjectMarkers: ["pom.xml"],
   triggers: ["schedule"],
   detectionPatternGroups: [[
-    "dependabot",
+    "package-ecosystem: maven",
+    'package-ecosystem: "maven"',
     "renovate",
     "versions-maven-plugin",
-    "gradle-versions-plugin",
   ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-dependabot.yml",
   category: "dependency-update",
   template:
-    `# Dependabot configuration for Maven/Gradle (place in .github/dependabot.yml)
+    `# Dependabot configuration for Maven (place in .github/dependabot.yml)
 version: 2
 updates:
   - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+`,
+};
+
+const javaGradleDependencyUpdates: WorkflowSpec = {
+  id: "java-gradle-dependency-updates",
+  name: "Java Gradle Dependency Updates",
+  appliesTo: ["Java"],
+  rootProjectMarkers: ["build.gradle", "build.gradle.kts"],
+  triggers: ["schedule"],
+  detectionPatternGroups: [[
+    "package-ecosystem: gradle",
+    'package-ecosystem: "gradle"',
+    "renovate",
+    "gradle-versions-plugin",
+  ]],
+  capabilities: ["Automated dependency updates"],
+  suggestedFilename: "java-gradle-dependabot.yml",
+  category: "dependency-update",
+  template:
+    `# Dependabot configuration for Gradle (place in .github/dependabot.yml)
+version: 2
+updates:
+  - package-ecosystem: gradle
     directory: /
     schedule:
       interval: weekly
@@ -962,6 +995,7 @@ export const WORKFLOW_SPECS: ReadonlyArray<WorkflowSpec> = [
   // Java
   javaDependencyCheck,
   javaDependencyUpdates,
+  javaGradleDependencyUpdates,
   // Bash
   shellcheck,
 ];
