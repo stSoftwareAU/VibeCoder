@@ -27,27 +27,32 @@ flowchart LR
   missing-command report but exit 1.
 - An unclosed Deno output block stays ignored so malformed captured output is
   classified as a content failure, not an infrastructure deferral.
-- `QUOTED_TEXT_LINE` in `publication_validation.ts` is not reused. The
-  whole-line matcher already rejects quoted and indented reports, and importing
-  that helper would create a module cycle.
+- Strip ANSI colour codes before matching shell reports and Deno's ordinary,
+  pre-test and post-test output boundaries.
 
 ### Undiscoverable Facts
 
 - Real Bash printed `bash: line 1: vibe-no-such-command-4829: command not found`
   and exited 127. A wrapper that then exits 1 kept the same Bash report.
-- Real Deno output placed a test's `foo: command not found` between
-  `------- output -------` and `----- output end -----`, followed by the failed
-  test line.
+- Real Deno output places a test's `foo: command not found` between output
+  markers followed by the failed test line. On the gate's pipe the markers
+  carry ANSI colour codes; module output uses pre-test markers.
 
 ## Evidence
 
-Backend-only change; no UI. `runQualityGateCheck` calls the updated matcher,
-`publication_validation.ts` maps `failed_missing_command` to `unavailable`, and
-its `failed_fixable` result remains eligible for base comparison. The completion
-phase's existing failed-verdict path passes the failure to a repair turn.
+Backend-only change; no UI. `runQualityGateCheck` calls the updated matcher.
+`pr_ci_processor.ts` starts repair for `failed_fixable`, while
+`worker/deno/commands/quality_gate_phase.ts` exposes the result to callers.
 
 ## Test Plan
 
+- Review regression: `worker/deno/tests/quality_gate_phase_test.ts::runQualityGateCheck - coloured Deno output remains fixable`
+  covers coloured ordinary and pre-test markers; the matcher test also covers
+  post-test markers and reports after each block. Both new tests failed before
+  the fix. The former bare `command not found` fixture is obsolete because a
+  fragment is no longer a shell report; whole shell reports remain covered by
+  `worker/deno/tests/quality_gate_phase_test.ts::isMissingCommandFailure - detects a bare shell report`
+  and the baseline context test continues to cover its failure message.
 - `worker/deno/tests/quality_gate_phase_test.ts` exercises bare Bash and
   script-with-line-number reports, reports among other lines, quoted/indented
   lookalikes, Deno output boundaries, unclosed and malformed blocks, a report
@@ -66,8 +71,9 @@ phase's existing failed-verdict path passes the failure to a repair turn.
   (63 passed), including the quoted-output `runQualityGateCheck` test and the
   lookalike/Deno-block matcher tests. Restoring the branch code returned the
   file to green.
-- `deno task test:unit tests/quality_gate_phase_test.ts`: 70 passed, 0 failed.
-- `deno fmt --check` and `deno lint` on the changed test file passed.
+- After the review fix, `deno task test:unit tests/quality_gate_phase_test.ts`
+  passed 72 tests; full-tree `deno fmt --check`, `deno lint` and
+  `deno task check` passed.
 - Pre-push recovery: `deno task check:manifests` passed (847 passed, 0 failed, 1
   ignored), `deno task check` passed, and the production `runSemgrepCheck`
   passed over four changed files with Semgrep 1.182.1. The reported JSR manifest

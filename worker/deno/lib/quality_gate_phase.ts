@@ -719,8 +719,8 @@ export function isDockerInfraFailure(output: string): boolean {
 // nested or overlapping quantifiers.
 const SHELL_MISSING_COMMAND_LINE =
   /^(?:[^\s:]+: (?:line \d+: )?)?[^\s:]+: command not found$/;
-const DENO_OUTPUT_START = /^-{3,} output -{3,}$/;
-const DENO_OUTPUT_END = /^-{3,} output end -{3,}$/;
+const DENO_OUTPUT_START = /^-{3,} (?:(?:pre|post)-test )?output -{3,}$/;
+const DENO_OUTPUT_END = /^-{3,} (?:(?:pre|post)-test )?output end -{3,}$/;
 
 /**
  * Check if output contains a shell's own missing-command report, such as
@@ -733,7 +733,8 @@ const DENO_OUTPUT_END = /^-{3,} output end -{3,}$/;
 export function isMissingCommandFailure(output: string): boolean {
   let inDenoOutput = false;
   for (const raw of output.split(/\r?\n/)) {
-    const line = raw.trimEnd();
+    // deno-lint-ignore no-control-regex
+    const line = raw.replace(/\x1b\[[0-9;]*m/g, "").trimEnd();
     if (inDenoOutput) {
       if (DENO_OUTPUT_END.test(line)) inDenoOutput = false;
       continue;

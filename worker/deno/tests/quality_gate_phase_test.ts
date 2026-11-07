@@ -189,6 +189,42 @@ Deno.test("isMissingCommandFailure - ignores text inside a Deno output block", (
   assertEquals(isMissingCommandFailure(DENO_OUTPUT_BLOCK), false);
 });
 
+Deno.test("isMissingCommandFailure - handles coloured pre-test and post-test blocks", () => {
+  for (const phase of ["pre-test", "post-test"]) {
+    const output = [
+      `\x1b[0m\x1b[38;5;245m------- ${phase} output -------\x1b[0m`,
+      "foo: command not found",
+      `\x1b[0m\x1b[38;5;245m----- ${phase} output end -----\x1b[0m`,
+    ].join("\n");
+    assertEquals(isMissingCommandFailure(output), false);
+    assertEquals(
+      isMissingCommandFailure(`${output}\nbar: command not found`),
+      true,
+    );
+  }
+  assertEquals(
+    isMissingCommandFailure("\x1b[31mbash: foo: command not found\x1b[0m"),
+    true,
+  );
+});
+
+Deno.test("runQualityGateCheck - coloured Deno output remains fixable", async () => {
+  for (const phase of ["", "pre-test "]) {
+    const output = [
+      `\x1b[0m\x1b[38;5;245m------- ${phase}output -------\x1b[0m`,
+      "foo: command not found",
+      `\x1b[0m\x1b[38;5;245m----- ${phase}output end -----\x1b[0m`,
+      "test failure ... FAILED",
+    ].join("\n");
+    const deps = createMockDeps({
+      runCommand: async () => ({ exitCode: 1, output }),
+    });
+    const result = await runQualityGateCheck(createParams(), deps);
+    assertEquals(result.action, "failed_fixable");
+    assertStringIncludes(result.retryPrompt!, "foo: command not found");
+  }
+});
+
 Deno.test("isMissingCommandFailure - an unclosed Deno output block stays skipped", () => {
   assertEquals(
     isMissingCommandFailure(
