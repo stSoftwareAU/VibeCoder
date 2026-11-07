@@ -1,9 +1,9 @@
 ## Summary
 
-Rewrote the "call the existing owner" guidance from #3084 so it applies to tests,
-scripts and components as well as product code, dropped its Rust-only remedy,
-and added the reconciliation rule that a test never computes its expected result
-by calling the implementation it asserts. Closes #4688.
+Rewrote the "call the existing owner" guidance from #3084 so it applies to
+tests, scripts and components as well as product code, dropped its Rust-only
+remedy, and added the reconciliation rule that a test never computes its
+expected result by calling the implementation it asserts. Closes #4688.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -13,9 +13,9 @@ Version bump: `VERSION` is not touched by this change.
 
 - The old trigger ("something the product already does") and the `pub(crate)` →
   `pub` remedy let fleet PRs copy file-local test helpers, shell functions and
-  UI components. The new bullet names product code, scripts and other test files,
-  and gives a remedy that works in any language: export it or move it to a
-  shared module, and switch the old callers.
+  UI components. The new bullet names product code, scripts and other test
+  files, and gives a remedy that works in any language: export it or move it to
+  a shared module, and switch the old callers.
 - The search procedure ("grep for the domain term") and the trigger list were
   removed, as the issue proposes; the rule is shorter by about eight lines.
 
@@ -55,8 +55,8 @@ Version bump: `VERSION` is not touched by this change.
 ## Test Plan
 
 - Updated `worker/deno/tests/reuse_existing_owner_3084_test.ts` (5 tests kept):
-  - issue Instructions: new pins for "call existing code — never copy it",
-    the test-file/script scope, the export-or-share remedy, the independent
+  - issue Instructions: new pins for "call existing code — never copy it", the
+    test-file/script scope, the export-or-share remedy, the independent
     expected-value sentence; absence checks for `widen its visibility`,
     `` `pub(crate)` → `pub` `` and the old trigger list.
   - `pr_feedback` Making Changes: same style of pins and absence check.
@@ -67,11 +67,11 @@ Version bump: `VERSION` is not touched by this change.
   "call the existing owner", "formats, orders, ranks, validates or decides",
   "every component or function the issue names", "implementation section",
   "widen its visibility", `` `pub(crate)` → `pub` ``, "replace the copy with a
-  call to the owner", "re-implemented by hand instead of called".
-  Required by: "This rewrite removes the trigger list that narrowed the prompt
-  rule to product behaviour, and the Rust-only example."
-  Replaced by: the new pins above, plus `still in …` absence assertions that
-  keep the removed wording from returning.
+  call to the owner", "re-implemented by hand instead of called". Required by:
+  "This rewrite removes the trigger list that narrowed the prompt rule to
+  product behaviour, and the Rust-only example." Replaced by: the new pins
+  above, plus `still in …` absence assertions that keep the removed wording from
+  returning.
 - Red check: with the three docs restored to the base branch and the new test
   kept, `reuse_existing_owner_3084_test.ts` fails (AssertionError on the new
   pins); with the rewritten docs it passes (5 passed, 0 failed).
