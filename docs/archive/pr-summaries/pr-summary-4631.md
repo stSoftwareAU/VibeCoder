@@ -28,8 +28,9 @@ Version bump: none; no version file changed.
   uses `--norc`. Worker HOME, XDG and external ancestor configs cannot affect
   it.
 - Touched paths retain configuration deletions; execution targets exclude
-  deleted scripts. Unsupported or uninterpretable policy, delegation and tool
-  failures return incomplete infrastructure results rather than success.
+  deleted scripts. Unsupported policy, delegation, missing tools and version
+  mismatches return incomplete infrastructure results rather than success.
+  ShellCheck execution failures propagate the pre-flight result.
 - `runPrePushGate` uses the shared implementation. `commitAndPushPending` gates
   unpushed commits even without a pre-flight spec, applying ShellCheck alone in
   that case. The babysitter's `validateAndCommit` checks staged repairs before
@@ -69,6 +70,13 @@ same implementation.
   blocks through the existing `git_push.ts` caller with the actual repository
   workflow. Commented YAML block headers and root/nested config deletion also
   block on SC2086.
+- The ShellCheck fixtures put the earlier documentation commit on the remote
+  before adding scripts. The old fixture unintentionally required markdownlint
+  for ShellCheck-only tests; `pre_push_gate_test.ts` still covers the separate
+  Markdown blocking path in `runPrePushGate: doc-only push blocked by failing
+  markdownlint`, while the clean-script and recovery tests exercise ShellCheck
+  without that unrelated tool. With markdownlint absent, the suite reproduced
+  the three CI failures before the repair and passed all 72 tests afterwards.
 - `shellcheck_publication_test.ts`: unconfigured repair publication leaves the
   remote unchanged on SC2086; the babysitter refuses its commit. Both entry
   points block with a missing binary, then revalidate diagnostics after tool
@@ -91,10 +99,13 @@ same implementation.
   recognition and was removed when command discovery was corrected. Comment and
   version-probe guards are pinned by direct policy tests. No mutation exemption
   is claimed.
-- `./quality.sh < /dev/null`: passed on the final implementation, including the
+- `./quality.sh < /dev/null`: passed before the CI fixture repair, including the
   full Deno suite, lint, type-check, formatting, Markdown lint, Semgrep and
   completeness checks. Config integration and Checkov were skipped by the gate.
 - `deno task check:manifests`: 848 passed, 0 failed, 1 ignored.
+- The CI shard was retried after the fixture repair, but this host's sandbox
+  denied `/bin/ps` during process-tree tests, preventing the shard from
+  completing. The affected test file passed separately; CI runs the full shard.
 - `deno task pr-summary-check --base origin/main ../../docs/archive/pr-summaries/pr-summary-4631.md`:
   0 blocked; closure, independent review and reproduction status were not
   checked because no issue-body file or labels were supplied.

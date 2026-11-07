@@ -249,7 +249,9 @@ async function commitShellcheckFiles(
   files: Record<string, string>,
   flags = "-e SC1091 -e SC2034",
 ): Promise<string> {
-  await Deno.writeTextFile(`${clone}/README.md`, "# Valid heading\n");
+  // Keep the unrelated doc commit on the remote so these fixtures need only
+  // ShellCheck, as in the CI test shard which does not install markdownlint.
+  await git(clone, "push", "-q", "origin", "HEAD:main");
   await Deno.mkdir(`${clone}/.github/workflows`, { recursive: true });
   await Deno.writeTextFile(
     `${clone}/.github/workflows/validate-scripts.yml`,
