@@ -1035,8 +1035,8 @@ merges on green CI with no reviewer:
   (the suspicious-image flag is the exception: it always stops the run). A
   closed, unreadable or self-filed dependency does not defer, and the issue is
   retried. A bare `## Blocked:` heading does not defer. When no criterion
-  is `missing`, the PR body gets `Closes #{{ISSUE_NUMBER}}` appended
-  automatically if your summary omits it.
+  is `partial` or `missing`, the PR body gets `Closes #{{ISSUE_NUMBER}}`
+  appended automatically if your summary omits it.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -1242,9 +1242,9 @@ one of:
 In the `Part of` case, write no closing keyword for the issue anywhere in the
 summary. The worker raises the PR body the same way (`Part of #{{ISSUE_NUMBER}}`
 plus a `## Not closing #{{ISSUE_NUMBER}}` section), so the committed summary and
-the PR body agree. The `missing` entry must really be in the block, since
-without one the worker appends `Closes #{{ISSUE_NUMBER}}` to the PR body and the
-issue closes on merge (in the Vibe Coder repository, `deno task
+the PR body agree. The `partial` or `missing` entry must really be in the
+block, since without one the worker appends `Closes #{{ISSUE_NUMBER}}` to the
+PR body and the issue closes on merge (in the Vibe Coder repository, `deno task
 pr-summary-check` also blocks it).
 
 Place it in the **Summary** section of your PR summary. For example: "Fixed the
@@ -1352,7 +1352,7 @@ The file MUST contain:
 
 1. **Summary**: A brief description of what was changed and why, **including
    `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
-   criterion `missing`, otherwise `Closes #{{ISSUE_NUMBER}}`**
+   criterion `partial` or `missing`, otherwise `Closes #{{ISSUE_NUMBER}}`**
 2. **Spec**: the after-run record of what the diff alone cannot tell a
    reviewer, placed directly after Summary under three sub-headings — at most
    four bullets each, and `None.` when a sub-heading has nothing to say:
