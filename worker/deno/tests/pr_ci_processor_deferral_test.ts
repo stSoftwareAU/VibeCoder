@@ -1332,6 +1332,64 @@ Deno.test("processCiFailure - semgrep fallback compares rule and whole file at e
   }
 });
 
+Deno.test("processCiFailure - diagnostic rules stay paired with their files", async () => {
+  const fixture = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const message of ["", " an exception thrown here is not handled."]) {
+    const pr = fixture.replace(
+      "Details: https://sg.run/gr65",
+      `Details: https://sg.run/gr65${message}`,
+    );
+    const base = pr.replaceAll(
+      "detect-non-literal-regexp",
+      "detect-eval-with-expression",
+    ) +
+      pr.replace(
+        "worker/deno/lib/marker_dedup_author_manifest.ts",
+        "worker/deno/lib/other_module.ts",
+      );
+    for (const [baseLog, marker] of [[base, "attempt"], [pr, "deferred"]]) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: pr,
+        baseLog,
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+      );
+    }
+  }
+  const cases = [
+    [
+      "a.ts\n❯❱ rule.one\n  1┆ code\n❯❱ rule.two\n  2┆ code",
+      "a.ts\n❯❱ rule.one\n  1┆ code\n❯❱ rule.other\n  2┆ code\nb.ts\n❯❱ rule.two\n  2┆ code",
+    ],
+    [
+      "error[no-explicit-any]: any type is not allowed\n --> a.ts:12:20",
+      "error[no-unused-vars]: unused variable\n --> a.ts:12:20\nerror[no-explicit-any]: any type is not allowed\n --> b.ts:12:20",
+    ],
+    [
+      "In a.sh line 12:\nSC2086: Double quote to prevent globbing.",
+      "In a.sh line 12:\nSC2046: Quote this.\nIn b.sh line 12:\nSC2086: Double quote to prevent globbing.",
+    ],
+  ];
+  const wrap = (s: string) =>
+    `##[endgroup]\n${s}\n##[error]Process completed with exit code 1.\n`;
+  for (const [pr, base] of cases) {
+    for (const [baseLog, marker] of [[base!, "attempt"], [pr!, "deferred"]]) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: wrap(pr!),
+        baseLog: wrap(baseLog!),
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+      );
+    }
+  }
+});
+
 Deno.test("processCiFailure - formatter identifies the failed file", async () => {
   const log = (file: string, count: number) =>
     `##[endgroup]\nfrom ${file}:\nerror: Found 1 not formatted file in ${count} files\n##[error]Process completed with exit code 1.\n`;

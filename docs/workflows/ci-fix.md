@@ -508,9 +508,11 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   and an annotation without a failure word. A failing-test name must equal a
   whole line of the base log, so `parses header` does not match `parses header
   with a BOM`. Semgrep finding files and rules also must equal whole base-log
-  lines. The file is the non-empty line before the rule at any severity icon
-  (`❱`, `❯❱`, `❯❯❱` or `❯❯❯❱`); both are compared even when output
-  contains a failure word. Other lines may sit inside a longer base line. Output printed
+  lines, as a file-and-rule pair within the same finding. The file header before
+  the first rule carries across subsequent rules at any severity icon (`❱`,
+  `❯❱`, `❯❯❱` or `❯❯❯❱`), even when output contains a failure word.
+  Deno lint rule and location lines, and ShellCheck file and rule lines, are
+  likewise compared as pairs. Other lines may sit inside a longer base line. Output printed
   by a passing test that no recognised block marks (for example inline logger
   lines in Mocha or node:test) is still compared. When the pull request has no
   such line (semgrep, shellcheck, cspell and similar checks print rule ids, not

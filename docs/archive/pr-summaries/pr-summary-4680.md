@@ -4,7 +4,7 @@ The CI-fix base-branch deferral now compares the pull request's failure with the
 red base run's log before accepting a `Depends on` claim. A red conclusion alone
 can represent a different failure. Closes #4680.
 
-- **Same:** every comparable PR failure line appears in the base log; defer
+- **Same:** every comparable PR failure line and diagnostic pair appears in the base log; defer
   without charging an attempt.
 - **Different:** at least one comparable line is absent; follow the ordinary
   charged path.
@@ -42,7 +42,8 @@ frames and Jest's `Test suite failed to run`. A failing-test name (Jest `●`, `
 and `FAIL file.test.js`, node:test `✖`, Bats `✗`, TAP `not ok`, Mocha `N)`,
 Vitest `FAIL a > b`, pytest `FAILED id::name`, Go `--- FAIL:`, Deno or cargo
 `name ... FAILED` and Deno `name => path:line:col`) must equal a whole base-log
-line; Semgrep finding files and rules also require whole-line matches. Other
+line; Semgrep finding files and rules also require whole-line matches as a pair.
+Deno lint rule and locus and ShellCheck file and rule are also paired. Other
 lines (annotation messages, lines with a failure word) may sit
 inside a longer base line.
 
@@ -50,8 +51,8 @@ When no line qualifies, distinctive rule identifiers and file loci in the
 failing step output are compared with standalone numbers ignored. Run metadata
 and generic command echoes are not evidence; without a distinctive line the
 result is unreadable. Semgrep's finding-block file line is identified by its
-position before the rule, including root-level and extensionless paths, at all
-four severity markers. Both file and rule remain evidence even when the output
+position before the first rule and carried across subsequent rules, including
+root-level and extensionless paths, at all four severity markers. Both file and rule remain evidence even when the output
 contains a failure word. Deno
 formatter `from <path>:` lines identify files and its
 file-count summary is ignored. Deno lint and check locations, and shellcheck
@@ -82,7 +83,11 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  91 passed, 0 failed (50 and 41 tests respectively).
+  93 passed, 0 failed (51 and 42 tests respectively).
+- Crossed diagnostic files and rules no longer match independently. Identical
+  pairs still defer, including multiple Semgrep rules in one file block.
+  Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic rules stay paired with their files`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - diagnostic rules stay paired with their files`.
 - `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
   output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using
@@ -128,7 +133,10 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
   and
   `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
 - The focused tests, Deno-tree `deno fmt --check`, `deno lint`,
-  and `deno task check` passed.
+  `deno task check`, and `deno task check:manifests` passed. The full local
+  quality gate's parallel test pass hit a Deno 2.9.0 permission-pledge panic
+  on macOS; its serial pass therefore did not run. Semgrep and Checkov were
+  skipped because their pinned runners were unavailable on this host.
 - The matching rule is documented in `docs/workflows/ci-fix.md` and
   `prompts/ci_fix/prompt.md`; both were updated together.
 

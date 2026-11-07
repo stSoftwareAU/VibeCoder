@@ -304,16 +304,6 @@ function loosen(line: string): string {
 function comparableLines(lines: string[], needsWord: boolean): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
-  const semgrepFiles = new Set<number>();
-  if (!needsWord) {
-    for (let i = 0; i < lines.length; i++) {
-      if (!SEMGREP_RULE.test(canonicalLine(lines[i] as string))) continue;
-      let previous = i - 1;
-      while (previous >= 0 && !(lines[previous] as string).trim()) previous--;
-      if (previous >= 0) semgrepFiles.add(previous);
-    }
-  }
-
   for (let i = 0; i < lines.length; i++) {
     const trimmed = lines[i] as string;
     if (COMMAND_ECHO.test(trimmed.trim())) continue;
@@ -338,8 +328,7 @@ function comparableLines(lines: string[], needsWord: boolean): string[] {
     } else {
       if (
         !DISTINCTIVE_LINE.test(normalised) &&
-        !DIAGNOSTIC_LOCUS.test(normalised) &&
-        !semgrepFiles.has(i)
+        !DIAGNOSTIC_LOCUS.test(normalised)
       ) continue;
     }
     if (seen.has(normalised)) continue;
@@ -358,19 +347,59 @@ interface FailureSignature {
   loose: boolean;
   /** Semgrep finding files and rules must match whole lines. */
   exact: Set<string>;
+  pairs: string[];
+}
+
+/** Preserve the association between a diagnostic's rule and its file. */
+function diagnosticPairs(lines: string[], loose: boolean): string[] {
+  const normalise = (line: string) => {
+    const value = canonicalLine(line);
+    return loose ? loosen(value) : value;
+  };
+  const values = lines.map(normalise);
+  const pairs: string[] = [];
+  let semgrepFile = "";
+  let lintRule = "";
+  let shellFile = "";
+  let previous = "";
+  for (const line of values) {
+    if (!line) continue;
+    if (SEMGREP_RULE.test(line)) {
+      // A file header immediately precedes the first rule in a file block;
+      // subsequent rules follow the previous finding's source or separator.
+      if (/^[\w./-]+$/.test(previous) && !/^\d/.test(previous)) {
+        semgrepFile = previous;
+      }
+      if (semgrepFile) {
+        pairs.push(JSON.stringify(["semgrep", semgrepFile, line]));
+      }
+    }
+    if (/^error\[[^\]]+\]:/.test(line)) lintRule = line;
+    else if (lintRule && /^-->\s+\S+/.test(line)) {
+      pairs.push(JSON.stringify(["lint", lintRule, line]));
+      lintRule = "";
+    }
+    if (/^in\s+\S+\s+line\s+(?:\d+|<n>):/i.test(line)) shellFile = line;
+    const shellRule = line.match(/\bSC\d{4}\b/i)?.[0];
+    if (shellFile && shellRule) {
+      pairs.push(JSON.stringify(["shellcheck", shellFile, shellRule]));
+    }
+    previous = line;
+  }
+  return pairs;
 }
 
 function failureSignature(text: string): FailureSignature {
   const prepared = preparedLines(text, MAX_LINES);
   const lines = comparableLines(prepared, true);
+  const pairs = diagnosticPairs(prepared, false);
   const semgrep = new Set<string>();
-  for (let i = 0; i < prepared.length; i++) {
-    const rule = canonicalLine(prepared[i] as string);
-    if (!SEMGREP_RULE.test(rule)) continue;
-    let previous = i - 1;
-    while (previous >= 0 && !(prepared[previous] as string).trim()) previous--;
-    if (previous >= 0) semgrep.add(canonicalLine(prepared[previous] as string));
-    semgrep.add(rule);
+  for (const pair of pairs) {
+    const [kind, file, rule] = JSON.parse(pair) as string[];
+    if (kind === "semgrep") {
+      semgrep.add(file!);
+      semgrep.add(rule!);
+    }
   }
   // These runner headers identify a test failure but not which test failed.
   // An assertion or exception alone cannot establish the same test on base.
@@ -378,21 +407,31 @@ function failureSignature(text: string): FailureSignature {
     /^(?:errors|failures|[●] test suite failed to run)$/i.test(line.trim())
   );
   if (testFailureHeader && !lines.some((line) => TEST_NAME.test(line))) {
-    return { lines: [], loose: false, exact: new Set() };
+    return { lines: [], loose: false, exact: new Set(), pairs: [] };
   }
   if (lines.length > 0) {
     return {
       lines: [...new Set([...lines, ...semgrep])],
       loose: false,
       exact: semgrep,
+      pairs,
     };
   }
   // A check whose output holds no failure word (semgrep, shellcheck, cspell)
   // is read from the failing step's own output instead.
+  const step = failingStepLines(prepared);
+  const stepPairs = diagnosticPairs(step, true);
+  const stepSemgrep = stepPairs.flatMap((pair) => {
+    const [kind, file, rule] = JSON.parse(pair) as string[];
+    return kind === "semgrep" ? [file!, rule!] : [];
+  });
   return {
-    lines: comparableLines(failingStepLines(prepared), false).map(loosen),
+    lines: [
+      ...new Set([...comparableLines(step, false).map(loosen), ...stepSemgrep]),
+    ],
     loose: true,
-    exact: new Set([...semgrep].map(loosen)),
+    exact: new Set(stepSemgrep),
+    pairs: stepPairs,
   };
 }
 
@@ -403,7 +442,7 @@ function failureSignature(text: string): FailureSignature {
  * output never qualify. A line qualifies when it is long enough and is a
  * failing-test name or carries a failure word outside any command-line flag.
  * Semgrep finding file and rule lines also qualify, even with failure words;
- * the file is the non-empty line before a rule at any severity icon. When no
+ * the file is carried across rules in each finding block at any severity icon. When no
  * failure line qualifies, distinctive rule and file loci in the failing step's
  * output qualify, with standalone numbers normalised.
  */
@@ -473,12 +512,21 @@ export async function compareBaseFailure(options: {
   }
   // Test names and Semgrep finding files and rules must match whole base lines.
   const baseSet = new Set(baseLines);
+  const basePairs = new Set(
+    diagnosticPairs(
+      preparedLines(outcome.excerpt, MAX_BASE_LINES),
+      signature.loose,
+    ),
+  );
   const baseText = baseLines.join("\n");
   const found = (line: string) =>
     TEST_NAME.test(line) || signature.exact.has(line)
       ? baseSet.has(line)
       : baseText.includes(line);
-  if (!prLines.every(found)) {
+  if (
+    !prLines.every(found) ||
+    !signature.pairs.every((pair) => basePairs.has(pair))
+  ) {
     return { state: "different" };
   }
   return { state: "same", matched: firstLine };
