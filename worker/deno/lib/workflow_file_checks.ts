@@ -188,7 +188,7 @@ export const WORKFLOW_FILE_CHECKS: readonly WorkflowFileCheck[] = [
   {
     id: "checkout-persist-credentials",
     label:
-      "every `actions/checkout` sets `persist-credentials: false` unless the job pushes",
+      "every `actions/checkout` sets `persist-credentials: false` unless the job needs the checkout credential",
     run: (files) =>
       fromPerFileScanner(
         scanCheckoutPersistCredentials(files),
@@ -206,7 +206,8 @@ export const WORKFLOW_FILE_CHECKS: readonly WorkflowFileCheck[] = [
   },
   {
     id: "ci-install-pins",
-    label: "every `run:` package install pins an exact version",
+    label:
+      "every `run:` package install pins an exact version (and every `cargo install` passes `--locked`)",
     run: (files) => scanCiInstallPins(files).map(fromScanner),
   },
   {

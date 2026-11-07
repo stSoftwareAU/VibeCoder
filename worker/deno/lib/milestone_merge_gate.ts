@@ -25,6 +25,12 @@
  * itself names a `Cargo.lock` remedy (`cargo update --precise`), so that form
  * stays an ordinary, repairable failure.
  *
+ * A `cargo check` can also fail because the host cannot reach the crate
+ * registry (Issue #4786). That is a host fault, not a bad resolution, so the
+ * check is retried once offline, from the local cargo cache, and if the retry
+ * still cannot reach the registry the project is left to CI as a timed-out
+ * check is.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -34,6 +40,7 @@ import {
   runRepositoryCommand,
 } from "./untrusted_gate_spawn.ts";
 import { stripJsonc } from "./jsonc.ts";
+import { stripAnsi } from "./github_actions_log_fetcher.ts";
 import {
   CARGO_BUILD_SKIPPED_FOR_MERGE,
   shouldSkipEphemeralCargoBuild,
@@ -133,10 +140,10 @@ export interface MergeGateOutcome {
   landUnverified?: boolean;
   /**
    * Set when a cargo project was left to CI (Issue #4326) — skipped for the
-   * host's budget, or because its `cargo check` timed out (Issue #4786). A
-   * `passed` outcome with this set has verified only the Deno half; the report
-   * must not claim the cargo half passed. A `skipped` outcome with this set
-   * verified nothing.
+   * host's budget, or because its `cargo check` timed out or could not reach
+   * the crate registry (Issue #4786). A `passed` outcome with this set has
+   * verified only the Deno half; the report must not claim the cargo half
+   * passed. A `skipped` outcome with this set verified nothing.
    */
   cargoSkipped?: boolean;
   /**
@@ -157,10 +164,15 @@ export interface MergeGateOutcome {
 
 /**
  * A Deno task that could not fetch a remote module because the host cannot
- * reach the module host (Issue #4422).
+ * reach the module host (Issue #4422), or an npm package or registry it could
+ * not reach (Issue #4848).
  */
 export interface RemoteModuleGap {
-  /** The `http(s)` URL the failed import named. */
+  /**
+   * The `http(s)` URL the failed import named; `npm:<spec>` for a failed npm
+   * package cache (e.g. `npm:playwright-core@1.60.0`); or the registry URL of a
+   * failed npm metadata load (Issue #4848).
+   */
   url: string;
   /** The trimmed output line that names the connection-class cause. */
   cause: string;
@@ -439,6 +451,24 @@ export function describeRustToolchainGap(
 const REMOTE_IMPORT_FAILED_RE = /^error: Import '(https?:\/\/[^'\s]+)' failed/;
 
 /**
+ * npm package-cache failure line, e.g.
+ * `error: Failed caching npm package 'playwright-core@1.60.0'` (Issue #4848).
+ * Anchored on the literal prefix; `[^'\s]+` is disjoint from the closing quote,
+ * so the match is linear.
+ */
+const REMOTE_NPM_CACHE_FAILED_RE =
+  /^error: Failed caching npm package '([^'\s]+)'/;
+
+/**
+ * npm metadata-load failure line, e.g.
+ * `error: Failed loading https://registry.npmjs.org/x for package "x"` (Issue
+ * #4848). Anchored on the literal prefix; `[^\s]+` is disjoint from the space
+ * that opens the literal ` for package "`, so the match is linear.
+ */
+const REMOTE_NPM_METADATA_FAILED_RE =
+  /^error: Failed loading (https?:\/\/[^\s]+) for package "/;
+
+/**
  * A connection-class cause: the host could not open a route to the module
  * host. Literal alternatives only, so the match is linear in the line length.
  */
@@ -446,33 +476,162 @@ const REMOTE_FETCH_CAUSE_RE =
   /error sending request for url|unsuccessful tunnel|dns error|client error \(Connect\)|connection (refused|reset|timed out)/i;
 
 /**
+ * An SGR colour remnant whose escape byte was already stripped upstream, e.g.
+ * by an issue or log sanitiser, leaving a bare `[0m` or `[1m[31m` (Issue
+ * #4853). Matched anywhere in the line. Each match starts at a `[`, and
+ * `[0-9;]*` is disjoint from the closing `m`, so the scan is linear.
+ */
+const ORPHAN_SGR_RE = /\[[0-9;]*m/g;
+
+/**
+ * A `cargo` refusal to fetch from the crate registry, with the connection-class
+ * cause the host reported (Issue #4786).
+ */
+export interface CargoRegistryGap {
+  /** The trimmed output line that names the connection-class cause. */
+  cause: string;
+}
+
+/**
+ * A line in which cargo refuses to get its dependencies from the registry
+ * (Issue #4786). Each alternative is a fixed literal anchored at the start of
+ * the line and followed by a word boundary, so the match is linear in the line
+ * length: there is no quantifier for it to backtrack through.
+ */
+const CARGO_REGISTRY_REFUSAL_RE =
+  /^error: failed to (?:get|download|fetch|update)\b|^(?:unable to update registry|failed to download|download of config\.json failed|failed to load source for dependency|failed to query replaced source)\b/;
+
+/**
+ * A connection-class cause: the host could not open a route to the crate
+ * registry, or cargo was told not to try (`--offline`). Fixed literals only and
+ * not anchored, so each alternative is a plain substring scan and the match is
+ * linear in the line length.
+ */
+const CARGO_REGISTRY_CAUSE_RE =
+  /could not resolve host(?:name)?|couldn't connect|failed to connect|connection (?:refused|reset|timed out)|network is unreachable|temporary failure in name resolution|operation timed out|attempting to make an HTTP request, but --offline was specified|offline mode/i;
+
+/**
+ * cargo's own retry warning, `warning: spurious network error (N tries
+ * remaining): …`. It repeats the cause while cargo retries, so it is kept only
+ * as a fallback cause.
+ */
+const CARGO_SPURIOUS_RETRY_RE = /spurious network error/i;
+
+/**
+ * Detect a cargo refusal caused by the host being unable to reach the crate
+ * registry (Issue #4786).
+ *
+ * An unreachable registry is a host fault, like an unreachable module host
+ * (Issue #4422), not a bad resolution. A gap needs both a registry-fetch refusal
+ * line and a connection-class cause line. The cause reported is the last
+ * connection-class line that is not a `spurious network error` warning, falling
+ * back to the last such warning. A compile error, a `--locked` lockfile refusal,
+ * a manifest parse error, or a rustc-version gap is not a registry gap.
+ *
+ * @param output - The raw cargo output (untrimmed)
+ * @returns The gap, or undefined when no registry refusal and cause both appear
+ */
+export function detectCargoRegistryGap(
+  output: string,
+): CargoRegistryGap | undefined {
+  let refused = false;
+  let cause: string | undefined;
+  let retryCause: string | undefined;
+  for (const rawLine of output.split("\n")) {
+    const line = rawLine.trim().slice(0, MAX_GAP_LINE_CHARS);
+    if (CARGO_REGISTRY_REFUSAL_RE.test(line)) {
+      refused = true;
+      continue;
+    }
+    if (!CARGO_REGISTRY_CAUSE_RE.test(line)) continue;
+    if (CARGO_SPURIOUS_RETRY_RE.test(line)) {
+      retryCause = line;
+    } else {
+      cause = line;
+    }
+  }
+  const picked = cause ?? retryCause;
+  return refused && picked !== undefined ? { cause: picked } : undefined;
+}
+
+/** Classify an offline retry only after the initial registry gap is established. */
+export function isCargoOfflineRegistryGap(output: string): boolean {
+  if (detectCargoRegistryGap(output)) return true;
+  const lines = output.split("\n").map((line) =>
+    line.trim().slice(0, MAX_GAP_LINE_CHARS)
+  );
+  return lines.some((line) =>
+    /^(?:error: )?(?:no matching package named|failed to select a version for the requirement)\b/
+      .test(line)
+  ) && lines.some((line) =>
+    /(?:you're using offline mode|offline mode \(via `--offline`\))/i.test(line)
+  );
+}
+
+/**
+ * The same cargo argv with `--offline` straight after the subcommand (Issue
+ * #4786), so the local cargo cache can satisfy a registry the host cannot
+ * reach. An argv that already carries the flag is returned unchanged, so the
+ * call is idempotent.
+ *
+ * @param args - The argv after the executable, its first element the subcommand
+ * @returns A new argv with `--offline` in second place
+ */
+export function withCargoOffline(args: string[]): string[] {
+  if (args.length === 0 || args.includes("--offline")) return [...args];
+  return [args[0]!, "--offline", ...args.slice(1)];
+}
+
+/**
  * Detect a Deno task that could not fetch a remote module because the host
- * cannot reach the module host (Issue #4422).
+ * cannot reach the module host (Issue #4422), or an npm package or registry
+ * (Issue #4848).
  *
  * An unreachable host is an environment fault, like the Rust toolchain gap of
  * Issue #3255, not a bad resolution: a repair round cannot fix it. A gap is
- * reported only when an import-failure line names an `http(s)` URL and a
- * connection-class cause line follows it. An import that failed for any other
- * reason (a 404, a bad certificate, a checksum mismatch, a missing module, a
- * type error) is an ordinary failure and returns undefined.
+ * reported only when a failure header names the remote and a connection-class
+ * cause line follows it. The headers are the legacy `error: Import '<url>'
+ * failed`, the npm package-cache `error: Failed caching npm package '<spec>'`
+ * (reported as `npm:<spec>`), and the npm metadata `error: Failed loading <url>
+ * for package "<name>"`. Each line is read with ANSI colour stripped, so a
+ * coloured `error` prefix matches as a plain one (Issue #4848). SGR remnants
+ * whose escape byte was already lost, a bare `[0m`, are ignored wherever they
+ * sit in the line (Issue #4853), so `error[0m: Failed ...` still matches. An
+ * import or
+ * package that failed for any other reason (a 404, a bad certificate, a
+ * checksum mismatch, a missing module, a type error) is an ordinary failure and
+ * returns undefined.
  *
- * @param output - The raw task output (untrimmed)
- * @returns The gap, or undefined when no connection-class cause follows an
- *   import failure
+ * @param output - The raw task output (untrimmed, possibly ANSI-coloured)
+ * @returns The gap, or undefined when no connection-class cause follows a
+ *   failure header
  */
 export function detectRemoteModuleGap(
   output: string,
 ): RemoteModuleGap | undefined {
-  let importUrl: string | undefined;
+  let failedUrl: string | undefined;
   for (const rawLine of output.split("\n")) {
-    const line = rawLine.trim().slice(0, MAX_GAP_LINE_CHARS);
+    const line = stripAnsi(rawLine.slice(0, MAX_GAP_LINE_CHARS)).replace(
+      ORPHAN_SGR_RE,
+      "",
+    ).trim();
     const imported = REMOTE_IMPORT_FAILED_RE.exec(line);
     if (imported) {
-      importUrl = imported[1];
+      failedUrl = imported[1];
       continue;
     }
-    if (importUrl !== undefined && REMOTE_FETCH_CAUSE_RE.test(line)) {
-      return { url: importUrl, cause: line };
+    const cached = REMOTE_NPM_CACHE_FAILED_RE.exec(line);
+    if (cached) {
+      failedUrl = `npm:${cached[1]}`;
+      continue;
+    }
+    const loaded = REMOTE_NPM_METADATA_FAILED_RE.exec(line);
+    if (loaded) {
+      failedUrl = loaded[1];
+      continue;
+    }
+    if (failedUrl !== undefined && REMOTE_FETCH_CAUSE_RE.test(line)) {
+      return { url: failedUrl, cause: line };
     }
   }
   return undefined;
@@ -660,6 +819,9 @@ export async function checkMergedTree(
   const leftToCi: string[] = [];
   // Cargo checks that hit their time limit (Issue #4786).
   const cargoTimedOut: string[] = [];
+  // Cargo checks that could not reach their crate registry, even offline
+  // (Issue #4786).
+  const cargoRegistryGaps: string[] = [];
   const skipCargo = await skipCargoBuild();
   let skippedCargo = false;
   for (const project of projects) {
@@ -677,6 +839,9 @@ export async function checkMergedTree(
       accountUnavailable?: string;
       timedOut?: boolean;
     };
+    // The cause the first attempt named when it could not reach the registry
+    // (Issue #4786); set only when the check was retried offline.
+    let registryCause: string | undefined;
     try {
       result = await runner(project);
       // A cargo check that ran out of time has still compiled part of the
@@ -685,6 +850,20 @@ export async function checkMergedTree(
       // second timeout is left to CI below.
       if (project.kind === "cargo" && result.code !== 0 && result.timedOut) {
         result = await runner(project);
+      }
+      // A cargo check that could not reach its crate registry is a host fault,
+      // so it is retried once offline: the local cargo cache may hold every
+      // locked crate (Issue #4786). A Deno project is never retried this way.
+      const firstGap = project.kind === "cargo" && result.code !== 0 &&
+          !result.timedOut && !result.accountUnavailable
+        ? detectCargoRegistryGap(result.output)
+        : undefined;
+      if (firstGap) {
+        registryCause = firstGap.cause;
+        result = await runner({
+          ...project,
+          args: withCargoOffline(project.args),
+        });
       }
     } catch (err) {
       // Unrunnable is not clean: refuse the push rather than assume it
@@ -698,6 +877,19 @@ export async function checkMergedTree(
     }
     if (result.accountUnavailable) {
       leftToCi.push(`${where}: ${result.accountUnavailable}`);
+      continue;
+    }
+    // The offline retry could not reach the registry either: the cargo half
+    // cannot be verified here, so it is left to CI as a timed-out check is
+    // (Issue #4786). The note keeps the first attempt's cause.
+    if (
+      registryCause !== undefined && result.code !== 0 &&
+      isCargoOfflineRegistryGap(result.output)
+    ) {
+      skippedCargo = true;
+      cargoRegistryGaps.push(
+        `${where} could not reach its crate registry (${registryCause})`,
+      );
       continue;
     }
     if (result.code !== 0) {
@@ -740,13 +932,19 @@ export async function checkMergedTree(
         output: tail(result.output),
       };
     }
-    checked.push(where);
+    // A check that passed only on the offline retry says so (Issue #4786).
+    checked.push(
+      registryCause !== undefined
+        ? `${where} (verified offline from the local cargo cache, Issue #4786)`
+        : where,
+    );
   }
 
   const notes = [
     ...cargoTimedOut.map((where) =>
       `${where} timed out after ${CARGO_MERGE_GATE_TIMEOUT_MS}ms — left to CI (Issue #4786)`
     ),
+    ...cargoRegistryGaps.map((note) => `${note} — left to CI (Issue #4786)`),
     ...(skippedCargo ? [`${CARGO_BUILD_SKIPPED_FOR_MERGE} (Issue #4326)`] : []),
     ...leftToCi.map((note) => `${note} — left to CI (Issue #4422)`),
   ];

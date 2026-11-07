@@ -1031,6 +1031,32 @@ Deno.test("issue_query - fetchAllOpenPRs - carries author and head ownership (Is
   assertEquals(prs[1]?.autoMergeRequest, undefined);
 });
 
+Deno.test("issue_query - fetchAllOpenPRs - re-spells a GitHub App author as <slug>[bot] (Issue #4719)", async () => {
+  const row = (number: number, author: unknown) => ({
+    number,
+    title: "T",
+    baseRefName: "main",
+    headRefName: "h",
+    body: "",
+    url: "",
+    author,
+  });
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      // gh's real App shape: `app/<slug>` with is_bot true.
+      row(41, { is_bot: true, login: "app/dependabot" }),
+      // Not a bot: the login is recorded exactly as reported.
+      row(42, { is_bot: false, login: "app/dependabot" }),
+      // No is_bot flag at all: left unchanged.
+      row(43, { login: "app/dependabot" }),
+    ]));
+
+  const prs = await fetchAllOpenPRs("o/r", undefined, 50, mockGh);
+  assertEquals(prs[0]?.authorLogin, "dependabot[bot]");
+  assertEquals(prs[1]?.authorLogin, "app/dependabot");
+  assertEquals(prs[2]?.authorLogin, "app/dependabot");
+});
+
 Deno.test("issue_query - fetchAllOpenPRs - rejects a non-array payload (Issue #1846)", async () => {
   // `{"message":"Not Found"}` is valid JSON, so the #4257 parse guard passes
   // it. Returning [] would let a failed call read as "this repo has no open
@@ -1218,6 +1244,7 @@ function mockClosedGhByAuthor(
       title: string;
       mergedAt: string | null;
       closedAt: string | null;
+      body?: string;
     }>
   >,
 ): { fn: (args: string[]) => Promise<string>; authors: string[] } {
@@ -1524,6 +1551,112 @@ Deno.test("issue_query - isBlockedByRecentlyClosedPR - an earlier merged bare me
     },
   ];
   assertEquals(isBlockedByRecentlyClosedPR(prs, 2463)?.number, 11);
+});
+
+// -----------------------------------------------------------------------
+// A merged `Part of #N` PR leaves its issue to resume (Issue #3177)
+// -----------------------------------------------------------------------
+//
+// A run with an unmet criterion raises `Part of #N` and no closing keyword,
+// and the closers leave the issue open "and queued to finish the unmet
+// criteria". The fleet PR's title still says `(Issue #N)`, so the title
+// match made the merge permanent: in a private fleet repository ~20 such
+// issues stayed open and were refused as `merged-pr-permanent` for good.
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - a merged Part-of PR does not block the issue it continues (Issue #3177)", () => {
+  const partOf: ClosedPR = {
+    number: 71,
+    title: "Reconcile the ledger (Issue #70)",
+    closedAt: "",
+    merged: true,
+    closingRefs: [],
+    partOfRefs: [70],
+  };
+  assertEquals(isBlockedByRecentlyClosedPR([partOf], 70), null);
+});
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - a closing keyword still wins over Part of (Issue #3177)", () => {
+  const both: ClosedPR = {
+    number: 71,
+    title: "Reconcile the ledger (Issue #70)",
+    closedAt: "",
+    merged: true,
+    closingRefs: [70],
+    partOfRefs: [70],
+  };
+  assertEquals(isBlockedByRecentlyClosedPR([both], 70)?.number, 71);
+});
+
+Deno.test("issue_query - isBlockedByRecentlyClosedPR - a closed-unmerged Part-of PR keeps its cooldown (Issue #3177)", () => {
+  const unmerged: ClosedPR = {
+    number: 71,
+    title: "Reconcile the ledger (Issue #70)",
+    closedAt: "",
+    merged: false,
+    partOfRefs: [70],
+  };
+  assertEquals(isBlockedByRecentlyClosedPR([unmerged], 70)?.number, 71);
+});
+
+Deno.test("issue_query - fetchRecentlyClosedPRsForFleet - a merged Part-of body leaves the issue claimable, a Closes body does not (Issue #3177)", async () => {
+  const { fn } = mockClosedGhByAuthor({
+    self: [
+      {
+        number: 71,
+        title: "Reconcile the ledger (Issue #70)",
+        mergedAt: isoAgo(7200),
+        closedAt: isoAgo(7200),
+        body: "## Not closing #70\n\nPart of #70",
+      },
+      {
+        number: 81,
+        title: "Add a policy knob (Issue #80)",
+        mergedAt: isoAgo(7200),
+        closedAt: isoAgo(7200),
+        body: "Closes #80",
+      },
+    ],
+  });
+  const prs = await fetchRecentlyClosedPRsForFleet(
+    "o/r",
+    ["self"],
+    3600,
+    undefined,
+    fn,
+  );
+  assertEquals(isBlockedByRecentlyClosedPR(prs, 70), null);
+  assertEquals(isBlockedByRecentlyClosedPR(prs, 80)?.number, 81);
+});
+
+Deno.test("issue_query - fetchRecentlyClosedPRsForFleet - a merged Closes PR whose closure block marks a criterion partial leaves the issue claimable (Issue #3177)", async () => {
+  // A private fleet repository's milestone sub-issue: its PR said `Closes
+  // #N` and merged into the milestone with one criterion `partial`. The closer logged "left queued
+  // for completion" and kept the issue open, so the scan must not refuse it;
+  // four sub-issues depend on it and the whole milestone stalled behind it.
+  const { fn } = mockClosedGhByAuthor({
+    self: [{
+      number: 91,
+      title: "Separate the benchmarks (Issue #90)",
+      mergedAt: isoAgo(7200),
+      closedAt: isoAgo(7200),
+      body: [
+        "Closes #90",
+        "",
+        "## Acceptance Criteria",
+        "",
+        "- **met** — Benchmarks are separated.",
+        "- **partial** — Targeted tests and repository quality checks pass.",
+      ].join("\n"),
+    }],
+  });
+  const prs = await fetchRecentlyClosedPRsForFleet(
+    "o/r",
+    ["self"],
+    3600,
+    undefined,
+    fn,
+  );
+  assertEquals(isBlockedByRecentlyClosedPR(prs, 90), null);
 });
 
 // =============================================================================

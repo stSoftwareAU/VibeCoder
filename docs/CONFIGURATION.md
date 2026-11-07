@@ -184,10 +184,7 @@ a warning, instead of failing the phase. The check also runs on review-fix
 pushes, where survivors are reported in the PR reply rather than blocking the
 push (see [Diff-scoped mutation check](mutation-check.md)).
 The [coverage carry-over check](coverage-carryover-check.md) passes the
-repository's resolved `quality_credentials` to its test runs in the same way. The same
-declared credentials reach the repository's own gate that validates each head
-before publication in the issue-completion, CI-repair, PR-feedback,
-babysitter-repair and PR-spelling lanes (Issue #4625).
+repository's resolved `quality_credentials` to its test runs in the same way.
 
 
 ## Two axes of trust
@@ -2898,10 +2895,10 @@ agents were still inside it at 49 to 68 minutes. Starting it with ten minutes
 left cannot end well: the gate does not finish, nothing it reports gets fixed,
 and the runway needed to commit and push is gone.
 
-Nothing is lost by skipping it. CI runs the same checks on the PR in parallel
-shards on dedicated runners, and the worker runs its own gate
-(`phases/quality_gate_remediation_phase.ts`) after the agent stops. The agent's
-run is the third copy — the only one paid for out of the run budget.
+Nothing is lost by skipping it. The worker runs its own gate
+(`phases/quality_gate_remediation_phase.ts`) after the agent stops, before the
+PR is raised. The agent's run is the expensive copy — the only one paid for out
+of the run budget.
 
 So the instruction the agent receives is budget-aware, and it comes from one
 place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
@@ -2921,10 +2918,10 @@ A skipped gate is never silent: that note goes in the PR summary (or
 that passed.
 
 **A slow gate is refused for most of a run, by design.** The refusal band is
-`gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it
-from about 17 minutes into an hour-long run and does not offer it again. That
-is the intended trade: on such a repo the agent could never have finished the
-gate and acted on it anyway, and CI runs it in parallel shards regardless. A
+`gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it from
+about 17 minutes into an hour-long run and does not offer it again. That is the
+intended trade: on such a repo the agent could never have finished the gate and
+acted on it anyway, and the worker runs it before the PR is raised regardless. A
 repo in that position should shorten its gate or set `quality_command` to the
 subset worth running locally.
 
@@ -2935,7 +2932,7 @@ flowchart TD
     B -- "yes" --> D{"remaining ≥ gate + 180s tail?"}
     D -- "yes" --> C
     D -- "no" --> E["Targeted checks only<br/>+ skip note in the PR"]
-    C --> F["Worker gate, then CI"]
+    C --> F["Worker gate before the PR is raised"]
     E --> F
     style E fill:#f4a261,stroke:#b5651d,color:#000
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -4887,10 +4884,10 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | Option                  | Type    | Description                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `pre_setup_command`     | string  | Command to run before Claude starts working (e.g., `./scripts/setup-env.sh`). See [Pre-Setup Command](#-pre-setup-command).                                                                                                                                                                                                                                                |
-| `skip_quality_check`    | boolean | When `true`, skips running quality checks entirely for this repository. It also opts out of the pre-publication check that the issue-completion, CI-repair, PR-feedback, babysitter-repair and PR-spelling lanes run before a push (Issue #4625). |
-| `quality_command`       | string  | Custom command to run instead of `./quality.sh`. It is also the command the pre-publication check runs before a push in those lanes (Issue #4625). |
+| `skip_quality_check`    | boolean | When `true`, skips running quality checks entirely for this repository                                                                                                                                                                                                                                                                                                    |
+| `quality_command`       | string  | Custom command to run instead of `./quality.sh`                                                                                                                                                                                                                                                                                                                           |
 | `custom_instructions`   | string  | Additional instructions to include in the Claude prompt for this repository                                                                                                                                                                                                                                                                                               |
-| `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#-docker-based-quality-checks). It also runs the pre-publication check that those lanes apply before a push (Issue #4625). |
+| `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#-docker-based-quality-checks).                                                                                                                                                                                                                           |
 | `requires_screenshots`  | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
 | `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives. |
 | `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, that the named test, run by the worker in a disposable checkout, passes at the head and fails with the merge-base versions of the changed non-test files restored (only Deno and Rust tests can be executed today, so a security fix whose cited test is in another language blocks as not checked), and additionally that the summary states the original trigger is closed with no trivial bypass. A diff that cannot be computed, or a discrimination run that cannot execute, blocks the PR rather than passing it. Opting out also skips the executed check. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
@@ -5644,10 +5641,7 @@ Docker installed.
 
 **Requirements:** Docker must be installed on the worker machine. If Docker is
 not available and `docker_image` is configured, the worker will fail the quality
-check with a clear error message. The same image runs the repository's own gate
-before publication in the issue-completion, CI-repair, PR-feedback,
-babysitter-repair and PR-spelling lanes (Issue #4625); without Docker that check
-is unavailable, so the push is deferred rather than sent unchecked.
+check with a clear error message.
 
 ## 🔧 Pre-Setup Command
 

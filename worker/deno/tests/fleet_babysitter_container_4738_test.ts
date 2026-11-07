@@ -1,10 +1,11 @@
 /**
  * Tests for the babysitter repair container (Issue #4767): the run arguments,
  * the private key guard, the flag and token rules, the preflight, the timeout
- * kill, the egress refusal and the real default deps. Fake deps stand in for
- * the runtime; the default spawn and image check run the real `deno` binary
- * with an empty environment. No test sets a process environment variable:
- * env readers are injected.
+ * kill and the real default deps. Fake deps stand in for the runtime; the
+ * default spawn and image check run the real `deno` binary with an empty
+ * environment. Egress (the Apple helper and the sidecar) lives in
+ * fleet_babysitter_container_egress_4738_test.ts. No test sets a process
+ * environment variable: env readers are injected.
  */
 
 import {
@@ -953,24 +954,6 @@ Deno.test("repair reports a non-timeout exit with its code and a redacted stderr
       !error.message.includes(SECRET),
       "a classic GitHub token is redacted",
     );
-  } finally {
-    await Deno.remove(f.root, { recursive: true });
-  }
-});
-
-Deno.test("repair refuses a plan that needs the egress proxy, and accepts neither flag set", async () => {
-  const f = await makeFixture();
-  try {
-    for (const overrides of [{ egressEnforced: true }, { proxyName: "p" }]) {
-      const { deps, calls } = fakeDeps(f, { overrides });
-      await assertRejects(
-        () => runBabysitterRepairContainer(inputFor(f), deps),
-        Error,
-        "the plan needs the egress proxy",
-      );
-      assertEquals(calls.spawns.length, 0);
-    }
-    assertEquals(await acceptedSpawns(f, []), 1);
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }

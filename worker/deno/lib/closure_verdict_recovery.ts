@@ -17,8 +17,8 @@
  * shortfall named; a second short verdict is rendered as it stands, and the
  * gate blocks on it exactly as before. Nothing is invented at any step.
  * The issue's closing keyword is aligned with the rendered block as well: a
- * `missing` entry turns `Closes #N` into `Part of #N`, and an all-met verdict
- * restores it (Issue #4472).
+ * `partial` or `missing` entry turns `Closes #N` into `Part of #N`, and an
+ * all-met verdict restores it (Issue #4472).
  *
  * ```mermaid
  * flowchart TD

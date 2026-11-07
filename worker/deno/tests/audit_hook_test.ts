@@ -46,6 +46,7 @@ import {
   classifyGitMutation,
   type MutationInfo,
 } from "../lib/audit_mutation_classifier.ts";
+import { buildPushArgs } from "../lib/git_ref_args.ts";
 import { envFrom } from "./support/env_lookup.ts";
 
 /** Worker partition these tests journal under — a sentinel, not a real id. */
@@ -103,7 +104,15 @@ Deno.test("audit_hook - auditGhMutation journals a gh mutation", async () => {
 Deno.test("audit_hook - PR mutations carry a worker action id and PR number", async () => {
   await withAuditEnv(async (journalPath, opts) => {
     await auditGhMutation(
-      ["pr", "merge", "42", "--repo", "org/repo"],
+      [
+        "pr",
+        "merge",
+        "42",
+        "--repo",
+        "org/repo",
+        "--match-head-commit",
+        "a".repeat(40),
+      ],
       0,
       opts,
     );
@@ -113,13 +122,29 @@ Deno.test("audit_hook - PR mutations carry a worker action id and PR number", as
     const entry = loaded.value[0];
     assertEquals(entry?.actionKind, "merge");
     assertEquals(entry?.prNumber, 42);
-    // No caller hands the hook a head SHA, so the hook never writes one.
-    assertEquals(entry?.headSha, undefined);
+    assertEquals(entry?.headSha, "a".repeat(40));
     assertEquals(entry?.component, "unknown");
     assert(
       entry?.actionId !== undefined && /^[0-9a-f-]{36}$/.test(entry.actionId),
     );
     assertEquals(entry?.outcome, "success");
+  });
+});
+
+Deno.test("audit_hook - unpinned and malformed merge pins carry no head", async () => {
+  await withAuditEnv(async (journalPath, opts) => {
+    await auditGhMutation(["pr", "merge", "42", "--repo", "org/repo"], 0, opts);
+    await auditGhMutation(
+      ["pr", "merge", "42", "--repo", "org/repo", "--match-head-commit", "abc"],
+      0,
+      opts,
+    );
+    const loaded = await loadEntries(journalPath);
+    assert(loaded.ok);
+    assertEquals(loaded.value.map((entry) => entry.headSha), [
+      undefined,
+      undefined,
+    ]);
   });
 });
 
@@ -379,6 +404,7 @@ Deno.test("audit_hook - componentFor names the babysitter, reviewer and worker f
   );
   assertEquals(componentFor(callerIn("lib", "agent_pr_adoption.ts")), "worker");
   assertEquals(componentFor(callerIn("lib", "pr_maintenance.ts")), "worker");
+  assertEquals(componentFor(callerIn("lib", "git_pull.ts")), "worker");
   assertEquals(
     componentFor(callerIn("lib", "phases/completion_phase.ts")),
     "worker",
@@ -556,7 +582,7 @@ Deno.test("audit_hook - disarming auto-merge is not a merge", () => {
   );
   assertEquals(
     ghKind(["pr", "merge", "42", "--repo", "org/repo", "--auto"]),
-    "merge",
+    "merge-arm",
   );
 });
 
@@ -635,12 +661,63 @@ Deno.test("audit_hook - actionKindFor names a repair push from the babysitter an
   );
 });
 
-Deno.test("audit_hook - actionKindFor leaves a push from an unresolved or unlisted caller unknown", () => {
+/** The action kind the hook assigns to a `git push` of `args` from `caller`. */
+function pushKindFor(args: string[], caller?: string) {
+  return actionKindFor(gitInfo(args), caller, args);
+}
+
+/** Frames of the milestone sync push (`pushSyncedMilestoneBranch`). */
+const GIT_PULL_MILESTONE_STACK = [
+  "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:373:3)",
+  "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+  "    at pushSyncedMilestoneBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:242:17)",
+  "    at async syncMilestone (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:901:9)",
+].join("\n");
+
+/** Frames of a PR feature-branch update (`updatePrBranch` -> `pushFeatureBranch`). */
+const GIT_PULL_FEATURE_STACK = [
+  "    at auditGitMutation (file:///srv/VibeCoder/worker/deno/lib/audit_hook.ts:373:3)",
+  "    at runGitCommand (file:///srv/VibeCoder/worker/deno/lib/git_timeout.ts:366:5)",
+  "    at pushFeatureBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:1651:20)",
+  "    at async updatePrBranch (file:///srv/VibeCoder/worker/deno/lib/git_pull.ts:1615:22)",
+].join("\n");
+
+Deno.test("audit_hook - unnamed pushes stay unknown while milestone pushes are classified", () => {
   assertEquals(pushKind(undefined), "unknown");
-  // A milestone sync push is reached through the `git` adapter in git_pull.ts
-  // (raiseMilestoneSyncPr's deps), not through milestone_sync_pr.ts, so the
-  // first module above the hook is git_pull.ts and it stays unknown.
-  assertEquals(pushKind(callerIn("lib", "git_pull.ts")), "unknown");
+  assertEquals(pushKind(callerIn("lib", "recent_activity.ts")), "unknown");
+  assertEquals(
+    pushKindFor(
+      ["push", "origin", "milestone/foo"],
+      callerIn("lib", "git_pull.ts"),
+    ),
+    "milestone",
+  );
+});
+
+Deno.test("audit_hook - a git_pull push to a milestone branch is a milestone action", () => {
+  const caller = callerFromStack(GIT_PULL_MILESTONE_STACK);
+  assertEquals(caller, "worker/deno/lib/git_pull.ts");
+  assertEquals(
+    pushKindFor(["push", "origin", "milestone/foo"], caller),
+    "milestone",
+  );
+  assertEquals(
+    pushKindFor(buildPushArgs("origin", "milestone/foo"), caller),
+    "milestone",
+  );
+});
+
+Deno.test("audit_hook - a git_pull feature-branch update is branch-update, not milestone", () => {
+  const caller = callerFromStack(GIT_PULL_FEATURE_STACK);
+  assertEquals(caller, "worker/deno/lib/git_pull.ts");
+  assertEquals(
+    pushKindFor(buildPushArgs("origin", "feature-branch"), caller),
+    "branch-update",
+  );
+  assertEquals(
+    pushKindFor(["push", "origin", "feature-branch"], caller),
+    "branch-update",
+  );
 });
 
 Deno.test("audit_hook - a push with no resolved caller is journalled as component and kind unknown", async () => {

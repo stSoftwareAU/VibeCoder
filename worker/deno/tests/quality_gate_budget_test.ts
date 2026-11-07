@@ -4,7 +4,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertMatch,
+  assertNotMatch,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   ASSUMED_GATE_SECONDS,
   buildQualityGateBudgetLines,
@@ -102,7 +107,23 @@ Deno.test("quality_gate_budget - the skip note carries the marker and both figur
   assertStringIncludes(note, 'remaining="480s"');
   assertStringIncludes(note, 'required="1200s"');
   // The reader has to know what covers the gap.
-  assertStringIncludes(note, "CI");
+  assertStringIncludes(note, "the worker runs the full gate again");
+});
+
+Deno.test("quality_gate_budget - the skip note and prompt lines name no CI coverage (Issue #4777)", () => {
+  const decision = decideQualityGateRun({
+    remainingSeconds: 480,
+    typicalGateSeconds: 1020,
+  });
+  assertEquals(decision.run, false);
+  const note = formatQualityGateSkipNote(decision);
+  const lines = buildQualityGateBudgetLines("./quality.sh", undefined, 600)
+    .join("\n");
+  for (const text of [note, lines]) {
+    assertNotMatch(text, /\bCI\b/);
+    assertMatch(text, /[Tt]he worker runs/);
+    assertStringIncludes(text, "again before the PR is raised");
+  }
 });
 
 Deno.test("quality_gate_budget - a note is only ever written for a skipped gate", () => {

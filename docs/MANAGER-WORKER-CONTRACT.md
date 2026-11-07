@@ -32,7 +32,7 @@ phases, except where they share the provider seam; the billing policy itself
   DeepSeek).
 - **Provider CLI:** the program the worker spawns for one invocation. The four
   are registered in `AGENT_PROVIDERS`
-  (`worker/deno/lib/agent_provider.ts:1188`). A provider CLI is not a vendor.
+  (`worker/deno/lib/agent_provider.ts:1200`). A provider CLI is not a vendor.
   The `deepseek` child environment points `ANTHROPIC_BASE_URL` at DeepSeek's
   endpoint (`worker/deno/lib/deepseek_env.ts:166-167`), so the vendor and the
   CLI are different axes.
@@ -70,32 +70,32 @@ relative to the repository root.
 | Edit guard           | `worker/deno/lib/issue_executor_enforcement.ts:47`, `:58`, `:124`, `:138`                                                                                     | Guarded tools are `Edit` and `Write`. A call with `agent_id` present (an executor) is allowed. A call without it (the advisor) is denied, unless its `file_path` is one of the advisor's own run-record files (`isAdvisorRunRecordPath`, `:98`, `:142-145`): the PR summary `docs/archive/pr-summaries/pr-summary-<issue>.md` or the PR-feedback reply file `.pr_response_message`. |
 | Hook settings        | `worker/deno/lib/issue_executor_enforcement.ts:205`, `:240`                                                                                                   | `buildIssueExecutorHookSettings` and `resolveIssueExecutorHookSettings` build the `--settings` payload.                                                                                                                                                                                                                                                                             |
 | Guard CLI            | `worker/deno/lib/issue_edit_guard_cli.ts:46`                                                                                                                  | `runIssueEditGuard` is the hook entry point.                                                                                                                                                                                                                                                                                                                                        |
-| Flag delivery        | `worker/deno/lib/agent_provider.ts:623` (`buildClaudeCliArgs`), `:646-648`, `:653-655`                                                                        | `buildClaudeCliArgs` emits `--agents` JSON (`:646-648`) and one `--settings` argument (`:653-655`) when `settingsJson` is set.                                                                                                                                                                                                                                                      |
-| Descriptor           | `worker/deno/lib/agent_provider.ts:394` (`agents`), `:422` (`settingsJson`), `:456` (`promptTransport`), `:536` (`buildInvocation`), `:545` (`buildChildEnv`) | The `AgentProviderDescriptor` fields.                                                                                                                                                                                                                                                                                                                                               |
+| Flag delivery        | `worker/deno/lib/agent_provider.ts:631` (`buildClaudeCliArgs`), `:658-660`, `:665-667`                                                                        | `buildClaudeCliArgs` emits `--agents` JSON (`:658-660`) and one `--settings` argument (`:665-667`) when `settingsJson` is set.                                                                                                                                                                                                                                                      |
+| Descriptor           | `worker/deno/lib/agent_provider.ts:402` (`agents`), `:430` (`settingsJson`), `:464` (`promptTransport`), `:544` (`buildInvocation`), `:553` (`buildChildEnv`) | The `AgentProviderDescriptor` fields.                                                                                                                                                                                                                                                                                                                                               |
 
 Per-provider behaviour, from the same file:
 
-- **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:737`). Its
-  `buildInvocation` is at `:765` and `buildChildEnv` at `:778-780`, which calls
+- **Claude:** `promptTransport` is `"stdin"` (`agent_provider.ts:749`). Its
+  `buildInvocation` is at `:777` and `buildChildEnv` at `:790-792`, which calls
   `buildClaudeChildEnv` (`worker/deno/lib/claude_env.ts:229`).
-- **Codex:** `promptTransport` is `"stdin"` (`:861`). `buildInvocation` (`:900`)
-  calls `buildCodexArgs` (`:923`, defined at
+- **Codex:** `promptTransport` is `"stdin"` (`:873`). `buildInvocation` (`:912`)
+  calls `buildCodexArgs` (`:935`, defined at
   `worker/deno/lib/codex_executor.ts:540`), which carries no `agents` but does
-  pass `settingsJson` through (`:926`) and turns it into per-spawn
+  pass `settingsJson` through (`:938`) and turns it into per-spawn
   `hooks.PreToolUse` `-c` arguments (`codex_executor.ts:525`). `buildChildEnv`
-  (`:948`) calls `buildIsolatedCodexChildEnv`
+  (`:960`) calls `buildIsolatedCodexChildEnv`
   (`worker/deno/lib/codex_env.ts:116`), which calls `buildCodexChildEnv`
   (`worker/deno/lib/codex_env.ts:90`).
-- **Gemini:** `promptTransport` is `"argv"` (`:1005`). `buildInvocation`
-  (`:1020`) calls `buildGeminiArgs` (`:1022`, defined at
+- **Gemini:** `promptTransport` is `"argv"` (`:1017`). `buildInvocation`
+  (`:1032`) calls `buildGeminiArgs` (`:1034`, defined at
   `worker/deno/lib/gemini_executor.ts:251`) and carries no `agents` or
-  `settingsJson`. `buildChildEnv` (`:1038`) uses `buildGeminiChildEnv`
+  `settingsJson`. `buildChildEnv` (`:1050`) uses `buildGeminiChildEnv`
   (`worker/deno/lib/gemini_env.ts:92`).
-- **DeepSeek:** `promptTransport` is `"stdin"` (`:1099`). `buildInvocation`
-  (`:1135`) destructures out `agents` and `settingsJson` (`:1154`). `agents`
-  triggers `warnDeepSeekAgentsUnsupported` (`:1155`,
+- **DeepSeek:** `promptTransport` is `"stdin"` (`:1111`). `buildInvocation`
+  (`:1147`) destructures out `agents` and `settingsJson` (`:1166`). `agents`
+  triggers `warnDeepSeekAgentsUnsupported` (`:1167`,
   `worker/deno/lib/deepseek_executor.ts:255`). `settingsJson` is dropped
-  silently, with `settingsJson: undefined` at `:1166`. `buildChildEnv` (`:1172`)
+  silently, with `settingsJson: undefined` at `:1178`. `buildChildEnv` (`:1184`)
   uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:158`).
 
 Prompt templates. The advisor and executor instructions are built in code, and
@@ -253,7 +253,7 @@ the claim through the advisor and its sub-agents to the result.
 flowchart LR
   A["Claim the issue<br/>claim_issue.ts:1240"] --> B["Phase options<br/>execute_claude_phase.ts:1297-1344"]
   B --> C["buildIssueRunAgents<br/>issue_executor_agents.ts:420"]
-  C --> D["buildClaudeCliArgs<br/>agent_provider.ts:623"]
+  C --> D["buildClaudeCliArgs<br/>agent_provider.ts:631"]
   D --> E["claude CLI<br/>--agents and --settings"]
   E --> F["Advisor, no agent_id<br/>Edit and Write denied<br/>except run-record files"]
   E --> G["Executor or reviewer<br/>agent_id present"]
@@ -278,7 +278,7 @@ Supporting lifecycle code, each cited from the file it lives in:
   `:233-247` `sessionResumeForProvider` filters the stored state to the calling
   provider. A state tagged with another `providerId` is dropped (`:238`). An
   untagged legacy state is kept only for `claude` or `deepseek` (`:239-245`).
-  DeepSeek calls it at `worker/deno/lib/agent_provider.ts:1159-1162`. Compaction
+  DeepSeek calls it at `worker/deno/lib/agent_provider.ts:1171-1174`. Compaction
   is a separate path (`stream_compaction.ts:67-70`, see section 7).
 
 ### Target
@@ -392,10 +392,10 @@ refuses, as a backstop (Issue #4010).
 
 | Provider   | Prompt transport                | `--agents`                               | `--settings` (edit guard)                                                                                                                                                  | `supportsCompaction`               | Behaviour with split on                                                                                                                                                                                                                                                                                 |
 | ---------- | ------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude`   | stdin (`agent_provider.ts:737`) | Emitted (`:646-648`)                     | Emitted (`:653-655`)                                                                                                                                                       | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active.                                                                                                                                                                                                                                             |
-| `codex`    | stdin (`:861`)                  | Not carried, silent at `buildInvocation` | Translated to per-spawn `hooks.PreToolUse` `-c` arguments when present (`agent_provider.ts:926`, `codex_executor.ts:414`); carries the RTK hook only, never the edit guard | No                                 | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard (the Codex `--settings` column carries only the RTK hook). |
-| `gemini`   | argv (`:1005`)                  | Not carried, silent at `buildInvocation` | Not carried, silent                                                                                                                                                        | No                                 | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard.                                                           |
-| `deepseek` | stdin (`:1099`)                 | Stripped, warned (`:1154-1155`)          | Stripped, silent (`:1154`, `:1166`)                                                                                                                                        | Yes                                | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); the descriptor warns for `agents` only. No edit guard.                   |
+| `claude`   | stdin (`agent_provider.ts:749`) | Emitted (`:658-660`)                     | Emitted (`:665-667`)                                                                                                                                                       | Yes (`stream_compaction.ts:67-70`) | Prompt block renders; executors defined; edit guard active.                                                                                                                                                                                                                                             |
+| `codex`    | stdin (`:873`)                  | Not carried, silent at `buildInvocation` | Translated to per-spawn `hooks.PreToolUse` `-c` arguments when present (`agent_provider.ts:938`, `codex_executor.ts:414`); carries the RTK hook only, never the edit guard | No                                 | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard (the Codex `--settings` column carries only the RTK hook). |
+| `gemini`   | argv (`:1017`)                  | Not carried, silent at `buildInvocation` | Not carried, silent                                                                                                                                                        | No                                 | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); no edit guard.                                                           |
+| `deepseek` | stdin (`:1111`)                 | Stripped, warned (`:1166-1167`)          | Stripped, silent (`:1166`, `:1178`)                                                                                                                                        | Yes                                | Block renders unless the planner strips the run (`executorSplit` false, no block); `issue` runs carrying `--agents` are rerouted to Claude or stripped before spawn (Issue #4109; runner refusal, Issue #4010, is a backstop); the descriptor warns for `agents` only. No edit guard.                   |
 
 **The block is not gated on the provider, but the planner clears it on the strip
 path.** `isIssueExecutorSplitEnabled` takes the phase, repo and host config only

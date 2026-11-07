@@ -77,7 +77,7 @@ Local edits are reversible and are yours to make; anything externally visible or
 Fix all validation, lint, and test issues as part of the spelling fix — do not wait for a reviewer.
 
 - Run the checks the `<quality_instructions>` block above prescribes: the targeted ones (spell check, lint, type check, the tests covering what you touched) always, and the full gate once at the end only when the remaining run budget covers it.
-- Every check you run must pass before you push. When the budget did not cover the full gate, say so in the response message with the skip note — CI runs the same checks on the PR.
+- Every check you run must pass before you push. When the budget did not cover the full gate, say so in the response message with the skip note.
 
 ## Change Scope
 

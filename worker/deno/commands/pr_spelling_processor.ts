@@ -184,9 +184,6 @@ export const prSpellingProcessorCommand: Command = {
           customInstructions,
           claudeTimeout: config.claudeTimeout || undefined,
           claudeModel: config.claudeModel || undefined,
-          // Issue #4625: the publication gate reads the repo's quality
-          // settings from the same per-repo map the CI wrapper passes.
-          repoConfigs: config.repoConfig,
         };
 
         const result = await processSpellingFailure(input, processorDeps);

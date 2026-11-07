@@ -275,6 +275,28 @@ Deno.test("formatCiReport - a control character in a code path cannot start a ne
   assertStringIncludes(text, "[BLOCKED] Summary freshness");
 });
 
+Deno.test("formatCiReport - stale summaries must be rewritten for the head", () => {
+  const result: PrSummaryCiResult = {
+    kind: "checked",
+    issueNumber: 42,
+    summaryPath: SUMMARY_PATH,
+    freshness: {
+      kind: "stale",
+      codeCommit: "c2",
+      codeFiles: [CODE_FILE],
+      summaryCommit: "s1",
+    },
+    gates: [],
+  };
+
+  const report = formatCiReport(result);
+  assertStringIncludes(
+    report,
+    `rewrite ${SUMMARY_PATH} so its claims, counts and results describe the head`,
+  );
+  assert(!report.includes("add a Test Plan entry for the push"));
+});
+
 // --- Integration: a real remote and clone -------------------------------------
 
 /** Run `body` against a fresh remote and clone, removing them afterwards. */

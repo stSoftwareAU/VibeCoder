@@ -30,6 +30,11 @@
  * than as passed, and it is not failed: a tree that passes every other task is
  * still pushed. A failure of any other kind still refuses the resolution.
  *
+ * A Cargo step that cannot reach its crate registry (Issue #4786) is retried
+ * once offline, from the local cargo cache, inside the remaining budget. If the
+ * retry still cannot reach the registry the step is left to CI, as a timed-out
+ * Cargo step is, and the passed detail names it.
+ *
  * The Issue #974 type check runs first and has its own limit,
  * `typeCheckTimeoutMs` (300 s for Deno, 900 s for Cargo; Issue #4787). The
  * verification budget, {@link RESOLUTION_GATE_BUDGET_MS}, starts once that
@@ -43,13 +48,16 @@ import {
   checkMergedTree,
   collapseRepeatedLines,
   describeRustToolchainGap,
+  detectCargoRegistryGap,
   detectRemoteModuleGap,
   detectRustToolchainGap,
   findProjectManifests,
+  isCargoOfflineRegistryGap,
   type MergeGateFn,
   type MergeGateOutcome,
   type ProjectKind,
   readManifestTasks,
+  withCargoOffline,
 } from "./milestone_merge_gate.ts";
 import {
   GateAccountUnavailable,
@@ -269,7 +277,9 @@ export const spawnTask = async (
  *   check left to CI the same way is carried through as `checkLeftToCi`
  *   (Issue #4441), so the report does not claim it passed. A Cargo step (check
  *   carried through, or `cargo test`) that hit its time limit (Issue #4786) is
- *   left to CI the same way and named as timed out in the passed detail; a Deno
+ *   left to CI the same way and named as timed out in the passed detail; a Cargo
+ *   step that could not reach its crate registry even on an offline retry
+ *   (Issue #4786) is left to CI likewise and named in the passed detail; a Deno
  *   task that times out is still a failure. `skipped` when the
  *   tree defines nothing to run, which the caller must treat as a refusal. That
  *   refusal is fail closed: an all-left-to-CI tree where no unit suite or
@@ -343,8 +353,10 @@ export async function verifyResolvedTree(
   const skipCargo = projects.some((project) => project.kind === "cargo") &&
     (typed.cargoSkipped === true || await skipCargoBuild());
   let skippedCargoSuite = false;
-  // Cargo steps that hit their time limit (Issue #4786).
-  const cargoTimedOut: string[] = [];
+  // Cargo steps left to CI: those that hit their time limit, and those that
+  // could not reach their crate registry even offline (Issue #4786). Each entry
+  // names the step and its cause; the passed detail adds the CI suffix.
+  const cargoLeftNotes: string[] = [];
   // Run Deno first: a cargo timeout may consume the whole remaining budget.
   const orderedProjects = [
     ...projects.filter((project) => project.kind !== "cargo"),
@@ -379,7 +391,7 @@ export async function verifyResolvedTree(
     for (const step of planned) {
       const task = step.task;
       const where = `${describeTask(step)} in ${project.dir}`;
-      const timeoutMs = deadline - now();
+      let timeoutMs = deadline - now();
       if (timeoutMs <= 0) {
         return {
           status: "failed",
@@ -405,6 +417,54 @@ export async function verifyResolvedTree(
           output: tail(err instanceof Error ? err.message : String(err)),
         };
       }
+      // The cause the first attempt named when it could not reach the crate
+      // registry (Issue #4786); set only when the step was retried offline.
+      let registryCause: string | undefined;
+      const firstGap = step.kind === "cargo" && result.code !== 0 &&
+          !result.timedOut && !result.accountUnavailable
+        ? detectCargoRegistryGap(result.output)
+        : undefined;
+      if (firstGap) {
+        // A cargo step that cannot reach its registry is retried once offline,
+        // from the local cargo cache, inside whatever budget is left (Issue
+        // #4786). The retry gets a fresh reading of the clock.
+        registryCause = firstGap.cause;
+        timeoutMs = deadline - now();
+        if (timeoutMs <= 0) {
+          return {
+            status: "failed",
+            detail: `${where} was not reached within the ` +
+              `${RESOLUTION_GATE_BUDGET_MS}ms verification budget — the ` +
+              `resolution is unverified, so it is not pushed`,
+            output: "",
+          };
+        }
+        try {
+          result = await runner({
+            ...step,
+            args: withCargoOffline(step.args),
+            timeoutMs,
+          });
+        } catch (err) {
+          return {
+            status: "failed",
+            detail: `${where} could not be run`,
+            output: tail(err instanceof Error ? err.message : String(err)),
+          };
+        }
+        // Still no registry after the offline retry: the step is left to CI,
+        // with the first attempt's cause (Issue #4786).
+        if (
+          result.code !== 0 && !result.accountUnavailable &&
+          isCargoOfflineRegistryGap(result.output)
+        ) {
+          skippedCargoSuite = true;
+          cargoLeftNotes.push(
+            `${where} could not reach its crate registry (${registryCause})`,
+          );
+          continue;
+        }
+      }
       if (result.accountUnavailable) {
         leftToCi.push(`${where}: ${result.accountUnavailable}`);
         if (step.kind === "cargo" || isUnitSuite(task)) {
@@ -418,7 +478,7 @@ export async function verifyResolvedTree(
         // Deno task that times out is still a failure, below.
         if (step.kind === "cargo" && result.timedOut) {
           skippedCargoSuite = true;
-          cargoTimedOut.push(`${where} timed out after ${timeoutMs}ms`);
+          cargoLeftNotes.push(`${where} timed out after ${timeoutMs}ms`);
           continue;
         }
         // Issue #4422: a Deno task that could not fetch a remote module ran on
@@ -454,7 +514,12 @@ export async function verifyResolvedTree(
           output: tail(result.output),
         };
       }
-      ran.push(where);
+      // A step that passed only on the offline retry says so (Issue #4786).
+      ran.push(
+        registryCause !== undefined
+          ? `${where} (verified offline from the local cargo cache, Issue #4786)`
+          : where,
+      );
       if (step.kind === "cargo" || isUnitSuite(task)) unitSuiteRan = true;
     }
   }
@@ -539,12 +604,12 @@ export async function verifyResolvedTree(
   const suiteNote = leftToCi.length > 0
     ? `; ${leftToCi.join("; ")} — left to the milestone PR's CI (Issue #4422)`
     : "";
-  const timeoutNote = cargoTimedOut.map((note) =>
+  const cargoLeftNote = cargoLeftNotes.map((note) =>
     `; ${note} — left to CI (Issue #4786)`
   ).join("");
   return {
     status: "passed",
-    detail: `${ran.join("; ")} passed${cargoNote}${timeoutNote}${suiteNote}`,
+    detail: `${ran.join("; ")} passed${cargoNote}${cargoLeftNote}${suiteNote}`,
     output: "",
     ...(cargoLeftToCi ? { cargoSkipped: true } : {}),
     ...(leftToCi.length > 0 ? { suiteLeftToCi: leftToCi.join("; ") } : {}),

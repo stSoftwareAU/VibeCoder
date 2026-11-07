@@ -135,6 +135,77 @@ Deno.test("pr-completion-report --collect rejects a --max-prs-per-repo that is n
   }
 });
 
+Deno.test("pr-completion-report --collect rejects an invalid CI call budget", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of ["-1", "two", "1.5", true, ""]) {
+    const result = await runPrCompletionCollect(
+      {
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "ci-call-budget": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false);
+    assertStringIncludes(
+      result.message,
+      "--ci-call-budget must be a non-negative integer",
+    );
+  }
+});
+
+Deno.test("pr-completion-report --collect passes the CI call budget to the collector", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) {
+        return path.includes("page=1")
+          ? [{
+            number: 1,
+            state: "open",
+            created_at: "2026-10-20T00:00:00Z",
+            merged_at: null,
+            closed_at: null,
+            title: "Change",
+            body: "",
+            labels: [],
+            base: { ref: "main" },
+            head: { ref: "issue-1", sha: "sha1" },
+          }]
+          : [];
+      }
+      if (
+        path.startsWith("repos/org/repo/pulls/") ||
+        path.startsWith("repos/org/repo/issues/")
+      ) return [];
+      throw new Error(`unexpected CI request: ${path}`);
+    };
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        "audit-dir": dir,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        start: "2026-10-01T00:00:00Z",
+        end: "2026-11-01T00:00:00Z",
+        "ci-call-budget": "0",
+      },
+      { repos: ["org/repo"] } as unknown as WorkerConfig,
+      gh,
+    );
+    assertEquals(result.success, true, result.message);
+    assertStringIncludes(
+      result.message,
+      "CI history truncated; collection call budget exhausted",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("pr-completion-report --collect passes --max-prs-per-repo to the collector and reports the truncation", async () => {
   const dir = await Deno.makeTempDir();
   try {
@@ -159,6 +230,12 @@ Deno.test("pr-completion-report --collect passes --max-prs-per-repo to the colle
       }
       if (path.startsWith("repos/org/repo/pulls/")) return [];
       if (path.startsWith("repos/org/repo/issues/")) return [];
+      if (path.includes("/check-runs?")) {
+        return { total_count: 0, check_runs: [] };
+      }
+      if (path.includes("/actions/runs?")) {
+        return { total_count: 0, workflow_runs: [] };
+      }
       throw new Error(`unrouted gh path: ${path}`);
     };
     const result = await runPrCompletionCollect(
@@ -272,12 +349,19 @@ Deno.test("pr-completion-report --collect notes a --review-log it cannot read, a
         return [{
           id: 601,
           state: "APPROVED",
+          body: "",
           submitted_at: "2026-10-20T01:00:00Z",
-          user: { login: "review-bot[bot]" },
+          user: { id: 7001, login: "review-bot[bot]" },
         }];
       }
       if (path.startsWith("repos/org/repo/pulls/")) return [];
       if (path.startsWith("repos/org/repo/issues/")) return [];
+      if (path.includes("/check-runs?")) {
+        return { total_count: 0, check_runs: [] };
+      }
+      if (path.includes("/actions/runs?")) {
+        return { total_count: 0, workflow_runs: [] };
+      }
       throw new Error(`unrouted gh path: ${path}`);
     };
     const args = {
@@ -305,12 +389,42 @@ Deno.test("pr-completion-report --collect notes a --review-log it cannot read, a
 
     const withoutLog = await runPrCompletionCollect(args, config, gh);
     assertEquals(withoutLog.success, true);
+    assertEquals(withoutLog.data?.report.delivery.reviewRounds, 0);
     assertStringIncludes(
       withoutLog.message,
       "coverage: 1 review event on 1 PR had no review-log source",
     );
+
+    const attributed = await runPrCompletionCollect(
+      { ...args, "human-actor-id": "7001" },
+      config,
+      gh,
+    );
+    assertEquals(attributed.success, true);
+    assertEquals(
+      attributed.data?.report.delivery.reviewRounds,
+      1,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("pr-completion-report --collect rejects a non-numeric --human-actor-id before any read", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (const value of ["alice", "1,bot", "0x2", true]) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "human-actor-id": value,
+      },
+      {} as WorkerConfig,
+      gh,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(result.message, "--human-actor-id must be");
   }
 });
 
@@ -393,5 +507,106 @@ Deno.test("pr-completion-report --input refuses a non-string value as a missing 
     );
     assertEquals(result.success, false, `value ${String(value)}`);
     assertStringIncludes(result.message, "--input <path> is required");
+  }
+});
+
+/** The one refusal message for a malformed or a duplicate --expected-inventory. */
+const INVENTORY_REFUSAL =
+  "--expected-inventory must be a unique comma-separated list of hostId/component entries";
+
+Deno.test("pr-completion-report --collect refuses a malformed --expected-inventory entry before any read, with the inventory message", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  // Each value is malformed: no slash, an empty host, an empty component, an
+  // upper-case component, a space in the host, or a flag with no value.
+  for (
+    const value of [
+      "host-a",
+      "/worker",
+      "host-a/",
+      "host-a/Worker",
+      "host a/worker",
+      true,
+    ]
+  ) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "expected-inventory": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${String(value)}`);
+    assertStringIncludes(result.message, INVENTORY_REFUSAL);
+  }
+});
+
+Deno.test("pr-completion-report --collect refuses a duplicate --expected-inventory entry before any read, with the inventory message", async () => {
+  const gh: GhJson = () => Promise.reject(new Error("must not be called"));
+  for (
+    const value of [
+      "host-a/worker,host-a/worker",
+      "host-a/worker, host-a/worker",
+    ]
+  ) {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        repos: "org/repo",
+        "expected-revision": "rev1",
+        "expected-inventory": value,
+      },
+      {} as WorkerConfig,
+      gh,
+      () => undefined,
+    );
+    assertEquals(result.success, false, `value ${value}`);
+    assertStringIncludes(result.message, INVENTORY_REFUSAL);
+  }
+});
+
+Deno.test("pr-completion-report --collect accepts legal --expected-inventory entries and passes them into the report", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const auditDir = `${dir}/audit`;
+    await Deno.mkdir(auditDir);
+    const gh: GhJson = async (path) => {
+      if (path === "repos/org/repo") return { default_branch: "main" };
+      if (path.startsWith("repos/org/repo/pulls?")) return [];
+      throw new Error(`unrouted gh path: ${path}`);
+    };
+    const config = { repos: ["org/repo"] } as unknown as WorkerConfig;
+    const collect = (inventory: string) =>
+      runPrCompletionCollect(
+        {
+          collect: true,
+          "audit-dir": auditDir,
+          "expected-revision": "rev1",
+          start: "2026-10-01T00:00:00Z",
+          end: "2026-11-01T00:00:00Z",
+          "expected-inventory": inventory,
+        },
+        config,
+        gh,
+      );
+    // A single legal entry has the same shape as the refused ones above.
+    const single = await collect("host-a/worker");
+    assertEquals(single.success, true);
+    assertEquals(
+      single.data?.report.deployment.expectedHostComponents,
+      ["host-a/worker"],
+    );
+    // Several distinct entries, in any order, all reach the report, sorted.
+    const several = await collect("host-b/reviewer, host-a/worker");
+    assertEquals(several.success, true);
+    assertEquals(
+      several.data?.report.deployment.expectedHostComponents,
+      ["host-a/worker", "host-b/reviewer"],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });

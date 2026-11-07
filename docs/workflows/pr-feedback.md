@@ -219,6 +219,11 @@ of the summary alone, Issue #4234) — whichever push
 changed it, this run's or an earlier one. A pr_feedback run also re-syncs
 when it pushed nothing and has no commits left unpushed, so a run that
 answers a finding without a push still refreshes a stale body (Issue #3315).
+Exits on a turn limit, agent error, timeout, scheduled release, held review or
+failed final push also check
+the PR branch against the remote and sync the summary committed at that verified
+head before settling the run. Later local commits and working-tree edits stay
+unpublished; an unconfirmed remote head is skipped.
 A body raised before the digest marker existed keeps the older rule:
 rebuilt only when this run's own push changed the summary file. Fix branches
 for a gated milestone head are skipped, and only a worker-authored PR is
@@ -231,8 +236,9 @@ it with `gh pr edit <n> --body-file <file>` and name that in
 
 **Priority 1.64 — Reconcile PR Body Digests** (Issue #3760) covers pushes the
 worker did not make. The re-sync above runs only on the worker's own runs (PR
-feedback, CI fix and merge conflict, after their push; a PR-feedback run that
-pushed nothing also runs it, Issue #3315), so a review-fix commit pushed by
+feedback, CI fix and merge conflict, after their push; PR feedback also checks
+on interrupted or failed finalisation exits and runs it when nothing is left unpushed, Issue #3315),
+so a review-fix commit pushed by
 hand, from a laptop or an interactive Claude Code session, never reaches it:
 the live description stayed on the old summary until some later worker push.
 Each cycle the pass lists the open fleet-authored PRs (the push-capable
@@ -272,8 +278,9 @@ A re-sync never files a follow-up issue (Issue #4146): a criterion still
 
 Writing `Refs #N` in the summary does not stop the rebuilt description from
 closing the issue, since the rebuild appends `Closes #N` unless a closing
-keyword is already present; marking each unmet acceptance criterion `missing`
-is the way to keep the PR open against the issue instead (Issue #3315).
+keyword is already present; marking each unmet acceptance criterion
+`partial` or `missing` is the way to keep the PR open against the issue instead
+(Issue #3315).
 
 Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 <branch>`, and confirms `origin/<branch>` contains every cited fix commit
@@ -856,6 +863,15 @@ test PRs against their future head; conflicts remain on the repair path.
   and merge are pending, then a later pass releases it after merge, closure,
   failed required checks or bounded expiry. The same required-check contract
   applies across those lanes; optional pending or skipped jobs do not block.
+  GitHub may temporarily report `UNKNOWN` mergeability or a test-merge commit
+  whose parents lag the live head/base. The shared refresh checks re-read those
+  states up to three times in the same pass, using the standard retry backoff,
+  while retaining the approval, check, target-SHA and ownership guards. If one
+  of those transient refusals recurs on two consecutive passes, the sweep
+  updates one marked diagnostic comment on the PR and emits a fleet-health
+  error log; it continues trying automatically. Recovery or loss of refresh
+  eligibility clears the streak and marks an existing diagnostic comment
+  recovered.
 - **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
   current head is not armed until a new head arrives, and a queued base is
   never merged directly (`merge-queue-removed`,
@@ -976,7 +992,10 @@ After feedback fixes and quality checks, the PR is auto-merged._
 ## 🔁 A branch that can never be updated (Issue #335)
 
 A branch update that fails is retried on the next cycle — correct for a
-transient failure, useless for a permanent one. One branch in
+transient failure, useless for a permanent one. Strict-base refreshes also
+retry GitHub's transient mergeability and test-merge-parent calculations
+within the same pass, then escalate a matching refusal that spans two
+consecutive passes. One branch in
 `stSoftwareAU/NEAT-AI-core` logged the same
 `Failed to checkout branch 'issue-3832-detect-cycles-linear'` warning **65
 times** across days: nothing counted the repeats, nothing escalated, and the

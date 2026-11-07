@@ -156,19 +156,18 @@ guessing.
      neutralised, never with `includes()` or a first-occurrence match over the
      whole body, and test that the agent's text quoting the marker — in a code
      span, in prose, and after the worker re-wraps the body — does not fire it.
-   - **Call the existing owner — never copy it.** Before writing code that
-     formats, orders, ranks, validates or decides something the product
-     already does, find the helper, component or policy that owns it and
-     call it. Open every component or function the issue names — above all
-     in an Implementation section — and grep for the domain term (`rating`,
-     `buy_order`, `Stars`). When the owner is private (`pub(crate)`, not
-     exported), widen its visibility (`pub(crate)` → `pub`, add the export)
-     instead of copying it; that widening is part of this change, not the
-     adjacent refactor **Change Scope** rules out. A hand-made copy drifts
-     from its owner and drops the owner's edge cases. A component the issue
-     says to reuse is a stated requirement: the Spec reviewer judges it as a
-     criterion, and a diff that re-implements it by hand instead of calling
-     it is not `met`.
+   - **Call existing code — never copy it.** When the helper, component or
+     rule you need already exists in the repo (in product code, a script or
+     another test file), call or import it. If it is private or file-local,
+     export it or move it to a shared module in this change, and switch the
+     old callers to it. A component the issue says to reuse is a stated
+     criterion: the Spec reviewer judges it as one, and a diff that
+     re-implements it by hand instead of calling it is not `met`. A test
+     reuses production code as the system under test and shares genuine test
+     utilities and fixtures, but never computes its expected result by
+     calling the implementation it asserts: a literal expected value or an
+     independent behavioural fixture is what lets the test fail when the
+     result is wrong.
    - **Extend a module's existing imports.** When you add tests or code
      partway down an existing module — a new block inside an existing
      `mod tests`, say — merge each new name into the `use` / `import`
@@ -633,9 +632,8 @@ When things go wrong during implementation, follow these guidelines:
    must pass before a PR exists, and the gate includes the semgrep SAST stage,
    so a PR raised over a failing one ships an
    unresolved security finding. (A gate the run budget could not cover is a
-   different thing entirely: it is skipped, recorded with the skip note, and
-   left to CI — that is not a failing check.) If a check still fails after
-   three attempts:
+   different thing entirely: it is skipped and recorded with the skip note —
+   that is not a failing check.) If a check still fails after three attempts:
    - do **not** create a pull request;
    - commit and push what you have, so the branch is preserved and the next
      run resumes from it rather than starting again;
@@ -683,7 +681,7 @@ reviewer.
 - All checks must pass before PR creation: lint, type checks, unit tests, and
   every other gate you ran. When the run budget did not cover the full gate,
   record the skip in the PR summary with the note the `<quality_instructions>`
-  block gives you — CI runs the same checks on the PR.
+  block gives you.
 
 ## Change Scope
 
@@ -741,10 +739,14 @@ The committed file must yield no finding from the file-scoped Actions checks in
 - `workflow-triggers` — no test/lint/scan workflow triggers on push to the
   default branch; those checks run on `pull_request`.
 - `checkout-persist-credentials` — every `actions/checkout` sets
-  `persist-credentials: false` unless the job pushes.
+  `persist-credentials: false` unless the job needs the checkout credential
+  (for example, a `run: git push` or `git fetch`, a push action using that
+  credential, or a submodules checkout). `peter-evans/create-pull-request`
+  uses its own token and does not count.
 - `milestone-branch-filters` — every `pull_request` branch filter also matches
   `milestone/<slug>` branches, so a milestone PR is not silently unchecked.
-- `ci-install-pins` — every `run:` package install pins an exact version.
+- `ci-install-pins` — every `run:` package install pins an exact version (and
+  every `cargo install` passes `--locked`).
 - `run-injection` — no `run:` step interpolates an attacker-controllable
   `${{ github.* }}` field; pass it through `env:` and quote the variable.
 - `artifact-uploads` — no `actions/upload-artifact` step uploads the whole
@@ -1036,8 +1038,8 @@ merges on green CI with no reviewer:
   (the suspicious-image flag is the exception: it always stops the run). A
   closed, unreadable or self-filed dependency does not defer, and the issue is
   retried. A bare `## Blocked:` heading does not defer. When no criterion
-  is `missing`, the PR body gets `Closes #{{ISSUE_NUMBER}}` appended
-  automatically if your summary omits it.
+  is `partial` or `missing`, the PR body gets `Closes #{{ISSUE_NUMBER}}`
+  appended automatically if your summary omits it.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -1243,9 +1245,9 @@ one of:
 In the `Part of` case, write no closing keyword for the issue anywhere in the
 summary. The worker raises the PR body the same way (`Part of #{{ISSUE_NUMBER}}`
 plus a `## Not closing #{{ISSUE_NUMBER}}` section), so the committed summary and
-the PR body agree. The `missing` entry must really be in the block, since
-without one the worker appends `Closes #{{ISSUE_NUMBER}}` to the PR body and the
-issue closes on merge (in the Vibe Coder repository, `deno task
+the PR body agree. The `partial` or `missing` entry must really be in the
+block, since without one the worker appends `Closes #{{ISSUE_NUMBER}}` to the
+PR body and the issue closes on merge (in the Vibe Coder repository, `deno task
 pr-summary-check` also blocks it).
 
 Place it in the **Summary** section of your PR summary. For example: "Fixed the
@@ -1353,7 +1355,7 @@ The file MUST contain:
 
 1. **Summary**: A brief description of what was changed and why, **including
    `Part of #{{ISSUE_NUMBER}}` when the `## Acceptance Criteria` block marks any
-   criterion `missing`, otherwise `Closes #{{ISSUE_NUMBER}}`**
+   criterion `partial` or `missing`, otherwise `Closes #{{ISSUE_NUMBER}}`**
 2. **Spec**: the after-run record of what the diff alone cannot tell a
    reviewer, placed directly after Summary under three sub-headings — at most
    four bullets each, and `None.` when a sub-heading has nothing to say:

@@ -147,20 +147,6 @@ const REMOTE_CONFIRMS_PUSH = () =>
     reason: "verified in test",
   });
 
-/**
- * The repository gate stub. The mocked push never calls the publication guard,
- * so a head the agent "pushed itself" is judged by this seam (Issue #4625); the
- * real gate would find no repository in the fake workDir and report `unavailable`.
- */
-const passingPublication: NonNullable<
-  PrFeedbackProcessorDeps["validatePublication"]
-> = () =>
-  Promise.resolve({
-    status: "passed" as const,
-    head: "0".repeat(40),
-    gate: "absent" as const,
-  });
-
 function makeSuccessfulPushGit(
   gitCalls: string[][],
 ): Partial<GitDeps> {
@@ -224,7 +210,6 @@ Deno.test("processPrFeedback - gated head: works on a fix branch and raises a fi
     workDir: "/tmp/test-milestone-fix-gated",
     workRoot: "/tmp/test-milestone-fix-gated",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -276,7 +261,6 @@ Deno.test("processPrFeedback - gated head: fix PR creation failure => claim take
     workDir: "/tmp/test-milestone-fix-pr-fail",
     workRoot: "/tmp/test-milestone-fix-pr-fail",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -342,7 +326,6 @@ Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => 
     workDir: "/tmp/test-milestone-fix-pr-fail-review",
     workRoot: "/tmp/test-milestone-fix-pr-fail-review",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(
@@ -392,7 +375,6 @@ Deno.test("processPrFeedback - gated head: fix-branch checkout failure => honest
     workDir: "/tmp/test-milestone-fix-checkout-fail",
     workRoot: "/tmp/test-milestone-fix-checkout-fail",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -427,7 +409,6 @@ Deno.test("processPrFeedback - non-gated head: unchanged behaviour, pushes to th
     workDir: "/tmp/test-milestone-fix-non-gated",
     workRoot: "/tmp/test-milestone-fix-non-gated",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const input = makeInput({ branchName: "issue-2866-ordinary-branch" });
@@ -493,7 +474,6 @@ Deno.test("processPrFeedback - gated head: PR branch held elsewhere => stands do
     workDir: "/tmp/test-milestone-fix-branch-held",
     workRoot: "/tmp/test-milestone-fix-branch-held",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -588,7 +568,6 @@ Deno.test("processPrFeedback - gated head: pr_review branch_held => releases wit
     workDir: "/tmp/test-milestone-fix-pr-review-branch-held",
     workRoot: "/tmp/test-milestone-fix-pr-review-branch-held",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(
@@ -670,7 +649,6 @@ Deno.test("processPrFeedback - pr_review branch_missing => not released, so it i
     workDir: "/tmp/test-milestone-fix-branch-missing",
     workRoot: "/tmp/test-milestone-fix-branch-missing",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(
@@ -742,7 +720,6 @@ Deno.test("processPrFeedback - gated head: branch_held with a failed reaction DE
     workDir: "/tmp/test-milestone-fix-delete-fails",
     workRoot: "/tmp/test-milestone-fix-delete-fails",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -849,7 +826,6 @@ Deno.test("processPrFeedback - gated head: agent pushed the fix branch itself, l
     workDir: "/tmp/test-milestone-fix-self-pushed",
     workRoot: "/tmp/test-milestone-fix-self-pushed",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -902,7 +878,6 @@ Deno.test("processPrFeedback - gated head: fix branch on origin holds no commits
     workDir: "/tmp/test-milestone-fix-nothing-ahead",
     workRoot: "/tmp/test-milestone-fix-nothing-ahead",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -941,7 +916,6 @@ Deno.test("processPrFeedback - gated head: fix branch absent from origin => no f
     workDir: "/tmp/test-milestone-fix-absent-on-origin",
     workRoot: "/tmp/test-milestone-fix-absent-on-origin",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -982,7 +956,6 @@ Deno.test("processPrFeedback - gated head: origin unreachable while reading the 
     workDir: "/tmp/test-milestone-fix-remote-unreachable",
     workRoot: "/tmp/test-milestone-fix-remote-unreachable",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -1016,7 +989,6 @@ Deno.test("processPrFeedback - gated head: a measured unpushed count blocks the 
     workDir: "/tmp/test-milestone-fix-partly-pushed",
     workRoot: "/tmp/test-milestone-fix-partly-pushed",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -1053,7 +1025,6 @@ Deno.test("processPrFeedback - non-gated head: the remote fix-branch check never
     workDir: "/tmp/test-milestone-fix-not-gated",
     workRoot: "/tmp/test-milestone-fix-not-gated",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -1088,7 +1059,6 @@ Deno.test("processPrFeedback - gated head: a locally confirmed push skips the re
     workDir: "/tmp/test-milestone-fix-local-confirmed",
     workRoot: "/tmp/test-milestone-fix-local-confirmed",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: passingPublication,
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);

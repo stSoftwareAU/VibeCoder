@@ -17,7 +17,6 @@
  * Australian English throughout (behaviour, summarised).
  */
 
-import { createPublicationGuard } from "./publication_validation.ts";
 import { GITHUB_ISSUE_BODY_MAX_CHARS } from "./idle_task_body_limit.ts";
 import { hasClosingKeyword, WORKER_PR_MARKER_PREFIX } from "./pr_body.ts";
 import {
@@ -449,17 +448,6 @@ async function commitRewrittenSummary(
     { cwd: state.repoPath },
     false,
     resolvePreFlightSpec(config.repoConfig, repo),
-    undefined,
-    undefined,
-    // Issue #4625: this push reaches origin (and CI) before completion's own
-    // gate runs, so the repository's checks must pass on the head first.
-    createPublicationGuard({
-      cwd: state.repoPath,
-      repo,
-      repoConfigs: config.repoConfig,
-      branchName: state.branchName,
-      validate: deps.git.validatePublication,
-    }),
   );
   if (!commit.ok) {
     logger.error(

@@ -8,10 +8,12 @@
  * babysitter heartbeats are read from local or exported directories. The
  * review-fleet-prs skill's own `log.jsonl` files are read from
  * `--review-log <log.jsonl,...>` as a lower-trust source (docs/INTERNALS.md).
+ * `--human-actor-id <id,...>` identifies numeric GitHub account ids as human
+ * evidence for reviews, dismissals and merges unmatched to verified fleet actions.
  * Nothing is written to GitHub or host configuration. `--collect` writes only
  * the optional `--write-snapshot <path>`, which holds the collected input so a
- * later `--input` run can reproduce the report, and whatever `verifyAllChains`
- * settles in an audit directory it sweeps (an interrupted append, Issue #1074).
+ * later `--input` run can reproduce the report. Audit verification does not
+ * recover or modify interrupted journals.
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
@@ -20,6 +22,7 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { resolveBaseDir } from "../lib/audit_journal.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import {
+  ACTOR_ID_PATTERN,
   buildPrCompletionReport,
   fingerprintWorkerReviewPolicy,
   formatPrCompletionReport,
@@ -67,6 +70,30 @@ function asList(value: unknown): string[] | undefined {
   if (text === undefined) return undefined;
   const items = splitList(text);
   return items.length > 0 ? items : undefined;
+}
+
+/** Parse explicit `hostId/component` deployment inventory entries. */
+function asInventory(
+  value: unknown,
+): Array<{ hostId: string; component: string }> | undefined {
+  const items = asList(value);
+  if (!items) return undefined;
+  const parsed: Array<{ hostId: string; component: string }> = [];
+  for (const item of items) {
+    const slash = item.lastIndexOf("/");
+    const hostId = item.slice(0, slash);
+    const component = item.slice(slash + 1);
+    if (
+      slash <= 0 ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(hostId) ||
+      !/^[a-z][a-z0-9_-]{0,31}$/.test(component)
+    ) return undefined;
+    parsed.push({ hostId, component });
+  }
+  return new Set(parsed.map((entry) => `${entry.hostId}/${entry.component}`))
+      .size === parsed.length
+    ? parsed
+    : undefined;
 }
 
 /**
@@ -122,6 +149,22 @@ export async function runPrCompletionCollect(
     };
   }
 
+  const ciBudgetRaw = args["ci-call-budget"];
+  const ciCallBudget = ciBudgetRaw === undefined
+    ? undefined
+    : Number(ciBudgetRaw);
+  if (
+    ciBudgetRaw !== undefined &&
+    ((typeof ciBudgetRaw !== "string" && typeof ciBudgetRaw !== "number") ||
+      !/^\d+$/.test(String(ciBudgetRaw)) || !Number.isSafeInteger(ciCallBudget))
+  ) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --ci-call-budget must be a non-negative integer",
+    };
+  }
+
   const observedAt = new Date().toISOString();
   const end = asText(args.end) ?? observedAt;
   if (!/^\d{4}-\d\d-\d\dT.*Z$/.test(end) || !Number.isFinite(Date.parse(end))) {
@@ -142,6 +185,30 @@ export async function runPrCompletionCollect(
         "pr-completion-report failed: --review-log <log.jsonl,...> must name at least one file",
     };
   }
+  const humanActorArg = args["human-actor-id"];
+  const humanActorIds = humanActorArg === undefined
+    ? undefined
+    : asList(humanActorArg);
+  if (
+    humanActorArg !== undefined &&
+    (humanActorIds === undefined ||
+      humanActorIds.some((id) => !ACTOR_ID_PATTERN.test(id)))
+  ) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --human-actor-id must be a comma-separated list of numeric GitHub user ids",
+    };
+  }
+  const inventoryArg = args["expected-inventory"];
+  const inventory = asInventory(inventoryArg);
+  if (inventoryArg !== undefined && inventory === undefined) {
+    return {
+      success: false,
+      message:
+        "pr-completion-report failed: --expected-inventory must be a unique comma-separated list of hostId/component entries",
+    };
+  }
   const rolloutVerifiedAt = asText(args["rollout-verified-at"]);
   const writeSnapshot = asText(args["write-snapshot"]);
 
@@ -153,17 +220,22 @@ export async function runPrCompletionCollect(
       auditDirs: asList(args["audit-dir"]) ?? [resolveBaseDir()],
       reviewRunDirs: asList(args["review-run-dir"]),
       reviewLogs,
+      ...(humanActorIds !== undefined
+        ? { humanActorIds: [...new Set(humanActorIds)] }
+        : {}),
       lifecycleLedgers: asList(args["lifecycle-ledger"]),
       babysitterStateDirs: asList(args["babysitter-state-dir"]),
       expected: {
         components: asList(args["expected-components"]) ??
           DEFAULT_EXPECTED_COMPONENTS,
+        ...(inventory ? { inventory } : {}),
         revision: expectedRevision,
         policyFingerprint,
         maxHeartbeatAgeHours: hours,
       },
       ...(rolloutVerifiedAt !== undefined ? { rolloutVerifiedAt } : {}),
       ...(maxPrsPerRepo !== undefined ? { maxPrsPerRepo } : {}),
+      ...(ciCallBudget !== undefined ? { ciCallBudget } : {}),
       gh,
     });
     const report = buildPrCompletionReport(snapshot.input);

@@ -396,8 +396,8 @@ bash `worker/run_core.sh` conductor. It sequences:
    Last, both closers read the merged PR's **own closure block** (Issue
    #3177, [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)).
    A PR into a milestone branch merges unreviewed on green CI, so a PR whose
-   `## Acceptance Criteria` block marks any criterion `missing` used to close
-   its issue as completed. The issue stays open with its existing labels so the worker can finish
+   `## Acceptance Criteria` block marks any criterion `partial` or `missing`
+   used to close its issue as completed. The issue stays open with its existing labels so the worker can finish
    it. Both closers record the missing criteria in their diagnostic output;
    they neither apply `needs-human` nor post repeated hand-off comments.
    `ensureIssueClosedIfPrMerged` (the sweep and recovery path) logs a
@@ -405,8 +405,8 @@ bash `worker/run_core.sh` conductor. It sequences:
    unchanged repeat, including the one the next hourly worker start produces,
    is logged at DEBUG (`decision_warn_signatures.json` in the work directory,
    Issue #4495).
-   When a criterion is marked missing, the PR itself is raised as `Part of #N`
-   rather than `Closes #N`
+   When a criterion is marked `partial` or `missing`, the PR itself is raised as
+   `Part of #N` rather than `Closes #N`
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
    closer check is what actually holds it open.
 
@@ -433,7 +433,7 @@ flowchart TD
     R -->|Yes| Z
     R -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
     F -->|No| Z
-    F -->|Yes| M{"PR's closure block marks<br/>a criterion missing? (#3177)"}
+    F -->|Yes| M{"PR's closure block marks<br/>a criterion partial or missing? (#3177)"}
     M -->|Yes| H["Left open and queued<br/>to finish the missing criteria"]
     M -->|No| G["Closed, naming the PR<br/>and the merge commit"]
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -1124,9 +1124,10 @@ pr-completion-report --collect` builds that snapshot itself and reports on it.
 Exactly one of `--input` and `--collect` is required. Neither mode performs
 GitHub writes or changes host configuration. `--collect` writes only the
 optional `--write-snapshot <path>`, which holds the collected input so a later
-`--input` run reproduces the same report, plus whatever `verifyAllChains` settles
-in an audit directory it sweeps (an interrupted append, Issue #1074; see
-**Limits**). A `--input` snapshot is not authenticated.
+`--input` run reproduces the same report. Audit-chain verification disables
+interrupted-append recovery, so collection modifies neither journals nor the
+audit roster. A `--input`
+snapshot is not authenticated.
 
 `--collect` reads these sources, all read-only. The audit journals are the
 verified fleet source; the review-fleet-prs log is a lower-trust source, set
@@ -1136,11 +1137,13 @@ out under **Review-fleet-prs log** below:
   (default `config.repos`): the default branch; the pull requests created in
   `[start, end)` (`--start` and `--end`, default the fourteen days ending now),
   paged newest first; each cohort PR's reviews, issue events and commits; and
-  check runs for merged PRs.
+  paginated check runs for every observed PR head, including heads without
+  workflow runs; workflow attempts and jobs for heads with workflow runs; and
+  commit-head checks regardless of PR state, plus the merge commit of each merged
+  PR (read for post-merge regressions only).
 - **Audit journals** in each `--audit-dir` (default the resolved audit
-  directory). Each directory's chains are verified with `verifyAllChains`, the
-  sweep `audit-chain-verify` runs at startup, and each journal is read with
-  `loadEntries`.
+  directory). Each directory's chains are verified with `verifyAllChains` and
+  each journal is read with `loadEntries`.
 - **Review-run records**: `<round>/review-run.json` under each
   `--review-run-dir`.
 - **Lifecycle ledgers** named by `--lifecycle-ledger`.
@@ -1149,11 +1152,47 @@ out under **Review-fleet-prs log** below:
 - **Review-fleet-prs log**: each `log.jsonl` named by `--review-log`
   (comma-separated, one per host). Lower trust; see below.
 
+Unmatched GitHub reviews, dismissals and merges remain unknown
+unless `--human-actor-id <id,...>` explicitly lists their numeric GitHub user
+ids. This operator-supplied allowlist is affirmative evidence of human
+intervention; login names and bot suffixes do not classify actors. A matching
+verified fleet journal action takes precedence, including when automation used
+an account also listed as human. Keep automation account ids out of this list.
+Explicit null actor identities, unmatched review logs and unmatched fleet
+history remain unknown; omitted or malformed actor IDs fail collection.
+Commit authorship is self-set metadata, so author-only commits stay
+unknown even when that author's account is allowlisted.
+
 The expected deployment comes from `--expected-components` (default
-`worker,reviewer,babysitter`), `--expected-revision` (default
+`worker,reviewer,babysitter`), optional `--expected-inventory`
+(`hostId/component,...`), `--expected-revision` (default
 `VIBE_BUILD_COMMIT`; the command fails when neither is set), the policy
 fingerprint from `fingerprintWorkerReviewPolicy(config)`, and
 `--max-heartbeat-age-hours` (default 24).
+
+**Host identity.** Worker rows are keyed by the lifecycle ledger's `host`, the
+machine hostname from `getHostname()`. That is unchanged, so the subscription
+allocation reader still matches it. Babysitter rows (`deployment-health.json`)
+and the babysitter's daily `pr-discovery-events.jsonl.YYYY-MM-DD` files use
+`reportHostId(escalationHostId())`: `VIBE_HOST_ID` or the short hostname, with
+any character outside `[A-Za-z0-9_.-]` replaced by `-`, leading non-alphanumerics
+dropped, and at most 128 characters. Reviewer rows (`review-run.json`) are
+mapped by the same `reportHostId`, so a free-form `VIBE_HOST_ID` cannot make the
+report's host-id pattern reject them. An `--expected-inventory` entry therefore
+uses the machine hostname for a worker and the mapped id for a babysitter or a
+reviewer.
+
+Discovery appends deduplicate each event, host, repository, PR, head and
+policy fingerprint (the SHA-256 the heartbeat also records; legacy rows carry
+none) within each UTC day across processes, by reading the bounded daily file under the
+append lock. Collection also reads the legacy
+`pr-discovery-events.jsonl` and daily files intersecting the verification window,
+ending at the observation time or 14 days after verification, whichever is
+earlier. A combined 16 MiB read limit marks rollout evidence incomplete with a
+coverage note when exceeded. Because deduplication keeps the first row of a day,
+the rollout check counts a row stamped before the verification instant when it
+carries the expected policy fingerprint; rows with another or no fingerprint
+count only from the verification instant.
 
 **Cross-host evidence.** The command reads only the audit directories it is
 given. To include another host, export that host's journal directory and pass
@@ -1165,11 +1204,16 @@ if any directory's chains fail, or a directory has no journals, every PR's
 chain sweep. Other JSONL files contribute unverified actions and a coverage
 note, and make the directory incomplete, even beside valid journals.
 
-**Match rule.** Reviews and dismissals match one verified fleet action of the
-same kind on the same PR within ten minutes. Each commit is attributed to the
-first confirmed, verified implementation or repair push whose recorded
-`deliveredCommits` contains that commit, at or after its committer date within
-the PR lifetime. The git chokepoint reads the remote branch head before pushing
+**Match rule.** A review or dismissal matches one verified fleet action of the
+same kind on the same PR within ten minutes either side of the GitHub event. A
+review may instead match one review-log record (see below). When the event and
+the action both carry a head SHA, the two must be equal. A journalled `review`
+without a head SHA can still match a GitHub review that carries a `commit_id`;
+reviewer posts at a reviewed head record that SHA. A merge matches on its head and within
+ten minutes either side of `mergedAt` (see **Merge window**). Each commit is
+attributed to a confirmed, verified implementation, repair or milestone push
+whose recorded `deliveredCommits` contains that commit, at or after its
+committer date within the PR lifetime. The git chokepoint reads the remote branch head before pushing
 and enumerates the old-to-local commit range. For a new destination it excludes
 history already in that remote's tracking refs. This range is recorded even for
 a failed push, but only a confirmed push can account for commits.
@@ -1186,13 +1230,18 @@ on the remote is excluded from a later fleet push's range. Legacy pushes without
 delivery evidence, unsupported push forms and shallow or unavailable history
 leave commits unknown rather than falling back to time-based attribution.
 
-**Merge window.** Auto-merge journals the merge when it is armed, which can be
-hours before GitHub records `mergedAt`. So a fleet `merge` action matches a
-merge event when its timestamp lies from the PR's creation to ten minutes after
-`mergedAt`. An armed merge stamped before the PR existed does not match, nor
-does one stamped more than ten minutes after the merge. A verified, successful
-fleet disarm between the arm and GitHub's merge invalidates that arm. A later
-re-arm can match; failed disarms do not withdraw an arm.
+**Merge window.** A GitHub merge matches a verified, confirmed fleet `merge`
+action only when the action's `headSha` equals the PR's head SHA and its
+timestamp lies within ten minutes either side of `mergedAt`. An action stamped
+eleven minutes before or after the merge does not match, and nor does one on
+another head. A direct merge records its head when it is pinned with
+`--match-head-commit`. Auto-merge arming is recorded as `merge-arm` and never
+verifies a later merge; neither a disarm nor a re-arm verifies it. A merge entry
+written before merge entries carried a
+`headSha` (the pre-change shape) has no head to compare, so it never matches.
+Pre-change merge entries are therefore read as `unknown` for attribution: the
+GitHub merge stays `unknown`, and its PR is not counted as unattended on that
+account.
 
 **Push linking.** Production writes `git-push` entries with no repository, only
 the push target. Such a push links across every supplied repository by branch
@@ -1207,9 +1256,18 @@ record the branch `HEAD` names. Empty or `-`-prefixed targets cannot be linked
 either, and nor can a branch name shared by PRs in two repositories. An unlinked
 push leaves its commits as `unknown` actions.
 
-**Review-fleet-prs log (lower trust).** The review-fleet-prs skill posts its
-reviews through its own `gh` calls, which do not pass the audit hook, so no
-audit action records them. After each post, the skill appends one line to its
+**Review-fleet-prs audit and log.** The review-fleet-prs skill's
+`postReviewAtHead` records each actual review-posting attempt through the
+shared hash-chained audit writer in `<reviewer-state>/audit`. Successful
+attempts carry the reviewer component, PR number, reviewed head and action ID;
+failed attempts remain failed evidence. Supply this local or exported directory
+with `--audit-dir` alongside the worker and babysitter audit directories.
+The gate and post paths also journal each reviewer `update-branch` request as a
+`branch-update` action tied to its PR. Its resulting commit is correlated from
+the PR commit list within the same ten-minute action window; the request does
+not claim the previous head as the refreshed head.
+An audit-append refusal is reported on stderr and leaves no verified action.
+After each successful post, the skill also appends one line to its
 `log.jsonl` (`LOG_FILE` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`,
 in the skill's state directory, `stateDir()`). `--review-log <log.jsonl,...>`
 reads those files, one per host, with `parseLog`. The review-log contract and
@@ -1218,25 +1276,22 @@ and the skill, which re-exports them. There is no worker-to-skill import. Each r
 `outcome` of `approved`, `changes_requested` or `held`. Each is a posted GitHub
 review: a held PR is posted as a COMMENTED review.
 
-A record for a cohort PR becomes a verified fleet `review` action with actor
-`fleet`, outcome `confirmed` and the ID `review-log:<repo>#<number>:<at>`. The
-same record in two logs is one action. It matches a GitHub review event within
-ten minutes, as an audit action does. Matching uses the repository, the PR
-number and the time only. A review posted at an older head still matches, so the
-record's head SHA is not carried because nothing uses it. An action links to
-its PR by repository and number whatever head it was recorded at.
+A record for a cohort PR becomes an unverified `review` action with actor
+`unknown` and outcome `confirmed`. It may support matching a GitHub review event
+within ten minutes either side, but does not establish trusted automation or make the PR's
+history complete. The same record in two logs is one action. The record's head
+SHA is retained as supporting correlation evidence; it does not verify the
+event. An action links to its PR by repository and number whatever head it was
+recorded at.
 Records for PRs outside the cohort are ignored. A missing or unreadable file,
 and a malformed line, are coverage notes; the rest of the log is still used.
 
 **This log is not hash-chained or tamper-evident.** The audit-chain verification
-(`verifyAllChains`) does not cover it. It is trusted at the same level as the
-lifecycle ledger and the review-run records: the fleet account's own record,
-not a journal that the chain protects. A record can therefore make a review
-event verified, and so help a PR count as unattended. The review-fleet-prs
-skill still does not journal to the audit chain. A PR whose GitHub review
-events have neither an audit action nor a review-log record stays unknown. With
-no `--review-log` and any GitHub review event in the cohort, the coverage notes
-say `N review events on M PRs had no review-log source`.
+(`verifyAllChains`) does not cover it, so its records remain supporting evidence
+only. They can associate a review event with a timestamp and PR, but cannot
+verify the action. A review without a verified audit action therefore remains
+unknown for unattended completion. Missing or malformed records are noted in
+coverage.
 
 **Dismissals.** The review-fleet-prs skill makes no dismissal call; its `gate.ts`
 comments only describe the worker's dismissals. The worker dismisses a review
@@ -1251,28 +1306,87 @@ the PR number. A PUT to `…/reviews/<id>` with `state=DISMISSED` is also kind
 `dismissal`. The review-fleet-prs skill makes no dismissal call, so it has none
 to journal.
 
-**Unknown, never human.** A GitHub event with no matching verified fleet action
-becomes an `unknown` action: unverified, outcome unknown, with the ID
-`gh:<repo>#<number>:<kind>:<id>`. GitHub logins are never read, so no login
-makes an action human or fleet.
+**Unknown and human evidence.** A GitHub review, dismissal or merge with no
+matching verified fleet action becomes an `unknown` action unless its numeric
+actor id appears in the explicit `--human-actor-id` allowlist. Commit authorship
+does not identify the authenticated push actor and cannot verify human repair
+or implementation. The unknown action is unverified, outcome
+unknown, with the ID `gh:<repo>#<number>:<kind>:<id>`. Matched audit actions
+take precedence over review logs regardless of timestamp proximity and retain
+the kind and identifier of each GitHub event they
+account for, even if the event's account is also in the human allowlist. A
+review-log match is supporting evidence only; when the matched GitHub review
+has an allowlisted numeric actor id, that actor id—not the log—verifies human
+attribution.
 
-**Owner gates.** `ownerGateVerified` is always false today, because no hold
-marker is recorded yet. A PR labelled `needs-human` is recorded as
-`ownerGated` but stays in the eligible denominator.
+**Owner gates.** A genuine current owner-only exception is an open PR carrying
+`needs-human` whose latest submitted review at its current head is a COMMENTED
+owner hold under the current reviewer hold policy. The body must carry the
+canonical product-contract question or repository-policy hold and whole-line
+policy marker. That exact GitHub review must match a confirmed, verified fleet
+reviewer audit action. The hold-body contract is shared with the posting script
+in `worker/deno/lib/fleet_review_hold.ts`; an unchained log alone cannot verify
+a gate. Truncated review history, a stale head, a legacy blanket test-change
+hold, a missing owner question, or a later conclusive review leaves the gate
+unverified. Merged and closed PRs cannot be current owner exceptions.
 
-**Blockers produced.** `needs-human` (from the label, open until it is removed)
-and `changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
-commit, approval or dismissal). CI-failing and hold blockers are not produced
-yet.
+The collector records the verified reason, question or policy, review ID,
+action ID, head and timestamp in `ownerGateEvidence`. The report lists these
+PRs in `ownerOnlyExceptions` beside its separate `regressions` view and counts
+them in `cohort.ownerGatedPrs`. Generic `needs-human` labels stay in the eligible
+denominator and count as `unverifiedOwnerGateLabels`. Old snapshots with only
+the verified gate boolean remain readable; their exception rows lack detailed
+evidence. The rollout check also keeps generic labels in its stranded set and
+excludes a verified owner hold only when it already existed at verification.
 
-**Regression heuristic.** A cohort PR whose title opens `Revert "…"`, or whose
+**Blockers produced.** `needs-human` (from the label, open until it is removed),
+`changes-requested` (opened by a CHANGES_REQUESTED review, closed by the next
+commit, approval or dismissal), and `ci-failure` (opened when a workflow run
+completes with `failure`, `timed_out` or `action_required`). A
+`ci-failure` closes at the first later successful run of the same workflow: a
+later attempt of the failed run, or a different run on any head of the PR
+(including a ready-for-review or reopened run on the same head). It
+never extends past the PR's merge or close. When the PR has ended, an open
+blocker ends at that moment, and a failure completed after it is not a blocker.
+Overlapping workflow failure intervals are combined so waiting time is not
+counted twice. Concurrency cancellations do not open a blocker.
+A `repair-recovery` interval runs from a failed verified repair action to the
+next confirmed repair action or verified fleet dismissal, with repeated failures
+combined into one wait;
+`branch-refresh` runs from a verified branch update to the first completed
+workflow run or external check on its correlated commit. A running workflow's
+last update is not completion evidence. Both waits are capped by the PR's
+merge or close; otherwise they remain open and their duration is measured to
+observation time. Missing action or commit evidence remains
+unknown rather than being inferred from a login or branch name.
+When a babysitter repair attempt ends without a push (an agent failure, an
+infrastructure, capability or race cooldown, or an agent that made no change
+and left the blocker in place),
+the babysitter journals a verified `babysitter-attempt` failed repair in its
+audit journal. The existing `repair-recovery` interval then covers that cooldown
+until the next confirmed repair push or verified fleet dismissal. A successful
+no-push publication and review dismissal is not a failed attempt. Owner holds
+are not journalled, because
+they are already `needs-human` waits, and a failure after a push is not
+journalled, because that push is already confirmed.
+
+**Regression evidence.** A cohort PR whose title opens `Revert "…"`, or whose
 title or body has `Revert #N` or `Reverts #N`, records a regression against `N`
 when `N` is a merged cohort PR. It is detected at the earliest such revert and
 is resolved when that revert merged. Reverts of PRs outside the cohort are not
-observed. Each pattern reads a bounded slice (a title's first 1,000 characters,
-a body's first 20,000) and has no nested or overlapping quantifiers, so each
-runs in linear time over its slice. The tests feed long hostile titles and
-bodies to each pattern and assert the exact result.
+observed. Post-merge CI is recorded as `post_merge_ci`: a workflow run on a
+merged PR's merge commit (`merge_commit_sha`) that completes at or after the
+merge, with a `failure`, `timed_out` or `action_required` outcome. A `cancelled`
+run is not a failure, since a concurrency cancellation is not one. It is resolved
+by a later successful attempt of the same workflow on that commit. Post-merge
+visibility covers the merge commit only: runs on the PR head that finish after
+the merge are not post-merge regressions, and later default-branch commits are
+not observed. A merged PR whose merge commit SHA is null or absent has no
+post-merge CI observed, and a coverage note says so. Each text pattern reads a
+bounded slice (a title's first 1,000 characters, a body's first 20,000) and has
+no nested or overlapping
+quantifiers, so each runs in linear time over its slice. The tests feed long
+hostile titles and bodies to each pattern and assert the exact result.
 
 **Rollup derivation.** A milestone PR (base `milestone/…`) gets a `rollupRoot`
 by ref only, never from its text. The root is the single cohort PR whose head
@@ -1283,16 +1397,33 @@ rollup, not a delivered change, so the root's merge is the one delivery.
 
 **Truncation.** Pull requests are read newest first until the page holding the
 cohort's oldest PR, up to 500 per repository. `--max-prs-per-repo <n>` sets that
-cap to a positive integer. A repository that reaches the cap is listed as
+cap to a positive integer. Rollout verification also reads older pages until
+exhaustion or the bound; exhausting that older scan leaves rollout evidence
+incomplete. A repository with potentially unseen cohort PRs is listed as
 truncated: the command prints a `TRUNCATED` line, returns the repository in its
 data, and records it in `coverage.truncatedRepos`. The same field is written
 into `--write-snapshot`, so an `--input` replay reports the truncation too.
 Paged event lists stop after ten pages, which is a coverage note. Every missing,
 unreadable or malformed local file is a coverage note, not a silent drop.
 
-**CI scope.** CI minutes come only from the final head SHA's check runs of each
-merged PR. Check runs on earlier pushes are not counted. A coverage note says so
-whenever a merged PR is collected.
+**CI scope.** Collection lists workflow runs by PR branch, matches them to
+observed PR and commit heads, and reads check runs for every observed head,
+including heads without workflow runs. Workflow attempts and paginated jobs are
+read for heads with workflow runs. A shared 5,000-call CI budget bounds each
+collection; exhaustion leaves a per-PR coverage
+note and discards that PR's partial CI history. Workflow attempts and paginated
+jobs are read, including for open and closed-unmerged PRs.
+
+CI collection accepts `--ci-call-budget` (default 5000). A truncated PR is
+recorded in the snapshot; delivered CI ratios become unknown and the report
+marks CI-failure waiting and post-merge CI coverage incomplete as applicable.
+
+Merge-commit runs are read for post-merge regressions only, and are kept out of
+the CI history that feeds the cost totals. Shared evidence is deduplicated by repository, run and attempt. Truncated history
+and missing durations remain visible; cost totals are calculated for delivered
+changes. Cost totals retain check-only heads alongside workflow heads;
+checks on a head already represented by workflow runs are excluded from those
+totals to avoid counting workflow jobs twice.
 
 **Deployments.** A babysitter heartbeat is kept whatever its age, so the report
 can call it stale. Review-run and ledger rows older than the heartbeat window
@@ -1301,41 +1432,58 @@ timed by its `recordedAt`.
 
 **Rollout check** (`--rollout-verified-at`). A stranded PR was created before
 the verification instant, was still open at it (no merge or close at or before
-it), was at least 24 hours old at it, and is not labelled `needs-human`. A PR
-that merged after the instant is therefore still stranded, and is listed with
-its rediscovery and processing. It is rediscovered when a verified fleet action
-on it has a timestamp at or after that instant. It is processed when such an
-action is confirmed and is not of kind `unknown`. The check only reads
-ordinary-discovery evidence: it runs no discovery and writes nothing. PRs
-created before `cohort.start` are invisible to the check; an operator who needs
-them widens `--start`.
+it), and was at least 24 hours old at it. Generic `needs-human` labels remain
+in the stranded set; only a verified current owner hold whose review predates
+the verification instant is excluded. A PR that merged after the instant is
+therefore still stranded. Its discovered,
+eligible and processed transitions come from the babysitter's ordinary scan
+event ledger, not later audit actions. An unchanged head under an unchanged
+review policy is recorded again on the first scan of a later UTC day; same-day
+scans of it add no row, but a same-day scan under a changed policy
+fingerprint does.
+Ledger write failures are
+logged without interrupting the pass; a torn final record is discarded on the
+next append. Every expected babysitter host and an
+explicit deployment inventory must be present for rollout coverage to be
+complete; otherwise those counts are unknown. A host is covered when a discovery
+event naming it appears in a supplied `--babysitter-state-dir`; an uncovered host
+adds the note "PR discovery events do not cover every expected babysitter host". The check only reads discovery
+evidence: it runs no discovery and writes nothing. PRs created before
+`cohort.start` are invisible to the cohort denominator. When rollout verification
+is requested, the collector separately scans older PRs until pagination is
+exhausted or the scan cap is reached, and applies the 24-hour age threshold
+when selecting stranded PRs for rollout discovery without adding them to the
+measurement denominator. The same per-repository PR
+scan cap applies; reaching it while candidates may remain makes discovery
+evidence incomplete rather than treating unseen PRs as rediscovered.
 
-**Limits.** `verifyAllChains` is the sweep `audit-chain-verify` runs at
-startup. It can settle an interrupted append in a journal it sweeps
-(Issue #1074), so `--collect` does not promise zero writes to a journal left
-mid-append. CI durations are fetched only for merged PRs, because the report
-counts CI only for delivered changes.
+**Limits.** `--collect` verifies audit chains with interrupted-append recovery
+disabled, so reporting repairs neither journals nor the audit roster. Truncated history and missing
+durations remain coverage gaps.
 
 **Accepted limits.** These are known and not mitigated in this change:
 
-- The host babysitter has no `WORK_DIR`, which the audit hook requires to
-  enable journalling. Its repair pushes and review dismissals are never
-  journalled, so babysitter-repaired PRs stay unknown under `--collect`.
-  Deployment heartbeats do not provide mutation provenance.
-- A merge armed by the fleet (`gh pr merge --auto`) and completed later by a
-  person is attributed to the fleet. The audit entry cannot see who clicked
-  merge, so verified human-merge detection is not produced.
-- Deployment rows are grouped per component, not per host. One host's missing
-  heartbeat is hidden while another host of the same component reports. The
-  operator supplies per-host state directories and checks the `coverage notes`.
+- The host babysitter has no `WORK_DIR`; its startup points the existing audit
+  hook at a private `audit/` directory under its state directory through
+  `VIBE_AUDIT_DIR`. Mutations routed through the shared `gh` and `git`
+  chokepoints are journalled. The spawned repair agent has journalling disabled
+  so its test or local commands cannot write into the host journal.
+- Reviewer review posts now use the canonical audit writer. Earlier posts
+  without exported audit evidence remain unknown unless an explicitly
+  allowlisted human actor establishes human intervention; the unchained review
+  log remains supporting evidence only.
+- GitHub actions with no matching verified action or explicit human actor ID
+  stay unknown. Commit authorship alone stays unknown even when its author is
+  allowlisted. Arming auto-merge cannot verify a later human merge.
+- Deployment rows are evaluated per expected host and component. Missing host
+  inventory, stale heartbeats, or legacy rows without host and policy evidence
+  degrade deployment verification.
 - Builds older than this change cannot verify journal entries that carry the
   new fields, nor read ledger rows that carry `reviewPolicyFingerprint`. Upgrade
   every host before exporting journals across them.
-- `ownerGateVerified` is always false from `--collect`, so an owner-gated PR
-  stays in the completion denominator (conservative). The rollout's stranded
-  set excludes `needs-human` PRs on the label alone, so the two rules differ:
-  a `needs-human` PR is counted in the denominator and left out of the stranded
-  list.
+- Only current reviewer holds with verified audit evidence establish an owner
+  exception. Missing evidence keeps `needs-human` PRs in both the completion
+  denominator and the rollout's stranded set.
 
 GitHub responses are read strictly. A key GitHub always sends (for example
 `merged_at`, `closed_at`, `labels`, `body`, or a review's `state`) that is absent
@@ -2451,10 +2599,10 @@ flowchart LR
 [pr_comments.ts](../worker/deno/lib/pr_comments.ts) checks three types of
 feedback:
 
-| Type                               | API endpoint                        | Authorisation                                                                                                                                                                   |
-| ---------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Inline review comments**         | `repos/{repo}/pulls/{pr}/comments`  | Authorised commenters: process immediately. Others: require a thumbs-up reaction **from an authorised user** (a bare `+1` count is not trusted, since any user can self-react). |
-| **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments.                                                                                                                                                        |
+| Type                               | API endpoint                        | Authorisation                                                                                                                                                                                                                             |
+| ---------------------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Inline review comments**         | `repos/{repo}/pulls/{pr}/comments`  | Authorised commenters: process immediately. Others: require a thumbs-up reaction **from an authorised user** (a bare `+1` count is not trusted, since any user can self-react).                                                           |
+| **Issue/discussion comments**      | `repos/{repo}/issues/{pr}/comments` | Same as review comments, and a comment with no visible text once HTML comments are removed (for example a review round's `vibe-review-claim` marker) is never actionable (Issue #4673).                                                   |
 | **PR reviews** (CHANGES_REQUESTED) | `repos/{repo}/pulls/{pr}/reviews`   | Authorised commenters and `trusted_review_bots` only (Issue #185) — anyone can review a PR, and the body goes straight into the feedback prompt. Only each reviewer's latest review counts, whatever commit it was left on (Issue #2697). |
 
 **Processed-comment tracking** — comments are marked as processed by adding an
@@ -4645,23 +4793,39 @@ exceptions, and each names what went unchecked. The first is a merge-only
 cycle (Issue #4326): a host that cannot afford the cargo build marks its
 `skipped` verdict `landUnverified`, the resolution is pushed with the `UNGATED`
 note, and the report says the tree was not checked. The second is a cargo check
-or cargo test that hits its time limit (Issue #4786). A timeout on a cold
-ephemeral target says nothing about the resolution, so the step is left to CI
-and named as timed out rather than refused. A Deno timeout is still a failure.
+or cargo test that hits its time limit or cannot reach the crates registry
+(Issue #4786). A timeout on a cold ephemeral target says nothing about the
+resolution, so the step is left to CI and named as timed out rather than
+refused. A registry gap is handled differently: cargo prints `unable to update
+registry` with a connection-class cause such as `Could not resolve host:
+index.crates.io`, and [`detectCargoRegistryGap`](../worker/deno/lib/milestone_merge_gate.ts)
+recognises that pair. The step is retried once with `--offline`, because the
+local cargo cache may hold every locked crate. A tree that then verifies from
+the cache counts as passed. If the offline run still cannot reach the registry,
+the step is left to CI with the detail naming the registry and the cause line,
+as a timeout is. A Deno timeout is still a failure.
 `checkMergedTree` runs a timed-out cargo check once more first: the first run
 left compiled crates in the target, so the retry resumes from them and can
-finish and verify a tree whose only check is cargo. Only a second timeout is
-left to CI, and a tree whose only check is cargo and timed out twice is still
-refused outside a merge-only cycle, because that `skipped` verdict is refused
-there (`judgeResolutionVerdict`). The third (Issue #4422)
-covers a Deno task whose remote module host this host cannot reach, in the
-resolution gate's tasks and, under the condition below, in the type check in
-`checkMergedTree` (Issue #4451). When a Deno task fails because this
-host cannot fetch a remote module, deno prints `error: Import '<url>' failed.`
-followed by a connection-class cause such as `error sending request for url`,
-`unsuccessful tunnel` or `dns error`. `detectRemoteModuleGap` in
-[milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) recognises
-only that pair. A 404, a certificate, a checksum or a type error is still an
+finish and verify a tree whose only check is cargo. Only a second timeout, or an
+offline run that still cannot reach the registry, is left to CI. A tree whose
+only checks are cargo and are all left to CI this way is
+`skipped` and refused outside a merge-only cycle: an automatic resolution
+requires a completed check (Issue #1559). The third (Issue #4422)
+covers a Deno task whose remote module host, or npm registry, this host cannot
+reach, in the resolution gate's tasks and, under the condition below, in the
+type check in `checkMergedTree` (Issue #4451). When a Deno task fails because
+this host cannot fetch a remote module or npm package, deno prints a failure
+header followed by a connection-class cause such as `error sending request for
+url`, `unsuccessful tunnel` or `dns error`. The header is `error: Import
+'<url>' failed.`, `error: Failed caching npm package '<spec>'` (reported as
+`npm:<spec>`), or `error: Failed loading <url> for package "<name>"`
+(Issue #4848). `detectRemoteModuleGap` in
+[milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) reads each
+line with ANSI colour stripped, so a coloured `error` prefix still matches
+(Issue #4848). A line whose escape byte was already stripped upstream, leaving
+bare `[0m`-style remnants, has them ignored wherever they sit in the line, so
+the header still matches (Issue #4853). It reports a gap only when a
+connection-class cause follows one of those headers. A 404, a certificate, a checksum or a type error is still an
 ordinary failure and is refused. The unreachable task is not counted as passed
 and is not repaired. Every other task still runs, so a real failure elsewhere
 still refuses the resolution, and `quality.sh` is never substituted for an
@@ -4845,8 +5009,9 @@ Three properties matter:
   read — counts as a failure, not a pass: absence of a failure is not success.
   The deliberate exceptions are the merge-only cycle of Issue #4326 on a tree
   that holds a cargo project, described after this list; a cargo check that
-  still times out after one retry (Issue #4786), which is left to CI because a
-  timeout says nothing about the resolution; and a Deno check whose
+  still times out after one retry, or still cannot reach the crate registry
+  after its `--offline` retry (Issue #4786), which is left to CI because neither
+  says anything about the resolution; and a Deno check whose
   remote module host this host cannot reach, which is reported as not run
   rather than counted as passed. In the resolution gate (Issue #4422, described
   in the merge-down section above) the resolution lands with `suiteLeftToCi`
@@ -5809,9 +5974,7 @@ and last 2,000 characters: the head holds the `[PRE_PUSH_BLOCKED] ... command`
 line that names the failing check, the tail the end of its output, and GitHub
 refuses a comment body over 65,536 characters (a refusal `markIssueAsFailedOnce`
 swallows). Second, only a verdict on the branch's content carries the marker, a
-`PrePushGateBlockedError` from `gateUnpushedCommits` or a
-`PublicationValidationFailedError` raised by the push guard (reported by
-`publicationBlockedResult`): a check, a plan, an
+`PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan, an
 unsafe base ref, or any other non-infrastructure error from `runPrePushGate`
 (such as malformed hook input), which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
 `describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
@@ -6325,7 +6488,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                                                           |
 |                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                                                              |
 |                             | [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)                                   | The fleet-authored milestone roll-back marker both merged-PR closers honour, so a reverted child stays reopened (Issue #1770)                                                                                                   |
-|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                           | A PR whose closure block marks a criterion `missing` is raised as `Part of #N`, and the merged-PR closers keep its issue queued for completion (Issue #3177)                                                                        |
+|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                           | A PR whose closure block marks a criterion `partial` or `missing` is raised as `Part of #N`, and the merged-PR closers keep its issue queued for completion (Issue #3177)                                                           |
 |                             | [milestone_rollback_requeue.ts](../worker/deno/lib/milestone_rollback_requeue.ts)                                 | After a successful roll-back, reopen and re-queue each reverted child and close its PRs; after a failed one, escalate once on an issue that already exists (Issue #1781)                                                        |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                                                                        |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                                                                  |
@@ -6385,130 +6548,3 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [imgbb_upload.ts](../worker/deno/lib/imgbb_upload.ts)                                                             | ImgBB screenshot upload client                                                                                                                                                                                                  |
 |                             | [failure_message.ts](../worker/deno/lib/failure_message.ts)                                                       | Failure message formatting                                                                                                                                                                                                      |
 |                             | [subprocess_timeout.ts](../worker/deno/lib/subprocess_timeout.ts)                                                 | Subprocess timeout management                                                                                                                                                                                                   |
-
-#### Publication validation: the repository's own gate before publication (Issue #4625)
-
-Before a lane publishes agent-authored work, the runner runs the target
-repository's own gate on the committed head: `./quality.sh`, or its
-`quality_command`, in its `docker_image`, with its declared
-`quality_credentials`, using the same runner as the quality-gate phase, with a
-30-minute default timeout. `skip_quality_check` opts a repository out. The check
-is `validateRepositoryForPublication`, and its once-per-head `beforePush` guard
-is `createPublicationGuard`, both in
-`worker/deno/lib/publication_validation.ts`. It returns one of three outcomes,
-and only `passed` publishes:
-
-- `passed`: the gate ran and succeeded on a clean checkout (`gate: "ran"`), the
-  repository has no `quality.sh` (`gate: "absent"`), or the operator opted out
-  (`gate: "opted-out"`).
-- `failed`: the gate rejected the head, the working tree has uncommitted changes
-  the push would leave out, a Deno test run executed no tests, or the gate
-  reached its time limit. The output
-  goes back to the lane for repair.
-- `unavailable`: the gate could not run (a missing tool, a Docker or credential
-  fault, an unreadable checkout, a full disk), or it failed here in a way that
-  reproduces on the PR's base commit. For the last case a failing gate is re-run
-  once in a throwaway detached worktree of the base ref (`baseRef`, else
-  `origin/HEAD`, `origin/main` or `origin/master`), cached per base SHA; the
-  failure reproduces when the base gate also failed and every failure line of
-  the head is already in the base's (the idea of `decidePreExistingGateFailure`,
-  Issue #1852). The lines compared are `failureEvidenceLines`: each checkout
-  path is replaced by one token, and passing-test and count-only lines (`... ok`,
-  `ok | N passed`, `running N tests`) are dropped, so a head that adds a passing
-  test or runs in another directory does not look like a different failure. The
-  base tree's parent directory is made world-traversable so the separate
-  account can reach it. A host fault or a check already
-  red on the base is therefore not charged to the change. This is not a verdict
-  on the change: the lane defers the head and a later cycle retries it.
-
-The five lanes apply it as follows:
-
-- Issue completion runs it after the changed-file pre-push gate, and once more
-  on a head that the last-currency step merged. A `failed` verdict gets the one
-  in-run recovery turn; `unavailable` is retried as a push failure. The push
-  and the push-rejection recovery both carry the publication guard: a rejected
-  push is recovered by merging the remote branch in, and that merged head is
-  validated before it is pushed. A head already validated in the phase is not
-  validated twice.
-- CI repair and PR feedback run it in the `beforePush` guard of
-  `commitAndPushPending` and `recoverFromPushRejection`. Feedback runs the AI
-  review-fix verifier before merging the base and the gate on the resulting
-  head, and gives a `failed` verdict one correction round. In the CI lane an
-  `unavailable` verdict releases the pull request: the local retry charge
-  remains, no failed-push comment or attempt marker is written, and the round
-  returns `processed: false`. The per-check retry cap bounds repeated faults.
-- The completion recovery turns (summary-rule, screenshot and PR-body-length)
-  push the issue branch before completion's own gate, so each passes the same
-  `createPublicationGuard` as `beforePush`; a `failed` or `unavailable` verdict
-  leaves origin unmoved.
-- Babysitter repair runs it after the commit and before the push, with
-  `requireSeparateAccount`: the babysitter's account holds the fleet's
-  write-capable credentials (THREAT-MODEL control C37), so the PR's own code runs
-  only as the separate `agent` account. A host with no such account reports
-  `unavailable` and never runs the gate as the runner: the refusal is decided
-  before the gate is entered, so a refused gate runs no sweep and no spawn, and
-  it is repeated on the argv that would spawn. Because that gate runs on the
-  operator's host, it runs without the container-oriented port and process
-  sweeps (`lsof | kill -9`, `pgrep -f | kill -9`). Before the merge and before
-  any Codex session, `probePublicationCapability` checks the fixed host
-  properties on the clone (a separate account that can enter the clone when the
-  repository has a `quality.sh` or a configured `quality_command`, Docker for a
-  `docker_image`;
-  a repository with `skip_quality_check` is never refused); a host that cannot
-  starts no session. A `failed` verdict is
-  thrown as a `BabysitterFailure` of class `code`, so the gate's output (a test
-  named `needs-human`, a "timed out" line) can never change its class, and it
-  counts one substantive attempt; `unavailable` is a `capability` failure and
-  counts none. Each such deferral (the probe, or the gate after a session) is
-  charged to the PR, failure and head (`MAX_PUBLICATION_DEFERRALS`); the round
-  that spends the budget posts one deduplicated pause comment and records it as
-  the incident's escalation, so nothing more is started until the head changes.
-  The comparison base for a failing gate is the PR's own base (`origin/<base>`).
-- PR spelling fixes run it on the committed fix before the push. `unavailable`
-  defers the head to a later cycle, as in the other lanes.
-- The spelling and feedback scanners have no retry cap of their own, so each
-  charges one round (`publication_deferral_budget.ts`, `MAX_PUBLICATION_DEFERRALS`
-  = 3). Spelling charges a round when the gate defers or rejects a fix; feedback
-  charges one only when the gate defers it (`unavailable`), and a rejected feedback
-  head is not charged. Spelling keys the budget on the
-  check run, feedback on the comment and the head it started from. A spent
-  budget skips the agent and verifier sessions until the key changes (a new push).
-  The output of a head the gate rejected in the spelling lane is shown, fenced as
-  untrusted, to the next round for the same check run.
-
-A `passed` verdict is reused only while the checkout is clean and the head is
-unchanged. Any new commit or uncommitted edit is validated afresh. The gate's
-timeout defaults to 30 minutes (`PUBLICATION_GATE_TIMEOUT_SECONDS`), not the
-quality-gate phase's 10 minutes, and a repository's own `quality_check_timeout`
-still overrides it.
-
-A head the agent pushes itself in the CI, feedback and spelling lanes leaves
-the branch in sync with its remote, so the guard has nothing to publish. After the run the
-lane notices the moved head and, when the guard did not already run the gate,
-validates it through `validateSelfPushedHead`. That push has already left the
-host, so the verdict cannot withdraw it: a `failed` verdict means the round is
-not reported as a successful push (the CI lane writes the failed-push comment
-with the gate output; feedback holds a review, or does not report a push for a
-non-review comment), and an `unavailable` verdict defers the round as above.
-When the base is merged into the branch in the same push (`syncBaseBranch`),
-`commitAndPushPending` validates the merged head before pushing it.
-
-Known limits: the agent's own pre-push hook still checks changed files only, so
-a self-push is judged by the full gate after the fact, not before it. Non-review
-PR-feedback comments are marked processed before publication, so a gate failure
-there does not unmark them. Parity with the mutation, clippy, cargo-deny and
-ShellCheck checks (issues 4617, 4630, 4626 and 4631), durable retry (issue 4656)
-and review dismissal (issue 4657) are not part of this change.
-
-```mermaid
-flowchart LR
-    I["Issue completion<br/>after the pre-push gate"] --> V
-    C["CI repair<br/>beforePush guard"] --> V
-    F["PR feedback<br/>beforePush guard, after the verifier"] --> V
-    B["Babysitter repair<br/>after commit, before push"] --> V
-    S["PR spelling fixes<br/>before push"] --> V
-    V["Repository gate on the committed head<br/>quality.sh or quality_command"] --> R{"Outcome"}
-    R -->|"passed"| P["Publish"]
-    R -->|"failed"| X["Not pushed; output returned to the lane"]
-    R -->|"unavailable"| U["Not pushed; deferred, not a verdict"]
-```

@@ -102,8 +102,12 @@ re-syncs under the same condition, and also when it pushed nothing and has no
 commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
-file. So the description never drifts from a summary rewritten
-after creation, for as long as that run's conditions are met. Priority 1.64 also
+file. Feedback exits on a turn limit, agent error, timeout, scheduled
+release, held review or failed final push also check the PR branch against the remote and sync the summary
+committed at that verified head before settling the run. Later local commits
+and working-tree edits stay unpublished; an unconfirmed remote head is skipped.
+So the description never drifts from a summary rewritten after creation,
+for as long as that run's conditions are met. Priority 1.64 also
 catches a push the worker did not make (Issue #3760), such as a review-fix
 commit pushed by hand: each cycle it re-syncs, in the repos due that cycle, an
 open fleet-authored PR whose recorded digest differs from the summary at its
@@ -111,14 +115,14 @@ head (see [the PR feedback workflow](workflows/pr-feedback.md)). A PR body with 
 worker marker, such as one the agent raised itself with `gh pr create`, is
 left alone unless its head is the run's own `issue-<N>[-slug]` branch; then it
 is adopted (Issue #3804): rebuilt with the worker marker, digest and, when a
-criterion is `missing`, the withheld close (`Part of #N`). The issue run's
-completion phase adopts it at every exit, once the checkout's HEAD is the
-pushed head and the PR is open. The adopted body is built from the summary
-committed at that verified pushed head, never from uncommitted working-tree
-edits (Issue #4712). The adoption is skipped if the pushed head has moved since,
-or if that commit holds no summary. It preserves a recognised issue-reference
-title and rewrites other titles to `<issue title> (Issue #N)` (Issue #4621).
-A marker-less PR on any other branch is still left alone.
+criterion is `partial` or `missing`, the withheld close (`Part of #N`). The
+issue run's completion phase adopts it at every exit, once the checkout's HEAD
+is the pushed head and the PR is open. The adopted body is built from the
+summary committed at that verified pushed head, never from uncommitted
+working-tree edits (Issue #4712). The adoption is skipped if the pushed head
+has moved since, or if that commit holds no summary. It preserves a recognised
+issue-reference title and rewrites other titles to `<issue title> (Issue #N)`
+(Issue #4621). A marker-less PR on any other branch is still left alone.
 A re-sync never files an issue: a criterion still `partial` or `missing` is
 named on the PR at completion instead (Issues #4146, #4234, see
 [issue-processing.md](workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run)).

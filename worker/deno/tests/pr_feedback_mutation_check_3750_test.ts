@@ -451,6 +451,42 @@ Deno.test("runReviewFixMutationCheck passes CI package scope to the runner", asy
   });
 });
 
+Deno.test("runReviewFixMutationCheck reads CI flags through the lookup options (Issue #4617)", async () => {
+  await withRepo(async (dir) => {
+    const beforeSha = await editedRepo(dir);
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/ci.yml`,
+      "on: pull_request\njobs:\n  mutants:\n    runs-on: ubuntu-latest\n    steps:\n      - run: cargo mutants --timeout 60 --test-tool nextest\n",
+    );
+    const { logger } = recordingLogger();
+    const run = async (requiredChecks: string[]) => {
+      let args: readonly string[] | undefined;
+      await runReviewFixMutationCheck(
+        { repo: REPO, repoPath: dir, beforeSha, repoConfigs: undefined },
+        {
+          runGit: countingRunGit(dir).runGit,
+          logger,
+          ciLookupOptions: () => Promise.resolve({ requiredChecks }),
+          runner: (input) => {
+            args = input.cargoMutantsArgs;
+            return Promise.resolve({ kind: "not_applicable", reason: "probe" });
+          },
+        },
+      );
+      return args;
+    };
+    assertEquals(await run(["mutants"]), [
+      "--timeout",
+      "60",
+      "--test-tool",
+      "nextest",
+    ]);
+    // No required check covers the job, so CI does not block on it.
+    assertEquals(await run(["tests"]), undefined);
+  });
+});
+
 Deno.test("runReviewFixMutationCheck - the budget comes from mutation_check_budget_seconds, default when unset", async () => {
   await withRepo(async (dir) => {
     const beforeSha = await editedRepo(dir);

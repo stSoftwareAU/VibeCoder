@@ -42,6 +42,8 @@ export interface ReviewRunRecord {
   /** Active reviewer build and resolved policy at the most recent heartbeat. */
   deployment?: {
     component: "reviewer";
+    /** Optional on legacy records written before per-host reporting. */
+    hostId?: string;
     codeRevision: string;
     policyFingerprint: string;
     observedAt: string;

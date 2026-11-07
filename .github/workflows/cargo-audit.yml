@@ -36,6 +36,6 @@ jobs:
       # eval fixture under evals/), so there is nothing to audit until one is
       # committed; the steps then run with no further change.
       - if: hashFiles('Cargo.lock') != ''
-        run: cargo install cargo-audit
+        run: cargo install --locked cargo-audit --version 0.22.2
       - if: hashFiles('Cargo.lock') != ''
         run: cargo audit

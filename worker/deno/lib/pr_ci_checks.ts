@@ -69,15 +69,6 @@ export function sanitiseRepoName(repo: string): string {
   return repo.replace("/", "_");
 }
 
-/** The state file counting retries for one check run of one repository. */
-function retryStateFile(
-  stateDir: string,
-  repo: string,
-  checkId: string,
-): string {
-  return `${stateDir}/${sanitiseRepoName(repo)}_${checkId}.retries`;
-}
-
 /**
  * Record a CI check retry in the state directory (Issue #562).
  *
@@ -91,7 +82,8 @@ export async function recordCiCheckRetry(
   repo: string,
   checkId: string,
 ): Promise<number> {
-  const stateFile = retryStateFile(stateDir, repo, checkId);
+  const safeRepo = sanitiseRepoName(repo);
+  const stateFile = `${stateDir}/${safeRepo}_${checkId}.retries`;
 
   let currentCount = 0;
   try {
@@ -140,7 +132,8 @@ export async function getCiCheckRetryCount(
   repo: string,
   checkId: string,
 ): Promise<number> {
-  const stateFile = retryStateFile(stateDir, repo, checkId);
+  const safeRepo = sanitiseRepoName(repo);
+  const stateFile = `${stateDir}/${safeRepo}_${checkId}.retries`;
 
   try {
     const content = await Deno.readTextFile(stateFile);

@@ -20,6 +20,7 @@
 
 import { withholdIssueClose } from "./missing_criterion_close_guard.ts";
 import { mdSafe } from "./mutation_gate.ts";
+import { buildPrTitle } from "./pr_title_build.ts";
 
 /** Marks a PR body as a draft continuation (timed out, or criteria unmet). */
 export const DRAFT_CONTINUATION_MARKER = "<!-- vibe-draft-continuation -->";
@@ -73,7 +74,8 @@ export async function ensureDraftContinuationPr(args: {
       "--head",
       branchName,
       "--title",
-      `WIP: ${issueTitle} (#${issueNumber})`,
+      // Issue #4679: scrubbed, so an issue-title `[#999]` is no reference.
+      buildPrTitle(issueTitle, issueNumber),
       "--body",
       buildDraftContinuationBody(issueNumber),
     ]);
@@ -197,7 +199,6 @@ export function buildMutationHoldDraftBody(
     job: string;
     workflow: string;
     comment: string;
-    incomplete?: { nextAction: string };
   },
 ): string {
   const job = mdSafe(hold.job);
@@ -205,18 +206,11 @@ export function buildMutationHoldDraftBody(
   return [
     DRAFT_CONTINUATION_MARKER,
     "",
-    `> **Draft — validation incomplete.** ${
-      hold.incomplete
-        ? "The worker's mutation check could not finish on the changed lines, " +
-          `so they are unvalidated, not passed, and this repository's `
-        : "The worker's mutation check still reports surviving mutants on " +
-          "the changed lines, and this repository's "
-    }` +
-    `CI job \`${job}\` (${workflow}) blocks on ${
-      hold.incomplete ? "that check" : "them"
-    }. Part of #${issueNumber}. ` +
+    "> **Draft — validation incomplete.** The worker's mutation check still " +
+    "reports surviving mutants on the changed lines, and this repository's " +
+    `CI job \`${job}\` (${workflow}) blocks on them. Part of #${issueNumber}. ` +
     "The next run continues this branch; the pull request is marked ready " +
-    "only when the mutation check finishes with no survivor left.",
+    "once the mutation check reports no survivor.",
     "",
     hold.comment,
     "",

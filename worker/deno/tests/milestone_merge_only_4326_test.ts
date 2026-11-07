@@ -10,7 +10,8 @@
  * conflict-free merge in a cargo-only tree lands without the cargo build
  * (`UNGATED`), so does a conflict the deterministic rules settle, a Deno-only
  * tree still runs its own gate, and a conflict that needs the agent is not
- * pushed. The first over-budget cycle is not charged; the next one is.
+ * pushed. A cargo-budget withhold is not a refusal, is not counted in
+ * `refusedCycles` and never climbs the recovery ladder (Issue #4588).
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */

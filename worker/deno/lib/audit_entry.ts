@@ -18,9 +18,11 @@ export type AuditOutcome = "success" | "error";
 export type AuditActionKind =
   | "implementation"
   | "repair"
+  | "milestone"
   | "branch-update"
   | "review"
   | "dismissal"
+  | "merge-arm"
   | "merge"
   | "unknown";
 
@@ -35,12 +37,7 @@ export interface AuditMutation {
   component?: AuditComponent;
   /** Known PR number; absent when the mutation target is not a PR. */
   prNumber?: number;
-  /**
-   * PR head SHA, when a caller records one. It is part of the hashed payload,
-   * and `prActionsFromAuditJournal` (pr_completion_report.ts) copies it
-   * through when present. No production writer sets it yet: the audit hooks
-   * take no head SHA, so entries from this build never carry it.
-   */
+  /** PR head SHA pinned by a direct merge command, when the caller supplies it. */
   headSha?: string;
   /** Commits absent from the remote branch immediately before this push. */
   deliveredCommits?: string[];

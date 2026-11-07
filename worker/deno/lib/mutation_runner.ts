@@ -37,10 +37,12 @@
  */
 
 import {
+  CARGO_MUTANTS_MISSING,
   DEFAULT_MUTANT_CAP,
   generateDenoMutantsDetailed,
   isDenoTestFile,
   type Mutant,
+  MUTATION_BASELINE_FAILS,
   MUTATION_TEMP_DIR_UNWRITABLE,
   type MutationCheckResult,
   type MutationLanguage,
@@ -129,8 +131,6 @@ const SOURCE_FILE = /\.(?:ts|tsx|js|mjs)$/;
 const RELATIVE_SPECIFIER = /["'](\.{1,2}\/[^"']*)["']/g;
 /** Any quoted specifier; a bare one may be an `imports` alias (Issue #4533). */
 const QUOTED_SPECIFIER = /["']([^"'\s]+)["']/g;
-const CARGO_MUTANTS_MISSING =
-  "cargo-mutants is not installed; install it or set skip_mutation_check";
 
 /**
  * Repo-relative directory of the nearest ancestor of `file` (itself included)
@@ -590,7 +590,7 @@ async function runDeno(
       if (base.code !== 0) {
         return {
           kind: "error",
-          reason: `baseline tests fail before mutation (${
+          reason: `${MUTATION_BASELINE_FAILS} (${
             tests.join(", ")
           }); cannot judge mutants`,
         };
@@ -886,6 +886,39 @@ async function runCargoMutants(
   outDir: string,
 ): Promise<MutationCheckResult> {
   const { repoPath, budgetSeconds } = input;
+  let ciArgs = input.cargoMutantsArgs ?? [];
+  let substitutedNextest = false;
+  if (
+    ciArgs.some((arg, i) =>
+      arg === "--test-tool" && ciArgs[i + 1] === "nextest" ||
+      arg === "--test-tool=nextest"
+    )
+  ) {
+    const probe = await seams.runProcess("cargo", ["nextest", "--version"], {
+      cwd: repoPath,
+      timeoutMs: budgetSeconds * 1000,
+      env: input.credentialEnv,
+    });
+    if (
+      !probe.timedOut &&
+      (probe.code === 127 || /no such command: `?nextest/i.test(probe.stderr))
+    ) {
+      ciArgs = ciArgs.filter((arg, i) =>
+        arg !== "--test-tool=nextest" &&
+        !(arg === "--test-tool" && ciArgs[i + 1] === "nextest") &&
+        !(arg === "nextest" && ciArgs[i - 1] === "--test-tool")
+      );
+      substitutedNextest = true;
+    }
+    if (!substitutedNextest && (probe.timedOut || probe.code !== 0)) {
+      return {
+        kind: "error",
+        reason: `cargo nextest --version ${
+          probe.timedOut ? "timed out" : `exited with code ${probe.code}`
+        }`,
+      };
+    }
+  }
   await seams.writeTextFile(diffPath, input.diff);
   const jobs = input.jobs ??
     Math.max(1, Math.min(4, globalThis.navigator?.hardwareConcurrency ?? 2));
@@ -894,7 +927,7 @@ async function runCargoMutants(
     [
       "mutants",
       ...packages.flatMap((p) => ["--package", p]),
-      ...(input.cargoMutantsArgs ?? []),
+      ...ciArgs,
       "--in-diff",
       diffPath,
       "--output",
@@ -913,17 +946,24 @@ async function runCargoMutants(
     },
   );
 
+  const substitution = substitutedNextest
+    ? "; cargo-nextest is unavailable; used cargo's test runner instead; install cargo-nextest to match CI"
+    : "";
+
   if (
     !proc.timedOut &&
     (proc.code === 127 || /no such command: `?mutants/i.test(proc.stderr))
   ) {
-    return { kind: "error", reason: CARGO_MUTANTS_MISSING };
+    return { kind: "error", reason: CARGO_MUTANTS_MISSING + substitution };
   }
   if (!proc.timedOut && ![0, 2, 3].includes(proc.code)) {
     const why = proc.code === 4
-      ? "baseline tests fail before mutation"
+      ? MUTATION_BASELINE_FAILS
       : `cargo mutants exited with code ${proc.code}`;
-    return { kind: "error", reason: `${why}; cannot judge mutants` };
+    return {
+      kind: "error",
+      reason: `${why}; cannot judge mutants${substitution}`,
+    };
   }
 
   const outcomesPath = `${outDir}/mutants.out/outcomes.json`;
@@ -947,12 +987,13 @@ async function runCargoMutants(
           tested: 0,
           total: 0,
           budgetSeconds,
+          ...(substitutedNextest ? { substitutedNextest: true as const } : {}),
         };
       }
       return {
         kind: "error",
         reason: "cargo mutants exited with timeouts and wrote no parseable " +
-          "mutants.out/outcomes.json; cannot judge mutants",
+          `mutants.out/outcomes.json; cannot judge mutants${substitution}`,
       };
     }
     return {
@@ -963,6 +1004,7 @@ async function runCargoMutants(
       tested: parsed.tested,
       total: parsed.total,
       budgetSeconds,
+      ...(substitutedNextest ? { substitutedNextest: true as const } : {}),
     };
   }
   if (parsed === null) {
@@ -974,14 +1016,15 @@ async function runCargoMutants(
     ) {
       return {
         kind: "not_applicable",
-        reason: "cargo-mutants found no mutants on the changed lines",
+        reason: "cargo-mutants found no mutants on the changed lines" +
+          substitution,
       };
     }
     return {
       kind: "error",
-      reason: text === null
+      reason: (text === null
         ? "cargo mutants wrote no outcomes.json"
-        : "could not parse mutants.out/outcomes.json",
+        : "could not parse mutants.out/outcomes.json") + substitution,
     };
   }
   return {
@@ -990,6 +1033,7 @@ async function runCargoMutants(
     survivors: parsed.survivors,
     killed: parsed.killed,
     total: parsed.total,
+    ...(substitutedNextest ? { substitutedNextest: true as const } : {}),
   };
 }
 
@@ -1274,6 +1318,9 @@ export function defaultMutationRunnerSeams(
           delete childEnv["CARGO_TARGET_DIR"];
         }
       }
+      // Aborted with the SIGKILL fallbacks below, so the spawn also carries
+      // an explicit signal (Issue #4248).
+      const hardStop = new AbortController();
       let child: Deno.ChildProcess;
       try {
         child = new Deno.Command(cmd, {
@@ -1281,6 +1328,7 @@ export function defaultMutationRunnerSeams(
           cwd: opts.cwd,
           env: childEnv,
           clearEnv: true,
+          signal: hardStop.signal,
           stdin: "null",
           stdout: "piped",
           stderr: "piped",
@@ -1310,6 +1358,7 @@ export function defaultMutationRunnerSeams(
           try {
             child.kill("SIGKILL");
           } catch { /* already exited */ }
+          hardStop.abort();
         }, killGraceMs);
       }, Math.max(1, opts.timeoutMs));
       // A cargo that started above the floor can still fill the host
@@ -1336,6 +1385,7 @@ export function defaultMutationRunnerSeams(
               try {
                 child.kill("SIGKILL");
               } catch { /* already exited */ }
+              hardStop.abort();
             }, killGraceMs);
           });
         }, options?.diskPollMs ?? HOST_DISK_POLL_MS)

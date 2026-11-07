@@ -105,6 +105,24 @@ export function findMissingCriteria(prBody: string): string[] {
     .map((entry) => entry.text);
 }
 
+/**
+ * Same-repository issues a PR body names as `Part of #N` (Issue #3177): the
+ * explicit non-closing reference this module writes when a criterion is
+ * unmet. A qualified `owner/repo#N` is another repository's issue and is not
+ * returned.
+ */
+export function extractPartOfIssueNumbers(prBody: string): number[] {
+  const numbers = new Set<number>();
+  for (const match of prBody.matchAll(PART_OF_RE)) {
+    if (match[2]) continue;
+    const issueNumber = Number(match[3]);
+    if (Number.isSafeInteger(issueNumber) && issueNumber > 0) {
+      numbers.add(issueNumber);
+    }
+  }
+  return [...numbers];
+}
+
 /** Whether the closure block requires withholding the issue close. */
 export function withholdsIssueClose(summary: string): boolean {
   return findMissingCriteria(summary).length > 0;

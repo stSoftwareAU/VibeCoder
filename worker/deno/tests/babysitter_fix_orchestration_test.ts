@@ -18,6 +18,7 @@ import {
   forwardAgentStderr,
   observeTrackedPr,
   pendingPublicationStore,
+  readOnlyReviewVerifier,
   readSharedBabysitterAttempts,
   reconcileTrackedPr,
   repairFailureIdentity,
@@ -28,8 +29,24 @@ import {
   listBabysitterRetryStates,
   saveBabysitterRetryState,
 } from "../lib/babysitter_retry_state.ts";
-import { loadConfig } from "../lib/config.ts";
+import { createLogger } from "../lib/logger.ts";
 import { acquireBranchUpdateLock } from "../lib/pr_branch_lock.ts";
+import type {
+  ReviewVerificationInput,
+  ReviewVerificationOutcome,
+} from "../lib/babysitter_review_verifier.ts";
+
+/** A verifier that judges every requested review fixed (Issue #4657). */
+const allVerified = (
+  input: ReviewVerificationInput,
+): Promise<ReviewVerificationOutcome[]> =>
+  Promise.resolve(
+    input.reviews.map((review) => ({
+      id: review.id,
+      verified: true,
+      reason: "fixed",
+    })),
+  );
 
 const HEAD = "a".repeat(40);
 const PUSHED = "b".repeat(40);
@@ -95,6 +112,9 @@ function harness(
     reviewId: 10,
     editFailures: 0,
     dismissals: 0,
+    journalled: [] as Array<
+      { repo: string; prNumber: number; headSha: string }
+    >,
   };
   let nextId = 100;
   const gh = (args: string[]): Promise<string> => {
@@ -260,16 +280,17 @@ function harness(
     run,
     clone: () => Promise.resolve(),
     mergeBase: () => Promise.resolve({ kind: "current" }),
-    // This harness mocks the checkout; real publication gates are exercised by
-    // fleet_pr_babysitter_validation_test.ts (Issue #4625).
-    validate: () =>
-      Promise.resolve({ status: "passed", head: PUSHED, gate: "ran" }),
     dismiss: () => {
       state.dismissals++;
       return Promise.resolve();
     },
+    verifyReviews: allVerified,
     armAutoMerge: () => Promise.resolve(),
     startAgent,
+    journalAttempt: (attempt) => {
+      state.journalled.push(attempt);
+      return Promise.resolve();
+    },
     commit: () => {
       state.committed = true;
       return Promise.resolve();
@@ -325,11 +346,13 @@ Deno.test("fix resumes a failed publication without another agent session (PR #4
       pushed: false,
     });
     assertEquals(h.state.dismissals, 0);
+    assertEquals(h.state.journalled.length, 1);
     await elapse(stateDir);
     await h.attempt();
     assertEquals(h.state.sessions, 1);
     assertEquals(h.state.pr.body, "Rewritten description.");
     assertEquals(h.state.dismissals, 1);
+    assertEquals(h.state.journalled.length, 1);
     assertEquals(await store.load(HEAD), undefined);
   });
 });
@@ -1468,77 +1491,249 @@ Deno.test("stale conflict defers until GitHub recomputes mergeability", async ()
     assert(Date.parse(record!.nextEligibleAt!) <= Date.now() + 5 * 60_000);
     await h.attempt();
     assertEquals(h.state.sessions, 0);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
   });
 });
 
-Deno.test("fix asks for the repository gate on the committed head as a separate account, with the loaded configs and the PR's base (Issue #4625)", async () => {
+Deno.test("an infrastructure failure journals one failed attempt at the observed head", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);
-    const configPath = `${stateDir}-config.json`;
-    await Deno.writeTextFile(
-      configPath,
-      JSON.stringify({
-        repos: [REPO],
-        repo_config: { [REPO]: { quality_command: "./check.sh" } },
-      }),
+    h.state.agents.push({ code: 1, signal: "SIGKILL" });
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "agent exited unsuccessfully",
     );
-    const expected = (await loadConfig(configPath)).repoConfig;
-    assertEquals(expected?.[REPO]?.qualityCommand, "./check.sh");
-    const requests: Array<Parameters<NonNullable<FixDeps["validate"]>>[0]> = [];
-    // The checkout and validation are mocked, so the host capability probe
-    // must not depend on whether this test runner has a separate account.
-    h.deps.probeCapability = () => Promise.resolve(undefined);
-    h.deps.validate = (request) => {
-      requests.push(request);
-      return Promise.resolve({ status: "passed", head: PUSHED, gate: "ran" });
-    };
-    h.state.pr = basePr({ baseRefName: "release/2" });
-    h.state.changes = true;
-    await fix(
-      REPO,
-      basePr({ baseRefName: "release/2" }) as never,
-      [BOT],
-      BOT,
-      APP,
-      configPath,
-      h.gh,
-      () => Promise.resolve(),
-      3,
-      h.deps,
-    );
-    await Deno.remove(configPath);
-    assertEquals(requests.length, 1);
-    assertEquals(requests[0]!.repo, REPO);
-    assertEquals(requests[0]!.repoConfigs, expected);
-    assertEquals(requests[0]!.requireSeparateAccount, true);
-    // A base other than main tells the PR's base from a hard-coded default.
-    assertEquals(requests[0]!.baseRef, "origin/release/2");
-    assertEquals(h.state.pushed, 1);
+    const [record] = await records(stateDir);
+    assertEquals(record!.observedHead, HEAD);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
   });
 });
 
-Deno.test("a paused failed-CI repair is handed off as a handoff, not as the auto-fix cap (Issue #4625)", async () => {
-  const writes: string[] = [];
-  const comments: Array<Record<string, unknown>> = [];
-  const request: EscalationRequest = {
+Deno.test("a code failure journals one failed attempt and keeps the repair's real error", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.agents.push({ code: 1, stderr: "task failed: invalid source" });
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "agent exited unsuccessfully with code 1",
+    );
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
+  });
+});
+
+Deno.test("a no-push review repair dismisses the review without journalling failure", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    await h.attempt();
+    assertEquals(h.state.dismissals, 1);
+    assertEquals(h.state.journalled, []);
+  });
+});
+
+/** A verifier that could not judge: the outage shape the production verifier returns. */
+const verifierOutage = (
+  input: ReviewVerificationInput,
+): Promise<ReviewVerificationOutcome[]> =>
+  Promise.resolve(
+    input.reviews.map((review) => ({
+      id: review.id,
+      verified: false,
+      reason: "verifier unavailable: Claude CLI not found",
+      unavailable: true,
+    })),
+  );
+
+const reviewsFixture = [{
+  id: 10,
+  state: "CHANGES_REQUESTED",
+  user: { login: "reviewer" },
+}] as never;
+
+Deno.test("a no-change review repair with a verifier outage is an infrastructure wait that re-verifies without the agent (PR #4849 review)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    h.deps.verifyReviews = verifierOutage;
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "the review verifier was unavailable",
+    );
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "infrastructure");
+    assertEquals(record!.attempts.substantive, 0);
+    assertEquals(record!.attempts.infrastructure, 1);
+    assertEquals(record!.escalation, undefined);
+    assertStringIncludes(record!.lastOutcome ?? "", "Claude CLI not found");
+    assertEquals(h.state.dismissals, 0);
+    assertEquals(h.state.escalations, 0);
+    assertEquals(h.state.journalled.length, 1);
+    const store = pendingPublicationStore(stateDir, REPO, 1, reviewsFixture);
+    assertEquals(await store.load(HEAD), {
+      proposal: "Rewritten description.",
+      pushed: false,
+    });
+
+    // The host recovers: the next scan re-verifies and dismisses; no new agent.
+    h.deps.verifyReviews = allVerified;
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals(h.state.sessions, 1);
+    assertEquals(h.state.dismissals, 1);
+    assertEquals(await store.load(HEAD), undefined);
+  });
+});
+
+Deno.test("a verifier outage on a resumed publication keeps the record and backs off without the agent (PR #4849 review)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    h.deps.verifyReviews = verifierOutage;
+    await assertRejects(() => h.attempt(), Error, "verifier was unavailable");
+    await elapse(stateDir);
+    await assertRejects(() => h.attempt(), Error, "verifier was unavailable");
+    assertEquals(h.state.sessions, 1);
+    const [record] = await records(stateDir);
+    assertEquals(record!.attempts.infrastructure, 2);
+    assertEquals(record!.attempts.substantive, 0);
+    const store = pendingPublicationStore(stateDir, REPO, 1, reviewsFixture);
+    assertEquals((await store.load(HEAD))?.proposal, "Rewritten description.");
+  });
+});
+
+Deno.test("the production verifier fails closed when its read-only token cannot be minted (PR #4849 review)", async () => {
+  const verify = readOnlyReviewVerifier(
+    { ...APP, privateKeyPath: "/nonexistent/app-key.pem" },
+    REPO,
+    "/unused",
+  );
+  const outcomes = await verify({
     repo: REPO,
     prNumber: 1,
-    failureIdentity: "failed CI",
-    record: tracked({ evidence: ["line one"] }),
-    authors: [BOT],
-    gh: (args) => {
-      if (args.includes("POST")) {
-        const body = args[args.indexOf("--field") + 1]!.slice(5);
-        writes.push(body);
-        comments.push({ body, user: { login: BOT } });
-        return Promise.resolve('{"id":1}');
-      }
-      return Promise.resolve(JSON.stringify([comments]));
-    },
-    pause: "the host cannot run the repository checks",
-  };
-  await escalateStuckRepair(request);
-  assertEquals(writes.length, 1);
-  assertStringIncludes(writes[0]!, "babysitter-handoff:");
-  assert(!writes[0]!.includes("auto-fix-cap:"));
+    repoPath: "/unused",
+    title: "fix",
+    body: "body",
+    baseRef: "origin/main",
+    reviews: [{
+      id: 10,
+      body: "**`a.ts:1`**: problem\n\n**Fix:** fix it",
+    }],
+    timeoutSeconds: 1,
+    logger: createLogger(),
+  });
+  assertEquals(outcomes.map((o) => [o.id, o.verified, o.unavailable]), [[
+    10,
+    false,
+    true,
+  ]]);
+});
+
+Deno.test("a no-change review repair the verifier judges not fixed is journalled as a failed repair (PR #4849 review)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS" }],
+    });
+    h.state.agents.push({ proposal: "Rewritten description." });
+    h.deps.verifyReviews = (input) =>
+      Promise.resolve(input.reviews.map((review) => ({
+        id: review.id,
+        verified: false,
+        reason: 'finding 1 verdict "not fixed": still open',
+      })));
+    await h.attempt();
+    assertEquals(h.state.dismissals, 0);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    const store = pendingPublicationStore(stateDir, REPO, 1, reviewsFixture);
+    assertEquals(await store.load(HEAD), undefined);
+  });
+});
+
+Deno.test("an agent that makes no change journals one failed attempt", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    await h.attempt();
+    assertEquals(h.state.sessions, 1);
+    assertEquals(h.state.pushed, 0);
+    assertEquals(h.state.journalled, [{
+      repo: REPO,
+      prNumber: 1,
+      headSha: HEAD,
+    }]);
+  });
+});
+
+Deno.test("an owner-class failure journals nothing, as it is already a needs-human wait", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.deps.mergeBase = () =>
+      Promise.reject(new Error("needs-human label is set by the owner"));
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "needs-human label is set by the owner",
+    );
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "owner");
+    assertEquals(h.state.journalled, []);
+  });
+});
+
+Deno.test("a successful push journals nothing", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    await h.attempt();
+    assertEquals(h.state.pushed, 1);
+    assertEquals(h.state.journalled, []);
+  });
+});
+
+Deno.test("a failure after a confirmed push journals nothing", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    h.deps.dismiss = () => Promise.reject(new Error("dismissal failed"));
+    await assertRejects(() => h.attempt(), Error, "dismissal failed");
+    assertEquals(h.state.pushed, 1);
+    const [record] = await records(stateDir);
+    assertEquals(record!.reconciliation, "waiting-for-ci-review");
+    assertEquals(h.state.journalled, []);
+  });
 });

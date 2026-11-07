@@ -75,8 +75,8 @@ const DEPENDENCY_UPDATE_TIMEOUT_MINUTES = 20;
  * not left on disk.
  */
 const CHECKOUT_NO_CREDENTIALS = `        with:
-          # Nothing here pushes, so the job token must not be left behind
-          # in .git/config where a later step could read it.
+          # The checkout credential is not needed, so do not leave it in
+          # .git/config where a later step could read it.
           persist-credentials: false`;
 
 /**
@@ -88,6 +88,30 @@ const CHECKOUT_NO_CREDENTIALS = `        with:
  * `container/tools.json` and `.github/workflows/markdown-lint.yml`.
  */
 const MARKDOWNLINT_CLI2_VERSION = "0.24.0";
+
+/**
+ * Exact `cargo-audit` version installed by the cargo-audit template.
+ *
+ * A `run:` install is not a manifest, so no dependency manager governs it.
+ * `--locked` makes cargo use the crate's own `Cargo.lock` instead of
+ * re-resolving its dependency tree to the newest crates.io releases on every
+ * run, which would otherwise land outside the 24h supply-chain quarantine.
+ * Bump in lock-step with `.github/workflows/cargo-audit.yml`, which tests keep
+ * equal to this constant, so bumps stay deliberate.
+ */
+const CARGO_AUDIT_VERSION = "0.22.2";
+
+/**
+ * Exact `cargo-edit` version installed by the cargo-upgrade template.
+ *
+ * A `run:` install is not a manifest, so no dependency manager governs it.
+ * `--locked` makes cargo use the crate's own `Cargo.lock` instead of
+ * re-resolving its dependency tree to the newest crates.io releases on every
+ * run, which would otherwise land outside the 24h supply-chain quarantine.
+ * Bump in lock-step with `.github/workflows/cargo-upgrade.yml`, which tests keep
+ * equal to this constant, so bumps stay deliberate.
+ */
+const CARGO_EDIT_VERSION = "0.13.14";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -401,7 +425,7 @@ ${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("dtolnay/rust-toolchain")}
         with:
           toolchain: stable
-      - run: cargo install cargo-audit
+      - run: cargo install --locked cargo-audit --version ${CARGO_AUDIT_VERSION}
       - run: cargo audit
 `,
 };
@@ -433,15 +457,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${DEPENDENCY_UPDATE_TIMEOUT_MINUTES}
     steps:
-      # Credential persistence stays on: create-pull-request below pushes
-      # the update branch with the checkout credential.
+      # create-pull-request pushes with its own \`token\` input, so the checkout
+      # credential is not needed and is not persisted.
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       # SHA-pinned, so the toolchain can no longer be read from the ref
       # name — it is named explicitly instead (Issue #3645).
       - uses: ${pinnedAction("dtolnay/rust-toolchain")}
         with:
           toolchain: stable
-      - run: cargo install cargo-edit
+      - run: cargo install --locked cargo-edit --version ${CARGO_EDIT_VERSION}
       - run: cargo upgrade
       - run: cargo update
       - uses: ${pinnedAction("peter-evans/create-pull-request")}
@@ -544,9 +569,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: ${DEPENDENCY_UPDATE_TIMEOUT_MINUTES}
     steps:
-      # Credential persistence stays on: create-pull-request below pushes
-      # the update branch with the checkout credential.
+      # create-pull-request pushes with its own \`token\` input, so the checkout
+      # credential is not needed and is not persisted.
       - uses: ${pinnedAction("actions/checkout")}
+${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("denoland/setup-deno")}
         with:
           deno-version: v2.x

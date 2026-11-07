@@ -1,0 +1,12 @@
+{
+  "issue": 4657,
+  "chunk": "top-up-4657",
+  "title": "top-up: babysitter review verifier",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4657",
+  "definition": "Babysitter review verification (#4657): babysitter_review_verifier.ts takes the findings of requested PR reviews, asks the existing pre-PR verifier (pre_pr_verifier.ts) for per-finding verdicts through its injected deps, and decides which reviews are verified fixed; the module itself spawns nothing and runs no repository code, though the verifier pass it hands off is a read-only model run in a disposable checkout (no shell, no edit, no project settings), so it executes no repository code",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/babysitter_review_verifier.ts"
+  ],
+  "sweptAt": "a145df30eda14265aab586e4a947f4663bd543e5"
+}
