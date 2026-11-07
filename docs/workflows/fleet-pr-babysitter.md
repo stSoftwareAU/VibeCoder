@@ -40,6 +40,11 @@ marker-less PR or an already-current description, do not block dismissal. GitHub
 CI then runs the repository's quality and regression checks on the updated
 branch.
 
+When a repository keeps a per-PR summary that CI checks for freshness, the repair
+prompt tells the agent to rewrite it so every claim, count and result matches the
+pushed head. It must replace stale summary text rather than add a follow-up note
+beside it (Issue #4755).
+
 ```mermaid
 sequenceDiagram
     participant B as Babysitter
