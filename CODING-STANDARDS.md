@@ -1866,8 +1866,7 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
 - Grep for the **stem** of a behavioural claim, not one inflection
   (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
   final head after editing. In a file you update, read every passage that
-  mentions the changed surface, not only the section you edited. Name each
-  remaining hit in the PR summary by `file:line` with the reason it is still true.
+  mentions the changed surface, not only the section you edited.
 - **Check where you insert.** Before adding a new function, item, test or
   paragraph, read the lines directly above and below the insertion point. A
   doc comment, attribute or decorator directly above belongs to the item
