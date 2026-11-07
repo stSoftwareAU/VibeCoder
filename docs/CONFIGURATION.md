@@ -5069,7 +5069,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
 fmt/lint, cargo fmt, markdownlint, cspell, cargo deny and the Floci
-CloudFormation deploy test) still run and can fail the run. Unlike Step 1b, the completion gate
+CloudFormation deploy test) still run and can fail the run. Unlike Step 1b, the
+completion gate
 checks every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
