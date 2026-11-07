@@ -281,7 +281,7 @@ Deno.test("cargo deny gate: the default gate reads the repair's own commit and r
             {
               renewalFailed: () => false,
               // Real git for the commit's changed and tracked files.
-              runCommand: (command, args, cwd) => {
+              runCommand: (command, args) => {
                 if (
                   command === "git" &&
                   (args[0] === "ls-files" ||
