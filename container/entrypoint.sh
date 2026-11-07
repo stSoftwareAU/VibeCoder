@@ -121,8 +121,9 @@ TMP_SCRATCH_ROOT="${TMPDIR:-/tmp}/vibe-scratch"
 # created below it inherit that group rather than the creator's own.
 #
 # Only the top level is walked for the group and mode grant (each clone's own
-# `.git` is also walked, below, to strip write). The volume carries tens of gigabytes and a
-# recursive chgrp at every launch would cost minutes; setgid propagates to
+# `.git` is also walked, below, to strip write). Symbolic links and entries the
+# worker does not own are skipped (Issue #4759). The volume carries tens of
+# gigabytes and a recursive chgrp at every launch would cost minutes; setgid propagates to
 # what is created from here on, and `setupRepo` re-clones anything older. A
 # failure is a warning, not a stop: the quality gate falls back to running as
 # the worker (degraded, and it says so) rather than the container refusing to
@@ -196,6 +197,15 @@ if [[ -d "${VIBE_WORK_ROOT}" ]] && getent group vibework >/dev/null 2>&1; then
     chmod g+rwxs,+t "${VIBE_WORK_ROOT}" 2>/dev/null; then
     for entry in "${VIBE_WORK_ROOT}"/*/; do
       [[ -d "${entry}" ]] || continue
+      # The `*/` glob also matches a symlink to a directory, and chgrp/chmod
+      # follow it. The untrusted account can create one in this group-writable
+      # root, so a link to a worker-owned directory (`.container-state`, the
+      # session store) would be handed group write here (Issue #4759). Skip
+      # links and, unless running as root, anything the worker does not own.
+      [[ -L "${entry%/}" ]] && continue
+      if [[ "$(id -u)" != "0" ]] && [[ ! -O "${entry%/}" ]]; then
+        continue
+      fi
       entry_name="${entry%/}"
       entry_name="${entry_name##*/}"
       chgrp vibework "${entry}" 2>/dev/null || true
