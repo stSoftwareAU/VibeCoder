@@ -787,6 +787,33 @@ Deno.test("compareBaseFailure - semgrep identifies root and extensionless files"
   }
 });
 
+Deno.test("compareBaseFailure - semgrep keeps rule and exact file identity at every severity", async () => {
+  for (const icon of ["❱", "❯❱", "❯❯❱", "❯❯❯❱"]) {
+    const pr = SEMGREP_STEP(
+      "rule.b.new-finding",
+      "an exception thrown here is not handled.",
+    )
+      .replace("❯❱", icon).replace("worker/deno/lib/some_regex.ts", "run.sh");
+    assertEquals(
+      await compareStates(
+        pr,
+        pr.replace("rule.b.new-finding", "rule.a.base-finding"),
+      ),
+      "different",
+      icon,
+    );
+    assertEquals(
+      await compareStates(
+        pr,
+        pr.replace("run.sh", "fleet-pr-babysitter/run.sh"),
+      ),
+      "different",
+      icon,
+    );
+    assertEquals(await compareStates(pr, pr), "same", icon);
+  }
+});
+
 Deno.test("compareBaseFailure - output a passing test prints is not part of the failure, in Deno, Jest and Vitest", async () => {
   const errors =
     "ERRORS\n\nparser - parse header => ./tests/parser_test.ts:10:6\nerror: AssertionError: expected header to be valid\n";

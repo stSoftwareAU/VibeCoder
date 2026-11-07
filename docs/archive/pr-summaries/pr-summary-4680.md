@@ -42,14 +42,17 @@ frames and Jest's `Test suite failed to run`. A failing-test name (Jest `●`, `
 and `FAIL file.test.js`, node:test `✖`, Bats `✗`, TAP `not ok`, Mocha `N)`,
 Vitest `FAIL a > b`, pytest `FAILED id::name`, Go `--- FAIL:`, Deno or cargo
 `name ... FAILED` and Deno `name => path:line:col`) must equal a whole base-log
-line; other lines (annotation messages, lines with a failure word) may sit
+line; Semgrep finding files and rules also require whole-line matches. Other
+lines (annotation messages, lines with a failure word) may sit
 inside a longer base line.
 
 When no line qualifies, distinctive rule identifiers and file loci in the
 failing step output are compared with standalone numbers ignored. Run metadata
 and generic command echoes are not evidence; without a distinctive line the
 result is unreadable. Semgrep's finding-block file line is identified by its
-position before the rule, including root-level and extensionless paths. Deno
+position before the rule, including root-level and extensionless paths, at all
+four severity markers. Both file and rule remain evidence even when the output
+contains a failure word. Deno
 formatter `from <path>:` lines identify files and its
 file-count summary is ignored. Deno lint and check locations, and shellcheck
 file locations and rule IDs, identify findings; npm log-location lines are
@@ -79,7 +82,7 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  87 passed, 0 failed (48 and 39 tests respectively).
+  89 passed, 0 failed (49 and 40 tests respectively).
 - `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
   output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using
@@ -90,6 +93,14 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
   against the base file: matching paths defer and different paths are charged.
   Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - semgrep identifies root and extensionless files`
   and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - semgrep compares root and extensionless finding files`.
+- Semgrep file and rule identity across severity markers and messages with
+  failure words is covered by
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - semgrep keeps rule and exact file identity at every severity`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - semgrep compares severity, rule and exact file despite failure words`.
+  The tally test formerly supplied an unrelated default Semgrep log; it now
+  supplies the test failure it describes. Its remaining tally and deferral
+  behaviour is covered by
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - same test failure with different tallies is deferred`.
 - The obsolete fallback compared all step output, including run metadata and
   command echoes. The remaining behaviour compares distinctive rule or file
   evidence and holds generic-only output as unreadable. Coverage:

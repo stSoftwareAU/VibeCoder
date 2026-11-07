@@ -287,8 +287,9 @@ const LOOSE_NUMBER = /\b\d+\b/g;
 const FORMAT_LOCUS = /^from\s+\S+:$/;
 const DIAGNOSTIC_LOCUS =
   /^(?:(?:-->|at)\s+(?:file:\/\/)?\S+:<l>:<l>|in\s+\S+\s+line\s+<n>:)/i;
+const SEMGREP_RULE = /^❯{0,3}❱\s+\S/;
 const DISTINCTIVE_LINE =
-  /^(?:from\s+\S+:|❯❱\s+\S+|(?:[\w.-]+\/)+[\w.-]+\.[a-z\d]+(?::\d+)?$)|\b(?:sc\d{4}|md\d{3})\b/i;
+  /^(?:from\s+\S+:|❯{0,3}❱\s+\S+|(?:[\w.-]+\/)+[\w.-]+\.[a-z\d]+(?::\d+)?$)|\b(?:sc\d{4}|md\d{3})\b/i;
 const FORMAT_SUMMARY = /^error: found \d+ not formatted files? in \d+ files?$/;
 
 function loosen(line: string): string {
@@ -306,7 +307,7 @@ function comparableLines(lines: string[], needsWord: boolean): string[] {
   const semgrepFiles = new Set<number>();
   if (!needsWord) {
     for (let i = 0; i < lines.length; i++) {
-      if (!/^❯❱\s+\S/.test(canonicalLine(lines[i] as string))) continue;
+      if (!SEMGREP_RULE.test(canonicalLine(lines[i] as string))) continue;
       let previous = i - 1;
       while (previous >= 0 && !(lines[previous] as string).trim()) previous--;
       if (previous >= 0) semgrepFiles.add(previous);
@@ -355,25 +356,43 @@ interface FailureSignature {
   lines: string[];
   /** Step-output lines, matched with their standalone numbers ignored. */
   loose: boolean;
+  /** Semgrep finding files and rules must match whole lines. */
+  exact: Set<string>;
 }
 
 function failureSignature(text: string): FailureSignature {
   const prepared = preparedLines(text, MAX_LINES);
   const lines = comparableLines(prepared, true);
+  const semgrep = new Set<string>();
+  for (let i = 0; i < prepared.length; i++) {
+    const rule = canonicalLine(prepared[i] as string);
+    if (!SEMGREP_RULE.test(rule)) continue;
+    let previous = i - 1;
+    while (previous >= 0 && !(prepared[previous] as string).trim()) previous--;
+    if (previous >= 0) semgrep.add(canonicalLine(prepared[previous] as string));
+    semgrep.add(rule);
+  }
   // These runner headers identify a test failure but not which test failed.
   // An assertion or exception alone cannot establish the same test on base.
   const testFailureHeader = prepared.some((line) =>
     /^(?:errors|failures|[●] test suite failed to run)$/i.test(line.trim())
   );
   if (testFailureHeader && !lines.some((line) => TEST_NAME.test(line))) {
-    return { lines: [], loose: false };
+    return { lines: [], loose: false, exact: new Set() };
   }
-  if (lines.length > 0) return { lines, loose: false };
+  if (lines.length > 0) {
+    return {
+      lines: [...new Set([...lines, ...semgrep])],
+      loose: false,
+      exact: semgrep,
+    };
+  }
   // A check whose output holds no failure word (semgrep, shellcheck, cspell)
   // is read from the failing step's own output instead.
   return {
     lines: comparableLines(failingStepLines(prepared), false).map(loosen),
     loose: true,
+    exact: new Set([...semgrep].map(loosen)),
   };
 }
 
@@ -454,7 +473,9 @@ export async function compareBaseFailure(options: {
   const baseSet = new Set(baseLines);
   const baseText = baseLines.join("\n");
   const found = (line: string) =>
-    TEST_NAME.test(line) ? baseSet.has(line) : baseText.includes(line);
+    TEST_NAME.test(line) || signature.exact.has(line)
+      ? baseSet.has(line)
+      : baseText.includes(line);
   if (!prLines.every(found)) {
     return { state: "different" };
   }

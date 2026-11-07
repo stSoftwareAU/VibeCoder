@@ -1082,6 +1082,11 @@ Deno.test("processCiFailure - same test failure with different tallies is deferr
     }]),
   );
   const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: jobLog([
+      "parser - parse header ... FAILED",
+      "AssertionError: expected header to be valid",
+      "FAILED | 1407 passed | 1 failed (2m14s)",
+    ]),
     baseLog: jobLog([
       "parser - parse header ... FAILED",
       "AssertionError: expected header to be valid",
@@ -1263,6 +1268,37 @@ Deno.test("processCiFailure - semgrep compares root and extensionless finding fi
         captured.comments.at(-1) ?? "",
         `<!-- vibe-ci-fix-${marker} `,
         file,
+      );
+    }
+  }
+});
+
+Deno.test("processCiFailure - semgrep compares severity, rule and exact file despite failure words", async () => {
+  const fixture = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const icon of ["❱", "❯❯❱", "❯❯❯❱"]) {
+    const pr = fixture.replaceAll("❯❱", icon)
+      .replace("worker/deno/lib/marker_dedup_author_manifest.ts", "run.sh")
+      .replace(
+        "BLOCKING CODE RULES FIRED:",
+        "an exception thrown here is not handled.\nBLOCKING CODE RULES FIRED:",
+      );
+    for (
+      const [baseLog, marker] of [
+        [pr.replaceAll(SEMGREP_RULE, "rule.a.base-finding"), "attempt"],
+        [pr.replace("run.sh", "fleet-pr-babysitter/run.sh"), "attempt"],
+        [pr, "deferred"],
+      ]
+    ) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: pr,
+        baseLog,
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+        icon,
       );
     }
   }
