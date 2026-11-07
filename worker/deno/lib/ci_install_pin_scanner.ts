@@ -184,6 +184,8 @@ export interface UnpinnedInstall {
    * `--frozen`. Always `false` for the other tools.
    */
   unlocked: boolean;
+  /** Whether cargo installs from a git or path source. */
+  externalSource: boolean;
 }
 
 /** A single call-site a consolidated finding covers. */
@@ -200,6 +202,8 @@ export interface CiInstallCallSite {
   command: string;
   /** `true` when a `cargo install` call-site passes no `--locked`/`--frozen`. */
   unlocked: boolean;
+  /** Whether this is a git or path cargo install. */
+  externalSource: boolean;
 }
 
 /** A consolidated unpinned-install finding for one package coordinate. */
@@ -323,6 +327,7 @@ function hit(
   line: LogicalLine,
   version: string | null = versionOf(spec),
   unlocked = false,
+  externalSource = false,
 ): UnpinnedInstall {
   return {
     tool,
@@ -332,6 +337,7 @@ function hit(
     command: line.command,
     anchor: line.anchor,
     unlocked,
+    externalSource,
   };
 }
 
@@ -446,9 +452,18 @@ export function findUnpinnedInstalls(run: string): UnpinnedInstall[] {
       const command = segment.trim();
       // Quotes are shell syntax, not part of the spec — `"$TOOL"` must
       // read as the variable `$TOOL` so it stays exempt.
-      const tokens = stripCommandPrefix(
+      let tokens = stripCommandPrefix(
         command.split(/\s+/).filter((t) => t.length > 0).map(unquote),
       );
+      if (tokens[0] === "cargo") {
+        // Keep quoted values and Actions expressions together within a token.
+        tokens = stripCommandPrefix(
+          (command.match(
+            /(?:\$\{\{.*?\}\}|"(?:\\.|[^"\\])*"|'[^']*'|\$(?!\{\{)|[^\s"'$]+)+/g,
+          ) ?? [])
+            .map(unquote),
+        );
+      }
       if (tokens.length === 0) continue;
       // Evidence keeps the command as written; only matching is normalised.
       const line: LogicalLine = { command, anchor: logical.anchor };
@@ -559,7 +574,7 @@ function collectCargoInstalls(
   const args = tokens.slice(1);
   let subcommand: string | null = null;
   let locked = false;
-  let externalSource = false;
+  let externalSource: string | null = null;
   let flagVersion: string | null = null;
   const specs: string[] = [];
 
@@ -582,7 +597,9 @@ function collectCargoInstalls(
         value = args[i + 1];
         i++;
       }
-      if (name === "--git" || name === "--path") externalSource = true;
+      if ((name === "--git" || name === "--path") && value !== undefined) {
+        externalSource = unquote(value);
+      }
       if ((name === "--version" || name === "--vers") && value !== undefined) {
         flagVersion = value;
       }
@@ -597,10 +614,12 @@ function collectCargoInstalls(
   }
 
   if (subcommand !== "install") return;
-  if (externalSource) {
+  if (externalSource !== null) {
     if (!locked) {
-      for (const spec of specs.length ? specs : ["cargo-install"]) {
-        found.push(hit("cargo", spec, line, null, true));
+      for (const spec of specs.length ? specs : [externalSource]) {
+        const install = hit("cargo", spec, line, null, true, true);
+        if (!specs.length) install.packageName = externalSource;
+        found.push(install);
       }
     }
     return;
@@ -747,6 +766,7 @@ export function scanCiInstallPins(
           spec: install.spec,
           command: install.command,
           unlocked: install.unlocked,
+          externalSource: install.externalSource,
         });
       }
     }
@@ -794,6 +814,7 @@ function buildFinding(
   const count = sites.length;
   const pkg = entry.packageName;
   const isCargo = entry.tool === "cargo";
+  const externalOnly = isCargo && sites.every((s) => s.externalSource);
 
   const evidenceLines = sites.map((s) =>
     `- \`${s.file}\`:${s.line} — job \`${s.job}\`: \`${s.command}\`${
@@ -806,28 +827,36 @@ function buildFinding(
     tool: entry.tool,
     packageName: pkg,
     severity: "medium",
-    title: isCargo
+    title: externalOnly
+      ? `${MEDIUM_EMOJI} Lock the CI install of \`${pkg}\``
+      : isCargo
       ? `${MEDIUM_EMOJI} Pin and lock the CI install of \`${pkg}\` to an exact ` +
         "version"
       : `${MEDIUM_EMOJI} Pin the CI install of \`${pkg}\` to an exact ` +
         "version",
     file: first.file,
     lines: first.line,
-    whyItMatters:
-      (isCargo
+    whyItMatters: externalOnly
+      ? `The cargo install of \`${pkg}\` does not lock its dependencies.` +
+        CARGO_WHY_NOTE
+      : (isCargo
         ? `A \`run:\` step installs \`${pkg}\` without an exact registry version or without locking dependencies, so the `
         : `A \`run:\` step installs \`${pkg}\` with no exact version, so the `) +
-      "build resolves whatever the registry serves at that moment. A " +
-      "hijacked or malicious release therefore executes on the runner — " +
-      "with the workflow's `GITHUB_TOKEN` and any secrets in scope — the " +
-      "instant it is published, with no embargo. Renovate's " +
-      "`minimumReleaseAge` (and Deno's `minimumDependencyAge`) only cover " +
-      "manifests the tool can manage, and a `run:` block is not a " +
-      "manifest, so the repository's dependency quarantine does not apply " +
-      "here. `uses:` SHA-pinning does not cover this either — " +
-      "`action_pin_scanner.ts` never inspects `run:`." +
-      (isCargo ? CARGO_WHY_NOTE : ""),
-    suggestedFix: isCargo
+        "build resolves whatever the registry serves at that moment. A " +
+        "hijacked or malicious release therefore executes on the runner — " +
+        "with the workflow's `GITHUB_TOKEN` and any secrets in scope — the " +
+        "instant it is published, with no embargo. Renovate's " +
+        "`minimumReleaseAge` (and Deno's `minimumDependencyAge`) only cover " +
+        "manifests the tool can manage, and a `run:` block is not a " +
+        "manifest, so the repository's dependency quarantine does not apply " +
+        "here. `uses:` SHA-pinning does not cover this either — " +
+        "`action_pin_scanner.ts` never inspects `run:`." +
+        (isCargo ? CARGO_WHY_NOTE : ""),
+    suggestedFix: externalOnly
+      ? "Retain the git or path source and pass `--locked` so cargo uses " +
+        "the source's lockfile instead of re-resolving its dependencies. " +
+        `If intentional, suppress with \`# best-practice-ignore: ${findingId} — <reason>\`.`
+      : isCargo
       ? `For registry installs, pin to an exact \`--version\` and pass \`--locked\`, e.g. ` +
         `\`${
           pinExample(entry.tool, pkg)

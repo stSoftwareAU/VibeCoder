@@ -805,3 +805,20 @@ Deno.test("agent provider - Codex and Gemini emit no --agents from the same requ
     );
   }
 });
+
+Deno.test("agent provider - isolateClaudeConfig starts Claude without project or user settings or ambient MCP servers (PR #4849 review)", () => {
+  const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
+  const isolated = provider.buildInvocation({
+    prompt: "PROMPT",
+    isolateClaudeConfig: true,
+  });
+  const at = isolated.indexOf("--setting-sources");
+  assert(at >= 0, "the isolated argv names --setting-sources");
+  assertEquals(isolated[at + 1], "");
+  assert(isolated.includes("--strict-mcp-config"));
+  assertEquals(isolated.at(-1), "PROMPT");
+  // Absent, the argv is the one every other caller has always had.
+  const plain = provider.buildInvocation({ prompt: "PROMPT" });
+  assert(!plain.includes("--setting-sources"));
+  assert(!plain.includes("--strict-mcp-config"));
+});

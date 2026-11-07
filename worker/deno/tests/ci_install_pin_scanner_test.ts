@@ -577,6 +577,50 @@ Deno.test("findUnpinnedInstalls - external cargo sources still require a lock", 
   }
 });
 
+Deno.test("cargo external findings identify sources and request locking only", () => {
+  const findings = scanCiInstallPins([
+    workflow(".github/workflows/a.yml", "lint", [
+      "cargo install --path .",
+      "cargo install --git https://github.com/org/tool",
+      "cargo install --git https://github.com/org/other named-crate",
+    ]),
+  ]);
+  assertEquals(findings.length, 3);
+  for (
+    const [name, id] of [
+      [".", "BP-CI-INSTALL-PIN-cargo-pkg-2b0c98f1b5d3"],
+      [
+        "https://github.com/org/tool",
+        "BP-CI-INSTALL-PIN-cargo-https-github-com-org-tool-aa150d4ebb24",
+      ],
+      ["named-crate", "BP-CI-INSTALL-PIN-cargo-named-crate"],
+    ]
+  ) {
+    const finding = findings.find((f) => f.packageName === name);
+    assert(finding);
+    assertEquals(finding.findingId, id);
+    assertStringIncludes(finding.title, "Lock the CI install");
+    assertStringIncludes(finding.suggestedFix, "--locked");
+    assertEquals(finding.suggestedFix.includes("--version"), false);
+  }
+  assertEquals(new Set(findings.map((f) => f.findingId)).size, 3);
+});
+
+Deno.test("cargo quoted values and expressions do not become crates", () => {
+  for (
+    const run of [
+      'cargo install --locked cargo-audit@0.22.2 --features "fix vendored-openssl"',
+      "cargo install --locked cargo-audit@${{ env.CARGO_AUDIT_VERSION }}",
+      "cargo install --locked cargo-audit --version ${{ env.V }}",
+    ]
+  ) assertEquals(findUnpinnedInstalls(run), [], run);
+  assertEquals(
+    findUnpinnedInstalls("cargo install cargo-audit --version ${{ env.V }}")
+      .map((f) => f.packageName),
+    ["cargo-audit"],
+  );
+});
+
 Deno.test("findUnpinnedInstalls - flags cargo versions that are not exact", () => {
   for (
     const [run, version] of [

@@ -519,7 +519,9 @@ not by Claude:
   `[a-z0-9-]` form keeps its plain slug, so ids such as
   `BP-CI-INSTALL-PIN-npm-markdownlint-cli2` are unchanged. Without the
   digest one suppression silently waived every package sharing the slug.
-  One id per package coordinate, however many call-sites it has.
+  One id per package coordinate, however many call-sites it has. For cargo
+  git or path installs without a named crate, the source URL or path is the
+  coordinate and uses the same slug and digest rule.
 
 The `BP-PERSIST-CREDS-…` and `BP-ARTIFACT-UPLOAD-…` families carried a
 per-step `BP-…-<workflow-basename>-<job>-<step-index>` id before
@@ -1024,7 +1026,9 @@ Local paths, `file:`, `git+`, `http(s):` specs, shell-variable package specs
 (`$TOOL`, `"$TOOL"`), and comment lines are exempt. A shell-variable version
 is exempt for cargo only; npm and gem still flag variable versions. Cargo
 `--git` / `--path` installs are exempt from version pinning but still require
-`--locked` or `--frozen`.
+`--locked` or `--frozen`. An unlocked external-source finding asks only for
+locking. Cargo quoted values and GitHub expression versions are kept together;
+expression versions, like shell-variable versions, are not statically decidable.
 
 **Commands are normalised before matching**. The tool used to
 have to be token 0 and the subcommand token 1, so two everyday spellings —

@@ -106,6 +106,13 @@ flowchart LR
   while unlocked installs are covered by
   `worker/deno/tests/ci_install_pin_scanner_test.ts::findUnpinnedInstalls - external cargo sources still require a lock`.
   Exact and non-exact `--vers` forms are covered by the existing cargo tests.
+- Review follow-up: the obsolete shared `cargo-install` placeholder and its
+  pinning advice are replaced by source-specific IDs and lock-only guidance;
+  unlocked external installs remain findings, covered by
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo external findings identify sources and request locking only`.
+  Quoted values and expression versions remain single cargo tokens, covered by
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo quoted values and expressions do not become crates`.
+  Both tests failed before the fix. The shared npm/gem tokenizer is unchanged.
 - Review follow-up validation: repository-wide `deno fmt --check`, `deno lint`,
   and `deno check '**/*.ts'` passed; the scanner, 4683 and template conformance
   tests passed (67 tests). The archived-summary freshness check reads commit
