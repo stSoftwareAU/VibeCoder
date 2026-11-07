@@ -244,7 +244,7 @@ export interface ShellcheckPolicy {
   workflowFiles: string[];
 }
 
-const SHELLCHECK_CONFIG = ".shellcheckrc";
+const SHELLCHECK_CONFIGS = new Set([".shellcheckrc", "shellcheckrc"]);
 
 function isRepoRelativeShellcheckConfig(path: string): boolean {
   return path !== "" && !path.startsWith("/") &&
@@ -382,7 +382,9 @@ export async function repoShellcheckPolicy(
         ? []
         : explicitConfigFiles.length > 0
         ? explicitConfigFiles
-        : [SHELLCHECK_CONFIG];
+        : tracked.filter((candidate) =>
+          SHELLCHECK_CONFIGS.has(candidate.split("/").at(-1) ?? "")
+        );
       policies.push({
         version,
         flags: args,
@@ -1105,8 +1107,6 @@ export async function runPrePushGate(opts: {
     : [];
   if (shellcheckPolicy.value && shellcheckFiles.length > 0) {
     for (const path of shellcheckPolicy.value.configFiles) {
-      const required = path !== SHELLCHECK_CONFIG || tracked.includes(path);
-      if (!required) continue;
       try {
         await Deno.readTextFile(`${opts.cwd}/${path}`);
       } catch (error) {
@@ -1124,8 +1124,13 @@ export async function runPrePushGate(opts: {
       if ((await Deno.stat(`${opts.cwd}/${path}`)).isFile) {
         existingShellcheckFiles.push(path);
       }
-    } catch {
-      // A file removed since the index was read is not sent to ShellCheck.
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      return infrastructureFail(
+        `cannot inspect changed ShellCheck file ${path}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
   let shellcheckBinary: string | null = null;

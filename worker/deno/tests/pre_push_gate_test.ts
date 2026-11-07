@@ -490,6 +490,30 @@ Deno.test("runPrePushGate: deleted scripts are not passed to ShellCheck", async 
   }
 });
 
+Deno.test("runPrePushGate: paths outside CI's .sh selection are excluded", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await commitShellcheckFiles(clone, { "baseline.sh": "#!/bin/sh\ntrue\n" });
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await Deno.writeTextFile(`${clone}/notes.txt`, "not a shell script\n");
+    await git(clone, "add", "notes.txt");
+    await git(clone, "commit", "-qm", "change a non-shell path");
+    const tip = await git(clone, "rev-parse", "HEAD");
+    const seen: string[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: prePushInput(tip),
+      preFlightCommands: [],
+      runner: recordingRunner(() => false, seen),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(result.value.checksRun, []);
+    assert(!seen.some((command) => command.includes("shellcheck")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("runPrePushGate: a changed ShellCheck config rechecks every tracked script", async () => {
   const { root, clone } = await makeRepoWithDocCommit();
   try {
@@ -514,6 +538,41 @@ Deno.test("runPrePushGate: a changed ShellCheck config rechecks every tracked sc
     assert(command);
     assert(command.includes("one.sh"), command);
     assert(command.includes("two scripts.sh"), command);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: nested ShellCheck config changes recheck tracked scripts", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await Deno.mkdir(`${clone}/scripts`, { recursive: true });
+    await Deno.mkdir(`${clone}/other`, { recursive: true });
+    await commitShellcheckFiles(clone, {
+      "scripts/one.sh": "#!/bin/sh\necho $1\n",
+      "other/two.sh": "#!/bin/sh\ntrue\n",
+    });
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await Deno.mkdir(`${clone}/scripts`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/scripts/.shellcheckrc`,
+      "disable=SC2086\n",
+    );
+    await git(clone, "add", "scripts/.shellcheckrc");
+    await git(clone, "commit", "-qm", "change nested ShellCheck config");
+    const tip = await git(clone, "rev-parse", "HEAD");
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: prePushInput(tip),
+      preFlightCommands: [],
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const command = result.value.checksRun.find((value) =>
+      value.includes("shellcheck")
+    );
+    assert(command);
+    assert(command.includes("scripts/one.sh"), command);
+    assert(command.includes("other/two.sh"), command);
   } finally {
     await Deno.remove(root, { recursive: true });
   }
