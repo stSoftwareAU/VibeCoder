@@ -54,6 +54,9 @@ Version bump: no `VERSION` file in this repository.
   `entrypoint.sh`).
 - Not read: job-level `defaults.run.working-directory`, matrix expansion and
   invocations hidden in scripts (documented, `SIMPLE-ON-PURPOSE`).
+- The action word-splits its `command` input as well as `arguments` and
+  `command-arguments`, so `command: check bans licenses` becomes the argv
+  entries `check`, `bans`, `licenses` (not one entry).
 
 ## Evidence
 
@@ -86,7 +89,7 @@ flowchart LR
 
 ## Test Plan
 
-- Added `worker/deno/tests/cargo_deny_gate_test.ts` (46 tests): workflow parsing
+- Added `worker/deno/tests/cargo_deny_gate_test.ts` (52 tests): workflow parsing
   (inline, re-wrapped `run: |`, continued lines, `&&`/`;` segments, env
   prefixes, `working-directory`, action defaults and overrides, look-alikes that
   must not fire), trigger paths, failure classification, runner order and
@@ -116,11 +119,24 @@ flowchart LR
   and `gateUnpushedCommits` (Step 1b and the completion phase); all inherit it.
   Babysitter: `finishBabysitterRepair` is the only push of a repair. Not gated
   (unchanged policy): WIP-preservation pushes.
-- Ran: the three new test files, `lib_sweep_coverage_test.ts` and the 21 test
-  files that read the edited docs: 319 passed, 0 failed. The full `./quality.sh`
-  run before the sweep top-up failed only `lib_sweep_coverage_test.ts` (module
-  unclaimed); that is fixed by `docs/audits/lib-sweep-coverage/top-up-4626.json`
-  and the full gate was not re-run afterwards (it takes about 8 minutes).
+- Verifier finding (`command: check bans licenses` passed as one argv entry):
+  fixed in `actionFindings` with `...splitWords(value("command"))`; test
+  `a multi-word action command: is split into separate argv entries` is red
+  without the fix (1 failed) and green with it.
+- Mutation survivors (8 listed), each now killed by a test (mutation applied,
+  test seen red, restored): `isSkippable` return value and both operands (blank
+  line and column-zero comment inside a `with:` block, and a comment-first bare
+  `-` step), `scalarValue` quote stripping (lone `"`, `xyx`, unclosed `"abc` and
+  `'abc`, paired quotes), and the double-quote case in `cutAtShellOperator`
+  (`--config "a&b.toml"`). `worker/deno/lib/cargo_deny_gate.ts:107` exempt
+  (untestable): the `true` there is in the `WorkDir` type alias, which is erased
+  at compile time, so swapping it changes no runtime behaviour.
+- Ran: the three new test files (63 passed, 0 failed after the fixes),
+  `lib_sweep_coverage_test.ts` and the 21 test files that read the edited docs:
+  319 passed, 0 failed (before the fixes). The full `./quality.sh` run before
+  the sweep top-up failed only `lib_sweep_coverage_test.ts` (module unclaimed);
+  that is fixed by `docs/audits/lib-sweep-coverage/top-up-4626.json` and the
+  full gate was not re-run afterwards (it takes about 8 minutes).
 - Docs: `docs/CONFIGURATION.md` (pre-push hook section) and
   `docs/workflows/fleet-pr-babysitter.md` updated; sibling check lists grepped
   (`cargo fmt, markdownlint, cspell`, `Floci`); `docs/INTERNALS.md` and

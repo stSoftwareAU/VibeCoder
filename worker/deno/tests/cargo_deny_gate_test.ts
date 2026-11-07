@@ -243,6 +243,131 @@ Deno.test("workflow: the cargo-deny-action with `with:` overrides uses them", ()
   ]);
 });
 
+Deno.test("workflow: a multi-word action `command:` is split into separate argv entries", () => {
+  const text = yaml(
+    "      - uses: EmbarkStudios/cargo-deny-action@v2",
+    "        with:",
+    "          command: check bans licenses",
+  );
+  assertEquals(workflowCargoDenyFindings(text), [
+    {
+      kind: "command",
+      argv: [
+        "cargo",
+        "deny",
+        "--log-level",
+        "warn",
+        "--manifest-path",
+        "./Cargo.toml",
+        "--all-features",
+        "check",
+        "bans",
+        "licenses",
+      ],
+      cwd: ".",
+    },
+  ]);
+});
+
+Deno.test("workflow: a blank line inside an action's `with:` block does not end the step", () => {
+  const text = yaml(
+    "      - uses: EmbarkStudios/cargo-deny-action@v2",
+    "        with:",
+    "          command: check",
+    "",
+    "          command-arguments: bans",
+  );
+  assertEquals(workflowCargoDenyFindings(text), [
+    {
+      kind: "command",
+      argv: [
+        "cargo",
+        "deny",
+        "--log-level",
+        "warn",
+        "--manifest-path",
+        "./Cargo.toml",
+        "--all-features",
+        "check",
+        "bans",
+      ],
+      cwd: ".",
+    },
+  ]);
+});
+
+Deno.test("workflow: a column-zero comment inside an action's `with:` block does not end the step", () => {
+  const text = yaml(
+    "      - uses: EmbarkStudios/cargo-deny-action@v2",
+    "        with:",
+    "          command: check",
+    "# a note at column zero",
+    "          command-arguments: bans",
+  );
+  assertEquals(workflowCargoDenyFindings(text), [
+    {
+      kind: "command",
+      argv: [
+        "cargo",
+        "deny",
+        "--log-level",
+        "warn",
+        "--manifest-path",
+        "./Cargo.toml",
+        "--all-features",
+        "check",
+        "bans",
+      ],
+      cwd: ".",
+    },
+  ]);
+});
+
+Deno.test("workflow: a bare `-` step whose first line is a comment still finds its keys", () => {
+  const text = yaml(
+    "      -",
+    "        # a note",
+    "",
+    "        run: cargo deny check",
+  );
+  assertEquals(workflowCargoDenyFindings(text), [
+    { kind: "command", argv: ["cargo", "deny", "check"], cwd: "." },
+  ]);
+});
+
+Deno.test("workflow: quotes are stripped only from a value quoted at both ends", () => {
+  const input = (value: string) =>
+    workflowCargoDenyFindings(yaml(
+      "      - uses: EmbarkStudios/cargo-deny-action@v2",
+      "        with:",
+      `          log-level: ${value}`,
+    ));
+  const logLevel = (value: string): string | undefined => {
+    const finding = input(value)[0];
+    return finding?.kind === "command" ? finding.argv[3] : undefined;
+  };
+  // A lone quote is not a quoted pair.
+  assertEquals(logLevel('"'), '"');
+  // Matching first and last characters that are not quotes are kept.
+  assertEquals(logLevel("xyx"), "xyx");
+  // An opening quote with no closing quote is kept.
+  assertEquals(logLevel('"abc'), '"abc');
+  assertEquals(logLevel("'abc"), "'abc");
+  // Both quote styles are stripped.
+  assertEquals(logLevel('"abc"'), "abc");
+  assertEquals(logLevel("'abc'"), "abc");
+});
+
+Deno.test("workflow: an operator inside a double-quoted argument does not cut the command", () => {
+  const findings = workflowCargoDenyFindings(
+    yaml('      - run: cargo deny check --config "a&b.toml"'),
+  );
+  assertEquals(findings.length, 1);
+  const finding = findings[0];
+  assert(finding?.kind === "command");
+  assertStringIncludes(finding.argv.join(" "), "b.toml");
+});
+
 Deno.test("workflow: look-alikes that are not cargo-deny check runs are not findings", () => {
   const text = yaml(
     "      - run: cargo install cargo-deny --locked",

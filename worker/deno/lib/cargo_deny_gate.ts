@@ -403,7 +403,7 @@ function actionFindings(
       "--manifest-path",
       value("manifest-path"),
       ...splitWords(value("arguments")),
-      value("command"),
+      ...splitWords(value("command")),
       ...splitWords(value("command-arguments")),
     ],
     cwd: ".",
