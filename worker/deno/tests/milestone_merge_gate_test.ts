@@ -867,6 +867,42 @@ Deno.test("detectRemoteModuleGap - an npm spec with no closing quote over 100000
   assertEquals(detectRemoteModuleGap(unclosed), undefined);
 });
 
+Deno.test("detectRemoteModuleGap - npm output whose escape bytes were stripped upstream is still a gap (Issue #4853)", () => {
+  const gap = detectRemoteModuleGap(
+    [
+      `[0m[32mDownload[0m ${NPM_TARBALL_URL}`,
+      "[0m[1m[31merror[0m: Failed caching npm package 'playwright-core@1.60.0'",
+      "",
+      "Caused by:",
+      `    0: error sending request for url (${NPM_TARBALL_URL}): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution`,
+      "    1: client error (Connect)",
+      "    2: dns error",
+      "    3: failed to lookup address information: Temporary failure in name resolution",
+    ].join("\n"),
+  );
+  assertEquals(gap?.url, "npm:playwright-core@1.60.0");
+  assertStringIncludes(gap!.cause, "dns error");
+});
+
+Deno.test("detectRemoteModuleGap - a remnant-prefixed npm header whose tarball failed its integrity check is an ordinary failure, not a gap (Issue #4853)", () => {
+  assertEquals(
+    detectRemoteModuleGap(
+      "[0m[1m[31merror: Failed caching npm package 'x@1'\n\n" +
+        "Caused by:\n" +
+        "    0: integrity check failed for tarball: x@1\n" +
+        "    1: expected sha512-AAAA, got sha512-BBBB\n",
+    ),
+    undefined,
+  );
+});
+
+Deno.test("detectRemoteModuleGap - a long run of bare SGR remnants or `[0` pairs with no failure header returns quickly (Issue #4853)", () => {
+  const remnants = "[0m".repeat(50_000) + "x";
+  assertEquals(detectRemoteModuleGap(remnants), undefined);
+  const brackets = "[0".repeat(50_000);
+  assertEquals(detectRemoteModuleGap(brackets), undefined);
+});
+
 Deno.test("checkMergedTree - a Deno check whose npm packages the host cannot fetch is left to CI, not failed (Issue #4848)", async () => {
   await withTempDir(async (dir) => {
     await writeFile(`${dir}/web/deno.json`, JSON.stringify({}));

@@ -732,6 +732,75 @@ Deno.test("script bodies and full heredoc delimiters remain scanned", () => {
   }
 });
 
+Deno.test("nested scripts normalise continuations and multiline strings", () => {
+  for (
+    const [opener, closer] of [
+      ["bash <<'EOF'", "EOF"],
+      [`docker run --rm --entrypoint bash "$IMAGE" -c '`, "' < /dev/null"],
+    ]
+  ) {
+    for (
+      const install of [
+        "npm install -g \\\npa11y-ci@1.2.3",
+        "gem install \\\nbundler -v 2.5.0",
+        "cargo install --locked \\\ncargo-audit --version 0.22.2",
+      ]
+    ) {
+      assertEquals(
+        findUnpinnedInstalls(`${opener}\n${install}\n${closer}`),
+        [],
+      );
+    }
+    assertEquals(
+      findUnpinnedInstalls(`${opener}\nnpm install -g \\\npa11y-ci\n${closer}`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+    );
+  }
+  assertEquals(
+    findUnpinnedInstalls(
+      `bash <<'EOF'\necho "a\nb" && npm install -g pa11y-ci\nEOF`,
+    ).map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+});
+
+Deno.test("heredoc delimiters and arithmetic preserve subsequent normalisation", () => {
+  for (
+    const prefix of [
+      "cat <<END-OF-FILE\nIt's done\nEND-OF-FILE",
+      "cat <<EOF.md\nIt's done\nEOF.md",
+      "cat <<\\EOF\nhello\nEOF",
+      `cat <<E"O"F\nhello\nEOF`,
+      "(( x = 1 << 2 ))",
+      "echo $(( 1 << n ))",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\necho "a\nb" && npm install -g pa11y-ci`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+      prefix,
+    );
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\nnpm install -g \\\npa11y-ci@1.2.3`),
+      [],
+      prefix,
+    );
+  }
+  assertEquals(
+    findUnpinnedInstalls("cat <<EOF\nunfinished\nnpm install -g \\\npa11y-ci")
+      .map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      '(( x = 1 << 2 ))\necho "a\n2\nb" && npm install -g pa11y-ci',
+    ).map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+});
+
 Deno.test("cargo expressions preserve logical operators and command boundaries", () => {
   for (
     const run of [

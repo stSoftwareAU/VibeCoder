@@ -476,6 +476,14 @@ const REMOTE_FETCH_CAUSE_RE =
   /error sending request for url|unsuccessful tunnel|dns error|client error \(Connect\)|connection (refused|reset|timed out)/i;
 
 /**
+ * An SGR colour remnant whose escape byte was already stripped upstream, e.g.
+ * by an issue or log sanitiser, leaving a bare `[0m` or `[1m[31m` (Issue
+ * #4853). Matched anywhere in the line. Each match starts at a `[`, and
+ * `[0-9;]*` is disjoint from the closing `m`, so the scan is linear.
+ */
+const ORPHAN_SGR_RE = /\[[0-9;]*m/g;
+
+/**
  * A `cargo` refusal to fetch from the crate registry, with the connection-class
  * cause the host reported (Issue #4786).
  */
@@ -586,7 +594,10 @@ export function withCargoOffline(args: string[]): string[] {
  * failed`, the npm package-cache `error: Failed caching npm package '<spec>'`
  * (reported as `npm:<spec>`), and the npm metadata `error: Failed loading <url>
  * for package "<name>"`. Each line is read with ANSI colour stripped, so a
- * coloured `error` prefix matches as a plain one (Issue #4848). An import or
+ * coloured `error` prefix matches as a plain one (Issue #4848). SGR remnants
+ * whose escape byte was already lost, a bare `[0m`, are ignored wherever they
+ * sit in the line (Issue #4853), so `error[0m: Failed ...` still matches. An
+ * import or
  * package that failed for any other reason (a 404, a bad certificate, a
  * checksum mismatch, a missing module, a type error) is an ordinary failure and
  * returns undefined.
@@ -600,7 +611,10 @@ export function detectRemoteModuleGap(
 ): RemoteModuleGap | undefined {
   let failedUrl: string | undefined;
   for (const rawLine of output.split("\n")) {
-    const line = stripAnsi(rawLine.slice(0, MAX_GAP_LINE_CHARS)).trim();
+    const line = stripAnsi(rawLine.slice(0, MAX_GAP_LINE_CHARS)).replace(
+      ORPHAN_SGR_RE,
+      "",
+    ).trim();
     const imported = REMOTE_IMPORT_FAILED_RE.exec(line);
     if (imported) {
       failedUrl = imported[1];

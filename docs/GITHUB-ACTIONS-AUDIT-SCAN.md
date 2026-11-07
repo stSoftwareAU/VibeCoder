@@ -1036,8 +1036,10 @@ have to be token 0 and the subcommand token 1, so two everyday spellings —
 clean, and a backslash-continued install produced a garbage finding id.
 Normalisation now: joins backslash continuations and quoted strings or GitHub
 expressions spanning lines into one command (anchoring the call-site to the
-line the command starts on). Heredoc body lines and multiline quoted lines are
-also scanned individually without changing the outer quote state. It splits at
+line the command starts on). Heredoc bodies and multiline quoted scripts are
+independently normalised, including continuations and nested quotes, without
+changing the outer quote state. Heredoc delimiters undergo shell quote removal;
+arithmetic shifts do not open heredocs. It splits at
 `;`, `|`, `&&`, `||`, background `&` and subshell parentheses outside quotes
 and expressions, and strips shell keywords (`then`, `do`, `else`, `elif`, `!`,
 `time`, `{`) and wrapper

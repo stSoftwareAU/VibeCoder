@@ -70,6 +70,16 @@ flowchart LR
 
 ## Test Plan
 
+- Review follow-up: scanning script bodies as separate physical lines is
+  obsolete because it loses continuations and quote state. Independent body
+  normalisation retains detection of unpinned installs and accepts pinned
+  continued installs. Full, quote-removed heredoc delimiters and arithmetic
+  shifts preserve normalisation after the body. The red-before-fix coverage is
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::nested scripts normalise continuations and multiline strings`
+  and `worker/deno/tests/ci_install_pin_scanner_test.ts::heredoc delimiters and arithmetic preserve subsequent normalisation`.
+  The scanner and audit documentation describe the same normalisation; no
+  second implementation was found.
+
 - Review follow-up: the obsolete assumption that heredoc bodies cannot contain
   installs is replaced by scanning each body line. Multiline quoted script lines
   are also scanned while retaining the joined command; full heredoc delimiters
