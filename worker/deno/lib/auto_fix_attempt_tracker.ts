@@ -74,7 +74,7 @@ export interface FailureSignatureInput {
  *
  * Strips the volatile parts that change on every build — ISO timestamps,
  * dates, clock times, build/run/job numbers, URL build segments, memory
- * addresses, durations, and the workspace root prefix — then lower-cases
+ * addresses, durations (including `2m14s` and `199µs`), and the workspace root prefix — then lower-cases
  * and collapses whitespace. Everything durable (the error text, the file
  * and line, the symbol name) survives, so a genuinely different failure
  * still normalises differently.
@@ -102,7 +102,13 @@ export function normaliseLogExcerpt(
     .replace(/\b(build|run|job|attempt|pipeline)\s*#?\d+/gi, "$1 <n>")
     .replace(/(https?:\/\/\S*?\/)\d+(?=\/|\s|$)/g, "$1<n>")
     .replace(/(?<![\w#])#\d+\b/g, "#<n>")
-    .replace(/\b\d+(?:\.\d+)?\s?m?s\b/gi, "<dur>")
+    // Compound (1h2m3s, 2m14s, 2m 14s) and sub-millisecond (µs, μs, us, ns)
+    // durations, as printed by `deno test`. The h/m prefixes and the unit
+    // use disjoint characters, so the pattern cannot backtrack badly.
+    .replace(
+      /\b(?:\d+h\s?)?(?:\d+m\s?)?\d+(?:\.\d+)?\s?[mµμun]?s\b/gi,
+      "<dur>",
+    )
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
