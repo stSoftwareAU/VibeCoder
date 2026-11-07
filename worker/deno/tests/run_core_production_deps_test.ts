@@ -11,7 +11,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertExists } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertExists,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   createProductionRunCoreDeps,
   type ProductionDepsOptions,
@@ -224,6 +229,107 @@ Deno.test("createProductionRunCoreDeps - all deps methods are functions", async 
 
   // Issue #253: per-cycle trusted-author refresh is wired in production.
   assertEquals(typeof deps.refreshTrustedAuthors, "function");
+});
+
+Deno.test("run-core PR feedback callback records its pre-flight push guarantee (Issue #4876)", async () => {
+  let qualityInstructions = "";
+  const { deps, cleanup } = await createProductionRunCoreDeps(
+    createTestOptions({
+      config: buildDefaultWorkerConfig({ repos: ["org/repo"] }),
+      findPrCommentsToFix: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            repo: "org/repo",
+            prNumber: 42,
+            branchName: "issue-42-fix",
+            commentType: "review",
+            commentId: "comment-1",
+            encodedBody: btoa("Please fix the issue"),
+          },
+        }),
+      setupRepoFn: () =>
+        Promise.resolve({ success: true, message: "/tmp/test-repo" }),
+      runGitCommandFn: () =>
+        Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        }),
+      processPrFeedbackFn: (_input, processorDeps) => {
+        qualityInstructions = processorDeps.qualityInstructions ?? "";
+        return Promise.resolve({ ok: false, error: new Error("captured") });
+      },
+    }),
+  );
+  try {
+    await deps.findAndProcessPrFeedback();
+    assertStringIncludes(
+      qualityInstructions,
+      "does not run the full gate before this push",
+    );
+    assertEquals(
+      qualityInstructions.includes(
+        "worker runs the gate again before the PR is raised",
+      ),
+      false,
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("run-core custom PR prompt callback records the agent pre-push guarantee (Issue #4876)", async () => {
+  const mapping = {
+    label: "custom-pr",
+    promptPath: "/tmp/custom-pr.md",
+    targetPhase: "pr" as const,
+  };
+  const candidate = {
+    repo: "org/repo",
+    prNumber: 42,
+    headRefName: "issue-42-fix",
+    title: "Fix issue",
+    url: "https://github.com/org/repo/pull/42",
+    isDraft: false,
+    author: "contributor",
+    updatedAt: "2026-01-01T00:00:00Z",
+    mapping,
+  };
+  let qualityInstructions = "";
+  const { deps, cleanup } = await createProductionRunCoreDeps(
+    createTestOptions({
+      config: buildDefaultWorkerConfig({
+        repos: ["org/repo"],
+        customLabelPrompts: [mapping],
+      }),
+      dispatchCustomLabelPrPromptsFn: async (dispatchDeps) => {
+        await dispatchDeps.buildPrompt(candidate);
+        return { processed: true };
+      },
+      buildCustomPrPromptFn: (promptOptions) => {
+        qualityInstructions = promptOptions.qualityInstructions ?? "";
+        return Promise.resolve({
+          ok: false,
+          error: new Error("captured"),
+        });
+      },
+    }),
+  );
+  try {
+    await deps.findAndProcessCustomLabelPrPrompts?.();
+    assertStringIncludes(
+      qualityInstructions,
+      "agent pre-push hook runs changed-file checks",
+    );
+    assertEquals(
+      qualityInstructions.includes(
+        "worker runs the gate again before the PR is raised",
+      ),
+      false,
+    );
+  } finally {
+    cleanup();
+  }
 });
 
 Deno.test(
