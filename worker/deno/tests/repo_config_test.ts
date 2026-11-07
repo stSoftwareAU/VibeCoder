@@ -310,6 +310,32 @@ Deno.test("repo_config - buildQualityInstructions still skips everything for a s
   assertEquals(result, "Note: Quality checks are skipped for this repository.");
 });
 
+Deno.test("repo_config - buildQualityInstructions carries the pre-flight record only for pre-flight-only (Issue #4876)", () => {
+  const preFlightOnly = buildQualityInstructions(
+    undefined,
+    "org/x",
+    { pushGuarantee: "pre-flight-only" },
+  );
+  assertStringIncludes(
+    preFlightOnly,
+    "does not run the full gate before this push",
+  );
+  assertStringIncludes(preFlightOnly, "pre-flight");
+  assertEquals(
+    preFlightOnly.includes("again before the PR is raised"),
+    false,
+    `pre-flight-only guidance must not promise a gate run:\n${preFlightOnly}`,
+  );
+
+  const defaulted = buildQualityInstructions(undefined, "org/x");
+  assertEquals(
+    defaulted.includes("does not run the full gate before this push"),
+    false,
+    `default guidance must keep the full-gate record:\n${defaulted}`,
+  );
+  assertStringIncludes(defaulted, "again before the PR is raised");
+});
+
 // =============================================================================
 // buildReviewerFlags tests
 // =============================================================================

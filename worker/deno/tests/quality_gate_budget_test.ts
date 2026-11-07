@@ -164,3 +164,51 @@ Deno.test("quality_gate_budget - the prompt lines quote the repo's own measureme
   assertStringIncludes(lines, "30m");
   assertStringIncludes(lines, "measured");
 });
+
+Deno.test("quality_gate_budget - the default and full-gate records say the worker runs the gate again (Issue #4876)", () => {
+  // Both branches: a fitting budget (3600s) and a refused one (600s).
+  for (const runBudget of [3600, 600]) {
+    const defaulted = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      runBudget,
+    );
+    const fullGate = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      runBudget,
+      "full-gate",
+    );
+    assertEquals(fullGate, defaulted, `budget ${runBudget}`);
+    assertStringIncludes(
+      defaulted.join("\n"),
+      "again before the PR is raised",
+      `budget ${runBudget}`,
+    );
+  }
+});
+
+Deno.test("quality_gate_budget - a pre-flight-only record does not promise a gate run before the push (Issue #4876)", () => {
+  // Both branches: a fitting budget (3600s) and a refused one (600s).
+  for (const runBudget of [3600, 600]) {
+    const text = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      runBudget,
+      "pre-flight-only",
+    ).join("\n");
+    assertStringIncludes(text, "pre-flight", `budget ${runBudget}`);
+    assertStringIncludes(
+      text,
+      "does not run the full gate before this push",
+      `budget ${runBudget}`,
+    );
+    assertNotMatch(
+      text,
+      /again before the PR is raised/,
+      `budget ${runBudget}`,
+    );
+    assertNotMatch(text, /\bCI\b/, `budget ${runBudget}`);
+    assertStringIncludes(text, GATE_SKIP_MARKER, `budget ${runBudget}`);
+  }
+});

@@ -2578,10 +2578,13 @@ export async function createProductionRunCoreDeps(
           decodedBody = comment.encodedBody;
         }
 
-        // Load quality and custom instructions for this repo
+        // Load quality and custom instructions for this repo. The PR already
+        // exists, so the skip record names only the pre-flight commands
+        // (Issue #4876).
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           comment.repo,
+          { pushGuarantee: "pre-flight-only" },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,
@@ -4344,6 +4347,7 @@ export async function createProductionRunCoreDeps(
                 qualityInstructions: buildQualityInstructions(
                   config.repoConfig,
                   candidate.repo,
+                  { pushGuarantee: "pre-flight-only" },
                 ),
                 customInstructions: getCustomInstructions(
                   config.repoConfig,

@@ -2895,10 +2895,18 @@ agents were still inside it at 49 to 68 minutes. Starting it with ten minutes
 left cannot end well: the gate does not finish, nothing it reports gets fixed,
 and the runway needed to commit and push is gone.
 
-Nothing is lost by skipping it. The worker runs its own gate
+On an issue run, nothing is lost by skipping it. The worker runs its own gate
 (`phases/quality_gate_remediation_phase.ts`) after the agent stops, before the
 PR is raised. The agent's run is the expensive copy — the only one paid for out
 of the run budget.
+
+The PR-side flows are the exception. PR feedback, spelling fix and custom PR
+prompts push to a PR that already exists, so they call `buildQualityInstructions()`
+with `pushGuarantee: "pre-flight-only"` (Issue #4876). Their skip-note record
+then says the worker runs only the repository's configured pre-flight commands,
+if any, before that push, and it tells the agent to name in its note exactly
+which checks it ran. The CI-fix flow and issue runs keep the full-gate wording,
+which says the worker runs the gate again before the PR is raised.
 
 So the instruction the agent receives is budget-aware, and it comes from one
 place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
@@ -2921,7 +2929,8 @@ that passed.
 `gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it from
 about 17 minutes into an hour-long run and does not offer it again. That is the
 intended trade: on such a repo the agent could never have finished the gate and
-acted on it anyway, and the worker runs it before the PR is raised regardless. A
+acted on it anyway, and on an issue run the worker runs it before the PR is
+raised regardless. A
 repo in that position should shorten its gate or set `quality_command` to the
 subset worth running locally.
 
@@ -2932,7 +2941,7 @@ flowchart TD
     B -- "yes" --> D{"remaining ≥ gate + 180s tail?"}
     D -- "yes" --> C
     D -- "no" --> E["Targeted checks only<br/>+ skip note in the PR"]
-    C --> F["Worker gate before the PR is raised"]
+    C --> F["Issue run: worker gate before the PR is raised<br/>PR-side: pre-flight commands only"]
     E --> F
     style E fill:#f4a261,stroke:#b5651d,color:#000
     style C fill:#2d6a4f,stroke:#1b4332,color:#fff

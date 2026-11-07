@@ -154,10 +154,16 @@ export const prSpellingProcessorCommand: Command = {
         // Build quality and custom instructions from config
         // No run-budget notice is written for this flow, so the whole run's
         // budget is the only gate signal the agent gets (Issue #1138).
+        // The PR already exists and the push runs only the configured
+        // pre-flight commands, so the skip record must not promise a gate
+        // run before the push (Issue #4876).
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           repo,
-          { runBudgetSeconds: config.claudeTimeout },
+          {
+            runBudgetSeconds: config.claudeTimeout,
+            pushGuarantee: "pre-flight-only",
+          },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,

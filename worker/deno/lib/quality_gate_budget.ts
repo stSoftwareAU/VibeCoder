@@ -173,6 +173,19 @@ export function formatQualityGateSkipNote(
 }
 
 /**
+ * What the worker runs before it pushes, which decides what a skipped gate's
+ * record may promise (Issue #4876).
+ *
+ * - `"full-gate"`: the issue flow and `ci_fix` run the full gate before the
+ *   push, so the record may say the worker runs it again before the PR is
+ *   raised.
+ * - `"pre-flight-only"`: the PR-side flows (`pr_feedback`, `spelling_fix`,
+ *   custom PR prompts) push to a PR that already exists, after running only
+ *   the repository's configured pre-flight commands, if any.
+ */
+export type GatePushGuarantee = "full-gate" | "pre-flight-only";
+
+/**
  * The gate instruction an agent's prompt carries (Issue #1138).
  *
  * One source of truth for every prompt that has a `{{QUALITY_INSTRUCTIONS}}`
@@ -192,12 +205,18 @@ export function formatQualityGateSkipNote(
  *   when it was measured.
  * @param runBudgetSeconds - The whole run's wall-clock budget, when the
  *   caller knows it.
+ * @param pushGuarantee - What the worker runs before it pushes, which names
+ *   what the skip record may promise: `"full-gate"` (the default: the issue
+ *   flow and `ci_fix`) says the worker runs the gate again before the PR is
+ *   raised; `"pre-flight-only"` (PR-side flows) says it runs only the repo's
+ *   configured pre-flight commands before that push.
  * @returns One prompt bullet per line, ready to join.
  */
 export function buildQualityGateBudgetLines(
   command: string,
   typicalGateSeconds?: number,
   runBudgetSeconds?: number,
+  pushGuarantee: GatePushGuarantee = "full-gate",
 ): string[] {
   const decision = decideQualityGateRun({
     ...(typicalGateSeconds === undefined ? {} : { typicalGateSeconds }),
@@ -209,8 +228,11 @@ export function buildQualityGateBudgetLines(
   const cost = decision.measured
     ? `it took ${duration} on this repository this run (measured)`
     : `it takes about ${duration}`;
-  const record =
-    `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have. The worker runs the gate again before the PR is raised.`;
+  const recordCore =
+    `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have.`;
+  const record = pushGuarantee === "pre-flight-only"
+    ? `${recordCore} The worker does not run the full gate before this push: the PR already exists, and it runs only the repository's configured pre-flight commands, if any. Name in your note exactly which checks you ran, and do not say the worker will run the gate.`
+    : `${recordCore} The worker runs the gate again before the PR is raised.`;
 
   // The gate cannot fit this run at all — no live signal can rescue that, so
   // it is settled here rather than left to the agent's judgement.

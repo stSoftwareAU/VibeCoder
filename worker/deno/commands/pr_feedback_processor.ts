@@ -158,11 +158,15 @@ export const prFeedbackProcessorCommand = {
         // This flow writes no run-budget notice (no progress extension), so
         // the whole run's budget is the only gate signal the agent gets
         // (Issue #1138): a gate that cannot fit inside it is refused here.
+        // The PR already exists and the push runs only the configured
+        // pre-flight commands, so the skip record must not promise a gate
+        // run before the push (Issue #4876).
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           repo,
           {
             runBudgetSeconds: config.prFeedbackTimeout || config.claudeTimeout,
+            pushGuarantee: "pre-flight-only",
           },
         );
         const customInstructions = getCustomInstructions(
