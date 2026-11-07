@@ -501,7 +501,9 @@ connection-class cause such as `error sending request for url`, `unsuccessful
 tunnel` or `dns error`. The header is `error: Import '<url>' failed.`, `error:
 Failed caching npm package '<spec>'`, or `error: Failed loading <url> for
 package "<name>"` (Issue #4848); the cause must follow it, and ANSI colour in
-the output does not stop the match. The task is neither counted as passed nor
+the output does not stop the match. A line whose escape byte was already
+stripped upstream, leaving bare `[0m`-style remnants, has them ignored wherever
+they sit in the line, so the header still matches (Issue #4853). The task is neither counted as passed nor
 repaired. Every other task still runs, so a real failure elsewhere still refuses
 the resolution. A
 404, a certificate, a checksum or a type error is an ordinary failure and is
