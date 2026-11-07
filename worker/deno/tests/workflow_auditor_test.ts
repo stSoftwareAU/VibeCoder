@@ -1080,6 +1080,34 @@ Deno.test("workflow_auditor - repository-wide templates accept nested project la
   ]);
 });
 
+Deno.test("workflow_auditor - web asset marker alone does not satisfy npm root manifest", async () => {
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    {
+      detected: [{
+        language: "React/Web",
+        confidence: "marker",
+        markerFile: "index.html",
+      }],
+      primary: "React/Web",
+      raw: {},
+    },
+    {
+      runCommand: mockRunner({
+        "repos/owner/repo/contents/.github/workflows": ok("[]"),
+      }),
+    },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.missing.some((spec) => spec.id.startsWith("npm-") || spec.id === "eslint-quality"), false);
+  assertEquals(result.value.notApplicable.map((spec) => spec.id), [
+    "npm-audit",
+    "npm-dependency-updates",
+    "eslint-quality",
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // gh spawn chokepoint (Issue #1227)
 // ---------------------------------------------------------------------------

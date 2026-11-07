@@ -323,19 +323,19 @@ export async function auditRepoWorkflows(
   const resolveSpecs = options.specsResolver ??
     getWorkflowsForLanguagesAndVisibility;
   const candidates = resolveSpecs(langNames, visibility);
-  const markerLanguages = new Set(
+  const rootMarkerFiles = new Set(
     languages.detected
       .filter((detected) => detected.confidence === "marker")
-      .map((detected) => detected.language),
+      .map((detected) => detected.markerFile)
+      .filter((marker): marker is string => marker !== undefined),
   );
   const requiredSpecs = candidates.filter((spec) =>
-    !spec.requiresRootProject ||
-    (spec.appliesTo !== "universal" &&
-      spec.appliesTo.some((language) => markerLanguages.has(language)))
+    !spec.rootProjectMarkers ||
+    spec.rootProjectMarkers.some((marker) => rootMarkerFiles.has(marker))
   );
   const notApplicable = candidates.filter((spec) =>
-    spec.requiresRootProject && spec.appliesTo !== "universal" &&
-    !spec.appliesTo.some((language) => markerLanguages.has(language))
+    spec.rootProjectMarkers !== undefined &&
+    !spec.rootProjectMarkers.some((marker) => rootMarkerFiles.has(marker))
   );
 
   // Fetch workflow file listing.

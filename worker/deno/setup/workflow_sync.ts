@@ -727,6 +727,7 @@ export async function syncWorkflowsForRepo(
       };
     }
     if (reconciled.value.failures.length > 0) {
+      const reasons = reconciled.value.failureReasons.join("; ");
       return {
         ok: false,
         repo,
@@ -738,7 +739,7 @@ export async function syncWorkflowsForRepo(
         partialIssuesRaised: 0,
         partialIssuesSkipped: 0,
         error:
-          `Failed to close ${reconciled.value.failures.length} inapplicable workflow issue(s)`,
+          `Failed to close ${reconciled.value.failures.length} inapplicable workflow issue(s): ${reasons}`,
       };
     }
   } catch (err: unknown) {

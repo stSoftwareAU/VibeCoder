@@ -288,10 +288,17 @@ export async function reconcileInapplicableWorkflowIssues(
   specIds: string[],
   options: PurgeOptions = {},
 ): Promise<
-  Result<{ closed: CandidateIssue[]; failures: CandidateIssue[] }, string>
+  Result<{
+    closed: CandidateIssue[];
+    failures: CandidateIssue[];
+    failureReasons: string[];
+  }, string>
 > {
   if (specIds.length === 0) {
-    return { ok: true, value: { closed: [], failures: [] } };
+    return {
+      ok: true,
+      value: { closed: [], failures: [], failureReasons: [] },
+    };
   }
   const runner = options.runCommand ??
     createDefaultRunCommand(options.ghConfigDir);
@@ -313,6 +320,7 @@ export async function reconcileInapplicableWorkflowIssues(
   );
   const closed: CandidateIssue[] = [];
   const failures: CandidateIssue[] = [];
+  const failureReasons: string[] = [];
   for (const issue of trusted) {
     const tag = extractSpecIdFromIssueBody(issue.body);
     if (!tag || !known.has(tag.specId)) continue;
@@ -323,15 +331,23 @@ export async function reconcileInapplicableWorkflowIssues(
     };
     if (options.dryRun) {
       closed.push(candidate);
-    } else if (
-      await closeIssue(repo, candidate, "missing-root-project", runner)
-    ) {
-      closed.push(candidate);
     } else {
-      failures.push(candidate);
+      const outcome = await closeIssue(
+        repo,
+        candidate,
+        "missing-root-project",
+        runner,
+      );
+      if (outcome.success) closed.push(candidate);
+      else {
+        failures.push(candidate);
+        failureReasons.push(
+          `#${candidate.number} ${candidate.specId}: ${outcome.error}`,
+        );
+      }
     }
   }
-  return { ok: true, value: { closed, failures } };
+  return { ok: true, value: { closed, failures, failureReasons } };
 }
 
 /** Close an issue with a comment via the gh CLI. */
@@ -340,7 +356,7 @@ async function closeIssue(
   candidate: CandidateIssue,
   reason: CloseReason,
   runner: (cmd: string[]) => Promise<CommandOutput>,
-): Promise<boolean> {
+): Promise<{ success: boolean; error: string }> {
   const result = await runner([
     "gh",
     "issue",
@@ -351,7 +367,10 @@ async function closeIssue(
     "--comment",
     buildClosingComment(candidate, reason),
   ]);
-  return result.success;
+  return {
+    success: result.success,
+    error: result.success ? "" : result.stderr || "unknown error",
+  };
 }
 
 /**
@@ -480,8 +499,13 @@ export async function purgeStaleWorkflowIssuesForRepo(
         notApplicable.push(candidate);
         continue;
       }
-      const ok = await closeIssue(repo, candidate, "not-applicable", runner);
-      if (ok) {
+      const outcome = await closeIssue(
+        repo,
+        candidate,
+        "not-applicable",
+        runner,
+      );
+      if (outcome.success) {
         notApplicable.push(candidate);
       } else {
         failures.push(candidate);
@@ -535,13 +559,13 @@ export async function purgeStaleWorkflowIssuesForRepo(
       if (options.dryRun) {
         notApplicable.push(candidate);
       } else {
-        const ok = await closeIssue(
+        const outcome = await closeIssue(
           repo,
           candidate,
           "missing-root-project",
           runner,
         );
-        if (ok) notApplicable.push(candidate);
+        if (outcome.success) notApplicable.push(candidate);
         else failures.push(candidate);
       }
       continue;
@@ -556,8 +580,8 @@ export async function purgeStaleWorkflowIssuesForRepo(
       continue;
     }
 
-    const ok = await closeIssue(repo, candidate, "now-present", runner);
-    if (ok) {
+    const outcome = await closeIssue(repo, candidate, "now-present", runner);
+    if (outcome.success) {
       closed.push(candidate);
     } else {
       failures.push(candidate);

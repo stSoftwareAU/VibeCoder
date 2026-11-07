@@ -444,6 +444,7 @@ Deno.test("syncWorkflowsForRepo - reports issue-close failures during reconcilia
   });
   assertEquals(result.ok, false);
   assertEquals(result.error?.includes("Failed to close 1"), true);
+  assertEquals(result.error?.includes("close failed"), true);
 });
 
 // ---------------------------------------------------------------------------
