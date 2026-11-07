@@ -238,12 +238,12 @@ export function buildQualityGateBudgetLines(
   const recordCore =
     `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have.`;
   const record = pushGuarantee === "pre-flight-only"
-    ? `${recordCore} This PR already exists. Before its push, the worker runs only the repository's configured pre-flight commands, if any; with none configured, it runs no checks before that push. Name exactly which checks you ran, and do not say the worker will run the full gate.`
+    ? `${recordCore} This PR already exists. The worker does not run the full gate before this push; it runs only the repository's configured pre-flight commands, if any. With none configured, it runs no checks before that push. Name exactly which checks you ran, and do not say the worker will run the full gate.`
     : pushGuarantee === "ci-fix"
     ? `${recordCore} The worker attempts the full gate if Claude leaves uncommitted changes after the fix; before its push, it also runs the repository's configured pre-flight commands, if any. If Claude leaves no uncommitted changes and no pre-flight commands are configured, the worker runs no checks before that push. Name exactly which checks you ran.`
     : pushGuarantee === "agent-pre-push"
     ? `${recordCore} This custom PR flow's agent pre-push hook runs changed-file checks and the repository's configured pre-flight commands, if any, when the agent pushes. The worker verifies the push after the agent finishes; it does not run a full gate before that push. Name exactly which checks you ran.`
-    : `${recordCore} The worker runs the full gate before the PR is raised.`;
+    : `${recordCore} The worker runs the gate again before the PR is raised.`;
 
   // The gate cannot fit this run at all — no live signal can rescue that, so
   // it is settled here rather than left to the agent's judgement.

@@ -14,6 +14,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
+import { prSpellingProcessorCommand } from "../commands/pr_spelling_processor.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   type ClaudeDeps,
@@ -25,7 +26,7 @@ import type { Logger } from "../types.ts";
 import { openPrGh } from "./support/pr_live_state_stub.ts";
 
 const PRE_FLIGHT_SENTENCE = "does not run the full gate before this push";
-const FULL_GATE_SENTENCE = "again before the PR is raised";
+const FULL_GATE_SENTENCE = "worker runs the gate again before the PR is raised";
 
 /** `captureBranchHead`'s default mock value (see `createMockDeps`). */
 const DEFAULT_MOCK_HEAD_SHA = "0000000000000000000000000000000000000000";
@@ -213,6 +214,74 @@ Deno.test("prFeedbackProcessorCommand - the agent prompt carries the pre-flight-
       prompt.includes(FULL_GATE_SENTENCE),
       false,
       "a PR-side prompt must not promise a gate run before the push",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("prSpellingProcessorCommand - the agent prompt carries the pre-flight-only push guarantee (Issue #4876)", async () => {
+  const workDir = await makeWorkDir();
+  try {
+    const recordedOptions: CapturedOptions[] = [];
+    const deps = createMockDeps({
+      logger: makeSilentLogger(),
+      claude: {
+        runClaudeWithRetry: makeClaudeMock(["Fixed spelling"], recordedOptions),
+      },
+      github: { runGhCommand: makeGh() },
+      git: {
+        setupRepo: () => Promise.resolve({ ok: true, value: workDir }),
+        runGitCommand: makeGit(),
+        getRepoDefaultBranch: () =>
+          Promise.resolve({ ok: true, value: "main" }),
+        syncFeatureBranchWithDefault: () =>
+          Promise.resolve({ ok: true, value: "main" }),
+        commitAndPushPending: () =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+              finalUnpushedSource: "remote-head",
+            },
+          }),
+      },
+    });
+    const config = buildDefaultWorkerConfig({
+      workDir,
+      claudeTimeout: 600,
+      repoConfig: { "org/repo": { skipMutationCheck: true } },
+    });
+
+    const result = await prSpellingProcessorCommand.execute(
+      {
+        operation: "process",
+        repo: "org/repo",
+        "pr-number": 42,
+        "branch-name": "issue-42-fix-bug",
+        "check-run-id": "12345",
+        "check-name": "cspell",
+        "encoded-annotations": btoa(JSON.stringify([{
+          path: "src/main.ts",
+          start_line: 1,
+          message: "Unknown word: colour",
+        }])),
+      },
+      config,
+      deps,
+    );
+
+    assertEquals(result.success, true, result.message);
+    assertEquals(recordedOptions.length, 1, "the agent must be invoked");
+    const prompt = recordedOptions[0]!.prompt;
+    assertStringIncludes(prompt, PRE_FLIGHT_SENTENCE);
+    assertStringIncludes(prompt, "With none configured");
+    assertEquals(
+      prompt.includes(FULL_GATE_SENTENCE),
+      false,
+      "a spelling-fix prompt must not promise a full gate before the push",
     );
   } finally {
     await Deno.remove(workDir, { recursive: true });

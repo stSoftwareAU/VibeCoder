@@ -122,7 +122,7 @@ Deno.test("quality_gate_budget - the skip note and prompt lines name no CI cover
   for (const text of [note, lines]) {
     assertNotMatch(text, /\bCI\b/);
     assertMatch(text, /[Tt]he worker runs/);
-    assertStringIncludes(text, "before the PR is raised");
+    assertStringIncludes(text, "again before the PR is raised");
   }
 });
 
@@ -200,7 +200,7 @@ Deno.test("quality_gate_budget - each push record names only checks its path run
     assertStringIncludes(preFlightOnly, "pre-flight", `budget ${runBudget}`);
     assertStringIncludes(
       preFlightOnly,
-      "with none configured, it runs no checks before that push",
+      "With none configured, it runs no checks before that push",
       `budget ${runBudget}`,
     );
     assertNotMatch(
@@ -208,7 +208,11 @@ Deno.test("quality_gate_budget - each push record names only checks its path run
       /again before the PR is raised/,
       `budget ${runBudget}`,
     );
-    assertStringIncludes(preFlightOnly, GATE_SKIP_MARKER, `budget ${runBudget}`);
+    assertStringIncludes(
+      preFlightOnly,
+      GATE_SKIP_MARKER,
+      `budget ${runBudget}`,
+    );
 
     const ciFix = buildQualityGateBudgetLines(
       "./quality.sh",
@@ -234,8 +238,16 @@ Deno.test("quality_gate_budget - each push record names only checks its path run
       runBudget,
       "agent-pre-push",
     ).join("\n");
-    assertStringIncludes(customPr, "agent pre-push hook", `budget ${runBudget}`);
-    assertStringIncludes(customPr, "changed-file checks", `budget ${runBudget}`);
+    assertStringIncludes(
+      customPr,
+      "agent pre-push hook",
+      `budget ${runBudget}`,
+    );
+    assertStringIncludes(
+      customPr,
+      "changed-file checks",
+      `budget ${runBudget}`,
+    );
     assertNotMatch(customPr, /worker runs the gate before the PR is raised/);
   }
 });

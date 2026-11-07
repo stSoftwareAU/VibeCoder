@@ -311,28 +311,42 @@ Deno.test("repo_config - buildQualityInstructions still skips everything for a s
 });
 
 Deno.test("repo_config - buildQualityInstructions carries the pre-flight record only for pre-flight-only (Issue #4876)", () => {
-  const preFlightOnly = buildQualityInstructions(
-    undefined,
-    "org/x",
-    { pushGuarantee: "pre-flight-only" },
-  );
-  assertStringIncludes(
-    preFlightOnly,
-    "does not run the full gate before this push",
-  );
-  assertStringIncludes(preFlightOnly, "pre-flight");
-  assertEquals(
-    preFlightOnly.includes("again before the PR is raised"),
-    false,
-    `pre-flight-only guidance must not promise a gate run:\n${preFlightOnly}`,
-  );
+  for (const runBudgetSeconds of [3600, 600]) {
+    const preFlightOnly = buildQualityInstructions(
+      undefined,
+      "org/x",
+      { runBudgetSeconds, pushGuarantee: "pre-flight-only" },
+    );
+    assertStringIncludes(
+      preFlightOnly,
+      "does not run the full gate before this push",
+    );
+    assertStringIncludes(preFlightOnly, "With none configured");
+    assertEquals(
+      preFlightOnly.includes("again before the PR is raised"),
+      false,
+      `pre-flight-only guidance must not promise a gate run at ${runBudgetSeconds}s:\n${preFlightOnly}`,
+    );
+
+    const ciFix = buildQualityInstructions(undefined, "org/x", {
+      runBudgetSeconds,
+      pushGuarantee: "ci-fix",
+    });
+    assertStringIncludes(ciFix, "attempts the full gate");
+    assertStringIncludes(ciFix, "if Claude leaves uncommitted changes");
+    assertStringIncludes(ciFix, "no checks before that push");
+    assertEquals(ciFix.includes("again before the PR is raised"), false);
+
+    const customPr = buildQualityInstructions(undefined, "org/x", {
+      runBudgetSeconds,
+      pushGuarantee: "agent-pre-push",
+    });
+    assertStringIncludes(customPr, "agent pre-push hook");
+    assertStringIncludes(customPr, "changed-file checks");
+    assertEquals(customPr.includes("again before the PR is raised"), false);
+  }
 
   const defaulted = buildQualityInstructions(undefined, "org/x");
-  assertEquals(
-    defaulted.includes("does not run the full gate before this push"),
-    false,
-    `default guidance must keep the full-gate record:\n${defaulted}`,
-  );
   assertStringIncludes(defaulted, "again before the PR is raised");
 });
 

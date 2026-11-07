@@ -29,7 +29,10 @@ import {
   type SpellingFixResult,
   type SpellingProcessorDeps,
 } from "../lib/pr_spelling_processor.ts";
-import { createDefaultDeps, type WorkerDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createDefaultDeps,
+  type WorkerDeps,
+} from "../lib/issue_worker_wiring.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
