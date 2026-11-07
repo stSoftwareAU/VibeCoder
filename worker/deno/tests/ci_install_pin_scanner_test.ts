@@ -871,6 +871,67 @@ Deno.test("cargo expressions preserve logical operators and command boundaries",
   );
 });
 
+Deno.test("quoted scripts on their opening line retain installs", () => {
+  for (
+    const [script, name] of [
+      [
+        'docker run --rm node:22 sh -c "npm ci && npm install -g pa11y-ci"',
+        "pa11y-ci",
+      ],
+      ['ssh host "cd /srv && gem install bundler"', "bundler"],
+      ["bash -c 'cd /src && cargo install cargo-audit'", "cargo-audit"],
+      [
+        `docker run "\${IMAGE}" -c 'mkdir -p "\${DENO_DIR}" && npm install -g pa11y-ci'`,
+        "pa11y-ci",
+      ],
+      ["bash -c 'cd /x && npm install -g pa11y-ci\necho done'", "pa11y-ci"],
+    ] as const
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(script).map((f) => f.packageName),
+      [name],
+      script,
+    );
+  }
+  for (
+    const script of [
+      `sh -c "npm ci && npm install -g pa11y-ci@1.2.3"`,
+      `ssh host "cd /srv && gem install bundler -v 2.5.0"`,
+      `bash -c 'cd /src && cargo install --locked cargo-audit@0.22.2'`,
+      `cargo install --locked cargo-audit@0.22.2 --features "a || b"`,
+    ]
+  ) assertEquals(findUnpinnedInstalls(script), [], script);
+});
+
+Deno.test("unmatched arithmetic on the opening line retains installs", () => {
+  for (
+    const [script, name] of [
+      [
+        `[[ "$R" =~ ^((a)b)? ]] && git commit -m "Release\nnotes" && gem install bundler`,
+        "bundler",
+      ],
+      [
+        `((cd web && npm ci) || true); echo "a\nb" && npm install -g pa11y-ci`,
+        "pa11y-ci",
+      ],
+      [
+        `((cd web && npm ci) || true) \\\n  && echo "a\nb" && npm install -g pa11y-ci`,
+        "pa11y-ci",
+      ],
+      [
+        `if [[ "$GITHUB_REF" =~ ^((refs/tags/)v)?[0-9]+ ]]; then git tag -a v1 -m "Release\nnotes"; fi; cargo install cargo-audit`,
+        "cargo-audit",
+      ],
+    ] as const
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(script).map((f) => f.packageName),
+      [name],
+      script,
+    );
+  }
+});
+
 Deno.test("cargo ignores shell comments and redirections", () => {
   for (
     const suffix of [

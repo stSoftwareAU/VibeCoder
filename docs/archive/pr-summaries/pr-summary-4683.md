@@ -173,6 +173,13 @@ flowchart LR
   `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo expressions preserve logical operators and command boundaries`
   and `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo ignores shell comments and redirections`
   both failed before the fix. No twinned command-splitting rule was found.
+- Review follow-up: quoted scripts on their opening line are scanned, and
+  unmatched arithmetic-like syntax no longer hides subsequent quoted lines.
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::quoted scripts on their opening line retain installs`
+  and `worker/deno/tests/ci_install_pin_scanner_test.ts::unmatched arithmetic on the opening line retains installs`
+  failed before the fix and cover the reported npm, gem and cargo cases, as well
+  as pinned controls. The independent `joinContinuations` in
+  `worker/deno/tests/checkov_workflow_test.ts` serves a different test contract.
 - Targeted run: `deno task test:unit` over the scanner, 3642, 4683, conformance,
   file-checks, audit-template, definitions, auditor and changed-gate tests: 299
   passed, 0 failed.

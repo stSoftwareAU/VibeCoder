@@ -37,7 +37,7 @@
  *
  * Commands are normalised before matching (Issue #3953): backslash line
  * continuations and multiline quotes or expressions are joined; heredoc
- * bodies and multiline quoted scripts are independently normalised without
+ * bodies and quoted scripts are independently normalised without
  * changing outer quote state. Chains split at `;`, `|`, `&&`, `||`, background `&`
  * and subshell parentheses outside quotes and expressions. Wrapper prefixes
  * (`sudo`, `env`, `command`, `exec`, their flags, leading `VAR=value`
@@ -353,9 +353,27 @@ interface LogicalLine {
   anchor: string;
 }
 
+/** Recognise a closed arithmetic span without mistaking a later quoted `))` for its end. */
+function hasArithmeticClose(text: string): boolean {
+  let depth = 2;
+  let quote = "";
+  for (let i = text.startsWith("$((") ? 3 : 2; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\" && quote !== "'") i++;
+    else if (quote && char === quote) quote = "";
+    else if (!quote && (char === "'" || char === '"')) quote = char;
+    else if (!quote && char === "(") depth++;
+    else if (!quote && char === ")") {
+      if (depth === 2 && text[i + 1] === ")") return true;
+      if (--depth < 2) return false;
+    }
+  }
+  return false;
+}
+
 /**
  * Join backslash continuations and multiline quotes or expressions, while
- * independently normalising heredoc bodies and multiline quoted scripts without
+ * independently normalising heredoc bodies and quoted scripts without
  * changing outer quote state. Fall back to physical lines for unfinished input.
  */
 function joinContinuations(run: string): LogicalLine[] {
@@ -370,7 +388,9 @@ function joinContinuations(run: string): LogicalLine[] {
   let heredocLines: string[] = [];
   const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
 
-  for (const rawLine of run.split("\n")) {
+  const physicalLines = run.split("\n");
+  for (let lineIndex = 0; lineIndex < physicalLines.length; lineIndex++) {
+    const rawLine = physicalLines[lineIndex]!;
     const line = rawLine.trim();
     if (heredocs.length > 0 && anchor === null) {
       const here = heredocs[0]!;
@@ -386,7 +406,7 @@ function joinContinuations(run: string): LogicalLine[] {
       }
       continue;
     }
-    const nestedQuote = quote;
+    let nestedQuote = quote;
     let nestedStart = nestedQuote ? 0 : -1;
     let nestedText = "";
     if (anchor === null) anchor = line;
@@ -408,7 +428,14 @@ function joinContinuations(run: string): LogicalLine[] {
       } else if (quote === "'" && line[i] === "'") {
         quote = "";
       } else if (
-        !quote && (line.startsWith("$((", i) || line.startsWith("((", i))
+        !quote && (line.startsWith("$((", i) || line.startsWith("((", i)) &&
+        (() => {
+          let logical = line.slice(i);
+          for (let j = lineIndex; physicalLines[j]?.endsWith("\\"); j++) {
+            logical += physicalLines[j + 1] ?? "";
+          }
+          return hasArithmeticClose(logical);
+        })()
       ) {
         arithmetic = true;
         i += line[i] === "$" ? 2 : 1;
@@ -419,6 +446,18 @@ function joinContinuations(run: string): LogicalLine[] {
         quote = "";
       } else if (!quote && (line[i] === "'" || line[i] === '"')) {
         quote = line[i] as string;
+        if (!nestedQuote) {
+          const end = line.indexOf(quote, i + 1);
+          const content = line.slice(i + 1, end < 0 ? undefined : end);
+          const prefix = line.slice(0, i);
+          if (
+            end < 0 || /[;|&]/.test(content) ||
+            /(?:^|\s)(?:-c\s+|ssh\s+\S+\s+)$/.test(prefix)
+          ) {
+            nestedQuote = quote;
+            nestedStart = i + 1;
+          }
+        }
       } else if (
         !quote && line.startsWith("<<", i) && line[i - 1] !== "<" &&
         line[i + 2] !== "<"
@@ -445,7 +484,10 @@ function joinContinuations(run: string): LogicalLine[] {
       if (nestedQuote && previousQuote === nestedQuote && !quote) {
         nestedText += line.slice(nestedStart, i);
         nestedStart = -1;
-      } else if (nestedQuote && !previousQuote && quote === nestedQuote) {
+      } else if (
+        nestedQuote && !previousQuote && quote === nestedQuote &&
+        nestedStart < 0
+      ) {
         nestedText += "X";
         nestedStart = i + 1;
       }
