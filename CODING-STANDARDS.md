@@ -1477,8 +1477,14 @@ there is a real signal and must be read; it is not the gate.
 
 **One named exception, and it is the prerequisite that moved, not the rule**
 (Issue #1598). The container image now ships PowerShell 7 (Issue #1596), so
-the three `run.ps1` launcher suites have their interpreter wherever the worker
-runs its gate. They are named, with the other launcher suites, in `IN_GATE_SCRIPT_SUITES`, each with a reason and its measured cost, and the gate runs them — about 125s across the map's four entries (about 87s of it for `run_ps1_launcher_test.ts` alone) for the Windows containment boundary being verified before the push rather than in a job that cannot block a merge. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
+the `run.ps1` launcher suites have their interpreter wherever the worker
+runs its gate. They are named in `IN_GATE_SCRIPT_SUITES`, each with a reason
+and its measured cost, so the Windows containment boundary is verified before
+the push rather than in a job that cannot block a merge. The map also retains
+the shared harness's Bash reclaim-stub and signal-readiness suites: they spawn
+the real launcher, and their script cost does not make them slow unit tests.
+Recognising their imported launcher descriptors preserves their existing gate
+coverage and the signal suite's serial placement. `pwsh_suites_in_the_gate_test.ts` fails the gate on a
 host without PowerShell rather than letting those suites report "ignored"
 while the gate reports green. The `setup.ps1` suites stay excluded. An entry
 there is an exception a change has to argue for, never a place to move a slow
@@ -1562,15 +1568,15 @@ bash linting is owned by each repo's own CI. See
 [CONTRIBUTING.md → Local quality gate](CONTRIBUTING.md) for how to install the
 optional checks (`markdownlint-cli2`, `semgrep`, `checkov`).
 
-**A quality run executes the unit suite only** — no benchmarks, and no
-integration tests beyond the three `run.ps1` launcher suites
-`IN_GATE_SCRIPT_SUITES` names (Issue #1598). Its `deno test` stage is the two
+**A quality run executes the unit suite and named script exceptions** — no
+benchmarks, and no other integration tests beyond the launcher suites
+`IN_GATE_SCRIPT_SUITES` names. Its `deno test` stage is the two
 unit passes and nothing else: both of them ignore `INTEGRATION_TEST_FILES`
 (Issue #907), and no gate has ever run a benchmark. The sharded
 `validate (tests N/4)` legs run exactly the same two unit passes, built from
 the same manifests by `lib/unit_test_passes.ts` (PR #1170), so "it passed
 locally" and "the merge gate passed" mean the same thing — including the
-`run.ps1` suites, which both now run. Every other integration test is covered
+named launcher suites, which both run. Every other integration test is covered
 by per-PR CI in a separate, non-required `integration tests` job; run them
 locally with `deno task test:integration` when your change touches a script
 they drive. A green quality run therefore says nothing about those suites, and

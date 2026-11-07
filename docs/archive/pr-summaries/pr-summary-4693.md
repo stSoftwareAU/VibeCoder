@@ -61,7 +61,8 @@ Version bump: no version file was changed for this update.
 Backend and CLI change; no visual surface changed. Read the workflow catalogue
 and purge command sections of `docs/EXTENDING.md` and the workflow-sync
 operator entry in `docs/SETUP.md`. They describe root evidence, reconciliation
-after language disappearance, purge dry-run candidates, and close conditions.
+after language disappearance, purge dry-run candidates, reopened requests,
+comment-read failures and filing again after the marker returns.
 
 The reported baseline failure was reproduced: 39 tests passed and three Cargo
 capability regressions failed across the five named suites. Marker fixtures in

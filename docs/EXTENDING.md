@@ -260,9 +260,14 @@ Older language results without that inventory trigger a root-contents fetch;
 a failed fetch fails the audit before reconciliation. Existing workflow files
 are left in place. Trusted generated requests for known inapplicable
 root-project specs are closed with the reason, including when GitHub no longer
-reports their language. `setup workflow-sync` has no dry run and closes these
-requests on every run. Use `purge-stale-workflow-issues --dry-run` to report
-the same root-marker closures as not applicable.
+reports their language. On each run, a request with a fleet-authored
+missing-root closure comment is recognised as reopened, left open and logged.
+A failed comment read leaves that request open and fails the repository's sync
+before filing issues; other candidates may already have been closed. A request
+the fleet closed for a missing root marker no longer suppresses filing when the
+marker returns. `setup workflow-sync` has no dry run. Use
+`purge-stale-workflow-issues --dry-run` to report the same eligible root-marker
+closures as not applicable.
 
 ### Pins are resolved when the issue is filed, and the body says so
 
@@ -478,7 +483,13 @@ marker that is absent. Root markers are `Cargo.toml`, `deno.json` or
 `deno.jsonc`, `package.json`, and `pom.xml`, `build.gradle` or
 `build.gradle.kts`, depending on the spec. Missing markers make a spec
 inapplicable even if its language no longer appears in GitHub's language
-counts. The command never changes workflow files.
+counts. A fleet-authored missing-root closure comment identifies a reopened
+request, which is left open and logged. If its comments cannot be read, the
+command leaves that request open and reports the failure. Other candidates may
+still be closed. A request closed for a missing root marker no longer suppresses
+workflow-sync filing when the marker returns. During sync, a failed reconciliation
+comment read fails that repository's sync before filing issues. The command never
+changes workflow files.
 
 ```bash
 # Dry run across all configured repos
