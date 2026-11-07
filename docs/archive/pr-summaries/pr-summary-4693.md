@@ -27,8 +27,8 @@ Version bump: no version file was changed for this update.
 
 ### Undiscoverable Facts
 
-- The issue identifies the VibeCoder Rust fixtures as the motivating case;
-  its root has no `Cargo.toml`.
+- The issue identifies the VibeCoder Rust fixtures as the motivating case; its
+  root has no `Cargo.toml`.
 - Template contracts were checked in the workflow definitions: Cargo commands
   run at the checkout root, ShellCheck's `scandir: .` recursively scans, Java
   Dependency Check uses `path: .`, and Dependabot Java updates use root `/`.
@@ -37,11 +37,12 @@ Version bump: no version file was changed for this update.
 
 Backend and CLI change; no visual surface changed.
 
-Template contract evidence: `gh api repos/ludeeus/action-shellcheck/contents/action.yaml`
-showed the `scandir` input and recursive file search. The Dependency Check
-Action README documents `path` as its scan path and uses `.` in its example.
-The Cargo templates invoke Cargo from the checkout root, and the Java update
-template configures Dependabot directory `/`.
+Template contract evidence:
+`gh api repos/ludeeus/action-shellcheck/contents/action.yaml` showed the
+`scandir` input and recursive file search. The Dependency Check Action README
+documents `path` as its scan path and uses `.` in its example. The Cargo
+templates invoke Cargo from the checkout root, and the Java update template
+configures Dependabot directory `/`.
 
 ```mermaid
 flowchart LR
@@ -65,9 +66,9 @@ flowchart LR
   specs; a root `Cargo.toml` retains all three; mixed languages retain universal
   and marker-backed specs; nested ShellCheck and Java Dependency Check remain
   eligible; `index.html` alone does not satisfy npm project templates.
-- `worker/deno/tests/purge_stale_workflow_issues_test.ts`:
-  trusted missing/partial requests are reconciled; unknown specs and untrusted
-  authors remain open; root-marker projects retain their requests; dry-run and
+- `worker/deno/tests/purge_stale_workflow_issues_test.ts`: trusted
+  missing/partial requests are reconciled; unknown specs and untrusted authors
+  remain open; root-marker projects retain their requests; dry-run and
   close-failure outcomes are covered.
 - `worker/deno/tests/setup_workflow_sync_test.ts`: sync reconciles when there
   are no workflow gaps; listing/close failures surface; dry-run does not close.
@@ -75,7 +76,8 @@ flowchart LR
   select Cargo toolchain actions, while a root Cargo project does.
 - Regression red check: the API-only Rust Cargo assertion failed with the
   unfixed auditor and passed with the final implementation.
-- `deno task test:unit tests/workflow_auditor_test.ts tests/purge_stale_workflow_issues_test.ts tests/setup_workflow_sync_test.ts tests/workflow_sync_actions_test.ts < /dev/null` — passed, 104 tests.
+- `deno task test:unit tests/workflow_auditor_test.ts tests/purge_stale_workflow_issues_test.ts tests/setup_workflow_sync_test.ts tests/workflow_sync_actions_test.ts < /dev/null`
+  — passed, 104 tests.
 - Targeted `deno check --frozen --lock=deno.lock` and `deno lint` on the changed
   source and test files — passed.
 - `timeout 900 ./quality.sh < /dev/null` — timed out with exit 124 while the
