@@ -10,7 +10,10 @@
  * or `CODING-STANDARDS.md` named an in-repo helper, component or policy
  * re-implemented by hand as a departure. These tests pin the rule the
  * templates, the shared Spec reviewer prompt constant and the coding
- * standards now carry, so a later edit that drops it fails here.
+ * standards now carry, so a later edit that drops it fails here. Issue #4688
+ * widened the rule to tests, scripts and components, and removed the Rust-only
+ * remedy of widening a private owner's visibility, so the pins follow that
+ * wording.
  *
  * Each pin runs against the one section of the doc that carries the rule —
  * `Instructions`, `Independent Review Before the PR`, `Making Changes` or
@@ -35,26 +38,40 @@ import {
   section,
 } from "./support/markdown_docs.ts";
 
-Deno.test("issue - step 1 makes the agent call the existing owner instead of copying it", async () => {
+Deno.test("issue - step 1 makes the agent call existing code instead of copying it", async () => {
   const body = flat(
     section(await readRepoDoc("prompts/issue/prompt.md"), "Instructions"),
   ).toLowerCase();
 
   for (
     const required of [
-      "call the existing owner",
-      "formats, orders, ranks, validates or decides",
-      "every component or function the issue names",
-      "implementation section",
-      "widen its visibility",
-      "`pub(crate)` → `pub`",
-      "a component the issue says to reuse is a stated requirement",
+      "call existing code — never copy it",
+      "already exists in the repo",
+      "in product code, a script or another test file",
+      "export it or move it to a shared module",
+      "switch the old callers to it",
+      "a component the issue says to reuse is a stated criterion",
+      "never computes its expected result by calling the implementation it asserts",
+      "a literal expected value or an independent behavioural fixture",
     ]
   ) {
     assertStringIncludes(
       body,
       required,
       `missing from prompts/issue/prompt.md's Instructions section: "${required}"`,
+    );
+  }
+
+  for (
+    const banned of [
+      "widen its visibility",
+      "`pub(crate)` → `pub`",
+      "formats, orders, ranks, validates or decides",
+    ]
+  ) {
+    assert(
+      !body.includes(banned),
+      `still in prompts/issue/prompt.md's Instructions section: "${banned}"`,
     );
   }
 });
@@ -75,7 +92,7 @@ Deno.test("issue - the Spec reviewer brief treats a named reuse as a criterion",
   );
 });
 
-Deno.test("pr_feedback - a fix calls the owner and replaces a flagged copy", async () => {
+Deno.test("pr_feedback - a fix calls existing code and replaces a flagged copy", async () => {
   const body = flat(
     section(
       await readRepoDoc("prompts/pr_feedback/prompt.md"),
@@ -85,9 +102,10 @@ Deno.test("pr_feedback - a fix calls the owner and replaces a flagged copy", asy
 
   for (
     const required of [
-      "call the existing owner",
-      "widen its visibility",
-      "replace the copy with a call to the owner",
+      "call existing code — never copy it",
+      "replace the copy with a call or import of the original",
+      "move it to a shared module and switch the old callers",
+      "never computes its expected result by calling the implementation it asserts",
     ]
   ) {
     assertStringIncludes(
@@ -97,6 +115,11 @@ Deno.test("pr_feedback - a fix calls the owner and replaces a flagged copy", asy
         `"${required}"`,
     );
   }
+  assert(
+    !body.includes("widen its visibility"),
+    "still in prompts/pr_feedback/prompt.md's Making Changes section: " +
+      `"widen its visibility"`,
+  );
 });
 
 Deno.test("CODING-STANDARDS - the over-engineering checklist flags an in-repo helper copied by hand", async () => {
@@ -111,8 +134,13 @@ Deno.test("CODING-STANDARDS - the over-engineering checklist flags an in-repo he
   );
   assertStringIncludes(
     body,
-    "an in-repo helper, component or policy re-implemented by hand instead of called",
+    "an in-repo helper, component or rule copied or re-implemented instead of called or imported, in tests and scripts as in product code",
     "missing from CODING-STANDARDS.md's Coding Principles section",
+  );
+  assert(
+    !body.includes("widen its visibility"),
+    "still in CODING-STANDARDS.md's Coding Principles section: " +
+      `"widen its visibility"`,
   );
 });
 
