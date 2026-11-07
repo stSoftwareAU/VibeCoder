@@ -3609,13 +3609,21 @@ Deno.test("repair prompt applies the shared evidence policy to test replacements
   }
 });
 
-Deno.test("a repair updates a CI-checked per-PR summary in the same fix", () => {
+Deno.test("every repair rewrites CI-checked per-PR summary claims for the pushed head", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
     assertStringIncludes(prompt, "per-PR summary");
-    assertStringIncludes(prompt, "in the same fix");
+    assertStringIncludes(
+      prompt,
+      "rewrite it in the same fix so every claim, count and result matches the pushed head",
+    );
+    assertStringIncludes(
+      prompt,
+      "instead of adding a follow-up note beside the old text",
+    );
+    assert(!prompt.includes("update it to cover your change"));
   }
 });
 
