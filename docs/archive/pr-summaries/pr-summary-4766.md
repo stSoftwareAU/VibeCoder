@@ -24,8 +24,10 @@ integration and Checkov stages reported as skipped. Closes #4766.
 - Reuse automatic routing, provider credential export and DeepSeek environment
   filtering; inject external inputs for deterministic tests.
 - Resolve missing and existing provider-less configs uniformly. Environment pins
-  win in auto mode or when the file names no provider; configured
-  providers/provider lists win in pinned mode.
+  win in auto mode or when the file names no provider; in pinned mode the
+  configured `agent_provider`, environment pin, then Claude select the provider.
+  `agent_providers` is the enabled set, not a pin. Auto-mode environment pins
+  must belong to that set.
 - Remove the explicit default token selector and redundant missing-file guard.
   The credential helper already defaults to that exact selector.
 - Reuse the source lexer to distinguish executable harness imports/calls from
@@ -63,7 +65,7 @@ flowchart TD
   `claude`. The new regression failed before the fix and passes now, asserting
   Codex, preserved environment and zero status probes/credential exports.
 - The unchanged `provider_auto_runtime` and `review_round` suites passed
-  together: 32 tests. The final combined targeted run passed 137 tests across 11
+  together: 32 tests. An earlier combined targeted run passed 137 tests across 11
   files, including the classifier and completeness regression suites.
 - `deno task check:manifests < /dev/null`: 848 passed, 0 failed, 1 ignored,
   across 55 completeness files. Literal classifier examples live in a focused
@@ -75,14 +77,13 @@ flowchart TD
 - Issue provenance checked: #4766 — “Babysitter repairs choose their provider
   subscription-first, with DeepSeek as logged paid overflow”; #4738 — “Fleet PR
   babysitter repairs run in the worker container, like reviewer rounds”.
-- Final `./quality.sh < /dev/null`: exit 0, `PASSED (with skipped checks)`.
+- Earlier `./quality.sh < /dev/null`: exit 0, `PASSED (with skipped checks)`.
   Parallel unit pass: 3m53s; serial unit pass: 2m59s. Lint, type check,
   formatting, Semgrep, Markdown, Mermaid and completeness checks passed. Config
   integration was skipped because no local config was available; Checkov was
   skipped because neither a pinned binary nor image was available.
-- Final `pr-summary-check` with the issue body and current labels validates
-  closure and review provenance. It reports one remaining finding: the
-  outstanding Standards redaction violation below; no checks were unverified.
+- The earlier `pr-summary-check` validated closure and review provenance.
+  Freshness for this uncommitted revision is checked after the babysitter commits.
 
 ```text
 Deno tests [parallel]: PASSED in 3m53s
@@ -93,7 +94,7 @@ Result: PASSED (with skipped checks)
 
 ## Test Plan
 
-- All test commands use stdin from `/dev/null`. The final targeted suite passed
+- The earlier targeted test commands used stdin from `/dev/null` and passed
   137 tests; the manifest suite passed 848 tests with one ignored case.
 
 ```bash
@@ -113,7 +114,14 @@ deno task test:unit \
 
 - Chooser coverage exercises ranking, restored quota, isolated/logged overflow,
   missing credentials, parse/read causes, null/primitive config rejection,
-  provider-list precedence, environment pins, returned env and resolver context.
+  provider selection, environment pins, returned env and resolver context.
+- The former list-first pinned expectation was obsolete: the enabled list does
+  not select the active provider. File pin, environment pin and default remain
+  covered by `worker/deno/tests/babysitter_provider_choice_4738_test.ts::configured single-provider pin takes precedence over an environment pin`,
+  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::provider list leaves pinned selection to the environment`,
+  and `worker/deno/tests/babysitter_provider_choice_4738_test.ts::provider list order does not override the default pin`.
+  The new list and disabled auto-pin cases failed before the fix. The chooser,
+  automatic runtime and review-round suites then passed together: 52 tests.
 - Default credential-export coverage uses a private temporary directory and a
   child process with `clearEnv: true`; it checks the real DeepSeek export,
   returned child env and absence of parent-env credential writes.
@@ -151,16 +159,14 @@ runtime assertion failure. No untestable exemptions are claimed.
 | 87            | Delete export `providers`      | Real default export with competing Claude credential                              | Red                       |
 | 88            | Delete explicit `selectToken`  | Callee already defaults to that exact selector; redundant property/import removed | Equivalent wiring removed |
 | 89            | Delete export `setEnv`         | Real export asserts returned key and no parent-env write                          | Red                       |
-| 118           | Delete `configuredProviders`   | Provider-list pin wins over environment                                           | Red                       |
 | 120           | Force `!config.missing` true   | Missing-file flag/branch removed; missing config resolves as empty object         | Redundant guard removed   |
-| 120           | Force auto-mode condition true | Configured provider/list pins retain precedence                                   | Red                       |
 | 130           | Delete pinned result `env`     | Provider-less/configured pin preserves supplied env                               | Red                       |
 | 135           | Delete runtime `workDir`       | Status resolution receives the repair work directory                              | Red                       |
 | 137           | Delete runtime `env`           | Status resolution receives the repair environment marker                          | Red                       |
 
-Not checked: config integration needs a real config; Checkov needs an available
-pinned tool/image. Remaining risk: the independent Standards reviewer identified
-the overflow-log redaction gap above.
+Not checked in the earlier quality run: config integration needs a real config;
+Checkov needs an available pinned tool/image. The latest independent review
+found process-wide console redaction and no secret-logging violation.
 
 ## Acceptance Criteria
 
@@ -190,7 +196,8 @@ the overflow-log redaction gap above.
   — reviewer: met
 - **met** — Test: pinned mode returns the pinned provider and never calls the
   DeepSeek export. — evidence:
-  `worker/deno/tests/babysitter provider choice 4738 test.ts::configured pinned mode returns the configured provider without probing or overflow`
+  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::configured pinned mode returns the configured provider without probing or overflow` and
+  `worker/deno/tests/babysitter_provider_choice_4738_test.ts::provider list leaves pinned selection to the environment`
   — reviewer: met
 - **met** — The existing provider auto runtime and review round tests pass
   unchanged. — evidence:
@@ -208,14 +215,9 @@ the overflow-log redaction gap above.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Secret Redaction — Every Outbound Sink: the new overflow
-  logger emits ranked credential labels and exclusion text without independently
-  applying redactSecrets(). — evidence:
-  `worker/deno/lib/babysitter provider choice.ts:169` — reason: The fix is
-  absent from the inspected diff. Reporting 'fixed in this diff' would be false;
-  this turn prohibits code changes, and a follow-up cannot discharge a breach on
-  newly added lines.
+- **clean** — Secret logging: the latest review found process-wide console
+  redaction and a test that checks the overflow log for credential values.
 - **clean** — Checked Australian English, KISS/DRY, existing routing and
   credential-helper reuse, contextual error propagation, behavioural test
   assertions, preserved launcher safety coverage and documentation consistency.
-  No files changed.
+  Provider precedence and disabled auto-mode pins were corrected after review.

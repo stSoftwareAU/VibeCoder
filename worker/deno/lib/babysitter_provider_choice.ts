@@ -2,8 +2,8 @@
 
 import {
   DEEPSEEK_PROVIDER_ID,
-  DEFAULT_AGENT_PROVIDER_ID,
   resolveAgentProvider,
+  resolveAgentProviderId,
 } from "./agent_provider.ts";
 import { applyProviderCredentialEnv } from "./credential_preflight.ts";
 import { buildDeepSeekChildEnv } from "./deepseek_env.ts";
@@ -111,16 +111,26 @@ export async function chooseBabysitterProvider(
     configuredProvider: raw.agent_provider,
     configuredProviders: raw.agent_providers,
   });
-  const resolvedConfig = pin &&
-      (configured.mode === "auto" || configured.preference.length === 0)
-    ? resolveAutomaticProviderConfig({ environmentProvider: pin })
-    : configured;
-
-  if (resolvedConfig.mode !== "auto") {
-    const providerId = resolvedConfig.preference[0] ??
-      DEFAULT_AGENT_PROVIDER_ID;
+  if (configured.mode !== "auto" || pin) {
+    if (
+      configured.mode === "auto" && pin &&
+      !deps.enabledProviderIds.some((id) => id.trim() === pin)
+    ) {
+      throw new Error(
+        `VIBE_AGENT_PROVIDER pin ${JSON.stringify(pin)} is not ` +
+          `in the enabled agent_providers set`,
+      );
+    }
+    const providerId = resolveAgentProviderId({
+      configured: configured.mode === "auto"
+        ? ""
+        : typeof raw.agent_provider === "string"
+        ? raw.agent_provider
+        : "",
+      env,
+    });
     return {
-      providerId: resolveAgentProvider(providerId).id,
+      providerId,
       overflow: false,
       env: (deps.readEnvironment ?? (() => Deno.env.toObject()))(),
     };

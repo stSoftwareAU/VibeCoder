@@ -332,11 +332,11 @@ Deno.test("malformed babysitter config retains the syntax error cause", async ()
   assert(error.cause instanceof SyntaxError);
 });
 
-Deno.test("configured provider list pins its first provider ahead of the environment", async () => {
+Deno.test("provider list leaves pinned selection to the environment", async () => {
   await withProviderState(async () => {
     const fixture = baseDeps({
-      config: { agent_providers: ["codex", "claude"] },
-      env: testEnv({ VIBE_AGENT_PROVIDER: "claude" }),
+      config: { agent_providers: ["claude", "codex"] },
+      env: testEnv({ VIBE_AGENT_PROVIDER: "codex" }),
     });
     const result = await chooseBabysitterProvider(fixture.deps);
     assertEquals(result.providerId, "codex");
@@ -344,6 +344,27 @@ Deno.test("configured provider list pins its first provider ahead of the environ
     assertEquals(result.overflow, false);
     assertEquals(fixture.calls(), { statusCalls: 0, credentialCalls: 0 });
   });
+});
+
+Deno.test("provider list order does not override the default pin", async () => {
+  const fixture = baseDeps({
+    config: { agent_providers: ["codex", "claude"] },
+  });
+  const result = await chooseBabysitterProvider(fixture.deps);
+  assertEquals(result.providerId, "claude");
+  assertEquals(fixture.calls(), { statusCalls: 0, credentialCalls: 0 });
+});
+
+Deno.test("auto mode rejects an environment pin outside the enabled set", async () => {
+  const fixture = baseDeps({
+    env: testEnv({ VIBE_AGENT_PROVIDER: "deepseek" }),
+  });
+  await assertRejects(
+    () => chooseBabysitterProvider(fixture.deps),
+    Error,
+    'VIBE_AGENT_PROVIDER pin "deepseek" is not in the enabled agent_providers set',
+  );
+  assertEquals(fixture.calls(), { statusCalls: 0, credentialCalls: 0 });
 });
 
 Deno.test("configured single-provider pin takes precedence over an environment pin", async () => {
