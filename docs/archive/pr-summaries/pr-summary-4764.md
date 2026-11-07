@@ -91,6 +91,10 @@ flowchart TD
 - Docs: `docs/USAGE.md` gains a paragraph on the committed-copy rule;
   `docs/workflows/fleet-pr-babysitter.md` already describes the committed loader
   for a different path and is unchanged.
+- Review fix: body-length recovery logs and comments now describe the committed
+  summary fallback and mechanical cut when a rewrite cannot be committed.
+  Existing coverage: `worker/deno/tests/pr_body_length_4359_test.ts` and
+  `worker/deno/tests/completion_phase_committed_summary_4764_test.ts`.
 - Doc fix: the `commitRecoveredSummary` comment in `summary_rule_gate_retry.ts`
   now says a completion re-run publishes the summary committed at HEAD, never an
   uncommitted one.

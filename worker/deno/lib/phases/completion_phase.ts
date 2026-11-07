@@ -2446,7 +2446,8 @@ async function completionBody(
   );
 
   // Issue #4359: ask once, before the gates, when the body would be rejected.
-  // The re-run reads the rewritten summary and applies these same checks.
+  // The re-run applies these checks to the rewritten summary once committed;
+  // otherwise it uses the summary committed at HEAD.
   // Cutting waits until that turn has been tried.
   {
     const limited = applyPrBodyLengthPolicy(prBody, {
