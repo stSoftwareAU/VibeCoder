@@ -1,8 +1,8 @@
 ## Summary
 
 Corrected the stale module header to describe cargo-budget withholds as
-uncharged, uncounted refusals that do not climb the recovery ladder. Closes
-#4702.
+uncharged events that are not refusals, do not count toward `refusedCycles`,
+and do not climb the recovery ladder. Closes #4702.
 
 Version bump: no version files changed for this documentation-only correction.
 
@@ -19,8 +19,8 @@ Version bump: no version files changed for this documentation-only correction.
 
 ### Undiscoverable Facts
 
-- `gh issue view 4588` confirmed Issue #4588 is closed and concerns cargo
-  withholds advancing `refusedCycles`.
+- `gh issue view 4588` confirmed Issue #4588 is closed and fixes cargo
+  withholds incorrectly advancing `refusedCycles`.
 
 ## Evidence
 
