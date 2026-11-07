@@ -46,14 +46,15 @@ Backend-only change; no UI files. Tests below were run on the head.
   Gradle id; new test "Java dependency update specs are split by ecosystem"
   checks each template's ecosystem, the exact root markers and detection groups,
   and each spec's display name, capabilities and suggested filename (kills the
-  four surviving mutants at `workflow_definitions.ts` lines 817, 846, 856 and 857).
+  four surviving mutants at `workflow_definitions.ts` lines 817, 846, 856 and
+  857).
 - `worker/deno/tests/workflow_auditor_test.ts` — new tests for `build.gradle`
   only, `build.gradle.kts` only, `pom.xml` only, and a workflow containing only
   `package-ecosystem: maven` (with a "Dependabot configuration for Maven" header
   comment, as the old template had) not satisfying the Gradle spec, asserted as
-  missing, not present or partial; two existing
-  expectations updated for the split (notApplicable lists now include both Java
-  update ids where no root file exists).
+  missing, not present or partial; two existing expectations updated for the
+  split (notApplicable lists now include both Java update ids where no root file
+  exists).
 - `worker/deno/tests/workflow_template_audit_conformance_test.ts` — the Gradle
   id added to `NON_WORKFLOW_SPEC_IDS` (it is a Dependabot config with no
   `jobs:`).
