@@ -192,14 +192,6 @@ function jobLog(messages: string[]): string {
   ].join("\n");
 }
 
-/** The messages of a CI-fix input's annotations. */
-function annotationMessages(input: CiFixInput): string[] {
-  const annotations = JSON.parse(
-    atob(input.encodedAnnotations),
-  ) as CheckAnnotation[];
-  return annotations.map((annotation) => annotation.message);
-}
-
 /** A job-log reply: the text, or a failed fetch when `log` is `"error"`. */
 function logReply(log: string | "error"): Promise<string> {
   return log === "error"
@@ -331,10 +323,10 @@ function makeGhRunner(
     }
     // The base run's job log and the merged run's job log (Issue #4680).
     if (endpoint === `repos/org/repo/actions/jobs/${BASE_CHECK_ID}/logs`) {
-      return logReply(options.baseLog ?? jobLog([SEMGREP_MESSAGE]));
+      return logReply(options.baseLog ?? semgrepLog(SEMGREP_RULE));
     }
     if (endpoint === `repos/org/repo/actions/jobs/${MERGED_CHECK_ID}/logs`) {
-      return logReply(options.mergedLog ?? jobLog([SEMGREP_MESSAGE]));
+      return logReply(options.mergedLog ?? semgrepLog(SEMGREP_RULE));
     }
 
     // The workflow path a run was created from (`--jq .path`, Issue #4680).
@@ -441,7 +433,9 @@ async function runDeferralScenario(
     };
     // The fixture's first annotation describes the job failure; notices are
     // not automatically copied into the job log.
-    const ownLog = jobLog(annotationMessages(input).slice(0, 1));
+    const ownLog = input.checkName === "lint"
+      ? "##[endgroup]\nIn ./scripts/deploy.sh line 42:\n  ^--^ SC2086 (info): Double quote to prevent globbing and word splitting.\n##[error]Process completed with exit code 1."
+      : semgrepLog(SEMGREP_RULE);
     const runGh = makeGhRunner(captured, {
       checkName: input.checkName,
       failingLog: ownLog,
@@ -710,7 +704,7 @@ Deno.test("processCiFailure - a deferral comment that fails to post is never rep
       warnings: [],
     };
     const inner = makeGhRunner(captured, {
-      failingLog: jobLog([SEMGREP_MESSAGE]),
+      failingLog: semgrepLog(SEMGREP_RULE),
     });
     const runGh = (args: string[]): Promise<string> => {
       if (args[0] === "pr" && args[1] === "comment") {
@@ -1343,4 +1337,55 @@ Deno.test("processCiFailure - output a passing test prints and changing test tal
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
   assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+});
+
+Deno.test("processCiFailure - npm log paths do not prevent deferral", async () => {
+  const log = (stamp: string) =>
+    jobLog([
+      `src/legacy/report.ts(14,7): error TS2322: incompatible types`,
+      `npm error A complete log of this run can be found in: /home/runner/.npm/_logs/${stamp}-debug-0.log`,
+    ]);
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log("2026-01-01T06_10_07_123Z"),
+    baseLog: log("2026-01-02T07_11_08_456Z"),
+  }, exitLineInput());
+  assertStringIncludes(
+    captured.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-deferred ",
+  );
+});
+
+Deno.test("processCiFailure - shellcheck and Deno diagnostics compare loci", async () => {
+  const shell = (file: string, rule: string) =>
+    `##[endgroup]
+In ./scripts/${file}.sh line 42:
+  ^--^ ${rule} (info): Double quote to prevent globbing and word splitting.
+##[error]Process completed with exit code 1.`;
+  const lint = (file: string) =>
+    `##[endgroup]
+error[no-explicit-any]: any type is not allowed
+ --> worker/deno/lib/${file}.ts:12:20
+##[error]Process completed with exit code 1.`;
+  const check = (file: string) =>
+    `##[endgroup]
+TS2322 [ERROR]: Type string is not assignable to number.
+ at file:///repo/worker/deno/lib/${file}.ts:30:9
+##[error]Process completed with exit code 1.`;
+  for (
+    const [pr, base, marker] of [
+      [shell("deploy", "SC2086"), shell("deploy", "SC2086"), "deferred"],
+      [shell("deploy", "SC2086"), shell("other", "SC2154"), "attempt"],
+      [lint("new"), lint("other"), "attempt"],
+      [check("new"), check("other"), "attempt"],
+    ]
+  ) {
+    const captured = await runDeferralScenario(AGENT_MESSAGE, {
+      failingLog: pr,
+      baseLog: base,
+    }, exitLineInput());
+    assertStringIncludes(
+      captured.comments.at(-1) ?? "",
+      `<!-- vibe-ci-fix-${marker} `,
+    );
+  }
 });

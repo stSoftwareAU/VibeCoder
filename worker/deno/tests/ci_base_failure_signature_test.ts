@@ -1041,3 +1041,55 @@ Deno.test("failureSignatureLines - the new line patterns stay bounded on hostile
     "unreadable",
   );
 });
+
+Deno.test("compareBaseFailure - npm log paths and diagnostic loci", async () => {
+  const npm = (stamp: string) =>
+    `src/legacy/report.ts(14,7): error TS2322: incompatible types
+npm error A complete log of this run can be found in: /home/runner/.npm/_logs/${stamp}-debug-0.log`;
+  assertEquals(
+    await compareStates(
+      npm("2026-01-01T06_10_07_123Z"),
+      npm("2026-01-02T07_11_08_456Z"),
+    ),
+    "same",
+  );
+  for (
+    const diagnostic of [
+      (file: string) =>
+        `error[no-explicit-any]: any type is not allowed
+ --> worker/deno/lib/${file}.ts:12:20`,
+      (file: string) =>
+        `TS2322 [ERROR]: Type string is not assignable to number.
+    at file:///repo/worker/deno/lib/${file}.ts:30:9`,
+    ]
+  ) {
+    assertEquals(
+      await compareStates(diagnostic("new_feature"), diagnostic("unrelated")),
+      "different",
+    );
+    assertEquals(
+      await compareStates(diagnostic("new_feature"), diagnostic("new_feature")),
+      "same",
+    );
+  }
+});
+
+Deno.test("compareBaseFailure - shellcheck tty identifies rule and file", async () => {
+  const log = (file: string, rule: string) =>
+    `##[endgroup]
+In ./scripts/${file}.sh line 42:
+  ^--^ ${rule} (info): Double quote to prevent globbing and word splitting.
+##[error]Process completed with exit code 1.`;
+  assertEquals(
+    await compareStates(log("deploy", "SC2086"), log("deploy", "SC2086")),
+    "same",
+  );
+  assertEquals(
+    await compareStates(log("deploy", "SC2086"), log("other", "SC2086")),
+    "different",
+  );
+  assertEquals(
+    await compareStates(log("deploy", "SC2086"), log("deploy", "SC2154")),
+    "different",
+  );
+});

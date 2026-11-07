@@ -51,7 +51,7 @@ const FLAG_TOKEN = /(?:^|\s)--?[a-z][\w-]*/g;
  * (it names no suite; the `FAIL <file>` line does).
  */
 const GENERIC_LINE =
-  /process completed with exit code|^assertion `left (?:==|!=) right` failed$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|npm error (?:path|command)\s|^throw new assertionerror\(|^at .+ \(https?:\/\/|^(?:error: )?assertionerror(?: \[err_assertion\])?: (?:values are not equal\.?|expected values to be strictly equal:?|the expression evaluated to a falsy value:?)$|^[●✖✕✗×] test suite failed to run/;
+  /process completed with exit code|^assertion `left (?:==|!=) right` failed$|error: test failed, to rerun pass|npm error command failed|a complete log of this run can be found in|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|npm error (?:path|command)\s|^throw new assertionerror\(|^at .+ \(https?:\/\/|^(?:error: )?assertionerror(?: \[err_assertion\])?: (?:values are not equal\.?|expected values to be strictly equal:?|the expression evaluated to a falsy value:?)$|^[●✖✕✗×] test suite failed to run/;
 /**
  * A passing test result, in any runner format: TAP `ok <n>`, Go `--- PASS`,
  * Jest `PASS`, pytest `::name PASSED`, and the `✓`, `✔` and `√` marks of the
@@ -105,6 +105,8 @@ function normaliseComparison(text: string): string {
   return normaliseLogExcerpt(
     text.replace(/\b\d+m\d+(?:\.\d+)?s\b|\b\d+(?:\.\d+)?\s*[µμ]s\b/gi, "<dur>")
       .replace(/^(.* => \S+?):\d+:\d+$/, "$1:<l>:<l>")
+      .replace(/^(\s*(?:-->|at)\s+\S+?):\d+:\d+$/, "$1:<l>:<l>")
+      .replace(/^(\s*in\s+\S+\s+line\s+)\d+:/i, "$1<n>:")
       .replace(
         /^(\s*(?:\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?z?\s+)?)(not ok\s+)\d+(?=\s)/gim,
         "$1$2<n>",
@@ -283,8 +285,10 @@ function failingStepLines(lines: string[]): string[] {
 const LOOSE_NUMBER = /\b\d+\b/g;
 /** Explicit file loci and rule identifiers are evidence; step banners are not. */
 const FORMAT_LOCUS = /^from\s+\S+:$/;
+const DIAGNOSTIC_LOCUS =
+  /^(?:(?:-->|at)\s+(?:file:\/\/)?\S+:<l>:<l>|in\s+\S+\s+line\s+<n>:)/i;
 const DISTINCTIVE_LINE =
-  /^(?:from\s+\S+:|❯❱\s+\S+|(?:[\w.-]+\/)+[\w.-]+\.[a-z\d]+(?::\d+)?$|(?:sc\d{4}|md\d{3})\b|semgrep: blocking code rules fired - \S+|lint: [\w-]+$)/i;
+  /^(?:from\s+\S+:|❯❱\s+\S+|(?:[\w.-]+\/)+[\w.-]+\.[a-z\d]+(?::\d+)?$)|\b(?:sc\d{4}|md\d{3})\b/i;
 const FORMAT_SUMMARY = /^error: found \d+ not formatted files? in \d+ files?$/;
 
 function loosen(line: string): string {
@@ -312,12 +316,18 @@ function comparableLines(lines: string[], needsWord: boolean): string[] {
     if (FORMAT_SUMMARY.test(normalised)) continue;
 
     if (needsWord) {
-      if (!TEST_NAME.test(normalised) && !FORMAT_LOCUS.test(normalised)) {
+      if (
+        !TEST_NAME.test(normalised) && !FORMAT_LOCUS.test(normalised) &&
+        !DIAGNOSTIC_LOCUS.test(normalised) &&
+        !/\b(?:sc\d{4}|md\d{3})\b/i.test(normalised)
+      ) {
         if (normalised.length < MIN_SIGNATURE_CHARS) continue;
         if (!FAILURE_WORD.test(normalised.replace(FLAG_TOKEN, " "))) continue;
       }
     } else {
-      if (!DISTINCTIVE_LINE.test(normalised)) continue;
+      if (
+        !DISTINCTIVE_LINE.test(normalised) && !DIAGNOSTIC_LOCUS.test(normalised)
+      ) continue;
     }
     if (seen.has(normalised)) continue;
 

@@ -49,7 +49,9 @@ When no line qualifies, distinctive rule identifiers and file loci in the
 failing step output are compared with standalone numbers ignored. Run metadata
 and generic command echoes are not evidence; without a distinctive line the
 result is unreadable. Deno formatter `from <path>:` lines identify files and its
-file-count summary is ignored. Deno failure-section and Jest suite-failure
+file-count summary is ignored. Deno lint and check locations, and shellcheck
+file locations and rule IDs, identify findings; npm log-location lines are
+ignored. Deno failure-section and Jest suite-failure
 headers without a test or suite locus are unreadable.
 
 Limits: output that a passing test prints without a recognised block marker
@@ -75,12 +77,13 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  81 passed, 0 failed (45 and 36 tests respectively).
+  85 passed, 0 failed (47 and 38 tests respectively).
 - `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
-  output, differing formatter file loci and counts, and generic npm output.
+  output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using
   real Semgrep job 101249366081 output with different commit IDs and event, and
-  formatter failures on the same or different files.
+  formatter and shellcheck failures on the same or different files, Deno lint and
+  check loci, and npm log paths.
 - The obsolete fallback compared all step output, including run metadata and
   command echoes. The remaining behaviour compares distinctive rule or file
   evidence and holds generic-only output as unreadable. Coverage:
@@ -97,6 +100,13 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
   added failure word; deferral remains covered by
   `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a red base defers once, charging no attempt (Issue #1880)`
   and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
+- The obsolete fixture-only Semgrep and lint signature alternatives are removed;
+  actual rule and file evidence remains comparable. Coverage:
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a red base defers once, charging no attempt (Issue #1880)`
+  and
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
+- The focused tests, repository-wide `deno fmt --check`, `deno lint`,
+  and `deno task check` passed.
 - The matching rule is documented in `docs/workflows/ci-fix.md` and
   `prompts/ci_fix/prompt.md`; both were updated together.
 
