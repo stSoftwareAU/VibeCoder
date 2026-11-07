@@ -111,8 +111,8 @@ export interface PurgeResult {
   kept: CandidateIssue[];
   /**
    * Issues that were (or would be, in dry-run) closed because the underlying
-   * spec is not applicable to this repository — typically a `public-only`
-   * spec on a private repo (Issue #1755).
+   * spec is not applicable to this repository — for example, a `public-only`
+   * spec on a private repo or a root-project template without its marker.
    */
   notApplicable: CandidateIssue[];
   /** Issues that should have been closed but the close call failed. */
@@ -282,7 +282,7 @@ Closing automatically: this issue is no longer applicable under the updated work
 *Closed by \`purge-stale-workflow-issues\` (Issue #1582).*`;
 }
 
-/** Reconcile trusted generated issues for specs excluded by root-project applicability. */
+/** Reconcile trusted generated issues excluded by root-project applicability. */
 export async function reconcileInapplicableWorkflowIssues(
   repo: string,
   specIds: string[],
@@ -399,8 +399,8 @@ function buildPublicOnlySpecIds(): Set<string> {
  * Steps:
  * 1. List open issues whose body contains a workflow-sync tag.
  * 2. Re-audit the repo's workflows using the current detection logic.
- * 3. For each candidate, if the spec is now classified as `present`, close
- *    the issue with an explanatory comment. Otherwise leave it open.
+ * 3. Close a candidate if its spec is now `present` or is no longer
+ *    applicable because a required root-project marker is absent.
  *
  * @param repo - Repository in `owner/repo` form.
  * @param options - Optional configuration.
