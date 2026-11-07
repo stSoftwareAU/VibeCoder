@@ -64,5 +64,8 @@ passes).
 - Run: `deno task test:unit` on the four touched test files plus
   `tests/pr_maintenance_bot_prs_test.ts`: 198 passed, 0 failed; `deno fmt`,
   `deno lint`, `deno check` clean on the six changed files.
+- `./quality.sh < /dev/null` on the code head: exit 0, "Result: PASSED (with
+  skipped checks)"; config integration and checkov were skipped by the gate
+  itself.
 - Not tested: an `is_bot: false` `app/<slug>` row in the stale cache is also
   rewritten (see decision above); `gh` cannot emit it.
