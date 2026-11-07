@@ -19,7 +19,7 @@
  *   screenshot         Setup Playwright MCP for screenshots
  *   label-sync         Synchronise labels across repos (--dry-run plans only)
  *   label-colour-reconcile  Repaint drifted fleet label colours
- *   workflow-sync      Audit workflows and raise issues for missing protections
+ *   workflow-sync      Audit workflows, raise issues, and close trusted requests missing root markers
  *   best-practices-sync  Audit workflows for best-practice findings and file follow-ups
  *   best-practices-relabel  Backfill severity + category labels on existing best-practice issues
  *   gitignore-sync     Apply canonical .gitignore + .gitattributes safety blocks to monitored repos
@@ -1911,7 +1911,7 @@ Subcommands:
                   reports what would change without touching a label)
   label-colour-reconcile  Repaint drifted fleet label colours to the canonical
                   table (supports --dry-run)
-  workflow-sync   Audit workflows and raise issues for missing protections
+  workflow-sync   Audit workflows, raise issues, and close trusted requests missing root markers
   best-practices-sync  Audit workflows for best-practice findings and file follow-ups
   best-practices-relabel  Backfill severity + category labels on existing best-practice issues (supports --dry-run)
   gitignore-sync  Apply canonical .gitignore + .gitattributes safety blocks to monitored repos
