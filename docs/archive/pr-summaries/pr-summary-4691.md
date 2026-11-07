@@ -13,9 +13,9 @@ Version bump: `VERSION` is not changed by this PR.
 
 ### Intent and Rationale
 
-- An agent following the bold "The file MUST contain" item wrote `Closes #N`
-  for a `partial`-only block, while the worker rewrote the PR body to
-  `Part of #N`. Making the checklist agree with the guard removes the mismatch.
+- An agent following the bold "The file MUST contain" item wrote `Closes #N` for
+  a `partial`-only block, while the worker rewrote the PR body to `Part of #N`.
+  Making the checklist agree with the guard removes the mismatch.
 
 ### Essential Design Decisions
 
@@ -28,20 +28,21 @@ Version bump: `VERSION` is not changed by this PR.
 ### Undiscoverable Facts
 
 - `deno task test:unit tests/merge_fallback_issue_test.ts` fails on the base
-  branch too (`createFallbackFlagFiler - routes the label creation through the
-  caller's gh`), so the full gate's deno-tests stage fails independently of this
-  change.
+  branch too
+  (`createFallbackFlagFiler - routes the label creation through the
+  caller's gh`),
+  so the full gate's deno-tests stage fails independently of this change.
 
 ## Evidence
 
-- `prompts/issue/prompt.md`: the "appended automatically" sentence, the
-  "must really be in the block" sentence and the bold item 1 now read
-  `partial` or `missing`.
-- Other places that stated the old rule, updated: `DESIGN-PRINCIPLES.md`
-  (Finish in the PR bullet), `docs/INTERNALS.md` (closer paragraph, the
-  `assemblePrBody` note, the mermaid node, the guard's table row),
-  `docs/USAGE.md` (adoption paragraph), `docs/workflows/pr-feedback.md`, and a
-  doc comment in `worker/deno/lib/closure_verdict_recovery.ts`.
+- `prompts/issue/prompt.md`: the "appended automatically" sentence, the "must
+  really be in the block" sentence and the bold item 1 now read `partial` or
+  `missing`.
+- Other places that stated the old rule, updated: `DESIGN-PRINCIPLES.md` (Finish
+  in the PR bullet), `docs/INTERNALS.md` (closer paragraph, the `assemblePrBody`
+  note, the mermaid node, the guard's table row), `docs/USAGE.md` (adoption
+  paragraph), `docs/workflows/pr-feedback.md`, and a doc comment in
+  `worker/deno/lib/closure_verdict_recovery.ts`.
 - Remaining `missing`-only hits in the issue prompt (`prompt.md` about the
   criteria-less issue, and the line that names a `missing` entry in general) are
   still true: they describe the criteria-less path above.
@@ -53,7 +54,8 @@ Version bump: `VERSION` is not changed by this PR.
 
 ## Test Plan
 
-- Added `worker/deno/tests/prompt_builder_test.ts::prompt builder - issue prompt gates the closing keyword on partial or missing (Issue #4691)`:
+- Added
+  `worker/deno/tests/prompt_builder_test.ts::prompt builder - issue prompt gates the closing keyword on partial or missing (Issue #4691)`:
   renders the issue prompt and asserts the three corrected sentences and the
   absence of the three old fragments. Red check: with the base
   `prompts/issue/prompt.md` restored it fails (69 passed, 1 failed); with the
