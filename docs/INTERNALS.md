@@ -4822,8 +4822,10 @@ url`, `unsuccessful tunnel` or `dns error`. The header is `error: Import
 (Issue #4848). `detectRemoteModuleGap` in
 [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts) reads each
 line with ANSI colour stripped, so a coloured `error` prefix still matches
-(Issue #4848), and reports a gap only when a connection-class cause follows one
-of those headers. A 404, a certificate, a checksum or a type error is still an
+(Issue #4848). A line whose escape byte was already stripped upstream, leaving
+bare `[0m`-style remnants, has them ignored wherever they sit in the line, so
+the header still matches (Issue #4853). It reports a gap only when a
+connection-class cause follows one of those headers. A 404, a certificate, a checksum or a type error is still an
 ordinary failure and is refused. The unreachable task is not counted as passed
 and is not repaired. Every other task still runs, so a real failure elsewhere
 still refuses the resolution, and `quality.sh` is never substituted for an
