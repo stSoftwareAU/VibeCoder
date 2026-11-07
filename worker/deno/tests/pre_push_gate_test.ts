@@ -17,9 +17,17 @@ import {
   workflowRunsCspell,
 } from "../lib/pre_push_gate.ts";
 import {
+  type PreFlightCommandResult,
   PreFlightGateError,
   type PreFlightRunner,
+  tokeniseCommand,
 } from "../lib/pre_flight_gate.ts";
+import {
+  type CiCargoCheck,
+  type CiCargoScan,
+  scanWorkflowForCargoChecks,
+} from "../lib/ci_cargo_checks.ts";
+import { TIMEOUT_EXIT_CODE } from "../lib/git_timeout.ts";
 
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
@@ -989,6 +997,692 @@ Deno.test("runPrePushGate: a failing Floci deploy test blocks the push", async (
     const accepted = await run(false);
     assert(accepted.ok);
     assert(accepted.value.checksRun.includes(FLOCI_COMMAND));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+// ---- CI cargo checks (Issue #4630) ------------------------------------------
+
+const CLIPPY_ARGV = [
+  "cargo",
+  "clippy",
+  "--all-targets",
+  "--locked",
+  "--",
+  "-D",
+  "warnings",
+];
+const CLIPPY_CMD = "cargo clippy --all-targets --locked -- -D warnings";
+const CLIPPY_CHECK: CiCargoCheck = {
+  kind: "clippy",
+  workingDirectory: "rust",
+  argv: CLIPPY_ARGV,
+  env: { RUSTFLAGS: "-D warnings" },
+  source: "ci.yml",
+};
+
+function scanOf(...checks: CiCargoCheck[]): CiCargoScan {
+  return { checks, unverifiable: [] };
+}
+
+/** A workflow whose lint job runs clippy and a covered test build in `rust`. */
+const RUST_WORKFLOW = [
+  "on:",
+  "  pull_request:",
+  "env:",
+  '  RUSTFLAGS: "-D warnings"',
+  "jobs:",
+  "  lint:",
+  "    defaults:",
+  "      run:",
+  "        working-directory: rust",
+  "    steps:",
+  `      - run: ${CLIPPY_CMD}`,
+  "      - run: cargo test --workspace --locked",
+  "",
+].join("\n");
+
+/** Two crate directories: clippy covers `rust`, a test build covers `tools`. */
+const LINT_WORKFLOW = [
+  "on:",
+  "  pull_request:",
+  "jobs:",
+  "  lint:",
+  "    defaults:",
+  "      run:",
+  "        working-directory: rust",
+  "    steps:",
+  `      - run: ${CLIPPY_CMD}`,
+  "      - run: cargo test --workspace --locked",
+  "  tools:",
+  "    defaults:",
+  "      run:",
+  "        working-directory: tools",
+  "    steps:",
+  "      - run: cargo nextest run -p core",
+  "",
+].join("\n");
+
+Deno.test("planChangedFileChecks: a changed .rs plans the CI clippy with its argv, env and working directory", () => {
+  const result = planChangedFileChecks(
+    ["rust/src/lib.rs"],
+    ["rust/Cargo.toml", "rust/src/lib.rs"],
+    { repoRoot: "/r", markdownlintBinary: null, ciCargo: scanOf(CLIPPY_CHECK) },
+  );
+  assert(result.ok);
+  assertEquals(result.value.filter((c) => c.cargo !== undefined), [{
+    label: "cargo clippy (rust)",
+    cwd: "/r/rust",
+    command: CLIPPY_CMD,
+    env: { RUSTFLAGS: "-D warnings" },
+    cargo: { kind: "clippy" },
+  }]);
+  // The planned command is the CI argv, token for token.
+  assertEquals(tokeniseCommand(CLIPPY_CMD), CLIPPY_ARGV);
+});
+
+Deno.test("planChangedFileChecks: the CI cargo checks come after cargo fmt", () => {
+  const result = planChangedFileChecks(
+    ["rust/src/lib.rs"],
+    ["rust/Cargo.toml", "rust/src/lib.rs"],
+    { repoRoot: "/r", markdownlintBinary: null, ciCargo: scanOf(CLIPPY_CHECK) },
+  );
+  assert(result.ok);
+  assertEquals(result.value.map((c) => c.label), [
+    "cargo fmt (rust)",
+    "cargo clippy (rust)",
+  ]);
+});
+
+Deno.test("planChangedFileChecks: a changed Cargo.lock plans the CI clippy at the root", () => {
+  const scan = scanOf({ ...CLIPPY_CHECK, workingDirectory: "." });
+  const result = planChangedFileChecks(["Cargo.lock"], ["Cargo.lock"], {
+    repoRoot: "/r",
+    markdownlintBinary: null,
+    ciCargo: scan,
+  });
+  assert(result.ok);
+  assertEquals(result.value.map((c) => [c.label, c.cwd]), [
+    ["cargo clippy (.)", "/r"],
+  ]);
+});
+
+Deno.test("planChangedFileChecks: a changed README.md plans no CI cargo check", () => {
+  const result = planChangedFileChecks(
+    ["README.md"],
+    ["rust/Cargo.toml", "README.md"],
+    { repoRoot: "/r", markdownlintBinary: null, ciCargo: scanOf(CLIPPY_CHECK) },
+  );
+  assert(result.ok);
+  assertEquals(result.value, []);
+});
+
+Deno.test("planChangedFileChecks: a .rs outside the CI working directory plans no CI cargo check", () => {
+  const result = planChangedFileChecks(
+    ["docs/x.rs"],
+    ["rust/Cargo.toml", "docs/x.rs"],
+    { repoRoot: "/r", markdownlintBinary: null, ciCargo: scanOf(CLIPPY_CHECK) },
+  );
+  assert(result.ok);
+  assertEquals(result.value, []);
+});
+
+Deno.test("planChangedFileChecks: no ciCargo option plans no CI cargo check", () => {
+  const result = planChangedFileChecks(
+    ["rust/src/lib.rs"],
+    ["rust/Cargo.toml"],
+    { repoRoot: "/r", markdownlintBinary: null },
+  );
+  assert(result.ok);
+  assertEquals(result.value.map((c) => c.command), ["cargo fmt --all --check"]);
+});
+
+Deno.test("planChangedFileChecks: clippy is planned before the test-target compile, and an identical check once", () => {
+  const testBuild: CiCargoCheck = {
+    kind: "test-build",
+    workingDirectory: "rust",
+    argv: ["cargo", "test", "--no-run", "--locked"],
+    env: {},
+    source: "ci.yml",
+  };
+  const result = planChangedFileChecks(
+    ["rust/src/lib.rs"],
+    ["rust/Cargo.toml"],
+    {
+      repoRoot: "/r",
+      markdownlintBinary: null,
+      ciCargo: scanOf(testBuild, CLIPPY_CHECK, CLIPPY_CHECK),
+    },
+  );
+  assert(result.ok);
+  assertEquals(
+    result.value.filter((c) => c.cargo !== undefined).map((c) => c.label),
+    ["cargo clippy (rust)", "cargo test --no-run (rust)"],
+  );
+});
+
+Deno.test("planChangedFileChecks: a CI +toolchain is kept as the cargo toolchain", () => {
+  const check: CiCargoCheck = {
+    ...CLIPPY_CHECK,
+    argv: ["cargo", "+1.80.0", "clippy", "--", "-D", "warnings"],
+  };
+  const result = planChangedFileChecks(
+    ["rust/src/lib.rs"],
+    ["rust/Cargo.toml"],
+    { repoRoot: "/r", markdownlintBinary: null, ciCargo: scanOf(check) },
+  );
+  assert(result.ok);
+  const planned = result.value.find((c) => c.cargo !== undefined);
+  assertEquals(planned?.command, "cargo +1.80.0 clippy -- -D warnings");
+  assertEquals(planned?.cargo, { kind: "clippy", toolchain: "1.80.0" });
+});
+
+Deno.test("planChangedFileChecks: a CI argument with a space is quoted and round-trips; one with both quote kinds is an error", () => {
+  const spaced: CiCargoCheck = {
+    ...CLIPPY_CHECK,
+    argv: ["cargo", "clippy", "--features", "serde json"],
+  };
+  const planned = planChangedFileChecks(
+    ["rust/src/lib.rs"],
+    ["rust/Cargo.toml"],
+    { repoRoot: "/r", markdownlintBinary: null, ciCargo: scanOf(spaced) },
+  );
+  assert(planned.ok);
+  const check = planned.value.find((c) => c.cargo !== undefined);
+  assertEquals(check?.command, "cargo clippy --features 'serde json'");
+  assertEquals(tokeniseCommand(check!.command), spaced.argv);
+
+  const unquotable: CiCargoCheck = {
+    ...CLIPPY_CHECK,
+    argv: ["cargo", "clippy", "--", "-A", `it's "x"`],
+  };
+  const refused = planChangedFileChecks(
+    ["rust/src/lib.rs"],
+    ["rust/Cargo.toml"],
+    { repoRoot: "/r", markdownlintBinary: null, ciCargo: scanOf(unquotable) },
+  );
+  assert(!refused.ok);
+  assert(refused.error.includes("cannot safely quote"));
+});
+
+Deno.test("planChangedFileChecks: a real workflow scan plans the clippy and test-target commands its lint job names", () => {
+  const scan = scanWorkflowForCargoChecks("ci.yml", LINT_WORKFLOW);
+  assertEquals(scan.unverifiable, []);
+  const result = planChangedFileChecks(
+    ["rust/src/lib.rs", "tools/src/main.rs"],
+    ["rust/Cargo.toml", "tools/Cargo.toml"],
+    { repoRoot: "/r", markdownlintBinary: null, ciCargo: scan },
+  );
+  assert(result.ok);
+  // `cargo test --workspace` in `rust` is covered by the clippy --all-targets
+  // run, so only the `tools` test build is planned as a compile.
+  assertEquals(
+    result.value.filter((c) => c.cargo !== undefined).map((c) => [
+      c.cwd,
+      c.command,
+    ]),
+    [
+      ["/r/rust", CLIPPY_CMD],
+      ["/r/tools", "cargo test --no-run -p core"],
+    ],
+  );
+});
+
+/** What a CI cargo run was asked to do. */
+interface RanCall {
+  command: string;
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+/** A runner that answers each command from `answer` (default: exit 0) and records it. */
+function scriptedRunner(
+  answer: (command: string) => Partial<PreFlightCommandResult>,
+  calls: RanCall[],
+): PreFlightRunner {
+  return (command, options) => {
+    calls.push({ command, cwd: options.cwd, env: options.env });
+    return Promise.resolve({
+      started: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+      ...answer(command),
+    });
+  };
+}
+
+/** The CI clippy and test-build runs, without the toolchain probes. */
+function ciRuns(calls: RanCall[]): RanCall[] {
+  return calls.filter((c) =>
+    /^cargo (\+\S+ )?(clippy|test --no-run)/.test(c.command) &&
+    !c.command.endsWith("--version")
+  );
+}
+
+const RUST_FILES = {
+  "rust/Cargo.toml": '[package]\nname = "demo"\n',
+  "rust/src/lib.rs": "pub fn f() {}\n",
+};
+
+/**
+ * Like {@link makeRepoWithDocCommit}, but the one local commit writes `files`
+ * (repo-relative path to text).
+ */
+async function makeRepoWithFiles(files: Record<string, string>): Promise<
+  { root: string; clone: string; stdin: string }
+> {
+  const root = await Deno.makeTempDir({ prefix: "vibe-pp-cargo-" });
+  const remote = `${root}/remote.git`;
+  const clone = `${root}/clone`;
+  await git(root, "init", "-q", "--bare", "-b", "main", remote);
+  await git(root, "clone", "-q", remote, clone);
+  await Deno.writeTextFile(`${clone}/deno.json`, "{}\n");
+  await git(clone, "add", ".");
+  await git(clone, "commit", "-qm", "init");
+  await git(clone, "push", "-q", "origin", "HEAD:main");
+  for (const [path, text] of Object.entries(files)) {
+    await Deno.mkdir(`${clone}/${path.slice(0, path.lastIndexOf("/"))}`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(`${clone}/${path}`, text);
+  }
+  await git(clone, "add", ".");
+  await git(clone, "commit", "-qm", "rust");
+  const sha = await git(clone, "rev-parse", "HEAD");
+  return {
+    root,
+    clone,
+    stdin: `refs/heads/main ${sha} refs/heads/main ${"0".repeat(40)}\n`,
+  };
+}
+
+/** Gate a push in `clone` with a fixed CI scan (default: the clippy check). */
+function gateRust(
+  clone: string,
+  stdin: string,
+  runner: PreFlightRunner,
+  scan: CiCargoScan = scanOf(CLIPPY_CHECK),
+) {
+  return runPrePushGate({
+    cwd: clone,
+    stdin,
+    preFlightCommands: [],
+    runner,
+    findCiCargo: () => Promise.resolve(scan),
+  });
+}
+
+Deno.test("runPrePushGate: CI clippy runs exactly as the workflow wrote it, in its directory with its env, after a toolchain probe", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles({
+    ...RUST_FILES,
+    ".github/workflows/ci.yml": RUST_WORKFLOW,
+  });
+  try {
+    const calls: RanCall[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), calls),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(ciRuns(calls).map((c) => c.command), [CLIPPY_CMD]);
+    assertEquals(ciRuns(calls)[0]?.cwd, `${clone}/rust`);
+    assertEquals(ciRuns(calls)[0]?.env, { RUSTFLAGS: "-D warnings" });
+    const probeAt = calls.findIndex((c) => c.command === "cargo --version");
+    const clippyAt = calls.findIndex((c) => c.command === CLIPPY_CMD);
+    assert(probeAt >= 0 && probeAt < clippyAt, "probe must run first");
+    assert(result.value.checksRun.includes(CLIPPY_CMD));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a CI +toolchain runs its probes and clippy with that toolchain", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const scan = scanOf({
+      ...CLIPPY_CHECK,
+      argv: ["cargo", "+1.80.0", "clippy", "--", "-D", "warnings"],
+    });
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(() => ({}), calls),
+      scan,
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const commands = calls.map((c) => c.command);
+    assert(commands.includes("cargo +1.80.0 --version"));
+    assert(commands.includes("cargo +1.80.0 clippy --version"));
+    assert(commands.includes("cargo +1.80.0 clippy -- -D warnings"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+/** The lint classes CI denies with `-D warnings`, as clippy reports them. */
+const DENIED_LINTS = [
+  "clippy::must_use_candidate",
+  "clippy::assert_is_empty",
+];
+
+Deno.test("runPrePushGate: a clippy lint denied by -D warnings blocks the push, and is not infrastructure", async () => {
+  for (const lint of DENIED_LINTS) {
+    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    try {
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(
+          (c) =>
+            c === CLIPPY_CMD
+              ? {
+                code: 101,
+                stderr:
+                  `error: this lint is denied\n  = note: \`-D ${lint}\` implied by \`-D warnings\`\n`,
+              }
+              : {},
+          [],
+        ),
+      );
+      assert(!result.ok, lint);
+      assertInstanceOf(result.error, PreFlightGateError);
+      assert(!(result.error instanceof PrePushGateInfrastructureError), lint);
+      assertEquals(result.error.reason, "non-zero-exit");
+      assertEquals(result.error.command, CLIPPY_CMD);
+      assert(result.error.message.includes(lint), lint);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("runPrePushGate: a compile failure in a test target from CI's test build blocks the push with its output", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const testBuild: CiCargoCheck = {
+      kind: "test-build",
+      workingDirectory: "rust",
+      argv: ["cargo", "test", "--no-run", "--locked"],
+      env: {},
+      source: "ci.yml",
+    };
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) =>
+          c === "cargo test --no-run --locked"
+            ? {
+              code: 101,
+              stderr:
+                "error[E0432]: unresolved import `demo::missing`\n --> rust/tests/foo.rs:1:5\n",
+            }
+            : {},
+        [],
+      ),
+      scanOf(testBuild),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PreFlightGateError);
+    assert(!(result.error instanceof PrePushGateInfrastructureError));
+    assertEquals(result.error.command, "cargo test --no-run --locked");
+    assert(result.error.message.includes("error[E0432]"));
+    assert(result.error.message.includes("tests/foo.rs"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a cargo probe that cannot start is infrastructure, and clippy never runs", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) => c === "cargo --version" ? { started: false, code: -1 } : {},
+        calls,
+      ),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(result.error.message.startsWith("Rust toolchain unavailable here"));
+    assert(result.error.message.includes("cargo --version"));
+    assert(!calls.some((c) => c.command.includes("clippy")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: cargo clippy --version failing is infrastructure, and clippy never runs", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) =>
+          c === "cargo clippy --version"
+            ? { code: 101, stderr: "error: no such command: `clippy`" }
+            : {},
+        calls,
+      ),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(result.error.message.includes("cargo clippy --version"));
+    assert(result.error.message.includes("no such command"));
+    assert(!calls.some((c) => c.command === CLIPPY_CMD));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: host disk-full output from a failing CI clippy is infrastructure, not a block", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) =>
+          c === CLIPPY_CMD
+            ? {
+              code: 101,
+              stderr:
+                "error: failed to write target: No space left on device (os error 28)\n",
+            }
+            : {},
+        [],
+      ),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(result.error.message.includes("No space left on device"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a denied lint whose output quotes disk-full text in a source excerpt still blocks", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    // The disk-full words appear only in the gutter source line; the tool's
+    // own error is the denied lint.
+    const stderr = [
+      "error: this could be a `const fn` (clippy::must_use_candidate)",
+      "  --> rust/src/lib.rs:1:1",
+      "   |",
+      '12 |     let x = "No space left on device";',
+      "   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^",
+      "   = note: `-D clippy::must_use_candidate` implied by `-D warnings`",
+      "",
+    ].join("\n");
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner((c) => c === CLIPPY_CMD ? { code: 101, stderr } : {}, []),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PreFlightGateError);
+    assert(!(result.error instanceof PrePushGateInfrastructureError));
+    assertEquals(result.error.reason, "non-zero-exit");
+    assert(result.error.message.includes("clippy::must_use_candidate"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a CI clippy that times out or cannot start is infrastructure", async () => {
+  const faults: Partial<PreFlightCommandResult>[] = [
+    { code: TIMEOUT_EXIT_CODE, timedOut: true },
+    { started: false, code: -1 },
+  ];
+  for (const fault of faults) {
+    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    try {
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner((c) => c === CLIPPY_CMD ? fault : {}, []),
+      );
+      assert(!result.ok, JSON.stringify(fault));
+      assertInstanceOf(result.error, PrePushGateInfrastructureError);
+      assert(result.error.message.includes(CLIPPY_CMD));
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("runPrePushGate: an unverifiable CI cargo scan with a changed .rs is infrastructure, and no cargo check runs", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(() => ({}), calls),
+      {
+        checks: [],
+        unverifiable: [
+          'ci.yml: "cargo clippy | tee out" cannot be reproduced faithfully: it contains a pipe',
+        ],
+      },
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(
+      result.error.message.startsWith(
+        "CI's cargo checks cannot be reproduced locally: ",
+      ),
+    );
+    assert(result.error.message.includes("contains a pipe"));
+    assertEquals(calls, []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: an unverifiable CI cargo scan does not block a docs-only push, and is not read", async () => {
+  const { root, clone, stdin } = await makeRepoWithDocCommit();
+  try {
+    let read = false;
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), []),
+      findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+      findCiCargo: () => {
+        read = true;
+        return Promise.resolve({ checks: [], unverifiable: ["ci.yml: x"] });
+      },
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assert(!read, "the CI cargo scan is read only for a Rust-relevant change");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a CI cargo working directory that is a symlink outside the repository is infrastructure", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  const outside = await Deno.makeTempDir({ prefix: "vibe-pp-outside-" });
+  try {
+    // The committed crate is replaced by a symlink to a directory outside the
+    // repository that also holds the changed file.
+    await Deno.mkdir(`${outside}/src`, { recursive: true });
+    await Deno.writeTextFile(`${outside}/src/lib.rs`, "pub fn f() {}\n");
+    await Deno.remove(`${clone}/rust`, { recursive: true });
+    await Deno.symlink(outside, `${clone}/rust`);
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(() => ({}), calls),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(result.error.message.includes("resolves outside the repository"));
+    assertEquals(ciRuns(calls), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a CI cargo working directory that is missing is infrastructure, naming the directory", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), calls),
+      // Removes the crate after the changed files are listed and before any
+      // CI cargo command would run in it.
+      findCiCargo: async () => {
+        await Deno.remove(`${clone}/rust`, { recursive: true });
+        return scanOf(CLIPPY_CHECK);
+      },
+    });
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(result.error.message.includes(`${clone}/rust`));
+    assert(result.error.message.includes("missing"));
+    assert(!calls.some((c) => c.command.includes("clippy")));
+    assert(!calls.some((c) => c.command.endsWith("--version")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: the real workflow scan drives the CI clippy run end to end", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles({
+    ...RUST_FILES,
+    ".github/workflows/ci.yml": LINT_WORKFLOW,
+  });
+  try {
+    const calls: RanCall[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: scriptedRunner(() => ({}), calls),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    // The tools test build is not in this push, so only the rust clippy and no
+    // tools compile run.
+    assertEquals(ciRuns(calls).map((c) => c.command), [CLIPPY_CMD]);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

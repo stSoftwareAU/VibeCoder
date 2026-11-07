@@ -26,11 +26,19 @@
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
  *    deploy test are cheap.
- * 2. Then runs the repo's configured pre-flight commands.
+ * 2. Then runs the CI cargo checks (Issue #4630): the `cargo clippy` and
+ *    test-target `cargo test --no-run` commands the repo's pull-request
+ *    workflows run, for each crate directory a pushed Rust file touches. Only
+ *    when the push changes a Rust-relevant file, and only after a probe that
+ *    the Rust toolchain runs here.
+ * 3. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
  * call, an unquotable path, or a configured-but-missing markdownlint or
- * cspell binary is an `Err`, never a pass.
+ * cspell binary is an `Err`, never a pass. A CI cargo command that cannot be
+ * reproduced here, or a Rust toolchain that is not available, is reported as
+ * an infrastructure fault (not a verdict on the commit) and never reduces the
+ * set of checks run.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -38,12 +46,23 @@
 import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
-import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
+import {
+  type PreFlightGateError,
+  type PreFlightRunner,
+  runPreFlightGate,
+} from "./pre_flight_gate.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
+import {
+  type CiCargoCheck,
+  type CiCargoCheckKind,
+  type CiCargoScan,
+  repoCiCargoChecks,
+} from "./ci_cargo_checks.ts";
+import { isHostDiskFaultText } from "./host_fault.ts";
 
 /**
  * The gate could not read the repository state it needs: a `git log`,
@@ -229,6 +248,14 @@ export interface ChangedFileCheck {
   /** Absolute working directory. */
   cwd: string;
   command: string;
+  /** Env the command runs with: the cargo-relevant env CI sets. Absent otherwise. */
+  env?: Record<string, string>;
+  /**
+   * Set on a cargo command the repo's CI runs (Issue #4630): its kind, and the
+   * `+toolchain` name when CI names one. Read by the capability probe and by
+   * the failure classification.
+   */
+  cargo?: { kind: CiCargoCheckKind; toolchain?: string };
 }
 
 // SIMPLE-ON-PURPOSE: fixed deno fmt/lint extension allow-list, extra types a repo configures are left to its pre-flight — upgrade when a repo needs another type checked on push
@@ -323,6 +350,66 @@ function quoteForTokeniser(value: string): string | null {
   return null;
 }
 
+/**
+ * Whether a changed path can change what a CI cargo command builds or checks:
+ * a `.rs` file, a cargo manifest or lock, a toolchain pin, or a clippy config.
+ * The same set gates whether the CI cargo checks are read at all.
+ */
+const RUST_CONFIG_NAMES = [
+  "Cargo.toml",
+  "Cargo.lock",
+  "rust-toolchain",
+  "rust-toolchain.toml",
+  "clippy.toml",
+  ".clippy.toml",
+];
+
+function isRustRelevant(path: string): boolean {
+  if (hasExtension(path, [".rs"])) return true;
+  return RUST_CONFIG_NAMES.includes(path.slice(path.lastIndexOf("/") + 1));
+}
+
+/**
+ * The argv as one command line for the pre-flight tokeniser. A token holding
+ * whitespace or a quote is quoted; an empty token becomes `''`. A token that
+ * cannot be quoted is an error, so the push is blocked rather than waved on.
+ */
+function argvCommand(argv: readonly string[]): Result<string, string> {
+  const parts: string[] = [];
+  for (const token of argv) {
+    if (token !== "" && !/[\s'"]/.test(token)) {
+      parts.push(token);
+      continue;
+    }
+    const quoted = quoteForTokeniser(token);
+    if (quoted === null) {
+      return {
+        ok: false,
+        error: `cannot safely quote CI's cargo argument ${
+          JSON.stringify(token)
+        } (it contains both ' and ") — the push is blocked, not waved through`,
+      };
+    }
+    parts.push(quoted);
+  }
+  return { ok: true, value: parts.join(" ") };
+}
+
+/**
+ * The CI cargo checks in gate order: directories keep the scan's order, and
+ * within one directory the clippy run comes before the test-target compile.
+ */
+function cargoCheckOrder(checks: readonly CiCargoCheck[]): CiCargoCheck[] {
+  const dirs = [...new Set(checks.map((c) => c.workingDirectory))];
+  return dirs.flatMap((dir) => {
+    const here = checks.filter((c) => c.workingDirectory === dir);
+    return [
+      ...here.filter((c) => c.kind === "clippy"),
+      ...here.filter((c) => c.kind === "test-build"),
+    ];
+  });
+}
+
 function quoteAll(paths: string[]): Result<string, string> {
   const quoted: string[] = [];
   for (const path of paths) {
@@ -347,6 +434,11 @@ function quoteAll(paths: string[]): Result<string, string> {
  * deno's own `include`, so a file the repo's `deno fmt` / `deno lint` would
  * not check is dropped here instead of being passed to deno. A root with no
  * entry is unfiltered.
+ *
+ * `ciCargo` (Issue #4630) is the CI cargo scan. Each of its checks is planned,
+ * after the cargo fmt check, when the push changes a Rust-relevant file under
+ * the check's working directory (`.` is anywhere). Absent means no CI cargo
+ * checks are planned.
  */
 export function planChangedFileChecks(
   changed: string[],
@@ -364,6 +456,8 @@ export function planChangedFileChecks(
      */
     cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
+    /** The cargo clippy and test-target commands CI runs (Issue #4630). */
+    ciCargo?: CiCargoScan;
   },
 ): Result<ChangedFileCheck[], string> {
   const checks: ChangedFileCheck[] = [];
@@ -493,6 +587,36 @@ export function planChangedFileChecks(
       label: "floci cloudformation",
       cwd: opts.repoRoot,
       command: `bash ${FLOCI_TEST_SCRIPT}`,
+    });
+  }
+
+  const seenCargo = new Set<string>();
+  for (const check of cargoCheckOrder(opts.ciCargo?.checks ?? [])) {
+    const dir = check.workingDirectory;
+    const touched = changed.some((p) =>
+      isRustRelevant(p) && (dir === "." || p.startsWith(`${dir}/`))
+    );
+    if (!touched) continue;
+    const command = argvCommand(check.argv);
+    if (!command.ok) return command;
+    const cwd = dirCwd(dir);
+    const key = JSON.stringify([cwd, command.value, check.env]);
+    if (seenCargo.has(key)) continue;
+    seenCargo.add(key);
+    const toolchain = check.argv[1]?.startsWith("+")
+      ? check.argv[1].slice(1)
+      : undefined;
+    checks.push({
+      label: `${
+        check.kind === "clippy" ? "cargo clippy" : "cargo test --no-run"
+      } (${dir})`,
+      cwd,
+      command: command.value,
+      env: check.env,
+      cargo: {
+        kind: check.kind,
+        ...(toolchain === undefined ? {} : { toolchain }),
+      },
     });
   }
 
@@ -702,11 +826,81 @@ async function findBinary(
 }
 
 /**
- * Run the pre-push gate: the always-on changed-file checks first, then the
- * repo's pre-flight commands. `checksRun` lists the changed-file commands run.
+ * The first line of a command's output that is not blank, for a message.
+ */
+function firstOutputLine(output: string): string {
+  return output.split("\n").map((line) => line.trim()).find((line) =>
+    line !== ""
+  ) ?? "(no output)";
+}
+
+/**
+ * Why a CI cargo check's working directory may not be used: it is missing, or
+ * it resolves (through a symlink, say) outside the repository. Both paths are
+ * resolved fully before the comparison. Null when it is the repository or
+ * inside it.
+ */
+async function cwdEscape(
+  repoRoot: string,
+  cwd: string,
+): Promise<string | null> {
+  let root: string;
+  let dir: string;
+  try {
+    root = await Deno.realPath(repoRoot);
+    dir = await Deno.realPath(cwd);
+  } catch {
+    return `working directory ${cwd} is missing or cannot be resolved`;
+  }
+  const prefix = root.endsWith("/") ? root : `${root}/`;
+  if (dir === root || dir.startsWith(prefix)) return null;
+  return `working directory ${cwd} resolves outside the repository`;
+}
+
+/**
+ * A line of tool output that quotes source or annotates a diagnostic, rather
+ * than reporting the tool's own failure: a gutter line (`12 |  code` or a bare
+ * `  |`), a `-->` location, or a `= note` / `= help` annotation. Each test is
+ * anchored and linear in the line length.
+ */
+function isQuotedSourceLine(line: string): boolean {
+  const trimmed = line.trim();
+  return /^\d*\s*\|/.test(trimmed) || trimmed.startsWith("-->") ||
+    trimmed.startsWith("= note") || trimmed.startsWith("= help");
+}
+
+/**
+ * Whether a failed CI cargo check reflects the host rather than the commit: the
+ * command could not start or timed out, or it exited non-zero with host
+ * disk-full output. Disk-full text counts only in the tool's own lines, so a
+ * source excerpt that quotes it does not turn a lint failure into a host fault.
+ * The disk-full test is `isHostDiskFaultText` in `host_fault.ts`.
+ */
+function isHostFaultOfCheck(error: PreFlightGateError): boolean {
+  if (error.reason === "not-started" || error.reason === "timeout") return true;
+  if (error.reason !== "non-zero-exit") return false;
+  const toolLines = error.output.split("\n").filter((line) =>
+    !isQuotedSourceLine(line)
+  );
+  return isHostDiskFaultText(toolLines.join("\n"));
+}
+
+/**
+ * Run the pre-push gate: the always-on changed-file checks first (cargo fmt
+ * among them), then the CI cargo checks (Issue #4630) when a Rust-relevant file
+ * changed, then the repo's pre-flight commands. `checksRun` lists the
+ * changed-file and CI cargo commands run.
  * The changed-file checks run whatever the run
  * budget — they are never skipped; all but the Floci deploy test are fast. Any
  * git, parse or planning error is an `Err`, never a pass.
+ *
+ * The CI cargo checks are read from the repo's pull-request workflows by
+ * `findCiCargo`. When the scan holds a command that cannot be reproduced here,
+ * the push fails with a {@link PrePushGateInfrastructureError}. Before the first
+ * CI cargo command runs, the Rust toolchain is probed. A CI cargo command that
+ * fails to start, times out, or fails with host disk-full output is also an
+ * infrastructure fault. Any other failing CI cargo command blocks the push, with
+ * its output.
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -717,6 +911,14 @@ export async function runPrePushGate(opts: {
   git?: PrePushGit;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   findCspell?: (repoRoot: string) => Promise<string | null>;
+  /**
+   * Reads the repo's CI cargo checks. Defaults to `repoCiCargoChecks`. Only
+   * called when a Rust-relevant file changed.
+   */
+  findCiCargo?: (
+    repoRoot: string,
+    tracked: readonly string[],
+  ) => Promise<CiCargoScan>;
   /**
    * Check every non-merge commit ahead of this ref instead of only commits on
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
@@ -777,23 +979,108 @@ export async function runPrePushGate(opts: {
     cspellBinary = await find(opts.cwd);
   }
 
+  // The CI cargo scan is read only when a Rust-relevant file changed. A command
+  // the scan cannot reproduce fails the push before anything runs, so it is
+  // never dropped from the checked set without a word.
+  let ciCargo: CiCargoScan | undefined;
+  if (changed.value.some(isRustRelevant)) {
+    const scan = await (opts.findCiCargo ?? repoCiCargoChecks)(
+      opts.cwd,
+      tracked,
+    );
+    if (scan.unverifiable.length > 0) {
+      return infrastructureFail(
+        `CI's cargo checks cannot be reproduced locally: ${
+          scan.unverifiable.join("; ")
+        }`,
+      );
+    }
+    ciCargo = scan;
+  }
+
   const plan = planChangedFileChecks(changed.value, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
+    ciCargo,
   });
   if (!plan.ok) return fail(plan.error);
 
+  const cargoChecks = plan.value.filter((c) => c.cargo !== undefined);
+  const clippyPlanned = cargoChecks.some((c) => c.cargo?.kind === "clippy");
+  let probed = false;
   const checksRun: string[] = [];
   for (const check of plan.value) {
+    if (check.cargo === undefined) {
+      const result = await runPreFlightGate([check.command], {
+        cwd: check.cwd,
+        runner: opts.runner,
+        timeoutSeconds: opts.timeoutSeconds,
+      });
+      if (!result.ok) return { ok: false, error: result.error };
+      checksRun.push(check.command);
+      continue;
+    }
+
+    const escape = await cwdEscape(opts.cwd, check.cwd);
+    if (escape !== null) {
+      return infrastructureFail(
+        `CI's ${check.label} cannot run here: ${escape}`,
+      );
+    }
+    // The probe runs once, before the first CI cargo command, in its directory
+    // and with its toolchain. A toolchain that is missing or cannot start is
+    // no verdict on the commit, and no CI cargo command is run past it.
+    if (!probed) {
+      probed = true;
+      const toolchain = check.cargo.toolchain === undefined
+        ? []
+        : [`+${check.cargo.toolchain}`];
+      const probes = [["cargo", ...toolchain, "--version"]];
+      if (clippyPlanned) {
+        probes.push(["cargo", ...toolchain, "clippy", "--version"]);
+      }
+      const probe = await runPreFlightGate(
+        probes.map((argv) => argv.join(" ")),
+        {
+          cwd: check.cwd,
+          env: check.env,
+          runner: opts.runner,
+          timeoutSeconds: opts.timeoutSeconds,
+        },
+      );
+      if (!probe.ok) {
+        const how = probe.error.reason === "not-started"
+          ? "could not be started"
+          : probe.error.reason === "timeout"
+          ? "timed out"
+          : `exited ${probe.error.exitCode}`;
+        return infrastructureFail(
+          `Rust toolchain unavailable here: \`${probe.error.command}\` ${how}: ${
+            firstOutputLine(probe.error.output)
+          }`,
+        );
+      }
+    }
+
     const result = await runPreFlightGate([check.command], {
       cwd: check.cwd,
+      env: check.env,
       runner: opts.runner,
       timeoutSeconds: opts.timeoutSeconds,
     });
-    if (!result.ok) return { ok: false, error: result.error };
+    if (!result.ok) {
+      if (isHostFaultOfCheck(result.error)) {
+        return infrastructureFail(
+          `CI's ${check.label} (\`${check.command}\`) did not finish on this host (${result.error.reason}): ${
+            firstOutputLine(result.error.output)
+          } — a host fault, not a verdict on the commit`,
+        );
+      }
+      return { ok: false, error: result.error };
+    }
     checksRun.push(check.command);
   }
 

@@ -5932,6 +5932,7 @@ remain included in the cost/model comment and fleet figures.
 The completion phase's pre-push gate (`gateBeforePush()` in
 `completion_phase.ts`) blocks with `[PRE_PUSH_BLOCKED]` followed by the failing
 check's output (cut to a head and tail, see "Two limits" below): `cargo fmt --check` and `deno fmt --check` diff hunks,
+CI cargo clippy and test-build diagnostics (Issue #4630),
 markdownlint `[Context: ...]` excerpts and quoted pre-flight test names. That
 text is repository content, so a source comment such as `// back off when the
 exchange rate limit is hit` was read as a rate limit: the run was released

@@ -5068,14 +5068,15 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
-test) still run and can fail the run. Unlike Step 1b, the completion gate
-checks every non-merge commit the branch has ahead of the PR base
-(`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
-ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
-push the agent's commits through `commitAndPushPending` with no spec, so those
-pushes are ungated and the commits are usually already on origin when the
-completion phase runs; the whole-branch range is what keeps them from reaching
+fmt/lint, cargo fmt, the CI cargo clippy and test-target compile, markdownlint,
+cspell and the Floci CloudFormation deploy test) still run and can fail the
+run. Unlike Step 1b, the completion gate checks every non-merge commit the
+branch has ahead of the PR base (`git log --no-merges <base>..HEAD`), not
+only commits on no remote-tracking ref. The execute phase's WIP checkpoints
+(periodic, and once more at phase end) push the agent's commits through
+`commitAndPushPending` with no spec, so those pushes are ungated and the
+commits are usually already on origin when the completion phase runs; the
+whole-branch range is what keeps them from reaching
 `gh pr create` unchecked (PR #3716 review). If the base ref cannot be resolved,
 the completion gate falls back to the unpushed-only check. The completion gate
 does nothing when the branch has no commit of its own ahead of the base, and in
@@ -5149,6 +5150,36 @@ The hook runs two stages:
      deno to judge, and an unparseable `deno.json` is left unfiltered;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
+   - **CI's cargo clippy and test-target compile** (Issue #4630), when the push
+     changes a Rust-relevant file (a `.rs` file, `Cargo.toml`, `Cargo.lock`,
+     `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
+     `.clippy.toml`) in a directory the repo's CI runs cargo in. The commands
+     are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
+     from workflows triggered on `pull_request`. Each `cargo clippy` run in a
+     step is run exactly as written: its `working-directory` (step, job or
+     workflow; a plain relative path inside the repo), its `+toolchain` (or the
+     toolchain of the job's `dtolnay/rust-toolchain`,
+     `actions-rust-lang/setup-rust-toolchain` or `actions-rs/toolchain` step),
+     its flags (for example `--all-targets`, `--locked`, `-- -D warnings`), and
+     its cargo-relevant environment (`RUSTFLAGS` and similar, taken verbatim). A
+     test-target compile (`cargo test --no-run`) is derived from a CI
+     `cargo test`, `cargo nextest run` or `cargo llvm-cov` only when no clippy
+     run in that directory already compiles the test targets (`--all-targets` or
+     `--tests`). Within a directory, clippy runs before the test-target compile,
+     after cargo fmt. A probe first checks that `cargo` (and `cargo clippy` when
+     clippy is planned) runs here. An infrastructure fault (a missing `cargo` or
+     `clippy`, a directory that is missing or resolves outside the repo, host
+     disk full, a timeout, or a CI command with a `${{ }}` expression, a pipe or
+     shell syntax the gate does not reproduce) is reported as an infrastructure
+     fault, not as a verdict on the commit, and it never reduces the set of
+     checks run. Disk full is recognised only in the build's own error lines,
+     not in quoted source excerpts (gutter lines, `-->` locations, `= note` and
+     `= help`). A failing clippy lint or test build is a verdict and blocks the
+     push with its output. Known limits: an `if:` on the step is not evaluated,
+     matrix entries are not expanded, reusable workflows are not followed, a
+     cargo run reached through a script the step calls is not detected, and
+     steps with `continue-on-error: true` or a line ending in `|| true` are
+     skipped;
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
      root carries a markdownlint config (`.markdownlint-cli2.*` or
      `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
@@ -5194,10 +5225,14 @@ start, or times out refuses the push; markdownlint configured but
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a Floci deploy test that exits
 non-zero, including when Floci cannot be started or the `aws` CLI is missing for
-a deployable template, refuses the push; a missing hook module, spec or `deno`
-binary refuses the push. Refusals print lines starting
-`[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
-pre-flight (the hook reuses `runPreFlightGate`).
+a deployable template, refuses the push; a CI cargo check that fails refuses
+the push with its output, while a CI cargo check that cannot start or time out,
+hits host disk full, or whose toolchain, directory or command cannot be
+reproduced here refuses it as an infrastructure fault (the push is still
+refused, but the run does not blame the branch, and the checked set is not
+reduced); a missing hook module, spec or `deno` binary refuses the push.
+Refusals print lines starting `[PRE_PUSH_BLOCKED]`. The checks run in the same
+filtered environment as pre-flight (the hook reuses `runPreFlightGate`).
 
 ```mermaid
 flowchart TD
