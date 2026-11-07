@@ -713,9 +713,38 @@ export function isDockerInfraFailure(output: string): boolean {
   return /docker:.*(not found|Cannot connect|permission denied)/i.test(output);
 }
 
-/** Check if output indicates a missing command issue. */
+// A shell's own missing-command report, whole line, unindented: an optional
+// `<shell-or-script>: [line N: ]` prefix, then `<name>: command not found`.
+// Linear: every `[^\s:]+` run stops at the next `:` or space, and there are no
+// nested or overlapping quantifiers.
+const SHELL_MISSING_COMMAND_LINE =
+  /^(?:[^\s:]+: (?:line \d+: )?)?[^\s:]+: command not found$/;
+const DENO_OUTPUT_START = /^-{3,} output -{3,}$/;
+const DENO_OUTPUT_END = /^-{3,} output end -{3,}$/;
+
+/**
+ * Check if output contains a shell's own missing-command report, such as
+ * `bash: foo: command not found` or `./quality.sh: line 3: foo: command not
+ * found`. Only whole, unindented lines count. Deno's captured test output (the
+ * block from `------- output -------` to `----- output end -----`) is skipped,
+ * so a failing gate whose test merely quotes the text is not classed as a
+ * missing command (Issue #4829).
+ */
 export function isMissingCommandFailure(output: string): boolean {
-  return output.includes("command not found");
+  let inDenoOutput = false;
+  for (const raw of output.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    if (inDenoOutput) {
+      if (DENO_OUTPUT_END.test(line)) inDenoOutput = false;
+      continue;
+    }
+    if (DENO_OUTPUT_START.test(line)) {
+      inDenoOutput = true;
+      continue;
+    }
+    if (SHELL_MISSING_COMMAND_LINE.test(line)) return true;
+  }
+  return false;
 }
 
 /**

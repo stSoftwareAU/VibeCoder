@@ -120,6 +120,109 @@ Deno.test("isMissingCommandFailure - returns false for normal failure", () => {
   assertEquals(isMissingCommandFailure("Test failed: expected 1 got 2"), false);
 });
 
+// Issue #4829: only a shell's own missing-command report counts. Quoted text,
+// indented text and Deno's captured output blocks do not.
+const DENO_OUTPUT_BLOCK = [
+  "------- output -------",
+  "foo: command not found",
+  "----- output end -----",
+].join("\n");
+
+Deno.test("isMissingCommandFailure - detects a bare shell report", () => {
+  assertEquals(isMissingCommandFailure("bash: foo: command not found"), true);
+});
+
+Deno.test("isMissingCommandFailure - detects a script report with a line number", () => {
+  assertEquals(
+    isMissingCommandFailure(
+      "./quality.sh: line 3: shellcheck: command not found",
+    ),
+    true,
+  );
+  assertEquals(
+    isMissingCommandFailure("bash: line 1: foo: command not found"),
+    true,
+  );
+});
+
+Deno.test("isMissingCommandFailure - detects a report among other output lines", () => {
+  const output = [
+    "step one ... ok",
+    "bash: foo: command not found",
+    "step three ... FAILED",
+  ].join("\n");
+  assertEquals(isMissingCommandFailure(output), true);
+});
+
+Deno.test("isMissingCommandFailure - ignores an indented quote", () => {
+  assertEquals(isMissingCommandFailure("  foo: command not found"), false);
+});
+
+Deno.test("isMissingCommandFailure - ignores a numbered source line", () => {
+  assertEquals(isMissingCommandFailure("12 | foo: command not found"), false);
+});
+
+Deno.test("isMissingCommandFailure - ignores a prefixed error quote", () => {
+  assertEquals(
+    isMissingCommandFailure("error: Error: foo: command not found"),
+    false,
+  );
+});
+
+Deno.test("isMissingCommandFailure - ignores a line with trailing prose", () => {
+  assertEquals(
+    isMissingCommandFailure(
+      "foo: command not found because the path is wrong",
+    ),
+    false,
+  );
+});
+
+Deno.test("isMissingCommandFailure - ignores a passing test line", () => {
+  assertEquals(
+    isMissingCommandFailure("launcher test ... ok (1ms)"),
+    false,
+  );
+});
+
+Deno.test("isMissingCommandFailure - ignores text inside a Deno output block", () => {
+  assertEquals(isMissingCommandFailure(DENO_OUTPUT_BLOCK), false);
+});
+
+Deno.test("isMissingCommandFailure - an unclosed Deno output block stays skipped", () => {
+  assertEquals(
+    isMissingCommandFailure(
+      "------- output -------\nfoo: command not found",
+    ),
+    false,
+  );
+});
+
+Deno.test("isMissingCommandFailure - a real report outside a Deno output block is detected", () => {
+  const output = [DENO_OUTPUT_BLOCK, "bar: command not found"].join("\n");
+  assertEquals(isMissingCommandFailure(output), true);
+});
+
+Deno.test("isMissingCommandFailure - a long unmatched line returns false", () => {
+  const hostile = "a".repeat(200000) + ": ";
+  assertEquals(isMissingCommandFailure(hostile), false);
+});
+
+Deno.test("isMissingCommandFailure - a long malformed Deno output start returns false", () => {
+  const hostile = "-".repeat(200000) + " not output -";
+  assertEquals(isMissingCommandFailure(hostile), false);
+});
+
+Deno.test("isMissingCommandFailure - a long malformed output end does not hide a later shell report", () => {
+  const hostile = [
+    "------- output -------",
+    "-".repeat(200000) + " not output end -",
+    "----- output end -----",
+    "foo: command not found",
+  ].join("\n");
+  assertEquals(isMissingCommandFailure(hostile), true);
+});
+
 // =============================================================================
 // buildRetryPrompt tests
 // =============================================================================
@@ -383,6 +486,31 @@ Deno.test("runQualityGateCheck - returns missing command failure", async () => {
   assertEquals(result.failureMessage !== undefined, true);
 });
 
+Deno.test("runQualityGateCheck - a quoted command not found inside a Deno output block is a fixable failure (Issue #4829)", async () => {
+  const deps = createMockDeps({
+    runCommand: async (_cmd, _opts) => ({
+      exitCode: 1,
+      output: `${DENO_OUTPUT_BLOCK}\nFAILED | 1 passed | 1 failed`,
+    }),
+  });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_fixable");
+  assertEquals(result.failureMessage, undefined);
+  assertStringIncludes(result.retryPrompt!, "foo: command not found");
+});
+
+Deno.test("runQualityGateCheck - a genuine Bash report with exit 1 stays a missing command failure (Issue #4829)", async () => {
+  const deps = createMockDeps({
+    runCommand: async (_cmd, _opts) => ({
+      exitCode: 1,
+      output: "bash: foo: command not found",
+    }),
+  });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_missing_command");
+  assertEquals(result.failureMessage !== undefined, true);
+});
+
 // =============================================================================
 // runQualityGateCheck tests — timeout configuration
 // =============================================================================
@@ -431,7 +559,7 @@ Deno.test("runQualityGateCheck - passes baseline context to failure message", as
   const deps = createMockDeps({
     runCommand: async (_cmd, _opts) => ({
       exitCode: 127,
-      output: "command not found",
+      output: "foo: command not found",
     }),
     formatFailureMsg: (output, baselinePassed, baselineOutput) => {
       baselinePassedArg = baselinePassed;
