@@ -2200,7 +2200,7 @@ repository it works on. Ten phases take a bundle — **issue**, **planning**,
 **question**, **PR feedback**, **CI fix** and **grill-me** through their
 builders (Issue #2101), and **clarity assessment**, **refinement**, **revision**
 and **quorum** appended to the built prompt — and all ten collect one (Issues
-#2102, #2103, #2561 and #2569). The query is the issue title and body on the
+\#2102, #2103, #2561 and #2569). The query is the issue title and body on the
 eight issue-shaped runs; on the two PR runs it is the PR title plus the feedback
 comment text (PR feedback) or the failing check's name, annotations and CI log
 excerpt (CI fix). The PR title costs one `gh pr view --json title`, made
