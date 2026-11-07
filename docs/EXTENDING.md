@@ -248,6 +248,21 @@ Universal specs (applied to every repo regardless of language) include:
 
 Language-specific specs cover Rust, Deno, Node, Java, and Bash projects;
 see `WORKFLOW_SPECS` in `workflow_definitions.ts` for the complete list.
+Templates that run a project tool from the checkout root require a matching
+root marker before workflow sync files an issue. Cargo specs require a root
+`Cargo.toml`; Rust reported only by GitHub's language byte counts is not
+enough. Repository-wide scans remain eligible for nested projects: ShellCheck
+scans `.` and Java Dependency Check uses `path: .`. Java dependency updates
+use Dependabot's root `/` directory and require a root Java project marker.
+The auditor uses the complete root file inventory, so Deno taking precedence
+over Node during language selection cannot hide an existing `package.json`.
+Older language results without that inventory trigger a root-contents fetch;
+a failed fetch fails the audit before reconciliation. Existing workflow files
+are left in place. Trusted generated requests for known inapplicable
+root-project specs are closed with the reason, including when GitHub no longer
+reports their language. `setup workflow-sync` has no dry run and closes these
+requests on every run. Use `purge-stale-workflow-issues --dry-run` to report
+the same root-marker closures as not applicable.
 
 ### Pins are resolved when the issue is filed, and the body says so
 
@@ -258,7 +273,7 @@ repository — and renders every missing- and partial-workflow body through
 `applyResolvedPins()`, so each `uses:` line carries the highest upstream
 release that has aged past `VIBE_BUMP_QUARANTINE_HOURS` rather than whatever
 SHA the catalogue was last edited with. The resolution is **lazy**: a run
-that renders no body — a `dryRun`, or a repository whose sync issues have all
+that renders no body — for example, a repository whose sync issues have all
 been filed already — issues no lookup at all.
 
 An action whose lookup fails keeps its catalogue SHA and emits exactly one
@@ -455,12 +470,15 @@ commands and run via `deno run worker/deno/mod.ts <name>`.
 ### `purge-stale-workflow-issues`
 
 Re-audits each configured repo (or a single repo passed via `--repo`)
-and closes any open issue carrying a workflow-sync deduplication tag —
+and closes open, fleet-authored issues carrying a workflow-sync deduplication tag —
 `<!-- vibe-coder:workflow-sync:<specId> -->` or
-`<!-- vibe-coder:workflow-sync:partial:<specId> -->` — whose underlying
-workflow now classifies as **present** under the current detection
-logic. Issues that still classify as `partial` or `missing` are left
-untouched.
+`<!-- vibe-coder:workflow-sync:partial:<specId> -->` — when the known spec
+is present, is public-only on a private repo, or requires a root-project
+marker that is absent. Root markers are `Cargo.toml`, `deno.json` or
+`deno.jsonc`, `package.json`, and `pom.xml`, `build.gradle` or
+`build.gradle.kts`, depending on the spec. Missing markers make a spec
+inapplicable even if its language no longer appears in GitHub's language
+counts. The command never changes workflow files.
 
 ```bash
 # Dry run across all configured repos
@@ -473,9 +491,8 @@ deno run --allow-all worker/deno/mod.ts \
 ```
 
 The command is intended as a one-off cleanup after improvements to the
-workflow auditor — the existing dedup tag prevents
-the regular `workflow-sync` from re-creating the false-positive issues,
-but it does not retroactively close them.
+workflow auditor. Regular `workflow-sync` also reconciles trusted requests
+whose root-project markers are absent.
 
 ### `audit-default-branch-rulesets`
 

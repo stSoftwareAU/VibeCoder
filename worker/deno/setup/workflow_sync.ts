@@ -1,15 +1,15 @@
 /**
  * Workflow synchronisation across all monitored repositories.
  *
- * Orchestrates language detection, workflow auditing, and issue creation
- * for missing GitHub Actions workflows. Issues are created in the TARGET
+ * Orchestrates language detection, workflow auditing, issue creation and
+ * closure of trusted generated requests missing root-project markers. Issues are created in the TARGET
  * repository (not VibeCoder) and are idempotent — running twice will not
  * create duplicates.
  *
  * Issue #1395: Add workflow-sync subcommand to setup CLI.
  *
- * The dedup search runs `--state all`, so a match suppresses the issue
- * **permanently** — no expiry, no recovery. A dedup tag is a string in an
+ * The dedup search runs `--state all`; a closed request retired by a trusted
+ * missing-root-project comment no longer suppresses a later request. A tag is a string in an
  * issue body, which on a public repository anyone who can open an issue
  * writes, so the match is author-verified against the fleet identity
  * (`lib/alert_dedup_authors.ts`) before it may suppress anything. The fail
@@ -40,6 +40,8 @@ import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupAuthorOptions,
   type AlertDedupRow,
+  parseIssueViewCommentRows,
+  selectFleetAuthoredComments,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
 import {
@@ -49,6 +51,7 @@ import {
   type ResolvedActionPins,
 } from "../lib/action_pin_resolver.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
+import { reconcileInapplicableWorkflowIssues } from "../lib/purge_stale_workflow_issues.ts";
 import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -149,7 +152,8 @@ export function partialDeduplicationTag(specId: string): string {
 /**
  * Check if an issue already exists in the target repo carrying the given tag.
  *
- * Searches open issues for the deduplication tag.
+ * Searches all states for fleet-authored matches. A trusted missing-root-project
+ * closure retires a closed match; a failed comment lookup skips the spec.
  */
 async function issueExistsByTag(
   repo: string,
@@ -158,8 +162,8 @@ async function issueExistsByTag(
   options: AlertDedupAuthorOptions,
   log: (message: string) => void,
 ): Promise<boolean> {
-  // Search across both open and closed states so a previously-raised
-  // (and possibly closed) issue suppresses recreation. Issue #1829: a
+  // Search both states: a closed issue suppresses recreation unless a trusted
+  // missing-root-project closure retired it. Issue #1829: a
   // dedup limited to `--state open` allowed setup to re-raise issues
   // for workflows that were already present and had a prior sync issue
   // closed against them.
@@ -179,7 +183,7 @@ async function issueExistsByTag(
     "--search",
     `"${tag}" in:body`,
     "--json",
-    ALERT_DEDUP_JSON_FIELDS,
+    `${ALERT_DEDUP_JSON_FIELDS},state`,
     "--limit",
     "20",
   ]);
@@ -189,9 +193,9 @@ async function issueExistsByTag(
     return false;
   }
 
-  let rows: (AlertDedupRow & { body?: string })[];
+  let rows: (AlertDedupRow & { state?: string })[];
   try {
-    rows = JSON.parse(result.stdout) as (AlertDedupRow & { body?: string })[];
+    rows = JSON.parse(result.stdout) as (AlertDedupRow & { state?: string })[];
   } catch {
     return false;
   }
@@ -203,7 +207,49 @@ async function issueExistsByTag(
     "the issue is raised — a tag anyone can type must not suppress a " +
       "workflow-sync issue for ever",
   );
-  return verified.length > 0;
+  const specId = tag.match(/workflow-sync:(?:partial:)?([^ ]+) -->/)?.[1];
+  for (const row of verified) {
+    if (row.state !== "CLOSED" || !specId) return true;
+    const view = await runner([
+      "gh",
+      "issue",
+      "view",
+      String(row.number),
+      "--repo",
+      repo,
+      "--json",
+      "comments",
+    ]);
+    if (!view.success) {
+      throw new Error(
+        `Could not read comments on #${row.number}: ${view.stderr}`,
+      );
+    }
+    const parsed: unknown = JSON.parse(view.stdout);
+    if (
+      !parsed || typeof parsed !== "object" ||
+      !Array.isArray((parsed as Record<string, unknown>).comments)
+    ) {
+      throw new Error(`Missing comments on #${row.number}`);
+    }
+    const comments = parseIssueViewCommentRows(
+      (parsed as Record<string, unknown>).comments,
+    )
+      .filter((comment) =>
+        comment.body.includes(
+          `<!-- vibe-coder:purge-not-applicable:${specId} -->`,
+        ) &&
+        comment.body.includes("requires a root project marker that is absent")
+      );
+    const retired = await selectFleetAuthoredComments(
+      comments,
+      `workflow-sync ${repo} #${row.number}`,
+      options,
+      log,
+    );
+    if (retired.length === 0) return true;
+  }
+  return false;
 }
 
 /** Build the issue title for a missing workflow. */
@@ -602,7 +648,9 @@ function skipReason(
  *
  * 1. Detect languages in the repo
  * 2. Audit existing workflows against expected specs
- * 3. For each missing workflow, check for existing issues and create if needed
+ * 3. Reconcile trusted requests with absent root markers; fail the sync if
+ *    reconciliation fails
+ * 4. For each missing workflow, check for existing issues and create if needed
  *
  * @param repo - Repository in "owner/repo" format.
  * @param options - Optional configuration for command execution.
@@ -694,6 +742,73 @@ export async function syncWorkflowsForRepo(
       partialIssuesRaised: 0,
       partialIssuesSkipped: 0,
       error: `Workflow audit failed: ${message}`,
+    };
+  }
+
+  // Reconcile obsolete generated requests even when this audit has no gaps.
+  // The successful audit already carries the root-marker applicability result.
+  try {
+    const reconciled = await reconcileInapplicableWorkflowIssues(
+      repo,
+      audit.notApplicable.map((spec) => spec.id),
+      {
+        runCommand: runner,
+        closedBy: "setup workflow-sync",
+        dryRun: options.dryRun,
+        fleetAuthors: options.fleetAuthors,
+        log,
+      },
+    );
+    if (!reconciled.ok) {
+      return {
+        ok: false,
+        repo,
+        languages: audit.languages,
+        present: audit.present.length,
+        issuesRaised: 0,
+        issuesSkipped: 0,
+        partial: audit.partial.length,
+        partialIssuesRaised: 0,
+        partialIssuesSkipped: 0,
+        error: `Workflow issue reconciliation failed: ${reconciled.error}`,
+      };
+    }
+    for (const candidate of reconciled.value.closed) {
+      log(
+        `[workflow-sync] ${
+          options.dryRun ? "Would close" : "Closed"
+        } #${candidate.number} (${candidate.specId}): root project marker absent`,
+      );
+    }
+    if (reconciled.value.failures.length > 0) {
+      const reasons = reconciled.value.failureReasons.join("; ");
+      return {
+        ok: false,
+        repo,
+        languages: audit.languages,
+        present: audit.present.length,
+        issuesRaised: 0,
+        issuesSkipped: 0,
+        partial: audit.partial.length,
+        partialIssuesRaised: 0,
+        partialIssuesSkipped: 0,
+        error:
+          `Failed to close ${reconciled.value.failures.length} inapplicable workflow issue(s): ${reasons}`,
+      };
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      repo,
+      languages: audit.languages,
+      present: audit.present.length,
+      issuesRaised: 0,
+      issuesSkipped: 0,
+      partial: audit.partial.length,
+      partialIssuesRaised: 0,
+      partialIssuesSkipped: 0,
+      error: `Workflow issue reconciliation failed: ${message}`,
     };
   }
 

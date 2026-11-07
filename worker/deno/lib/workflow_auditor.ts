@@ -10,10 +10,11 @@
 
 import type { Result } from "../types.ts";
 import { spawnGh } from "./gh_spawn.ts";
-import type { RepoLanguages } from "./language_detector.ts";
+import { fetchRootContents, type RepoLanguages } from "./language_detector.ts";
 import { getRepoVisibility, type RepoVisibility } from "./repo_visibility.ts";
 import {
   getWorkflowsForLanguagesAndVisibility,
+  WORKFLOW_SPECS,
   type WorkflowSpec,
 } from "./workflow_definitions.ts";
 
@@ -86,6 +87,8 @@ export interface WorkflowAuditResult {
   missing: WorkflowSpec[];
   /** Workflows with some but not all detection patterns matched. */
   partial: PartialMatch[];
+  /** Known root-project specs whose prerequisite is absent, even if the language disappeared. */
+  notApplicable: WorkflowSpec[];
 }
 
 // ---------------------------------------------------------------------------
@@ -315,11 +318,27 @@ export async function auditRepoWorkflows(
     // Fail-safe — leave visibility as "private".
   }
 
-  // Determine required workflows based on detected languages and visibility.
+  // Resolve language and visibility candidates, then require root-marker
+  // evidence only for templates whose commands run at the repository root.
   const langNames = languages.detected.map((d) => d.language);
   const resolveSpecs = options.specsResolver ??
     getWorkflowsForLanguagesAndVisibility;
-  const requiredSpecs = resolveSpecs(langNames, visibility);
+  const candidates = resolveSpecs(langNames, visibility);
+  let rootFiles = languages.rootFiles;
+  if (rootFiles === undefined) {
+    const contents = await fetchRootContents(repo, runner);
+    if (!contents.ok) return contents;
+    rootFiles = contents.value.filter((entry) => entry.type === "file")
+      .map((entry) => entry.name);
+  }
+  const rootMarkerFiles = new Set(rootFiles);
+  const hasRootProject = (spec: WorkflowSpec): boolean =>
+    !spec.rootProjectMarkers ||
+    spec.rootProjectMarkers.some((marker) => rootMarkerFiles.has(marker));
+  const requiredSpecs = candidates.filter(hasRootProject);
+  // Reconciliation covers the whole known catalogue: a language can vanish
+  // from GitHub entirely while its old generated requests are still open.
+  const notApplicable = WORKFLOW_SPECS.filter((spec) => !hasRootProject(spec));
 
   // Fetch workflow file listing.
   let workflowFiles: WorkflowFileEntry[];
@@ -407,6 +426,7 @@ export async function auditRepoWorkflows(
       present,
       missing,
       partial,
+      notApplicable,
     },
   };
 }

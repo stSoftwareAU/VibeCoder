@@ -7,11 +7,14 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { testStageEnv } from "../lib/unit_test_passes.ts";
 import {
   type CommandOutput,
   extractSpecIdFromIssueBody,
   type PurgeOptions,
+  purgeStaleWorkflowIssuesForAllRepos,
   purgeStaleWorkflowIssuesForRepo,
+  reconcileInapplicableWorkflowIssues,
 } from "../lib/purge_stale_workflow_issues.ts";
 import {
   deduplicationTag,
@@ -346,6 +349,110 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - closes missing-workflow issue when 
   assertEquals(result.value.closed.length, 1);
   assertEquals(result.value.closed[0]!.kind, "missing");
   assertEquals(state.closedIssues.length, 1);
+});
+
+Deno.test("purge - closes trusted missing and partial Cargo requests without a root manifest", async () => {
+  const { runner, state } = buildMockRunner({
+    issues: [
+      { number: 469, body: deduplicationTag("cargo-audit") },
+      { number: 470, body: partialDeduplicationTag("cargo-quality") },
+      { number: 471, body: deduplicationTag("unknown-spec") },
+    ],
+    rootFiles: ["README.md"],
+    languagesApi: { Rust: 4927 },
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.notApplicable.map((issue) => issue.number), [
+    469,
+    470,
+  ]);
+  assertEquals(result.value.kept.map((issue) => issue.number), [471]);
+  assertEquals(state.closedIssues.length, 2);
+  assertEquals(
+    state.closedIssues.every((issue) =>
+      issue.comment?.includes("requires a root project marker that is absent")
+    ),
+    true,
+  );
+  assertEquals(
+    state.closedIssues.every((issue) =>
+      issue.comment?.includes("No workflow files were changed")
+    ),
+    true,
+  );
+});
+
+Deno.test("purge - dry run reports inapplicable Cargo requests without closing them", async () => {
+  const { runner, state } = buildMockRunner({
+    issues: [{ number: 472, body: partialDeduplicationTag("cargo-upgrade") }],
+    rootFiles: ["README.md"],
+    languagesApi: { Rust: 1 },
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+    dryRun: true,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.notApplicable.map((issue) => issue.number), [472]);
+  assertEquals(state.closeCalls, 0);
+});
+
+Deno.test("purge - root Cargo marker keeps a generated request open", async () => {
+  const { runner, state } = buildMockRunner({
+    issues: [{ number: 474, body: deduplicationTag("cargo-audit") }],
+    rootFiles: ["Cargo.toml"],
+    languagesApi: { Rust: 1 },
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.kept.map((issue) => issue.number), [474]);
+  assertEquals(state.closeCalls, 0);
+});
+
+Deno.test("purge - reports close failure for an inapplicable workflow issue", async () => {
+  const { runner } = buildMockRunner({
+    issues: [{ number: 475, body: deduplicationTag("cargo-audit") }],
+    rootFiles: ["README.md"],
+    languagesApi: { Rust: 1 },
+    closeFails: true,
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.failures.map((issue) => issue.number), [475]);
+});
+
+Deno.test("purge - untrusted author cannot close an inapplicable workflow issue", async () => {
+  const { runner, state } = buildMockRunner({
+    issues: [{
+      number: 473,
+      body: deduplicationTag("cargo-audit"),
+      author: "human-maintainer",
+    }],
+    rootFiles: ["README.md"],
+    languagesApi: { Rust: 1 },
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(state.closeCalls, 0);
 });
 
 Deno.test("purgeStaleWorkflowIssuesForRepo - dry-run does not call gh issue close", async () => {
@@ -727,4 +834,241 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - issue with no recognisable tag is i
   assertEquals(result.value.closed.length, 0);
   assertEquals(result.value.kept.length, 0);
   assertEquals(state.closedIssues.length, 0);
+});
+
+for (const fleetRun of [false, true]) {
+  Deno.test(`purge - hybrid npm requests remain open and disappeared Cargo requests close (fleet=${fleetRun})`, async () => {
+    const { runner, state } = buildMockRunner({
+      rootFiles: [
+        "deno.json",
+        "package.json",
+        "package-lock.json",
+        "index.html",
+        "app.js",
+      ],
+      languagesApi: {},
+      issues: [
+        { number: 4801, body: deduplicationTag("npm-audit") },
+        { number: 4802, body: partialDeduplicationTag("npm-quality") },
+        { number: 4803, body: deduplicationTag("cargo-audit") },
+        {
+          number: 4804,
+          body: deduplicationTag("cargo-quality"),
+          author: "human",
+        },
+        { number: 4805, body: deduplicationTag("unknown-spec") },
+      ],
+    });
+    const options = {
+      fleetAuthors: [FLEET_AUTHOR],
+      runCommand: runner,
+      log: () => {},
+    };
+    const result = fleetRun
+      ? (await purgeStaleWorkflowIssuesForAllRepos([repo], options))[0]!.result
+      : await purgeStaleWorkflowIssuesForRepo(repo, options);
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.notApplicable.map((issue) => issue.number), [
+      4803,
+    ]);
+    assertEquals(result.value.kept.map((issue) => issue.number), [
+      4801,
+      4802,
+      4805,
+    ]);
+    assertEquals(state.closedIssues.map((issue) => issue.number), [4803]);
+  });
+}
+
+Deno.test("purge command - single and fleet modes preserve hybrid npm requests and close disappeared Cargo", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "workflow-purge-command-" });
+  try {
+    const configPath = `${dir}/config.json`;
+    await Deno.writeTextFile(
+      configPath,
+      JSON.stringify({ service_accounts: [FLEET_AUTHOR] }),
+    );
+    const commandUrl =
+      new URL("../commands/purge_stale_workflow_issues.ts", import.meta.url)
+        .href;
+    const spawnUrl = new URL("../lib/gh_spawn.ts", import.meta.url).href;
+    const defaultsUrl =
+      new URL("../lib/config_defaults.ts", import.meta.url).href;
+    // Isolate the default config/identity reader in a child with a declared
+    // environment; never change the test process's credentials or cwd.
+    const source = `
+      import { purgeStaleWorkflowIssuesCommand } from ${
+      JSON.stringify(commandUrl)
+    };
+      import { _setGhSpawnRunner } from ${JSON.stringify(spawnUrl)};
+      import { buildDefaultWorkerConfig } from ${JSON.stringify(defaultsUrl)};
+      const closed = [];
+      _setGhSpawnRunner(async (args) => {
+        let stdout = "";
+        if (args[0] === "issue" && args[1] === "list") {
+          stdout = JSON.stringify(${
+      JSON.stringify([
+        {
+          number: 4901,
+          body: deduplicationTag("npm-audit"),
+          author: { login: FLEET_AUTHOR },
+        },
+        {
+          number: 4902,
+          body: deduplicationTag("cargo-audit"),
+          author: { login: FLEET_AUTHOR },
+        },
+      ])
+    });
+        } else if (args[0] === "issue" && args[1] === "close") {
+          closed.push(Number(args[2]));
+        } else if (args[1] === "repos/owner/repo/contents/") {
+          stdout = JSON.stringify(["deno.json", "package.json", "package-lock.json", "index.html", "app.js"].map(name => ({ name, type: "file" })));
+        } else if (args[1] === "repos/owner/repo/languages") {
+          stdout = "{}";
+        } else if (args.includes(".visibility")) {
+          stdout = "public";
+        } else {
+          stdout = "[]";
+        }
+        return { code: 0, success: true, stdout, stderr: "" };
+      });
+      const config = { ...buildDefaultWorkerConfig(), repos: ["owner/repo"] };
+      const single = await purgeStaleWorkflowIssuesCommand.execute({ repo: "owner/repo" }, config);
+      const fleet = await purgeStaleWorkflowIssuesCommand.execute({}, config);
+      console.log(JSON.stringify({ single, fleet, closed }));
+    `;
+    const output = await new Deno.Command(Deno.execPath(), {
+      args: ["eval", source],
+      clearEnv: true,
+      env: {
+        ...testStageEnv(Deno.env.toObject()),
+        CONFIG_PATH: configPath,
+        GITHUB_USER: FLEET_AUTHOR,
+      },
+      signal: AbortSignal.timeout(30000),
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(output.success, true, new TextDecoder().decode(output.stderr));
+    const actual = JSON.parse(new TextDecoder().decode(output.stdout));
+    assertEquals(actual.closed, [4902, 4902]);
+    for (const result of [actual.single, actual.fleet]) {
+      assertEquals(result.success, true);
+      assertEquals(result.data.totalKept, 1);
+      assertEquals(result.data.totalNotApplicable, 1);
+      assertEquals(result.data.totalFailures, 0);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("reconcileInapplicableWorkflowIssues - empty prerequisites return empty results without listing", async () => {
+  const result = await reconcileInapplicableWorkflowIssues(repo, [], {
+    runCommand: () => {
+      throw new Error("must not list issues without inapplicable specs");
+    },
+  });
+  assertEquals(result, {
+    ok: true,
+    value: { closed: [], failures: [], failureReasons: [] },
+  });
+});
+
+for (const dryRun of [false, true]) {
+  Deno.test(`reconcileInapplicableWorkflowIssues - exact trusted candidates and writes (dryRun=${dryRun})`, async () => {
+    const { runner, state } = buildMockRunner({
+      issues: [
+        { number: 5001, body: deduplicationTag("cargo-audit") },
+        { number: 5002, body: partialDeduplicationTag("cargo-quality") },
+        { number: 5003, body: deduplicationTag("unknown-spec") },
+        { number: 5004, body: "<!-- vibe-coder:workflow-sync:broken" },
+        {
+          number: 5005,
+          body: deduplicationTag("cargo-audit"),
+          author: "human",
+        },
+      ],
+    });
+    const result = await reconcileInapplicableWorkflowIssues(repo, [
+      "cargo-audit",
+      "cargo-quality",
+    ], {
+      runCommand: runner,
+      fleetAuthors: [FLEET_AUTHOR],
+      dryRun,
+      log: () => {},
+    });
+    assertEquals(result, {
+      ok: true,
+      value: {
+        closed: [
+          { number: 5001, specId: "cargo-audit", kind: "missing" },
+          { number: 5002, specId: "cargo-quality", kind: "partial" },
+        ],
+        failures: [],
+        failureReasons: [],
+      },
+    });
+    assertEquals(state.closeCalls, dryRun ? 0 : 2);
+    assertEquals(
+      state.closedIssues.map((issue) => issue.number),
+      dryRun ? [] : [5001, 5002],
+    );
+  });
+}
+
+for (const stderr of ["network error", ""]) {
+  Deno.test(`reconcileInapplicableWorkflowIssues - close failure retains candidate and cause (${stderr || "empty stderr"})`, async () => {
+    const { runner } = buildMockRunner({
+      issues: [{ number: 5006, body: deduplicationTag("cargo-audit") }],
+    });
+    const result = await reconcileInapplicableWorkflowIssues(repo, [
+      "cargo-audit",
+    ], {
+      runCommand: (cmd) =>
+        cmd.includes("close") ? Promise.resolve(fail(stderr)) : runner!(cmd),
+      fleetAuthors: [FLEET_AUTHOR],
+    });
+    assertEquals(result, {
+      ok: true,
+      value: {
+        closed: [],
+        failures: [{ number: 5006, specId: "cargo-audit", kind: "missing" }],
+        failureReasons: [`#5006 cargo-audit: ${stderr || "unknown error"}`],
+      },
+    });
+  });
+}
+
+Deno.test("purge - empty language response still reconciles obsolete Cargo requests", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: ["README.md"],
+    languagesApi: {},
+    issues: [
+      { number: 5010, body: deduplicationTag("cargo-audit") },
+      { number: 5011, body: deduplicationTag("unknown-spec") },
+      { number: 5012, body: deduplicationTag("cargo-audit"), author: "human" },
+    ],
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
+    log: () => {},
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.notApplicable, [{
+    number: 5010,
+    specId: "cargo-audit",
+    kind: "missing",
+  }]);
+  assertEquals(result.value.kept, [{
+    number: 5011,
+    specId: "unknown-spec",
+    kind: "missing",
+  }]);
+  assertEquals(state.closedIssues.map((issue) => issue.number), [5010]);
 });
