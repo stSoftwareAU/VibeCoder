@@ -63,6 +63,11 @@ Issue #4848 paragraphs).
   restored.
 - `deno task test:unit tests/milestone_merge_gate_test.ts
   tests/milestone_resolution_gate_test.ts`: 91 passed, 0 failed.
+- Full gate `./quality.sh`: markdownlint, semgrep, lint, type check and fmt
+  passed. `deno tests` failed on two tests in
+  `worker/deno/tests/completion_phase_repo_formatters_test.ts` (an unformatted
+  Rust change; cargo fmt staging), which fail the same way on the base branch
+  and this change does not touch; its serial pass did not run after that.
 
 Not done / risk: no live milestone sync was run; a pre-#4848 worker would still
 refuse until it runs this code.
