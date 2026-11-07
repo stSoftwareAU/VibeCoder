@@ -353,6 +353,43 @@ Deno.test("prompt builder - issue prompt includes milestone targeting", async ()
   }
 });
 
+Deno.test("prompt builder - issue prompt gates the closing keyword on partial or missing (Issue #4691)", async () => {
+  const result = await buildIssuePrompt({
+    repo: "owner/repo",
+    issueNumber: "10",
+    issueTitle: "Partial criterion",
+    issueBody: "Implementation",
+    issueLabels: "enhancement",
+    qualityInstructions: "",
+    promptsDir: PROMPTS_DIR,
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    // The template wraps these sentences across lines, so collapse every
+    // whitespace run before matching the rendered prompt.
+    const prompt = result.value.prompt.replace(/\s+/g, " ");
+    assertStringIncludes(
+      prompt,
+      "When no criterion is `partial` or `missing`, the PR body gets `Closes #10` appended automatically",
+    );
+    assertStringIncludes(
+      prompt,
+      "The `partial` or `missing` entry must really be in the block",
+    );
+    assertStringIncludes(
+      prompt,
+      "marks any criterion `partial` or `missing`, otherwise `Closes #10`",
+    );
+    // The old `missing`-only wording must be gone.
+    assertEquals(prompt.includes("When no criterion is `missing`"), false);
+    assertEquals(prompt.includes("The `missing` entry must really be"), false);
+    assertEquals(
+      prompt.includes("marks any criterion `missing`, otherwise"),
+      false,
+    );
+  }
+});
+
 Deno.test("prompt builder - issue prompt includes screenshot retry notice", async () => {
   const result = await buildIssuePrompt({
     repo: "owner/repo",

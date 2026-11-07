@@ -1605,8 +1605,7 @@ gate skipped for budget is **recorded, never silent**: the
 `.pr_response_message`), because a gate nobody ran reads exactly like a gate
 that passed. That is not a licence to raise a PR over a *failing* check — the
 rule above is unchanged for every check that actually ran. See
-[docs/CONFIGURATION.md → The full gate is conditional on the budget
-left](docs/CONFIGURATION.md#the-full-gate-is-conditional-on-the-budget-left-issue-1138).
+[docs/CONFIGURATION.md → The full gate is conditional on the budget left](docs/CONFIGURATION.md#the-full-gate-is-conditional-on-the-budget-left-issue-1138).
 
 Always redirect stdin from `/dev/null` when running tests, quality checks, or
 build commands on unattended machines (`./quality.sh < /dev/null`,

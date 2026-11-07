@@ -35,6 +35,8 @@ Backend wording and docs only; no UI. Changed:
 `buildQualityGateBudgetLines`, module comment), `prompts/issue/prompt.md`,
 `prompts/spelling_fix/prompt.md`, `CODING-STANDARDS.md`, `docs/CONFIGURATION.md`
 (including the mermaid node).
+The configuration link in `CODING-STANDARDS.md` remains on one line so the
+cross-file anchor sweep continues to check its target.
 
 ## Test Plan
 
@@ -62,6 +64,9 @@ Backend wording and docs only; no UI. Changed:
   `deno fmt --check` and `deno lint` clean on the two changed `.ts` files.
 - Related existing rules checked: `prompt_gate_instruction_check.ts` (no prompt
   hard-codes "run the gate before you push") — still passes.
+- `worker/deno/tests/cross_file_anchors_test.ts` checks that the restored
+  one-line configuration link resolves; `crossFileAnchorLinks` also finds the
+  link in `CODING-STANDARDS.md`.
 
 <!-- vibe-quality-gate-skipped required="186s" remaining="n/a" -->
 

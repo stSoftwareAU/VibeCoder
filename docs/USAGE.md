@@ -115,14 +115,14 @@ head (see [the PR feedback workflow](workflows/pr-feedback.md)). A PR body with 
 worker marker, such as one the agent raised itself with `gh pr create`, is
 left alone unless its head is the run's own `issue-<N>[-slug]` branch; then it
 is adopted (Issue #3804): rebuilt with the worker marker, digest and, when a
-criterion is `missing`, the withheld close (`Part of #N`). The issue run's
-completion phase adopts it at every exit, once the checkout's HEAD is the
-pushed head and the PR is open. The adopted body is built from the summary
-committed at that verified pushed head, never from uncommitted working-tree
-edits (Issue #4712). The adoption is skipped if the pushed head has moved since,
-or if that commit holds no summary. It preserves a recognised issue-reference
-title and rewrites other titles to `<issue title> (Issue #N)` (Issue #4621).
-A marker-less PR on any other branch is still left alone.
+criterion is `partial` or `missing`, the withheld close (`Part of #N`). The
+issue run's completion phase adopts it at every exit, once the checkout's HEAD
+is the pushed head and the PR is open. The adopted body is built from the
+summary committed at that verified pushed head, never from uncommitted
+working-tree edits (Issue #4712). The adoption is skipped if the pushed head
+has moved since, or if that commit holds no summary. It preserves a recognised
+issue-reference title and rewrites other titles to `<issue title> (Issue #N)`
+(Issue #4621). A marker-less PR on any other branch is still left alone.
 A re-sync never files an issue: a criterion still `partial` or `missing` is
 named on the PR at completion instead (Issues #4146, #4234, see
 [issue-processing.md](workflows/issue-processing.md#-a-summary-shortfall-after-the-pr-is-not-a-failed-run)).
