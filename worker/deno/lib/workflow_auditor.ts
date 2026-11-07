@@ -86,6 +86,8 @@ export interface WorkflowAuditResult {
   missing: WorkflowSpec[];
   /** Workflows with some but not all detection patterns matched. */
   partial: PartialMatch[];
+  /** Known language specs skipped because their root project is absent. */
+  notApplicable: WorkflowSpec[];
 }
 
 // ---------------------------------------------------------------------------
@@ -315,11 +317,26 @@ export async function auditRepoWorkflows(
     // Fail-safe — leave visibility as "private".
   }
 
-  // Determine required workflows based on detected languages and visibility.
+  // Resolve language and visibility candidates, then require root-marker
+  // evidence only for templates whose commands run at the repository root.
   const langNames = languages.detected.map((d) => d.language);
   const resolveSpecs = options.specsResolver ??
     getWorkflowsForLanguagesAndVisibility;
-  const requiredSpecs = resolveSpecs(langNames, visibility);
+  const candidates = resolveSpecs(langNames, visibility);
+  const markerLanguages = new Set(
+    languages.detected
+      .filter((detected) => detected.confidence === "marker")
+      .map((detected) => detected.language),
+  );
+  const requiredSpecs = candidates.filter((spec) =>
+    !spec.requiresRootProject ||
+    (spec.appliesTo !== "universal" &&
+      spec.appliesTo.some((language) => markerLanguages.has(language)))
+  );
+  const notApplicable = candidates.filter((spec) =>
+    spec.requiresRootProject && spec.appliesTo !== "universal" &&
+    !spec.appliesTo.some((language) => markerLanguages.has(language))
+  );
 
   // Fetch workflow file listing.
   let workflowFiles: WorkflowFileEntry[];
@@ -407,6 +424,7 @@ export async function auditRepoWorkflows(
       present,
       missing,
       partial,
+      notApplicable,
     },
   };
 }

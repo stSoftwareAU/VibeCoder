@@ -49,6 +49,7 @@ import {
   type ResolvedActionPins,
 } from "../lib/action_pin_resolver.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
+import { reconcileInapplicableWorkflowIssues } from "../lib/purge_stale_workflow_issues.ts";
 import { createSetupRunCommand } from "./setup_command_runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -694,6 +695,65 @@ export async function syncWorkflowsForRepo(
       partialIssuesRaised: 0,
       partialIssuesSkipped: 0,
       error: `Workflow audit failed: ${message}`,
+    };
+  }
+
+  // Reconcile obsolete generated requests even when this audit has no gaps.
+  // The successful audit already carries the root-marker applicability result.
+  try {
+    const reconciled = await reconcileInapplicableWorkflowIssues(
+      repo,
+      audit.notApplicable.map((spec) => spec.id),
+      {
+        runCommand: runner,
+        ghConfigDir: options.ghConfigDir,
+        dryRun: options.dryRun,
+        fleetAuthors: options.fleetAuthors,
+        log,
+      },
+    );
+    if (!reconciled.ok) {
+      return {
+        ok: false,
+        repo,
+        languages: audit.languages,
+        present: audit.present.length,
+        issuesRaised: 0,
+        issuesSkipped: 0,
+        partial: audit.partial.length,
+        partialIssuesRaised: 0,
+        partialIssuesSkipped: 0,
+        error: `Workflow issue reconciliation failed: ${reconciled.error}`,
+      };
+    }
+    if (reconciled.value.failures.length > 0) {
+      return {
+        ok: false,
+        repo,
+        languages: audit.languages,
+        present: audit.present.length,
+        issuesRaised: 0,
+        issuesSkipped: 0,
+        partial: audit.partial.length,
+        partialIssuesRaised: 0,
+        partialIssuesSkipped: 0,
+        error:
+          `Failed to close ${reconciled.value.failures.length} inapplicable workflow issue(s)`,
+      };
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      repo,
+      languages: audit.languages,
+      present: audit.present.length,
+      issuesRaised: 0,
+      issuesSkipped: 0,
+      partial: audit.partial.length,
+      partialIssuesRaised: 0,
+      partialIssuesSkipped: 0,
+      error: `Workflow issue reconciliation failed: ${message}`,
     };
   }
 

@@ -3,9 +3,9 @@
  *
  * Re-audits a repo and closes any open issue carrying a
  * `<!-- vibe-coder:workflow-sync:... -->` deduplication tag whose
- * underlying workflow now classifies as **present** under the current
- * detection logic. Issues that still classify as `partial` or `missing`
- * are left untouched.
+ * underlying workflow now classifies as **present**, or its project-root
+ * prerequisite no longer applies. Issues that still classify as `partial`
+ * or `missing` remain open.
  *
  * Issue #1582: Add command to close stale false-positive workflow-sync
  * partial-match issues.
@@ -245,7 +245,7 @@ async function listWorkflowSyncIssues(
 }
 
 /** Reason used when building a closing comment. */
-type CloseReason = "now-present" | "not-applicable";
+type CloseReason = "now-present" | "not-applicable" | "missing-root-project";
 
 /** Idempotency marker embedded in the not-applicable closing comment. */
 function notApplicableMarker(specId: string): string {
@@ -264,6 +264,13 @@ ${notApplicableMarker(candidate.specId)}
 
 *Closed by \`purge-stale-workflow-issues\` (Issue #1755).*`;
   }
+  if (reason === "missing-root-project") {
+    return `Closing automatically: the \`${candidate.specId}\` workflow template runs its project tool from the repository root, but the matching root project marker is absent. Nested source files do not make this root-project workflow applicable. No workflow files were changed.
+
+${notApplicableMarker(candidate.specId)}
+
+*Closed by \`purge-stale-workflow-issues\` (Issue #4693).*`;
+  }
 
   const detectionReason = candidate.kind === "partial"
     ? `Re-audit detected a valid implementation of \`${candidate.specId}\` that the original detector flagged as a partial match.`
@@ -273,6 +280,58 @@ ${notApplicableMarker(candidate.specId)}
 Closing automatically: this issue is no longer applicable under the updated workflow detection logic. See umbrella issue #1577 for context.
 
 *Closed by \`purge-stale-workflow-issues\` (Issue #1582).*`;
+}
+
+/** Reconcile trusted generated issues for specs excluded by root-project applicability. */
+export async function reconcileInapplicableWorkflowIssues(
+  repo: string,
+  specIds: string[],
+  options: PurgeOptions = {},
+): Promise<
+  Result<{ closed: CandidateIssue[]; failures: CandidateIssue[] }, string>
+> {
+  if (specIds.length === 0) {
+    return { ok: true, value: { closed: [], failures: [] } };
+  }
+  const runner = options.runCommand ??
+    createDefaultRunCommand(options.ghConfigDir);
+  const log = options.log ?? ((message: string) => console.warn(message));
+  const listed = await listWorkflowSyncIssues(repo, runner);
+  if (!listed.ok) return listed;
+
+  const known = new Set(specIds);
+  const tagged = listed.value.filter((issue) => {
+    const tag = extractSpecIdFromIssueBody(issue.body);
+    return tag !== null && known.has(tag.specId);
+  });
+  const trusted = await selectFleetAuthoredMatches(
+    tagged,
+    `workflow-sync applicability ${repo}`,
+    options,
+    log,
+    "no issue is closed — an unverifiable workflow-sync tag must not drive a destructive write",
+  );
+  const closed: CandidateIssue[] = [];
+  const failures: CandidateIssue[] = [];
+  for (const issue of trusted) {
+    const tag = extractSpecIdFromIssueBody(issue.body);
+    if (!tag || !known.has(tag.specId)) continue;
+    const candidate = {
+      number: issue.number,
+      specId: tag.specId,
+      kind: tag.kind,
+    };
+    if (options.dryRun) {
+      closed.push(candidate);
+    } else if (
+      await closeIssue(repo, candidate, "missing-root-project", runner)
+    ) {
+      closed.push(candidate);
+    } else {
+      failures.push(candidate);
+    }
+  }
+  return { ok: true, value: { closed, failures } };
 }
 
 /** Close an issue with a comment via the gh CLI. */
@@ -466,9 +525,27 @@ export async function purgeStaleWorkflowIssuesForRepo(
   const audit: WorkflowAuditResult = auditResult.value;
 
   const presentSpecIds = new Set(audit.present.map((m) => m.spec.id));
+  const inapplicableSpecIds = new Set(
+    audit.notApplicable.map((spec) => spec.id),
+  );
 
   // 6. Decide and act per remaining candidate.
   for (const candidate of auditCandidates) {
+    if (inapplicableSpecIds.has(candidate.specId)) {
+      if (options.dryRun) {
+        notApplicable.push(candidate);
+      } else {
+        const ok = await closeIssue(
+          repo,
+          candidate,
+          "missing-root-project",
+          runner,
+        );
+        if (ok) notApplicable.push(candidate);
+        else failures.push(candidate);
+      }
+      continue;
+    }
     if (!presentSpecIds.has(candidate.specId)) {
       kept.push(candidate);
       continue;

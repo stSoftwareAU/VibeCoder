@@ -348,6 +348,110 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - closes missing-workflow issue when 
   assertEquals(state.closedIssues.length, 1);
 });
 
+Deno.test("purge - closes trusted missing and partial Cargo requests without a root manifest", async () => {
+  const { runner, state } = buildMockRunner({
+    issues: [
+      { number: 469, body: deduplicationTag("cargo-audit") },
+      { number: 470, body: partialDeduplicationTag("cargo-quality") },
+      { number: 471, body: deduplicationTag("unknown-spec") },
+    ],
+    rootFiles: ["README.md"],
+    languagesApi: { Rust: 4927 },
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.notApplicable.map((issue) => issue.number), [
+    469,
+    470,
+  ]);
+  assertEquals(result.value.kept.map((issue) => issue.number), [471]);
+  assertEquals(state.closedIssues.length, 2);
+  assertEquals(
+    state.closedIssues.every((issue) =>
+      issue.comment?.includes("root project marker is absent")
+    ),
+    true,
+  );
+  assertEquals(
+    state.closedIssues.every((issue) =>
+      issue.comment?.includes("No workflow files were changed")
+    ),
+    true,
+  );
+});
+
+Deno.test("purge - dry run reports inapplicable Cargo requests without closing them", async () => {
+  const { runner, state } = buildMockRunner({
+    issues: [{ number: 472, body: partialDeduplicationTag("cargo-upgrade") }],
+    rootFiles: ["README.md"],
+    languagesApi: { Rust: 1 },
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+    dryRun: true,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.notApplicable.map((issue) => issue.number), [472]);
+  assertEquals(state.closeCalls, 0);
+});
+
+Deno.test("purge - root Cargo marker keeps a generated request open", async () => {
+  const { runner, state } = buildMockRunner({
+    issues: [{ number: 474, body: deduplicationTag("cargo-audit") }],
+    rootFiles: ["Cargo.toml"],
+    languagesApi: { Rust: 1 },
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.kept.map((issue) => issue.number), [474]);
+  assertEquals(state.closeCalls, 0);
+});
+
+Deno.test("purge - reports close failure for an inapplicable workflow issue", async () => {
+  const { runner } = buildMockRunner({
+    issues: [{ number: 475, body: deduplicationTag("cargo-audit") }],
+    rootFiles: ["README.md"],
+    languagesApi: { Rust: 1 },
+    closeFails: true,
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.failures.map((issue) => issue.number), [475]);
+});
+
+Deno.test("purge - untrusted author cannot close an inapplicable workflow issue", async () => {
+  const { runner, state } = buildMockRunner({
+    issues: [{
+      number: 473,
+      body: deduplicationTag("cargo-audit"),
+      author: "human-maintainer",
+    }],
+    rootFiles: ["README.md"],
+    languagesApi: { Rust: 1 },
+  });
+  const result = await purgeStaleWorkflowIssuesForRepo(repo, {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(state.closeCalls, 0);
+});
+
 Deno.test("purgeStaleWorkflowIssuesForRepo - dry-run does not call gh issue close", async () => {
   const { runner, state } = buildMockRunner({
     issues: [

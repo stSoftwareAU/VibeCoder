@@ -975,6 +975,111 @@ Deno.test(
   },
 );
 
+Deno.test("workflow_auditor - API-only Rust does not require root Cargo workflows", async () => {
+  const languages: RepoLanguages = {
+    detected: [{ language: "Rust", confidence: "api" }],
+    primary: "Rust",
+    raw: { Rust: 4927 },
+  };
+  const result = await auditRepoWorkflows("owner/repo", languages, {
+    runCommand: mockRunner({
+      "repos/owner/repo/contents/.github/workflows": ok("[]"),
+    }),
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(
+    result.value.missing.some((spec) => spec.id.startsWith("cargo-")),
+    false,
+  );
+  assertEquals(result.value.notApplicable.map((spec) => spec.id), [
+    "cargo-audit",
+    "cargo-upgrade",
+    "cargo-quality",
+  ]);
+});
+
+Deno.test("workflow_auditor - root Cargo marker keeps all Cargo workflows", async () => {
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    {
+      detected: [{
+        language: "Rust",
+        confidence: "marker",
+        markerFile: "Cargo.toml",
+      }],
+      primary: "Rust",
+      raw: { Rust: 4927 },
+    },
+    {
+      runCommand: mockRunner({
+        "repos/owner/repo/contents/.github/workflows": ok("[]"),
+      }),
+    },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(
+    result.value.missing.map((spec) => spec.id).filter((id) =>
+      id.startsWith("cargo-")
+    ),
+    ["cargo-audit", "cargo-upgrade", "cargo-quality"],
+  );
+  assertEquals(result.value.notApplicable.length, 0);
+});
+
+Deno.test("workflow_auditor - mixed languages retain marker workflows and universal specs", async () => {
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    {
+      detected: [
+        { language: "Deno", confidence: "marker", markerFile: "deno.json" },
+        { language: "Rust", confidence: "api" },
+      ],
+      primary: "Rust",
+      raw: { Deno: 500, Rust: 4927 },
+    },
+    {
+      runCommand: mockRunner({
+        "repos/owner/repo/contents/.github/workflows": ok("[]"),
+      }),
+    },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  const missing = result.value.missing.map((spec) => spec.id);
+  assertEquals(missing.includes("deno-quality"), true);
+  assertEquals(missing.includes("cargo-audit"), false);
+  assertEquals(missing.includes("gitleaks"), true);
+  assertEquals(missing.includes("semgrep"), true);
+  assertEquals(missing.includes("markdown-lint"), true);
+});
+
+Deno.test("workflow_auditor - repository-wide templates accept nested project languages", async () => {
+  const languages: RepoLanguages = {
+    detected: [
+      { language: "Bash", confidence: "api" },
+      { language: "Java", confidence: "api" },
+    ],
+    primary: "Java",
+    raw: { Bash: 100, Java: 200 },
+  };
+  const result = await auditRepoWorkflows("owner/repo", languages, {
+    runCommand: mockRunner({
+      "repos/owner/repo/contents/.github/workflows": ok("[]"),
+    }),
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  const missing = result.value.missing.map((spec) => spec.id);
+  assertEquals(missing.includes("shellcheck"), true);
+  assertEquals(missing.includes("java-dependency-check"), true);
+  assertEquals(missing.includes("java-dependency-updates"), false);
+  assertEquals(result.value.notApplicable.map((spec) => spec.id), [
+    "java-dependency-updates",
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // gh spawn chokepoint (Issue #1227)
 // ---------------------------------------------------------------------------

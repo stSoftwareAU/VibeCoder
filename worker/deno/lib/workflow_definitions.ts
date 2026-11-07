@@ -101,6 +101,8 @@ export interface WorkflowSpec {
   name: string;
   /** Which languages this applies to, or "universal" for all repos. */
   appliesTo: "universal" | string[];
+  /** True when the template runs its project tool from the repository root. */
+  requiresRootProject?: boolean;
   /** Trigger events (e.g. "pull_request", "schedule"). */
   triggers: string[];
   /**
@@ -367,6 +369,7 @@ const cargoAudit: WorkflowSpec = {
   id: "cargo-audit",
   name: "Cargo Security Audit",
   appliesTo: ["Rust"],
+  requiresRootProject: true,
   triggers: ["pull_request", "schedule"],
   detectionPatternGroups: [[
     "cargo audit",
@@ -410,6 +413,7 @@ const cargoUpgrade: WorkflowSpec = {
   id: "cargo-upgrade",
   name: "Cargo Dependency Updates",
   appliesTo: ["Rust"],
+  requiresRootProject: true,
   triggers: ["schedule", "workflow_dispatch"],
   detectionPatternGroups: [["cargo upgrade", "cargo-edit", "cargo update"]],
   capabilities: ["Cargo dependency update"],
@@ -461,6 +465,7 @@ const cargoQuality: WorkflowSpec = {
   id: "cargo-quality",
   name: "Cargo Format and Clippy",
   appliesTo: ["Rust"],
+  requiresRootProject: true,
   triggers: ["pull_request"],
   detectionPatternGroups: [
     ["cargo fmt", "rustfmt"],
@@ -521,6 +526,7 @@ const denoOutdated: WorkflowSpec = {
   id: "deno-outdated",
   name: "Deno Dependency Updates",
   appliesTo: ["Deno"],
+  requiresRootProject: true,
   triggers: ["schedule", "workflow_dispatch"],
   detectionPatternGroups: [["deno outdated", "deno-outdated"]],
   capabilities: ["Deno outdated dependency check"],
@@ -573,6 +579,7 @@ const denoQuality: WorkflowSpec = {
   id: "deno-quality",
   name: "Deno Lint and Format",
   appliesTo: ["Deno"],
+  requiresRootProject: true,
   triggers: ["pull_request"],
   detectionPatternGroups: [["deno lint"], ["deno fmt"], ["deno check"]],
   capabilities: ["Linting", "Formatting", "Type checking"],
@@ -622,6 +629,7 @@ const npmAudit: WorkflowSpec = {
   id: "npm-audit",
   name: "NPM Security Audit",
   appliesTo: ["Node", "React/Web"],
+  requiresRootProject: true,
   triggers: ["pull_request", "schedule"],
   detectionPatternGroups: [["npm audit", "npm-audit", "audit-ci"]],
   capabilities: ["NPM security audit"],
@@ -659,6 +667,7 @@ const npmDependencyUpdates: WorkflowSpec = {
   id: "npm-dependency-updates",
   name: "NPM Dependency Updates",
   appliesTo: ["Node", "React/Web"],
+  requiresRootProject: true,
   triggers: ["schedule"],
   detectionPatternGroups: [[
     "dependabot",
@@ -686,6 +695,7 @@ const eslintQuality: WorkflowSpec = {
   id: "eslint-quality",
   name: "ESLint Code Quality",
   appliesTo: ["Node", "React/Web"],
+  requiresRootProject: true,
   triggers: ["pull_request"],
   detectionPatternGroups: [["eslint", "npx eslint", "npm run lint"]],
   capabilities: ["ESLint linting"],
@@ -776,6 +786,7 @@ const javaDependencyUpdates: WorkflowSpec = {
   id: "java-dependency-updates",
   name: "Java Dependency Updates",
   appliesTo: ["Java"],
+  requiresRootProject: true,
   triggers: ["schedule"],
   detectionPatternGroups: [[
     "dependabot",

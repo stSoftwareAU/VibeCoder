@@ -72,6 +72,7 @@ function workflowDirResponse(filenames: string[]): CommandOutput {
 interface MockState {
   issuesCreated: { repo: string; title: string; body: string }[];
   issueSearches: { repo: string; query: string }[];
+  closedIssues: { number: number; comment: string }[];
 }
 
 /**
@@ -97,8 +98,15 @@ function buildMockRunner(config: {
   langDetectionFails?: boolean;
   /** Whether workflow audit should fail. */
   auditFails?: boolean;
+  workflowSyncIssues?: { number: number; body: string; author?: string }[];
+  issueListFails?: boolean;
+  issueCloseFails?: boolean;
 }): { runner: WorkflowSyncOptions["runCommand"]; state: MockState } {
-  const state: MockState = { issuesCreated: [], issueSearches: [] };
+  const state: MockState = {
+    issuesCreated: [],
+    issueSearches: [],
+    closedIssues: [],
+  };
   const repo = "owner/repo";
 
   const runner = (cmd: string[]): Promise<CommandOutput> => {
@@ -154,11 +162,27 @@ function buildMockRunner(config: {
 
     // Issue search
     if (joined.includes("gh issue list")) {
+      if (config.issueListFails) return Promise.resolve(fail("list failed"));
       const repoIdx = cmd.indexOf("--repo");
       const searchIdx = cmd.indexOf("--search");
       const issueRepo = repoIdx >= 0 ? cmd[repoIdx + 1]! : "";
       const searchQuery = searchIdx >= 0 ? cmd[searchIdx + 1]! : "";
       state.issueSearches.push({ repo: issueRepo, query: searchQuery });
+
+      if (config.workflowSyncIssues) {
+        const marker = searchQuery.replace(/"/g, "").replace(/\s*in:body$/, "");
+        const matched = config.workflowSyncIssues.filter((issue) =>
+          issue.body.includes(marker)
+        );
+        if (matched.length > 0) {
+          const rows = matched.map((issue) => ({
+            number: issue.number,
+            body: issue.body,
+            author: { login: issue.author ?? FLEET_AUTHOR },
+          }));
+          return Promise.resolve(ok(JSON.stringify(rows)));
+        }
+      }
 
       // Check if any existing issue tag matches the search query.
       // Partial tags are checked first since they are longer and strictly
@@ -188,6 +212,14 @@ function buildMockRunner(config: {
         }
       }
       return Promise.resolve(ok("[]"));
+    }
+
+    if (joined.includes("gh issue close")) {
+      if (config.issueCloseFails) return Promise.resolve(fail("close failed"));
+      const number = Number(cmd[cmd.indexOf("close") + 1]);
+      const comment = cmd[cmd.indexOf("--comment") + 1] ?? "";
+      state.closedIssues.push({ number, comment });
+      return Promise.resolve(ok(""));
     }
 
     // Issue creation
@@ -327,6 +359,91 @@ Deno.test("syncWorkflowsForRepo - all workflows present raises no issues", async
   assertEquals(result.issuesRaised, 0);
   assertEquals(result.issuesSkipped, 0);
   assertEquals(state.issuesCreated.length, 0);
+});
+
+Deno.test("syncWorkflowsForRepo - reconciles obsolete Cargo issue with no workflow gaps", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: [],
+    languagesApi: { Rust: 4927 },
+    workflowFiles: ["gitleaks.yml", "semgrep.yml", "markdown-lint.yml"],
+    workflowContents: {
+      "gitleaks.yml": gitleaksYaml,
+      "semgrep.yml": semgrepYaml,
+      "markdown-lint.yml": markdownLintYaml,
+    },
+    workflowSyncIssues: [{
+      number: 4693,
+      body: `${deduplicationTag("cargo-upgrade")}`,
+    }],
+  });
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
+    resolvePins: cataloguePins,
+  });
+  assertEquals(result.ok, true);
+  assertEquals(result.issuesRaised, 0);
+  assertEquals(result.partialIssuesRaised, 0);
+  assertEquals(state.closedIssues.length, 1);
+  assertEquals(state.closedIssues[0]!.number, 4693);
+  assertEquals(
+    state.closedIssues[0]!.comment.includes("root project marker is absent"),
+    true,
+  );
+});
+
+Deno.test("syncWorkflowsForRepo - reports reconciliation listing failures", async () => {
+  const { runner } = buildMockRunner({
+    rootFiles: [],
+    languagesApi: { Rust: 4927 },
+    issueListFails: true,
+  });
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
+    resolvePins: cataloguePins,
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.error?.includes("reconciliation failed"), true);
+  assertEquals(result.error?.includes("list failed"), true);
+});
+
+Deno.test("syncWorkflowsForRepo - dry run does not close inapplicable requests", async () => {
+  const { runner, state } = buildMockRunner({
+    rootFiles: [],
+    languagesApi: { Rust: 4927 },
+    workflowSyncIssues: [{
+      number: 4694,
+      body: partialDeduplicationTag("cargo-quality"),
+    }],
+  });
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
+    dryRun: true,
+    resolvePins: cataloguePins,
+  });
+  assertEquals(result.ok, true);
+  assertEquals(state.closedIssues.length, 0);
+});
+
+Deno.test("syncWorkflowsForRepo - reports issue-close failures during reconciliation", async () => {
+  const { runner } = buildMockRunner({
+    rootFiles: [],
+    languagesApi: { Rust: 4927 },
+    workflowSyncIssues: [{
+      number: 4695,
+      body: deduplicationTag("cargo-audit"),
+    }],
+    issueCloseFails: true,
+  });
+  const result = await syncWorkflowsForRepo("owner/repo", {
+    runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
+    resolvePins: cataloguePins,
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.error?.includes("Failed to close 1"), true);
 });
 
 // ---------------------------------------------------------------------------
@@ -498,7 +615,11 @@ Deno.test("syncWorkflowsForRepo - dry run does not create issues", async () => {
 
 Deno.test("syncWorkflowsForAllRepos - processes multiple repos", async () => {
   // Use a runner that handles any repo
-  const state: MockState = { issuesCreated: [], issueSearches: [] };
+  const state: MockState = {
+    issuesCreated: [],
+    issueSearches: [],
+    closedIssues: [],
+  };
   const runner = (cmd: string[]): Promise<CommandOutput> => {
     const joined = cmd.join(" ");
 
