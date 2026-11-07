@@ -29,7 +29,8 @@ function prJson(overrides: Record<string, unknown>): Record<string, unknown> {
     headRefName: "dependabot/deno/std-1.2.3",
     body: "",
     url: "https://github.com/owner/repo/pull/1",
-    author: { login: "dependabot[bot]" },
+    // The shape `gh pr list --json author` really reports for a GitHub App.
+    author: { is_bot: true, login: "app/dependabot" },
     isCrossRepository: false,
     headRefOid: "abc123",
     autoMergeRequest: null,
@@ -347,4 +348,112 @@ Deno.test("listBotPrs - the caller's limit bounds what the listing returns", asy
   // The stub honours `--limit`, so a limit that never reached gh would show
   // up here as a third admitted PR.
   assertEquals(admitted.map((pr) => pr.number), [1, 2]);
+});
+
+Deno.test("listBotPrs - admits a GitHub App author reported as app/<slug> (Issue #4719)", async () => {
+  const lines: string[] = [];
+  const admitted = await listBotPrs({
+    repo: REPO,
+    ghCommandFn: buildGh([
+      prJson({ number: 30, author: { is_bot: true, login: "app/renovate" } }),
+    ]),
+    log: (message) => lines.push(message),
+  });
+
+  assertEquals(admitted.map((pr) => pr.number), [30]);
+  assertEquals(admitted[0]?.author, { login: "renovate[bot]" });
+  assertEquals(lines, [
+    `[pr-bot] admitted repo=${REPO} prNumber=30 author=renovate[bot]`,
+  ]);
+});
+
+Deno.test("listBotPrs - a non-bot author is never admitted", async () => {
+  // These ordinary user logins are not App-shaped, so neither is re-spelled,
+  // admitted or logged: they are not this door's business.
+  const lines: string[] = [];
+  const admitted = await listBotPrs({
+    repo: REPO,
+    ghCommandFn: buildGh([
+      prJson({ number: 31, author: { is_bot: false, login: "alice" } }),
+      prJson({
+        number: 32,
+        author: { is_bot: false, login: "someone-unknown" },
+      }),
+    ]),
+    log: (message) => lines.push(message),
+  });
+
+  assertEquals(admitted, []);
+  assertEquals(lines, []);
+});
+
+Deno.test("listBotPrs - a cross-repository App-authored PR is still excluded (Issue #4719)", async () => {
+  const lines: string[] = [];
+  const admitted = await listBotPrs({
+    repo: REPO,
+    ghCommandFn: buildGh([
+      prJson({
+        number: 34,
+        isCrossRepository: true,
+        author: { is_bot: true, login: "app/dependabot" },
+      }),
+    ]),
+    log: (message) => lines.push(message),
+  });
+
+  assertEquals(admitted, []);
+  assertEquals(lines, [
+    `[pr-bot] excluded repo=${REPO} prNumber=34 author=dependabot[bot] reason=cross-repository-head`,
+  ]);
+});
+
+Deno.test("listBotPrs - the host's own App-authored PR is still skipped (Issue #4719)", async () => {
+  const admitted = await listBotPrs({
+    repo: REPO,
+    ghCommandFn: buildGh([
+      prJson({
+        number: 35,
+        author: { is_bot: true, login: "app/vibecoderbot" },
+      }),
+      prJson({ number: 36 }),
+    ]),
+    githubUser: HOST,
+    log: DISCARD,
+  });
+
+  assertEquals(admitted.map((pr) => pr.number), [36]);
+});
+
+Deno.test("listBotPrs - admits a row cached in the previous app/<slug> shape (Issue #4719)", async () => {
+  await withCache(async (cache) => {
+    // Written by the previous release, before listings re-spelled App
+    // authors. It is still inside the cache TTL, so it must be handled.
+    await cache.write(REPO, "prs_open_all", [{
+      number: 50,
+      title: "chore(deps): bump std",
+      baseRefName: "main",
+      headRefName: "dependabot/deno/std-1.2.3",
+      body: "",
+      url: "https://github.com/owner/repo/pull/50",
+      authorLogin: "app/dependabot",
+      isCrossRepository: false,
+      headRefOid: "abc123",
+      autoMergeRequest: null,
+      mergeable: "MERGEABLE",
+      labels: [],
+    }]);
+    const lines: string[] = [];
+    const admitted = await listBotPrs({
+      repo: REPO,
+      ghCommandFn: () => Promise.reject(new Error("gh must not be called")),
+      cache,
+      log: (message) => lines.push(message),
+    });
+
+    assertEquals(admitted.map((pr) => pr.number), [50]);
+    assertEquals(admitted[0]?.author, { login: "dependabot[bot]" });
+    assertEquals(lines, [
+      `[pr-bot] admitted repo=${REPO} prNumber=50 author=dependabot[bot]`,
+    ]);
+  });
 });

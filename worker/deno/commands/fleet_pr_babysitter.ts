@@ -159,6 +159,8 @@ export interface CloneForRepairDeps {
 }
 
 const CLONE_TIMEOUT_SECONDS = 30 * 60;
+/** git fetch/push in a repair can be slow on a large repository, so git gets 30 minutes rather than the 60 s default. */
+const REPAIR_GIT_TIMEOUT_SECONDS = 30 * 60;
 
 /** Local git diagnostics contain arbitrary paths and source text, not transport evidence. */
 export function classifyBabysitterGitFailure(
@@ -819,14 +821,22 @@ export async function recoverTemporaryClones(root: string): Promise<void> {
     }
   }
 }
-async function run(
+/**
+ * Runs a repair command. git goes through the timeout/audit chokepoint
+ * (Issue #1553) with a 30-minute bound, not the 60 s default.
+ */
+export async function run(
   command: string,
   args: string[],
   cwd?: string,
+  runGit: typeof runGitArgv = runGitArgv,
 ): Promise<string> {
   // git goes through the timeout/audit chokepoint (Issue #1553).
   if (command === "git") {
-    const git = await runGitArgv([command, ...args], { cwd });
+    const git = await runGit([command, ...args], {
+      cwd,
+      timeoutSeconds: REPAIR_GIT_TIMEOUT_SECONDS,
+    });
     if (!git.success) {
       const message = `git failed: ${(git.stderr || git.stdout).trim()}`;
       throw classifyBabysitterGitFailure(args, new Error(message));
@@ -835,18 +845,6 @@ async function run(
   }
   // gh goes through its chokepoint too (Issue #3703).
   if (command === "gh") return (await runGhCommand(args)).trim();
-  if (command === "git") {
-    const result = await runGitCommand(args, { cwd, timeoutSeconds: 30 * 60 });
-    if (!result.ok) throw result.error;
-    if (result.value.code !== 0) {
-      throw new Error(
-        `git failed (${result.value.code}): ${
-          (result.value.stderr || result.value.stdout).trim()
-        }`,
-      );
-    }
-    return result.value.stdout.trim();
-  }
   const outcome = await runWithTimeout(command, args, {
     cwd,
     timeoutMs: 30 * 60_000,

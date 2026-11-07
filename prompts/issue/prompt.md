@@ -739,7 +739,10 @@ The committed file must yield no finding from the file-scoped Actions checks in
 - `workflow-triggers` — no test/lint/scan workflow triggers on push to the
   default branch; those checks run on `pull_request`.
 - `checkout-persist-credentials` — every `actions/checkout` sets
-  `persist-credentials: false` unless the job pushes.
+  `persist-credentials: false` unless the job needs the checkout credential
+  (for example, a `run: git push` or `git fetch`, a push action using that
+  credential, or a submodules checkout). `peter-evans/create-pull-request`
+  uses its own token and does not count.
 - `milestone-branch-filters` — every `pull_request` branch filter also matches
   `milestone/<slug>` branches, so a milestone PR is not silently unchecked.
 - `ci-install-pins` — every `run:` package install pins an exact version (and
