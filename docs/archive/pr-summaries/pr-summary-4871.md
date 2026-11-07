@@ -44,20 +44,23 @@ wording. Applied the rule to this diff: `git grep` for "your job", "stop there",
 
 - `worker/deno/tests/claimed_pr_lifecycle_guard_test.ts` — refusal reason no
   longer says "Raise the PR", still lists `'gh pr create'` as unaffected; coding
-  guidelines prompt no longer contains the old sentences and contains "Deciding
-  whether a PR lands is not your job.".
+  guidelines prompt no longer contains the old sentences, including when wrapped,
+  and its "Nor is your own pull request" section retains "Deciding whether a PR
+  lands is not your job.". The former whole-file positive pin could pass when the
+  sentence moved; the remaining section-specific rule and whole-file absence
+  checks are covered by `claimed_pr_lifecycle_guard_test.ts::coding guidelines
+  no longer say raising the PR is the agent's job (Issue #4871)`.
 - `worker/deno/tests/ci_failure_issue_test.ts` — rendered CI-failure section no
   longer says "raise the PR itself" and says the worker raises the PR.
 - Red check: with the production edits reverted, all three new tests fail; with
   them applied they pass.
-- Ran `deno task test:unit` over the coding_guidelines, prompt_hash, gh_guard,
-  claimed_ and ci_failure test files: 283 passed, 0 failed.
-- `./quality.sh` on the final head: every stage passed (including lint, type
-  check, fmt, markdownlint, semgrep) except `deno tests`, whose parallel pass
-  failed on one unrelated test, `worker/deno/tests/merge_fallback_issue_test.ts`
-  ("createFallbackFlagFiler - routes the label creation through the caller's
-  gh"). It fails identically on the base commit (`HEAD~1` checked out in a
-  separate worktree, 28 passed / 1 failed), so it is pre-existing and not caused
-  by this change; it looks host-state dependent (no label-create call reached
-  the fake `gh`). Because the parallel pass failed, the serial pass of the gate
-  did not run.
+- `deno task test:unit tests/claimed_pr_lifecycle_guard_test.ts
+  tests/ci_failure_issue_test.ts`: 52 passed, 0 failed.
+- Mutation checks: moving the positive sentence out of its section and wrapping
+  each forbidden phrase across a line break made the prompt test fail; restoring
+  the prompt made it pass.
+- `./quality.sh`: formatter, lint, type check and markdownlint passed. The unit
+  test parallel pass failed on this host with a Deno runtime panic, `pledge test
+  permissions called before restoring previous pledge`; a separate unit-suite
+  run reproduced the panic. The base commit's PR #4888 checks passed in CI.
+  Semgrep and the pinned Checkov version were unavailable locally; CI runs both.
