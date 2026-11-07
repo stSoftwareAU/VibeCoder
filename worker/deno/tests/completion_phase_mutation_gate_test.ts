@@ -123,8 +123,13 @@ interface Scenario {
   workflow?: string;
   /** Makes `.github/workflows` a regular file, so reading it throws (Issue #4617). */
   workflowsDirIsFile?: boolean;
+  /** Text the stub `gh api` serves for the remote workflow `acme/ci/.github/workflows/m.yml` (Issue #4617). */
+  remoteWorkflow?: string;
+  /** The base branch's required checks the stub `gh api` reports (Issue #4617). */
+  requiredChecks?: string[];
   /** The branch already has an open PR, so the existing-PR path runs. */
   existingPrForBranch?: boolean;
+  existingPrIsDraft?: boolean;
   /** `gh pr create` fails on the primary quota, so the REST fallback opens the PR (Issue #4617). */
   prCreateRateLimited?: boolean;
   /** `gh pr create` and the REST fallback both hit the secondary limit, so the PR is parked (Issue #4617). */
@@ -251,9 +256,37 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             ),
           );
         }
+        if (
+          scenario.requiredChecks !== undefined && args[0] === "api" &&
+          /^repos\/[^/]+\/[^/]+\/(rules\/)?branches\//.test(args[1] ?? "")
+        ) {
+          return Promise.resolve(
+            (args[1] ?? "").includes("/rules/")
+              ? JSON.stringify([[{
+                type: "required_status_checks",
+                parameters: {
+                  required_status_checks: scenario.requiredChecks.map((
+                    context,
+                  ) => ({ context })),
+                },
+              }]])
+              : JSON.stringify({ protection: null }),
+          );
+        }
+        if (
+          scenario.remoteWorkflow !== undefined && args[0] === "api" &&
+          (args[1] ?? "").startsWith(
+            "repos/acme/ci/contents/.github/workflows/m.yml?ref=",
+          )
+        ) {
+          return Promise.resolve(scenario.remoteWorkflow);
+        }
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(
-            JSON.stringify({ state: "OPEN", isDraft: false }),
+            JSON.stringify({
+              state: "OPEN",
+              isDraft: scenario.existingPrIsDraft === true,
+            }),
           );
         }
         return Promise.resolve(PR_URL);
@@ -803,7 +836,7 @@ Deno.test("completion - a CI-blocking mutants job with every mutant killed raise
   assertEquals(outcome.comments.length, 0);
 });
 
-Deno.test("completion - a runner error with a blocking CI job holds the PR as an incomplete-validation draft", async () => {
+Deno.test("completion - a runner error with a blocking CI job raises a ready, armed PR for CI to judge (Issue #4820)", async () => {
   const outcome = await runCompletion({
     mutation: { kind: "error", reason: "cargo mutants crashed" },
     workflow: CI_BLOCKING_WORKFLOW,
@@ -811,13 +844,8 @@ Deno.test("completion - a runner error with a blocking CI job holds the PR as an
 
   assertEquals(outcome.status, "continue");
   assertEquals(outcome.prCreateCalls, 1);
-  assertEquals(createCall(outcome).includes("--draft"), true);
-  const body = flagValue(createCall(outcome), "--body");
-  assertStringIncludes(body, DRAFT_CONTINUATION_MARKER);
-  assertStringIncludes(body, "could not finish");
-  assertStringIncludes(body, "Next action:");
-  assertStringIncludes(body, "unvalidated, not passed");
-  assertEquals(outcome.finalisePrCalls, 0, "auto-merge is not armed");
+  assertEquals(createCall(outcome).includes("--draft"), false);
+  assertEquals(outcome.finalisePrCalls, 1, "auto-merge is armed");
 });
 
 Deno.test("completion - a runner error without a blocking CI job is noted and the PR is raised ready", async () => {
@@ -830,15 +858,15 @@ Deno.test("completion - a runner error without a blocking CI job is noted and th
   assertEquals(outcome.finalisePrCalls, 1);
 });
 
-Deno.test("completion - an exhausted mutation budget with a blocking CI job holds the PR as a draft", async () => {
+Deno.test("completion - an exhausted mutation budget with a blocking CI job and no survivor raises a ready, armed PR (Issue #4820)", async () => {
   const outcome = await runCompletion({
     mutation: {
       kind: "budget_exhausted",
       language: "rust",
       survivors: [],
-      killed: 1,
-      tested: 1,
-      total: 5,
+      killed: 0,
+      tested: 0,
+      total: 0,
       budgetSeconds: 300,
     },
     workflow: CI_BLOCKING_WORKFLOW,
@@ -846,12 +874,63 @@ Deno.test("completion - an exhausted mutation budget with a blocking CI job hold
 
   assertEquals(outcome.status, "continue");
   assertEquals(outcome.claudeCalls, 0, "no recovery turn can add mutants");
-  assertEquals(createCall(outcome).includes("--draft"), true);
-  assertStringIncludes(
-    flagValue(createCall(outcome), "--body"),
-    "Next action:",
+  assertEquals(createCall(outcome).includes("--draft"), false);
+  assertEquals(outcome.finalisePrCalls, 1, "auto-merge is armed");
+  assertEquals(
+    outcome.warnings.some((w) =>
+      w.includes("CI job 'mutants' will still try every mutant")
+    ),
+    true,
+    `warnings: ${JSON.stringify(outcome.warnings)}`,
   );
-  assertEquals(outcome.finalisePrCalls, 0);
+});
+
+Deno.test("completion - an exhausted mutation budget with a survivor and a blocking CI job still holds the PR (Issue #4617)", async () => {
+  const outcome = await runCompletion({
+    mutation: {
+      kind: "budget_exhausted",
+      language: "rust",
+      survivors: [SURVIVOR],
+      killed: 0,
+      tested: 1,
+      total: 5,
+      budgetSeconds: 300,
+    },
+    workflow: CI_BLOCKING_WORKFLOW,
+  });
+
+  assertEquals(createCall(outcome).includes("--draft"), true);
+  assertEquals(outcome.finalisePrCalls, 0, "auto-merge is not armed");
+});
+
+Deno.test("completion - a draft held only for an unfinished check is marked ready on the resuming run (Issue #4820)", async () => {
+  const outcome = await runCompletion({
+    mutation: {
+      kind: "budget_exhausted",
+      language: "rust",
+      survivors: [],
+      killed: 0,
+      tested: 0,
+      total: 0,
+      budgetSeconds: 300,
+    },
+    workflow: CI_BLOCKING_WORKFLOW,
+    existingPrForBranch: true,
+    existingPrIsDraft: true,
+  });
+
+  assertEquals(outcome.prCreateCalls, 0);
+  const ready = prVerbCalls(outcome, "ready");
+  assertEquals(
+    ready.some((args) => args.includes("--undo")),
+    false,
+    "not turned back into a draft",
+  );
+  assertEquals(
+    ready.some((args) => !args.includes("--undo")),
+    true,
+    "marked ready",
+  );
 });
 
 Deno.test("completion - a CI mutants job marked continue-on-error does not hold the PR", async () => {
@@ -1079,4 +1158,62 @@ Deno.test("completion - cargo CI leaves a Deno survivor advisory and armed", asy
   assertEquals(createCall(outcome).includes("--draft"), false);
   assertEquals(outcome.finalisePrCalls, 1);
   assertStringIncludes(outcome.comments.join("\n"), "auto-merge stays armed");
+});
+
+Deno.test("completion - a CI mutants job that no required check covers does not hold the PR (Issue #4617)", async () => {
+  const held = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow: CI_BLOCKING_WORKFLOW,
+    requiredChecks: ["mutants"],
+  });
+  assertEquals(createCall(held).includes("--draft"), true, "required: held");
+
+  const ready = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    summary: SUMMARY_WITH_EXEMPTION,
+    workflow: CI_BLOCKING_WORKFLOW,
+    requiredChecks: ["tests"],
+  });
+  assertEquals(
+    createCall(ready).includes("--draft"),
+    false,
+    "not required: the exemption clears the survivor, as with no CI job",
+  );
+  assertEquals(ready.finalisePrCalls, 1);
+});
+
+Deno.test("completion - a survivor a remote reusable mutants workflow blocks on holds the PR as a draft (Issue #4617)", async () => {
+  const workflow = `name: ci
+on: pull_request
+jobs:
+  mutants:
+    uses: acme/ci/.github/workflows/m.yml@v1
+`;
+  const remoteWorkflow = `on: workflow_call
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo mutants --timeout 60
+`;
+  const held = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    workflow,
+    remoteWorkflow,
+  });
+  assertEquals(createCall(held).includes("--draft"), true);
+  assertEquals(held.finalisePrCalls, 0);
+  assertStringIncludes(
+    held.prompts[0]!,
+    "reusable acme/ci/.github/workflows/m.yml@v1",
+  );
+
+  // Control: when the remote file cannot be read, the contract is unknown and
+  // the survivor is a note, as before.
+  const unread = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    summary: SUMMARY_WITH_EXEMPTION,
+    workflow,
+  });
+  assertEquals(createCall(unread).includes("--draft"), false);
 });

@@ -125,6 +125,11 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import {
+  notifyBranchRefreshRefusal,
+  readBranchRefreshRefusals,
+  writeBranchRefreshRefusals,
+} from "./branch_refresh_refusal_streak.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
@@ -3756,6 +3761,28 @@ export async function createProductionRunCoreDeps(
               ok: false,
               error: new Error("PR base is unknown"),
             }),
+        branchRefreshRefusals: {
+          load: () =>
+            readBranchRefreshRefusals(
+              workDir,
+              undefined,
+              (message) => logger.warn(message),
+            ),
+          save: (state) =>
+            writeBranchRefreshRefusals(
+              workDir,
+              state,
+              undefined,
+              (message) => logger.warn(message),
+            ),
+          notify: async ({ repo, prNumber, entry, active }) => {
+            await notifyBranchRefreshRefusal(
+              { repo, prNumber, entry, active },
+              gh,
+              (login) => isFleetAuthor(login, maintenanceAuthors),
+            );
+          },
+        },
         // Issue #4424: an armed PR behind a merge queue is not updated — the
         // queue tests it against its future head and lands it.
         isMergeQueueBase: makeIsMergeQueueBase(gh),

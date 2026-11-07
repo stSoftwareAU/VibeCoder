@@ -60,8 +60,9 @@ summarise, authorised.
   explicitly: a standard-library function reinvented by hand, a dependency
   added when an installed one or the standard library already does the job,
   an abstraction with a single implementation, and an in-repo helper,
-  component or policy re-implemented by hand instead of called — when that
-  owner is private, widen its visibility rather than copy it.
+  component or rule copied or re-implemented instead of called or imported,
+  in tests and scripts as in product code (a test's expected result is still
+  not computed by calling the implementation it asserts).
 - **Deno TypeScript for new logic** — All new business logic, decision-making,
   and data processing must be implemented in Deno TypeScript (`worker/deno/`),
   not in shell scripts. Shell scripts are for orchestration only (calling Deno
@@ -1590,17 +1591,16 @@ the transcript: `unitTestPassTranscript` in `lib/unit_test_passes.ts` keeps a
 failing pass's output and drops a passing one's.
 
 **All quality checks MUST pass before creating a PR.** The worker runs
-`./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a
-PR with failing quality checks — fix the failures first.
+`./quality.sh` before creating any PR. Never raise a PR with failing quality
+checks — fix the failures first.
 
 **The agent's own run of the gate is conditional on the run budget
 (Issue #1138).** The gate's median observed run is 17 minutes inside a budget of
-roughly an hour, and the same checks arrive twice more for free — the worker
-runs the gate itself before the PR, and CI runs it on the PR. So an agent
-starts the gate only when the runway left covers it plus the time to fix,
-commit and push what it reports; the worker writes `.vibe-run-budget.md` into
-the checkout the moment it no longer does, and refuses the gate there. A gate
-skipped for budget is **recorded, never silent**: the
+roughly an hour, and the worker runs the gate itself before the PR is raised. So
+an agent starts the gate only when the runway left covers it plus the time to
+fix, commit and push what it reports; the worker writes `.vibe-run-budget.md`
+into the checkout the moment it no longer does, and refuses the gate there. A
+gate skipped for budget is **recorded, never silent**: the
 `<!-- vibe-quality-gate-skipped … -->` note goes in the PR summary (or
 `.pr_response_message`), because a gate nobody ran reads exactly like a gate
 that passed. That is not a licence to raise a PR over a *failing* check — the
@@ -1866,8 +1866,7 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
 - Grep for the **stem** of a behavioural claim, not one inflection
   (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
   final head after editing. In a file you update, read every passage that
-  mentions the changed surface, not only the section you edited. Name each
-  remaining hit in the PR summary by `file:line` with the reason it is still true.
+  mentions the changed surface, not only the section you edited.
 - **Check where you insert.** Before adding a new function, item, test or
   paragraph, read the lines directly above and below the insertion point. A
   doc comment, attribute or decorator directly above belongs to the item

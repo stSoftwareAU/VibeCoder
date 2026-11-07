@@ -493,13 +493,19 @@ it is refused the same way. There are two exceptions, and each names what went
 unchecked. The first is a merge-only cycle (Issue #4326) on a cargo-only tree:
 when the host cannot afford the cargo build, a resolution is pushed with the
 `UNGATED` note and the milestone PR's CI builds it. The second (Issue #4422)
-covers a Deno task whose remote module host this host cannot reach, in the
-resolution gate's tasks and, under the condition below, in the Issue #974 type
-check. When a Deno task fails because this host cannot reach a remote module
-host, deno prints `error: Import '<url>' failed.` followed by a connection-class
-cause such as `error sending request for url`, `unsuccessful tunnel` or
-`dns error`. The task is neither counted as passed nor repaired. Every other
-task still runs, so a real failure elsewhere still refuses the resolution. A
+covers a Deno task whose remote module host, or npm registry, this host cannot
+reach, in the resolution gate's tasks and, under the condition below, in the
+Issue #974 type check. When a Deno task fails because this host cannot reach a
+remote module host or npm registry, deno prints a failure header followed by a
+connection-class cause such as `error sending request for url`, `unsuccessful
+tunnel` or `dns error`. The header is `error: Import '<url>' failed.`, `error:
+Failed caching npm package '<spec>'`, or `error: Failed loading <url> for
+package "<name>"` (Issue #4848); the cause must follow it, and ANSI colour in
+the output does not stop the match. A line whose escape byte was already
+stripped upstream, leaving bare `[0m`-style remnants, has them ignored wherever
+they sit in the line, so the header still matches (Issue #4853). The task is neither counted as passed nor
+repaired. Every other task still runs, so a real failure elsewhere still refuses
+the resolution. A
 404, a certificate, a checksum or a type error is an ordinary failure and is
 refused. `quality.sh` is never substituted for an unreachable unit suite. The
 resolution lands with the outcome `suiteLeftToCi`. The push note is `TESTS LEFT

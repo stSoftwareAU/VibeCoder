@@ -44,40 +44,19 @@ import { runFooter, type RunInfo } from "./review_cost.ts";
 // import back would be a cycle.
 import type { ApprovedTestChange } from "./test_change_policy.ts";
 
-export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
-
-/**
- * The version of the owner-hold policy a held review was made under. Version 2
- * is the #4655 evidence-review policy: a test change is never itself a hold, so
- * the owner is asked only about a product-contract question or a repo's
- * explicit override. Bumping it reassesses every existing reviewer-owned hold
- * once, including a hold at the current head (Issue #4643, Issue #4655).
- */
-export const HOLD_POLICY_VERSION = 2;
-
-// A held review carries its policy version on a line of its own, so the gate
-// can tell a stale hold from a current one (Issue #4655). Only a whole line
-// counts: the marker quoted in prose or a code span does not.
-export const HOLD_POLICY_MARKER_PREFIX = "<!-- vibe-hold-policy v=";
-const HOLD_POLICY_LINE = /^<!-- vibe-hold-policy v=(\d{1,4}) -->$/;
-
-export function holdPolicyMarker(version = HOLD_POLICY_VERSION): string {
-  return `${HOLD_POLICY_MARKER_PREFIX}${version} -->`;
-}
-
-/**
- * The policy version a held review body was made under: the last whole-line
- * marker in it (the skill's own marker comes after the reviewer's text), or 1
- * when there is none, which is a hold made before #4655.
- */
-export function holdPolicyFromBody(body: string | undefined): number {
-  let version = 1;
-  for (const line of (body ?? "").split("\n")) {
-    const match = HOLD_POLICY_LINE.exec(line.trim());
-    if (match) version = Number(match[1]);
-  }
-  return version;
-}
+import {
+  holdPolicyMarker,
+  OWNER_CONTRACT_HOLD,
+  OWNER_POLICY_HOLD,
+  REVIEW_MARKER,
+} from "../../../../worker/deno/lib/fleet_review_hold.ts";
+export {
+  HOLD_POLICY_MARKER_PREFIX,
+  HOLD_POLICY_VERSION,
+  holdPolicyFromBody,
+  holdPolicyMarker,
+  REVIEW_MARKER,
+} from "../../../../worker/deno/lib/fleet_review_hold.ts";
 
 // A pre-existing problem Fable noticed that the PR did not cause (already on
 // the base branch, unchanged by the PR): unfair to ask this PR to fix it, too
@@ -387,9 +366,7 @@ export function reviewBody(
   } else if (outcome === "held") {
     const hold = opts.hold;
     lines.push(
-      hold?.override
-        ? "Held for owner review: this repository holds every meaningful test change for the owner (pr_reviewer_test_hold_repos)."
-        : "Held for owner review: the intended product contract behind these test changes is unclear.",
+      hold?.override ? OWNER_POLICY_HOLD : OWNER_CONTRACT_HOLD,
       ...(hold?.override
         ? []
         : (hold?.reasons ?? []).map((r) => `- ${plain(r)}`)),

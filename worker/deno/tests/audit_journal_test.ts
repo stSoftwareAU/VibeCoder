@@ -8,7 +8,12 @@
  * Uses Australian English throughout.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   _resetAuditCaches,
   type AuditEntry,
@@ -16,10 +21,12 @@ import {
   computeEntryHash,
   loadEntries,
   recordMutation,
+  resolveBaseDir,
   verifyAllChains,
   verifyChain,
 } from "../lib/audit_journal.ts";
 import { anchorPath, rosterPath } from "../lib/audit_anchor.ts";
+import { envFrom } from "./support/env_lookup.ts";
 
 /** Build a fresh isolated journal location for a test. */
 async function freshOpts(): Promise<
@@ -567,4 +574,63 @@ Deno.test("audit_journal - a journal awaiting --adopt is not quarantined out fro
     },
     () => {},
   );
+});
+
+/** The refusal `resolveBaseDir` raises for a malformed `VIBE_AUDIT_DIR`. */
+const AUDIT_DIR_REFUSAL =
+  "VIBE_AUDIT_DIR must be an absolute path without a '..' segment";
+
+Deno.test("audit_journal - VIBE_AUDIT_DIR as a relative path is refused before any write (Issue #2380)", async () => {
+  _resetAuditCaches();
+  const env = envFrom({ VIBE_AUDIT_DIR: "relative/audit" });
+  assertThrows(() => resolveBaseDir(undefined, env), Error, AUDIT_DIR_REFUSAL);
+
+  const result = await recordMutation({
+    runId: "run-1",
+    verb: "issue-comment",
+    outcome: "success",
+  }, { env, workerId: "test-worker", date: "2026-05-29" });
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertEquals(result.error.message, AUDIT_DIR_REFUSAL);
+});
+
+Deno.test("audit_journal - VIBE_AUDIT_DIR with a '..' segment is refused before any directory is created (Issue #2380)", async () => {
+  _resetAuditCaches();
+  const dir = await Deno.makeTempDir();
+  const env = envFrom({ VIBE_AUDIT_DIR: `${dir}/nested/../audit` });
+  assertThrows(() => resolveBaseDir(undefined, env), Error, AUDIT_DIR_REFUSAL);
+
+  const result = await recordMutation({
+    runId: "run-1",
+    verb: "issue-comment",
+    outcome: "success",
+  }, { env, workerId: "test-worker", date: "2026-05-29" });
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertEquals(result.error.message, AUDIT_DIR_REFUSAL);
+  await Deno.stat(`${dir}/audit`).then(
+    () => {
+      throw new Error("a refused VIBE_AUDIT_DIR must not create a directory");
+    },
+    (err: unknown) => assert(err instanceof Deno.errors.NotFound),
+  );
+});
+
+Deno.test("audit_journal - VIBE_AUDIT_DIR as a legal absolute temp directory is accepted (Issue #2380)", async () => {
+  _resetAuditCaches();
+  const dir = await Deno.makeTempDir();
+  const env = envFrom({ VIBE_AUDIT_DIR: dir });
+  assertEquals(resolveBaseDir(undefined, env), dir);
+
+  const opts = { env, workerId: "test-worker", date: "2026-05-29" };
+  const result = await recordMutation({
+    runId: "run-1",
+    verb: "issue-comment",
+    outcome: "success",
+  }, opts);
+  assert(result.ok, "a legal VIBE_AUDIT_DIR should record");
+  const path = auditFilePath(opts);
+  assertEquals(path, `${dir}/audit-test-worker-2026-05-29.jsonl`);
+  await Deno.stat(path);
 });

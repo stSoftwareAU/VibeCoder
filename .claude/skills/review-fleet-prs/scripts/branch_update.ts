@@ -17,6 +17,7 @@ import {
   withFileLock,
 } from "../../../../worker/deno/lib/file_lock.ts";
 import { requestReadyBranchUpdate } from "../../../../worker/deno/lib/required_branch_checks_4613.ts";
+import { recordMutation } from "../../../../worker/deno/lib/audit_journal.ts";
 import {
   BRANCH_UPDATE_FILE,
   FAILED_FILE,
@@ -74,6 +75,11 @@ export type BranchUpdateResult =
   | { updated: true }
   | { updated: false; error: string };
 
+export interface BranchUpdateAudit {
+  auditDir: string;
+  runId: string;
+}
+
 // Asks GitHub to merge the base branch into the PR. `expected_head_sha`
 // makes GitHub refuse (HTTP 422) when the fleet pushed meanwhile, so the
 // update never lands on a head the review did not see. A refusal is
@@ -81,8 +87,9 @@ export type BranchUpdateResult =
 export async function updateBranch(
   pr: { repo: string; number: number; headSha: string; baseRefName: string },
   runGh: RunGh,
-  authorOptions?: AlertDedupAuthorOptions,
-  reviewer?: string,
+  authorOptions: AlertDedupAuthorOptions | undefined,
+  reviewer: string | undefined,
+  audit: BranchUpdateAudit,
 ): Promise<BranchUpdateResult> {
   const options = authorOptions ?? {
     env: () => undefined,
@@ -103,10 +110,55 @@ export async function updateBranch(
       };
     }
   }
+  const auditedGh: RunGh = async (args) => {
+    const targetIndex = args.findIndex((arg) =>
+      /^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pulls\/[1-9]\d*\/update-branch$/
+        .test(arg)
+    );
+    const isUpdate = args[0] === "api" && args.includes("PUT") &&
+      targetIndex >= 0;
+    if (!isUpdate) return await runGh(args);
+
+    const target = args[targetIndex]!;
+    const match =
+      /^repos\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pulls\/([1-9]\d*)\/update-branch$/
+        .exec(target)!;
+    const timestamp = new Date().toISOString();
+    let outcome: "success" | "error" = "error";
+    try {
+      const result = await runGh(args);
+      outcome = "success";
+      return result;
+    } finally {
+      const recorded = await recordMutation({
+        actionId: crypto.randomUUID(),
+        runId: audit.runId,
+        component: "reviewer",
+        actionKind: "branch-update",
+        caller: "review-fleet-prs/scripts/branch_update.ts",
+        repo: match[1],
+        prNumber: Number(match[2]),
+        verb: "api-put",
+        target,
+        outcome,
+        timestamp,
+      }, {
+        baseDir: audit.auditDir,
+        workerId: "fleet-reviewer",
+        date: timestamp.slice(0, 10),
+        env: () => undefined,
+      });
+      if (!recorded.ok) {
+        console.error(
+          `[SECURITY] [AUDIT_JOURNAL_REFUSED] branch update: ${recorded.error.message}`,
+        );
+      }
+    }
+  };
   const result = await requestReadyBranchUpdate(
     pr.repo,
     pr.number,
-    runGh,
+    auditedGh,
     pr.baseRefName,
     pr.headSha,
     undefined,
@@ -124,8 +176,9 @@ export async function updateBranchOnce(
   pr: { repo: string; number: number; headSha: string; baseRefName: string },
   dir: string,
   runGh: RunGh,
-  authorOptions?: AlertDedupAuthorOptions,
-  reviewer?: string,
+  authorOptions: AlertDedupAuthorOptions | undefined,
+  reviewer: string | undefined,
+  audit: BranchUpdateAudit,
 ): Promise<BranchUpdateResult | undefined> {
   await Deno.mkdir(dir, { recursive: true });
   const key = prKey(pr.repo, pr.number);
@@ -141,7 +194,13 @@ export async function updateBranchOnce(
           updateAsked[key] === pr.headSha ||
           failed[`${key} branch-update`] === pr.headSha
         ) return undefined;
-        const result = await updateBranch(pr, runGh, authorOptions, reviewer);
+        const result = await updateBranch(
+          pr,
+          runGh,
+          authorOptions,
+          reviewer,
+          audit,
+        );
         if (result.updated) {
           await writeMemory(dir, BRANCH_UPDATE_FILE, { [key]: pr.headSha });
         } else {

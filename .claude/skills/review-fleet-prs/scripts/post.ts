@@ -90,6 +90,7 @@ import { type BranchUpdateResult, updateBranchOnce } from "./branch_update.ts";
 import { postRunInfo, recordPosted } from "./review_cost.ts";
 import { releaseClaims } from "./claim.ts";
 import { retryWithBackoff } from "../../../../worker/deno/lib/retry.ts";
+import { postReviewAtHead } from "../../../../worker/deno/lib/fleet_review_post.ts";
 
 interface Input {
   pr: {
@@ -604,21 +605,11 @@ export async function main() {
       hold,
     }),
   );
-  const flag = outcome === "approved"
-    ? "--approve"
-    : outcome === "held"
-    ? "--comment"
-    : "--request-changes";
-  await run("gh", [
-    "pr",
-    "review",
-    String(pr.number),
-    "-R",
-    pr.repo,
-    flag,
-    "--body-file",
-    bodyFile,
-  ]);
+  await postReviewAtHead(pr, outcome, bodyFile, {
+    auditDir: `${dir}/audit`,
+    runId: `reviewer:${roundDir}`,
+    runGh: (args) => run("gh", args),
+  });
   await Deno.remove(bodyFile).catch(() => {});
   if (runInfo.kind === "round") {
     // Best effort: an unrecorded review just keeps "cost unknown".
@@ -679,6 +670,7 @@ export async function main() {
         (args) => run("gh", args),
         undefined,
         reviewer,
+        { auditDir: `${dir}/audit`, runId: `reviewer:${roundDir}` },
       );
     }
     if (branchUpdate?.updated === false) {

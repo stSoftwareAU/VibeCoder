@@ -160,7 +160,6 @@ Deno.test("processPrFeedback - claude self-pushed: HEAD moved => success reply",
     git: mockGit,
   });
 
-  let validationCalls = 0;
   const processorDeps: PrFeedbackProcessorDeps = {
     promptsDir: PROMPTS_DIR,
     logger: makeSilentLogger(),
@@ -168,14 +167,6 @@ Deno.test("processPrFeedback - claude self-pushed: HEAD moved => success reply",
     workDir: "/tmp/test-self-push",
     workRoot: "/tmp/test-self-push",
     verifyPushFn: REMOTE_CONFIRMS_PUSH,
-    validatePublication: () => {
-      validationCalls++;
-      return Promise.resolve({
-        status: "passed",
-        head: "0".repeat(40),
-        gate: "absent",
-      });
-    },
   };
 
   const result = await processPrFeedback(makeInput(), processorDeps);
@@ -185,7 +176,6 @@ Deno.test("processPrFeedback - claude self-pushed: HEAD moved => success reply",
   // Branch reality: Claude pushed the fix.
   assertEquals(result.value.changesPushed, true);
   assertEquals(result.value.processed, true);
-  assertEquals(validationCalls, 1);
 
   // Reply should be the success message ("I've pushed a fix"), not the
   // neutral "could not identify a code change" fallback.

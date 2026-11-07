@@ -280,17 +280,6 @@ interface RunOptions {
   unpushedState?: number | "error" | "throw";
 }
 
-/**
- * A repository-checks stub that always passes (Issue #4625). The scenario
- * checkout is not a git repository, so the real validator would report
- * `unavailable` and defer before the verifier or push under test ran.
- */
-const passingPublication = async () => ({
-  status: "passed" as const,
-  head: "0".repeat(40),
-  gate: "absent" as const,
-});
-
 async function runScenario(options: RunOptions) {
   const captured = options.captured ?? {
     comments: [],
@@ -359,8 +348,8 @@ async function runScenario(options: RunOptions) {
           if (options.finaliseError) {
             return { ok: false, error: new Error(options.finaliseError) };
           }
-          if (options.feedbackVerifierFn && args[8]) {
-            const verdict = await args[8]();
+          if (options.feedbackVerifierFn && args[7]) {
+            const verdict = await args[7]();
             if (!verdict.ok) return verdict;
           }
           options.events.push("commitAndPushPending");
@@ -404,7 +393,6 @@ async function runScenario(options: RunOptions) {
         return { ok: true, value: { status: "updated", issueNumber: 42 } };
       },
       ...(options.verifyPushFn ? { verifyPushFn: options.verifyPushFn } : {}),
-      validatePublication: passingPublication,
     };
 
     const result = await processPrFeedback(options.input, processorDeps);
@@ -1306,13 +1294,25 @@ Deno.test("review-fix verifier - a pre-flight failure cannot turn a rebuttal int
   );
 });
 
-for (const unpushedState of [0, 2, "error", "throw"] as const) {
-  Deno.test(`review-fix hold - body sync requires measured zero unpushed commits: ${unpushedState}`, async () => {
+for (const remoteState of ["confirmed", "unconfirmed", "throw"] as const) {
+  Deno.test(`review-fix hold - body sync requires a verified remote: ${remoteState}`, async () => {
     const events: string[] = [];
     const { result, captured } = await runScenario({
       input: makeInput(),
       events,
-      unpushedState,
+      unpushedState: 2,
+      verifyPushFn: () => {
+        if (remoteState === "throw") throw new Error("remote unavailable");
+        return Promise.resolve(
+          remoteState === "confirmed"
+            ? {
+              landed: false,
+              remoteSha: "abc123",
+              reason: "local work remains",
+            }
+            : { landed: false, reason: "remote unavailable" },
+        );
+      },
       feedbackVerifierFn: (input, deps) => {
         assertEquals(input.branchName, makeInput().branchName);
         assertEquals(input.workerName, "");
@@ -1326,7 +1326,7 @@ for (const unpushedState of [0, 2, "error", "throw"] as const) {
     });
     assertEquals(
       events.filter((e) => e === "sync-body").length,
-      unpushedState === 0 ? 1 : 0,
+      remoteState === "confirmed" ? 1 : 0,
     );
     assertEquals(result.ok && result.value.processed, false);
     assertEquals(result.ok && result.value.changesPushed, false);
@@ -1338,7 +1338,7 @@ for (const unpushedState of [0, 2, "error", "throw"] as const) {
       e.startsWith("handlePrCommentFailure:")
     );
     assertEquals(failures.length, 1);
-    if (unpushedState === 0) {
+    if (remoteState === "confirmed") {
       assert(events.indexOf("sync-body") < events.indexOf(failures[0]!));
     }
     // Issue #4291: never a label or a disarm.

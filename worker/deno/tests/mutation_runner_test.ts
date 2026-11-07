@@ -14,7 +14,9 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { assertLinearGrowth } from "./support/growth.ts";
 import {
+  CARGO_MUTANTS_MISSING,
   evaluateMutationGate,
+  MUTATION_BASELINE_FAILS,
   MUTATION_TEMP_DIR_UNWRITABLE,
 } from "../lib/mutation_gate.ts";
 import {
@@ -368,6 +370,7 @@ Deno.test("runMutationCheck deno - failing baseline is an error and nothing is m
   const f = fake(denoFiles(), () => ok(1));
   const r = await runMutationCheck(input(), f.seams);
   assert(r.kind === "error");
+  assert(r.reason.startsWith(MUTATION_BASELINE_FAILS), r.reason);
   assertStringIncludes(r.reason, "baseline tests fail");
   assertEquals(f.calls.length, 1);
 });
@@ -769,6 +772,184 @@ function rustFake(outcomes: string | null, proc: ProcessResult) {
 
 const rsInput = { repoPath: REPO, diff: RS_DIFF, budgetSeconds: 60, jobs: 2 };
 
+Deno.test("runMutationCheck rust - installed nextest runs mutants and parses outcomes", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+    if (args[0] === "nextest") return ok();
+    writeOutcomes(fs, args, outcomesJson([["MissedMutant", 2]]));
+    return ok(2);
+  });
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assertEquals(f.calls.length, 2);
+  assertEquals(f.calls[0]?.args, ["nextest", "--version"]);
+  assertEquals(f.calls[1]?.cmd, "cargo");
+  assertEquals(f.calls[1]?.args[0], "mutants");
+  const args = f.calls[1]!.args;
+  const toolIndex = args.indexOf("--test-tool");
+  assert(toolIndex >= 0);
+  assertEquals(args[toolIndex + 1], "nextest");
+  assert(r.kind === "completed");
+  assertEquals(r.survivors.length, 1);
+  assertEquals(r.survivors[0]?.line, 2);
+});
+
+Deno.test("runMutationCheck rust - cargo test tool passes through without a nextest probe", async () => {
+  for (const toolArgs of [["--test-tool", "cargo"], ["--test-tool=cargo"]]) {
+    const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+      writeOutcomes(fs, args, outcomesJson([]));
+      return ok();
+    });
+    const r = await runMutationCheck(
+      { ...rsInput, cargoMutantsArgs: toolArgs },
+      f.seams,
+    );
+    assertEquals(f.calls.length, 1);
+    assertEquals(f.calls[0]?.args[0], "mutants");
+    for (const arg of toolArgs) assert(f.calls[0]!.args.includes(arg));
+    assert(r.kind === "completed");
+    assertEquals(r.substitutedNextest, undefined);
+  }
+});
+
+Deno.test("runMutationCheck rust - nextest fallback preserves a package named nextest", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+    if (args[0] === "nextest") return ok(127);
+    writeOutcomes(fs, args, outcomesJson([]));
+    return ok();
+  });
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["-p", "nextest", "--test-tool", "nextest"],
+  }, f.seams);
+  assert(r.kind === "completed");
+  const args = f.calls[1]!.args;
+  assertEquals(args[args.indexOf("-p") + 1], "nextest");
+  assertEquals(args.includes("--test-tool"), false);
+});
+
+Deno.test("runMutationCheck rust - nextest probe failure reports its exit code", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, () => ok(1));
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assert(r.kind === "error");
+  assertEquals(r.reason, "cargo nextest --version exited with code 1");
+  assertEquals(f.calls.length, 1);
+});
+
+Deno.test("runMutationCheck rust - missing cargo on probe falls through to missing mutants", async () => {
+  const f = fake({ [`${REPO}/Cargo.toml`]: "" }, () => ok(127));
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assertEquals(f.calls.map((call) => call.args[0]), ["nextest", "mutants"]);
+  assert(r.kind === "error");
+  assert(r.reason.startsWith(CARGO_MUTANTS_MISSING));
+  assertStringIncludes(r.reason, "install cargo-nextest to match CI");
+});
+
+Deno.test("runMutationCheck rust - timed-out nextest probe stops before mutants", async () => {
+  const f = fake(
+    { [`${REPO}/Cargo.toml`]: "" },
+    () => ({ ...ok(127), timedOut: true }),
+  );
+  const r = await runMutationCheck({
+    ...rsInput,
+    cargoMutantsArgs: ["--test-tool", "nextest"],
+  }, f.seams);
+  assert(r.kind === "error");
+  assertEquals(r.reason, "cargo nextest --version timed out");
+  assertEquals(f.calls.map((call) => call.args[0]), ["nextest"]);
+});
+
+Deno.test("runMutationCheck rust - nextest fallback survives both budget exhaustion paths", async () => {
+  for (const outcomes of [null, outcomesJson([["MissedMutant", 2]])]) {
+    const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+      if (args[0] === "nextest") return ok(127);
+      if (outcomes !== null) writeOutcomes(fs, args, outcomes);
+      return { ...ok(137), timedOut: true };
+    });
+    const r = await runMutationCheck({
+      ...rsInput,
+      cargoMutantsArgs: ["--test-tool", "nextest"],
+    }, f.seams);
+    assert(r.kind === "budget_exhausted");
+    assertEquals(r.substitutedNextest, true);
+    assertStringIncludes(
+      evaluateMutationGate(r, "").note,
+      "install cargo-nextest to match CI",
+    );
+  }
+});
+
+Deno.test("runMutationCheck rust - nextest fallback is reported for errors and no mutants", async () => {
+  for (
+    const [proc, kind] of [
+      [ok(1), "error"],
+      [ok(3), "error"],
+      [ok(0), "error"],
+      [{ ...ok(), stderr: "No mutants to filter" }, "not_applicable"],
+    ] as const
+  ) {
+    const f = fake(
+      { [`${REPO}/Cargo.toml`]: "" },
+      (_c, args) => args[0] === "nextest" ? ok(127) : proc,
+    );
+    const r = await runMutationCheck({
+      ...rsInput,
+      cargoMutantsArgs: ["--test-tool", "nextest"],
+    }, f.seams);
+    assert(
+      r.kind === kind && (r.kind === "error" || r.kind === "not_applicable"),
+    );
+    assertStringIncludes(r.reason, "install cargo-nextest to match CI");
+  }
+});
+
+Deno.test("runMutationCheck rust - missing nextest falls back to cargo and judges survivors", async () => {
+  for (
+    const toolArgs of [["--test-tool", "nextest"], ["--test-tool=nextest"]]
+  ) {
+    const f = fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+      if (args[0] === "nextest") {
+        return {
+          code: 101,
+          stdout: "",
+          stderr: "error: no such command: `nextest`",
+          timedOut: false,
+        };
+      }
+      writeOutcomes(fs, args, outcomesJson([["MissedMutant", 2]]));
+      return ok(2);
+    });
+    const r = await runMutationCheck({
+      ...rsInput,
+      cargoMutantsArgs: [...toolArgs, "--timeout", "30"],
+    }, f.seams);
+    assertEquals(f.calls.length, 2);
+    assertEquals(f.calls[1]!.args[0], "mutants");
+    assert(
+      !f.calls[1]!.args.some((arg) =>
+        arg.includes("nextest") || arg === "--test-tool"
+      ),
+    );
+    assert(f.calls[1]!.args.includes("--timeout"));
+    assert(r.kind === "completed");
+    assertEquals(r.survivors.length, 1);
+    const verdict = evaluateMutationGate(r, "", {
+      workflow: "ci.yml",
+      job: "mutants",
+      tool: "cargo",
+    });
+    assert(verdict.blocked);
+    assertStringIncludes(verdict.note, "install cargo-nextest");
+  }
+});
+
 Deno.test("runMutationCheck rust - an uncreatable temp dir is a worker-fault error and no cargo runs", async () => {
   const f = rustFake(outcomesJson([]), ok(0));
   f.seams.makeTempDir = () =>
@@ -834,6 +1015,7 @@ Deno.test("runMutationCheck rust - missing cargo-mutants is an error", async () 
   ) {
     const r = await runMutationCheck(rsInput, rustFake(null, proc).seams);
     assert(r.kind === "error");
+    assertEquals(r.reason, CARGO_MUTANTS_MISSING);
     assertStringIncludes(r.reason, "cargo-mutants is not installed");
   }
 });
@@ -845,6 +1027,11 @@ Deno.test("runMutationCheck rust - baseline failure and usage errors are errors"
       rustFake(outcomesJson([]), ok(code)).seams,
     );
     assert(r.kind === "error", `exit ${code}`);
+    assertEquals(
+      r.reason.startsWith(MUTATION_BASELINE_FAILS),
+      code === 4,
+      r.reason,
+    );
   }
 });
 

@@ -23,6 +23,7 @@ import { recordLifecyclePrFromGithub } from "./lifecycle_pr_observation.ts";
 import type { PrRollup } from "./check_runs_batch.ts";
 import { recordPrRejection } from "./fleet_telemetry.ts";
 import { PRE_PR_VERIFIER_HOLD_MARKER } from "./standing_violation_routing.ts";
+import { hasVisibleText } from "./visible_comment_text.ts";
 import {
   commentCarriesOpenPreprReview,
   preprReviewIsOpen,
@@ -1270,6 +1271,8 @@ export async function findPrCommentsToFix(
  *   only exception to skipping this host's own comments; a fleet eyes
  *   reaction still marks it processed. Other top-level comments require
  *   an authorised thumbs-up or authorisation.
+ * - a top-level comment with no visible text outside HTML comments is never
+ *   actionable, whoever wrote it (Issue #4673).
  */
 async function findActionableComment(
   repo: string,
@@ -1312,6 +1315,15 @@ async function findActionableComment(
           .map((entry) => entry.body),
       );
     if (comment.login === githubUser && !isVerifierHold && !isPreprReview) {
+      continue;
+    }
+    // Issue #4673: a marker-only comment (for example a review round's
+    // `vibe-review-claim`) has no body to act on. Skipped before any
+    // reaction or authorisation lookup, so no API call is spent on it.
+    if (commentType === "issue" && !hasVisibleText(comment.body)) {
+      logger.info(
+        `Skipping PR comment ${comment.id} on ${repo}#${prNumber} — it has no visible text to act on (a marker-only comment)`,
+      );
       continue;
     }
 
@@ -1948,6 +1960,7 @@ export async function findFailedCiChecks(
             checkId,
             fleetMarkers: parked?.markers ?? {
               attempts: new Map(),
+              unverifiedBaseHolds: new Map(),
               deferrals: new Map(),
               humanGates: new Map(),
               infraReruns: new Map(),

@@ -9,16 +9,19 @@
  * never reach the network. Nothing here writes to GitHub or to host
  * configuration.
  *
- * A GitHub event is never attributed to a human or to the fleet from a login:
- * it becomes a `TrustedPrAction` with actor `unknown` unless a verified fleet
- * action of the same kind sits within {@link MATCH_WINDOW_MS} of it. Those
- * actions are audit actions, plus, as a lower-trust source, the review-fleet-prs
- * skill's own review log (`reviewLogs`), which is not hash-chained.
+ * A GitHub event is never attributed from its login. A matching verified fleet
+ * action takes precedence; otherwise reviews, dismissals and merges require a
+ * numeric actor id in the explicit human allowlist. Commit authorship alone
+ * stays unknown. Review-fleet-prs logs
+ * can support a review match but are not hash-chained or sufficient to verify
+ * completion.
  *
  * Uses Australian English throughout (behaviour, organisation, authorised).
  */
 
 import type { AuditEntry } from "./audit_entry.ts";
+import { ownerHoldFromBody } from "./fleet_review_hold.ts";
+import { readPrDiscoveryEvents } from "./pr_discovery_events.ts";
 import {
   isAuditJournalName,
   loadEntries,
@@ -31,6 +34,7 @@ import {
 import { runGhCommand } from "./github.ts";
 import { REVIEW_RUN_FILE } from "./review_run_record.ts";
 import {
+  ACTOR_ID_PATTERN,
   PR_REPO_PATTERN,
   type PrActionKind,
   prActionsFromAuditJournal,
@@ -73,8 +77,12 @@ export interface CollectOptions {
   expected: PrCompletionInput["expectedDeployment"];
   /** When set, the rollout check runs against this verification instant. */
   rolloutVerifiedAt?: string;
+  /** Numeric GitHub ids whose unmatched reviews, dismissals or merges affirm human intervention. */
+  humanActorIds?: readonly string[];
   /** Cap on PRs kept per repository in the cohort (default 500). */
   maxPrsPerRepo?: number;
+  /** Maximum GitHub calls devoted to CI per collection (default 5000). */
+  ciCallBudget?: number;
   /** GitHub read seam. */
   gh: GhJson;
 }
@@ -135,7 +143,7 @@ const REVERT_REFERENCE = /\bReverts?\s+#(\d{1,7})\b/gi;
 const QUOTED_PR_REFERENCE = /\(#(\d{1,7})\)/g;
 /** Shown once per collection: the CI scope limit, for the coverage notes. */
 const CI_SCOPE_NOTE =
-  "CI runs are read from each merged PR's final head SHA only; check runs on earlier pushes are not counted";
+  "CI history reads check runs on every observed PR head and workflow attempts/jobs on heads with workflow runs; truncated API history is called out per PR";
 
 /** A PR observed in the cohort, with the text the regressions and rollups read. */
 interface ObservedPr {
@@ -151,14 +159,18 @@ interface Stamped {
 }
 
 interface Review extends Stamped {
+  body: string;
   id: string;
   state: string;
+  actorId: string | null;
+  headSha?: string;
 }
 
 interface IssueEvent extends Stamped {
   id: string;
   event: string;
   label: string | null;
+  actorId: string | null;
 }
 
 interface Commit extends Stamped {
@@ -167,6 +179,7 @@ interface Commit extends Stamped {
 
 interface PrEvidence {
   reviews: Review[];
+  reviewsComplete: boolean;
   issueEvents: IssueEvent[];
   commits: Commit[];
 }
@@ -175,6 +188,8 @@ interface PrEvidence {
 interface GitHubEvent extends Stamped {
   kind: PrActionKind;
   id: string;
+  headSha?: string;
+  actorId: string | null;
 }
 
 function keyOf(repo: string, number: number): string {
@@ -218,6 +233,19 @@ function stamped(value: unknown, what: string): Stamped {
   const at = asText(value);
   if (at === null) throw new Error(`${what} is missing`);
   return { at, ms: utcMillis(at, what) };
+}
+
+/** A numeric GitHub actor id, or null when the API names no account. */
+function actorIdOf(raw: Json, key: string, what: string): string | null {
+  const rawActor = requiredKey(raw, key, what);
+  if (rawActor === null) return null;
+  const actor = asObject(rawActor, `${what}.${key}`);
+  const id = asId(requiredKey(actor, "id", `${what}.${key}`), `${what}.${key}`);
+  const value = String(id);
+  if (!ACTOR_ID_PATTERN.test(value)) {
+    throw new Error(`${what}.${key}.id must be a numeric GitHub user id`);
+  }
+  return value;
 }
 
 function byTime<T extends Stamped>(a: T, b: T): number {
@@ -335,9 +363,9 @@ function observedPr(
 }
 
 /**
- * Observe one repository's cohort PRs. Pages stop at the first page whose
- * last PR predates the cohort, at a short page, or at the page bound; a bound
- * reached while the cohort may continue marks the repository truncated.
+ * Observe cohort PRs and, during rollout verification, outside-cohort candidates.
+ * Rollout discovery scans to exhaustion or the page bound: an age cutoff
+ * cannot rule out stranded PRs on later pages. Bound exhaustion is incomplete.
  */
 async function observeRepo(
   gh: GhJson,
@@ -345,7 +373,13 @@ async function observeRepo(
   cohort: CollectOptions["cohort"],
   maxPrs: number,
   truncatedRepos: string[],
-): Promise<{ observed: ObservedPr[]; openBeforeCohort: number }> {
+  rolloutVerifiedAt?: string,
+): Promise<{
+  observed: ObservedPr[];
+  rolloutCandidates: ObservedPr[];
+  rolloutComplete: boolean;
+  openBeforeCohort: number;
+}> {
   const repoInfo = asObject(await gh(`repos/${repo}`), `repos/${repo}`);
   const defaultBranch = asText(repoInfo.default_branch);
   if (defaultBranch === null) {
@@ -353,9 +387,14 @@ async function observeRepo(
   }
   const startMs = utcMillis(cohort.start, "cohort.start");
   const endMs = utcMillis(cohort.end, "cohort.end");
+  const verifiedMs = rolloutVerifiedAt === undefined
+    ? undefined
+    : utcMillis(rolloutVerifiedAt, "rolloutVerifiedAt");
   const pageBound = Math.ceil(maxPrs / PER_PAGE);
   const kept: Json[] = [];
+  const rolloutKept: Json[] = [];
   let truncated = false;
+  let rolloutIncomplete = false;
   for (let page = 1;; page++) {
     const batch = asList(
       await gh(
@@ -370,14 +409,19 @@ async function observeRepo(
         `${repo} pull request created_at`,
       );
       if (createdMs >= startMs && createdMs < endMs) kept.push(pr);
+      else if (
+        verifiedMs !== undefined && createdMs < verifiedMs
+      ) rolloutKept.push(pr);
     }
     const oldest = utcMillis(
       asText(batch[batch.length - 1]!.created_at) ?? "",
       `${repo} pull request created_at`,
     );
-    if (oldest < startMs || batch.length < PER_PAGE) break;
+    if (batch.length < PER_PAGE) break;
+    if (rolloutVerifiedAt === undefined && oldest < startMs) break;
     if (page >= pageBound) {
-      truncated = true;
+      truncated = oldest >= startMs;
+      rolloutIncomplete = rolloutVerifiedAt !== undefined;
       break;
     }
   }
@@ -385,8 +429,15 @@ async function observeRepo(
     kept.length = maxPrs;
     truncated = true;
   }
+  if (rolloutKept.length > maxPrs) {
+    rolloutKept.length = maxPrs;
+    rolloutIncomplete = true;
+  }
   if (truncated) truncatedRepos.push(repo);
   const observed = kept.map((pr) =>
+    observedPr(pr, repo, defaultBranch, cohort.observedAt)
+  );
+  const rolloutCandidates = rolloutKept.map((pr) =>
     observedPr(pr, repo, defaultBranch, cohort.observedAt)
   );
   deriveRollupRoots(observed);
@@ -397,7 +448,12 @@ async function observeRepo(
     pageBound,
     truncatedRepos,
   );
-  return { observed, openBeforeCohort };
+  return {
+    observed,
+    rolloutCandidates,
+    rolloutComplete: !rolloutIncomplete,
+    openBeforeCohort,
+  };
 }
 
 /**
@@ -451,6 +507,9 @@ function parseReview(raw: unknown, what: string): Review | null {
   return {
     id: asId(o.id, what),
     state,
+    body: asText(requiredKey(o, "body", what))?.slice(0, TEXT_BOUND) ?? "",
+    actorId: actorIdOf(o, "user", what),
+    ...(asText(o.commit_id) ? { headSha: asText(o.commit_id)! } : {}),
     at: submitted,
     ms: utcMillis(submitted, `${what} submitted_at`),
   };
@@ -465,6 +524,7 @@ function parseIssueEvent(raw: unknown, what: string): IssueEvent {
     id: asId(o.id, what),
     event: asText(o.event) ?? "",
     label,
+    actorId: actorIdOf(o, "actor", what),
     ...stamped(o.created_at, `${what} created_at`),
   };
 }
@@ -515,6 +575,7 @@ async function fetchEvidence(
     }
   }
   return {
+    reviewsComplete: !reviews.truncated,
     reviews: reviews.items.flatMap((item) => {
       const parsed = parseReview(item, `${label} review`);
       return parsed ? [parsed] : [];
@@ -530,7 +591,8 @@ async function fetchEvidence(
  * Blocker intervals for one PR. `needs-human` is open from a label until its
  * removal. `changes-requested` is open from a CHANGES_REQUESTED review until
  * the next approval, dismissal or commit. An interval that never closes has
- * `endedAt: null`. CI-failing and hold blockers are not produced yet.
+ * `endedAt: null`. CI failures, failed-repair recovery and reviewer branch
+ * refresh waits are added from their recorded evidence.
  */
 function blockersFor(
   record: PrCompletionRecord,
@@ -609,6 +671,175 @@ function blockersFor(
 }
 
 /**
+ * Failed workflow runs remain blockers until a later successful run of the same
+ * workflow: a later attempt of the failed run, or a different run on any head
+ * of the PR, including a ready_for_review or reopened run on the same head. A blocker never extends past the PR's merge or
+ * close: it ends there when no recovery came first, and a failure completed
+ * after that moment is not a blocker at all.
+ */
+function ciBlockersFor(
+  record: PrCompletionRecord,
+  runs: readonly CiRun[],
+  observedAt: string,
+): Blocker[] {
+  const workflows = runs.filter((run) =>
+    run.kind === "workflow_run" && run.workflowId && run.completedAt &&
+    run.outcome
+  ).sort((a, b) =>
+    utcMillis(a.completedAt!, "workflow completedAt") -
+    utcMillis(b.completedAt!, "workflow completedAt")
+  );
+  const endCap = record.mergedAt ?? record.closedAt ?? null;
+  const endCapMs = endCap === null
+    ? null
+    : utcMillis(endCap, "PR merged or closed at");
+  const out: Blocker[] = [];
+  for (const failed of workflows) {
+    if (
+      !new Set(["failure", "timed_out", "action_required"])
+        .has(failed.outcome!)
+    ) continue;
+    const startedAt = failed.completedAt!;
+    const startedMs = utcMillis(startedAt, "workflow completedAt");
+    if (startedMs > utcMillis(observedAt, "observedAt")) continue;
+    if (endCapMs !== null && startedMs > endCapMs) continue;
+    const recovered = workflows.find((candidate) =>
+      candidate.workflowId === failed.workflowId &&
+      candidate.outcome === "success" &&
+      (candidate.runId !== failed.runId ||
+        candidate.attempt! > failed.attempt!) &&
+      utcMillis(candidate.completedAt!, "workflow completedAt") >= startedMs
+    );
+    let endedAt: string | null = recovered?.completedAt ?? null;
+    if (
+      endCap !== null && endCapMs !== null &&
+      (endedAt === null ||
+        utcMillis(endedAt, "workflow completedAt") > endCapMs)
+    ) {
+      endedAt = endCap;
+    }
+    const previous = out.at(-1);
+    if (
+      previous && (previous.endedAt === null ||
+        utcMillis(previous.endedAt, "blocker endedAt") >= startedMs)
+    ) {
+      if (
+        previous.endedAt !== null && (endedAt === null ||
+          utcMillis(endedAt, "blocker endedAt") >
+            utcMillis(previous.endedAt, "blocker endedAt"))
+      ) {
+        previous.endedAt = endedAt;
+      }
+      continue;
+    }
+    out.push({
+      repo: record.repo,
+      prNumber: record.number,
+      blocker: "ci-failure",
+      startedAt,
+      endedAt,
+    });
+  }
+  return out;
+}
+
+/** Time from a failed repair to the next confirmed repair or verified fleet dismissal. */
+export function recoveryBlockersFor(
+  record: PrCompletionRecord,
+  actions: readonly TrustedPrAction[],
+): Blocker[] {
+  const endCap = record.mergedAt ?? record.closedAt ?? null;
+  const repairs = actions.filter((action) =>
+    action.verified && (action.kind === "repair" ||
+      (action.kind === "dismissal" && action.actor === "fleet" &&
+        action.outcome === "confirmed"))
+  ).sort((a, b) =>
+    utcMillis(a.timestamp, "repair action timestamp") -
+    utcMillis(b.timestamp, "repair action timestamp")
+  );
+  const out: Blocker[] = [];
+  let pending: string | null = null;
+  for (const action of repairs) {
+    if (
+      endCap !== null &&
+      utcMillis(action.timestamp, "repair timestamp") >
+        utcMillis(endCap, "PR end")
+    ) break;
+    if (action.kind === "repair" && action.outcome === "failed") {
+      pending ??= action.timestamp;
+    }
+    if (action.outcome === "confirmed" && pending !== null) {
+      out.push({
+        repo: record.repo,
+        prNumber: record.number,
+        blocker: "repair-recovery",
+        startedAt: pending,
+        endedAt: action.timestamp,
+      });
+      pending = null;
+    }
+  }
+  if (pending !== null) {
+    out.push({
+      repo: record.repo,
+      prNumber: record.number,
+      blocker: "repair-recovery",
+      startedAt: pending,
+      endedAt: endCap,
+    });
+  }
+  return out;
+}
+
+/** Time spent waiting for checks after a trusted reviewer branch refresh. */
+export function branchRefreshBlockersFor(
+  record: PrCompletionRecord,
+  actions: readonly TrustedPrAction[],
+  runs: readonly CiRun[],
+): Blocker[] {
+  const endCap = record.mergedAt ?? record.closedAt ?? null;
+  const endCapMs = endCap === null ? null : utcMillis(endCap, "PR end");
+  return actions.flatMap((action) => {
+    if (
+      !action.verified || action.actor !== "fleet" ||
+      action.kind !== "branch-update" ||
+      action.outcome !== "confirmed"
+    ) return [];
+    const commitShas = action.githubEvents?.filter((event) =>
+      event.kind === "implementation" || event.kind === "repair"
+    ).map((event) =>
+      event.id
+    ) ?? [];
+    if (commitShas.length === 0) return [];
+    const startedMs = utcMillis(action.timestamp, "branch update timestamp");
+    if (endCapMs !== null && startedMs > endCapMs) return [];
+    const completed = runs.flatMap((run) =>
+      (run.kind === "workflow_run" || run.kind === "check_run") &&
+        run.outcome && run.headSha &&
+        commitShas.includes(run.headSha) && run.completedAt &&
+        utcMillis(run.completedAt, "workflow completedAt") >= startedMs
+        ? [run.completedAt]
+        : []
+    ).sort((a, b) =>
+      utcMillis(a, "workflow completedAt") -
+      utcMillis(b, "workflow completedAt")
+    )[0] ?? null;
+    const endedAt = endCap !== null && (completed === null ||
+        utcMillis(completed, "workflow completedAt") >
+          utcMillis(endCap, "PR end"))
+      ? endCap
+      : completed;
+    return [{
+      repo: record.repo,
+      prNumber: record.number,
+      blocker: "branch-refresh",
+      startedAt: action.timestamp,
+      endedAt,
+    }];
+  });
+}
+
+/**
  * The GitHub-observed events for one PR: submitted reviews, dismissals, the
  * merge, and each commit. Commit delivery requires a verified push's recorded range.
  */
@@ -618,7 +849,14 @@ function gitHubEvents(
 ): GitHubEvent[] {
   const out: GitHubEvent[] = [];
   for (const review of evidence.reviews) {
-    out.push({ kind: "review", id: review.id, at: review.at, ms: review.ms });
+    out.push({
+      kind: "review",
+      id: review.id,
+      at: review.at,
+      ms: review.ms,
+      actorId: review.actorId,
+      ...(review.headSha ? { headSha: review.headSha } : {}),
+    });
   }
   for (const event of evidence.issueEvents) {
     if (event.event === "review_dismissed") {
@@ -627,16 +865,24 @@ function gitHubEvents(
         id: event.id,
         at: event.at,
         ms: event.ms,
+        actorId: event.actorId,
       });
     }
   }
   const { record } = observed;
   if (record.mergedAt !== null) {
+    const mergeEvents = evidence.issueEvents.filter((event) =>
+      event.event === "merged"
+    );
     out.push({
       kind: "merge",
-      id: observed.mergeCommitSha ?? "none",
+      id: mergeEvents.length === 1
+        ? mergeEvents[0]!.id
+        : observed.mergeCommitSha ?? "none",
       at: record.mergedAt,
       ms: utcMillis(record.mergedAt, "PR mergedAt"),
+      actorId: mergeEvents.length === 1 ? mergeEvents[0]!.actorId : null,
+      headSha: record.headSha,
     });
   }
   evidence.commits.forEach((commit, index) => {
@@ -645,74 +891,145 @@ function gitHubEvents(
       id: commit.sha,
       at: commit.at,
       ms: commit.ms,
+      // Git authorship is self-set metadata, not the authenticated push actor.
+      actorId: null,
     });
   });
   return out;
 }
 
+/** The GitHub event kinds that are commits, matched to a push by its delivered range. */
+const COMMIT_EVENT_KINDS: ReadonlySet<PrActionKind> = new Set<PrActionKind>([
+  "implementation",
+  "repair",
+]);
+
 /**
- * Match reviews, dismissals and merges one-to-one; commits can share the first
- * confirmed implementation or repair push whose delivered range contains them.
- * Branch updates match one commit within MATCH_WINDOW_MS either side of the call.
- * Matched events add nothing: the audit action already stands for them. Unmatched events become `unknown` actions, never attributed
- * to a human or the fleet.
+ * Match reviews, dismissals and merges one-to-one. A commit matches a confirmed
+ * implementation, repair or milestone push whose `deliveredCommits` contains it,
+ * stamped at or after the commit and within the PR's lifetime; several commits
+ * may share one such push. A branch update accounts for one commit within
+ * MATCH_WINDOW_MS either side of its call. Matched event identifiers are
+ * attached to the audit action. Unmatched events remain unknown unless their
+ * numeric GitHub actor id is explicitly configured as human evidence.
  *
- * A review or dismissal matches within {@link MATCH_WINDOW_MS} of it. A merge
- * matches from the PR's creation to {@link MATCH_WINDOW_MS} after `mergedAt`:
- * the fleet merges with `gh pr merge --auto`, so the audit entry is stamped
- * when auto-merge is armed, possibly hours before GitHub records the merge.
+ * A review or dismissal matches a verified fleet action of its kind within
+ * {@link MATCH_WINDOW_MS} either side of it. Reviews, dismissals and merges are
+ * paired one-to-one by nearest gap, not event order, so an earlier nearby review
+ * cannot take the action a later one recorded. A review's head is compared only
+ * when both sides carry one, so a journalled review without a head still
+ * matches a GitHub review that has a `commit_id`. A merge matches only a
+ * confirmed merge action on the PR's head, within MATCH_WINDOW_MS either side
+ * of the GitHub merge event. An auto-merge arm (`merge-arm`) never verifies a
+ * later merge.
  */
 function unmatchedActions(
   observed: ObservedPr,
   events: GitHubEvent[],
   verifiedFleet: TrustedPrAction[],
   used: Set<TrustedPrAction>,
+  humanActorIds: ReadonlySet<string | null>,
 ): TrustedPrAction[] {
   const { record } = observed;
-  const createdMs = utcMillis(record.createdAt, "PR createdAt");
   const out: TrustedPrAction[] = [];
-  for (const event of events) {
-    let best: TrustedPrAction | undefined;
-    let bestGap = Number.POSITIVE_INFINITY;
+  /** The gap of an in-window pairing of one event with one action, or null. */
+  const pairing = (
+    event: GitHubEvent,
+    action: TrustedPrAction,
+  ): number | null => {
+    const isCommit = COMMIT_EVENT_KINDS.has(event.kind);
+    if (action.outcome !== "confirmed") return null;
+    if (
+      event.headSha !== undefined && action.headSha !== undefined &&
+      event.headSha !== action.headSha
+    ) return null;
+    if (
+      isCommit && action.kind !== "branch-update" &&
+      !action.deliveredCommits?.includes(event.id)
+    ) return null;
+    const isPush = action.kind === "implementation" ||
+      action.kind === "repair" || action.kind === "milestone" ||
+      action.kind === "branch-update";
+    if (event.kind === "merge" && action.headSha !== record.headSha) {
+      return null;
+    }
+    if (
+      isCommit
+        ? !isPush || (action.kind === "branch-update" && used.has(action))
+        : action.kind !== event.kind
+    ) {
+      return null;
+    }
+    const actionMs = utcMillis(action.timestamp, "action timestamp");
+    const gap = Math.abs(actionMs - event.ms);
+    const inWindow = event.kind === "merge"
+      ? gap <= MATCH_WINDOW_MS
+      : action.kind === "branch-update"
+      ? gap <= MATCH_WINDOW_MS
+      : isCommit
+      ? actionMs >= event.ms &&
+        actionMs <=
+          Date.parse(
+              record.mergedAt ?? record.closedAt ?? record.observedAt!,
+            ) + LIFETIME_SLACK_MS
+      : gap <= MATCH_WINDOW_MS;
+    if (!inWindow) return null;
+    return gap;
+  };
+  const assigned = new Map<GitHubEvent, TrustedPrAction>();
+  // Reviews, dismissals and merges pair one-to-one by nearest gap, not event
+  // order, so an earlier nearby review cannot take the action another review
+  // actually recorded.
+  const pairs: {
+    event: GitHubEvent;
+    action: TrustedPrAction;
+    gap: number;
+    order: number;
+  }[] = [];
+  events.forEach((event, order) => {
+    if (COMMIT_EVENT_KINDS.has(event.kind)) return;
     for (const action of verifiedFleet) {
-      const isCommit = event.kind === "implementation" ||
-        event.kind === "repair";
-      if (action.outcome !== "confirmed") continue;
-      if (
-        isCommit && action.kind !== "branch-update" &&
-        !action.deliveredCommits?.includes(event.id)
-      ) continue;
-      const isPush = action.kind === "implementation" ||
-        action.kind === "repair" || action.kind === "branch-update";
-      if (
-        isCommit
-          ? !isPush || (action.kind === "branch-update" && used.has(action))
-          : used.has(action) || action.kind !== event.kind
-      ) {
-        continue;
-      }
-      const actionMs = utcMillis(action.timestamp, "action timestamp");
-      const gap = Math.abs(actionMs - event.ms);
-      const inWindow = event.kind === "merge"
-        ? actionMs >= createdMs && actionMs <= event.ms + MATCH_WINDOW_MS
-        : isCommit && action.kind === "branch-update"
-        ? gap <= MATCH_WINDOW_MS
-        : isCommit
-        ? actionMs >= event.ms &&
-          actionMs <=
-            Date.parse(
-                record.mergedAt ?? record.closedAt ?? record.observedAt!,
-              ) + LIFETIME_SLACK_MS
-        : gap <= MATCH_WINDOW_MS;
-      if (inWindow && gap < bestGap) {
-        best = action;
-        bestGap = gap;
+      const found = pairing(event, action);
+      if (found !== null) pairs.push({ event, action, order, gap: found });
+    }
+  });
+  pairs.sort((a, b) => a.gap - b.gap || a.order - b.order);
+  for (const pair of pairs) {
+    if (assigned.has(pair.event) || used.has(pair.action)) continue;
+    assigned.set(pair.event, pair.action);
+    used.add(pair.action);
+  }
+  for (const event of events) {
+    let best: TrustedPrAction | undefined = assigned.get(event);
+    // Commit events pick their nearest action here; none is in `assigned`.
+    if (COMMIT_EVENT_KINDS.has(event.kind)) {
+      let bestGap = Number.POSITIVE_INFINITY;
+      for (const action of verifiedFleet) {
+        const found = pairing(event, action);
+        if (found !== null && found < bestGap) {
+          best = action;
+          bestGap = found;
+        }
       }
     }
     if (best) {
       used.add(best);
+      if (
+        best.runId === REVIEW_LOG_RUN && !best.verified &&
+        humanActorIds.has(event.actorId)
+      ) {
+        best.actor = "human";
+        best.verified = true;
+      }
+      best.githubEvents ??= [];
+      best.githubEvents.push({
+        kind: event.kind,
+        id: event.id,
+        ...(event.headSha ? { headSha: event.headSha } : {}),
+      });
       continue;
     }
+    const human = humanActorIds.has(event.actorId);
     out.push({
       actionId: `gh:${record.repo}#${record.number}:${event.kind}:${event.id}`,
       runId: GITHUB_OBSERVATION_RUN,
@@ -721,46 +1038,231 @@ function unmatchedActions(
       prNumber: record.number,
       kind: event.kind,
       timestamp: event.at,
-      outcome: "unknown",
-      actor: "unknown",
-      verified: false,
+      outcome: human ? "confirmed" : "unknown",
+      actor: human ? "human" : "unknown",
+      verified: human,
     });
   }
   return out;
+}
+
+/** A current hold requires both the reviewer contract and verified action evidence. */
+function verifyOwnerGate(
+  record: PrCompletionRecord,
+  evidence: PrEvidence,
+  actions: TrustedPrAction[],
+): void {
+  if (
+    record.state !== "open" || record.ownerGated !== true ||
+    !evidence.reviewsComplete
+  ) return;
+  const latest = evidence.reviews.filter((review) =>
+    review.headSha === record.headSha
+  ).sort(byTime).at(-1);
+  if (latest?.state !== "COMMENTED") return;
+  const hold = ownerHoldFromBody(latest.body);
+  if (hold === null) return;
+  const action = actions.find((action) =>
+    action.kind === "review" && action.component === "reviewer" &&
+    action.verified && action.actor === "fleet" &&
+    action.outcome === "confirmed" && action.githubEvents?.some((event) =>
+      event.kind === "review" && event.id === latest.id
+    )
+  );
+  if (action === undefined) return;
+  record.ownerGateVerified = true;
+  record.ownerGateEvidence = {
+    ...hold,
+    reviewId: latest.id,
+    actionId: action.actionId,
+    headSha: record.headSha,
+    timestamp: latest.at,
+  };
 }
 
 /** CI duration per check run; `null` when the run is not completed or lacks a time. */
 async function ciRunsFor(
   gh: GhJson,
   record: PrCompletionRecord,
+  headShas: string[],
   notes: string[],
+  mergeCommit = false,
+  markIncomplete: () => void = () => {},
 ): Promise<CiRun[]> {
-  const path =
-    `repos/${record.repo}/commits/${record.headSha}/check-runs?per_page=${PER_PAGE}`;
-  const body = asObject(await gh(path), path);
-  const runs = asList(body.check_runs, path).map((run) =>
-    asObject(run, `${path} check run`)
-  );
-  const total = body.total_count;
   const label = keyOf(record.repo, record.number);
-  if (typeof total === "number" && total > runs.length) {
-    notes.push(`${label}: ${runs.length} of ${total} check runs listed`);
+  const rows: CiRun[] = [];
+  const fetchPages = async (
+    base: string,
+    field: "check_runs" | "workflow_runs" | "jobs",
+    source: string,
+    headSha?: string,
+  ): Promise<Json[]> => {
+    const items: Json[] = [];
+    let complete = false;
+    let totalCount: number | null = null;
+    for (let page = 1; page <= EVENT_PAGE_LIMIT; page++) {
+      const path = `${base}${
+        base.includes("?") ? "&" : "?"
+      }per_page=${PER_PAGE}&page=${page}`;
+      const body = asObject(await gh(path), path);
+      if (typeof body.total_count === "number") totalCount = body.total_count;
+      const batch = asList(requiredKey(body, field, path), path).map((item) =>
+        asObject(item, `${path} ${source}`)
+      );
+      items.push(...batch);
+      if (batch.length < PER_PAGE) {
+        complete = true;
+        break;
+      }
+    }
+    if (!complete) {
+      markIncomplete();
+      notes.push(
+        `${label}: ${source} history truncated for ${headSha ?? base}`,
+      );
+    }
+    if (totalCount !== null && totalCount > items.length) {
+      markIncomplete();
+      notes.push(
+        `${label}: ${items.length} of ${totalCount} ${source} listed for ${
+          headSha ?? base
+        }`,
+      );
+    }
+    return items;
+  };
+  const elapsedSeconds = (
+    start: unknown,
+    end: unknown,
+    sourceName: string,
+  ): number | null => {
+    if (typeof start !== "string" || typeof end !== "string") return null;
+    const seconds = (utcMillis(end, `${label} ${sourceName} completed_at`) -
+      utcMillis(start, `${label} ${sourceName} started_at`)) / 1000;
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+  };
+  const heads = [...new Set([record.headSha, ...headShas].filter(Boolean))];
+  const workflowRuns = new Map<string, { run: Json; headSha: string }>();
+  const workflowPath = mergeCommit
+    ? `repos/${record.repo}/actions/runs?head_sha=${
+      encodeURIComponent(record.headSha)
+    }`
+    : `repos/${record.repo}/actions/runs?branch=${
+      encodeURIComponent(record.headRef)
+    }`;
+  const workflows = await fetchPages(
+    workflowPath,
+    "workflow_runs",
+    "workflow-run",
+  );
+  for (const run of workflows) {
+    const headSha = asText(requiredKey(run, "head_sha", "workflow run"));
+    if (headSha === null || !heads.includes(headSha)) continue;
+    workflowRuns.set(asId(run.id, `${label} workflow run`), { run, headSha });
   }
-  return runs.map((run) => {
-    const started = asText(run.started_at);
-    const completed = asText(run.completed_at);
-    const duration = run.status === "completed" && started !== null &&
-        completed !== null
-      ? (utcMillis(completed, `${label} check completed_at`) -
-        utcMillis(started, `${label} check started_at`)) / MINUTE_MS
-      : null;
-    return {
-      repo: record.repo,
-      prNumber: record.number,
-      runId: String(asId(run.id, `${label} check run`)),
-      durationMinutes: duration !== null && duration >= 0 ? duration : null,
-    };
-  });
+  for (const headSha of mergeCommit ? [] : heads) {
+    // filter=all: otherwise GitHub lists only the latest run per check name.
+    const checks = await fetchPages(
+      `repos/${record.repo}/commits/${headSha}/check-runs?filter=all`,
+      "check_runs",
+      "check runs",
+      headSha,
+    );
+    for (const check of checks) {
+      const durationSeconds = check.status === "completed"
+        ? elapsedSeconds(check.started_at, check.completed_at, "check run")
+        : null;
+      rows.push({
+        repo: record.repo,
+        prNumber: record.number,
+        runId: String(asId(check.id, `${label} check run`)),
+        durationMinutes: durationSeconds === null ? null : durationSeconds / 60,
+        kind: "check_run",
+        headSha,
+        durationSeconds,
+        outcome: asText(check.conclusion),
+        startedAt: asText(check.started_at),
+        completedAt: check.status === "completed"
+          ? asText(check.completed_at)
+          : null,
+      });
+    }
+  }
+  for (const { run: listedRun, headSha } of workflowRuns.values()) {
+    const runId = asId(listedRun.id, `${label} workflow run`);
+    const latestAttempt = typeof listedRun.run_attempt === "number" &&
+        Number.isSafeInteger(listedRun.run_attempt) && listedRun.run_attempt > 0
+      ? listedRun.run_attempt
+      : 1;
+    const attemptLimit = 100;
+    if (latestAttempt > attemptLimit) {
+      markIncomplete();
+      notes.push(
+        `${label}: workflow run ${runId} has ${latestAttempt} attempts; history truncated at ${attemptLimit}`,
+      );
+    }
+    for (
+      let attempt = 1;
+      attempt <= Math.min(latestAttempt, attemptLimit);
+      attempt++
+    ) {
+      const attemptPath =
+        `repos/${record.repo}/actions/runs/${runId}/attempts/${attempt}`;
+      const run = asObject(await gh(attemptPath), attemptPath);
+      const started = asText(run.run_started_at) ?? asText(run.created_at);
+      const durationSeconds = run.status === "completed"
+        ? elapsedSeconds(started, run.updated_at, "workflow run")
+        : null;
+      rows.push({
+        repo: record.repo,
+        prNumber: record.number,
+        runId,
+        attempt,
+        durationMinutes: durationSeconds === null ? null : durationSeconds / 60,
+        durationSeconds,
+        kind: "workflow_run",
+        workflowRunId: runId,
+        ...(typeof run.workflow_id === "number" ||
+            typeof run.workflow_id === "string"
+          ? { workflowId: String(run.workflow_id) }
+          : {}),
+        headSha,
+        outcome: asText(run.conclusion),
+        startedAt: started,
+        completedAt: run.status === "completed" ? asText(run.updated_at) : null,
+      });
+      const jobs = await fetchPages(
+        `repos/${record.repo}/actions/runs/${runId}/attempts/${attempt}/jobs`,
+        "jobs",
+        "job",
+        headSha,
+      );
+      for (const job of jobs) {
+        const jobDuration = job.status === "completed"
+          ? elapsedSeconds(job.started_at, job.completed_at, "CI job")
+          : null;
+        rows.push({
+          repo: record.repo,
+          prNumber: record.number,
+          runId: String(asId(job.id, `${label} CI job`)),
+          attempt,
+          durationMinutes: jobDuration === null ? null : jobDuration / 60,
+          durationSeconds: jobDuration,
+          kind: "job",
+          workflowRunId: runId,
+          ...(typeof run.workflow_id === "number" ||
+              typeof run.workflow_id === "string"
+            ? { workflowId: String(run.workflow_id) }
+            : {}),
+          headSha,
+          outcome: asText(job.conclusion),
+          startedAt: asText(job.started_at),
+          completedAt: asText(job.completed_at),
+        });
+      }
+    }
+  }
+  return rows;
 }
 
 /** Revert targets named by a PR's title or body, each read over its bounded slice. */
@@ -783,8 +1285,19 @@ function revertedNumbers(title: string, body: string): number[] {
  * A regression is a cohort PR that reverts a merged cohort PR. It is recorded
  * once per reverted PR, at the earliest revert, and resolved when the revert
  * merged. Reverts of PRs outside the cohort are not observed.
+ *
+ * A post-merge CI regression is a failed workflow run on a merged PR's merge
+ * commit, completed at or after the merge. `failure`, `timed_out` and
+ * `action_required` count; `cancelled` does not, since a concurrency
+ * cancellation is not a failure. Only the merge commit's runs are read: a run
+ * on the PR head is not a post-merge regression, and later default-branch
+ * commits are not observed. It is resolved by a later successful attempt of the
+ * same workflow on that commit.
  */
-function regressionsFor(observed: ObservedPr[]): Regression[] {
+function regressionsFor(
+  observed: ObservedPr[],
+  postMergeRunsByPr: ReadonlyMap<string, readonly CiRun[]> = new Map(),
+): Regression[] {
   const byKey = new Map(
     observed.map((o) => [keyOf(o.record.repo, o.record.number), o.record]),
   );
@@ -812,7 +1325,49 @@ function regressionsFor(observed: ObservedPr[]): Regression[] {
       }
     }
   }
-  return [...earliest.values()].map(({ createdAt: _createdAt, ...row }) => row);
+  const rows: Regression[] = [...earliest.values()].map(
+    ({ createdAt: _createdAt, ...row }) => ({ ...row, source: "revert" }),
+  );
+  for (const { record, mergeCommitSha } of observed) {
+    if (!record.mergedAt || mergeCommitSha === null) continue;
+    const mergeMs = utcMillis(record.mergedAt, "PR mergedAt");
+    const runs = postMergeRunsByPr.get(keyOf(record.repo, record.number)) ?? [];
+    const workflows = runs.filter((run) => run.kind === "workflow_run");
+    const failedRuns = new Map<string, CiRun>();
+    for (const failed of workflows) {
+      if (
+        !failed.completedAt || !failed.workflowId ||
+        failed.headSha !== mergeCommitSha ||
+        !["failure", "timed_out", "action_required"].includes(
+          failed.outcome ?? "",
+        ) || utcMillis(failed.completedAt!, "workflow completedAt") < mergeMs
+      ) continue;
+      const previous = failedRuns.get(failed.runId);
+      if (!previous || failed.completedAt < previous.completedAt!) {
+        failedRuns.set(failed.runId, failed);
+      }
+    }
+    for (const failed of failedRuns.values()) {
+      const recovered = workflows.some((candidate) =>
+        candidate.workflowId === failed.workflowId &&
+        candidate.headSha === failed.headSha &&
+        candidate.outcome === "success" &&
+        (candidate.runId !== failed.runId ||
+          candidate.attempt! > failed.attempt!) &&
+        candidate.completedAt !== null &&
+        utcMillis(candidate.completedAt!, "workflow completedAt") >=
+          utcMillis(failed.completedAt!, "workflow completedAt")
+      );
+      rows.push({
+        repo: record.repo,
+        prNumber: record.number,
+        detectedAt: failed.completedAt!,
+        resolved: recovered,
+        source: "post_merge_ci",
+      });
+    }
+  }
+  return rows;
 }
 
 /** One deployment row, or the reason the record is unusable. */
@@ -821,6 +1376,7 @@ function deploymentRow(
   revision: unknown,
   fingerprint: unknown,
   observedAt: unknown,
+  hostId?: unknown,
 ): DeploymentRow | string {
   if (typeof component !== "string" || !COMPONENT_PATTERN.test(component)) {
     return "component is not a component identifier";
@@ -834,6 +1390,11 @@ function deploymentRow(
     return "policy fingerprint is not a SHA-256 fingerprint";
   }
   if (typeof observedAt !== "string") return "observedAt is missing";
+  if (
+    hostId !== undefined &&
+    (typeof hostId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(hostId))
+  ) return "hostId is not a host identifier";
   try {
     utcMillis(observedAt, "observedAt");
   } catch (error) {
@@ -841,6 +1402,7 @@ function deploymentRow(
   }
   return {
     component,
+    ...(typeof hostId === "string" ? { hostId } : {}),
     revision,
     policyFingerprint: fingerprint,
     observedAt,
@@ -909,6 +1471,7 @@ async function collectDeployments(
       o.codeRevision,
       o.policyFingerprint,
       o.observedAt,
+      o.hostId,
     );
     if (typeof row === "string") {
       notes.push(`babysitter heartbeat ${path}: ${row}; skipped`);
@@ -954,6 +1517,7 @@ async function collectDeployments(
         d.codeRevision,
         d.policyFingerprint,
         d.observedAt,
+        d.hostId,
       );
       if (typeof row === "string") {
         notes.push(`review-run record ${path}: ${row}; skipped`);
@@ -1004,6 +1568,7 @@ async function collectDeployments(
         treatment.workerCommit,
         treatment.reviewPolicyFingerprint,
         event.recordedAt,
+        event.host,
       );
       if (typeof row === "string") {
         notes.push(`lifecycle ledger ${path}: ${row}; row skipped`);
@@ -1020,6 +1585,54 @@ async function collectDeployments(
     );
   }
   return rows;
+}
+
+async function collectDiscoveryEvents(
+  directories: string[],
+  verifiedMs: number,
+  endMs: number,
+  expectedFingerprint: string,
+  notes: string[],
+): Promise<{
+  events: Array<{ repo: string; prNumber: number; event: string }>;
+  hosts: Set<string>;
+  complete: boolean;
+}> {
+  const events: Array<{ repo: string; prNumber: number; event: string }> = [];
+  const hosts = new Set<string>();
+  let complete = directories.length > 0;
+  for (const directory of directories) {
+    const path = `${directory}/pr-discovery-events.jsonl`;
+    try {
+      const rows = await readPrDiscoveryEvents(path, verifiedMs, endMs);
+      for (const row of rows) {
+        if (Date.parse(row.recordedAt) > endMs) continue;
+        hosts.add(row.hostId);
+        // Same-day dedup keeps the first row per key, so a row already carrying
+        // the expected policy fingerprint stands for later scans too.
+        if (
+          Date.parse(row.recordedAt) < verifiedMs &&
+          row.policyFingerprint !== expectedFingerprint
+        ) continue;
+        events.push({
+          repo: row.repo,
+          prNumber: row.prNumber,
+          event: row.event,
+        });
+      }
+    } catch (error) {
+      complete = false;
+      const reason = error instanceof Deno.errors.NotFound
+        ? "is missing"
+        : `is invalid (${
+          error instanceof Error ? error.message : String(error)
+        })`;
+      notes.push(
+        `PR discovery events ${path} ${reason}; rollout remains unknown`,
+      );
+    }
+  }
+  return { events, hosts, complete };
 }
 
 /**
@@ -1048,15 +1661,14 @@ function isPostedReview(value: unknown): value is LogRecord {
 }
 
 /**
- * Review actions from the review-fleet-prs skill's own logs. Each posted review
- * becomes a verified fleet `review` action, so it can match the GitHub review
- * event within {@link MATCH_WINDOW_MS} as an audit action does. The log is not
- * hash-chained, so this is a lower-trust source (docs/INTERNALS.md). Records for
+ * Review actions from the review-fleet-prs skill's own logs. A posted review
+ * may support matching the GitHub review event within {@link MATCH_WINDOW_MS},
+ * but remains unverified because the log is not hash-chained
+ * (docs/INTERNALS.md). Records for
  * PRs outside the cohort are ignored. A missing or unreadable file, and a
  * malformed line, is noted and skipped, never silently. The same record across
- * two logs is one action. Its head SHA is not carried because nothing uses it:
- * an action links by repository and PR number whatever its recorded head.
- * A review posted at an older head still matches its event by time.
+ * two logs is one action. Its head SHA helps correlate the event, but does not
+ * verify it; review-log records remain supporting evidence only.
  */
 async function reviewLogActions(
   paths: string[],
@@ -1096,11 +1708,12 @@ async function reviewLogActions(
         component: "reviewer",
         repo: record.repo,
         prNumber: record.number,
+        ...(record.headSha ? { headSha: record.headSha } : {}),
         kind: "review",
         timestamp: record.at,
         outcome: "confirmed",
-        actor: "fleet",
-        verified: true,
+        actor: "unknown",
+        verified: false,
       });
     }
   }
@@ -1144,7 +1757,9 @@ async function readAuditEntries(
   const byId = new Map<string, JournalEntry>();
   for (const dir of dirs) {
     try {
-      const swept = await verifyAllChains(dir);
+      const swept = await verifyAllChains(dir, {
+        recoverInterruptedAppends: false,
+      });
       let verified = false;
       if (!swept.ok) {
         complete = false;
@@ -1281,8 +1896,8 @@ function linkBranchPush(
  * Whether a cohort PR is stranded at the rollout verification instant: created
  * before it, still open at it (no merge or close at or before it), at least
  * {@link STRANDED_AGE_MS} old at it, and not owner-gated. A PR that merged after
- * the instant is stranded, and is then rediscovered or processed by its fleet
- * actions. PRs created before the cohort start never reach this check.
+ * the instant is stranded. Older rollout candidates are checked separately
+ * from cohort PRs.
  */
 function strandedAt(pr: PrCompletionRecord, verifiedMs: number): boolean {
   const createdMs = utcMillis(pr.createdAt, "PR createdAt");
@@ -1292,7 +1907,10 @@ function strandedAt(pr: PrCompletionRecord, verifiedMs: number): boolean {
   return createdMs < verifiedMs &&
     verifiedMs - createdMs >= STRANDED_AGE_MS &&
     openAtVerification &&
-    pr.ownerGated !== true;
+    !(pr.ownerGated === true && pr.ownerGateVerified === true &&
+      pr.ownerGateEvidence !== undefined &&
+      utcMillis(pr.ownerGateEvidence.timestamp, "owner gate timestamp") <=
+        verifiedMs);
 }
 
 /**
@@ -1327,12 +1945,27 @@ export async function collectPrCompletionSnapshot(
   if (!Number.isSafeInteger(maxPrs) || maxPrs < 1) {
     throw new Error("maxPrsPerRepo must be a positive integer");
   }
+  for (const id of options.humanActorIds ?? []) {
+    if (!ACTOR_ID_PATTERN.test(id)) {
+      throw new Error(
+        `humanActorIds entry ${id} is not a numeric GitHub user id`,
+      );
+    }
+  }
+  const humanActorIds = new Set(options.humanActorIds ?? []);
 
   const notes: string[] = [];
+  if (options.expected.inventory === undefined) {
+    notes.push(
+      "no expected host/component deployment inventory supplied; per-host rollout status is unavailable",
+    );
+  }
   const truncatedRepos: string[] = [];
   const audit = await readAuditEntries(options.auditDirs, notes);
 
   const observed: ObservedPr[] = [];
+  const rolloutCandidates: ObservedPr[] = [];
+  let rolloutPrsComplete = true;
   let openPrsBeforeCohort = 0;
   for (const repo of repos) {
     const repoObservation = await observeRepo(
@@ -1341,8 +1974,11 @@ export async function collectPrCompletionSnapshot(
       options.cohort,
       maxPrs,
       truncatedRepos,
+      options.rolloutVerifiedAt,
     );
     observed.push(...repoObservation.observed);
+    rolloutCandidates.push(...repoObservation.rolloutCandidates);
+    rolloutPrsComplete &&= repoObservation.rolloutComplete;
     openPrsBeforeCohort += repoObservation.openBeforeCohort;
   }
   for (const o of observed) o.record.actionsComplete = audit.complete;
@@ -1374,16 +2010,50 @@ export async function collectPrCompletionSnapshot(
     new Set(observed.map(({ record }) => keyOf(record.repo, record.number))),
     notes,
   );
+  const rolloutCandidatesByKey = new Map<string, ObservedPr>();
+  for (const candidate of rolloutCandidates) {
+    if (
+      strandedAt(
+        candidate.record,
+        utcMillis(
+          options.rolloutVerifiedAt!,
+          "rolloutVerifiedAt",
+        ),
+      )
+    ) {
+      const evidence = await fetchEvidence(
+        options.gh,
+        candidate.record.repo,
+        candidate.record.number,
+        notes,
+      );
+      const actions = verifiedActions.filter((action) =>
+        action.repo === candidate.record.repo &&
+        action.prNumber === candidate.record.number
+      );
+      unmatchedActions(
+        candidate,
+        gitHubEvents(candidate, evidence),
+        actions.filter((action) => action.actor === "fleet"),
+        new Set<TrustedPrAction>(),
+        humanActorIds,
+      );
+      verifyOwnerGate(candidate.record, evidence, actions);
+      rolloutCandidatesByKey.set(
+        keyOf(candidate.record.repo, candidate.record.number),
+        candidate,
+      );
+    }
+  }
   const verifiedFleet = [
     ...verifiedActions.filter((action) =>
       action.verified && action.actor === "fleet"
     ),
-    ...logActions,
   ];
   const fleetByPr = new Map<string, TrustedPrAction[]>();
   for (const action of verifiedFleet) {
-    // A recorded withdrawal invalidates earlier merge arms, but remains in
-    // the output history. Failed withdrawals and later re-arms do not cancel.
+    // A successful withdrawal before the GitHub merge invalidates an earlier
+    // direct merge action; the withdrawal remains in the output history.
     if (
       action.kind === "merge" &&
       linked.some(({ entry, verified }) =>
@@ -1406,11 +2076,53 @@ export async function collectPrCompletionSnapshot(
     list.push(action);
     fleetByPr.set(key, list);
   }
-
   const used = new Set<TrustedPrAction>();
+  const supersededLogs = new Set<TrustedPrAction>();
   const githubActions: TrustedPrAction[] = [];
   const blockers: Blocker[] = [];
   const ciRuns: CiRun[] = [];
+  const postMergeRunsByPr = new Map<string, CiRun[]>();
+  const ciIncompletePrs = new Map<string, { repo: string; prNumber: number }>();
+  let ciCallsRemaining = options.ciCallBudget ?? 5000;
+  if (!Number.isSafeInteger(ciCallsRemaining) || ciCallsRemaining < 0) {
+    throw new Error("ciCallBudget must be a non-negative safe integer");
+  }
+  class CiBudgetExhausted extends Error {}
+  const ciGh: GhJson = (path) => {
+    if (ciCallsRemaining === 0) throw new CiBudgetExhausted();
+    ciCallsRemaining--;
+    return options.gh(path);
+  };
+  const boundedCi = async (
+    record: PrCompletionRecord,
+    heads: string[],
+    mergeCommit = false,
+  ): Promise<CiRun[]> => {
+    const markIncomplete = () =>
+      ciIncompletePrs.set(
+        keyOf(record.repo, record.number),
+        { repo: record.repo, prNumber: record.number },
+      );
+    try {
+      return await ciRunsFor(
+        ciGh,
+        record,
+        heads,
+        notes,
+        mergeCommit,
+        markIncomplete,
+      );
+    } catch (error) {
+      if (!(error instanceof CiBudgetExhausted)) throw error;
+      markIncomplete();
+      notes.push(
+        `${
+          keyOf(record.repo, record.number)
+        }: CI history truncated; collection call budget exhausted`,
+      );
+      return [];
+    }
+  };
   let reviewEvents = 0;
   let prsWithReviewEvents = 0;
   for (const o of observed) {
@@ -1421,16 +2133,79 @@ export async function collectPrCompletionSnapshot(
       prsWithReviewEvents++;
     }
     blockers.push(...blockersFor(record, evidence));
-    githubActions.push(
-      ...unmatchedActions(
-        o,
-        gitHubEvents(o, evidence),
-        fleetByPr.get(keyOf(record.repo, record.number)) ?? [],
-        used,
+    const events = gitHubEvents(o, evidence);
+    const fleet = fleetByPr.get(keyOf(record.repo, record.number)) ?? [];
+    blockers.push(...recoveryBlockersFor(record, fleet));
+    const unmatched = unmatchedActions(o, events, fleet, used, humanActorIds);
+    // Reserve the log row for a matched reviewer post before another GitHub
+    // review can claim it. Unmatched journal actions cannot supersede logs.
+    for (
+      const action of fleet.filter((item) =>
+        item.component === "reviewer" && item.kind === "review" &&
+        item.githubEvents?.some((event) => event.kind === "review")
+      )
+    ) {
+      const candidates = logActions.filter((log) =>
+        !supersededLogs.has(log) && log.repo === action.repo &&
+        log.prNumber === action.prNumber &&
+        (!log.headSha || !action.headSha || log.headSha === action.headSha) &&
+        Math.abs(Date.parse(log.timestamp) - Date.parse(action.timestamp)) <=
+          MATCH_WINDOW_MS
+      );
+      candidates.sort((a, b) =>
+        Math.abs(Date.parse(a.timestamp) - Date.parse(action.timestamp)) -
+        Math.abs(Date.parse(b.timestamp) - Date.parse(action.timestamp))
+      );
+      if (candidates[0]) supersededLogs.add(candidates[0]);
+    }
+    const unmatchedIds = new Set(unmatched.map((action) => action.actionId));
+    githubActions.push(...unmatchedActions(
+      o,
+      events.filter((event) =>
+        unmatchedIds.has(
+          `gh:${record.repo}#${record.number}:${event.kind}:${event.id}`,
+        )
       ),
+      logActions.filter((action) =>
+        action.repo === record.repo && action.prNumber === record.number &&
+        !supersededLogs.has(action)
+      ),
+      used,
+      humanActorIds,
+    ));
+    verifyOwnerGate(
+      record,
+      evidence,
+      fleetByPr.get(keyOf(record.repo, record.number)) ?? [],
     );
-    if (record.state === "merged") {
-      ciRuns.push(...await ciRunsFor(options.gh, record, notes));
+    const prCiRuns = await boundedCi(
+      record,
+      evidence.commits.map((commit) => commit.sha),
+    );
+    ciRuns.push(...prCiRuns);
+    blockers.push(
+      ...ciBlockersFor(record, prCiRuns, options.cohort.observedAt),
+      ...branchRefreshBlockersFor(record, fleet, prCiRuns),
+    );
+    // Merge-commit runs feed only the post-merge regressions, not CI cost
+    // totals, so they are read separately and kept out of `ciRuns`.
+    if (record.mergedAt !== null) {
+      if (o.mergeCommitSha === null) {
+        notes.push(
+          `${
+            keyOf(record.repo, record.number)
+          }: merge commit SHA is null or absent; post-merge CI is not observed`,
+        );
+      } else {
+        postMergeRunsByPr.set(
+          keyOf(record.repo, record.number),
+          await boundedCi(
+            { ...record, headSha: o.mergeCommitSha },
+            [],
+            true,
+          ),
+        );
+      }
     }
   }
   if ((options.reviewLogs ?? []).length === 0 && reviewEvents > 0) {
@@ -1438,7 +2213,7 @@ export async function collectPrCompletionSnapshot(
     const prs = prsWithReviewEvents === 1 ? "PR" : "PRs";
     notes.push(
       `${reviewEvents} ${events} on ${prsWithReviewEvents} ${prs} had no review-log source; ` +
-        "the review-fleet-prs skill journals no audit records, so those reviews stay unknown unless an audit action matches them",
+        "reviews without a matching verified audit action or an explicitly allowlisted human actor stay unknown",
     );
   }
 
@@ -1450,26 +2225,59 @@ export async function collectPrCompletionSnapshot(
       options.rolloutVerifiedAt,
       "rolloutVerifiedAt",
     );
+    const discovery = await collectDiscoveryEvents(
+      options.babysitterStateDirs ?? [],
+      verifiedMs,
+      Math.min(observedMs, verifiedMs + 14 * 86_400_000),
+      options.expected.policyFingerprint,
+      notes,
+    );
+    discovery.complete &&= rolloutPrsComplete;
+    const expectedBabysitterHosts = options.expected.inventory
+      ?.filter((item) => item.component === "babysitter")
+      .map((item) => item.hostId) ?? [];
+    if (options.expected.inventory === undefined) {
+      discovery.complete = false;
+    }
+    if (
+      expectedBabysitterHosts.some((hostId) => !discovery.hosts.has(hostId))
+    ) {
+      discovery.complete = false;
+      notes.push(
+        "PR discovery events do not cover every expected babysitter host; rollout remains unknown",
+      );
+    }
     rollout = {
       verifiedAt: options.rolloutVerifiedAt,
-      strandedPrs: records.filter((pr) => strandedAt(pr, verifiedMs)).map(
+      discoveryEvidenceComplete: discovery.complete,
+      strandedPrs: [
+        ...records,
+        ...[...rolloutCandidatesByKey.values()].map((candidate) =>
+          candidate.record
+        ),
+      ].filter((pr) => strandedAt(pr, verifiedMs)).map(
         (pr) => {
-          const fleet = verifiedFleet.filter((action) =>
-            action.repo === pr.repo && action.prNumber === pr.number &&
-            utcMillis(action.timestamp, "action timestamp") >= verifiedMs
+          const events = discovery.events.filter((event) =>
+            event.repo === pr.repo && event.prNumber === pr.number
           );
           return {
             repo: pr.repo,
             prNumber: pr.number,
             eligible: true,
-            rediscovered: fleet.length > 0,
-            processed: fleet.some((action) =>
-              action.outcome === "confirmed" && action.kind !== "unknown"
+            discovered: events.some((event) => event.event === "discovered"),
+            eligibilityConfirmed: events.some((event) =>
+              event.event === "eligible"
             ),
+            processed: events.some((event) => event.event === "processed"),
           };
         },
       ),
     };
+    if (!discovery.complete && rollout.strandedPrs.length > 0) {
+      notes.push(
+        "rollout discovery evidence is unavailable; later audit actions do not prove ordinary discovery, eligibility or processing",
+      );
+    }
   }
 
   const input: PrCompletionInput = {
@@ -1478,15 +2286,22 @@ export async function collectPrCompletionSnapshot(
     actions: [
       ...verifiedActions,
       ...unverifiedActions,
-      ...logActions,
+      ...logActions.filter((action) => !supersededLogs.has(action)),
       ...githubActions,
     ],
     blockers,
     ciRuns,
-    regressions: regressionsFor(observed),
+    ciIncompletePrs: [...ciIncompletePrs.values()],
+    regressions: regressionsFor(observed, postMergeRunsByPr),
     deployments,
     expectedDeployment: {
       components: [...options.expected.components],
+      ...(options.expected.inventory !== undefined
+        ? {
+          inventory: options.expected.inventory.map((entry) => ({ ...entry })),
+        }
+        : {}),
+      inventoryComplete: options.expected.inventory !== undefined,
       revision: options.expected.revision,
       policyFingerprint: options.expected.policyFingerprint,
       maxHeartbeatAgeHours: options.expected.maxHeartbeatAgeHours,

@@ -982,3 +982,21 @@ Deno.test("issue assignment - a failing re-read after posting rejects and append
     assertEquals(await exists(ledger), false);
   });
 });
+
+Deno.test("issue assignment - the production seams record the machine hostname as the ledger host (Issue #4658)", async () => {
+  const script = `
+    import { productionIssueAssignmentSeams } from "./lib/issue_assignment.ts";
+    import { getHostname } from "./lib/worker_identity.ts";
+    const seams = productionIssueAssignmentSeams("/nonexistent", () => Promise.reject(new Error("unexpected gh")));
+    if (seams.host !== getHostname() || seams.host === "different-report-host") throw new Error("ledger host differs from machine hostname");
+  `;
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: ["eval", script],
+    cwd: new URL("..", import.meta.url).pathname,
+    clearEnv: true,
+    env: { VIBE_HOST_ID: "different-report-host" },
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  assertEquals(result.success, true, new TextDecoder().decode(result.stderr));
+});

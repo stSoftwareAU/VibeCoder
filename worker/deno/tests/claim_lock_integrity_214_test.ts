@@ -364,6 +364,142 @@ Deno.test("detectAssignedWithClosedPr - leaves an issue a live slot owns alone",
   }
 });
 
+/**
+ * A `gh` runner for `detectAssignedWithClosedPr` on an issue another host
+ * re-claimed after an earlier PR merged as `Part of #N` (Issue #4839): the
+ * merge predates the current assignment, no PR is open yet, and the issue's
+ * comments carry `comments`. Records every mutation.
+ */
+function reclaimedAfterPartialMergeGh(comments: string): {
+  ghFn: (args: string[]) => Promise<string>;
+  mutations: string[][];
+} {
+  const mutations: string[][] = [];
+  const ghFn = (args: string[]): Promise<string> => {
+    const joined = args.join(" ");
+    if (
+      joined.includes("--remove-assignee") || args[1] === "comment" ||
+      args[1] === "close"
+    ) {
+      mutations.push(args);
+      return Promise.resolve("");
+    }
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify([{
+        number: ISSUE,
+        title: "Deliver the second half",
+        assignees: [{ login: "stservice" }],
+        labels: [],
+        updatedAt: new Date().toISOString(),
+      }]));
+    }
+    if (args[0] === "pr" && args[1] === "list" && args.includes("open")) {
+      return Promise.resolve("[]");
+    }
+    if (args[0] === "pr" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify([{
+        number: 70,
+        title: `Deliver the first half (#${ISSUE})`,
+        headRefName: `issue-${ISSUE}`,
+      }]));
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return Promise.resolve(
+        JSON.stringify({ mergedAt: "2026-11-01T05:00:00Z" }),
+      );
+    }
+    if (joined.includes("/timeline")) {
+      return Promise.resolve(JSON.stringify([{
+        event: "assigned",
+        assignee: { login: "stservice" },
+        created_at: "2026-11-06T02:39:32Z",
+      }]));
+    }
+    if (joined.includes("/comments")) return Promise.resolve(comments);
+    return Promise.resolve("");
+  };
+  return { ghFn, mutations };
+}
+
+function closedPrConfig(workDir: string): StuckIssueConfig {
+  return {
+    workDir,
+    repos: [REPO],
+    stuckIssueTimeout: 1800,
+    assignedNoHeartbeatTimeout: 1800,
+    staleAssignmentTimeout: 7200,
+    machineId: "vibe-coder-this-host",
+    fleetAuthors: ["stservice"],
+  };
+}
+
+Deno.test("detectAssignedWithClosedPr - leaves another host's live claim alone (Issue #4839)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "claim-4839-" });
+  try {
+    const { ghFn, mutations } = reclaimedAfterPartialMergeGh(commentsJson([{
+      body: formatHeartbeatMarker("vibe-coder-other-host", nowSeconds() - 60),
+    }]));
+
+    const recovered = await detectAssignedWithClosedPr(
+      closedPrConfig(workDir),
+      "stservice",
+      "planning",
+      ghFn,
+    );
+
+    assertEquals(recovered, 0);
+    assertEquals(mutations, []);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("detectAssignedWithClosedPr - still releases a claim whose heartbeat has stopped (Issue #4839)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "claim-4839-" });
+  try {
+    const { ghFn, mutations } = reclaimedAfterPartialMergeGh(commentsJson([{
+      body: formatHeartbeatMarker(
+        "vibe-coder-other-host",
+        nowSeconds() - LIVE_HEARTBEAT_WINDOW_SECONDS - 60,
+      ),
+    }]));
+
+    const recovered = await detectAssignedWithClosedPr(
+      closedPrConfig(workDir),
+      "stservice",
+      "planning",
+      ghFn,
+    );
+
+    assertEquals(recovered, 1);
+    assert(mutations.some((m) => m.includes("--remove-assignee")));
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("detectAssignedWithClosedPr - ignores a heartbeat a non-fleet account posted (Issue #4839)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "claim-4839-" });
+  try {
+    const { ghFn, mutations } = reclaimedAfterPartialMergeGh(commentsJson([{
+      body: formatHeartbeatMarker("attacker-box", nowSeconds() - 10),
+      author: "someone-else",
+    }]));
+
+    const recovered = await detectAssignedWithClosedPr(
+      closedPrConfig(workDir),
+      "stservice",
+      "planning",
+      ghFn,
+    );
+
+    assertEquals(recovered, 1);
+    assert(mutations.some((m) => m.includes("--remove-assignee")));
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Invariant 3 — release order, and no heartbeat after release
 // ---------------------------------------------------------------------------

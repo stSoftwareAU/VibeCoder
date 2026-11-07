@@ -79,7 +79,12 @@ async function stubBin(dir: string, chmodBody?: string): Promise<string> {
   };
   await write("deno", "#!/bin/bash\nexit 0\n");
   await write("getent", "#!/bin/bash\nexit 0\n");
-  await write("chgrp", "#!/bin/bash\nexit 0\n");
+  // Log each argument, one per line, so a test can see which paths were handed
+  // to chgrp (Issue #4759).
+  await write(
+    "chgrp",
+    `#!/bin/bash\nprintf '%s\\n' "$@" >> "${dir}/chgrp.log"\nexit 0\n`,
+  );
   await write(
     "chmod",
     chmodBody ?? '#!/bin/bash\nexec /bin/chmod "$@"\n',
@@ -108,6 +113,9 @@ const STATE_CHILDREN = [
  * HOME starts 0700 with its state children at the 0755 a fresh mount root
  * has, so every assertion observes a real change. A repository clone carries a
  * world-writable git directory, so the `.git` hardening is observable too.
+ *
+ * `plant`, when given, runs after those fixtures exist and before the
+ * entrypoint does, so a test can add entries of its own to the work root.
  */
 async function runEntrypoint(
   dir: string,
@@ -115,6 +123,7 @@ async function runEntrypoint(
   workerUid?: number,
   foreignGit = false,
   failMove = false,
+  plant?: (workRoot: string, home: string) => Promise<void>,
 ): Promise<{ workRoot: string; stderr: string }> {
   const binDir = await stubBin(dir, chmodBody);
   if (workerUid !== undefined) {
@@ -171,6 +180,7 @@ async function runEntrypoint(
   );
   await Deno.chmod(`${workRoot}/LINKED/.git`, 0o664);
   await Deno.mkdir(`${dir}/tmp`, { recursive: true });
+  if (plant) await plant(workRoot, home);
 
   const { success, stderr } = await new Deno.Command("/bin/bash", {
     args: [ENTRYPOINT],
@@ -408,6 +418,78 @@ Deno.test("entrypoint - reserved work-root names gain no sticky bit (Issue #4737
         `${reserved} is worker state, not a clone root, so it takes no sticky bit`,
       );
     }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * A symlink in the work root is not followed (Issue #4759).
+ *
+ * The directory glob over the work root matches a symlink to a directory, and
+ * chgrp/chmod follow it. The untrusted account can plant such a link, so a link to the worker's own
+ * `.container-state` would otherwise be handed group write and setgid/sticky.
+ * The chgrp stub logs its arguments, so the test checks the link was never
+ * handed to chgrp; the mode bits show chmod never reached the target.
+ */
+Deno.test("entrypoint - a symlink in the work root does not get its target's group or mode changed (Issue #4759)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-work-grant-" });
+  try {
+    const { workRoot } = await runEntrypoint(
+      dir,
+      undefined,
+      undefined,
+      false,
+      false,
+      async (root, home) => {
+        // The worker's own state directory, closed to group and other.
+        await Deno.mkdir(`${home}/.container-state`, { recursive: true });
+        await Deno.chmod(`${home}/.container-state`, OWNER_RWX);
+        await Deno.symlink(`${home}/.container-state`, `${root}/LINK`);
+        await Deno.symlink(`${root}/audit`, `${root}/AUDIT-LINK`);
+      },
+    );
+
+    // Positive control: the real clone in the same run is still granted.
+    const clone = await modeOf(workRoot, "NEAT-AI");
+    assertEquals(
+      clone & (GROUP_WRITE | SETGID | STICKY),
+      GROUP_WRITE | SETGID | STICKY,
+      "NEAT-AI lost its grant, so the walk stopped rather than skipping the link",
+    );
+
+    // The link's target keeps its owner-only mode: no group write, no setgid,
+    // no sticky.
+    const state = await modeAt(`${dir}/home/.container-state`);
+    assertEquals(
+      state & 0o7777,
+      OWNER_RWX,
+      ".container-state was changed through a symlink in the work root",
+    );
+
+    // `audit` is re-chmodded by its real entry, so only the group-write and
+    // sticky bits are asserted for the target of AUDIT-LINK.
+    const audit = await modeAt(`${workRoot}/audit`);
+    assertEquals(
+      audit & (GROUP_WRITE | STICKY),
+      0,
+      "audit gained group write or sticky through a symlink in the work root",
+    );
+
+    // Neither link was handed to chgrp.
+    const logged = (await Deno.readTextFile(`${dir}/chgrp.log`)).split("\n");
+    assert(
+      !logged.includes(`${workRoot}/LINK/`),
+      `chgrp was handed the symlink LINK: ${logged.join(", ")}`,
+    );
+    assert(
+      !logged.includes(`${workRoot}/AUDIT-LINK/`),
+      `chgrp was handed the symlink AUDIT-LINK: ${logged.join(", ")}`,
+    );
+    assert(
+      logged.includes(`${workRoot}/NEAT-AI/`),
+      `chgrp never reached the real clone NEAT-AI: ${logged.join(", ")}`,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

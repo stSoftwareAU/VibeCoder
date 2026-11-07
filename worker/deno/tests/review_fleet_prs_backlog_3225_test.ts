@@ -11,6 +11,7 @@
  * per head, review first, update second.
  */
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { auditFilePath, loadEntries } from "../lib/audit_journal.ts";
 import {
   approvedAtHead,
   pass,
@@ -334,6 +335,9 @@ Deno.test("updateBranch refuses an unreadable ready state before requesting an u
       calls.push(args);
       return Promise.resolve("{}");
     },
+    undefined,
+    undefined,
+    { auditDir: "unused", runId: "reviewer:test" },
   );
   assertEquals(result.updated, false);
   assertEquals(
@@ -361,6 +365,9 @@ Deno.test("updateBranchOnce refuses an unreadable ready state before the update 
         }
         return "{}";
       },
+      undefined,
+      undefined,
+      { auditDir: `${dir}/audit`, runId: "reviewer:test" },
     );
     assertEquals(result, undefined);
     assertEquals(
@@ -450,6 +457,23 @@ Deno.test("pass: approved behind PRs reach the shared readiness policy, while an
     assertEquals(updates.length, 1);
     assertEquals(updates[0]?.[3], "repos/acme/app/pulls/30/update-branch");
     assertEquals(result.upkeep, ["acme/app#30 branch update requested"]);
+    const auditPath = auditFilePath({
+      baseDir: `${dir}/audit`,
+      workerId: "fleet-reviewer",
+      date: new Date().toISOString().slice(0, 10),
+    });
+    const auditRows = await loadEntries(auditPath);
+    assertEquals(auditRows.ok, true);
+    if (!auditRows.ok) throw auditRows.error;
+    assertEquals(
+      auditRows.value.map((entry) => [
+        entry.actionKind,
+        entry.repo,
+        entry.prNumber,
+        entry.outcome,
+      ]),
+      [["branch-update", "acme/app", 30, "success"]],
+    );
     for (const number of [31, 34]) {
       assertEquals(
         calls.some((c) =>
@@ -562,32 +586,39 @@ import {
 
 for (const refusal of ["", "gh api: HTTP 422: expected head sha\nmore"]) {
   Deno.test(`updateBranch reaches GitHub with strict readiness: ${refusal || "success"}`, async () => {
+    const dir = await Deno.makeTempDir();
     const f = strictRefreshFixture("acme/app");
     f.state.refusal = refusal;
-    const result = await updateBranch(
-      { repo: "acme/app", number: 20, headSha: f.head, baseRefName: "main" },
-      f.gh,
-      { fleetAuthors: [...FLEET] },
-    );
-    assertEquals(
-      result,
-      refusal
-        ? {
-          updated: false,
-          error: `Failed to update branch for PR #20 in acme/app: ${
-            refusal.split("\n")[0]
-          }`,
-        }
-        : { updated: true },
-    );
-    assertEquals(f.calls.filter((args) => args.includes("PUT")), [[
-      "api",
-      "--method",
-      "PUT",
-      "repos/acme/app/pulls/20/update-branch",
-      "-f",
-      `expected_head_sha=${f.head}`,
-    ]]);
+    try {
+      const result = await updateBranch(
+        { repo: "acme/app", number: 20, headSha: f.head, baseRefName: "main" },
+        f.gh,
+        { fleetAuthors: [...FLEET] },
+        undefined,
+        { auditDir: `${dir}/audit`, runId: "reviewer:test" },
+      );
+      assertEquals(
+        result,
+        refusal
+          ? {
+            updated: false,
+            error: `Failed to update branch for PR #20 in acme/app: ${
+              refusal.split("\n")[0]
+            }`,
+          }
+          : { updated: true },
+      );
+      assertEquals(f.calls.filter((args) => args.includes("PUT")), [[
+        "api",
+        "--method",
+        "PUT",
+        "repos/acme/app/pulls/20/update-branch",
+        "-f",
+        `expected_head_sha=${f.head}`,
+      ]]);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   });
 }
 
@@ -639,16 +670,102 @@ Deno.test("moving test merge leaves the reviewed head retryable", async () => {
       headSha: f.head,
       baseRefName: "main",
     };
-    const result = await updateBranchOnce(pr, dir, f.gh, {
-      fleetAuthors: [...FLEET],
-    });
+    const result = await updateBranchOnce(
+      pr,
+      dir,
+      f.gh,
+      {
+        fleetAuthors: [...FLEET],
+      },
+      undefined,
+      { auditDir: `${dir}/audit`, runId: "reviewer:test" },
+    );
     assertEquals(result, undefined);
     assertEquals(await readMemory(dir, FAILED_FILE), {});
     assertEquals(f.calls.some((args) => args.includes("PUT")), false);
     f.state.changeAtMerge = 0;
     assertEquals(
-      await updateBranchOnce(pr, dir, f.gh, { fleetAuthors: [...FLEET] }),
+      await updateBranchOnce(
+        pr,
+        dir,
+        f.gh,
+        { fleetAuthors: [...FLEET] },
+        undefined,
+        { auditDir: `${dir}/audit`, runId: "reviewer:test" },
+      ),
       { updated: true },
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("updateBranchOnce journals the reviewer branch refresh with PR provenance", async () => {
+  const dir = await Deno.makeTempDir();
+  const auditDir = `${dir}/audit`;
+  try {
+    const f = strictRefreshFixture("acme/app");
+    const result = await updateBranchOnce(
+      { repo: "acme/app", number: 20, headSha: f.head, baseRefName: "main" },
+      dir,
+      f.gh,
+      { fleetAuthors: [...FLEET] },
+      undefined,
+      { auditDir, runId: "reviewer:round-20" },
+    );
+    assertEquals(result, { updated: true });
+    const rows = await loadEntries(auditFilePath({
+      baseDir: auditDir,
+      workerId: "fleet-reviewer",
+      date: new Date().toISOString().slice(0, 10),
+    }));
+    assertEquals(rows.ok, true);
+    if (!rows.ok) throw rows.error;
+    assertEquals(
+      rows.value.map((entry) => [
+        entry.component,
+        entry.actionKind,
+        entry.repo,
+        entry.prNumber,
+        entry.outcome,
+      ]),
+      [["reviewer", "branch-update", "acme/app", 20, "success"]],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("updateBranchOnce journals a refused reviewer branch refresh as failed", async () => {
+  const dir = await Deno.makeTempDir();
+  const auditDir = `${dir}/audit`;
+  try {
+    const f = strictRefreshFixture("acme/app");
+    f.state.refusal = "gh api: HTTP 422: expected head sha";
+    const result = await updateBranchOnce(
+      { repo: "acme/app", number: 20, headSha: f.head, baseRefName: "main" },
+      `${dir}/state`,
+      f.gh,
+      { fleetAuthors: [...FLEET] },
+      undefined,
+      { auditDir, runId: "reviewer:round-20" },
+    );
+    assertEquals(result?.updated, false);
+    const rows = await loadEntries(auditFilePath({
+      baseDir: auditDir,
+      workerId: "fleet-reviewer",
+      date: new Date().toISOString().slice(0, 10),
+    }));
+    assertEquals(rows.ok, true);
+    if (!rows.ok) throw rows.error;
+    assertEquals(
+      rows.value.map((entry) => [
+        entry.actionKind,
+        entry.repo,
+        entry.prNumber,
+        entry.outcome,
+      ]),
+      [["branch-update", "acme/app", 20, "error"]],
     );
   } finally {
     await Deno.remove(dir, { recursive: true });

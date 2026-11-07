@@ -104,12 +104,30 @@ import {
   spawnBabysitterAgent,
   syncBabysitterPrBodyBeforeDismissal,
   takePrBodyProposal,
+  temporaryCloneRoot,
   validateAndCommit,
   waitForPushedHead,
   withBabysitterWriteScope,
 } from "../commands/fleet_pr_babysitter.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+import { escalationHostId } from "../lib/host_escalation.ts";
+import type {
+  ReviewVerificationInput,
+  ReviewVerificationOutcome,
+} from "../lib/babysitter_review_verifier.ts";
+
+/** A verifier that judges every requested review fixed (Issue #4657). */
+const allVerified = (
+  input: ReviewVerificationInput,
+): Promise<ReviewVerificationOutcome[]> =>
+  Promise.resolve(
+    input.reviews.map((review) => ({
+      id: review.id,
+      verified: true,
+      reason: "fixed",
+    })),
+  );
 
 /** Run a real git command for fixtures and for the injected runner in clone tests. */
 async function runGitForTest(
@@ -324,6 +342,7 @@ function cleanTreeFinishDeps(
     gh: service.deps.runGhCommand,
     syncBodyDeps: service.deps,
     dismiss,
+    verifyReviews: allVerified,
   };
 }
 
@@ -519,6 +538,7 @@ Deno.test("a pushed fix syncs the legacy body from its original head before dism
       [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
       {
         renewalFailed: () => false,
+        verifyReviews: allVerified,
         runCommand: async (command, args, cwd) => {
           if (command === "git" && args[0] === "status") return " M summary";
           if (command === "git" && args[0] === "diff") return "";
@@ -702,6 +722,7 @@ Deno.test("Issue #4637: a pushed repair pins its body sync to the verified pushe
       [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
       {
         renewalFailed: () => false,
+        verifyReviews: allVerified,
         runCommand: async (command, args) => {
           if (command === "git" && args[0] === "status") return " M summary";
           if (command === "git" && args[0] === "diff") return "";
@@ -759,6 +780,7 @@ Deno.test("Issue #4637: a no-change repair pins its body sync to the unchanged P
       [{ id: 1, state: "CHANGES_REQUESTED", user: { login: "reviewer" } }],
       {
         renewalFailed: () => false,
+        verifyReviews: allVerified,
         runCommand: async (command, args) => {
           if (command === "git" && args[0] === "status") return "";
           throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
@@ -1175,6 +1197,7 @@ function repairFinishDeps(options: {
 }) {
   return {
     renewalFailed: () => false,
+    verifyReviews: allVerified,
     runCommand: repairRunCommand({
       headSha: options.headSha,
       changed: options.changed,
@@ -1310,6 +1333,36 @@ Deno.test("a proposal that omits a fully met issue gets Closes #N", async () => 
     assertEquals(events, ["push", "publish", "dismiss"]);
     assertStringIncludes(github.body(), "Rewritten description.");
     assertStringIncludes(github.body(), "Closes #4637");
+  } finally {
+    await cleanupFixture(fixture.path);
+  }
+});
+
+Deno.test("a proposal that names a fully met issue as Refs is not given Closes #N (Issue #4637)", async () => {
+  const fixture = await makeCommittedSummaryRepo(4637, closingSummary(4637));
+  try {
+    const events: string[] = [];
+    const github = fakeRepairGitHub({
+      headRefOid: fixture.headSha,
+      body: `Closes #4637\n\n${buildIdempotencyMarker(4637)}`,
+      onEdit: () => events.push("publish"),
+    });
+    const pushed = pushedRepair(fixture, github, events);
+    await finishBabysitterRepair(
+      "owner/repo",
+      pushed.repairPr,
+      fixture.path,
+      "babysitter[bot]",
+      changesRequestedBy(),
+      pushed.deps,
+      {
+        exchange: fixture.scratch,
+        proposal: "Rewritten description.\n\nRefs #4637",
+      },
+    );
+    assertEquals(events, ["push", "publish", "dismiss"]);
+    assertStringIncludes(github.body(), "Refs #4637");
+    assertEquals(closingKeywordLine(github.body(), 4637), null);
   } finally {
     await cleanupFixture(fixture.path);
   }
@@ -2596,7 +2649,7 @@ Deno.test("concurrent repairs of one repo never mutate its mirror at the same ti
   });
 });
 
-Deno.test("babysitter deployment heartbeat stores only revision and policy fingerprint", async () => {
+Deno.test("babysitter deployment heartbeat stores host, revision and policy fingerprint", async () => {
   const dir = await Deno.makeTempDir();
   try {
     const split = buildDefaultWorkerConfig();
@@ -2614,6 +2667,7 @@ Deno.test("babysitter deployment heartbeat stores only revision and policy finge
       await Deno.readTextFile(`${dir}/deployment-health.json`),
     );
     assertEquals(first.component, "babysitter");
+    assertEquals(first.hostId, escalationHostId());
     assertEquals(first.codeRevision, "abcdef0123456789");
     assertEquals(first.observedAt, "2026-11-02T00:00:00.000Z");
     assertEquals(
@@ -3112,6 +3166,7 @@ Deno.test("codex agent gets its own read-only token instead of the runner's GH_T
     XDG_CACHE_HOME: scratch,
     GH_TOKEN: agentToken,
     GH_CONFIG_DIR: `${scratch}/gh-config`,
+    VIBE_AUDIT_DISABLED: "1",
   });
   assertEquals(call.options.timeoutMs, 90 * 60_000);
   assertEquals(call.options.args, [
@@ -3720,13 +3775,21 @@ Deno.test("repair prompt applies the shared evidence policy to test replacements
   }
 });
 
-Deno.test("a repair updates a CI-checked per-PR summary in the same fix", () => {
+Deno.test("every repair rewrites CI-checked per-PR summary claims for the pushed head", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
     assertStringIncludes(prompt, "per-PR summary");
-    assertStringIncludes(prompt, "in the same fix");
+    assertStringIncludes(
+      prompt,
+      "rewrite it in the same fix so every claim, count and result matches the pushed head",
+    );
+    assertStringIncludes(
+      prompt,
+      "instead of adding a follow-up note beside the old text",
+    );
+    assert(!prompt.includes("update it to cover your change"));
   }
 });
 
@@ -4028,4 +4091,10 @@ Deno.test("default git classifies mirror fetch timeout and clone disk exhaustion
       }
     });
   }
+});
+
+Deno.test("temporaryCloneRoot - an unset or empty TMPDIR falls back to /tmp", () => {
+  assertEquals(temporaryCloneRoot("/var/scratch"), "/var/scratch");
+  assertEquals(temporaryCloneRoot(undefined), "/tmp");
+  assertEquals(temporaryCloneRoot(""), "/tmp");
 });

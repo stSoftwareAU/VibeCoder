@@ -1198,6 +1198,65 @@ Deno.test("syncPrBodyFromSummary - Issue #4712: skips when the checkout moved of
   }
 });
 
+Deno.test("syncPrBodyFromSummary - allowing a local head ahead still rejects a head outside the committed lineage", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    await gitIn(repoPath, "restore", SUMMARY_REL);
+    await gitIn(repoPath, "checkout", "-q", "-b", "diverged", `${headSha}~1`);
+    await Deno.writeTextFile(`${repoPath}/README.md`, "diverged\n");
+    await gitIn(repoPath, "add", "README.md");
+    await gitIn(repoPath, "commit", "-q", "-m", "Diverged local work");
+    const localSha = await gitIn(repoPath, "rev-parse", "HEAD");
+    const calls: GhCall[] = [];
+    const result = await syncPrBodyFromSummary(
+      { ...adoptionInput(repoPath, headSha), allowLocalHeadAhead: true },
+      adoptionDeps(calls, localSha, remoteAt(headSha)),
+    );
+    assert(result.ok);
+    assertEquals(result.value, {
+      status: "skipped",
+      reason: "checkout does not extend the committed head",
+    });
+    assertEquals(calls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("syncPrBodyFromSummary - rejects a failed lineage check", async () => {
+  const { repoPath, headSha } = await committedSummaryRepo();
+  try {
+    await gitIn(repoPath, "restore", SUMMARY_REL);
+    await Deno.writeTextFile(`${repoPath}/README.md`, "local work\n");
+    await gitIn(repoPath, "add", "README.md");
+    await gitIn(repoPath, "commit", "-q", "-m", "Local work");
+    const localSha = await gitIn(repoPath, "rev-parse", "HEAD");
+    const calls: GhCall[] = [];
+    const deps = adoptionDeps(calls, localSha, remoteAt(headSha));
+    const result = await syncPrBodyFromSummary(
+      { ...adoptionInput(repoPath, headSha), allowLocalHeadAhead: true },
+      {
+        ...deps,
+        runGitCommand: (args, options) =>
+          args[0] === "merge-base"
+            ? Promise.resolve({
+              ok: false,
+              error: new Error("lineage check failed"),
+            })
+            : deps.runGitCommand(args, options),
+      },
+    );
+    assert(result.ok);
+    assertEquals(result.value, {
+      status: "skipped",
+      reason: "checkout does not extend the committed head",
+    });
+    assertEquals(calls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
 Deno.test("syncPrBodyFromSummary - Issue #4712: a non-zero ls-remote exit is not proof of the pushed head", async () => {
   const { repoPath, headSha } = await committedSummaryRepo();
   try {

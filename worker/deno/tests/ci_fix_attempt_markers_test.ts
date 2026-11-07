@@ -24,9 +24,11 @@ import {
   CI_INFRA_RERUN_MARKER_NAME,
   CI_RERUN_FALLBACK_MARKER_NAME,
   CI_RERUN_REFUSAL_MARKER_NAME,
+  type CiFixAttemptOutcome,
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
   countAttempts,
+  countUnverifiedBaseHolds,
   findDeferral,
   findHumanGate,
   findNoChangeComment,
@@ -980,4 +982,83 @@ Deno.test("ci_fix_attempt_markers - an unresolved fleet logs refusal and fallbac
     assertEquals(collected.rerunFallbacks instanceof Map, true);
     assertEquals(collected.rerunFallbacks.size, 0);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Base-branch holds (Issue #4680)
+// ---------------------------------------------------------------------------
+
+Deno.test("ci_fix_attempt_markers - a base-unverified hold round-trips", () => {
+  const marker = buildCiFixAttemptMarker({
+    signature: SIGNATURE,
+    checkName: "Project Validation",
+    head: HEAD,
+    attempt: 2,
+    outcome: "base-unverified",
+  });
+
+  assertEquals(parseCiFixAttemptMarkers(marker), [{
+    signature: SIGNATURE,
+    checkName: "Project Validation",
+    head: HEAD,
+    attempt: 2,
+    outcome: "base-unverified",
+  }]);
+});
+
+Deno.test("ci_fix_attempt_markers - an unknown attempt outcome is rejected both ways", () => {
+  const unknown = "bogus" as unknown as CiFixAttemptOutcome;
+
+  assertThrows(() =>
+    buildCiFixAttemptMarker({
+      signature: SIGNATURE,
+      checkName: "build",
+      head: HEAD,
+      attempt: 1,
+      outcome: unknown,
+    })
+  );
+  const hand = `<!-- ${CI_FIX_ATTEMPT_MARKER_NAME} signature="${SIGNATURE}" ` +
+    `check="build" head="${HEAD}" attempt="1" outcome="bogus" -->`;
+  assertEquals(parseCiFixAttemptMarkers(hand), []);
+});
+
+Deno.test("ci_fix_attempt_markers - holds never count as attempts, and are counted as holds (Issue #4680)", () => {
+  const hold = (attempt: number) =>
+    buildCiFixAttemptMarker({
+      signature: SIGNATURE,
+      checkName: "build",
+      head: HEAD,
+      attempt,
+      outcome: "base-unverified",
+    });
+  const pushed = buildCiFixAttemptMarker({
+    signature: SIGNATURE,
+    checkName: "build",
+    head: HEAD,
+    attempt: 1,
+    outcome: "pushed",
+  });
+  const collected = collectFleetCiFixMarkers(
+    [
+      comment({ id: 7, body: hold(1) }),
+      comment({ id: 8, body: hold(1) }),
+      comment({ id: 9, body: pushed }),
+      // A hold from outside the fleet is discarded like any other marker.
+      comment({ id: 10, author: "drive-by-contributor", body: hold(1) }),
+    ],
+    FLEET,
+  );
+
+  // The cap sees the one substantive attempt, not the two holds.
+  assertEquals(countAttempts(collected, SIGNATURE), 1);
+  assertEquals(
+    collected.attempts.get(SIGNATURE)?.map((a) => a.commentId),
+    [9],
+  );
+  // The hold bound sees exactly the two fleet holds.
+  assertEquals(countUnverifiedBaseHolds(collected, SIGNATURE), 2);
+  assertEquals(countUnverifiedBaseHolds(collected, "fedcba9876543210"), 0);
+  // Only a no-change record answers the no-change lookup.
+  assertEquals(findNoChangeComment(collected, SIGNATURE), undefined);
 });
