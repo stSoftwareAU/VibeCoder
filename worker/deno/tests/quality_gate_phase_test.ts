@@ -259,6 +259,18 @@ Deno.test("runQualityGateCheck - detects missing commands after inline Deno end 
   }
 });
 
+Deno.test("runQualityGateCheck - preserves stderr after unterminated stdout", async () => {
+  const command = await runCommandAsWorker([
+    "sh",
+    "-c",
+    "printf 'Linting shell scripts... '; printf './quality.sh: line 4: shellcheck: command not found\\n' >&2; exit 127",
+  ]);
+  const deps = createMockDeps({ runCommand: async () => command });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_missing_command");
+  assertStringIncludes(result.qualityOutput, "scripts... \n./quality.sh");
+});
+
 Deno.test("isMissingCommandFailure - an unclosed Deno output block stays skipped", () => {
   assertEquals(
     isMissingCommandFailure(

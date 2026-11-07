@@ -426,7 +426,8 @@ async function spawnRepositoryCommand(
         output: `${CREDENTIAL_DELIVERY_FAILURE}: ${fault}`,
       };
     }
-    return { exitCode: result.code, output: stdout + stderr };
+    const separator = stdout && stderr && !stdout.endsWith("\n") ? "\n" : "";
+    return { exitCode: result.code, output: stdout + separator + stderr };
   } catch (err) {
     return { exitCode: 1, output: String(err) };
   }
