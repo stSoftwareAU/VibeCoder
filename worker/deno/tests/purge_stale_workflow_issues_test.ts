@@ -372,7 +372,7 @@ Deno.test("purge - closes trusted missing and partial Cargo requests without a r
   assertEquals(state.closedIssues.length, 2);
   assertEquals(
     state.closedIssues.every((issue) =>
-      issue.comment?.includes("root project marker is absent")
+      issue.comment?.includes("requires a root project marker that is absent")
     ),
     true,
   );

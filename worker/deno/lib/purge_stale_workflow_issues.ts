@@ -265,7 +265,7 @@ ${notApplicableMarker(candidate.specId)}
 *Closed by \`purge-stale-workflow-issues\` (Issue #1755).*`;
   }
   if (reason === "missing-root-project") {
-    return `Closing automatically: the \`${candidate.specId}\` workflow template runs its project tool from the repository root, but the matching root project marker is absent. Nested source files do not make this root-project workflow applicable. No workflow files were changed.
+    return `Closing automatically: the \`${candidate.specId}\` workflow template requires a root project marker that is absent. Nested source files do not make this root-project workflow applicable. No workflow files were changed.
 
 ${notApplicableMarker(candidate.specId)}
 
