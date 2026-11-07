@@ -30,7 +30,13 @@
  *    test-target `cargo test --no-run` commands the repo's pull-request
  *    workflows run, for each crate directory a pushed Rust file touches. Only
  *    when the push changes a Rust-relevant file, and only after a probe that
- *    the Rust toolchain runs here.
+ *    the Rust toolchain runs here. These run only for a caller that passes
+ *    `findCiCargo`: with none, no CI cargo check is planned or run. The
+ *    agent's own pre-push hook (`lib/pre_push_gate_cli.ts`) runs under
+ *    `--no-config`, where the YAML parser that reads the workflows cannot be
+ *    loaded, so it does not run them. The worker's own gates do: `git_push.ts`
+ *    `gateUnpushedCommits` (`commitAndPushPending` Step 1b and the completion
+ *    phase) passes `repoCiCargoChecks`.
  * 3. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
@@ -56,11 +62,12 @@ import {
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
-import {
-  type CiCargoCheck,
-  type CiCargoCheckKind,
-  type CiCargoScan,
-  repoCiCargoChecks,
+// Types only: a value import would load the YAML parser, which the agent's
+// `--no-config` hook cannot resolve (see the module header).
+import type {
+  CiCargoCheck,
+  CiCargoCheckKind,
+  CiCargoScan,
 } from "./ci_cargo_checks.ts";
 import { isHostDiskFaultText } from "./host_fault.ts";
 
@@ -438,7 +445,8 @@ function quoteAll(paths: string[]): Result<string, string> {
  * `ciCargo` (Issue #4630) is the CI cargo scan. Each of its checks is planned,
  * after the cargo fmt check, when the push changes a Rust-relevant file under
  * the check's working directory (`.` is anywhere). Absent means no CI cargo
- * checks are planned.
+ * checks are planned. Only `runPrePushGate` supplies it, and only when its
+ * caller passes `findCiCargo` (see the module header).
  */
 export function planChangedFileChecks(
   changed: string[],
@@ -895,7 +903,10 @@ function isHostFaultOfCheck(error: PreFlightGateError): boolean {
  * git, parse or planning error is an `Err`, never a pass.
  *
  * The CI cargo checks are read from the repo's pull-request workflows by
- * `findCiCargo`. When the scan holds a command that cannot be reproduced here,
+ * `findCiCargo`, which is opt-in with no default: a caller that does not pass it
+ * gets no CI cargo check, planned or run. The agent's own pre-push hook does not
+ * pass it (it runs under `--no-config` and cannot load the YAML parser); the
+ * worker's gates in `git_push.ts` do. When the scan holds a command that cannot be reproduced here,
  * the push fails with a {@link PrePushGateInfrastructureError}. Before the first
  * CI cargo command runs, the Rust toolchain is probed. A CI cargo command that
  * fails to start, times out, or fails with host disk-full output is also an
@@ -907,7 +918,8 @@ function isHostFaultOfCheck(error: PreFlightGateError): boolean {
  * the changed files are still listed and the CI cargo scan still read, but the
  * other changed-file checks, their binary lookups and the repo's pre-flight
  * commands are skipped. Only the Rust-relevant changed files are planned, so no
- * other checker's planning error can block the push.
+ * other checker's planning error can block the push. With no `findCiCargo`,
+ * `ciCargoOnly` plans and runs nothing.
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -921,7 +933,8 @@ export async function runPrePushGate(opts: {
   /** Run only the CI cargo checks (see the doc comment above). */
   ciCargoOnly?: boolean;
   /**
-   * Reads the repo's CI cargo checks. Defaults to `repoCiCargoChecks`. Only
+   * Reads the repo's CI cargo checks (the worker passes `repoCiCargoChecks`).
+   * Opt-in with no default: absent, no CI cargo check is planned or run. Only
    * called when a Rust-relevant file changed.
    */
   findCiCargo?: (
@@ -997,11 +1010,8 @@ export async function runPrePushGate(opts: {
   // the scan cannot reproduce fails the push before anything runs, so it is
   // never dropped from the checked set without a word.
   let ciCargo: CiCargoScan | undefined;
-  if (changed.value.some(isRustRelevant)) {
-    const scan = await (opts.findCiCargo ?? repoCiCargoChecks)(
-      opts.cwd,
-      tracked,
-    );
+  if (opts.findCiCargo && changed.value.some(isRustRelevant)) {
+    const scan = await opts.findCiCargo(opts.cwd, tracked);
     if (scan.unverifiable.length > 0) {
       return infrastructureFail(
         `CI's cargo checks cannot be reproduced locally: ${

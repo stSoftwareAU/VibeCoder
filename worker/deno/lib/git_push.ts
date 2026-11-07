@@ -812,6 +812,11 @@ export async function gateUnpushedCommits(
     };
   }
   const ref = `refs/heads/${branchName}`;
+  // Loaded here, not imported at the top: a static import would put the YAML
+  // parser (`@std/yaml/parse`) into the graph of the agent's `--no-config`
+  // pre-push hook, which cannot resolve it. This module is never reached from
+  // the hook's entry point; only the worker's own gates call it.
+  const { repoCiCargoChecks } = await import("./ci_cargo_checks.ts");
   const gate = await runPrePushGate({
     cwd: options.cwd ?? Deno.cwd(),
     stdin: `${ref} ${head.value.stdout.trim()} ${ref} ${remoteSha}\n`,
@@ -819,6 +824,7 @@ export async function gateUnpushedCommits(
     timeoutSeconds: preFlight.timeoutSeconds,
     runner: preFlight.runner,
     ciCargoOnly: preFlight.ciCargoOnly,
+    findCiCargo: repoCiCargoChecks,
     baseRef,
   });
   if (!gate.ok) {
