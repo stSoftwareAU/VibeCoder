@@ -19,7 +19,9 @@
  */
 
 import type { Result } from "../types.ts";
-import { parse as parseYaml } from "@std/yaml/parse";
+// Reviewer entry points also load this module outside the worker's import map.
+// deno-lint-ignore no-import-prefix
+import { parse as parseYaml } from "jsr:@std/yaml@^1.0.12/parse";
 import {
   type PreFlightGateError,
   type PreFlightRunner,

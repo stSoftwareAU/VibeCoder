@@ -38,6 +38,8 @@ The recommended action matrix fixture exercises all four check subsets; an
 unknown command expression exercises the full-check fallback. The repository’s
 container-build workflow contains a scratch-crate command inside a quoted
 container script, which the host gate now ignores.
+The YAML parser uses an explicit JSR specifier so reviewer entry points outside
+the worker's import map can load the gate as well.
 
 ## Test Plan
 
@@ -60,6 +62,13 @@ container script, which the host gate now ignores.
 - Existing babysitter and review-dismissal tests inject a passing gate and keep
   positive controls. The three cargo-deny test files passed (68 tests); those
   and the two babysitter suites passed together (206 tests).
+- `worker/deno/tests/review_fleet_prs_root_forwarders_3417_test.ts` exercises
+  reviewer entry points without the worker import map; its three failing cases
+  passed after the import fix, alongside 56 cargo-deny tests.
+- The four reviewer checklist, claim, posting and strict-refresh test files
+  that failed in CI's third shard passed together (51 tests).
+- `worker/deno/tests/pre_push_hook_test.ts` passed all five tests, including
+  the two hook integration cases that failed in CI's fourth shard.
 - Documentation copies checked: `docs/CONFIGURATION.md` and
   `docs/workflows/fleet-pr-babysitter.md`; no matching list in README or
   `docs/INTERNALS.md`. The action’s multi-word command and parser boundary cases
@@ -68,7 +77,8 @@ container script, which the host gate now ignores.
   literal that is erased at runtime and is exempt (untestable) from mutation.
 
 The test suite does not run cargo-deny end to end; its runner is injected.
-The local full gate passed formatting, lint, type checking and markdownlint, but
-its parallel test runner panicked in Deno while restoring test permissions; the
-serial pass did not run. The base commit's PR #4888 passed CI. Semgrep and
-Checkov were skipped because the required local tool or pinned image was absent.
+Repository-wide formatting, lint and type checking and the local gate's
+markdownlint passed. The macOS sandbox refused `/bin/ps` in process-control
+tests, so the affected full shards did not complete locally. The sequential local
+gate was interrupted before completion; Semgrep and Checkov were skipped
+because the required local tool or pinned image was absent.
