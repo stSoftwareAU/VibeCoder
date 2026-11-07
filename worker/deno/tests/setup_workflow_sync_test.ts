@@ -387,6 +387,10 @@ Deno.test("syncWorkflowsForRepo - reconciles obsolete Cargo issue with no workfl
   assertEquals(state.closedIssues.length, 1);
   assertEquals(state.closedIssues[0]!.number, 4693);
   assertEquals(
+    state.closedIssues[0]!.comment.includes("Closed by `setup workflow-sync`"),
+    true,
+  );
+  assertEquals(
     state.closedIssues[0]!.comment.includes(
       "requires a root project marker that is absent",
     ),

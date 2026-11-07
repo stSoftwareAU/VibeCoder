@@ -48,7 +48,12 @@ import {
 import { adoptAgentRaisedPrBody } from "../agent_pr_adoption.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
-import { loadPrSummary } from "../pr_summary_loader.ts";
+import {
+  loadCommittedPrSummary,
+  loadPrSummary,
+  prSummaryCandidatePaths,
+  type PrSummaryResult,
+} from "../pr_summary_loader.ts";
 import {
   buildPrePrVerifierGateComment,
   prePrVerifierBlocked,
@@ -66,7 +71,7 @@ import {
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
-import type { Result, WorkerConfig } from "../../types.ts";
+import type { Logger, Result, WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
   findBranchEvidenceImages,
@@ -1540,6 +1545,76 @@ async function abortStaleClaim(
   };
 }
 
+/**
+ * The PR summary the completion phase publishes (Issue #4764).
+ *
+ * The PR body must never come from uncommitted summary content. A summary
+ * the recovery turn rewrote but never committed would otherwise reach the
+ * PR. When the summary candidates are dirty, the summary is read from HEAD,
+ * which is the pushed branch head by this point in completion. A git failure
+ * is an error result; the working tree is never the fallback.
+ */
+export async function loadSummaryForPublication(
+  state: PhaseState,
+  issueNumber: number,
+  deps: WorkerDeps,
+  logger: Logger,
+): Promise<Result<PrSummaryResult>> {
+  // Issue #4764: any change to a summary candidate (modified, untracked,
+  // deleted or staged) means the working tree is not the committed summary.
+  const status = await deps.git.runGitCommand(
+    [
+      "status",
+      "--porcelain",
+      "-z",
+      "--untracked-files=all",
+      "--",
+      ...prSummaryCandidatePaths(issueNumber),
+    ],
+    { cwd: state.repoPath },
+  );
+  if (!status.ok) return { ok: false, error: status.error };
+  if (status.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `git status for the PR summary failed (exit ${status.value.code}): ${status.value.stderr.trim()}`,
+      ),
+    };
+  }
+  if (status.value.stdout === "") {
+    return loadPrSummary(state.repoPath, issueNumber);
+  }
+
+  // Issue #4764: uncommitted summary content must not reach the PR body.
+  logger.warn(
+    "PR summary has uncommitted changes; publishing the committed copy at HEAD (Issue #4764)",
+    {
+      changes: status.value.stdout.split("\0").filter((entry) =>
+        entry.length > 0
+      ),
+    },
+  );
+  const head = await deps.git.runGitCommand(["rev-parse", "HEAD"], {
+    cwd: state.repoPath,
+  });
+  if (!head.ok) return { ok: false, error: head.error };
+  if (head.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `git rev-parse HEAD failed (exit ${head.value.code}): ${head.value.stderr.trim()}`,
+      ),
+    };
+  }
+  return loadCommittedPrSummary(
+    state.repoPath,
+    issueNumber,
+    head.value.stdout.trim(),
+    deps.git.runGitCommand,
+  );
+}
+
 /** Single-attempt completion-phase body — see `workOnIssueCompletion`. */
 async function completionBody(
   ctx: IssueContext,
@@ -2242,7 +2317,12 @@ async function completionBody(
     }
   }
 
-  const summaryResult = await loadPrSummary(state.repoPath, issueNumber);
+  const summaryResult = await loadSummaryForPublication(
+    state,
+    issueNumber,
+    deps,
+    logger,
+  );
   let summaryContent: string;
   // The summary file's repo-relative path, set only when a summary with
   // content was actually loaded — the pre-PR verifier names this file
@@ -2366,7 +2446,8 @@ async function completionBody(
   );
 
   // Issue #4359: ask once, before the gates, when the body would be rejected.
-  // The re-run reads the rewritten summary and applies these same checks.
+  // The re-run applies these checks to the rewritten summary once committed;
+  // otherwise it uses the summary committed at HEAD.
   // Cutting waits until that turn has been tried.
   {
     const limited = applyPrBodyLengthPolicy(prBody, {

@@ -1,8 +1,8 @@
 /**
  * Workflow synchronisation across all monitored repositories.
  *
- * Orchestrates language detection, workflow auditing, and issue creation
- * for missing GitHub Actions workflows. Issues are created in the TARGET
+ * Orchestrates language detection, workflow auditing, issue creation and
+ * closure of trusted generated requests missing root-project markers. Issues are created in the TARGET
  * repository (not VibeCoder) and are idempotent — running twice will not
  * create duplicates.
  *
@@ -152,7 +152,8 @@ export function partialDeduplicationTag(specId: string): string {
 /**
  * Check if an issue already exists in the target repo carrying the given tag.
  *
- * Searches open issues for the deduplication tag.
+ * Searches all states for fleet-authored matches. A trusted missing-root-project
+ * closure retires a closed match; a failed comment lookup skips the spec.
  */
 async function issueExistsByTag(
   repo: string,
@@ -161,8 +162,8 @@ async function issueExistsByTag(
   options: AlertDedupAuthorOptions,
   log: (message: string) => void,
 ): Promise<boolean> {
-  // Search across both open and closed states so a previously-raised
-  // (and possibly closed) issue suppresses recreation. Issue #1829: a
+  // Search both states: a closed issue suppresses recreation unless a trusted
+  // missing-root-project closure retired it. Issue #1829: a
   // dedup limited to `--state open` allowed setup to re-raise issues
   // for workflows that were already present and had a prior sync issue
   // closed against them.
@@ -647,7 +648,9 @@ function skipReason(
  *
  * 1. Detect languages in the repo
  * 2. Audit existing workflows against expected specs
- * 3. For each missing workflow, check for existing issues and create if needed
+ * 3. Reconcile trusted requests with absent root markers; fail the sync if
+ *    reconciliation fails
+ * 4. For each missing workflow, check for existing issues and create if needed
  *
  * @param repo - Repository in "owner/repo" format.
  * @param options - Optional configuration for command execution.
@@ -750,6 +753,7 @@ export async function syncWorkflowsForRepo(
       audit.notApplicable.map((spec) => spec.id),
       {
         runCommand: runner,
+        closedBy: "setup workflow-sync",
         dryRun: options.dryRun,
         fleetAuthors: options.fleetAuthors,
         log,

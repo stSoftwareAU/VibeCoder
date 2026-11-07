@@ -6,7 +6,9 @@ requests for known root-project specs whose manifests are absent, even after
 GitHub stops reporting their language. A complete root file inventory preserves
 legitimate npm requests when Deno and web assets coexist with `package.json`.
 Closure comments explain the missing prerequisite, and their authenticated
-markers allow a new request when the root marker returns. The purge command's
+markers allow a new request when the root marker returns. Comments name the
+command that closed the request, and setup help describes automatic closures.
+The purge command's
 dry run reports the would-close candidates; setup workflow-sync has no dry run.
 Existing workflow files remain untouched.
 Closes #4693.
@@ -94,6 +96,7 @@ test run.
   with only `README.md`; direct reconciliation result shapes, malformed/unknown
   tags, dry-run writes, and exact close-failure causes.
 - `worker/deno/tests/setup_workflow_sync_test.ts`: reconciliation with no gaps;
+  the reconciliation comment identifies `setup workflow-sync`;
   listing/close failures; logged dry-run candidates; hybrid npm preservation;
   disappeared-language reconciliation; human-authored matching requests and
   unresolved fleet identity; fleet wrapper coverage; complete error results for

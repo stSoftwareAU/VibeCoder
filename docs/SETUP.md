@@ -139,7 +139,8 @@ background service is offered, where files land — is covered in
      repository.
    - `workflow-sync` — audits each repository's CI workflows and files issues
      for missing protections, each carrying a template whose action pins were
-     resolved when the issue was filed.
+     resolved when the issue was filed. It also closes trusted generated
+     requests whose root-project marker is absent.
    - `best-practices-sync` — audits the same workflows for best-practice
      findings.
    - `gitignore-sync` — applies the canonical `.gitignore` safety block to

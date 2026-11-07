@@ -256,6 +256,7 @@ function notApplicableMarker(specId: string): string {
 function buildClosingComment(
   candidate: CandidateIssue,
   reason: CloseReason,
+  closedBy = "purge-stale-workflow-issues",
 ): string {
   if (reason === "not-applicable") {
     return `Closing automatically: the \`${candidate.specId}\` workflow is not applicable to this repository — it requires features (such as GitHub Advanced Security for \`dependency-review\`) that are unavailable on private repos. See issue #1750 for context.
@@ -269,7 +270,7 @@ ${notApplicableMarker(candidate.specId)}
 
 ${notApplicableMarker(candidate.specId)}
 
-*Closed by \`purge-stale-workflow-issues\` (Issue #4693).*`;
+*Closed by \`${closedBy}\` (Issue #4693).*`;
   }
 
   const detectionReason = candidate.kind === "partial"
@@ -286,7 +287,7 @@ Closing automatically: this issue is no longer applicable under the updated work
 export async function reconcileInapplicableWorkflowIssues(
   repo: string,
   specIds: string[],
-  options: PurgeOptions = {},
+  options: PurgeOptions & { closedBy?: "setup workflow-sync" } = {},
 ): Promise<
   Result<{
     closed: CandidateIssue[];
@@ -337,6 +338,7 @@ export async function reconcileInapplicableWorkflowIssues(
         candidate,
         "missing-root-project",
         runner,
+        options.closedBy,
       );
       if (outcome.success) closed.push(candidate);
       else {
@@ -356,6 +358,7 @@ async function closeIssue(
   candidate: CandidateIssue,
   reason: CloseReason,
   runner: (cmd: string[]) => Promise<CommandOutput>,
+  closedBy?: "setup workflow-sync",
 ): Promise<{ success: boolean; error: string }> {
   const result = await runner([
     "gh",
@@ -365,7 +368,7 @@ async function closeIssue(
     "--repo",
     repo,
     "--comment",
-    buildClosingComment(candidate, reason),
+    buildClosingComment(candidate, reason, closedBy),
   ]);
   return {
     success: result.success,
