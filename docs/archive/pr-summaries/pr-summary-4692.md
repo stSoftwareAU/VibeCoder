@@ -3,8 +3,8 @@
 The `cargo-upgrade` and `deno-outdated` templates now render
 `persist-credentials: false` on their `actions/checkout`, and the
 checkout-persist-credentials pre-filer no longer treats
-`peter-evans/create-pull-request` as a reason to skip a job. The two docs
-that repeated the false premise are corrected. Closes #4692.
+`peter-evans/create-pull-request` as a reason to skip a job. The two docs that
+repeated the false premise are corrected. Closes #4692.
 
 Version bump: `VERSION` is not changed by this PR.
 
@@ -12,11 +12,11 @@ Version bump: `VERSION` is not changed by this PR.
 
 ### Intent and Rationale
 
-- `peter-evans/create-pull-request` configures its own HTTPS credential from
-  its `token` / `branch-token` input (default `github.token`) before it
-  touches the remote, and both templates already pass `token:`. The checkout
-  credential was therefore left in `.git/config` for later third-party steps
-  (including `cargo install cargo-edit`) with no purpose.
+- `peter-evans/create-pull-request` configures its own HTTPS credential from its
+  `token` / `branch-token` input (default `github.token`) before it touches the
+  remote, and both templates already pass `token:`. The checkout credential was
+  therefore left in `.git/config` for later third-party steps (including
+  `cargo install cargo-edit`) with no purpose.
 - The repository's own `.github/workflows/cargo-upgrade.yml` already carries
   `persist-credentials: false` (PR #4686); the templates now match it.
 
@@ -26,10 +26,10 @@ Version bump: `VERSION` is not changed by this PR.
   `CREDENTIAL_USING_ACTIONS`. The other entries (`ad-m/github-push-action`,
   `stefanzweifel/git-auto-commit-action`, …) are untouched: the issue gives
   evidence for this action only, and I did not verify the others.
-- The templates reuse the shared `CHECKOUT_NO_CREDENTIALS` block, as the
-  issue asks. Its comment line "Nothing here pushes, …" sits under the new
-  comment saying create-pull-request pushes with its own token; I left the
-  shared constant alone to stay in scope.
+- The templates reuse the shared `CHECKOUT_NO_CREDENTIALS` block, as the issue
+  asks. Its comment line "Nothing here pushes, …" sits under the new comment
+  saying create-pull-request pushes with its own token; I left the shared
+  constant alone to stay in scope.
 
 ### Undiscoverable Facts
 
@@ -42,8 +42,8 @@ Version bump: `VERSION` is not changed by this PR.
 Backend templates, scanner and docs only; no UI. Changed:
 `worker/deno/lib/workflow_definitions.ts`,
 `worker/deno/lib/checkout_persist_credentials_scanner.ts`, `docs/EXTENDING.md`,
-`docs/GITHUB-ACTIONS-AUDIT-SCAN.md`. Doc section read in full:
-EXTENDING "Every emitted template now carries" list and the audit-scan
+`docs/GITHUB-ACTIONS-AUDIT-SCAN.md`. Doc section read in full: EXTENDING "Every
+emitted template now carries" list and the audit-scan
 "checkout-persist-credentials" signal table.
 
 ## Test Plan
@@ -52,28 +52,28 @@ EXTENDING "Every emitted template now carries" list and the audit-scan
   "scan - a job using create-pull-request with a persisting checkout is
   flagged", "scan - a job using create-pull-request with persist-credentials:
   false is not flagged", and "jobNeedsCheckoutCredentials - create-pull-request
-  alone is not a credential signal" (with an `ad-m/github-push-action`
-  positive control). Red with `peter-evans/create-pull-request` re-added to
+  alone is not a credential signal" (with an `ad-m/github-push-action` positive
+  control). Red with `peter-evans/create-pull-request` re-added to
   `CREDENTIAL_USING_ACTIONS`: the flagged and the not-a-signal tests fail.
 - Added to `worker/deno/tests/workflow_definitions_test.ts`: "dependency-update
   templates do not persist the checkout credential (Issue #4692)" — parses the
   `cargo-upgrade` and `deno-outdated` templates, asserts the checkout's
-  `persist-credentials` is `false` and the create-pull-request step still has
-  a `token:`. Red with the `${CHECKOUT_NO_CREDENTIALS}` line removed from
+  `persist-credentials` is `false` and the create-pull-request step still has a
+  `token:`. Red with the `${CHECKOUT_NO_CREDENTIALS}` line removed from
   `cargo-upgrade`; the existing conformance test
   `worker/deno/tests/workflow_template_audit_conformance_test.ts` ("every
   `actions/checkout` sets `persist-credentials: false` unless the job pushes")
   also goes red there, reporting `BP-PERSIST-CREDS-cargo-upgrade-upgrade-0`.
 - No existing assertion was removed or edited.
-- Run: `deno task test:unit` over the 34 test files that reference the
-  scanner, `workflow_definitions`, `workflow_file_checks` or the audit
-  template — 794 passed, 0 failed. `deno fmt --check` and `deno lint` clean on
-  the four changed `.ts` files.
-- `./quality.sh` ran 500 s in the foreground and was stopped by `timeout`
-  after the markdownlint, mermaid, semgrep and release-tag ruleset stages had
-  passed; it gave no overall verdict.
+- Run: `deno task test:unit` over the 34 test files that reference the scanner,
+  `workflow_definitions`, `workflow_file_checks` or the audit template — 794
+  passed, 0 failed. `deno fmt --check` and `deno lint` clean on the four changed
+  `.ts` files.
+- `./quality.sh` ran 500 s in the foreground and was stopped by `timeout` after
+  the markdownlint, mermaid, semgrep and release-tag ruleset stages had passed;
+  it gave no overall verdict.
 
 <!-- vibe-quality-gate-skipped required="186s" remaining="n/a" -->
 
-The full gate gave no verdict (timed out); the targeted checks above were
-run instead and the worker runs the gate again before the PR is raised.
+The full gate gave no verdict (timed out); the targeted checks above were run
+instead and the worker runs the gate again before the PR is raised.
