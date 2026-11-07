@@ -3,9 +3,9 @@
  *
  * Re-audits a repo and closes any open issue carrying a
  * `<!-- vibe-coder:workflow-sync:... -->` deduplication tag whose
- * underlying workflow now classifies as **present**, or its project-root
- * prerequisite no longer applies. Issues that still classify as `partial`
- * or `missing` remain open.
+ * underlying workflow is present, is public-only on a private repo, or
+ * lacks its required root-project marker. Other partial or missing requests
+ * remain open.
  *
  * Issue #1582: Add command to close stale false-positive workflow-sync
  * partial-match issues.

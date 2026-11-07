@@ -394,6 +394,137 @@ Deno.test("syncWorkflowsForRepo - reconciles obsolete Cargo issue with no workfl
   );
 });
 
+Deno.test("syncWorkflowsForRepo - files Cargo again after a missing root marker returns", async () => {
+  let rootPresent = false;
+  let closed = false;
+  let closingComment = "";
+  const tag = deduplicationTag("cargo-audit");
+  const { runner: base, state } = buildMockRunner({
+    rootFiles: [],
+    languagesApi: { Rust: 4927 },
+  });
+  const runner: NonNullable<WorkflowSyncOptions["runCommand"]> = (cmd) => {
+    const joined = cmd.join(" ");
+    if (
+      joined.includes("repos/owner/repo/contents/") &&
+      !joined.includes(".github")
+    ) {
+      return Promise.resolve(
+        rootContentsResponse(rootPresent ? ["Cargo.toml"] : []),
+      );
+    }
+    if (joined.includes("gh issue list") && joined.includes("workflow-sync:")) {
+      return Promise.resolve(
+        ok(
+          JSON.stringify([{
+            number: 4701,
+            body: tag,
+            state: closed ? "CLOSED" : "OPEN",
+            author: { login: FLEET_AUTHOR },
+          }]),
+        ),
+      );
+    }
+    if (joined.includes("gh issue close")) {
+      closed = true;
+      closingComment = cmd[cmd.indexOf("--comment") + 1]!;
+      return Promise.resolve(ok(""));
+    }
+    if (joined.includes("gh issue view")) {
+      return Promise.resolve(
+        ok(
+          JSON.stringify({
+            comments: [{
+              body: closingComment,
+              author: { login: FLEET_AUTHOR },
+            }],
+          }),
+        ),
+      );
+    }
+    return base!(cmd);
+  };
+  const options = {
+    runCommand: runner,
+    fleetAuthors: [FLEET_AUTHOR],
+    resolvePins: cataloguePins,
+  };
+  assertEquals((await syncWorkflowsForRepo("owner/repo", options)).ok, true);
+  assertEquals(closed, true);
+  rootPresent = true;
+  assertEquals((await syncWorkflowsForRepo("owner/repo", options)).ok, true);
+  assertEquals(
+    state.issuesCreated.some((issue) => issue.body.includes(tag)),
+    true,
+  );
+});
+
+for (
+  const scenario of [
+    "human comment",
+    "ordinary closure",
+    "open issue",
+    "lookup failure",
+  ] as const
+) {
+  Deno.test(`syncWorkflowsForRepo - ${scenario} does not retire a request`, async () => {
+    const tag = deduplicationTag("cargo-audit");
+    const { runner: base, state } = buildMockRunner({
+      rootFiles: ["Cargo.toml"],
+    });
+    const logs: string[] = [];
+    const runner: NonNullable<WorkflowSyncOptions["runCommand"]> = (cmd) => {
+      const joined = cmd.join(" ");
+      if (joined.includes("gh issue list") && joined.includes(tag)) {
+        return Promise.resolve(
+          ok(
+            JSON.stringify([{
+              number: 4701,
+              body: tag,
+              state: scenario === "open issue" ? "OPEN" : "CLOSED",
+              author: { login: FLEET_AUTHOR },
+            }]),
+          ),
+        );
+      }
+      if (joined.includes("gh issue view")) {
+        if (scenario === "lookup failure") {
+          return Promise.resolve(fail("lookup failed"));
+        }
+        const body = scenario === "ordinary closure"
+          ? "completed"
+          : "requires a root project marker that is absent\n<!-- vibe-coder:purge-not-applicable:cargo-audit -->";
+        return Promise.resolve(
+          ok(
+            JSON.stringify({
+              comments: [{
+                body,
+                author: {
+                  login: scenario === "human comment" ? "human" : FLEET_AUTHOR,
+                },
+              }],
+            }),
+          ),
+        );
+      }
+      return base!(cmd);
+    };
+    await syncWorkflowsForRepo("owner/repo", {
+      runCommand: runner,
+      fleetAuthors: [FLEET_AUTHOR],
+      resolvePins: cataloguePins,
+      log: (message) => logs.push(message),
+    });
+    assertEquals(
+      state.issuesCreated.some((issue) => issue.body.includes(tag)),
+      false,
+    );
+    if (scenario === "lookup failure") {
+      assertEquals(logs.some((line) => line.includes("lookup failed")), true);
+    }
+  });
+}
+
 Deno.test("syncWorkflowsForRepo - reports reconciliation listing failures", async () => {
   const { runner } = buildMockRunner({
     rootFiles: [],

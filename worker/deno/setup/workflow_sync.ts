@@ -8,8 +8,8 @@
  *
  * Issue #1395: Add workflow-sync subcommand to setup CLI.
  *
- * The dedup search runs `--state all`, so a match suppresses the issue
- * **permanently** — no expiry, no recovery. A dedup tag is a string in an
+ * The dedup search runs `--state all`; a closed request retired by a trusted
+ * missing-root-project comment no longer suppresses a later request. A tag is a string in an
  * issue body, which on a public repository anyone who can open an issue
  * writes, so the match is author-verified against the fleet identity
  * (`lib/alert_dedup_authors.ts`) before it may suppress anything. The fail
@@ -40,6 +40,8 @@ import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupAuthorOptions,
   type AlertDedupRow,
+  parseIssueViewCommentRows,
+  selectFleetAuthoredComments,
   selectFleetAuthoredMatches,
 } from "../lib/alert_dedup_authors.ts";
 import {
@@ -180,7 +182,7 @@ async function issueExistsByTag(
     "--search",
     `"${tag}" in:body`,
     "--json",
-    ALERT_DEDUP_JSON_FIELDS,
+    `${ALERT_DEDUP_JSON_FIELDS},state`,
     "--limit",
     "20",
   ]);
@@ -190,9 +192,9 @@ async function issueExistsByTag(
     return false;
   }
 
-  let rows: (AlertDedupRow & { body?: string })[];
+  let rows: (AlertDedupRow & { state?: string })[];
   try {
-    rows = JSON.parse(result.stdout) as (AlertDedupRow & { body?: string })[];
+    rows = JSON.parse(result.stdout) as (AlertDedupRow & { state?: string })[];
   } catch {
     return false;
   }
@@ -204,7 +206,49 @@ async function issueExistsByTag(
     "the issue is raised — a tag anyone can type must not suppress a " +
       "workflow-sync issue for ever",
   );
-  return verified.length > 0;
+  const specId = tag.match(/workflow-sync:(?:partial:)?([^ ]+) -->/)?.[1];
+  for (const row of verified) {
+    if (row.state !== "CLOSED" || !specId) return true;
+    const view = await runner([
+      "gh",
+      "issue",
+      "view",
+      String(row.number),
+      "--repo",
+      repo,
+      "--json",
+      "comments",
+    ]);
+    if (!view.success) {
+      throw new Error(
+        `Could not read comments on #${row.number}: ${view.stderr}`,
+      );
+    }
+    const parsed: unknown = JSON.parse(view.stdout);
+    if (
+      !parsed || typeof parsed !== "object" ||
+      !Array.isArray((parsed as Record<string, unknown>).comments)
+    ) {
+      throw new Error(`Missing comments on #${row.number}`);
+    }
+    const comments = parseIssueViewCommentRows(
+      (parsed as Record<string, unknown>).comments,
+    )
+      .filter((comment) =>
+        comment.body.includes(
+          `<!-- vibe-coder:purge-not-applicable:${specId} -->`,
+        ) &&
+        comment.body.includes("requires a root project marker that is absent")
+      );
+    const retired = await selectFleetAuthoredComments(
+      comments,
+      `workflow-sync ${repo} #${row.number}`,
+      options,
+      log,
+    );
+    if (retired.length === 0) return true;
+  }
+  return false;
 }
 
 /** Build the issue title for a missing workflow. */

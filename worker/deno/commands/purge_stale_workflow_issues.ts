@@ -2,9 +2,9 @@
  * Purge stale workflow-sync issues command.
  *
  * Re-audits each configured repo (or a single repo passed via `--repo`)
- * and closes any open issue carrying a workflow-sync deduplication tag
- * whose underlying workflow now classifies as **present** under the
- * current detection logic.
+ * and closes fleet-authored workflow-sync requests when the workflow is
+ * present, a public-only spec is on a private repo, or a root-project
+ * spec's root marker is absent.
  *
  * Issue #1582: Add command to close stale false-positive workflow-sync
  * partial-match issues.
@@ -61,7 +61,7 @@ function summarise(result: PurgeResult): {
 export const purgeStaleWorkflowIssuesCommand: Command = {
   name: "purge-stale-workflow-issues",
   description:
-    "Close stale workflow-sync issues whose workflow is now classified as present",
+    "Close fleet-authored workflow-sync requests when present, public-only on a private repo, or missing a root-project marker",
 
   async execute(
     args: Record<string, unknown>,

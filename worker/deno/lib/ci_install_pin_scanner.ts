@@ -24,14 +24,24 @@
  *     A bare `npx <pkg>` prefers a binary already in `node_modules`, which
  *     the lockfile (and Renovate) already govern, so it is not flagged.
  *   - `gem install <pkg>` with no exact `-v` / `--version`.
+ *   - `cargo install <crate>` must carry BOTH an exact version (`--version
+ *     x.y.z` or `crate@x.y.z`, where cargo treats a bare version as `=x.y.z`)
+ *     AND `--locked` (or `--frozen`). A version-pinned install without
+ *     `--locked` still re-resolves the tool's whole dependency tree to the
+ *     newest crates.io releases, so it is flagged as unlocked. `--git` and
+ *     `--path` installs require locking but are exempt from version pinning.
  *
  * Local, file, git, and URL specs, shell variables (`$PKG`), comment lines,
  * flags, and non-install subcommands (`npm ci`, `npm config set …`) are
  * never flagged.
  *
  * Commands are normalised before matching (Issue #3953): backslash line
- * continuations are joined, wrapper prefixes (`sudo`, `env`, `command`,
- * `exec`, their flags, and leading `VAR=value` assignments) are stripped,
+ * continuations and multiline quotes or expressions are joined; heredoc
+ * bodies and quoted scripts are independently normalised without
+ * changing outer quote state. Chains split at `;`, `|`, `&&`, `||`, background `&`
+ * and subshell parentheses outside quotes and expressions. Wrapper prefixes
+ * (`sudo`, `env`, `command`, `exec`, their flags, leading `VAR=value`
+ * assignments, and `then`, `do`, `else`, `elif`, `!`, `time`, `{`) are stripped,
  * and the subcommand is the first non-flag argument rather than a fixed
  * index. Without that, `sudo npm install -g <pkg>` and
  * `npm --global install <pkg>` — two of the commonest real-world spellings
@@ -113,11 +123,51 @@ const PREFIX_VALUE_FLAGS = new Set([
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
+ * `cargo install` flags that consume the following token as their value
+ * when written without `=` (Issue #4683). Their value is not the crate.
+ */
+const CARGO_VALUE_FLAGS = new Set([
+  "--version",
+  "--vers",
+  "--git",
+  "--path",
+  "--branch",
+  "--tag",
+  "--rev",
+  "--root",
+  "--registry",
+  "--index",
+  "--features",
+  "-F",
+  "--bin",
+  "--example",
+  "--target",
+  "--target-dir",
+  "--profile",
+  "--jobs",
+  "-j",
+  "--config",
+  "--color",
+  "-Z",
+  "--message-format",
+  "--lockfile-path",
+  "--manifest-path",
+  "-C",
+]);
+
+/** Note appended to the cargo `whyItMatters` rationale (Issue #4683). */
+const CARGO_WHY_NOTE =
+  " For `cargo install`, an exact `--version` is not enough on its own: without `--locked`, cargo re-resolves the tool's whole dependency tree to the newest crates.io releases on every run, so even a version-pinned tool pulls unquarantined, unlocked dependencies.";
+
+/** Evidence suffix for a `cargo install` call-site without `--locked`. */
+const UNLOCKED_NOTE = " (no `--locked`)";
+
+/**
  * One unpinned install found in a `run:` block: the offending command and
  * the package it would have resolved at run time.
  */
 export interface UnpinnedInstall {
-  /** `npm`, `npx`, or `gem`. */
+  /** `npm`, `npx`, `gem`, or `cargo`. */
   tool: string;
   /** The package argument as written, e.g. `pa11y-ci@3`. */
   spec: string;
@@ -125,7 +175,7 @@ export interface UnpinnedInstall {
   packageName: string;
   /** The unpinned version as written (`3`, `^14.1.1`), or `null` if absent. */
   version: string | null;
-  /** The whole command the spec came from, backslash continuations joined. */
+  /** The normalised command the spec came from. */
   command: string;
   /**
    * First physical line of that command as written in the file — the text
@@ -133,6 +183,13 @@ export interface UnpinnedInstall {
    * several lines (Issue #3953). Equals `command` when it does not.
    */
   anchor: string;
+  /**
+   * `cargo` only: `true` when the install passes neither `--locked` nor
+   * `--frozen`. Always `false` for the other tools.
+   */
+  unlocked: boolean;
+  /** Whether cargo installs from a git or path source. */
+  externalSource: boolean;
 }
 
 /** A single call-site a consolidated finding covers. */
@@ -147,13 +204,17 @@ export interface CiInstallCallSite {
   spec: string;
   /** The command line the spec came from. */
   command: string;
+  /** `true` when a `cargo install` call-site passes no `--locked`/`--frozen`. */
+  unlocked: boolean;
+  /** Whether this is a git or path cargo install. */
+  externalSource: boolean;
 }
 
 /** A consolidated unpinned-install finding for one package coordinate. */
 export interface CiInstallPinFinding {
   /** Stable id `BP-CI-INSTALL-PIN-<tool>-<package-slug>`. */
   findingId: string;
-  /** `npm`, `npx`, or `gem`. */
+  /** `npm`, `npx`, `gem`, or `cargo`. */
   tool: string;
   /** The package name the finding is raised against. */
   packageName: string;
@@ -269,6 +330,8 @@ function hit(
   spec: string,
   line: LogicalLine,
   version: string | null = versionOf(spec),
+  unlocked = false,
+  externalSource = false,
 ): UnpinnedInstall {
   return {
     tool,
@@ -277,48 +340,218 @@ function hit(
     version,
     command: line.command,
     anchor: line.anchor,
+    unlocked,
+    externalSource,
   };
 }
 
 /** One shell command, with the first physical line it started on. */
 interface LogicalLine {
-  /** The command with any backslash continuations joined onto one line. */
+  /** The normalised logical or physical command. */
   command: string;
   /** The first physical line as written, used to anchor the file line. */
   anchor: string;
 }
 
+/** Recognise a closed arithmetic span without mistaking a later quoted `))` for its end. */
+function hasArithmeticClose(text: string): boolean {
+  let depth = 2;
+  let quote = "";
+  for (let i = text.startsWith("$((") ? 3 : 2; i < text.length; i++) {
+    const char = text[i];
+    if (char === "\\" && quote !== "'") i++;
+    else if (quote && char === quote) quote = "";
+    else if (!quote && (char === "'" || char === '"')) quote = char;
+    else if (!quote && char === "(") depth++;
+    else if (!quote && char === ")") {
+      if (depth === 2 && text[i + 1] === ")") return true;
+      if (--depth < 2) return false;
+    }
+  }
+  return false;
+}
+
 /**
- * Join backslash line continuations so a wrapped install reads as one
- * command (Issue #3953). Without this, `npm install -g \` flagged the
- * trailing `\` as the package and produced the garbage id `…-npm-`.
+ * Join backslash continuations and multiline quotes or expressions, while
+ * independently normalising heredoc bodies and quoted scripts without
+ * changing outer quote state. Fall back to physical lines for unfinished input.
  */
 function joinContinuations(run: string): LogicalLine[] {
   const out: LogicalLine[] = [];
   let buffer = "";
   let anchor: string | null = null;
+  let quote = "";
+  let expression = false;
+  let arithmetic = false;
+  let bufferedLines: string[] = [];
+  let nestedLines: string[] = [];
+  let heredocLines: string[] = [];
+  const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
 
-  for (const rawLine of run.split("\n")) {
+  const physicalLines = run.split("\n");
+  for (let lineIndex = 0; lineIndex < physicalLines.length; lineIndex++) {
+    const rawLine = physicalLines[lineIndex]!;
     const line = rawLine.trim();
+    if (heredocs.length > 0 && anchor === null) {
+      const here = heredocs[0]!;
+      if (
+        (here.stripTabs ? rawLine.replace(/^\t+/, "") : rawLine) ===
+          here.delimiter
+      ) {
+        out.push(...joinContinuations(heredocLines.join("\n")));
+        heredocLines = [];
+        heredocs.shift();
+      } else {
+        heredocLines.push(rawLine);
+      }
+      continue;
+    }
+    let nestedQuote = quote;
+    let nestedStart = nestedQuote ? 0 : -1;
+    let spliceStart = -1;
+    let nestedText = "";
     if (anchor === null) anchor = line;
+    bufferedLines.push(line);
+    for (let i = 0; i < line.length; i++) {
+      // A splice continues the same shell word; whitespace or an operator
+      // outside quotes ends it and allows a later script to be captured.
+      if (
+        nestedQuote && nestedStart < 0 && !quote && !expression &&
+        !arithmetic &&
+        !(line.startsWith("((", i) && hasArithmeticClose(line.slice(i))) &&
+        /[\s;|&()<>]/.test(line[i]!)
+      ) {
+        if (spliceStart >= 0) nestedText += line.slice(spliceStart, i);
+        nestedLines.push(nestedText);
+        out.push(...joinContinuations(nestedLines.join("\n")));
+        nestedLines = [];
+        nestedText = "";
+        nestedQuote = "";
+        spliceStart = -1;
+      }
+      const previousQuote = quote;
+      if (arithmetic) {
+        if (line.startsWith("))", i)) {
+          arithmetic = false;
+          i++;
+        }
+      } else if (expression) {
+        if (line.startsWith("}}", i)) {
+          expression = false;
+          i++;
+        }
+      } else if (line[i] === "\\" && quote !== "'") {
+        i++;
+      } else if (quote === "'" && line[i] === "'") {
+        quote = "";
+      } else if (
+        !quote && (line.startsWith("$((", i) || line.startsWith("((", i)) &&
+        (() => {
+          let logical = line.slice(i);
+          for (let j = lineIndex; physicalLines[j]?.endsWith("\\"); j++) {
+            logical += physicalLines[j + 1] ?? "";
+          }
+          return hasArithmeticClose(logical);
+        })()
+      ) {
+        arithmetic = true;
+        i += line[i] === "$" ? 2 : 1;
+      } else if (line.startsWith("${{", i) && quote !== "'") {
+        expression = true;
+        i += 2;
+      } else if (quote && line[i] === quote) {
+        quote = "";
+      } else if (!quote && (line[i] === "'" || line[i] === '"')) {
+        quote = line[i] as string;
+        if (!nestedQuote) {
+          const end = line.indexOf(quote, i + 1);
+          const content = line.slice(i + 1, end < 0 ? undefined : end);
+          const prefix = line.slice(0, i);
+          if (
+            end < 0 || /[;|&]/.test(content) ||
+            /(?:^|\s)(?:-c\s+|ssh\s+\S+\s+)$/.test(prefix)
+          ) {
+            nestedQuote = quote;
+            nestedStart = i + 1;
+          }
+        }
+      } else if (
+        !quote && line.startsWith("<<", i) && line[i - 1] !== "<" &&
+        line[i + 2] !== "<"
+      ) {
+        const match = line.slice(i).match(
+          /^<<(-)?\s*((?:\\.|'[^']*'|"[^"]*"|[^\s;|&()<>])+)/,
+        );
+        if (match) {
+          heredocs.push({
+            delimiter: match[2]!.replace(
+              /\\(.)|'([^']*)'|"([^"]*)"/g,
+              (_match, escaped, single, double) => escaped ?? single ?? double,
+            ),
+            stripTabs: !!match[1],
+          });
+          i += match[0].length - 1;
+        }
+      } else if (
+        !quote && line[i] === "#" &&
+        (i === 0 || /\s/.test(line[i - 1] as string))
+      ) {
+        break;
+      }
+      if (nestedQuote && previousQuote === nestedQuote && !quote) {
+        nestedText += line.slice(nestedStart, i);
+        nestedStart = -1;
+        spliceStart = i + 1;
+      } else if (
+        nestedQuote && !previousQuote && quote === nestedQuote &&
+        nestedStart < 0
+      ) {
+        nestedText += line.slice(spliceStart, i);
+        nestedStart = i + 1;
+        spliceStart = -1;
+      }
+    }
+    if (nestedStart >= 0) nestedText += line.slice(nestedStart);
+    else if (spliceStart >= 0) nestedText += line.slice(spliceStart);
+    if (nestedQuote) nestedLines.push(nestedText);
+    if (!line.endsWith("\\")) arithmetic = false;
     if (line.endsWith("\\")) {
       buffer += `${line.slice(0, -1).trim()} `;
       continue;
     }
+    if (quote || expression) {
+      buffer += `${line} `;
+      continue;
+    }
     out.push({ command: `${buffer}${line}`.trim(), anchor });
+    if (nestedLines.length) {
+      out.push(...joinContinuations(nestedLines.join("\n")));
+    }
     buffer = "";
     anchor = null;
+    bufferedLines = [];
+    nestedLines = [];
+  }
+  if (heredocLines.length) {
+    out.push(...joinContinuations(heredocLines.join("\n")));
   }
   // A trailing continuation with nothing after it still yields its command.
   if (buffer.length > 0) {
-    out.push({ command: buffer.trim(), anchor: anchor ?? buffer.trim() });
+    if (quote || expression) {
+      for (const line of bufferedLines) {
+        out.push({ command: line, anchor: line });
+      }
+    } else {
+      out.push({ command: buffer.trim(), anchor: anchor ?? buffer.trim() });
+    }
   }
   return out;
 }
 
 /**
  * Drop the wrapper prefix in front of the real tool — `sudo`, `env`,
- * `command`, `exec`, their flags, and leading `VAR=value` assignments —
+ * `command`, `exec`, their flags, leading `VAR=value` assignments and shell
+ * keywords `then`, `do`, `else`, `elif`, `!`, `time`, `{` —
  * so the tool is found wherever it sits (Issue #3953).
  */
 function stripCommandPrefix(tokens: readonly string[]): readonly string[] {
@@ -327,6 +560,10 @@ function stripCommandPrefix(tokens: readonly string[]): readonly string[] {
 
   while (i < tokens.length) {
     const token = tokens[i] as string;
+    if (["then", "do", "else", "elif", "!", "time", "{"].includes(token)) {
+      i++;
+      continue;
+    }
     if (ENV_ASSIGNMENT.test(token)) {
       i++;
       continue;
@@ -360,6 +597,72 @@ function subcommandIndex(args: readonly string[]): number {
   return args.findIndex((t) => !t.startsWith("-"));
 }
 
+/** Split shell command chains without splitting quoted text or Actions expressions. */
+function splitCommands(command: string): string[] {
+  const segments: string[] = [];
+  let start = 0;
+  let quote = "";
+  let expression = false;
+  for (let i = 0; i < command.length; i++) {
+    if (expression) {
+      if (command.startsWith("}}", i)) {
+        expression = false;
+        i++;
+      }
+    } else if (quote === "'" && command[i] === "'") {
+      quote = "";
+    } else if (command[i] === "\\" && quote !== "'") {
+      i++;
+    } else if (command.startsWith("${{", i) && quote !== "'") {
+      expression = true;
+      i += 2;
+    } else if (quote) {
+      if (command[i] === quote) quote = "";
+    } else if (command[i] === "'" || command[i] === '"') {
+      quote = command[i] as string;
+    } else if (
+      command[i] === "#" && (i === 0 || /\s/.test(command[i - 1] as string))
+    ) {
+      break;
+    } else if (
+      command[i] === ";" || command[i] === "|" || command[i] === "(" ||
+      command[i] === ")" || (command[i] === "&" &&
+        command[i + 1] !== ">" && command[i - 1] !== ">" &&
+        command[i - 1] !== "<")
+    ) {
+      segments.push(command.slice(start, i));
+      if (
+        command.startsWith("||", i) || command.startsWith("&&", i) ||
+        command.startsWith("|&", i)
+      ) i++;
+      start = i + 1;
+    }
+  }
+  segments.push(command.slice(start));
+  return segments;
+}
+
+/** Drop unquoted shell comments and redirections from cargo arguments. */
+function cargoShellTokens(tokens: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] as string;
+    if (token.startsWith("#")) break;
+    const redirect = token.match(/^(?:\d*|&)(?:>>?|<<?)(.*)$/);
+    if (redirect) {
+      if (!redirect[1]) i++;
+      continue;
+    }
+    result.push(
+      token.replace(
+        /"((?:\\.|[^"\\])*)"|'([^']*)'/g,
+        (_match, double, single) => double ?? single,
+      ),
+    );
+  }
+  return result;
+}
+
 /**
  * Find every unpinned third-party package install in a shell snippet taken
  * from a workflow `run:` block.
@@ -369,7 +672,9 @@ function subcommandIndex(args: readonly string[]): number {
  *   - `npx --yes <pkg>` / `npx -p <pkg>` (the explicit-fetch forms) without
  *     an exact version — a bare `npx <pkg>` prefers the lockfile-governed
  *     binary in `node_modules` and is not flagged;
- *   - `gem install <pkg>` without an exact `-v`/`--version`.
+ *   - `gem install <pkg>` without an exact `-v`/`--version`;
+ *   - `cargo install <crate>` without BOTH an exact version and `--locked`/
+ *     `--frozen` (git and path sources only require locking).
  *
  * Comment lines, flags, local/URL/variable specs, and non-install npm
  * subcommands (`npm ci`, `npm config set …`) are ignored.
@@ -385,13 +690,23 @@ export function findUnpinnedInstalls(run: string): UnpinnedInstall[] {
     }
 
     // A line may chain commands; inspect each segment separately.
-    for (const segment of logical.command.split(/&&|\|\||;|\|/)) {
+    for (const segment of splitCommands(logical.command)) {
       const command = segment.trim();
       // Quotes are shell syntax, not part of the spec — `"$TOOL"` must
       // read as the variable `$TOOL` so it stays exempt.
-      const tokens = stripCommandPrefix(
+      let tokens = stripCommandPrefix(
         command.split(/\s+/).filter((t) => t.length > 0).map(unquote),
       );
+      if (tokens[0] === "cargo") {
+        // Keep quoted values and Actions expressions together within a token.
+        tokens = stripCommandPrefix(
+          cargoShellTokens(
+            command.match(
+              /(?:\$\{\{.*?\}\}|"(?:\\.|[^"\\])*"|'[^']*'|\$(?!\{\{)|[^\s"'$]+)+/g,
+            ) ?? [],
+          ),
+        );
+      }
       if (tokens.length === 0) continue;
       // Evidence keeps the command as written; only matching is normalised.
       const line: LogicalLine = { command, anchor: logical.anchor };
@@ -403,6 +718,8 @@ export function findUnpinnedInstalls(run: string): UnpinnedInstall[] {
         collectNpxFetches(tokens, line, found);
       } else if (tool === "gem") {
         collectGemInstalls(tokens, line, found);
+      } else if (tool === "cargo") {
+        collectCargoInstalls(tokens, line, found);
       }
     }
   }
@@ -479,6 +796,87 @@ function collectGemInstalls(
     if (flagIndex >= 0 && i === flagIndex + 1) continue; // the version
     if (SPEC_EXEMPT.test(spec)) continue;
     found.push(hit("gem", spec, line, version ?? null));
+  }
+}
+
+/**
+ * `cargo install <crate>…` (Issue #4683). Each crate must carry an exact
+ * version — `--version x.y.z` or `crate@x.y.z`, where cargo treats a bare
+ * version as `=x.y.z` — AND the install must pass `--locked` or `--frozen`,
+ * or cargo re-resolves the whole dependency tree on every run.
+ *
+ * `--locked`/`--frozen` are global cargo flags, so they count wherever they
+ * sit, including before `install`. `--git`/`--path` installs are local or
+ * git sources and are exempt from the version requirement, not locking.
+ */
+function collectCargoInstalls(
+  tokens: readonly string[],
+  line: LogicalLine,
+  found: UnpinnedInstall[],
+): void {
+  const args = tokens.slice(1);
+  let subcommand: string | null = null;
+  let locked = false;
+  let externalSource: string | null = null;
+  let flagVersion: string | null = null;
+  const specs: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i] as string;
+    // A rustup toolchain selector, e.g. `cargo +stable install`.
+    if (token.startsWith("+")) continue;
+
+    if (token.startsWith("-")) {
+      const eq = token.indexOf("=");
+      const name = eq >= 0 ? token.slice(0, eq) : token;
+      if (name === "--locked" || name === "--frozen") {
+        locked = true;
+        continue;
+      }
+      let value: string | undefined;
+      if (eq >= 0) {
+        value = token.slice(eq + 1);
+      } else if (CARGO_VALUE_FLAGS.has(name)) {
+        value = args[i + 1];
+        i++;
+      }
+      if ((name === "--git" || name === "--path") && value !== undefined) {
+        externalSource = unquote(value);
+      }
+      if ((name === "--version" || name === "--vers") && value !== undefined) {
+        flagVersion = value;
+      }
+      continue;
+    }
+
+    if (subcommand === null) {
+      subcommand = token;
+      continue;
+    }
+    specs.push(token);
+  }
+
+  if (subcommand !== "install") return;
+  if (externalSource !== null) {
+    if (!locked) {
+      for (const spec of specs.length ? specs : [externalSource]) {
+        const install = hit("cargo", spec, line, null, true, true);
+        if (!specs.length) install.packageName = externalSource;
+        found.push(install);
+      }
+    }
+    return;
+  }
+
+  for (const spec of specs) {
+    if (SPEC_EXEMPT.test(spec)) continue;
+    const version = versionOf(spec) ?? flagVersion;
+    // A shell-variable version is not statically decidable: treat as pinned.
+    const pinned = version !== null &&
+      (version.startsWith("$") ||
+        EXACT_VERSION.test(version.replace(/^=/, "")));
+    if (pinned && locked) continue;
+    found.push(hit("cargo", spec, line, version, !locked));
   }
 }
 
@@ -610,6 +1008,8 @@ export function scanCiInstallPins(
           job: step.job,
           spec: install.spec,
           command: install.command,
+          unlocked: install.unlocked,
+          externalSource: install.externalSource,
         });
       }
     }
@@ -635,6 +1035,9 @@ function pinExample(tool: string, packageName: string): string {
   if (tool === "npx") {
     return `npx --yes ${packageName}@1.2.3`;
   }
+  if (tool === "cargo") {
+    return `cargo install --locked ${packageName} --version 1.2.3`;
+  }
   return `npm install -g ${packageName}@1.2.3`;
 }
 
@@ -653,9 +1056,13 @@ function buildFinding(
   const first = sites[0] as CiInstallCallSite;
   const count = sites.length;
   const pkg = entry.packageName;
+  const isCargo = entry.tool === "cargo";
+  const externalOnly = isCargo && sites.every((s) => s.externalSource);
 
   const evidenceLines = sites.map((s) =>
-    `- \`${s.file}\`:${s.line} — job \`${s.job}\`: \`${s.command}\``
+    `- \`${s.file}\`:${s.line} — job \`${s.job}\`: \`${s.command}\`${
+      s.unlocked ? UNLOCKED_NOTE : ""
+    }`
   );
 
   return {
@@ -663,33 +1070,58 @@ function buildFinding(
     tool: entry.tool,
     packageName: pkg,
     severity: "medium",
-    title: `${MEDIUM_EMOJI} Pin the CI install of \`${pkg}\` to an exact ` +
-      "version",
+    title: externalOnly
+      ? `${MEDIUM_EMOJI} Lock the CI install of \`${pkg}\``
+      : isCargo
+      ? `${MEDIUM_EMOJI} Pin and lock the CI install of \`${pkg}\` to an exact ` +
+        "version"
+      : `${MEDIUM_EMOJI} Pin the CI install of \`${pkg}\` to an exact ` +
+        "version",
     file: first.file,
     lines: first.line,
-    whyItMatters:
-      `A \`run:\` step installs \`${pkg}\` with no exact version, so the ` +
-      "build resolves whatever the registry serves at that moment. A " +
-      "hijacked or malicious release therefore executes on the runner — " +
-      "with the workflow's `GITHUB_TOKEN` and any secrets in scope — the " +
-      "instant it is published, with no embargo. Renovate's " +
-      "`minimumReleaseAge` (and Deno's `minimumDependencyAge`) only cover " +
-      "manifests the tool can manage, and a `run:` block is not a " +
-      "manifest, so the repository's dependency quarantine does not apply " +
-      "here. `uses:` SHA-pinning does not cover this either — " +
-      "`action_pin_scanner.ts` never inspects `run:`.",
-    suggestedFix:
-      `Pin the install to an exact version, e.g. \`${
+    whyItMatters: externalOnly
+      ? `The cargo install of \`${pkg}\` does not lock its dependencies.` +
+        CARGO_WHY_NOTE
+      : (isCargo
+        ? `A \`run:\` step installs \`${pkg}\` without an exact registry version or without locking dependencies, so the `
+        : `A \`run:\` step installs \`${pkg}\` with no exact version, so the `) +
+        "build resolves whatever the registry serves at that moment. A " +
+        "hijacked or malicious release therefore executes on the runner — " +
+        "with the workflow's `GITHUB_TOKEN` and any secrets in scope — the " +
+        "instant it is published, with no embargo. Renovate's " +
+        "`minimumReleaseAge` (and Deno's `minimumDependencyAge`) only cover " +
+        "manifests the tool can manage, and a `run:` block is not a " +
+        "manifest, so the repository's dependency quarantine does not apply " +
+        "here. `uses:` SHA-pinning does not cover this either — " +
+        "`action_pin_scanner.ts` never inspects `run:`." +
+        (isCargo ? CARGO_WHY_NOTE : ""),
+    suggestedFix: externalOnly
+      ? "Retain the git or path source and pass `--locked` so cargo uses " +
+        "the source's lockfile instead of re-resolving its dependencies. " +
+        `If intentional, suppress with \`# best-practice-ignore: ${findingId} — <reason>\`.`
+      : isCargo
+      ? `For registry installs, pin to an exact \`--version\` and pass \`--locked\`, e.g. ` +
+        `\`${
+          pinExample(entry.tool, pkg)
+        }\`: \`--locked\` makes cargo use the Cargo.lock the crate publishes ` +
+        "instead of re-resolving its dependencies. For git or path installs, retain the source and pass `--locked`. Add a Renovate " +
+        "`customManagers` regex entry matching `cargo install --locked " +
+        "<crate> --version x.y.z` in .github/workflows so the pin is kept " +
+        "current inside the quarantine window. If this install is " +
+        "intentionally floating, suppress it with an in-source " +
+        `\`# best-practice-ignore: ${findingId} — <reason>\` comment on or ` +
+        "above the offending line."
+      : `Pin the install to an exact version, e.g. \`${
         pinExample(entry.tool, pkg)
       }\`, and add a Renovate \`customManagers\` regex entry covering ` +
-      ".github/workflows so the pin is kept current inside the quarantine " +
-      "window. Do not add `--ignore-scripts` blindly: some packages need " +
-      "their postinstall step (for example `pa11y-ci` fetching a browser), " +
-      "and dropping it breaks the job — pinning is the fix here, " +
-      "`--ignore-scripts` is a separate judgement per package. If this " +
-      "install is intentionally floating, suppress it with an in-source " +
-      `\`# best-practice-ignore: ${findingId} — <reason>\` comment on or ` +
-      "above the offending line.",
+        ".github/workflows so the pin is kept current inside the quarantine " +
+        "window. Do not add `--ignore-scripts` blindly: some packages need " +
+        "their postinstall step (for example `pa11y-ci` fetching a browser), " +
+        "and dropping it breaks the job — pinning is the fix here, " +
+        "`--ignore-scripts` is a separate judgement per package. If this " +
+        "install is intentionally floating, suppress it with an in-source " +
+        `\`# best-practice-ignore: ${findingId} — <reason>\` comment on or ` +
+        "above the offending line.",
     evidence: count === 1
       ? evidenceLines.join("\n")
       : `${count} call-sites:\n${evidenceLines.join("\n")}`,

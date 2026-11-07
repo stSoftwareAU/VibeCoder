@@ -5,8 +5,10 @@ run from the checkout root. Workflow sync and purge close trusted generated
 requests for known root-project specs whose manifests are absent, even after
 GitHub stops reporting their language. A complete root file inventory preserves
 legitimate npm requests when Deno and web assets coexist with `package.json`.
-Closure comments explain the missing prerequisite; dry-run sync logs each
-would-close issue number and spec. Existing workflow files remain untouched.
+Closure comments explain the missing prerequisite, and their authenticated
+markers allow a new request when the root marker returns. The purge command's
+dry run reports the would-close candidates; setup workflow-sync has no dry run.
+Existing workflow files remain untouched.
 Closes #4693.
 
 Version bump: no version file was changed for this update.
@@ -33,8 +35,11 @@ Version bump: no version file was changed for this update.
   inapplicable set checks root prerequisites across the known catalogue,
   independently of current language presence.
 - Only known workflow-sync requests verified as fleet-authored are reconciled.
-  An unresolved fleet identity cannot authorise closure. Dry runs report the
-  same trusted candidates through helper results and workflow-sync logging.
+  An unresolved fleet identity cannot authorise closure. The purge dry run
+  reports the same trusted root-marker candidates without closing them.
+- Filing dedup checks closed matches for fleet-authored missing-root-project
+  comments. Other closed requests still suppress duplicates; a failed comment
+  lookup skips filing that spec and logs the failure.
 - Universal specs and repository-wide scans have no root-project requirement.
   Existing workflow files are not removed when a language stops qualifying.
 
@@ -51,7 +56,7 @@ Version bump: no version file was changed for this update.
 Backend and CLI change; no visual surface changed. Read the workflow catalogue
 and purge command sections of `docs/EXTENDING.md` and the workflow-sync
 operator entry in `docs/SETUP.md`. They describe root evidence, reconciliation
-after language disappearance, dry-run candidate logs, and purge close conditions.
+after language disappearance, purge dry-run candidates, and close conditions.
 
 The reported baseline failure was reproduced: 39 tests passed and three Cargo
 capability regressions failed across the five named suites. Marker fixtures in
@@ -93,6 +98,10 @@ test run.
   disappeared-language reconciliation; human-authored matching requests and
   unresolved fleet identity; fleet wrapper coverage; complete error results for
   failed and thrown reconciliation, including non-Error throws.
+- `worker/deno/tests/setup_workflow_sync_test.ts::syncWorkflowsForRepo - files Cargo again after a missing root marker returns`:
+  the former permanent suppression after an applicability closure is obsolete;
+  ordinary closed requests still deduplicate, covered by the Issue #1829 test
+  below, while this test closes the request then files again after Cargo returns.
 - `worker/deno/tests/workflow_sync_actions_test.ts`: API-only versus root Cargo
   actions and hybrid-project npm action references with the universal Markdown
   workflow already present, so it cannot supply a false-positive Node action.

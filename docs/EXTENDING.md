@@ -260,7 +260,9 @@ Older language results without that inventory trigger a root-contents fetch;
 a failed fetch fails the audit before reconciliation. Existing workflow files
 are left in place. Trusted generated requests for known inapplicable
 root-project specs are closed with the reason, including when GitHub no longer
-reports their language. Dry runs log each would-close issue number and spec.
+reports their language. `setup workflow-sync` has no dry run and closes these
+requests on every run. Use `purge-stale-workflow-issues --dry-run` to report
+the same root-marker closures as not applicable.
 
 ### Pins are resolved when the issue is filed, and the body says so
 
@@ -271,7 +273,7 @@ repository — and renders every missing- and partial-workflow body through
 `applyResolvedPins()`, so each `uses:` line carries the highest upstream
 release that has aged past `VIBE_BUMP_QUARANTINE_HOURS` rather than whatever
 SHA the catalogue was last edited with. The resolution is **lazy**: a run
-that renders no body — a `dryRun`, or a repository whose sync issues have all
+that renders no body — for example, a repository whose sync issues have all
 been filed already — issues no lookup at all.
 
 An action whose lookup fails keeps its catalogue SHA and emits exactly one
@@ -399,8 +401,10 @@ before Issue #1639. Every emitted template now carries:
 - `timeout-minutes:` on every job — 10 for scan and quality jobs, 20 for
   dependency-update jobs that open a PR;
 - an exact version pin on every `run:` install the audit's install-pin
-  pre-filer covers — npm, npx and gem (a `run:` install is not a manifest,
-  so no dependency manager applies the 24h quarantine to it);
+  pre-filer covers — npm, npx, gem and cargo (a `run:` install is not a
+  manifest, so no dependency manager applies the 24h quarantine to it).
+  A cargo install also passes `--locked`, for example
+  `cargo install --locked <crate> --version x.y.z`;
 - `set -euo pipefail` at the top of every multi-line `run:` block, so a
   failing command mid-block cannot vanish into a green step;
 - a trailing `# <version>` comment on every SHA-pinned `uses:`, rendered by

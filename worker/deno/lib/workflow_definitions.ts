@@ -89,6 +89,30 @@ const CHECKOUT_NO_CREDENTIALS = `        with:
  */
 const MARKDOWNLINT_CLI2_VERSION = "0.24.0";
 
+/**
+ * Exact `cargo-audit` version installed by the cargo-audit template.
+ *
+ * A `run:` install is not a manifest, so no dependency manager governs it.
+ * `--locked` makes cargo use the crate's own `Cargo.lock` instead of
+ * re-resolving its dependency tree to the newest crates.io releases on every
+ * run, which would otherwise land outside the 24h supply-chain quarantine.
+ * Bump in lock-step with `.github/workflows/cargo-audit.yml`, which tests keep
+ * equal to this constant, so bumps stay deliberate.
+ */
+const CARGO_AUDIT_VERSION = "0.22.2";
+
+/**
+ * Exact `cargo-edit` version installed by the cargo-upgrade template.
+ *
+ * A `run:` install is not a manifest, so no dependency manager governs it.
+ * `--locked` makes cargo use the crate's own `Cargo.lock` instead of
+ * re-resolving its dependency tree to the newest crates.io releases on every
+ * run, which would otherwise land outside the 24h supply-chain quarantine.
+ * Bump in lock-step with `.github/workflows/cargo-upgrade.yml`, which tests keep
+ * equal to this constant, so bumps stay deliberate.
+ */
+const CARGO_EDIT_VERSION = "0.13.14";
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -404,7 +428,7 @@ ${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("dtolnay/rust-toolchain")}
         with:
           toolchain: stable
-      - run: cargo install cargo-audit
+      - run: cargo install --locked cargo-audit --version ${CARGO_AUDIT_VERSION}
       - run: cargo audit
 `,
 };
@@ -446,7 +470,7 @@ ${CHECKOUT_NO_CREDENTIALS}
       - uses: ${pinnedAction("dtolnay/rust-toolchain")}
         with:
           toolchain: stable
-      - run: cargo install cargo-edit
+      - run: cargo install --locked cargo-edit --version ${CARGO_EDIT_VERSION}
       - run: cargo upgrade
       - run: cargo update
       - uses: ${pinnedAction("peter-evans/create-pull-request")}
