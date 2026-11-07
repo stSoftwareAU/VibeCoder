@@ -1031,6 +1031,32 @@ Deno.test("issue_query - fetchAllOpenPRs - carries author and head ownership (Is
   assertEquals(prs[1]?.autoMergeRequest, undefined);
 });
 
+Deno.test("issue_query - fetchAllOpenPRs - re-spells a GitHub App author as <slug>[bot] (Issue #4719)", async () => {
+  const row = (number: number, author: unknown) => ({
+    number,
+    title: "T",
+    baseRefName: "main",
+    headRefName: "h",
+    body: "",
+    url: "",
+    author,
+  });
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      // gh's real App shape: `app/<slug>` with is_bot true.
+      row(41, { is_bot: true, login: "app/dependabot" }),
+      // Not a bot: the login is recorded exactly as reported.
+      row(42, { is_bot: false, login: "app/dependabot" }),
+      // No is_bot flag at all: left unchanged.
+      row(43, { login: "app/dependabot" }),
+    ]));
+
+  const prs = await fetchAllOpenPRs("o/r", undefined, 50, mockGh);
+  assertEquals(prs[0]?.authorLogin, "dependabot[bot]");
+  assertEquals(prs[1]?.authorLogin, "app/dependabot");
+  assertEquals(prs[2]?.authorLogin, "app/dependabot");
+});
+
 Deno.test("issue_query - fetchAllOpenPRs - rejects a non-array payload (Issue #1846)", async () => {
   // `{"message":"Not Found"}` is valid JSON, so the #4257 parse guard passes
   // it. Returning [] would let a failed call read as "this repo has no open

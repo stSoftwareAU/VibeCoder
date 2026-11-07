@@ -505,3 +505,695 @@ Deno.test("scanCiInstallPins - detects sudo and global-flag spellings", () => {
     "BP-CI-INSTALL-PIN-npm-pa11y-ci",
   ]);
 });
+
+// ---------------------------------------------------------------------------
+// cargo install (Issue #4683) — an exact version AND --locked
+// ---------------------------------------------------------------------------
+
+Deno.test("findUnpinnedInstalls - cargo install needs an exact version and --locked", () => {
+  const bare = findUnpinnedInstalls("cargo install cargo-audit");
+  assertEquals(bare.length, 1);
+  assertEquals(bare[0]?.tool, "cargo");
+  assertEquals(bare[0]?.packageName, "cargo-audit");
+  assertEquals(bare[0]?.version, null);
+  assertEquals(bare[0]?.unlocked, true);
+
+  const locked = findUnpinnedInstalls("cargo install --locked cargo-audit");
+  assertEquals(locked.length, 1);
+  assertEquals(locked[0]?.version, null);
+  assertEquals(locked[0]?.unlocked, false);
+
+  const pinnedUnlocked = findUnpinnedInstalls(
+    "cargo install cargo-audit --version 0.22.2",
+  );
+  assertEquals(pinnedUnlocked.length, 1);
+  assertEquals(pinnedUnlocked[0]?.version, "0.22.2");
+  assertEquals(pinnedUnlocked[0]?.unlocked, true);
+});
+
+Deno.test("findUnpinnedInstalls - accepts a cargo install that is exact and locked", () => {
+  for (
+    const run of [
+      "cargo install --locked cargo-audit@0.22.2",
+      "cargo install --locked cargo-audit --version 0.22.2",
+      "cargo install --locked --version=0.22.2 cargo-audit",
+      "cargo install --locked cargo-audit --vers 0.22.2",
+      "cargo install --locked cargo-audit --vers=0.22.2",
+      "cargo install cargo-audit@0.22.2 --locked",
+      "cargo --locked install cargo-audit --version 0.22.2",
+      "cargo install --frozen cargo-audit --version =0.22.2",
+    ]
+  ) {
+    assertEquals(findUnpinnedInstalls(run), [], run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - ignores non-install, local, git, and variable cargo runs", () => {
+  for (
+    const run of [
+      "cargo install --locked --path .",
+      "cargo install --frozen --git https://example.com/x cargo-x",
+      "cargo build --locked",
+      "cargo install",
+      'cargo install --locked cargo-audit --version "$V"',
+      "# cargo install cargo-audit",
+    ]
+  ) {
+    assertEquals(findUnpinnedInstalls(run), [], run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - external cargo sources still require a lock", () => {
+  for (
+    const run of [
+      "cargo install --path .",
+      "cargo install --git https://example.com/x cargo-x",
+      "cargo install --git=https://example.com/x",
+    ]
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.length, 1, run);
+    assertEquals(found[0]?.unlocked, true, run);
+  }
+});
+
+Deno.test("cargo external findings identify sources and request locking only", () => {
+  const findings = scanCiInstallPins([
+    workflow(".github/workflows/a.yml", "lint", [
+      "cargo install --path .",
+      "cargo install --git https://github.com/org/tool",
+      "cargo install --git https://github.com/org/other named-crate",
+    ]),
+  ]);
+  assertEquals(findings.length, 3);
+  for (
+    const [name, id] of [
+      [".", "BP-CI-INSTALL-PIN-cargo-pkg-2b0c98f1b5d3"],
+      [
+        "https://github.com/org/tool",
+        "BP-CI-INSTALL-PIN-cargo-https-github-com-org-tool-aa150d4ebb24",
+      ],
+      ["named-crate", "BP-CI-INSTALL-PIN-cargo-named-crate"],
+    ]
+  ) {
+    const finding = findings.find((f) => f.packageName === name);
+    assert(finding);
+    assertEquals(finding.findingId, id);
+    assertStringIncludes(finding.title, "Lock the CI install");
+    assertStringIncludes(finding.suggestedFix, "--locked");
+    assertEquals(finding.suggestedFix.includes("--version"), false);
+  }
+  assertEquals(new Set(findings.map((f) => f.findingId)).size, 3);
+});
+
+Deno.test("cargo quoted values and expressions do not become crates", () => {
+  for (
+    const run of [
+      'cargo install --locked cargo-audit@0.22.2 --features "fix vendored-openssl"',
+      "cargo install --locked cargo-audit@${{ env.CARGO_AUDIT_VERSION }}",
+      "cargo install --locked cargo-audit --version ${{ env.V }}",
+    ]
+  ) assertEquals(findUnpinnedInstalls(run), [], run);
+  assertEquals(
+    findUnpinnedInstalls("cargo install cargo-audit --version ${{ env.V }}")
+      .map((f) => f.packageName),
+    ["cargo-audit"],
+  );
+});
+
+Deno.test("cargo shell versions and command boundaries", () => {
+  for (
+    const run of [
+      `cargo install --locked cargo-audit --version="$V"`,
+      `cargo install --locked cargo-audit@"$V"`,
+      `cargo install --locked cargo-audit --version='0.22.2'`,
+      `cargo install --locked cargo-audit@"0.22.2"`,
+      'cargo install --locked cargo-audit@"${{ inputs.v }}"',
+      `cargo install --locked cargo-audit@0.22.2 & cargo install --locked cargo-edit@0.13.14 & wait`,
+    ]
+  ) assertEquals(findUnpinnedInstalls(run), [], run);
+  for (
+    const run of [
+      `cargo install --locked cargo-audit@0.22.2 & cargo install other`,
+      `node -e "\n console.log(1)\n" && npm install -g pa11y-ci`,
+      `git commit -m 'chore: x\nbody' && cargo install other`,
+      `if ! command -v cargo-audit; then cargo install other; fi`,
+      `time cargo install other`,
+      `(cargo install other)`,
+    ]
+  ) {
+    assertEquals(findUnpinnedInstalls(run).map((f) => f.packageName), [
+      run.includes("pa11y") ? "pa11y-ci" : "other",
+    ], run);
+  }
+});
+
+Deno.test("heredoc bodies and unfinished quotes do not hide later installs", () => {
+  for (
+    const [operator, install, name] of [
+      ["<<'EOF'", "npm install -g pa11y-ci", "pa11y-ci"],
+      ["<<EOF", "gem install bundler", "bundler"],
+      ['<<-"EOF"', "cargo install cargo-audit", "cargo-audit"],
+    ]
+  ) {
+    const run =
+      `cat ${operator} > notes.md\nIt's done\nEOF\n${install}\necho "it's over"`;
+    assertEquals(findUnpinnedInstalls(run).map((f) => f.packageName), [name]);
+  }
+  assertEquals(
+    findUnpinnedInstalls("echo 'unfinished\nnpm install -g pa11y-ci")
+      .map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+  for (const prefix of ["echo '<<EOF'", "cat <<<word"]) {
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\nnpm install -g pa11y-ci`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+    );
+  }
+  assertEquals(
+    findUnpinnedInstalls(
+      "cat <<A <<-'B'\nnpm install -g phantom\nA\nIt's done\n\tB\ncargo install cargo-audit",
+    ).map((f) => f.packageName),
+    ["phantom", "cargo-audit"],
+  );
+});
+
+Deno.test("script bodies and full heredoc delimiters remain scanned", () => {
+  for (
+    const opener of [
+      "bash <<'EOF'",
+      "sudo sh -s <<EOF",
+      "ssh deploy@host <<'EOF'",
+      "docker run -i node:22 sh <<'EOF'",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(`${opener}\nnpm install -g pa11y-ci\nEOF`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+      opener,
+    );
+  }
+  for (
+    const opener of [
+      `docker run --rm --entrypoint bash "$IMAGE" -c '`,
+      `bash -c "`,
+    ]
+  ) {
+    const close = opener.endsWith("'") ? "'" : '"';
+    assertEquals(
+      findUnpinnedInstalls(
+        `${opener}\nset -euo pipefail\ngem install bundler\n${close} < /dev/null`,
+      )
+        .map((f) => f.packageName),
+      ["bundler"],
+      opener,
+    );
+  }
+  for (const delimiter of ["END-OF-FILE", "EOF.md"]) {
+    assertEquals(
+      findUnpinnedInstalls(
+        `cat <<${delimiter}\nIt's done\n${delimiter}\nnpm install -g pa11y-ci`,
+      )
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+      delimiter,
+    );
+  }
+  for (const prefix of ["cat <<EOF\nunfinished", "echo $(( 1 << n ))"]) {
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\nnpm install -g pa11y-ci`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+      prefix,
+    );
+  }
+});
+
+Deno.test("nested scripts normalise continuations and multiline strings", () => {
+  for (
+    const [opener, closer] of [
+      ["bash <<'EOF'", "EOF"],
+      [`docker run --rm --entrypoint bash "$IMAGE" -c '`, "' < /dev/null"],
+    ]
+  ) {
+    for (
+      const install of [
+        "npm install -g \\\npa11y-ci@1.2.3",
+        "gem install \\\nbundler -v 2.5.0",
+        "cargo install --locked \\\ncargo-audit --version 0.22.2",
+      ]
+    ) {
+      assertEquals(
+        findUnpinnedInstalls(`${opener}\n${install}\n${closer}`),
+        [],
+      );
+    }
+    assertEquals(
+      findUnpinnedInstalls(`${opener}\nnpm install -g \\\npa11y-ci\n${closer}`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+    );
+  }
+  assertEquals(
+    findUnpinnedInstalls(
+      `bash <<'EOF'\necho "a\nb" && npm install -g pa11y-ci\nEOF`,
+    ).map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+});
+
+Deno.test("heredoc delimiters and arithmetic preserve subsequent normalisation", () => {
+  for (
+    const prefix of [
+      "cat <<END-OF-FILE\nIt's done\nEND-OF-FILE",
+      "cat <<EOF.md\nIt's done\nEOF.md",
+      "cat <<\\EOF\nIt's done\nEOF",
+      `cat <<E"O"F\nIt's done\nEOF`,
+      "(( x = 1 << 2 ))",
+      "echo $(( 1 << n ))",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\necho "a\nb" && npm install -g pa11y-ci`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+      prefix,
+    );
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\nnpm install -g \\\npa11y-ci@1.2.3`),
+      [],
+      prefix,
+    );
+  }
+  assertEquals(
+    findUnpinnedInstalls("cat <<EOF\nunfinished\nnpm install -g \\\npa11y-ci")
+      .map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      '(( x = 1 << 2 ))\necho "a\n2\nb" && npm install -g pa11y-ci',
+    ).map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+});
+
+Deno.test("quoted script splices and unmatched arithmetic retain installs", () => {
+  for (
+    const [install, name] of [
+      ["npm install -g pa11y-ci", "pa11y-ci"],
+      ["gem install bundler", "bundler"],
+      ["cargo install cargo-audit", "cargo-audit"],
+    ]
+  ) {
+    const script =
+      `docker run --rm --entrypoint bash "$IMAGE" -c '\n  cd '"$DIR"' && ${install}\n' < /dev/null`;
+    assertEquals(findUnpinnedInstalls(script).map((f) => f.packageName), [
+      name,
+    ]);
+  }
+  assertEquals(
+    findUnpinnedInstalls(
+      `docker run --rm --entrypoint bash "$IMAGE" -c '\n  test "$P" = '"$browsers"' && npm install -g pa11y-ci\n' < /dev/null`,
+    ).map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      `bash -c '\n echo '"$GREETING"'; gem install bundler\n'`,
+    )
+      .map((f) => f.packageName),
+    ["bundler"],
+  );
+  for (
+    const install of [
+      "npm install -g pa11y-ci@1.2.3",
+      "gem install bundler -v 2.5.0",
+      "cargo install --locked cargo-audit --version 0.22.2",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(`bash -c '\n cd '"$DIR"' && ${install}\n'`),
+      [],
+    );
+  }
+  for (
+    const prefix of [
+      'if [[ "$GITHUB_REF" =~ ^((a)b)? ]]; then echo tag; fi',
+      "((cd web && npm ci) || true)",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\necho "a\nb" && npm install -g pa11y-ci`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+    );
+  }
+});
+
+Deno.test("cargo expressions preserve logical operators and command boundaries", () => {
+  for (
+    const run of [
+      "cargo install --locked cargo-audit --version ${{ inputs.version || '0.22.2' }}",
+      "cargo install --locked cargo-audit@${{ inputs.version || '0.22.2' }}",
+      "cargo install --locked cargo-audit --version ${{ github.event_name == 'push' && '0.22.2' || '0.22.1' }}",
+      'cargo install --locked cargo-audit@0.22.2 --features "a || b"',
+    ]
+  ) assertEquals(findUnpinnedInstalls(run), [], run);
+  assertEquals(
+    findUnpinnedInstalls(
+      "cargo install --locked cargo-audit@${{ inputs.version || '0.22.2' }} && cargo install other",
+    ).map((f) => f.packageName),
+    ["other"],
+  );
+});
+
+Deno.test("quoted scripts on their opening line retain installs", () => {
+  for (
+    const [script, name] of [
+      [
+        'docker run --rm node:22 sh -c "npm ci && npm install -g pa11y-ci"',
+        "pa11y-ci",
+      ],
+      ['ssh host "cd /srv && gem install bundler"', "bundler"],
+      ["bash -c 'cd /src && cargo install cargo-audit'", "cargo-audit"],
+      [
+        `docker run "\${IMAGE}" -c 'mkdir -p "\${DENO_DIR}" && npm install -g pa11y-ci'`,
+        "pa11y-ci",
+      ],
+      ["bash -c 'cd /x && npm install -g pa11y-ci\necho done'", "pa11y-ci"],
+    ] as const
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(script).map((f) => f.packageName),
+      [name],
+      script,
+    );
+  }
+  for (
+    const script of [
+      `sh -c "npm ci && npm install -g pa11y-ci@1.2.3"`,
+      `ssh host "cd /srv && gem install bundler -v 2.5.0"`,
+      `bash -c 'cd /src && cargo install --locked cargo-audit@0.22.2'`,
+      `cargo install --locked cargo-audit@0.22.2 --features "a || b"`,
+    ]
+  ) assertEquals(findUnpinnedInstalls(script), [], script);
+});
+
+Deno.test("separate quoted scripts and shell words retain their boundaries", () => {
+  for (
+    const script of [
+      `docker run --rm img sh -c 'cargo install --locked cargo-audit --version 0.22.2' && echo 'done'`,
+      `bash -c 'cd /src && cargo install --locked cargo-audit@0.22.2' || echo 'install failed'`,
+      `bash -c '\n cd /x\n cargo install --locked cargo-audit --version 0.22.2' || echo 'install failed'`,
+      `sh -c 'npm install -g pa11y-ci@1.2.3' && echo 'ok'`,
+      `ssh host "gem install bundler -v 2.5.0" || echo "failed"`,
+    ]
+  ) assertEquals(findUnpinnedInstalls(script), [], script);
+
+  for (
+    const [script, name] of [
+      [`sh -c 'npm install -g pa11y-ci' && echo 'ok'`, "pa11y-ci"],
+      [`sh -c 'cd '"$DIR"' && npm install -g pa11y-ci'`, "pa11y-ci"],
+      [
+        `grep -E "foo|bar" f && sh -c 'cd x && npm install -g pa11y-ci'`,
+        "pa11y-ci",
+      ],
+      [
+        `jq -r '.a | .b' f && bash -c "cd x && npm install -g pa11y-ci"`,
+        "pa11y-ci",
+      ],
+      [
+        `sh -c 'npm ci' && ssh host "cd /srv && gem install bundler"`,
+        "bundler",
+      ],
+      [
+        `jq -r '.a | .b' f && bash -c "cd x && cargo install cargo-audit"`,
+        "cargo-audit",
+      ],
+      [
+        `bash -c '\n npm ci\n' && sh -c "cd x && npm install -g pa11y-ci"`,
+        "pa11y-ci",
+      ],
+    ] as const
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(script).map((f) => f.packageName),
+      [name],
+      script,
+    );
+  }
+});
+
+Deno.test("nested script splices retain variables and expressions", () => {
+  for (
+    const script of [
+      `sh -c 'npm install -g '"$TOOL"' && echo ok'`,
+      `sh -c 'gem install '"$GEM"' --no-document'`,
+      `sh -c 'cargo install --locked cargo-audit --version '"$CARGO_AUDIT_VERSION"' && cargo audit'`,
+      `sh -c 'cargo install --locked x --version '$V' && echo ok'`,
+      `sh -c 'cargo install --locked cargo-audit --version '\${{ env.V }}`,
+      `sh -c 'cargo install --locked cargo-audit --version '"\${{ env.V }}"`,
+    ]
+  ) assertEquals(findUnpinnedInstalls(script), [], script);
+  assertEquals(
+    findUnpinnedInstalls(`sh -c 'cd '"$DIR"' && npm install -g pa11y-ci'`)
+      .map((finding) => finding.packageName),
+    ["pa11y-ci"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(`sh -c 'echo '$((1 + 2))' && npm install -g pa11y-ci'`)
+      .map((finding) => finding.packageName),
+    ["pa11y-ci"],
+  );
+});
+
+Deno.test("unmatched arithmetic on the opening line retains installs", () => {
+  for (
+    const [script, name] of [
+      [
+        `[[ "$R" =~ ^((a)b)? ]] && git commit -m "Release\nnotes" && gem install bundler`,
+        "bundler",
+      ],
+      [
+        `((cd web && npm ci) || true); echo "a\nb" && npm install -g pa11y-ci`,
+        "pa11y-ci",
+      ],
+      [
+        `((cd web && npm ci) || true) \\\n  && echo "a\nb" && npm install -g pa11y-ci`,
+        "pa11y-ci",
+      ],
+      [
+        `if [[ "$GITHUB_REF" =~ ^((refs/tags/)v)?[0-9]+ ]]; then git tag -a v1 -m "Release\nnotes"; fi; cargo install cargo-audit`,
+        "cargo-audit",
+      ],
+    ] as const
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(script).map((f) => f.packageName),
+      [name],
+      script,
+    );
+  }
+});
+
+Deno.test("cargo ignores shell comments and redirections", () => {
+  for (
+    const suffix of [
+      "2>&1",
+      "2>&1 | tee install.log",
+      "> /dev/null",
+      ">> log",
+      "< input",
+      "&> log",
+      "2>log",
+      "# pinned",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(
+        `cargo install --locked cargo-audit@0.22.2 ${suffix}`,
+      ),
+      [],
+      suffix,
+    );
+  }
+  assertEquals(
+    findUnpinnedInstalls("cargo install cargo-audit # exact and locked")
+      .map((f) => f.packageName),
+    ["cargo-audit"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      "cargo install cargo-audit # comment && cargo install phantom",
+    )
+      .map((f) => f.packageName),
+    ["cargo-audit"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      'cargo install --locked cargo-audit@0.22.2 --features "# feature"',
+    ),
+    [],
+  );
+});
+
+Deno.test("findUnpinnedInstalls - flags cargo versions that are not exact", () => {
+  for (
+    const [run, version] of [
+      ["cargo install --locked cargo-audit --version 0.22", "0.22"],
+      ["cargo install --locked cargo-audit --vers 0.22", "0.22"],
+      ["cargo install --locked cargo-audit@^0.22.2", "^0.22.2"],
+      ["cargo install --locked cargo-audit@0.22", "0.22"],
+    ] as const
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.length, 1, run);
+    assertEquals(found[0]?.version, version, run);
+    assertEquals(found[0]?.packageName, "cargo-audit", run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - cargo evasions still flag the unpinned install", () => {
+  for (
+    const [run, unlocked] of [
+      ["sudo cargo install cargo-audit", true],
+      ["env CARGO_TERM_COLOR=always cargo install --locked cargo-audit", false],
+      ["cargo +stable install --locked cargo-audit", false],
+      ["rustup update && cargo install cargo-audit --version 0.22.2", true],
+      ["cargo install --locked --features foo cargo-audit", false],
+      ["cargo install --root /usr/local cargo-audit", true],
+    ] as const
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.map((f) => f.packageName), ["cargo-audit"], run);
+    assertEquals(found[0]?.unlocked, unlocked, run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - cargo value flags do not leak their value as a crate", () => {
+  for (
+    const flag of [
+      "--branch",
+      "--tag",
+      "--rev",
+      "--root",
+      "--registry",
+      "--index",
+      "-F",
+      "--bin",
+      "--example",
+      "--target",
+      "--target-dir",
+      "--profile",
+      "--jobs",
+      "-j",
+      "--config",
+      "--color",
+      "-Z",
+      "--message-format",
+      "--lockfile-path",
+      "--manifest-path",
+      "-C",
+    ]
+  ) {
+    const run = `cargo install --locked ${flag} some-value cargo-audit`;
+    assertEquals(
+      findUnpinnedInstalls(run).map((f) => f.packageName),
+      ["cargo-audit"],
+      run,
+    );
+  }
+});
+
+Deno.test("findUnpinnedInstalls - npm, npx and gem findings are not marked unlocked", () => {
+  for (
+    const run of [
+      "npm install -g pa11y-ci@3",
+      "npx -y pa11y-ci",
+      "gem install bundler",
+    ]
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.length, 1, run);
+    assertEquals(found[0]?.unlocked, false, run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - joins cargo backslash continuations onto the first line", () => {
+  const found = findUnpinnedInstalls(
+    ["cargo install \\", "  --locked \\", "  cargo-audit"].join("\n"),
+  );
+  assertEquals(found.map((f) => f.packageName), ["cargo-audit"]);
+  assertEquals(found[0]?.anchor, "cargo install \\");
+  assertEquals(found[0]?.unlocked, false);
+});
+
+Deno.test("findUnpinnedInstalls - hostile cargo input completes deterministically", () => {
+  const repeatedFlags = `cargo install ${"--locked ".repeat(5000)}cargo-audit`;
+  const first = findUnpinnedInstalls(repeatedFlags);
+  assertEquals(first.map((f) => f.packageName), ["cargo-audit"]);
+  assertEquals(first, findUnpinnedInstalls(repeatedFlags));
+
+  const padded = `cargo install ${" ".repeat(5000)}${
+    "- ".repeat(5000)
+  }cargo-audit`;
+  assertEquals(findUnpinnedInstalls(padded).map((f) => f.packageName), [
+    "cargo-audit",
+  ]);
+});
+
+Deno.test("scanCiInstallPins - cargo install gets the pin-and-lock finding", () => {
+  const findings = scanCiInstallPins([
+    workflow(".github/workflows/a.yml", "lint", ["cargo install cargo-audit"]),
+  ]);
+  assertEquals(findings.map((f) => f.findingId), [
+    "BP-CI-INSTALL-PIN-cargo-cargo-audit",
+  ]);
+  const finding = findings[0] as CiInstallPinFinding;
+  assertEquals(finding.tool, "cargo");
+  assertStringIncludes(finding.title, "Pin and lock");
+  assertEquals(finding.callSites[0]?.line, 8);
+  assertEquals(finding.callSites[0]?.unlocked, true);
+  assertStringIncludes(finding.evidence, "no `--locked`");
+  assertStringIncludes(finding.whyItMatters, "re-resolves");
+  assertStringIncludes(
+    finding.suggestedFix,
+    "cargo install --locked cargo-audit --version 1.2.3",
+  );
+});
+
+Deno.test("scanCiInstallPins - a pinned and locked cargo install yields no finding", () => {
+  assertEquals(
+    scanCiInstallPins([
+      workflow(".github/workflows/a.yml", "lint", [
+        "cargo install --locked cargo-audit --version 0.22.2",
+      ]),
+    ]),
+    [],
+  );
+});
+
+Deno.test("scanCiInstallPins - cargo evidence marks only the unlocked call-sites", () => {
+  const findings = scanCiInstallPins([
+    workflow(".github/workflows/a.yml", "lint", [
+      "cargo install --locked cargo-audit",
+    ]),
+    workflow(".github/workflows/b.yml", "docs", [
+      "cargo install cargo-audit --version 0.22.2",
+    ]),
+  ]);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]?.callSites.map((s) => s.unlocked), [false, true]);
+  const [, lockedLine, unlockedLine] = (findings[0]?.evidence ?? "").split(
+    "\n",
+  );
+  assertEquals(
+    lockedLine?.endsWith("`cargo install --locked cargo-audit`"),
+    true,
+  );
+  assertEquals(unlockedLine?.endsWith("(no `--locked`)"), true);
+});

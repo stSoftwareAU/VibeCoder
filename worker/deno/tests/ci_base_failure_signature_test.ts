@@ -63,6 +63,46 @@ Deno.test("compareBaseFailure - Jest identifies the failing test rather than sha
   assertEquals(failureSignatureLines(generic), []);
 });
 
+Deno.test("compareBaseFailure - notices and variable runner output do not obscure the same failure", async () => {
+  const pr =
+    "- **runner:1**: The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026.\nparser - header ... FAILED (150µs)\nAssertionError: invalid header value\nFAILED | 8693 passed (4 steps) | 1 failed (6m11s)\n=== 1 failed, 41 passed in 2.3s ===\nTests  1 failed | 5 passed (6)";
+  const base =
+    "parser - header ... FAILED (171µs)\nAssertionError: invalid header value\nFAILED | 8690 passed (4 steps) | 1 failed (6m29s)\n=== 1 failed, 40 passed in 3.4s ===\nTests  1 failed | 4 passed (5)";
+  const result = await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText: pr,
+    ghFn: unusedGh,
+    actionsLogFn: logFake(excerptOf(base)).fn,
+  });
+  assertEquals(result.state, "same");
+});
+
+Deno.test("compareBaseFailure - node and bats test names distinguish unrelated failures", async () => {
+  const cases: [string, string][] = [
+    [
+      "✖ adds 1 + 2\nAssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+      "✖ subtracts 5 - 2\nAssertionError [ERR_ASSERTION]: Expected values to be strictly equal:",
+    ],
+    [
+      "not ok 3 parser rejects a bad header\n# command failed",
+      "not ok 4 renderer pads the title\n# command failed",
+    ],
+  ];
+  for (const [pr, base] of cases) {
+    const result = await compareBaseFailure({
+      repo: REPO,
+      checkName: CHECK,
+      baseCheckRunId: BASE_RUN_ID,
+      failureText: pr,
+      ghFn: unusedGh,
+      actionsLogFn: logFake(excerptOf(base)).fn,
+    });
+    assertEquals(result.state, "different");
+  }
+});
+
 const REPO = "org/repo";
 const CHECK = "Project Validation";
 const BASE_RUN_ID = 9001;
@@ -176,11 +216,10 @@ Deno.test("compareBaseFailure - a shared generic exit line alone is different", 
   assertEquals(result, { state: "different" });
 });
 
-Deno.test("compareBaseFailure - an annotation-only failure matches its message in the base log", async () => {
-  // formatCiAnnotations renders `- **path:line**: message`; the annotation
-  // carries no failure word, so it qualifies only because it is an annotation.
-  const failureText = "- **a/b.ts:4**: semgrep: rule fired - x\n";
-  const baseLog = "2026-11-02T10:00:00Z ##[error]semgrep: rule fired - x\n";
+Deno.test("compareBaseFailure - an annotation with a failure word matches its message in the base log", async () => {
+  const failureText = "- **a/b.ts:4**: semgrep error: rule fired - x\n";
+  const baseLog =
+    "2026-11-02T10:00:00Z ##[error]semgrep error: rule fired - x\n";
   const log = logFake(excerptOf(baseLog));
 
   const result = await compareBaseFailure({
@@ -192,7 +231,10 @@ Deno.test("compareBaseFailure - an annotation-only failure matches its message i
     actionsLogFn: log.fn as typeof fetchGithubActionsLogExcerpt,
   });
 
-  assertEquals(result, { state: "same", matched: "semgrep: rule fired - x" });
+  assertEquals(result, {
+    state: "same",
+    matched: "semgrep error: rule fired - x",
+  });
 });
 
 Deno.test("compareBaseFailure - empty or boilerplate failure text is unreadable and never fetches the log", async () => {

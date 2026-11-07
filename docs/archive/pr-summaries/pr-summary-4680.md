@@ -52,8 +52,9 @@ flowchart TD
 
 ### Essential Design Decisions
 
-- A line counts when it is an annotation, or carries a failure word outside a
-  command-line flag, is at least 20 normalised characters, is not a command echo
+- A line counts when it carries a failure word outside a command-line flag and
+  is at least 20 normalised characters, or names a failing Jest, node:test or
+  Bats test; it must not be a command echo
   (`##[group]`, `##[endgroup]`, `##[command]`, `[command]` lines such as
   `Run cargo test --no-fail-fast`) and is not the runner's generic
   `Process completed with exit code N` line (every failed job has it). Flags
@@ -115,8 +116,8 @@ Backend-only change.
   different failure is charged (no deferral, no hold); red base whose log cannot
   be fetched is held; a tree-equivalent red with a differing log is charged; two
   prior holds make an unreadable red base charged. The stub now serves the base
-  run's identity and job log, defaulting to the failing check's own annotation
-  messages so the existing red-base tests are unchanged. The hold tests for a
+  run's identity and job log, defaulting to the fixture's first failure message.
+  The hold tests for a
   missing and a stale base run now assert the `Depends on` reference and the
   base state in the comment, and a new test asserts the base run's log is
   fetched with the failing check's name. Red checks: "different" falling through
@@ -175,5 +176,26 @@ and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - same
 Different Jest tests and generic-only output are covered by
 `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - Jest identifies the failing test rather than shared suite output`.
 These three new tests failed before the fix. The processor comments and workflow
-diagram now specify that every comparable line must appear. No other copy of
-the signature extraction rule was found.
+diagram now specify that every comparable line must appear. The manual also
+lists the signature extraction rule and is updated alongside the implementation.
+
+Latest review follow-up: annotations without failure words are excluded, so a
+runner notice absent from the job log does not prevent deferral. The worker's
+own CI-log wrapper is excluded as boilerplate when both job logs are present.
+Deno step
+tallies, pytest and Vitest summaries are excluded, and minute and microsecond
+durations are normalised for this comparison. Jest, node:test and Bats failing
+test names distinguish unrelated failures. The obsolete assumption that every
+annotation is comparable is replaced by failure-word filtering; matching
+annotations with failure words remain covered by
+`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - an annotation with a failure word matches its message in the base log`.
+The non-audit lint fixture now includes a failure word to exercise the remaining
+deferral path, covered by
+`worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
+The notice and variable output are covered by
+`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - notices and variable runner output do not obscure the same failure`
+and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a runner notice absent from the job logs does not prevent deferral`.
+Different node:test and Bats names are covered by
+`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - node and bats test names distinguish unrelated failures`.
+Both comparison tests failed before the fix. The extraction rule's manual copy
+is `docs/workflows/ci-fix.md`; the CI-fix prompt does not enumerate the lines.

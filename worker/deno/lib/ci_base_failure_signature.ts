@@ -46,18 +46,25 @@ const COMMAND_ECHO =
 const FLAG_TOKEN = /(?:^|\s)--?[a-z][\w-]*/g;
 /** The runner's closing line, shared by every failed job; not evidence. */
 const GENERIC_LINE =
-  /process completed with exit code|^(?:<ts>\s*)?(?:##\[error\]\s*)?assertion `left (?:==|!=) right` failed\s*$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|^(?:<ts>\s*)?(?:(?:ok|failed)\s*\|\s*\d+ passed\s*\||test result:|tests:|test suites:|fail\s+\S+\.(?:test|spec)\.[^\s]+\s*$|npm error (?:path|command)\s)/;
+  /process completed with exit code|^(?:<ts>\s*)?(?:##\[error\]\s*)?assertion `left (?:==|!=) right` failed\s*$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|^(?:<ts>\s*)?(?:(?:ok|failed)\s*\|\s*\d+ passed(?:\s*\(\d+ steps?\))?\s*\||test result:|tests:|test suites:|tests\s+\d+\s+(?:failed|passed)\s*\||=+\s*\d+\s+(?:failed|passed)\b|fail\s+\S+\.(?:test|spec)\.[^\s]+\s*$|npm error (?:path|command)\s)/;
 /** The worker's own boilerplate from formatCiAnnotations; not evidence. */
 const BOILERPLATE =
-  /no specific annotations were available|following ci failure details were detected|\d+ further annotation\(s\) omitted/;
+  /no specific annotations were available|following ci failure details were detected|\d+ further annotation\(s\) omitted|^## pr failure action output$|^the following excerpts were fetched by the configured ci log providers/;
 const FAILURE_WORD =
   /\b(?:error|fail(?:ed|ure|ing|s)?|panic(?:ked)?|exception|fatal|assert\w*|cannot|denied)\b/;
+
+/** Normalise runner durations that the shared fingerprint normaliser does not cover. */
+function normaliseComparison(text: string): string {
+  return normaliseLogExcerpt(
+    text.replace(/\b\d+m\d+(?:\.\d+)?s\b|\b\d+(?:\.\d+)?\s*[µμ]s\b/gi, "<dur>"),
+  );
+}
 
 /**
  * Failure lines of a CI failure text, normalised and de-duplicated in
  * first-seen order. A line qualifies when it is long enough, is not the
- * generic runner summary or a command echo, and is an annotation, a Jest
- * failing-test name, or carries a failure word outside any command-line flag.
+ * generic runner summary or a command echo, and is a failing-test name or
+ * carries a failure word outside any command-line flag.
  */
 export function failureSignatureLines(text: string): string[] {
   const seen = new Set<string>();
@@ -68,20 +75,21 @@ export function failureSignatureLines(text: string): string[] {
 
     if (COMMAND_ECHO.test(line)) continue;
 
-    let annotation = false;
     const prefix = ANNOTATION_PREFIX.exec(line);
     if (prefix) {
       line = line.slice(prefix[0].length);
-      annotation = true;
     }
     line = line.replace(COMMAND_MARKER, "");
 
-    const normalised = normaliseLogExcerpt(line);
-    if (normalised.length < MIN_SIGNATURE_CHARS) continue;
+    const normalised = normaliseComparison(line);
+    const testName = /^(?:<ts>\s*)?(?:●\s+\S|✖\s+\S|not ok\s+\d+\s+\S)/.test(
+      normalised,
+    );
+    if (!testName && normalised.length < MIN_SIGNATURE_CHARS) continue;
     if (GENERIC_LINE.test(normalised)) continue;
     if (BOILERPLATE.test(normalised)) continue;
     if (
-      !annotation && !/^●\s+\S/.test(normalised) &&
+      !testName &&
       !FAILURE_WORD.test(normalised.replace(FLAG_TOKEN, " "))
     ) continue;
     if (seen.has(normalised)) continue;
@@ -143,7 +151,7 @@ export async function compareBaseFailure(options: {
     };
   }
 
-  const baseText = normaliseLogExcerpt(stripAnsi(outcome.excerpt));
+  const baseText = normaliseComparison(stripAnsi(outcome.excerpt));
   if (baseText.length === 0) {
     return {
       state: "unreadable",

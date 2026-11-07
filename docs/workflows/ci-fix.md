@@ -486,9 +486,11 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   A red run's conclusion alone does not grant the deferral (Issue #4680). When
   that newest evidence is `failure`, the worker reads the failing job's log of
   the same run and compares it with the pull request's own failure. The pull
-  request's failure lines are its check annotation messages and its log lines
-  containing `error`, `fail`, `panic`, `exception`, `fatal`, `assert`, `cannot`
-  or `denied`; each is normalised, and the generic
+  request's failure lines are its annotation messages and log lines containing
+  `error`, `fail`, `panic`, `exception`, `fatal`, `assert`, `cannot` or
+  `denied`, as well as Jest `●`, node:test `✖`, and Bats `not ok` failing-test
+  names. An annotation without a failure word is excluded; each line is
+  normalised, and the generic
   runner summaries, passing test lines and generic assertion lines are ignored. The comparison gives one
   of three signatures:
   - **Same** — every comparable normalised failure line of the pull request appears in

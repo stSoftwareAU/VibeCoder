@@ -103,7 +103,7 @@ const MERGED_CHECK_ID = 8;
 
 /** The annotation message makeInput carries for the failing semgrep check. */
 const SEMGREP_MESSAGE =
-  "semgrep: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)";
+  "semgrep error: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)";
 
 /** The workflow path each run id resolves to, unless a scenario overrides it. */
 const DEFAULT_RUN_PATHS: Record<string, string> = {
@@ -115,6 +115,8 @@ const DEFAULT_RUN_PATHS: Record<string, string> = {
 
 /** How the stubbed GitHub answers the base-branch and issue-state reads. */
 interface StubOptions {
+  /** Failing pull request job's log, when supplied. */
+  failingLog?: string;
   /** Raw `check-runs` body for the base branch, or a thrower. */
   baseCheckRuns?: string | "error";
   /** Name of the failing check, which its identity payload carries. */
@@ -321,8 +323,13 @@ function makeGhRunner(
       }));
     }
 
-    // The base run's job log and the merged run's job log (Issue #4680). The
-    // failing check's own job (111) is deliberately not served here.
+    if (
+      endpoint === "repos/org/repo/actions/jobs/111/logs" &&
+      options.failingLog !== undefined
+    ) {
+      return logReply(options.failingLog);
+    }
+    // The base run's job log and the merged run's job log (Issue #4680).
     if (endpoint === `repos/org/repo/actions/jobs/${BASE_CHECK_ID}/logs`) {
       return logReply(options.baseLog ?? jobLog([SEMGREP_MESSAGE]));
     }
@@ -432,9 +439,9 @@ async function runDeferralScenario(
       errors: [],
       warnings: [],
     };
-    // By default the base run and the merged run print this failure's own
-    // annotations, so a red base shares the pull request's failure (Issue #4680).
-    const ownLog = jobLog(annotationMessages(input));
+    // The fixture's first annotation describes the job failure; notices are
+    // not automatically copied into the job log.
+    const ownLog = jobLog(annotationMessages(input).slice(0, 1));
     const runGh = makeGhRunner(captured, {
       checkName: input.checkName,
       baseLog: ownLog,
@@ -843,7 +850,7 @@ Deno.test("processCiFailure - a non-audit check with a Depends on line and a red
   const captured = await runDeferralScenario(
     AGENT_MESSAGE,
     { baseCheckRuns: baseCheckRunsPayload("failure", "lint") },
-    makeCheckInput("lint", "lint: no-unused-vars"),
+    makeCheckInput("lint", "lint error: no-unused-vars"),
   );
 
   assertEquals(captured.comments.length, 1);
@@ -1083,6 +1090,31 @@ Deno.test("processCiFailure - same test failure with different tallies is deferr
       "AssertionError: expected header to be valid",
       "FAILED | 1405 passed | 1 failed (2m31s)",
     ]),
+  }, input);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+});
+
+Deno.test("processCiFailure - a runner notice absent from the job logs does not prevent deferral", async () => {
+  const input = makeInput();
+  input.encodedAnnotations = btoa(JSON.stringify([
+    {
+      path: "test.ts",
+      start_line: 1,
+      message: "AssertionError: invalid header value",
+    },
+    {
+      path: "runner",
+      start_line: 1,
+      message:
+        "The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026.",
+    },
+  ]));
+  const log = jobLog(["AssertionError: invalid header value"]);
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log,
+    baseLog: log,
   }, input);
   const body = captured.comments.at(-1) ?? "";
   assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
