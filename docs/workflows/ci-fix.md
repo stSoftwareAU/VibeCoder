@@ -488,20 +488,33 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   the same run and compares it with the pull request's own failure. The pull
   request's failure lines are its annotation messages and log lines containing
   `error`, `fail`, `panic`, `exception`, `fatal`, `assert`, `cannot` or
-  `denied`, as well as failing-test names: Jest `●` and `✕`, node:test `✖`,
-  Bats `✗`, TAP `not ok`, Mocha numbered names, Vitest `FAIL file > name`,
-  pytest `FAILED id::name`, Go `--- FAIL:` and Deno or cargo `name ... FAILED`.
-  Each line is normalised first: timestamps, durations, TAP and Mocha sequence
-  numbers and the counts beside `passed`, `failed`, `failures`, `errors`,
-  `tests` and the like are replaced. Left out of the comparison are passing
-  test lines in every runner format (`... ok`, TAP `ok <n>`, `✓`, `✔`, `√`,
-  `--- PASS`, `PASS`, pytest `PASSED`), lines made only of a test-run tally
-  (`1 failed, 42 passed in 0.31s`, `42 examples, 1 failure`, the generic
-  `1) Failure:` header), the runner's exit line, other generic assertion and
-  command-failed lines, and an annotation without a failure word. A
-  failing-test name must equal a whole line of the base log, so `parses header`
-  does not match `parses header with a BOM`; any other line may sit inside a
-  longer base line. Unknown runner formats can still produce generic-only
+  `denied`, as well as failing-test names: Jest `●`, `✕` and `FAIL file.test.js`,
+  node:test `✖`, Bats `✗`, TAP `not ok`, Mocha numbered names (a describe header
+  is joined to the test line under it), Vitest `FAIL file > name`, pytest
+  `FAILED id::name`, Go `--- FAIL:`, Deno or cargo `name ... FAILED` and Deno's
+  `name => path:line:col`. Each line is normalised first: timestamps, durations,
+  TAP and Mocha sequence numbers, Deno source positions and the counts beside
+  `passed`, `failed`, `failures`, `errors`, `tests` and the like are replaced.
+  Left out of the comparison are passing test lines in every runner format
+  (`... ok`, TAP `ok <n>`, `✓`, `✔`, `√`, `--- PASS`, `PASS`, pytest `PASSED`),
+  output that tests print (Deno `------- output -------` blocks, Jest
+  `console.*` blocks and Vitest `stdout |` blocks), lines made only of
+  `<count> <word>` groups whatever the noun (`1 failed, 42 passed, 3 warnings in
+  0.31s`, `Deprecations: 3`, `42 examples, 1 failure`, the generic `1) Failure:`
+  header), the runner's exit line, other generic assertion and command-failed
+  lines, assertion-library headers and remote library stack frames
+  (`Values are not equal.`, `throw new AssertionError(...)`,
+  `at assertEquals (https://jsr.io/...)`), Jest's `Test suite failed to run`
+  and an annotation without a failure word. A failing-test name must equal a
+  whole line of the base log, so `parses header` does not match `parses header
+  with a BOM`; any other line may sit inside a longer base line. Output printed
+  by a passing test that no recognised block marks (for example inline logger
+  lines in Mocha or node:test) is still compared. When the pull request has no
+  such line (semgrep, shellcheck, cspell and similar checks print rule ids, not
+  failure words), the lines of the failing step's own output (between its
+  command echo and the `Process completed with exit code` line) are compared
+  instead, with standalone numbers ignored; without that step the failure is
+  unreadable. A pull request whose only lines are generic is unreadable.
   matches. The comparison gives one of three signatures:
   - **Same** — every comparable normalised failure line of the pull request appears in
     the base run's log, so the base is red for this failure.
@@ -509,8 +522,8 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
     line is absent, so the base is red for another reason and the claim is
     not verified as this failure.
   - **Unreadable** — either side cannot be compared: the pull request has no
-    failure line, the check is not a GitHub Actions check, or the base log cannot
-    be fetched.
+    failure line or failing step output, the check is not a GitHub Actions
+    check, or the base log cannot be fetched.
 
   [`_resolveBaseBranchDeferral`](../../worker/deno/lib/pr_ci_processor.ts)
   then applies the verdict:
@@ -683,7 +696,7 @@ flowchart TD
     E -->|"failure"| L{"base run's failing log contains<br/>all comparable PR failure lines?"}
     L -->|"same: all comparable PR failure lines<br/>appear in the base log"| R["deferred: diagnosis posted once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
     L -->|"different: base log read,<br/>a PR failure line is missing"| O
-    L -->|"unreadable: no failure line,<br/>non-Actions check, log fetch error"| H{"fewer than two holds<br/>for this signature?"}
+    L -->|"unreadable: no failure line or step output,<br/>non-Actions check, log fetch error"| H{"fewer than two holds<br/>for this signature?"}
     E -->|"no run, stale run,<br/>cancelled or skipped,<br/>lookup failed"| H
     H -->|yes| U["base-unverified note<br/>+ attempt marker, no charge"]
     H -->|no| O

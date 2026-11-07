@@ -103,7 +103,7 @@ const MERGED_CHECK_ID = 8;
 
 /** The annotation message makeInput carries for the failing semgrep check. */
 const SEMGREP_MESSAGE =
-  "semgrep error: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)";
+  "semgrep: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)";
 
 /** The workflow path each run id resolves to, unless a scenario overrides it. */
 const DEFAULT_RUN_PATHS: Record<string, string> = {
@@ -186,8 +186,8 @@ function baseCheckRunsPayload(
 function jobLog(messages: string[]): string {
   return [
     "##[group]Run the check",
-    ...messages.map((message) => `##[error]${message}`),
     "##[endgroup]",
+    ...messages.map((message) => `##[error]${message}`),
     "##[error]Process completed with exit code 1.",
   ].join("\n");
 }
@@ -444,6 +444,7 @@ async function runDeferralScenario(
     const ownLog = jobLog(annotationMessages(input).slice(0, 1));
     const runGh = makeGhRunner(captured, {
       checkName: input.checkName,
+      failingLog: ownLog,
       baseLog: ownLog,
       mergedLog: ownLog,
       ...options,
@@ -708,7 +709,9 @@ Deno.test("processCiFailure - a deferral comment that fails to post is never rep
       errors: [],
       warnings: [],
     };
-    const inner = makeGhRunner(captured, {});
+    const inner = makeGhRunner(captured, {
+      failingLog: jobLog([SEMGREP_MESSAGE]),
+    });
     const runGh = (args: string[]): Promise<string> => {
       if (args[0] === "pr" && args[1] === "comment") {
         return Promise.reject(new Error("HTTP 403: Forbidden"));
@@ -850,7 +853,7 @@ Deno.test("processCiFailure - a non-audit check with a Depends on line and a red
   const captured = await runDeferralScenario(
     AGENT_MESSAGE,
     { baseCheckRuns: baseCheckRunsPayload("failure", "lint") },
-    makeCheckInput("lint", "lint error: no-unused-vars"),
+    makeCheckInput("lint", "lint: no-unused-vars"),
   );
 
   assertEquals(captured.comments.length, 1);
@@ -1204,4 +1207,98 @@ Deno.test("processCiFailure - an unreadable red base after two holds takes the o
     true,
     `expected the hold-bound warning; got: ${captured.warnings.join(" | ")}`,
   );
+});
+
+/** A semgrep job log naming `rule`, which prints no failure word (Issue #4680). */
+function semgrepLog(rule: string, line = 42): string {
+  return [
+    "##[group]Run semgrep ci --config auto",
+    "semgrep ci --config auto",
+    "##[endgroup]",
+    "┌────────────────┐",
+    "│ 1 Code Finding │",
+    "└────────────────┘",
+    "    worker/deno/lib/some_regex.ts",
+    `   ❯❱ ${rule}`,
+    "          RegExp() called with a variable; this may allow ReDoS.",
+    `           ${line}┆ const re = new RegExp(input);`,
+    "BLOCKING CODE RULES FIRED:",
+    `  ${rule}`,
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+}
+
+const SEMGREP_RULE = "javascript.lang.security.audit.detect-non-literal-regexp";
+
+/** An input whose only annotation is the runner's generic exit line. */
+function exitLineInput(): CiFixInput {
+  const input = makeInput();
+  input.encodedAnnotations = btoa(JSON.stringify([{
+    path: ".github",
+    start_line: 1,
+    message: "Process completed with exit code 1.",
+  }]));
+  return input;
+}
+
+Deno.test("processCiFailure - a semgrep failure with no failure word in its output is deferred when the base log shows the same rule (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: semgrepLog(SEMGREP_RULE, 57),
+    baseLog: semgrepLog(SEMGREP_RULE, 42),
+  }, exitLineInput());
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - a semgrep failure whose base log names another rule is charged, neither deferred nor held (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: semgrepLog(SEMGREP_RULE),
+    baseLog: semgrepLog(
+      "javascript.lang.security.audit.detect-eval-with-expression",
+    ),
+  }, exitLineInput());
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+});
+
+Deno.test("processCiFailure - output a passing test prints and changing test tallies do not stop the deferral (Issue #4680)", async () => {
+  const failure = [
+    "##[group]Run deno task test",
+    "##[endgroup]",
+    "parser - parse header => ./tests/parser_test.ts:10:6",
+    "error: AssertionError: expected header to be valid",
+  ];
+  const prLog = [
+    "##[group]Run deno task test",
+    "##[endgroup]",
+    "new test ...",
+    "------- output -------",
+    "ERROR worktree retry failed after 3 attempts: simulated outage",
+    "----- output end -----",
+    "ok (1ms)",
+    ...failure.slice(2),
+    "FAILED | 1407 passed | 1 failed (2m14s)",
+    "1 failed, 42 passed, 3 warnings in 0.31s",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+  const baseLog = [
+    ...failure,
+    "FAILED | 1405 passed | 1 failed (2m31s)",
+    "1 failed, 41 passed, 2 warnings in 0.28s",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: prLog,
+    baseLog,
+  }, exitLineInput());
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
 });

@@ -28,6 +28,8 @@ export type BaseFailureComparison =
 
 /** Lines read from a failure text, and their length; bounds keep hostile input cheap. */
 const MAX_LINES = 2000;
+/** The base excerpt is byte-capped, so it needs no tighter line bound. */
+const MAX_BASE_LINES = 20000;
 const MAX_LINE_CHARS = 500;
 /** Shortest normalised line worth comparing. */
 const MIN_SIGNATURE_CHARS = 20;
@@ -42,9 +44,14 @@ const COMMAND_ECHO =
   /^(?:\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?z?\s+)?(?:##\[(?:group|endgroup|command)\]|\[command\])/i;
 /** A command-line flag, such as `--no-fail-fast` or `--fail`; not a failure. */
 const FLAG_TOKEN = /(?:^|\s)--?[a-z][\w-]*/g;
-/** Lines that are never evidence: the runner's closing line and shared tool output. */
+/**
+ * Lines that are never evidence: the runner's closing line, shared tool output,
+ * an assertion library's own header and remote library stack frames (they are
+ * the same for every failed assertion), and Jest's `Test suite failed to run`
+ * (it names no suite; the `FAIL <file>` line does).
+ */
 const GENERIC_LINE =
-  /process completed with exit code|^assertion `left (?:==|!=) right` failed$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|^fail\s+\S+\.(?:test|spec)\.[^\s]+$|npm error (?:path|command)\s/;
+  /process completed with exit code|^assertion `left (?:==|!=) right` failed$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|npm error (?:path|command)\s|^throw new assertionerror\(|^at .+ \(https?:\/\/|^(?:error: )?assertionerror(?: \[err_assertion\])?: (?:values are not equal\.?|expected values to be strictly equal:?|the expression evaluated to a falsy value:?)$|^[●✖✕✗×] test suite failed to run/;
 /**
  * A passing test result, in any runner format: TAP `ok <n>`, Go `--- PASS`,
  * Jest `PASS`, pytest `::name PASSED`, and the `✓`, `✔` and `√` marks of the
@@ -54,12 +61,13 @@ const GENERIC_LINE =
 const PASSING_LINE = /^(?:[✓✔√]|ok\s|--- pass:|pass\s|\S+::\S+ passed\b)/;
 /**
  * A failing-test name: Jest `●`, node:test `✖`, Jest `✕`, Bats `✗`, TAP
- * `not ok`, Mocha `<n>)`, Vitest `FAIL file > name`, pytest `FAILED id::name`,
- * Go `--- FAIL:` and Deno/cargo `name ... FAILED`. A base log must hold the
- * whole line, not a longer test name that starts with it.
+ * `not ok`, Mocha `<n>)`, Vitest `FAIL file > name`, Jest `FAIL file.test.js`,
+ * pytest `FAILED id::name`, Go `--- FAIL:`, Deno/cargo `name ... FAILED` and
+ * Deno's `name => path:line:col` in its ERRORS and FAILURES sections. A base
+ * log must hold the whole line, not a longer test name that starts with it.
  */
 const TEST_NAME =
-  /^(?:[●✖✕✗×]\s+\S|not ok\s+<n>\s+\S|<n>\)\s+\S|fail\s+\S+\s>\s|--- fail:|(?:failed|error)\s+\S+::\S|.* \.\.\. failed(?: \(<dur>\))?$)/;
+  /^(?:[●✖✕✗×]\s+\S|not ok\s+<n>\s+\S|<n>\)\s+\S|fail\s+\S+\s>\s|fail\s+\S+\.(?:test|spec)\.\S+$|--- fail:|(?:failed|error)\s+\S+::\S|.* \.\.\. failed(?: \(<dur>\))?$|.+ => \S+:<l>:<l>$)/;
 /** Words a test-run tally line is made of; the counts beside them vary run to run. */
 const TALLY_WORDS = new Set(
   (
@@ -90,12 +98,13 @@ const LEADING_MARKERS =
   /^(?:<ts>\s*)?(?:##\[(?:error|warning|group|endgroup)\]\s*)?/;
 
 /**
- * Normalise runner durations, sequence numbers and test-run counts that the
- * shared fingerprint normaliser does not cover.
+ * Normalise runner durations, sequence numbers, Deno source positions and
+ * test-run counts that the shared fingerprint normaliser does not cover.
  */
 function normaliseComparison(text: string): string {
   return normaliseLogExcerpt(
     text.replace(/\b\d+m\d+(?:\.\d+)?s\b|\b\d+(?:\.\d+)?\s*[µμ]s\b/gi, "<dur>")
+      .replace(/^(.* => \S+?):\d+:\d+$/, "$1:<l>:<l>")
       .replace(
         /^(\s*(?:\d{4}-\d{2}-\d{2}[t ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?z?\s+)?)(not ok\s+)\d+(?=\s)/gim,
         "$1$2<n>",
@@ -123,36 +132,169 @@ function canonicalLine(raw: string): string {
 }
 
 /**
- * True when the line is only a test-run tally, such as `1 failed, 42 passed in
- * <dur>`. This also covers minitest's generic `1) Failure:` header, which names
- * no test.
+ * True when the line is only a test-run tally, whatever its count nouns:
+ * `1 failed, 42 passed, 3 warnings in <dur>`, `Deprecations: 3` and Deno's
+ * `FAILED | <n> passed | <n> failed (<dur>)`. Every word must be a tally word,
+ * a noun directly after a count (`3 warnings`) or a label before `:` and a
+ * count (`Deprecations: 3`), so `error: expected 3 got 4` is not a tally. It
+ * also covers minitest's generic `1) Failure:` header, which names no test.
  */
 function isTallyLine(normalised: string): boolean {
-  const tokens = normalised.match(/[a-z]+|\d+/g);
+  const tokens = normalised.match(/<n>|<dur>|[a-z]+|\d+|[^\sa-z\d]/g);
   if (tokens === null) return false;
+  const isCount = (token: string | undefined) =>
+    token !== undefined && (token === "<n>" || token === "<dur>" ||
+      /^\d+$/.test(token));
+  const isLabelMark = (token: string | undefined) =>
+    token === ":" || token === "=";
   let hasCount = false;
-  for (const token of tokens) {
-    if (/^\d+$/.test(token) || token === "n" || token === "dur") {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] as string;
+    if (!/^[a-z]+$/.test(token) && !isCount(token)) continue; // punctuation
+    if (isCount(token)) {
       hasCount = true;
-    } else if (!TALLY_WORDS.has(token)) return false;
+    } else if (TALLY_WORDS.has(token)) continue;
+    else if (isCount(tokens[i - 1])) continue; // `3 warnings`
+    else if (isLabelMark(tokens[i + 1]) && isCount(tokens[i + 2])) continue; // `Deprecations: 3`
+    else return false;
   }
   return hasCount;
 }
 
-/**
- * Failure lines of a CI failure text, normalised and de-duplicated in
- * first-seen order. A line qualifies when it is long enough, is not a passing
- * test result, a test-run tally, the generic runner output or a command echo,
- * and is a failing-test name or carries a failure word outside any
- * command-line flag.
- */
-export function failureSignatureLines(text: string): string[] {
-  const seen = new Set<string>();
-  const lines: string[] = [];
+/** An Actions timestamp at the start of a raw log line. */
+const LEADING_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s?/;
+/** Deno's captured-output block, including the pre-test and post-test forms. */
+const DENO_OUTPUT_START = /^-{3,}\s*(?:pre-test |post-test )?output\s*-{3,}$/i;
+const DENO_OUTPUT_END =
+  /^-{3,}\s*(?:pre-test |post-test )?output end\s*-{3,}$/i;
+/** Jest's `console.error` header, indented; its block is the deeper lines. */
+const JEST_CONSOLE = /^console\.(?:log|info|warn|error|debug)$/;
+/** Vitest's `stdout | file > test` header; its block runs to the next blank line. */
+const VITEST_OUTPUT = /^(?:stdout|stderr) \| /;
+/** The marker `summariseActionsLog` leaves where it dropped lines. */
+const OMISSION_MARKER = /^\[\.\.\. .* \.\.\.\]$/;
+/** Mocha's numbered failure header, whose test name sits on a deeper line. */
+const NUMBERED_FAILURE = /^\d+\)\s+\S/;
+/** How many deeper lines a Mocha failure header may join to reach its test name. */
+const MOCHA_NAME_LINES = 3;
 
-  for (const raw of stripAnsi(text).split("\n").slice(0, MAX_LINES)) {
-    const trimmed = raw.slice(0, MAX_LINE_CHARS).trim();
-    if (COMMAND_ECHO.test(trimmed)) continue;
+function indentOf(line: string): number {
+  return line.length - line.trimStart().length;
+}
+
+/**
+ * The lines of a log text, ready for comparison: ANSI and timestamps removed,
+ * each line capped, the output that tests print left out (Deno `output`
+ * blocks, Jest `console.*` blocks and Vitest `stdout |` blocks, which can hold
+ * a failure word without being a failure), and a Mocha `1) Parser` header
+ * joined to the `parses header:` line that names its test.
+ */
+function preparedLines(text: string, limit: number): string[] {
+  const lines = stripAnsi(text).split("\n").slice(0, limit).map((line) =>
+    line.slice(0, MAX_LINE_CHARS).replace(LEADING_TIMESTAMP, "").trimEnd()
+  );
+  const kept: string[] = [];
+  let denoBlock = false;
+  let blockIndent = -1; // indent of the Jest header whose block is being skipped
+  let untilBlank = false; // a Vitest block ends at the next blank line
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] as string;
+    const trimmed = line.trim();
+    if (denoBlock) {
+      if (DENO_OUTPUT_END.test(trimmed) || OMISSION_MARKER.test(trimmed)) {
+        denoBlock = false;
+      }
+      continue;
+    }
+    if (untilBlank) {
+      if (trimmed !== "") continue;
+      untilBlank = false;
+    } else if (blockIndent >= 0) {
+      if (trimmed === "" || indentOf(line) > blockIndent) continue;
+      blockIndent = -1;
+    }
+    if (DENO_OUTPUT_START.test(trimmed)) {
+      denoBlock = true;
+      continue;
+    }
+    if (JEST_CONSOLE.test(trimmed)) {
+      blockIndent = indentOf(line);
+      continue;
+    }
+    if (VITEST_OUTPUT.test(trimmed)) {
+      untilBlank = true;
+      continue;
+    }
+    if (NUMBERED_FAILURE.test(trimmed) && !trimmed.endsWith(":")) {
+      let joined = trimmed;
+      let j = i + 1;
+      while (
+        j < lines.length && j <= i + MOCHA_NAME_LINES &&
+        !joined.endsWith(":") && lines[j]?.trim() !== "" &&
+        indentOf(lines[j] as string) > indentOf(line) &&
+        !(lines[j] as string).trim().startsWith("at ")
+      ) {
+        joined += " " + (lines[j] as string).trim();
+        j++;
+      }
+      if (joined.endsWith(":")) {
+        kept.push(joined);
+        i = j - 1;
+        continue;
+      }
+    }
+    kept.push(line);
+  }
+  return kept;
+}
+
+/** The runner's closing line for a failed step, as it appears in a job log. */
+const STEP_FAILED_LINE = /^##\[error\]process completed with exit code/i;
+/** The line that opens or closes a step's command echo. */
+const STEP_BOUNDARY = /^##\[(?:group|endgroup)\]/i;
+/** How many lines before the step's closing line the fallback reads. */
+const MAX_STEP_LINES = 200;
+
+/**
+ * The output of the failing step: the lines between the step's command echo
+ * and its `##[error]Process completed with exit code` line. Empty when the log
+ * has no such line.
+ */
+function failingStepLines(lines: string[]): string[] {
+  let end = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (STEP_FAILED_LINE.test((lines[i] as string).trim())) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return [];
+  let start = end;
+  while (start > 0 && end - start < MAX_STEP_LINES) {
+    const previous = (lines[start - 1] as string).trim();
+    if (STEP_BOUNDARY.test(previous) || OMISSION_MARKER.test(previous)) break;
+    start--;
+  }
+  return lines.slice(start, end);
+}
+
+/** A standalone number in a line with no failure word, as in `42┆ new RegExp(x)`. */
+const LOOSE_NUMBER = /\b\d+\b/g;
+
+function loosen(line: string): string {
+  return line.replace(LOOSE_NUMBER, "<n>");
+}
+
+/**
+ * The comparable form of each line that passes the filters. `needsWord` asks
+ * for a failure word (or a test name); the step-output fallback does not.
+ */
+function comparableLines(lines: string[], needsWord: boolean): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const trimmed of lines) {
+    if (COMMAND_ECHO.test(trimmed.trim())) continue;
 
     const normalised = canonicalLine(trimmed);
     if (normalised.length === 0) continue;
@@ -161,17 +303,54 @@ export function failureSignatureLines(text: string): string[] {
     if (BOILERPLATE.test(normalised)) continue;
     if (isTallyLine(normalised)) continue;
 
-    if (!TEST_NAME.test(normalised)) {
+    if (needsWord) {
+      if (!TEST_NAME.test(normalised)) {
+        if (normalised.length < MIN_SIGNATURE_CHARS) continue;
+        if (!FAILURE_WORD.test(normalised.replace(FLAG_TOKEN, " "))) continue;
+      }
+    } else {
       if (normalised.length < MIN_SIGNATURE_CHARS) continue;
-      if (!FAILURE_WORD.test(normalised.replace(FLAG_TOKEN, " "))) continue;
+      if (!/[a-z]{3}/.test(normalised)) continue;
     }
     if (seen.has(normalised)) continue;
 
     seen.add(normalised);
-    lines.push(normalised);
+    result.push(normalised);
   }
 
-  return lines;
+  return result;
+}
+
+/** A pull request's comparable lines, and how they are to be matched. */
+interface FailureSignature {
+  lines: string[];
+  /** Step-output lines, matched with their standalone numbers ignored. */
+  loose: boolean;
+}
+
+function failureSignature(text: string): FailureSignature {
+  const prepared = preparedLines(text, MAX_LINES);
+  const lines = comparableLines(prepared, true);
+  if (lines.length > 0) return { lines, loose: false };
+  // A check whose output holds no failure word (semgrep, shellcheck, cspell)
+  // is read from the failing step's own output instead.
+  return {
+    lines: comparableLines(failingStepLines(prepared), false).map(loosen),
+    loose: true,
+  };
+}
+
+/**
+ * Failure lines of a CI failure text, normalised and de-duplicated in
+ * first-seen order. Test output (Deno `output` blocks, Jest `console.*`),
+ * passing test results, test-run tallies, command echoes and generic runner
+ * output never qualify. A line qualifies when it is long enough and is a
+ * failing-test name or carries a failure word outside any command-line flag.
+ * When no line does, the failing step's own output qualifies, with standalone
+ * numbers normalised.
+ */
+export function failureSignatureLines(text: string): string[] {
+  return failureSignature(text).lines;
 }
 
 /**
@@ -189,7 +368,8 @@ export async function compareBaseFailure(options: {
 }): Promise<BaseFailureComparison> {
   const { repo, checkName, baseCheckRunId, failureText, ghFn } = options;
 
-  const prLines = failureSignatureLines(failureText);
+  const signature = failureSignature(failureText);
+  const prLines = signature.lines;
   const firstLine = prLines[0];
   if (firstLine === undefined) {
     return {
@@ -224,8 +404,9 @@ export async function compareBaseFailure(options: {
     };
   }
 
-  const baseLines = stripAnsi(outcome.excerpt).split("\n").map(canonicalLine)
-    .filter((line) => line.length > 0);
+  const baseLines = preparedLines(outcome.excerpt, MAX_BASE_LINES)
+    .map(canonicalLine).filter((line) => line.length > 0)
+    .map((line) => signature.loose ? loosen(line) : line);
   if (baseLines.length === 0) {
     return {
       state: "unreadable",

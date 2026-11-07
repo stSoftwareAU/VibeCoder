@@ -60,7 +60,7 @@ Deno.test("compareBaseFailure - Jest identifies the failing test rather than sha
     actionsLogFn: log.fn,
   });
   assertEquals(result.state, "different");
-  assertEquals(failureSignatureLines(generic), []);
+  assertEquals(failureSignatureLines(generic), ["fail src/sum.test.js"]);
 });
 
 Deno.test("compareBaseFailure - notices and variable runner output do not obscure the same failure", async () => {
@@ -757,4 +757,250 @@ Deno.test("failureSignatureLines - tally detection drops count-only lines and ke
   ]);
   // A failing-test marker with no letters or digits has no tokens: kept.
   assertEquals(failureSignatureLines("✖ ✖"), ["✖ ✖"]);
+});
+
+const SEMGREP_STEP = (rule: string, extra = "") =>
+  [
+    "##[group]Run semgrep ci --config auto",
+    "semgrep ci --config auto",
+    "##[endgroup]",
+    "┌────────────────┐",
+    "│ 1 Code Finding │",
+    "└────────────────┘",
+    "    worker/deno/lib/some_regex.ts",
+    `   ❯❱ ${rule}`,
+    "          RegExp() called with a variable; this may allow ReDoS.",
+    "           42┆ const re = new RegExp(input);",
+    extra,
+    "BLOCKING CODE RULES FIRED:",
+    `  ${rule}`,
+    "##[error]Process completed with exit code 1.",
+    "##[group]Post job cleanup.",
+  ].join("\n");
+
+Deno.test("compareBaseFailure - output a passing test prints is not part of the failure, in Deno, Jest and Vitest", async () => {
+  const errors =
+    "ERRORS\n\nparser - parse header => ./tests/parser_test.ts:10:6\nerror: AssertionError: expected header to be valid\n";
+  const denoOutput = (message: string) =>
+    `new test ...\n------- output -------\n${message}\n----- output end -----\nok (1ms)\n`;
+  const cases: [string, string][] = [
+    [
+      "Deno output block",
+      denoOutput(
+        "ERROR worktree retry failed after 3 attempts: simulated outage",
+      ),
+    ],
+    [
+      "Deno pre-test output block",
+      "new test ...\n------- pre-test output -------\nERROR worktree retry failed after 3 attempts\n----- pre-test output end -----\nok (1ms)\n",
+    ],
+    [
+      "Jest console.error block",
+      "PASS src/new.test.js\n  console.error\n    Error: disk full while writing the snapshot\n\n      at Object.<anonymous> (src/new.test.js:5:11)\n\n",
+    ],
+    [
+      "Vitest stdout block",
+      "stdout | src/new.test.ts > logs\nERROR worktree retry failed after 3 attempts\n\n",
+    ],
+  ];
+  for (const [label, passingOutput] of cases) {
+    assertEquals(
+      await compareStates(
+        `${passingOutput}${errors}`,
+        errors,
+      ),
+      "same",
+      label,
+    );
+  }
+  // A failure line that is not inside an output block still counts.
+  assertEquals(
+    await compareStates(
+      `${errors}ERROR worktree retry failed after 3 attempts\n`,
+      errors,
+    ),
+    "different",
+  );
+});
+
+Deno.test("failureSignatureLines - an unclosed Deno output block ends at the omission marker", () => {
+  const lines = failureSignatureLines(
+    "------- output -------\nERROR dropped inside the block\n[... 40 lines omitted ...]\nERROR kept after the marker line\n",
+  );
+  assertEquals(lines, ["error kept after the marker line"]);
+});
+
+Deno.test("compareBaseFailure - a check printing rule ids rather than failure words is compared on its step output", async () => {
+  const rule = "javascript.lang.security.audit.detect-non-literal-regexp";
+  // Same finding, with the PR's finding on a shifted line and a moved file count.
+  const pr = SEMGREP_STEP(rule).replace("42┆", "57┆");
+  assertEquals(await compareStates(pr, SEMGREP_STEP(rule)), "same");
+  // A different rule id is a different failure.
+  assertEquals(
+    await compareStates(
+      pr,
+      SEMGREP_STEP(
+        "javascript.lang.security.audit.detect-eval-with-expression",
+      ),
+    ),
+    "different",
+  );
+  // The shared runner exit line and the group lines alone are unreadable.
+  assertEquals(
+    failureSignatureLines(
+      "Process completed with exit code 1.\n##[group]Run semgrep ci\n##[endgroup]",
+    ),
+    [],
+  );
+});
+
+Deno.test("compareBaseFailure - the step-output fallback needs a failing step and is unreadable without one", async () => {
+  const noExitLine = SEMGREP_STEP("rule.id.with.dots").replace(
+    "##[error]Process completed with exit code 1.",
+    "done",
+  );
+  const result = await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText: noExitLine,
+    ghFn: unusedGh,
+    actionsLogFn: logFake(excerptOf(noExitLine)).fn,
+  });
+  assertEquals(result.state, "unreadable");
+});
+
+Deno.test("compareBaseFailure - counts beside any noun in a tally line do not obscure the same failure", async () => {
+  const failed = "parser - parse header ... FAILED\n";
+  const cases: [string, string][] = [
+    [
+      "1 failed, 42 passed, 3 warnings in 0.31s",
+      "1 failed, 41 passed, 2 warnings in 0.28s",
+    ],
+    [
+      "=== 1 failed, 42 passed, 3 warnings in 0.31s ===",
+      "=== 1 failed, 41 passed, 2 warnings in 0.28s ===",
+    ],
+    ["1 failed, 42 passed, 2 deselected", "1 failed, 42 passed, 1 deselected"],
+    [
+      "1 failed, 42 passed, 2 deselected",
+      "1 failed, 42 passed, 1 deselected, 1 xfailed",
+    ],
+    [
+      "Tests: 43, Assertions: 100, Failures: 1, Deprecations: 3.",
+      "Tests: 43, Assertions: 100, Failures: 1, Deprecations: 2.",
+    ],
+  ];
+  for (const [pr, base] of cases) {
+    assertEquals(await compareStates(failed + pr, failed + base), "same", pr);
+  }
+  // A message that merely holds counts is not a tally.
+  assertEquals(failureSignatureLines("error: expected 3 got 4"), [
+    "error: expected 3 got 4",
+  ]);
+});
+
+Deno.test("compareBaseFailure - Deno tests with the same bare assertion are told apart by name and position", async () => {
+  const failure = (name: string, loc: string) =>
+    `${name} ... FAILED (3ms)\n\n ERRORS \n\n${name} => ${loc}\nerror: AssertionError: Values are not equal.\n\n\n    [Diff] Actual / Expected\n\n-   1\n+   2\n\n  throw new AssertionError(message);\n        ^\n    at assertEquals (https://jsr.io/@std/assert/1.0.18/equals.ts:65:9)\n    at file:///work/tests/x_test.ts:11:3\n\n FAILURES \n\n${name} => ${loc}\n\nFAILED | 5 passed | 1 failed (1m4s)\n`;
+  const base = failure(
+    "renderer - pads the footer",
+    "./tests/render_test.ts:20:6",
+  );
+  assertEquals(
+    await compareStates(
+      failure("parser - parse header", "./tests/parser_test.ts:10:6"),
+      base,
+    ),
+    "different",
+  );
+  // The same test further down the file, after the PR added tests above it.
+  assertEquals(
+    await compareStates(
+      failure("renderer - pads the footer", "./tests/render_test.ts:48:6"),
+      base,
+    ),
+    "same",
+  );
+  // A log cut down to the ERRORS section still names the test by `name => path:line:col`.
+  const errorsOnly = (name: string, loc: string) =>
+    `\n ERRORS \n\n${name} => ${loc}\nerror: AssertionError: Values are not equal.\n`;
+  const errorsBase = errorsOnly(
+    "renderer - pads the footer",
+    "./tests/render_test.ts:20:6",
+  );
+  assertEquals(
+    await compareStates(
+      errorsOnly("parser - parse header", "./tests/parser_test.ts:10:6"),
+      errorsBase,
+    ),
+    "different",
+  );
+  assertEquals(
+    await compareStates(
+      errorsOnly("renderer - pads the footer", "./tests/render_test.ts:48:6"),
+      errorsBase,
+    ),
+    "same",
+  );
+  // The assertion header, throw line and library frame are never evidence.
+  assertEquals(
+    failureSignatureLines(
+      "error: AssertionError: Values are not equal.\n  throw new AssertionError(message);\n    at assertEquals (https://jsr.io/@std/assert/1.0.18/equals.ts:65:9)",
+    ),
+    [],
+  );
+});
+
+Deno.test("compareBaseFailure - Jest suite failures in different files are different", async () => {
+  const suite = (file: string, error: string) =>
+    `FAIL ${file}\n  ● Test suite failed to run\n\n    ${error}\n\nTests: 0 total\n`;
+  const base = suite("src/b.test.js", "SyntaxError: Unexpected token");
+  assertEquals(
+    await compareStates(
+      suite("src/a.test.js", "ReferenceError: x is not defined"),
+      base,
+    ),
+    "different",
+  );
+  assertEquals(
+    await compareStates(
+      suite("src/b.test.js", "SyntaxError: Unexpected token"),
+      base,
+    ),
+    "same",
+  );
+  assertEquals(failureSignatureLines("  ● Test suite failed to run"), []);
+});
+
+Deno.test("compareBaseFailure - Mocha failures under one describe block are told apart by test name", async () => {
+  const failure = (name: string) =>
+    `  1) Parser\n       ${name}:\n     AssertionError: expected 3 to equal 4\n`;
+  const base = failure("parses header");
+  assertEquals(
+    await compareStates(failure("rejects a bad footer"), base),
+    "different",
+  );
+  assertEquals(await compareStates(failure("parses header"), base), "same");
+  // A numbered line whose deeper lines never reach a `:` name stays as written.
+  assertEquals(
+    failureSignatureLines("1) Error: boom\n     at fn (file.js:1:1)"),
+    ["<n>) error: boom"],
+  );
+});
+
+Deno.test("failureSignatureLines - the new line patterns stay bounded on hostile input", async () => {
+  const hostile = "a => ".repeat(100) + "b:1:";
+  assertEquals(failureSignatureLines(hostile).length <= 1, true);
+  assertEquals(failureSignatureLines("-".repeat(100000) + "x"), []);
+  assertEquals(failureSignatureLines("at " + "a ".repeat(50000) + "(x"), []);
+  assertEquals(failureSignatureLines("1) " + " ".repeat(100000) + "x"), []);
+  // A base excerpt that is all one unclosed output block has nothing to read.
+  assertEquals(
+    await compareStates(
+      "parse header ... FAILED",
+      "------- output -------\n".repeat(5000),
+    ),
+    "unreadable",
+  );
 });
