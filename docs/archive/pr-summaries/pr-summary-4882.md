@@ -32,4 +32,4 @@ Backend-only change; no UI files. Tests below were run on the head.
 - Red checks: adding `pom.xml` to the Gradle root markers made 2 tests fail ("Maven pom.xml alone files only the Maven Dependabot spec", "split by ecosystem"); changing the Gradle template to `maven` made "split by ecosystem" fail. Both restored.
 - Docs: `docs/EXTENDING.md` (section on root markers for templates) updated; README and `docs/` (excluding archive) grepped for "Java dependency updates"/`java-dependency-updates` with no other stale hit.
 - Callers checked: `getWorkflowsForLanguagesAndVisibility`/`auditRepoWorkflows` filter by `appliesTo` and `rootProjectMarkers` generically, so the new spec needs no caller change.
-- Full `./quality.sh` result: see the final message of this run.
+- Full `./quality.sh < /dev/null` on the head code (97ba8227): `Result: PASSED (with skipped checks)`; deno tests, lint, type check, fmt, semgrep and markdownlint passed; config integration and checkov were skipped by the gate itself.
