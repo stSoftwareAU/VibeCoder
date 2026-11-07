@@ -778,6 +778,15 @@ const SEMGREP_STEP = (rule: string, extra = "") =>
     "##[group]Post job cleanup.",
   ].join("\n");
 
+Deno.test("compareBaseFailure - semgrep identifies root and extensionless files", async () => {
+  const base = SEMGREP_STEP("rule.id.with.dots");
+  for (const file of ["run.sh", "container/Containerfile"]) {
+    const pr = base.replace("worker/deno/lib/some_regex.ts", file);
+    assertEquals(await compareStates(pr, base), "different", file);
+    assertEquals(await compareStates(pr, pr), "same", file);
+  }
+});
+
 Deno.test("compareBaseFailure - output a passing test prints is not part of the failure, in Deno, Jest and Vitest", async () => {
   const errors =
     "ERRORS\n\nparser - parse header => ./tests/parser_test.ts:10:6\nerror: AssertionError: expected header to be valid\n";

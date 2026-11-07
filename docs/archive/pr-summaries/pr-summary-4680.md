@@ -48,7 +48,9 @@ inside a longer base line.
 When no line qualifies, distinctive rule identifiers and file loci in the
 failing step output are compared with standalone numbers ignored. Run metadata
 and generic command echoes are not evidence; without a distinctive line the
-result is unreadable. Deno formatter `from <path>:` lines identify files and its
+result is unreadable. Semgrep's finding-block file line is identified by its
+position before the rule, including root-level and extensionless paths. Deno
+formatter `from <path>:` lines identify files and its
 file-count summary is ignored. Deno lint and check locations, and shellcheck
 file locations and rule IDs, identify findings; npm log-location lines are
 ignored. Deno failure-section and Jest suite-failure
@@ -77,13 +79,17 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  85 passed, 0 failed (47 and 38 tests respectively).
+  87 passed, 0 failed (48 and 39 tests respectively).
 - `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
   output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using
   real Semgrep job 101249366081 output with different commit IDs and event, and
   formatter and shellcheck failures on the same or different files, Deno lint and
   check loci, and npm log paths.
+- Semgrep finding blocks with root-level and extensionless paths are compared
+  against the base file: matching paths defer and different paths are charged.
+  Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - semgrep identifies root and extensionless files`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - semgrep compares root and extensionless finding files`.
 - The obsolete fallback compared all step output, including run metadata and
   command echoes. The remaining behaviour compares distinctive rule or file
   evidence and holds generic-only output as unreadable. Coverage:

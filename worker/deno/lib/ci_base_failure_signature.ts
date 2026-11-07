@@ -303,8 +303,18 @@ function loosen(line: string): string {
 function comparableLines(lines: string[], needsWord: boolean): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
+  const semgrepFiles = new Set<number>();
+  if (!needsWord) {
+    for (let i = 0; i < lines.length; i++) {
+      if (!/^❯❱\s+\S/.test(canonicalLine(lines[i] as string))) continue;
+      let previous = i - 1;
+      while (previous >= 0 && !(lines[previous] as string).trim()) previous--;
+      if (previous >= 0) semgrepFiles.add(previous);
+    }
+  }
 
-  for (const trimmed of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i] as string;
     if (COMMAND_ECHO.test(trimmed.trim())) continue;
 
     const normalised = canonicalLine(trimmed);
@@ -326,7 +336,9 @@ function comparableLines(lines: string[], needsWord: boolean): string[] {
       }
     } else {
       if (
-        !DISTINCTIVE_LINE.test(normalised) && !DIAGNOSTIC_LOCUS.test(normalised)
+        !DISTINCTIVE_LINE.test(normalised) &&
+        !DIAGNOSTIC_LOCUS.test(normalised) &&
+        !semgrepFiles.has(i)
       ) continue;
     }
     if (seen.has(normalised)) continue;

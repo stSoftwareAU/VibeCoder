@@ -1245,6 +1245,29 @@ Deno.test("processCiFailure - real semgrep output ignores run-specific metadata"
   );
 });
 
+Deno.test("processCiFailure - semgrep compares root and extensionless finding files", async () => {
+  const base = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const file of ["run.sh", "container/Containerfile"]) {
+    const pr = base.replace(
+      "worker/deno/lib/marker_dedup_author_manifest.ts",
+      file,
+    );
+    for (const [baseLog, marker] of [[base, "attempt"], [pr, "deferred"]]) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: pr,
+        baseLog,
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+        file,
+      );
+    }
+  }
+});
+
 Deno.test("processCiFailure - formatter identifies the failed file", async () => {
   const log = (file: string, count: number) =>
     `##[endgroup]\nfrom ${file}:\nerror: Found 1 not formatted file in ${count} files\n##[error]Process completed with exit code 1.\n`;
