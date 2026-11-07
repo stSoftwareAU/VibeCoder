@@ -36,8 +36,6 @@ Version bump: none for this change.
 
 - The CI command test uses a fresh check ID and removes its retry record, so
   repeated test and mutation runs cannot exhaust the worker's retry counter.
-- Three broader production-dependency tests fail in this environment on both
-  this branch and base commit `5f7c4250`; details are in the Test Plan.
 
 ## Evidence
 
@@ -83,9 +81,9 @@ Kept implementation, checks and tests on Deno; no dependencies were added and
   both absent and configured pre-flight commands and checks the spec passed to
   the push helper.
 - `worker/deno/tests/run_core_production_deps_test.ts` captures feedback and
-  custom PR prompt instructions from the production callbacks. Feedback uses a
-  600 s reactive budget distinct from the 3600 s issue budget and a `pr_review`
-  input.
+  custom PR prompt instructions from the production callbacks. Both use a 600 s
+  reactive budget distinct from the 3600 s issue budget; feedback uses a
+  `pr_review` input. The custom PR test asserts the gate refusal and 600 s budget.
 - `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)`
   now checks the prompt and absent pre-flight specs while retaining every
   existing assertion about verifier attempts, outstanding findings, pushes and
@@ -108,21 +106,10 @@ failed with an assertion error, then passed after restoration. Removing
 spelling's new `repoConfigs` forwarding also made the configured-pre-flight test
 fail. No untestable exemptions were used.
 
-Validation for this recovery:
+Validation for the review fix:
 
-- Focused Issue #4876 tests and the persistent-findings test: passed.
-- Affected suites: budget, repository config, PR-side command guarantees, CI,
-  spelling, review dismissal, production dependencies and execute-phase budget
-  coverage: 290 passed, three failed. The same three failures reproduced on base
-  commit `5f7c4250` (30 passed, three failed):
-  `isRateLimitActive - returns false when signal has expired`,
-  `isRateLimitActive - returns false when no signal file exists`, and
-  `production coding dispatch defers actual heartbeat publication through its final landed decision (Issue #3977)`.
-  These unrelated failures were left unchanged.
-- `deno task check:manifests`: passed, 848 tests passed and one ignored.
-- Deno type checks for the affected test modules, lint and formatting: passed.
+- Production dependencies suite: 35 passed.
+- Repository Deno formatter and linter: passed.
 - Markdown lint: passed.
-- Semgrep `p/default` over the 12 changed TypeScript files: passed, zero
-  findings.
-- Full `./quality.sh` was not rerun in this recovery; the completion worker runs
-  the quality gate after these changes.
+- Repository-wide Deno type check: passed.
+- The configuration manual change is limited to the Issue #1138 budget section.

@@ -314,6 +314,8 @@ Deno.test("run-core custom PR prompt callback records the agent pre-push guarant
     createTestOptions({
       config: buildDefaultWorkerConfig({
         repos: ["org/repo"],
+        prFeedbackTimeout: 600,
+        claudeTimeout: 3600,
         customLabelPrompts: [mapping],
       }),
       dispatchCustomLabelPrPromptsFn: async (dispatchDeps) => {
@@ -331,6 +333,11 @@ Deno.test("run-core custom PR prompt callback records the agent pre-push guarant
   );
   try {
     await deps.findAndProcessCustomLabelPrPrompts?.();
+    assertStringIncludes(
+      qualityInstructions,
+      "Do NOT run ./quality.sh in this run",
+    );
+    assertStringIncludes(qualityInstructions, "600s");
     assertStringIncludes(
       qualityInstructions,
       "agent pre-push hook runs changed-file checks",
