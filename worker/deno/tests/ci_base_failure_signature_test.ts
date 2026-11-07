@@ -22,6 +22,47 @@ import type {
   fetchGithubActionsLogExcerpt,
 } from "../lib/github_actions_log_fetcher.ts";
 
+Deno.test("compareBaseFailure - same Deno and cargo failures ignore changing tallies", async () => {
+  const cases: [string, string][] = [
+    [
+      "parser - parse header ... FAILED\nAssertionError: expected header to be valid\nFAILED | 1407 passed | 1 failed (2m14s)\n_3 further annotation(s) omitted (cap: 50 annotations). Run the failing check locally._",
+      "parser - parse header ... FAILED\nAssertionError: expected header to be valid\nFAILED | 1405 passed | 1 failed (2m31s)",
+    ],
+    [
+      "thread 'tests::parse_header' panicked at src/lib.rs:10: invalid header\ntest result: FAILED. 42 passed; 1 failed",
+      "thread 'tests::parse_header' panicked at src/lib.rs:10: invalid header\ntest result: FAILED. 41 passed; 1 failed",
+    ],
+  ];
+  for (const [failureText, baseLog] of cases) {
+    const log = logFake(excerptOf(baseLog));
+    const result = await compareBaseFailure({
+      repo: REPO,
+      checkName: CHECK,
+      baseCheckRunId: BASE_RUN_ID,
+      failureText,
+      ghFn: unusedGh,
+      actionsLogFn: log.fn,
+    });
+    assertEquals(result.state, "same");
+  }
+});
+
+Deno.test("compareBaseFailure - Jest identifies the failing test rather than shared suite output", async () => {
+  const generic =
+    "FAIL src/sum.test.js\nTests: 1 failed, 5 passed, 6 total\nTest Suites: 1 failed, 1 total\nnpm error path /work/project\nnpm error command sh -c jest";
+  const log = logFake(excerptOf(`${generic}\n  ● subtracts 5 - 2 to equal 3`));
+  const result = await compareBaseFailure({
+    repo: REPO,
+    checkName: CHECK,
+    baseCheckRunId: BASE_RUN_ID,
+    failureText: `${generic}\n  ● adds 1 + 2 to equal 3`,
+    ghFn: unusedGh,
+    actionsLogFn: log.fn,
+  });
+  assertEquals(result.state, "different");
+  assertEquals(failureSignatureLines(generic), []);
+});
+
 const REPO = "org/repo";
 const CHECK = "Project Validation";
 const BASE_RUN_ID = 9001;

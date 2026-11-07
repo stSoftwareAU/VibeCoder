@@ -967,6 +967,50 @@ Deno.test(
   },
 );
 
+// Issue #4692: create-pull-request pushes with its own `token` input, so the
+// checkout in each dependency-update template must not persist the job token.
+Deno.test(
+  "workflow_definitions - dependency-update templates do not persist the checkout credential (Issue #4692)",
+  () => {
+    for (const id of ["cargo-upgrade", "deno-outdated"]) {
+      const spec = WORKFLOW_SPECS.find((s) => s.id === id);
+      assertNotEquals(spec, undefined, `${id} spec missing`);
+      assertEquals(spec!.template.includes("Nothing here pushes"), false);
+      const workflow = parseYaml(spec!.template) as {
+        jobs: Record<string, { steps: Record<string, unknown>[] }>;
+      };
+      const steps = Object.values(workflow.jobs).flatMap((job) => job.steps);
+      const usesOf = (step: Record<string, unknown>) =>
+        typeof step["uses"] === "string" ? step["uses"].split("@")[0] : "";
+
+      const checkouts = steps.filter((s) => usesOf(s) === "actions/checkout");
+      assertEquals(checkouts.length, 1, `${id} must have one actions/checkout`);
+      const checkoutWith = checkouts[0]!["with"] as
+        | Record<string, unknown>
+        | undefined;
+      assertEquals(
+        checkoutWith?.["persist-credentials"],
+        false,
+        `${id} checkout must set persist-credentials: false (Issue #4692)`,
+      );
+
+      // Positive control: the pushing step is still there with its token.
+      const pushes = steps.filter((s) =>
+        usesOf(s) === "peter-evans/create-pull-request"
+      );
+      assertEquals(pushes.length, 1, `${id} must keep create-pull-request`);
+      const pushWith = pushes[0]!["with"] as
+        | Record<string, unknown>
+        | undefined;
+      assertNotEquals(
+        pushWith?.["token"],
+        undefined,
+        `${id} create-pull-request must pass its own token: input`,
+      );
+    }
+  },
+);
+
 Deno.test(
   "workflow_definitions - deno-outdated template enforces 24h native minimum-age (Issue #2540)",
   () => {

@@ -164,3 +164,16 @@ The full local gate's parallel test process panicked in Deno 2.9.0 on macOS
 (`pledge test permissions called before restoring previous pledge`), so its
 serial pass did not run. The latest base's merged PR #4866 passed all four
 test shards in CI. Semgrep and Checkov were unavailable locally.
+
+Further review follow-up: test tallies, Jest suite headings, npm path and
+command lines, and the omitted-annotations note no longer serve as failure
+evidence. Jest failing-test names are compared, so a shared suite alone cannot
+defer unrelated failures. The obsolete comparison of generic tallies is replaced
+by comparison of specific failure lines; same-failure deferral remains covered
+by `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - same Deno and cargo failures ignore changing tallies`
+and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - same test failure with different tallies is deferred`.
+Different Jest tests and generic-only output are covered by
+`worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - Jest identifies the failing test rather than shared suite output`.
+These three new tests failed before the fix. The processor comments and workflow
+diagram now specify that every comparable line must appear. No other copy of
+the signature extraction rule was found.

@@ -1067,6 +1067,28 @@ Deno.test("processCiFailure - unrelated test failures sharing runner output are 
   assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
 });
 
+Deno.test("processCiFailure - same test failure with different tallies is deferred", async () => {
+  const input = makeInput();
+  input.encodedAnnotations = btoa(
+    JSON.stringify([{
+      path: "test.ts",
+      start_line: 1,
+      message:
+        "parser - parse header ... FAILED\nAssertionError: expected header to be valid\nFAILED | 1407 passed | 1 failed (2m14s)",
+    }]),
+  );
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: jobLog([
+      "parser - parse header ... FAILED",
+      "AssertionError: expected header to be valid",
+      "FAILED | 1405 passed | 1 failed (2m31s)",
+    ]),
+  }, input);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+});
+
 Deno.test("processCiFailure - the base run's log is read for the failing check's name (Issue #4680)", async () => {
   const logCalls: ActionsLogOptions[] = [];
   await runDeferralScenario(AGENT_MESSAGE, { logCalls });

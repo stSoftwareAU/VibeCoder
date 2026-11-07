@@ -46,18 +46,18 @@ const COMMAND_ECHO =
 const FLAG_TOKEN = /(?:^|\s)--?[a-z][\w-]*/g;
 /** The runner's closing line, shared by every failed job; not evidence. */
 const GENERIC_LINE =
-  /process completed with exit code|^(?:<ts>\s*)?(?:##\[error\]\s*)?assertion `left (?:==|!=) right` failed\s*$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)/;
+  /process completed with exit code|^(?:<ts>\s*)?(?:##\[error\]\s*)?assertion `left (?:==|!=) right` failed\s*$|error: test failed, to rerun pass|npm error command failed|(?:npm error )?lifecycle script .* failed|\.\.\. ok(?:\s|$)|^(?:<ts>\s*)?(?:(?:ok|failed)\s*\|\s*\d+ passed\s*\||test result:|tests:|test suites:|fail\s+\S+\.(?:test|spec)\.[^\s]+\s*$|npm error (?:path|command)\s)/;
 /** The worker's own boilerplate from formatCiAnnotations; not evidence. */
 const BOILERPLATE =
-  /no specific annotations were available|following ci failure details were detected/;
+  /no specific annotations were available|following ci failure details were detected|\d+ further annotation\(s\) omitted/;
 const FAILURE_WORD =
   /\b(?:error|fail(?:ed|ure|ing|s)?|panic(?:ked)?|exception|fatal|assert\w*|cannot|denied)\b/;
 
 /**
  * Failure lines of a CI failure text, normalised and de-duplicated in
  * first-seen order. A line qualifies when it is long enough, is not the
- * generic runner exit line or a command echo, and is either an annotation or
- * carries a failure word outside any command-line flag.
+ * generic runner summary or a command echo, and is an annotation, a Jest
+ * failing-test name, or carries a failure word outside any command-line flag.
  */
 export function failureSignatureLines(text: string): string[] {
   const seen = new Set<string>();
@@ -81,7 +81,7 @@ export function failureSignatureLines(text: string): string[] {
     if (GENERIC_LINE.test(normalised)) continue;
     if (BOILERPLATE.test(normalised)) continue;
     if (
-      !annotation &&
+      !annotation && !/^●\s+\S/.test(normalised) &&
       !FAILURE_WORD.test(normalised.replace(FLAG_TOKEN, " "))
     ) continue;
     if (seen.has(normalised)) continue;

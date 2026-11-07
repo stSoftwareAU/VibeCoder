@@ -642,7 +642,7 @@ flowchart TD
     A["agent: no change,<br/>message ends<br/>'Depends on o/r#N'"] --> B{"base branch's latest<br/>run of the check red?"}
     B -->|"green or no base ref"| D["ordinary no-changes reply<br/>+ attempt charged"]
     B -->|"no evidence: no run,<br/>stale run, lookup failed"| U["base-unverified note<br/>+ attempt marker, no charge"]
-    B -->|yes| S{"base log holds a line<br/>of the PR's failure?"}
+    B -->|yes| S{"base log holds every<br/>comparable PR failure line?"}
     S -->|same| P{"prior deferral<br/>for this signature?"}
     S -->|different| D
     S -->|unreadable| U

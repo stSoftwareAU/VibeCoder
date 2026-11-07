@@ -3975,11 +3975,11 @@ interface BaseBranchDeferralOptions {
  * through {@link readBaseBranchCheck}. The evidence sorts the claim four ways:
  *
  * - **Verified red** — the base's run failed **and** its log carries this
- *   pull request's own failure line (read through {@link compareBaseFailure}):
+ *   every comparable pull request failure line (read through {@link compareBaseFailure}):
  *   a deferral, granted only with no prior deferral on an open blocker to
  *   consult. It costs no attempt and no `needs-human`.
  * - **Red for another reason** — the base's run failed but its log carries
- *   none of this pull request's failure lines, so the claim is not verified as
+ *   fewer than all comparable pull request failure lines, so the claim is not verified as
  *   this failure: the ordinary charged path runs, with no hold.
  * - **Verified green** — the base's run passed: the claim is refuted and the
  *   ordinary charged path runs. A green base is the one reading that proves
@@ -4181,8 +4181,8 @@ async function _resolveBaseBranchDeferral(
   }
 
   // Issue #4680: a red conclusion is not yet this failure. The base run's log
-  // must carry one of this pull request's failure lines, or the base failed for
-  // some other reason and the claim is not verified as this one.
+  // must carry every comparable pull request failure line; if any is missing,
+  // the claim is not verified as this failure.
   if (evidence.state === "red") {
     const comparison = await compareBaseFailure({
       repo,
