@@ -8,10 +8,10 @@
  * ten minutes left cannot finish it, cannot act on what it reports, and loses
  * the runway it needed to commit and push.
  *
- * The information is not lost by skipping: CI runs the same checks on the PR
- * in parallel shards on dedicated runners, and the worker runs its own gate
- * (`phases/quality_gate_remediation_phase.ts`) after the agent stops. The
- * agent's run is the third copy — the one paid for out of the run budget.
+ * The information is not lost by skipping: the worker runs its own gate
+ * (`phases/quality_gate_remediation_phase.ts`) after the agent stops, before
+ * the PR is raised. The agent's run is the expensive copy — the one paid for
+ * out of the run budget.
  *
  * So the rule this module encodes is: run the gate when the remaining budget
  * covers it *and* the tail needed to fix, commit and push what it reports;
@@ -167,8 +167,8 @@ export function formatQualityGateSkipNote(
     "",
     "**Full quality gate skipped — not enough run budget.** " +
     `${decision.reason} The targeted checks (formatter, linter, type check ` +
-    "and the tests covering the change) were run instead; CI runs the full " +
-    "gate on this PR, and the worker runs it again before the PR is raised.",
+    "and the tests covering the change) were run instead; the worker runs the " +
+    "full gate again before the PR is raised.",
   ].join("\n");
 }
 
@@ -210,7 +210,7 @@ export function buildQualityGateBudgetLines(
     ? `it took ${duration} on this repository this run (measured)`
     : `it takes about ${duration}`;
   const record =
-    `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have. CI runs the same checks on the PR and the worker runs the gate again before the PR is raised.`;
+    `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have. The worker runs the gate again before the PR is raised.`;
 
   // The gate cannot fit this run at all — no live signal can rescue that, so
   // it is settled here rather than left to the agent's judgement.

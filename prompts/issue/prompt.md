@@ -632,9 +632,8 @@ When things go wrong during implementation, follow these guidelines:
    must pass before a PR exists, and the gate includes the semgrep SAST stage,
    so a PR raised over a failing one ships an
    unresolved security finding. (A gate the run budget could not cover is a
-   different thing entirely: it is skipped, recorded with the skip note, and
-   left to CI — that is not a failing check.) If a check still fails after
-   three attempts:
+   different thing entirely: it is skipped and recorded with the skip note —
+   that is not a failing check.) If a check still fails after three attempts:
    - do **not** create a pull request;
    - commit and push what you have, so the branch is preserved and the next
      run resumes from it rather than starting again;
@@ -682,7 +681,7 @@ reviewer.
 - All checks must pass before PR creation: lint, type checks, unit tests, and
   every other gate you ran. When the run budget did not cover the full gate,
   record the skip in the PR summary with the note the `<quality_instructions>`
-  block gives you — CI runs the same checks on the PR.
+  block gives you.
 
 ## Change Scope
 

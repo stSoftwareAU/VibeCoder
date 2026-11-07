@@ -948,6 +948,29 @@ Deno.test("separate quoted scripts and shell words retain their boundaries", () 
   }
 });
 
+Deno.test("nested script splices retain variables and expressions", () => {
+  for (
+    const script of [
+      `sh -c 'npm install -g '"$TOOL"' && echo ok'`,
+      `sh -c 'gem install '"$GEM"' --no-document'`,
+      `sh -c 'cargo install --locked cargo-audit --version '"$CARGO_AUDIT_VERSION"' && cargo audit'`,
+      `sh -c 'cargo install --locked x --version '$V' && echo ok'`,
+      `sh -c 'cargo install --locked cargo-audit --version '\${{ env.V }}`,
+      `sh -c 'cargo install --locked cargo-audit --version '"\${{ env.V }}"`,
+    ]
+  ) assertEquals(findUnpinnedInstalls(script), [], script);
+  assertEquals(
+    findUnpinnedInstalls(`sh -c 'cd '"$DIR"' && npm install -g pa11y-ci'`)
+      .map((finding) => finding.packageName),
+    ["pa11y-ci"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(`sh -c 'echo '$((1 + 2))' && npm install -g pa11y-ci'`)
+      .map((finding) => finding.packageName),
+    ["pa11y-ci"],
+  );
+});
+
 Deno.test("unmatched arithmetic on the opening line retains installs", () => {
   for (
     const [script, name] of [

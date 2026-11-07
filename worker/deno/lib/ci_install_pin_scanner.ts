@@ -408,6 +408,7 @@ function joinContinuations(run: string): LogicalLine[] {
     }
     let nestedQuote = quote;
     let nestedStart = nestedQuote ? 0 : -1;
+    let spliceStart = -1;
     let nestedText = "";
     if (anchor === null) anchor = line;
     bufferedLines.push(line);
@@ -415,14 +416,18 @@ function joinContinuations(run: string): LogicalLine[] {
       // A splice continues the same shell word; whitespace or an operator
       // outside quotes ends it and allows a later script to be captured.
       if (
-        nestedQuote && nestedStart < 0 && !quote &&
+        nestedQuote && nestedStart < 0 && !quote && !expression &&
+        !arithmetic &&
+        !(line.startsWith("((", i) && hasArithmeticClose(line.slice(i))) &&
         /[\s;|&()<>]/.test(line[i]!)
       ) {
+        if (spliceStart >= 0) nestedText += line.slice(spliceStart, i);
         nestedLines.push(nestedText);
         out.push(...joinContinuations(nestedLines.join("\n")));
         nestedLines = [];
         nestedText = "";
         nestedQuote = "";
+        spliceStart = -1;
       }
       const previousQuote = quote;
       if (arithmetic) {
@@ -496,15 +501,18 @@ function joinContinuations(run: string): LogicalLine[] {
       if (nestedQuote && previousQuote === nestedQuote && !quote) {
         nestedText += line.slice(nestedStart, i);
         nestedStart = -1;
+        spliceStart = i + 1;
       } else if (
         nestedQuote && !previousQuote && quote === nestedQuote &&
         nestedStart < 0
       ) {
-        nestedText += "X";
+        nestedText += line.slice(spliceStart, i);
         nestedStart = i + 1;
+        spliceStart = -1;
       }
     }
     if (nestedStart >= 0) nestedText += line.slice(nestedStart);
+    else if (spliceStart >= 0) nestedText += line.slice(spliceStart);
     if (nestedQuote) nestedLines.push(nestedText);
     if (!line.endsWith("\\")) arithmetic = false;
     if (line.endsWith("\\")) {

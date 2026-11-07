@@ -70,6 +70,13 @@ flowchart LR
 
 ## Test Plan
 
+- Review follow-up: replacing or dropping text spliced into a nested script is
+  obsolete. Shell variables and expressions remain intact, and a real
+  unpinned install after a splice is still reported. Coverage:
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::nested script splices retain variables and expressions`.
+  The npm variable case failed before the fix. No second command-normalisation
+  implementation was found.
+
 - Review follow-up: treating every later same-quoted word as a splice is
   obsolete. Adjacent quoted segments still form one shell word, while whitespace
   or an operator ends the capture and a later script is scanned independently.
