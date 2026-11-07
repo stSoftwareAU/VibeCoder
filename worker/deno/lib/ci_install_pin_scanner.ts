@@ -36,8 +36,11 @@
  * never flagged.
  *
  * Commands are normalised before matching (Issue #3953): backslash line
- * continuations are joined, wrapper prefixes (`sudo`, `env`, `command`,
- * `exec`, their flags, and leading `VAR=value` assignments) are stripped,
+ * continuations and multiline quotes or expressions are joined; heredoc
+ * bodies are data. Chains split at `;`, `|`, `&&`, `||`, background `&`
+ * and subshell parentheses outside quotes and expressions. Wrapper prefixes
+ * (`sudo`, `env`, `command`, `exec`, their flags, leading `VAR=value`
+ * assignments, and `then`, `do`, `else`, `elif`, `!`, `time`, `{`) are stripped,
  * and the subcommand is the first non-flag argument rather than a fixed
  * index. Without that, `sudo npm install -g <pkg>` and
  * `npm --global install <pkg>` — two of the commonest real-world spellings
@@ -350,9 +353,9 @@ interface LogicalLine {
 }
 
 /**
- * Join backslash line continuations so a wrapped install reads as one
- * command (Issue #3953). Without this, `npm install -g \` flagged the
- * trailing `\` as the package and produced the garbage id `…-npm-`.
+ * Join backslash continuations and multiline quotes or expressions, while
+ * treating heredoc bodies as data. Preserve individual lines as a fallback
+ * when a quote or expression remains unfinished at the end of the block.
  */
 function joinContinuations(run: string): LogicalLine[] {
   const out: LogicalLine[] = [];
@@ -360,10 +363,23 @@ function joinContinuations(run: string): LogicalLine[] {
   let anchor: string | null = null;
   let quote = "";
   let expression = false;
+  let bufferedLines: string[] = [];
+  const heredocs: { delimiter: string; stripTabs: boolean }[] = [];
 
   for (const rawLine of run.split("\n")) {
     const line = rawLine.trim();
+    if (heredocs.length > 0 && anchor === null) {
+      const here = heredocs[0]!;
+      if (
+        (here.stripTabs ? rawLine.replace(/^\t+/, "") : rawLine) ===
+          here.delimiter
+      ) {
+        heredocs.shift();
+      }
+      continue;
+    }
     if (anchor === null) anchor = line;
+    bufferedLines.push(line);
     for (let i = 0; i < line.length; i++) {
       if (expression) {
         if (line.startsWith("}}", i)) {
@@ -382,6 +398,20 @@ function joinContinuations(run: string): LogicalLine[] {
       } else if (!quote && (line[i] === "'" || line[i] === '"')) {
         quote = line[i] as string;
       } else if (
+        !quote && line.startsWith("<<", i) && line[i - 1] !== "<" &&
+        line[i + 2] !== "<"
+      ) {
+        const match = line.slice(i).match(
+          /^<<(-)?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/,
+        );
+        if (match) {
+          heredocs.push({
+            delimiter: (match[2] ?? match[3] ?? match[4])!,
+            stripTabs: !!match[1],
+          });
+          i += match[0].length - 1;
+        }
+      } else if (
         !quote && line[i] === "#" &&
         (i === 0 || /\s/.test(line[i - 1] as string))
       ) {
@@ -399,17 +429,25 @@ function joinContinuations(run: string): LogicalLine[] {
     out.push({ command: `${buffer}${line}`.trim(), anchor });
     buffer = "";
     anchor = null;
+    bufferedLines = [];
   }
   // A trailing continuation with nothing after it still yields its command.
   if (buffer.length > 0) {
-    out.push({ command: buffer.trim(), anchor: anchor ?? buffer.trim() });
+    if (quote || expression) {
+      for (const line of bufferedLines) {
+        out.push({ command: line, anchor: line });
+      }
+    } else {
+      out.push({ command: buffer.trim(), anchor: anchor ?? buffer.trim() });
+    }
   }
   return out;
 }
 
 /**
  * Drop the wrapper prefix in front of the real tool — `sudo`, `env`,
- * `command`, `exec`, their flags, and leading `VAR=value` assignments —
+ * `command`, `exec`, their flags, leading `VAR=value` assignments and shell
+ * keywords `then`, `do`, `else`, `elif`, `!`, `time`, `{` —
  * so the tool is found wherever it sits (Issue #3953).
  */
 function stripCommandPrefix(tokens: readonly string[]): readonly string[] {

@@ -648,6 +648,38 @@ Deno.test("cargo shell versions and command boundaries", () => {
   }
 });
 
+Deno.test("heredoc bodies and unfinished quotes do not hide later installs", () => {
+  for (
+    const [operator, install, name] of [
+      ["<<'EOF'", "npm install -g pa11y-ci", "pa11y-ci"],
+      ["<<EOF", "gem install bundler", "bundler"],
+      ['<<-"EOF"', "cargo install cargo-audit", "cargo-audit"],
+    ]
+  ) {
+    const run =
+      `cat ${operator} > notes.md\nIt's done\nEOF\n${install}\necho "it's over"`;
+    assertEquals(findUnpinnedInstalls(run).map((f) => f.packageName), [name]);
+  }
+  assertEquals(
+    findUnpinnedInstalls("echo 'unfinished\nnpm install -g pa11y-ci")
+      .map((f) => f.packageName),
+    ["pa11y-ci"],
+  );
+  for (const prefix of ["echo '<<EOF'", "cat <<<word"]) {
+    assertEquals(
+      findUnpinnedInstalls(`${prefix}\nnpm install -g pa11y-ci`)
+        .map((f) => f.packageName),
+      ["pa11y-ci"],
+    );
+  }
+  assertEquals(
+    findUnpinnedInstalls(
+      "cat <<A <<-'B'\nnpm install -g phantom\nA\nIt's done\n\tB\ncargo install cargo-audit",
+    ).map((f) => f.packageName),
+    ["cargo-audit"],
+  );
+});
+
 Deno.test("cargo expressions preserve logical operators and command boundaries", () => {
   for (
     const run of [

@@ -1034,8 +1034,12 @@ expression versions, like shell-variable versions, are not statically decidable.
 have to be token 0 and the subcommand token 1, so two everyday spellings —
 `sudo npm install -g <pkg>` and `npm --global install <pkg>` — read as
 clean, and a backslash-continued install produced a garbage finding id.
-Normalisation now: joins backslash line continuations into one command
-(anchoring the call-site to the line the command starts on), strips wrapper
+Normalisation now: joins backslash continuations and quoted strings or GitHub
+expressions spanning lines into one command (anchoring the call-site to the
+line the command starts on), treating heredoc bodies as data. It splits at
+`;`, `|`, `&&`, `||`, background `&` and subshell parentheses outside quotes
+and expressions, and strips shell keywords (`then`, `do`, `else`, `elif`, `!`,
+`time`, `{`) and wrapper
 prefixes (`sudo`, `env`, `command`, `exec`, their flags and flag values,
 and leading `VAR=value` assignments), strips cargo toolchain selectors
 (`cargo +stable install` is read as `cargo install`), recognises a global

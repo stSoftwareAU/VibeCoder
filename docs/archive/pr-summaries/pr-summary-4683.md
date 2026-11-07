@@ -70,6 +70,14 @@ flowchart LR
 
 ## Test Plan
 
+- Review follow-up: heredoc bodies no longer contribute shell quote state;
+  unfinished quotes and expressions fall back to scanning physical lines.
+  npm, gem and cargo installs after heredocs remain detectable, covered by
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::heredoc bodies and unfinished quotes do not hide later installs`.
+  The shared normalisation descriptions now match the scanner. The regression
+  test failed before the fix; no second command-normalisation implementation was
+  found.
+
 - Review follow-up: shell quotes attached to cargo versions are removed, and
   background operators split commands without splitting redirections. Multiline
   quoted strings retain their state, and shell condition and timing prefixes
