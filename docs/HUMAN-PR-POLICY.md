@@ -110,6 +110,15 @@ What counts as a bot **for admission** is `isBotAuthorForMaintenance`
 - one of the three known **suffix-less** bots, matched whole:
   `dependabot`, `renovate`, `github-actions`.
 
+`gh pr list --json author` reports a GitHub App author as `app/<slug>` with
+`is_bot: true` (for example `app/dependabot`), not as `dependabot[bot]`.
+`fetchAllOpenPRs` re-spells that shape as `<slug>[bot]` (`normaliseGhAppLogin`,
+`worker/deno/lib/trust_exclusions.ts`) before the listing reaches the admission
+predicate, so a Dependabot or Renovate PR is admitted. The re-spelling is
+representation only: it grants no authority, and the cross-repository,
+fleet-author and every other rule here still apply. A login that is not
+`app/<slug>` with `is_bot: true` is never rewritten.
+
 That is deliberately narrower than `isBotLogin`, the worker's general
 `[bot]`-detection predicate, which also matches a login **starting** with
 `github-copilot`, `copilot`, `cursor`, `dependabot`, `renovate`, `snyk` or

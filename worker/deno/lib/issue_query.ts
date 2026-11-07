@@ -30,6 +30,7 @@ import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 // actually targets (50-char slug cap + trailing-hyphen strip).
 import { createMilestoneBranchName } from "./git_branch.ts";
 import { isHumanAuthoredPr } from "./fleet_authors.ts";
+import { normaliseGhAppLogin } from "./trust_exclusions.ts";
 export { createMilestoneBranchName };
 import { CLOSED_MILESTONE_CACHE_PREFIX, IssueCache } from "./issue_cache.ts";
 import type { IssueSubAgentTier, WorkerConfig } from "../types.ts";
@@ -104,6 +105,10 @@ export interface OpenPRWithBody extends OpenPR {
   labels?: string[];
   /**
    * The listing author's login, when `gh` reported one (Issue #1846).
+   *
+   * A GitHub App author is recorded as `<slug>[bot]`, the REST form, not the
+   * `app/<slug>` that `gh pr list --json author` reports (Issue #4719). An
+   * ordinary user's login is recorded as reported.
    *
    * Named apart from {@link OpenPR.author} deliberately: that field carries
    * the *fleet login the PR was fetched under* (Issue #4024) and feeds
@@ -1265,9 +1270,15 @@ export async function fetchAllOpenPRs(
     };
     // Issue #1846: carried only when `gh` actually reported them, so an
     // absent field stays "unknown" rather than becoming a false negative.
-    const author = isRecord(item.author) ? item.author.login : undefined;
-    if (typeof author === "string" && author.trim() !== "") {
-      pr.authorLogin = author.trim();
+    // Issue #4719: `gh` reports a GitHub App author as `app/<slug>` with
+    // `is_bot: true`. Only that shape is rewritten, so an ordinary user's
+    // login is never changed.
+    const author = isRecord(item.author) ? item.author : undefined;
+    const login = typeof author?.login === "string" ? author.login.trim() : "";
+    if (login !== "") {
+      pr.authorLogin = author?.is_bot === true
+        ? normaliseGhAppLogin(login)
+        : login;
     }
     if (typeof item.isCrossRepository === "boolean") {
       pr.isCrossRepository = item.isCrossRepository;
