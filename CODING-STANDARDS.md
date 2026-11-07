@@ -1594,8 +1594,8 @@ failing pass's output and drops a passing one's.
 `./quality.sh` before creating any PR. Never raise a PR with failing quality
 checks — fix the failures first.
 
-**The agent's own run of the gate is conditional on the run budget (Issue
-#1138).** The gate's median observed run is 17 minutes inside a budget of
+**The agent's own run of the gate is conditional on the run budget
+(Issue #1138).** The gate's median observed run is 17 minutes inside a budget of
 roughly an hour, and the worker runs the gate itself before the PR is raised. So
 an agent starts the gate only when the runway left covers it plus the time to
 fix, commit and push what it reports; the worker writes `.vibe-run-budget.md`
