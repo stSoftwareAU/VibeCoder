@@ -195,11 +195,13 @@ generate unless a guideline below explicitly says otherwise.
    `branches: ["*"]`, and never omit the filter. This applies to every
    workflow you generate, for the reason spelt out in *Gitleaks Reference
    Implementation* requirement 1 below.
-10. **Disable credential persistence on every read-only checkout:
+10. **Disable credential persistence when the checkout credential is not needed:
     `persist-credentials: false`** — same rule as *Gitleaks Reference
     Implementation* requirement 8 below, applied to every workflow. Only a
-    job that genuinely pushes back to the repository (or fetches a private
-    submodule) keeps the credential, and it says so in a comment.
+    job that needs the checkout credential keeps it and says so in a comment:
+    for example, `run: git push` or `git fetch`, a push action using that
+    credential, or a submodules checkout. `peter-evans/create-pull-request`
+    uses its own token and does not count.
 11. **Declare a cancelling `concurrency:` group on every workflow, and
     `timeout-minutes:` on every job.** Use
     `group: ${{ github.workflow }}-${{ github.ref }}` with
