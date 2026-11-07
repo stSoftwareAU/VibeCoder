@@ -97,7 +97,8 @@
  *   - **Native unpinned-CI-install pre-filer (Issue #3668, split out of
  *     #3642).** Each `run:`-level package install with no exact version
  *     pin (`npm install -g <pkg>`, `npx --yes <pkg>`, `gem install
- *     <pkg>`) becomes its own `severity:medium` issue via
+ *     <pkg>`, `cargo install <crate>` without an exact `--version` and
+ *     `--locked`) becomes its own `severity:medium` issue via
  *     `ci_install_pin_scanner.ts`, consolidated one per package
  *     coordinate. `action_pin_scanner.ts` only inspects `uses:`, so these
  *     installs previously sat outside every native pre-filer — and
@@ -1428,10 +1429,11 @@ export function createGitHubActionsAuditTemplate(
         // 5i. Native unpinned-CI-install pre-filer (Issue #3668, split out
         //     of #3642). Flag every `run:`-level package install with no
         //     exact version pin (`npm install -g <pkg>`, `npx --yes <pkg>`,
-        //     `gem install <pkg>`) — invisible to `action_pin_scanner.ts`,
-        //     which only inspects `uses:`. Such an install resolves
-        //     whatever the registry serves at run time, so it sits outside
-        //     the repo's dependency quarantine. Findings consolidate one
+        //     `gem install <pkg>`, `cargo install <crate>` without an exact
+        //     `--version` or without `--locked`) — invisible to
+        //     `action_pin_scanner.ts`, which only inspects `uses:`. Such an
+        //     install resolves whatever the registry serves at run time, so
+        //     it sits outside the repo's dependency quarantine. Findings consolidate one
         //     per package coordinate at `severity:medium`; each id is added
         //     to the known-open list so the LLM does not double-file. Per
         //     Issue #3239 isolation the pin rides a normal per-repo worker
