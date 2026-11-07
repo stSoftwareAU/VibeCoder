@@ -17,6 +17,7 @@ import {
   fetchTeamMembers,
   isBotAuthorForMaintenance,
   isBotLogin,
+  normaliseGhAppLogin,
   resolveVibeCoderLogins,
   type TeamMemberSet,
 } from "../lib/trust_exclusions.ts";
@@ -409,4 +410,51 @@ Deno.test("fetchTeamMembers - non-zero exit without HTTP status is an error resu
   } finally {
     restore();
   }
+});
+
+// =============================================================================
+// normaliseGhAppLogin — the gh `app/<slug>` author spelling (Issue #4719)
+// =============================================================================
+
+Deno.test("normaliseGhAppLogin - re-spells a gh App author in the REST [bot] form", () => {
+  assertEquals(normaliseGhAppLogin("app/dependabot"), "dependabot[bot]");
+  assertEquals(normaliseGhAppLogin("app/renovate"), "renovate[bot]");
+  assertEquals(
+    normaliseGhAppLogin("app/github-actions"),
+    "github-actions[bot]",
+  );
+  assertEquals(normaliseGhAppLogin("  app/dependabot  "), "dependabot[bot]");
+});
+
+Deno.test("normaliseGhAppLogin - leaves logins outside the app/<slug> shape unchanged", () => {
+  assertEquals(normaliseGhAppLogin("dependabot[bot]"), "dependabot[bot]");
+  assertEquals(normaliseGhAppLogin("alice"), "alice");
+  assertEquals(normaliseGhAppLogin("app/"), "app/");
+  assertEquals(normaliseGhAppLogin("app/a/b"), "app/a/b");
+  assertEquals(normaliseGhAppLogin("app/ bad"), "app/ bad");
+});
+
+Deno.test("normaliseGhAppLogin - a hostile over-long slug is returned unchanged in linear time", () => {
+  const hostile = "app/" + "a-".repeat(50000) + "!";
+  assertEquals(normaliseGhAppLogin(hostile), hostile);
+});
+
+Deno.test("normaliseGhAppLogin - composes with isBotAuthorForMaintenance", () => {
+  // A normalised App author is admitted, exactly as its REST spelling is.
+  assertEquals(
+    isBotAuthorForMaintenance(normaliseGhAppLogin("app/dependabot")),
+    true,
+  );
+  // An ordinary user stays a non-bot.
+  assertEquals(isBotAuthorForMaintenance(normaliseGhAppLogin("alice")), false);
+  // A name GitHub has not attested by the [bot] suffix is recorded as one:
+  // the `[bot]`-suffixed name is what GitHub attests, as it does over REST.
+  assertEquals(
+    normaliseGhAppLogin("app/some-unknown-app"),
+    "some-unknown-app[bot]",
+  );
+  assertEquals(
+    isBotAuthorForMaintenance(normaliseGhAppLogin("app/some-unknown-app")),
+    true,
+  );
 });
