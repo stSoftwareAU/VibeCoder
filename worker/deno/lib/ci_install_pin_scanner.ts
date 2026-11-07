@@ -421,6 +421,61 @@ function subcommandIndex(args: readonly string[]): number {
   return args.findIndex((t) => !t.startsWith("-"));
 }
 
+/** Split shell command chains without splitting quoted text or Actions expressions. */
+function splitCommands(command: string): string[] {
+  const segments: string[] = [];
+  let start = 0;
+  let quote = "";
+  let expression = false;
+  for (let i = 0; i < command.length; i++) {
+    if (expression) {
+      if (command.startsWith("}}", i)) {
+        expression = false;
+        i++;
+      }
+    } else if (quote === "'" && command[i] === "'") {
+      quote = "";
+    } else if (command[i] === "\\" && quote !== "'") {
+      i++;
+    } else if (command.startsWith("${{", i) && quote !== "'") {
+      expression = true;
+      i += 2;
+    } else if (quote) {
+      if (command[i] === quote) quote = "";
+    } else if (command[i] === "'" || command[i] === '"') {
+      quote = command[i] as string;
+    } else if (
+      command[i] === "#" && (i === 0 || /\s/.test(command[i - 1] as string))
+    ) {
+      break;
+    } else if (
+      command[i] === ";" || command[i] === "|" || command.startsWith("&&", i)
+    ) {
+      segments.push(command.slice(start, i));
+      if (command.startsWith("||", i) || command.startsWith("&&", i)) i++;
+      start = i + 1;
+    }
+  }
+  segments.push(command.slice(start));
+  return segments;
+}
+
+/** Drop unquoted shell comments and redirections from cargo arguments. */
+function cargoShellTokens(tokens: string[]): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] as string;
+    if (token.startsWith("#")) break;
+    const redirect = token.match(/^(?:\d*|&)(?:>>?|<<?)(.*)$/);
+    if (redirect) {
+      if (!redirect[1]) i++;
+      continue;
+    }
+    result.push(unquote(token));
+  }
+  return result;
+}
+
 /**
  * Find every unpinned third-party package install in a shell snippet taken
  * from a workflow `run:` block.
@@ -448,7 +503,7 @@ export function findUnpinnedInstalls(run: string): UnpinnedInstall[] {
     }
 
     // A line may chain commands; inspect each segment separately.
-    for (const segment of logical.command.split(/&&|\|\||;|\|/)) {
+    for (const segment of splitCommands(logical.command)) {
       const command = segment.trim();
       // Quotes are shell syntax, not part of the spec — `"$TOOL"` must
       // read as the variable `$TOOL` so it stays exempt.
@@ -458,10 +513,11 @@ export function findUnpinnedInstalls(run: string): UnpinnedInstall[] {
       if (tokens[0] === "cargo") {
         // Keep quoted values and Actions expressions together within a token.
         tokens = stripCommandPrefix(
-          (command.match(
-            /(?:\$\{\{.*?\}\}|"(?:\\.|[^"\\])*"|'[^']*'|\$(?!\{\{)|[^\s"'$]+)+/g,
-          ) ?? [])
-            .map(unquote),
+          cargoShellTokens(
+            command.match(
+              /(?:\$\{\{.*?\}\}|"(?:\\.|[^"\\])*"|'[^']*'|\$(?!\{\{)|[^\s"'$]+)+/g,
+            ) ?? [],
+          ),
         );
       }
       if (tokens.length === 0) continue;

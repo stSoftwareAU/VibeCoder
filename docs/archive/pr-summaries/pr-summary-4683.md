@@ -117,6 +117,12 @@ flowchart LR
   and `deno check '**/*.ts'` passed; the scanner, 4683 and template conformance
   tests passed (67 tests). The archived-summary freshness check reads commit
   history and will verify this working-tree update after the babysitter commits.
+- Latest review follow-up: command chains split outside quoted text and GitHub
+  expressions, while cargo ignores unquoted shell comments and redirections.
+  Real chained installs still produce findings. The regression tests
+  `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo expressions preserve logical operators and command boundaries`
+  and `worker/deno/tests/ci_install_pin_scanner_test.ts::cargo ignores shell comments and redirections`
+  both failed before the fix. No twinned command-splitting rule was found.
 - Targeted run: `deno task test:unit` over the scanner, 3642, 4683, conformance,
   file-checks, audit-template, definitions, auditor and changed-gate tests: 299
   passed, 0 failed.

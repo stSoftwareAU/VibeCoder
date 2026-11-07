@@ -621,6 +621,64 @@ Deno.test("cargo quoted values and expressions do not become crates", () => {
   );
 });
 
+Deno.test("cargo expressions preserve logical operators and command boundaries", () => {
+  for (
+    const run of [
+      "cargo install --locked cargo-audit --version ${{ inputs.version || '0.22.2' }}",
+      "cargo install --locked cargo-audit@${{ inputs.version || '0.22.2' }}",
+      "cargo install --locked cargo-audit --version ${{ github.event_name == 'push' && '0.22.2' || '0.22.1' }}",
+      'cargo install --locked cargo-audit@0.22.2 --features "a || b"',
+    ]
+  ) assertEquals(findUnpinnedInstalls(run), [], run);
+  assertEquals(
+    findUnpinnedInstalls(
+      "cargo install --locked cargo-audit@${{ inputs.version || '0.22.2' }} && cargo install other",
+    ).map((f) => f.packageName),
+    ["other"],
+  );
+});
+
+Deno.test("cargo ignores shell comments and redirections", () => {
+  for (
+    const suffix of [
+      "2>&1",
+      "2>&1 | tee install.log",
+      "> /dev/null",
+      ">> log",
+      "< input",
+      "&> log",
+      "2>log",
+      "# pinned",
+    ]
+  ) {
+    assertEquals(
+      findUnpinnedInstalls(
+        `cargo install --locked cargo-audit@0.22.2 ${suffix}`,
+      ),
+      [],
+      suffix,
+    );
+  }
+  assertEquals(
+    findUnpinnedInstalls("cargo install cargo-audit # exact and locked")
+      .map((f) => f.packageName),
+    ["cargo-audit"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      "cargo install cargo-audit # comment && cargo install phantom",
+    )
+      .map((f) => f.packageName),
+    ["cargo-audit"],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      'cargo install --locked cargo-audit@0.22.2 --features "# feature"',
+    ),
+    [],
+  );
+});
+
 Deno.test("findUnpinnedInstalls - flags cargo versions that are not exact", () => {
   for (
     const [run, version] of [
