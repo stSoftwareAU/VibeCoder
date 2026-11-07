@@ -303,7 +303,7 @@ skipped — never silently permissive. See
 
 A monitored repo the worker's login **cannot list** — 404, or 403 "Must have
 push access to view repository collaborators" — is a different thing (Issue
-#1453). It is a property of the deployment, not an outage, and the worker could
+\#1453). It is a property of the deployment, not an outage, and the worker could
 never write to that repo either. Such a repo is **skipped**: named once in a
 `[derived-authors] … skipped` warning with GitHub's own words, and left out of
 the fold. The fold still intersects across every repo that resolved, so write
@@ -1539,7 +1539,7 @@ fetch origin`, then a hard reset to `origin/<default-branch>`, a
 `git clean -fd` (Issue #512) and a pathspec-scoped `git clean -ffdx` over the
 ignored directories that carry executable content (`node_modules/`, `.venv/`,
 `target/`, …) so nothing a previous launch left in them runs in this one (Issue
-#1443 — see `worker/deno/lib/ignored_path_clean.ts`). This is the **only**
+\#1443 — see `worker/deno/lib/ignored_path_clean.ts`). This is the **only**
 update of that checkout: Issue #513 retired the in-container reset, so nothing
 inside the container writes to `/workspace` and that mount can become read-only
 (Issue #509). The branch is read from the checkout's own `origin/HEAD`.
@@ -2185,7 +2185,7 @@ built, nothing is injected, and no prompt changes.
 This key is the configuration surface (Issue #2098). As of Issue #2569 it is
 live for all ten phases that accept a bundle — the **issue**, **planning** and
 **question** runs (Issue #2102), the **PR feedback** and **CI fix** runs (Issue
-#2103), the **grill-me** rounds (Issue #2561) and the **clarity assessment**,
+\#2103), the **grill-me** rounds (Issue #2561) and the **clarity assessment**,
 **refinement**, **revision** and **quorum** runs (Issue #2569): each collects a
 bundle before its prompt is built and injects it when the collection succeeded.
 The run-stats fields land with the rest of #2060. A host that leaves the switch
@@ -2228,9 +2228,9 @@ rule **leads** the built user prompt naming the tools — `graft_find_code`,
 replaces, with the reason and the cases where reading is still right. It leads
 rather than trails because, as one sentence appended after the issue and the
 bundle, it was ignored: 25 of 29 `Graft: ok` runs reported `0 queries` (Issue
-#2435). The entry and the rule are added together or not at all, on the same six
-run kinds. The entry carries `alwaysLoad: true`, which exempts the server from
-the Claude CLI's tool-search deferral: deferred, a Graft tool is a name the
+\#2435). The entry and the rule are added together or not at all, on the same
+six run kinds. The entry carries `alwaysLoad: true`, which exempts the server
+from the Claude CLI's tool-search deferral: deferred, a Graft tool is a name the
 agent must spend a call loading before it can use it, and it greps instead
 (Issue #2435). The exemption is per server, so nothing else the run carries is
 loaded up front, and Codex — which reads only `command`, `args` and `env` —
@@ -2424,8 +2424,8 @@ billed run that produced nothing the next attempt did not redo.
 
 Both floors measure the same runway — the runway left to the **supervisor hard
 cap** (Issue #425). The cycle deadline still stops new claims on its own (Issue
-#397), but it no longer truncates the execute of a claim already taken, so it is
-not what decides whether a claim can fit.
+\#397), but it no longer truncates the execute of a claim already taken, so it
+is not what decides whether a claim can fit.
 
 So the floor adapts to what the issue already carries (Issue #245). Evidence is
 any one of: preserved WIP on the issue branch, a previous attempt whose recorded
@@ -2497,7 +2497,7 @@ a hand-written weekly report.
 The fast-failure tracker is the durable half. It lives on the work volume as
 `repo_fast_failures_<host>.json` — the hostname rides in the filename, never the
 PID — so the counters survive a worker restart. Fleet-wide tallying (Issue
-#2956) adds a second, shared record in the monitored repository itself, so a
+\#2956) adds a second, shared record in the monitored repository itself, so a
 repository's failures are counted across every host, not just the one that hit
 them.
 
@@ -2793,7 +2793,7 @@ grace period.
 One exception, and it is the reason a live CI fix logged `3600s` against a
 documented `1800`: a reactive key left unset **while `claude_timeout` is set
 explicitly in the config file** inherits `claude_timeout` for back-compat (Issue
-#1824). Set `pr_feedback_timeout` / `ci_fix_timeout` explicitly whenever you
+\#1824). Set `pr_feedback_timeout` / `ci_fix_timeout` explicitly whenever you
 raise `claude_timeout`, or the reactive phases follow it up. Separately, the run
 loop itself used to hand the reactive processors `claude_timeout` regardless of
 these keys — fixed in Issue #213, so the run loop and the single-shot commands
@@ -3452,7 +3452,7 @@ can be overridden via environment variables for testing or special deployments.
 The three `gh` timeouts are applied at the `gh` chokepoint itself
 ([`worker/deno/lib/gh_spawn.ts`](../worker/deno/lib/gh_spawn.ts) via
 [`gh_timeout.ts`](../worker/deno/lib/gh_timeout.ts)), not by each caller (Issue
-#1229): `GH_CLONE_TIMEOUT` for `gh repo clone`, `GH_PAGINATED_TIMEOUT` for a
+\#1229): `GH_CLONE_TIMEOUT` for `gh repo clone`, `GH_PAGINATED_TIMEOUT` for a
 `gh api --paginate` read, and `GH_COMMAND_TIMEOUT` for everything else. A call
 that exceeds its budget is aborted and reported loudly — exit code `124` with
 `TIMEOUT: gh <args> timed out after <n>s` on stderr — so a stalled GitHub call
@@ -3671,7 +3671,7 @@ one floor and claim at another.
 ### Host build-cache reclaim (Issue #4498)
 
 A host short of its claiming floor plus the 25 GB cargo build headroom (Issue
-#4540) first reclaims regenerable build caches (stale `target/` directories and
+\#4540) first reclaims regenerable build caches (stale `target/` directories and
 their kind), before any work volume is considered for recreation. The reclaim is
 on by default and is configured only in `.config.json`; there is no environment
 variable for it. See
@@ -4642,7 +4642,7 @@ without the other.
 
 The trusted-author set that feeds those same downstream guards is
 **collaborators minus exclusions**, not the local `allowed_authors` array (Issue
-#1066). `service_accounts` and `fleet_pr_authors` are on both sides of that
+\#1066). `service_accounts` and `fleet_pr_authors` are on both sides of that
 picture: they union into the sibling list, and they are also stripped from the
 collaborator set so a fleet login cannot authorise itself.
 
@@ -5494,7 +5494,7 @@ and it replaces the old locus-wide sweep, which handed a flapping check a fresh
 budget on every green cycle and so never reached the cap at all.
 
 An agent run the provider refused to serve is not an attempt at all (Issue
-#4038). That covers a refused model, spent quota, a rejected credential or an
+\#4038). That covers a refused model, spent quota, a rejected credential or an
 outage, which `isProviderUnavailableFailure` classifies. Such a run leaves the
 working tree empty because the agent never read the failure, not because no
 change was needed. So it posts nothing, writes no marker and applies no label,
@@ -6232,7 +6232,7 @@ add or modify repositories, either:
 GitHub repository names are case-insensitive, so `org/My-Repo` and `org/my-repo`
 are the **same repository**. Listing both once meant every per-repository scan
 ran twice and the two slots of one worker raced each other for its issues (Issue
-#1546).
+\#1546).
 
 Both the worker's config load and `./setup.sh` now collapse case-variant `repos`
 entries to the **first** spelling and say which entry was dropped:
