@@ -47,3 +47,7 @@ outside `archive/` and the READMEs for `closed as completed (Issue` and
 - No existing assertion was removed or edited.
 - Run: `deno task test:unit tests/handle_no_changes_phase_test.ts` — 33 passed,
   0 failed. `deno fmt --check` and `deno lint` clean on both changed files.
+- `./quality.sh < /dev/null` on the final code head: exit 0, "Result: PASSED
+  (with skipped checks)" — deno tests, lint, type check, fmt, markdownlint,
+  mermaid, semgrep and the release-tag ruleset passed; config integration and
+  checkov were skipped by the gate itself.
