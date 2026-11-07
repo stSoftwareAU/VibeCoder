@@ -485,8 +485,9 @@ export async function recoverFromSummaryRuleBlock(
  *
  * A commit that cannot be made leaves the file on disk exactly as the recovery
  * wrote it — the pre-existing behaviour. Exit-time adoption reads the summary
- * committed at the pushed head (Issue #4712), but a completion re-run can
- * still publish the working-tree summary (Issue #4764). The failed commit does
+ * committed at the pushed head (Issue #4712), and a completion re-run
+ * publishes the summary committed at HEAD, never an uncommitted one
+ * (Issue #4764). The failed commit does
  * not fail the run; it is logged at **error** with the consequence named,
  * because a silent warning is how this loss went unnoticed.
  *
