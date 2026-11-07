@@ -382,8 +382,8 @@ function freshnessLines(result: CheckedResult): string[] {
       return [
         `[BLOCKED] ${FRESHNESS_TITLE}`,
         `    - code commit ${escapeControl(freshness.codeCommit)} changes ` +
-        `${paths}, but ${summaryState}; rewrite ${result.summaryPath} for ` +
-        "the head and add a Test Plan entry for the push",
+        `${paths}, but ${summaryState}; rewrite ${result.summaryPath} ` +
+        "so its claims, counts and results describe the head",
       ];
     }
   }
