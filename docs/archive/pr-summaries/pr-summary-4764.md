@@ -78,8 +78,8 @@ flowchart TD
 - Red check: forcing the helper's dirty branch to always call `loadPrSummary`
   made the first two tests fail (body held `UNCOMMITTED-EDIT-4764`); restored
   afterwards. The direct tests kill the surviving mutants the mutation check
-  listed for the `status` argv, the `cwd` options and the four `ok: false`
-  error returns.
+  listed for the `status` argv, the `cwd` options and the four `ok: false` error
+  returns.
 - Existing completion-phase tests (`completion_phase_summary_rule_retry`,
   `acceptance_closure`, `pre_pr_verifier_3395`, `rest_pr_fallback`,
   `pr_body_limit_4359`, `branch_evidence`, `head_reconcile`,
@@ -91,9 +91,9 @@ flowchart TD
 - Docs: `docs/USAGE.md` gains a paragraph on the committed-copy rule;
   `docs/workflows/fleet-pr-babysitter.md` already describes the committed loader
   for a different path and is unchanged.
-- Doc fix: the `commitRecoveredSummary` comment in
-  `summary_rule_gate_retry.ts` now says a completion re-run publishes the
-  summary committed at HEAD, never an uncommitted one.
+- Doc fix: the `commitRecoveredSummary` comment in `summary_rule_gate_retry.ts`
+  now says a completion re-run publishes the summary committed at HEAD, never an
+  uncommitted one.
 
 ## Merge verification
 
