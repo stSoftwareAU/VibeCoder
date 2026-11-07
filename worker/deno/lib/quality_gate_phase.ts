@@ -722,10 +722,10 @@ const SHELL_MISSING_COMMAND_LINE =
 const DOCKER_INFRA_LINE =
   /^(?:[^\s:]+: (?:line \d+: )?)?docker: .*(?:not found|Cannot connect|permission denied)/i;
 // Deno's per-test lines end with the test's own name's decoration: the result
-// (`name ... FAILED (2ms)`) or the failure summary (`name => file:line:col`). A
-// test called `docker: reports not found` reads as a Docker error without this.
+// (including the bare wait line and multiple step/timing groups) or the failure
+// summary (`name => file:line:col`). A test name can look like a Docker error.
 const DENO_TEST_LINE_SUFFIX =
-  / (?:\.\.\. (?:ok|FAILED|ignored)(?: \([^)]*\))?|=> \S+:\d+:\d+)$/;
+  / (?:\.\.\.(?: (?:ok|FAILED|ignored|cancelled|INCOMPLETE)(?: \([^)]*\))*)?|=> \S+:\d+:\d+)$/;
 const DENO_OUTPUT_START = /^-{3,} (?:(?:pre|post)-test )?output -{3,}$/;
 const DENO_OUTPUT_END = /^-{3,} (?:(?:pre|post)-test )?output end -{3,}$/;
 

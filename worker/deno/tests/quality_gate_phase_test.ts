@@ -123,6 +123,33 @@ Deno.test("isDockerInfraFailure - a failing test named for docker and not found 
   assertEquals(isDockerInfraFailure(output), false);
 });
 
+const DENO_DOCKER_FAILURES = [
+  [
+    "running 1 test from ./docker_test.ts",
+    "docker: reports not found when the image is missing ...",
+    "------- output -------",
+    "logged output",
+    "----- output end -----",
+    "docker: reports not found when the image is missing ... FAILED (5ms)",
+    " ERRORS ",
+    "docker: reports not found when the image is missing => ./docker_test.ts:1:6",
+    "error: AssertionError",
+  ].join("\n"),
+  "docker: reports not found ... FAILED (due to 1 failed step) (5ms)",
+];
+
+Deno.test("isDockerInfraFailure - Deno wait and step summary lines are not infrastructure", () => {
+  for (const output of DENO_DOCKER_FAILURES) {
+    assertEquals(isDockerInfraFailure(output), false);
+  }
+  for (const status of ["ok", "FAILED", "ignored", "cancelled", "INCOMPLETE"]) {
+    assertEquals(
+      isDockerInfraFailure(`docker: not found ... ${status}`),
+      false,
+    );
+  }
+});
+
 Deno.test("isDockerInfraFailure - ANSI-coloured result line is not infrastructure (Issue #4891)", () => {
   assertEquals(
     isDockerInfraFailure(
@@ -328,6 +355,21 @@ Deno.test("runQualityGateCheck - a failing Docker run whose test name quotes doc
   const result = await runQualityGateCheck(createParams(), deps);
   assertEquals(result.action, "failed_fixable");
   assertStringIncludes(result.retryPrompt!, "reports not found");
+});
+
+Deno.test("runQualityGateCheck - Deno output and failed step summaries remain fixable", async () => {
+  for (const output of DENO_DOCKER_FAILURES) {
+    const deps = createMockDeps({
+      getRepoConfig: (_configs, _repo, key) =>
+        key === "dockerImage" ? "node:20" : "",
+      runCommand: async (cmd) =>
+        cmd[0] === "docker" && cmd[1] === "version"
+          ? { exitCode: 0, output: "Docker version 27" }
+          : { exitCode: 1, output },
+    });
+    const result = await runQualityGateCheck(createParams(), deps);
+    assertEquals(result.action, "failed_fixable");
+  }
 });
 
 Deno.test("runQualityGateCheck - detects missing commands after inline Deno end markers", async () => {
