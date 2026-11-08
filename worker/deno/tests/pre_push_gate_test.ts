@@ -12,6 +12,10 @@ import {
 } from "@std/assert";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
 import {
+  createRepoFormatterDeps,
+  formatBranchChanges,
+} from "../lib/repo_formatters.ts";
+import {
   defaultPrePushGit,
   listPushedFiles,
   parsePrePushRefs,
@@ -549,16 +553,24 @@ Deno.test("listPushedFiles: a merge lists the paths it resolved, never the files
   try {
     await git(root, "init", "-q", "-b", "main");
     await Deno.writeTextFile(`${root}/c.txt`, "1\n");
+    await Deno.writeTextFile(`${root}/deno.json`, "{}\n");
+    await Deno.mkdir(`${root}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${root}/.github/workflows/check.yml`,
+      SYNCED_SHELLCHECK_WORKFLOW,
+    );
     await git(root, "add", "-A");
     await git(root, "commit", "-qm", "init");
     await git(root, "checkout", "-q", "-b", "feat");
     await Deno.writeTextFile(`${root}/c.txt`, "feat\n");
     await Deno.writeTextFile(`${root}/own.sh`, "#!/bin/sh\necho ok\n");
+    await Deno.writeTextFile(`${root}/own.ts`, "export const own = 1;\n");
     await git(root, "add", "-A");
     await git(root, "commit", "-qm", "own change");
     await git(root, "checkout", "-q", "main");
     await Deno.writeTextFile(`${root}/c.txt`, "main\n");
     await Deno.writeTextFile(`${root}/base_bad.sh`, "#!/bin/sh\necho $1\n");
+    await Deno.writeTextFile(`${root}/base_bad.ts`, "export const bad=1\n");
     await git(root, "add", "-A");
     await git(root, "commit", "-qm", "base moves on");
     await git(root, "checkout", "-q", "feat");
@@ -583,7 +595,33 @@ Deno.test("listPushedFiles: a merge lists the paths it resolved, never the files
       "main",
     );
     assert(files.ok);
-    assertEquals(files.value, ["c.txt", "merge_only.sh", "own.sh"]);
+    assertEquals(files.value, ["c.txt", "merge_only.sh", "own.sh", "own.ts"]);
+    const seen: string[] = [];
+    const gate = await runPrePushGate({
+      cwd: root,
+      stdin: prePushInput(await git(root, "rev-parse", "HEAD")),
+      baseRef: "main",
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: recordingRunner((command) => command.includes("base_bad"), seen),
+    });
+    assert(gate.ok, gate.ok ? "" : gate.error.message);
+    assert(seen.some((command) => command.includes("own.sh")));
+    assert(!seen.some((command) => command.includes("base_bad")));
+    const formatted: string[] = [];
+    const deps = createRepoFormatterDeps();
+    deps.runCommand = (command) => {
+      formatted.push(command.join(" "));
+      return Promise.resolve({ exitCode: 0, output: "" });
+    };
+    const result = await formatBranchChanges(root, "main", deps);
+    assertEquals(result.gitError, undefined);
+    assert(formatted.some((command) => command.includes("own.ts")));
+    assert(!formatted.some((command) => command.includes("base_bad")));
+    assertEquals(
+      await Deno.readTextFile(`${root}/base_bad.ts`),
+      "export const bad=1\n",
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -861,6 +899,36 @@ Deno.test("listPushedFiles: a file behind a directory later replaced by a symlin
   } finally {
     await Deno.remove(root, { recursive: true });
     await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate excludes files behind a replaced directory symlink (#4909)", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await Deno.mkdir(`${root}/outside`);
+    await Deno.writeTextFile(`${root}/outside/notes.md`, "# Outside\n");
+    await Deno.mkdir(`${clone}/dir`);
+    await Deno.writeTextFile(`${clone}/dir/notes.md`, "# Inside\n");
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "nested");
+    await git(clone, "rm", "-rq", "dir");
+    await Deno.symlink(`${root}/outside`, `${clone}/dir`);
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "replace directory");
+    const seen: string[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: prePushInput(await git(clone, "rev-parse", "HEAD")),
+      preFlightCommands: [],
+      findMarkdownlint: () => Promise.resolve("/fake/markdownlint"),
+      findCspell: () => Promise.resolve("/fake/cspell"),
+      runner: recordingRunner(() => false, seen),
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assert(seen.some((command) => command.includes("README.md")));
+    assert(!seen.some((command) => command.includes("dir/notes.md")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
   }
 });
 
@@ -1429,7 +1497,7 @@ Deno.test("runPrePushGate: git ls-files failure is an error", async () => {
   assert(failed.error.message.includes("ls-files"));
   assert(failed.error.message.includes("index corrupt"));
   assertInstanceOf(failed.error, PrePushGateInfrastructureError);
-  assertEquals(calls, ["log", "ls-files"]);
+  assertEquals(calls, ["log", "log", "ls-files"]);
 
   const accepted = await runPrePushGate({ ...input, git: makeGit(0) });
   assert(accepted.ok);

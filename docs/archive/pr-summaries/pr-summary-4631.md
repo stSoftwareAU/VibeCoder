@@ -204,9 +204,12 @@ call the same implementation.
   `pr_side_gate_guarantee_4876_test.ts::prSpellingProcessorCommand - prompt budget and push checks with no pre-flight (Issue #4876)`.
 - PR #4898 review round:
   `pre_push_gate_test.ts::listPushedFiles: a merge lists the paths it resolved, never the files it brings in from the base (PR #4898 review)`
-  merges a base commit carrying a ShellCheck-failing `base_bad.sh` into a branch
-  with its own `own.sh` and a conflict on `c.txt`; only `c.txt` and `own.sh` are
-  listed. Restoring `--diff-merges=first-parent` turned it red. The existing
+  merges a base commit carrying a ShellCheck-failing `base_bad.sh` and an
+  unformatted `base_bad.ts` into a branch with its own shell and TypeScript
+  files and a conflict on `c.txt`. The listing includes the branch files and
+  merge resolution, the gate passes without checking either base file, and the
+  formatter leaves the base TypeScript file untouched. Restoring
+  `--diff-merges=first-parent` turned the listing assertion red. The existing
   `shellcheck_publication_test.ts` merge-resolution SC2086 test still refuses
   the push.
   `pre_push_gate_test.ts::ShellCheck refuses an oversized configuration without reading it`
@@ -214,3 +217,12 @@ call the same implementation.
   turned it red. The babysitter `validateAndCommit` tests and the
   `gateStagedShellcheck` helper (which only they and one assertion used) were
   removed with the babysitter call.
+  `pre_push_gate_test.ts::runPrePushGate excludes files behind a replaced directory symlink (#4909)`
+  checks that a Markdown file behind a symlinked parent never reaches a check
+  command, while an in-tree Markdown file does. The regression test failed
+  against the former unfiltered listing and bare `lstat` implementation. Deleted
+  paths still reach ShellCheck configuration invalidation; execution targets use
+  the contained listing shared with the repository formatters. The former single
+  `git log` call count is obsolete because both listings are required;
+  `pre_push_gate_test.ts::runPrePushGate: git ls-files failure is an error`
+  still verifies that an index failure is reported as infrastructure failure.

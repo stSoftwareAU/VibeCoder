@@ -1666,22 +1666,14 @@ export async function runPrePushGate(opts: {
     true,
   );
   if (!touched.ok) return infrastructureFail(touched.error);
-  const existing: string[] = [];
-  for (const path of touched.value) {
-    try {
-      if ((await Deno.lstat(`${opts.cwd}/${path}`)).isFile) existing.push(path);
-    } catch (error) {
-      if (
-        !(error instanceof Deno.errors.NotFound) &&
-        !(error instanceof Deno.errors.NotADirectory)
-      ) {
-        return infrastructureFail(
-          `cannot inspect pushed file ${path}: ${error}`,
-        );
-      }
-    }
-  }
-  const changed = { value: opts.shellcheckOnly ? [] : existing };
+  const contained = await listPushedFiles(
+    refs.value,
+    opts.cwd,
+    git,
+    opts.baseRef,
+  );
+  if (!contained.ok) return infrastructureFail(contained.error);
+  const changed = { value: opts.shellcheckOnly ? [] : contained.value };
 
   const lsFiles = await git(["ls-files", "-z"], opts.cwd);
   if (lsFiles.code !== 0) {
