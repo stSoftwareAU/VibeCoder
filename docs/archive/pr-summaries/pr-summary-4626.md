@@ -131,7 +131,10 @@ not run there.
   `cargo_deny_gate_test.ts::workflow: compact steps report the offending source line`
   and `cargo_deny_gate_test.ts::workflow: aliased steps identify their job and step`
   cover diagnostic locations for compact and aliased step lists. The compact
-  test failed with line 1 before the fix.
+  test failed with line 1 before the fix. The aliased-list test replaces its
+  single-step fixture, which could not verify the index, with checkout followed
+  by the same unrunnable step. It still covers alias diagnostics and now asserts
+  step 2; replacing the calculated index with 1 makes that test fail.
 - The old conservative treatment of multiple repetitions is obsolete: valid
   patterns now select only matching paths, covered by
   `cargo_deny_gate_test.ts::workflow: multi-wildcard path filters select only matching paths`

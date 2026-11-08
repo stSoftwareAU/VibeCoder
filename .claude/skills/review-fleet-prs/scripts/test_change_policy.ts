@@ -34,8 +34,8 @@ const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const ISSUE_BRANCH = /^issue-(\d+)(?:-|$)/;
-const PART_OF_SAME = /^[ \t]*Part of #(\d+)[ \t]*\.?[ \t]*$/i;
-const PART_OF_OTHER =
+export const PART_OF_SAME = /^[ \t]*Part of #(\d+)[ \t]*\.?[ \t]*$/i;
+export const PART_OF_OTHER =
   /^[ \t]*Part of ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)[ \t]*\.?[ \t]*$/i;
 const PATH_PATTERN = /^[A-Za-z0-9_@.+\-\/ ()\[\]~]+$/;
 const BOOLEAN_WORDS = /^(?:true|yes|ok|passes?|verified|n\/a|done)$/i;

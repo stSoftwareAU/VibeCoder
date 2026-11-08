@@ -41,6 +41,11 @@ import {
   runGitCommand,
 } from "./git_timeout.ts";
 import { defaultLogger } from "./logger.ts";
+import {
+  type FenceLine,
+  isClosingFence,
+  parseFenceLine,
+} from "./markdown_code_spans.ts";
 import type { Logger, Result } from "../types.ts";
 import { redactedHeadTail, redactedTail } from "./redacted_text.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
@@ -198,6 +203,9 @@ const WORKER_OWNED_ARCHIVE_DIRS = [
 /** Extensions `deno fmt` will rewrite under those directories. */
 const ARCHIVE_FORMAT_EXTENSIONS = [".md", ".markdown", ".json", ".jsonc"];
 
+/** Largest archive file the worker will read and rewrite (1 MiB). */
+export const MAX_ARCHIVE_REWRITE_BYTES = 1024 * 1024;
+
 /**
  * A branch path the archive step may rewrite.
  *
@@ -255,13 +263,71 @@ function sortJsonKeys(value: unknown): unknown {
 }
 
 /**
+ * A line that is only a linkage keyword and an issue reference, such as
+ * `Part of #4802` or `Closes owner/repo#12`.
+ *
+ * The line is trimmed before the test, so the pattern carries no leading or
+ * trailing whitespace quantifiers and stray spaces cannot hide a linkage line.
+ * Whitespace is allowed between the number and the full stop, matching the
+ * reviewer's `PART_OF_SAME` and `PART_OF_OTHER`
+ * (`.claude/skills/review-fleet-prs/scripts/test_change_policy.ts`); a test
+ * runs both over the same table so they cannot drift.
+ */
+const LINKAGE_LINE =
+  /^(?:Closes|Fixes|Resolves|Part of) (?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+[ \t]*\.?$/i;
+
+/**
+ * Give each linkage-only line its own paragraph before `deno fmt` runs.
+ *
+ * `deno fmt` joins adjacent lines into one paragraph, so `Part of #A` over
+ * `Part of #B` would become `Part of #A Part of #B`, which breaks the
+ * reviewer's anchored-line rule (Issue #4802). A blank line goes above and
+ * below each linkage line that touches a non-blank line, so consecutive
+ * linkage lines end up with exactly one blank between them. Lines inside a
+ * fenced code block are left alone, and every other line is unchanged. A
+ * fence closes only on the opener's character with a run at least as long, as
+ * in CommonMark, so a ``` line inside a ~~~ block does not end it.
+ */
+export function isolateLinkageLines(text: string): string {
+  const input = text.split("\n");
+  const output: string[] = [];
+  let opener: FenceLine | null = null;
+  for (const [i, line] of input.entries()) {
+    const fence = parseFenceLine(line);
+    if (opener === null && fence !== null) {
+      opener = fence;
+      output.push(line);
+      continue;
+    }
+    if (opener !== null) {
+      if (isClosingFence(line, opener)) opener = null;
+      output.push(line);
+      continue;
+    }
+    if (!LINKAGE_LINE.test(line.trim())) {
+      output.push(line);
+      continue;
+    }
+    if ((output.at(-1) ?? "").trim() !== "") output.push("");
+    output.push(line);
+    if ((input[i + 1] ?? "").trim() !== "") output.push("");
+  }
+  return output.join("\n");
+}
+
+/**
  * Format the worker's own archive Markdown and JSON, then commit.
  *
  * Runs after the repository formatters. Only the two worker-owned
  * directories are touched, and only when the repository tracks a Deno
  * config — that is the formatter the pre-push gate will check them with.
- * A missing formatter, a write failure, or a formatter that exits non-zero
- * is logged. This function never throws, so the gate still runs.
+ * Before `deno fmt` runs, each Markdown file has its linkage-only lines
+ * isolated (see {@link isolateLinkageLines}) and each JSON file is rewritten
+ * with sorted keys; a file is written back only when it changed. Files over
+ * MAX_ARCHIVE_REWRITE_BYTES are skipped with a warning and left for the gate
+ * to report. A missing formatter, a write failure, or a formatter that exits
+ * non-zero is logged.
+ * This function never throws, so the gate still runs.
  */
 export async function formatWorkerOwnedArchive(
   repoPath: string,
@@ -314,19 +380,30 @@ export async function formatWorkerOwnedArchive(
       return;
     }
 
+    const skipped = new Set<string>();
     for (const path of archiveFiles) {
-      if (
-        !path.toLowerCase().endsWith(".json") &&
-        !path.toLowerCase().endsWith(".jsonc")
-      ) {
-        continue;
-      }
+      const lower = path.toLowerCase();
+      const isMarkdown = lower.endsWith(".md") || lower.endsWith(".markdown");
+      const isJson = lower.endsWith(".json") || lower.endsWith(".jsonc");
+      if (!isMarkdown && !isJson) continue;
       const absolute = `${repoPath}/${path}`;
       try {
+        // `listPushedFiles` has already dropped symlinks and paths that
+        // resolve outside the checkout; the cap keeps a huge file out of memory.
+        const info = await Deno.lstat(absolute);
+        if (info.size > MAX_ARCHIVE_REWRITE_BYTES) {
+          skipped.add(path);
+          deps.logger.warn(
+            `repo formatters: skipped ${path}: larger than ${MAX_ARCHIVE_REWRITE_BYTES} bytes`,
+          );
+          continue;
+        }
         const current = await Deno.readTextFile(absolute);
-        const canonical = canonicalArchiveJson(current);
-        if (canonical !== undefined && canonical !== current) {
-          await Deno.writeTextFile(absolute, canonical);
+        const rewritten = isMarkdown
+          ? isolateLinkageLines(current)
+          : canonicalArchiveJson(current);
+        if (rewritten !== undefined && rewritten !== current) {
+          await Deno.writeTextFile(absolute, rewritten);
         }
       } catch (error: unknown) {
         deps.logger.warn(
@@ -337,14 +414,16 @@ export async function formatWorkerOwnedArchive(
       }
     }
 
+    const formatPaths = archiveFiles.filter((path) => !skipped.has(path));
+    // `deno fmt` with no paths formats the whole repository: never run it empty.
+    if (formatPaths.length === 0) return;
+
     const { exitCode, output } = await deps.runCommand(
       [
         "deno",
         "fmt",
         "--permit-no-files",
-        ...archiveFiles.map((path) =>
-          path.startsWith("-") ? `./${path}` : path
-        ),
+        ...formatPaths.map((path) => path.startsWith("-") ? `./${path}` : path),
       ],
       { stdin: "null", cwd: repoPath },
     );
@@ -354,14 +433,14 @@ export async function formatWorkerOwnedArchive(
         "--name-only",
         "-z",
         "--",
-        ...archiveFiles.map((path) => `:(literal)${path}`),
+        ...formatPaths.map((path) => `:(literal)${path}`),
       ],
       { cwd: repoPath },
     );
     const diffError = gitStepError("diff --name-only", diff);
     const changedCount = diff.ok && diff.value.code === 0
       ? diff.value.stdout.split("\0").filter((name) =>
-        archiveFiles.includes(name)
+        formatPaths.includes(name)
       ).length
       : undefined;
     const countText = changedCount === undefined
@@ -383,7 +462,7 @@ export async function formatWorkerOwnedArchive(
     }
     if (changedCount === 0) return;
 
-    const gitError = await commitTrackedPaths(repoPath, deps, archiveFiles);
+    const gitError = await commitTrackedPaths(repoPath, deps, formatPaths);
     if (gitError !== undefined) {
       deps.logger.warn(`repo formatters: ${gitError}`);
       return;

@@ -1539,13 +1539,14 @@ Deno.test("workflow: compact steps report the offending source line", () => {
 Deno.test("workflow: aliased steps identify their job and step", () => {
   const findings = workflowCargoDenyFindings(yaml(
     "shared: &audit",
+    "  - uses: actions/checkout@v4",
     "  - run: cargo deny $SUBCOMMAND",
     "jobs:",
     "  deny:",
     "    steps: *audit",
   ));
   assertEquals(findings.map((f) => f.kind === "unrunnable" && f.source), [
-    "job deny step 1",
+    "job deny step 2",
   ]);
 });
 
