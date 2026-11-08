@@ -539,7 +539,7 @@ function sanitiseRepairConfig(value: unknown): unknown {
   return clean;
 }
 
-/** Create a checkout snapshot containing tracked files and a scrubbed config. */
+/** Create a checkout snapshot containing tracked regular files and scrubbed config. */
 async function createRepairWorkspaceSnapshot(
   baseDir: string,
   scratch: string,
@@ -556,33 +556,108 @@ async function createRepairWorkspaceSnapshot(
   const config = JSON.parse(
     await Deno.readTextFile(`${sourceConfig.source}/.config.json`),
   );
-  const archive = new Deno.Command("git", {
-    args: ["-C", baseDir, "archive", "--format=tar", "HEAD"],
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
-  const extract = new Deno.Command("tar", {
-    args: ["-xf", "-", "-C", path],
-    stdin: "piped",
-    stdout: "null",
-    stderr: "piped",
-  }).spawn();
   try {
-    const writer = extract.stdin.getWriter();
-    for await (const chunk of archive.stdout) await writer.write(chunk);
-    await writer.close();
-    const [archiveStatus, extractStatus, archiveErr, extractErr] = await Promise
-      .all([
-        archive.status,
-        extract.status,
-        new Response(archive.stderr).text(),
-        new Response(extract.stderr).text(),
-      ]);
-    if (!archiveStatus.success || !extractStatus.success) {
+    const env = {
+      PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+      HOME: Deno.env.get("HOME") ?? "/tmp",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_OPTIONAL_LOCKS: "0",
+    };
+    const tree = await new Deno.Command("git", {
+      args: ["-C", baseDir, "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+      env,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    if (!tree.success) {
       throw new Error(
-        `could not snapshot tracked worker checkout: git archive ${archiveStatus.code} ${archiveErr.trim()}; tar ${extractStatus.code} ${extractErr.trim()}`,
+        `could not list tracked worker checkout files: ${
+          new TextDecoder().decode(tree.stderr).trim()
+        }`,
       );
+    }
+    const entries = new TextDecoder("utf-8", { fatal: true }).decode(
+      tree.stdout,
+    )
+      .split("\0").filter(Boolean).map((entry) => {
+        const tab = entry.indexOf("\t");
+        if (tab < 0) throw new Error("malformed git tree entry");
+        const [mode, type, oid] = entry.slice(0, tab).split(" ");
+        const name = entry.slice(tab + 1);
+        const segments = name.split("/");
+        if (
+          !name || name.startsWith("/") || name.includes("\\") ||
+          segments.some((segment) =>
+            segment === "" || segment === "." || segment === ".."
+          )
+        ) throw new Error(`unsafe tracked path in worker checkout: ${name}`);
+        if (type !== "blob" || (mode !== "100644" && mode !== "100755")) {
+          throw new Error(
+            `unsupported tracked entry in worker checkout: ${name} (${mode} ${type})`,
+          );
+        }
+        return { mode, oid, name };
+      });
+    const catFile = new Deno.Command("git", {
+      args: ["-C", baseDir, "cat-file", "--batch"],
+      env,
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+    }).spawn();
+    const writer = catFile.stdin.getWriter();
+    await writer.write(
+      new TextEncoder().encode(entries.map(({ oid }) => oid).join("\n") + "\n"),
+    );
+    await writer.close();
+    const [status, stdout, stderr] = await Promise.all([
+      catFile.status,
+      new Response(catFile.stdout).arrayBuffer().then((buffer) =>
+        new Uint8Array(buffer)
+      ),
+      new Response(catFile.stderr).text(),
+    ]);
+    if (!status.success) {
+      throw new Error(
+        `could not read tracked worker checkout blobs: ${stderr.trim()}`,
+      );
+    }
+    let offset = 0;
+    const decoder = new TextDecoder();
+    for (const entry of entries) {
+      const headerEnd = stdout.indexOf(10, offset);
+      if (headerEnd < 0) {
+        throw new Error("malformed git cat-file response header");
+      }
+      const [oid, kind, sizeText] = decoder.decode(
+        stdout.subarray(offset, headerEnd),
+      ).split(" ");
+      const size = Number(sizeText);
+      if (
+        oid !== entry.oid || kind !== "blob" || !Number.isSafeInteger(size) ||
+        size < 0
+      ) {
+        throw new Error(`malformed git cat-file response for ${entry.name}`);
+      }
+      const start = headerEnd + 1;
+      const end = start + size;
+      if (end >= stdout.length || stdout[end] !== 10) {
+        throw new Error(`truncated git cat-file response for ${entry.name}`);
+      }
+      const destination = `${path}/${entry.name}`;
+      const parent = destination.slice(0, destination.lastIndexOf("/"));
+      await Deno.mkdir(parent, { recursive: true, mode: 0o700 });
+      await Deno.writeFile(destination, stdout.subarray(start, end), {
+        createNew: true,
+        mode: entry.mode === "100755" ? 0o700 : 0o600,
+      });
+      offset = end + 1;
+    }
+    if (offset !== stdout.length) {
+      throw new Error("unexpected trailing git cat-file data");
     }
     await Deno.writeTextFile(
       `${path}/.config.json`,

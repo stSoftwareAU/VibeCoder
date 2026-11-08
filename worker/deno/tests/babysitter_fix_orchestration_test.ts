@@ -44,6 +44,7 @@ import {
   fakeTokenExchange,
   generateTestKeyPem,
   repairDirs,
+  repairPlan,
   type RuntimeSpawn,
   withTestKey,
 } from "./fixtures/babysitter_container_fakes_4770.ts";
@@ -694,19 +695,33 @@ Deno.test("a failed escalation is retried on the next no-progress pass", async (
 });
 
 Deno.test("a non-zero container exit keeps the retry record and the repair's real error (Issue #4770)", async () => {
-  await withState(async (stateDir) => {
-    const h = harness(stateDir, { markerFails: true });
-    h.state.agents.push({ code: 1, stderr: "task failed: invalid source" });
-    await assertRejects(
-      () => h.attempt(),
-      Error,
-      "exited with code 1: task failed: invalid source",
-    );
-    const [record] = await records(stateDir);
-    assertEquals(record!.blockerClass, "infrastructure");
-    assertEquals(record!.attempts, { infrastructure: 1, substantive: 0 });
-    assertEquals(h.state.markers.length, 0);
-    assert(record!.nextEligibleAt !== null);
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir, { markerFails: true });
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns, {
+          onSpawn: () =>
+            Promise.resolve({
+              success: false,
+              code: 1,
+              stderr: "task-failure: invalid source",
+              timedOut: false,
+            }),
+        }),
+      );
+      await assertRejects(
+        () => h.attempt(),
+        Error,
+        "exited with code 1: task-failure: invalid source",
+      );
+      const [record] = await records(stateDir);
+      assertEquals(record!.blockerClass, "code");
+      assertEquals(record!.attempts, { infrastructure: 0, substantive: 1 });
+      assertEquals(h.state.markers.length, 0);
+      assert(record!.nextEligibleAt !== null);
+    });
   });
 });
 
@@ -1877,6 +1892,33 @@ Deno.test("a missing container runtime or worker image stops the repair before a
   }
 });
 
+Deno.test("an egress startup failure aborts fix before any repair spawn or push (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      const plan = repairPlan("egress-failure");
+      plan.egressEnforced = true;
+      h.deps.startAgent = productionAgent(privateKeyPath, {
+        ...fakeContainer(spawns),
+        buildPlan: () => Promise.resolve(plan),
+        startSidecar: () =>
+          Promise.reject(new Error("egress proxy startup failed")),
+        stopSidecar: () => Promise.resolve([]),
+      });
+      await assertRejects(
+        () => h.attempt(),
+        Error,
+        "egress proxy startup failed",
+      );
+      assertEquals(spawns.length, 0);
+      assertEquals(h.state.pushed, 0);
+      assertEquals(h.state.committed, false);
+    });
+  });
+});
+
 Deno.test("a non-zero container exit fails the repair with its code, stderr and the rebuild hint, and pushes nothing (Issue #4770)", async () => {
   await withTestKey(async (privateKeyPath) => {
     await withState(async (stateDir) => {
@@ -1906,7 +1948,7 @@ Deno.test("a non-zero container exit fails the repair with its code, stderr and 
       assertEquals(h.state.pushed, 0);
       assertEquals(h.state.committed, false);
       const [record] = await records(stateDir);
-      assertEquals(record!.blockerClass, "infrastructure");
+      assertEquals(record!.blockerClass, "code");
     });
   });
 });
@@ -2325,7 +2367,9 @@ Deno.test("fix replaces agent-controlled git config before host publication (Iss
         safeConfig = await Deno.readTextFile(configPath);
       };
       await h.attempt();
-      assert(safeConfig.includes("https://github.com/stSoftwareAU/VibeCoder.git"));
+      assert(
+        safeConfig.includes("https://github.com/owner/repo.git"),
+      );
       assert(!safeConfig.includes("/host/agent-command"));
       assertEquals(h.state.pushed, 1);
     });

@@ -946,6 +946,37 @@ Deno.test("the real repair plan mounts no gh credential, key or custom prompt pa
 
 Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while keeping declared quality credentials", async () => {
   const f = await makeFixture();
+  const workerCheckout = `${f.root}/worker-checkout`;
+  await Deno.mkdir(workerCheckout);
+  await Deno.writeTextFile(
+    `${workerCheckout}/tracked.txt`,
+    "tracked worker file\n",
+  );
+  for (
+    const args of [
+      ["init", "-q", workerCheckout],
+      ["-C", workerCheckout, "add", "tracked.txt"],
+      [
+        "-C",
+        workerCheckout,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "fixture",
+      ],
+    ]
+  ) {
+    const result = await new Deno.Command("git", {
+      args,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(result.success, new TextDecoder().decode(result.stderr));
+  }
   const configStage = `${f.root}/staged`;
   const logs = `${f.root}/logs`;
   const credentialRoot = `${f.root}/credentials`;
@@ -974,7 +1005,7 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
     "--volume",
     `${logs}:/home/vibe/logs`,
     "--volume",
-    `${REPO_ROOT}:/workspace:ro`,
+    `${workerCheckout}:/workspace:ro`,
     "--volume",
     `${configStage}:/container/run-config:ro`,
     "--volume",
@@ -987,7 +1018,7 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
   plan.mounts = [
     { source: "vibe-work", target: "/home/vibe/auto-issue-work", volume: true },
     { source: logs, target: "/home/vibe/logs" },
-    { source: REPO_ROOT, target: "/workspace", readOnly: true },
+    { source: workerCheckout, target: "/workspace", readOnly: true },
     { source: configStage, target: "/container/run-config", readOnly: true },
     {
       source: `${credentialRoot}/gh`,
@@ -1003,11 +1034,15 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
   const { deps, calls } = fakeDeps(f, { overrides: plan });
   try {
     await runBabysitterRepairContainer(
-      { ...inputFor(f), baseDir: REPO_ROOT },
+      { ...inputFor(f), baseDir: workerCheckout },
       deps,
     );
     const args = spawnAt(calls, 0).args;
     assert(args.includes(`${f.scratch}/workspace:/workspace:ro`));
+    assertEquals(
+      await Deno.readTextFile(`${f.scratch}/workspace/tracked.txt`),
+      "tracked worker file\n",
+    );
     assert(args.includes(`${f.scratch}:/home/vibe/logs`));
     assert(args.includes("CONFIG_PATH=/workspace/.config.json"));
     assert(!args.some((arg) => arg.includes(`${f.keyDir}`)));

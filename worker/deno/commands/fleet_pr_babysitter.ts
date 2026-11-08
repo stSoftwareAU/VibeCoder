@@ -896,6 +896,29 @@ export const HOST_GIT_HARDENING_ARGS: readonly string[] = [
   "core.fsmonitor=false",
 ];
 
+/** Run publication git with the same executable-config boundary as `run()`. */
+export function runHardenedRepairGit(
+  args: string[],
+  options: Parameters<typeof runGitCommand>[1] = {},
+  runGit: typeof runGitCommand = runGitCommand,
+) {
+  return runGit([
+    ...HOST_GIT_HARDENING_ARGS,
+    ...args,
+  ], {
+    ...options,
+    env: {
+      ...options.env,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_PARAMETERS: "",
+      GIT_ATTR_NOSYSTEM: "1",
+    },
+  });
+}
+
 /** Replace agent-writable local config before any host publication git call. */
 export async function resetRepairCloneGitConfig(
   dir: string,
@@ -1704,7 +1727,7 @@ export async function finishBabysitterRepair(
       reviews,
       deps.syncBodyDeps ?? {
         runGhCommand: gh,
-        runGitCommand: deps.runGit ?? runGitCommand,
+        runGitCommand: deps.runGit ?? runHardenedRepairGit,
         logger: createLogger(),
       },
       deps.syncBodyFn,
@@ -1718,7 +1741,7 @@ export async function finishBabysitterRepair(
           noCodeChange: expectedHead === pr.headRefOid &&
             !change.pushedByEarlierRepair,
           change,
-          runGit: deps.runGit ?? runGitCommand,
+          runGit: deps.runGit ?? runHardenedRepairGit,
           gh,
         });
         // A CI or conflict repair addresses no review, so nothing is verified.
@@ -2013,17 +2036,17 @@ async function removeFileIfPresent(path: string): Promise<void> {
 }
 
 /**
- * A missing runtime or a missing worker image is a capability gap, so no
- * substantive attempt is spent. Every other launcher failure is infrastructure;
- * retry policy stays with #4656 (Issue #4770).
+ * A missing runtime or worker image is a capability gap. Other failures use
+ * the existing retry classifier, so a repair's task failure remains a
+ * substantive attempt and transient launcher failures remain infrastructure.
  */
-function repairFailureClass(
-  message: string,
-): "capability" | "infrastructure" {
-  return message.includes("the container runtime is not on PATH") ||
-      message.includes("the worker image is not built")
-    ? "capability"
-    : "infrastructure";
+function repairFailureClass(message: string) {
+  if (
+    message.includes("the container runtime is not on PATH") ||
+    message.includes("the worker image is not built")
+  ) return "capability" as const;
+  if (!message.includes("exited with code")) return "infrastructure" as const;
+  return classifyBabysitterFailure(new Error(message));
 }
 
 /**

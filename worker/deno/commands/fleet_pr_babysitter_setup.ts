@@ -76,17 +76,6 @@ async function command(name: string, args: string[]): Promise<string> {
   }
   return result.value.stdout.trim();
 }
-function argument(name: string): string | undefined {
-  return Deno.args.find((arg) => arg.startsWith(`--${name}=`))?.slice(
-    name.length + 3,
-  );
-}
-function input(name: string, defaultValue = ""): string {
-  const supplied = argument(name);
-  if (supplied !== undefined) return supplied.trim();
-  return (prompt(`${name}${defaultValue ? ` [${defaultValue}]` : ""}:`)
-    ?.trim() || defaultValue);
-}
 function expandHome(path: string, home: string): string {
   return path.startsWith("~/") ? `${home}/${path.slice(2)}` : path;
 }
