@@ -377,7 +377,8 @@ function diagnosticPairs(lines: string[], loose: boolean): string[] {
       // Source, separator and autofix lines belong to the preceding finding.
       if (
         previous && !/[┆│]/.test(previous) &&
-        !/^(?:[-─]+|autofix\b|❯{0,3}❱)/i.test(previous)
+        !/^(?:─+$|❯{0,3}❱|\[(?:shortened a long line|hid (?:\d+|<n>) additional lines)\b)/i
+          .test(previous)
       ) {
         semgrepFile = previous;
       }
@@ -392,7 +393,7 @@ function diagnosticPairs(lines: string[], loose: boolean): string[] {
       pairs.push(JSON.stringify(["lint", lintRule, line]));
       lintRule = "";
     }
-    if (/^TS\d+\s+\[ERROR\]:/i.test(line)) checkRule = line;
+    if (/^(?:error:\s*)?TS\d+\s+\[ERROR\]:/i.test(line)) checkRule = line;
     else if (checkRule && /^at\s+(?:file:\/\/)?\S+/.test(line)) {
       pairs.push(JSON.stringify(["check", checkRule, line]));
       checkRule = "";
@@ -486,6 +487,14 @@ export async function compareBaseFailure(options: {
   const { repo, checkName, baseCheckRunId, failureText, ghFn } = options;
 
   const signature = failureSignature(failureText);
+  if (
+    signature.pairs.some((pair) => pair.startsWith('["unidentified-semgrep",'))
+  ) {
+    return {
+      state: "unreadable",
+      reason: "a Semgrep finding's file header was not available",
+    };
+  }
   const prLines = signature.lines;
   const firstLine = prLines[0];
   if (firstLine === undefined) {
@@ -545,9 +554,7 @@ export async function compareBaseFailure(options: {
       : baseText.includes(line);
   if (
     !prLines.every(found) ||
-    !signature.pairs.every((pair) =>
-      !pair.startsWith('["unidentified-semgrep",') && basePairs.has(pair)
-    )
+    !signature.pairs.every((pair) => basePairs.has(pair))
   ) {
     return { state: "different" };
   }

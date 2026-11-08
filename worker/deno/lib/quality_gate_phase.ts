@@ -709,29 +709,32 @@ export async function runNativeQualityCheck(
 // Failure classification
 // =============================================================================
 
-/** Check if output indicates a Docker infrastructure issue. */
-export function isDockerInfraFailure(output: string): boolean {
-  return /docker:.*(not found|Cannot connect|permission denied)/i.test(output);
-}
-
 // A shell's own missing-command report, whole line, unindented: an optional
 // `<shell-or-script>: [line N: ]` prefix, then `<name>: command not found`.
 // Linear: every `[^\s:]+` run stops at the next `:` or space, and there are no
 // nested or overlapping quantifiers.
 const SHELL_MISSING_COMMAND_LINE =
   /^(?:[^\s:]+: (?:line \d+: )?)?[^\s:]+: command not found$/;
+// The Docker CLI's own error line, whole line, unindented: an optional
+// `<shell-or-script>: [line N: ]` prefix, then `docker:` and a message naming
+// a missing binary, an unreachable daemon or a permission fault. Linear for the
+// same reason as the pattern above.
+const DOCKER_INFRA_LINE =
+  /^(?:[^\s:]+: (?:line \d+: )?)?docker: .*(?:not found|Cannot connect|permission denied)/i;
+// Deno's per-test lines end with the test's own name's decoration: the result
+// (including the bare wait line and multiple step/timing groups) or the failure
+// summary (`name => file:line:col`). A test name can look like a Docker error.
+const DENO_TEST_LINE_SUFFIX =
+  / (?:\.\.\.(?: (?:ok|FAILED|ignored|cancelled|INCOMPLETE)(?: \([^)]*\))*)?|=> \S+:\d+:\d+)$/;
 const DENO_OUTPUT_START = /^-{3,} (?:(?:pre|post)-test )?output -{3,}$/;
 const DENO_OUTPUT_END = /^-{3,} (?:(?:pre|post)-test )?output end -{3,}$/;
 
 /**
- * Check if output contains a shell's own missing-command report, such as
- * `bash: foo: command not found` or `./quality.sh: line 3: foo: command not
- * found`. Only whole, unindented lines count. Deno's captured test output (the
- * block from `------- output -------` to `----- output end -----`) is skipped,
- * so a failing gate whose test merely quotes the text is not classed as a
- * missing command (Issue #4829).
+ * The lines of `output` a failure classifier may match: ANSI codes stripped,
+ * trailing whitespace trimmed, and Deno's captured test output (the block from
+ * `------- output -------` to `----- output end -----`) left out.
  */
-export function isMissingCommandFailure(output: string): boolean {
+function* uncapturedLines(output: string): Generator<string> {
   let inDenoOutput = false;
   for (const raw of output.split(/\r?\n/)) {
     // deno-lint-ignore no-control-regex
@@ -748,6 +751,35 @@ export function isMissingCommandFailure(output: string): boolean {
       inDenoOutput = true;
       continue;
     }
+    yield line;
+  }
+}
+
+/**
+ * Check if output contains the Docker CLI's own infrastructure error, such as
+ * `docker: Cannot connect to the Docker daemon` or `docker: Got permission
+ * denied ...`. Only whole, unindented lines count, and Deno's captured test
+ * output and per-test result lines are skipped, so a failing gate whose test
+ * name or log merely quotes the text is not classed as an infrastructure
+ * failure (Issue #4891).
+ */
+export function isDockerInfraFailure(output: string): boolean {
+  for (const line of uncapturedLines(output)) {
+    if (DENO_TEST_LINE_SUFFIX.test(line)) continue;
+    if (DOCKER_INFRA_LINE.test(line)) return true;
+  }
+  return false;
+}
+
+/**
+ * Check if output contains a shell's own missing-command report, such as
+ * `bash: foo: command not found` or `./quality.sh: line 3: foo: command not
+ * found`. Only whole, unindented lines count. Deno's captured test output is
+ * skipped, so a failing gate whose test merely quotes the text is not classed
+ * as a missing command (Issue #4829).
+ */
+export function isMissingCommandFailure(output: string): boolean {
+  for (const line of uncapturedLines(output)) {
     if (SHELL_MISSING_COMMAND_LINE.test(line)) return true;
   }
   return false;

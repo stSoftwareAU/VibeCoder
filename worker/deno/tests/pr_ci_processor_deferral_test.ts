@@ -34,6 +34,7 @@ import type {
 import {
   type ActionsLogOptions,
   fetchGithubActionsLogExcerpt,
+  summariseActionsLog,
 } from "../lib/github_actions_log_fetcher.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 
@@ -1550,6 +1551,8 @@ TS2322 [ERROR]: Type string is not assignable to number.
 Deno.test("processCiFailure - diagnostic pairing handles real log boundaries", async () => {
   const cases: [string, string][] = [
     ...[
+      "autofix/rules.ts",
+      "-rules.ts",
       "src/routes/+page.svelte",
       "app/[id]/page.tsx",
       "app/(auth)/login.ts",
@@ -1567,6 +1570,17 @@ Deno.test("processCiFailure - diagnostic pairing handles real log boundaries", a
     [
       "In other.sh line 12:\nSC2086: quote\nFor more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote",
       "In deploy.sh line 12:\nSC2086: quote\nIn other.sh line 12:\nSC2154: variable\nFor more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote\nhttps://www.shellcheck.net/wiki/SC2154 -- variable",
+    ],
+    ...[
+      "[shortened a long line from output, adjust with --max-chars-per-line]",
+      "[hid 5 additional lines, adjust with --max-lines-per-finding]",
+    ].map((note): [string, string] => [
+      `a.ts\n❯❱ rule.one\n1┆ code\n${note}\n❯❱ rule.two\n2┆ code`,
+      `a.ts\n❯❱ rule.one\n1┆ code\n${note}\nb.ts\n❯❱ rule.zero\n1┆ code\n${note}\n❯❱ rule.two\n2┆ code`,
+    ]),
+    [
+      "error: TS2322 [ERROR]: incompatible type\n at file:///repo/new.ts:30:9",
+      "error: TS2322 [ERROR]: incompatible type\n at file:///repo/other.ts:30:9\nTS2345 [ERROR]: bad argument\n at file:///repo/new.ts:30:9",
     ],
     [
       "TS2322 [ERROR]: incompatible type\n at file:///repo/new.ts:30:9",
@@ -1586,4 +1600,24 @@ Deno.test("processCiFailure - diagnostic pairing handles real log boundaries", a
       assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
     }
   }
+});
+
+Deno.test("processCiFailure - truncated Semgrep file header holds without charging", async () => {
+  const findings = Array.from(
+    { length: 30 },
+    (_, i) =>
+      `❯❱ rule.${i}\n${
+        Array.from({ length: 10 }, () => "1┆ source code").join("\n")
+      }`,
+  ).join("\n");
+  const log = summariseActionsLog(
+    `##[endgroup]\nworker/deno/lib/big.ts\n${findings}\n##[error]Process completed with exit code 1.`,
+  );
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log,
+    baseLog: log,
+  }, exitLineInput());
+  const body = captured.comments.at(-1) ?? "";
+  assertEquals(attemptOutcomes(body), ["base-unverified"]);
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
 });

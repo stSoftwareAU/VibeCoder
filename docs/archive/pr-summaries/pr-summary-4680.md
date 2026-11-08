@@ -8,7 +8,8 @@ can represent a different failure. Closes #4680.
   without charging an attempt.
 - **Different:** a comparable line or diagnostic pair is absent; follow the ordinary
   charged path.
-- **Unreadable:** no comparable PR line or no readable base log; hold without
+- **Unreadable:** no comparable PR line, a Semgrep finding without its file
+  header, or no readable base log; hold without
   charging, subject to the existing two-hold bound.
 
 The base evidence remains the same check on the base head, or the same workflow
@@ -54,7 +55,8 @@ and generic command echoes are not evidence; without a distinctive line the
 result is unreadable. Semgrep's finding-block file line is distinguished from
 source, separator and autofix lines and carried across subsequent rules, including
 paths with punctuation or spaces, at all four severity markers. An omission
-clears the carried file. Both file and rule remain evidence even when the output
+clears the carried file; shortened and hidden-line notices retain it. A missing
+file header makes the comparison unreadable. Both file and rule remain evidence even when the output
 contains a failure word. Deno
 formatter `from <path>:` lines identify files and its
 file-count summary is ignored. Deno lint and check locations, and shellcheck
@@ -85,7 +87,7 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  95 passed, 0 failed (52 and 43 tests respectively).
+  96 passed, 0 failed (52 and 44 tests respectively).
 - Crossed diagnostic files and rules no longer match independently. Identical
   pairs still defer, including multiple Semgrep rules in one file block.
   Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic rules stay paired with their files`
@@ -96,6 +98,12 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
   or numeric segments, omitted headers, footers and Deno check diagnostics.
   Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic pairing handles real log boundaries`
   and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - diagnostic pairing handles real log boundaries`.
+- A missing Semgrep file header formerly produced a charged `different` result;
+  it now holds as unreadable. Identified file and rule pairs still distinguish
+  findings. Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic pairing handles real log boundaries`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - truncated Semgrep file header holds without charging`.
+  The boundary tests also cover shortened and hidden lines, `autofix` and
+  hyphen-prefixed paths, and prefixed Deno check errors.
 - `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
   output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using
@@ -141,10 +149,7 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
   and
   `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
 - The focused tests, Deno-tree `deno fmt --check`, `deno lint`,
-  `deno task check`, and `deno task check:manifests` passed. The full local
-  quality gate's parallel test pass hit a Deno 2.9.0 permission-pledge panic
-  on macOS; its serial pass therefore did not run. Semgrep and Checkov were
-  skipped because their pinned runners were unavailable on this host.
+  `deno task check`, and `deno task check:manifests` passed.
 - The matching rule is documented in `docs/workflows/ci-fix.md` and
   `prompts/ci_fix/prompt.md`; both were updated together.
 

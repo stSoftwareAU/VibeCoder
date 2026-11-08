@@ -51,6 +51,53 @@ Deno.test("auto_fix_attempt_tracker - normalisation keeps genuinely different me
   assertNotEquals(a, b);
 });
 
+Deno.test("auto_fix_attempt_tracker - normalisation strips compound and sub-millisecond durations", () => {
+  const pairs: Array<[string, string]> = [
+    // Deno's minute-length summary format.
+    [
+      "FAILED | 17451 passed | 2 failed (1m43s)",
+      "FAILED | 17451 passed | 2 failed (2m14s)",
+    ],
+    ["took 1m 43s", "took 2m 14s"],
+    ["took 1h2m3s", "took 4h5m6s"],
+    ["took 1h 2m 3s", "took 4h 5m 6s"],
+    // Deno's sub-millisecond units (µ U+00B5, μ U+03BC, ASCII u, ns).
+    ["x ... ok (199µs)", "x ... ok (186µs)"],
+    ["x ... ok (199μs)", "x ... ok (186μs)"],
+    ["x ... ok (199us)", "x ... ok (186us)"],
+    ["x ... ok (12ns)", "x ... ok (97.5ns)"],
+    // Durations already handled keep working.
+    ["x ... ok (12ms)", "x ... ok (41ms)"],
+    ["finished in 12s", "finished in 41s"],
+  ];
+  for (const [a, b] of pairs) {
+    assertEquals(
+      normaliseLogExcerpt(a),
+      normaliseLogExcerpt(b),
+      `${a} vs ${b}`,
+    );
+    assert(normaliseLogExcerpt(a).includes("<dur>"), a);
+  }
+});
+
+Deno.test("auto_fix_attempt_tracker - duration normalisation keeps durable numbers", () => {
+  // A line number or count that is not a duration must survive.
+  assertNotEquals(
+    normaliseLogExcerpt("Foo.java:12: error 3m records"),
+    normaliseLogExcerpt("Foo.java:13: error 3m records"),
+  );
+  assertNotEquals(
+    normaliseLogExcerpt("2 failed (1m43s)"),
+    normaliseLogExcerpt("3 failed (1m43s)"),
+  );
+});
+
+Deno.test("auto_fix_attempt_tracker - duration normalisation terminates on a hostile digit run", () => {
+  const hostile = "1m ".repeat(20000) + "x";
+  assert(normaliseLogExcerpt(hostile).length > 0);
+  assert(normaliseLogExcerpt("9".repeat(50000) + "!").length > 0);
+});
+
 // ---------------------------------------------------------------------------
 // computeFailureSignature
 // ---------------------------------------------------------------------------
@@ -171,4 +218,22 @@ Deno.test("auto_fix_attempt_tracker - global and per-repo overrides are honoured
   assertEquals(resolveMaxAutoFixAttempts(config, "owner/strict"), 1);
   // Non-positive per-repo values are guarded back to the global setting.
   assertEquals(resolveMaxAutoFixAttempts(config, "owner/bad"), 5);
+});
+
+Deno.test("auto_fix_attempt_tracker - signature is stable across minute-length and microsecond durations", () => {
+  const sig = (logExcerpt: string) =>
+    computeFailureSignature({
+      repo: "owner/repo",
+      locus: LOCUS,
+      checkName: "validate-scripts / validate (tests 1/4)",
+      logExcerpt,
+    });
+  assertEquals(
+    sig("x ... ok (199µs)\nFAILED | 17451 passed | 2 failed (2m14s)"),
+    sig("x ... ok (186µs)\nFAILED | 17451 passed | 2 failed (2m31s)"),
+  );
+  assertNotEquals(
+    sig("FAILED | 17451 passed | 2 failed (2m14s)"),
+    sig("FAILED | 17451 passed | 3 failed (2m14s)"),
+  );
 });

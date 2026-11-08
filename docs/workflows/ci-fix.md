@@ -527,10 +527,11 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   - **Same** — every comparable normalised failure line of the pull request appears in
     the base run's log, so the base is red for this failure.
   - **Different** — the base log was read and at least one comparable pull request failure
-    line is absent, so the base is red for another reason and the claim is
+    line or diagnostic pair is absent, so the base is red for another reason and the claim is
     not verified as this failure.
   - **Unreadable** — either side cannot be compared: the pull request has no
-    failure line or failing step output, the check is not a GitHub Actions
+    failure line or failing step output, a Semgrep finding lacks its file header,
+    the check is not a GitHub Actions
     check, or the base log cannot be fetched.
 
   [`_resolveBaseBranchDeferral`](../../worker/deno/lib/pr_ci_processor.ts)

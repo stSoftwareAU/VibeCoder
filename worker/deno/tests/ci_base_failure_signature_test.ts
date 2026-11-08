@@ -875,6 +875,8 @@ Deno.test("compareBaseFailure - diagnostic rules stay paired with their files", 
 Deno.test("compareBaseFailure - diagnostic pairing handles real log boundaries", async () => {
   const cases: [string, string][] = [
     ...[
+      "autofix/rules.ts",
+      "-rules.ts",
       "src/routes/+page.svelte",
       "app/[id]/page.tsx",
       "app/(auth)/login.ts",
@@ -893,6 +895,17 @@ Deno.test("compareBaseFailure - diagnostic pairing handles real log boundaries",
       "In other.sh line 12:\nSC2086: quote\nFor more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote",
       "In deploy.sh line 12:\nSC2086: quote\nIn other.sh line 12:\nSC2154: variable\nFor more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote\nhttps://www.shellcheck.net/wiki/SC2154 -- variable",
     ],
+    ...[
+      "[shortened a long line from output, adjust with --max-chars-per-line]",
+      "[hid 5 additional lines, adjust with --max-lines-per-finding]",
+    ].map((note): [string, string] => [
+      `a.ts\n❯❱ rule.one\n1┆ code\n${note}\n❯❱ rule.two\n2┆ code`,
+      `a.ts\n❯❱ rule.one\n1┆ code\n${note}\nb.ts\n❯❱ rule.zero\n1┆ code\n${note}\n❯❱ rule.two\n2┆ code`,
+    ]),
+    [
+      "error: TS2322 [ERROR]: incompatible type\n at file:///repo/new.ts:30:9",
+      "error: TS2322 [ERROR]: incompatible type\n at file:///repo/other.ts:30:9\nTS2345 [ERROR]: bad argument\n at file:///repo/new.ts:30:9",
+    ],
     [
       "TS2322 [ERROR]: incompatible type\n at file:///repo/new.ts:30:9",
       "TS2322 [ERROR]: incompatible type\n at file:///repo/other.ts:30:9\nTS2345 [ERROR]: bad argument\n at file:///repo/new.ts:30:9",
@@ -907,7 +920,17 @@ Deno.test("compareBaseFailure - diagnostic pairing handles real log boundaries",
   const missingHeader = wrap(
     "[... 10 lines omitted ...]\n❯❱ rule.one\n1┆ code",
   );
-  assertEquals(await compareStates(missingHeader, missingHeader), "different");
+  assertEquals(await compareStates(missingHeader, missingHeader), "unreadable");
+  const longBlock = wrap(
+    `a.ts\n${
+      Array.from({ length: 30 }, (_, i) =>
+        `❯❱ rule.${i}\n${
+          Array.from({ length: 10 }, () =>
+            "1┆ code").join("\n")
+        }`).join("\n")
+    }`,
+  );
+  assertEquals(await compareStates(longBlock, longBlock), "unreadable");
   const shell = "In a.sh line 12:\nSC2086: quote";
   const footer =
     "For more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote";
