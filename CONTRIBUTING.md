@@ -104,10 +104,15 @@ unattended runs cannot hang waiting for input.
 Run it in the **foreground** and let it finish — each check reports as it
 settles, so you can watch progress. Never background it and poll with a
 `sleep`/`pgrep` wait loop (Issue #399). While iterating, prefer the fast checks
-(`deno fmt`, `deno lint`, `deno check`, and the test files you touched), then
-`deno task check:manifests` — the tree-scanning completeness tests, a few
-seconds, and the usual reason a correct change goes red in CI (Issue #1483);
-the full gate is the last step before the PR.
+(`deno fmt` from `worker/deno` (hand-wrap Markdown elsewhere), `deno lint`,
+`deno check`, and the test files you touched), then `deno task check:manifests`
+— the tree-scanning completeness tests, a few seconds, and the usual reason a
+correct change goes red in CI (Issue #1483); the full gate is the last step
+before the PR. `deno fmt` governs `worker/deno/**` only; Markdown outside it is
+hand-wrapped and checked by markdownlint's structural rules. The formatter
+rewraps every paragraph to its own width, so a small edit can become a huge
+diff that buries the change (Issue #1503). Match the surrounding wrapping by
+hand.
 
 **The gate needs PowerShell 7** (Issue #1598). It runs the `run.ps1` launcher
 suites, so a host without `pwsh` fails the gate with a
@@ -116,16 +121,6 @@ is not a passed one. The container image ships PowerShell 7.6.8 at
 `/usr/local/bin/pwsh` (Issue #1596); on a host, install PowerShell 7 or set
 `VIBE_PWSH` to the interpreter's absolute path. The `setup.ps1` suites remain
 integration tests and are still CI's, not the gate's.
-
-**`deno fmt` governs `worker/deno/**` only.** The gate runs `deno fmt --check`
-from `worker/deno`, so that tree is the formatter's whole scope. Markdown
-under `docs/` and at the repository root is hand-wrapped and governed by
-markdownlint's structural rules instead — never run `deno fmt` on a `.md`
-file outside `worker/deno`. The formatter's Markdown rules rewrap every
-paragraph to its own width, so a two-line edit to `docs/CONTAINER.md` comes
-back as a 1,500-line diff that buries the change (Issue #1503); 62 of the 63
-Markdown files there are in that state on `main`, by design rather than by
-drift. Match the surrounding wrapping by hand, as the existing text does.
 
 CI-enforced workflows live under `.github/workflows/`, including
 `validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, `semgrep.yml`,
