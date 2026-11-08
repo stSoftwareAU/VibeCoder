@@ -1192,8 +1192,12 @@ export function workflowCargoDenyFindings(
         const stepsIndent = indentOf(lines[stepsLine] ?? "");
         for (let i = stepsLine + 1; i < block.end;) {
           const line = lines[i] ?? "";
-          if (!isSkippable(line) && indentOf(line) <= stepsIndent) break;
           const item = LIST_ITEM.exec(line);
+          if (
+            !isSkippable(line) &&
+            (indentOf(line) < stepsIndent ||
+              (indentOf(line) === stepsIndent && item === null))
+          ) break;
           if (item === null) {
             i++;
             continue;
@@ -1216,7 +1220,12 @@ export function workflowCargoDenyFindings(
         const loc = locations[index];
         findings.push(
           ...(loc === undefined
-            ? stepFindings(["- step: parsed"], 0, 1, 0, job, step)
+            ? stepFindings(["- step: parsed"], 0, 1, 0, job, step).map(
+              (finding) =>
+                finding.kind === "unrunnable"
+                  ? { ...finding, source: `job ${key} step ${index + 1}` }
+                  : finding,
+            )
             : stepFindings(lines, loc.start, loc.end, loc.indent, job, step)),
         );
       }

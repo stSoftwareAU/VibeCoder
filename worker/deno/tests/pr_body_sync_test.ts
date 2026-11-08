@@ -21,6 +21,7 @@ import {
   assignmentIdFromBody,
   buildAssignmentIdMarker,
   buildSubAgentTierMarker,
+  extractClosingIssueNumbers,
   WORKER_PR_MARKER_PREFIX,
 } from "../lib/pr_body.ts";
 import {
@@ -259,6 +260,88 @@ Deno.test("assemblePrBody - records the summary digest marker right after the wo
     digestMarker,
   );
   assertEquals(summaryDigestFromBody(body), digest);
+});
+
+// --- Issue #4783: closing keywords the summary quotes for another issue -----
+
+const GOVERNING_ISSUE = 4637;
+
+/** A summary whose one met criterion quotes a closing keyword for #4674. */
+function quotingSummary(lead: string): string {
+  return `## Summary\n\nDid the thing.${lead}\n\n` +
+    "## Acceptance Criteria\n\n" +
+    "- **met** — final body and GitHub closing references do not close #4674 — " +
+    "evidence: `x` — reviewer: met\n";
+}
+
+Deno.test("assemblePrBody - Issue #4783: a summary quoting another issue's closing keyword does not close it", () => {
+  const body = assemblePrBody({
+    summaryContent: quotingSummary(""),
+    issueNumber: GOVERNING_ISSUE,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  // Only the appended governing reference closes an issue.
+  assertEquals(extractClosingIssueNumbers(body), [GOVERNING_ISSUE]);
+  assertStringIncludes(body, "#4674");
+  assertStringIncludes(body, "do not `close` #4674");
+});
+
+Deno.test("assemblePrBody - Issue #4783: the governing issue's own closing keyword is kept unwrapped", () => {
+  const body = assemblePrBody({
+    summaryContent: quotingSummary("\n\nCloses #4637."),
+    issueNumber: GOVERNING_ISSUE,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(extractClosingIssueNumbers(body), [GOVERNING_ISSUE]);
+  assertStringIncludes(body, "Closes #4637");
+  assertStringIncludes(body, "do not `close` #4674");
+});
+
+Deno.test("assemblePrBody - Issue #4783: a withheld close quotes unmet criteria without closing another issue", () => {
+  const summary = "## Summary\n\nPart of #4637. Partial delivery.\n\n" +
+    "## Acceptance Criteria\n\n" +
+    "- **missing** — final body and GitHub closing references do not close #4674 — " +
+    "reason: the export is absent\n";
+  const body = assemblePrBody({
+    summaryContent: summary,
+    issueNumber: GOVERNING_ISSUE,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(extractClosingIssueNumbers(body), []);
+  assertStringIncludes(body, "Part of #4637");
+  assertStringIncludes(body, "do not `close` #4674");
+});
+
+Deno.test("assemblePrBody - Issue #4783: colon and full-URL closing forms for another issue are neutralised", () => {
+  const summary = "## Summary\n\nDid the thing.\n\n" +
+    "## Acceptance Criteria\n\n" +
+    "- **met** — do not close: #4674 and never Closes https://github.com/o/r/issues/4674 — " +
+    "evidence: `x` — reviewer: met\n";
+  const body = assemblePrBody({
+    summaryContent: summary,
+    issueNumber: GOVERNING_ISSUE,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(extractClosingIssueNumbers(body), [GOVERNING_ISSUE]);
+  assertStringIncludes(body, "do not `close`: #4674");
+  assertStringIncludes(body, "`Closes` https://github.com/o/r/issues/4674");
+  assertEquals(/close[sd]?\s*:\s*#4674/i.test(body), false);
+  assertEquals(
+    /closes\s+https:\/\/github\.com\/o\/r\/issues\/4674/.test(body),
+    false,
+  );
 });
 
 // --- subAgentTier (Issue #3403) --------------------------------------------

@@ -435,10 +435,12 @@ export async function detachLaneWorktreeHead(
  * git names that this module does not recognise) is reported rather than
  * wrenched away: the repair is for the fleet's own contention, not for
  * whatever else happens to share the clone. The shared clone's own primary
- * worktree is the one other holder the issue path also releases, via
- * {@link primaryCloneHoldingBranch} (Issue #4789); the PR passes do not.
+ * worktree is the other holder the issue path (create and resume) also
+ * releases, via {@link primaryCloneHoldingBranch} (Issue #4789); the PR passes
+ * do not.
  *
- * Shared by the issue path (`createFeatureBranchFromBase`) and the PR
+ * Shared by the issue path (`createFeatureBranchFromBase`,
+ * `resumeFeatureBranchFromRemote`) and the PR
  * passes (`preparePrBranch`, `checkoutPrBranchAtRemoteHead`): before #1677
  * only the issue path recognised the refusal, so a finished issue lane parked
  * on its PR branch blocked the CI-fix pass for that PR on every cycle.

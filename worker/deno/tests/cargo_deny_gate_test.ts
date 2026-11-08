@@ -1522,6 +1522,33 @@ Deno.test("workflow: an unrunnable finding names the line it came from", () => {
   );
 });
 
+Deno.test("workflow: compact steps report the offending source line", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "    - uses: actions/checkout@v4",
+    "    - name: audit",
+    "      run: cargo deny $SUBCOMMAND",
+  ));
+  assertEquals(findings.map((f) => f.kind === "unrunnable" && f.source), [
+    "line 6",
+  ]);
+});
+
+Deno.test("workflow: aliased steps identify their job and step", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "shared: &audit",
+    "  - run: cargo deny $SUBCOMMAND",
+    "jobs:",
+    "  deny:",
+    "    steps: *audit",
+  ));
+  assertEquals(findings.map((f) => f.kind === "unrunnable" && f.source), [
+    "job deny step 1",
+  ]);
+});
+
 Deno.test("workflow: a matrix working directory with no matrix value is unrunnable", () => {
   const findings = workflowCargoDenyFindings(yaml(
     "jobs:",
