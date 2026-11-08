@@ -1847,3 +1847,87 @@ Deno.test("workflow: a hostile path pattern is not read and does not hang", () =
     1,
   );
 });
+
+Deno.test("workflow: an include list holding a null or a scalar entry is skipped without expanding its characters as keys", () => {
+  // `include: ["ab"]` would name the keys "0" and "1" if a scalar entry were read as a mapping,
+  // which would expand the unreadable "0" dimension and force the plain-check fallback.
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        checks: [advisories, bans]",
+    "        '0': [[1]]",
+    "        include:",
+    "          - ~",
+    "          - ab",
+    "    steps:",
+    "      - run: cargo deny check ${{ matrix.checks }}",
+  ));
+  assertEquals(summary(findings), [
+    ["check advisories", ".", false],
+    ["check bans", ".", false],
+  ]);
+});
+
+function pathFiltered(pattern: string): string {
+  return yaml(
+    "on:",
+    "  pull_request:",
+    `    paths: ['${pattern}']`,
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check",
+  );
+}
+
+function pathRuns(pattern: string, touched: string): boolean {
+  return workflowCargoDenyFindings(pathFiltered(pattern), {
+    touched: [touched],
+  }).length === 1;
+}
+
+Deno.test("workflow: a path pattern reads *, a literal dot, ? and + as GitHub does", () => {
+  // `*` stops at `/`; `.` is literal.
+  assertEquals(pathRuns("*.rs", "a.rs"), true);
+  assertEquals(pathRuns("*.rs", "src/a.rs"), false);
+  assertEquals(pathRuns("Cargo.lock", "Cargo.lock"), true);
+  assertEquals(pathRuns("Cargo.lock", "CargoXlock"), false);
+  // `?` makes the character before it optional; `+` repeats it.
+  assertEquals(pathRuns("Cargo.loc?", "Cargo.loc"), true);
+  assertEquals(pathRuns("Cargo.loc?", "Cargo.locc"), false);
+  assertEquals(pathRuns("a+.rs", "aaa.rs"), true);
+  assertEquals(pathRuns("a+.rs", "b.rs"), false);
+  // A character class.
+  assertEquals(pathRuns("[ab].rs", "a.rs"), true);
+  assertEquals(pathRuns("[ab].rs", "c.rs"), false);
+});
+
+Deno.test("workflow: a path pattern the gate cannot read selects the path", () => {
+  // Over the length cap: not read, so it selects instead of failing to match.
+  assertEquals(pathRuns("a".repeat(250), "b"), true);
+  // An unclosed class.
+  assertEquals(pathRuns("a[b", "z"), true);
+  // A trailing backslash is a literal one, not an escape of nothing.
+  assertEquals(pathRuns("a\\", "a"), false);
+  assertEquals(pathRuns("a\\", "a\\"), true);
+  // A quantifier with nothing before it is an invalid regex, so it selects.
+  assertEquals(pathRuns("?a", "b"), true);
+});
+
+Deno.test("workflow: a paths filter holding a non-string entry is not read", () => {
+  const text = yaml(
+    "on:",
+    "  pull_request:",
+    "    paths: [1, 2]",
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check",
+  );
+  assertEquals(
+    workflowCargoDenyFindings(text, { touched: ["a.rs"] }).length,
+    1,
+  );
+});

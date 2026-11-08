@@ -842,10 +842,8 @@ interface ParsedWorkflow {
 /** The workflow as YAML parsed it, or null when it is not valid YAML. */
 function parseWorkflow(text: string): ParsedWorkflow | null {
   try {
-    const doc = parseYaml(text);
-    return doc !== null && typeof doc === "object" && !Array.isArray(doc)
-      ? doc as ParsedWorkflow
-      : null;
+    // A scalar or a list has no `on`, `defaults` or jobs to read, so it needs no guard of its own.
+    return (parseYaml(text) ?? null) as ParsedWorkflow | null;
   } catch {
     // GitHub does not run a workflow that is not valid YAML, so CI has no default to mirror.
     return null;
@@ -1105,7 +1103,10 @@ export function workflowCargoDenyFindings(
 
 /**
  * Locate the repository's cargo-deny invocations. Reads every tracked
- * `.github/workflows/*.yml|yaml`. A workflow that cannot be read is one
+ * `.github/workflows/*.yml|yaml`, but reports nothing for a workflow CI does
+ * not run for the push described by `context` (a `schedule`-only trigger, a
+ * non-matching `branches` filter, or a `paths` filter selecting none of the
+ * touched paths). A workflow that cannot be read is one
  * unrunnable finding naming that file (fail closed).
  */
 export async function repoCargoDenyFindings(

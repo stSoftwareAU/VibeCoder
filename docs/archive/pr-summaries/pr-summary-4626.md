@@ -72,7 +72,10 @@ workflow (matrix entries `advisories` and `bans licenses sources`, with
 `check advisories` and `check bans licenses sources`, and only the first is
 allowed to fail. Source-only changes reach the gate in the whole-branch pre-PR
 check, so newly published advisories are checked even when the lockfile is
-unchanged; intermediate hooks still skip source-only changes. The repository’s
+unchanged, provided CI runs the workflow for the branch (a `schedule`-only
+workflow, a push `branches` filter that excludes the branch, or a `paths`
+filter that selects none of the touched paths is skipped); intermediate hooks
+still skip source-only changes. The repository’s
 container-build workflow contains a scratch-crate command inside a quoted
 container script, which the host gate ignores. The YAML parser uses an explicit
 JSR specifier so reviewer entry points outside the worker's import map can load
@@ -172,3 +175,14 @@ not run there.
 The test suite does not run cargo-deny end to end; its runner is injected. The
 full local gate (`./quality.sh`) was not run in the PR #4895 review round;
 Semgrep and Checkov were not run.
+
+## Mutation survivors (PR #4895 review fix)
+
+- `cargo_deny_gate.ts` include-entry guard, `filterPatternRegex` (length cap, `?`, `+`,
+  class, trailing backslash, invalid regex) and `stringList`: pinned by new tests in
+  `worker/deno/tests/cargo_deny_gate_test.ts`; each listed mutation was re-applied by hand
+  and turned a test red.
+- `parseWorkflow`'s object/array/null guard was dead: a scalar, list or null document has
+  no `on`, `defaults` or jobs, so every operand mutation gave the same result. The guard
+  is removed.
+- The 50 mutants past the cap were not run: unchecked.
