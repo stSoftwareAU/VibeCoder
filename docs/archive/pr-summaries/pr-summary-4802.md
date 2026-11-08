@@ -31,3 +31,4 @@ Backend only. `worker/deno/tests/repo_formatters_4129_test.ts` runs the real `de
 - `deno task test:unit tests/repo_formatters_4129_test.ts`: 7 passed, 0 failed.
 - Callers of the changed loop: only `formatWorkerOwnedArchive` (via `formatBeforeGate`); JSON behaviour unchanged and still covered by the existing real-runner test.
 - Not checked: other twinned copies of the linkage regex (reviewer's `PART_OF_*` in `.claude/skills/review-fleet-prs/scripts/test_change_policy.ts`) were read, not changed.
+- `./quality.sh`: lint, type check, fmt, markdownlint and semgrep passed; the deno test step reported 6 failures (`tests/pr_maintenance_command_test.ts` ×5, `tests/merge_fast_checks_credentials_4705_test.ts` ×1). The same 6 fail on an untouched checkout of the base commit (28 passed, 6 failed there too), and neither file touches `repo_formatters.ts`. Not fixed here (out of scope).
