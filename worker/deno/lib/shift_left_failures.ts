@@ -516,7 +516,7 @@ export function formatShiftLeftIssue(
       : `Make the fleet run \`${group.tool}\` the way CI does, and require it ` +
         "to pass, before a PR is raised or a fix is pushed. Find the path " +
         "that skipped it (a disk-budget deferral that leaves checks to CI, a " +
-        "targeted subset, a babysitter push with no local gate) and close it.",
+        "targeted subset) and close it.",
   );
   const title = generic
     ? `Shift left: CI runs \`${group.tool}\` but no local gate does, across ${
