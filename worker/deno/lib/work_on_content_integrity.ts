@@ -162,6 +162,7 @@ export type ContentIntegrityBlockReason =
   | "no-approval-snapshot"
   | "content-snapshot-persist-failed"
   | "content-editor-unresolved"
+  | "content-edit-history-truncated"
   | "content-modified-after-approval"
   | "content-check-error";
 
@@ -661,36 +662,6 @@ export async function resolveContentIntegrity(
         return blockedBy("content-editor-unresolved");
       }
 
-      // Issue #4804: GitHub lists body edits newest first, so a truncated
-      // window holds the newest 100 and hides older edits. A hidden edit could
-      // post-date the snapshot, so an empty or post-snapshot-only window proves
-      // nothing. The oldest returned body edit settles it only when it predates
-      // the snapshot: then every edit at or after the snapshot is in the window.
-      // Otherwise fail closed, the same route as an unresolved editor.
-      if (editorLookup.bodyHistoryTruncated) {
-        const bodyEditTimes = editorLookup.actors
-          .filter((e) => e.source === "content-edit")
-          .map((e) => e.editedAt);
-        const oldestBodyEditAt = bodyEditTimes.length === 0
-          ? null
-          : Math.min(...bodyEditTimes);
-        if (
-          oldestBodyEditAt === null ||
-          oldestBodyEditAt >= verification.capturedAt
-        ) {
-          const why = oldestBodyEditAt === null
-            ? "no body edit in the window places the snapshot"
-            : "the oldest body edit in the window post-dates the snapshot, so an older unseen edit could too";
-          console.error(
-            `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED] ${repo}#${issueNumber} ` +
-              `has body edits beyond GitHub's newest-100 window, and ${why} — ` +
-              `BLOCKED`,
-          );
-          diag?.logIssueSkipped(repo, issueNumber, "content-editor-unresolved");
-          return blockedBy("content-editor-unresolved");
-        }
-      }
-
       // Issue #3879 (SEC-91c772025359): the lookup used to collapse the whole
       // edit history to a single newest actor, so an untrusted body edit
       // followed by *any* later trusted edit — a maintainer fixing a typo in
@@ -700,52 +671,6 @@ export async function resolveContentIntegrity(
       // approval?", which is a property of the set, not of its maximum.
       const editor = editorLookup.actor;
       const editorLogin = editor?.login ?? "";
-
-      // Edits that post-date the baseline are the ones that could have produced
-      // the current content.
-      const sinceSnapshot = editorLookup.actors.filter(
-        (e) => e.editedAt >= verification.capturedAt,
-      );
-
-      // Issue #3964: GitHub records every title rename and every body edit.
-      // When the lookup succeeds and records nothing since the snapshot, the
-      // content provably did not change, so the mismatch can only be
-      // self-inflicted — an encoding change, store corruption, or a
-      // capture-side bug (the #3963 hash migration is the canonical case).
-      // The previous whole-history fallback judged the phantom editor as
-      // unattributable/untrusted and de-scheduled the issue fleet-wide,
-      // punishing the operator for a worker defect. Log loudly (this is a
-      // worker bug worth surfacing), refresh the baseline from the
-      // verified-unchanged live content, and proceed without touching labels
-      // or commenting.
-      if (sinceSnapshot.length === 0) {
-        console.error(
-          `[SECURITY] [SNAPSHOT_SELF_MISMATCH] Snapshot hash for ` +
-            `${repo}#${issueNumber} mismatches but GitHub records no edit ` +
-            `since the snapshot (recorded history: ` +
-            `[${describeEditors(editorLookup.actors)}]) — the content is ` +
-            `provably unchanged, so this is a worker-side snapshot defect. ` +
-            `Re-baselining and proceeding.`,
-        );
-        return await captureBaselineOrBlock({
-          stateDir,
-          repo,
-          issueNumber,
-          title: currentTitle,
-          body: currentBody,
-          author: issueAuthor,
-          contentDeps,
-          diag,
-        });
-      }
-
-      const judged = sinceSnapshot;
-      const untrustedEditors = judged.filter(
-        (e) =>
-          !e.login ||
-          // Issue #2734: this repository's own writers.
-          !isAuthorTrusted(e.login, trustedAuthorsFor(config, repo)),
-      );
 
       // Issue #1561: If a trusted author re-added the work-on label AFTER
       // the snapshot was captured, treat that as a fresh approval — the
@@ -811,6 +736,155 @@ export async function resolveContentIntegrity(
         });
       };
 
+      // Issue #4804: GitHub lists body edits newest first, so a truncated
+      // window holds the newest 100 and hides older edits. A hidden edit could
+      // post-date the snapshot, so an empty or post-snapshot-only window proves
+      // nothing. The oldest returned body edit settles it only when it predates
+      // the snapshot: then every edit at or after the snapshot is in the window.
+      // Otherwise fail closed, but not as a transient fault: nothing on the
+      // next scan changes the history, so a trusted re-approval made after the
+      // newest edit (which the newest-first window always contains) clears it,
+      // and otherwise the issue is escalated to a human (PR #4944 review).
+      if (editorLookup.bodyHistoryTruncated) {
+        const bodyEditTimes = editorLookup.actors
+          .filter((e) => e.source === "content-edit")
+          .map((e) => e.editedAt);
+        const oldestBodyEditAt = bodyEditTimes.length === 0
+          ? null
+          : Math.min(...bodyEditTimes);
+        if (
+          oldestBodyEditAt === null ||
+          oldestBodyEditAt >= verification.capturedAt
+        ) {
+          const why = oldestBodyEditAt === null
+            ? "no body edit in the window places the snapshot"
+            : "the oldest body edit in the window post-dates the snapshot, so an older unseen edit could too";
+
+          // An empty window leaves the newest edit unknown, so no re-approval
+          // can be shown to post-date it: only a fresh edit (which enters the
+          // newest-first window) lets the check run.
+          if (newestEditAt !== null) {
+            const reapproval = await findTrustedReapproval({
+              ...reapprovalArgs,
+              warnOnStale: true,
+            });
+            if (reapproval) {
+              return await reBaselineOnReapproval(
+                reapproval,
+                " (truncated history)",
+              );
+            }
+            if (timelineCache) {
+              await timelineCache.invalidate(repo, issueNumber);
+              const fresh = await findTrustedReapproval({
+                ...reapprovalArgs,
+                warnOnStale: false,
+              });
+              if (fresh) {
+                return await reBaselineOnReapproval(
+                  fresh,
+                  " (truncated history, uncached re-read)",
+                );
+              }
+            }
+          }
+
+          console.error(
+            `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED] ${repo}#${issueNumber} ` +
+              `has body edits beyond GitHub's newest-100 window, and ${why} — ` +
+              `BLOCKED`,
+          );
+          await escalateToHuman({
+            ghClient: createGhEscalationClient(ghFn),
+            repo,
+            target: { kind: "issue", number: issueNumber },
+            needsHumanLabel: config.needsHumanLabel,
+            heading: "Issue Edit History Too Long To Verify",
+            reason:
+              `The issue's title or body was modified after a trusted author ` +
+              `applied \`${approvalLabel}\`, but it has more body edits than ` +
+              `GitHub lists (the newest 100), so the worker cannot show that ` +
+              `none of the hidden older edits came from an untrusted editor. ` +
+              `For security, \`${config.needsHumanLabel}\` has been added and ` +
+              `automated processing is blocked until a human reviews the issue.`,
+            nextStep:
+              `A trusted author should review the current title and body. If ` +
+              `they are acceptable, remove \`${config.needsHumanLabel}\` (or ` +
+              `re-add \`${approvalLabel}\`) after the most recent edit to ` +
+              `re-approve the content. If they are not, revert the change ` +
+              `first.`,
+            // Scoped to the newest edit, so a later edit raises its own
+            // comment while a still-blocked issue is not re-commented on
+            // every scan (Issue #1562).
+            dedupKey: `content-history-truncated-${issueNumber}-${
+              newestEditAt ?? "unknown"
+            }`,
+            deps: {
+              github: {
+                ensureLabelExists: ensureLabelExistsViaGhFn(ghFn),
+              },
+              dedupAuthors: { fleetAuthors },
+            },
+            logger: defaultLogger,
+          });
+          diag?.logIssueSkipped(
+            repo,
+            issueNumber,
+            "content-edit-history-truncated",
+          );
+          return blockedBy("content-edit-history-truncated");
+        }
+      }
+
+      // Edits that post-date the baseline are the ones that could have produced
+      // the current content.
+      const sinceSnapshot = editorLookup.actors.filter(
+        (e) => e.editedAt >= verification.capturedAt,
+      );
+
+      // Issue #3964: GitHub records every title rename and every body edit.
+      // When the lookup succeeds and records nothing since the snapshot, the
+      // content provably did not change, so the mismatch can only be
+      // self-inflicted — an encoding change, store corruption, or a
+      // capture-side bug (the #3963 hash migration is the canonical case).
+      // The previous whole-history fallback judged the phantom editor as
+      // unattributable/untrusted and de-scheduled the issue fleet-wide,
+      // punishing the operator for a worker defect. Log loudly (this is a
+      // worker bug worth surfacing), refresh the baseline from the
+      // verified-unchanged live content, and proceed without touching labels
+      // or commenting.
+      if (sinceSnapshot.length === 0) {
+        console.error(
+          `[SECURITY] [SNAPSHOT_SELF_MISMATCH] Snapshot hash for ` +
+            `${repo}#${issueNumber} mismatches but GitHub records no edit ` +
+            `since the snapshot (recorded history: ` +
+            `[${describeEditors(editorLookup.actors)}]) — the content is ` +
+            `provably unchanged, so this is a worker-side snapshot defect. ` +
+            `Re-baselining and proceeding.`,
+        );
+        return await captureBaselineOrBlock({
+          stateDir,
+          repo,
+          issueNumber,
+          title: currentTitle,
+          body: currentBody,
+          author: issueAuthor,
+          contentDeps,
+          diag,
+        });
+      }
+
+      const judged = sinceSnapshot;
+      const untrustedEditors = judged.filter(
+        (e) =>
+          !e.login ||
+          // Issue #2734: this repository's own writers.
+          !isAuthorTrusted(e.login, trustedAuthorsFor(config, repo)),
+      );
+
+      // Issue #1561 / #3868: a trusted re-approval that post-dates the newest
+      // edit is a fresh approval of the current content (see the helpers
+      // defined above, shared with the truncated-history block).
       const reapproval = await findTrustedReapproval({
         ...reapprovalArgs,
         warnOnStale: true,

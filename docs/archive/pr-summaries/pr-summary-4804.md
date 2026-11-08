@@ -29,9 +29,15 @@ Version bump: not touched by this change.
 - A truncated window whose body edits include an unparseable `editedAt` fails
   the lookup itself (`ok: false`), since such an edit cannot be placed against
   the snapshot.
-- Truncation blocks through the existing `content-editor-unresolved` skip reason
-  and strips no label, so a transient or oversized history cannot mutate the
-  issue; the distinct log marker is
+- Truncation blocks through its own `content-edit-history-truncated` skip reason
+  (PR #4944 review), classed `human` in `SKIP_REASON_CLEARING` so it does not
+  hold the repo's lower tiers, and `run-local` in the census coverage map. It is
+  not transient, so before blocking the gate checks `findTrustedReapproval` (a
+  trusted `work-on` re-add or `needs-human` removal after the newest edit,
+  including one uncached re-read) and re-baselines on a hit. Otherwise it
+  applies `needs-human` and posts one deduplicated comment via `escalateToHuman`
+  and leaves `work-on` in place. An empty window leaves the newest edit unknown,
+  so no re-approval clears it. The distinct log marker is
   `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]`. If the oldest returned body
   edit predates the snapshot, every post-snapshot edit is in the window and the
   gate proceeds as before.
@@ -54,7 +60,9 @@ flowchart TD
     B --> C{bodyHistoryTruncated?}
     C -->|no| E[judge edits since snapshot]
     C -->|yes| D{oldest body edit < capturedAt?}
-    D -->|no or window empty| T[blocked: CONTENT_EDIT_HISTORY_TRUNCATED]
+    D -->|no or window empty| R{trusted re-approval after newest edit?}
+    R -->|yes| P[re-baseline and proceed]
+    R -->|no| T[needs-human + comment, blocked: content-edit-history-truncated]
     D -->|yes| E
 ```
 
@@ -68,11 +76,15 @@ advises `last:N` for timelines, which stays true; not edited.
 
 - Added
   `worker/deno/tests/work_on_content_integrity_truncated_history_4804_test.ts`
-  (5 tests, gate level): all-post-snapshot truncated window blocks; window
-  covering the snapshot with an untrusted editor among the newest three is
-  judged and blocked (the bug's reproduction: under `last:100` it was
-  invisible); same window all trusted proceeds; complete 3-edit history proceeds
-  (control); `totalCount` 150 with an empty window blocks.
+  (11 tests at head, gate level): all-post-snapshot truncated window blocks and
+  escalates; window covering the snapshot with an untrusted editor among the
+  newest three is judged and blocked (the bug's reproduction: under `last:100`
+  it was invisible); same window all trusted proceeds; complete 3-edit history
+  proceeds (control); `totalCount` 150 with an empty window blocks and
+  escalates; a trusted `work-on` re-add after the newest edit clears a truncated
+  history; a re-add before the newest edit, an untrusted re-add and any re-add
+  over an empty window do not; a stale cached timeline gets one live re-read;
+  the new reason does not suppress lower tiers (`suppressesLowerTiers`).
 - Added to `worker/deno/tests/issue_edit_actor_test.ts`: default query asks for
   `first:100`; 150 edits give the newest 100 with
   `bodyHistoryTruncated === true`; 3 edits give `false`; missing `totalCount`
@@ -85,21 +97,24 @@ advises `last:N` for timelines, which stays true; not edited.
   `issue_finder_test.ts`, `pickup_content_integrity_test.ts` and
   `work_on_content_integrity_{depends_on,editor,escalation_dedup,multi_editor,needs_human_reapproval,reapproval_edit_order,reapproval,self_mismatch}_test.ts`,
   because the lookup now rejects a response without `totalCount`.
-- Red checks (each restored afterwards): truncation block disabled →
-  truncated-window test red; `oldestBodyEditAt >= capturedAt` forced true →
-  untrusted-editor and trusted-proceed tests red; `oldestBodyEditAt === null ||`
-  replaced by `false ||` → empty-window test red; `first:100` changed back to
-  `last:100` → untrusted-editor test red.
+- Red checks (each restored afterwards): `newestEditAt !== null` guard forced
+  true → empty-window re-approval test red; re-approval result ignored → re-add
+  test red; uncached re-read result ignored → stale-cache test red; truncation
+  block disabled → truncated-window test red; `oldestBodyEditAt >= capturedAt`
+  forced true → untrusted-editor and trusted-proceed tests red;
+  `oldestBodyEditAt === null ||` replaced by `false ||` → empty-window test red;
+  `first:100` changed back to `last:100` → untrusted-editor test red.
 - Callers of `resolveLastIssueEditor` checked: only
   `work_on_content_integrity.ts` (the gate) in production.
-- Results: `deno task test:unit` on `issue_edit_actor_test.ts`,
-  `issue_finder_test.ts`, `pickup_content_integrity_test.ts`,
-  `review_fleet_prs_test_policy_4655_test.ts`: 156 passed, 0 failed; all
-  `work_on_content_integrity_*` and `content_approval_*` tests: 165 passed, 0
-  failed (before the fifth gate test was added); the new file: 5 passed, 0
-  failed.
-- `./quality.sh` (proxy variables partly unset): every stage passed except
-  `deno tests`, parallel pass 33286 passed, 1 failed:
+- Results (final head): `deno task test:unit` on all
+  `work_on_content_integrity_*` and `content_approval_*` tests,
+  `issue_edit_actor_test.ts`, `skip_reason_clearing_test.ts`,
+  `idle_decision_census_test.ts`, `pickup_content_integrity_test.ts`,
+  `issue_finder_test.ts` and `collect_work_on_candidates*_test.ts`: 398 passed,
+  0 failed; the truncated-history file alone: 11 passed, 0 failed.
+- `./quality.sh` (run on the earlier head, before the PR #4944 review fix; not
+  re-run on the final head): every stage passed except `deno tests`, parallel
+  pass 33286 passed, 1 failed:
   `tests/merge_fast_checks_credentials_4705_test.ts:101`, which expects no
   `NO_PROXY`/`no_proxy` entries in the spawned environment and fails because
   this sandbox sets them; it does not touch the changed code. Not confirmed on

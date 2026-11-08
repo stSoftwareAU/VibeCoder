@@ -17,6 +17,8 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { TimelineCache } from "../lib/timeline_cache.ts";
+import { suppressesLowerTiers } from "../lib/skip_reason_clearing.ts";
 import {
   verifyWorkOnContentIntegrityDetailed,
   type WorkOnContentIntegrityOutcome,
@@ -184,6 +186,8 @@ interface HistoryMockOptions {
   actions: string[];
   addedLabels: string[];
   commentBodies: string[];
+  /** Timeline events served by the REST timeline call (default: one early `work-on` add). */
+  timeline?: unknown[];
 }
 
 /**
@@ -235,14 +239,16 @@ function createGhMock(
     }
 
     if (command.includes("api") && command.includes("timeline")) {
-      return Promise.resolve(JSON.stringify([
-        {
-          event: "labeled",
-          label: { name: "work-on" },
-          actor: { login: "alice" },
-          created_at: LABEL_ADDED_AT,
-        },
-      ]));
+      return Promise.resolve(JSON.stringify(
+        opts.timeline ?? [
+          {
+            event: "labeled",
+            label: { name: "work-on" },
+            actor: { login: "alice" },
+            created_at: LABEL_ADDED_AT,
+          },
+        ],
+      ));
     }
 
     if (command.includes("issue view") && command.includes("title,body")) {
@@ -324,6 +330,23 @@ function runGate(
   );
 }
 
+/** A truncated-history block labels `needs-human` and explains why, once. */
+function assertEscalated(
+  actions: string[],
+  addedLabels: string[],
+  commentBodies: string[],
+  config: WorkerConfig,
+): void {
+  assertEquals(
+    actions.includes("remove-label"),
+    false,
+    "Blocking must not remove work-on (Issue #3964)",
+  );
+  assertEquals(addedLabels.includes(config.needsHumanLabel), true);
+  assertEquals(commentBodies.length, 1, "Exactly one escalation comment");
+  assertStringIncludes(commentBodies[0] ?? "", "Edit History Too Long");
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -356,7 +379,7 @@ Deno.test(
 
     assertEquals(
       outcome,
-      { verdict: "blocked", reason: "content-editor-unresolved" },
+      { verdict: "blocked", reason: "content-edit-history-truncated" },
       "A truncated history cannot be judged complete, so it must block",
     );
     assert(
@@ -370,12 +393,7 @@ Deno.test(
       false,
       "A truncated history must not be re-baselined as a self-inflicted mismatch",
     );
-    assertEquals(
-      actions,
-      [],
-      "A truncated history must not mutate labels or post a comment",
-    );
-    assertEquals(addedLabels, []);
+    assertEscalated(actions, addedLabels, commentBodies, config);
     assertEquals(
       await capturedAt(config, deps),
       LONG_AGO_UNIX,
@@ -574,7 +592,7 @@ Deno.test(
 
     assertEquals(
       outcome,
-      { verdict: "blocked", reason: "content-editor-unresolved" },
+      { verdict: "blocked", reason: "content-edit-history-truncated" },
       "An empty window over a truncated history must block",
     );
     assert(
@@ -591,16 +609,233 @@ Deno.test(
       false,
       "An empty truncated window must not be re-baselined as a self-inflicted mismatch",
     );
-    assertEquals(
-      actions,
-      [],
-      "A truncated history must not mutate labels or post a comment",
-    );
-    assertEquals(addedLabels, []);
+    assertEscalated(actions, addedLabels, commentBodies, config);
     assertEquals(
       await capturedAt(config, deps),
       LONG_AGO_UNIX,
       "Blocked content must leave the approval baseline untouched",
     );
+  },
+);
+
+/** A `work-on` add by `by` at `at`, in the REST timeline shape the gate reads. */
+function workOnAdded(by: string, at: string) {
+  return {
+    event: "labeled",
+    label: { name: "work-on" },
+    actor: { login: by },
+    created_at: at,
+  };
+}
+
+Deno.test(
+  "work_on_content_integrity - a trusted work-on re-add after the newest edit clears a truncated history (PR #4944 review)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    // 150 trusted edits, newest at 12:00. alice re-approves at 12:05.
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: bodyHistory(150, () => "alice"),
+      actions,
+      addedLabels,
+      commentBodies,
+      timeline: [workOnAdded("alice", "2026-05-01T12:05:00Z")],
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors, warnings } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, { verdict: "proceed" });
+    assert(
+      warnings.some((line) =>
+        line.includes("[ISSUE_REAPPROVED_AFTER_MODIFICATION]")
+      ),
+      `Expected the re-approval marker, got: ${warnings.join(" | ")}`,
+    );
+    assertEquals(
+      errors.some((line) => line.includes("[CONTENT_EDIT_HISTORY_TRUNCATED]")),
+      false,
+      "A re-approved truncated history must not log the block",
+    );
+    assertEquals(actions, [], "A re-approval mutates nothing on gh");
+    assert(
+      (await capturedAt(config, deps) ?? 0) > LONG_AGO_UNIX,
+      "A re-approval refreshes the baseline",
+    );
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - a work-on add that predates the newest edit does not clear a truncated history (PR #4944 review)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    // The label add is after the snapshot but before the newest edit (12:00),
+    // so it cannot bless content its approver never saw.
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: bodyHistory(150, () => "alice"),
+      actions,
+      addedLabels,
+      commentBodies,
+      timeline: [workOnAdded("alice", "2026-05-01T11:59:00Z")],
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-edit-history-truncated",
+    });
+    assertEscalated(actions, addedLabels, commentBodies, config);
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - an untrusted work-on add does not clear a truncated history (PR #4944 review)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: bodyHistory(150, () => "alice"),
+      actions,
+      addedLabels,
+      commentBodies,
+      timeline: [workOnAdded("mallory", "2026-05-01T12:05:00Z")],
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-edit-history-truncated",
+    });
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - a re-approval cannot clear a truncated history whose window is empty (PR #4944 review)",
+  async () => {
+    // No node in the window means the newest edit is unknown, so no
+    // re-approval can be shown to post-date it.
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: [],
+      totalBodyEdits: 150,
+      actions,
+      addedLabels,
+      commentBodies,
+      timeline: [workOnAdded("alice", "2026-05-01T12:05:00Z")],
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-edit-history-truncated",
+    });
+    assertEscalated(actions, addedLabels, commentBodies, config);
+  },
+);
+
+Deno.test("work_on_content_integrity - the truncated-history reason does not hold lower tiers (PR #4944 review)", () => {
+  assertEquals(suppressesLowerTiers("content-edit-history-truncated"), false);
+  // The transient reason it used to share still serialises the repo.
+  assertEquals(suppressesLowerTiers("content-editor-unresolved"), true);
+});
+
+Deno.test(
+  "work_on_content_integrity - a stale cached timeline gets one live re-read before a truncated history blocks (PR #4944 review)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+    const dir = Deno.makeTempDirSync({ prefix: "truncated-history-cache-" });
+
+    try {
+      // The cache predates alice's 12:05 re-approval; the live timeline has it.
+      const cache = new TimelineCache(300, dir);
+      await cache.write(
+        "owner/repo",
+        42,
+        [workOnAdded("alice", LABEL_ADDED_AT)],
+        true,
+      );
+
+      const actions: string[] = [];
+      const gh = createGhMock({
+        title: "Fix the bug",
+        body: "Approved specification, reworded",
+        bodyEdits: bodyHistory(150, () => "alice"),
+        actions,
+        addedLabels: [],
+        commentBodies: [],
+        timeline: [
+          workOnAdded("alice", LABEL_ADDED_AT),
+          workOnAdded("alice", "2026-05-01T12:05:00Z"),
+        ],
+      });
+
+      let outcome: WorkOnContentIntegrityOutcome | undefined;
+      const { warnings } = await captureConsole(async () => {
+        outcome = await verifyWorkOnContentIntegrityDetailed(
+          "owner/repo",
+          makeIssue("alice"),
+          config,
+          gh,
+          undefined,
+          deps,
+          cache,
+        );
+      });
+
+      assertEquals(outcome, { verdict: "proceed" });
+      assert(
+        warnings.some((line) => line.includes("(truncated history, uncached")),
+        `Expected the uncached re-read marker, got: ${warnings.join(" | ")}`,
+      );
+      assertEquals(actions, []);
+    } finally {
+      Deno.removeSync(dir, { recursive: true });
+    }
   },
 );
