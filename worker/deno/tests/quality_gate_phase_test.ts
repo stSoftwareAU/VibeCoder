@@ -35,6 +35,7 @@ import {
   runDockerQualityCheck,
   runNativeQualityCheck,
   runQualityGateCheck,
+  sudoCarriedEnv,
   untrustedAccountOf,
   untrustedQualityCommandEnv,
 } from "../lib/quality_gate_phase.ts";
@@ -1270,6 +1271,54 @@ Deno.test("carryEnvThroughSudo - the placement travels in argv, past sudo's env_
       "bash",
       "-c",
       "./quality.sh",
+    ],
+  );
+});
+
+Deno.test("sudoCarriedEnv - the egress proxy travels with the placement, nothing else does (Issue #4877)", () => {
+  const proxy = "http://192.168.128.2:3128";
+  assertEquals(
+    sudoCarriedEnv({
+      PATH: "/usr/bin",
+      HOME: "/home/vibe",
+      CARGO_TARGET_DIR: "/var/tmp/t",
+      HTTPS_PROXY: proxy,
+      https_proxy: proxy,
+      http_proxy: proxy,
+      NO_PROXY: "localhost,127.0.0.1,::1",
+      GH_TOKEN: "ghs_secret",
+    }),
+    {
+      CARGO_TARGET_DIR: "/var/tmp/t",
+      HTTPS_PROXY: proxy,
+      https_proxy: proxy,
+      http_proxy: proxy,
+      NO_PROXY: "localhost,127.0.0.1,::1",
+    },
+  );
+});
+
+Deno.test("sudoCarriedEnv - a proxy URL with credentials stays out of argv (Issue #4877)", () => {
+  assertEquals(
+    sudoCarriedEnv({ HTTPS_PROXY: "http://user:pw@proxy:3128" }),
+    {},
+  );
+});
+
+Deno.test("carryEnvThroughSudo - a proxy URL and a lower-case name pass (Issue #4877)", () => {
+  assertEquals(
+    carryEnvThroughSudo(["sudo", "-n", "-u", "agent", "--", "true"], {
+      https_proxy: "http://192.168.128.2:3128",
+    }),
+    [
+      "sudo",
+      "-n",
+      "-u",
+      "agent",
+      "--",
+      "env",
+      "https_proxy=http://192.168.128.2:3128",
+      "true",
     ],
   );
 });

@@ -26,6 +26,7 @@
 
 import {
   carryEnvThroughSudo,
+  sudoCarriedEnv,
   untrustedAccountOf,
   untrustedQualityCommandEnv,
   untrustedSpawn,
@@ -431,11 +432,9 @@ export async function runRepositoryCommand(
         ? {}
         : { CARGO_TARGET_DIR: privateTarget }),
     };
-    const target = env["CARGO_TARGET_DIR"];
-    const final = carryEnvThroughSudo(
-      spawnable,
-      target === undefined ? {} : { CARGO_TARGET_DIR: target },
-    );
+    // The placement and the egress proxy past sudo's env_reset (Issues
+    // #2247, #4877): without the proxy every registry fetch fails to resolve.
+    const final = carryEnvThroughSudo(spawnable, sudoCarriedEnv(env));
     let channelled: ChannelledCommand;
     try {
       channelled = carryCredentialsThroughSudo(final, declared);
