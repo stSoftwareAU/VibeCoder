@@ -3388,13 +3388,12 @@ Deno.test("repair prompt gives generic summary guidance without an issue number"
 
 Deno.test("repair caller passes the issue number parsed from the PR branch", async () => {
   const root = await Deno.makeTempDir();
-  const previousHome = Deno.env.get("HOME");
+  assert(Deno.env.get("HOME"), "the repair harness requires HOME to be set");
   const head = "a".repeat(40);
   let prompt = "";
   let lockBody = "";
   const commands: string[][] = [];
   let nextCommentId = 10;
-  Deno.env.set("HOME", root);
   const capture = async (headRefName: string): Promise<string> => {
     const currentPr = {
       ...pr,
@@ -3473,8 +3472,6 @@ Deno.test("repair caller passes the issue number parsed from the PR branch", asy
     const unknown = await capture("feature-without-issue");
     assert(!unknown.includes("docs/archive/pr-summaries/pr-summary-"));
   } finally {
-    if (previousHome === undefined) Deno.env.delete("HOME");
-    else Deno.env.set("HOME", previousHome);
     await Deno.remove(root, { recursive: true });
   }
 });
