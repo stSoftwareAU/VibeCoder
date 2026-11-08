@@ -1,12 +1,16 @@
 /**
  * Shared fakes for the babysitter repair tests (Issue #4770): a generated App
- * key, a fake GitHub token exchange, a clone/scratch/exchange tree, a launch
- * plan carrying the fields the repair reads, and container deps that record
- * every runtime spawn. Nothing here starts a process or reads the host.
+ * key, a fake GitHub token exchange, a clone/scratch/exchange tree, a temp
+ * worker checkout and home, a REAL launch plan built by
+ * `buildLaunchPlanForCommand` over them (mounts, staged config and all), and
+ * container deps that record every runtime spawn. Nothing here starts a
+ * runtime process or reads the host's home.
  */
 import type { ContainerLaunchPlan } from "../../lib/container_launch.ts";
 import type { BabysitterContainerDeps } from "../../lib/fleet_babysitter_container.ts";
 import type { FetchFn } from "../../lib/github_app_auth.ts";
+import { buildLaunchPlanForCommand } from "../../commands/container_launch_plan.ts";
+import { REPO_ROOT } from "./launcher_harness.ts";
 
 /** A PKCS#8 RSA key, generated for the test. */
 export async function generateTestKeyPem(): Promise<string> {
@@ -87,34 +91,111 @@ export async function repairDirs(): Promise<
 }
 
 /**
- * The fields of a launch plan that the repair reads (its runtime, image,
- * named volumes, run arguments and egress flags). The rest are unused here.
+ * The temp inputs a real repair plan reads: `baseDir` is a git repo with the
+ * container manifests and one tracked file (so `git ls-tree HEAD` works);
+ * `home` holds the babysitter's config and one enabled provider credential
+ * directory (claude). `root` is removed by the test.
  */
-export function repairPlan(
+export interface RepairHost {
+  root: string;
+  baseDir: string;
+  home: string;
+}
+
+/** Copy a directory tree of regular files and directories, synchronously. */
+function copyTreeSync(src: string, dst: string): void {
+  Deno.mkdirSync(dst, { recursive: true });
+  for (const entry of Deno.readDirSync(src)) {
+    const from = `${src}/${entry.name}`;
+    const to = `${dst}/${entry.name}`;
+    if (entry.isDirectory) copyTreeSync(from, to);
+    else if (entry.isFile) Deno.copyFileSync(from, to);
+  }
+}
+
+function gitSync(cwd: string, args: string[]): void {
+  const out = new Deno.Command("git", {
+    args: [
+      "-C",
+      cwd,
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ],
+    env: {
+      PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+    },
+    stdout: "null",
+    stderr: "piped",
+  }).outputSync();
+  if (!out.success) {
+    throw new Error(
+      `git ${args.join(" ")} failed: ${new TextDecoder().decode(out.stderr)}`,
+    );
+  }
+}
+
+/** Build a {@link RepairHost}; `config` is written as the babysitter's config.json. */
+export function repairHost(config: Record<string, unknown> = {}): RepairHost {
+  const root = Deno.realPathSync(Deno.makeTempDirSync());
+  const baseDir = `${root}/checkout`;
+  // The whole container/ tree: the image tag hashes every enumerated input.
+  copyTreeSync(`${REPO_ROOT}/container`, `${baseDir}/container`);
+  Deno.writeTextFileSync(`${baseDir}/README.md`, "tracked\n");
+  gitSync(baseDir, ["init", "-q"]);
+  gitSync(baseDir, ["add", "."]);
+  gitSync(baseDir, ["commit", "-q", "-m", "fixture"]);
+
+  const home = `${root}/home`;
+  Deno.mkdirSync(`${home}/.vibe-coder/credentials/claude`, {
+    recursive: true,
+  });
+  Deno.writeTextFileSync(`${home}/config.json`, JSON.stringify(config));
+  return { root, baseDir, home };
+}
+
+/** The environment the real plan reads: the host home, its config and credentials. */
+function hostEnvironment(host: RepairHost): Record<string, string> {
+  return {
+    HOME: host.home,
+    VIBE_CREDENTIAL_DIR: `${host.home}/.vibe-coder/credentials`,
+    CONFIG_PATH: `${host.home}/config.json`,
+    WORK_DIR: `${host.home}/work`,
+  };
+}
+
+/**
+ * A real launch plan for the repair, built by `buildLaunchPlanForCommand` over
+ * the host: the worker checkout mount, the staged config, the log mount and the
+ * enabled provider credential mount, as production builds them. `extraRunArgs`
+ * go before the image.
+ */
+export async function repairPlan(
+  host: RepairHost,
   containerName: string,
   extraRunArgs: string[] = [],
-): ContainerLaunchPlan {
-  const image = "vibe-coder:test";
-  return {
-    runtime: "podman",
-    image,
-    containerName,
-    volumes: ["vibe-work"],
-    resettableVolumes: [],
-    imageInspectArgs: ["image", "inspect", image],
-    egressEnforced: false,
-    proxyName: "",
-    runArgs: [
-      "run",
-      "--rm",
-      "--name",
-      containerName,
-      "--volume",
-      "vibe-work:/home/vibe/auto-issue-work",
-      ...extraRunArgs,
-      image,
-    ],
-  } as unknown as ContainerLaunchPlan;
+): Promise<ContainerLaunchPlan> {
+  const environment = hostEnvironment(host);
+  const plan = await buildLaunchPlanForCommand(host.baseDir, containerName, {
+    env: (name) => environment[name],
+    now: () => 1_900_000_000_000,
+    probe: (candidate) =>
+      Promise.resolve({
+        available: true,
+        path: `/usr/bin/${candidate.executable}`,
+      }),
+  });
+  const runArgs = [...plan.runArgs];
+  if (extraRunArgs.length > 0) {
+    runArgs.splice(runArgs.lastIndexOf(plan.image), 0, ...extraRunArgs);
+  }
+  return { ...plan, runArgs };
 }
 
 /** One runtime process the repair started. */
@@ -127,11 +208,15 @@ export interface RuntimeSpawn {
 
 /**
  * Container deps that record each runtime spawn and report a clean exit. The
- * host environment reader returns nothing unless `env` is given.
+ * plan is real (see {@link repairPlan}) over `options.host`, or a fresh host.
+ * The checkout the repair snapshots is that host's worker checkout. Egress
+ * starts are stubbed, so no sidecar or Apple helper runs. The host environment
+ * reader returns nothing unless `env` is given.
  */
 export function fakeContainer(
   spawns: RuntimeSpawn[],
   options: {
+    host?: RepairHost;
     env?: BabysitterContainerDeps["env"];
     extraRunArgs?: string[];
     /** Runs in place of the clean exit; its result is returned. */
@@ -145,12 +230,21 @@ export function fakeContainer(
     }>;
   } = {},
 ): Partial<BabysitterContainerDeps> {
+  const host = options.host ?? repairHost();
   return {
     env: options.env ?? (() => undefined),
     onPath: () => Promise.resolve(true),
+    checkoutDir: () => host.baseDir,
     buildPlan: (_baseDir, containerName) =>
-      Promise.resolve(repairPlan(containerName, options.extraRunArgs)),
+      repairPlan(host, containerName, options.extraRunArgs),
     imageExists: () => Promise.resolve(true),
+    startSidecar: () => Promise.resolve(undefined),
+    stopSidecar: () => Promise.resolve([]),
+    startAppleEgress: (plan) =>
+      Promise.resolve({
+        runArgs: plan.runArgs,
+        stop: () => Promise.resolve([]),
+      }),
     spawn: (runtime, args, spawnOptions) => {
       const spawn: RuntimeSpawn = {
         runtime,

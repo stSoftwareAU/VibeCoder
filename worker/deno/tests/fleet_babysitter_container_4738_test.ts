@@ -996,6 +996,8 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
       repos: ["stSoftwareAU/VibeCoder"],
       github_app_private_key_path: f.keyPath,
       imgbb_api_key: "host-imgbb-secret",
+      max_issue_body_tokens: 1000,
+      recent_activity_max_tokens: 500,
       repo_config: {
         "stSoftwareAU/VibeCoder": {
           quality_credentials: {
@@ -1038,6 +1040,25 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
     },
   ];
   const { deps, calls } = fakeDeps(f, { overrides: plan });
+  // The snapshot is removed when the session ends (Issue #4770), so the
+  // container's spawn reads what it mounts while the session runs.
+  let seen:
+    | { tracked: string; binary: Uint8Array; untracked: boolean; config: string }
+    | undefined;
+  const runSpawn = deps.spawn!;
+  deps.spawn = async (runtime, args, options) => {
+    const snapshot = `${f.scratch}/workspace`;
+    seen = {
+      tracked: await Deno.readTextFile(`${snapshot}/tracked.txt`),
+      binary: await Deno.readFile(`${snapshot}/tracked.bin`),
+      untracked: await Deno.stat(`${snapshot}/untracked-secret.txt`).then(
+        () => true,
+        () => false,
+      ),
+      config: await Deno.readTextFile(`${snapshot}/.config.json`),
+    };
+    return await runSpawn(runtime, args, options);
+  };
   try {
     await runBabysitterRepairContainer(
       { ...inputFor(f), baseDir: workerCheckout },
@@ -1045,17 +1066,14 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
     );
     const args = spawnAt(calls, 0).args;
     assert(args.includes(`${f.scratch}/workspace:/workspace:ro`));
-    assertEquals(
-      await Deno.readTextFile(`${f.scratch}/workspace/tracked.txt`),
-      "tracked worker file\n",
-    );
-    assertEquals(
-      await Deno.readFile(`${f.scratch}/workspace/tracked.bin`),
-      binaryContent,
-    );
+    assert(seen, "the container ran with the snapshot");
+    assertEquals(seen.tracked, "tracked worker file\n");
+    assertEquals(seen.binary, binaryContent);
+    assertEquals(seen.untracked, false, "untracked files are not snapshotted");
     await assertRejects(
-      () => Deno.stat(`${f.scratch}/workspace/untracked-secret.txt`),
+      () => Deno.stat(`${f.scratch}/workspace`),
       Deno.errors.NotFound,
+      "the snapshot is removed after the session",
     );
     assert(args.includes(`${f.scratch}:/home/vibe/logs`));
     assert(args.includes("CONFIG_PATH=/workspace/.config.json"));
@@ -1070,15 +1088,16 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
     assert(
       volumeValues(args).some((mount) => mount.includes("/credentials/claude")),
     );
-    const safeConfig = await Deno.readTextFile(
-      `${f.scratch}/workspace/.config.json`,
-    );
+    const safeConfig = seen.config;
     assert(!safeConfig.includes(f.keyPath));
     assert(!safeConfig.includes("host-imgbb-secret"));
     assert(safeConfig.includes("quality-token-command"));
     assert(safeConfig.includes("QUALITY_TOKEN"));
     assert(!safeConfig.includes("github_app_private_key_path"));
     assert(!safeConfig.includes("imgbb_api_key"));
+    // Numeric limits are not secrets: a key named `*_tokens` keeps its value.
+    assertEquals(JSON.parse(safeConfig).max_issue_body_tokens, 1000);
+    assertEquals(JSON.parse(safeConfig).recent_activity_max_tokens, 500);
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }

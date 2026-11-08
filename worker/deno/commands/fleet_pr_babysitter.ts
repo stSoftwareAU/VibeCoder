@@ -362,12 +362,17 @@ export async function excludeRepairByproducts(
  * is never staged as the fix (Issue #4827). `info/exclude` only affects
  * untracked paths, so a repo that tracks one of these paths is unaffected.
  */
+/** A GitHub `owner/name`; the one rule shared by the repair clone and its publication config reset. */
+export function isValidRepoName(repo: string): boolean {
+  return /^[\w-]+\/[\w.-]+$/.test(repo);
+}
+
 export async function cloneForRepair(
   repo: string,
   dir: string,
   deps: CloneForRepairDeps = {},
 ): Promise<void> {
-  if (!/^[\w-]+\/[\w.-]+$/.test(repo)) {
+  if (!isValidRepoName(repo)) {
     throw new Error(`Invalid repository: ${repo}`);
   }
   const git = deps.git ??
@@ -903,33 +908,27 @@ export function runHardenedRepairGit(
   options: Parameters<typeof runGitCommand>[1] = {},
   runGit: typeof runGitCommand = runGitCommand,
 ) {
+  // The host's global and system config stay visible: they carry the
+  // credential helper that publication (e.g. `git ls-remote origin`) needs.
+  // The agent cannot write them; the clone's own config is replaced below.
   return runGit([
     ...HOST_GIT_HARDENING_ARGS,
     ...args,
-  ], {
-    ...options,
-    env: {
-      ...options.env,
-      GIT_CONFIG_NOSYSTEM: "1",
-      GIT_CONFIG_SYSTEM: "/dev/null",
-      GIT_CONFIG_GLOBAL: "/dev/null",
-      GIT_CONFIG_COUNT: "0",
-      GIT_CONFIG_PARAMETERS: "",
-      GIT_ATTR_NOSYSTEM: "1",
-    },
-  });
+  ], options);
 }
 
 /** Replace agent-writable local config before any host publication git call. */
 export async function resetRepairCloneGitConfig(
   dir: string,
   repo: string,
+  deps: { gh?: (args: string[]) => Promise<string> } = {},
 ): Promise<void> {
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+  if (!isValidRepoName(repo)) {
     throw new Error(
       "Refusing to publish a repair for an invalid repository name",
     );
   }
+  const url = await defaultRemoteUrl(repo, deps.gh);
   const gitDir = `${dir}/.git`;
   const info = await Deno.lstat(gitDir);
   if (!info.isDirectory || info.isSymlink) {
@@ -946,7 +945,7 @@ export async function resetRepairCloneGitConfig(
     "\tbare = false",
     "\tlogallrefupdates = true",
     '[remote "origin"]',
-    `\turl = https://github.com/${repo}.git`,
+    `\turl = ${url}`,
     "\tfetch = +refs/heads/*:refs/remotes/origin/*",
     "",
   ].join("\n");
@@ -1951,8 +1950,9 @@ const VERIFIER_WITHHELD_ENV = [
 /**
  * What the review verifier's Claude child may hold (Issue #4657). The verifier
  * is a model that reads untrusted review text and a repository's code, and it
- * shares the runner's OS user, so it gets the repair agent's boundary
- * (Issue #4572): its own freshly minted read-only token for the target
+ * shares the runner's OS user, so it is not container-isolated like the repair
+ * agent. It is confined by its own deny rules (Issue #4572): its own freshly
+ * minted read-only token for the target
  * repository as `GH_TOKEN`, never the runner's write token; no Bash, so it runs
  * no code that could read a credential; and no Read or Edit of the babysitter's
  * protected paths (the App key, credential directory, gh config, other App
@@ -2108,7 +2108,7 @@ export async function startBabysitterAgent(
   await removeFileIfPresent(responsePath);
   try {
     await runBabysitterRepairContainer({
-      baseDir: babysitterCheckoutDir(),
+      baseDir: options.container?.checkoutDir?.() ?? babysitterCheckoutDir(),
       clone: options.dir,
       scratch: options.scratch,
       privateKeyPath: app.privateKeyPath,

@@ -316,7 +316,7 @@ decision uses the close guard (#3177/#4644) in
 `worker/deno/lib/missing_criterion_close_guard.ts`.
 
 The runner and the agent exchange files through a runner-owned exchange
-directory that the agent cannot write, outside its clone and scratch grants. The
+directory that the agent cannot write, outside the clone and scratch mounts. The
 runner stages the PR description it applies there before
 `gh pr edit --body-file`, and the agent writes its final response to `.babysitter-response` in the clone.
 After the container exits, the host reads that file through the no-follow,
@@ -347,10 +347,11 @@ command with `--dir /babysitter/clone`, `--prompt-file` pointing at the prompt,
 and `--response-file /babysitter/clone/.babysitter-response`. The agent's
 read-only repository token is passed as `GH_TOKEN` by name only, so its value
 never appears on a command line. The agent has the clone's `.git` read-write.
-Before host publication, the host replaces its local config with the canonical
-GitHub remote, dropping agent-written hooks, filters, fsmonitor, external diff
-and SSH commands; host `run()` git calls also set the hooks and fsmonitor
-overrides (`HOST_GIT_HARDENING_ARGS`).
+Before host publication, `resetRepairCloneGitConfig` rewrites the clone's
+`.git/config` as a minimal canonical GitHub remote config, dropping agent-written
+hooks, filters, fsmonitor, external diff and SSH commands. Publication git runs
+with `core.hooksPath=/dev/null` and `core.fsmonitor=false`, and the host's `run()`
+git calls use the same flags (`HOST_GIT_HARDENING_ARGS`).
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container is
@@ -401,16 +402,22 @@ The repair container receives:
 - the agent's read-only repository token, as `GH_TOKEN`, minted again on each
   token restart;
 - the clone and the scratch directory (prompt file), read-write;
-- a read-only snapshot of tracked worker checkout files at `/workspace`; ignored
-  files are excluded, and its `.config.json` is a scrubbed copy;
+- a tracked-files copy of the worker checkout, written on the host to
+  `<scratch>/workspace` (regular tracked files only; ignored files are excluded,
+  and its `.config.json` is a scrubbed copy), mounted read-only at `/workspace`.
+  That copy sits inside the read-write scratch directory, so the agent can also
+  reach the same files read-write at `/babysitter/scratch/workspace`;
 - the repair scratch directory at the container log path, so logs do not expose
   the host's log directory;
-- each enabled provider's credential sub-directory of the Vibe credential
-  directory, read-only;
-- the fixed runtime environment allowlist, plus the short-lived `GH_TOKEN`;
-  declared `quality_credentials` configuration is retained, and the existing
-  quality command transport remains responsible for resolving and delivering
-  its declared values.
+- plan mounts whose source contains `/credentials/`: each enabled provider's
+  credential sub-directory, with the launcher's read-only mode (the `gh` store is
+  dropped);
+- the plan's other `--env` specs (listed in the C36 row of
+  `docs/THREAT-MODEL.md`), plus the short-lived `GH_TOKEN`. The host runtime
+  allowlist (`BASE_ENV_ALLOWLIST`) goes to the runtime process, not into the
+  container. Declared `quality_credentials` configuration is retained, and the
+  existing quality command transport remains responsible for resolving and
+  delivering its declared values.
 
 The plan's named work and agent-state volumes are not mounted. The host `gh`
 credential directory (the `gh` sub-directory of the Vibe credential directory)
@@ -440,13 +447,17 @@ and, because the image may predate the babysitter-repair mode, a hint to relaunc
 with `./run.sh` to rebuild it.
 A timeout reports `babysitter repair timed out after <N> minutes; container
 <name> killed`, where `<N>` is that session's own timeout, and a timeout that is
-not restarted (see "Token restarts") fails the repair. Missing runtime or image
-is classified as a capability failure. A structured in-container task-failure
-status is recorded as a substantive code failure; other launcher failures,
-including egress failures and ordinary non-zero exits, are infrastructure
-failures and use the default infrastructure backoff. The host does not infer a
-failure category from agent-controlled stderr. Quota-reset and retry-after
-parsing remains outside this change; #4656 owns richer retry policy.
+not restarted (see "Token restarts") fails the repair. A timeout is classified as
+infrastructure, unless the 90-minute session budget has run out: the repair loop
+then raises `agent session budget exhausted: <cause>` as a code failure. Missing
+runtime or image is classified as a capability failure. Exit status 42, the
+in-container task-failure status, is recorded as a substantive code failure;
+other launcher failures, including egress failures and ordinary non-zero exits,
+are infrastructure failures and use the default infrastructure backoff. The host
+does not infer a failure category from agent-controlled stderr. A quota reset or
+retry-after time is no longer read from the container's stderr; the Codex stderr
+parsing is removed from the babysitter path. Richer retry handling stays with the
+retry-state work tracked in #4656, which is closed; this change does not add it.
 
 ## Scans, retries and failure classification
 
@@ -488,8 +499,11 @@ that moved) first, and the error text only as a fallback. Infrastructure, host
 capability (missing tool, full disk) and head or lock races receive bounded
 cooldowns without spending the substantive repair budget and post no attempt
 marker. A diagnostic that names a timeout, network, DNS or rate-limit failure is
-classified as infrastructure. Container exits and timeouts
-are infrastructure and do not spend that budget (see "Failure behaviour").
+classified as infrastructure. Container failures follow "Failure behaviour":
+exit status 42 is a code failure that spends that budget; a timeout is
+infrastructure unless the 90-minute session budget has run out, which makes it
+`agent session budget exhausted` (code); other launcher failures are
+infrastructure and do not spend it.
 Code failures, runner session-budget exhaustion and no-progress outcomes spend
 that budget. A changed head bypasses the old cooldown while
 keeping the attempt history. The retry

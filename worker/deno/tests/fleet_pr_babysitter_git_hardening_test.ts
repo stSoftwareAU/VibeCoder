@@ -5,8 +5,10 @@
  *
  * Uses Australian English spelling (behaviour, neutralise, organisation, etc.)
  */
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  cloneForRepair,
+  isValidRepoName,
   resetRepairCloneGitConfig,
   run,
   runHardenedRepairGit,
@@ -140,7 +142,9 @@ Deno.test("repair resets agent-controlled filters, diff and SSH git config befor
     );
     await Deno.chmod(`${repo}/.git/hooks/pre-commit`, 0o755);
 
-    await resetRepairCloneGitConfig(repo, "stSoftwareAU/VibeCoder");
+    await resetRepairCloneGitConfig(repo, "stSoftwareAU/VibeCoder", {
+      gh: () => Promise.resolve("https\n"),
+    });
     await Deno.writeTextFile(`${repo}/fix.txt`, "fixed\n");
     const add = await runHardenedRepairGit(["-C", repo, "add", "fix.txt"]);
     assert(add.ok && add.value.code === 0);
@@ -167,6 +171,96 @@ Deno.test("repair resets agent-controlled filters, diff and SSH git config befor
     assert(
       !/filter\.owned|core\.sshCommand|diff\.external|fsmonitor/.test(config),
     );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the publication reset writes the URL of gh's git protocol, and one repo-name rule guards both the clone and the reset", async () => {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-git-protocol-" });
+  try {
+    const repo = `${root}/repo`;
+    await Deno.mkdir(repo);
+    await git(repo, "init", "-q");
+    await resetRepairCloneGitConfig(repo, "stSoftwareAU/VibeCoder", {
+      gh: (args) => {
+        assertEquals(args, ["config", "get", "git_protocol", "-h", "github.com"]);
+        return Promise.resolve("ssh\n");
+      },
+    });
+    assertEquals(
+      await git(repo, "config", "--local", "--get", "remote.origin.url"),
+      "git@github.com:stSoftwareAU/VibeCoder.git",
+    );
+
+    for (
+      const name of ["owner", "a/b/c", "owner/repo name", "owner.x/repo", "../x"]
+    ) {
+      assertEquals(isValidRepoName(name), false, name);
+      await assertRejects(
+        () => resetRepairCloneGitConfig(repo, name, { gh: () => Promise.resolve("ssh") }),
+        Error,
+        "Refusing to publish a repair for an invalid repository name",
+      );
+      await assertRejects(
+        () => cloneForRepair(name, `${root}/clone`),
+        Error,
+        "Invalid repository",
+      );
+    }
+    assertEquals(isValidRepoName("stSoftwareAU/VibeCoder"), true);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("publication git keeps the host's global config, while a planted pre-commit hook still does not run", async () => {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-global-" });
+  try {
+    const repo = `${root}/repo`;
+    const markers = `${root}/markers`;
+    await Deno.mkdir(repo);
+    await Deno.mkdir(markers);
+    await git(repo, "init", "-q");
+    // The host's global config, supplied through the env the caller passes.
+    const globalConfig = `${root}/host.gitconfig`;
+    await Deno.writeTextFile(globalConfig, "[alias]\n\tzz = status\n");
+    const globalEnv = { GIT_CONFIG_GLOBAL: globalConfig };
+    const alias = await runHardenedRepairGit(
+      ["-C", repo, "config", "--get", "alias.zz"],
+      { env: globalEnv },
+    );
+    assert(alias.ok && alias.value.code === 0, "the global alias is read");
+    assertEquals(alias.value.stdout.trim(), "status");
+
+    await Deno.mkdir(`${repo}/.git/hooks`, { recursive: true });
+    await Deno.writeTextFile(
+      `${repo}/.git/hooks/pre-commit`,
+      `#!/bin/sh\n: > "${markers}/hook"\n`,
+    );
+    await Deno.chmod(`${repo}/.git/hooks/pre-commit`, 0o755);
+    await Deno.writeTextFile(`${repo}/fix.txt`, "fixed\n");
+    const add = await runHardenedRepairGit(
+      ["-C", repo, "add", "fix.txt"],
+      { env: globalEnv },
+    );
+    assert(add.ok && add.value.code === 0);
+    const commit = await runHardenedRepairGit(
+      [
+        "-C",
+        repo,
+        "-c",
+        "user.name=fixture-bot",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-m",
+        "host repair commit",
+      ],
+      { env: globalEnv },
+    );
+    assert(commit.ok && commit.value.code === 0);
+    assertEquals(await markerNames(markers), []);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

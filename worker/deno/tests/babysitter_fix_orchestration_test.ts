@@ -38,6 +38,7 @@ import {
   BABYSITTER_CLONE_MOUNT,
   BABYSITTER_TASK_FAILURE_EXIT_CODE,
   type BabysitterContainerDeps,
+  runBabysitterRepairContainer,
 } from "../lib/fleet_babysitter_container.ts";
 import { babysitterHostCredentialPaths } from "../lib/fleet_babysitter_paths.ts";
 import {
@@ -45,6 +46,7 @@ import {
   fakeTokenExchange,
   generateTestKeyPem,
   repairDirs,
+  repairHost,
   repairPlan,
   type RuntimeSpawn,
   withTestKey,
@@ -802,18 +804,69 @@ Deno.test("container task failures spend substantive attempts while transient ex
       },
     ] as const
   ) {
-    await withState(async (stateDir) => {
-      const h = harness(stateDir);
-      const before = Date.now();
-      h.state.agents.push({ code: blockerClass === "code" ? code : 1, stderr });
-      await assertRejects(() => h.attempt());
-      const [record] = await records(stateDir);
-      assertEquals(record!.attempts.substantive, substantive);
-      assertEquals(record!.blockerClass, blockerClass);
-      assertEquals(h.state.markers.length, substantive);
-      assert(Date.parse(record!.nextEligibleAt!) >= before + 60_000);
+    // The production startBabysitterAgent and runRepairProcess map the exit
+    // code to a failure class; the harness stub does not decide it here.
+    await withTestKey(async (privateKeyPath) => {
+      await withState(async (stateDir) => {
+        const h = harness(stateDir);
+        const spawns: RuntimeSpawn[] = [];
+        h.deps.startAgent = productionAgent(
+          privateKeyPath,
+          fakeContainer(spawns, {
+            onSpawn: () =>
+              Promise.resolve({ success: false, code, stderr, timedOut: false }),
+          }),
+        );
+        const before = Date.now();
+        await assertRejects(() => h.attempt());
+        assertEquals(spawns.length, 1, `${code} ${stderr}`);
+        const [record] = await records(stateDir);
+        assertEquals(record!.attempts.substantive, substantive);
+        assertEquals(record!.blockerClass, blockerClass);
+        assertEquals(h.state.markers.length, substantive);
+        assert(Date.parse(record!.nextEligibleAt!) >= before + 60_000);
+      });
     });
   }
+});
+
+Deno.test("an expired read token restarts the real agent session, which starts again and the repair succeeds (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      // The token expires two minutes and fifteen seconds out: the session
+      // runs for fifteen seconds, and the expiry is inside the restart window.
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns, {
+          onSpawn: (spawn) => {
+            if (spawns.length === 1) {
+              return Promise.resolve({
+                success: false,
+                code: 143,
+                stderr: "",
+                timedOut: false,
+              });
+            }
+            return Deno.writeTextFile(
+              `${cloneMountedBy(spawn)}/${BABYSITTER_CONTAINER_RESPONSE_FILE}`,
+              "done\nBABYSITTER_READY\n",
+            ).then(() => OK_RUN);
+          },
+        }),
+        2 * 60_000 + 15_000,
+      );
+      await h.attempt();
+      assertEquals(spawns.length, 2, "both container spawns are recorded");
+      assertEquals(h.state.pushed, 1);
+      assertEquals(
+        (await records(stateDir))[0]!.reconciliation,
+        "waiting-for-ci-review",
+      );
+    });
+  });
 });
 
 Deno.test("real human gates stay paused", async () => {
@@ -1804,6 +1857,7 @@ const OK_RUN = { success: true, code: 0, stderr: "", timedOut: false };
 function productionAgent(
   privateKeyPath: string,
   container: Partial<BabysitterContainerDeps>,
+  tokenLifetimeMs?: number,
 ): NonNullable<FixDeps["startAgent"]> {
   return (_app, repo, options, beforeSpawn) =>
     startBabysitterAgent(
@@ -1812,7 +1866,12 @@ function productionAgent(
       {
         ...options,
         fetchFn: fakeTokenExchange(
-          { permissions: BABYSITTER_AGENT_PERMISSIONS },
+          {
+            permissions: BABYSITTER_AGENT_PERMISSIONS,
+            ...(tokenLifetimeMs === undefined ? {} : {
+              expires_at: new Date(Date.now() + tokenLifetimeMs).toISOString(),
+            }),
+          },
           [],
         ),
         container,
@@ -1877,6 +1936,32 @@ Deno.test("a repair starts only the container runtime with babysitter-repair, ne
   });
 });
 
+Deno.test("a token restart reuses the scratch: the real container repair runs twice on one scratch, and the snapshot is removed after each session (Issue #4770)", async () => {
+  const host = repairHost();
+  const dirs = await repairDirs();
+  try {
+    const spawns: RuntimeSpawn[] = [];
+    const deps = fakeContainer(spawns, { host });
+    const input = {
+      baseDir: host.baseDir,
+      clone: dirs.dir,
+      scratch: dirs.scratch,
+      privateKeyPath: `${host.root}/app-key.pem`,
+      token: "ghs_restart_token",
+    };
+    await runBabysitterRepairContainer(input, deps);
+    await runBabysitterRepairContainer(input, deps);
+    assertEquals(spawns.length, 2);
+    await assertRejects(
+      () => Deno.stat(`${dirs.scratch}/workspace`),
+      Deno.errors.NotFound,
+    );
+  } finally {
+    await Deno.remove(host.root, { recursive: true });
+    await Deno.remove(dirs.root, { recursive: true });
+  }
+});
+
 Deno.test("a missing container runtime or worker image stops the repair before any spawn, as a capability gap (Issue #4770)", async () => {
   const cases = [
     {
@@ -1915,23 +2000,28 @@ Deno.test("an egress startup failure aborts fix before any repair spawn or push 
       const h = harness(stateDir);
       h.state.changes = true;
       const spawns: RuntimeSpawn[] = [];
-      const plan = repairPlan("egress-failure");
-      plan.egressEnforced = true;
-      h.deps.startAgent = productionAgent(privateKeyPath, {
-        ...fakeContainer(spawns),
-        buildPlan: () => Promise.resolve(plan),
-        startSidecar: () =>
-          Promise.reject(new Error("egress proxy startup failed")),
-        stopSidecar: () => Promise.resolve([]),
-      });
-      await assertRejects(
-        () => h.attempt(),
-        Error,
-        "egress proxy startup failed",
-      );
-      assertEquals(spawns.length, 0);
-      assertEquals(h.state.pushed, 0);
-      assertEquals(h.state.committed, false);
+      const host = repairHost();
+      try {
+        const plan = await repairPlan(host, "egress-failure");
+        plan.egressEnforced = true;
+        h.deps.startAgent = productionAgent(privateKeyPath, {
+          ...fakeContainer(spawns, { host }),
+          buildPlan: () => Promise.resolve(plan),
+          startSidecar: () =>
+            Promise.reject(new Error("egress proxy startup failed")),
+          stopSidecar: () => Promise.resolve([]),
+        });
+        await assertRejects(
+          () => h.attempt(),
+          Error,
+          "egress proxy startup failed",
+        );
+        assertEquals(spawns.length, 0);
+        assertEquals(h.state.pushed, 0);
+        assertEquals(h.state.committed, false);
+      } finally {
+        await Deno.remove(host.root, { recursive: true });
+      }
     });
   });
 });

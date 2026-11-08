@@ -3,7 +3,7 @@
   "chunk": "top-up-4770",
   "title": "top-up: babysitter credential path helpers",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4770",
-  "definition": "Credential paths the fleet PR babysitter's Claude review verifier must not read, and that the container launcher's key guard resolves: the App private key, the babysitter's entries under ~/.vibe-coder and the host credential locations, with normalised, symlink-resolved and missing-tail forms (Issue #4770)",
+  "definition": "Credential paths the fleet PR babysitter's Claude review verifier must not read, and that the container launcher's key guard resolves (the App key only, with the shared normalise and canonical helpers): the App private key, the babysitter's entries under ~/.vibe-coder and the host credential locations, with normalised, symlink-resolved and missing-tail forms (Issue #4770)",
   "status": "claimed",
   "sweptAt": "978fe051462aead703420a0769e8532423170e56",
   "paths": [

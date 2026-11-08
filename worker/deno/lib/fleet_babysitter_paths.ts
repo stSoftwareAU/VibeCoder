@@ -7,9 +7,10 @@ import { expandHome } from "./service_account_env.ts";
  * These name the paths the babysitter's Claude review verifier must not read:
  * the GitHub App private key, the babysitter's own entries under
  * `~/.vibe-coder`, and the host's credential locations. The container
- * launcher's key guard (`fleet_babysitter_container.ts`) resolves the same
- * paths. Each path is normalised, and symlink targets and missing tails are
- * resolved, so a spelling cannot reach a protected file under another name.
+ * launcher's key guard (`fleet_babysitter_container.ts`) covers the App key
+ * only, and resolves it with the shared normalise and canonical helpers. Each
+ * path is normalised, and symlink targets and missing tails are resolved, so a
+ * spelling cannot reach a protected file under another name.
  */
 
 /** Entries under `~/.vibe-coder` that belong to the babysitter, by name prefix. */

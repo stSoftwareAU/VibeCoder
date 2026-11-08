@@ -108,6 +108,11 @@ export interface BabysitterAppleEgress {
 export interface BabysitterContainerDeps {
   /** Is the runtime executable on PATH (default: babysitterRuntimeOnPath). */
   onPath: (runtime: string) => Promise<boolean>;
+  /**
+   * The worker checkout the repair snapshots, read by startBabysitterAgent
+   * (default: babysitterCheckoutDir()). Tests point it at a temp git repo.
+   */
+  checkoutDir?: () => string;
   /** Default: buildLaunchPlanForCommand(baseDir, containerName). */
   buildPlan: (
     baseDir: string,
@@ -530,7 +535,11 @@ export function buildBabysitterRunArgs(
 const REPAIR_CONFIG_SECRET_KEY =
   /(?:api_?key|private_?key|ssh_?key|token|password|secret)/i;
 
-/** Remove host-only secret values while keeping declared quality credential rules. */
+/**
+ * Remove host-only secret values while keeping declared quality credential
+ * rules. A secret-named key is dropped only when its value is a string, array
+ * or object; numeric and boolean limits such as `max_issue_body_tokens` stay.
+ */
 function sanitiseRepairConfig(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sanitiseRepairConfig);
   if (value === null || typeof value !== "object") return value;
@@ -538,11 +547,54 @@ function sanitiseRepairConfig(value: unknown): unknown {
   for (const [key, item] of Object.entries(value)) {
     if (key === "quality_credentials" || key === "qualityCredentials") {
       clean[key] = item;
-    } else if (!REPAIR_CONFIG_SECRET_KEY.test(key)) {
+    } else if (
+      REPAIR_CONFIG_SECRET_KEY.test(key) &&
+      (typeof item === "string" || Array.isArray(item) ||
+        (item !== null && typeof item === "object"))
+    ) {
+      continue;
+    } else {
       clean[key] = sanitiseRepairConfig(item);
     }
   }
   return clean;
+}
+
+/**
+ * Remove a workspace snapshot left under scratch by an earlier session of the
+ * same repair (a token restart reuses the scratch). A symlink is unlinked
+ * itself and never followed.
+ */
+async function clearLeftoverWorkspace(path: string): Promise<void> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  if (info.isSymlink) {
+    await Deno.remove(path);
+    return;
+  }
+  await Deno.remove(path, { recursive: true });
+}
+
+/** Remove the snapshot after its session; only a failure other than NotFound is logged. */
+async function removeRepairWorkspaceSnapshot(
+  path: string,
+  log: (message: string) => void,
+): Promise<void> {
+  try {
+    await Deno.remove(path, { recursive: true });
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    log(
+      `could not remove the repair workspace snapshot: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }
 
 /** Create a checkout snapshot containing tracked regular files and scrubbed config. */
@@ -552,6 +604,7 @@ async function createRepairWorkspaceSnapshot(
   plan: ContainerLaunchPlan,
 ): Promise<string> {
   const path = `${scratch}/workspace`;
+  await clearLeftoverWorkspace(path);
   await Deno.mkdir(path, { mode: 0o700 });
   const sourceConfig = plan.mounts.find((mount) =>
     mount.target.endsWith("/run-config")
@@ -1297,7 +1350,7 @@ export async function runBabysitterRepairContainer(
   const workspaceSnapshot = plan.mounts?.length
     ? await createRepairWorkspaceSnapshot(input.baseDir, input.scratch, plan)
     : undefined;
-
+  try {
   // Built and key-checked before any egress starts, so a bad plan never
   // starts a proxy.
   const planArgs = buildBabysitterRunArgs(plan, {
@@ -1347,5 +1400,10 @@ export async function runBabysitterRepairContainer(
     return { containerName };
   } finally {
     await runTeardown(teardown, log, input.token);
+  }
+  } finally {
+    if (workspaceSnapshot) {
+      await removeRepairWorkspaceSnapshot(workspaceSnapshot, log);
+    }
   }
 }
