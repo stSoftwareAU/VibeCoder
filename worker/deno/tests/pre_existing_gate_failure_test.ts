@@ -18,6 +18,7 @@ import {
   failedChecks,
   normaliseGateOutputLines,
 } from "../lib/baseline_gate.ts";
+import { normaliseLogExcerpt } from "../lib/auto_fix_attempt_tracker.ts";
 
 const RED =
   "repo check: workflows must carry one version comment everywhere\n" +
@@ -58,6 +59,100 @@ Deno.test("normaliseGateOutputLines - drops blank lines, timing lines and durati
     "check failed in <duration>",
     "indented detail",
   ]);
+});
+
+Deno.test("normaliseGateOutputLines - compact Deno durations compare as pre-existing", () => {
+  const baselineOutput = "FAILED | 17451 passed | 2 failed (1m43s)";
+  const currentOutput = "FAILED | 17451 passed | 2 failed (2m14s)";
+  const baselineLines = normaliseGateOutputLines(baselineOutput);
+  const currentLines = normaliseGateOutputLines(currentOutput);
+
+  assertEquals(baselineLines, [
+    "FAILED | 17451 passed | 2 failed (<duration>)",
+  ]);
+  assertEquals(currentLines, baselineLines);
+
+  const decision = decidePreExistingGateFailure(
+    { passed: false, failedChecks: [check("deno tests", baselineOutput)] },
+    [check("deno tests", currentOutput)],
+  );
+  assertEquals(decision.preExisting, true);
+  assertEquals(decision.reason, "pre_existing");
+  assertEquals(decision.newLines, []);
+});
+
+Deno.test("normaliseGateOutputLines - changed failure counts and diagnostics remain new output", () => {
+  const baselineOutput =
+    "FAILED | 17451 passed | 2 failed (1m43s)\nerror: test A";
+  const currentOutput =
+    "FAILED | 17451 passed | 3 failed (2m14s)\nerror: test B";
+  const decision = decidePreExistingGateFailure(
+    { passed: false, failedChecks: [check("deno tests", baselineOutput)] },
+    [check("deno tests", currentOutput)],
+  );
+
+  assertEquals(decision.preExisting, false);
+  assertEquals(decision.reason, "new_output");
+  assertEquals(decision.newLines, [
+    "deno tests: FAILED | 17451 passed | 3 failed (<duration>)",
+    "deno tests: error: test B",
+  ]);
+});
+
+Deno.test("normaliseGateOutputLines - compound durations and existing formats normalise", () => {
+  const pairs: Array<[string, string]> = [
+    ["test finished (1h2m3s)", "test finished (4h5m6s)"],
+    ["test finished (1h 2m 3s)", "test finished (4h 5m 6s)"],
+    ["test finished (2m14s)", "test finished (3m21s)"],
+    ["test finished (2m 14s)", "test finished (3m 21s)"],
+    ["test finished in 12.4s", "test finished in 18.6s"],
+    ["test finished in 12,4ms", "test finished in 18,6ms"],
+    ["test finished in 12µs", "test finished in 18µs"],
+    ["test finished in 12us", "test finished in 18us"],
+    ["test finished in 12ns", "test finished in 18ns"],
+    ["test finished in 2m", "test finished in 3m"],
+  ];
+  for (const [baseline, current] of pairs) {
+    assertEquals(
+      normaliseGateOutputLines(baseline),
+      normaliseGateOutputLines(current),
+      `${baseline} vs ${current}`,
+    );
+  }
+});
+
+Deno.test("normaliseGateOutputLines - duration matching handles hostile digits and whitespace", () => {
+  const digitRun = "9".repeat(50000);
+  const whitespaceRun = "1m ".repeat(20000) + "x";
+
+  assertEquals(normaliseGateOutputLines(`${digitRun}!`), [`${digitRun}!`]);
+  const normalisedWhitespace = normaliseGateOutputLines(whitespaceRun);
+  assertEquals(normalisedWhitespace.length, 1);
+  assertEquals(normalisedWhitespace[0]?.endsWith("x"), true);
+});
+
+Deno.test("normalisers agree that overlapping duration formats are volatile", () => {
+  const pairs: Array<[string, string]> = [
+    [
+      "FAILED | 17451 passed | 2 failed (1m43s)",
+      "FAILED | 17451 passed | 2 failed (2m14s)",
+    ],
+    ["finished (1h2m3s)", "finished (4h5m6s)"],
+    ["finished (2m 14s)", "finished (3m 21s)"],
+    ["finished in 12.4s", "finished in 18.6s"],
+  ];
+  for (const [baseline, current] of pairs) {
+    assertEquals(
+      normaliseGateOutputLines(baseline),
+      normaliseGateOutputLines(current),
+      `baseline gate: ${baseline} vs ${current}`,
+    );
+    assertEquals(
+      normaliseLogExcerpt(baseline),
+      normaliseLogExcerpt(current),
+      `auto-fix tracker: ${baseline} vs ${current}`,
+    );
+  }
 });
 
 Deno.test("normaliseGateOutputLines - masks secrets so a cached baseline compares with a live run", () => {

@@ -56,7 +56,9 @@ fake `deno` runner in a temporary git repository.
   (`diff.renames=bogus`), exact snapshot contents, `isUnsafePath` (now exported)
   for every branch, a nested repository directory refused by `restoreTree`, a
   stray file that cannot be removed (OS message warned, other files still
-  restored) and one that has already gone (silent). Hand-applied mutants
+  restored) and one that has already gone (silent). The permissions test uses
+  `id -u` to detect root under the standard Deno test permissions; root still
+  cannot exercise the directory permission failure. Hand-applied mutants
   (negated `NotFound` check, negated message ternary, dropped `!run.ok` /
   `code !== 0` operands, `isUnsafePath` returning undefined) each turn a test
   red.
@@ -69,9 +71,10 @@ fake `deno` runner in a temporary git repository.
 - Red-check: with the `restoreTree` call in `runDeno` disabled, three of the
   five guard tests fail (stray file stays, fixture stays rewritten, deleted file
   stays missing); restored afterwards.
-- `./quality.sh` on the final head: all stages pass except
-  `tests/merge_fast_checks_credentials_4705_test.ts`, which fails because this
-  host's proxy environment variables appear in the expected argv; it does not
-  touch the mutation code.
+- CI repair: `deno task test tests/mutation_tree_guard_test.ts` passes all 12
+  tests with the standard permissions. The local quality gate encountered a
+  Deno permissions pledge panic in the parallel suite and a Checkov timeout.
+  Formatting, lint, type, completeness and Markdown checks passed. The sandbox
+  also refused `/bin/ps` during the shard's process tests.
 - Docs: `docs/mutation-check.md` gains a paragraph on the restore. Twinned
   copies: none found.

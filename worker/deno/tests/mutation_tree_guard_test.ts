@@ -328,7 +328,9 @@ Deno.test("Issue #4905 - restoreTree refuses a nested repository directory and l
 });
 
 Deno.test("Issue #4905 - restoreTree warns with the OS message when a stray file cannot be removed, and carries on", async () => {
-  if (Deno.uid() === 0) return; // root ignores directory permissions
+  const id = await new Deno.Command("id", { args: ["-u"] }).output();
+  assert(id.success, "id -u must succeed");
+  if (new TextDecoder().decode(id.stdout).trim() === "0") return; // root ignores directory permissions
   await withRepo({ "a.txt": "a\n" }, async (repo) => {
     const before = await snapshotTree(repo);
     assert(before !== null);
