@@ -3357,17 +3357,13 @@ Deno.test("repair prompt names the summary for the PR's issue", () => {
   );
   assertStringIncludes(
     prompt,
-    "this PR's is docs/archive/pr-summaries/pr-summary-2453.md",
+    "this PR's is docs/archive/pr-summaries/pr-summary-2453.md: rewrite it in the same fix so every claim, count and result matches the pushed head",
   );
   assertStringIncludes(
     prompt,
     "Other summaries, including any the base merge brought in, belong to the PRs that wrote them.",
   );
   assert(!prompt.includes("pr-summary-<issue>.md"));
-  assertStringIncludes(
-    prompt,
-    "Rewrite it in the same fix so every claim, count and result matches the pushed head",
-  );
 });
 
 Deno.test("repair prompt gives generic summary guidance without an issue number", () => {
@@ -3382,7 +3378,7 @@ Deno.test("repair prompt gives generic summary guidance without an issue number"
   assert(!prompt.includes("<issue>"));
   assertStringIncludes(
     prompt,
-    "Rewrite it in the same fix so every claim, count and result matches the pushed head",
+    "rewrite this PR's summary in the same fix so every claim, count and result matches the pushed head",
   );
 });
 
@@ -3922,17 +3918,19 @@ Deno.test("every repair rewrites CI-checked per-PR summary claims for the pushed
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
-    assertStringIncludes(prompt, "per-PR summary");
-    assertStringIncludes(
-      prompt,
-      "Rewrite it in the same fix so every claim, count and result matches the pushed head",
-    );
-    assertStringIncludes(
-      prompt,
-      "instead of adding a follow-up note beside the old text",
-    );
-    assert(!prompt.includes("update it to cover your change"));
+    for (const issue of [null, 2453]) {
+      const prompt = buildRepairPrompt(why, 1, "owner/repo", issue, "");
+      assertStringIncludes(prompt, "per-PR summary");
+      assertStringIncludes(
+        prompt,
+        "so every claim, count and result matches the pushed head",
+      );
+      assertStringIncludes(
+        prompt,
+        "instead of adding a follow-up note beside the old text",
+      );
+      assert(!prompt.includes("cover your change"));
+    }
   }
 });
 
