@@ -1,4 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
   BabysitterFailure,
   babysitterRetryDelayMs,
@@ -13,6 +14,17 @@ import {
   saveBabysitterRetryState,
   sharedBabysitterAttemptCount,
 } from "../lib/babysitter_retry_state.ts";
+
+Deno.test("babysitter classifies a missing ShellCheck gate as infrastructure", () => {
+  assertEquals(
+    classifyBabysitterFailure(
+      new PrePushGateInfrastructureError(
+        "ShellCheck is required by repository CI but could not be found",
+      ),
+    ),
+    "infrastructure",
+  );
+});
 
 Deno.test("babysitter retry state migrates a legacy attempt to a bounded retry", async () => {
   const dir = await Deno.makeTempDir();

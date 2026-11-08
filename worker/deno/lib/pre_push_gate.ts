@@ -278,7 +278,7 @@ const SHELLCHECK_ACTION_SEVERITIES = ["error", "warning", "info", "style"];
  * the worker syncs into Bash repositories). Only `scandir: .` and `severity`
  * are understood; any other input, a `SHELLCHECK_OPTS` override or another
  * ShellCheck action is an unsupported policy, never an implicit pass. The
- * action scans more extensions than `.sh`; the gate checks the `.sh` subset.
+ * action's file selection is applied by the gate.
  */
 function shellcheckActionFlags(
   text: string,
@@ -402,6 +402,16 @@ export async function repoShellcheckPolicy(
     const commands = runSteps.flatMap(executableShellCommands).filter(
       isShellcheckInvocation,
     );
+    if (
+      (actionFlags.value.length > 0 || commands.length > 0) &&
+      /SHELLCHECK_OPTS/.test(text)
+    ) {
+      return {
+        ok: false,
+        error:
+          `unsupported ShellCheck action option SHELLCHECK_OPTS in ${path}`,
+      };
+    }
     if (commands.length === 0) continue;
     if (
       /^\s*working-directory\s*:\s*(?!["']?\.["']?\s*(?:#.*)?$)/m.test(text)
@@ -1282,8 +1292,60 @@ const defaultShellcheckVersionProbe: ShellcheckVersionProbe = async (
 /** Whether a changed path can alter what the repository's ShellCheck CI checks. */
 function touchesShellcheckSurface(changed: readonly string[]): boolean {
   return changed.some((p) =>
-    p.endsWith(".sh") || SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "")
+    /\.(?:sh|bash|ksh|zsh|shlib)$/.test(p) ||
+    ACTION_SHELL_NAMES.has(p.split("/").at(-1) ?? "") ||
+    !p.split("/").at(-1)?.includes(".") ||
+    SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "")
   );
+}
+
+const ACTION_SHELL_NAMES = new Set([
+  ".bashrc",
+  "bashrc",
+  ".bash_aliases",
+  ".bash_completion",
+  ".bash_login",
+  ".bash_logout",
+  ".bash_profile",
+  "bash_profile",
+  "suid_profile",
+  ".zlogin",
+  "zlogin",
+  ".zlogout",
+  "zlogout",
+  ".zprofile",
+  "zprofile",
+  ".zsenv",
+  "zsenv",
+  ".zshrc",
+  "zshrc",
+  ".profile",
+  "profile",
+]);
+
+async function actionShellcheckFile(
+  root: string,
+  path: string,
+  info: Deno.FileInfo,
+): Promise<boolean> {
+  const name = path.split("/").at(-1)!;
+  if (
+    path.split("/").includes(".git") || path.endsWith(".go") || name === "mvnw"
+  ) return false;
+  if (
+    /\.(?:sh|bash|ksh|zsh|shlib)$/.test(name) || ACTION_SHELL_NAMES.has(name)
+  ) return true;
+  if (name.includes(".") || !((info.mode ?? 0) & 0o111)) return false;
+  const file = await Deno.open(`${root}/${path}`, { read: true });
+  try {
+    const bytes = new Uint8Array(4096);
+    const count = await file.read(bytes);
+    return /^#! *\/[^ ]*\/(?:env *)?[abk]*sh/.test(
+      new TextDecoder().decode(bytes.subarray(0, count ?? 0)).split("\n")[0]!,
+    );
+  } finally {
+    file.close();
+  }
 }
 
 /**
@@ -1329,29 +1391,19 @@ export async function runAffectedShellcheckChecks(opts: {
       SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "") ||
       shellcheckPolicy.value?.configFiles.includes(p)
     ) || shellcheckWorkflowChanged;
-  const shellcheckFiles = shellcheckPolicy.value &&
-      (shellcheckTouchedConfigs || opts.changed.some((p) => p.endsWith(".sh")))
-    ? (shellcheckTouchedConfigs
-      ? opts.tracked.filter((p) => p.endsWith(".sh"))
-      : opts.changed.filter((p) => p.endsWith(".sh")))
+  const shellcheckFiles = shellcheckPolicy.value
+    ? (shellcheckTouchedConfigs ? opts.tracked : opts.changed)
     : [];
-  if (shellcheckPolicy.value && shellcheckFiles.length > 0) {
-    for (const path of shellcheckPolicy.value.configFiles) {
-      try {
-        await Deno.readTextFile(`${opts.cwd}/${path}`);
-      } catch (error) {
-        return infrastructureFail(
-          `cannot read ShellCheck configuration ${path}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-    }
-  }
   const existingShellcheckFiles: string[] = [];
   for (const path of shellcheckFiles) {
     try {
-      if ((await Deno.stat(`${opts.cwd}/${path}`)).isFile) {
+      const info = await Deno.lstat(`${opts.cwd}/${path}`);
+      if (
+        info.isFile && !info.isSymlink &&
+        (shellcheckPolicy.value?.version === null
+          ? await actionShellcheckFile(opts.cwd, path, info)
+          : path.endsWith(".sh"))
+      ) {
         existingShellcheckFiles.push(path);
       }
     } catch (error) {
@@ -1361,6 +1413,25 @@ export async function runAffectedShellcheckChecks(opts: {
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
+  }
+  if (shellcheckPolicy.value && existingShellcheckFiles.length > 0) {
+    for (const path of shellcheckPolicy.value.configFiles) {
+      try {
+        const info = await Deno.lstat(`${opts.cwd}/${path}`);
+        if (!info.isFile || info.isSymlink) {
+          return infrastructureFail(
+            `cannot read ShellCheck configuration ${path}: not a regular file`,
+          );
+        }
+        await Deno.readTextFile(`${opts.cwd}/${path}`);
+      } catch (error) {
+        return infrastructureFail(
+          `cannot read ShellCheck configuration ${path}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
     }
   }
   let shellcheckBinary: string | null = null;

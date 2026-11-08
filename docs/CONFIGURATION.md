@@ -5169,10 +5169,11 @@ The hook runs two stages:
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
    - `shellcheck` on changed `.sh` files when a tracked workflow contains the
-     supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or a
+     supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or on
+     the action's named shell files and executable extensionless shell scripts for a
      `ludeeus/action-shellcheck` step (the shape the worker syncs into Bash
      repositories) that sets only `scandir: .` and `severity`, which the gate
-     runs as `--severity=<level>` over the `.sh` files. The gate carries the
+     runs as `--severity=<level>`. The gate carries the
      workflow's options (including exclusions, an explicit shell dialect and
      value-taking options such as `-S warning` or `--enable all`) and runs from
      the repository root. It selects the nearest tracked `.shellcheckrc` or
@@ -5180,15 +5181,15 @@ The hook runs two stages:
      configured `--rcfile`; absent a repository config, `--norc` prevents
      worker HOME, XDG and external ancestor settings from changing the result.
      A changed ShellCheck workflow or changed or deleted config rechecks the
-     remaining tracked `.sh` files; deleted scripts are omitted. For a `find` policy the
+     remaining tracked files in the policy's scope; deleted scripts and symlinks
+     are omitted. A symlinked config is refused. For a `find` policy the
      gate checks the available binary against the version declared by CI
      before running it (an action-managed ShellCheck declares none). A policy
      the gate cannot read (an unsupported command shape, other action input,
-     delegated gate or action), an unreadable config, or an unavailable or
+     delegated gate or action, or `SHELLCHECK_OPTS` in that workflow), an unreadable config, or an unavailable or
      mismatched tool is an incomplete infrastructure result, never a
-     successful validation, but only for a push that changes a `.sh` file, a
-     ShellCheck config or a ShellCheck workflow; any other push has nothing for ShellCheck
-     to check and is not refused. A repository with no CI ShellCheck invocation
+     successful validation, but only for a push that changes a possible shell
+     script, a ShellCheck config or a ShellCheck workflow. A repository with no CI ShellCheck invocation
      gets no ShellCheck check. The same validation runs before the PR repair
      processors (CI fix, review feedback, spelling and merge conflict) publish
      a repair through `commitAndPushPending`, including repositories without

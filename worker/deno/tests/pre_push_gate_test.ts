@@ -15,6 +15,7 @@ import {
   type PrePushGit,
   repoCiRunsCspell,
   repoShellcheckPolicy,
+  runAffectedShellcheckChecks,
   runPrePushGate,
   workflowRunsCspell,
 } from "../lib/pre_push_gate.ts";
@@ -249,6 +250,148 @@ const SHELLCHECK_WORKFLOW = (
 
 const SYNCED_SHELLCHECK_WORKFLOW =
   WORKFLOW_SPECS.find((spec) => spec.id === "shellcheck")!.template;
+
+Deno.test("ShellCheck policy rejects inherited options for action and find", async () => {
+  const root = await Deno.makeTempDir();
+  const path = ".github/workflows/check.yml";
+  try {
+    await Deno.mkdir(`${root}/.github/workflows`, { recursive: true });
+    for (
+      const body of [
+        SYNCED_SHELLCHECK_WORKFLOW + "\nenv:\n  SHELLCHECK_OPTS: -e SC2086\n",
+        SHELLCHECK_WORKFLOW("").replace(
+          "- run: |",
+          "- env:\n          SHELLCHECK_OPTS: -e SC2086\n        run: |",
+        ),
+      ]
+    ) {
+      await Deno.writeTextFile(`${root}/${path}`, body);
+      const result = await repoShellcheckPolicy(root, [path]);
+      assert(!result.ok);
+      assert(result.error.includes("SHELLCHECK_OPTS"));
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("ShellCheck action checks its scripts and skips symlinks on change and recheck", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await Deno.mkdir(`${clone}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/.github/workflows/check.yml`,
+      SYNCED_SHELLCHECK_WORKFLOW,
+    );
+    await Deno.writeTextFile(`${clone}/util.bash`, "echo $1\n");
+    await Deno.writeTextFile(
+      `${clone}/deploy`,
+      "#!/usr/bin/env bash\necho $1\n",
+      { mode: 0o755 },
+    );
+    await Deno.chmod(`${clone}/deploy`, 0o755);
+    await Deno.writeTextFile(`${root}/outside`, "echo $1\n");
+    await Deno.symlink(`${root}/outside`, `${clone}/x.sh`);
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-qm", "scripts");
+    const tracked = [
+      ".github/workflows/check.yml",
+      "util.bash",
+      "deploy",
+      "x.sh",
+    ];
+    for (
+      const changed of [["util.bash", "deploy", "x.sh"], [".shellcheckrc"]]
+    ) {
+      const seen: string[] = [];
+      const result = await runAffectedShellcheckChecks({
+        cwd: clone,
+        changed,
+        tracked,
+        ...stubShellcheck(),
+        runner: recordingRunner(() => false, seen),
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assert(seen.some((c) => c.includes("util.bash")));
+      assert(seen.some((c) => c.includes("deploy")));
+      assert(!seen.some((c) => c.includes("x.sh")));
+    }
+    const seen: string[] = [];
+    const pushed = await runPrePushGate({
+      cwd: clone,
+      stdin: prePushInput(await git(clone, "rev-parse", "HEAD")),
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: recordingRunner(() => false, seen),
+    });
+    assert(pushed.ok, pushed.ok ? "" : pushed.error.message);
+    assert(seen.some((c) => c.includes("util.bash")));
+    assert(seen.some((c) => c.includes("deploy")));
+    assert(!seen.some((c) => c.includes("x.sh")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate skips committed script symlinks on change and config recheck", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await commitShellcheckFiles(clone, { "real.sh": "#!/bin/sh\necho ok\n" });
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await Deno.writeTextFile(`${root}/outside`, "echo $1\n");
+    await Deno.symlink(`${root}/outside`, `${clone}/x.sh`);
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-qm", "symlink");
+    for (const recheck of [false, true]) {
+      if (recheck) {
+        await git(clone, "push", "-q", "origin", "HEAD:main");
+        await Deno.writeTextFile(`${clone}/.shellcheckrc`, "disable=SC2086\n");
+        await git(clone, "add", "-A");
+        await git(clone, "commit", "-qm", "config");
+      }
+      const seen: string[] = [];
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin: prePushInput(await git(clone, "rev-parse", "HEAD")),
+        preFlightCommands: [],
+        ...stubShellcheck(),
+        runner: recordingRunner(() => false, seen),
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assert(!seen.some((c) => c.includes("x.sh")));
+      if (recheck) assert(seen.some((c) => c.includes("real.sh")));
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("ShellCheck refuses a symlinked configuration without reading its target", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await commitShellcheckFiles(clone, { "real.sh": "#!/bin/sh\necho ok\n" });
+    await Deno.writeTextFile(`${root}/outside`, "disable=SC2086\n");
+    await Deno.symlink(`${root}/outside`, `${clone}/.shellcheckrc`);
+    const seen: string[] = [];
+    const result = await runAffectedShellcheckChecks({
+      cwd: clone,
+      changed: ["real.sh"],
+      tracked: [
+        ".github/workflows/validate-scripts.yml",
+        "real.sh",
+        ".shellcheckrc",
+      ],
+      ...stubShellcheck(),
+      runner: recordingRunner(() => false, seen),
+    });
+    assert(!result.ok);
+    assert(result.error.message.includes("not a regular file"));
+    assertEquals(seen, []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 async function commitShellcheckFiles(
   clone: string,

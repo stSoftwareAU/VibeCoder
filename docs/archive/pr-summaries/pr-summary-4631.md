@@ -26,17 +26,20 @@ Version bump: none; no version file changed.
   `find . -name "*.sh" -type f -exec shellcheck … {} +` policy and the
   `ludeeus/action-shellcheck` step the worker syncs into Bash repositories
   (`scandir: .` and `severity` only, run as `--severity=<level>`; any other
-  input or a `SHELLCHECK_OPTS` override is unsupported). Discovery checks
+  input or a workflow-level, job-level or step-level `SHELLCHECK_OPTS` override
+  is unsupported). The action policy selects its named shell files and
+  executable extensionless shell shebangs, with its default exclusions; the
+  find policy selects `.sh` files. Symlinks are not execution targets, and a
+  symlinked configuration fails closed. Discovery checks
   executable commands, including wrapped invocations, excluding logs, installation
   arguments, comments and script path arrays. Unsupported wrappers fail closed.
   YAML block headers accept trailing comments.
 - Value-taking options (`-e -s -S -o -i -P -f -W` and their long forms,
   including `--opt=value` and attached `-Swarning`) consume their value instead
   of being read as positional arguments.
-- A policy the gate cannot read fails a push only when it changes a `.sh` file,
-  a ShellCheck config or a workflow that invokes ShellCheck. Any other push
-  has nothing to check, so an unsupported workflow cannot make a repository
-  unpublishable.
+- A policy the gate cannot read fails a push when it changes a possible shell
+  script, a ShellCheck config or a workflow that invokes ShellCheck. Unrelated
+  pushes do not fail solely because of an unsupported workflow.
 - The ShellCheck version probe is injectable (`readShellcheckVersion`, beside
   `findShellcheck`). An action-managed policy declares no version, so the probe
   result is not compared.
@@ -48,6 +51,8 @@ Version bump: none; no version file changed.
   deleted scripts. Unsupported policy, delegation, missing tools and version
   mismatches return incomplete infrastructure results rather than success.
   ShellCheck execution failures propagate the pre-flight result.
+  The babysitter classifies structured gate infrastructure errors as
+  infrastructure, preserving its substantive repair attempt budget.
 - Opt-in, not blanket: `commitAndPushPending` Step 1b runs only when a
   pre-flight spec is passed, as before. The four PR-repair processors pass
   `resolveRepairPreFlightSpec`, which yields
@@ -97,7 +102,10 @@ all publication paths call the same implementation.
   in a repo with the synced template, an unsupported action or a delegating
   script, and a script push in the unsupported case is still refused. The actual
   `WORKFLOW_SPECS` template is the fixture. Flagless find commands are checked,
-  wrapped invocations are refused, and an unrelated workflow change passes. Real
+  wrapped invocations are refused, and an unrelated workflow change passes.
+  Action-selected `.bash` and executable shebang files are checked, script
+  symlinks are skipped on changes and config rechecks, and inherited
+  `SHELLCHECK_OPTS` is rejected for both policy forms. Real
   diagnostics (the actual repository workflow, dialect and exclusions, and a
   later edit invalidating a clean result) live in
   `worker/deno/tests/shellcheck_gate_integration_test.ts`.
@@ -107,7 +115,8 @@ all publication paths call the same implementation.
   its commit. Both repair entry points block with a missing binary, then
   revalidate after tool recovery and accept corrected content. All but the
   empty-input CLI test need the host ShellCheck. The entire suite is in the
-  integration manifest and fails explicitly if the tool is unavailable.
+  integration manifest and fails explicitly if the tool is unavailable. The
+  babysitter missing-tool case also asserts its infrastructure classification.
 - Call sites: `worker/deno/tests/pr_round_repo_formatters_test.ts` (feedback and
   CI fix), `worker/deno/tests/pr_merge_conflict_processor_test.ts` and
   `worker/deno/tests/pr_spelling_processor_test.ts` assert the spec each
@@ -125,10 +134,6 @@ all publication paths call the same implementation.
   unsupported policy → passes (three non-shell tests); action policy with `null`
   version → probe not compared (synced-template run); `find` policy with a
   mismatched version → refused (mismatch test).
-- Existing tests that reached the changed paths still pass: 335 tests across
-  `git_push*`, `commit_and_push_pending`, the completion pre-push gate, pre-push
-  CLI and hook, gate retry, babysitter, quality gate and the integration
-  manifest.
 - The obsolete unit-suite behaviour conditionally skipped real-binary cases;
   those cases remain required in the integration manifest. Coverage is in
   `shellcheck_gate_integration_test.ts::runPrePushGate: a changed shell script is blocked through git_push with the actual repository workflow`
@@ -138,5 +143,10 @@ all publication paths call the same implementation.
   use `workflow_definitions.ts` directly, covered by
   `pre_push_gate_test.ts::repoShellcheckPolicy: the worker's synced ludeeus template is a supported policy`
   and `pre_push_gate_test.ts::runPrePushGate: a non-shell push is not refused in a repo with the worker's synced ludeeus template`.
+- The action's former `.sh`-only selection is obsolete; its other named shell
+  files and executable extensionless shell scripts remain checked, while
+  symlinks stay excluded. Coverage:
+  `pre_push_gate_test.ts::ShellCheck action checks its scripts and skips symlinks on change and recheck`
+  and `pre_push_gate_test.ts::runPrePushGate skips committed script symlinks on change and config recheck`.
 - The manifest classifier's required-tool rule is covered by
   `integration_source_classifier_test.ts::integration classifier recognises a required real ShellCheck`.

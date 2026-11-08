@@ -61,7 +61,7 @@ async function child(
   source: string,
   cwd: string,
   path: string,
-): Promise<{ ok: boolean; message?: string }> {
+): Promise<{ ok: boolean; message?: string; blockerClass?: string }> {
   const cacheInfo = await new Deno.Command(Deno.execPath(), {
     args: ["info", "--json"],
     stdout: "piped",
@@ -188,12 +188,20 @@ for (const entry of ["commitAndPushPending", "validateAndCommit"]) {
               `${repoRoot}worker/deno/commands/fleet_pr_babysitter.ts`,
             )
           };
+           import { classifyBabysitterFailure } from ${
+            JSON.stringify(
+              `${repoRoot}worker/deno/lib/babysitter_retry_state.ts`,
+            )
+          };
            try { await validateAndCommit(Deno.cwd(), 4631, {login:"test",id:"1"}); console.log(JSON.stringify({ok:true})); }
-           catch (error) { console.log(JSON.stringify({ok:false, message:error.message})); }`;
+           catch (error) { console.log(JSON.stringify({ok:false, message:error.message, blockerClass:classifyBabysitterFailure(error)})); }`;
         await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
         const missing = await child(source, dir, tools);
         assertEquals(missing.ok, false);
         assertStringIncludes(missing.message!, "could not be found");
+        if (entry === "validateAndCommit") {
+          assertEquals(missing.blockerClass, "infrastructure");
+        }
         await Deno.symlink(shellcheckPath, `${tools}/shellcheck`);
         const diagnostic = await child(source, dir, tools);
         assertEquals(diagnostic.ok, false);
