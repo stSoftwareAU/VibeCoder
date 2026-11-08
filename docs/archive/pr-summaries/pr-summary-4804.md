@@ -76,7 +76,7 @@ advises `last:N` for timelines, which stays true; not edited.
 
 - Added
   `worker/deno/tests/work_on_content_integrity_truncated_history_4804_test.ts`
-  (11 tests at head, gate level): all-post-snapshot truncated window blocks and
+  (13 tests at head, gate level): all-post-snapshot truncated window blocks and
   escalates; window covering the snapshot with an untrusted editor among the
   newest three is judged and blocked (the bug's reproduction: under `last:100`
   it was invisible); same window all trusted proceeds; complete 3-edit history
@@ -84,7 +84,9 @@ advises `last:N` for timelines, which stays true; not edited.
   escalates; a trusted `work-on` re-add after the newest edit clears a truncated
   history; a re-add before the newest edit, an untrusted re-add and any re-add
   over an empty window do not; a stale cached timeline gets one live re-read;
-  the new reason does not suppress lower tiers (`suppressesLowerTiers`).
+  the new reason does not suppress lower tiers (`suppressesLowerTiers`); a stale
+  approval is reported once, not again by the uncached re-read; an unattributable
+  edit blocks even when the trusted list holds an empty login.
 - Added to `worker/deno/tests/issue_edit_actor_test.ts`: default query asks for
   `first:100`; 150 edits give the newest 100 with
   `bodyHistoryTruncated === true`; 3 edits give `false`; missing `totalCount`
