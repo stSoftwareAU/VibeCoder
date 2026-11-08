@@ -51,8 +51,8 @@ sequenceDiagram
 - Exit status 42 from `babysitter-repair` is a reported task failure and is a
   `code` failure; a missing runtime or image is `capability`; every other
   launcher failure is `infrastructure`. Codex stderr retry-after parsing is gone
-  with the Codex spawn, so a quota reset time is no longer carried into the retry
-  record; richer retry is the closed #4656's area.
+  with the Codex spawn, so a quota reset time is no longer carried into the
+  retry record; richer retry is the closed #4656's area.
 - Lock-renewal failure aborts an `AbortSignal` that kills the container by name,
   replacing `child.kill`.
 
@@ -84,49 +84,142 @@ Backend and CLI change; no visual surface changed.
 - Issue numbers cited: #4767: Build and launch the babysitter repair container
   from the worker's launch plan; #4769: Start the egress proxy for babysitter
   repair containers on Apple and docker/podman hosts; #4766: Babysitter repairs
-  choose their provider subscription-first, with DeepSeek as logged paid overflow;
-  #4656: Babysitter: recover temporary failures and continue PR reconciliation
-  after a repair push (closed); #4771: Prove headless Chromium launches in the
-  babysitter repair container (open, not delivered here).
-- Quality gate: `env -u HTTP_PROXY -u HTTPS_PROXY -u NO_PROXY -u http_proxy -u https_proxy -u no_proxy ./quality.sh < /dev/null`
-  returned `Result: PASSED (with skipped checks)` on the head before this summary
-  was committed. Skipped: config integration (no `.config.json`), Semgrep (registry
-  unreachable), Checkov (unavailable) and the release-tag ruleset check
-  (`api.github.com` unreachable).
+  choose their provider subscription-first, with DeepSeek as logged paid
+  overflow; #4656: Babysitter: recover temporary failures and continue PR
+  reconciliation after a repair push (closed); #4771: Prove headless Chromium
+  launches in the babysitter repair container (open, not delivered here).
+- Quality gate:
+  `env -u HTTP_PROXY -u HTTPS_PROXY -u NO_PROXY -u http_proxy -u https_proxy -u no_proxy ./quality.sh < /dev/null`
+  returned `Result: PASSED (with skipped checks)` on the head before this
+  summary was committed. Skipped: config integration (no `.config.json`),
+  Semgrep (registry unreachable), Checkov (unavailable) and the release-tag
+  ruleset check (`api.github.com` unreachable).
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Test: a repair spawns the container runtime with `babysitter-repair`. It never spawns `codex`, any host agent, or `quality.sh` on the host. — evidence: `worker/deno/tests/babysitter_fix_orchestration_test.ts::a repair starts only the container runtime with babysitter-repair, never codex, an agent or quality.sh (Issue #4770)` and `::a successful repair runs no host quality.sh or codex (Issue #4770)` — reviewer: met
-- **met** — Test: a missing runtime and a missing image each make `fix()` throw with the cause. No host agent runs and nothing is pushed. — evidence: `worker/deno/tests/babysitter_fix_orchestration_test.ts::a missing container runtime or worker image stops the repair before any spawn, as a capability gap (Issue #4770)` — reviewer: met
-- **met** — Test: a non-zero container exit throws and nothing is pushed. — evidence: `worker/deno/tests/babysitter_fix_orchestration_test.ts::a non-zero container exit fails the repair with its code, stderr and the rebuild hint, and pushes nothing (Issue #4770)` — reviewer: met
-- **met** — Setup test: setup runs the container preflight and installs no Codex. — evidence: `worker/deno/tests/fleet_pr_babysitter_setup_test.ts::setup entry point invokes the container preflight and does not install Codex` and `::setup runs the container preflight (runtime, then image) and installs no Codex` — reviewer: met
-- **met** — `git grep -n "fleet_babysitter_sandbox\|fleet_babysitter_codex\|ensureBabysitterCodex\|buildBabysitterSandboxArgs"` finds no hit outside `docs/archive/` and `docs/audits/`. — evidence: the grep command in Evidence returned no hits — reviewer: met
-- **met** — Tests show the GitHub App private key, host GitHub credential store, and other host credential paths are absent from the repair container's mounts and environment. Only the existing scoped short-lived agent token and the provider/declared quality credentials allowed by their existing transport contracts cross the boundary. — evidence: `worker/deno/tests/fleet_babysitter_container_4738_test.ts::the real repair plan mounts no gh credential, key or custom prompt path, and passes no GH_, GITHUB_ or SSH_ env (Issue #4770)`, `::repair mounts a tracked checkout snapshot and a scrubbed config while keeping declared quality credentials` and `worker/deno/tests/babysitter_fix_orchestration_test.ts::the repair container gets no App key, host credential mount or GitHub App env, only the base env and GH_TOKEN (Issue #4770)` — reviewer: met
-- **met** — No repository-controlled quality command is launched on the host, including checks added to `validateAndCommit` or pre-push hooks. Host orchestration retains locks, trusted git/commit/push and PR-body publication. — evidence: `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::validateAndCommit and push run no planted pre-commit, pre-push or fsmonitor`, `::repair resets agent-controlled filters, diff and SSH git config before host work` and `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix replaces agent-controlled git config before host publication (Issue #4770)` — reviewer: met
-- **met** — `./quality.sh` passes. — evidence: the gate run described in Evidence, `PASSED (with skipped checks)` — reviewer: partial — reason: the reviewer could not run the gate and saw it only through this summary; it was run here on the head with the host proxy variables unset, and it fails only without that unsetting, in `merge_fast_checks_credentials_4705_test.ts`, which this change does not touch
-- **unrequested** — exit status 42 for a reported task failure (`BABYSITTER_TASK_FAILURE_EXIT_CODE` in `worker/deno/commands/babysitter_repair.ts`) — reviewer: unrequested — reason: keeps the old code-versus-infrastructure attempt accounting that the deleted Codex stderr classifier provided
-- **unrequested** — tracked-files workspace snapshot, config scrub and fail-closed mount refusal in `worker/deno/lib/fleet_babysitter_container.ts` — reviewer: unrequested — reason: needed so the worker checkout's untracked files and live config are not exposed, for the credential-absence criterion
-- **unrequested** — host git hardening (`HOST_GIT_HARDENING_ARGS`, `runHardenedRepairGit`, `resetRepairCloneGitConfig`) — reviewer: unrequested — reason: the container can write the clone's `.git`, so the host's trusted commit and push needed hooks and config neutralised
-- **unrequested** — `AbortSignal` support, the `startLockRenewal` and `resetGitConfig` seams in `FixDeps`, and an injectable setup entry point — reviewer: unrequested — reason: replace `child.kill` on lock-renewal failure and make the setup preflight testable
-- **unrequested** — sweep-ledger changes (`top-up-4593.json` and `top-up-4664.json` deleted, `top-up-4770.json` added), the deleted `worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`, and docs edits in `docs/CONFIGURATION.md`, `docs/workflows/fleet-pr-babysitter-github-app.md` and `DESIGN-PRINCIPLES.md` — reviewer: unrequested — reason: the ledger gate treats a path with no file as stale, the fixture served only the deleted Codex CLI test, and the docs carried stale Codex wording
+- **met** — Test: a repair spawns the container runtime with
+  `babysitter-repair`. It never spawns `codex`, any host agent, or `quality.sh`
+  on the host. — evidence:
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::a repair starts only the container runtime with babysitter-repair, never codex, an agent or quality.sh (Issue #4770)`
+  and `::a successful repair runs no host quality.sh or codex (Issue #4770)` —
+  reviewer: met
+- **met** — Test: a missing runtime and a missing image each make `fix()` throw
+  with the cause. No host agent runs and nothing is pushed. — evidence:
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::a missing container runtime or worker image stops the repair before any spawn, as a capability gap (Issue #4770)`
+  — reviewer: met
+- **met** — Test: a non-zero container exit throws and nothing is pushed. —
+  evidence:
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::a non-zero container exit fails the repair with its code, stderr and the rebuild hint, and pushes nothing (Issue #4770)`
+  — reviewer: met
+- **met** — Setup test: setup runs the container preflight and installs no
+  Codex. — evidence:
+  `worker/deno/tests/fleet_pr_babysitter_setup_test.ts::setup entry point invokes the container preflight and does not install Codex`
+  and
+  `::setup runs the container preflight (runtime, then image) and installs no Codex`
+  — reviewer: met
+- **met** —
+  `git grep -n "fleet_babysitter_sandbox\|fleet_babysitter_codex\|ensureBabysitterCodex\|buildBabysitterSandboxArgs"`
+  finds no hit outside `docs/archive/` and `docs/audits/`. — evidence: the grep
+  command in Evidence returned no hits — reviewer: met
+- **met** — Tests show the GitHub App private key, host GitHub credential store,
+  and other host credential paths are absent from the repair container's mounts
+  and environment. Only the existing scoped short-lived agent token and the
+  provider/declared quality credentials allowed by their existing transport
+  contracts cross the boundary. — evidence:
+  `worker/deno/tests/fleet_babysitter_container_4738_test.ts::the real repair plan mounts no gh credential, key or custom prompt path, and passes no GH_, GITHUB_ or SSH_ env (Issue #4770)`,
+  `::repair mounts a tracked checkout snapshot and a scrubbed config while keeping declared quality credentials`
+  and
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::the repair container gets no App key, host credential mount or GitHub App env, only the base env and GH_TOKEN (Issue #4770)`
+  — reviewer: met
+- **met** — No repository-controlled quality command is launched on the host,
+  including checks added to `validateAndCommit` or pre-push hooks. Host
+  orchestration retains locks, trusted git/commit/push and PR-body publication.
+  — evidence:
+  `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::validateAndCommit and push run no planted pre-commit, pre-push or fsmonitor`,
+  `::repair resets agent-controlled filters, diff and SSH git config before host work`
+  and
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix replaces agent-controlled git config before host publication (Issue #4770)`
+  — reviewer: met
+- **met** — `./quality.sh` passes. — evidence: the gate run described in
+  Evidence, `PASSED (with skipped checks)` — reviewer: partial — reason: the
+  reviewer could not run the gate and saw it only through this summary; it was
+  run here on the head with the host proxy variables unset, and it fails only
+  without that unsetting, in `merge_fast_checks_credentials_4705_test.ts`, which
+  this change does not touch
+- **unrequested** — exit status 42 for a reported task failure
+  (`BABYSITTER_TASK_FAILURE_EXIT_CODE` in
+  `worker/deno/commands/babysitter_repair.ts`) — reviewer: unrequested — reason:
+  keeps the old code-versus-infrastructure attempt accounting that the deleted
+  Codex stderr classifier provided
+- **unrequested** — tracked-files workspace snapshot, config scrub and
+  fail-closed mount refusal in `worker/deno/lib/fleet_babysitter_container.ts` —
+  reviewer: unrequested — reason: needed so the worker checkout's untracked
+  files and live config are not exposed, for the credential-absence criterion
+- **unrequested** — host git hardening (`HOST_GIT_HARDENING_ARGS`,
+  `runHardenedRepairGit`, `resetRepairCloneGitConfig`) — reviewer: unrequested —
+  reason: the container can write the clone's `.git`, so the host's trusted
+  commit and push needed hooks and config neutralised
+- **unrequested** — `AbortSignal` support, the `startLockRenewal` and
+  `resetGitConfig` seams in `FixDeps`, and an injectable setup entry point —
+  reviewer: unrequested — reason: replace `child.kill` on lock-renewal failure
+  and make the setup preflight testable
+- **unrequested** — sweep-ledger changes (`top-up-4593.json` and
+  `top-up-4664.json` deleted, `top-up-4770.json` added), the deleted
+  `worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`, and docs
+  edits in `docs/CONFIGURATION.md`,
+  `docs/workflows/fleet-pr-babysitter-github-app.md` and `DESIGN-PRINCIPLES.md`
+  — reviewer: unrequested — reason: the ledger gate treats a path with no file
+  as stale, the fixture served only the deleted Codex CLI test, and the docs
+  carried stale Codex wording
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — every token restart failed because the snapshot directory already existed — evidence: `worker/deno/lib/fleet_babysitter_container.ts:555` — reason: fixed in this diff (leftover removed before creation and the snapshot removed after each session; tested through the real launcher)
-- **violation** — the fake plan lacked `mounts`, so the orchestration tests skipped the snapshot and mount refusal — evidence: `worker/deno/tests/fixtures/babysitter_container_fakes_4770.ts:92` — reason: fixed in this diff (real plan from `buildLaunchPlanForCommand`)
-- **violation** — `resetRepairCloneGitConfig` hard-coded an HTTPS URL and its own repo-name rule — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:924` — reason: fixed in this diff (uses `defaultRemoteUrl` and the clone's shared `isValidRepoName`; tested)
-- **violation** — `runHardenedRepairGit` nulled the host's global git config and so its credential helper — evidence: `worker/deno/commands/fleet_pr_babysitter.ts:901` — reason: fixed in this diff (only the hooks and fsmonitor flags remain; tested that the global config is still honoured)
-- **violation** — the task-failure test copied the classifier into the harness stub and stayed green without the production mapping — evidence: `worker/deno/tests/babysitter_fix_orchestration_test.ts:790` — reason: fixed in this diff (runs the real `startBabysitterAgent` with exit 42 and exit 1)
-- **violation** — removed tests were not all recorded — evidence: `docs/archive/pr-summaries/pr-summary-4770.md:1` — reason: fixed in this diff (see Test Plan)
-- **violation** — workflow doc said container exits never spend the budget and that retry-after parsing remained — evidence: `docs/workflows/fleet-pr-babysitter.md:449` — reason: fixed in this diff
-- **violation** — workflow doc misplaced the snapshot mount, and the C36 row said "Only" for what crosses the boundary — evidence: `docs/THREAT-MODEL.md:213` — reason: fixed in this diff (lists what `buildBabysitterRunArgs` keeps)
-- **violation** — stale doc comments about the key guard and the verifier boundary — evidence: `worker/deno/lib/fleet_babysitter_paths.ts:10` — reason: fixed in this diff
-- **violation** — Evidence lacked the issue-number list — evidence: `docs/archive/pr-summaries/pr-summary-4770.md:1` — reason: fixed in this diff
-- **clean** — Australian English; no hidden paths staged; no named test is absent; secrets are redacted before launcher errors are rethrown; the response file is always removed from the clone; moved path helpers keep their tests in `worker/deno/tests/fleet_babysitter_paths_test.ts`; every new export has a production reader or default; no `.github/workflows` change
+- **violation** — every token restart failed because the snapshot directory
+  already existed — evidence:
+  `worker/deno/lib/fleet_babysitter_container.ts:555` — reason: fixed in this
+  diff (leftover removed before creation and the snapshot removed after each
+  session; tested through the real launcher)
+- **violation** — the fake plan lacked `mounts`, so the orchestration tests
+  skipped the snapshot and mount refusal — evidence:
+  `worker/deno/tests/fixtures/babysitter_container_fakes_4770.ts:92` — reason:
+  fixed in this diff (real plan from `buildLaunchPlanForCommand`)
+- **violation** — `resetRepairCloneGitConfig` hard-coded an HTTPS URL and its
+  own repo-name rule — evidence:
+  `worker/deno/commands/fleet_pr_babysitter.ts:924` — reason: fixed in this diff
+  (uses `defaultRemoteUrl` and the clone's shared `isValidRepoName`; tested)
+- **violation** — `runHardenedRepairGit` nulled the host's global git config and
+  so its credential helper — evidence:
+  `worker/deno/commands/fleet_pr_babysitter.ts:901` — reason: fixed in this diff
+  (only the hooks and fsmonitor flags remain; tested that the global config is
+  still honoured)
+- **violation** — the task-failure test copied the classifier into the harness
+  stub and stayed green without the production mapping — evidence:
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts:790` — reason: fixed
+  in this diff (runs the real `startBabysitterAgent` with exit 42 and exit 1)
+- **violation** — removed tests were not all recorded — evidence:
+  `docs/archive/pr-summaries/pr-summary-4770.md:1` — reason: fixed in this diff
+  (see Test Plan)
+- **violation** — workflow doc said container exits never spend the budget and
+  that retry-after parsing remained — evidence:
+  `docs/workflows/fleet-pr-babysitter.md:449` — reason: fixed in this diff
+- **violation** — workflow doc misplaced the snapshot mount, and the C36 row
+  said "Only" for what crosses the boundary — evidence:
+  `docs/THREAT-MODEL.md:213` — reason: fixed in this diff (lists what
+  `buildBabysitterRunArgs` keeps)
+- **violation** — stale doc comments about the key guard and the verifier
+  boundary — evidence: `worker/deno/lib/fleet_babysitter_paths.ts:10` — reason:
+  fixed in this diff
+- **violation** — Evidence lacked the issue-number list — evidence:
+  `docs/archive/pr-summaries/pr-summary-4770.md:1` — reason: fixed in this diff
+- **clean** — Australian English; no hidden paths staged; no named test is
+  absent; secrets are redacted before launcher errors are rethrown; the response
+  file is always removed from the clone; moved path helpers keep their tests in
+  `worker/deno/tests/fleet_babysitter_paths_test.ts`; every new export has a
+  production reader or default; no `.github/workflows` change
 
 ## Test Plan
 
@@ -138,26 +231,72 @@ Backend and CLI change; no visual surface changed.
   `worker/deno/tests/fleet_babysitter_container_egress_4738_test.ts`,
   `worker/deno/tests/babysitter_repair_4738_test.ts` and
   `worker/deno/tests/fleet_pr_babysitter_setup_test.ts`.
-- Removed from `worker/deno/tests/fleet_babysitter_sandbox_test.ts` (file deleted): the nine `buildBabysitterSandboxArgs` and Codex-floor cases.
-  Removed functionality: `buildBabysitterSandboxArgs`, `codexVersionMeetsFloor`; their only caller was the host Codex spawn.
-  The 18 path-helper cases moved to `worker/deno/tests/fleet_babysitter_paths_test.ts`.
-- Removed from `worker/deno/tests/fleet_babysitter_codex_test.ts` (file deleted): all six cases.
-  Removed functionality: `ensureBabysitterCodex`; setup no longer installs Codex.
-- Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`: the five `spawnBabysitterAgent` cases.
-  Removed functionality: `spawnBabysitterAgent`; response-file reading stays covered by the kept `readAgentResponse` cases and the orchestration symlink-response tests.
-- Removed from `worker/deno/tests/fleet_babysitter_app_test.ts`: the three `babysitterAgentEnv` cases and `production repair forwards CONFIG_PATH and denies canonical credential targets`.
-  Removed functionality: `babysitterAgentEnv` and the Codex fixture (`worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`, deleted); the container's environment is asserted in the orchestration credential test. That CLI test also covered the ssh origin and the pending-open exit; the origin URL now follows `defaultRemoteUrl` (tested), and the pending-open case keeps unit coverage in `worker/deno/tests/fleet_babysitter_exchange_test.ts` and `worker/deno/tests/file_utils_test.ts`.
-- Removed from `worker/deno/tests/fleet_pr_babysitter_audit_test.ts`: `babysitter agent disables the inherited host audit journal`.
-  Removed functionality: the host Codex spawn's `VIBE_AUDIT_DISABLED` env; the container's env is asserted to carry no `VIBE_AUDIT_DIR`.
-- Removed from `worker/deno/tests/babysitter_fix_orchestration_test.ts`: the two agent-stderr tests and the `>= before + 300_000` retry-after assertion of `an empty agent diagnostic retries and a reported retry-after is honoured`.
-  Removed functionality: `forwardAgentStderr`, the Codex stderr scratch file and `CODEX_OUTPUT_ADAPTER` retry-after parsing.
-- Edited expectations: `exited with code 1` replaces `agent exited unsuccessfully`; a plain non-zero exit moves from `code` to `infrastructure`, and exit 42 stays `code`. Red check: removing the exit-42 mapping fails `container task failures spend substantive attempts while transient exits back off` and `a non-zero container exit keeps the retry record and the repair's real error`.
-- Red checks (break, red, restore): runtime check skipped; image check skipped; abort does not kill; failed abort-kill not logged; already-aborted refusal removed; rebuild hint removed; stderr cause dropped; `gh` mount drop removed; custom-prompt mount and env drops removed; hook-hardening flags emptied (planted pre-commit, pre-push and fsmonitor markers appear); `signal: options.signal` dropped; Apple-egress abort check dropped; snapshot cleanup reverted (the token-restart tests fail); the global-config override restored (`publication git keeps the host's global config, while a planted pre-commit hook still does not run` fails); exit-42 mapping removed.
-- Not red-checked: the `isValidRepoName` sharing and the numeric-limit config scrub (both have direct tests that exercise their inputs).
-- Callers checked for the new `startBabysitterAgent` contract: `fix()` is the only production caller; `babysitter_fix_orchestration_test.ts` and `fleet_babysitter_app_test.ts` call it. Twinned rule: the runtime and image refusal is one helper (`checkRuntimeAndImage`) used by the repair and the setup preflight.
-- Results on the head: `deno task test:unit` on the container, egress, orchestration, app, git-hardening, `fleet_pr_babysitter_test.ts` and `babysitter_repair_4738_test.ts` files passed (277 tests); the full gate result is in Evidence.
-- Docs read and updated: the container repair, credential-boundary and failure sections of `docs/workflows/fleet-pr-babysitter.md`, control C36 in `docs/THREAT-MODEL.md`, the key section of `docs/CONFIGURATION.md`, `docs/workflows/fleet-pr-babysitter-github-app.md` and the design principle in `DESIGN-PRINCIPLES.md`.
+- Removed from `worker/deno/tests/fleet_babysitter_sandbox_test.ts` (file
+  deleted): the nine `buildBabysitterSandboxArgs` and Codex-floor cases. Removed
+  functionality: `buildBabysitterSandboxArgs`, `codexVersionMeetsFloor`; their
+  only caller was the host Codex spawn. The 18 path-helper cases moved to
+  `worker/deno/tests/fleet_babysitter_paths_test.ts`.
+- Removed from `worker/deno/tests/fleet_babysitter_codex_test.ts` (file
+  deleted): all six cases. Removed functionality: `ensureBabysitterCodex`; setup
+  no longer installs Codex.
+- Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`: the five
+  `spawnBabysitterAgent` cases. Removed functionality: `spawnBabysitterAgent`;
+  response-file reading stays covered by the kept `readAgentResponse` cases and
+  the orchestration symlink-response tests.
+- Removed from `worker/deno/tests/fleet_babysitter_app_test.ts`: the three
+  `babysitterAgentEnv` cases and
+  `production repair forwards CONFIG_PATH and denies canonical credential targets`.
+  Removed functionality: `babysitterAgentEnv` and the Codex fixture
+  (`worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`, deleted);
+  the container's environment is asserted in the orchestration credential test.
+  That CLI test also covered the ssh origin and the pending-open exit; the
+  origin URL now follows `defaultRemoteUrl` (tested), and the pending-open case
+  keeps unit coverage in `worker/deno/tests/fleet_babysitter_exchange_test.ts`
+  and `worker/deno/tests/file_utils_test.ts`.
+- Removed from `worker/deno/tests/fleet_pr_babysitter_audit_test.ts`:
+  `babysitter agent disables the inherited host audit journal`. Removed
+  functionality: the host Codex spawn's `VIBE_AUDIT_DISABLED` env; the
+  container's env is asserted to carry no `VIBE_AUDIT_DIR`.
+- Removed from `worker/deno/tests/babysitter_fix_orchestration_test.ts`: the two
+  agent-stderr tests and the `>= before + 300_000` retry-after assertion of
+  `an empty agent diagnostic retries and a reported retry-after is honoured`.
+  Removed functionality: `forwardAgentStderr`, the Codex stderr scratch file and
+  `CODEX_OUTPUT_ADAPTER` retry-after parsing.
+- Edited expectations: `exited with code 1` replaces
+  `agent exited unsuccessfully`; a plain non-zero exit moves from `code` to
+  `infrastructure`, and exit 42 stays `code`. Red check: removing the exit-42
+  mapping fails
+  `container task failures spend substantive attempts while transient exits back off`
+  and
+  `a non-zero container exit keeps the retry record and the repair's real error`.
+- Red checks (break, red, restore): runtime check skipped; image check skipped;
+  abort does not kill; failed abort-kill not logged; already-aborted refusal
+  removed; rebuild hint removed; stderr cause dropped; `gh` mount drop removed;
+  custom-prompt mount and env drops removed; hook-hardening flags emptied
+  (planted pre-commit, pre-push and fsmonitor markers appear);
+  `signal: options.signal` dropped; Apple-egress abort check dropped; snapshot
+  cleanup reverted (the token-restart tests fail); the global-config override
+  restored
+  (`publication git keeps the host's global config, while a planted pre-commit hook still does not run`
+  fails); exit-42 mapping removed.
+- Not red-checked: the `isValidRepoName` sharing and the numeric-limit config
+  scrub (both have direct tests that exercise their inputs).
+- Callers checked for the new `startBabysitterAgent` contract: `fix()` is the
+  only production caller; `babysitter_fix_orchestration_test.ts` and
+  `fleet_babysitter_app_test.ts` call it. Twinned rule: the runtime and image
+  refusal is one helper (`checkRuntimeAndImage`) used by the repair and the
+  setup preflight.
+- Results on the head: `deno task test:unit` on the container, egress,
+  orchestration, app, git-hardening, `fleet_pr_babysitter_test.ts` and
+  `babysitter_repair_4738_test.ts` files passed (277 tests); the full gate
+  result is in Evidence.
+- Docs read and updated: the container repair, credential-boundary and failure
+  sections of `docs/workflows/fleet-pr-babysitter.md`, control C36 in
+  `docs/THREAT-MODEL.md`, the key section of `docs/CONFIGURATION.md`,
+  `docs/workflows/fleet-pr-babysitter-github-app.md` and the design principle in
+  `DESIGN-PRINCIPLES.md`.
 
 ### Deno regression avoided
 
-- Used Deno tasks and tooling for tests, lint, type checks and formatting; no Node tooling or manifest was added.
+- Used Deno tasks and tooling for tests, lint, type checks and formatting; no
+  Node tooling or manifest was added.
