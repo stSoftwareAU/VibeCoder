@@ -37,6 +37,8 @@ Version bump: `VERSION` is not changed by this PR.
   (including spaces before the full stop), plus the closing keywords the issue
   names. Recognising code-formatted or wrapped references is owned by #4808, not
   here.
+- `docs/CONFIGURATION.md` and `docs/INTERNALS.md` describe the linkage
+  isolation and the warning and gate reporting for files over the cap.
 
 ### Undiscoverable Facts
 
@@ -105,8 +107,8 @@ Backend only. `worker/deno/tests/repo_formatters_4129_test.ts` runs the real
 - Twinned copy of the linkage regex: the reviewer's `PART_OF_*` in
   `.claude/skills/review-fleet-prs/scripts/test_change_policy.ts`, now pinned to
   the formatter by the drift test above.
-- `./quality.sh`: lint, type check, fmt, markdownlint and semgrep passed; the
-  deno test step reported 6 failures (`tests/pr_maintenance_command_test.ts` ×5,
-  `tests/merge_fast_checks_credentials_4705_test.ts` ×1). The same 6 fail on an
-  untouched checkout of the base commit (28 passed, 6 failed there too), and
-  neither file touches `repo_formatters.ts`. Not fixed here (out of scope).
+- `./quality.sh`: lint, type check, fmt and markdownlint passed. The parallel
+  test stage aborted on this macOS host when Deno 2.9.0 panicked over test
+  permission pledges, so the serial stage did not run. The base commit's PR
+  #4938 passed CI. Semgrep was unavailable and Checkov did not match the CI
+  pin; both local stages skipped. CI runs these checks on the pushed head.

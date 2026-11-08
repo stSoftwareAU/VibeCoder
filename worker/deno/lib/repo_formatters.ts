@@ -323,8 +323,10 @@ export function isolateLinkageLines(text: string): string {
  * config — that is the formatter the pre-push gate will check them with.
  * Before `deno fmt` runs, each Markdown file has its linkage-only lines
  * isolated (see {@link isolateLinkageLines}) and each JSON file is rewritten
- * with sorted keys; a file is written back only when it changed. A missing
- * formatter, a write failure, or a formatter that exits non-zero is logged.
+ * with sorted keys; a file is written back only when it changed. Files over
+ * MAX_ARCHIVE_REWRITE_BYTES are skipped with a warning and left for the gate
+ * to report. A missing formatter, a write failure, or a formatter that exits
+ * non-zero is logged.
  * This function never throws, so the gate still runs.
  */
 export async function formatWorkerOwnedArchive(
