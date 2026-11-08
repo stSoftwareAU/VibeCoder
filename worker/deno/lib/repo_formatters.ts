@@ -41,6 +41,11 @@ import {
   runGitCommand,
 } from "./git_timeout.ts";
 import { defaultLogger } from "./logger.ts";
+import {
+  type FenceLine,
+  isClosingFence,
+  parseFenceLine,
+} from "./markdown_code_spans.ts";
 import type { Logger, Result } from "../types.ts";
 import { redactedHeadTail, redactedTail } from "./redacted_text.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
@@ -263,9 +268,13 @@ function sortJsonKeys(value: unknown): unknown {
  *
  * The line is trimmed before the test, so the pattern carries no leading or
  * trailing whitespace quantifiers and stray spaces cannot hide a linkage line.
+ * Whitespace is allowed between the number and the full stop, matching the
+ * reviewer's `PART_OF_SAME` and `PART_OF_OTHER`
+ * (`.claude/skills/review-fleet-prs/scripts/test_change_policy.ts`); a test
+ * runs both over the same table so they cannot drift.
  */
 const LINKAGE_LINE =
-  /^(?:Closes|Fixes|Resolves|Part of) (?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+\.?$/i;
+  /^(?:Closes|Fixes|Resolves|Part of) (?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+[ \t]*\.?$/i;
 
 /**
  * Give each linkage-only line its own paragraph before `deno fmt` runs.
@@ -275,20 +284,27 @@ const LINKAGE_LINE =
  * reviewer's anchored-line rule (Issue #4802). A blank line goes above and
  * below each linkage line that touches a non-blank line, so consecutive
  * linkage lines end up with exactly one blank between them. Lines inside a
- * fenced code block are left alone, and every other line is unchanged.
+ * fenced code block are left alone, and every other line is unchanged. A
+ * fence closes only on the opener's character with a run at least as long, as
+ * in CommonMark, so a ``` line inside a ~~~ block does not end it.
  */
 export function isolateLinkageLines(text: string): string {
   const input = text.split("\n");
   const output: string[] = [];
-  let inFence = false;
+  let opener: FenceLine | null = null;
   for (const [i, line] of input.entries()) {
-    const trimmedStart = line.trimStart();
-    if (trimmedStart.startsWith("```") || trimmedStart.startsWith("~~~")) {
-      inFence = !inFence;
+    const fence = parseFenceLine(line);
+    if (opener === null && fence !== null) {
+      opener = fence;
       output.push(line);
       continue;
     }
-    if (inFence || !LINKAGE_LINE.test(line.trim())) {
+    if (opener !== null) {
+      if (isClosingFence(line, opener)) opener = null;
+      output.push(line);
+      continue;
+    }
+    if (!LINKAGE_LINE.test(line.trim())) {
       output.push(line);
       continue;
     }
@@ -396,14 +412,16 @@ export async function formatWorkerOwnedArchive(
       }
     }
 
+    const formatPaths = archiveFiles.filter((path) => !skipped.has(path));
+    // `deno fmt` with no paths formats the whole repository: never run it empty.
+    if (formatPaths.length === 0) return;
+
     const { exitCode, output } = await deps.runCommand(
       [
         "deno",
         "fmt",
         "--permit-no-files",
-        ...archiveFiles.filter((path) => !skipped.has(path)).map((path) =>
-          path.startsWith("-") ? `./${path}` : path
-        ),
+        ...formatPaths.map((path) => path.startsWith("-") ? `./${path}` : path),
       ],
       { stdin: "null", cwd: repoPath },
     );
@@ -413,14 +431,14 @@ export async function formatWorkerOwnedArchive(
         "--name-only",
         "-z",
         "--",
-        ...archiveFiles.map((path) => `:(literal)${path}`),
+        ...formatPaths.map((path) => `:(literal)${path}`),
       ],
       { cwd: repoPath },
     );
     const diffError = gitStepError("diff --name-only", diff);
     const changedCount = diff.ok && diff.value.code === 0
       ? diff.value.stdout.split("\0").filter((name) =>
-        archiveFiles.includes(name)
+        formatPaths.includes(name)
       ).length
       : undefined;
     const countText = changedCount === undefined
@@ -442,7 +460,7 @@ export async function formatWorkerOwnedArchive(
     }
     if (changedCount === 0) return;
 
-    const gitError = await commitTrackedPaths(repoPath, deps, archiveFiles);
+    const gitError = await commitTrackedPaths(repoPath, deps, formatPaths);
     if (gitError !== undefined) {
       deps.logger.warn(`repo formatters: ${gitError}`);
       return;

@@ -22,6 +22,10 @@ import {
   type RepoFormatterDeps,
 } from "../lib/repo_formatters.ts";
 import type { Logger } from "../types.ts";
+import {
+  PART_OF_OTHER,
+  PART_OF_SAME,
+} from "../../../.claude/skills/review-fleet-prs/scripts/test_change_policy.ts";
 
 const ARCHIVE = [
   "docs/archive/handover/issue-1.md",
@@ -612,6 +616,86 @@ Deno.test("isolateLinkageLines leaves prose lines and lines inside either fence 
   );
 });
 
+Deno.test("isolateLinkageLines closes a fence only on the opener's character and length (Issue #4802)", () => {
+  // A ``` line inside a ~~~ block does not end it, so the later ~~~ does.
+  assertEquals(
+    isolateLinkageLines("~~~text\n```\n~~~\nPart of #3\nPart of #4"),
+    "~~~text\n```\n~~~\n\nPart of #3\n\nPart of #4",
+  );
+  // A shorter ``` run does not close a ```` block, so nothing inside changes.
+  const nested = "````markdown\n```\nPart of #1\nPart of #2\n```\n````";
+  assertEquals(isolateLinkageLines(nested), nested);
+  const tildeInBackticks = "```markdown\n~~~\nPart of #1\nPart of #2\n~~~\n```";
+  assertEquals(isolateLinkageLines(tildeInBackticks), tildeInBackticks);
+  // A closer with an info string is not a closer.
+  const infoCloser = "```\n```text\nPart of #1\nPart of #2\n```";
+  assertEquals(isolateLinkageLines(infoCloser), infoCloser);
+  // Linkage lines after the nested sample are isolated again.
+  assertEquals(
+    isolateLinkageLines(`${nested}\nPart of #5\nPart of #6`),
+    `${nested}\n\nPart of #5\n\nPart of #6`,
+  );
+});
+
+Deno.test("isolateLinkageLines accepts the same Part of shapes as the reviewer's PART_OF_SAME and PART_OF_OTHER (Issue #4802)", () => {
+  const variants = [
+    "Part of #5",
+    "Part of #5.",
+    "Part of #5 .",
+    "Part of #5\t.",
+    "Part of #5 . ",
+    "  Part of #5  ",
+    "part of #5",
+    "PART OF #5",
+    "Part of o/r#5",
+    "Part of o/r#5 .",
+    "Part of o/r#5.",
+    "Part of Owner-1/re.po_2#5",
+    "Part of #5x",
+    "Part of #",
+    "Part of  #5",
+    "Part of #5..",
+    "Part of #5 . .",
+    "Part of o/r/x#5",
+    "Part of /r#5",
+    "Part of o/r #5",
+    "Partof #5",
+  ];
+  for (const line of variants) {
+    const reviewer = PART_OF_SAME.test(line) || PART_OF_OTHER.test(line);
+    const isolated = isolateLinkageLines(`Prose\n${line}\nProse`) !==
+      `Prose\n${line}\nProse`;
+    assertEquals(isolated, reviewer, JSON.stringify(line));
+  }
+  // The table must exercise both outcomes, so it cannot pass vacuously.
+  assert(variants.some((line) => PART_OF_SAME.test(line)));
+  assert(variants.some((line) => PART_OF_OTHER.test(line)));
+  assert(
+    variants.some((line) =>
+      !PART_OF_SAME.test(line) && !PART_OF_OTHER.test(line)
+    ),
+  );
+});
+
+Deno.test("formatBeforeGate keeps linkage lines apart after a mixed-fence block and leaves a nested sample untouched (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-mixed-" });
+  try {
+    const nested = "````markdown\n```\nPart of #1\nPart of #2\n```\n````\n";
+    const { repo } = await formatSeededSummary(
+      root,
+      `# Summary\n\n~~~text\n\`\`\`\n~~~\n\nPart of #3\nPart of #4\n\n${nested}`,
+    );
+    const formatted = await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`);
+    const lines = formatted.split("\n");
+    assert(lines.includes("Part of #3"), formatted);
+    assert(lines.includes("Part of #4"), formatted);
+    assertEquals(formatted.includes("Part of #3 Part of #4"), false, formatted);
+    assertStringIncludes(formatted, nested, formatted);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("formatBeforeGate still joins adjacent prose lines while isolating linkage lines (Issue #4802)", async () => {
   const root = await Deno.makeTempDir({ prefix: "fmt4802-prose-" });
   try {
@@ -689,17 +773,51 @@ Deno.test("formatBeforeGate leaves the target of an archive symlink alone (Issue
   }
 });
 
-Deno.test("formatBeforeGate skips an archive file over the size limit (Issue #4802)", async () => {
+Deno.test("formatBeforeGate skips an archive file over the size limit and never formats the rest of the repository (Issue #4802)", async () => {
   const root = await Deno.makeTempDir({ prefix: "fmt4802-big-" });
   try {
     const big = `${TWO_LINKAGE_LINES}${
       "x\n".repeat(MAX_ARCHIVE_REWRITE_BYTES)
     }`;
+    const readme = "Prose\n\nPart of #1\nPart of #2\n";
+    const unformatted = "const   x  =  1\n";
     const { repo, logger } = await formatSeededFiles(root, {
+      "deno.json": "{}\n",
+      "README.md": readme,
+      "src/main.ts": unformatted,
       [ARCHIVE[2]]: big,
     });
     assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), big);
-    assertStringIncludes(logger.lines.join("\n"), `skipped ${ARCHIVE[2]}`);
+    assertEquals(await Deno.readTextFile(`${repo}/README.md`), readme);
+    assertEquals(await Deno.readTextFile(`${repo}/src/main.ts`), unformatted);
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+    assertEquals((await git(repo, ["log", "--format=%s"])).trim(), "seed");
+    const joined = logger.lines.join("\n");
+    assertStringIncludes(joined, `skipped ${ARCHIVE[2]}`);
+    assertEquals(joined.includes("Formatter deno fmt"), false, joined);
+    assertEquals(joined.includes("committed worker-owned"), false, joined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate still formats the other archive files when one is over the size limit (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-bigmix-" });
+  try {
+    const big = `${TWO_LINKAGE_LINES}${
+      "x\n".repeat(MAX_ARCHIVE_REWRITE_BYTES)
+    }`;
+    const { repo } = await formatSeededFiles(root, {
+      "deno.json": "{}\n",
+      [ARCHIVE[0]]: TWO_LINKAGE_LINES,
+      [ARCHIVE[2]]: big,
+    });
+    assertEquals(
+      await Deno.readTextFile(`${repo}/${ARCHIVE[0]}`),
+      "# Summary\n\nPart of #1\n\nPart of #2\n",
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), big);
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
