@@ -959,6 +959,29 @@ Deno.test("repair reports a non-timeout exit with its code and a redacted stderr
   }
 });
 
+Deno.test("repair retains the final failure after lengthy routing logs", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps } = fakeDeps(f, {
+      spawnResults: [{
+        success: false,
+        code: 1,
+        stderr: `${
+          "routing log\n".repeat(100)
+        }provider choice failed: no budget`,
+        timedOut: false,
+      }],
+    });
+    const error = await assertRejects(
+      () => runBabysitterRepairContainer(inputFor(f), deps),
+      Error,
+    );
+    assertStringIncludes(error.message, "provider choice failed: no budget");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
 Deno.test("babysitterRuntimeOnPath finds an executable on PATH, and not with an empty PATH", async () => {
   const bin = await Deno.makeTempDir();
   try {
