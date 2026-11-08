@@ -198,6 +198,9 @@ const WORKER_OWNED_ARCHIVE_DIRS = [
 /** Extensions `deno fmt` will rewrite under those directories. */
 const ARCHIVE_FORMAT_EXTENSIONS = [".md", ".markdown", ".json", ".jsonc"];
 
+/** Largest archive file the worker will read and rewrite (1 MiB). */
+export const MAX_ARCHIVE_REWRITE_BYTES = 1024 * 1024;
+
 /**
  * A branch path the archive step may rewrite.
  *
@@ -274,7 +277,7 @@ const LINKAGE_LINE =
  * linkage lines end up with exactly one blank between them. Lines inside a
  * fenced code block are left alone, and every other line is unchanged.
  */
-function isolateLinkageLines(text: string): string {
+export function isolateLinkageLines(text: string): string {
   const input = text.split("\n");
   const output: string[] = [];
   let inFence = false;
@@ -359,6 +362,7 @@ export async function formatWorkerOwnedArchive(
       return;
     }
 
+    const skipped = new Set<string>();
     for (const path of archiveFiles) {
       const lower = path.toLowerCase();
       const isMarkdown = lower.endsWith(".md") || lower.endsWith(".markdown");
@@ -366,6 +370,16 @@ export async function formatWorkerOwnedArchive(
       if (!isMarkdown && !isJson) continue;
       const absolute = `${repoPath}/${path}`;
       try {
+        // `listPushedFiles` has already dropped symlinks and paths that
+        // resolve outside the checkout; the cap keeps a huge file out of memory.
+        const info = await Deno.lstat(absolute);
+        if (info.size > MAX_ARCHIVE_REWRITE_BYTES) {
+          skipped.add(path);
+          deps.logger.warn(
+            `repo formatters: skipped ${path}: larger than ${MAX_ARCHIVE_REWRITE_BYTES} bytes`,
+          );
+          continue;
+        }
         const current = await Deno.readTextFile(absolute);
         const rewritten = isMarkdown
           ? isolateLinkageLines(current)
@@ -387,7 +401,7 @@ export async function formatWorkerOwnedArchive(
         "deno",
         "fmt",
         "--permit-no-files",
-        ...archiveFiles.map((path) =>
+        ...archiveFiles.filter((path) => !skipped.has(path)).map((path) =>
           path.startsWith("-") ? `./${path}` : path
         ),
       ],

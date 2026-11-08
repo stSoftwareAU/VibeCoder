@@ -22,6 +22,12 @@ Version bump: `VERSION` is not changed by this PR.
 - The line is trimmed before matching, so the regex has no overlapping
   whitespace quantifiers (no backtracking risk).
 - Lines inside fenced code blocks are left alone.
+- The Markdown rewrite shares the JSON rewrite loop, so it is bounded the same
+  way: `listPushedFiles` already drops symlinks and paths that resolve outside
+  the checkout (it `lstat`s and `realPath`s each name), and the loop now
+  `lstat`s each file and skips, with a warning, anything over
+  `MAX_ARCHIVE_REWRITE_BYTES` (1 MiB). Skipped files are also left out of the
+  `deno fmt` argument list.
 - Only the shapes `PART_OF_SAME`/`PART_OF_OTHER` match, plus the closing
   keywords the issue names. Recognising code-formatted or wrapped references is
   owned by #4808, not here.
@@ -46,7 +52,21 @@ Backend only. `worker/deno/tests/repo_formatters_4129_test.ts` runs the real
   `formatBeforeGate leaves linkage-looking lines inside a code fence adjacent (Issue #4802)`
   in the same file: guards against over-isolation (stays green without the fix
   by design).
-- `deno task test:unit tests/repo_formatters_4129_test.ts`: 7 passed, 0 failed.
+- Added unit tests for the exported `isolateLinkageLines` (blank lines only
+  where a linkage line touches another line; prose, `` ``` `` and `~~~` fences
+  untouched), and real-runner tests for: adjacent prose lines still joined,
+  `.markdown` and `.jsonc` files rewritten, an already-canonical file not
+  rewritten (mtime unchanged), a symlinked archive file whose outside target is
+  left alone, and an over-limit file skipped with a warning. Each of the six
+  surviving mutants (`~~~` operand, linkage test, size-of-blank-line condition,
+  `.markdown`, `.jsonc`, `rewritten !== current`) was applied by hand and turns
+  a test red.
+- `deno task test:unit tests/repo_formatters_4129_test.ts`: 14 passed, 0 failed.
+- Verifier finding on symlinks and size: `listPushedFiles` already excludes
+  symlinks and symlinked parents, so a symlinked `.md` never reaches the loop
+  (covered by the symlink test); the 1 MiB cap is new and covered by the
+  over-limit test. The extra `isFile` check was not added because it is
+  unreachable after that filter and so cannot be tested.
 - Callers of the changed loop: only `formatWorkerOwnedArchive` (via
   `formatBeforeGate`); JSON behaviour unchanged and still covered by the
   existing real-runner test.
