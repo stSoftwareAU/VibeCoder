@@ -1,158 +1,169 @@
 ## Summary
 
-The CI-fix base-branch deferral (#1880) no longer reads "the base branch has no
-run of this check" as "the base is green". The worker now reads the failing
-check's identity (name, producer app, workflow file) and the base head's SHA,
-and sorts the agent's `Depends on` claim into verified red (deferral, as
-before), verified green (claim refuted, ordinary charged path), or
-**unverified** (no run from the same workflow, a run for another commit, or an
-unreadable API). An unverified claim is held: the diagnosis is posted with a
-`vibe-ci-fix-attempt` marker whose outcome is `base-unverified`, no fix attempt
-is charged, nothing is marked passed, and no `needs-human` is applied. At most
-two holds are allowed per failure signature, after which the ordinary charged
-path runs so the fleet-wide cap still ends the loop. The CI-fix prompt and
-`docs/workflows/ci-fix.md` describe these states and no longer say "nothing on
-this branch can fix it".
+The CI-fix base-branch deferral now compares the pull request's failure with the
+red base run's log before accepting a `Depends on` claim. A red conclusion alone
+can represent a different failure. Closes #4680.
 
-A PR-only check never runs on the base head, so the worker also reads
-commit-bound evidence from the same workflow: the runs of the same check (same
-app and workflow file) on the head of a pull request merged as the base head,
-but only when that commit's tree is identical to the base head's tree. A red
-there is a verified base defect and takes the existing deferral (the
-`Depends
-on` issue and `vibe-ci-fix-deferred` marker, resumed by the existing
-scanner when the blocker closes); a green refutes the claim. When no such commit
-exists or any lookup fails, the claim stays unverified (held, not deferred). The
-worker does not re-run the check on the base tree. Part of #4680.
+- **Same:** every comparable PR failure line and diagnostic pair appears in the base log; defer
+  without charging an attempt.
+- **Different:** a comparable line or diagnostic pair is absent from a complete
+  base excerpt; follow the ordinary charged path.
+- **Unreadable:** no comparable PR line, a Semgrep finding without its file
+  header, a missing match that could be in omitted base output, or no readable base log; hold without
+  charging, subject to the existing two-hold bound.
 
-Version bump: `VERSION` is not changed by this PR.
-
-```mermaid
-flowchart TD
-    A[Agent: Depends on N] --> B[Read failing check identity]
-    B --> C[Read base head SHA and its check runs]
-    C -- same workflow, failure --> D[Red: defer once, no attempt]
-    C -- same workflow, success --> E[Green: ordinary path, attempt charged]
-    C -- no run on head --> T[Same workflow on a merged PR head with the base tree]
-    T -- failure --> D
-    T -- success --> E
-    C -- no run / stale / API error --> F{Holds so far < 2?}
-    T -- none / lookup failed --> F
-    F -- yes --> G[Unverified hold: marker base-unverified, no attempt]
-    F -- no --> E
-```
+The base evidence remains the same check on the base head, or the same workflow
+on a merged PR head with an identical tree. The worker does not rerun the check
+on the base tree. Dependency audits retain their existing exception. `VERSION`
+is unchanged.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Most fleet checks run only on pull requests, so the base never has a run and
-  the old reading made the deferral impossible; the agent then patched base
-  defects inside unrelated PRs (VibeCoder#4675, TagsTS#88).
-- Unknown evidence is its own state rather than a pass or a charged failure, as
-  the issue asks (item 3). A bounded hold keeps it recoverable without a new
-  scheduler (#4656 owns retry state).
+Comparing failure text prevents an unrelated red base check from automatically
+deferring a PR failure. The comparison is conservative when logs cannot be read.
 
 ### Essential Design Decisions
 
-- Identity is name + producer app + workflow file path, so a same-named check
-  from another workflow (TagsTS's default CodeQL setup) is not evidence. A
-  GitHub Actions check whose workflow path cannot be resolved is `unavailable`,
-  never matched by name alone.
-- Only `success` is green; cancelled, skipped, neutral, timed-out and
-  action-required runs are no evidence.
-- Holds are recorded as attempt markers with outcome `base-unverified` but are
-  kept out of `countAttempts` (a separate `unverifiedBaseHolds` map), so they do
-  not consume the fleet-wide cap. A merge-queue check (non-numeric id) cannot
-  have its identity read and is therefore held rather than read by name.
-- Assumption: an unrelated open PR failing the same job is not read, since the
-  issue says it is only a diagnostic lead. Only a PR merged as the base head,
-  and only when its head commit has the base head's tree, is read. A merge
-  queue's commit is not in `commits/{sha}/pulls`, so such a base stays held.
+`compareBaseFailure` reads both logs the same way. It removes ANSI, timestamps,
+the output tests print (Deno `------- output -------` blocks, Jest `console.*`
+and `● Console` blocks, Vitest `stdout |` blocks) and joins a Mocha `1) Parser`
+header to the `parses header:` line under it. Each line is canonicalised
+(annotation prefix and workflow marker removed; durations, TAP and Mocha
+sequence numbers, Deno source positions and counts beside `passed`, `failed`,
+`tests` and similar words replaced).
+
+The pull request's comparable lines then exclude command echoes, passing test
+lines in every runner format, lines made only of `<count> <word>` groups
+whatever the noun (pytest warnings and deselected, PHPUnit `Deprecations: 3`),
+the runner's exit line, generic assertion lines, assertion-library headers
+(`Values are not equal.`, `throw new AssertionError(...)`), remote library stack
+frames and Jest's `Test suite failed to run`. A failing-test name (Jest `●`, `✕`
+and `FAIL file.test.js`, node:test `✖`, Bats `✗`, TAP `not ok`, Mocha `N)`,
+Vitest `FAIL a > b`, pytest `FAILED id::name`, Go `--- FAIL:`, Deno or cargo
+`name ... FAILED` and Deno `name => path:line:col`) must equal a whole base-log
+line; Semgrep finding files and rules also require whole-line matches as a pair.
+Deno lint and check rule and locus and ShellCheck file and rule are also paired;
+ShellCheck wiki footer links are excluded. Other
+lines (annotation messages, lines with a failure word) may sit
+inside a longer base line.
+
+When no line qualifies, distinctive rule identifiers and file loci in the
+failing step output are compared with standalone numbers ignored. Run metadata
+and generic command echoes are not evidence; without a distinctive line the
+result is unreadable. Semgrep's finding-block file line is distinguished from
+source, separator and autofix lines and carried across subsequent rules, including
+paths with punctuation or spaces, at all four severity markers. An omission
+clears the carried file; shortened and hidden-line notices retain it. A missing
+file header makes the comparison unreadable. The first partial line after a
+byte truncation is discarded. A missing base match is unreadable when the base
+excerpt has an omission, a line limit or an unidentified Semgrep finding; a
+positive match still defers. Both file and rule remain evidence even when the output
+contains a failure word. Deno
+formatter `from <path>:` lines identify files and its
+file-count summary is ignored. Deno lint and check locations, and shellcheck
+file locations and rule IDs, identify findings; npm log-location lines are
+ignored. Deno failure-section and Jest suite-failure
+headers without a test or suite locus are unreadable.
+
+Limits: output that a passing test prints without a recognised block marker
+(inline logger lines in Mocha or node:test) is still compared, and unrecognised
+runner formats can still match on or miss generic lines. This is not proof that
+every unrelated failure is told apart.
 
 ### Undiscoverable Facts
 
-- `conflict_needs_human_gate.ts` treats any parsed `vibe-ci-fix-attempt` marker
-  as "a CI fix was attempted", so a hold counts there too; left unchanged
-  because a hold does mean an agent ran.
+The log fetcher receives the base check-run ID. The worker relies on the
+available excerpt and does not reproduce the check on the base tree.
 
 ## Evidence
 
-- `deno task test:unit` on `worker/deno/tests/ci_base_branch_check_test.ts`,
-  `worker/deno/tests/ci_fix_attempt_markers_test.ts`,
-  `worker/deno/tests/pr_ci_processor_deferral_test.ts` and
-  `worker/deno/tests/ci_fix_audit_in_pr_3116_test.ts`: 100 passed, 0 failed.
-- Production readers of the new members: `readBaseBranchCheck` and
-  `readCheckIdentity` are called in `worker/deno/lib/pr_ci_processor.ts`;
-  `countUnverifiedBaseHolds` is called there; `base-unverified` is built in the
-  processor and parsed in `worker/deno/lib/ci_fix_attempt_markers.ts`.
-- Files read to cite behaviour: `worker/deno/lib/pr_ci_processor.ts`,
-  `worker/deno/lib/ci_fix_attempt_markers.ts`,
-  `worker/deno/lib/conflict_needs_human_gate.ts`.
-- Tree-equivalent evidence: `readTreeEquivalentVerdict` in
-  `worker/deno/lib/ci_base_branch_check.ts` is called by `readBaseBranchCheck`
-  when the base head has no verdict of its own.
-- Not observed: a live GitHub response for a PR-only check; fixtures follow the
-  documented REST shape of `check-runs` and `actions/runs`.
-
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **partial** — "Establish the same failure signature and its cause in the
-  relevant base tree, using an isolated baseline reproduction or equivalent
-  commit-bound evidence from the same workflow." — evidence:
-  `worker/deno/lib/ci_base_branch_check.ts::readTreeEquivalentVerdict`,
-  `worker/deno/tests/ci_base_branch_check_test.ts::a PR-only check red on the
-  merged PR's identical tree is red, bound to that commit`
-  — reviewer: partial — reason: the same check from the same workflow on a
-  commit with the base head's tree is now read, but only the check's conclusion
-  is compared; the failing step or log is not compared with the PR's failure
-  signature, and the worker does not re-run the check on the base tree.
-- **met** — "Once a base defect is verified, use the existing deduplicated
-  base-repair/dependency mechanism and automatically resume the PR when that
-  repair lands" for a PR-only workflow — evidence:
-  `worker/deno/tests/pr_ci_processor_deferral_test.ts::a PR-only workflow red
-  on the merged PR's identical tree defers, charging no attempt and paging no
-  human`,
-  `worker/deno/tests/pr_maintenance_ci_deferral_test.ts::once the named
-  issue closes the check is returned again`
-  — reviewer: met
+Backend-only change. `compareBaseFailure` is called by
+`_resolveBaseBranchDeferral` in `worker/deno/lib/pr_ci_processor.ts` and uses
+the injected Actions log fetcher. The matching rule is documented in
+`docs/workflows/ci-fix.md`, `prompts/ci_fix/prompt.md`, `docs/PROMPTS.md`,
+`CODING-STANDARDS.md` and `prompts/coding_guidelines/prompt.md`; the latter two
+are twinned restatements. The new module has a lib-sweep coverage entry.
 
 ## Test Plan
 
-- `worker/deno/tests/ci_base_branch_check_test.ts` (42): tree-equivalent red,
-  green, newest wins, differing tree, other workflow, cancelled, other commit,
-  several heads, a cancelled head run, failed and malformed lookups, and the
-  `--jq` request shapes of the check-runs and check-run calls (the surviving
-  mutations at lines 140, 167, 245 and 246 each turn a test red: the non-Actions
-  app with no workflow path, and the asserted `--jq` arguments). Earlier: (25):
-  red, green, no-run, other-workflow, other-app, stale, unresolved identity,
-  non-success conclusions, errors. Red checks: removing the workflow-path
-  comparison, the head-SHA filter, the GitHub Actions no-workflow-path guard and
-  the missing app-slug error each turned one test red.
-- `worker/deno/tests/pr_ci_processor_deferral_test.ts`: PR-only no-run hold,
-  same-named other-workflow check, other PR's red run, stale run, unreadable
-  identity, hold bound of two, resumption to deferral once the base is red,
-  known-good base. Red checks: forcing no-run to the ordinary path, raising the
-  hold cap and counting holds as attempts each turned tests red.
-- Tree-equivalent cases in `pr_ci_processor_deferral_test.ts`: red defers with
-  no attempt, green takes the charged path, a differing tree is held.
-- Coverage carry-over: `ci_base_branch_check.ts` line 503 (a JSON body that is
-  not an object) is reached by the "JSON but not an object" test;
-  `github_actions_log_fetcher.ts` lines 284-291 (a run-only and a job-less
-  details URL) by two `resolveActionsJobId` tests in
-  `github_actions_log_fetcher_test.ts`.
-- `worker/deno/tests/ci_fix_attempt_markers_test.ts`: round-trip and unknown
-  outcome rejection for `base-unverified`; holds excluded from `countAttempts`.
-- Edited expectation in `pr_ci_processor_deferral_test.ts`: a base lookup error
-  now holds (one comment, no attempt) instead of charging an attempt; the
-  required behaviour is the issue's item 3. It still goes red if the hold is
-  forced to the ordinary path (red check above).
-- Removed from `worker/deno/tests/ci_base_branch_check_test.ts`: the
-  `isCheckRedOnBranch` tests.
-  - Replaced by: `readBaseBranchCheck` tests of the same scenarios (latest run
-    wins, in-progress re-run, malformed body, API failure).
-  - Obsolete: `isCheckRedOnBranch` read a base with no run as `false`.
-- Twinned rules: the pinned prompt phrases in
-  `worker/deno/tests/ci_fix_audit_in_pr_3116_test.ts` still pass.
+- `deno task test:unit tests/ci_base_failure_signature_test.ts
+  tests/pr_ci_processor_deferral_test.ts`:
+  98 passed, 0 failed (53 and 45 tests respectively).
+- The obsolete comparison treated missing evidence in a summarised base log as
+  a different failure and could read a byte-cut fragment as a Semgrep file.
+  Complete, identified pairs still distinguish failures; omitted evidence holds
+  without charging. Coverage:
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - incomplete excerpts cannot prove a missing failure`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - incomplete excerpts hold without charging`.
+- Crossed diagnostic files and rules no longer match independently. Identical
+  pairs still defer, including multiple Semgrep rules in one file block.
+  Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic rules stay paired with their files`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - diagnostic rules stay paired with their files`.
+- The obsolete comparison could carry the wrong Semgrep file, treat ShellCheck
+  footer links as findings, or match Deno check rules and loci independently.
+  It now retains file and rule association across paths with punctuation, spaces
+  or numeric segments, omitted headers, footers and Deno check diagnostics.
+  Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic pairing handles real log boundaries`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - diagnostic pairing handles real log boundaries`.
+- A missing Semgrep file header formerly produced a charged `different` result;
+  it now holds as unreadable. Identified file and rule pairs still distinguish
+  findings. Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic pairing handles real log boundaries`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - truncated Semgrep file header holds without charging`.
+  The boundary tests also cover shortened and hidden lines, `autofix` and
+  hyphen-prefixed paths, and prefixed Deno check errors.
+  Its former expectation that a missing pair after an omission is different is
+  obsolete; identified pairs in complete excerpts remain covered by those tests.
+- `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
+  output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using
+  real Semgrep job 101249366081 output with different commit IDs and event, and
+  formatter and shellcheck failures on the same or different files, Deno lint and
+  check loci, and npm log paths.
+- Semgrep finding blocks with root-level and extensionless paths are compared
+  against the base file: matching paths defer and different paths are charged.
+  Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - semgrep identifies root and extensionless files`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - semgrep compares root and extensionless finding files`.
+- Semgrep file and rule identity across severity markers and messages with
+  failure words is covered by
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - semgrep keeps rule and exact file identity at every severity`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - semgrep compares severity, rule and exact file despite failure words`.
+  The real fixture without a failure-word line covers the fallback at all four
+  severity icons, with different rules, nested same-name files, different files
+  and identical findings:
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - semgrep fallback compares rule and whole file at each severity`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - semgrep fallback compares rule and whole file at each severity`.
+  The tally test formerly supplied an unrelated default Semgrep log; it now
+  supplies the test failure it describes. Its remaining tally and deferral
+  behaviour is covered by
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - same test failure with different tallies is deferred`.
+- The obsolete fallback compared all step output, including run metadata and
+  command echoes. The remaining behaviour compares distinctive rule or file
+  evidence and holds generic-only output as unreadable. Coverage:
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - generic npm step output is unreadable`
+  and
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - real semgrep output ignores run-specific metadata`.
+- The Jest fixture now includes the default reporter’s `● Console` header; it
+  still verifies that the actual failure matches despite passing test output:
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - output a passing test prints is not part of the failure, in Deno, Jest and Vitest`.
+- The obsolete Jest expectation excluded `FAIL <file>`; suite file identity
+  remains required evidence, covered by
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - Jest identifies the failing test rather than shared suite output`.
+  The Semgrep and lint annotations retain their original wording without an
+  added failure word; deferral remains covered by
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a red base defers once, charging no attempt (Issue #1880)`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
+- The obsolete fixture-only Semgrep and lint signature alternatives are removed;
+  actual rule and file evidence remains comparable. Coverage:
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a Depends on line with a red base defers once, charging no attempt (Issue #1880)`
+  and
+  `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)`.
+- The focused tests, Deno-tree `deno fmt --check`, `deno lint`,
+  `deno task check`, and `deno task check:manifests` passed.
+- The matching rule is documented in `docs/workflows/ci-fix.md` and
+  `prompts/ci_fix/prompt.md`; both were updated together.
+
+Risk: comparison depends on available excerpts and recognised formats;
+unrecognised generic messages can still match, and missing evidence can hold a
+claim even where the underlying failure is the same.
