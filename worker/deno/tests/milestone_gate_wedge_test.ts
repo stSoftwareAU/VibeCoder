@@ -44,8 +44,11 @@ import {
   concludeGateRefusal,
   GATE_WEDGE_DIAGNOSTIC_REPO,
   gateWedgeDiagnosticTitle,
+  type GateWedgeReport,
+  privateGateWedgeDiagnosticTitle,
   reportGateWedge,
 } from "../lib/milestone_gate_wedge.ts";
+import { redactSecrets } from "../lib/secret_redaction.ts";
 
 const REPO = "owner/repo";
 const MILESTONE_TITLE = "#2298 worker deno lib: merge conflicts";
@@ -295,6 +298,9 @@ function deps(
           NOW,
           {
             ghCommandFn: (args) => {
+              // The visibility lookup (Issue #4780) answers public, so these
+              // tests keep reaching the public form they assert on.
+              if (args[0] === "api") return Promise.resolve("public");
               filings.push(args);
               return Promise.resolve(args[1] === "list" ? "[]" : "");
             },
@@ -566,6 +572,7 @@ Deno.test("reportGateWedge - files one diagnostic in VibeCoder when none is open
   const filed = await reportGateWedge(REPORT, {
     ghCommandFn: (args) => {
       calls.push(args);
+      if (args[0] === "api") return Promise.resolve("public");
       if (args[1] === "list") return Promise.resolve("[]");
       return Promise.resolve("https://github.com/x/y/issues/9");
     },
@@ -574,6 +581,12 @@ Deno.test("reportGateWedge - files one diagnostic in VibeCoder when none is open
   });
 
   assertEquals(filed, true);
+  // Positive control: the public form below is reached only through this
+  // visibility lookup (Issue #4780).
+  assert(
+    calls.some((a) => a[0] === "api" && a[1] === `repos/${REPO}`),
+    "the repository's visibility was looked up first",
+  );
   const create = calls.find((a) => a[0] === "issue" && a[1] === "create")!;
   assert(create !== undefined, "the diagnostic is created");
   assertEquals(
@@ -594,6 +607,7 @@ Deno.test("reportGateWedge - appends to the open diagnostic instead of filing a 
   const filed = await reportGateWedge(REPORT, {
     ghCommandFn: (args) => {
       calls.push(args);
+      if (args[0] === "api") return Promise.resolve("public");
       if (args[1] === "list") {
         return Promise.resolve(JSON.stringify([{
           number: 4242,
@@ -615,10 +629,12 @@ Deno.test("reportGateWedge - appends to the open diagnostic instead of filing a 
 
 Deno.test("reportGateWedge - a refused write reports not-filed so the next cycle retries", async () => {
   const filed = await reportGateWedge(REPORT, {
-    ghCommandFn: (args) =>
-      args[1] === "list"
+    ghCommandFn: (args) => {
+      if (args[0] === "api") return Promise.resolve("public");
+      return args[1] === "list"
         ? Promise.resolve("[]")
-        : Promise.reject(new Error("gh: 403")),
+        : Promise.reject(new Error("gh: 403"));
+    },
     log: () => {},
     dedupAuthors: { fleetAuthors: ["vibe-coder"] },
   });
@@ -668,4 +684,217 @@ Deno.test("presyncMilestoneBranch - a wedge reached only through a child run sti
   } finally {
     await fx.cleanup();
   }
+});
+
+// ---------------------------------------------------------------------------
+// The private repository: an opaque title and body in VibeCoder, and the full
+// report kept on the host log (Issue #4780, mirroring #4318)
+// ---------------------------------------------------------------------------
+
+/** The both-sides analysis: the half a private repository must keep off GitHub. */
+const ANALYSIS =
+  "BOTH-SIDES-ANALYSIS-4780: the milestone side renamed the helper";
+
+/** The report with its analysis, as the production sync files it. */
+const DETAILED: GateWedgeReport = { ...REPORT, analysis: ANALYSIS };
+
+/** Particulars a private repository's diagnostic must never carry (Issue #4780). */
+const PRIVATE_LEAKS = [
+  REPO,
+  `\`${DEFAULT_BRANCH}\``,
+  MILESTONE,
+  MILESTONE_TITLE,
+  GATE_VERDICT,
+  REFUSAL.conflictKey,
+  "lib/foo_test.ts",
+  ANALYSIS,
+];
+
+/** Fails when any leaked particular appears in the argv (joined, so a substring counts). */
+function assertNoPrivateLeak(argv: string[], where: string): void {
+  const joined = argv.join("\n");
+  for (const leak of PRIVATE_LEAKS) {
+    assertEquals(joined.includes(leak), false, `${where} leaks '${leak}'`);
+  }
+}
+
+/** The value that follows a flag in an argv. */
+const argOf = (argv: string[], flag: string): string =>
+  argv[argv.indexOf(flag) + 1]!;
+
+/**
+ * Drive reportGateWedge against a fake `gh`. `visibility` is what the lookup
+ * answers, or "fail" when the lookup is refused. `open` is the diagnostic the
+ * title search finds, when one is already open.
+ */
+async function fileDiagnostic(
+  report: GateWedgeReport,
+  visibility: "public" | "private" | "fail",
+  open: { number: number; title: string } | null = null,
+) {
+  const calls: string[][] = [];
+  const logs: { message: string; level?: string }[] = [];
+  const filed = await reportGateWedge(report, {
+    ghCommandFn: (args) => {
+      calls.push(args);
+      if (args[0] === "api") {
+        return visibility === "fail"
+          ? Promise.reject(new Error("gh: 404 Not Found"))
+          : Promise.resolve(visibility);
+      }
+      if (args[1] === "list") {
+        return Promise.resolve(
+          open
+            ? JSON.stringify([{
+              number: open.number,
+              title: open.title,
+              author: { login: "vibe-coder" },
+            }])
+            : "[]",
+        );
+      }
+      return Promise.resolve("https://github.com/x/y/issues/9");
+    },
+    log: (message: string, level?: string) => logs.push({ message, level }),
+    dedupAuthors: { fleetAuthors: ["vibe-coder"] },
+  });
+  return { filed, calls, logs };
+}
+
+Deno.test("reportGateWedge - a private repository files the opaque title and body, and nothing identifying reaches GitHub (Issue #4780)", async () => {
+  const { filed, calls } = await fileDiagnostic(DETAILED, "private");
+
+  assertEquals(filed, true);
+  const create = calls.find((a) => a[0] === "issue" && a[1] === "create")!;
+  assert(create !== undefined, "the opaque diagnostic is created");
+  assertEquals(argOf(create, "--repo"), GATE_WEDGE_DIAGNOSTIC_REPO);
+  assertEquals(
+    argOf(create, "--title"),
+    await privateGateWedgeDiagnosticTitle(REPO, MILESTONE),
+  );
+  assertNoPrivateLeak(create, "the issue create argv");
+
+  // The count, the timestamp and the tip SHAs survive; the generic fix too.
+  const body = argOf(create, "--body");
+  assertStringIncludes(body, "refused the same resolution 2 time(s)");
+  assertStringIncludes(body, REPORT.refusal.at);
+  assertStringIncludes(body, DEFAULT_SHA);
+  assertStringIncludes(body, MILESTONE_SHA);
+  assertStringIncludes(body, "milestone_resolution_gate.ts");
+  assertEquals(
+    body.includes("needs a human"),
+    false,
+    "a conflict is never a human's to resolve",
+  );
+});
+
+Deno.test("reportGateWedge - a failed visibility lookup is unknown, and unknown is private (Issue #4780)", async () => {
+  const { filed, calls } = await fileDiagnostic(DETAILED, "fail");
+
+  assertEquals(filed, true);
+  const create = calls.find((a) => a[0] === "issue" && a[1] === "create")!;
+  assertEquals(
+    argOf(create, "--title"),
+    await privateGateWedgeDiagnosticTitle(REPO, MILESTONE),
+  );
+  assertNoPrivateLeak(create, "the issue create argv");
+});
+
+Deno.test("reportGateWedge - a second refusal on the same private branch appends to the opaque diagnostic and leaks nothing (Issue #4780)", async () => {
+  const title = await privateGateWedgeDiagnosticTitle(REPO, MILESTONE);
+
+  const first = await fileDiagnostic(DETAILED, "private");
+  const created = first.calls.filter((a) => a[1] === "create");
+  assertEquals(created.length, 1, "the first refusal files one issue");
+
+  const second = await fileDiagnostic(DETAILED, "private", {
+    number: 4242,
+    title,
+  });
+  assertEquals(second.filed, true);
+  assertEquals(
+    second.calls.filter((a) => a[1] === "create").length,
+    0,
+    "the second refusal files no second issue",
+  );
+  // The dedup search runs on the opaque title, never the monitored repository's.
+  const search = second.calls.find((a) => a[1] === "list")!;
+  assertStringIncludes(argOf(search, "--search"), title);
+
+  const comments = second.calls.filter((a) => a[1] === "comment");
+  assertEquals(comments.length, 1, "one append to the open diagnostic");
+  assertEquals(comments[0]![2], "4242");
+  assertNoPrivateLeak(comments[0]!, "the issue comment argv");
+  assertEquals(
+    argOf(comments[0]!, "--body"),
+    argOf(created[0]!, "--body"),
+    "the create and the repeat comment carry the same body",
+  );
+});
+
+Deno.test("reportGateWedge - a private repository's full report stays on the host log at warn (Issue #4780)", async () => {
+  const { logs } = await fileDiagnostic(DETAILED, "private");
+
+  const full = logs.find((l) => l.message.includes(GATE_VERDICT));
+  assert(full !== undefined, "the verdict is kept on the host log");
+  assertEquals(full.level, "warn");
+  assertStringIncludes(full.message, ANALYSIS);
+  assertStringIncludes(full.message, REPO);
+});
+
+Deno.test("reportGateWedge - a public repository keeps the full public form (Issue #4780)", async () => {
+  const { filed, calls } = await fileDiagnostic(DETAILED, "public");
+
+  assertEquals(filed, true);
+  assert(
+    calls.some((a) => a[0] === "api" && a[1] === `repos/${REPO}`),
+    "the repository's visibility was looked up first",
+  );
+  const create = calls.find((a) => a[0] === "issue" && a[1] === "create")!;
+  assertEquals(
+    argOf(create, "--title"),
+    gateWedgeDiagnosticTitle(REPO, MILESTONE),
+  );
+  const body = argOf(create, "--body");
+  assertEquals(body, redactSecrets(buildGateWedgeDiagnosticBody(DETAILED)));
+  assertStringIncludes(body, REPO);
+  assertStringIncludes(body, MILESTONE_TITLE);
+  assertStringIncludes(body, GATE_VERDICT);
+  assertStringIncludes(body, ANALYSIS);
+});
+
+Deno.test("privateGateWedgeDiagnosticTitle - stable for one repo and branch, distinct across branches and repos, a SHA-256 digest of them (Issue #4780)", async () => {
+  const title = await privateGateWedgeDiagnosticTitle(REPO, MILESTONE);
+  assertEquals(
+    title,
+    await privateGateWedgeDiagnosticTitle(REPO, MILESTONE),
+    "the same inputs give the same title, so the dedup search finds it",
+  );
+
+  const otherBranch = await privateGateWedgeDiagnosticTitle(
+    REPO,
+    "milestone/other",
+  );
+  const otherRepo = await privateGateWedgeDiagnosticTitle(
+    "owner/other",
+    MILESTONE,
+  );
+  assert(title !== otherBranch, "a different branch gives a different title");
+  assert(title !== otherRepo, "a different repository gives a different title");
+
+  const digest = new Uint8Array(
+    await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`${REPO} ${MILESTONE}`),
+    ),
+  );
+  const hex = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  assertEquals(
+    title,
+    "Milestone sync gate cannot verify a resolution it keeps refusing: " +
+      `a private fleet repo (${hex.slice(0, 12)})`,
+  );
+  assert(title !== gateWedgeDiagnosticTitle(REPO, MILESTONE));
 });

@@ -4876,10 +4876,16 @@ things close that loop, and none of them asks a human:
    side's tip moves, which is a different merge and re-arms the ladder. A
    landed sync clears it outright.
 3. **The gate is what gets reported.** A wedge files **one** worker diagnostic
-   in `stSoftwareAU/VibeCoder` naming the repository, the milestone, the gate's
-   verdict and the count — so the *gate* gets fixed — instead of a
-   "needs a human" comment on an arbitrary sibling issue of the milestone,
-   where nobody looks. A conflict is the worker's to resolve end to end.
+   in `stSoftwareAU/VibeCoder` so the *gate* gets fixed, instead of a "needs a
+   human" comment on an arbitrary sibling issue of the milestone, where nobody
+   looks. For a public repository it names the repository, milestone, gate
+   verdict and count. For a private repository, or when the visibility lookup
+   fails, the title ends `a private fleet repo (<12 hex of sha256(repo + " " + branch)>)`;
+   the issue or repeat comment retains only the count, timestamp and tip SHAs
+   alongside generic context and fix text. The full report (repository,
+   branches, milestone, conflict key, verdict and analysis) is redacted and
+   written to the host log at `warn` (Issue #4780). A conflict is the worker's
+   to resolve end to end.
 
 Issue #4328 adds a bound that the wedge does not supply. A gate refusal of the
 resolution is a refusal too: it is counted in `refusedCycles`, and once the
