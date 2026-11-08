@@ -14,7 +14,9 @@ branch update reach GitHub in **one push**. A second push just to update the
 branch would run the whole CI again and roughly double the Actions cost of the
 repair. After Codex reports a completed fix, the babysitter commits the fix and
 the merge together as one merge commit, checks the fix (not the base's own
-changes) for whitespace errors and conflict markers, and rechecks the PR. It
+changes) for whitespace errors and conflict markers. Before committing it also
+runs the repository's ShellCheck policy on affected staged scripts, then
+rechecks the PR. It
 pushes only if the PR still matches the original head. A base merge on its own
 is also pushed when the agent made no change, so the branch is never left
 behind. After a push, the babysitter synchronises the PR description from the
@@ -161,7 +163,10 @@ can use this to publish a separate babysitter heartbeat and failure record. Dry
 runs and runs limited to a repository or PR do not report service health.
 
 The host needs `gh`, `git` and `deno`, and the Claude CLI with a working Claude
-credential for the review verifier (Issue #4657). The read-only verifier uses
+credential for the review verifier (Issue #4657). ShellCheck must be on the
+babysitter's PATH for repositories whose CI requires it; a find policy requires
+the version pinned by `SHELLCHECK_VERSION`. A missing or mismatched binary is
+reported as an infrastructure failure. The read-only verifier uses
 Claude only, regardless of the configured agent provider or fallback; it refuses
 a fallback that cannot enforce its isolation. Without them the verifier
 reports an outage and every review stays open. A pass that pushed nothing is

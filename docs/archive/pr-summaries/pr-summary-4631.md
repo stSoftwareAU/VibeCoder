@@ -33,8 +33,9 @@ Version bump: none; no version file changed.
   are excluded, and a configuration with a symlink in any component fails
   closed. Discovery joins shell line continuations and checks
   executable commands, including wrapped invocations, excluding logs, installation
-  arguments, comments and script path arrays. ShellCheck container images and
-  shell `-c` invocations are detected as unsupported. Unsupported wrappers fail closed.
+  arguments, comments and script path arrays. ShellCheck container images,
+  including registry prefixes and digests, and shell `-c` invocations with
+  preceding or clustered options are detected as unsupported. Unsupported wrappers fail closed.
   YAML block headers accept trailing comments.
 - Value-taking options (`-e -s -S -o -i -P -f -W` and their long forms,
   including `--opt=value` and attached `-Swarning`) consume their value instead
@@ -87,8 +88,8 @@ integration suites `shellcheck_gate_integration_test.ts` and
 `shellcheck_publication_test.ts` cover real diagnostics, repair and WIP entry
 points, the babysitter, missing-tool recovery and ambient configuration.
 
-Read and updated the operator manual's **Agent pre-push hook and the
-changed-files check** section in `docs/CONFIGURATION.md`.
+Updated the pre-push hook manual in `docs/CONFIGURATION.md` and the babysitter
+manual's host requirements and pre-commit validation, as well as the README.
 `docs/pre-pr-ci-audit.md` (WIP checkpoint pushes "ungated on purpose") is true
 again and unchanged. No second copy of the ShellCheck execution rule was found;
 all publication paths call the same implementation.
@@ -112,7 +113,12 @@ all publication paths call the same implementation.
   later edit invalidating a clean result) live in
   `worker/deno/tests/shellcheck_gate_integration_test.ts`.
 - `pre_push_gate_test.ts::ShellCheck discovers continued commands and refuses indirect invocations`
-  covers continued `find` commands, container images and shell `-c` calls.
+  covers continued `find` commands, registry-prefixed and digest container
+  images and shell `-c` calls with preceding or clustered options.
+  `pre_push_gate_test.ts::runPrePushGate selects nearest tracked config and respects explicit rcfile`
+  checks root and nested config selection and an explicit policy rcfile;
+  `shellcheck_gate_integration_test.ts::runPrePushGate applies tracked config to real ShellCheck diagnostics`
+  checks SC2086 is suppressed with the tracked config and rejected without it.
   `pre_push_gate_test.ts::ShellCheck skips scripts under symlinked parents and missing directory paths`
   covers changed and staged paths through a symlinked parent and a directory
   replaced by a file; `pre_push_gate_test.ts::ShellCheck refuses a configuration below a symlinked directory`

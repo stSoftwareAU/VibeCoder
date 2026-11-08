@@ -607,20 +607,47 @@ async function workflowDelegatesToShellcheck(
 
 function isShellcheckInvocation(line: string): boolean {
   const tokens = tokeniseCommand(line);
-  const shellCommand = ["bash", "sh"].includes(tokens[0] ?? "") &&
-    tokens[1] === "-c" && tokens[2] !== undefined &&
-    executableShellCommands(tokens[2]).some(isShellcheckInvocation);
-  const dockerImage = tokens[0] === "docker" && tokens[1] === "run" &&
-    tokens.some((token) => /^koalaman\/shellcheck(?::[^\s]+)?$/.test(token));
+  const commandOption = tokens.findIndex((token, i) =>
+    i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)
+  );
+  const shellCommand =
+    ["bash", "sh"].includes(tokens[0]?.split("/").at(-1) ?? "") &&
+    commandOption > 0 && tokens[commandOption + 1] !== undefined &&
+    executableShellCommands(tokens[commandOption + 1]!).some(
+      isShellcheckInvocation,
+    );
+  const dockerImage = tokens[0] === "docker" &&
+    tokens.some((token) =>
+      /(?:^|\/)koalaman\/shellcheck(?::[^\s@]+)?(?:@[^\s]+)?$/.test(token)
+    );
+  const indirect = ![
+    "echo",
+    "printf",
+    "apt",
+    "apt-get",
+    "brew",
+    "curl",
+    "wget",
+    "tar",
+    "mv",
+    "cp",
+    "chmod",
+    "install",
+  ]
+    .includes(tokens[0] ?? "") &&
+    tokens.slice(1).some((token, index, rest) =>
+      (token.split("/").at(-1)?.includes("shellcheck") ?? false) &&
+      rest[index + 1] !== "--version"
+    );
   const wrapped = ["xargs", "parallel", "do", "time", "exec", "nice", "timeout"]
     .includes(tokens[0] ?? "") &&
     tokens.slice(1).some((token, index, rest) =>
       token.split("/").at(-1) === "shellcheck" &&
       rest[index + 1] !== "--version"
     );
-  return (tokens[0]?.split("/").at(-1) === "shellcheck" &&
+  return ((tokens[0]?.split("/").at(-1)?.includes("shellcheck") ?? false) &&
     tokens[1] !== "--version") ||
-    wrapped || shellCommand || dockerImage ||
+    wrapped || shellCommand || dockerImage || indirect ||
     (tokens[0] === "find" &&
       tokens.some((t, i) => t === "-exec" && tokens[i + 1] === "shellcheck"));
 }

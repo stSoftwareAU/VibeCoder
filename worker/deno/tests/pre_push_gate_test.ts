@@ -268,6 +268,11 @@ Deno.test("ShellCheck discovers continued commands and refuses indirect invocati
     for (
       const command of [
         "docker run --rm koalaman/shellcheck:stable scripts/*.sh",
+        "docker run --rm docker.io/koalaman/shellcheck:stable scripts/x.sh",
+        "docker run --rm koalaman/shellcheck@sha256:abcdef scripts/x.sh",
+        "docker container run --rm koalaman/shellcheck:stable scripts/x.sh",
+        "bash -ec 'shellcheck scripts/x.sh'",
+        "bash -e -c 'shellcheck scripts/x.sh'",
         "bash -c 'shellcheck scripts/*.sh'",
       ]
     ) {
@@ -742,6 +747,65 @@ Deno.test("runPrePushGate: paths outside CI's .sh selection are excluded", async
     assert(result.ok, result.ok ? "" : result.error.message);
     assertEquals(result.value.checksRun, []);
     assert(!seen.some((command) => command.includes("shellcheck")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate selects nearest tracked config and respects explicit rcfile", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await Deno.mkdir(`${clone}/scripts/deep`, { recursive: true });
+    let tip = await commitShellcheckFiles(clone, {
+      "a.sh": "#!/bin/sh\ntrue\n",
+      "scripts/b.sh": "#!/bin/sh\ntrue\n",
+      "scripts/deep/c.sh": "#!/bin/sh\ntrue\n",
+      ".shellcheckrc": "disable=SC2086\n",
+      "scripts/.shellcheckrc": "disable=SC2034\n",
+    });
+    const run = (sha: string) =>
+      runPrePushGate({
+        cwd: clone,
+        stdin: prePushInput(sha),
+        preFlightCommands: [],
+        ...stubShellcheck(),
+        runner: recordingRunner(() => false, []),
+      });
+    const result = await run(tip);
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const commands = result.value.checksRun.filter((c) =>
+      c.includes("shellcheck")
+    );
+    for (
+      const [script, config] of [["a.sh", ".shellcheckrc"], [
+        "scripts/b.sh",
+        "scripts/.shellcheckrc",
+      ], ["scripts/deep/c.sh", "scripts/.shellcheckrc"]]
+    ) {
+      assert(
+        commands.some((c) =>
+          c.includes(`'${script}'`) && c.includes(`'--rcfile' '${config}'`)
+        ),
+        commands.join("\n"),
+      );
+    }
+    await Deno.writeTextFile(
+      `${clone}/.github/workflows/validate-scripts.yml`,
+      SHELLCHECK_WORKFLOW("--rcfile .shellcheckrc"),
+    );
+    await git(clone, "add", ".github/workflows/validate-scripts.yml");
+    await git(clone, "commit", "-qm", "explicit config");
+    tip = await git(clone, "rev-parse", "HEAD");
+    const explicit = await run(tip);
+    assert(explicit.ok, explicit.ok ? "" : explicit.error.message);
+    for (
+      const command of explicit.value.checksRun.filter((c) =>
+        c.includes("shellcheck")
+      )
+    ) {
+      assertEquals(command.match(/--rcfile/g)?.length, 1);
+      assert(!command.includes("--norc"));
+    }
   } finally {
     await Deno.remove(root, { recursive: true });
   }

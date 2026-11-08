@@ -398,14 +398,16 @@ launcher, not the worker's toolchain:
 
 The coding-agent CLI, `gh`, `jq`, `timeout`, headless Chromium and the
 monitored repositories' build toolchains are baked into the image — do not
-install them on the host. See the
+install them on the host for the worker. The separate fleet PR babysitter has
+host requirements described below. See the
 [Deployment Guide](docs/DEPLOYMENT.md#-run-mode-container-only) and
 [Containment](docs/CONTAINMENT.md).
 
-Optional: [shellcheck](https://github.com/koalaman/shellcheck) is **not** run by
-`./quality.sh` — bash linting is owned by each repo's own CI, and
-this repo lints its shell scripts in the `validate-scripts` GitHub Actions
-workflow. Install it only if you want to reproduce that CI check locally.
+[ShellCheck](https://github.com/koalaman/shellcheck) is not run by
+`./quality.sh`; each repository's CI owns its shell lint policy. The pre-push
+gate runs that policy on affected scripts, and the fleet PR babysitter needs
+ShellCheck on its host PATH to validate repairs. Find policies require the
+version pinned by CI. See the [babysitter manual](docs/workflows/fleet-pr-babysitter.md).
 
 Optional: [semgrep](https://semgrep.dev/docs/getting-started/quickstart) **is**
 run by `./quality.sh`, over the branch's changed files, using the same

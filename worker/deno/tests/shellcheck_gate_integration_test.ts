@@ -13,6 +13,38 @@ import {
 const REAL_SHELLCHECK = await requireRealShellcheck();
 const ZERO = "0".repeat(40);
 
+Deno.test("runPrePushGate applies tracked config to real ShellCheck diagnostics", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    const tip = await commitShellcheckFiles(
+      clone,
+      {
+        "script.sh": "#!/bin/sh\necho $1\n",
+        ".shellcheckrc": "disable=SC2086\n",
+      },
+      "",
+      REAL_SHELLCHECK.version,
+    );
+    const configured = await runPrePushGate({
+      cwd: clone,
+      stdin: prePushInput(tip),
+      preFlightCommands: [],
+    });
+    assert(configured.ok, configured.ok ? "" : configured.error.message);
+    await git(clone, "rm", ".shellcheckrc");
+    await git(clone, "commit", "-qm", "remove config");
+    const without = await runPrePushGate({
+      cwd: clone,
+      stdin: prePushInput(await git(clone, "rev-parse", "HEAD")),
+      preFlightCommands: [],
+    });
+    assert(!without.ok);
+    assert(without.error.message.includes("SC2086"), without.error.message);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 const GIT_ENV = ["-c", "user.email=t@e", "-c", "user.name=t"];
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
