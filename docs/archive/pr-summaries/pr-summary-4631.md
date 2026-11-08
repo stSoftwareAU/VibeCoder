@@ -160,3 +160,9 @@ all publication paths call the same implementation.
   and `pre_push_gate_test.ts::runPrePushGate skips committed script symlinks on change and config recheck`.
 - The manifest classifier's required-tool rule is covered by
   `integration_source_classifier_test.ts::integration classifier recognises a required real ShellCheck`.
+- The merged base's expectation that repairs without configured pre-flight
+  commands receive no spec is obsolete. The fix verifier still runs and
+  spelling repairs still receive their push guarantee; both now receive the
+  ShellCheck-only spec. Coverage:
+  `pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)`
+  and `pr_side_gate_guarantee_4876_test.ts::prSpellingProcessorCommand - prompt budget and push checks with no pre-flight (Issue #4876)`.

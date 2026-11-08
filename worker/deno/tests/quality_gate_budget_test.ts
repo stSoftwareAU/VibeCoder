@@ -164,3 +164,95 @@ Deno.test("quality_gate_budget - the prompt lines quote the repo's own measureme
   assertStringIncludes(lines, "30m");
   assertStringIncludes(lines, "measured");
 });
+
+Deno.test("quality_gate_budget - the default and full-gate records say the worker runs the gate again (Issue #4876)", () => {
+  // Both branches: a fitting budget (3600s) and a refused one (600s).
+  for (const runBudget of [3600, 600]) {
+    const defaulted = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      runBudget,
+    );
+    const fullGate = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      runBudget,
+      "full-gate",
+    );
+    assertEquals(fullGate, defaulted, `budget ${runBudget}`);
+    assertStringIncludes(
+      defaulted.join("\n"),
+      "again before the PR is raised",
+      `budget ${runBudget}`,
+    );
+  }
+});
+
+Deno.test("quality_gate_budget - each push record names only checks its path runs (Issue #4876)", () => {
+  // Both branches: a fitting budget (3600s) and a refused one (600s).
+  for (const runBudget of [3600, 600]) {
+    const preFlightOnly = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      runBudget,
+      "pre-flight-only",
+    ).join("\n");
+    assertStringIncludes(preFlightOnly, "pre-flight", `budget ${runBudget}`);
+    assertStringIncludes(
+      preFlightOnly,
+      "The worker does not run a fix verifier",
+      `budget ${runBudget}`,
+    );
+    assertEquals(preFlightOnly.includes("runs no checks"), false);
+    assertStringIncludes(
+      preFlightOnly,
+      "Configured pre-flight commands enable changed-file checks",
+    );
+    assertNotMatch(
+      preFlightOnly,
+      /again before the PR is raised/,
+      `budget ${runBudget}`,
+    );
+    assertStringIncludes(
+      preFlightOnly,
+      GATE_SKIP_MARKER,
+      `budget ${runBudget}`,
+    );
+
+    const ciFix = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      runBudget,
+      "ci-fix",
+    ).join("\n");
+    assertStringIncludes(
+      ciFix,
+      "if Claude leaves uncommitted changes",
+      `budget ${runBudget}`,
+    );
+    assertStringIncludes(
+      ciFix,
+      "no checks before that push",
+      `budget ${runBudget}`,
+    );
+    assertNotMatch(ciFix, /runs the full gate before the PR is raised/);
+
+    const customPr = buildQualityGateBudgetLines(
+      "./quality.sh",
+      undefined,
+      runBudget,
+      "agent-pre-push",
+    ).join("\n");
+    assertStringIncludes(
+      customPr,
+      "agent pre-push hook",
+      `budget ${runBudget}`,
+    );
+    assertStringIncludes(
+      customPr,
+      "changed-file checks",
+      `budget ${runBudget}`,
+    );
+    assertNotMatch(customPr, /worker runs the gate before the PR is raised/);
+  }
+});

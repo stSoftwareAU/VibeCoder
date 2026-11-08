@@ -2895,10 +2895,26 @@ agents were still inside it at 49 to 68 minutes. Starting it with ten minutes
 left cannot end well: the gate does not finish, nothing it reports gets fixed,
 and the runway needed to commit and push is gone.
 
-Nothing is lost by skipping it. The worker runs its own gate
+On an issue run, nothing is lost by skipping it. The worker runs its own gate
 (`phases/quality_gate_remediation_phase.ts`) after the agent stops, before the
 PR is raised. The agent's run is the expensive copy — the only one paid for out
 of the run budget.
+
+The push guarantee follows the flow. Issue completion runs the full worker gate
+before creating the PR. A CI fix attempts that gate when Claude leaves
+uncommitted changes after its attempt, then runs configured pre-flight commands
+before the worker push; with no such changes and no pre-flight commands, it runs
+no checks before that push. PR feedback and spelling fixes do not run the full
+gate before the worker push. Configured pre-flight commands also enable
+changed-file checks. PR-review feedback runs its independent fix verifier even
+without pre-flight configuration; persistent findings can block the push.
+Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
+and configured pre-flight commands when the agent pushes; the worker verifies
+that push afterwards. PR-side callers pass their flow to
+`buildQualityInstructions()`; issue completion uses its full-gate default (Issue #4876). The skip record names that path's checks and tells the
+agent to name the checks it ran.
+Custom PR prompts take their prompt-time budget from `pr_feedback_timeout`,
+the same key that limits their run.
 
 So the instruction the agent receives is budget-aware, and it comes from one
 place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
@@ -2921,21 +2937,27 @@ that passed.
 `gate + 180 s`, so a repo whose gate measurably takes 40 minutes refuses it from
 about 17 minutes into an hour-long run and does not offer it again. That is the
 intended trade: on such a repo the agent could never have finished the gate and
-acted on it anyway, and the worker runs it before the PR is raised regardless. A
-repo in that position should shorten its gate or set `quality_command` to the
-subset worth running locally.
+acted on it anyway, and issue completion runs the worker gate before the PR is
+raised. A repo in that position should shorten its gate or set `quality_command`
+to the subset worth running locally.
 
 ```mermaid
 flowchart TD
-    A["Agent finishing its change"] --> B{".vibe-run-budget.md exists?"}
-    B -- "no" --> C["Run the full gate once, in the foreground"]
-    B -- "yes" --> D{"remaining ≥ gate + 180s tail?"}
-    D -- "yes" --> C
-    D -- "no" --> E["Targeted checks only<br/>+ skip note in the PR"]
-    C --> F["Worker gate before the PR is raised"]
+    A["Agent builds a change"] --> B{"Prompt flow"}
+    B -->|"issue completion"| C{"Gate fits the budget?"}
+    B -->|"CI fix"| C
+    B -->|"PR feedback / spelling"| C
+    B -->|"custom PR"| C
+    C -->|"yes"| D["Agent runs the full gate"]
+    C -->|"no"| E["Targeted checks + skip record naming this flow's push checks"]
+    D --> F{"Worker push path"}
     E --> F
+    F -->|"issue completion"| G["Worker full gate before PR creation"]
+    F -->|"CI fix"| H["Worker gate attempt if uncommitted changes remain; configured pre-flight before push"]
+    F -->|"feedback / spelling"| I["Configured pre-flight and changed-file checks; PR-review fix verifier even without configuration"]
+    F -->|"custom PR"| J["Agent pre-push hook runs changed-file checks and configured pre-flight; worker verifies push"]
     style E fill:#f4a261,stroke:#b5651d,color:#000
-    style C fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
 No prompt template may hard-code its own "run the gate before you push":

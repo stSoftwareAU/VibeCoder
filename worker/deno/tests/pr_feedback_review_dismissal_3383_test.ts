@@ -41,6 +41,7 @@ import type {
 } from "../lib/issue_worker_wiring.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
+import { buildQualityInstructions } from "../lib/repo_config.ts";
 import { verifyFeedbackFix } from "../lib/pr_feedback_verifier.ts";
 import { HOST_DISK_PARK_NOTE } from "../lib/heavy_build_gate.ts";
 
@@ -276,6 +277,7 @@ interface RunOptions {
   logger?: Logger;
   captured?: CapturedGh;
   feedbackVerifierFn?: PrFeedbackProcessorDeps["feedbackVerifierFn"];
+  qualityInstructions?: string;
   finaliseError?: string;
   unpushedState?: number | "error" | "throw";
 }
@@ -290,6 +292,9 @@ async function runScenario(options: RunOptions) {
   try {
     let callCount = 0;
     const prompts: string[] = [];
+    const preFlightSpecs: Array<
+      Parameters<GitDeps["commitAndPushPending"]>[4]
+    > = [];
     const behaviours = options.runBehaviours ?? ["ok"];
     const mockClaude: Partial<ClaudeDeps> = {
       runClaudeWithRetry: (async (opts: { prompt: string }) => {
@@ -345,6 +350,7 @@ async function runScenario(options: RunOptions) {
     const gitOverrides: Partial<GitDeps> = {
       commitAndPushPending:
         (async (...args: Parameters<GitDeps["commitAndPushPending"]>) => {
+          preFlightSpecs.push(args[4]);
           if (options.finaliseError) {
             return { ok: false, error: new Error(options.finaliseError) };
           }
@@ -372,6 +378,7 @@ async function runScenario(options: RunOptions) {
       workDir,
       workRoot: workDir,
       feedbackVerifierFn: options.feedbackVerifierFn,
+      qualityInstructions: options.qualityInstructions,
       describeUnpushedFn: async () => {
         options.events.push("measure-unpushed");
         if (options.unpushedState === "throw") {
@@ -396,7 +403,7 @@ async function runScenario(options: RunOptions) {
     };
 
     const result = await processPrFeedback(options.input, processorDeps);
-    return { captured, result, prompts };
+    return { captured, result, prompts, preFlightSpecs };
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -1133,9 +1140,13 @@ Deno.test(
 Deno.test("review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)", async () => {
   const events: string[] = [];
   let checks = 0;
-  const { result, captured } = await runScenario({
+  const { result, captured, prompts, preFlightSpecs } = await runScenario({
     input: makeInput(),
     events,
+    qualityInstructions: buildQualityInstructions(undefined, "org/repo", {
+      runBudgetSeconds: 600,
+      pushGuarantee: "pr-review-verifier",
+    }),
     runBehaviours: ["ok", "ok", "ok"],
     feedbackVerifierFn: () => {
       checks++;
@@ -1146,6 +1157,19 @@ Deno.test("review-fix verifier - persistent findings stay outstanding without pu
     },
   });
   assertEquals(checks, 2);
+  assertEquals(
+    preFlightSpecs,
+    [
+      { commands: [], shellcheckOnly: true },
+      { commands: [], shellcheckOnly: true },
+    ],
+    "repairs without configured commands still check ShellCheck",
+  );
+  assertStringIncludes(
+    prompts[0] ?? "",
+    "The worker runs its fix verifier even without configured pre-flight commands",
+  );
+  assertEquals((prompts[0] ?? "").includes("runs no checks"), false);
   assertEquals(result.ok && result.value.processed, false);
   assertEquals(result.ok && result.value.changesPushed, false);
   assertEquals(events.some((e) => e === "commitAndPushPending"), false);

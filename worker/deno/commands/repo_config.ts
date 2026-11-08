@@ -98,7 +98,9 @@ export const repoConfigCommand: Command = {
         if (!repo) {
           return { success: false, message: "Missing --repo argument" };
         }
-        const instructions = buildQualityInstructions(repoConfigs, repo);
+        const instructions = buildQualityInstructions(repoConfigs, repo, {
+          pushGuarantee: "full-gate",
+        });
         return { success: true, message: instructions };
       }
 

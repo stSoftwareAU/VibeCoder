@@ -651,6 +651,13 @@ export interface ProductionDepsOptions {
   logger?: Logger;
   /** Optional config override. */
   config?: WorkerConfig;
+  /** Test seams for the PR-feedback production callback. */
+  setupRepoFn?: typeof setupRepo;
+  runGitCommandFn?: typeof runGitCommand;
+  processPrFeedbackFn?: typeof processPrFeedback;
+  /** Test seams for the custom PR-prompt production callback. */
+  dispatchCustomLabelPrPromptsFn?: typeof dispatchCustomLabelPrPrompts;
+  buildCustomPrPromptFn?: typeof buildCustomPrPrompt;
   /** Coding-run seams: real phases remain injectable without live GitHub writes (#3977). */
   workerDeps?: WorkerDeps;
   workOnIssue?: typeof workOnIssue;
@@ -897,6 +904,13 @@ export async function createProductionRunCoreDeps(
 ): Promise<{ deps: RunCoreDeps; config: RunCoreConfig; cleanup: () => void }> {
   const { repoDir, workDir, githubUser } = options;
   const env = options.env ?? processEnvLookup;
+  const setupRepoFn = options.setupRepoFn ?? setupRepo;
+  const runGitCommandFn = options.runGitCommandFn ?? runGitCommand;
+  const processPrFeedbackFn = options.processPrFeedbackFn ?? processPrFeedback;
+  const dispatchCustomLabelPrPromptsFn =
+    options.dispatchCustomLabelPrPromptsFn ?? dispatchCustomLabelPrPrompts;
+  const buildCustomPrPromptFn = options.buildCustomPrPromptFn ??
+    buildCustomPrPrompt;
 
   // Load config
   const configPath = env("CONFIG_PATH") ?? `${repoDir}/.config.json`;
@@ -2536,7 +2550,7 @@ export async function createProductionRunCoreDeps(
         // Set up the target repository so Claude runs with correct context.
         // Without this, Claude runs in the worker directory instead of
         // the target repo with the PR branch checked out (Issue #1297).
-        const repoSetupResult = await setupRepo(comment.repo, workDir);
+        const repoSetupResult = await setupRepoFn(comment.repo, workDir);
         if (!repoSetupResult.success) {
           logger.error("Failed to set up repo for PR feedback", {
             repo: comment.repo,
@@ -2549,15 +2563,15 @@ export async function createProductionRunCoreDeps(
         // Checkout and sync the PR branch
         const branchName = comment.branchName;
         try {
-          await runGitCommand(
+          await runGitCommandFn(
             buildFetchArgs("origin", branchName),
             { cwd: repoWorkDir },
           );
-          await runGitCommand(
+          await runGitCommandFn(
             buildCheckoutArgs(branchName),
             { cwd: repoWorkDir },
           );
-          await runGitCommand(
+          await runGitCommandFn(
             buildPullArgs("origin", branchName),
             { cwd: repoWorkDir },
           );
@@ -2578,10 +2592,18 @@ export async function createProductionRunCoreDeps(
           decodedBody = comment.encodedBody;
         }
 
-        // Load quality and custom instructions for this repo
+        // Load quality and custom instructions for this repo. The PR already
+        // exists, so describe conditional push checks and the PR-review
+        // verifier without promising a full gate (Issue #4876).
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           comment.repo,
+          {
+            runBudgetSeconds: reactivePhaseTimeout(config, "pr-feedback"),
+            pushGuarantee: comment.commentType === "pr_review"
+              ? "pr-review-verifier"
+              : "pre-flight-only",
+          },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,
@@ -2591,7 +2613,7 @@ export async function createProductionRunCoreDeps(
         // Issue #1072: Pass workerId for distributed PR comment claiming
         const workerId = getWorkerUniqueId(config.workerName);
 
-        const feedbackResult = await processPrFeedback(
+        const feedbackResult = await processPrFeedbackFn(
           {
             repo: comment.repo,
             prNumber: comment.prNumber,
@@ -4279,7 +4301,7 @@ export async function createProductionRunCoreDeps(
           // worker directory. Set by `checkout`, read by the two seams after
           // it; scoped to this invocation, so no cycle sees another's.
           let prRunWorkDir: string | undefined;
-          const value = await dispatchCustomLabelPrPrompts({
+          const value = await dispatchCustomLabelPrPromptsFn({
             logger,
             ghCommandFn: runGhCommand,
             findCandidates: () =>
@@ -4336,7 +4358,7 @@ export async function createProductionRunCoreDeps(
               }
             },
             buildPrompt: (candidate) =>
-              buildCustomPrPrompt({
+              buildCustomPrPromptFn({
                 repo: candidate.repo,
                 prNumber: String(candidate.prNumber),
                 mapping: candidate.mapping,
@@ -4344,6 +4366,13 @@ export async function createProductionRunCoreDeps(
                 qualityInstructions: buildQualityInstructions(
                   config.repoConfig,
                   candidate.repo,
+                  {
+                    runBudgetSeconds: reactivePhaseTimeout(
+                      config,
+                      "pr-feedback",
+                    ),
+                    pushGuarantee: "agent-pre-push",
+                  },
                 ),
                 customInstructions: getCustomInstructions(
                   config.repoConfig,
