@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4905",
   "definition": "Snapshot and restore the issue clone's working tree around the Deno mutation gate, so a file a mutant's test run writes is not committed by the worker's recovery commit: mutation_tree_guard.ts (#4905)",
   "status": "claimed",
-  "sweptAt": "7a562f8d71fb9ad3233c8956732b64f0fdba9ffa",
+  "sweptAt": "362b4956396f66a3c5157d77925bf083db3ed41b",
   "paths": [
     "worker/deno/lib/mutation_tree_guard.ts"
   ]
