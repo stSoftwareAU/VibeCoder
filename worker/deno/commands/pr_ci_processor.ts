@@ -29,7 +29,10 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import { decodeAnnotations } from "../lib/pr_spelling_processor.ts";
-import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createDefaultDeps,
+  type WorkerDeps,
+} from "../lib/issue_worker_wiring.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -39,18 +42,20 @@ import { getWorkerUniqueId } from "../lib/worker_identity.ts";
 import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
+import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
 
 // Re-export library functions for external use
 export { formatCiAnnotations };
 export type { CiFixResult };
 
 /** The pr-ci-processor command. */
-export const prCiProcessorCommand: Command = {
+export const prCiProcessorCommand = {
   name: "pr-ci-processor",
   description: "Process CI check failures on PRs (Issue #967, #1230)",
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    workerDeps?: WorkerDeps,
   ): Promise<CommandResult<CiFixResult>> {
     const operation = String(args["operation"] ?? "");
 
@@ -102,7 +107,7 @@ export const prCiProcessorCommand: Command = {
         };
       }
 
-      const deps = createDefaultDeps();
+      const deps = workerDeps ?? createDefaultDeps();
 
       // Top-level try/catch to prevent silent crashes (Issue #1230)
       try {
@@ -153,7 +158,10 @@ export const prCiProcessorCommand: Command = {
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           repo,
-          { runBudgetSeconds: config.ciFixTimeout || config.claudeTimeout },
+          {
+            runBudgetSeconds: config.ciFixTimeout || config.claudeTimeout,
+            pushGuarantee: "ci-fix",
+          },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,
@@ -177,6 +185,7 @@ export const prCiProcessorCommand: Command = {
           // Issue #1662: heartbeat, marker and milestone state live in the
           // work root, not in the clone `setupRepo` returned above.
           workRoot: config.workDir,
+          stateDir: resolveCiCheckStateDir(config.workDir),
           qualityInstructions,
           customInstructions,
           // Issue #1824: CI fix uses its own timeout, distinct from the
@@ -254,4 +263,4 @@ export const prCiProcessorCommand: Command = {
         `Unknown operation: ${operation}. Valid: format-ci-annotations, process`,
     };
   },
-};
+} satisfies Command;
