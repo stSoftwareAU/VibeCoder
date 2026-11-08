@@ -1541,8 +1541,9 @@ which of the three you chose, and why, in the PR summary.
 
 ## Quality Gates
 
-Iterate with the fast checks — `deno fmt`, `deno lint`, `deno check`, and only
-the test files your change touches. Then run `deno task check:manifests`
+Iterate with the fast checks — `deno fmt` from `worker/deno` (hand-wrap
+Markdown elsewhere), `deno lint`, `deno check`, and only the test files your
+change touches. Then run `deno task check:manifests`
 (Issue #1483): the tree-scanning completeness tests — every new `lib/` module
 claimed by a sweep slice, every `VIBE_*` name registered, every prompt and
 integration suite in its manifest — in a few seconds, under read and env

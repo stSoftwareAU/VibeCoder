@@ -8,6 +8,7 @@ import { assertEquals } from "@std/assert";
 import {
   type CommandOutput,
   getRepoVisibility,
+  isRepoPublic,
   type RepoVisibilityOptions,
 } from "../lib/repo_visibility.ts";
 
@@ -85,4 +86,48 @@ Deno.test("repo_visibility - calls gh REST API (not GraphQL) with --jq filter", 
   assertEquals(capturedCmd.includes("--jq"), true);
   const jqIdx = capturedCmd.indexOf("--jq");
   assertEquals(capturedCmd[jqIdx + 1], ".visibility");
+});
+
+Deno.test("isRepoPublic - true only when the lookup resolves 'public'", async () => {
+  let capturedArgs: string[] = [];
+  const result = await isRepoPublic("owner/repo", (args) => {
+    capturedArgs = args;
+    return Promise.resolve("public\n");
+  });
+  assertEquals(result, true);
+  // The leading "gh" is stripped: ghFn receives only the gh arguments.
+  assertEquals(capturedArgs, [
+    "api",
+    "repos/owner/repo",
+    "--jq",
+    ".visibility",
+  ]);
+});
+
+Deno.test("isRepoPublic - false for a private repository", async () => {
+  assertEquals(
+    await isRepoPublic("owner/repo", () => Promise.resolve("private")),
+    false,
+  );
+});
+
+Deno.test("isRepoPublic - false for an unrecognised visibility (fail-safe)", async () => {
+  assertEquals(
+    await isRepoPublic("owner/repo", () => Promise.resolve("internal")),
+    false,
+  );
+});
+
+Deno.test("isRepoPublic - false when the gh call rejects with an Error", async () => {
+  assertEquals(
+    await isRepoPublic("owner/repo", () => Promise.reject(new Error("boom"))),
+    false,
+  );
+});
+
+Deno.test("isRepoPublic - false when the gh call rejects with a non-Error", async () => {
+  assertEquals(
+    await isRepoPublic("owner/repo", () => Promise.reject("boom")),
+    false,
+  );
 });

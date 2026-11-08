@@ -408,7 +408,12 @@ bash `worker/run_core.sh` conductor. It sequences:
    When a criterion is marked `partial` or `missing`, the PR itself is raised as
    `Part of #N` rather than `Closes #N`
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
-   closer check is what actually holds it open.
+   closer check is what actually holds it open. `assemblePrBody` also puts the
+   keyword word of any closing reference the summary quotes for an issue other
+   than the governing one into a code span (`` `close` #M ``, and likewise the
+   colon and full-URL forms), so a negated phrase copied from an acceptance
+   criterion cannot close that issue on merge (Issue #4783); code the summary
+   already holds is left as written.
 
    It spends quota the way the rest of the worker does (Issue #1477): one
    rate-limit pre-flight per sweep, a stop at the first primary-quota
@@ -4871,10 +4876,16 @@ things close that loop, and none of them asks a human:
    side's tip moves, which is a different merge and re-arms the ladder. A
    landed sync clears it outright.
 3. **The gate is what gets reported.** A wedge files **one** worker diagnostic
-   in `stSoftwareAU/VibeCoder` naming the repository, the milestone, the gate's
-   verdict and the count — so the *gate* gets fixed — instead of a
-   "needs a human" comment on an arbitrary sibling issue of the milestone,
-   where nobody looks. A conflict is the worker's to resolve end to end.
+   in `stSoftwareAU/VibeCoder` so the *gate* gets fixed, instead of a "needs a
+   human" comment on an arbitrary sibling issue of the milestone, where nobody
+   looks. For a public repository it names the repository, milestone, gate
+   verdict and count. For a private repository, or when the visibility lookup
+   fails, the title ends `a private fleet repo (<12 hex of sha256(repo + " " + branch)>)`;
+   the issue or repeat comment retains only the count, timestamp and tip SHAs
+   alongside generic context and fix text. The full report (repository,
+   branches, milestone, conflict key, verdict and analysis) is redacted and
+   written to the host log at `warn` (Issue #4780). A conflict is the worker's
+   to resolve end to end.
 
 Issue #4328 adds a bound that the wedge does not supply. A gate refusal of the
 resolution is a refusal too: it is counted in `refusedCycles`, and once the

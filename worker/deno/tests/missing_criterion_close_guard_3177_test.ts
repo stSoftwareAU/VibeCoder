@@ -31,7 +31,10 @@ import {
   withholdIssueClose,
 } from "../lib/missing_criterion_close_guard.ts";
 import { assemblePrBody } from "../lib/pr_body_sync.ts";
-import { hasClosingKeyword } from "../lib/pr_body.ts";
+import {
+  extractClosingIssueNumbers,
+  hasClosingKeyword,
+} from "../lib/pr_body.ts";
 import {
   closeIssuesForMergedPrs,
   findExistingPrForIssue,
@@ -708,7 +711,11 @@ Deno.test("cross-repository partial body preserves unrelated issue links (Issue 
     subAgentTier: undefined,
   });
   assertStringIncludes(body, "Part of stSoftwareAU/NEAT-AI-Discovery#2422");
-  assertStringIncludes(body, "Fixes #2422");
+  // Issue #4783: an unqualified #2422 names the PR's own repository, not the
+  // governing issue, so GitHub must not read it as a closing reference; the
+  // link text is kept.
+  assertStringIncludes(body, "`Fixes` #2422");
+  assertEquals(extractClosingIssueNumbers(body), []);
   assertEquals(
     /(?:closes|fixes|resolves)\s+stSoftwareAU\/NEAT-AI-Discovery#2422/i.test(
       body,

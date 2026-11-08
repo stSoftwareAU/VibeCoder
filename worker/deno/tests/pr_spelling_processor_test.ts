@@ -161,6 +161,7 @@ Deno.test("formatAnnotations - formats multiple annotations", () => {
 
 Deno.test("processSpellingFailure - succeeds with mock Claude output", async () => {
   const requests: Array<Record<string, unknown>> = [];
+  const preFlights: unknown[] = [];
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: ((request: Record<string, unknown>) => {
       requests.push(request);
@@ -178,15 +179,17 @@ Deno.test("processSpellingFailure - succeeds with mock Claude output", async () 
     github: mockGithub,
     git: {
       // Issue #1643: processor uses commitAndPushPending.
-      commitAndPushPending: (() =>
-        Promise.resolve({
+      commitAndPushPending: ((...args: unknown[]) => {
+        preFlights.push(args[4]);
+        return Promise.resolve({
           ok: true,
           value: {
             committedNewChanges: false,
             commitsPushed: 1,
             finalUnpushedCount: 0,
           },
-        })) as unknown as GitDeps["commitAndPushPending"],
+        });
+      }) as unknown as GitDeps["commitAndPushPending"],
     },
   });
 
@@ -212,6 +215,9 @@ Deno.test("processSpellingFailure - succeeds with mock Claude output", async () 
   // alone (PR #3584 review).
   assertEquals(requests.length, 1);
   assertEquals(requests[0]?.repo, makeInput().repo);
+  // Issue #4631: no pre-flight commands are configured, so the push is gated
+  // on the repository's ShellCheck policy alone.
+  assertEquals(preFlights, [{ commands: [], shellcheckOnly: true }]);
 });
 
 Deno.test("processSpellingFailure - the heartbeat state lands in the work root, not the clone (Issue #1662)", async () => {
