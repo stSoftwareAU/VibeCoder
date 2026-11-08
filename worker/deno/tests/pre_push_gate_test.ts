@@ -349,6 +349,110 @@ Deno.test("listPushedFiles: a committed symlink is not a regular file and is ski
   }
 });
 
+Deno.test("listPushedFiles: a file behind a directory later replaced by a symlink is skipped (#4909)", async () => {
+  const outside = await Deno.makeTempDir({ prefix: "vibe-pp-outside-" });
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await Deno.writeTextFile(`${outside}/file.json`, "{}\n");
+    await Deno.mkdir(`${clone}/dir`);
+    await Deno.writeTextFile(`${clone}/dir/file.json`, "{}\n");
+    await Deno.mkdir(`${clone}/keep`);
+    await Deno.writeTextFile(`${clone}/keep/ok.md`, "# Ok\n");
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "nested");
+    await git(clone, "rm", "-rq", "dir");
+    await Deno.symlink(outside, `${clone}/dir`);
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "replace dir with symlink");
+    const sha = await git(clone, "rev-parse", "HEAD");
+    const refs = parsePrePushRefs(
+      `refs/heads/main ${sha} refs/heads/main ${"0".repeat(40)}\n`,
+    );
+    assert(refs.ok);
+    const files = await listPushedFiles(refs.value, clone, async (a, c) => {
+      const out = await new Deno.Command("git", {
+        args: a,
+        cwd: c,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const d = new TextDecoder();
+      return {
+        code: out.code,
+        stdout: d.decode(out.stdout),
+        stderr: d.decode(out.stderr),
+      };
+    });
+    assert(files.ok);
+    assertEquals(files.value, ["README.md", "keep/ok.md"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("listPushedFiles: a symlinked checkout retains real files and skips escaping paths (#4909)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-pp-linked-" });
+  try {
+    const clone = `${root}/clone`;
+    const outside = `${root}/outside`;
+    const link = `${root}/link`;
+    await Deno.mkdir(`${clone}/keep`, { recursive: true });
+    await Deno.mkdir(outside);
+    await Deno.writeTextFile(`${clone}/README.md`, "# Readme\n");
+    await Deno.writeTextFile(`${clone}/keep/ok.md`, "# Ok\n");
+    await Deno.writeTextFile(`${outside}/file.json`, "{}\n");
+    await Deno.symlink(outside, `${clone}/dir`);
+    await Deno.symlink(clone, link);
+    const refs = parsePrePushRefs(
+      `refs/heads/main ${SHA_A} refs/heads/main ${ZERO}\n`,
+    );
+    assert(refs.ok);
+    const files = await listPushedFiles(
+      refs.value,
+      link,
+      () =>
+        Promise.resolve({
+          code: 0,
+          stdout: "README.md\0keep/ok.md\0dir/file.json\0",
+          stderr: "",
+        }),
+    );
+    assert(files.ok);
+    assertEquals(files.value, ["README.md", "keep/ok.md"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("listPushedFiles: an unresolvable checkout returns an Err naming the cause (#4909)", async () => {
+  const missing = `${await Deno.makeTempDir({ prefix: "vibe-pp-gone-" })}/gone`;
+  let expected = "";
+  try {
+    await Deno.realPath(missing);
+  } catch (err) {
+    assertInstanceOf(err, Error);
+    expected = err.message;
+  }
+  assert(expected !== "");
+  const sha = "a".repeat(40);
+  const refs = parsePrePushRefs(
+    `refs/heads/main ${sha} refs/heads/main ${"0".repeat(40)}\n`,
+  );
+  assert(refs.ok);
+  const files = await listPushedFiles(
+    refs.value,
+    missing,
+    () => Promise.resolve({ code: 0, stdout: "README.md\0", stderr: "" }),
+  );
+  assert(!files.ok);
+  assertEquals(
+    files.error,
+    `could not resolve checkout ${JSON.stringify(missing)}: ${expected}`,
+  );
+  await Deno.remove(missing.slice(0, -"/gone".length), { recursive: true });
+});
+
 Deno.test("runPrePushGate: doc-only push blocked by failing markdownlint", async () => {
   const { root, clone, stdin } = await makeRepoWithDocCommit();
   try {
