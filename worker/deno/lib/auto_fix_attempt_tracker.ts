@@ -145,7 +145,7 @@ export function computeFailureSignature(input: FailureSignatureInput): string {
  * key, not a security boundary — and keeps the function synchronous, so
  * callers need no `crypto.subtle` await or extra permissions.
  */
-function fnv1a64Hex(input: string): string {
+export function fnv1a64Hex(input: string): string {
   const prime = 1099511628211n;
   const mask = 0xffffffffffffffffn;
   let hash = 14695981039346656037n;

@@ -347,9 +347,9 @@ keep a process alive. The non-watch pass explicitly exits after cleanup so it
 cannot hold the supervisor. Watch mode continues running with the pending open;
 if it eventually completes, its descriptor is closed. A repair that fails this
 way publishes no PR description and dismisses no review. It is recorded as a
-failed attempt for that head, so it is not retried on this host until its state
-file is removed, as described above; a new head or a new review gets its own
-attempt. The design relies on Codex writing `--output-last-message` from outside
+failed attempt under the durable retry policy below; no manual state-file
+deletion is required. A repeated review ID alone is not new repair input.
+The design relies on Codex writing `--output-last-message` from outside
 the agent's permissions profile. That behaviour is taken from the issue and has
 not been checked against an installed Codex, so confirm it on each host, as for
 the key check in "Verifying the credential boundary" below.
@@ -393,8 +393,13 @@ Retry records live under
 versioned, atomically replaced JSON. Each record binds the repository, PR,
 stable failure identity, observed and pushed heads, blocker class, last outcome,
 infrastructure and substantive attempt counts, next eligible time, next action,
-and reconciliation state. The identity survives repair pushes; a new change
-request review gets a separate identity. A legacy create-only attempt file is
+and reconciliation state. The identity survives repair pushes and repeated
+reviews of the same problem/Fix pairs. Review IDs, verdict commentary and the
+fleet review footer do not renew the budget; changed findings do. Reviews
+without a readable body retain the per-review fallback because their inline
+feedback cannot be fingerprinted. The `findings-v1` identity starts a new
+incident once on upgrade; old retry records remain readable. A legacy
+create-only attempt file is
 migrated to a five-minute cooldown and then becomes eligible again. No manual
 state-file deletion is part of normal recovery.
 
@@ -425,7 +430,7 @@ When substantive attempts reach the configured `maxAutoFixAttempts` limit, the
 record keeps the newest five redacted evidence lines, and the babysitter posts
 an auto-fix cap marker for failed CI or a separate babysitter handoff marker
 for other incidents. Further sessions for that incident stop until
-the head or requested review changes, including green review-feedback and
+the head or requested findings change, including green review-feedback and
 merge-conflict incidents. A failed handoff is retried without another agent
 session. The shared tally also bounds sessions on a different host. A moved
 head retains the attempt history and receives a changed-diagnosis prompt with
@@ -439,6 +444,11 @@ escalation issue is created. The comment identifies the babysitter handoff, so
 it does not claim ownership of a human `needs-human` label. Explicit human
 holds stay paused until cleared. Waiting paths release the branch lock; the
 next scan logs the cause, next action, and eligible time.
+
+A missing ready marker retains up to 2,000 characters of the redacted agent
+reply in the failure, labelled as untrusted evidence. It cannot classify its
+own failure, authorise a push or dismiss a review. The existing bounded
+evidence ledger carries the cause into the next diagnosis.
 
 Local git validation, staging, commit and merge failures are code failures even
 when the diagnostic contains transport words in file paths or source text.
