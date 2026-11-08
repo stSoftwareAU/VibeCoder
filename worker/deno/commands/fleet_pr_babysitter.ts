@@ -896,6 +896,62 @@ export const HOST_GIT_HARDENING_ARGS: readonly string[] = [
   "core.fsmonitor=false",
 ];
 
+/** Replace agent-writable local config before any host publication git call. */
+export async function resetRepairCloneGitConfig(
+  dir: string,
+  repo: string,
+): Promise<void> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+    throw new Error(
+      "Refusing to publish a repair for an invalid repository name",
+    );
+  }
+  const gitDir = `${dir}/.git`;
+  const info = await Deno.lstat(gitDir);
+  if (!info.isDirectory || info.isSymlink) {
+    throw new Error(
+      "Refusing host git operations: repair .git is not a directory",
+    );
+  }
+  const config = `${gitDir}/config`;
+  const temporary = `${gitDir}/config.babysitter-${crypto.randomUUID()}`;
+  const trustedConfig = [
+    "[core]",
+    "\trepositoryformatversion = 0",
+    "\tfilemode = true",
+    "\tbare = false",
+    "\tlogallrefupdates = true",
+    '[remote "origin"]',
+    `\turl = https://github.com/${repo}.git`,
+    "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+    "",
+  ].join("\n");
+  try {
+    const file = await Deno.open(temporary, {
+      write: true,
+      createNew: true,
+      mode: 0o600,
+    });
+    try {
+      await file.write(new TextEncoder().encode(trustedConfig));
+    } finally {
+      file.close();
+    }
+    await Deno.rename(temporary, config);
+  } catch (error) {
+    try {
+      await Deno.remove(temporary);
+    } catch (removeError) {
+      if (!(removeError instanceof Deno.errors.NotFound)) throw removeError;
+    }
+    throw new Error(
+      `Could not replace agent-controlled git config before publication: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
 /**
  * Runs a repair command. git goes through the timeout/audit chokepoint
  * (Issue #1553) with a 30-minute bound, not the 60 s default.
@@ -2177,6 +2233,8 @@ export interface FixDeps {
    * `${options.exchange}/${BABYSITTER_RESPONSE_FILE}`.
    */
   startAgent?: typeof startBabysitterAgent;
+  /** Replaces agent-controlled local git config before host publication. */
+  resetGitConfig?: typeof resetRepairCloneGitConfig;
   /** Starts the PR lock renewal (default: startBranchUpdateLockRenewal). */
   startLockRenewal?: typeof startBranchUpdateLockRenewal;
   commit?: typeof validateAndCommit;
@@ -2891,6 +2949,7 @@ export async function fix(
         "agent did not report that its fix was ready; refusing to push",
       );
     }
+    await (deps.resetGitConfig ?? resetRepairCloneGitConfig)(dir, repo);
     if ((await exec("git", ["rev-parse", "HEAD"], dir)) !== pr.headRefOid) {
       throw new Error("agent changed HEAD; refusing to push");
     }

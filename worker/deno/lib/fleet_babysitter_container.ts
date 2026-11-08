@@ -10,13 +10,12 @@
  * mounted in their place, and the agent's read-only token is passed by name
  * alone (`--env GH_TOKEN`), so its value is never on a command line.
  *
- * Mounts the repair keeps from the plan (Issue #4770): the read-only checkout
- * at `/workspace`, the log directory, the staged configuration (read-only),
- * and the read-only provider credential sub-directories the agent needs to
- * run. Left out: the named volumes, the host GitHub credential store (`gh`),
- * which the repair never needs because it carries only `GH_TOKEN`, the
- * operator's custom prompt directories, and their `VIBE_CUSTOM_PROMPT_PATHS`
- * variable, which the repair does not need either.
+ * Keeps only a tracked, sanitised worker checkout, the repair scratch and
+ * enabled provider credential directories. The plan's host checkout is
+ * archived to scratch (excluding ignored files), and its configuration is
+ * scrubbed before being placed in that archive. Host logs are redirected to
+ * scratch. The GitHub store, App config copy, log directory, custom prompts
+ * and named volumes do not cross this boundary.
  *
  * Egress (Issue #4769): a plan that enforces egress (docker or podman) gets
  * its internal network and proxy from `startEgressSidecar`. A plan with a
@@ -388,7 +387,7 @@ function isCustomPromptEnvSpec(spec: string): boolean {
  */
 export function buildBabysitterRunArgs(
   plan: ContainerLaunchPlan,
-  input: { clone: string; scratch: string },
+  input: { clone: string; scratch: string; workspaceSnapshot?: string },
 ): string[] {
   const runArgs = plan.runArgs;
   if (runArgs.length === 0 || runArgs[runArgs.length - 1] !== plan.image) {
@@ -397,6 +396,30 @@ export function buildBabysitterRunArgs(
     );
   }
   const named = new Set([...plan.volumes, ...plan.resettableVolumes]);
+  const baseTarget = plan.runArgs.find((arg) =>
+    arg.startsWith("VIBE_BASE_DIR=")
+  )
+    ?.slice("VIBE_BASE_DIR=".length);
+  const configSpec = plan.runArgs.find((arg) => arg.startsWith("CONFIG_PATH="));
+  const configTarget = configSpec?.slice("CONFIG_PATH=".length)
+    .replace(/\/.config\.json$/, "");
+  const logMount = plan.mounts?.find((mount) =>
+    !mount.volume && mount.target.endsWith("/logs")
+  );
+  const baseMount = baseTarget
+    ? plan.mounts?.find((mount) => mount.target === baseTarget)
+    : undefined;
+  const configMount = configTarget
+    ? plan.mounts?.find((mount) => mount.target === configTarget)
+    : undefined;
+  if (
+    plan.mounts?.length &&
+    (!baseMount || !configMount || !logMount || !input.workspaceSnapshot)
+  ) {
+    throw new Error(
+      "refusing repair launch: plan is missing the checkout, config, log or sanitised workspace transport",
+    );
+  }
   const bodyArgs = runArgs.slice(0, -1);
   const body: string[] = [];
   for (let i = 0; i < bodyArgs.length; i++) {
@@ -419,10 +442,37 @@ export function buildBabysitterRunArgs(
       const src = colon === -1 ? value : value.slice(0, colon);
       i++;
       const destination = volumeDestination(value);
-      if (
-        named.has(src) || isGhCredentialDestination(destination) ||
-        isCustomPromptDestination(destination)
-      ) continue;
+      const mount = plan.mounts?.find((candidate) =>
+        candidate.target === destination
+      );
+      if (named.has(src) || isGhCredentialDestination(destination)) continue;
+      if (baseMount && destination === baseTarget) {
+        body.push(arg, `${input.workspaceSnapshot ?? src}:${destination}:ro`);
+        continue;
+      }
+      if (configMount && destination === configTarget) continue;
+      if (logMount && destination === logMount.target) {
+        body.push(arg, `${input.scratch}:${destination}`);
+        continue;
+      }
+      if (isCustomPromptDestination(destination)) continue;
+      if (mount && mount.source.includes("/credentials/")) {
+        // The enabled provider credential directories retain the launcher's
+        // read-only contract. The `gh` store was removed above.
+        body.push(arg, value);
+        continue;
+      }
+      if (mount && mount.volume) continue;
+      if (mount) {
+        throw new Error(
+          `refusing repair mount ${destination}: no repair transport permits it`,
+        );
+      }
+      if (plan.mounts?.length) {
+        throw new Error(
+          `refusing unclassified repair mount ${destination}`,
+        );
+      }
       body.push(arg, value);
       continue;
     }
@@ -437,7 +487,11 @@ export function buildBabysitterRunArgs(
       arg.startsWith("--env=") &&
       isCustomPromptEnvSpec(arg.slice("--env=".length))
     ) continue;
-    body.push(arg);
+    if (arg.startsWith("CONFIG_PATH=") && baseTarget) {
+      body.push(`CONFIG_PATH=${baseTarget}/.config.json`);
+    } else {
+      body.push(arg);
+    }
   }
   for (let i = 0; i < body.length; i++) {
     const arg = body[i] ?? "";
@@ -465,6 +519,81 @@ export function buildBabysitterRunArgs(
     plan.image,
     ...BABYSITTER_REPAIR_COMMAND,
   ];
+}
+
+const REPAIR_CONFIG_SECRET_KEY =
+  /(?:api_?key|private_?key|ssh_?key|access_?token|password|secret)/i;
+
+/** Remove host-only secret values while keeping declared quality credential rules. */
+function sanitiseRepairConfig(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitiseRepairConfig);
+  if (value === null || typeof value !== "object") return value;
+  const clean: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "quality_credentials" || key === "qualityCredentials") {
+      clean[key] = item;
+    } else if (!REPAIR_CONFIG_SECRET_KEY.test(key)) {
+      clean[key] = sanitiseRepairConfig(item);
+    }
+  }
+  return clean;
+}
+
+/** Create a checkout snapshot containing tracked files and a scrubbed config. */
+async function createRepairWorkspaceSnapshot(
+  baseDir: string,
+  scratch: string,
+  plan: ContainerLaunchPlan,
+): Promise<string> {
+  const path = `${scratch}/workspace`;
+  await Deno.mkdir(path, { mode: 0o700 });
+  const sourceConfig = plan.mounts.find((mount) =>
+    mount.target.endsWith("/run-config")
+  );
+  if (!sourceConfig) {
+    throw new Error("repair launch plan has no staged config mount");
+  }
+  const config = JSON.parse(
+    await Deno.readTextFile(`${sourceConfig.source}/.config.json`),
+  );
+  const archive = new Deno.Command("git", {
+    args: ["-C", baseDir, "archive", "--format=tar", "HEAD"],
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  const extract = new Deno.Command("tar", {
+    args: ["-xf", "-", "-C", path],
+    stdin: "piped",
+    stdout: "null",
+    stderr: "piped",
+  }).spawn();
+  try {
+    const writer = extract.stdin.getWriter();
+    for await (const chunk of archive.stdout) await writer.write(chunk);
+    await writer.close();
+    const [archiveStatus, extractStatus, archiveErr, extractErr] = await Promise
+      .all([
+        archive.status,
+        extract.status,
+        new Response(archive.stderr).text(),
+        new Response(extract.stderr).text(),
+      ]);
+    if (!archiveStatus.success || !extractStatus.success) {
+      throw new Error(
+        `could not snapshot tracked worker checkout: git archive ${archiveStatus.code} ${archiveErr.trim()}; tar ${extractStatus.code} ${extractErr.trim()}`,
+      );
+    }
+    await Deno.writeTextFile(
+      `${path}/.config.json`,
+      JSON.stringify(sanitiseRepairConfig(config)),
+      { mode: 0o600 },
+    );
+    return path;
+  } catch (error) {
+    await Deno.remove(path, { recursive: true });
+    throw error;
+  }
 }
 
 /**
@@ -1116,12 +1245,16 @@ export async function runBabysitterRepairContainer(
 
   const containerName = throwawayContainerName();
   const plan = await buildPlan(input.baseDir, containerName);
+  const workspaceSnapshot = plan.mounts?.length
+    ? await createRepairWorkspaceSnapshot(input.baseDir, input.scratch, plan)
+    : undefined;
 
   // Built and key-checked before any egress starts, so a bad plan never
   // starts a proxy.
   const planArgs = buildBabysitterRunArgs(plan, {
     clone: input.clone,
     scratch: input.scratch,
+    ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
   });
   await assertBabysitterKeyOutOfRunArgs(planArgs, input.privateKeyPath);
 
@@ -1143,6 +1276,7 @@ export async function runBabysitterRepairContainer(
       args = buildBabysitterRunArgs({ ...plan, runArgs: helper.runArgs }, {
         clone: input.clone,
         scratch: input.scratch,
+        ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
       });
       await assertBabysitterKeyOutOfRunArgs(args, input.privateKeyPath);
     } else if (plan.egressEnforced) {

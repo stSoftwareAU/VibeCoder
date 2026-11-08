@@ -309,6 +309,7 @@ function harness(
     verifyReviews: allVerified,
     armAutoMerge: () => Promise.resolve(),
     startAgent,
+    resetGitConfig: () => Promise.resolve(),
     journalAttempt: (attempt) => {
       state.journalled.push(attempt);
       return Promise.resolve();
