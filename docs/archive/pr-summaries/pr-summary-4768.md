@@ -8,7 +8,7 @@ command (`worker/deno/commands/babysitter_repair.ts`, registered in
 session through `runClaudeWithTimeout` (explicit `agentProvider`, `cwd` =
 `--dir`, 90 minutes, the overflow env as `parentEnv` only for an overflow
 choice) and writes the agent's final message to `--response-file`. Every failure
-exits non-zero with the cause. Cleanup failures are reported and can leave a
+exits non-zero and logs its redacted cause to stderr for the host. Cleanup failures can leave a
 response file behind. Closes #4768.
 
 ```mermaid
@@ -70,18 +70,18 @@ Backend/CLI change only, no UI file touched. Evidence is the tests below.
 - Stale comments in `fleet_babysitter_container.ts` and a sentence in
   `DESIGN-PRINCIPLES.md` said the in-container command was missing or uncalled;
   both now say it exists. They still say the host `fix()` does not launch the
-  container (#4774); `grep` of `commands/fleet_pr_babysitter.ts` finds no
+  container (#4770); `grep` of `commands/fleet_pr_babysitter.ts` finds no
   reference to `runBabysitterRepairContainer`.
 - Fake mirrored: `chooseProvider` and `runClaude` stand in for
   `chooseBabysitterProvider` and `runClaudeWithTimeout`; the properties relied
   on are `Result<ClaudeExecutionResult>` with `exitCode`, `output`, `stderr`,
-  `timedOut` and `timeoutReason`, read from
+  `timedOut`, `timeoutReason` and `agentFailure`, read from
   `worker/deno/lib/claude_executor.ts`.
 - Issue numbers cited: #4768: Add the worker container's babysitter-repair mode;
   #4766: provider choice (named by the issue as delivered); #4767: host
-  container launcher (named in `fleet_babysitter_container.ts`); #4774: wire the
-  container into `fix()` (named in the same file, not viewed with
-  `gh issue view` in this run).
+  container launcher (named in `fleet_babysitter_container.ts`); #4770: the
+  open production switch-over issue, superseding the closed duplicate #4774
+  (both checked via GitHub).
 
 ## Acceptance Criteria
 
@@ -141,9 +141,10 @@ Backend/CLI change only, no UI file touched. Evidence is the tests below.
 - **violation** — two new branches had no test (stale removal failing, final
   write failing) — evidence: `worker/deno/commands/babysitter_repair.ts:101` —
   reason: fixed in this diff (tests added)
-- **violation** — non-zero-exit reason quoted only the last 500 characters of
-  stderr — evidence: `worker/deno/commands/babysitter_repair.ts:158` — reason:
-  fixed in this diff (first and last 250 characters, redacted before cutting)
+- **violation** — classified agent failures and final failure messages did not
+  reach the host reliably — evidence: `worker/deno/commands/babysitter_repair.ts`
+  and `worker/deno/lib/fleet_babysitter_container.ts` — reason: the command
+  logs the redacted classified cause and the launcher retains the stderr tail.
 - **clean** — Australian English; no hidden paths staged; `Result` convention;
   the registry-count edit in `worker/deno/tests/mod_test.ts` goes red without
   the registration; no named test is absent; docs that said the command was
@@ -158,6 +159,12 @@ Backend/CLI change only, no UI file touched. Evidence is the tests below.
   refusals, command wiring) and a `babysitter-repair` case in
   `worker/deno/tests/container_entrypoint_test.ts`;
   `worker/deno/tests/mod_test.ts` count 161 → 162 with an `includes` check.
+- Review fix: `worker/deno/tests/babysitter_repair_4738_test.ts::classified agent failure reaches stderr and leaves no response`
+  covers classification, redaction, logging and cleanup; `::provider-choice throw fails with its cause and removes a stale response`
+  covers failure logging; `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair retains the final failure after lengthy routing logs`
+  covers host propagation. The obsolete launcher kept the first 500 stderr
+  characters; it still redacts secrets and now keeps the last 500. These
+  assertions failed before the fix.
 - Removed from `worker/deno/tests/mod_test.ts`: nothing. Edited expectation: the
   count `161` → `162`; red check: removing
   `registry.register(babysitterRepairCommand)` drops the count to 161, so both
@@ -193,10 +200,10 @@ Backend/CLI change only, no UI file touched. Evidence is the tests below.
   expects no proxy variables in its argv and passes when they are unset; it is
   unrelated to this change and was not edited.
 
-  Current validation removed the accidental `worker/deno/undefined` fixture
-  output and updated this summary. The freshness check reads committed history
-  and remains blocked locally until the babysitter commits both changes.
-  `./quality.sh` passed completeness, type check, formatting, lint, Mermaid and
-  Markdown lint; its Deno parallel test process panicked and its Checkov probe
-  timed out on this host. Semgrep and config integration were skipped. The base
-  PR passed all four CI test shards and Checkov.
+  Review-fix validation: both changed test files passed 64 tests with Deno
+  2.9.7. The full gate passed formatting, lint, type check, completeness,
+  Mermaid and Markdown lint, but Deno 2.9.7 panicked during parallel tests
+  before the serial pass. Config integration, Semgrep and Checkov were
+  skipped on this host. The default Deno 2.9.0 rejects `deno eval` permission
+  flags used by three existing launcher tests; CI pins Deno 2.9.8. Summary
+  freshness reads committed history and runs against the committed fix in CI.

@@ -221,7 +221,36 @@ Deno.test("provider-choice throw fails with its cause and removes a stale respon
     assertEquals(result.success, false);
     assertEquals(result.exitCode, 1);
     assertStringIncludes(result.message, "no subscription has budget");
+    assertEquals(h.logs.at(-1), result.message);
     assertEquals(h.runs.length, 0);
+    assertEquals(await exists(paths.response), false);
+  });
+});
+
+Deno.test("classified agent failure reaches stderr and leaves no response", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    await writeStale(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({
+        exitCode: 1,
+        stderr: "",
+        agentFailure: {
+          category: "authentication",
+          message: "login failed GITHUB_TOKEN=fixture-secret",
+          evidence: "structured",
+          terminal: true,
+          errors: [],
+        },
+      }),
+    );
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "authentication");
+    assertStringIncludes(result.message, "login failed");
+    assert(!result.message.includes("fixture-secret"));
+    assertEquals(h.logs.at(-1), result.message);
     assertEquals(await exists(paths.response), false);
   });
 });

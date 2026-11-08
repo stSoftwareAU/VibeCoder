@@ -164,7 +164,7 @@ explicit fallback can also select a metered provider.
   (`worker/deno/commands/babysitter_repair.ts`, Issue #4768) calls
   `chooseBabysitterProvider` and runs the repair session on the chosen
   provider. The host babysitter's `fix()` does not launch that container yet
-  (#4774 will).
+  (#4770 will).
 - **The worker keeps its auto-mode wait policy.** When every eligible
   subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in

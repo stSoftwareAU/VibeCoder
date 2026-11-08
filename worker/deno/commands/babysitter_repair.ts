@@ -123,16 +123,21 @@ export async function runBabysitterRepair(
   config: WorkerConfig,
   deps: BabysitterRepairDeps = productionBabysitterRepairDeps,
 ): Promise<CommandResult> {
+  const reportFailure = (message: string): CommandResult => {
+    const redacted = redactSecrets(message);
+    deps.log(redacted);
+    return fail(redacted);
+  };
   // a. The response path comes first, so every later failure can clear it.
   if (!hasValue(args["response-file"])) {
-    return fail("--response-file <value> is required");
+    return reportFailure("--response-file <value> is required");
   }
   const responseFile = String(args["response-file"]);
 
   // b. Clear any stale response so a failed run cannot leave an old one behind.
   const staleError = await clearResponse(responseFile, deps);
   if (staleError !== undefined) {
-    return fail(
+    return reportFailure(
       `cannot remove stale response file ${responseFile}: ${staleError}`,
     );
   }
@@ -147,9 +152,10 @@ export async function runBabysitterRepair(
   }
   if (result.success) return result;
   const clearError = await clearResponse(responseFile, deps);
-  if (clearError === undefined) return result;
-  return fail(
-    `${result.message}; also could not remove ${responseFile}: ${clearError}`,
+  return reportFailure(
+    clearError === undefined
+      ? result.message
+      : `${result.message}; also could not remove ${responseFile}: ${clearError}`,
   );
 }
 
@@ -214,10 +220,13 @@ async function repairResponse(
     );
   }
   if (run.exitCode !== 0) {
+    const cause = run.agentFailure
+      ? `${run.agentFailure.category}: ${
+        redactSecrets(run.agentFailure.message)
+      }`
+      : `stderr: ${quoteStderr(run.stderr) || "(empty)"}`;
     return fail(
-      `agent exited ${run.exitCode}; stderr: ${
-        quoteStderr(run.stderr) || "(empty)"
-      }`,
+      `agent exited ${run.exitCode}; ${cause}`,
     );
   }
   if (run.output.trim() === "") {

@@ -22,7 +22,7 @@
  * Not wired in yet: the in-container `babysitter-repair` command now exists
  * (worker/deno/commands/babysitter_repair.ts, routed by container/entrypoint.sh,
  * Issue #4768), so a real run reaches it. This module is still not wired into
- * `fix()` in `commands/fleet_pr_babysitter.ts`; #4774 will wire it.
+ * `fix()` in `commands/fleet_pr_babysitter.ts`; #4770 will wire it.
  */
 
 import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
@@ -454,15 +454,13 @@ function redactToken(text: string, token: string): string {
 
 /**
  * Stderr for an error message: the token and any other secret redacted, then
- * trimmed and capped at 500 characters. The token is replaced first, so no
+ * trimmed and capped to the last 500 characters. The token is replaced first, so no
  * partial token survives the cap.
  */
 function describeStderr(stderr: string, token: string): string {
   const redacted = redactToken(stderr, token).trim();
   if (redacted === "") return "(no stderr)";
-  return redacted.length > STDERR_CAP
-    ? redacted.slice(0, STDERR_CAP)
-    : redacted;
+  return redacted.length > STDERR_CAP ? redacted.slice(-STDERR_CAP) : redacted;
 }
 
 /** Resolves after `ms`. Exported so a test can time it. */
@@ -862,7 +860,7 @@ async function runRepairProcess(run: RepairRun): Promise<void> {
  * by name. The in-container command now exists (#4768), so a real run reaches
  * it. Reviewer rounds in run.sh still refuse
  * enforced plans; that is out of scope here. Not wired into `fix()` yet
- * (#4774).
+ * (#4770).
  */
 export async function runBabysitterRepairContainer(
   input: BabysitterContainerInput,
