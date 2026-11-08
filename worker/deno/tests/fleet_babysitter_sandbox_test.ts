@@ -357,7 +357,7 @@ Deno.test("buildBabysitterSandboxArgs refuses an empty protected list", async ()
     assertThrows(
       () => buildBabysitterSandboxArgs({ dir, scratch, protectedPaths: [] }),
       Error,
-      "Refusing to build the babysitter sandbox with no protected paths",
+      "no protected paths",
     );
     // Positive control: one protected path makes the same call legal.
     const args = buildBabysitterSandboxArgs({

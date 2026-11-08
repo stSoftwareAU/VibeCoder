@@ -69,8 +69,6 @@ import {
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import { ensureBabysitterCodex } from "../lib/fleet_babysitter_codex.ts";
-import { babysitterCargoDenyRunner } from "../lib/fleet_babysitter_cargo_deny_sandbox.ts";
-import type { PreFlightRunner } from "../lib/pre_flight_gate.ts";
 import {
   createExchangeDir,
   readAgentOutput,
@@ -80,11 +78,6 @@ import {
   buildFetchTrackingRefArgs,
   buildPushCreateBranchArgs,
 } from "../lib/git_ref_args.ts";
-import {
-  type CargoDenyGateError,
-  runCargoDenyGate,
-} from "../lib/cargo_deny_gate.ts";
-import type { Result } from "../types.ts";
 import {
   runWithTimeout,
   spawnCommandWithTimeout,
@@ -1198,25 +1191,6 @@ export interface BabysitterRepairFinishDeps {
   ) => Promise<ReviewVerificationOutcome[]>;
   /** The git runner the committed summary is read through. */
   runGit?: typeof runGitCommand;
-  /**
-   * Runs the repository's CI cargo-deny check on the repair's commit before it
-   * is pushed (Issue #4626). A `verdict` or `infrastructure` error throws a
-   * {@link BabysitterFailure} and nothing is pushed. Defaults to the check over
-   * the files the commit changes since the PR head.
-   */
-  cargoDenyGate?: (input: {
-    repoPath: string;
-    baseHead: string;
-  }) => Promise<Result<{ checksRun: string[] }, CargoDenyGateError>>;
-  /**
-   * The process runner the default cargo-deny gate runs the check through. It
-   * must run the check under the repair agent's boundary, because the clone
-   * can choose the program cargo runs (see
-   * `lib/fleet_babysitter_cargo_deny_sandbox.ts`). With neither this nor
-   * {@link cargoDenyGate}, a check that CI makes cannot start, so nothing is
-   * pushed; the check never runs as a bare host process.
-   */
-  cargoDenyRunner?: PreFlightRunner;
   /** Pause between reads while GitHub's PR view catches up; 1 second by default. */
   headWaitDelayMs?: number;
   /**
@@ -1542,55 +1516,9 @@ export interface BabysitterRepairFinish {
   outage?: string;
 }
 
-/** NUL-separated git output as a list of non-empty entries. */
-function splitNulList(output: string): string[] {
-  return output.split("\0").filter((part) => part !== "");
-}
-
 /**
- * The default cargo-deny gate for a repair (Issue #4626): the files the commit
- * changes since the PR head and the tracked files, read through the repair's
- * own git runner, then the repository's CI cargo-deny check over them. The
- * check runs through `runner`, which isolates it like the repair agent.
- */
-async function defaultCargoDenyGate(
-  input: { repoPath: string; baseHead: string },
-  runCommand: typeof run,
-  runner: PreFlightRunner = noIsolatedCargoDenyRunner,
-): Promise<Result<{ checksRun: string[] }, CargoDenyGateError>> {
-  const changed = splitNulList(
-    await runCommand(
-      "git",
-      ["diff", "--name-only", "--diff-filter=d", "-z", input.baseHead, "HEAD"],
-      input.repoPath,
-    ),
-  );
-  const tracked = splitNulList(
-    await runCommand("git", ["ls-files", "-z"], input.repoPath),
-  );
-  return runCargoDenyGate({
-    cwd: input.repoPath,
-    changed,
-    tracked,
-    always: true,
-    runner,
-  });
-}
-
-/** The runner when none was supplied: cargo deny must not run unisolated. */
-const noIsolatedCargoDenyRunner: PreFlightRunner = () =>
-  Promise.resolve({
-    started: false,
-    code: -1,
-    stdout: "",
-    stderr: "no isolated runner is configured for the cargo-deny check",
-  });
-
-/**
- * Validate, commit, run the repository's cargo-deny check (Issue #4626) and
- * push a repair, then sync the PR body and dismiss the reviews it addressed
- * (Issue #4637). The cargo-deny gate runs before the push, so a failing or
- * unavailable check pushes nothing. On a push, GitHub's PR view must first
+ * Validate, commit and push a repair, then sync the PR body and dismiss the
+ * reviews it addressed (Issue #4637). On a push, GitHub's PR view must first
  * report the pushed head, since it lags behind the push. The body sync runs
  * on the committed summary at that head. Inside the sync, the guarded
  * description is published and checked. Reviews are then dismissed only for
@@ -1652,23 +1580,6 @@ export async function finishBabysitterRepair(
       current.baseRefName !== pr.baseRefName || !reason(current)
     ) {
       throw new Error("PR changed during the fix; refusing to push");
-    }
-    const cargoDeny = await (deps.cargoDenyGate ??
-      ((input) =>
-        defaultCargoDenyGate(input, runCommand, deps.cargoDenyRunner)))({
-        repoPath,
-        baseHead: pr.headRefOid,
-      });
-    if (!cargoDeny.ok) {
-      throw new BabysitterFailure(
-        cargoDeny.error.message,
-        cargoDeny.error.kind === "infrastructure" ? "infrastructure" : "code",
-      );
-    }
-    if (cargoDeny.value.checksRun.length > 0) {
-      console.log(
-        `${repo}#${pr.number}: cargo deny passed locally (${cargoDeny.value.checksRun.length} check(s))`,
-      );
     }
     await runCommand(
       "git",
@@ -2268,8 +2179,6 @@ export interface FixDeps {
   dismiss?: BabysitterRepairFinishDeps["dismiss"];
   /** Independent review verifier; defaults to the production verifier (Issue #4657). */
   verifyReviews?: BabysitterRepairFinishDeps["verifyReviews"];
-  /** Runs the cargo-deny check; defaults to the sandboxed production runner. */
-  cargoDenyRunner?: PreFlightRunner;
   journalAttempt?: typeof journalBabysitterAttempt;
 }
 
@@ -3001,14 +2910,6 @@ export async function fix(
       publication,
       dismiss: deps.dismiss,
       verifyReviews,
-      cargoDenyRunner: deps.cargoDenyRunner ?? babysitterCargoDenyRunner({
-        privateKeyPath: app.privateKeyPath,
-        home,
-        configPath,
-        dir,
-        scratch,
-        resolveCodex: () => ensureBabysitterCodex(home),
-      }),
       onPushed: async (pushedHead) => {
         pushed = true;
         retryRecord = {

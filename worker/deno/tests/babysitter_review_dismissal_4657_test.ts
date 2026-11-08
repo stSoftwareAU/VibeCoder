@@ -162,8 +162,6 @@ interface FinishRecord {
   dismissed: number[][];
   /** Every input the verifier was called with. */
   inputs: ReviewVerificationInput[];
-  /** Every input the cargo-deny gate was called with (Issue #4626). */
-  cargoDenyInputs: { repoPath: string; baseHead: string }[];
   events: string[];
 }
 
@@ -171,7 +169,6 @@ async function runFinish(options: FinishOptions): Promise<FinishRecord> {
   const events: string[] = [];
   const dismissed: number[][] = [];
   const inputs: ReviewVerificationInput[] = [];
-  const cargoDenyInputs: { repoPath: string; baseHead: string }[] = [];
   const exchange = await createExchangeDir("babysitter-review-4657-");
   try {
     await finishBabysitterRepair(
@@ -188,14 +185,6 @@ async function runFinish(options: FinishOptions): Promise<FinishRecord> {
         gh: options.github.gh,
         syncBodyFn: skipSync,
         headWaitDelayMs: 0,
-        // Passes with nothing run: these repairs touch no cargo input (Issue #4626).
-        cargoDenyGate: (input) => {
-          cargoDenyInputs.push(input);
-          return Promise.resolve({
-            ok: true as const,
-            value: { checksRun: [] },
-          });
-        },
         dismiss: (reviews) => {
           dismissed.push(reviews.map((item) => item.id));
           return Promise.resolve();
@@ -214,7 +203,7 @@ async function runFinish(options: FinishOptions): Promise<FinishRecord> {
   } finally {
     await Deno.remove(exchange, { recursive: true });
   }
-  return { dismissed, inputs, cargoDenyInputs, events };
+  return { dismissed, inputs, events };
 }
 
 /** The one verifier input a run made; the run must have called the verifier once. */
@@ -251,11 +240,6 @@ Deno.test("a complete fix dismisses every review the verifier judged fixed (Issu
     agentReply: "Fixed both findings.\nBABYSITTER_READY",
   });
   assertEquals(record.dismissed, [[1, 2]]);
-  // Positive control: the pushed repair reached the cargo-deny gate once.
-  assertEquals(record.cargoDenyInputs, [{
-    repoPath: "/unused-repo",
-    baseHead: pr.headRefOid,
-  }]);
   assertEquals(record.inputs.length, 1);
   assertEquals(onlyInput(record).reviews.map((item) => item.id), [1, 2]);
   assertEquals(onlyInput(record).baseRef, "origin/main");

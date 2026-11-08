@@ -462,23 +462,56 @@ Deno.test("workflow: look-alikes that are not cargo-deny check runs are not find
   assertEquals(workflowCargoDenyFindings(text), []);
 });
 
-Deno.test("workflow: a shell variable in a cargo deny check line is unrunnable", () => {
-  const text = yaml("      - run: cargo deny $DENY_FLAGS check bans");
-  const findings = workflowCargoDenyFindings(text);
-  assertEquals(findings.length, 1);
-  const [finding] = findings;
-  assert(finding?.kind === "unrunnable");
-  assertEquals(finding.source, "line 1");
-  assertStringIncludes(finding.reason, "shell variable or workflow expression");
+Deno.test("workflow: a shell variable or expression before check is dropped, leaving a plain check", () => {
+  assertEquals(
+    workflowCargoDenyFindings(
+      yaml("      - run: cargo deny $DENY_FLAGS check bans"),
+    ),
+    [{ kind: "command", argv: ["cargo", "deny", "check", "bans"], cwd: "." }],
+  );
+  assertEquals(
+    workflowCargoDenyFindings(
+      yaml("      - run: cargo deny ${{ matrix.args }} check bans"),
+    ),
+    [{ kind: "command", argv: ["cargo", "deny", "check", "bans"], cwd: "." }],
+  );
 });
 
-Deno.test("workflow: a workflow expression in a cargo deny check line is unrunnable", () => {
-  const text = yaml(
-    "      - run: cargo deny ${{ matrix.args }} check bans",
+Deno.test("workflow: an expression that is an option's value drops the option with it", () => {
+  const argvOf = (line: string) =>
+    workflowCargoDenyFindings(yaml(`      - run: ${line}`)).map((finding) =>
+      finding.kind === "command" ? finding.argv : finding.kind
+    );
+  // An expression that is not a matrix key, before `check`.
+  assertEquals(
+    argvOf(
+      "cargo deny --manifest-path ${{ github.workspace }}/Cargo.toml check",
+    ),
+    [["cargo", "deny", "check"]],
   );
-  const findings = workflowCargoDenyFindings(text);
-  assertEquals(findings.length, 1);
-  assertEquals(findings[0]?.kind, "unrunnable");
+  // After `check`: the option must not be left without its value.
+  assertEquals(
+    argvOf("cargo deny check --config ${{ env.DENY_CONFIG }}"),
+    [["cargo", "deny", "check"]],
+  );
+  assertEquals(argvOf("cargo deny check --config=$DENY_CONFIG bans"), [
+    ["cargo", "deny", "check", "bans"],
+  ]);
+  // A resolved option and a literal flag stay.
+  assertEquals(
+    argvOf(
+      "cargo deny --all-features check --config deny.toml ${{ env.X }} bans",
+    ),
+    [[
+      "cargo",
+      "deny",
+      "--all-features",
+      "check",
+      "--config",
+      "deny.toml",
+      "bans",
+    ]],
+  );
 });
 
 /** The cargo-deny-action README's "Recommended pipeline if using advisories". */
@@ -516,6 +549,333 @@ Deno.test("workflow: the action README's recommended pipeline expands per matrix
     "advisories",
     "bans licenses sources",
   ]);
+});
+
+Deno.test("workflow: the README pipeline marks only its advisories leg as allowed to fail", () => {
+  const findings = workflowCargoDenyFindings(README_PIPELINE);
+  assertEquals(
+    findings.map((finding) =>
+      finding.kind === "command" ? finding.allowFailure ?? false : finding.kind
+    ),
+    [true, false],
+  );
+});
+
+Deno.test("gate: a failed advisories leg is a warning and a failed bans leg is a verdict (README pipeline)", async () => {
+  const findings = workflowCargoDenyFindings(README_PIPELINE);
+  const advisoriesFails = fakeRunner((command) =>
+    command.endsWith("'advisories'")
+      ? {
+        code: 1,
+        stderr: "error[vulnerability]: RUSTSEC-2099-0001 (no patched version)",
+      }
+      : {}
+  );
+  const allowed = await runCargoDenyGate({
+    cwd: "/repo",
+    changed: [],
+    always: true,
+    tracked: [],
+    runner: advisoriesFails.runner,
+    findings,
+  });
+  assert(allowed.ok, allowed.ok ? "" : allowed.error.message);
+  assertEquals(allowed.value.checksRun.length, 1);
+  assertStringIncludes(allowed.value.checksRun[0] ?? "", "'bans'");
+  assertEquals(allowed.value.warnings.length, 1);
+  assertStringIncludes(allowed.value.warnings[0] ?? "", "continue-on-error");
+  assertStringIncludes(allowed.value.warnings[0] ?? "", "RUSTSEC-2099-0001");
+  // The advisory leg ran, after the blocking one.
+  assertEquals(advisoriesFails.calls.length, 2);
+  assertStringIncludes(advisoriesFails.calls[1]?.command ?? "", "'advisories'");
+
+  const bansFails = fakeRunner((command) =>
+    command.includes("'bans'")
+      ? { code: 1, stderr: "error[banned]: crate `openssl` is banned" }
+      : {}
+  );
+  const blocked = await runCargoDenyGate({
+    cwd: "/repo",
+    changed: [],
+    always: true,
+    tracked: [],
+    runner: bansFails.runner,
+    findings,
+  });
+  assert(!blocked.ok);
+  assertEquals(blocked.error.kind, "verdict");
+  assertStringIncludes(blocked.error.message, "banned");
+  // The blocking leg stopped the gate before the allowed one ran.
+  assertEquals(bansFails.calls.length, 1);
+});
+
+Deno.test("gate: an infrastructure failure of an allowed leg is a warning too", async () => {
+  const { runner } = fakeRunner(() => ({
+    code: 1,
+    stderr: "failed to fetch advisory database https://x.invalid/db",
+  }));
+  const result = await runCargoDenyGate({
+    cwd: "/repo",
+    changed: [],
+    always: true,
+    tracked: [],
+    runner,
+    findings: [{
+      kind: "command",
+      argv: ["cargo", "deny", "check", "advisories"],
+      cwd: ".",
+      allowFailure: true,
+    }],
+  });
+  assert(result.ok);
+  assertEquals(result.value.checksRun, []);
+  assertEquals(result.value.warnings.length, 1);
+});
+
+Deno.test("gate: an identical invocation that CI does not allow to fail still blocks", async () => {
+  const argv = ["cargo", "deny", "check", "advisories"];
+  const { runner } = fakeRunner(() => ({
+    code: 1,
+    stderr: "error[vulnerability]: RUSTSEC-2099-0001",
+  }));
+  for (
+    const findings of [
+      [{ kind: "command", argv, cwd: ".", allowFailure: true }, {
+        kind: "command",
+        argv,
+        cwd: ".",
+      }],
+      [{ kind: "command", argv, cwd: "." }, {
+        kind: "command",
+        argv,
+        cwd: ".",
+        allowFailure: true,
+      }],
+    ] as CargoDenyCiFinding[][]
+  ) {
+    const result = await runCargoDenyGate({
+      cwd: "/repo",
+      changed: [],
+      always: true,
+      tracked: [],
+      runner,
+      findings,
+    });
+    assert(!result.ok);
+  }
+});
+
+Deno.test("workflow: continue-on-error is read at step and job level, literally or per matrix entry", () => {
+  const allowed = (text: string) =>
+    workflowCargoDenyFindings(text).map((finding) =>
+      finding.kind === "command" ? finding.allowFailure === true : finding.kind
+    );
+  // A literal true on the step, on the job, and the job-level false.
+  assertEquals(
+    allowed(yaml(
+      "jobs:",
+      "  deny:",
+      "    steps:",
+      "      - run: cargo deny check",
+      "        continue-on-error: true",
+    )),
+    [true],
+  );
+  assertEquals(
+    allowed(yaml(
+      "jobs:",
+      "  deny:",
+      "    continue-on-error: true",
+      "    steps:",
+      "      - run: cargo deny check",
+    )),
+    [true],
+  );
+  assertEquals(
+    allowed(yaml(
+      "jobs:",
+      "  deny:",
+      "    continue-on-error: false",
+      "    steps:",
+      "      - run: cargo deny check",
+      "        continue-on-error: ${{ github.event_name == 'push' }}",
+    )),
+    [false],
+  );
+  // A matrix test: `==`, `!=`, a bare key, and a key only some entries set.
+  const matrixJob = (test: string) =>
+    yaml(
+      "jobs:",
+      "  deny:",
+      `    continue-on-error: ${test}`,
+      "    strategy:",
+      "      matrix:",
+      "        checks: [advisories, bans]",
+      "    steps:",
+      "      - run: cargo deny check ${{ matrix.checks }}",
+    );
+  assertEquals(
+    allowed(matrixJob("${{ matrix.checks == 'Advisories' }}")),
+    [true, false],
+  );
+  assertEquals(
+    allowed(matrixJob("${{ matrix.checks != 'advisories' }}")),
+    [false, true],
+  );
+  assertEquals(allowed(matrixJob("${{ matrix.checks }}")), [false, false]);
+  assertEquals(
+    allowed(yaml(
+      "jobs:",
+      "  deny:",
+      "    continue-on-error: ${{ matrix.experimental }}",
+      "    strategy:",
+      "      matrix:",
+      "        checks: [advisories, bans]",
+      "        include:",
+      "          - checks: advisories",
+      "            experimental: true",
+      "    steps:",
+      "      - run: cargo deny check ${{ matrix.checks }}",
+    )),
+    [true, false],
+  );
+  // A test the gate does not read, or one with no matrix to evaluate it on,
+  // does not allow a failure.
+  assertEquals(
+    allowed(matrixJob("${{ contains(matrix.checks, 'adv') }}")),
+    [false, false],
+  );
+  assertEquals(
+    allowed(yaml(
+      "jobs:",
+      "  deny:",
+      "    continue-on-error: ${{ matrix.checks == 'advisories' }}",
+      "    steps:",
+      "      - run: cargo deny check",
+    )),
+    [false],
+  );
+});
+
+Deno.test("workflow: an action step's continue-on-error is read too", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "      - uses: EmbarkStudios/cargo-deny-action@v2",
+    "        continue-on-error: true",
+  ));
+  assertEquals(findings.length, 1);
+  assert(findings[0]?.kind === "command" && findings[0].allowFailure === true);
+});
+
+Deno.test("workflow: a continue-on-error test with a long run of spaces is not allowed (hostile input)", () => {
+  // `\s*` before an optional group and before `}}` must not backtrack badly.
+  for (const tail of ["x", "}", "== '"]) {
+    const findings = workflowCargoDenyFindings(yaml(
+      "jobs:",
+      "  deny:",
+      "    strategy:",
+      "      matrix:",
+      "        checks: [advisories]",
+      "    steps:",
+      "      - run: cargo deny check",
+      "        continue-on-error: ${{ matrix.checks" + " ".repeat(50_000) +
+        tail,
+    ));
+    assertEquals(
+      findings.map((finding) =>
+        finding.kind === "command" ? finding.allowFailure === true : "other"
+      ),
+      [false],
+    );
+  }
+});
+
+Deno.test("workflow: a job's defaults.run.working-directory is the cwd of its run steps", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    defaults:",
+    "      run:",
+    "        working-directory: rust",
+    "    steps:",
+    "      - run: cargo deny check",
+    "      - run: cargo deny check bans",
+    "        working-directory: other",
+    "      - uses: EmbarkStudios/cargo-deny-action@v2",
+  ));
+  assertEquals(
+    findings.map((finding) =>
+      finding.kind === "command" ? finding.cwd : finding.kind
+    ),
+    ["rust", "other", "."],
+  );
+});
+
+Deno.test("workflow: a workflow's defaults.run.working-directory applies unless the job sets its own", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "defaults:",
+    "  run:",
+    "    working-directory: wf",
+    "jobs:",
+    "  inherits:",
+    "    steps:",
+    "      - run: cargo deny check",
+    "  overrides:",
+    "    defaults:",
+    "      run:",
+    "        working-directory: job",
+    "    steps:",
+    "      - run: cargo deny check",
+    "  also-inherits:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: cargo deny check",
+  ));
+  assertEquals(
+    findings.map((finding) =>
+      finding.kind === "command" ? finding.cwd : finding.kind
+    ),
+    ["wf", "job", "wf"],
+  );
+});
+
+Deno.test("workflow: a default working-directory that cannot be reproduced is unrunnable", () => {
+  for (const wd of ["../x", "/abs", "${{ inputs.dir }}"]) {
+    const findings = workflowCargoDenyFindings(yaml(
+      "jobs:",
+      "  deny:",
+      "    defaults:",
+      "      run:",
+      `        working-directory: ${wd}`,
+      "    steps:",
+      "      - run: cargo deny check",
+    ));
+    assertEquals(findings.map((finding) => finding.kind), ["unrunnable"], wd);
+  }
+});
+
+Deno.test("workflow: a working-directory that names a matrix key expands per entry", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        crate: [a, b/c]",
+    "    defaults:",
+    "      run:",
+    "        working-directory: ${{ matrix.crate }}",
+    "    steps:",
+    "      - run: cargo deny check",
+    "      - run: cargo deny check bans",
+    "        working-directory: ${{ matrix.crate }}/sub",
+  ));
+  assertEquals(
+    findings.map((finding) =>
+      finding.kind === "command"
+        ? `${finding.cwd}:${finding.argv.at(-1)}`
+        : finding.kind
+    ),
+    ["a:check", "b/c:check", "a/sub:bans", "b/c/sub:bans"],
+  );
 });
 
 Deno.test("workflow: a run line's matrix expression expands per matrix entry", () => {
@@ -561,15 +921,6 @@ Deno.test("workflow: a run line's matrix expression that cannot be expanded runs
       cwd: ".",
     }]);
   }
-});
-
-Deno.test("workflow: a variable before check in a run line is still unrunnable", () => {
-  const findings = workflowCargoDenyFindings(
-    yaml(
-      "      - run: cargo deny --manifest-path ${{ matrix.dir }}/Cargo.toml check",
-    ),
-  );
-  assertEquals(findings.map((f) => f.kind), ["unrunnable"]);
 });
 
 Deno.test("workflow: matrix include entries expand an action's manifest path", () => {
@@ -679,12 +1030,22 @@ Deno.test("workflow: operator segments that are not cargo deny check runs are no
   assertEquals(workflowCargoDenyFindings(text), []);
 });
 
+Deno.test("workflow: an environment assignment holding an expression is dropped like any other", () => {
+  assertEquals(
+    workflowCargoDenyFindings(
+      yaml(
+        "      - run: CARGO_TERM_COLOR=${{ matrix.color }} cargo deny check",
+      ),
+    ),
+    [{ kind: "command", argv: ["cargo", "deny", "check"], cwd: "." }],
+  );
+});
+
 Deno.test("workflow: a cargo deny segment with a shell variable is unrunnable even without check", () => {
   const lines = [
     "      - run: cargo deny ${{ matrix.cmd }}",
     "      - run: cargo deny $CMD",
     "      - run: cargo fetch && cargo deny $CMD",
-    "      - run: CARGO_TERM_COLOR=${{ matrix.color }} cargo deny check",
   ];
   for (const line of lines) {
     const findings = workflowCargoDenyFindings(yaml(line));
@@ -920,7 +1281,7 @@ Deno.test("gate: a change to no cargo input runs nothing", async () => {
     runner,
     findings: [{ kind: "command", argv: DENY_CHECK_ARGV, cwd: "." }],
   });
-  assertEquals(result, { ok: true, value: { checksRun: [] } });
+  assertEquals(result, { ok: true, value: { checksRun: [], warnings: [] } });
   assertEquals(calls.length, 0);
 });
 
@@ -946,7 +1307,10 @@ Deno.test("gate: a triggered change runs CI's exact argv in the repo root", asyn
     runner,
     findings: [{ kind: "command", argv, cwd: "." }],
   });
-  assertEquals(result, { ok: true, value: { checksRun: [expected] } });
+  assertEquals(result, {
+    ok: true,
+    value: { checksRun: [expected], warnings: [] },
+  });
   assertEquals(calls, [{ command: expected, cwd: "/repo" }]);
 });
 

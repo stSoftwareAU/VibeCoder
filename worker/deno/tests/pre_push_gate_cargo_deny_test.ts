@@ -97,7 +97,7 @@ const CI_WITH_MATRIX_DENY = [
   "  deny:",
   "    runs-on: ubuntu-latest",
   "    steps:",
-  "      - run: cargo deny --all-features ${{ matrix.check }} check",
+  "      - run: cargo deny --all-features ${{ matrix.cmd }}",
   "",
 ].join("\n");
 
@@ -347,3 +347,79 @@ Deno.test("cargo deny: a CI invocation with a workflow expression is a verdict n
     await Deno.remove(root, { recursive: true });
   }
 });
+
+/** The cargo-deny-action README's "Recommended pipeline if using advisories". */
+const CI_README_PIPELINE = [
+  "name: ci",
+  "on: push",
+  "jobs:",
+  "  cargo-deny:",
+  "    runs-on: ubuntu-latest",
+  "    strategy:",
+  "      matrix:",
+  "        checks:",
+  "          - advisories",
+  "          - bans licenses sources",
+  "    continue-on-error: ${{ matrix.checks == 'advisories' }}",
+  "    steps:",
+  "      - uses: EmbarkStudios/cargo-deny-action@v2",
+  "        with:",
+  "          command: check ${{ matrix.checks }}",
+  "",
+].join("\n");
+
+Deno.test("cargo deny: a failed leg CI allows to fail warns on stderr and does not block the push", async () => {
+  const { root, clone, stdin } = await makeRepo(CI_README_PIPELINE, {
+    "Cargo.lock": "version = 4\n",
+  });
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+  try {
+    const seen: Seen[] = [];
+    const result = await recordingGate(
+      clone,
+      stdin,
+      seen,
+      (command) =>
+        command.endsWith("'advisories'")
+          ? { started: true, code: 1, stdout: "", stderr: VERDICT_OUTPUT }
+          : PASS,
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(result.value.checksRun.length, 1);
+    assertStringIncludes(result.value.checksRun[0] ?? "", "'licenses'");
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0] ?? "", "[PRE_PUSH_WARNING] cargo deny");
+    assertStringIncludes(warnings[0] ?? "", "'advisories'");
+    // Positive control: the same failure on the leg CI does not allow blocks.
+    const blocked = await recordingGate(
+      clone,
+      stdin,
+      [],
+      (command) =>
+        command.includes("'licenses'")
+          ? { started: true, code: 1, stdout: "", stderr: VERDICT_OUTPUT }
+          : PASS,
+    );
+    assert(!blocked.ok);
+    assertStringIncludes(blocked.error.message, "error[vulnerability]");
+  } finally {
+    console.warn = realWarn;
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+function recordingGate(
+  clone: string,
+  stdin: string,
+  seen: Seen[],
+  reply: (command: string) => PreFlightCommandResult,
+) {
+  return runPrePushGate({
+    cwd: clone,
+    stdin,
+    preFlightCommands: [],
+    runner: recordingRunner(seen, reply),
+  });
+}

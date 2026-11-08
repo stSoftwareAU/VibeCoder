@@ -5191,33 +5191,45 @@ The hook runs two stages:
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
-   - **`cargo deny`** (Issue #4626), for the whole-branch completion check and
-     every babysitter repair push. Intermediate push hooks run it when changes
-     include a `Cargo.toml`,
+   - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
+     Intermediate push hooks run it when changes include a `Cargo.toml`,
      `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
      `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
      `*.yaml` files for each `run:` step whose command is `cargo deny` with a
      `check` argument, and for each `EmbarkStudios/cargo-deny-action` step,
      whose inputs (with the action's own defaults) give the argv the action
-     runs. It runs CI's arguments: a `run:` step from its
-     `working-directory` (relative paths only), and an action step from the
-     repo root. No `--offline`, ignore list or reduced-scope flag is added. A
-     `${{ matrix.<key> }}` expression, in an action input or after `cargo deny`
-     in a `run:` line, expands from the job's literal `strategy.matrix` lists
-     and `include` entries into one invocation per combination (the action
-     README's recommended `command: check ${{ matrix.checks }}` pipeline runs
+     runs. It runs CI's arguments: a `run:` step from its `working-directory`,
+     else the job's, else the workflow's `defaults.run.working-directory`
+     (relative paths only; a default does not apply to an action step), and an
+     action step from the repo root. No `--offline`, ignore list or
+     reduced-scope flag is added. A `${{ matrix.<key> }}` expression, in an
+     action input, a `working-directory` or after `cargo deny` in a `run:`
+     line, expands from the job's literal `strategy.matrix` lists and `include`
+     entries into one invocation per combination (the action README's
+     recommended `command: check ${{ matrix.checks }}` pipeline runs
      `check advisories` and `check bans licenses sources`). `exclude` entries
-     are not applied, so an excluded combination is checked too. An expression
-     that cannot be expanded is dropped when it follows `check` in a `run:`
-     line, and an action input holding one takes that input's own default (an
-     unexpandable `command` becomes a plain `check`, which runs every check and
-     so covers every subset; the other inputs leave `command` as written). A
-     shell variable or expression before `check` in a `run:` line, one in a
-     `cargo deny` line that names no `check`, or a
-     `working-directory` with `..` or an absolute path refuses the push.
-     The hook does not read job-level `defaults.run.working-directory`, or
-     invocations hidden in a script the step calls, so those forms are not
-     checked. Quoted multiline container scripts are not host commands;
+     are not applied, so an excluded combination is checked too. Any other
+     variable or expression in a `run:` line, before or after `check`, is
+     dropped together with the option it was the value of (`--config ${{
+     env.X }}` goes whole), so the line runs a plain `check`; an action input
+     holding one takes that input's own default (an unexpandable `command`
+     becomes a plain `check`, which runs every check and so covers every
+     subset). A `cargo deny` line that names no `check` and holds a variable or
+     expression, or a `working-directory` with `..`, an absolute path or an
+     expression that is not a matrix key, refuses the push. An invocation CI
+     allows to fail (`continue-on-error` on its step or its job, as a literal
+     `true` or as `${{ matrix.<key> }}` / `${{ matrix.<key> == '<value>' }}` /
+     `!=` evaluated for each matrix combination) still runs, after the others,
+     but its failure prints a `[PRE_PUSH_WARNING] cargo deny:` line on stderr
+     and does not refuse the push, as it does not fail CI; the README
+     pipeline's `advisories` leg is one. The same invocation without that
+     allowance in any combination still refuses. Any other `continue-on-error`
+     value blocks as usual. The hook does not read invocations hidden in a
+     script the step calls, so those forms are not checked. Quoted multiline
+     container scripts are not host commands. The fleet babysitter does not run
+     it: its execution belongs inside the worker container (#4768, #4770),
+     never beside the host App key, so babysitter repairs are not checked by
+     it until that contained path exists;
    - `shellcheck` on changed `.sh` files when a tracked workflow contains the
      supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or on
      the action's named shell files and executable extensionless shell scripts for a

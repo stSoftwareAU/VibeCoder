@@ -14,10 +14,15 @@
  *
  * The gate never adds `--offline`, an ignore list or a reduced-scope flag.
  * A `${{ matrix.<key> }}` expression is expanded from the job's literal
- * matrix, one invocation per combination. An expression that cannot be
- * expanded falls back to a plain `check` (every check, so every subset) with
- * the action's defaults, except in a `run:` line before `check`, which stays
- * unrunnable.
+ * matrix, one invocation per combination. An expression or variable that
+ * cannot be expanded is dropped, together with the option it was the value of,
+ * so the invocation runs a plain `check` (every check, so every subset) with
+ * the action's defaults. Only a `cargo deny` line that names no `check` and
+ * holds one, or a working directory that cannot be resolved, stays unrunnable.
+ *
+ * An invocation CI allows to fail (`continue-on-error` on its step or job: a
+ * literal true, or a `matrix.<key>` test evaluated for each combination) still
+ * runs, but a failure is a warning, never a verdict.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -35,7 +40,13 @@ import {
 
 /** One cargo-deny invocation CI makes, or a CI invocation we cannot reproduce. */
 export type CargoDenyCiFinding =
-  | { kind: "command"; argv: string[]; cwd: string }
+  | {
+    kind: "command";
+    argv: string[];
+    cwd: string;
+    /** CI allows this invocation to fail (`continue-on-error`); set only when true. */
+    allowFailure?: true;
+  }
   | { kind: "unrunnable"; source: string; reason: string };
 
 /** A cargo-deny gate failure: a real verdict, or the tool could not run. */
@@ -43,6 +54,9 @@ export type CargoDenyGateError = {
   kind: "verdict" | "infrastructure";
   message: string;
 };
+
+/** The most characters of a failed check's output kept in a warning. */
+const WARNING_CAP = 1000;
 
 /** Longest line the parser's messages and the classifier will examine. */
 const LINE_CAP = 2000;
@@ -209,6 +223,24 @@ function joinContinuations(
   return commands;
 }
 
+/** What a step inherits from its job and workflow. */
+interface JobContext {
+  matrix: Record<string, unknown>;
+  /** `defaults.run.working-directory` of the job, else of the workflow. */
+  defaultWd: string | undefined;
+  /** The job's `continue-on-error`, as written. */
+  continueOnError: string | undefined;
+}
+
+/** The step-level view of one step, with the job's context folded in. */
+interface StepContext {
+  matrix: Record<string, unknown>;
+  /** The `working-directory` a `run:` command executes in, as written. */
+  wd: string | undefined;
+  /** Every `continue-on-error` value that applies (the step's, then the job's). */
+  continueOnError: readonly string[];
+}
+
 /** The working directory a step's run commands execute in. */
 function resolveWorkingDirectory(wd: string | undefined): WorkDir {
   if (wd === undefined || wd === "") return { ok: true, cwd: "." };
@@ -332,13 +364,19 @@ function matrixKeys(texts: readonly string[]): string[] {
  * applied (an excluded combination is checked too, which is stricter). Null
  * when a key has no literal value in some combination, a value is not a plain
  * scalar, or there are too many combinations: the caller then falls back to a
- * plain `check`.
+ * plain `check`. A key in `optionalKeys` may be missing from a combination
+ * (it is then "", as in a workflow expression) and need not be a safe value.
  */
 function matrixCombinations(
   matrix: Record<string, unknown>,
   keys: readonly string[],
+  optionalKeys: readonly string[] = [],
 ): Record<string, string>[] | null {
-  if (keys.length === 0) return [{}];
+  const wanted = [
+    ...keys,
+    ...optionalKeys.filter((key) => !keys.includes(key)),
+  ];
+  if (wanted.length === 0) return [{}];
   const dimensions = Object.entries(matrix).filter(([key, value]) =>
     key !== "include" && key !== "exclude" && Array.isArray(value)
   );
@@ -346,7 +384,7 @@ function matrixCombinations(
     ? []
     : [{}];
   for (const [key, list] of dimensions) {
-    if (!keys.includes(key)) continue;
+    if (!wanted.includes(key)) continue;
     const values = (list as unknown[]).map(matrixScalar);
     if (values.length === 0 || values.some((value) => value === undefined)) {
       return null;
@@ -373,7 +411,7 @@ function matrixCombinations(
       matched = true;
       return { ...values, ...combination };
     });
-    if (!matched && keys.some((key) => values[key] !== undefined)) {
+    if (!matched && wanted.some((key) => values[key] !== undefined)) {
       combinations.push(values);
     }
   }
@@ -382,10 +420,12 @@ function matrixCombinations(
   const result: Record<string, string>[] = [];
   for (const combination of combinations) {
     const picked: Record<string, string> = {};
-    for (const key of keys) {
+    for (const key of wanted) {
       const value = combination[key];
-      if (value === undefined || !SAFE_MATRIX_VALUE.test(value)) return null;
-      picked[key] = value;
+      if (keys.includes(key)) {
+        if (value === undefined || !SAFE_MATRIX_VALUE.test(value)) return null;
+      }
+      picked[key] = value ?? "";
     }
     const id = JSON.stringify(picked);
     if (seen.has(id)) continue;
@@ -406,38 +446,95 @@ function substituteMatrix(
   );
 }
 
+/** A `continue-on-error` value that is a literal true. */
+const CONTINUE_LITERAL = /^(?:true|\$\{\{\s*true\s*\}\})$/i;
+/**
+ * A `continue-on-error` test on one matrix key: `${{ matrix.<key> }}`, or
+ * `${{ matrix.<key> == '<value>' }}` (also `!=`, and an unquoted value).
+ */
+const CONTINUE_MATRIX_TEST =
+  /^\$\{\{\s*matrix\.([\w-]+)(?:\s*(==|!=)\s*(?:'([^']{0,200})'|([\w.-]{1,200})))?\s*\}\}$/;
+
+/**
+ * Whether a `continue-on-error` value lets the invocation of `combination`
+ * fail. A literal true does. A matrix test is evaluated for the combination as
+ * GitHub does (strings compare without regard to case, a missing key is "").
+ * Anything else, and any test with no combination to evaluate it on, does
+ * not: the failure then blocks.
+ */
+function continueOnErrorAllows(
+  value: string,
+  combination: Readonly<Record<string, string>> | null,
+): boolean {
+  const text = value.trim();
+  if (CONTINUE_LITERAL.test(text)) return true;
+  if (combination === null) return false;
+  const test = CONTINUE_MATRIX_TEST.exec(text);
+  if (test === null) return false;
+  const actual = (combination[test[1] ?? ""] ?? "").toLowerCase();
+  if (test[2] === undefined) return actual === "true";
+  const expected = (test[3] ?? test[4] ?? "").toLowerCase();
+  return (actual === expected) === (test[2] === "==");
+}
+
+/** `allowFailure: true` when any of the step's `continue-on-error` values allows it. */
+function allowFailureFor(
+  ctx: StepContext,
+  combination: Readonly<Record<string, string>> | null,
+): { allowFailure?: true } {
+  return ctx.continueOnError.some((value) =>
+      continueOnErrorAllows(value, combination)
+    )
+    ? { allowFailure: true }
+    : {};
+}
+
+/**
+ * The tokens with each variable or expression that is left dropped. An option
+ * the dropped token stood after is dropped with it, so no option is left
+ * without its value (`--config ${{ env.X }}` goes whole). The command is then
+ * a plain check of what remains.
+ */
+function dropUnresolved(tokens: readonly string[]): string[] {
+  const kept: string[] = [];
+  for (const token of tokens) {
+    if (!UNRESOLVED.test(token)) {
+      kept.push(token);
+      continue;
+    }
+    const previous = kept.at(-1);
+    if (
+      previous !== undefined && previous.startsWith("-") &&
+      !previous.includes("=")
+    ) kept.pop();
+  }
+  return kept;
+}
+
 /**
  * The findings for one command segment of a shell line. A `${{ matrix.<key> }}`
  * expression is expanded from the job's literal matrix, one invocation per
- * combination. A variable or expression that stays after `check` is dropped,
- * so the invocation runs a plain `check`, which covers every subset a matrix
- * could select. One before `check`, or in a command that names no `check`,
- * could change what is checked, so that is unrunnable.
+ * combination. A variable or expression that stays, before or after `check`,
+ * is dropped, so the invocation runs a plain `check`, which covers every subset
+ * the variable could select. One in a command that names no `check` could
+ * stand for another subcommand, so that is unrunnable.
  */
 function segmentFindings(
   segment: string,
   no: number,
-  wd: string | undefined,
-  matrix: Record<string, unknown>,
+  ctx: StepContext,
 ): CargoDenyCiFinding[] {
-  // The text before any redirect or comment, environment assignments included.
+  // The text before any redirect or comment. Environment assignments are
+  // dropped (the check is run with the gate's own environment).
   const head = cutAtShellOperator(segment.trim());
   const command = stripEnvAssignments(head);
   if (!CARGO_DENY_START.test(command)) return [];
   const source = `line ${no}`;
-  const unrunnable = (): CargoDenyCiFinding[] => [{
-    kind: "unrunnable",
-    source,
-    reason: "the line uses a shell variable or workflow expression " +
-      "($ or a backtick) that cannot be resolved, so it cannot be run as " +
-      "CI runs it",
-  }];
-  // An environment assignment with a variable or expression cannot be
-  // reproduced.
-  if (UNRESOLVED.test(head.slice(0, head.length - command.length))) {
-    return unrunnable();
-  }
-  const combinations = matrixCombinations(matrix, matrixKeys([command]));
+  const combinations = matrixCombinations(
+    ctx.matrix,
+    matrixKeys([command, ctx.wd ?? ""]),
+    matrixKeys(ctx.continueOnError),
+  );
   const findings: CargoDenyCiFinding[] = [];
   for (const combination of combinations ?? [null]) {
     const text =
@@ -448,18 +545,27 @@ function segmentFindings(
     const checkAt = argv.indexOf("check", 2);
     if (checkAt === -1) {
       // Without `check` a variable could still stand for it.
-      if (argv.some((token) => UNRESOLVED.test(token))) return unrunnable();
+      if (argv.some((token) => UNRESOLVED.test(token))) {
+        return [{
+          kind: "unrunnable",
+          source,
+          reason: "the line uses a shell variable or workflow expression " +
+            "($ or a backtick) in a cargo deny command that names no " +
+            "`check`, so it cannot be run as CI runs it",
+        }];
+      }
       continue;
     }
-    if (argv.slice(0, checkAt).some((token) => UNRESOLVED.test(token))) {
-      return unrunnable();
-    }
+    const wd = ctx.wd === undefined || combination === null
+      ? ctx.wd
+      : substituteMatrix(ctx.wd, combination);
     const cwd = resolveWorkingDirectory(wd);
     if (!cwd.ok) return [{ kind: "unrunnable", source, reason: cwd.reason }];
     findings.push({
       kind: "command",
-      argv: argv.filter((token, i) => i <= checkAt || !UNRESOLVED.test(token)),
+      argv: dropUnresolved(argv),
       cwd: cwd.cwd,
+      ...allowFailureFor(ctx, combination),
     });
   }
   return findings;
@@ -473,11 +579,10 @@ function segmentFindings(
 function cargoDenyCommandFindings(
   line: string,
   no: number,
-  wd: string | undefined,
-  matrix: Record<string, unknown>,
+  ctx: StepContext,
 ): CargoDenyCiFinding[] {
   return splitShellSegments(line).flatMap((segment) =>
-    segmentFindings(segment, no, wd, matrix)
+    segmentFindings(segment, no, ctx)
   );
 }
 
@@ -487,8 +592,7 @@ function cargoDenyCommandFindings(
  */
 function runFindings(
   run: MappingLine,
-  wd: string | undefined,
-  matrix: Record<string, unknown>,
+  ctx: StepContext,
 ): CargoDenyCiFinding[] {
   const script: YamlLine[] = BLOCK_INDICATOR.test(scalarValue(run.raw))
     ? run.children
@@ -520,7 +624,7 @@ function runFindings(
     }
     if (!startsInQuote) {
       findings.push(
-        ...cargoDenyCommandFindings(command.text, command.no, wd, matrix),
+        ...cargoDenyCommandFindings(command.text, command.no, ctx),
       );
     }
   }
@@ -546,11 +650,12 @@ function parseWith(children: readonly YamlLine[]): Map<string, string> {
  */
 function actionFindings(
   inputs: ReadonlyMap<string, string>,
-  matrix: Record<string, unknown>,
+  ctx: StepContext,
 ): CargoDenyCiFinding[] {
   const combinations = matrixCombinations(
-    matrix,
+    ctx.matrix,
     matrixKeys([...inputs.values()]),
+    matrixKeys(ctx.continueOnError),
   );
   return (combinations ?? [null]).flatMap((combination) =>
     actionVariantFindings(
@@ -560,6 +665,7 @@ function actionFindings(
           combination === null ? value : substituteMatrix(value, combination),
         ]),
       ),
+      allowFailureFor(ctx, combination),
     )
   );
 }
@@ -572,6 +678,7 @@ function actionFindings(
  */
 function actionVariantFindings(
   inputs: ReadonlyMap<string, string>,
+  allow: { allowFailure?: true },
 ): CargoDenyCiFinding[] {
   const value = (name: ActionInput): string => {
     const input = inputs.get(name) ?? ACTION_DEFAULTS[name];
@@ -591,6 +698,7 @@ function actionVariantFindings(
       ...splitWords(value("command-arguments")),
     ],
     cwd: ".",
+    ...allow,
   }];
 }
 
@@ -616,7 +724,7 @@ function stepFindings(
   start: number,
   end: number,
   dashIndent: number,
-  matrix: Record<string, unknown>,
+  job: JobContext,
 ): CargoDenyCiFinding[] {
   const afterDash = LIST_ITEM.exec(lines[start] ?? "")?.[2] ?? "";
   const content = afterDash.trimStart();
@@ -656,8 +764,18 @@ function stepFindings(
 
   const find = (name: string): MappingLine | undefined =>
     keys.find((key) => key.key === name);
+  // A step's own `working-directory` wins over the job's and the workflow's
+  // `defaults.run.working-directory`, which apply to `run:` steps only.
   const wdKey = find("working-directory");
-  const wd = wdKey === undefined ? undefined : scalarValue(wdKey.raw);
+  const coeKey = find("continue-on-error");
+  const ctx: StepContext = {
+    matrix: job.matrix,
+    wd: wdKey === undefined ? job.defaultWd : scalarValue(wdKey.raw),
+    continueOnError: [
+      ...(coeKey === undefined ? [] : [scalarValue(coeKey.raw)]),
+      ...(job.continueOnError === undefined ? [] : [job.continueOnError]),
+    ],
+  };
   const findings: CargoDenyCiFinding[] = [];
   const usesKey = find("uses");
   if (usesKey !== undefined && ACTION_REPO.test(scalarValue(usesKey.raw))) {
@@ -665,14 +783,42 @@ function stepFindings(
     findings.push(
       ...actionFindings(
         withKey === undefined ? new Map() : parseWith(withKey.children),
-        matrix,
+        ctx,
       ),
     );
   }
   for (const key of keys) {
-    if (key.key === "run") findings.push(...runFindings(key, wd, matrix));
+    if (key.key === "run") findings.push(...runFindings(key, ctx));
   }
   return findings;
+}
+
+/** The parts of a parsed job this gate reads. */
+interface ParsedJob {
+  strategy?: { matrix?: Record<string, unknown> };
+  defaults?: { run?: { "working-directory"?: unknown } };
+  "continue-on-error"?: unknown;
+}
+
+/** A parsed YAML scalar as the text GitHub would see, or undefined. */
+function yamlScalar(value: unknown): string | undefined {
+  return typeof value === "string" || typeof value === "number" ||
+      typeof value === "boolean"
+    ? String(value)
+    : undefined;
+}
+
+/** The workflow's own `defaults.run.working-directory`, if it parses and sets one. */
+function workflowDefaultWd(text: string): string | undefined {
+  try {
+    const doc = parseYaml(text) as
+      | { defaults?: { run?: { "working-directory"?: unknown } } }
+      | null;
+    return yamlScalar(doc?.defaults?.run?.["working-directory"]);
+  } catch {
+    // GitHub does not run a workflow that is not valid YAML, so CI has no default to mirror.
+    return undefined;
+  }
 }
 
 /**
@@ -680,11 +826,16 @@ function stepFindings(
  * make. A step starts at a `- ` line and ends at the next non-blank line at
  * or below its dash's indent. Comment lines are ignored.
  *
- * SIMPLE-ON-PURPOSE: job- or workflow-level `defaults.run.working-directory`, `exclude` entries of a matrix and script-hidden invocations are not read — upgrade when a cargo deny check run escapes this gate in practice or a workflow uses one of those forms.
+ * A `run:` step without its own `working-directory` takes the job's, then the
+ * workflow's, `defaults.run.working-directory`. A step's or job's
+ * `continue-on-error` marks the invocations it allows to fail.
+ *
+ * SIMPLE-ON-PURPOSE: `exclude` entries of a matrix, `continue-on-error` tests other than a literal true or one matrix key, and script-hidden invocations are not read — upgrade when a cargo deny check run escapes this gate in practice or a workflow uses one of those forms.
  */
 export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
   const lines = text.split("\n").map((raw) => raw.replace(/\r$/, ""));
   const findings: CargoDenyCiFinding[] = [];
+  const workflowWd = workflowDefaultWd(text);
   let start = 0;
   while (start < lines.length) {
     const item = LIST_ITEM.exec(lines[start] ?? "");
@@ -700,7 +851,11 @@ export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
       if (!isSkippable(line) && indentOf(line) <= dashIndent) break;
       end++;
     }
-    let matrix: Record<string, unknown> = {};
+    let job: JobContext = {
+      matrix: {},
+      defaultWd: workflowWd,
+      continueOnError: undefined,
+    };
     try {
       const jobLine = lines.slice(0, start).findLastIndex((line) =>
         /^ {2}[\w-]+:\s*(?:#.*)?$/.test(line)
@@ -714,14 +869,18 @@ export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
         ) jobEnd++;
         const parsed = parseYaml(
           lines.slice(jobLine, jobEnd).map((line) => line.slice(2)).join("\n"),
-        ) as Record<
-          string,
-          { strategy?: { matrix?: Record<string, unknown> } }
-        >;
-        matrix = Object.values(parsed)[0]?.strategy?.matrix ?? {};
+        ) as Record<string, ParsedJob | null>;
+        const parsedJob = Object.values(parsed)[0];
+        job = {
+          matrix: parsedJob?.strategy?.matrix ?? {},
+          defaultWd:
+            yamlScalar(parsedJob?.defaults?.run?.["working-directory"]) ??
+              workflowWd,
+          continueOnError: yamlScalar(parsedJob?.["continue-on-error"]),
+        };
       }
     } catch { /* Unsupported job syntax uses the full-check fallback. */ }
-    findings.push(...stepFindings(lines, start, end, dashIndent, matrix));
+    findings.push(...stepFindings(lines, start, end, dashIndent, job));
     start = end;
   }
   return findings;
@@ -841,6 +1000,9 @@ export function quoteArg(value: string): string | null {
 /**
  * Run the cargo-deny gate (Issue #4626). Intermediate pushes without cargo
  * inputs skip it unless `always` is set. The first failed check stops the gate.
+ * An invocation CI allows to fail (`allowFailure`) runs after the others and
+ * never stops the gate: its failure is a warning in the result, as it is
+ * in CI. An identical invocation that CI does not allow to fail blocks.
  */
 export async function runCargoDenyGate(opts: {
   cwd: string;
@@ -850,9 +1012,11 @@ export async function runCargoDenyGate(opts: {
   runner?: PreFlightRunner;
   timeoutSeconds?: number;
   findings?: CargoDenyCiFinding[];
-}): Promise<Result<{ checksRun: string[] }, CargoDenyGateError>> {
+}): Promise<
+  Result<{ checksRun: string[]; warnings: string[] }, CargoDenyGateError>
+> {
   if (!opts.always && !cargoDenyTriggered(opts.changed)) {
-    return { ok: true, value: { checksRun: [] } };
+    return { ok: true, value: { checksRun: [], warnings: [] } };
   }
   const findings = opts.findings ??
     await repoCargoDenyFindings(opts.cwd, opts.tracked);
@@ -871,13 +1035,19 @@ export async function runCargoDenyGate(opts: {
     }
   }
 
-  const seen = new Set<string>();
-  const checks: { command: string; cwd: string }[] = [];
+  const checks = new Map<
+    string,
+    { command: string; cwd: string; allowFailure: boolean }
+  >();
   for (const finding of findings) {
     if (finding.kind !== "command") continue;
     const key = JSON.stringify([finding.argv, finding.cwd]);
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const allowFailure = finding.allowFailure === true;
+    const seen = checks.get(key);
+    if (seen !== undefined) {
+      seen.allowFailure = seen.allowFailure && allowFailure;
+      continue;
+    }
     const parts: string[] = [];
     for (const arg of finding.argv) {
       const quoted = quoteArg(arg);
@@ -894,23 +1064,37 @@ export async function runCargoDenyGate(opts: {
       }
       parts.push(quoted);
     }
-    checks.push({
+    checks.set(key, {
       command: parts.join(" "),
       cwd: finding.cwd === "." ? opts.cwd : `${opts.cwd}/${finding.cwd}`,
+      allowFailure,
     });
   }
 
   const checksRun: string[] = [];
-  for (const check of checks) {
+  const warnings: string[] = [];
+  const ordered = [...checks.values()];
+  for (
+    const check of [
+      ...ordered.filter((item) => !item.allowFailure),
+      ...ordered.filter((item) => item.allowFailure),
+    ]
+  ) {
     const result = await runPreFlightGate([check.command], {
       cwd: check.cwd,
       runner: opts.runner,
       timeoutSeconds: opts.timeoutSeconds,
     });
     if (!result.ok) {
-      return { ok: false, error: classifyCargoDenyFailure(result.error) };
+      const error = classifyCargoDenyFailure(result.error);
+      if (!check.allowFailure) return { ok: false, error };
+      warnings.push(
+        `${check.command} failed, which CI allows (continue-on-error), so ` +
+          `the push is not blocked: ${error.message.slice(0, WARNING_CAP)}`,
+      );
+      continue;
     }
     checksRun.push(check.command);
   }
-  return { ok: true, value: { checksRun } };
+  return { ok: true, value: { checksRun, warnings } };
 }

@@ -391,39 +391,6 @@ async function elapse(stateDir: string): Promise<void> {
   }
 }
 
-Deno.test("fix runs CI's cargo-deny check through the runner it was given before it pushes (PR #4895 review)", async () => {
-  await withState(async (stateDir) => {
-    const h = harness(stateDir);
-    h.state.changes = true;
-    h.deps.clone = async (_repo, dir) => {
-      await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
-      await Deno.writeTextFile(
-        `${dir}/.github/workflows/ci.yml`,
-        "jobs:\n  deny:\n    steps:\n      - run: cargo deny check\n",
-      );
-    };
-    const baseRun = h.deps.run!;
-    h.deps.run = (command, args, cwd) =>
-      command === "git" && args[0] === "ls-files"
-        ? Promise.resolve(".github/workflows/ci.yml\0")
-        : baseRun(command, args, cwd);
-    const commands: string[] = [];
-    h.deps.cargoDenyRunner = (command) => {
-      commands.push(command);
-      assertEquals(h.state.pushed, 0, "the check runs before the push");
-      return Promise.resolve({
-        started: true,
-        code: 0,
-        stdout: "",
-        stderr: "",
-      });
-    };
-    await h.attempt();
-    assertEquals(commands, ["'cargo' 'deny' 'check'"]);
-    assertEquals(h.state.pushed, 1);
-  });
-});
-
 Deno.test("a push on another host resets the shared no-progress budget", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);

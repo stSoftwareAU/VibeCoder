@@ -162,7 +162,7 @@ export function buildBabysitterSandboxArgs(options: {
   assertAbsolute(options.scratch, "The scratch directory");
   if (options.protectedPaths.length === 0) {
     throw new Error(
-      "Refusing to build the babysitter sandbox with no protected paths",
+      "Refusing to start the babysitter agent with no protected paths",
     );
   }
   for (const path of options.protectedPaths) {
@@ -170,12 +170,12 @@ export function buildBabysitterSandboxArgs(options: {
     for (const writable of [options.dir, options.scratch]) {
       if (writable === path || writable.startsWith(`${path}/`)) {
         throw new Error(
-          `Refusing to build the babysitter sandbox: ${writable} is inside protected path ${path}`,
+          `Refusing to start the babysitter agent: ${writable} is inside protected path ${path}`,
         );
       }
       if (path.startsWith(`${writable}/`)) {
         throw new Error(
-          `Refusing to build the babysitter sandbox: protected path ${path} overlaps writable path ${writable}`,
+          `Refusing to start the babysitter agent: protected path ${path} overlaps writable path ${writable}`,
         );
       }
     }

@@ -1756,6 +1756,10 @@ export async function runPrePushGate(opts: {
         : fail(cargoDeny.error.message);
     }
     checksRun.push(...cargoDeny.value.checksRun);
+    // A check CI allows to fail is reported, never counted as run or a block.
+    for (const warning of cargoDeny.value.warnings) {
+      console.warn(`[PRE_PUSH_WARNING] cargo deny: ${warning}`);
+    }
   }
 
   const preFlight = await runPreFlightGate(opts.preFlightCommands, {

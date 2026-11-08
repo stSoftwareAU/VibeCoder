@@ -1,48 +1,51 @@
 ## Summary
 
-Run the repository’s CI `cargo deny` checks locally before a PR is raised or a
-babysitter repair is pushed, catching advisory failures before CI. Intermediate
-push hooks run them when cargo inputs change. Closes #4626.
+Run the repository’s CI `cargo deny` checks locally before a PR is raised,
+catching advisory failures before CI. Intermediate push hooks run them when
+cargo inputs change. Closes #4626.
 
 The gate discovers direct workflow commands and cargo-deny-action steps. It
 expands `${{ matrix.<key> }}` from the job's literal `strategy.matrix` lists and
-`include` entries, in action inputs and in `run:` lines, one invocation per
-combination. An expression it cannot expand is dropped after `check` in a `run:`
-line (so `check bans $X` becomes `check bans`), and an action input holding one
-takes that input's own default; only an unexpandable `command` becomes a plain
-`check` (every subset). It does not add offline or ignore flags. A variable
-before `check`, an unreproducible working directory or a `cargo deny` line
-naming no `check` but holding a variable or expression refuse the push;
-unavailable tools or networks are infrastructure failures, and audit diagnostics
-are code verdicts. Quoted multiline container scripts are not treated as host
-commands.
+`include` entries, in action inputs, `working-directory` values and `run:`
+lines, one invocation per combination. Any other variable or expression in a
+`run:` line, before or after `check`, is dropped together with the option it was
+the value of (`--config ${{ env.X }}` goes whole), so the line runs a plain
+`check`; an action input holding one takes that input's own default. It does not
+add offline or ignore flags. A `run:` step runs from its `working-directory`,
+else the job's, else the workflow's `defaults.run.working-directory`. An
+invocation CI allows to fail (`continue-on-error` on the step or the job, a
+literal `true` or a `matrix.<key>` test evaluated per combination) still runs,
+after the others, but its failure is a `[PRE_PUSH_WARNING]` line and does not
+refuse the push. A `cargo deny` line naming no `check` but holding a variable or
+expression, and a working directory that cannot be reproduced, refuse the push;
+unavailable tools or networks are infrastructure failures, and audit
+diagnostics are code verdicts. Quoted multiline container scripts are not
+treated as host commands.
 
-The babysitter runs the check on its host, so it runs under `codex sandbox` with
-the repair agent's permissions profile (the protected credential paths are
-`none`), by absolute path to `cargo-deny` and `cargo` found outside the clone,
-with the rustup toolchain pinned and the rustc wrapper variables emptied
-(`worker/deno/lib/fleet_babysitter_cargo_deny_sandbox.ts`, recorded under C36 in
-`docs/THREAT-MODEL.md`). With no isolated runner the default gate cannot start
-the check and nothing is pushed. The shared sandbox builder's refusal messages
-refer to building the sandbox, since it also serves checks that start no agent.
+The babysitter is not gated. Its repairs run on the host, and the governing
+issue forbids host execution beside the App key until the contained path
+(#4768, #4770) exists. The host-side babysitter gate, its sandbox module and its
+C36 text were removed in the PR #4895 review round, and no document claims that
+babysitter pushes are checked.
 
 ## Spec
 
 ### Intent and Rationale
 
 Advisories can change without a lockfile change, so the whole-branch completion
-check and every babysitter repair push run CI’s cargo-deny checks regardless of
-changed paths. Intermediate hooks retain the cargo-input trigger to limit cost.
-The workflow is the source for arguments and action defaults. The parser does
-not resolve job-level working directories, matrix `exclude` entries (an excluded
-combination is checked too) or commands hidden in scripts. A plain `check`
+check runs CI’s cargo-deny checks regardless of changed paths. Intermediate
+hooks retain the cargo-input trigger to limit cost. The workflow is the source
+for arguments, working directories, action defaults and which invocations CI
+allows to fail. The parser does not resolve matrix `exclude` entries (an
+excluded combination is checked too), `continue-on-error` tests other than a
+literal true or one matrix key, or commands hidden in scripts. A plain `check`
 covers every subset an unresolved expression could select.
 
 ### Essential Design Decisions
 
-The shared pre-push gate serves the hook, Step 1b and completion; the babysitter
-runs the same gate before its own push. Verdict diagnostics take precedence over
-network text; unavailable tools or databases do not count as successful checks.
+The shared pre-push gate serves the hook, Step 1b and completion, all of which
+run in the worker container. Verdict diagnostics take precedence over network
+text; unavailable tools or databases do not count as successful checks.
 WIP-preservation pushes remain outside this gate. No VERSION file exists here.
 ShellCheck-only repair checks also leave cargo deny to CI, even when given a
 base ref; the completion gate still runs cargo deny for a whole branch.
@@ -53,84 +56,73 @@ A real cargo-deny 0.20.2 scratch crate produced an advisory-fetch failure with
 an unreachable database and an `error[unlicensed]` diagnostic for a licence
 failure. Tests inject the command runner to verify argv, cwd and failure
 mapping. The action README's own "Recommended pipeline if using advisories"
-workflow (matrix entries `advisories` and `bans licenses sources`) expands to
-`check advisories` and `check bans licenses sources`; unexpandable expressions
-exercise the plain-check fallback. Source-only changes reach the gate in both
-the whole-branch pre-PR check and the babysitter repair path, so newly published
-advisories are checked even when the lockfile is unchanged; intermediate hooks
-still skip source-only changes. The repository’s container-build workflow
-contains a scratch-crate command inside a quoted container script, which the
-host gate ignores. The YAML parser uses an explicit JSR specifier so reviewer
-entry points outside the worker's import map can load the gate.
+workflow (matrix entries `advisories` and `bans licenses sources`, with
+`continue-on-error: ${{ matrix.checks == 'advisories' }}`) expands to
+`check advisories` and `check bans licenses sources`, and only the first is
+allowed to fail. Source-only changes reach the gate in the whole-branch pre-PR
+check, so newly published advisories are checked even when the lockfile is
+unchanged; intermediate hooks still skip source-only changes. The repository’s
+container-build workflow contains a scratch-crate command inside a quoted
+container script, which the host gate ignores. The YAML parser uses an explicit
+JSR specifier so reviewer entry points outside the worker's import map can load
+the gate.
+
+Review round (PR #4895): the babysitter files are restored to `origin/main`
+(`git diff origin/main --stat` lists none of them), so the only babysitter text
+that mentions cargo deny is the sentence in `docs/CONFIGURATION.md` saying it is
+not run there.
 
 ## Test Plan
 
-- `worker/deno/tests/cargo_deny_gate_test.ts` (63 tests at head) covers workflow
+- `worker/deno/tests/cargo_deny_gate_test.ts` (74 tests at head) covers workflow
   parsing, matrix expansion and fallback, the actual container workflow,
-  triggers, diagnostic classification and runner behaviour. The seven matrix and
-  expression tests added in the PR #4895 review round fail against the previous
-  head's `cargo_deny_gate.ts`.
-- The old permanent refusals of an unresolved action input and of a `run:` line
-  with a matrix expression after `check` are obsolete; a check stays mandatory.
-  The replacements are
-  `cargo_deny_gate_test.ts::workflow: the action README's recommended pipeline expands per matrix entry`,
-  `cargo_deny_gate_test.ts::workflow: an action input that cannot be expanded takes the action's default`
+  triggers, diagnostic classification and runner behaviour. This round adds the
+  job- and workflow-level `defaults.run.working-directory` tests, the
+  matrix-keyed `working-directory` test, the `continue-on-error` tests (step and
+  job level, literal, `==`, `!=`, a bare key, a key only some `include` entries
+  set, an unread test, no matrix) and the README-pipeline gate tests (advisories
+  failure is a warning, bans failure is a verdict, an identical invocation CI
+  does not allow still blocks, an infrastructure failure of an allowed leg is a
+  warning), plus the dropped-option and environment-assignment tests and a
+  hostile-input test for the `continue-on-error` pattern.
+- Obsolete: the permanent refusals of a variable or expression before `check`
+  and of an environment assignment holding an expression. A check stays
+  mandatory; the replacements are
+  `cargo_deny_gate_test.ts::workflow: a shell variable or expression before check is dropped, leaving a plain check`,
+  `cargo_deny_gate_test.ts::workflow: an expression that is an option's value drops the option with it`
   and
-  `cargo_deny_gate_test.ts::workflow: a run line's matrix expression that cannot be expanded runs a plain check`.
-  A variable before `check` stays unrunnable
-  (`cargo_deny_gate_test.ts::workflow: a variable before check in a run line is still unrunnable`).
-- `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` covers exact argv,
-  infrastructure and verdict mapping, intermediate source-only skips and the
-  source-only whole-branch check. The latter was observed failing before the
-  fix. `cargo deny: shellcheck-only mode skips cargo deny even with a baseRef`
-  covers the merge with main's ShellCheck-only repair mode.
-- `worker/deno/tests/fleet_pr_babysitter_cargo_deny_test.ts` (6 tests at head)
-  covers verdicts, infrastructure failures, ordering and a source-only repair
-  checked before push. The default gate reads the repair’s tracked workflow and
-  blocks an unreproducible invocation (a variable before `check`), runs a
-  reproducible one through the supplied isolated runner before the push, and
-  with no isolated runner starts nothing and pushes nothing (infrastructure).
-- `worker/deno/tests/fleet_babysitter_cargo_deny_sandbox_test.ts` (10 tests at
-  head) covers the sandbox runner: the `codex sandbox` argv carries the profile
-  that denies the App key, only `cargo deny` runs, tools under the clone,
-  scratch or a relative `PATH` entry are not used, a cwd outside the clone, an
-  unsupported OS and an unpinnable toolchain do not run the check, and the
-  production runner sets up lazily and passes the profile to a real process (a
-  stand-in `codex` script). Breaking each of the cwd, inside-clone,
-  relative-entry, only-`cargo deny` and `sandbox` subcommand guards on its own
-  turned a test red.
-- `worker/deno/tests/fleet_babysitter_sandbox_test.ts::buildBabysitterSandboxArgs refuses an empty protected list`
-  checks the shared builder's refusal wording and retains a positive control for
-  a protected path. The sandbox and cargo-deny sandbox suites passed together
-  (37 tests) after this wording change.
-- `worker/deno/tests/babysitter_fix_orchestration_test.ts` (48 tests at head)
-  proves `fix()` hands its cargo-deny runner to the finish and that the check
-  runs before the push.
-- Existing babysitter and review-dismissal tests inject a passing gate and keep
-  positive controls. The cargo-deny and sandbox test files, the two babysitter
-  suites, the review-dismissal test and the sandbox and pre-flight tests passed
-  together (311 tests).
+  `cargo_deny_gate_test.ts::workflow: an environment assignment holding an expression is dropped like any other`.
+  What remains refused, and is still tested, is a `cargo deny` line with a
+  variable and no `check` (`...is unrunnable even without check`) and an
+  unreproducible working directory.
+- `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (10 tests at head) covers
+  exact argv, infrastructure and verdict mapping, intermediate source-only
+  skips, the source-only whole-branch check, the README pipeline through
+  `runPrePushGate` (the allowed leg prints `[PRE_PUSH_WARNING] cargo deny:` and
+  does not block; the other leg blocks), and
+  `cargo deny: shellcheck-only mode skips cargo deny even with a baseRef`.
+- Red checks run on this head, each by breaking one thing and running
+  `cargo_deny_gate_test.ts` or `pre_push_gate_cargo_deny_test.ts`: job default
+  ignored → 4 tests red; workflow default ignored → 1 red; never allow failure
+  → 4 red; option not dropped with its value → 1 red; `!=` read as `==` → 1
+  red; literal true ignored → 2 red; bare key ignored → 1 red; allowed failure
+  blocks → 2 red; dedupe allowance OR instead of AND → 1 red; allowed legs run
+  before blocking ones → 1 red; matrix `working-directory` not substituted → 1
+  red; a missing optional key not "" → 1 red; the stderr warning removed from
+  `pre_push_gate.ts` → the pre-push README test red.
+- Callers checked for the changed `runCargoDenyGate` result (it now also carries
+  `warnings`): `pre_push_gate.ts` is the only production caller; the other
+  callers are `cargo_deny_gate_test.ts`. The babysitter no longer calls it.
 - `worker/deno/tests/review_fleet_prs_root_forwarders_3417_test.ts` exercises
   reviewer entry points without the worker import map; its three failing cases
   passed after the import fix.
-- The four reviewer checklist, claim, posting and strict-refresh test files that
-  failed in CI's third shard passed together (51 tests).
-- `worker/deno/tests/pre_push_hook_test.ts` passed all five tests, including the
-  two hook integration cases that failed in CI's fourth shard.
-- Documentation copies checked: `docs/CONFIGURATION.md`,
-  `docs/workflows/fleet-pr-babysitter.md` and the C36 row of
-  `docs/THREAT-MODEL.md`; no matching list in README or `docs/INTERNALS.md`. The
-  action’s multi-word command and parser boundary cases remain covered by the
-  cargo-deny tests.
-- `worker/deno/lib/cargo_deny_gate.ts:114`’s `WorkDir` type alias has a `true`
-  type literal that is erased at runtime and is exempt (untestable) from
-  mutation.
+- Documentation copies checked: `docs/CONFIGURATION.md` (the `cargo deny` bullet
+  and the refusal sentence below it); `docs/workflows/fleet-pr-babysitter.md`
+  and `docs/THREAT-MODEL.md` are back to their base text; no matching list in
+  README or `docs/INTERNALS.md`.
+- `worker/deno/lib/cargo_deny_gate.ts`’s `WorkDir` type alias has a `true` type
+  literal that is erased at runtime and is exempt (untestable) from mutation.
 
 The test suite does not run cargo-deny end to end; its runner is injected. The
-sandbox wiring (`codex -c <profile> sandbox <macos|linux> -- cargo-deny deny`)
-was written without an installed Codex to test against, like the agent's own
-profile; the new "Verifying the credential boundary" step in
-`docs/workflows/fleet-pr-babysitter.md` is the host check. On the final head
-`deno fmt --check`, `deno lint` and markdownlint of the changed documents
-passed; the full local gate (`./quality.sh`) was not run in the PR #4895 review
-round, and Semgrep and Checkov were not run.
+full local gate (`./quality.sh`) was not run in the PR #4895 review round;
+Semgrep and Checkov were not run.
