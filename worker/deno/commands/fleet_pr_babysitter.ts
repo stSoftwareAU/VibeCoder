@@ -69,6 +69,8 @@ import {
   buildBabysitterSandboxArgs,
 } from "../lib/fleet_babysitter_sandbox.ts";
 import { ensureBabysitterCodex } from "../lib/fleet_babysitter_codex.ts";
+import { babysitterCargoDenyRunner } from "../lib/fleet_babysitter_cargo_deny_sandbox.ts";
+import type { PreFlightRunner } from "../lib/pre_flight_gate.ts";
 import {
   createExchangeDir,
   readAgentOutput,
@@ -1206,6 +1208,15 @@ export interface BabysitterRepairFinishDeps {
     repoPath: string;
     baseHead: string;
   }) => Promise<Result<{ checksRun: string[] }, CargoDenyGateError>>;
+  /**
+   * The process runner the default cargo-deny gate runs the check through. It
+   * must run the check under the repair agent's boundary, because the clone
+   * can choose the program cargo runs (see
+   * `lib/fleet_babysitter_cargo_deny_sandbox.ts`). With neither this nor
+   * {@link cargoDenyGate}, a check that CI makes cannot start, so nothing is
+   * pushed; the check never runs as a bare host process.
+   */
+  cargoDenyRunner?: PreFlightRunner;
   /** Pause between reads while GitHub's PR view catches up; 1 second by default. */
   headWaitDelayMs?: number;
   /**
@@ -1539,11 +1550,13 @@ function splitNulList(output: string): string[] {
 /**
  * The default cargo-deny gate for a repair (Issue #4626): the files the commit
  * changes since the PR head and the tracked files, read through the repair's
- * own git runner, then the repository's CI cargo-deny check over them.
+ * own git runner, then the repository's CI cargo-deny check over them. The
+ * check runs through `runner`, which isolates it like the repair agent.
  */
 async function defaultCargoDenyGate(
   input: { repoPath: string; baseHead: string },
   runCommand: typeof run,
+  runner: PreFlightRunner = noIsolatedCargoDenyRunner,
 ): Promise<Result<{ checksRun: string[] }, CargoDenyGateError>> {
   const changed = splitNulList(
     await runCommand(
@@ -1560,8 +1573,18 @@ async function defaultCargoDenyGate(
     changed,
     tracked,
     always: true,
+    runner,
   });
 }
+
+/** The runner when none was supplied: cargo deny must not run unisolated. */
+const noIsolatedCargoDenyRunner: PreFlightRunner = () =>
+  Promise.resolve({
+    started: false,
+    code: -1,
+    stdout: "",
+    stderr: "no isolated runner is configured for the cargo-deny check",
+  });
 
 /**
  * Validate, commit, run the repository's cargo-deny check (Issue #4626) and
@@ -1631,7 +1654,8 @@ export async function finishBabysitterRepair(
       throw new Error("PR changed during the fix; refusing to push");
     }
     const cargoDeny = await (deps.cargoDenyGate ??
-      ((input) => defaultCargoDenyGate(input, runCommand)))({
+      ((input) =>
+        defaultCargoDenyGate(input, runCommand, deps.cargoDenyRunner)))({
         repoPath,
         baseHead: pr.headRefOid,
       });
@@ -2244,6 +2268,8 @@ export interface FixDeps {
   dismiss?: BabysitterRepairFinishDeps["dismiss"];
   /** Independent review verifier; defaults to the production verifier (Issue #4657). */
   verifyReviews?: BabysitterRepairFinishDeps["verifyReviews"];
+  /** Runs the cargo-deny check; defaults to the sandboxed production runner. */
+  cargoDenyRunner?: PreFlightRunner;
   journalAttempt?: typeof journalBabysitterAttempt;
 }
 
@@ -2975,6 +3001,14 @@ export async function fix(
       publication,
       dismiss: deps.dismiss,
       verifyReviews,
+      cargoDenyRunner: deps.cargoDenyRunner ?? babysitterCargoDenyRunner({
+        privateKeyPath: app.privateKeyPath,
+        home,
+        configPath,
+        dir,
+        scratch,
+        resolveCodex: () => ensureBabysitterCodex(home),
+      }),
       onPushed: async (pushedHead) => {
         pushed = true;
         retryRecord = {

@@ -481,15 +481,157 @@ Deno.test("workflow: a workflow expression in a cargo deny check line is unrunna
   assertEquals(findings[0]?.kind, "unrunnable");
 });
 
-Deno.test("workflow: a workflow expression in an action input is unrunnable", () => {
-  const text = yaml(
+/** The cargo-deny-action README's "Recommended pipeline if using advisories". */
+const README_PIPELINE = `name: CI
+on: [push, pull_request]
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        checks:
+          - advisories
+          - bans licenses sources
+
+    # Prevent sudden announcement of a new advisory from failing ci:
+    continue-on-error: \${{ matrix.checks == 'advisories' }}
+
+    steps:
+    - uses: actions/checkout@v3
+    - uses: EmbarkStudios/cargo-deny-action@v2
+      with:
+        command: check \${{ matrix.checks }}
+`;
+
+/** The check subset each finding runs: the words after `check`. */
+function checkSubsets(findings: CargoDenyCiFinding[]): string[] {
+  return findings.map((finding) => {
+    assert(finding.kind === "command", JSON.stringify(finding));
+    return finding.argv.slice(finding.argv.indexOf("check") + 1).join(" ");
+  });
+}
+
+Deno.test("workflow: the action README's recommended pipeline expands per matrix entry", () => {
+  assertEquals(checkSubsets(workflowCargoDenyFindings(README_PIPELINE)), [
+    "advisories",
+    "bans licenses sources",
+  ]);
+});
+
+Deno.test("workflow: a run line's matrix expression expands per matrix entry", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        checks: [advisories, bans]",
+    "    steps:",
+    "      - run: cargo deny --all-features check ${{ matrix.checks }}",
+  ));
+  assertEquals(checkSubsets(findings), ["advisories", "bans"]);
+  assertEquals(
+    findings[0]?.kind === "command" && findings[0].argv.slice(0, 3),
+    [
+      "cargo",
+      "deny",
+      "--all-features",
+    ],
+  );
+});
+
+Deno.test("workflow: a run line's matrix expression that cannot be expanded runs a plain check", () => {
+  // No matrix, and a matrix value that is not a literal list. The expression
+  // is dropped and the literal flag after it stays.
+  for (
+    const matrix of ["", "      matrix:\n        checks: ${{ fromJSON(x) }}"]
+  ) {
+    const findings = workflowCargoDenyFindings(
+      `jobs:\n  deny:\n    strategy:\n${matrix}\n    steps:\n` +
+        "      - run: cargo deny --all-features check ${{ matrix.checks }} --hide-inclusion-graph\n",
+    );
+    assertEquals(findings, [{
+      kind: "command",
+      argv: [
+        "cargo",
+        "deny",
+        "--all-features",
+        "check",
+        "--hide-inclusion-graph",
+      ],
+      cwd: ".",
+    }]);
+  }
+});
+
+Deno.test("workflow: a variable before check in a run line is still unrunnable", () => {
+  const findings = workflowCargoDenyFindings(
+    yaml(
+      "      - run: cargo deny --manifest-path ${{ matrix.dir }}/Cargo.toml check",
+    ),
+  );
+  assertEquals(findings.map((f) => f.kind), ["unrunnable"]);
+});
+
+Deno.test("workflow: matrix include entries expand an action's manifest path", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        include:",
+    "          - crate: one",
+    "          - crate: two",
+    "    steps:",
+    "      - uses: EmbarkStudios/cargo-deny-action@v2",
+    "        with:",
+    "          manifest-path: ${{ matrix.crate }}/Cargo.toml",
+  ));
+  assertEquals(
+    findings.map((f) => f.kind === "command" ? f.argv[5] : f.kind),
+    ["one/Cargo.toml", "two/Cargo.toml"],
+  );
+});
+
+Deno.test("workflow: action arguments with spaces and commas expand from the matrix", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        features: ['--all-features', '--features a,b']",
+    "    steps:",
+    "      - uses: EmbarkStudios/cargo-deny-action@v2",
+    "        with:",
+    "          arguments: ${{ matrix.features }}",
+  ));
+  assertEquals(
+    findings.map((f) => f.kind === "command" ? f.argv.slice(6) : f.kind),
+    [["--all-features", "check"], ["--features", "a,b", "check"]],
+  );
+});
+
+Deno.test("workflow: an action input that cannot be expanded takes the action's default", () => {
+  const findings = workflowCargoDenyFindings(yaml(
     "      - uses: EmbarkStudios/cargo-deny-action@v2",
     "        with:",
     "          manifest-path: ${{ matrix.manifest }}",
-  );
-  const findings = workflowCargoDenyFindings(text);
-  assertEquals(findings.length, 1);
-  assertEquals(findings[0]?.kind, "unrunnable");
+    "          arguments: ${{ inputs.flags }}",
+    "          command: check ${{ steps.pick.outputs.subset }}",
+  ));
+  assertEquals(findings, [{
+    kind: "command",
+    argv: [
+      "cargo",
+      "deny",
+      "--log-level",
+      "warn",
+      "--manifest-path",
+      "./Cargo.toml",
+      "--all-features",
+      "check",
+    ],
+    cwd: ".",
+  }]);
 });
 
 Deno.test("workflow: a cargo deny check after && or || is found", () => {
@@ -549,6 +691,16 @@ Deno.test("workflow: a cargo deny segment with a shell variable is unrunnable ev
     assertEquals(findings.length, 1, line);
     assertEquals(findings[0]?.kind, "unrunnable", line);
   }
+});
+
+Deno.test("workflow: a run of unterminated expression openers returns a plain check", () => {
+  // 50000 `${{ ` openers and no `}}`: each opener must not rescan to the end.
+  const findings = workflowCargoDenyFindings(
+    yaml("      - run: cargo deny check " + "${{ ".repeat(50_000)),
+  );
+  assertEquals(findings, [
+    { kind: "command", argv: ["cargo", "deny", "check"], cwd: "." },
+  ]);
 });
 
 Deno.test("workflow: a 200000-character line returns promptly", () => {

@@ -13,7 +13,11 @@
  * never a pass and never a verdict. Any other non-zero exit is a verdict.
  *
  * The gate never adds `--offline`, an ignore list or a reduced-scope flag.
- * An unresolved action command expression falls back to a full check.
+ * A `${{ matrix.<key> }}` expression is expanded from the job's literal
+ * matrix, one invocation per combination. An expression that cannot be
+ * expanded falls back to a plain `check` (every check, so every subset) with
+ * the action's defaults, except in a `run:` line before `check`, which stays
+ * unrunnable.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -292,37 +296,173 @@ function stripEnvAssignments(segment: string): string {
   return rest;
 }
 
-/** The findings for one command segment of a shell line. */
+/** A workflow expression or shell variable left in a token. */
+const UNRESOLVED = /[$`]/;
+/** A `${{ ... }}` expression, whose spaces would split it across tokens. */
+const WORKFLOW_EXPRESSION = /\$\{\{[^}]{0,500}\}\}/g;
+/** A `${{ matrix.<key> }}` expression. */
+const MATRIX_EXPRESSION = /\$\{\{\s*matrix\.([\w-]+)\s*\}\}/g;
+/** A matrix value that is safe to place in an argv: no quoting or shell syntax. */
+const SAFE_MATRIX_VALUE = /^[\w./ ,=:@+-]*$/;
+/** The most matrix combinations the gate expands before it falls back. */
+const MAX_MATRIX_COMBINATIONS = 64;
+
+function matrixScalar(value: unknown): string | undefined {
+  return typeof value === "string" || typeof value === "number" ||
+      typeof value === "boolean"
+    ? String(value)
+    : undefined;
+}
+
+/** The distinct matrix keys the texts name in `${{ matrix.<key> }}`. */
+function matrixKeys(texts: readonly string[]): string[] {
+  return [
+    ...new Set(
+      texts.flatMap((text) =>
+        [...text.matchAll(MATRIX_EXPRESSION)].map((match) => match[1] ?? "")
+      ),
+    ),
+  ];
+}
+
+/**
+ * The value of each of `keys` in every combination of the job's literal
+ * `strategy.matrix`: the lists cross, each `include` entry adds to the
+ * combinations it matches or is its own combination, and `exclude` is not
+ * applied (an excluded combination is checked too, which is stricter). Null
+ * when a key has no literal value in some combination, a value is not a plain
+ * scalar, or there are too many combinations: the caller then falls back to a
+ * plain `check`.
+ */
+function matrixCombinations(
+  matrix: Record<string, unknown>,
+  keys: readonly string[],
+): Record<string, string>[] | null {
+  if (keys.length === 0) return [{}];
+  const dimensions = Object.entries(matrix).filter(([key, value]) =>
+    key !== "include" && key !== "exclude" && Array.isArray(value)
+  );
+  let combinations: Record<string, string>[] = dimensions.length === 0
+    ? []
+    : [{}];
+  for (const [key, list] of dimensions) {
+    if (!keys.includes(key)) continue;
+    const values = (list as unknown[]).map(matrixScalar);
+    if (values.length === 0 || values.some((value) => value === undefined)) {
+      return null;
+    }
+    combinations = combinations.flatMap((combination) =>
+      values.map((value) => ({ ...combination, [key]: value as string }))
+    );
+    if (combinations.length > MAX_MATRIX_COMBINATIONS) return null;
+  }
+  const includes = Array.isArray(matrix.include) ? matrix.include : [];
+  for (const entry of includes) {
+    if (entry === null || typeof entry !== "object") continue;
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(entry)) {
+      const scalar = matrixScalar(value);
+      if (scalar !== undefined) values[key] = scalar;
+    }
+    let matched = false;
+    combinations = combinations.map((combination) => {
+      const agrees = Object.entries(combination).every(([key, value]) =>
+        values[key] === undefined || values[key] === value
+      );
+      if (!agrees) return combination;
+      matched = true;
+      return { ...values, ...combination };
+    });
+    if (!matched && keys.some((key) => values[key] !== undefined)) {
+      combinations.push(values);
+    }
+  }
+  if (combinations.length > MAX_MATRIX_COMBINATIONS) return null;
+  const seen = new Set<string>();
+  const result: Record<string, string>[] = [];
+  for (const combination of combinations) {
+    const picked: Record<string, string> = {};
+    for (const key of keys) {
+      const value = combination[key];
+      if (value === undefined || !SAFE_MATRIX_VALUE.test(value)) return null;
+      picked[key] = value;
+    }
+    const id = JSON.stringify(picked);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    result.push(picked);
+  }
+  return result.length === 0 ? null : result;
+}
+
+/** `text` with each `${{ matrix.<key> }}` replaced by the combination's value. */
+function substituteMatrix(
+  text: string,
+  combination: Readonly<Record<string, string>>,
+): string {
+  return text.replace(
+    MATRIX_EXPRESSION,
+    (_match, key: string) => combination[key] ?? "",
+  );
+}
+
+/**
+ * The findings for one command segment of a shell line. A `${{ matrix.<key> }}`
+ * expression is expanded from the job's literal matrix, one invocation per
+ * combination. A variable or expression that stays after `check` is dropped,
+ * so the invocation runs a plain `check`, which covers every subset a matrix
+ * could select. One before `check`, or in a command that names no `check`,
+ * could change what is checked, so that is unrunnable.
+ */
 function segmentFindings(
   segment: string,
   no: number,
   wd: string | undefined,
+  matrix: Record<string, unknown>,
 ): CargoDenyCiFinding[] {
   // The text before any redirect or comment, environment assignments included.
   const head = cutAtShellOperator(segment.trim());
   const command = stripEnvAssignments(head);
   if (!CARGO_DENY_START.test(command)) return [];
   const source = `line ${no}`;
-  // A cargo deny segment with a shell variable or expression cannot be
-  // reproduced, whether or not it names `check`.
-  if (head.includes("$") || head.includes("`")) {
-    return [{
-      kind: "unrunnable",
-      source,
-      reason: "the line uses a shell variable or workflow expression " +
-        "($ or a backtick), so it cannot be run as CI runs it",
-    }];
+  const unrunnable = (): CargoDenyCiFinding[] => [{
+    kind: "unrunnable",
+    source,
+    reason: "the line uses a shell variable or workflow expression " +
+      "($ or a backtick) that cannot be resolved, so it cannot be run as " +
+      "CI runs it",
+  }];
+  // An environment assignment with a variable or expression cannot be
+  // reproduced.
+  if (UNRESOLVED.test(head.slice(0, head.length - command.length))) {
+    return unrunnable();
   }
-  const argv = tokeniseCommand(command);
-  if (
-    argv[0] !== "cargo" || argv[1] !== "deny" ||
-    !argv.slice(2).includes("check")
-  ) {
-    return [];
+  const combinations = matrixCombinations(matrix, matrixKeys([command]));
+  const findings: CargoDenyCiFinding[] = [];
+  for (const combination of combinations ?? [null]) {
+    const text =
+      (combination === null ? command : substituteMatrix(command, combination))
+        .replace(WORKFLOW_EXPRESSION, "$EXPRESSION");
+    const argv = tokeniseCommand(text);
+    if (argv[0] !== "cargo" || argv[1] !== "deny") continue;
+    const checkAt = argv.indexOf("check", 2);
+    if (checkAt === -1) {
+      // Without `check` a variable could still stand for it.
+      if (argv.some((token) => UNRESOLVED.test(token))) return unrunnable();
+      continue;
+    }
+    if (argv.slice(0, checkAt).some((token) => UNRESOLVED.test(token))) {
+      return unrunnable();
+    }
+    const cwd = resolveWorkingDirectory(wd);
+    if (!cwd.ok) return [{ kind: "unrunnable", source, reason: cwd.reason }];
+    findings.push({
+      kind: "command",
+      argv: argv.filter((token, i) => i <= checkAt || !UNRESOLVED.test(token)),
+      cwd: cwd.cwd,
+    });
   }
-  const cwd = resolveWorkingDirectory(wd);
-  if (!cwd.ok) return [{ kind: "unrunnable", source, reason: cwd.reason }];
-  return [{ kind: "command", argv, cwd: cwd.cwd }];
+  return findings;
 }
 
 /**
@@ -334,9 +474,10 @@ function cargoDenyCommandFindings(
   line: string,
   no: number,
   wd: string | undefined,
+  matrix: Record<string, unknown>,
 ): CargoDenyCiFinding[] {
   return splitShellSegments(line).flatMap((segment) =>
-    segmentFindings(segment, no, wd)
+    segmentFindings(segment, no, wd, matrix)
   );
 }
 
@@ -347,6 +488,7 @@ function cargoDenyCommandFindings(
 function runFindings(
   run: MappingLine,
   wd: string | undefined,
+  matrix: Record<string, unknown>,
 ): CargoDenyCiFinding[] {
   const script: YamlLine[] = BLOCK_INDICATOR.test(scalarValue(run.raw))
     ? run.children
@@ -377,7 +519,9 @@ function runFindings(
       ) break;
     }
     if (!startsInQuote) {
-      findings.push(...cargoDenyCommandFindings(command.text, command.no, wd));
+      findings.push(
+        ...cargoDenyCommandFindings(command.text, command.no, wd, matrix),
+      );
     }
   }
   return findings;
@@ -395,75 +539,44 @@ function parseWith(children: readonly YamlLine[]): Map<string, string> {
   return inputs;
 }
 
-/** The argv the action builds from its inputs, run from the repo root. */
+/**
+ * The argv the action builds from its inputs, run from the repo root. A
+ * `${{ matrix.<key> }}` expression is expanded from the job's literal matrix,
+ * one invocation per combination.
+ */
 function actionFindings(
   inputs: ReadonlyMap<string, string>,
-  no: number,
   matrix: Record<string, unknown>,
 ): CargoDenyCiFinding[] {
-  const expression = /\$\{\{\s*matrix\.([\w-]+)\s*\}\}/g;
-  const matches = [
-    ...new Map(
-      [...inputs.values()].flatMap((value) =>
-        [...value.matchAll(expression)].map((match) =>
-          [match[0], match] as const
-        )
+  const combinations = matrixCombinations(
+    matrix,
+    matrixKeys([...inputs.values()]),
+  );
+  return (combinations ?? [null]).flatMap((combination) =>
+    actionVariantFindings(
+      new Map(
+        [...inputs].map(([name, value]) => [
+          name,
+          combination === null ? value : substituteMatrix(value, combination),
+        ]),
       ),
-    ).values(),
-  ];
-  let variants = [new Map(inputs)];
-  for (const match of matches) {
-    const values = matrix[match[1] ?? ""];
-    if (
-      !Array.isArray(values) || !values.length ||
-      !values.every((v) => typeof v === "string" && /^[\w./-]+$/.test(v))
-    ) {
-      continue;
-    }
-    variants = variants.flatMap((variant) =>
-      values.map((v: string) => {
-        const next = new Map(variant);
-        for (const key of inputs.keys()) {
-          const value = next.get(key);
-          if (value !== undefined) next.set(key, value.replaceAll(match[0], v));
-        }
-        return next;
-      })
-    );
-  }
-  if (
-    variants.some((v) =>
-      /[$`]/.test(
-        `${v.get("command") ?? ""} ${v.get("command-arguments") ?? ""}`,
-      )
     )
-  ) {
-    variants = variants.map((variant) => {
-      const fallback = new Map(variant);
-      fallback.set("command", "check");
-      fallback.set("command-arguments", "");
-      return fallback;
-    });
-  }
-  return variants.flatMap((variant) => actionVariantFindings(variant, no));
+  );
 }
 
+/**
+ * One invocation of the action. An input that still holds a variable or
+ * expression cannot be reproduced, so it takes the action's own default: the
+ * command becomes a plain `check`, which runs every check and so covers every
+ * subset the expression could select.
+ */
 function actionVariantFindings(
   inputs: ReadonlyMap<string, string>,
-  no: number,
 ): CargoDenyCiFinding[] {
-  const value = (name: ActionInput): string =>
-    inputs.get(name) ?? ACTION_DEFAULTS[name];
-  for (const name of Object.keys(ACTION_DEFAULTS) as ActionInput[]) {
-    if (/[$`]/.test(value(name))) {
-      return [{
-        kind: "unrunnable",
-        source: `line ${no}`,
-        reason: `the cargo-deny-action input ${name} uses a shell variable ` +
-          `or workflow expression, so it cannot be run as CI runs it`,
-      }];
-    }
-  }
+  const value = (name: ActionInput): string => {
+    const input = inputs.get(name) ?? ACTION_DEFAULTS[name];
+    return UNRESOLVED.test(input) ? ACTION_DEFAULTS[name] : input;
+  };
   return [{
     kind: "command",
     argv: [
@@ -552,13 +665,12 @@ function stepFindings(
     findings.push(
       ...actionFindings(
         withKey === undefined ? new Map() : parseWith(withKey.children),
-        usesKey.no,
         matrix,
       ),
     );
   }
   for (const key of keys) {
-    if (key.key === "run") findings.push(...runFindings(key, wd));
+    if (key.key === "run") findings.push(...runFindings(key, wd, matrix));
   }
   return findings;
 }
@@ -568,7 +680,7 @@ function stepFindings(
  * make. A step starts at a `- ` line and ends at the next non-blank line at
  * or below its dash's indent. Comment lines are ignored.
  *
- * SIMPLE-ON-PURPOSE: job- or workflow-level `defaults.run.working-directory`, non-action matrix expansion and script-hidden invocations are not read — upgrade when a cargo deny check run escapes this gate in practice or a workflow uses one of those forms.
+ * SIMPLE-ON-PURPOSE: job- or workflow-level `defaults.run.working-directory`, `exclude` entries of a matrix and script-hidden invocations are not read — upgrade when a cargo deny check run escapes this gate in practice or a workflow uses one of those forms.
  */
 export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
   const lines = text.split("\n").map((raw) => raw.replace(/\r$/, ""));
@@ -720,7 +832,7 @@ export function classifyCargoDenyFailure(
 }
 
 /** Quote one argv entry for the pre-flight tokeniser, or null if impossible. */
-function quoteArg(value: string): string | null {
+export function quoteArg(value: string): string | null {
   if (!value.includes("'")) return `'${value}'`;
   if (!value.includes('"')) return `"${value}"`;
   return null;

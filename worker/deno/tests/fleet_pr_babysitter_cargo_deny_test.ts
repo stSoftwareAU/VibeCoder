@@ -18,6 +18,7 @@ import { finishBabysitterRepair } from "../commands/fleet_pr_babysitter.ts";
 import { BabysitterFailure } from "../lib/babysitter_retry_state.ts";
 import { createExchangeDir } from "../lib/fleet_babysitter_exchange.ts";
 import type { CargoDenyGateError } from "../lib/cargo_deny_gate.ts";
+import type { PreFlightRunner } from "../lib/pre_flight_gate.ts";
 
 type Reviews = Parameters<typeof finishBabysitterRepair>[4];
 type Gate = NonNullable<
@@ -228,9 +229,16 @@ Deno.test("cargo deny gate: a passing gate runs before the push and the push hap
   );
 });
 
-Deno.test("cargo deny gate: the default gate checks a source-only repair and refuses an unreproducible CI invocation", async () => {
-  // A real repository: the workflow's cargo-deny step uses a matrix expression,
-  // so the default gate refuses before any cargo-deny process starts.
+/**
+ * Runs the real `finishBabysitterRepair` over a real git repository whose CI
+ * has one workflow step and whose repair commit changes only a source file.
+ * No `cargoDenyGate` is injected, so the default gate runs; only the process
+ * runner is the caller's. Returns what was pushed and what the finish threw.
+ */
+async function finishWithDefaultGate(
+  workflowStep: string,
+  cargoDenyRunner?: PreFlightRunner,
+): Promise<{ events: string[]; error: unknown }> {
   const dir = await Deno.makeTempDir({ prefix: "vibe-babysitter-deny-" });
   const realGit = async (args: string[]): Promise<string> => {
     const out = await new Deno.Command("git", {
@@ -256,7 +264,7 @@ Deno.test("cargo deny gate: the default gate checks a source-only repair and ref
         "  deny:",
         "    runs-on: ubuntu-latest",
         "    steps:",
-        "      - run: cargo deny --all-features check ${{ matrix.check }}",
+        workflowStep,
         "",
       ].join("\n"),
     );
@@ -271,47 +279,89 @@ Deno.test("cargo deny gate: the default gate checks a source-only repair and ref
     const events: string[] = [];
     const exchange = await createExchangeDir("babysitter-cargo-deny-4626-");
     try {
-      const error = await assertRejects(
-        () =>
-          finishBabysitterRepair(
-            REPO,
-            { ...pr, headRefOid: baseHead },
-            dir,
-            "babysitter[bot]",
-            NO_REVIEWS,
-            {
-              renewalFailed: () => false,
-              // Real git for the commit's changed and tracked files.
-              runCommand: (command, args) => {
-                if (
-                  command === "git" &&
-                  (args[0] === "ls-files" ||
-                    (args[0] === "diff" && args.includes("--name-only")))
-                ) {
-                  return realGit(args);
-                }
-                return repairCommands(events)(command, args);
-              },
-              readPr: () => Promise.resolve({ ...pr, headRefOid: baseHead }),
-              validateAndCommit: () => Promise.resolve(),
-              gh,
-              syncBodyFn: skipSync,
-              headWaitDelayMs: 0,
-              dismiss: () => Promise.resolve(),
-              verifyReviews: () => Promise.resolve([]),
+      let error: unknown;
+      try {
+        await finishBabysitterRepair(
+          REPO,
+          { ...pr, headRefOid: baseHead },
+          dir,
+          "babysitter[bot]",
+          NO_REVIEWS,
+          {
+            renewalFailed: () => false,
+            // Real git for the commit's changed and tracked files.
+            runCommand: (command, args) => {
+              if (
+                command === "git" &&
+                (args[0] === "ls-files" ||
+                  (args[0] === "diff" && args.includes("--name-only")))
+              ) {
+                return realGit(args);
+              }
+              return repairCommands(events)(command, args);
             },
-            { exchange },
-          ),
-      );
-      assertInstanceOf(error, BabysitterFailure);
-      assertEquals(error.blockerClass, "code");
-      assertStringIncludes(error.message, ".github/workflows/ci.yml");
-      assertStringIncludes(error.message, "cannot be reproduced locally");
-      assertEquals(events, [], "an unreproducible CI invocation must not push");
+            readPr: () => Promise.resolve({ ...pr, headRefOid: baseHead }),
+            validateAndCommit: () => Promise.resolve(),
+            gh,
+            syncBodyFn: skipSync,
+            headWaitDelayMs: 0,
+            dismiss: () => Promise.resolve(),
+            verifyReviews: () => Promise.resolve([]),
+            cargoDenyRunner,
+          },
+          { exchange },
+        );
+      } catch (caught) {
+        error = caught;
+      }
+      return { events, error };
     } finally {
       await Deno.remove(exchange, { recursive: true });
     }
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+}
+
+Deno.test("cargo deny gate: the default gate checks a source-only repair and refuses an unreproducible CI invocation", async () => {
+  // The workflow's cargo-deny step puts a variable before `check`, so the
+  // default gate refuses before any cargo-deny process starts.
+  const { events, error } = await finishWithDefaultGate(
+    "      - run: cargo deny --all-features ${{ matrix.check }} check",
+  );
+  assertInstanceOf(error, BabysitterFailure);
+  assertEquals(error.blockerClass, "code");
+  assertStringIncludes(error.message, ".github/workflows/ci.yml");
+  assertStringIncludes(error.message, "cannot be reproduced locally");
+  assertEquals(events, [], "an unreproducible CI invocation must not push");
+});
+
+Deno.test("cargo deny gate: the default gate runs CI's check through the supplied isolated runner and then pushes", async () => {
+  const seen: { command: string; cwd: string | undefined }[] = [];
+  const runner: PreFlightRunner = (command, options) => {
+    seen.push({ command, cwd: options.cwd });
+    return Promise.resolve({ started: true, code: 0, stdout: "", stderr: "" });
+  };
+  const { events, error } = await finishWithDefaultGate(
+    "      - run: cargo deny --all-features check ${{ matrix.check }}",
+    runner,
+  );
+  assertEquals(error, undefined);
+  assertEquals(seen.length, 1, "the isolated runner must run the check");
+  assertEquals(
+    seen[0]?.command,
+    "'cargo' 'deny' '--all-features' 'check'",
+    "an expression the matrix cannot expand runs a plain check",
+  );
+  assertEquals(events, ["push"]);
+});
+
+Deno.test("cargo deny gate: with no isolated runner the default gate never runs cargo on the host", async () => {
+  const { events, error } = await finishWithDefaultGate(
+    "      - run: cargo deny check",
+  );
+  assertInstanceOf(error, BabysitterFailure);
+  assertEquals(error.blockerClass, "infrastructure");
+  assertStringIncludes(error.message, "no isolated runner is configured");
+  assertEquals(events, [], "an unisolated check must not push");
 });

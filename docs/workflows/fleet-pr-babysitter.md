@@ -19,7 +19,10 @@ the repair is ready to push, it first runs
 the repository's CI `cargo deny` check locally (Issue #4626). A failing check
 is a code attempt, and a check that cannot run (cargo-deny missing, or the
 advisory database or network unreachable) is an infrastructure attempt with
-infrastructure backoff; either one stops the push. It pushes only if the PR
+infrastructure backoff; either one stops the push. The check runs under the
+same Codex permissions profile as the repair agent (see "Verifying the
+credential boundary"), never as a bare host process, because cargo reads its
+configuration and toolchain choice from the PR's checkout. It pushes only if the PR
 still matches the original head. A base merge on its own
 is also pushed when the agent made no change, so the branch is never left
 behind. After a push, the babysitter synchronises the PR description from the
@@ -380,6 +383,29 @@ key, and expect a denied read. The GitHub token handed to the agent stays
 read-only. This is a path denylist derived from the worker configuration and
 documented host defaults, not a guarantee that every credential on a host is
 unreadable.
+
+**The cargo-deny check's boundary.** `cargo deny` runs code the PR can
+influence: cargo reads command aliases and compiler overrides from the clone's
+`.cargo/config.toml`, and the rustup proxy reads its `rust-toolchain.toml`. So
+the babysitter runs it as `codex sandbox <macos|linux> -- cargo-deny deny ...`
+with the same `-c` profile overrides as the repair agent (built by
+`buildBabysitterSandboxArgs`): read everywhere, write only the clone (its `.git`
+read-only) and the scratch directory, and no access to the protected paths
+above. Only macOS and Linux have a `codex sandbox`; on any other host OS the
+check cannot start, which stops the push as an infrastructure failure. The checkout does not choose the program that runs: `cargo-deny` and
+`cargo` are found on the runner's `~/.cargo/bin` and `PATH`, skipping relative
+entries and any under the clone or scratch directory, and run by absolute path;
+`RUSTUP_TOOLCHAIN` is pinned to the host's own (from the environment, else
+`rustup show active-toolchain` run in the scratch directory), which overrides a
+`rust-toolchain.toml`; and `RUSTC_WRAPPER` and `RUSTC_WORKSPACE_WRAPPER` are
+emptied. The sandbox is the boundary; these keep the clone from choosing the
+program inside it. `CARGO_HOME` is under the scratch directory, so the advisory
+database and registry index are fetched afresh in each repair. The sandbox is
+set up on the first cargo-deny run of a repair, so a repository whose CI has no
+cargo-deny step starts no sandbox. As with the agent's profile, this was written
+without an installed Codex to test against: after upgrading Codex, confirm on
+the host that `codex -c <the babysitter overrides> sandbox <macos|linux> -- cat
+<App private key>` is denied, as for the agent.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs. A
 PR labelled `needs-human` is never a candidate: it waits on a person, for

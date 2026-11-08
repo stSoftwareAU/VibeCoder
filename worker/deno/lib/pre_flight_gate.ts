@@ -141,7 +141,7 @@ export function tokeniseCommand(command: string): string[] {
 }
 
 /** Default runner: spawn the command directly with timeout protection. */
-async function defaultPreFlightRunner(
+export async function defaultPreFlightRunner(
   command: string,
   options: PreFlightRunOptions,
 ): Promise<PreFlightCommandResult> {

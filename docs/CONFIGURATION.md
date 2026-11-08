@@ -5179,13 +5179,20 @@ The hook runs two stages:
      whose inputs (with the action's own defaults) give the argv the action
      runs. It runs CI's arguments: a `run:` step from its
      `working-directory` (relative paths only), and an action step from the
-     repo root. No `--offline`, ignore list or reduced-scope flag is added. An
-     Action input matrix expressions expand literal job matrix lists; an
-     unresolved action command expression falls back to a full `check`. An
-     invocation the hook cannot reproduce (a shell variable, an expression
-     outside those action command inputs, or a `working-directory` with
-     `..` or an absolute path) refuses the push. The hook does not read
-     job-level `defaults.run.working-directory`, other matrix expansion, or
+     repo root. No `--offline`, ignore list or reduced-scope flag is added. A
+     `${{ matrix.<key> }}` expression, in an action input or after `cargo deny`
+     in a `run:` line, expands from the job's literal `strategy.matrix` lists
+     and `include` entries into one invocation per combination (the action
+     README's recommended `command: check ${{ matrix.checks }}` pipeline runs
+     `check advisories` and `check bans licenses sources`). `exclude` entries
+     are not applied, so an excluded combination is checked too. An expression
+     that cannot be expanded is dropped when it follows `check` in a `run:`
+     line, and an action input holding one takes the action's own default (the
+     command becomes a plain `check`, which runs every check and so covers
+     every subset). A shell variable or expression before `check` in a `run:`
+     line, one in a `cargo deny` line that names no `check`, or a
+     `working-directory` with `..` or an absolute path refuses the push.
+     The hook does not read job-level `defaults.run.working-directory`, or
      invocations hidden in a script the step calls, so those forms are not
      checked. Quoted multiline container scripts are not host commands;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push

@@ -76,7 +76,7 @@ const CI_WITH_MATRIX_DENY = [
   "  deny:",
   "    runs-on: ubuntu-latest",
   "    steps:",
-  "      - run: cargo deny --all-features check ${{ matrix.check }}",
+  "      - run: cargo deny --all-features ${{ matrix.check }} check",
   "",
 ].join("\n");
 
