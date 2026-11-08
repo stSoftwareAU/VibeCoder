@@ -1,0 +1,12 @@
+{
+  "issue": 4905,
+  "chunk": "top-up-4905",
+  "title": "top-up: Deno mutation gate working-tree restore",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4905",
+  "definition": "Snapshot and restore the issue clone's working tree around the Deno mutation gate, so a file a mutant's test run writes is not committed by the worker's recovery commit: mutation_tree_guard.ts (#4905)",
+  "status": "claimed",
+  "sweptAt": "7a562f8d71fb9ad3233c8956732b64f0fdba9ffa",
+  "paths": [
+    "worker/deno/lib/mutation_tree_guard.ts"
+  ]
+}
