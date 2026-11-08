@@ -8,7 +8,8 @@ command (`worker/deno/commands/babysitter_repair.ts`, registered in
 session through `runClaudeWithTimeout` (explicit `agentProvider`, `cwd` =
 `--dir`, 90 minutes, the overflow env as `parentEnv` only for an overflow
 choice) and writes the agent's final message to `--response-file`. Every failure
-exits non-zero with the cause and leaves no response file. Closes #4768.
+exits non-zero with the cause. Cleanup failures are reported and can leave a
+response file behind. Closes #4768.
 
 ```mermaid
 flowchart LR
@@ -17,7 +18,7 @@ flowchart LR
     C --> P[chooseBabysitterProvider]
     P --> R[runClaudeWithTimeout in --dir]
     R -->|exit 0, final message| W[(--response-file)]
-    R -->|fault or timeout| X[non-zero exit, no file]
+    R -->|fault or timeout| X[non-zero exit, cleanup attempted]
 ```
 
 ## Spec
@@ -33,9 +34,9 @@ flowchart LR
 ### Essential Design Decisions
 
 - A response file is written only after a complete run (exit 0, no timeout,
-  non-empty message). Any earlier failure removes the path, including a file the
-  agent wrote itself in the clone, because the response path sits inside the
-  clone the agent can write.
+  non-empty message). On failure it attempts to remove the path, including a
+  file the agent wrote itself in the clone. A removal failure is reported and
+  may leave the file.
 - Only an overflow choice passes `parentEnv` (the DeepSeek child env). A
   subscription choice returns the plain process env, which is the runner's
   default, so passing it adds nothing.
@@ -61,8 +62,7 @@ flowchart LR
 
 ## Evidence
 
-Backend/CLI change only, no UI file touched. Evidence is the tests below, run on
-the head.
+Backend/CLI change only, no UI file touched. Evidence is the tests below.
 
 - The issue's fixed command line (`BABYSITTER_REPAIR_COMMAND` in
   `worker/deno/lib/fleet_babysitter_container.ts`) is what the entrypoint test
@@ -113,11 +113,10 @@ the head.
   command registry. — evidence:
   `worker/deno/tests/mod_test.ts::mod - createDefaultRegistry has all built-in commands registered`
   — reviewer: met
-- **met** — `./quality.sh` passes. — evidence: `./quality.sh` run on the head
-  with the host's proxy variables unset, `Result: PASSED (with skipped checks)`
-  — reviewer: missing — reason: the reviewer could not run the gate; it was run
-  here. Semgrep was skipped (its registry was unreachable), and the CI gate runs
-  it
+- **met** — `./quality.sh` passes. — evidence: the implementation run of `./quality.sh` reported
+  `PASSED (with skipped checks)`; the current host rerun failed when Deno
+  panicked and the Checkov probe timed out. — reviewer: missing — reason: the
+  reviewer could not run the gate; CI runs the checks.
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4768.json` —
   reviewer: unrequested — reason: `lib_sweep_coverage_test.ts` refuses a new
   module under `worker/deno/commands/` that no sweep slice claims
@@ -137,7 +136,8 @@ the head.
 - **violation** — "every failure leaves no response file" was false for a
   missing `--dir`/`--prompt-file`, and for a file the agent wrote — evidence:
   `worker/deno/commands/babysitter_repair.ts:83` — reason: fixed in this diff
-  (stale clear first, every later failure clears the path)
+  (stale clear first, every later failure attempts to clear the path and
+  reports cleanup errors)
 - **violation** — two new branches had no test (stale removal failing, final
   write failing) — evidence: `worker/deno/commands/babysitter_repair.ts:101` —
   reason: fixed in this diff (tests added)
@@ -183,7 +183,7 @@ the head.
   or fails. Each has a test above. Callers checked: `container/entrypoint.sh`
   routing (entrypoint test), registry (`mod_test.ts`),
   `babysitterRepairCommand.execute` (wiring test). Twinned rule: none found.
-- Results on the final head:
+- Results recorded during implementation:
   `deno task test:unit tests/babysitter_repair_4738_test.ts tests/mod_test.ts`
   passed (43 tests); `deno test --allow-all tests/container_entrypoint_test.ts`
   passed (44 tests). `./quality.sh` with the host's `HTTP(S)_PROXY`/`NO_PROXY`
@@ -192,3 +192,11 @@ the head.
   only `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts`, which
   expects no proxy variables in its argv and passes when they are unset; it is
   unrelated to this change and was not edited.
+
+  Current validation removed the accidental `worker/deno/undefined` fixture
+  output and updated this summary. The freshness check reads committed history
+  and remains blocked locally until the babysitter commits both changes.
+  `./quality.sh` passed completeness, type check, formatting, lint, Mermaid and
+  Markdown lint; its Deno parallel test process panicked and its Checkov probe
+  timed out on this host. Semgrep and config integration were skipped. The base
+  PR passed all four CI test shards and Checkov.
