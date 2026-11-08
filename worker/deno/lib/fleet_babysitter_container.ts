@@ -19,10 +19,11 @@
  * hides the repair's own result. The Apple helper may run in its advisory
  * mode, where host/LAN isolation is not promised (see `apple_egress_launch.ts`).
  *
- * Not wired in yet: the in-container `babysitter-repair` command now exists
- * (worker/deno/commands/babysitter_repair.ts, routed by container/entrypoint.sh,
- * Issue #4768), so a real run reaches it. This module is still not wired into
- * `fix()` in `commands/fleet_pr_babysitter.ts`; #4770 will wire it.
+ * The in-container `babysitter-repair` command (worker/deno/commands/
+ * babysitter_repair.ts, routed by container/entrypoint.sh, Issue #4768) is
+ * what a run reaches. This module is the only way `fix()` in
+ * `commands/fleet_pr_babysitter.ts` runs a repair (Issue #4770), with no host
+ * fallback.
  */
 
 import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
@@ -37,7 +38,7 @@ import {
 import {
   canonicalPathIncludingMissingTail,
   normaliseAbsolutePath,
-} from "./fleet_babysitter_sandbox.ts";
+} from "./fleet_babysitter_paths.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { startEgressSidecar, stopEgressSidecar } from "./egress_sidecar.ts";
 
@@ -148,6 +149,12 @@ export interface BabysitterContainerInput {
   token: string;
   /** Default {@link BABYSITTER_REPAIR_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /**
+   * Aborts the repair (Issue #4770). An abort before the container starts
+   * refuses the run. An abort while it runs kills the container by name, so
+   * the runtime process returns; a failed kill is logged.
+   */
+  signal?: AbortSignal;
 }
 
 /** The only host environment variables a repair or kill receives. */
@@ -385,7 +392,8 @@ export function buildBabysitterRunArgs(
  * The lexical, canonical and normalised-then-canonical forms of a path. A
  * source like `<root>/missing/../link` collapses its `..` textually in the
  * canonical form, so the normalised-then-canonical form is needed to follow
- * a symlink there (as `babysitterProtectedPaths` does).
+ * a symlink there (as `babysitterProtectedPaths` in fleet_babysitter_paths.ts
+ * does).
  */
 async function pathForms(path: string): Promise<string[]> {
   const normalised = normaliseAbsolutePath(path);
@@ -795,7 +803,7 @@ async function runTeardown(
   }
 }
 
-/** One repair spawn: the arguments, the environment and the timeout. */
+/** One repair spawn: the arguments, the environment, the timeout and the abort. */
 interface RepairRun {
   spawn: BabysitterContainerDeps["spawn"];
   runtime: string;
@@ -804,33 +812,79 @@ interface RepairRun {
   baseEnv: Record<string, string>;
   token: string;
   timeoutMs: number;
+  signal?: AbortSignal;
+  log: (message: string) => void;
+}
+
+/** Refuses a repair whose signal has already aborted (Issue #4770). */
+function refuseIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error(
+      "the babysitter repair was aborted before the container started",
+    );
+  }
+}
+
+/**
+ * Kills the container by name (Issue #4767). Returns the failure, or undefined
+ * when the kill worked. Never throws.
+ */
+async function killContainer(run: RepairRun): Promise<string | undefined> {
+  try {
+    const kill = await run.spawn(run.runtime, ["kill", run.containerName], {
+      env: run.baseEnv,
+      timeoutMs: 30_000,
+    });
+    if (kill.success) return undefined;
+    return `exit code ${kill.code}: ${describeStderr(kill.stderr, run.token)}`;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
+ * Kills the container after an abort (Issue #4770). A failed kill is reported
+ * through `log`, redacted, and never thrown.
+ */
+async function killAfterAbort(run: RepairRun): Promise<void> {
+  const failure = await killContainer(run);
+  if (failure !== undefined) {
+    report(
+      run.log,
+      redactToken(
+        `could not kill container ${run.containerName} after abort: ${failure}`,
+        run.token,
+      ),
+    );
+  }
 }
 
 /**
  * Runs the repair and throws on a timeout (after killing it by name), or on a
- * non-zero exit. The kill's own failure is named in the error.
+ * non-zero exit. The kill's own failure is named in the error. An abort while
+ * the repair runs kills the container by name, so the spawn returns; the
+ * listener is removed when the run ends (Issue #4770).
  */
 async function runRepairProcess(run: RepairRun): Promise<void> {
-  const result = await run.spawn(run.runtime, run.args, {
-    env: { ...run.baseEnv, GH_TOKEN: run.token },
-    timeoutMs: run.timeoutMs,
-  });
+  refuseIfAborted(run.signal);
+  const kills: Promise<void>[] = [];
+  const onAbort = (): void => {
+    kills.push(killAfterAbort(run));
+  };
+  run.signal?.addEventListener("abort", onAbort, { once: true });
+  let result: BabysitterSpawnResult;
+  try {
+    result = await run.spawn(run.runtime, run.args, {
+      env: { ...run.baseEnv, GH_TOKEN: run.token },
+      timeoutMs: run.timeoutMs,
+    });
+  } finally {
+    run.signal?.removeEventListener("abort", onAbort);
+    await Promise.all(kills);
+  }
   if (result.timedOut) {
     const minutes = Math.round(run.timeoutMs / 60_000);
-    let killFailure: string | undefined;
-    try {
-      const kill = await run.spawn(run.runtime, ["kill", run.containerName], {
-        env: run.baseEnv,
-        timeoutMs: 30_000,
-      });
-      if (!kill.success) {
-        killFailure = `exit code ${kill.code}: ${
-          describeStderr(kill.stderr, run.token)
-        }`;
-      }
-    } catch (error) {
-      killFailure = error instanceof Error ? error.message : String(error);
-    }
+    const killFailure = await killContainer(run);
     if (killFailure !== undefined) {
       throw new Error(
         `babysitter repair timed out after ${minutes} minutes; container ${run.containerName} not killed; kill failed: ${killFailure}`,
@@ -844,9 +898,90 @@ async function runRepairProcess(run: RepairRun): Promise<void> {
     throw new Error(
       `babysitter repair container ${run.containerName} exited with code ${result.code}: ${
         describeStderr(result.stderr, run.token)
-      }`,
+      }; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`,
     );
   }
+}
+
+/**
+ * The checkout root: the directory holding worker/deno, derived from this
+ * module's location as the setup command derives it (Issue #4770).
+ */
+export function babysitterCheckoutDir(): string {
+  return decodeURIComponent(new URL("../../..", import.meta.url).pathname)
+    .replace(/\/$/, "");
+}
+
+/**
+ * The two checks a repair needs before it starts: the runtime is on PATH and
+ * the worker image is built (Issue #4770). The repair and
+ * {@link preflightBabysitterContainer} both run this, so the two cannot drift.
+ */
+async function checkRuntimeAndImage(
+  plan: ContainerLaunchPlan,
+  checks: {
+    onPath: BabysitterContainerDeps["onPath"];
+    imageExists: BabysitterContainerDeps["imageExists"];
+    baseEnv: Record<string, string>;
+  },
+): Promise<void> {
+  if (!await checks.onPath(plan.runtime)) {
+    throw new Error(
+      `cannot run ${plan.runtime}: the container runtime is not on PATH`,
+    );
+  }
+  if (
+    !await checks.imageExists(
+      plan.runtime,
+      plan.imageInspectArgs,
+      checks.baseEnv,
+    )
+  ) {
+    throw new Error(
+      "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
+    );
+  }
+}
+
+/** The container name for a run that is never started (the preflight's plan). */
+function throwawayContainerName(): string {
+  return `vibe-babysitter-${Date.now().toString(36)}-${
+    crypto.randomUUID().slice(0, 8)
+  }`;
+}
+
+/**
+ * Builds the babysitter's launch plan and runs the repair's runtime and image
+ * checks, without starting anything (Issue #4770). The plan is built under a
+ * throwaway container name. Throws the same refusals as the repair.
+ */
+export async function preflightBabysitterContainer(
+  input: { baseDir: string },
+  deps: Partial<
+    Pick<
+      BabysitterContainerDeps,
+      "onPath" | "buildPlan" | "imageExists" | "env"
+    >
+  > = {},
+): Promise<ContainerLaunchPlan> {
+  const env = deps.env ?? processEnv;
+  const buildPlan = deps.buildPlan ?? defaultBuildPlan;
+  const plan = await buildPlan(input.baseDir, throwawayContainerName());
+  await checkRuntimeAndImage(plan, {
+    onPath: deps.onPath ??
+      ((runtime: string) => babysitterRuntimeOnPath(runtime, env)),
+    imageExists: deps.imageExists ?? babysitterImageExists,
+    baseEnv: baseEnvironment(env),
+  });
+  return plan;
+}
+
+/** The default plan builder: the worker's own launch plan for the checkout. */
+function defaultBuildPlan(
+  baseDir: string,
+  containerName: string,
+): Promise<ContainerLaunchPlan> {
+  return buildLaunchPlanForCommand(baseDir, containerName);
 }
 
 /**
@@ -858,9 +993,9 @@ async function runRepairProcess(run: RepairRun): Promise<void> {
  * (docker or podman) through the sidecar. Either is stopped in a `finally`,
  * and a teardown failure is logged, never thrown. A timed-out repair is killed
  * by name. The in-container command now exists (#4768), so a real run reaches
- * it. Reviewer rounds in run.sh still refuse
- * enforced plans; that is out of scope here. Not wired into `fix()` yet
- * (#4770).
+ * it. Reviewer rounds in run.sh still refuse enforced plans; that is out of
+ * scope here. This is the only way `fix()` runs a repair (Issue #4770), with
+ * no host fallback.
  */
 export async function runBabysitterRepairContainer(
   input: BabysitterContainerInput,
@@ -888,9 +1023,7 @@ export async function runBabysitterRepairContainer(
   const timeoutMs = input.timeoutMs ?? BABYSITTER_REPAIR_TIMEOUT_MS;
   const onPath = deps.onPath ??
     ((runtime: string) => babysitterRuntimeOnPath(runtime, env));
-  const buildPlan = deps.buildPlan ??
-    ((baseDir: string, containerName: string) =>
-      buildLaunchPlanForCommand(baseDir, containerName));
+  const buildPlan = deps.buildPlan ?? defaultBuildPlan;
   const imageExists = deps.imageExists ?? babysitterImageExists;
   const spawn = deps.spawn ?? babysitterSpawn;
   const startAppleEgress = deps.startAppleEgress ??
@@ -903,9 +1036,7 @@ export async function runBabysitterRepairContainer(
   const log = deps.log ??
     ((message: string) => console.error(`[babysitter] ${message}`));
 
-  const containerName = `vibe-babysitter-${Date.now().toString(36)}-${
-    crypto.randomUUID().slice(0, 8)
-  }`;
+  const containerName = throwawayContainerName();
   const plan = await buildPlan(input.baseDir, containerName);
 
   // Built and key-checked before any egress starts, so a bad plan never
@@ -916,17 +1047,10 @@ export async function runBabysitterRepairContainer(
   });
   await assertBabysitterKeyOutOfRunArgs(planArgs, input.privateKeyPath);
 
-  if (!await onPath(plan.runtime)) {
-    throw new Error(
-      `cannot run ${plan.runtime}: the container runtime is not on PATH`,
-    );
-  }
   const baseEnv = baseEnvironment(env);
-  if (!await imageExists(plan.runtime, plan.imageInspectArgs, baseEnv)) {
-    throw new Error(
-      "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
-    );
-  }
+  await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
+  // Refused before any egress starts; runRepairProcess checks again before the spawn.
+  refuseIfAborted(input.signal);
 
   const apple = !plan.egressEnforced && plan.proxyName !== "";
   let teardown: Teardown | undefined;
@@ -956,6 +1080,8 @@ export async function runBabysitterRepairContainer(
       baseEnv,
       token: input.token,
       timeoutMs,
+      signal: input.signal,
+      log,
     });
     return { containerName };
   } finally {

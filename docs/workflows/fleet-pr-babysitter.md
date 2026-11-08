@@ -3,16 +3,16 @@
 The babysitter scans the repositories in `.config.json` for open fleet PRs with
 merge conflicts, outdated branches, failed CI or requested review changes. By
 default it fixes candidates. It takes the same PR branch lock as the fleet's CI
-and conflict workers, rechecks the head, and runs one Codex session in a
-temporary clone. Up to two independent PR repairs run at once, each with a
-90-minute Codex limit and its own branch lock. While repairs run, it rescans
+and conflict workers, rechecks the head, and runs one repair session in a
+temporary clone, inside a worker container. Up to two independent PR repairs run
+at once, each with a 90-minute container limit and its own branch lock. While repairs run, it rescans
 every five minutes and queues newly actionable PRs without starting two repairs
-for the same PR. Before Codex starts, the babysitter merges the PR's latest base
+for the same PR. Before the repair session starts, the babysitter merges the PR's latest base
 into the temporary clone without committing, for every kind of repair, so the
 agent works and runs its checks against up-to-date code and the fix and the
 branch update reach GitHub in **one push**. A second push just to update the
 branch would run the whole CI again and roughly double the Actions cost of the
-repair. After Codex reports a completed fix, the babysitter commits the fix and
+repair. After the repair session reports a completed fix, the babysitter commits the fix and
 the merge together as one merge commit, checks the fix (not the base's own
 changes) for whitespace errors and conflict markers, and rechecks the PR. It
 pushes only if the PR still matches the original head. A base merge on its own
@@ -99,7 +99,8 @@ From the VibeCoder checkout:
 Setup prompts for the GitHub App ID and private-key path, discovers the App
 installation, and verifies its permissions, repository access and GraphQL quota
 without printing credentials, then saves the App settings for run.sh and adds
-its bot to this host's fleet-lock identities. It checks and required commands.
+its bot to this host's fleet-lock identities. It checks the required commands
+and runs the container runtime and image preflight; it does not install Codex.
 For a non-interactive preflight, use `--check` and `--app-id=<id>`; the key
 defaults to `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass
 `--key=<path>`.
@@ -144,12 +145,9 @@ so an untracked copy is never committed as part of a fix (Issue #4827). The
 exclusion covers untracked paths only; a file the repository tracks is still
 committed when a repair edits it. If the fetch fails, the repair fails with git's
 cause, the mirror is kept, and the next pass retries. Passes never remove
-mirrors; delete a mirror directory to force a fresh download. Codex reads the
-filesystem under its permissions profile, so it can read a mirror, but it
-cannot write to one because
-its write grants are only the clone and scratch directory. Mirrors are not among
-the `~/.vibe-coder/fleet-pr-babysitter*` denylist entries, so do not treat them
-as credential-protected. Every other git command a repair runs through the
+mirrors; delete a mirror directory to force a fresh download. The repair
+container does not mount the mirror; it sees only its clone and scratch
+directory. Do not treat mirrors as credential-protected. Every other git command a repair runs through the
 babysitter's generic runner, including the tracking-ref fetches and the push of
 the fix, is also bounded to 30 minutes rather than the 60-second default for
 git.
@@ -160,58 +158,38 @@ failure is logged and the next pass retries. Organisation-specific extensions
 can use this to publish a separate babysitter heartbeat and failure record. Dry
 runs and runs limited to a repository or PR do not report service health.
 
-The host needs `gh`, `git` and `deno`, and the Claude CLI with a working Claude
-credential for the review verifier (Issue #4657). The read-only verifier uses
-Claude only, regardless of the configured agent provider or fallback; it refuses
-a fallback that cannot enforce its isolation. Without them the verifier
-reports an outage and every review stays open. A pass that pushed nothing is
-retried under infrastructure backoff; after a push the kept publication record
-is retried on the next scan, with no backoff. Codex CLI must be 0.164.0 or newer,
-because older versions may silently ignore the permissions profile; a
-pre-release counts when its base version is newer (0.166.0-alpha passes,
-0.164.0-beta does not). Setup and each repair check the `codex` on PATH before
-minting an agent token. When it is missing, too old or unrecognised, they
-install the Codex version pinned in `container/tools.json` (CLI and code-mode
-host, macOS or Linux, each archive verified against its pinned SHA-256) under
-`~/.vibe-coder/codex/<version>-<target>/` and run that instead, so an unattended
-host needs no manual upgrade. When RTK is available, each repair receives
-instructions to use it; otherwise the babysitter logs a warning and continues
-without it. Before execution, put the App's `<slug>[bot]` login in
+The host needs `gh`, `git` and `deno`, the Claude CLI with a working Claude
+credential for the review verifier (Issue #4657), and the container runtime
+that the worker's launch plan selects (docker, podman or Apple `container`) with
+the worker image built. The read-only verifier uses Claude only, regardless of
+the configured agent provider or fallback; it refuses a fallback that cannot
+enforce its isolation. Without them the verifier reports an outage and every
+review stays open. A pass that pushed nothing is retried under infrastructure
+backoff; after a push the kept publication record is retried on the next scan,
+with no backoff. Setup runs the container runtime and image preflight; it no
+longer installs Codex. Before execution, put the App's `<slug>[bot]` login in
 `service_accounts` or `fleet_pr_authors` **on every fleet host**. Run setup on
 each host (or deploy your organisation's fleet configuration) before starting
 repairs. Those workers only trust locks written by known fleet accounts. The MVP
 checks the local configuration; it cannot verify other hosts. Use a dedicated
-account with only the access it needs. An operator may also configure a trusted
-Codex RTK hook on each host. Each repair activates the worker-side GitHub write
+account with only the access it needs. Each repair activates the worker-side GitHub write
 allowlist for its target repository, including lock comments, branch updates and
-review dismissals. Concurrent repairs use separate scopes. Codex runs with
-approvals disabled, under a per-spawn Codex permissions profile
-(`default_permissions` and a `permissions.<profile>.filesystem` inline table
-passed as one `-c` value) that reads the filesystem, writes only the temporary
-clone (its `.git` read-only) and scratch directory, and has no access (`none`)
-to the babysitter App private key, the worker credential directory, the host
-`gh` config directory, configured reviewer and worker App keys, configured
-service-account SSH key, the `~/.vibe-coder/fleet-pr-babysitter*` entries and
-their resolved symlink targets. Credential locations are read from the same
-`CONFIG_PATH` file and host environment as the worker, including the documented
-defaults `~/.vibe-coder/credentials` and `~/.config/gh`. The configured spelling
-is resolved with filesystem traversal semantics, so `..` after a directory
-symlink follows the target's parent. Normalised locations and their canonical
-targets are also denied; missing tails are resolved through the longest existing
-parent. These entries are denied because the agent shares the runner's OS user
-and file modes alone do not protect them; it is also told not to ask questions.
-When a fix needs a human decision, it should report the blocker and stop without
-a commit. The sandbox still applies; an unavailable permission or credential can
-stop a run and must be corrected by the operator. Codex gets its own
-installation token, minted per repair for the target repository only, with
+review dismissals. Concurrent repairs use separate scopes. The repair session
+runs in a container, described under "Container repairs" below. Its agent is
+told that it runs unattended and must not ask questions; when a fix needs a
+human decision, it reports the blocker and stops without a commit. Its
+repository token is minted per repair for the target repository only, with
 read-only permissions (contents, pull requests, issues, checks, actions). Every
 GitHub write (lock, push, branch update, review dismissal, PR description) is
 made by the runner with its own token. The review verifier is a Claude model
 that reads untrusted review text and repository code as the same OS user, so it
-gets the same boundary: its own read-only token for the target repository as
+is confined separately: its own read-only token for the target repository as
 `GH_TOKEN`, minted per verification, never the runner's write token; no Bash, Edit,
 Write or NotebookEdit, so it can run nothing and write no file; no Read of the
-protected paths listed above or of `/proc`; and the Claude CLI starts without
+protected paths (the babysitter App private key, the worker credential
+directory, the host `gh` stores, the configured reviewer and worker App keys,
+the configured service-account SSH key, the `~/.vibe-coder/fleet-pr-babysitter*`
+entries and their resolved symlink targets) or of `/proc`; and the Claude CLI starts without
 project or user settings (`--setting-sources ""`) or ambient MCP servers
 (`--strict-mcp-config`), so a hook or MCP entry committed in the PR's checkout
 cannot run a command outside the tool rules. Because it has no shell, the worker
@@ -219,8 +197,13 @@ hands it the evidence as files outside the checkout: the `git diff base...head`
 and a read-only tree at the base ref, and its prompt says the tools are
 unavailable. A check that needs a command run (a test that must go red without
 the fix) is reported as not run, so it is not judged fixed on a claim alone. If its token cannot
-be minted, the pass is an outage. The runner restarts a session with a fresh repository-scoped read token
-when its token approaches expiry, preserving the repair clone. When a review asks
+be minted, the pass is an outage. The protected paths are read from the same `CONFIG_PATH` file and host
+environment as the worker, including the documented defaults
+`~/.vibe-coder/credentials` and `~/.config/gh`. The configured spelling is
+resolved with filesystem traversal semantics, so `..` after a directory symlink
+follows the target's parent; normalised locations and their canonical targets
+are denied, and missing tails are resolved through the longest existing parent.
+When a review asks
 for a description change, the agent writes the complete new description
 (Markdown) to `.babysitter-pr-body` in the clone. The proposal is data, not
 authority. The runner takes the file out of the clone before the change check,
@@ -334,10 +317,12 @@ decision uses the close guard (#3177/#4644) in
 The runner and the agent exchange files through a runner-owned exchange
 directory that the agent cannot write, outside its clone and scratch grants. The
 runner stages the PR description it applies there before
-`gh pr edit --body-file`, and it passes Codex a `--output-last-message` file
-there for the final message that ends with the completion marker. The agent can
-write `.babysitter-pr-body` in the clone, so the runner reads that file, and the
-final message, through a no-follow, regular-file, size-bounded reader. A
+`gh pr edit --body-file`, and the agent writes its final response to `.babysitter-response` in the clone.
+After the container exits, the host reads that file through the no-follow,
+regular-file, size-bounded reader, removes it from the clone, and hands it to the
+exchange directory, where the `BABYSITTER_READY` completion check runs on the
+host. The agent can also write `.babysitter-pr-body` in the clone, so the runner
+reads that file through the same reader. A
 symlink, FIFO, hard link or oversized file fails the repair before anything is
 published. The bounded reader opens read-write, so a FIFO raced in before the
 open does not block on Unix; it then refuses the non-regular descriptor. This
@@ -349,30 +334,77 @@ if it eventually completes, its descriptor is closed. A repair that fails this
 way publishes no PR description and dismisses no review. It is recorded as a
 failed attempt for that head, so it is not retried on this host until its state
 file is removed, as described above; a new head or a new review gets its own
-attempt. The design relies on Codex writing `--output-last-message` from outside
-the agent's permissions profile. That behaviour is taken from the issue and has
-not been checked against an installed Codex, so confirm it on each host, as for
-the key check in "Verifying the credential boundary" below.
+attempt. ## Container repairs
 
-The profile explicitly enables network access so the agent can fetch GitHub
-feedback and check details. Host `[sandbox_workspace_write]` settings do not
-apply to this profile: `network_access` and `writable_roots` are not inherited,
-and `/tmp` is not automatically writable. The agent can write to its assigned
-clone and scratch directory instead; the runner-owned exchange directory that
-holds the final message and the staged PR description is not among them.
+Each repair runs in one container, started by `runBabysitterRepairContainer`
+(`worker/deno/lib/fleet_babysitter_container.ts`). The clone is mounted at
+`/babysitter/clone` and a scratch directory holding `prompt.md` is mounted at
+`/babysitter/scratch`. The image runs the in-container `babysitter-repair`
+command with `--dir /babysitter/clone`, `--prompt-file` pointing at the prompt,
+and `--response-file /babysitter/clone/.babysitter-response`. The agent's
+read-only repository token is passed as `GH_TOKEN` by name only, so its value
+never appears on a command line.
 
-**Verifying the credential boundary.** The permissions-profile keys were written
-without an installed Codex to test against. The paths are passed as the keys of
-one inline-table value, not as dotted `-c` keys, because Codex splits a `-c` key
-on every dot and every protected path contains dots. After upgrading Codex or
-changing the key path, confirm on the host that the agent cannot read the key:
-run a one-off `codex exec` with the same `-c` overrides the babysitter passes
-(built by `buildBabysitterSandboxArgs` in
-`worker/deno/lib/fleet_babysitter_sandbox.ts`), ask it to `cat` the App private
-key, and expect a denied read. The GitHub token handed to the agent stays
-read-only. This is a path denylist derived from the worker configuration and
-documented host defaults, not a guarantee that every credential on a host is
-unreadable.
+A repair is limited to 90 minutes; on timeout the container is killed and the
+repair fails. Egress follows the worker's egress controls (Issue #4769). A
+runtime that enforces egress (docker or podman) gets an internal network and
+proxy from the egress sidecar. Apple `container`, which does not enforce egress,
+gets its run arguments from the Apple egress helper, which may run in an
+advisory mode where host and LAN isolation is not promised. A failed egress start
+fails the repair; the runtime's open network is never used instead.
+
+The image provides Chromium at `$CHROMIUM_PATH`. A real Chromium launch check
+inside the repair container is planned (Issue #4771); until it lands, browser
+checks are not proven in that container.
+
+## Provider selection
+
+`babysitter-repair` calls `chooseBabysitterProvider`
+(`worker/deno/lib/babysitter_provider_choice.ts`), which applies this rule:
+
+- A pinned provider runs that provider and never overflows. A pin is a
+  non-automatic `agent_provider_mode`, or a `VIBE_AGENT_PROVIDER` value. In
+  automatic mode a `VIBE_AGENT_PROVIDER` pin must name a provider in the enabled
+  `agent_providers` set, or the repair fails.
+- In automatic mode the worker's subscription ranking chooses first. If routing
+  finds a winner, that subscription runs the repair.
+- Only when routing pauses because no subscription has budget does the repair use
+  DeepSeek as paid overflow. The chooser logs `[quota] babysitter paid overflow
+  selected=deepseek`, with each ranked provider, credential label and exclusion
+  reason, and it needs a DeepSeek credential that can be exported. Without one the
+  repair fails; it does not wait or run on the host.
+
+## Credentials across the boundary
+
+The repair container receives:
+
+- the agent's read-only repository token, as `GH_TOKEN`;
+- the worker launch plan's read-only mounts that are kept: the worker checkout,
+  the staged configuration directory, the `gh` credential sub-directory and each
+  enabled provider's credential sub-directory of the Vibe credential directory,
+  and the worker log directory (read-write). The plan's named work and
+  agent-state volumes are removed, and the clone and scratch directories are added;
+- a fixed allowlist of host environment variables.
+
+The container does not receive the babysitter App private key. Before any egress
+starts, the run arguments are checked, and the repair is refused if any mount
+would reach that key or an ancestor of it (`assertBabysitterKeyOutOfRunArgs`).
+The host's `gh` configuration (`~/.config/gh`) is not in the plan's mount list.
+The host keeps the App key, the branch locks, the attempt record and every
+GitHub write.
+
+## Failure behaviour
+
+There is no host fallback. A missing container runtime, a missing image, an
+egress failure or a non-zero container exit throws with its cause, and the pass
+is recorded as failed. The messages are `cannot run <runtime>: the container
+runtime is not on PATH`, `the worker image is not built; start the Vibe Coder
+(./run.sh) once to build it`, `egress setup failed: <cause>`, and `babysitter
+repair container <name> exited with code <N>` followed by the redacted stderr
+and, because the image may predate the babysitter-repair mode, a hint to relaunch
+with `./run.sh` to rebuild it.
+A timeout reports `babysitter repair timed out after 90 minutes`. Retry policy
+stays with Issue #4656.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs. A
 PR labelled `needs-human` is never a candidate: it waits on a person, for
@@ -411,9 +443,8 @@ killed by a signal or exit 137/143, a lock that could not be renewed, a head
 that moved) first, and the error text only as a fallback. Infrastructure, host
 capability (missing tool, full disk) and head or lock races receive bounded
 cooldowns without spending the substantive repair budget and post no attempt
-marker. Codex diagnostics classify provider, authentication, quota, rate-limit,
-network and memory failures as infrastructure; an unreadable or empty
-diagnostic on a non-zero exit is also infrastructure. A reported quota reset
+marker. A diagnostic that names a timeout, network, DNS or rate-limit failure is
+classified as infrastructure. A reported quota reset
 or retry-after time delays the next attempt. Code failures, runner
 session-budget exhaustion and no-progress
 outcomes spend that budget. A changed head bypasses the old cooldown while
@@ -524,9 +555,8 @@ reproduces the failing step with the command the workflow runs and confirms it
 passes, and review and conflict repairs run the formatter, linter and type or
 compile check for the code they touched.
 
-This MVP uses the configured GitHub App and Codex; it does not yet select
-providers by remaining quota, handle Dependabot, use per-repository quality
-commands, or review PRs. It does not change repository CI, review, or merge
+This MVP uses the configured GitHub App and the worker's agent providers; it does
+not handle Dependabot, use per-repository quality commands, or review PRs. It does not change repository CI, review, or merge
 rules. Test the read-only pass before running execution mode.
 
 To prepare a separate GitHub identity and API quota, follow the

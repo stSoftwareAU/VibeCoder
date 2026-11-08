@@ -17,6 +17,7 @@ import {
 import type { ContainerLaunchPlan } from "../lib/container_launch.ts";
 import {
   assertBabysitterKeyOutOfRunArgs,
+  babysitterCheckoutDir,
   type BabysitterContainerDeps,
   type BabysitterContainerInput,
   type BabysitterEnvReader,
@@ -25,6 +26,7 @@ import {
   babysitterSpawn,
   type BabysitterSpawnResult,
   buildBabysitterRunArgs,
+  preflightBabysitterContainer,
   runBabysitterRepairContainer,
 } from "../lib/fleet_babysitter_container.ts";
 
@@ -1208,6 +1210,260 @@ Deno.test("babysitterSpawn passes the given env to the child", async () => {
     assertEquals(result.code, 0, `child env wrong: ${result.stderr}`);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * Fake deps for an abort test. The repair spawn runs `onRepairStarted` and
+ * then blocks until a kill arrives. The kill returns `killResult`, or throws
+ * when it is an Error, and it releases the blocked repair (exit 137).
+ */
+function blockingDeps(
+  f: Fixture,
+  killResult: BabysitterSpawnResult | Error,
+  onRepairStarted: () => void,
+): { deps: Partial<BabysitterContainerDeps>; calls: Calls } {
+  const { deps, calls } = fakeDeps(f);
+  let release: (result: BabysitterSpawnResult) => void = () => {};
+  const repairExited = new Promise<BabysitterSpawnResult>((resolve) => {
+    release = resolve;
+  });
+  deps.spawn = (runtime, args, opts) => {
+    calls.spawns.push({
+      runtime,
+      args: [...args],
+      env: { ...opts.env },
+      timeoutMs: opts.timeoutMs,
+    });
+    if (args[0] !== "kill") {
+      onRepairStarted();
+      return repairExited;
+    }
+    release({ success: false, code: 137, stderr: "", timedOut: false });
+    return killResult instanceof Error
+      ? Promise.reject(killResult)
+      : Promise.resolve(killResult);
+  };
+  return { deps, calls };
+}
+
+Deno.test("babysitterCheckoutDir is the checkout root, with no trailing slash", async () => {
+  const root = babysitterCheckoutDir();
+  assert(!root.endsWith("/"), root);
+  const stat = await Deno.stat(
+    `${root}/worker/deno/lib/fleet_babysitter_container.ts`,
+  );
+  assert(stat.isFile);
+});
+
+Deno.test("preflight refuses when the runtime is not on PATH, and never asks for the image", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps, calls } = fakeDeps(f, { onPath: false });
+    await assertRejects(
+      () => preflightBabysitterContainer({ baseDir: "/checkout" }, deps),
+      Error,
+      "cannot run fake-runtime: the container runtime is not on PATH",
+    );
+    assertEquals(calls.onPath, ["fake-runtime"]);
+    assertEquals(calls.imageExists, []);
+    assertEquals(calls.spawns.length, 0, "the preflight starts nothing");
+
+    const control = fakeDeps(f, { onPath: true });
+    const plan = await preflightBabysitterContainer(
+      { baseDir: "/checkout" },
+      control.deps,
+    );
+    assertEquals(plan.runtime, "fake-runtime");
+    assert(
+      builtAt(control.calls, 0).startsWith("vibe-babysitter-"),
+      "the preflight plan takes a throwaway babysitter container name",
+    );
+    assertEquals(
+      control.calls.spawns.length,
+      0,
+      "the preflight starts nothing",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("preflight refuses when the worker image is not built, and starts nothing", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps, calls } = fakeDeps(f, { imageExists: false });
+    await assertRejects(
+      () => preflightBabysitterContainer({ baseDir: "/checkout" }, deps),
+      Error,
+      "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
+    );
+    assertEquals(calls.imageExists, [{
+      runtime: "fake-runtime",
+      args: ["image", "inspect", "vibe-coder:test"],
+    }]);
+    assertEquals(calls.spawns.length, 0, "the preflight starts nothing");
+
+    const control = fakeDeps(f, { imageExists: true });
+    await preflightBabysitterContainer({ baseDir: "/checkout" }, control.deps);
+    assertEquals(control.calls.spawns.length, 0);
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("abort while the repair runs kills the container by name, and the run settles", async () => {
+  const f = await makeFixture();
+  try {
+    const controller = new AbortController();
+    const { deps, calls } = blockingDeps(f, OK, () => controller.abort());
+    const logged: string[] = [];
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: controller.signal },
+          { ...deps, log: (message) => logged.push(message) },
+        ),
+      Error,
+      "exited with code 137",
+    );
+    assertEquals(calls.spawns.length, 2);
+    const name = builtAt(calls, 0);
+    assertEquals(spawnAt(calls, 1).runtime, "fake-runtime");
+    assertEquals(spawnAt(calls, 1).args, ["kill", name]);
+    assertEquals(spawnAt(calls, 1).timeoutMs, 30_000);
+    assert(!("GH_TOKEN" in spawnAt(calls, 1).env), "the kill carries no token");
+    assertEquals(logged, [], "a kill that worked logs nothing");
+
+    // The listener is removed when the run ends, so a later abort starts no kill.
+    const late = new AbortController();
+    const after = fakeDeps(f);
+    await runBabysitterRepairContainer(
+      { ...inputFor(f), signal: late.signal },
+      after.deps,
+    );
+    late.abort();
+    assertEquals(
+      after.calls.spawns.length,
+      1,
+      "an abort after the run ends starts no kill",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("a failed kill after an abort is logged, redacted, and not thrown", async () => {
+  const f = await makeFixture();
+  try {
+    const controller = new AbortController();
+    const failed: BabysitterSpawnResult = {
+      success: false,
+      code: 1,
+      stderr: `no such container ${TOKEN}`,
+      timedOut: false,
+    };
+    const { deps, calls } = blockingDeps(
+      f,
+      failed,
+      () => controller.abort(),
+    );
+    const logged: string[] = [];
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: controller.signal },
+          { ...deps, log: (message) => logged.push(message) },
+        ),
+      Error,
+      "exited with code 137",
+    );
+    const name = builtAt(calls, 0);
+    assertEquals(logged.length, 1, "the failed kill is logged once");
+    assertStringIncludes(
+      logged[0]!,
+      `could not kill container ${name} after abort`,
+    );
+    assertStringIncludes(logged[0]!, "exit code 1: no such container ***");
+    assert(!logged[0]!.includes(TOKEN), "the token is redacted from the log");
+
+    const thrownController = new AbortController();
+    const thrown = blockingDeps(
+      f,
+      new Error("spawn broke"),
+      () => thrownController.abort(),
+    );
+    const thrownLogged: string[] = [];
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: thrownController.signal },
+          { ...thrown.deps, log: (message) => thrownLogged.push(message) },
+        ),
+      Error,
+      "exited with code 137",
+    );
+    assertEquals(thrownLogged.length, 1, "a kill that throws is logged too");
+    assertStringIncludes(thrownLogged[0]!, "spawn broke");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair refuses an already-aborted signal before the runtime starts", async () => {
+  const f = await makeFixture();
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    const { deps, calls } = fakeDeps(f);
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: controller.signal },
+          deps,
+        ),
+      Error,
+      "aborted before the container started",
+    );
+    assertEquals(calls.spawns.length, 0, "no runtime process starts");
+
+    const control = fakeDeps(f);
+    await runBabysitterRepairContainer(inputFor(f), control.deps);
+    assertEquals(
+      control.calls.spawns.length,
+      1,
+      "the same run, unaborted, starts",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair's non-zero exit names the rebuild hint and keeps the stderr cause", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps } = fakeDeps(f, {
+      spawnResults: [{
+        success: false,
+        code: 3,
+        stderr: "provider choice failed: no budget",
+        timedOut: false,
+      }],
+    });
+    const error = await assertRejects(
+      () => runBabysitterRepairContainer(inputFor(f), deps),
+      Error,
+    );
+    assertStringIncludes(
+      error.message,
+      "exited with code 3: provider choice failed: no budget",
+    );
+    assertStringIncludes(
+      error.message,
+      "; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
   }
 });
 
