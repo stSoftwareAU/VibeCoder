@@ -1527,3 +1527,323 @@ Deno.test("workflow: a matrix working directory with no matrix value is unrunnab
   ));
   assertEquals(findings.map((f) => f.kind), ["unrunnable"]);
 });
+
+/** The `[argv.slice(2).join(" "), cwd, allowFailure]` of each finding. */
+function summary(findings: CargoDenyCiFinding[]): unknown[] {
+  return findings.map((finding) =>
+    finding.kind === "command"
+      ? [
+        finding.argv.slice(2).join(" "),
+        finding.cwd,
+        finding.allowFailure ?? false,
+      ]
+      : finding.kind
+  );
+}
+
+Deno.test("workflow: jobs indented with four spaces keep their defaults and continue-on-error", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "name: ci",
+    "on: pull_request",
+    "jobs:",
+    "    deny:",
+    "        defaults:",
+    "            run:",
+    "                working-directory: rust",
+    "        continue-on-error: ${{ matrix.checks == 'advisories' }}",
+    "        strategy:",
+    "            matrix:",
+    "                checks: [advisories, bans]",
+    "        steps:",
+    "            - run: cargo deny check ${{ matrix.checks }}",
+    "    other:",
+    "        steps:",
+    "            - run: cargo deny check licenses",
+  ));
+  assertEquals(summary(findings), [
+    ["check advisories", "rust", true],
+    ["check bans", "rust", false],
+    ["check licenses", ".", false],
+  ]);
+});
+
+Deno.test("workflow: a continue-on-error test on a key the command does not use is evaluated per combination", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        toolchain: [stable, nightly]",
+    "    continue-on-error: ${{ matrix.toolchain != 'stable' }}",
+    "    steps:",
+    "      - run: cargo deny check",
+    "      - uses: EmbarkStudios/cargo-deny-action@v2",
+    "        continue-on-error: ${{ matrix.toolchain == 'nightly' }}",
+  ));
+  // The stable leg of the run step blocks, so the merged check blocks.
+  assertEquals(
+    summary(findings).filter((item) => (item as unknown[])[0] === "check"),
+    [["check", ".", false], ["check", ".", true]],
+  );
+  const action = findings.filter((f) =>
+    f.kind === "command" && f.cwd === "." && f.argv.includes("--manifest-path")
+  );
+  assertEquals(
+    action.map((f) => f.kind === "command" && f.allowFailure === true),
+    [false, true],
+  );
+});
+
+Deno.test("gate: a failure on the stable leg of a toolchain-keyed continue-on-error blocks", async () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        toolchain: [stable, nightly]",
+    "    continue-on-error: ${{ matrix.toolchain != 'stable' }}",
+    "    steps:",
+    "      - run: cargo deny check",
+  ));
+  const failing = fakeRunner(() => ({
+    code: 1,
+    stderr: "error[vulnerability]: RUSTSEC-2099-0001",
+  }));
+  const result = await runCargoDenyGate({
+    cwd: "/repo",
+    changed: [],
+    always: true,
+    tracked: [],
+    runner: failing.runner,
+    findings,
+  });
+  assert(!result.ok);
+  assertEquals(result.error.kind, "verdict");
+});
+
+Deno.test("workflow: an include on another dimension does not collapse a continue-on-error test", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        os: [ubuntu-latest, windows-latest]",
+    "        include:",
+    "          - os: windows-latest",
+    "            experimental: true",
+    "    continue-on-error: ${{ matrix.experimental }}",
+    "    steps:",
+    "      - run: cargo deny check",
+  ));
+  // The ubuntu leg blocks and the windows leg is allowed to fail: one check, blocking.
+  assertEquals(summary(findings), [
+    ["check", ".", false],
+    ["check", ".", true],
+  ]);
+});
+
+Deno.test("workflow: an include on another dimension does not drop a leg that lacks the command key", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        os: [ubuntu-latest, windows-latest]",
+    "        include:",
+    "          - os: windows-latest",
+    "            checks: advisories",
+    "    steps:",
+    "      - run: cargo deny check ${{ matrix.checks }}",
+  ));
+  // The ubuntu leg has no `checks`, so the gate falls back to one plain check.
+  assertEquals(summary(findings), [["check", ".", false]]);
+});
+
+const SCHEDULE_ONLY = yaml(
+  "on:",
+  "  schedule:",
+  "    - cron: '0 0 * * *'",
+  "  workflow_dispatch:",
+  "jobs:",
+  "  deny:",
+  "    steps:",
+  "      - run: cargo deny check advisories",
+);
+
+const PATH_FILTERED = yaml(
+  "on:",
+  "  pull_request:",
+  "    paths:",
+  "      - Cargo.lock",
+  "      - Cargo.toml",
+  "      - deny.toml",
+  "jobs:",
+  "  deny:",
+  "    steps:",
+  "      - run: cargo deny check advisories",
+);
+
+Deno.test("workflow: a schedule-only workflow has no findings for a push", () => {
+  assertEquals(workflowCargoDenyFindings(SCHEDULE_ONLY), []);
+  assertEquals(
+    workflowCargoDenyFindings(SCHEDULE_ONLY, { touched: ["Cargo.lock"] }),
+    [],
+  );
+  // Positive control: the same job on a pull_request trigger is found.
+  assertEquals(
+    summary(workflowCargoDenyFindings(
+      SCHEDULE_ONLY.replace("schedule:", "pull_request:").replace(
+        "    - cron: '0 0 * * *'\n",
+        "",
+      ),
+    )),
+    [["check advisories", ".", false]],
+  );
+});
+
+Deno.test("workflow: a path-filtered workflow runs only when a touched path matches", () => {
+  const sourceOnly = { touched: ["src/main.rs", "README.md"] };
+  assertEquals(workflowCargoDenyFindings(PATH_FILTERED, sourceOnly), []);
+  assertEquals(
+    summary(workflowCargoDenyFindings(PATH_FILTERED, {
+      touched: ["src/main.rs", "Cargo.lock"],
+    })),
+    [["check advisories", ".", false]],
+  );
+  // Touched paths unknown: the filter cannot rule the workflow out.
+  assertEquals(workflowCargoDenyFindings(PATH_FILTERED).length, 1);
+});
+
+Deno.test("workflow: paths-ignore and negated paths are read", () => {
+  const ignoring = PATH_FILTERED.replace("    paths:", "    paths-ignore:");
+  assertEquals(
+    workflowCargoDenyFindings(ignoring, { touched: ["Cargo.lock"] }),
+    [],
+  );
+  assertEquals(
+    workflowCargoDenyFindings(ignoring, { touched: ["Cargo.lock", "a.rs"] })
+      .length,
+    1,
+  );
+  const negated = yaml(
+    "on:",
+    "  pull_request:",
+    "    paths: ['docs/**', '!docs/internal/**', '**/Cargo.lock']",
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check",
+  );
+  assertEquals(
+    workflowCargoDenyFindings(negated, { touched: ["docs/internal/a.md"] }),
+    [],
+  );
+  assertEquals(
+    workflowCargoDenyFindings(negated, { touched: ["docs/a/b.md"] }).length,
+    1,
+  );
+  assertEquals(
+    workflowCargoDenyFindings(negated, { touched: ["Cargo.lock"] }).length,
+    1,
+  );
+  assertEquals(
+    workflowCargoDenyFindings(negated, { touched: ["crates/x/Cargo.lock"] })
+      .length,
+    1,
+  );
+});
+
+Deno.test("workflow: a push trigger runs when its branch filter matches the pushed branch", () => {
+  const onMain = yaml(
+    "on:",
+    "  push:",
+    "    branches: [main, 'release/**']",
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check",
+  );
+  assertEquals(
+    workflowCargoDenyFindings(onMain, { branches: ["issue-1-fix"] }),
+    [],
+  );
+  assertEquals(
+    workflowCargoDenyFindings(onMain, { branches: ["release/1.2"] }).length,
+    1,
+  );
+  assertEquals(workflowCargoDenyFindings(onMain, {}).length, 1);
+  const ignoring = onMain.replace("branches:", "branches-ignore:");
+  assertEquals(
+    workflowCargoDenyFindings(ignoring, { branches: ["main"] }),
+    [],
+  );
+  assertEquals(
+    workflowCargoDenyFindings(ignoring, { branches: ["issue-1-fix"] }).length,
+    1,
+  );
+  const tagsOnly = yaml(
+    "on:",
+    "  push:",
+    "    tags: ['v*']",
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check",
+  );
+  assertEquals(workflowCargoDenyFindings(tagsOnly, {}), []);
+  // A pull_request trigger beside the push filter still runs.
+  assertEquals(
+    workflowCargoDenyFindings(
+      onMain.replace("  push:", "  pull_request:\n  push:"),
+      { branches: ["issue-1-fix"] },
+    ).length,
+    1,
+  );
+});
+
+Deno.test("workflow: trigger forms as a string, a list or merge_group are read", () => {
+  const body = [
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check",
+  ];
+  for (
+    const [on, runs] of [
+      ["on: schedule", false],
+      ["on: [schedule, workflow_dispatch]", false],
+      ["on: workflow_run", false],
+      ["on: [schedule, pull_request]", true],
+      ["on: pull_request_target", true],
+      ["on: merge_group", true],
+      ["on: workflow_call", true],
+    ] as const
+  ) {
+    assertEquals(
+      workflowCargoDenyFindings(yaml(on, ...body), { touched: ["a.rs"] })
+        .length,
+      runs ? 1 : 0,
+      on,
+    );
+  }
+  // No readable trigger: the workflow is not ruled out.
+  assertEquals(workflowCargoDenyFindings(yaml(...body)).length, 1);
+});
+
+Deno.test("workflow: a hostile path pattern is not read and does not hang", () => {
+  const pattern = "**/".repeat(60) + "x";
+  const text = yaml(
+    "on:",
+    "  pull_request:",
+    `    paths: ['${pattern}']`,
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check",
+  );
+  // The pattern is unreadable, so the filter selects (the workflow is not ruled out).
+  assertEquals(
+    workflowCargoDenyFindings(text, { touched: ["a".repeat(2000)] }).length,
+    1,
+  );
+});

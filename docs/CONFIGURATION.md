@@ -5220,14 +5220,25 @@ The hook runs two stages:
      expression that is not a matrix key, refuses the push. An invocation CI
      allows to fail (`continue-on-error` on its step or its job, as a literal
      `true` or as `${{ matrix.<key> }}` / `${{ matrix.<key> == '<value>' }}` /
-     `!=` evaluated for each matrix combination) still runs, after the others,
-     but its failure prints a `[PRE_PUSH_WARNING] cargo deny:` line on stderr
+     `!=` evaluated for each matrix combination, whichever keys the test
+     reads) still runs, after the others, but its failure prints a `[PRE_PUSH_WARNING] cargo deny:` line on stderr
      and does not refuse the push, as it does not fail CI; the README
      pipeline's `advisories` leg is one. The same invocation without that
      allowance in any combination still refuses. Any other `continue-on-error`
      value blocks as usual. The hook does not read invocations hidden in a
-     script the step calls, so those forms are not checked. Quoted multiline
-     container scripts are not host commands. The fleet babysitter does not run
+     script the step calls, so those forms are not checked. A workflow CI
+     does not run for the branch is not checked: one whose `on:` has no
+     `pull_request`, `pull_request_target`, `merge_group` or `workflow_call`
+     trigger and no `push` trigger whose `branches` / `branches-ignore` filter
+     matches the pushed branch (a `schedule`-only audit, say; a `push` filtered
+     by `tags` alone does not run for a branch push), and, in the whole-branch
+     completion check, one whose `paths` / `paths-ignore` filter selects none
+     of the paths the branch's commits touch (deleted files included;
+     `!` patterns, `*`, `**`, `?`, `+` and `[...]` read as GitHub reads them).
+     A `pull_request` `branches` filter is not read, a pattern the gate cannot
+     read selects, and an unreadable `on:` runs the workflow. Jobs and their
+     `defaults` and `continue-on-error` are found at any indent. Quoted
+     multiline container scripts are not host commands. The fleet babysitter does not run
      it: its execution belongs inside the worker container (#4768, #4770),
      never beside the host App key, so babysitter repairs are not checked by
      it until that contained path exists;

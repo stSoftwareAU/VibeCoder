@@ -46,6 +46,82 @@ Deno.test("cargo deny: baseRef checks a source-only branch", async () => {
   }
 });
 
+const DENY_STEPS = [
+  "jobs:",
+  "  deny:",
+  "    runs-on: ubuntu-latest",
+  "    steps:",
+  "      - run: cargo deny --all-features check advisories bans",
+  "",
+];
+const CI_SCHEDULE_ONLY = [
+  "name: audit",
+  "on:",
+  "  schedule:",
+  "    - cron: '0 0 * * *'",
+  ...DENY_STEPS,
+].join("\n");
+const CI_PATH_FILTERED = [
+  "name: audit",
+  "on:",
+  "  pull_request:",
+  "    paths: [Cargo.lock, Cargo.toml, deny.toml]",
+  ...DENY_STEPS,
+].join("\n");
+const CI_PUSH_MAIN_ONLY = [
+  "name: audit",
+  "on:",
+  "  push:",
+  "    branches: [other]",
+  ...DENY_STEPS,
+].join("\n");
+
+Deno.test("cargo deny: baseRef skips a workflow CI does not run for the branch", async () => {
+  // Each workflow runs cargo deny only when CI would: a source-only branch has none.
+  for (
+    const workflow of [CI_SCHEDULE_ONLY, CI_PATH_FILTERED, CI_PUSH_MAIN_ONLY]
+  ) {
+    const { root, clone, stdin } = await makeRepo(workflow, {
+      "src/main.rs": "fn main() { }\n",
+    });
+    try {
+      const seen: Seen[] = [];
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin,
+        baseRef: "origin/main",
+        preFlightCommands: [],
+        runner: recordingRunner(seen, () => PASS),
+      });
+      assert(result.ok);
+      assertEquals(denyCommands(seen), [], workflow);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("cargo deny: baseRef runs a path-filtered workflow when the branch touches a filtered path", async () => {
+  const { root, clone, stdin } = await makeRepo(CI_PATH_FILTERED, {
+    "src/main.rs": "fn main() { }\n",
+    "deny.toml": "[advisories]\n",
+  });
+  try {
+    const seen: Seen[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      baseRef: "origin/main",
+      preFlightCommands: [],
+      runner: recordingRunner(seen, () => PASS),
+    });
+    assert(result.ok);
+    assertEquals(denyCommands(seen), [{ command: DENY_ARGV, cwd: clone }]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("cargo deny: shellcheck-only mode checks Cargo.lock", async () => {
   const { root, clone, stdin } = await makeRepo(CI_WITH_DENY, {
     "Cargo.lock": "version = 4\n",

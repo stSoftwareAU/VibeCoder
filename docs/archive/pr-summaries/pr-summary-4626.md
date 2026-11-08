@@ -14,14 +14,20 @@ the value of (`--config ${{ env.X }}` goes whole), so the line runs a plain
 add offline or ignore flags. A `run:` step runs from its `working-directory`,
 else the job's, else the workflow's `defaults.run.working-directory`. An
 invocation CI allows to fail (`continue-on-error` on the step or the job, a
-literal `true` or a `matrix.<key>` test evaluated per combination) still runs,
+literal `true` or a `matrix.<key>` test evaluated per combination, for every
+key the test reads) still runs,
 after the others, but its failure is a `[PRE_PUSH_WARNING]` line and does not
 refuse the push. A `cargo deny` line naming no `check` but holding a variable or
 expression, and a working directory that cannot be reproduced, refuse the push;
 for an invocation CI does not allow to fail, unavailable tools or networks are
 infrastructure failures and audit diagnostics are code verdicts; for one it
 allows to fail, both are warnings. Quoted multiline container scripts are not
-treated as host commands.
+treated as host commands. Jobs are found as the children of the top-level
+`jobs:` key at whatever indent the file uses. A workflow CI does not run for the
+push is not read: one with no `pull_request`, `pull_request_target`,
+`merge_group` or `workflow_call` trigger and no `push` trigger whose branch
+filter matches the pushed branch, and, in the whole-branch check, one whose
+`paths` / `paths-ignore` filter selects none of the branch's touched paths.
 
 The babysitter is not gated. Its repairs run on the host, and the governing
 issue forbids host execution beside the App key until the contained path (#4768,
@@ -34,12 +40,15 @@ babysitter pushes are checked.
 ### Intent and Rationale
 
 Advisories can change without a lockfile change, so the whole-branch completion
-check runs CI’s cargo-deny checks regardless of changed paths. Intermediate
+check runs CI’s cargo-deny checks regardless of changed cargo paths, but only
+those workflows CI itself runs for the branch (a `schedule`-only audit, or one
+whose `paths` filter selects nothing the branch touches, is skipped). Intermediate
 hooks retain the cargo-input trigger to limit cost. The workflow is the source
 for arguments, working directories, action defaults and which invocations CI
 allows to fail. The parser does not resolve matrix `exclude` entries (an
 excluded combination is checked too), `continue-on-error` tests other than a
-literal true or one matrix key, or commands hidden in scripts. A plain `check`
+literal true or one matrix key, a `pull_request` `branches` filter (the base
+branch is not known to the gate, so it matches), or commands hidden in scripts. A plain `check`
 covers every subset an unresolved expression could select.
 
 ### Essential Design Decisions
@@ -76,7 +85,7 @@ not run there.
 
 ## Test Plan
 
-- `worker/deno/tests/cargo_deny_gate_test.ts` (81 tests at head) covers workflow
+- `worker/deno/tests/cargo_deny_gate_test.ts` (92 tests at head) covers workflow
   parsing, matrix expansion and fallback, the actual container workflow,
   triggers, diagnostic classification and runner behaviour. This round adds the
   job- and workflow-level `defaults.run.working-directory` tests, the
@@ -90,7 +99,12 @@ not run there.
   adds tests for an include entry that extends every combination, a matrix key
   with no value, an unsafe matrix value, a `continue-on-error` matrix test with
   no combination, an option that carries its own `=` value, the `source` of an
-  unrunnable finding, and a matrix `working-directory` with no value.
+  unrunnable finding, and a matrix `working-directory` with no value. The
+  second review round adds 11: four-space jobs, a `continue-on-error` test on a
+  key the command does not use (and its gate refusal), an `include` on another
+  dimension (for `continue-on-error` and for a command key), a schedule-only
+  workflow, path filters (`paths`, `paths-ignore`, `!`), push branch filters and
+  tags-only, trigger forms, and a hostile path pattern.
 - Obsolete: the permanent refusals of a variable or expression before `check`
   and of an environment assignment holding an expression. A check stays
   mandatory; the replacements are
@@ -101,11 +115,13 @@ not run there.
   What remains refused, and is still tested, is a `cargo deny` line with a
   variable and no `check` (`...is unrunnable even without check`) and an
   unreproducible working directory.
-- `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (11 tests at head) covers
+- `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (13 tests at head) covers
   exact argv, infrastructure and verdict mapping, intermediate source-only
   skips, the source-only whole-branch check, the README pipeline through
   `runPrePushGate` (the allowed leg prints `[PRE_PUSH_WARNING] cargo deny:` and
-  does not block; the other leg blocks). The obsolete ShellCheck-only blanket
+  does not block; the other leg blocks), and a source-only whole-branch check
+  that skips a schedule-only, a path-filtered and a `push: branches: [other]`
+  workflow but runs the path-filtered one when the branch touches `deny.toml`. The obsolete ShellCheck-only blanket
   skip is replaced: cargo input changes are checked, while source-only repairs
   still skip cargo deny, covered by
   `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: shellcheck-only mode checks Cargo.lock`
@@ -120,6 +136,16 @@ not run there.
   blocking ones → 1 red; matrix `working-directory` not substituted → 1 red; a
   missing optional key not "" → 1 red; the stderr warning removed from
   `pre_push_gate.ts` → the pre-push README test red.
+- Red checks, second round: running the new `cargo_deny_gate_test.ts` tests
+  against the previous `cargo_deny_gate.ts` → 10 red (all but the hostile-pattern
+  case); setting `touched` / `branches` to `undefined` in `pre_push_gate.ts` →
+  `cargo deny: baseRef skips a workflow CI does not run for the branch` red;
+  raising the pattern caps → the hostile-pattern test red (the unreadable
+  pattern then rules the workflow out).
+- Regexes checked for backtracking: the new `jobs:` header and job-key patterns
+  are anchored with no overlapping quantifiers; the path-pattern regex is built
+  from a pattern capped at 200 characters and four `**`, and an unreadable one
+  selects (hostile case above); `CONTINUE_MATRIX_KEY` is a single `\w-` run.
 - Callers checked for the changed `runCargoDenyGate` result (it now also carries
   `warnings`): `pre_push_gate.ts` is the only production caller; the other
   callers are `cargo_deny_gate_test.ts`. The babysitter no longer calls it.
@@ -127,7 +153,10 @@ not run there.
   reviewer entry points without the worker import map; its three failing cases
   passed after the import fix.
 - Documentation copies checked: `docs/CONFIGURATION.md` (the `cargo deny` bullet
-  and the refusal sentence below it); `docs/workflows/fleet-pr-babysitter.md`
+  and the refusal sentence below it); the three `git_push.ts` doc comments on
+  `shellcheckOnly`, `resolveRepairPreFlightSpec` and the `commitAndPushPending`
+  `@param preFlight` now say a ShellCheck-only spec also runs cargo deny for a
+  cargo input; `docs/workflows/fleet-pr-babysitter.md`
   and `docs/THREAT-MODEL.md` are back to their base text; no matching list in
   README or `docs/INTERNALS.md`.
 - `worker/deno/lib/cargo_deny_gate.ts`’s `WorkDir` type alias has a `true` type

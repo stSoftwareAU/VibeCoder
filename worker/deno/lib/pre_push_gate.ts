@@ -173,6 +173,16 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
   return { code, stdout, stderr };
 };
 
+/** The branch names the refs push (`refs/heads/` stripped), or undefined when none. */
+function pushedBranches(refs: readonly PrePushRef[]): string[] | undefined {
+  const names = refs.flatMap((ref) =>
+    ref.remoteRef.startsWith("refs/heads/")
+      ? [ref.remoteRef.slice("refs/heads/".length)]
+      : []
+  );
+  return names.length === 0 ? undefined : names;
+}
+
 /**
  * List the files the push introduces: those touched by commits (including
  * the paths a merge commit itself changed: a conflict resolution or a fix
@@ -1746,6 +1756,12 @@ export async function runPrePushGate(opts: {
     cwd: opts.cwd,
     changed: contained.value,
     always: !opts.shellcheckOnly && opts.baseRef !== undefined,
+    // The touched paths decide a workflow's `paths` filter only over the whole
+    // branch; a push of the newest commits alone would miss earlier ones.
+    context: {
+      touched: opts.baseRef === undefined ? undefined : touched.value,
+      branches: pushedBranches(refs.value),
+    },
     tracked,
     runner: opts.runner,
     timeoutSeconds: opts.timeoutSeconds,

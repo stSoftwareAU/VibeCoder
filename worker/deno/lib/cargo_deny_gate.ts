@@ -25,6 +25,10 @@
  * literal true, or a `matrix.<key>` test evaluated for each combination) still
  * runs, but a failure is a warning, never a verdict.
  *
+ * A workflow CI does not run for the push (a `schedule`-only audit, or a
+ * `paths` filter that selects none of the branch's touched paths) is not read:
+ * the gate is no stricter than CI.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
@@ -358,6 +362,20 @@ function matrixKeys(texts: readonly string[]): string[] {
   ];
 }
 
+/** Any `matrix.<key>` a `continue-on-error` test reads, in whatever form. */
+const CONTINUE_MATRIX_KEY = /\bmatrix\.([\w-]+)/g;
+
+/** The distinct matrix keys a `continue-on-error` test reads. */
+function continueKeys(texts: readonly string[]): string[] {
+  return [
+    ...new Set(
+      texts.flatMap((text) =>
+        [...text.matchAll(CONTINUE_MATRIX_KEY)].map((match) => match[1] ?? "")
+      ),
+    ),
+  ];
+}
+
 /**
  * The value of each of `keys` in every combination of the job's literal
  * `strategy.matrix`: the lists cross, each `include` entry adds to the
@@ -367,6 +385,8 @@ function matrixKeys(texts: readonly string[]): string[] {
  * scalar, or there are too many combinations: the caller then falls back to a
  * plain `check`. A key in `optionalKeys` may be missing from a combination
  * (it is then "", as in a workflow expression) and need not be a safe value.
+ * Every dimension a key or an `include` entry names is expanded before the
+ * entries are applied; the combinations are then projected onto the keys.
  */
 function matrixCombinations(
   matrix: Record<string, unknown>,
@@ -381,11 +401,19 @@ function matrixCombinations(
   const dimensions = Object.entries(matrix).filter(([key, value]) =>
     key !== "include" && key !== "exclude" && Array.isArray(value)
   );
+  const includes = Array.isArray(matrix.include) ? matrix.include : [];
+  // A dimension an `include` entry names is expanded too, so the entry is
+  // added only to the combinations it matches, not to a collapsed one.
+  const includeKeys = new Set(
+    includes.flatMap((entry) =>
+      entry === null || typeof entry !== "object" ? [] : Object.keys(entry)
+    ),
+  );
   let combinations: Record<string, string>[] = dimensions.length === 0
     ? []
     : [{}];
   for (const [key, list] of dimensions) {
-    if (!wanted.includes(key)) continue;
+    if (!wanted.includes(key) && !includeKeys.has(key)) continue;
     const values = (list as unknown[]).map(matrixScalar);
     if (values.length === 0 || values.some((value) => value === undefined)) {
       return null;
@@ -395,7 +423,6 @@ function matrixCombinations(
     );
     if (combinations.length > MAX_MATRIX_COMBINATIONS) return null;
   }
-  const includes = Array.isArray(matrix.include) ? matrix.include : [];
   for (const entry of includes) {
     if (entry === null || typeof entry !== "object") continue;
     const values: Record<string, string> = {};
@@ -531,7 +558,7 @@ function segmentFindings(
   const combinations = matrixCombinations(
     ctx.matrix,
     matrixKeys([command, ctx.wd ?? ""]),
-    matrixKeys(ctx.continueOnError),
+    continueKeys(ctx.continueOnError),
   );
   const findings: CargoDenyCiFinding[] = [];
   for (const combination of combinations ?? [null]) {
@@ -653,7 +680,7 @@ function actionFindings(
   const combinations = matrixCombinations(
     ctx.matrix,
     matrixKeys([...inputs.values()]),
-    matrixKeys(ctx.continueOnError),
+    continueKeys(ctx.continueOnError),
   );
   return (combinations ?? [null]).flatMap((combination) =>
     actionVariantFindings(
@@ -806,17 +833,206 @@ function yamlScalar(value: unknown): string | undefined {
     : undefined;
 }
 
-/** The workflow's own `defaults.run.working-directory`, if it parses and sets one. */
-function workflowDefaultWd(text: string): string | undefined {
+/** The parts of a parsed workflow this gate reads. */
+interface ParsedWorkflow {
+  on?: unknown;
+  defaults?: { run?: { "working-directory"?: unknown } };
+}
+
+/** The workflow as YAML parsed it, or null when it is not valid YAML. */
+function parseWorkflow(text: string): ParsedWorkflow | null {
   try {
-    const doc = parseYaml(text) as
-      | { defaults?: { run?: { "working-directory"?: unknown } } }
-      | null;
-    return yamlScalar(doc?.defaults?.run?.["working-directory"]);
+    const doc = parseYaml(text);
+    return doc !== null && typeof doc === "object" && !Array.isArray(doc)
+      ? doc as ParsedWorkflow
+      : null;
   } catch {
     // GitHub does not run a workflow that is not valid YAML, so CI has no default to mirror.
-    return undefined;
+    return null;
   }
+}
+
+/** What decides whether CI runs a workflow for a push: the paths and branches it carries. */
+export interface WorkflowRunContext {
+  /** Every path the branch's commits touch (deleted ones too); unknown means a path filter matches. */
+  touched?: readonly string[];
+  /** The branches pushed, without `refs/heads/`; unknown means a branch filter matches. */
+  branches?: readonly string[];
+}
+
+/** The most characters of a `paths` or `branches` pattern the gate reads. */
+const FILTER_PATTERN_CAP = 200;
+/** The most `**` a pattern may hold: each can backtrack, so more is not read. */
+const MAX_DOUBLE_STARS = 4;
+
+/**
+ * A GitHub filter pattern as a regex: `*` is any run but `/`, `**` any run,
+ * `?` and `+` apply to the character before them, `[...]` is a class. Null
+ * for a pattern the gate cannot read, which the caller treats as a match.
+ */
+function filterPatternRegex(pattern: string): RegExp | null {
+  if (
+    pattern.length > FILTER_PATTERN_CAP ||
+    pattern.split("**").length > MAX_DOUBLE_STARS + 1
+  ) return null;
+  let out = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i] ?? "";
+    if (pattern.startsWith("**/", i)) {
+      out += "(?:.*/)?";
+      i += 2;
+    } else if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        out += ".*";
+        i++;
+      } else out += "[^/]*";
+    } else if (ch === "?" || ch === "+") out += ch;
+    else if (ch === "[") {
+      const close = pattern.indexOf("]", i + 2);
+      if (close === -1) return null;
+      out += `[${pattern.slice(i + 1, close).replace(/\\/g, "\\\\")}]`;
+      i = close;
+    } else if (ch === "\\" && i + 1 < pattern.length) {
+      i++;
+      out += (pattern[i] ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } else out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  try {
+    return new RegExp(`^${out}$`);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the filter patterns select `name`: the last pattern that matches
+ * decides, and a leading `!` deselects. A pattern the gate cannot read selects.
+ */
+function filterSelects(patterns: readonly string[], name: string): boolean {
+  let selected = false;
+  for (const pattern of patterns) {
+    const negated = pattern.startsWith("!");
+    const regex = filterPatternRegex(negated ? pattern.slice(1) : pattern);
+    if (regex === null) return true;
+    if (regex.test(name)) selected = !negated;
+  }
+  return selected;
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (typeof value === "string") return [value];
+  return Array.isArray(value) && value.every((v) => typeof v === "string")
+    ? value as string[]
+    : undefined;
+}
+
+/** Whether the names pass an include list and an ignore list (either may be absent). */
+function namesPass(
+  names: readonly string[] | undefined,
+  include: string[] | undefined,
+  ignore: string[] | undefined,
+): boolean {
+  if (names === undefined) return true;
+  if (include !== undefined) {
+    return names.some((name) => filterSelects(include, name));
+  }
+  if (ignore !== undefined) {
+    return names.some((name) => !filterSelects(ignore, name));
+  }
+  return true;
+}
+
+/** One `on:` event's filters: an event with no mapping has none. */
+function eventFilters(config: unknown): Record<string, unknown> {
+  return config !== null && typeof config === "object" &&
+      !Array.isArray(config)
+    ? config as Record<string, unknown>
+    : {};
+}
+
+/**
+ * Whether CI can run the workflow for a push of these branches and paths:
+ * it has a `pull_request`, `pull_request_target`, `merge_group` or
+ * `workflow_call` trigger, or a `push` trigger whose branch filter matches;
+ * and the trigger's `paths` / `paths-ignore` filter selects a touched path.
+ * A `pull_request` `branches` filter is not read (the base branch is not
+ * known here), so it matches. A workflow whose triggers cannot be read runs.
+ */
+function workflowRunsFor(
+  workflow: ParsedWorkflow | null,
+  context: WorkflowRunContext,
+): boolean {
+  const on = workflow === null
+    ? undefined
+    : workflow.on ?? (workflow as Record<string, unknown>)["true"];
+  let events: Record<string, unknown>;
+  if (typeof on === "string") events = { [on]: null };
+  else if (Array.isArray(on)) {
+    events = Object.fromEntries(on.map((event) => [String(event), null]));
+  } else if (on !== null && typeof on === "object") {
+    events = on as Record<string, unknown>;
+  } else return true;
+  const pathsPass = (filters: Record<string, unknown>) =>
+    namesPass(
+      context.touched,
+      stringList(filters.paths),
+      stringList(filters["paths-ignore"]),
+    );
+  return Object.entries(events).some(([event, config]) => {
+    const filters = eventFilters(config);
+    if (event === "pull_request" || event === "pull_request_target") {
+      return pathsPass(filters);
+    }
+    if (event === "merge_group" || event === "workflow_call") return true;
+    if (event !== "push") return false;
+    const branches = stringList(filters.branches);
+    const branchesIgnore = stringList(filters["branches-ignore"]);
+    // A push filtered by tags alone does not run for a branch push.
+    if (
+      branches === undefined && branchesIgnore === undefined &&
+      (filters.tags !== undefined || filters["tags-ignore"] !== undefined)
+    ) return false;
+    return namesPass(context.branches, branches, branchesIgnore) &&
+      pathsPass(filters);
+  });
+}
+
+/** A job of the workflow: its header line and the line after its last. */
+interface JobBlock {
+  header: number;
+  end: number;
+  indent: number;
+}
+
+/**
+ * The jobs of the workflow: the direct children of the top-level `jobs:` key,
+ * at whatever indent the file uses.
+ */
+function jobBlocks(lines: readonly string[]): JobBlock[] {
+  const jobsAt = lines.findIndex((line) => /^jobs:\s*(?:#.*)?$/.test(line));
+  if (jobsAt === -1) return [];
+  const first = lines.slice(jobsAt + 1).find((line) =>
+    !isSkippable(line) && indentOf(line) > 0
+  );
+  if (first === undefined) return [];
+  const indent = indentOf(first);
+  const blocks: JobBlock[] = [];
+  for (let i = jobsAt + 1; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (isSkippable(line)) continue;
+    if (indentOf(line) === 0) break;
+    if (
+      indentOf(line) !== indent ||
+      !/^\s*(?:[\w-]+|"[^"]*"|'[^']*'):\s*(?:#.*)?$/.test(line)
+    ) continue;
+    let end = i + 1;
+    while (
+      end < lines.length &&
+      (isSkippable(lines[end] ?? "") || indentOf(lines[end] ?? "") > indent)
+    ) end++;
+    blocks.push({ header: i, end, indent });
+  }
+  return blocks;
 }
 
 /**
@@ -824,16 +1040,23 @@ function workflowDefaultWd(text: string): string | undefined {
  * make. A step starts at a `- ` line and ends at the next non-blank line at
  * or below its dash's indent. Comment lines are ignored.
  *
- * A `run:` step without its own `working-directory` takes the job's, then the
- * workflow's, `defaults.run.working-directory`. A step's or job's
+ * A workflow CI cannot run for the push (see {@link workflowRunsFor}) has no
+ * findings. A `run:` step without its own `working-directory` takes the job's,
+ * then the workflow's, `defaults.run.working-directory`. A step's or job's
  * `continue-on-error` marks the invocations it allows to fail.
  *
- * SIMPLE-ON-PURPOSE: `exclude` entries of a matrix, `continue-on-error` tests other than a literal true or one matrix key, and script-hidden invocations are not read — upgrade when a cargo deny check run escapes this gate in practice or a workflow uses one of those forms.
+ * SIMPLE-ON-PURPOSE: `exclude` entries of a matrix, `continue-on-error` tests other than a literal true or one matrix key, a `pull_request` `branches` filter, and script-hidden invocations are not read — upgrade when a cargo deny check run escapes this gate in practice or a workflow uses one of those forms.
  */
-export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
+export function workflowCargoDenyFindings(
+  text: string,
+  context: WorkflowRunContext = {},
+): CargoDenyCiFinding[] {
   const lines = text.split("\n").map((raw) => raw.replace(/\r$/, ""));
+  const workflow = parseWorkflow(text);
+  if (!workflowRunsFor(workflow, context)) return [];
   const findings: CargoDenyCiFinding[] = [];
-  const workflowWd = workflowDefaultWd(text);
+  const workflowWd = yamlScalar(workflow?.defaults?.run?.["working-directory"]);
+  const jobs = jobBlocks(lines);
   let start = 0;
   while (start < lines.length) {
     const item = LIST_ITEM.exec(lines[start] ?? "");
@@ -854,19 +1077,15 @@ export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
       defaultWd: workflowWd,
       continueOnError: undefined,
     };
-    try {
-      const jobLine = lines.slice(0, start).findLastIndex((line) =>
-        /^ {2}[\w-]+:\s*(?:#.*)?$/.test(line)
-      );
-      if (jobLine >= 0) {
-        let jobEnd = jobLine + 1;
-        while (
-          jobEnd < lines.length &&
-          (isSkippable(lines[jobEnd] ?? "") ||
-            indentOf(lines[jobEnd] ?? "") > 2)
-        ) jobEnd++;
+    const block = jobs.findLast((candidate) =>
+      candidate.header < start && start < candidate.end
+    );
+    if (block !== undefined) {
+      try {
         const parsed = parseYaml(
-          lines.slice(jobLine, jobEnd).map((line) => line.slice(2)).join("\n"),
+          lines.slice(block.header, block.end).map((line) =>
+            line.slice(block.indent)
+          ).join("\n"),
         ) as Record<string, ParsedJob | null>;
         const parsedJob = Object.values(parsed)[0];
         job = {
@@ -876,8 +1095,8 @@ export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
               workflowWd,
           continueOnError: yamlScalar(parsedJob?.["continue-on-error"]),
         };
-      }
-    } catch { /* Unsupported job syntax uses the full-check fallback. */ }
+      } catch { /* Unsupported job syntax uses the full-check fallback. */ }
+    }
     findings.push(...stepFindings(lines, start, end, dashIndent, job));
     start = end;
   }
@@ -892,6 +1111,7 @@ export function workflowCargoDenyFindings(text: string): CargoDenyCiFinding[] {
 export async function repoCargoDenyFindings(
   repoRoot: string,
   tracked: readonly string[],
+  context: WorkflowRunContext = {},
 ): Promise<CargoDenyCiFinding[]> {
   const findings: CargoDenyCiFinding[] = [];
   for (const path of tracked) {
@@ -910,7 +1130,7 @@ export async function repoCargoDenyFindings(
       });
       continue;
     }
-    for (const finding of workflowCargoDenyFindings(text)) {
+    for (const finding of workflowCargoDenyFindings(text, context)) {
       findings.push(
         finding.kind === "unrunnable"
           ? { ...finding, source: `${path} ${finding.source}` }
@@ -1010,6 +1230,8 @@ export async function runCargoDenyGate(opts: {
   runner?: PreFlightRunner;
   timeoutSeconds?: number;
   findings?: CargoDenyCiFinding[];
+  /** The paths and branches that decide which workflows CI runs for this push. */
+  context?: WorkflowRunContext;
 }): Promise<
   Result<{ checksRun: string[]; warnings: string[] }, CargoDenyGateError>
 > {
@@ -1017,7 +1239,7 @@ export async function runCargoDenyGate(opts: {
     return { ok: true, value: { checksRun: [], warnings: [] } };
   }
   const findings = opts.findings ??
-    await repoCargoDenyFindings(opts.cwd, opts.tracked);
+    await repoCargoDenyFindings(opts.cwd, opts.tracked, opts.context);
 
   for (const finding of findings) {
     if (finding.kind === "unrunnable") {
