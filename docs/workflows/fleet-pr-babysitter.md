@@ -362,9 +362,7 @@ gets its run arguments from the Apple egress helper, which may run in an
 advisory mode where host and LAN isolation is not promised. A failed egress start
 fails the repair; the runtime's open network is never used instead.
 
-The image provides Chromium at `$CHROMIUM_PATH`. A real Chromium launch check
-inside the repair container is planned (Issue #4771); until it lands, browser
-checks are not proven in that container.
+The worker image provides Chromium at `$CHROMIUM_PATH` for browser checks.
 
 **Token restarts.** When a session ends at its read token's expiry, the host
 deletes the response file, mints a fresh repository-scoped read token and starts
@@ -442,13 +440,13 @@ and, because the image may predate the babysitter-repair mode, a hint to relaunc
 with `./run.sh` to rebuild it.
 A timeout reports `babysitter repair timed out after <N> minutes; container
 <name> killed`, where `<N>` is that session's own timeout, and a timeout that is
-not restarted (see "Token restarts") fails the repair. Every failure the
-container launcher raises (a non-zero exit, a timeout, an egress failure or any
-other launcher error) is recorded as an infrastructure failure: it spends no
-substantive attempt, takes the default infrastructure backoff, and no quota
-reset or retry-after time is parsed. A missing container runtime or worker image
-is a capability failure. Quota-reset and retry-after parsing is not implemented;
-Issue #4656, which tracked richer retry policy, is closed.
+not restarted (see "Token restarts") fails the repair. Missing runtime or image
+is classified as a capability failure. A structured in-container task-failure
+status is recorded as a substantive code failure; other launcher failures,
+including egress failures and ordinary non-zero exits, are infrastructure
+failures and use the default infrastructure backoff. The host does not infer a
+failure category from agent-controlled stderr. Quota-reset and retry-after
+parsing remains outside this change; #4656 owns richer retry policy.
 
 ## Scans, retries and failure classification
 

@@ -11,9 +11,8 @@
  * alone (`--env GH_TOKEN`), so its value is never on a command line.
  *
  * Keeps only a tracked, sanitised worker checkout, the repair scratch and
- * enabled provider credential directories. The plan's host checkout is
- * archived to scratch (excluding ignored files), and its configuration is
- * scrubbed before being placed in that archive. Host logs are redirected to
+ * enabled provider credential directories. Tracked files are copied from Git
+ * blobs into a fresh snapshot, and its configuration is scrubbed. Host logs are redirected to
  * scratch. The GitHub store, App config copy, log directory, custom prompts
  * and named volumes do not cross this boundary.
  *
