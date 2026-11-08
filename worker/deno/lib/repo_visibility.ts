@@ -121,3 +121,36 @@ export async function getRepoVisibility(
   // or unexpected — is treated as private.
   return { ok: true, value: "private" };
 }
+
+/**
+ * Whether a repository may be named in a public VibeCoder issue (Issue #4318).
+ *
+ * `getRepoVisibility` maps anything other than `"public"` to private. A failed
+ * lookup is unknown, and unknown is private: the caller withholds the
+ * repository's name, branches and other particulars from the public issue.
+ *
+ * @param repo - Repository in `"owner/repo"` format.
+ * @param ghFn - The `gh` runner: resolves stdout, rejects on failure.
+ * @returns True only when the repository is positively public.
+ */
+export async function isRepoPublic(
+  repo: string,
+  ghFn: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  const result = await getRepoVisibility(repo, {
+    runCommand: async (cmd) => {
+      try {
+        const stdout = await ghFn(cmd.slice(1));
+        return { success: true, stdout, stderr: "" };
+      } catch (err) {
+        return {
+          success: false,
+          stdout: "",
+          stderr: err instanceof Error ? err.message : String(err),
+        };
+      }
+    },
+  });
+  if (!result.ok) return false;
+  return result.value === "public";
+}
