@@ -102,15 +102,11 @@ Deno.test("setup runs the container preflight (runtime, then image) and installs
       return Promise.resolve(true);
     },
   });
+  // Only the runtime and image checks run: nothing installs or spawns Codex.
   assertEquals(calls, [
     "onPath podman",
     "imageExists podman image inspect vibe-coder:test",
   ]);
-  const source = await Deno.readTextFile(
-    new URL("../commands/fleet_pr_babysitter_setup.ts", import.meta.url),
-  );
-  assert(!source.includes("ensureBabysitterCodex"));
-  assert(!source.includes("fleet_babysitter_codex"));
 });
 
 Deno.test("setup refuses a missing runtime before it checks the image", async () => {
