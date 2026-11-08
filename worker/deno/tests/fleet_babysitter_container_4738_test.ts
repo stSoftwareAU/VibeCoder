@@ -952,10 +952,16 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
     `${workerCheckout}/tracked.txt`,
     "tracked worker file\n",
   );
+  const binaryContent = new Uint8Array([0, 255, 1, 128, 10]);
+  await Deno.writeFile(`${workerCheckout}/tracked.bin`, binaryContent);
+  await Deno.writeTextFile(
+    `${workerCheckout}/untracked-secret.txt`,
+    "host-only credential\n",
+  );
   for (
     const args of [
       ["init", "-q", workerCheckout],
-      ["-C", workerCheckout, "add", "tracked.txt"],
+      ["-C", workerCheckout, "add", "tracked.txt", "tracked.bin"],
       [
         "-C",
         workerCheckout,
@@ -1042,6 +1048,14 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
     assertEquals(
       await Deno.readTextFile(`${f.scratch}/workspace/tracked.txt`),
       "tracked worker file\n",
+    );
+    assertEquals(
+      await Deno.readFile(`${f.scratch}/workspace/tracked.bin`),
+      binaryContent,
+    );
+    await assertRejects(
+      () => Deno.stat(`${f.scratch}/workspace/untracked-secret.txt`),
+      Deno.errors.NotFound,
     );
     assert(args.includes(`${f.scratch}:/home/vibe/logs`));
     assert(args.includes("CONFIG_PATH=/workspace/.config.json"));

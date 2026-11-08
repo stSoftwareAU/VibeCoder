@@ -11,10 +11,11 @@
  * alone (`--env GH_TOKEN`), so its value is never on a command line.
  *
  * Keeps only a tracked, sanitised worker checkout, the repair scratch and
- * enabled provider credential directories. Tracked files are copied from Git
- * blobs into a fresh snapshot, and its configuration is scrubbed. Host logs are redirected to
- * scratch. The GitHub store, App config copy, log directory, custom prompts
- * and named volumes do not cross this boundary.
+ * enabled provider credential directories. Tracked paths are copied into a
+ * fresh snapshot, and its configuration is scrubbed. Host logs are redirected
+ * to scratch. The GitHub store, App config
+ * copy, log directory, custom prompts and named volumes do not cross this
+ * boundary.
  *
  * Egress (Issue #4769): a plan that enforces egress (docker or podman) gets
  * its internal network and proxy from `startEgressSidecar`. A plan with a
@@ -51,6 +52,7 @@ import {
 } from "./custom_prompt_mounts.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { startEgressSidecar, stopEgressSidecar } from "./egress_sidecar.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** A repair may run for 90 minutes before it is killed. */
 export const BABYSITTER_REPAIR_TIMEOUT_MS = 90 * 60_000;
@@ -565,31 +567,31 @@ async function createRepairWorkspaceSnapshot(
       PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
       HOME: Deno.env.get("HOME") ?? "/tmp",
       GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_SYSTEM: "/dev/null",
       GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_PARAMETERS: "",
       GIT_TERMINAL_PROMPT: "0",
       GIT_OPTIONAL_LOCKS: "0",
     };
-    const tree = await new Deno.Command("git", {
-      args: ["-C", baseDir, "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
-      env,
-      stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    if (!tree.success) {
+    const tree = await runGitCommand(
+      ["-C", baseDir, "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+      { env, timeoutSeconds: 60 },
+    );
+    if (!tree.ok) throw tree.error;
+    if (tree.value.code !== 0) {
       throw new Error(
-        `could not list tracked worker checkout files: ${
-          new TextDecoder().decode(tree.stderr).trim()
-        }`,
+        `could not list tracked worker checkout files: ${tree.value.stderr.trim()}`,
       );
     }
-    const entries = new TextDecoder("utf-8", { fatal: true }).decode(
-      tree.stdout,
-    )
-      .split("\0").filter(Boolean).map((entry) => {
+    if (tree.value.stdout.includes("\uFFFD")) {
+      throw new Error("tracked worker checkout paths are not valid UTF-8");
+    }
+    const entries = tree.value.stdout.split("\0").filter(Boolean).map(
+      (entry) => {
         const tab = entry.indexOf("\t");
         if (tab < 0) throw new Error("malformed git tree entry");
-        const [mode, type, oid] = entry.slice(0, tab).split(" ");
+        const [mode, type] = entry.slice(0, tab).split(" ");
         const name = entry.slice(tab + 1);
         const segments = name.split("/");
         if (
@@ -603,65 +605,30 @@ async function createRepairWorkspaceSnapshot(
             `unsupported tracked entry in worker checkout: ${name} (${mode} ${type})`,
           );
         }
-        return { mode, oid, name };
-      });
-    const catFile = new Deno.Command("git", {
-      args: ["-C", baseDir, "cat-file", "--batch"],
-      env,
-      stdin: "piped",
-      stdout: "piped",
-      stderr: "piped",
-    }).spawn();
-    const writer = catFile.stdin.getWriter();
-    await writer.write(
-      new TextEncoder().encode(entries.map(({ oid }) => oid).join("\n") + "\n"),
+        return { mode, name };
+      },
     );
-    await writer.close();
-    const [status, stdout, stderr] = await Promise.all([
-      catFile.status,
-      new Response(catFile.stdout).arrayBuffer().then((buffer) =>
-        new Uint8Array(buffer)
-      ),
-      new Response(catFile.stderr).text(),
-    ]);
-    if (!status.success) {
-      throw new Error(
-        `could not read tracked worker checkout blobs: ${stderr.trim()}`,
-      );
-    }
-    let offset = 0;
-    const decoder = new TextDecoder();
+    const sourceRoot = await Deno.realPath(baseDir);
     for (const entry of entries) {
-      const headerEnd = stdout.indexOf(10, offset);
-      if (headerEnd < 0) {
-        throw new Error("malformed git cat-file response header");
+      const source = `${sourceRoot}/${entry.name}`;
+      const sourceInfo = await Deno.lstat(source);
+      if (!sourceInfo.isFile || sourceInfo.isSymlink) {
+        throw new Error(
+          `tracked checkout path is not a regular file: ${entry.name}`,
+        );
       }
-      const [oid, kind, sizeText] = decoder.decode(
-        stdout.subarray(offset, headerEnd),
-      ).split(" ");
-      const size = Number(sizeText);
-      if (
-        oid !== entry.oid || kind !== "blob" || !Number.isSafeInteger(size) ||
-        size < 0
-      ) {
-        throw new Error(`malformed git cat-file response for ${entry.name}`);
-      }
-      const start = headerEnd + 1;
-      const end = start + size;
-      if (end >= stdout.length || stdout[end] !== 10) {
-        throw new Error(`truncated git cat-file response for ${entry.name}`);
+      if (await Deno.realPath(source) !== source) {
+        throw new Error(
+          `tracked checkout path escapes its root: ${entry.name}`,
+        );
       }
       const destination = `${path}/${entry.name}`;
       const parent = destination.slice(0, destination.lastIndexOf("/"));
       await Deno.mkdir(parent, { recursive: true, mode: 0o700 });
-      await Deno.writeFile(destination, stdout.subarray(start, end), {
+      await Deno.writeFile(destination, await Deno.readFile(source), {
         createNew: true,
         mode: entry.mode === "100755" ? 0o700 : 0o600,
       });
-      offset = end + 1;
-    }
-    if (offset !== stdout.length) {
-      throw new Error("unexpected trailing git cat-file data");
     }
     await Deno.writeTextFile(
       `${path}/.config.json`,

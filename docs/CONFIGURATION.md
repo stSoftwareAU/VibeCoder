@@ -473,7 +473,7 @@ key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
 mounted into the container. Use a different App from the worker's own
 `github_app_*` identity, since GitHub refuses an approval from a PR's author.
 The fleet PR babysitter's repair container never mounts this configured key.
-Its worker checkout is a read-only archive of tracked files, its config copy is
+Its worker checkout is a read-only snapshot of tracked files, its config copy is
 scrubbed, and unknown plan mounts are refused. It keeps only enabled provider
 credential sub-directories and declared quality-credential rules; the `gh`
 credential directory, host log directory and `custom_label_prompts` directories

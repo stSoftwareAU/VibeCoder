@@ -401,7 +401,7 @@ The repair container receives:
 - the agent's read-only repository token, as `GH_TOKEN`, minted again on each
   token restart;
 - the clone and the scratch directory (prompt file), read-write;
-- a read-only archive of tracked worker checkout files at `/workspace`; ignored
+- a read-only snapshot of tracked worker checkout files at `/workspace`; ignored
   files are excluded, and its `.config.json` is a scrubbed copy;
 - the repair scratch directory at the container log path, so logs do not expose
   the host's log directory;
@@ -418,8 +418,8 @@ is not mounted, and the host `gh` configuration (`~/.config/gh`) is not in the
 plan's mount list. The operator's custom prompt directories
 (`custom_label_prompts`) are not mounted, and the plan's
 `VIBE_CUSTOM_PROMPT_PATHS` environment variable is dropped. The container does
-not receive the babysitter App private key: the host checkout is archived from
-tracked files only, secret-bearing config keys are removed from the config
+not receive the babysitter App private key: the host checkout snapshot copies
+tracked paths only, secret-bearing config keys are removed from the config
 snapshot, and the final run arguments are checked against the App key path
 (`assertBabysitterKeyOutOfRunArgs`). Unknown plan mounts fail closed. The host
 keeps the App key, branch locks, attempt record, trusted commit/push, PR-body

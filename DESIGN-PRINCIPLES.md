@@ -165,7 +165,7 @@ explicit fallback can also select a metered provider.
   `chooseBabysitterProvider` and runs the repair session on the chosen
   provider. The host babysitter's `fix()` launches that container for every
   repair (Issue #4770), so the repair agent never runs on the host. The
-  container receives a fresh snapshot copied from tracked Git blobs and a
+  container receives a fresh snapshot copied from tracked worker checkout paths and a
   scrubbed config; before publication the host replaces agent-writable local
   Git config and uses hardened Git settings for publication commands.
 - **The worker keeps its auto-mode wait policy.** When every eligible
