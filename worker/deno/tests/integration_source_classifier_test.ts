@@ -3,6 +3,20 @@
 import { assertEquals } from "@std/assert";
 import { isIntegrationTestSource } from "../lib/integration_test_manifest.ts";
 
+Deno.test("integration classifier recognises a required real ShellCheck", () => {
+  const imported =
+    'import { requireRealShellcheck } from "./support/shellcheck_support.ts";';
+  assertEquals(isIntegrationTestSource(imported), false);
+  assertEquals(
+    isIntegrationTestSource(`${imported}\n// await requireRealShellcheck()`),
+    false,
+  );
+  assertEquals(
+    isIntegrationTestSource(`${imported}\nawait requireRealShellcheck()`),
+    true,
+  );
+});
+
 Deno.test("integration classifier recognises launched harness descriptors, not unused imports or comments", () => {
   const imported =
     'import { BASH_LAUNCHER, runLauncher } from "./fixtures/launcher_harness.ts";';
