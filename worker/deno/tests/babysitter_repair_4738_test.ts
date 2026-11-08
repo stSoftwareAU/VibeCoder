@@ -240,6 +240,24 @@ Deno.test("runner error result fails with its cause and removes a stale response
   });
 });
 
+Deno.test("a runner that throws after writing the response fails with its cause and removes the file", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    await writeStale(paths);
+    const h = harness();
+    h.deps.runClaude = async () => {
+      await Deno.writeTextFile(paths.response, "WRITTEN BY AGENT");
+      throw new Error("runner exploded");
+    };
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "runner exploded");
+    assertEquals(await exists(paths.response), false);
+  });
+});
+
 Deno.test("timed-out run fails with the timeout reason and removes a stale response", async () => {
   await inWorkspace(async (paths) => {
     await writePrompt(paths);
@@ -372,4 +390,182 @@ Deno.test("babysitter-repair command object is wired and refuses a bad flag", as
   );
   assertEquals(result.success, false);
   assert(result.message.includes("--dir"));
+});
+
+Deno.test("a stale response that cannot be removed fails with the cause before the runner", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    await writeStale(paths);
+    const h = harness();
+    h.deps.removeFile = async () => {
+      throw new Deno.errors.PermissionDenied("stale-remove-denied fixture");
+    };
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "cannot remove stale response file");
+    assertStringIncludes(result.message, "stale-remove-denied fixture");
+    assertEquals(h.runs.length, 0);
+  });
+});
+
+Deno.test("a failed final write fails with its cause and clears the partial response", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness();
+    const removed: string[] = [];
+    const removeFile = h.deps.removeFile;
+    h.deps.removeFile = async (path) => {
+      removed.push(path);
+      await removeFile(path);
+    };
+    h.deps.writeTextFile = async (path) => {
+      await Deno.writeTextFile(path, "PARTIAL");
+      throw new Error("disk-full fixture");
+    };
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "disk-full fixture");
+    assertEquals(removed[removed.length - 1], paths.response);
+    assertEquals(await exists(paths.response), false);
+  });
+});
+
+Deno.test("a failed final write names both causes when the partial response also cannot be removed", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness();
+    let written = false;
+    const removeFile = h.deps.removeFile;
+    h.deps.removeFile = async (path) => {
+      if (written) {
+        throw new Deno.errors.PermissionDenied("remove-denied fixture");
+      }
+      await removeFile(path);
+    };
+    h.deps.writeTextFile = async (path) => {
+      written = true;
+      await Deno.writeTextFile(path, "PARTIAL");
+      throw new Error("disk-full fixture");
+    };
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "disk-full fixture");
+    assertStringIncludes(result.message, "also could not remove");
+    assertStringIncludes(result.message, "remove-denied fixture");
+    assertEquals(await exists(paths.response), true);
+  });
+});
+
+/** Runner outcomes that fail after the agent has written the response itself. */
+const AGENT_FAILURES: Array<[string, Result<ClaudeExecutionResult>]> = [
+  [
+    "timed-out run",
+    finished({
+      exitCode: 124,
+      timedOut: true,
+      timeoutReason: "hard-timeout",
+    }),
+  ],
+  ["non-zero exit", finished({ exitCode: 2, stderr: "agent crashed" })],
+  ["empty final message", finished({ output: "  \n" })],
+];
+
+for (const [label, run] of AGENT_FAILURES) {
+  Deno.test(`${label} removes a response file the agent wrote itself`, async () => {
+    await inWorkspace(async (paths) => {
+      await writePrompt(paths);
+      const h = harness(CLAUDE_CHOICE, run);
+      h.deps.runClaude = async (options) => {
+        h.runs.push(options);
+        await Deno.writeTextFile(paths.response, "WRITTEN BY AGENT");
+        return run;
+      };
+
+      const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+      assertEquals(result.success, false);
+      assertEquals(h.runs.length, 1);
+      assertEquals(await exists(paths.response), false);
+    });
+  });
+}
+
+const MISSING_WITH_STALE: Array<[string, Record<string, unknown>]> = [
+  ["--dir", { dir: undefined }],
+  ["--prompt-file", { "prompt-file": undefined }],
+];
+
+for (const [flag, override] of MISSING_WITH_STALE) {
+  Deno.test(`missing ${flag} names the flag and removes a stale response`, async () => {
+    await inWorkspace(async (paths) => {
+      await writePrompt(paths);
+      await writeStale(paths);
+      const h = harness();
+
+      const result = await runBabysitterRepair(
+        argsFor(paths, override),
+        CONFIG,
+        h.deps,
+      );
+
+      assertEquals(result.success, false);
+      assertStringIncludes(result.message, flag);
+      assertEquals(h.runs.length, 0);
+      assertEquals(await exists(paths.response), false);
+    });
+  });
+}
+
+Deno.test("missing --response-file fails naming the flag before anything runs", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness();
+
+    const result = await runBabysitterRepair(
+      argsFor(paths, { "response-file": undefined }),
+      CONFIG,
+      h.deps,
+    );
+
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "--response-file");
+    assertEquals(h.runs.length, 0);
+    assertEquals(h.chooseCalls.length, 0);
+  });
+});
+
+Deno.test("non-zero exit quotes both ends of long stderr and keeps the secret out", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const filler = "filler text ".repeat(200);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({
+        exitCode: 3,
+        output: "partial text that must not be written",
+        stderr:
+          `CAUSE-HEAD ${filler}GITHUB_TOKEN=fixture-middle-secret ${filler}CAUSE-TAIL`,
+      }),
+    );
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, "exited 3");
+    assertStringIncludes(result.message, "CAUSE-HEAD");
+    assertStringIncludes(result.message, "CAUSE-TAIL");
+    assertStringIncludes(result.message, " … ");
+    assertEquals(result.message.includes("fixture-middle-secret"), false);
+    assert(
+      result.message.length < 700,
+      `message too long: ${result.message.length}`,
+    );
+    assertEquals(await exists(paths.response), false);
+  });
 });

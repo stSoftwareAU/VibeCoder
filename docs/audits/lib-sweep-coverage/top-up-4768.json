@@ -1,0 +1,12 @@
+{
+  "issue": 4768,
+  "chunk": "top-up-4768",
+  "title": "top-up: worker container babysitter-repair command",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4768",
+  "definition": "Run one fleet babysitter repair session in the worker container: choose the provider, run the agent in the mounted clone, and write its final message to the response file, failing loud with no response file on any fault.",
+  "status": "claimed",
+  "sweptAt": "2b77b2b5a285fe5b672ab90420992a356f3af737",
+  "paths": [
+    "worker/deno/commands/babysitter_repair.ts"
+  ]
+}
