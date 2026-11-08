@@ -1893,14 +1893,11 @@ export async function runQualityGate(
     );
   }
 
-  // Shellcheck is intentionally NOT run by the worker (Issue #3129). Bash
-  // linting is owned by each target repo's own CI (the `shellcheck`
-  // GitHub Actions workflow the worker syncs in via workflow_definitions.ts),
-  // so the worker no longer runs it locally — that avoided two problems:
-  // hosts without the shellcheck binary failed every .sh-containing repo, and
-  // the worker's bare `-e SC1091 -e SC2034` scan drifted stricter than a
-  // repo's own (deliberately curated) CI policy. A genuine CI shellcheck
-  // failure is handled by the existing CI-fix flow (ci_failure_classifier.ts).
+  // Keep the blanket ShellCheck scan out of quality_gate (Issue #3129): each
+  // repo owns its CI flags and exclusions. The shared pre-push gate runs that
+  // repo-specific policy only for affected scripts when CI's workflow is
+  // supported, so a bare worker scan cannot drift from the target repo's rule.
+  // A genuine CI ShellCheck failure is handled by ci_failure_classifier.ts.
 
   // Deno checks
   if (denoModuleExists) {

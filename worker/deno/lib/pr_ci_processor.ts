@@ -170,7 +170,7 @@ import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
 import {
   prBaseForSync,
-  resolvePreFlightSpec,
+  resolveRepairPreFlightSpec,
   unstageStateAndAssertSafe,
 } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
@@ -2152,7 +2152,7 @@ async function _processCiWithHeartbeat(
   // Issue #3577: enforce the repo's pre-flight gate at the automated-commit
   // chokepoint — a non-zero exit blocks both this commit and the push so a
   // known-broken CI "fix" is never pushed back into the expensive build.
-  const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
+  const preFlight = resolveRepairPreFlightSpec(processorDeps.repoConfigs, repo);
   // The repo's own formatters run between the commit and the gate (follow-up
   // to #3806): a formatting-only miss in this round is fixed and committed
   // rather than failing the push or reaching CI. Same files the gate checks

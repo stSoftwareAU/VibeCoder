@@ -14,7 +14,7 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { prBaseForSync, resolvePreFlightSpec } from "./git_push.ts";
+import { prBaseForSync, resolveRepairPreFlightSpec } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   buildSpellingFixPrompt,
@@ -428,7 +428,7 @@ async function _processSpellingWithHeartbeat(
   //
   // Issue #3577: enforce the repo's pre-flight gate — a non-zero exit blocks
   // both the commit and the push.
-  const preFlight = resolvePreFlightSpec(
+  const preFlight = resolveRepairPreFlightSpec(
     processorDeps.repoConfigs,
     input.repo,
   );
