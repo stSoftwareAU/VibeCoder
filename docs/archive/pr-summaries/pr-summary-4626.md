@@ -8,10 +8,11 @@ The gate discovers direct workflow commands and cargo-deny-action steps. It
 expands `${{ matrix.<key> }}` from the job's literal `strategy.matrix` lists and
 `include` entries, in action inputs and in `run:` lines, one invocation per
 combination. An expression it cannot expand is dropped after `check` in a `run:`
-line, and an action input holding one takes the action's default, so the
-command is a plain `check` (every subset). It does not add offline or ignore
-flags. A variable before `check`, an unreproducible working directory or a
-`cargo deny` line naming no `check` refuse the push; unavailable tools or
+line (so `check bans $X` becomes `check bans`), and an action input holding one
+takes that input's own default; only an unexpandable `command` becomes a plain
+`check` (every subset). It does not add offline or ignore flags. A variable
+before `check`, an unreproducible working directory or a `cargo deny` line
+naming no `check` but holding a variable or expression refuse the push; unavailable tools or
 networks are infrastructure failures, and audit diagnostics are code verdicts.
 Quoted multiline container scripts are not treated as host commands.
 

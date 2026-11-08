@@ -5187,10 +5187,11 @@ The hook runs two stages:
      `check advisories` and `check bans licenses sources`). `exclude` entries
      are not applied, so an excluded combination is checked too. An expression
      that cannot be expanded is dropped when it follows `check` in a `run:`
-     line, and an action input holding one takes the action's own default (the
-     command becomes a plain `check`, which runs every check and so covers
-     every subset). A shell variable or expression before `check` in a `run:`
-     line, one in a `cargo deny` line that names no `check`, or a
+     line, and an action input holding one takes that input's own default (an
+     unexpandable `command` becomes a plain `check`, which runs every check and
+     so covers every subset; the other inputs leave `command` as written). A
+     shell variable or expression before `check` in a `run:` line, one in a
+     `cargo deny` line that names no `check`, or a
      `working-directory` with `..` or an absolute path refuses the push.
      The hook does not read job-level `defaults.run.working-directory`, or
      invocations hidden in a script the step calls, so those forms are not
