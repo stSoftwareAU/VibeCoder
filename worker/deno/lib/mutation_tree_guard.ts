@@ -50,39 +50,43 @@ function splitNul(stdout: string): string[] {
   return stdout.split("\0").filter((p) => p !== "");
 }
 
+/** A successful value, or the cause of the failure for a warning. */
+type Listed<T> = { ok: true; value: T } | { ok: false; cause: string };
+
+/** One NUL-separated git listing at `repoPath` as a set of paths. */
+async function listPaths(
+  repoPath: string,
+  args: string[],
+): Promise<Listed<Set<string>>> {
+  const run = await runGitCommand(args, { cwd: repoPath });
+  if (!run.ok || run.value.code !== 0) {
+    return { ok: false, cause: causeOf(run) };
+  }
+  return { ok: true, value: new Set(splitNul(run.value.stdout)) };
+}
+
 /**
  * Both listings of the tree at `repoPath`: untracked (ignored files excluded)
  * and modified tracked files. Returns the cause of the first failure instead.
  */
-async function listTree(
-  repoPath: string,
-): Promise<{ ok: true; value: TreeSnapshot } | { ok: false; cause: string }> {
-  const untracked = await runGitCommand(
-    ["ls-files", "--others", "--exclude-standard", "-z"],
-    { cwd: repoPath },
-  );
-  if (!untracked.ok || untracked.value.code !== 0) {
-    return {
-      ok: false,
-      cause: causeOf(untracked),
-    };
-  }
-  const modified = await runGitCommand(
-    ["diff", "--name-only", "-z", "--relative"],
-    { cwd: repoPath },
-  );
-  if (!modified.ok || modified.value.code !== 0) {
-    return {
-      ok: false,
-      cause: causeOf(modified),
-    };
-  }
+async function listTree(repoPath: string): Promise<Listed<TreeSnapshot>> {
+  const untracked = await listPaths(repoPath, [
+    "ls-files",
+    "--others",
+    "--exclude-standard",
+    "-z",
+  ]);
+  if (!untracked.ok) return untracked;
+  const modified = await listPaths(repoPath, [
+    "diff",
+    "--name-only",
+    "-z",
+    "--relative",
+  ]);
+  if (!modified.ok) return modified;
   return {
     ok: true,
-    value: {
-      untracked: new Set(splitNul(untracked.value.stdout)),
-      modified: new Set(splitNul(modified.value.stdout)),
-    },
+    value: { untracked: untracked.value, modified: modified.value },
   };
 }
 
@@ -109,7 +113,7 @@ export async function snapshotTree(
  * A path a restore must never act on: absolute, a `.` or `..` segment, or a
  * trailing `/` (a nested repository directory).
  */
-function isUnsafePath(path: string): boolean {
+export function isUnsafePath(path: string): boolean {
   if (path.startsWith("/") || path.endsWith("/")) return true;
   return path.split("/").some((segment) => segment === "." || segment === "..");
 }

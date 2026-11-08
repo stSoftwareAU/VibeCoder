@@ -16,7 +16,11 @@ import {
   type MutationRunnerSeams,
   runMutationCheck,
 } from "../lib/mutation_runner.ts";
-import { restoreTree, snapshotTree } from "../lib/mutation_tree_guard.ts";
+import {
+  isUnsafePath,
+  restoreTree,
+  snapshotTree,
+} from "../lib/mutation_tree_guard.ts";
 
 const MODULE = "lib/m.ts";
 const SOURCE =
@@ -256,4 +260,112 @@ Deno.test("Issue #4905 - restoreTree warns and does not throw when the listing n
   } finally {
     await Deno.remove(repo, { recursive: true });
   }
+});
+
+Deno.test("Issue #4905 - snapshotTree returns null and warns when the directory does not exist", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "mutation-tree-guard-gone-" });
+  await Deno.remove(dir, { recursive: true });
+  const { value, warnings } = await captureWarnings(() => snapshotTree(dir));
+  assertEquals(value, null);
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(
+    warnings[0] ?? "",
+    "[mutation] could not snapshot the working tree:",
+  );
+});
+
+Deno.test("Issue #4905 - snapshotTree returns null and warns when the modified-file listing fails", async () => {
+  await withRepo({ "a.txt": "a\n" }, async (repo) => {
+    // `git diff` reads this setting; `git ls-files` does not, so only the
+    // second listing fails.
+    await git(repo, ["config", "diff.renames", "bogus"]);
+    const { value, warnings } = await captureWarnings(() => snapshotTree(repo));
+    assertEquals(value, null);
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(
+      warnings[0] ?? "",
+      "[mutation] could not snapshot the working tree:",
+    );
+    assertStringIncludes(warnings[0] ?? "", "diff.renames");
+  });
+});
+
+Deno.test("Issue #4905 - snapshotTree lists untracked and modified paths exactly", async () => {
+  await withRepo({ "a.txt": "a\n", "b.txt": "b\n" }, async (repo) => {
+    await Deno.writeTextFile(`${repo}/a.txt`, "changed\n");
+    await Deno.writeTextFile(`${repo}/new.txt`, "new\n");
+    const snapshot = await snapshotTree(repo);
+    assert(snapshot !== null);
+    assertEquals([...snapshot.untracked], ["new.txt"]);
+    assertEquals([...snapshot.modified], ["a.txt"]);
+  });
+});
+
+Deno.test("Issue #4905 - isUnsafePath flags absolute, dot-segment and trailing-slash paths only", () => {
+  assertEquals(isUnsafePath("/abs"), true);
+  assertEquals(isUnsafePath("dir/"), true);
+  assertEquals(isUnsafePath("./a"), true);
+  assertEquals(isUnsafePath("a/./b"), true);
+  assertEquals(isUnsafePath("../a"), true);
+  assertEquals(isUnsafePath("a/../b"), true);
+  assertEquals(isUnsafePath("a"), false);
+  assertEquals(isUnsafePath("a/b.txt"), false);
+  assertEquals(isUnsafePath("a/.hidden/b"), false);
+});
+
+Deno.test("Issue #4905 - restoreTree refuses a nested repository directory and leaves it", async () => {
+  await withRepo({ "a.txt": "a\n" }, async (repo) => {
+    const before = await snapshotTree(repo);
+    assert(before !== null);
+    await Deno.mkdir(`${repo}/nested`);
+    await git(`${repo}/nested`, ["init", "-q"]);
+    await Deno.writeTextFile(`${repo}/nested/f.txt`, "f\n");
+    const { warnings } = await captureWarnings(() => restoreTree(repo, before));
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0] ?? "", "refusing unsafe path nested/");
+    assertEquals(await exists(`${repo}/nested/f.txt`), true);
+  });
+});
+
+Deno.test("Issue #4905 - restoreTree warns with the OS message when a stray file cannot be removed, and carries on", async () => {
+  if (Deno.uid() === 0) return; // root ignores directory permissions
+  await withRepo({ "a.txt": "a\n" }, async (repo) => {
+    const before = await snapshotTree(repo);
+    assert(before !== null);
+    await Deno.mkdir(`${repo}/locked`);
+    await Deno.writeTextFile(`${repo}/locked/f.txt`, "f\n");
+    await Deno.writeTextFile(`${repo}/stray.txt`, "s\n");
+    await Deno.chmod(`${repo}/locked`, 0o555);
+    let message = "";
+    try {
+      try {
+        await Deno.remove(`${repo}/locked/f.txt`);
+      } catch (err) {
+        message = (err as Error).message;
+      }
+      assert(message !== "", "the locked directory must refuse the removal");
+      const { warnings } = await captureWarnings(() =>
+        restoreTree(repo, before)
+      );
+      assertEquals(warnings.length, 1);
+      assertStringIncludes(
+        warnings[0] ?? "",
+        `removing locked/f.txt: ${message}`,
+      );
+      assertEquals(await exists(`${repo}/stray.txt`), false);
+    } finally {
+      await Deno.chmod(`${repo}/locked`, 0o755);
+    }
+  });
+});
+
+Deno.test("Issue #4905 - restoreTree is silent when a stray file has already gone", async () => {
+  await withRepo({ "a.txt": "a\n" }, async (repo) => {
+    const before = await snapshotTree(repo);
+    assert(before !== null);
+    await Deno.writeTextFile(`${repo}/stray.txt`, "s\n");
+    await Deno.remove(`${repo}/stray.txt`);
+    const { warnings } = await captureWarnings(() => restoreTree(repo, before));
+    assertEquals(warnings, []);
+  });
 });
