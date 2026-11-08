@@ -3,8 +3,9 @@
 Made budget skip records describe the checks used by each push path without
 promising a full worker gate for existing PRs. Forwarded repository
 configuration through the spelling command so configured pre-flight commands
-reach its push helper. Updated the configuration manual and diagram. Closes
-#4876.
+reach its push helper. Updated the configuration manual and diagram.
+
+Closes #4876.
 
 Version bump: none for this change.
 
@@ -89,7 +90,8 @@ Kept implementation, checks and tests on Deno; no dependencies were added and
 - `worker/deno/tests/run_core_production_deps_test.ts` captures feedback and
   custom PR prompt instructions from the production callbacks. Both use a 600 s
   reactive budget distinct from the 3600 s issue budget; feedback uses a
-  `pr_review` input. The custom PR test asserts the gate refusal and 600 s budget.
+  `pr_review` input. The custom PR test asserts the gate refusal and 600 s
+  budget.
 - `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)`
   now checks the prompt and absent pre-flight specs while retaining every
   existing assertion about verifier attempts, outstanding findings, pushes and
@@ -114,8 +116,8 @@ fail. No untestable exemptions were used.
 
 Validation for the review fix:
 
-- CI command push-guarantee suite: 4 passed, including the isolated retry
-  state assertion.
+- CI command push-guarantee suite: 4 passed, including the isolated retry state
+  assertion.
 - Production dependencies suite: 35 passed.
 - Repository Deno formatter and linter: passed.
 - Markdown lint: passed.
