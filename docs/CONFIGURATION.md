@@ -5192,7 +5192,8 @@ The hook runs two stages:
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
    - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
-     Intermediate push hooks run it when changes include a `Cargo.toml`,
+     Intermediate push hooks and ShellCheck-only repair checks run it when
+     pushed changes include a `Cargo.toml`,
      `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
      `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
      `*.yaml` files for each `run:` step whose command is `cargo deny` with a

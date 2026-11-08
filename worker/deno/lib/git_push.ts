@@ -52,7 +52,8 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * cspell, the Floci deploy test and the repository's ShellCheck policy), then
  * cargo deny when applicable (Issue #4626), even when `commands` is empty; an
  * empty list only means no repo pre-flight commands run. A spec with
- * `shellcheckOnly` runs just the ShellCheck policy (Issue #4631).
+ * `shellcheckOnly` runs the ShellCheck policy and cargo deny for changed cargo
+ * inputs (Issues #4631 and #4626).
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */

@@ -1742,25 +1742,23 @@ export async function runPrePushGate(opts: {
     checksRun.push(check.command);
   }
 
-  if (!opts.shellcheckOnly) {
-    const cargoDeny = await runCargoDenyGate({
-      cwd: opts.cwd,
-      changed: changed.value,
-      always: opts.baseRef !== undefined,
-      tracked,
-      runner: opts.runner,
-      timeoutSeconds: opts.timeoutSeconds,
-    });
-    if (!cargoDeny.ok) {
-      return cargoDeny.error.kind === "infrastructure"
-        ? infrastructureFail(cargoDeny.error.message)
-        : fail(cargoDeny.error.message);
-    }
-    checksRun.push(...cargoDeny.value.checksRun);
-    // A check CI allows to fail is reported, never counted as run or a block.
-    for (const warning of cargoDeny.value.warnings) {
-      console.warn(`[PRE_PUSH_WARNING] cargo deny: ${warning}`);
-    }
+  const cargoDeny = await runCargoDenyGate({
+    cwd: opts.cwd,
+    changed: contained.value,
+    always: !opts.shellcheckOnly && opts.baseRef !== undefined,
+    tracked,
+    runner: opts.runner,
+    timeoutSeconds: opts.timeoutSeconds,
+  });
+  if (!cargoDeny.ok) {
+    return cargoDeny.error.kind === "infrastructure"
+      ? infrastructureFail(cargoDeny.error.message)
+      : fail(cargoDeny.error.message);
+  }
+  checksRun.push(...cargoDeny.value.checksRun);
+  // A check CI allows to fail is reported, never counted as run or a block.
+  for (const warning of cargoDeny.value.warnings) {
+    console.warn(`[PRE_PUSH_WARNING] cargo deny: ${warning}`);
   }
 
   const preFlight = await runPreFlightGate(opts.preFlightCommands, {

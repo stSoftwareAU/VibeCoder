@@ -48,8 +48,9 @@ The shared pre-push gate serves the hook, Step 1b and completion, all of which
 run in the worker container. Verdict diagnostics take precedence over network
 text; unavailable tools or databases do not count as successful checks.
 WIP-preservation pushes remain outside this gate. No VERSION file exists here.
-ShellCheck-only repair checks also leave cargo deny to CI, even when given a
-base ref; the completion gate still runs cargo deny for a whole branch.
+ShellCheck-only repair checks run cargo deny when pushed paths include cargo
+inputs, including with a base ref; source-only repairs skip it. The completion
+gate still runs cargo deny for a whole branch.
 
 ## Evidence
 
@@ -100,12 +101,16 @@ not run there.
   What remains refused, and is still tested, is a `cargo deny` line with a
   variable and no `check` (`...is unrunnable even without check`) and an
   unreproducible working directory.
-- `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (10 tests at head) covers
+- `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` (11 tests at head) covers
   exact argv, infrastructure and verdict mapping, intermediate source-only
   skips, the source-only whole-branch check, the README pipeline through
   `runPrePushGate` (the allowed leg prints `[PRE_PUSH_WARNING] cargo deny:` and
-  does not block; the other leg blocks), and
-  `cargo deny: shellcheck-only mode skips cargo deny even with a baseRef`.
+  does not block; the other leg blocks). The obsolete ShellCheck-only blanket
+  skip is replaced: cargo input changes are checked, while source-only repairs
+  still skip cargo deny, covered by
+  `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: shellcheck-only mode checks Cargo.lock`
+  and
+  `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: shellcheck-only mode skips a source-only repair even with a baseRef`.
 - Red checks run on this head, each by breaking one thing and running
   `cargo_deny_gate_test.ts` or `pre_push_gate_cargo_deny_test.ts`: job default
   ignored → 4 red; workflow default ignored → 1 red; never allow failure → 4
