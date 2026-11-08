@@ -242,6 +242,14 @@ export function buildClaudeChildEnv(
     if (env[name] === undefined) env[name] = value;
   }
 
+  // Claude's foreground Bash ceiling defaults to 600 s, shorter than some
+  // repository gates (#4913). Allow requests up to the default reactive-phase
+  // budget, without changing the default command timeout or outer watchdogs.
+  // https://code.claude.com/docs/en/env-vars#bash-tool
+  if (env["BASH_MAX_TIMEOUT_MS"] === undefined) {
+    env["BASH_MAX_TIMEOUT_MS"] = "1800000";
+  }
+
   // Durable transcripts inside the container (Issue #4170): claude stores
   // the session transcripts `--resume` replays under CLAUDE_CONFIG_DIR.
   // Left at the default ~/.claude they die with the ephemeral VM — observed

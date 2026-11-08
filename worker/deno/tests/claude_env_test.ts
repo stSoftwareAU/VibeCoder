@@ -64,11 +64,31 @@ Deno.test("buildClaudeChildEnv - honours a custom denylist", () => {
   assertEquals(child.KEEP, "yes");
 });
 
-Deno.test("buildClaudeChildEnv - an empty environment inherits nothing; the only entries are the audit-journal off switch (Issue #2400) and the sub-agent spawn caps (Issue #2575)", () => {
+Deno.test("buildClaudeChildEnv - an empty environment gets only the worker defaults", () => {
   assertEquals(buildClaudeChildEnv({}), {
     VIBE_AUDIT_DISABLED: "1",
     ...CLAUDE_SUBAGENT_CAP_ENV,
+    BASH_MAX_TIMEOUT_MS: "1800000",
   });
+});
+
+Deno.test("buildClaudeChildEnv - permits a longer foreground gate without changing the default command timeout (#4913)", () => {
+  const parent = { PATH: "/usr/bin" };
+  const child = buildClaudeChildEnv(parent);
+  assertEquals(child.BASH_MAX_TIMEOUT_MS, "1800000");
+  assertEquals(child.BASH_DEFAULT_TIMEOUT_MS, undefined);
+  assertEquals(parent, { PATH: "/usr/bin" });
+});
+
+Deno.test("buildClaudeChildEnv - explicit foreground timeout settings win (#4913)", () => {
+  for (const ceiling of ["300000", "3600000"]) {
+    const child = buildClaudeChildEnv({
+      BASH_MAX_TIMEOUT_MS: ceiling,
+      BASH_DEFAULT_TIMEOUT_MS: "60000",
+    });
+    assertEquals(child.BASH_MAX_TIMEOUT_MS, ceiling);
+    assertEquals(child.BASH_DEFAULT_TIMEOUT_MS, "60000");
+  }
 });
 
 Deno.test("CLAUDE_ENV_DENYLIST - includes the GitHub App private key variables", () => {
