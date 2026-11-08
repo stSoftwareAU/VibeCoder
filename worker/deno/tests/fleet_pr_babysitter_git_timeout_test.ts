@@ -44,7 +44,16 @@ Deno.test("run sends git push through the chokepoint with a 30-minute timeout", 
   assertEquals(calls.length, 1);
   const call = calls[0];
   assert(call !== undefined);
-  assertEquals(call.argv, ["git", "push", "origin", "HEAD"]);
+  assertEquals(call.argv, [
+    "git",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "push",
+    "origin",
+    "HEAD",
+  ]);
   assertEquals(call.options.cwd, "/some/dir");
   assertEquals(call.options.timeoutSeconds, 1800);
   assertEquals(result, "ok");
@@ -68,7 +77,16 @@ Deno.test("run sends git fetch through the chokepoint with a 30-minute timeout",
   assertEquals(calls.length, 1);
   const call = calls[0];
   assert(call !== undefined);
-  assertEquals(call.argv, ["git", "fetch", "origin", refspec]);
+  assertEquals(call.argv, [
+    "git",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "fetch",
+    "origin",
+    refspec,
+  ]);
   assertEquals(call.options.cwd, "/some/dir");
   assertEquals(call.options.timeoutSeconds, 1800);
   assertEquals(result, "ok");

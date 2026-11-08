@@ -74,10 +74,11 @@ const APP = { appId: "1", installationId: "1", privateKeyPath: "/unused" };
 interface AgentScript {
   code?: number;
   stderr?: string;
-  signal?: string | null;
   response?: string;
   expiresInMs?: number;
   elapsedMs?: number;
+  /** Throws this message as a code-class failure, as a repair the agent failed would. */
+  codeFailure?: string;
   setupScratch?: (scratch: string) => Promise<void>;
   proposal?: string;
 }
@@ -126,6 +127,7 @@ function harness(
     escalations: 0,
     escalateFails: 0,
     markerFailures: 0,
+    markerAttempts: 0,
     reviewId: 10,
     editFailures: 0,
     dismissals: 0,
@@ -199,6 +201,7 @@ function harness(
       args[0] === "api" && args[1] === `repos/${REPO}/issues/1/comments` &&
       args.includes("POST")
     ) {
+      state.markerAttempts++;
       if (state.markerFailures > 0) {
         state.markerFailures--;
         return Promise.reject(new Error("marker write 502"));
@@ -275,6 +278,9 @@ function harness(
     if (script.elapsedMs) {
       const now = Date.now();
       Date.now = () => now + script.elapsedMs!;
+    }
+    if (script.codeFailure !== undefined) {
+      throw new BabysitterFailure(script.codeFailure, "code");
     }
     const code = script.code ?? 0;
     if (code !== 0) {
@@ -432,7 +438,7 @@ Deno.test("transient failure, cooldown, retry, checked repair, CI, review and me
   await withState(async (stateDir) => {
     const h = harness(stateDir);
     // 1. The provider ends the session: an infrastructure failure.
-    h.state.agents.push({ code: 1, signal: "SIGKILL" });
+    h.state.agents.push({ code: 1 });
     await assertRejects(
       () => h.attempt(),
       Error,
@@ -633,7 +639,7 @@ Deno.test("an expired read token restarts the session and the repair continues",
   await withState(async (stateDir) => {
     const h = harness(stateDir);
     h.state.changes = true;
-    h.state.agents.push({ code: 143, signal: "SIGTERM", expiresInMs: 60_000 });
+    h.state.agents.push({ code: 143, expiresInMs: 60_000 });
     await h.attempt();
     assertEquals(h.state.sessions, 2);
     assertStringIncludes(h.state.prompts[1]!, "previous read token expired");
@@ -699,6 +705,30 @@ Deno.test("a non-zero container exit keeps the retry record and the repair's rea
     assertEquals(record!.attempts, { infrastructure: 1, substantive: 0 });
     assertEquals(h.state.markers.length, 0);
     assert(record!.nextEligibleAt !== null);
+  });
+});
+
+Deno.test("a failed marker write never replaces the repair's real error", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir, { markerFails: true });
+    h.state.agents.push({
+      codeFailure: "agent exited unsuccessfully with code 1",
+    });
+    await assertRejects(
+      () => h.attempt(),
+      Error,
+      "agent exited unsuccessfully with code 1",
+    );
+    assert(h.state.markerAttempts > 0, "the marker write was attempted");
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    assertEquals(record!.attempts.substantive, 1);
+    assertEquals(record!.lastOutcome, "repair-failed");
+    assertEquals(record!.evidence?.length, 1);
+    assertEquals(record!.unpublishedAttempts, 1);
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals((await records(stateDir))[0]!.attempts.substantive, 2);
   });
 });
 
@@ -1092,7 +1122,6 @@ Deno.test("runner budget exhaustion is substantive and reaches escalation", asyn
       for (let i = 0; i < 3; i++) {
         h.state.agents.push({
           code: 143,
-          signal: "SIGTERM",
           elapsedMs: 90 * 60_000,
         });
         await assertRejects(
@@ -1469,7 +1498,7 @@ Deno.test("stale conflict defers until GitHub recomputes mergeability", async ()
 Deno.test("an infrastructure failure journals one failed attempt at the observed head", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);
-    h.state.agents.push({ code: 1, signal: "SIGKILL" });
+    h.state.agents.push({ code: 1 });
     await assertRejects(
       () => h.attempt(),
       Error,
@@ -1485,17 +1514,19 @@ Deno.test("an infrastructure failure journals one failed attempt at the observed
   });
 });
 
-Deno.test("a non-zero container exit journals one failed attempt and keeps the repair's real error (Issue #4770)", async () => {
+Deno.test("a code failure journals one failed attempt and keeps the repair's real error (Issue #4770)", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);
-    h.state.agents.push({ code: 1, stderr: "task failed: invalid source" });
+    h.state.agents.push({
+      codeFailure: "agent exited unsuccessfully with code 1",
+    });
     await assertRejects(
       () => h.attempt(),
       Error,
-      "exited with code 1: task failed: invalid source",
+      "agent exited unsuccessfully with code 1",
     );
     const [record] = await records(stateDir);
-    assertEquals(record!.blockerClass, "infrastructure");
+    assertEquals(record!.blockerClass, "code");
     assertEquals(h.state.journalled, [{
       repo: REPO,
       prNumber: 1,
@@ -2160,6 +2191,60 @@ Deno.test("a lock renewal failure aborts the signal given to the agent before pu
     );
     assert(signal?.aborted === true);
     assertEquals(h.state.pushed, 0);
+  });
+});
+
+Deno.test("a lock renewal failure kills the repair container, so the fix fails with the race failure (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      let onRenewalError: ((message: string) => void) | undefined;
+      h.deps.startLockRenewal = (options) => {
+        onRenewalError = options.onError;
+        return { stop() {} };
+      };
+      const spawns: RuntimeSpawn[] = [];
+      let markKilled!: () => void;
+      const killed = new Promise<void>((resolve) => markKilled = resolve);
+      const ok = { success: true, code: 0, stderr: "", timedOut: false };
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns, {
+          onSpawn: (spawn) => {
+            if (spawn.args[0] === "kill") {
+              markKilled();
+              return Promise.resolve(ok);
+            }
+            // The repair runs until the renewal failure aborts it. The
+            // fallback timer stops a missing kill from hanging the test.
+            onRenewalError!(
+              "Failed to renew PR lock comment 1 on owner/repo: down",
+            );
+            return new Promise((resolve) => {
+              const timer = setTimeout(() => resolve(ok), 5_000);
+              killed.then(() => {
+                clearTimeout(timer);
+                resolve({ success: false, code: 137, stderr: "", timedOut: false });
+              });
+            });
+          },
+        }),
+      );
+      await assertRejects(
+        () => h.attempt(),
+        BabysitterFailure,
+        "PR lock renewal failed; agent stopped before publication",
+      );
+      const name = spawns[0]!.args[spawns[0]!.args.indexOf("--name") + 1];
+      assert(
+        spawns.some((spawn) =>
+          spawn.args[0] === "kill" && spawn.args[1] === name
+        ),
+        `the abort kills the container by name: ${JSON.stringify(spawns)}`,
+      );
+      assertEquals(h.state.pushed, 0);
+    });
   });
 });
 

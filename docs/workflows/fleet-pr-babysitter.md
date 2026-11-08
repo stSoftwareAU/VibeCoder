@@ -146,8 +146,9 @@ exclusion covers untracked paths only; a file the repository tracks is still
 committed when a repair edits it. If the fetch fails, the repair fails with git's
 cause, the mirror is kept, and the next pass retries. Passes never remove
 mirrors; delete a mirror directory to force a fresh download. The repair
-container does not mount the mirror; it sees only its clone and scratch
-directory. Do not treat mirrors as credential-protected. Every other git command a repair runs through the
+container does not mount the mirror. The agent can write only its clone and
+scratch directory; it can read what "Credentials across the boundary" lists.
+Do not treat mirrors as credential-protected. Every other git command a repair runs through the
 babysitter's generic runner, including the tracking-ref fetches and the push of
 the fix, is also bounded to 30 minutes rather than the 60-second default for
 git.
@@ -334,7 +335,9 @@ if it eventually completes, its descriptor is closed. A repair that fails this
 way publishes no PR description and dismisses no review. It is recorded as a
 failed attempt for that head, so it is not retried on this host until its state
 file is removed, as described above; a new head or a new review gets its own
-attempt. ## Container repairs
+attempt.
+
+## Container repairs
 
 Each repair runs in one container, started by `runBabysitterRepairContainer`
 (`worker/deno/lib/fleet_babysitter_container.ts`). The clone is mounted at
@@ -343,7 +346,7 @@ Each repair runs in one container, started by `runBabysitterRepairContainer`
 command with `--dir /babysitter/clone`, `--prompt-file` pointing at the prompt,
 and `--response-file /babysitter/clone/.babysitter-response`. The agent's
 read-only repository token is passed as `GH_TOKEN` by name only, so its value
-never appears on a command line.
+never appears on a command line. The agent has the clone's `.git` read-write, so the host runs every git command with `core.hooksPath=/dev/null` and `core.fsmonitor=false` (`HOST_GIT_HARDENING_ARGS`), so a hook or config planted in the clone does not run on the host; fuller shared-clone git protection belongs to a separate issue.
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container is
@@ -429,8 +432,15 @@ and, because the image may predate the babysitter-repair mode, a hint to relaunc
 with `./run.sh` to rebuild it.
 A timeout reports `babysitter repair timed out after <N> minutes; container
 <name> killed`, where `<N>` is that session's own timeout, and a timeout that is
-not restarted (see "Token restarts") fails the repair. Retry policy
-stays with Issue #4656.
+not restarted (see "Token restarts") fails the repair. Every failure the
+container launcher raises (a non-zero exit, a timeout, an egress failure or any
+other launcher error) is recorded as an infrastructure failure: it spends no
+substantive attempt, takes the default infrastructure backoff, and no quota
+reset or retry-after time is parsed. A missing container runtime or worker image
+is a capability failure. Quota-reset and retry-after parsing is not implemented;
+Issue #4656, which tracked richer retry policy, is closed.
+
+## Scans, retries and failure classification
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs. A
 PR labelled `needs-human` is never a candidate: it waits on a person, for
@@ -470,10 +480,10 @@ that moved) first, and the error text only as a fallback. Infrastructure, host
 capability (missing tool, full disk) and head or lock races receive bounded
 cooldowns without spending the substantive repair budget and post no attempt
 marker. A diagnostic that names a timeout, network, DNS or rate-limit failure is
-classified as infrastructure. A reported quota reset
-or retry-after time delays the next attempt. Code failures, runner
-session-budget exhaustion and no-progress
-outcomes spend that budget. A changed head bypasses the old cooldown while
+classified as infrastructure. Container exits and timeouts
+are infrastructure and do not spend that budget (see "Failure behaviour").
+Code failures, runner session-budget exhaustion and no-progress outcomes spend
+that budget. A changed head bypasses the old cooldown while
 keeping the attempt history. The retry
 record is saved before any best-effort marker write, and a failed marker write
 never replaces the repair's real error.

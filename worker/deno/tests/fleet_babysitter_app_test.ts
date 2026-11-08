@@ -388,12 +388,6 @@ Deno.test("App token refresh recovers after a transient failure", async () => {
 // runner's write token; it gets its own single-repo, read-only installation token.
 // =============================================================================
 
-/**
- * Generate a fresh 2048-bit RSA key at test time, as a PKCS#8 PEM string.
- *
- * Generated per call rather than committed, so no key material lives in source.
- * The PEM header and footer are concatenated so no literal PEM block appears.
- */
 Deno.test("babysitter agent token - scope is frozen read-only permissions", () => {
   assertEquals(Object.isFrozen(BABYSITTER_AGENT_PERMISSIONS), true);
   assertEquals(BABYSITTER_AGENT_PERMISSIONS, {

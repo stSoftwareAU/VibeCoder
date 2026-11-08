@@ -3370,7 +3370,7 @@ Deno.test("an oversized completion response is refused", async () => {
 
 // Issue #4677: CI is the gate, so a check this host cannot run is reported,
 // not a reason to discard an otherwise complete repair.
-Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
+Deno.test("a check the container cannot run is named but does not withhold readiness", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
