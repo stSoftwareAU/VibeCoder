@@ -36,6 +36,7 @@ import {
 import { BABYSITTER_AGENT_PERMISSIONS } from "../lib/fleet_babysitter_app.ts";
 import {
   BABYSITTER_CLONE_MOUNT,
+  BABYSITTER_TASK_FAILURE_EXIT_CODE,
   type BabysitterContainerDeps,
 } from "../lib/fleet_babysitter_container.ts";
 import { babysitterHostCredentialPaths } from "../lib/fleet_babysitter_paths.ts";
@@ -255,8 +256,7 @@ function harness(
   };
   // The stub follows startBabysitterAgent's contract: false when beforeSpawn
   // declines, otherwise true with the agent's final message in the exchange.
-  // A non-zero exit throws what the real wrapper throws: an infrastructure
-  // failure naming the container, its exit code and its stderr (Issue #4770).
+  // Mirror the container wrapper's error text and existing retry classifier.
   const startAgent: NonNullable<FixDeps["startAgent"]> = async (
     _app,
     _repo,
@@ -286,11 +286,13 @@ function harness(
     }
     const code = script.code ?? 0;
     if (code !== 0) {
-      throw new BabysitterFailure(
+      const message =
         `babysitter repair container vibe-babysitter-test exited with code ${code}${
           script.stderr ? `: ${script.stderr}` : ""
-        }; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`,
-        "infrastructure",
+        }; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`;
+      throw new BabysitterFailure(
+        message,
+        code === BABYSITTER_TASK_FAILURE_EXIT_CODE ? "code" : "infrastructure",
       );
     }
     await Deno.writeTextFile(
@@ -441,7 +443,7 @@ Deno.test("transient failure, cooldown, retry, checked repair, CI, review and me
   await withState(async (stateDir) => {
     const h = harness(stateDir);
     // 1. The provider ends the session: an infrastructure failure.
-    h.state.agents.push({ code: 1 });
+    h.state.agents.push({ code: 1, stderr: "stream disconnected" });
     await assertRejects(
       () => h.attempt(),
       Error,
@@ -705,7 +707,7 @@ Deno.test("a non-zero container exit keeps the retry record and the repair's rea
           onSpawn: () =>
             Promise.resolve({
               success: false,
-              code: 1,
+              code: BABYSITTER_TASK_FAILURE_EXIT_CODE,
               stderr: "task-failure: invalid source",
               timedOut: false,
             }),
@@ -714,7 +716,7 @@ Deno.test("a non-zero container exit keeps the retry record and the repair's rea
       await assertRejects(
         () => h.attempt(),
         Error,
-        "exited with code 1: task-failure: invalid source",
+        `exited with code ${BABYSITTER_TASK_FAILURE_EXIT_CODE}: task-failure: invalid source`,
       );
       const [record] = await records(stateDir);
       assertEquals(record!.blockerClass, "code");
@@ -783,17 +785,32 @@ Deno.test("provider and gh network failures do not spend repair attempts", async
   });
 });
 
-Deno.test("a non-zero container exit spends no substantive budget, whatever its diagnostic (Issue #4770)", async () => {
-  for (const stderr of ["", "HTTP 429 rate limit"]) {
+Deno.test("container task failures spend substantive attempts while transient exits back off (Issue #4770)", async () => {
+  for (
+    const { code, stderr, blockerClass, substantive } of [
+      {
+        code: BABYSITTER_TASK_FAILURE_EXIT_CODE,
+        stderr: "task-failure: invalid source",
+        blockerClass: "code",
+        substantive: 1,
+      },
+      {
+        code: 1,
+        stderr: "HTTP 429 rate limit",
+        blockerClass: "infrastructure",
+        substantive: 0,
+      },
+    ] as const
+  ) {
     await withState(async (stateDir) => {
       const h = harness(stateDir);
       const before = Date.now();
-      h.state.agents.push({ code: 1, stderr });
+      h.state.agents.push({ code: blockerClass === "code" ? code : 1, stderr });
       await assertRejects(() => h.attempt());
       const [record] = await records(stateDir);
-      assertEquals(record!.attempts.substantive, 0);
-      assertEquals(record!.blockerClass, "infrastructure");
-      assertEquals(h.state.markers.length, 0);
+      assertEquals(record!.attempts.substantive, substantive);
+      assertEquals(record!.blockerClass, blockerClass);
+      assertEquals(h.state.markers.length, substantive);
       assert(Date.parse(record!.nextEligibleAt!) >= before + 60_000);
     });
   }
@@ -1948,7 +1965,7 @@ Deno.test("a non-zero container exit fails the repair with its code, stderr and 
       assertEquals(h.state.pushed, 0);
       assertEquals(h.state.committed, false);
       const [record] = await records(stateDir);
-      assertEquals(record!.blockerClass, "code");
+      assertEquals(record!.blockerClass, "infrastructure");
     });
   });
 });

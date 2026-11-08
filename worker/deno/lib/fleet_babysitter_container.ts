@@ -72,6 +72,11 @@ export const BABYSITTER_REPAIR_COMMAND: readonly string[] = [
   "--response-file",
   `${BABYSITTER_CLONE_MOUNT}/.babysitter-response`,
 ];
+/** Exit status reserved for an agent task failure inside babysitter-repair. */
+export const BABYSITTER_TASK_FAILURE_EXIT_CODE = 42;
+
+/** A task failure reported through the container's structured exit status. */
+export class BabysitterTaskFailure extends Error {}
 
 /** What one runtime process did. */
 export interface BabysitterSpawnResult {
@@ -522,7 +527,7 @@ export function buildBabysitterRunArgs(
 }
 
 const REPAIR_CONFIG_SECRET_KEY =
-  /(?:api_?key|private_?key|ssh_?key|access_?token|password|secret)/i;
+  /(?:api_?key|private_?key|ssh_?key|token|password|secret)/i;
 
 /** Remove host-only secret values while keeping declared quality credential rules. */
 function sanitiseRepairConfig(value: unknown): unknown {
@@ -1178,11 +1183,14 @@ async function runRepairProcess(run: RepairRun): Promise<void> {
     );
   }
   if (!result.success) {
-    throw new Error(
+    const message =
       `babysitter repair container ${run.containerName} exited with code ${result.code}: ${
         describeStderr(result.stderr, run.token)
-      }; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`,
-    );
+      }; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`;
+    if (result.code === BABYSITTER_TASK_FAILURE_EXIT_CODE) {
+      throw new BabysitterTaskFailure(message);
+    }
+    throw new Error(message);
   }
 }
 

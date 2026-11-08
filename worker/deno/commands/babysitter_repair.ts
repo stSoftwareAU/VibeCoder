@@ -27,7 +27,10 @@ import {
   type RunClaudeOptions,
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
-import { BABYSITTER_REPAIR_TIMEOUT_MS } from "../lib/fleet_babysitter_container.ts";
+import {
+  BABYSITTER_REPAIR_TIMEOUT_MS,
+  BABYSITTER_TASK_FAILURE_EXIT_CODE,
+} from "../lib/fleet_babysitter_container.ts";
 import { redactSecrets } from "../lib/secret_redaction.ts";
 
 /** Redacted stderr up to this length is quoted whole in a failure message. */
@@ -60,8 +63,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function fail(message: string): CommandResult {
-  return { success: false, message, exitCode: 1 };
+function fail(message: string, exitCode = 1): CommandResult {
+  return { success: false, message, exitCode };
 }
 
 /** A required flag must carry a real value; a bare flag parses as "true". */
@@ -123,10 +126,10 @@ export async function runBabysitterRepair(
   config: WorkerConfig,
   deps: BabysitterRepairDeps = productionBabysitterRepairDeps,
 ): Promise<CommandResult> {
-  const reportFailure = (message: string): CommandResult => {
+  const reportFailure = (message: string, exitCode = 1): CommandResult => {
     const redacted = redactSecrets(message);
     deps.log(redacted);
-    return fail(redacted);
+    return fail(redacted, exitCode);
   };
   // a. The response path comes first, so every later failure can clear it.
   if (!hasValue(args["response-file"])) {
@@ -156,6 +159,7 @@ export async function runBabysitterRepair(
     clearError === undefined
       ? result.message
       : `${result.message}; also could not remove ${responseFile}: ${clearError}`,
+    result.exitCode,
   );
 }
 
@@ -227,6 +231,9 @@ async function repairResponse(
       : `stderr: ${quoteStderr(run.stderr) || "(empty)"}`;
     return fail(
       `agent exited ${run.exitCode}; ${cause}`,
+      run.agentFailure?.category === "task-failure"
+        ? BABYSITTER_TASK_FAILURE_EXIT_CODE
+        : 1,
     );
   }
   if (run.output.trim() === "") {

@@ -9,6 +9,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   resetRepairCloneGitConfig,
   run,
+  runHardenedRepairGit,
   validateAndCommit,
 } from "../commands/fleet_pr_babysitter.ts";
 import type { runGitArgv } from "../lib/git_timeout.ts";
@@ -141,7 +142,20 @@ Deno.test("repair resets agent-controlled filters, diff and SSH git config befor
 
     await resetRepairCloneGitConfig(repo, "stSoftwareAU/VibeCoder");
     await Deno.writeTextFile(`${repo}/fix.txt`, "fixed\n");
-    await validateAndCommit(repo, 4770, { login: "fixture-bot", id: "1" });
+    const add = await runHardenedRepairGit(["-C", repo, "add", "fix.txt"]);
+    assert(add.ok && add.value.code === 0);
+    const commit = await runHardenedRepairGit([
+      "-C",
+      repo,
+      "-c",
+      "user.name=fixture-bot",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "host repair commit",
+    ]);
+    assert(commit.ok && commit.value.code === 0);
     await run("git", ["status", "--porcelain"], repo);
 
     assertEquals(await markerNames(markers), []);

@@ -67,6 +67,7 @@ import {
 import {
   babysitterCheckoutDir,
   type BabysitterContainerDeps,
+  BabysitterTaskFailure,
   runBabysitterRepairContainer,
 } from "../lib/fleet_babysitter_container.ts";
 import {
@@ -2036,17 +2037,16 @@ async function removeFileIfPresent(path: string): Promise<void> {
 }
 
 /**
- * A missing runtime or worker image is a capability gap. Other failures use
- * the existing retry classifier, so a repair's task failure remains a
- * substantive attempt and transient launcher failures remain infrastructure.
+ * A missing runtime or worker image is a capability gap. Other launcher
+ * failures are infrastructure; the command's reserved exit status carries
+ * task failures as a structured host error type.
  */
 function repairFailureClass(message: string) {
   if (
     message.includes("the container runtime is not on PATH") ||
     message.includes("the worker image is not built")
   ) return "capability" as const;
-  if (!message.includes("exited with code")) return "infrastructure" as const;
-  return classifyBabysitterFailure(new Error(message));
+  return "infrastructure" as const;
 }
 
 /**
@@ -2120,7 +2120,12 @@ export async function startBabysitterAgent(
     const message = redactSecrets(
       error instanceof Error ? error.message : String(error),
     );
-    throw new BabysitterFailure(message, repairFailureClass(message));
+    throw new BabysitterFailure(
+      message,
+      error instanceof BabysitterTaskFailure
+        ? "code"
+        : repairFailureClass(message),
+    );
   }
   let response: string | null;
   try {
