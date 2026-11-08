@@ -1,73 +1,62 @@
 ## Summary
 
-The babysitter repair prompt now identifies the PR's archived summary from its
-issue branch and explains that summaries brought in by a base merge belong to
-the PRs that created them. Branches without an issue number get generic summary
-guidance without an example filename. Closes #4775.
+The babysitter repair prompt identifies the PR's archived summary from its issue
+branch and explains that summaries brought in by a base merge belong to their
+original PRs. Branches without an issue number get generic guidance. Closes
+#4775.
 
 ## Spec
 
 ### Intent and Rationale
 
-- A base merge can make another PR's summary visible in the repair diff; naming
-  the repair PR's summary prevents edits to that foreign record.
+- Naming the repair PR's summary prevents edits to another PR's record after a
+  base merge.
 
 ### Essential Design Decisions
 
-- Use the existing `issueNumberFromBranch` helper. A `null` result keeps the
-  summary guidance generic and omits a filename.
-- Keep the existing instruction to rewrite stale claims, counts and results in
-  the same repair rather than append a note.
+- Use `issueNumberFromBranch`; a `null` result omits a specific filename.
+- Keep the instruction to rewrite stale claims, counts and results in the same
+  repair.
+- Inject the HOME lookup in the repair test while production reads the process
+  environment. An absent HOME still prevents the agent from starting.
 
 ### Undiscoverable Facts
 
-- The 14-day review-log observation is post-merge verification and has not yet
-  run.
+- The 14-day review-log observation is post-merge verification and has not run.
 
 ## Evidence
 
-- Backend prompt and documentation change; no visual surface, dependency or
-  lockfile changed.
-- The manual section read was the opening repair-flow description under “Fleet
-  PR babysitter MVP” in `docs/workflows/fleet-pr-babysitter.md`; that file was
-  updated. The matching PR summary rules in `CODING-STANDARDS.md` were checked
-  and remain consistent.
-- The known-issue and no-issue prompt outcomes are covered by
-  `worker/deno/tests/fleet_pr_babysitter_test.ts`.
-- Deno regression avoided: kept the test and validation path Deno-native; no
-  Node tooling or dependencies were added.
+- This is a backend prompt, test and documentation change; no visual surface,
+  dependency or lockfile changed.
+- The repair-flow description in `docs/workflows/fleet-pr-babysitter.md` was
+  updated; the summary rules in `CODING-STANDARDS.md` remain consistent.
+- The old test mutated process-wide HOME; that mechanism is obsolete because it
+  violates parallel safety. The missing-HOME refusal and no-agent-start behaviour
+  remain covered by
+  `worker/deno/tests/fleet_pr_babysitter_test.ts::repair caller passes the issue number parsed from the PR branch`,
+  using an injected lookup. The parallel-safety gate covers the absence of new
+  process-state mutation.
+- No rule copies needed changing for the HOME lookup. The prompt tests cover the
+  issue and no-issue paths; existing merged-base and unmerged prompt assertions
+  remain in `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`.
 
 ## Test Plan
 
-- `deno task test:unit tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_single_push_test.ts`
-  — passed (134 passed, 0 failed).
-- `deno fmt --check` on the three changed TypeScript files — passed.
-- `deno lint` on the three changed TypeScript files — passed.
-- `deno check --frozen --lock=deno.lock` on the changed command and test files —
-  passed.
-- The new prompt tests failed against the previous wording. Reverting only the
-  repair caller's issue-number argument made
-  `repair caller passes the issue number parsed from the PR branch` fail because
-  the captured prompt omitted `pr-summary-2453.md`; restoring
-  `issueNumberFromBranch(pr.headRefName)` made it pass.
-- Coverage carry-over: the caller test
-  `worker/deno/tests/fleet_pr_babysitter_test.ts::repair caller passes the issue number parsed from the PR branch`
-  also removes HOME before agent startup, asserts `HOME is not set` and checks
-  that no agent started, exercising
-  `worker/deno/commands/fleet_pr_babysitter.ts:2799`. Disabling that guard made
-  the test fail: it received `captured prompt` instead of `HOME is not set`. The
-  guard was restored; no production code changed for this coverage repair.
-  Running both targeted files with Deno coverage passed all 134 tests; LCOV
-  records `DA:2799,6` for the command, confirming the reported line is reached.
-- No assertions were removed. The existing merged-base and unmerged prompt
-  assertions in `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`
-  remain and pass with the new required argument.
-- `./quality.sh < /dev/null` — failed in the unrelated
-  `spawnFastCheck: declared credentials ride the stdin channel, never argv, behind the sudo wrapper`
-  test. Its expected argv included the six HTTP(S) proxy variables; the actual
-  argv contained only `CARGO_TARGET_DIR`. The default-branch commit's changed
-  files do not include that test or its implementation. This failure was not
-  confirmed against a green base-branch CI run. The gate also reported config
-  integration skipped because `.config.json` was unavailable and Checkov skipped
-  because it was not installed or running in Docker/Podman.
-- The 14-day review-log observation remains unperformed until after merge.
+- `deno task test:unit tests/parallel_safety_cap_test.ts tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_single_push_test.ts`
+  — 136 passed. Before the fix the parallel-safety test failed on the HOME
+  mutation.
+- The prompt tests failed against the previous wording; removing the caller's
+  issue-number argument made the caller test fail. Disabling the HOME guard made
+  that test reach the agent instead of reporting `HOME is not set`.
+- The CI shard command `.github/scripts/deno-test-shard.sh 3 4` could not start
+  on the sandboxed macOS host: `mktemp -t` attempted a denied system temporary
+  path. CI runs the shard on the pushed head.
+- `./quality.sh` passed formatting, lint, type checking, markdownlint and the
+  other completed checks, but its parallel Deno suite panicked in host Deno
+  2.9.0; the repository pins 2.9.8. Config integration, Semgrep and Checkov were
+  skipped because their local prerequisites were unavailable. Mermaid initially
+  failed while this summary was being rewritten; a subsequent `check-mermaid`
+  run passed after the file was restored.
+- `deno task pr-summary-check --base origin/main` passed the applicable gates;
+  three gates were not checked without an issue body or labels.
+- The 14-day review-log observation remains post-merge work.
