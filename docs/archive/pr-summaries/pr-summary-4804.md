@@ -37,8 +37,10 @@ Version bump: not touched by this change.
   including one uncached re-read) and re-baselines on a hit. Otherwise it
   applies `needs-human` and posts one deduplicated comment via `escalateToHuman`
   and leaves `work-on` in place. An empty body window leaves the newest body edit
-  unknown even if a rename is visible, so no re-approval clears it. Renames do
-  not place the body window against the snapshot. The distinct log marker is
+  unknown even if a rename is visible, so no re-approval clears it until a new
+  body edit enters the window. The escalation asks for that edit followed by
+  re-approval. Renames do not place the body window against the snapshot. The
+  distinct log marker is
   `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]`. If the oldest returned body
   edit predates the snapshot, every post-snapshot edit is in the window and the
   gate proceeds as before.
@@ -124,21 +126,26 @@ advises `last:N` for timelines, which stays true; not edited.
   (2 failed); `warnOnStale: false` → `true` on the uncached re-read → once-only
   stale-marker test red; `!e.login ||` → `false ||` → empty-login test red
   (config trusts `""`).
-- Current review fix: `deno task test:unit` on
-  `tests/work_on_content_integrity_truncated_history_4804_test.ts` passed all
-  15 tests. Before the guard fix, the empty-body-window-with-rename test failed
+- Review fix: before the guard fix, the empty-body-window-with-rename test failed
   because the gate proceeded. Removing the body-edit source filter made the
   old-rename test fail; the filter was restored. The obsolete behaviour was
   accepting re-approval with no visible body edit when a rename was present;
   re-approval after a visible newest body edit remains supported by
   `work_on_content_integrity_truncated_history_4804_test.ts::a trusted work-on re-add after the newest edit clears a truncated history`.
+- The empty-window escalation now asks for a new body edit followed by
+  re-approval. The old label-only instruction was ineffective for an empty
+  window; label-only re-approval remains supported when a body edit is visible,
+  covered by the trusted re-add test named above. The empty-window test asserts
+  both steps and failed before the message change. The focused gate and actor
+  suites passed together: 41 tests, 0 failures.
 - `./quality.sh < /dev/null`: formatter, linter, type check, completeness,
-  Markdown and other available checks passed. The parallel test pass twice
-  stopped on a Deno runtime panic, `pledge test permissions called before
-  restoring previous pledge`, before the serial pass could run. The focused
-  gate-runner test above passed; the four test shards on the PR that produced
-  main commit `13881efd` passed in CI. Semgrep and Checkov were skipped because
-  the host lacks the installed or pinned tools, and config integration was
-  skipped without `.config.json`.
+  Markdown and other available checks passed. The parallel test pass stopped
+  on a Deno runtime panic, `pledge test permissions called before restoring
+  previous pledge`, before the serial pass could run. The focused suites above
+  passed; all four test shards on PR #4938, which produced main commit
+  `13881efd`, passed in CI. Semgrep and Checkov were skipped because the host
+  lacks the installed or pinned tools; config integration was skipped without
+  `.config.json`. The release-tag ruleset check passed on the second run after
+  a network timeout on the first.
 
 Not checked: truncation of the rename history itself (`timelineItems(last:100)`).

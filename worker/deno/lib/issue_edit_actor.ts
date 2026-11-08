@@ -57,11 +57,11 @@ export interface IssueEditActor {
  * Outcome of an editor lookup.
  *
  * `ok: true` carries `actors`: every recorded edit in the window, ordered
- * newest first — all renames and the newest 100 body edits (see
- * `bodyHistoryTruncated`). An empty array means GitHub has no edit record at
- * all (`actor` is then `null`). `ok: false` means the lookup itself could not
- * be completed, and callers that gate on trust must fail closed rather than
- * guess (Issue #3234).
+ * newest first — the newest 100 renames and newest 100 body edits. Renames
+ * are not covered by `bodyHistoryTruncated`. An empty array means no edit
+ * record was returned (`actor` is then `null`). `ok: false` means the lookup
+ * itself could not be completed, and callers that gate on trust must fail
+ * closed rather than guess (Issue #3234).
  *
  * `actor` is the head of `actors`, kept for messaging and for ordering an
  * approval against the most recent edit. A **trust** decision must read

@@ -505,19 +505,21 @@ export interface ContentIntegrityDecisionInput {
  *   bless an untrusted edit is an explicit approval-label re-add by a trusted
  *   author that post-dates it.
  * - Changed, but the editor lookup succeeds with **zero edits since the
- *   snapshot** (Issue #3964): GitHub records every rename and body edit, so
- *   the content provably did not change and the mismatch is self-inflicted
- *   (encoding change, store corruption, capture bug). Logs the
+ *   snapshot** (Issue #3964): treats the mismatch as self-inflicted
+ *   (encoding change, store corruption, capture bug), subject to the bounded
+ *   rename history. Logs the
  *   `[SNAPSHOT_SELF_MISMATCH]` marker, re-baselines from the
  *   verified-unchanged live content, and proceeds without mutating the issue.
  * - Changed, but the editor cannot be resolved: blocks without mutating the
  *   issue, so a transient lookup failure cannot mutate labels.
  * - Changed, and the body history is truncated beyond GitHub's newest-100
  *   window with no returned body edit predating the snapshot (Issue #4804):
- *   first re-baselines on a trusted re-approval that post-dates the newest
- *   edit; otherwise logs `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]`, adds
- *   `needs-human` with one deduplicated comment, and blocks with the
- *   `content-edit-history-truncated` reason.
+ *   if a body edit is visible, re-baselines on a trusted re-approval that
+ *   post-dates the newest edit. An empty body window cannot be re-approved
+ *   until a new body edit enters it. Otherwise logs
+ *   `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]`, adds `needs-human` with one
+ *   deduplicated comment, and blocks with the `content-edit-history-truncated`
+ *   reason.
  * - Changed, and the refreshed baseline could not be persisted: blocks rather
  *   than proceeding on a baseline that was never written (Issue #3868).
  *
@@ -745,8 +747,8 @@ export async function resolveContentIntegrity(
       // the snapshot: then every edit at or after the snapshot is in the window.
       // Otherwise fail closed, but not as a transient fault: nothing on the
       // next scan changes the history, so a trusted re-approval made after the
-      // newest edit (which the newest-first window always contains) clears it,
-      // and otherwise the issue is escalated to a human (PR #4944 review).
+      // newest edit clears it when a body edit is visible; otherwise the issue
+      // is escalated to a human (PR #4944 review).
       if (editorLookup.bodyHistoryTruncated) {
         const bodyEditTimes = editorLookup.actors
           .filter((e) => e.source === "content-edit")
@@ -809,12 +811,16 @@ export async function resolveContentIntegrity(
               `none of the hidden older edits came from an untrusted editor. ` +
               `For security, \`${config.needsHumanLabel}\` has been added and ` +
               `automated processing is blocked until a human reviews the issue.`,
-            nextStep:
-              `A trusted author should review the current title and body. If ` +
-              `they are acceptable, remove \`${config.needsHumanLabel}\` (or ` +
-              `re-add \`${approvalLabel}\`) after the most recent edit to ` +
-              `re-approve the content. If they are not, revert the change ` +
-              `first.`,
+            nextStep: oldestBodyEditAt === null
+              ? `A trusted author should review the current title and body, ` +
+                `make a new body edit, then remove \`${config.needsHumanLabel}\` ` +
+                `(or re-add \`${approvalLabel}\`) after that edit to re-approve ` +
+                `the content. Revert any unacceptable changes first.`
+              : `A trusted author should review the current title and body. If ` +
+                `they are acceptable, remove \`${config.needsHumanLabel}\` (or ` +
+                `re-add \`${approvalLabel}\`) after the most recent edit to ` +
+                `re-approve the content. If they are not, revert the change ` +
+                `first.`,
             // Scoped to the newest edit, so a later edit raises its own
             // comment while a still-blocked issue is not re-commented on
             // every scan (Issue #1562).

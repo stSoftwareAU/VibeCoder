@@ -616,6 +616,8 @@ Deno.test(
       "An empty truncated window must not be re-baselined as a self-inflicted mismatch",
     );
     assertEscalated(actions, addedLabels, commentBodies, config);
+    assertStringIncludes(commentBodies[0] ?? "", "make a new body edit");
+    assertStringIncludes(commentBodies[0] ?? "", "after that edit");
     assertEquals(
       await capturedAt(config, deps),
       LONG_AGO_UNIX,
