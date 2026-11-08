@@ -2153,7 +2153,8 @@ async function _processCiWithHeartbeat(
   // Issue #3577: enforce the repo's pre-flight gate at the automated-commit
   // chokepoint — a non-zero exit blocks both this commit and the push so a
   // known-broken CI "fix" is never pushed back into the expensive build.
-  // Issue #4630: a repo with no pre-flight commands still gets CI's cargo checks.
+  // Issue #4630: a repo with no pre-flight commands still gets CI's cargo checks
+  // (the ShellCheck policy of #4631 runs in every gate).
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo) ??
     CI_CARGO_ONLY_PRE_FLIGHT;
   // The repo's own formatters run between the commit and the gate (follow-up

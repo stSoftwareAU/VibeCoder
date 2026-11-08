@@ -28,7 +28,14 @@ compile error is therefore caught before the push, not by a CI run. Closes
   `gateUnpushedCommits` (so Step 1b of `commitAndPushPending` and the completion
   phase run it). New `CI_CARGO_ONLY_PRE_FLIGHT` spec; `pr_ci_processor.ts` and
   `pr_feedback_processor.ts` pass it when a repo has no pre-flight commands, so
-  repair pushes run only the CI cargo checks.
+  repair pushes run only the CI cargo checks and the ShellCheck policy that
+  every gate run applies (#4631, merged from main).
+- Merge with main (#4631, #4909): the ShellCheck policy and `shellcheckOnly`
+  stay as main has them. The cargo checks are planned from a changed-file list
+  that keeps a file reached through a symlinked parent directory
+  (`listPushedFiles(..., containToCheckout = false)`), so the cargo working
+  directory containment check still refuses a crate symlinked outside the
+  repository, while main's other changed-file checks keep skipping such files.
 - Docs: `docs/CONFIGURATION.md` (pre-flight / pre-push gate section) and
   `docs/INTERNALS.md`.
 - Not done here: `cargo deny` (owned by #4626, still open).
@@ -66,7 +73,10 @@ flowchart LR
 - Anything the scanner cannot reproduce faithfully fails loud as infrastructure
   instead of dropping to a smaller check set (the issue requires this).
 - Repair processors use a cargo-only spec for repos without pre-flight, so the
-  full changed-file gate does not newly apply to repair pushes.
+  full changed-file gate does not newly apply to repair pushes. The ShellCheck
+  policy (#4631) runs in every gate, so these repairs keep it. The spelling and
+  merge-conflict repairs keep main's `resolveRepairPreFlightSpec`
+  (`shellcheckOnly`), with no cargo check.
 
 ### Undiscoverable Facts
 

@@ -29,7 +29,10 @@ import {
   type CiProcessorDeps,
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
-import { commitAndPushPending } from "../lib/git_push.ts";
+import {
+  CI_CARGO_ONLY_PRE_FLIGHT,
+  commitAndPushPending,
+} from "../lib/git_push.ts";
 import { captureBranchHead } from "../lib/branch_head_tracker.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import {
@@ -181,6 +184,9 @@ const REMOTE_CONFIRMS_PUSH = () =>
     reason: "verified in test",
   });
 
+/** The `preFlight` spec each real `commitAndPushPending` call was given. */
+const observedPreFlights: unknown[] = [];
+
 /**
  * Deps whose agent run is `agent`, and whose final mile is the real
  * `commitAndPushPending` + formatters on the fixture.
@@ -199,16 +205,19 @@ function makeDeps(
     github: { runGhCommand: ghStub },
     git: {
       captureBranchHead,
-      commitAndPushPending: ((...a: Parameters<typeof commitAndPushPending>) =>
-        commitAndPushPending(
-          a[0],
-          a[1],
-          { ...a[2], env: NO_HOST_GIT_CONFIG },
-          a[3],
-          a[4],
-          a[5],
-          a[6],
-        )) as GitDeps["commitAndPushPending"],
+      commitAndPushPending:
+        ((...a: Parameters<typeof commitAndPushPending>) => {
+          observedPreFlights.push(a[4]);
+          return commitAndPushPending(
+            a[0],
+            a[1],
+            { ...a[2], env: NO_HOST_GIT_CONFIG },
+            a[3],
+            a[4],
+            a[5],
+            a[6],
+          );
+        }) as GitDeps["commitAndPushPending"],
       formatBranchChanges: formatter ??
         ((repo, baseRef) =>
           formatBranchChanges(repo, baseRef, realFormatterDeps())),
@@ -371,6 +380,65 @@ Deno.test({
         await remoteFile(fx, "worker/deno/lib/a.ts"),
         FORMATTED_TS,
       );
+    } finally {
+      await Deno.remove(fx.tmp, { recursive: true });
+    }
+  },
+});
+
+// The CI-fix and PR-feedback repairs add CI's cargo checks (Issue #4630); the
+// gate behind any spec also runs the ShellCheck policy (Issue #4631).
+const REPAIR_NO_PRE_FLIGHT_SPEC = CI_CARGO_ONLY_PRE_FLIGHT;
+
+Deno.test({
+  name:
+    "pr feedback - a repo with no pre-flight still gets the cargo-only publication spec, which keeps the ShellCheck policy (Issues #4630, #4631)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const fx = await makeFixture();
+    try {
+      observedPreFlights.length = 0;
+      const result = await runFeedbackRound(fx, {
+        "worker/deno/lib/a.ts": FORMATTED_TS,
+      }, undefined);
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(observedPreFlights, [REPAIR_NO_PRE_FLIGHT_SPEC]);
+    } finally {
+      await Deno.remove(fx.tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "ci fix - a repo with no pre-flight still gets the cargo-only publication spec, which keeps the ShellCheck policy (Issues #4630, #4631)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const fx = await makeFixture();
+    try {
+      observedPreFlights.length = 0;
+      const result = await processCiFailure({
+        repo: REPO,
+        prNumber: 2524,
+        branchName: BRANCH,
+        checkRunId: "67890",
+        checkName: "Quality Checks",
+        encodedAnnotations: btoa(JSON.stringify([])),
+      }, {
+        promptsDir: PROMPTS_DIR,
+        logger: silentLogger,
+        deps: makeDeps(async () => {
+          await writeFiles(fx.repo, { "worker/deno/lib/a.ts": FORMATTED_TS });
+          await git(["add", "."], fx.repo);
+          await git(["commit", "-m", "Fix CI"], fx.repo);
+        }),
+        stateDir: `${fx.tmp}/.ci_check_state`,
+        workDir: fx.repo,
+        workRoot: fx.tmp,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(observedPreFlights, [REPAIR_NO_PRE_FLIGHT_SPEC]);
     } finally {
       await Deno.remove(fx.tmp, { recursive: true });
     }

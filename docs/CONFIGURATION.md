@@ -4984,7 +4984,7 @@ The gate runs at four points:
    the pre-flight commands when Step 1 committed nothing;
 3. the issue completion phase's `gateBeforePush()`, before the first push and
    again before the retry push that follows push-rejection recovery, over every
-   non-merge commit ahead of the PR base (including commits the execute
+   commit ahead of the PR base (including commits the execute
    phase's ungated WIP checkpoint pushes already put on origin);
 4. the agent's own `git push` through a per-run `pre-push` hook.
 
@@ -5094,18 +5094,19 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 (such as WIP-preservation pushes) are not gated there. The CI-fix and
 PR-feedback repair processors pass a cargo-only spec when the repo has no
 pre-flight commands (Issue #4630), so their repair pushes run only the repo
-CI's cargo clippy and test-target compile through Step 1b, and not the
-changed-file checks listed below. Repos with pre-flight commands keep their own
+CI's cargo clippy and test-target compile, and the ShellCheck policy (Issue
+#4631), through Step 1b, and not the other changed-file checks listed below. Repos with pre-flight commands keep their own
 spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the first stage below: deno
 fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
-test, and the CI cargo clippy and test-target compile, which the agent's hook
-does not run) still run and can fail the
-run. Unlike Step 1b, the completion gate checks every non-merge commit the
-branch has ahead of the PR base (`git log --no-merges <base>..HEAD`), not
-only commits on no remote-tracking ref. The execute phase's WIP checkpoints
+test, the CI cargo clippy and test-target compile, which the agent's hook
+does not run, and the repository's ShellCheck policy) still run and can fail the
+run. Unlike Step 1b, the completion gate checks every commit the branch has
+ahead of the PR base, not only commits on no remote-tracking ref; a merge commit
+contributes only the paths the merge itself changed (a conflict resolution),
+never the files it brings in from the base. The execute phase's WIP checkpoints
 (periodic, and once more at phase end) push the agent's commits through
 `commitAndPushPending` with no spec, so those pushes are ungated and the
 commits are usually already on origin when the completion phase runs; the
@@ -5163,8 +5164,9 @@ checks in stage 1, which only the worker's own gates run (see that bullet):
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
-   remote-tracking ref (merge commits and deleted files excluded; the issue
-   completion phase widens the range to every non-merge commit ahead of the PR
+   remote-tracking ref (a merge commit contributes only the paths the merge itself
+   changed, never the files it brings in from the base, and deleted files
+   are excluded from execution; the issue completion phase widens the range to every commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
    config would check, see below). The one exception is the Floci deploy test
@@ -5239,6 +5241,41 @@ checks in stage 1, which only the worker's own gates run (see that bullet):
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
+   - `shellcheck` on changed `.sh` files when a tracked workflow contains the
+     supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or on
+     the action's named shell files and executable extensionless shell scripts for a
+     `ludeeus/action-shellcheck` step (the shape the worker syncs into Bash
+     repositories) that sets only `scandir: .` and `severity`, which the gate
+     runs as `--severity=<level>`. The gate carries the
+     workflow's options (including exclusions, an explicit shell dialect and
+     value-taking options such as `-S warning` or `--enable all`) and runs from
+     the repository root. It selects the nearest tracked `.shellcheckrc` or
+     `shellcheckrc` in each script's repository ancestry, or uses the
+     configured `--rcfile`; absent a repository config, `--norc` prevents
+     worker HOME, XDG and external ancestor settings from changing the result.
+     A changed ShellCheck workflow or changed or deleted config rechecks the
+     remaining tracked files in the policy's scope; deleted scripts and symlinks
+     are omitted. A symlinked config or delegated script is refused; symlinked
+     workflows are ignored. Workflow, configuration and delegated-script reads
+     are capped at 1 MiB and refused above it. For a `find` policy the
+     gate checks the available binary against the version declared by CI
+     before running it (an action-managed ShellCheck declares none). A policy
+     the gate cannot read (an unsupported command shape, other action input,
+     delegated gate or action, or `SHELLCHECK_OPTS` in that workflow), an unreadable config, or an unavailable or
+     mismatched tool is an incomplete infrastructure result, never a
+     successful validation, but only for a push that changes a possible shell
+     script, a ShellCheck config or a ShellCheck workflow. A repository with no CI ShellCheck invocation
+     gets no ShellCheck check. The same validation runs before the PR repair
+     processors (CI fix, review feedback, spelling and merge conflict) publish
+     a repair through `commitAndPushPending`, including repositories without
+     configured pre-flight commands, where it is the only Step 1b check for the
+     spelling and merge-conflict repairs (the CI-fix and review-feedback repairs
+     add the CI cargo checks, Issue #4630). The
+     fleet babysitter does not run it: its execution belongs inside the worker
+     container (#4768, #4770), never beside the host App key, so babysitter
+     repairs are not ShellCheck-validated until that contained path exists. WIP checkpoint,
+     timeout-preservation and declared hand-off pushes pass no pre-flight spec
+     and stay ungated;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
@@ -5263,17 +5300,19 @@ It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
 `markdownlint-cli2` not found refuses the push; cspell configured and run by
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
-does not); a Floci deploy test that exits
-non-zero, including when Floci cannot be started or the `aws` CLI is missing for
-a deployable template, refuses the push; a CI cargo check that fails refuses
-the push with its output (in the worker's own gates; the agent's hook runs none
-of them), while a CI cargo check that cannot start or time out,
-hits host disk full, or whose toolchain, directory or command cannot be
-reproduced here refuses it as an infrastructure fault (the push is still
-refused, but the run does not blame the branch, and the checked set is not
-reduced); a missing hook module, spec or `deno` binary refuses the push.
-Refusals print lines starting `[PRE_PUSH_BLOCKED]`. The checks run in the same
-filtered environment as pre-flight (the hook reuses `runPreFlightGate`).
+does not); a ShellCheck CI policy with a missing or mismatched binary, an
+unreadable config, or an unsupported workflow shape is incomplete and refuses
+a push that changes a script, a ShellCheck config or a ShellCheck workflow; a
+Floci deploy test that exits non-zero, including when Floci cannot be started
+or the `aws` CLI is missing for a deployable template, refuses the push; a CI
+cargo check that fails refuses the push with its output (in the worker's own
+gates; the agent's hook runs none of them), while a CI cargo check that cannot
+start or time out, hits host disk full, or whose toolchain, directory or
+command cannot be reproduced here refuses it as an infrastructure fault (the
+push is still refused, but the run does not blame the branch, and the checked
+set is not reduced); a missing hook module, spec or `deno` binary refuses the
+push. Refusals print lines starting `[PRE_PUSH_BLOCKED]`. The checks run in the
+same filtered environment as pre-flight (the hook reuses `runPreFlightGate`).
 
 ```mermaid
 flowchart TD

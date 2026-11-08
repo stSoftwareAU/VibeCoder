@@ -1760,7 +1760,8 @@ async function _processFeedbackWithHeartbeat(
   //
   // Issue #3577: enforce the repo's pre-flight gate — a non-zero exit blocks
   // both the commit and the push so a broken feedback fix is not pushed.
-  // Issue #4630: a repo with no pre-flight commands still gets CI's cargo checks.
+  // Issue #4630: a repo with no pre-flight commands still gets CI's cargo checks
+  // (the ShellCheck policy of #4631 runs in every gate).
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo) ??
     CI_CARGO_ONLY_PRE_FLIGHT;
   // The repo's own formatters run between the commit and the gate (follow-up

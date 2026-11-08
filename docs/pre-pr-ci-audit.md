@@ -26,8 +26,9 @@ failure ID (C1 to C8, A1 to A5) in place of a SHA and run link. The stages are:
   worker pushes them. It sees only commits on no remote-tracking ref;
 - the issue worker's completion-phase gate (`gateBeforePush()` in
   `lib/phases/completion_phase.ts`), run before the first push and again before
-  the retry push after `recoverFromPushRejection`. It checks every non-merge
-  commit the branch has ahead of the PR base, including commits the execute
+  the retry push after `recoverFromPushRejection`. It checks every
+  commit the branch has ahead of the PR base (a merge contributes only the paths
+  it changed), including commits the execute
   phase's WIP checkpoint pushes (periodic and phase-end, which are ungated)
   already put on origin. A block is reported with the worker-written prefix
   "the branch did not pass the worker's pre-push gate" ahead of the check
@@ -60,7 +61,7 @@ flowchart TD
     B --> C["Worker final-mile commitAndPushPending"]
     C --> D["Pre-flight gate on staged changes"]
     D --> E["Changed-files gate on unpushed commits (new, #3689)"]
-    E --> H["Completion-phase gateBeforePush: every non-merge commit ahead of the PR base, pushed or not (before first push and retry push)"]
+    E --> H["Completion-phase gateBeforePush: every commit ahead of the PR base (merges: own paths only), pushed or not (before first push and retry push)"]
     H --> F["Push and open PR"]
     F --> G["CI runs every required check independently"]
 ```
@@ -86,8 +87,9 @@ remote WIP checkpoints": the execute phase's periodic and phase-end checkpoint
 pushes (`commitAndPushPending` with no pre-flight spec) put the misspelt PR
 summaries on origin before the completion phase ran. Those pushes stay ungated
 on purpose, so work is never lost. The check therefore sits at the completion
-phase, which gates every non-merge commit the branch has ahead of the PR base
-(`git log --no-merges origin/<base>..HEAD`), pushed or not, before
+phase, which gates every commit the branch has ahead of the PR base
+(`git log --diff-merges=dense-combined origin/<base>..HEAD`, so a merge
+contributes only the paths it changed), pushed or not, before
 `gh pr create`. `worker/deno/tests/git_push_preflight_test.ts` pins this with a
 bad commit already on origin through a checkpoint push. A failure of the repo's
 worker test job is also class local and is already covered by `quality.sh`.

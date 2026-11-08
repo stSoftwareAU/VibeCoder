@@ -78,7 +78,10 @@ import {
   releaseBranchUpdateLock,
   startBranchUpdateLockRenewal,
 } from "./pr_branch_lock.ts";
-import { assertPushTargetAllowed, resolvePreFlightSpec } from "./git_push.ts";
+import {
+  assertPushTargetAllowed,
+  resolveRepairPreFlightSpec,
+} from "./git_push.ts";
 import { buildPushArgs } from "./git_ref_args.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
@@ -2069,7 +2072,7 @@ async function resolveConflict(
   // Commit whatever the merge left staged and push, now that the checks above
   // have passed (Issue #4616). No force: the merge commit fast-forwards the
   // remote branch, so every PR commit survives.
-  const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
+  const preFlight = resolveRepairPreFlightSpec(processorDeps.repoConfigs, repo);
   timer.start("push");
   const finalise = await deps.git.commitAndPushPending(
     branchName,

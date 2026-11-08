@@ -194,6 +194,19 @@ Deno.test("a VibeCoder issue for a private source names neither the repository n
   assertEquals(parseShiftLeftMarker(body), group!.key);
 });
 
+Deno.test("a VibeCoder issue does not point agents at a babysitter push with no local gate", async () => {
+  const [group] = await repeatedFailures(
+    seeded([7, 8, 9], "owner/secret-product"),
+    NOW,
+  );
+  const { body } = formatShiftLeftIssue(group!, {
+    target: "vibecoder",
+    reason: "the local gate already runs `cargo clippy`",
+  }, { sourcePublic: false });
+  assertStringIncludes(body, "a targeted subset) and close it.");
+  assert(!body.includes("babysitter push"));
+});
+
 Deno.test("a product-repository issue links its PRs and asks for a local equivalent", async () => {
   const [group] = await repeatedFailures(
     seeded([7, 8, 9], "owner/product"),

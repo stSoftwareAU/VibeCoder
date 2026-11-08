@@ -1161,7 +1161,7 @@ Deno.test("review-fix verifier - persistent findings stay outstanding without pu
   assertEquals(
     preFlightSpecs,
     [CI_CARGO_ONLY_PRE_FLIGHT, CI_CARGO_ONLY_PRE_FLIGHT],
-    "no pre-flight commands are configured, so the cargo-only spec gates the push (Issue #4630)",
+    "no pre-flight commands are configured, so the cargo-only spec gates the push (Issue #4630); the ShellCheck policy runs in every gate (Issue #4631)",
   );
   assertStringIncludes(
     prompts[0] ?? "",
