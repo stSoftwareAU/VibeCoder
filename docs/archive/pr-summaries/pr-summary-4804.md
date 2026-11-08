@@ -111,13 +111,13 @@ advises `last:N` for timelines, which stays true; not edited.
   `pickup_content_integrity_test.ts` and `issue_finder_test.ts`, plus
   `content_approval_*`, `idle_decision_census_test.ts` and
   `collect_work_on_candidates*_test.ts`: 391 passed, 0 failed;
-  `work_on_content_integrity_truncated_history_4804_test.ts` (13 tests at
-  head): 13 passed, 0 failed.
+  `work_on_content_integrity_truncated_history_4804_test.ts` (13 tests at head):
+  13 passed, 0 failed.
 - Mutation survivors (PR #4944 review), each killed then restored:
-  `warnOnStale: true` → `false` in the truncated block → stale-approval test
-  red (2 failed); `warnOnStale: false` → `true` on the uncached re-read →
-  once-only stale-marker test red; `!e.login ||` → `false ||` → empty-login
-  test red (config trusts `""`).
+  `warnOnStale: true` → `false` in the truncated block → stale-approval test red
+  (2 failed); `warnOnStale: false` → `true` on the uncached re-read → once-only
+  stale-marker test red; `!e.login ||` → `false ||` → empty-login test red
+  (config trusts `""`).
 - `./quality.sh` (run on the earlier head, before the PR #4944 review fix; not
   re-run on the final head): every stage passed except `deno tests`, parallel
   pass 33286 passed, 1 failed:
