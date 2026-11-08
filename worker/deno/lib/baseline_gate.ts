@@ -27,8 +27,9 @@
  * whose OWN check is red on its default branch produces no findings to diff,
  * so it failed the gate on every run and recorded a host health failure each
  * time. `decidePreExistingGateFailure` compares the failing checks and their
- * output against the untouched tree's instead: same checks, same lines, so the
- * run reproduced a failure it did not cause and ends without failing.
+ * output against the untouched tree's instead: same checks, same normalised
+ * lines, so the run reproduced a failure it did not cause and ends without
+ * failing.
  *
  * Uses Australian English throughout (behaviour, colour, organisation,
  * favour, centre).
