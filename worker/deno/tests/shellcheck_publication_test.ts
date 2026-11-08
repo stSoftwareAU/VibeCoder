@@ -7,7 +7,6 @@ import {
   commitAndPushPending,
   resolveRepairPreFlightSpec,
 } from "../lib/git_push.ts";
-import { validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
 import { requireRealShellcheck } from "./support/shellcheck_support.ts";
 
 const REAL_SHELLCHECK = await requireRealShellcheck();
@@ -189,86 +188,48 @@ Deno.test(
 );
 
 Deno.test(
-  "validateAndCommit: babysitter refuses a real ShellCheck diagnostic before commit",
+  "commitAndPushPending: missing ShellCheck recovers and checks the repaired content",
   async () => {
     const { root, dir } = await fixture();
     try {
-      const head = await git(dir, "rev-parse", "HEAD");
+      const tools = `${root}/tools`;
+      await Deno.mkdir(tools);
+      const gitPath = decoder.decode(
+        (await new Deno.Command("which", { args: ["git"], stdout: "piped" })
+          .output()).stdout,
+      ).trim();
+      const shellcheckPath = decoder.decode(
+        (await new Deno.Command("which", {
+          args: ["shellcheck"],
+          stdout: "piped",
+        }).output()).stdout,
+      ).trim();
+      await Deno.symlink(gitPath, `${tools}/git`);
+      const source =
+        `import { commitAndPushPending, resolveRepairPreFlightSpec } from ${
+          JSON.stringify(`${repoRoot}worker/deno/lib/git_push.ts`)
+        };
+   const result = await commitAndPushPending("repair", "Fix #4631", { cwd: Deno.cwd() }, false, resolveRepairPreFlightSpec(undefined, "org/repo"));
+   console.log(JSON.stringify(result.ok ? {ok:true} : {ok:false, message:result.error.message}));`;
       await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
-      let message = "";
-      try {
-        await validateAndCommit(dir, 4631, { login: "test", id: "1" });
-      } catch (error) {
-        message = (error as Error).message;
-      }
-      assertStringIncludes(message, "SC2086");
-      assertEquals(await git(dir, "rev-parse", "HEAD"), head);
+      const missing = await child(source, dir, tools);
+      assertEquals(missing.ok, false);
+      assertStringIncludes(missing.message!, "could not be found");
+      await Deno.symlink(shellcheckPath, `${tools}/shellcheck`);
+      const diagnostic = await child(source, dir, tools);
+      assertEquals(diagnostic.ok, false);
+      assertStringIncludes(diagnostic.message!, "SC2086");
+      await Deno.writeTextFile(
+        `${dir}/script.sh`,
+        '#!/bin/sh\necho "fixed: $1"\n',
+      );
+      const recovered = await child(source, dir, tools);
+      assertEquals(recovered, { ok: true });
     } finally {
       await Deno.remove(root, { recursive: true });
     }
   },
 );
-
-for (const entry of ["commitAndPushPending", "validateAndCommit"]) {
-  Deno.test(
-    `${entry}: missing ShellCheck recovers and checks the repaired content`,
-    async () => {
-      const { root, dir } = await fixture();
-      try {
-        const tools = `${root}/tools`;
-        await Deno.mkdir(tools);
-        const gitPath = decoder.decode(
-          (await new Deno.Command("which", { args: ["git"], stdout: "piped" })
-            .output()).stdout,
-        ).trim();
-        const shellcheckPath = decoder.decode(
-          (await new Deno.Command("which", {
-            args: ["shellcheck"],
-            stdout: "piped",
-          }).output()).stdout,
-        ).trim();
-        await Deno.symlink(gitPath, `${tools}/git`);
-        const source = entry === "commitAndPushPending"
-          ? `import { commitAndPushPending, resolveRepairPreFlightSpec } from ${
-            JSON.stringify(`${repoRoot}worker/deno/lib/git_push.ts`)
-          };
-           const result = await commitAndPushPending("repair", "Fix #4631", { cwd: Deno.cwd() }, false, resolveRepairPreFlightSpec(undefined, "org/repo"));
-           console.log(JSON.stringify(result.ok ? {ok:true} : {ok:false, message:result.error.message}));`
-          : `import { validateAndCommit } from ${
-            JSON.stringify(
-              `${repoRoot}worker/deno/commands/fleet_pr_babysitter.ts`,
-            )
-          };
-           import { classifyBabysitterFailure } from ${
-            JSON.stringify(
-              `${repoRoot}worker/deno/lib/babysitter_retry_state.ts`,
-            )
-          };
-           try { await validateAndCommit(Deno.cwd(), 4631, {login:"test",id:"1"}); console.log(JSON.stringify({ok:true})); }
-           catch (error) { console.log(JSON.stringify({ok:false, message:error.message, blockerClass:classifyBabysitterFailure(error)})); }`;
-        await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
-        const missing = await child(source, dir, tools);
-        assertEquals(missing.ok, false);
-        assertStringIncludes(missing.message!, "could not be found");
-        if (entry === "validateAndCommit") {
-          assertEquals(missing.blockerClass, "infrastructure");
-        }
-        await Deno.symlink(shellcheckPath, `${tools}/shellcheck`);
-        const diagnostic = await child(source, dir, tools);
-        assertEquals(diagnostic.ok, false);
-        assertStringIncludes(diagnostic.message!, "SC2086");
-        await Deno.writeTextFile(
-          `${dir}/script.sh`,
-          '#!/bin/sh\necho "fixed: $1"\n',
-        );
-        const recovered = await child(source, dir, tools);
-        assertEquals(recovered, { ok: true });
-      } finally {
-        await Deno.remove(root, { recursive: true });
-      }
-    },
-  );
-}
 
 Deno.test("pre-push CLI: actual repository workflows pass with empty hook input under --no-config", async () => {
   const root = await Deno.makeTempDir();

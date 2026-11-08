@@ -170,7 +170,8 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
 
 /**
  * List the files the push introduces: those touched by commits (including
- * first-parent changes in merge commits)
+ * the paths a merge commit itself changed: a conflict resolution or a fix
+ * folded into the merge, never the files it merely brings in from the base)
  * reachable from the pushed tips but not from `baseRef` — by default no
  * remote-tracking ref (`--remotes`) — minus deletions, and only those that
  * still exist as files in the working tree. Sorted and unique.
@@ -196,7 +197,7 @@ export async function listPushedFiles(
   const result = await git(
     [
       "log",
-      "--diff-merges=first-parent",
+      "--diff-merges=dense-combined",
       "--name-only",
       "-z",
       "--format=",
@@ -1531,7 +1532,7 @@ export async function runAffectedShellcheckChecks(opts: {
             `cannot read ShellCheck configuration ${path}: not a regular file`,
           );
         }
-        await Deno.readTextFile(`${opts.cwd}/${path}`);
+        await readBoundedPolicyFile(opts.cwd, path, info);
       } catch (error) {
         return infrastructureFail(
           `cannot read ShellCheck configuration ${path}: ${
@@ -1595,37 +1596,6 @@ export async function runAffectedShellcheckChecks(opts: {
     checksRun.push(check.command);
   }
   return { ok: true, value: { checksRun } };
-}
-
-/** Check staged repair files, including configuration deletions, before commit. */
-export async function gateStagedShellcheck(
-  cwd: string,
-  baseline = "HEAD",
-): Promise<Result<{ checksRun: string[] }, Error>> {
-  const paths = await defaultPrePushGit([
-    "diff",
-    "--cached",
-    "--name-only",
-    "-z",
-    baseline,
-    "--",
-  ], cwd);
-  const tracked = await defaultPrePushGit(["ls-files", "-z"], cwd);
-  for (const result of [paths, tracked]) {
-    if (result.code !== 0) {
-      return {
-        ok: false,
-        error: new PrePushGateInfrastructureError(
-          result.stderr || "cannot list staged ShellCheck inputs",
-        ),
-      };
-    }
-  }
-  return runAffectedShellcheckChecks({
-    cwd,
-    changed: paths.stdout.split("\0").filter(Boolean),
-    tracked: tracked.stdout.split("\0").filter(Boolean),
-  });
 }
 
 /**

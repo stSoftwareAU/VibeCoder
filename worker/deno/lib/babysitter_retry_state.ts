@@ -275,9 +275,6 @@ export function classifyBabysitterFailure(
   error: unknown,
 ): BabysitterBlockerClass {
   if (error instanceof BabysitterFailure) return error.blockerClass;
-  if ((error as { kind?: unknown } | null)?.kind === "infrastructure") {
-    return "infrastructure";
-  }
   const code = (error as { code?: unknown } | null)?.code;
   if (code === "ENOSPC" || code === "ENOENT") return "capability";
   return classifyBabysitterBlocker(

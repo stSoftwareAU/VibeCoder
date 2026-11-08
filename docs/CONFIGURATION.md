@@ -5092,9 +5092,9 @@ and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
 fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
 test) still run and can fail the run. Unlike Step 1b, the completion gate
-checks every commit the branch has ahead of the PR base, including first-parent
-merge diffs, not only commits on no remote-tracking
-ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
+checks every commit the branch has ahead of the PR base, not only commits on no
+remote-tracking ref; a merge commit contributes only the paths the merge itself
+changed (a conflict resolution), never the files it brings in from the base. The execute phase's WIP checkpoints (periodic, and once more at phase end)
 push the agent's commits through `commitAndPushPending` with no spec, so those
 pushes are ungated and the commits are usually already on origin when the
 completion phase runs; the whole-branch range is what keeps them from reaching
@@ -5150,7 +5150,8 @@ The hook runs two stages:
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
-   remote-tracking ref (merge commits use first-parent diffs and deleted files
+   remote-tracking ref (a merge commit contributes only the paths the merge itself
+   changed, never the files it brings in from the base, and deleted files
    are excluded from execution; the issue completion phase widens the range to every commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
@@ -5217,8 +5218,10 @@ The hook runs two stages:
      gets no ShellCheck check. The same validation runs before the PR repair
      processors (CI fix, review feedback, spelling and merge conflict) publish
      a repair through `commitAndPushPending`, including repositories without
-     configured pre-flight commands, where it is the only Step 1b check, and
-     before the fleet babysitter commits staged repairs. WIP checkpoint,
+     configured pre-flight commands, where it is the only Step 1b check. The
+     fleet babysitter does not run it: its execution belongs inside the worker
+     container (#4768, #4770), never beside the host App key, so babysitter
+     repairs are not ShellCheck-validated until that contained path exists. WIP checkpoint,
      timeout-preservation and declared hand-off pushes pass no pre-flight spec
      and stay ungated;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push

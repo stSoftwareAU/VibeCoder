@@ -4,11 +4,15 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals, assertInstanceOf } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertInstanceOf,
+  assertStringIncludes,
+} from "@std/assert";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
 import {
   defaultPrePushGit,
-  gateStagedShellcheck,
   listPushedFiles,
   parsePrePushRefs,
   planChangedFileChecks,
@@ -395,9 +399,6 @@ Deno.test("ShellCheck skips scripts under symlinked parents and missing director
     assert(rechecked.ok);
     assertEquals(seen, []);
     await git(clone, "add", "-A");
-    const staged = await gateStagedShellcheck(clone);
-    assert(staged.ok, staged.ok ? "" : staged.error.message);
-    assertEquals(staged.value.checksRun, []);
     await git(clone, "commit", "-qm", "replace directory with symlink");
     const pushed = await runPrePushGate({
       cwd: clone,
@@ -538,6 +539,81 @@ Deno.test("runPrePushGate skips committed script symlinks on change and config r
       assert(!seen.some((c) => c.includes("x.sh")));
       if (recheck) assert(seen.some((c) => c.includes("real.sh")));
     }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("listPushedFiles: a merge lists the paths it resolved, never the files it brings in from the base (PR #4898 review)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-pp-merge-" });
+  try {
+    await git(root, "init", "-q", "-b", "main");
+    await Deno.writeTextFile(`${root}/c.txt`, "1\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "init");
+    await git(root, "checkout", "-q", "-b", "feat");
+    await Deno.writeTextFile(`${root}/c.txt`, "feat\n");
+    await Deno.writeTextFile(`${root}/own.sh`, "#!/bin/sh\necho ok\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "own change");
+    await git(root, "checkout", "-q", "main");
+    await Deno.writeTextFile(`${root}/c.txt`, "main\n");
+    await Deno.writeTextFile(`${root}/base_bad.sh`, "#!/bin/sh\necho $1\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "base moves on");
+    await git(root, "checkout", "-q", "feat");
+    // The merge conflicts on c.txt; the resolution is the merge's own change.
+    let conflicted = false;
+    try {
+      await git(root, "merge", "--no-commit", "main");
+    } catch {
+      conflicted = true;
+    }
+    assert(conflicted, "the fixture must conflict on c.txt");
+    await Deno.writeTextFile(`${root}/c.txt`, "resolved\n");
+    await git(root, "add", "-A");
+    await git(root, "commit", "-qm", "merge main");
+    const files = await listPushedFiles(
+      [{ localRef: "HEAD", localSha: "HEAD", remoteRef: "x", remoteSha: "0" }],
+      root,
+      defaultPrePushGit,
+      "main",
+    );
+    assert(files.ok);
+    assertEquals(files.value, ["c.txt", "own.sh"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("ShellCheck refuses an oversized configuration without reading it", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await commitShellcheckFiles(clone, { "real.sh": "#!/bin/sh\necho ok\n" });
+    const config = await Deno.open(`${clone}/.shellcheckrc`, {
+      write: true,
+      create: true,
+    });
+    try {
+      await config.truncate(1024 * 1024 + 1);
+    } finally {
+      config.close();
+    }
+    const seen: string[] = [];
+    const result = await runAffectedShellcheckChecks({
+      cwd: clone,
+      changed: ["real.sh"],
+      tracked: [
+        ".github/workflows/validate-scripts.yml",
+        "real.sh",
+        ".shellcheckrc",
+      ],
+      ...stubShellcheck(),
+      runner: recordingRunner(() => false, seen),
+    });
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "exceeds policy size limit");
+    assertEquals(seen, []);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

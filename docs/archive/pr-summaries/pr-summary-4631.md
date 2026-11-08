@@ -2,8 +2,11 @@
 
 Repository ShellCheck CI policy now validates affected scripts before agent,
 completion and PR-repair publication (CI fix, review feedback, spelling and
-merge conflict, including repositories without configured pre-flight commands)
-and fleet babysitter repairs. Configuration changes and removals revalidate
+merge conflict, including repositories without configured pre-flight commands).
+The fleet babysitter is not covered: running ShellCheck there would execute a
+host tool beside the babysitter App key, so its check waits for the contained
+repair path (#4768, #4770) and its repairs are not ShellCheck-validated by this
+change. Configuration changes and removals revalidate
 remaining tracked scripts. An unsupported policy, unreadable configuration and a
 missing or mismatched tool block a push that changes a script, a ShellCheck
 config or a ShellCheck workflow. WIP checkpoint, timeout-preservation and declared hand-off
@@ -32,8 +35,8 @@ Version bump: none; no version file changed.
   find policy selects `.sh` files. Targets with a symlink in any path component
   are excluded, and a configuration with a symlink in any component fails
   closed. Symlinked workflows are ignored; delegated scripts with symlinked
-  components are refused. Workflow and delegated-script reads are capped at
-  1 MiB. Discovery joins shell line continuations and checks
+  components are refused. Workflow, delegated-script and ShellCheck configuration reads are
+  capped at 1 MiB (`readBoundedPolicyFile`). Discovery joins shell line continuations and checks
   executable commands, including wrapped invocations, excluding logs, installation
   arguments, comments and script path arrays. ShellCheck container images,
   including registry prefixes and digests, and shell `-c` invocations with
@@ -46,7 +49,10 @@ Version bump: none; no version file changed.
   script, a ShellCheck config or a workflow that invokes ShellCheck. Unrelated
   pushes do not fail solely because of an unsupported workflow. Extensionless
   paths count only when executable and carrying a shell shebang; deleted paths
-  do not count. First-parent merge diffs include resolved files in the scan.
+  do not count. `listPushedFiles` uses `--diff-merges=dense-combined`, so a merge commit
+  contributes only the paths the merge itself changed (a conflict resolution or
+  a fix folded into the merge). Files a merge merely brings in from the base are
+  not in scope for the gate, Step 1b or the repo formatters.
 - The ShellCheck version probe is injectable (`readShellcheckVersion`, beside
   `findShellcheck`). An action-managed policy declares no version, so the probe
   result is not compared.
@@ -58,8 +64,6 @@ Version bump: none; no version file changed.
   deleted scripts and paths whose parent has become a file. Unsupported policy, delegation, missing tools and version
   mismatches return incomplete infrastructure results rather than success.
   ShellCheck execution failures propagate the pre-flight result.
-  The babysitter classifies structured gate infrastructure errors as
-  infrastructure, preserving its substantive repair attempt budget.
 - Opt-in, not blanket: `commitAndPushPending` Step 1b runs only when a
   pre-flight spec is passed, as before. The four PR-repair processors pass
   `resolveRepairPreFlightSpec`, which yields
@@ -68,8 +72,7 @@ Version bump: none; no version file changed.
   commands, so Step 1b runs ShellCheck alone there. Callers that pass no spec
   (`wip_checkpoint.ts`, `run_wip_preservation.ts`, `declared_handoff.ts`,
   `pre_push_gate_retry.ts`) stay ungated, as `docs/pre-pr-ci-audit.md`
-  documents. The babysitter's `validateAndCommit` checks staged repairs before
-  committing. The blanket scan remains outside `quality_gate.ts`.
+  documents. The babysitter's `validateAndCommit` is unchanged. The blanket scan remains outside `quality_gate.ts`.
 
 ### Undiscoverable Facts
 
@@ -90,12 +93,12 @@ This changes backend and CLI validation; there is no visual surface.
 value-taking options, the push-relevance rule and stub-driven runs. The
 integration suites `shellcheck_gate_integration_test.ts` and
 `shellcheck_publication_test.ts` cover real diagnostics, repair and WIP entry
-points, the babysitter, missing-tool recovery and ambient configuration.
+points, missing-tool recovery and ambient configuration.
 
-Updated the pre-push hook manual in `docs/CONFIGURATION.md` and the babysitter
-manual's host requirements and pre-commit validation, as well as the README.
-`docs/pre-pr-ci-audit.md` (WIP checkpoint pushes "ungated on purpose") is true
-again and unchanged. No second copy of the ShellCheck execution rule was found;
+Updated the pre-push hook manual in `docs/CONFIGURATION.md` (which now states
+the babysitter is not ShellCheck-validated) and the README.
+`docs/pre-pr-ci-audit.md` keeps its "ungated on purpose" WIP statement, and its
+non-merge wording now says merges contribute only the paths they changed. No second copy of the ShellCheck execution rule was found;
 all publication paths call the same implementation.
 
 ## Test Plan
@@ -141,12 +144,11 @@ all publication paths call the same implementation.
   remain checked by the existing action and find policy tests above.
 - `worker/deno/tests/shellcheck_publication_test.ts`: a PR repair with
   `resolveRepairPreFlightSpec` leaves the remote unchanged on SC2086; a no-spec
-  WIP checkpoint with the same diagnostic still pushes; the babysitter refuses
-  its commit. Both repair entry points block with a missing binary, then
-  revalidate after tool recovery and accept corrected content. All but the
+  WIP checkpoint with the same diagnostic still pushes. The repair entry point
+  blocks with a missing binary, then revalidates after tool recovery and
+  accepts corrected content. All but the
   empty-input CLI test need the host ShellCheck. The entire suite is in the
-  integration manifest and fails explicitly if the tool is unavailable. The
-  babysitter missing-tool case also asserts its infrastructure classification.
+  integration manifest and fails explicitly if the tool is unavailable.
 - `worker/deno/tests/git_push_preflight_test.ts`: `commitAndPushPending - no preFlight spec: WIP checkpoint with a ShellCheck diagnostic still pushed (PR #4898 review)`
   is the hermetic (no ShellCheck binary) WIP case; forcing Step 1b to run with
   a ShellCheck-only default turned it red (`ShellCheck version mismatch`).
@@ -189,3 +191,13 @@ all publication paths call the same implementation.
   ShellCheck-only spec. Coverage:
   `pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)`
   and `pr_side_gate_guarantee_4876_test.ts::prSpellingProcessorCommand - prompt budget and push checks with no pre-flight (Issue #4876)`.
+- PR #4898 review round: `pre_push_gate_test.ts::listPushedFiles: a merge lists the paths it resolved, never the files it brings in from the base (PR #4898 review)`
+  merges a base commit carrying a ShellCheck-failing `base_bad.sh` into a branch
+  with its own `own.sh` and a conflict on `c.txt`; only `c.txt` and `own.sh` are
+  listed. Restoring `--diff-merges=first-parent` turned it red. The existing
+  `shellcheck_publication_test.ts` merge-resolution SC2086 test still refuses
+  the push. `pre_push_gate_test.ts::ShellCheck refuses an oversized configuration without reading it`
+  uses a sparse 1 MiB + 1 byte `.shellcheckrc`; restoring `Deno.readTextFile`
+  turned it red. The babysitter `validateAndCommit` tests and the
+  `gateStagedShellcheck` helper (which only they and one assertion used) were
+  removed with the babysitter call.

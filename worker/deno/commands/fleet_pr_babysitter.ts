@@ -1,5 +1,4 @@
 import { buildDedupMarker } from "../lib/needs_human_escalation.ts";
-import { gateStagedShellcheck } from "../lib/pre_push_gate.ts";
 import { fenceUntrustedIssueText } from "../lib/prompt_delimiter.ts";
 import { neutraliseAgentMarkers } from "../lib/agent_marker_neutralisation.ts";
 import { isFleetAuthor } from "../lib/fleet_authors.ts";
@@ -998,8 +997,6 @@ export async function validateAndCommit(
     "--check",
     options.checkBaseline ?? "HEAD",
   ], dir);
-  const shellcheck = await gateStagedShellcheck(dir, options.checkBaseline);
-  if (!shellcheck.ok) throw shellcheck.error;
   await run("git", [
     "-c",
     `user.name=${bot.login}`,
