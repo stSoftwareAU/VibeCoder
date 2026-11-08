@@ -352,6 +352,125 @@ Deno.test("repair drops the named volumes and adds exactly the clone and scratch
   }
 });
 
+Deno.test("repair drops the gh credential store mount and keeps the provider credential mounts (Issue #4770)", async () => {
+  const f = await makeFixture();
+  try {
+    const gh = `${f.root}/host/credentials/gh`;
+    const claude = `${f.root}/host/credentials/claude`;
+    const ghExtra = `${f.root}/host/credentials/gh-extra`;
+    const credentialMounts = (options: string): string[] => [
+      "--volume",
+      `${gh}:/home/vibe/.vibe-coder/credentials/gh${options}`,
+      "--volume",
+      `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+      "--volume",
+      `${ghExtra}:/home/vibe/.vibe-coder/credentials/gh-extra:ro`,
+    ];
+    for (const options of [":ro", ""]) {
+      const plan = fakePlan(f.root, "vibe-test", credentialMounts(options));
+      const args = buildBabysitterRunArgs(plan, {
+        clone: f.clone,
+        scratch: f.scratch,
+      });
+      const mounts = volumeValues(args);
+      assertEquals(
+        mounts.filter((value) => value.startsWith(`${gh}:`)),
+        [],
+        `the gh store must not be mounted (options "${options}")`,
+      );
+      assert(
+        mounts.includes(
+          `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+        ),
+        "a provider credential mount stays",
+      );
+      assert(
+        mounts.includes(
+          `${ghExtra}:/home/vibe/.vibe-coder/credentials/gh-extra:ro`,
+        ),
+        "a sibling directory named gh-extra is not the gh store",
+      );
+    }
+
+    // The run the repair spawns carries no gh store mount either.
+    const { deps, calls } = fakeDeps(f, {
+      extra: credentialMounts(":ro"),
+    });
+    await runBabysitterRepairContainer(inputFor(f), deps);
+    const spawned = volumeValues(spawnAt(calls, 0).args);
+    assertEquals(
+      spawned.filter((value) => value.startsWith(`${gh}:`)),
+      [],
+      "the repair run mounts no gh store",
+    );
+    assert(
+      spawned.includes(
+        `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+      ),
+      "the repair run keeps the provider credential mount",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair drops the custom prompt mount and its env spec, and keeps provider mounts (Issue #4770)", async () => {
+  const f = await makeFixture();
+  try {
+    const label = `${f.home}/.vibe-coder/credentials/gh/label.md`;
+    const claude = `${f.root}/host/credentials/claude`;
+    const sibling = `${f.root}/host/custom-prompts-other`;
+    const promptMap = JSON.stringify({
+      [label]: "/home/vibe/.vibe-coder/custom-prompts/1/label.md",
+    });
+    const planExtra = (envArg: string[]): string[] => [
+      "--volume",
+      `${label}:/home/vibe/.vibe-coder/custom-prompts/1:ro`,
+      "--volume",
+      `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+      "--volume",
+      `${sibling}:/home/vibe/.vibe-coder/custom-prompts-other:ro`,
+      ...envArg,
+    ];
+    for (
+      const envArg of [
+        ["--env", `VIBE_CUSTOM_PROMPT_PATHS=${promptMap}`],
+        [`--env=VIBE_CUSTOM_PROMPT_PATHS=${promptMap}`],
+      ]
+    ) {
+      const plan = fakePlan(f.root, "vibe-test", planExtra(envArg));
+      const args = buildBabysitterRunArgs(plan, {
+        clone: f.clone,
+        scratch: f.scratch,
+      });
+      const mounts = volumeValues(args);
+      assertEquals(
+        mounts.filter((value) => value.startsWith(`${label}:`)),
+        [],
+        `the custom prompt mount must not be mounted (${envArg[0]})`,
+      );
+      assert(
+        !args.some((arg) => arg.includes("VIBE_CUSTOM_PROMPT_PATHS")),
+        `the custom prompt env spec must not reach the run args (${envArg[0]})`,
+      );
+      assert(
+        mounts.includes(
+          `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+        ),
+        "a provider credential mount stays",
+      );
+      assert(
+        mounts.includes(
+          `${sibling}:/home/vibe/.vibe-coder/custom-prompts-other:ro`,
+        ),
+        "a sibling named custom-prompts-other is not the custom prompt target",
+      );
+    }
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
 Deno.test("repair keeps the key out of every mount, argument and env value", async () => {
   const f = await makeFixture();
   try {

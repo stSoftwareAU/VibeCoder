@@ -10,6 +10,14 @@
  * mounted in their place, and the agent's read-only token is passed by name
  * alone (`--env GH_TOKEN`), so its value is never on a command line.
  *
+ * Mounts the repair keeps from the plan (Issue #4770): the read-only checkout
+ * at `/workspace`, the log directory, the staged configuration (read-only),
+ * and the read-only provider credential sub-directories the agent needs to
+ * run. Left out: the named volumes, the host GitHub credential store (`gh`),
+ * which the repair never needs because it carries only `GH_TOKEN`, the
+ * operator's custom prompt directories, and their `VIBE_CUSTOM_PROMPT_PATHS`
+ * variable, which the repair does not need either.
+ *
  * Egress (Issue #4769): a plan that enforces egress (docker or podman) gets
  * its internal network and proxy from `startEgressSidecar`. A plan with a
  * proxy and no enforcement (Apple container) gets its run arguments from the
@@ -39,6 +47,10 @@ import {
   canonicalPathIncludingMissingTail,
   normaliseAbsolutePath,
 } from "./fleet_babysitter_paths.ts";
+import {
+  CUSTOM_PROMPT_PATH_MAP_ENV,
+  CUSTOM_PROMPTS_TARGET_SUBDIR,
+} from "./custom_prompt_mounts.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { startEgressSidecar, stopEgressSidecar } from "./egress_sidecar.ts";
 
@@ -314,10 +326,62 @@ export async function babysitterImageExists(
 }
 
 /**
+ * The container destination of a `--volume` value: the field after the first
+ * colon, up to the next colon (an option such as `ro` follows it). Empty when
+ * the value has no colon.
+ */
+function volumeDestination(value: string): string {
+  const first = value.indexOf(":");
+  if (first === -1) return "";
+  const rest = value.slice(first + 1);
+  const second = rest.indexOf(":");
+  return second === -1 ? rest : rest.slice(0, second);
+}
+
+/**
+ * True when a container destination is the `gh` credential store, as the plan
+ * mounts it at `<credentials>/gh` (Issue #4770). Provider sub-directories such
+ * as `<credentials>/claude` are not matched.
+ */
+function isGhCredentialDestination(destination: string): boolean {
+  return destination.replace(/\/+$/, "").endsWith("/credentials/gh");
+}
+
+/**
+ * True when a container destination is the operator's custom prompt target,
+ * `<home>/.vibe-coder/custom-prompts`, or lies under it on a path-segment
+ * boundary (Issue #4770). The container home is the image account's, so the
+ * match is on the segments, not on a fixed account name. A sibling such as
+ * `custom-prompts-other` does not match.
+ */
+function isCustomPromptDestination(destination: string): boolean {
+  const escaped = CUSTOM_PROMPTS_TARGET_SUBDIR.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  return new RegExp(`(^|/)${escaped}(/|$)`).test(
+    destination.replace(/\/+$/, ""),
+  );
+}
+
+/**
+ * True when an `--env` spec is the plan's custom prompt path map, by name or
+ * with a value (`VIBE_CUSTOM_PROMPT_PATHS=…`). The repair does not use it.
+ */
+function isCustomPromptEnvSpec(spec: string): boolean {
+  return spec === CUSTOM_PROMPT_PATH_MAP_ENV ||
+    spec.startsWith(`${CUSTOM_PROMPT_PATH_MAP_ENV}=`);
+}
+
+/**
  * The run arguments, without the runtime. They begin with the plan's own
  * `run`. Starts from the plan's run arguments, drops every `--volume` whose
  * source is one of the plan's named volumes (the work and agent-state
- * volumes), then appends the clone and scratch mounts, `--env GH_TOKEN`, the
+ * volumes), every `--volume` whose container destination is the `gh`
+ * credential store (`…/credentials/gh`, Issue #4770) or lies under the
+ * custom prompt target (`…/.vibe-coder/custom-prompts`), and the plan's
+ * `VIBE_CUSTOM_PROMPT_PATHS` env spec. The provider credential sub-directories
+ * are kept. Then appends the clone and scratch mounts, `--env GH_TOKEN`, the
  * image and the repair command. Refuses any plan flag that could mount a
  * path or load an env file by another spelling, and any plan env spec that
  * sets GH_TOKEN. Pure; exported for tests.
@@ -354,10 +418,25 @@ export function buildBabysitterRunArgs(
       const colon = value.indexOf(":");
       const src = colon === -1 ? value : value.slice(0, colon);
       i++;
-      if (named.has(src)) continue;
+      const destination = volumeDestination(value);
+      if (
+        named.has(src) || isGhCredentialDestination(destination) ||
+        isCustomPromptDestination(destination)
+      ) continue;
       body.push(arg, value);
       continue;
     }
+    if (
+      (arg === "--env" || arg === "-e") && i + 1 < bodyArgs.length &&
+      isCustomPromptEnvSpec(bodyArgs[i + 1] ?? "")
+    ) {
+      i++;
+      continue;
+    }
+    if (
+      arg.startsWith("--env=") &&
+      isCustomPromptEnvSpec(arg.slice("--env=".length))
+    ) continue;
     body.push(arg);
   }
   for (let i = 0; i < body.length; i++) {

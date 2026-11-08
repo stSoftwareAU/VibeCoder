@@ -473,9 +473,9 @@ key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
 mounted into the container. Use a different App from the worker's own
 `github_app_*` identity, since GitHub refuses an approval from a PR's author.
 The fleet PR babysitter's repair container never mounts this configured key: the
-run is refused if its mounts would reach it. The container does keep the
-read-only worker credential sub-directories described in the
-[babysitter credential boundary](workflows/fleet-pr-babysitter.md#credentials-across-the-boundary).
+run is refused if its mounts would reach it. The repair container mounts only
+the enabled providers' credential sub-directories (read-only), never the `gh`
+credential directory; see the [babysitter credential boundary](workflows/fleet-pr-babysitter.md#credentials-across-the-boundary).
 
 The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**
 read and write, plus **Checks** and **Commit statuses** read. Contents write

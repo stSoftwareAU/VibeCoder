@@ -345,8 +345,10 @@ and `--response-file /babysitter/clone/.babysitter-response`. The agent's
 read-only repository token is passed as `GH_TOKEN` by name only, so its value
 never appears on a command line.
 
-A repair is limited to 90 minutes; on timeout the container is killed and the
-repair fails. Egress follows the worker's egress controls (Issue #4769). A
+A repair session's container timeout is the lesser of the remaining 90-minute
+budget and the read token's expiry minus two minutes. On timeout the container is
+killed; see "Token restarts" below. Egress follows the worker's egress controls
+(Issue #4769). A
 runtime that enforces egress (docker or podman) gets an internal network and
 proxy from the egress sidecar. Apple `container`, which does not enforce egress,
 gets its run arguments from the Apple egress helper, which may run in an
@@ -356,6 +358,19 @@ fails the repair; the runtime's open network is never used instead.
 The image provides Chromium at `$CHROMIUM_PATH`. A real Chromium launch check
 inside the repair container is planned (Issue #4771); until it lands, browser
 checks are not proven in that container.
+
+**Token restarts.** When a session ends at its read token's expiry, the host
+deletes the response file, mints a fresh repository-scoped read token and starts
+the container again. The clone is preserved. The restart prompt tells the agent
+to continue from the current working tree and not to repeat completed steps. A
+restart is attempted only while more than two minutes of the 90-minute budget
+remain; otherwise the failure is final.
+
+**RTK.** The host probe `rtk --version` decides whether the prompt carries the
+RTK instruction. When the probe finds `rtk` and the image has `rtk` installed
+(`container/tools.json`), the prompt tells the agent to prefix its shell commands
+with `rtk`. When the probe does not find it, the prompt carries no RTK instruction
+and the babysitter logs that the repair runs without RTK.
 
 ## Provider selection
 
@@ -378,20 +393,26 @@ checks are not proven in that container.
 
 The repair container receives:
 
-- the agent's read-only repository token, as `GH_TOKEN`;
-- the worker launch plan's read-only mounts that are kept: the worker checkout,
-  the staged configuration directory, the `gh` credential sub-directory and each
-  enabled provider's credential sub-directory of the Vibe credential directory,
-  and the worker log directory (read-write). The plan's named work and
-  agent-state volumes are removed, and the clone and scratch directories are added;
+- the agent's read-only repository token, as `GH_TOKEN`, minted again on each
+  token restart;
+- the clone and the scratch directory (prompt file), read-write;
+- the worker checkout, read-only;
+- the staged copy of the configuration, read-only, in its own directory outside
+  the checkout, so the worker reads only that copy;
+- the worker log directory, read-write;
+- each enabled provider's credential sub-directory of the Vibe credential
+  directory, read-only;
+- any custom prompt directories named by `custom_label_prompts`, read-only;
 - a fixed allowlist of host environment variables.
 
-The container does not receive the babysitter App private key. Before any egress
-starts, the run arguments are checked, and the repair is refused if any mount
-would reach that key or an ancestor of it (`assertBabysitterKeyOutOfRunArgs`).
-The host's `gh` configuration (`~/.config/gh`) is not in the plan's mount list.
-The host keeps the App key, the branch locks, the attempt record and every
-GitHub write.
+The plan's named work and agent-state volumes are not mounted. The host `gh`
+credential directory (the `gh` sub-directory of the Vibe credential directory)
+is not mounted, and the host `gh` configuration (`~/.config/gh`) is not in the
+plan's mount list. The container does not receive the babysitter App private
+key: before any egress starts, the run arguments are checked, and the repair is
+refused if any mount would reach that key or an ancestor of it
+(`assertBabysitterKeyOutOfRunArgs`). The host keeps the App key, the branch
+locks, the attempt record and every GitHub write.
 
 ## Failure behaviour
 
@@ -403,7 +424,9 @@ runtime is not on PATH`, `the worker image is not built; start the Vibe Coder
 repair container <name> exited with code <N>` followed by the redacted stderr
 and, because the image may predate the babysitter-repair mode, a hint to relaunch
 with `./run.sh` to rebuild it.
-A timeout reports `babysitter repair timed out after 90 minutes`. Retry policy
+A timeout reports `babysitter repair timed out after <N> minutes; container
+<name> killed`, where `<N>` is that session's own timeout, and a timeout that is
+not restarted (see "Token restarts") fails the repair. Retry policy
 stays with Issue #4656.
 
 Fleet-wide scans consider only fleet-authored, non-draft, same-repository PRs. A
