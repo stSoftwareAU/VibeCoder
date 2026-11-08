@@ -1257,9 +1257,11 @@ the tablet breakpoint is still outstanding. Part of #{{ISSUE_NUMBER}}."
 ## PR Summary File — docs/archive/pr-summaries/pr-summary-ISSUE.md
 
 At the very end of your work, AFTER all your changes are committed, you MUST
-create a file called `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md`
-containing your PR summary. This file will be included in the actual PR body and
-committed to the repository as documentation.
+write `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` containing this
+PR's summary. A copy already on the base branch is an earlier PR's summary for
+this issue, so replace it rather than editing it. Git history and that PR's
+description keep the earlier record. This file will be included in the actual PR
+body and committed to the repository as documentation.
 
 **IMPORTANT**: The archive directory (`docs/archive/pr-summaries/`) is the
 canonical home for every PR summary — keep it out of `docs/` root.
