@@ -408,7 +408,12 @@ bash `worker/run_core.sh` conductor. It sequences:
    When a criterion is marked `partial` or `missing`, the PR itself is raised as
    `Part of #N` rather than `Closes #N`
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
-   closer check is what actually holds it open.
+   closer check is what actually holds it open. `assemblePrBody` also puts the
+   keyword word of any closing reference the summary quotes for an issue other
+   than the governing one into a code span (`` `close` #M ``, and likewise the
+   colon and full-URL forms), so a negated phrase copied from an acceptance
+   criterion cannot close that issue on merge (Issue #4783); code the summary
+   already holds is left as written.
 
    It spends quota the way the rest of the worker does (Issue #1477): one
    rate-limit pre-flight per sweep, a stop at the first primary-quota
