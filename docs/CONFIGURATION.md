@@ -475,7 +475,10 @@ mounted into the container. Use a different App from the worker's own
 The fleet PR babysitter's repair container never mounts this configured key: the
 run is refused if its mounts would reach it. The repair container mounts only
 the enabled providers' credential sub-directories (read-only), never the `gh`
-credential directory; see the [babysitter credential boundary](workflows/fleet-pr-babysitter.md#credentials-across-the-boundary).
+credential directory or the `custom_label_prompts` directories. The staged
+configuration copy, the log directory and the worker checkout (which may hold a
+gitignored `.config.json`) remain mounted as residual exposure; see the
+[babysitter credential boundary](workflows/fleet-pr-babysitter.md#credentials-across-the-boundary).
 
 The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**
 read and write, plus **Checks** and **Commit statuses** read. Contents write

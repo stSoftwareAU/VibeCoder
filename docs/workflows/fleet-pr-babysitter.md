@@ -396,19 +396,22 @@ The repair container receives:
 - the agent's read-only repository token, as `GH_TOKEN`, minted again on each
   token restart;
 - the clone and the scratch directory (prompt file), read-write;
-- the worker checkout, read-only;
+- the worker checkout, read-only, at `/workspace`. Residual exposure: a
+  gitignored `.config.json` inside that checkout, if one exists, is readable there;
 - the staged copy of the configuration, read-only, in its own directory outside
-  the checkout, so the worker reads only that copy;
-- the worker log directory, read-write;
+  the checkout; `CONFIG_PATH` points the worker at that copy. Residual exposure:
+  the copy is still mounted;
+- the worker log directory, read-write. Residual exposure: it is still mounted;
 - each enabled provider's credential sub-directory of the Vibe credential
   directory, read-only;
-- any custom prompt directories named by `custom_label_prompts`, read-only;
 - a fixed allowlist of host environment variables.
 
 The plan's named work and agent-state volumes are not mounted. The host `gh`
 credential directory (the `gh` sub-directory of the Vibe credential directory)
 is not mounted, and the host `gh` configuration (`~/.config/gh`) is not in the
-plan's mount list. The container does not receive the babysitter App private
+plan's mount list. The operator's custom prompt directories
+(`custom_label_prompts`) are not mounted, and the plan's
+`VIBE_CUSTOM_PROMPT_PATHS` environment variable is dropped. The container does not receive the babysitter App private
 key: before any egress starts, the run arguments are checked, and the repair is
 refused if any mount would reach that key or an ancestor of it
 (`assertBabysitterKeyOutOfRunArgs`). The host keeps the App key, the branch
