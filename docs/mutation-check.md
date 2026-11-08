@@ -370,6 +370,19 @@ mutants. Candidates past the cap, and added lines over 400 characters (never
 mutated), are counted as untested: the run is reported as capped, with the
 number untested, never as a clean pass.
 
+The Deno path also restores the working tree once its run ends (Issue #4905),
+so a file a test run leaves behind is not committed by the worker's recovery
+commit (`git add -A`). An untracked file that was not there when the run
+started is deleted, and a tracked file that a mutant run newly modified is
+checked out again; anything present or modified before the run is left alone,
+and ignored files are never touched. A failure to list or restore the tree is
+logged as a `[mutation] could not restore the working tree:` warning and never
+changes the verdict. Accepted limits: a tracked file that was already modified
+before the run, and that a mutant run changes further, is left as it is,
+because restoring it would lose the earlier edit; empty directories a mutant
+run created are left, since git does not track them. The Rust path is
+unchanged; `cargo mutants` writes its output outside the repository.
+
 ## Budget
 
 `mutation_check_budget_seconds` bounds the whole run: a positive integer,

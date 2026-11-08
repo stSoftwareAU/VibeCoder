@@ -20,6 +20,12 @@
  * Every child process runs with an allowlisted environment, never the
  * worker's own (see {@link defaultMutationRunnerSeams}).
  *
+ * The Deno path restores the working tree once its run ends (Issue #4905):
+ * untracked files a test run created are deleted and newly modified tracked
+ * files are checked out again, so the worker's recovery commit cannot pick
+ * them up. The guard is in `mutation_tree_guard.ts`, and its accepted limits
+ * are documented there. The Rust path is unchanged.
+ *
  * Every `deno test` and `cargo mutants` child also gets `TMPDIR` set to the
  * run's own temporary directory, created per run and removed afterwards. When
  * that directory cannot be created the run reports an `error` whose reason
@@ -66,6 +72,11 @@ import {
   inFlightHostDiskGateEnabled,
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
+import {
+  restoreTree,
+  snapshotTree,
+  type TreeSnapshot,
+} from "./mutation_tree_guard.ts";
 
 export interface ProcessResult {
   code: number;
@@ -101,6 +112,17 @@ export interface MutationRunnerSeams {
   listTestFiles(repoPath: string): Promise<string[]>;
   /** Create an empty, writable temporary directory outside any repository; rejects when none can be created. */
   makeTempDir(): Promise<string>;
+  /**
+   * The untracked and modified paths of the working tree at `repoPath`, taken
+   * before a Deno run (Issue #4905); null when git cannot list it. Never throws.
+   */
+  snapshotTree(repoPath: string): Promise<TreeSnapshot | null>;
+  /**
+   * Restore the working tree at `repoPath` to `before` after a Deno run: delete
+   * untracked files new since the snapshot, check out newly modified tracked
+   * files. A failure is a warning, never a throw (Issue #4905).
+   */
+  restoreTree(repoPath: string, before: TreeSnapshot): Promise<void>;
 }
 
 export interface MutationRunInput {
@@ -571,6 +593,11 @@ async function runDeno(
   const childEnv = {
     env: { ...input.credentialEnv, TMPDIR: tmpDir },
   };
+  // Issue #4905: what the tree holds before any child runs, so the finally
+  // below can undo what the test runs leave behind.
+  const treeBefore = runnable.length > 0
+    ? await seams.snapshotTree(repoPath)
+    : null;
 
   try {
     // Baseline: the importing tests must pass unmutated.
@@ -632,6 +659,7 @@ async function runDeno(
     if (dropped > 0) return exhausted("mutant_cap");
     return { kind: "completed", language: "deno", survivors, killed, total };
   } finally {
+    if (treeBefore !== null) await seams.restoreTree(repoPath, treeBefore);
     if (tmpDir !== "") await seams.removeDir(tmpDir);
   }
 }
@@ -1437,5 +1465,7 @@ export function defaultMutationRunnerSeams(
     },
     makeTempDir: () => makeMutationTempDir(lookup),
     listTestFiles: (repoPath) => listDenoTestFiles(repoPath),
+    snapshotTree: (repoPath) => snapshotTree(repoPath),
+    restoreTree: (repoPath, before) => restoreTree(repoPath, before),
   };
 }

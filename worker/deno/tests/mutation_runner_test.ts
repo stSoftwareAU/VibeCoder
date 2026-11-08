@@ -113,6 +113,8 @@ function fake(
           k.slice(REPO.length + 1)
         ),
       ),
+    snapshotTree: () => Promise.resolve(null),
+    restoreTree: () => Promise.resolve(),
   };
   return { seams, files: fs, calls, clock, removed };
 }
