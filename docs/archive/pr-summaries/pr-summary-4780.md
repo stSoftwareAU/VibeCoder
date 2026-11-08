@@ -76,3 +76,18 @@ Backend only. `deno task test:unit` over `tests/milestone_gate_wedge_test.ts`,
   the base commit; neither file imports a module this change touches.
 - Not checked: the `merge_fast_checks_credentials_4705_test.ts` failure was not
   re-run on the base.
+- Mutation check: `isRepoPublic` is now pinned directly in
+  `tests/repo_visibility_test.ts` (public resolves true and the gh argv drops
+  the leading `gh`; private, unrecognised value, `Error` rejection and
+  non-`Error` rejection all give false). This kills the
+  `repo_visibility.ts:144`, `:154` and `:155` mutants.
+- `worker/deno/lib/repo_visibility.ts:147` exempt (untestable): `success: false`
+  on the rejection path; flipping or deleting it still yields `stdout: ""`,
+  which `getRepoVisibility` maps to private, so `isRepoPublic` returns false
+  either way (equivalent mutant).
+- `worker/deno/lib/repo_visibility.ts:148` exempt (untestable): `stdout: ""` on
+  the rejection path; `getRepoVisibility` never reads it when `success` is
+  false.
+- `worker/deno/lib/repo_visibility.ts:149` exempt (untestable): the `stderr`
+  message (and its `Error` vs non-`Error` ternary) only feeds
+  `getRepoVisibility`'s error string, which `isRepoPublic` collapses to `false`.
