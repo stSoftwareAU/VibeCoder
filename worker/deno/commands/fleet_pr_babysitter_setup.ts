@@ -10,7 +10,11 @@ import {
   configureBabysitterLockTrust,
   writeBabysitterAppConfig,
 } from "../lib/fleet_babysitter_app.ts";
-import { ensureBabysitterCodex } from "../lib/fleet_babysitter_codex.ts";
+import {
+  babysitterCheckoutDir,
+  type BabysitterContainerDeps,
+  preflightBabysitterContainer,
+} from "../lib/fleet_babysitter_container.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
 import { escapeXml } from "../lib/xml_escape.ts";
 import {
@@ -86,6 +90,19 @@ function input(name: string, defaultValue = ""): string {
 function expandHome(path: string, home: string): string {
   return path.startsWith("~/") ? `${home}/${path.slice(2)}` : path;
 }
+/**
+ * Setup's container check (Issue #4770): the runtime is on PATH and the worker
+ * image is built. Setup installs nothing and spawns no agent; the image carries
+ * the agent. The deps are test seams, and the defaults are the real checks.
+ */
+export async function runContainerPreflight(
+  checkout: string,
+  deps: Partial<
+    Pick<BabysitterContainerDeps, "onPath" | "buildPlan" | "imageExists">
+  > = {},
+): Promise<void> {
+  await preflightBabysitterContainer({ baseDir: checkout }, deps);
+}
 async function main(): Promise<number> {
   const installFlag = Deno.args.includes("--install-launch-agent");
   const checkOnly = Deno.args.includes("--check");
@@ -104,12 +121,7 @@ async function main(): Promise<number> {
   }
   const home = Deno.env.get("HOME");
   if (!home) throw new Error("HOME is not set");
-  const checkout = decodeURIComponent(
-    new URL("../../..", import.meta.url).pathname,
-  ).replace(
-    /\/$/,
-    "",
-  );
+  const checkout = babysitterCheckoutDir();
   const configPath = Deno.env.get("CONFIG_PATH") ?? `${checkout}/.config.json`;
   const config = await loadConfig(configPath);
   if (!config.repos.length) {
@@ -118,7 +130,7 @@ async function main(): Promise<number> {
   for (const binary of ["git", "rtk"]) {
     await command(binary, ["--version"]);
   }
-  await ensureBabysitterCodex(home);
+  await runContainerPreflight(checkout);
   await runGhCommand(["--version"]);
   if (checkOnly && !argument("app-id")) {
     throw new Error("--check requires --app-id");

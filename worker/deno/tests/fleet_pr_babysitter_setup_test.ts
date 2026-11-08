@@ -1,9 +1,22 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   launchAgentPlist,
   missingAppPermissions,
+  runContainerPreflight,
 } from "../commands/fleet_pr_babysitter_setup.ts";
+import type { ContainerLaunchPlan } from "../lib/container_launch.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
+
+/**
+ * A plan carrying the two fields the preflight reads: the runtime and the
+ * image inspect arguments (Issue #4770).
+ */
+function preflightPlan(runtime: string): ContainerLaunchPlan {
+  return {
+    runtime,
+    imageInspectArgs: ["image", "inspect", "vibe-coder:test"],
+  } as unknown as ContainerLaunchPlan;
+}
 
 Deno.test("setup validates each App permission including write levels", () => {
   const permissions = {
@@ -72,4 +85,64 @@ Deno.test("launch agent schedules bounded passes and escapes filesystem paths", 
   );
   assert(plist.includes("/tmp/gh &lt;fleet&gt;"));
   assert(!plist.includes("GH_TOKEN"));
+});
+
+// Issue #4770: setup checks the worker container (the runtime on PATH, then
+// the image) and installs no Codex: the image carries the agent.
+Deno.test("setup runs the container preflight (runtime, then image) and installs no Codex", async () => {
+  const calls: string[] = [];
+  await runContainerPreflight("/checkout", {
+    buildPlan: () => Promise.resolve(preflightPlan("podman")),
+    onPath: (runtime) => {
+      calls.push(`onPath ${runtime}`);
+      return Promise.resolve(true);
+    },
+    imageExists: (runtime, args) => {
+      calls.push(`imageExists ${runtime} ${args.join(" ")}`);
+      return Promise.resolve(true);
+    },
+  });
+  assertEquals(calls, [
+    "onPath podman",
+    "imageExists podman image inspect vibe-coder:test",
+  ]);
+  const source = await Deno.readTextFile(
+    new URL("../commands/fleet_pr_babysitter_setup.ts", import.meta.url),
+  );
+  assert(!source.includes("ensureBabysitterCodex"));
+  assert(!source.includes("fleet_babysitter_codex"));
+});
+
+Deno.test("setup refuses a missing runtime before it checks the image", async () => {
+  const calls: string[] = [];
+  await assertRejects(
+    () =>
+      runContainerPreflight("/checkout", {
+        buildPlan: () => Promise.resolve(preflightPlan("podman")),
+        onPath: () => {
+          calls.push("onPath");
+          return Promise.resolve(false);
+        },
+        imageExists: () => {
+          calls.push("imageExists");
+          return Promise.resolve(true);
+        },
+      }),
+    Error,
+    "the container runtime is not on PATH",
+  );
+  assertEquals(calls, ["onPath"]);
+});
+
+Deno.test("setup refuses an unbuilt worker image and names the rebuild", async () => {
+  await assertRejects(
+    () =>
+      runContainerPreflight("/checkout", {
+        buildPlan: () => Promise.resolve(preflightPlan("podman")),
+        onPath: () => Promise.resolve(true),
+        imageExists: () => Promise.resolve(false),
+      }),
+    Error,
+    "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
+  );
 });
