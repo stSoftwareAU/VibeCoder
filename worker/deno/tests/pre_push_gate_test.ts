@@ -571,6 +571,9 @@ Deno.test("listPushedFiles: a merge lists the paths it resolved, never the files
     }
     assert(conflicted, "the fixture must conflict on c.txt");
     await Deno.writeTextFile(`${root}/c.txt`, "resolved\n");
+    // A file only the merge commit introduces: no ordinary commit lists it, so
+    // it appears solely when the merge's own diff is requested.
+    await Deno.writeTextFile(`${root}/merge_only.sh`, "#!/bin/sh\necho ok\n");
     await git(root, "add", "-A");
     await git(root, "commit", "-qm", "merge main");
     const files = await listPushedFiles(
@@ -580,7 +583,7 @@ Deno.test("listPushedFiles: a merge lists the paths it resolved, never the files
       "main",
     );
     assert(files.ok);
-    assertEquals(files.value, ["c.txt", "own.sh"]);
+    assertEquals(files.value, ["c.txt", "merge_only.sh", "own.sh"]);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

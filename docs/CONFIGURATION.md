@@ -5206,8 +5206,8 @@ The hook runs two stages:
      A changed ShellCheck workflow or changed or deleted config rechecks the
      remaining tracked files in the policy's scope; deleted scripts and symlinks
      are omitted. A symlinked config or delegated script is refused; symlinked
-     workflows are ignored. Workflow and delegated-script reads are capped at
-     1 MiB. For a `find` policy the
+     workflows are ignored. Workflow, configuration and delegated-script reads
+     are capped at 1 MiB and refused above it. For a `find` policy the
      gate checks the available binary against the version declared by CI
      before running it (an action-managed ShellCheck declares none). A policy
      the gate cannot read (an unsupported command shape, other action input,

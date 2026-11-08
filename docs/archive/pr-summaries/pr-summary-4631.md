@@ -137,7 +137,7 @@ all publication paths call the same implementation.
   `shellcheck_gate_integration_test.ts::runPrePushGate applies tracked config to real ShellCheck diagnostics`
   checks SC2086 is suppressed with the tracked config and rejected without it.
   `pre_push_gate_test.ts::ShellCheck skips scripts under symlinked parents and missing directory paths`
-  covers changed and staged paths through a symlinked parent and a directory
+  covers changed paths through a symlinked parent and a directory
   replaced by a file; `pre_push_gate_test.ts::ShellCheck refuses a configuration below a symlinked directory`
   covers configuration ancestors. The former treatment of symlinked parents and
   `NotADirectory` as executable or fatal is obsolete; regular in-tree scripts
