@@ -3,9 +3,11 @@
  *
  * When the agent reports the failure as pre-existing on the base branch by
  * ending its `.pr_response_message` with a `Depends on owner/repo#N` line,
- * and the base branch's own latest run of the same check is red, the worker
- * must post the diagnosis **once**, record a deferral marker, apply no
- * `needs-human` and charge no attempt. A green base refutes the claim and
+ * and the base branch's own latest run of the same check is red **and** its log
+ * shows this pull request's own failure (Issue #4680), the worker must post the
+ * diagnosis **once**, record a deferral marker, apply no `needs-human` and
+ * charge no attempt. A red base whose log shows some other failure is charged,
+ * not held. A green base refutes the claim and
  * charges an attempt. A claim that cannot be verified (no run of the check
  * from the same workflow, a stale run, an unreadable API) is held as
  * `base-unverified`: the diagnosis is posted with a hold marker, no attempt is
@@ -29,6 +31,11 @@ import type {
   GitDeps,
   GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
+import {
+  type ActionsLogOptions,
+  fetchGithubActionsLogExcerpt,
+  summariseActionsLog,
+} from "../lib/github_actions_log_fetcher.ts";
 import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
@@ -89,6 +96,16 @@ const FAILING_RUN_ID = 900;
 /** The base branch's run of the same check, from the same workflow. */
 const BASE_RUN_ID = 700;
 
+/** The check run id of the base branch's run (Issue #4680). */
+const BASE_CHECK_ID = 7;
+
+/** The check run id of the merged pull request's run, a tree-equivalent stand-in. */
+const MERGED_CHECK_ID = 8;
+
+/** The annotation message makeInput carries for the failing semgrep check. */
+const SEMGREP_MESSAGE =
+  "semgrep: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)";
+
 /** The workflow path each run id resolves to, unless a scenario overrides it. */
 const DEFAULT_RUN_PATHS: Record<string, string> = {
   [String(FAILING_RUN_ID)]: CI_WORKFLOW,
@@ -99,6 +116,8 @@ const DEFAULT_RUN_PATHS: Record<string, string> = {
 
 /** How the stubbed GitHub answers the base-branch and issue-state reads. */
 interface StubOptions {
+  /** Failing pull request job's log, when supplied. */
+  failingLog?: string;
   /** Raw `check-runs` body for the base branch, or a thrower. */
   baseCheckRuns?: string | "error";
   /** Name of the failing check, which its identity payload carries. */
@@ -113,6 +132,19 @@ interface StubOptions {
    * workflow's run on that commit.
    */
   mergedPr?: { treeMatches: boolean; conclusion: string; runPath?: string };
+  /**
+   * The base run's Actions job log (Issue #4680): the text it printed, or
+   * `"error"` when the log cannot be fetched. Defaults to the failing check's
+   * own annotation messages, so the base run shares this pull request's failure.
+   */
+  baseLog?: string | "error";
+  /**
+   * The merged pull request's Actions job log, for a tree-equivalent red
+   * (Issue #4680). Defaults like {@link baseLog}.
+   */
+  mergedLog?: string | "error";
+  /** Collects each call the base run's log fetch makes (Issue #4680). */
+  logCalls?: ActionsLogOptions[];
   /** State the blocking issue reports. */
   blockerState?: "OPEN" | "CLOSED";
   /** Comments already on the pull request. */
@@ -130,12 +162,14 @@ const NO_BASE_RUNS = JSON.stringify({ check_runs: [] });
 function baseCheckRunsPayload(
   conclusion: string,
   name = "semgrep",
-  row: { headSha?: string; runId?: number; app?: string } = {},
+  row: { headSha?: string; runId?: number; app?: string; checkId?: number } =
+    {},
 ): string {
+  const checkId = row.checkId ?? BASE_CHECK_ID;
   return JSON.stringify({
     check_runs: [
       {
-        id: 7,
+        id: checkId,
         name,
         status: "completed",
         conclusion,
@@ -143,10 +177,27 @@ function baseCheckRunsPayload(
         app_slug: row.app ?? APP,
         details_url: `https://github.com/org/repo/actions/runs/${
           row.runId ?? BASE_RUN_ID
-        }/job/7`,
+        }/job/${checkId}`,
       },
     ],
   });
+}
+
+/** A job log printing each message as a workflow error line (Issue #4680). */
+function jobLog(messages: string[]): string {
+  return [
+    "##[group]Run the check",
+    "##[endgroup]",
+    ...messages.map((message) => `##[error]${message}`),
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+}
+
+/** A job-log reply: the text, or a failed fetch when `log` is `"error"`. */
+function logReply(log: string | "error"): Promise<string> {
+  return log === "error"
+    ? Promise.reject(new Error("HTTP 404: Not Found"))
+    : Promise.resolve(log);
 }
 
 /** The attempt outcomes a comment's markers carry, in order. */
@@ -181,7 +232,11 @@ function makeGhRunner(
   return (args: string[]): Promise<string> => {
     if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
 
-    const endpoint = args[0] === "api" ? String(args[1] ?? "") : "";
+    // The endpoint is the `repos/` argument: the log fetcher passes
+    // `--allow-escape-sequences` ahead of it (Issue #4680).
+    const endpoint = args[0] === "api"
+      ? String(args.find((arg) => arg.startsWith("repos/")) ?? args[1] ?? "")
+      : "";
 
     // The base branch's head commit: the commit its check runs must be on.
     if (endpoint === "repos/org/repo/commits/develop") {
@@ -224,6 +279,7 @@ function makeGhRunner(
             {
               headSha: PR_HEAD_SHA,
               runId: 703,
+              checkId: MERGED_CHECK_ID,
             },
           ),
         );
@@ -241,6 +297,37 @@ function makeGhRunner(
         details_url:
           `https://github.com/org/repo/actions/runs/${FAILING_RUN_ID}/job/111`,
       }));
+    }
+
+    // The base run's check run, read by the log fetcher for its job (Issue
+    // #4680): the Actions app and the job the run's details URL names.
+    if (endpoint === `repos/org/repo/check-runs/${BASE_CHECK_ID}`) {
+      return Promise.resolve(JSON.stringify({
+        app: { slug: APP },
+        details_url:
+          `https://github.com/org/repo/actions/runs/${BASE_RUN_ID}/job/${BASE_CHECK_ID}`,
+      }));
+    }
+    if (endpoint === `repos/org/repo/check-runs/${MERGED_CHECK_ID}`) {
+      return Promise.resolve(JSON.stringify({
+        app: { slug: APP },
+        details_url:
+          `https://github.com/org/repo/actions/runs/703/job/${MERGED_CHECK_ID}`,
+      }));
+    }
+
+    if (
+      endpoint === "repos/org/repo/actions/jobs/111/logs" &&
+      options.failingLog !== undefined
+    ) {
+      return logReply(options.failingLog);
+    }
+    // The base run's job log and the merged run's job log (Issue #4680).
+    if (endpoint === `repos/org/repo/actions/jobs/${BASE_CHECK_ID}/logs`) {
+      return logReply(options.baseLog ?? semgrepLog(SEMGREP_RULE));
+    }
+    if (endpoint === `repos/org/repo/actions/jobs/${MERGED_CHECK_ID}/logs`) {
+      return logReply(options.mergedLog ?? semgrepLog(SEMGREP_RULE));
     }
 
     // The workflow path a run was created from (`--jq .path`, Issue #4680).
@@ -308,8 +395,7 @@ function makeInput(): CiFixInput {
     {
       path: "worker/deno/lib/some_regex.ts",
       start_line: 42,
-      message:
-        "semgrep: blocking code rules fired - detect-non-literal-regexp (possible ReDoS)",
+      message: SEMGREP_MESSAGE,
     },
   ];
   return {
@@ -346,8 +432,16 @@ async function runDeferralScenario(
       errors: [],
       warnings: [],
     };
+    // The fixture's first annotation describes the job failure; notices are
+    // not automatically copied into the job log.
+    const ownLog = input.checkName === "lint"
+      ? "##[endgroup]\nIn ./scripts/deploy.sh line 42:\n  ^--^ SC2086 (info): Double quote to prevent globbing and word splitting.\n##[error]Process completed with exit code 1."
+      : semgrepLog(SEMGREP_RULE);
     const runGh = makeGhRunner(captured, {
       checkName: input.checkName,
+      failingLog: ownLog,
+      baseLog: ownLog,
+      mergedLog: ownLog,
       ...options,
     });
 
@@ -392,6 +486,14 @@ async function runDeferralScenario(
       workRoot: tmpDir,
       ghCommandFn: runGh,
       fleetLogins: [FLEET_LOGIN],
+      ...(options.logCalls !== undefined
+        ? {
+          actionsLogFn: (opts: ActionsLogOptions) => {
+            options.logCalls?.push(opts);
+            return fetchGithubActionsLogExcerpt(opts);
+          },
+        }
+        : {}),
     };
 
     const result = await processCiFailure(input, processorDeps);
@@ -602,7 +704,9 @@ Deno.test("processCiFailure - a deferral comment that fails to post is never rep
       errors: [],
       warnings: [],
     };
-    const inner = makeGhRunner(captured, {});
+    const inner = makeGhRunner(captured, {
+      failingLog: semgrepLog(SEMGREP_RULE),
+    });
     const runGh = (args: string[]): Promise<string> => {
       if (args[0] === "pr" && args[1] === "comment") {
         return Promise.reject(new Error("HTTP 403: Forbidden"));
@@ -767,6 +871,9 @@ Deno.test("processCiFailure - a PR-only workflow with no base run is held unveri
   const body = captured.comments[0] ?? "";
   assertStringIncludes(body, "the finding is in the base branch");
   assertStringIncludes(body, "could not be verified");
+  // The hold names the claimed blocker and the base state it found.
+  assertStringIncludes(body, `Depends on ${BLOCKER}`);
+  assertStringIncludes(body, "check state is `no-run`");
   assertEquals(attemptOutcomes(body), ["base-unverified"]);
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
@@ -808,6 +915,8 @@ Deno.test("processCiFailure - a base run recorded against an older commit is sta
   assertEquals(captured.comments.length, 1);
   const body = captured.comments[0] ?? "";
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertStringIncludes(body, `Depends on ${BLOCKER}`);
+  assertStringIncludes(body, "check state is `stale`");
   assertEquals(attemptOutcomes(body), ["base-unverified"]);
   assertEquals(captured.labelsAdded.includes("needs-human"), false);
 });
@@ -921,4 +1030,638 @@ Deno.test("processCiFailure - a merged PR whose tree differs from the base head 
   const body = captured.comments[0] ?? "";
   assertEquals(attemptOutcomes(body), ["base-unverified"]);
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+});
+
+// ---------------------------------------------------------------------------
+// A red base must show this failure, not merely a red conclusion (Issue #4680)
+// ---------------------------------------------------------------------------
+
+Deno.test("processCiFailure - a red base whose log shows a different failure takes the ordinary charged path, neither deferred nor held (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: jobLog(["lint: an unrelated finding in another file"]),
+  });
+
+  assertEquals(captured.comments.length >= 1, true);
+  const body = captured.comments.at(-1) ?? "";
+  // The base failed for another reason: the claim is not verified as this
+  // failure, so an attempt is charged and nothing is deferred or held.
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - unrelated test failures sharing runner output are charged", async () => {
+  const input = makeInput();
+  input.encodedAnnotations = btoa(
+    JSON.stringify([{
+      path: "test.ts",
+      start_line: 1,
+      message: "parser - parse header ... FAILED\nnpm error command failed",
+    }]),
+  );
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: jobLog([
+      "parser - render footer ... FAILED",
+      "npm error command failed",
+    ]),
+  }, input);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+});
+
+Deno.test("processCiFailure - same test failure with different tallies is deferred", async () => {
+  const input = makeInput();
+  input.encodedAnnotations = btoa(
+    JSON.stringify([{
+      path: "test.ts",
+      start_line: 1,
+      message:
+        "parser - parse header ... FAILED\nAssertionError: expected header to be valid\nFAILED | 1407 passed | 1 failed (2m14s)",
+    }]),
+  );
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: jobLog([
+      "parser - parse header ... FAILED",
+      "AssertionError: expected header to be valid",
+      "FAILED | 1407 passed | 1 failed (2m14s)",
+    ]),
+    baseLog: jobLog([
+      "parser - parse header ... FAILED",
+      "AssertionError: expected header to be valid",
+      "FAILED | 1405 passed | 1 failed (2m31s)",
+    ]),
+  }, input);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+});
+
+Deno.test("processCiFailure - a runner notice absent from the job logs does not prevent deferral", async () => {
+  const input = makeInput();
+  input.encodedAnnotations = btoa(JSON.stringify([
+    {
+      path: "test.ts",
+      start_line: 1,
+      message: "AssertionError: invalid header value",
+    },
+    {
+      path: "runner",
+      start_line: 1,
+      message:
+        "The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026.",
+    },
+  ]));
+  const log = jobLog(["AssertionError: invalid header value"]);
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log,
+    baseLog: log,
+  }, input);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+});
+
+Deno.test("processCiFailure - the base run's log is read for the failing check's name (Issue #4680)", async () => {
+  const logCalls: ActionsLogOptions[] = [];
+  await runDeferralScenario(AGENT_MESSAGE, { logCalls });
+
+  // The failing check's own log is read too; pick the base run's read.
+  const baseReads = logCalls.filter((call) =>
+    call.checkRunId === String(BASE_CHECK_ID)
+  );
+  assertEquals(baseReads.length, 1);
+  assertEquals(baseReads[0]?.repo, "org/repo");
+  assertEquals(baseReads[0]?.checkName, "semgrep");
+});
+
+Deno.test("processCiFailure - a red base whose log cannot be fetched is held unverified: posts once, charges no attempt, pages no human (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: "error",
+  });
+
+  assertEquals(
+    captured.comments.length,
+    1,
+    `expected exactly one comment; got ${captured.comments.length}`,
+  );
+  const body = captured.comments[0] ?? "";
+  assertStringIncludes(body, "the finding is in the base branch");
+  assertStringIncludes(body, "could not be compared");
+  assertEquals(attemptOutcomes(body), ["base-unverified"]);
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  assertEquals(
+    captured.errors.some((line) =>
+      line.includes("Could not compare the base branch's red run")
+    ),
+    true,
+    `expected a loud error about the failed comparison; got: ${
+      captured.errors.join(" | ")
+    }`,
+  );
+});
+
+Deno.test("processCiFailure - a tree-equivalent red whose merged run's log shows a different failure takes the ordinary charged path (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseCheckRuns: NO_BASE_RUNS,
+    mergedPr: { treeMatches: true, conclusion: "failure" },
+    mergedLog: jobLog(["lint: an unrelated finding in another file"]),
+  });
+
+  assertEquals(captured.comments.length >= 1, true);
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - an unreadable red base after two holds takes the ordinary charged path (Issue #4680)", async () => {
+  // The hold the first scan posted, fed back twice as the pull request's
+  // history: the fleet has already held this failure twice.
+  const first = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: "error",
+  });
+  const holdBody = first.comments[0] ?? "";
+
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    baseLog: "error",
+    existingComments: [
+      { id: 1, author: FLEET_LOGIN, body: holdBody, createdAt: "" },
+      { id: 2, author: FLEET_LOGIN, body: holdBody, createdAt: "" },
+    ] as unknown as GitHubComment[],
+  });
+
+  assertEquals(captured.comments.length, 1);
+  const body = captured.comments[0] ?? "";
+  // Charged: the attempt is recorded as a substantive outcome, not a hold.
+  assertEquals(attemptOutcomes(body).length, 1);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+  assertEquals(
+    captured.warnings.some((line) =>
+      line.includes("still unverified after 2 holds")
+    ),
+    true,
+    `expected the hold-bound warning; got: ${captured.warnings.join(" | ")}`,
+  );
+});
+
+/** A semgrep job log naming `rule`, which prints no failure word (Issue #4680). */
+function semgrepLog(rule: string, line = 42): string {
+  return [
+    "##[group]Run semgrep ci --config auto",
+    "semgrep ci --config auto",
+    "##[endgroup]",
+    "┌────────────────┐",
+    "│ 1 Code Finding │",
+    "└────────────────┘",
+    "    worker/deno/lib/some_regex.ts",
+    `   ❯❱ ${rule}`,
+    "          RegExp() called with a variable; this may allow ReDoS.",
+    `           ${line}┆ const re = new RegExp(input);`,
+    "BLOCKING CODE RULES FIRED:",
+    `  ${rule}`,
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+}
+
+const SEMGREP_RULE = "javascript.lang.security.audit.detect-non-literal-regexp";
+
+Deno.test("processCiFailure - real semgrep output ignores run-specific metadata", async () => {
+  const log = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  const base = log.replaceAll(
+    "d18354c516fd14bf6d7fb665e38ad092033ead92",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  ).replaceAll(
+    "be9daca4d6743abf0d4ffa2923ba1d46ee659fe3",
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  ).replace("triggering event is pull_request", "triggering event is push");
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log,
+    baseLog: base,
+  }, exitLineInput());
+  assertStringIncludes(
+    captured.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-deferred ",
+  );
+});
+
+Deno.test("processCiFailure - semgrep compares root and extensionless finding files", async () => {
+  const base = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const file of ["run.sh", "container/Containerfile"]) {
+    const pr = base.replace(
+      "worker/deno/lib/marker_dedup_author_manifest.ts",
+      file,
+    );
+    for (const [baseLog, marker] of [[base, "attempt"], [pr, "deferred"]]) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: pr,
+        baseLog,
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+        file,
+      );
+    }
+  }
+});
+
+Deno.test("processCiFailure - semgrep compares severity, rule and exact file despite failure words", async () => {
+  const fixture = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const icon of ["❱", "❯❯❱", "❯❯❯❱"]) {
+    const pr = fixture.replaceAll("❯❱", icon)
+      .replace("worker/deno/lib/marker_dedup_author_manifest.ts", "run.sh")
+      .replace(
+        "BLOCKING CODE RULES FIRED:",
+        "an exception thrown here is not handled.\nBLOCKING CODE RULES FIRED:",
+      );
+    for (
+      const [baseLog, marker] of [
+        [pr.replaceAll(SEMGREP_RULE, "rule.a.base-finding"), "attempt"],
+        [pr.replace("run.sh", "fleet-pr-babysitter/run.sh"), "attempt"],
+        [pr, "deferred"],
+      ]
+    ) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: pr,
+        baseLog,
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+        icon,
+      );
+    }
+  }
+});
+
+Deno.test("processCiFailure - semgrep fallback compares rule and whole file at each severity", async () => {
+  const fixture = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const icon of ["❱", "❯❱", "❯❯❱", "❯❯❯❱"]) {
+    const pr = fixture.replaceAll("❯❱", icon)
+      .replace("worker/deno/lib/marker_dedup_author_manifest.ts", "run.sh");
+    for (
+      const [baseLog, marker] of [
+        [pr.replaceAll(SEMGREP_RULE, "rule.a.base-finding"), "attempt"],
+        [pr.replace("run.sh", "fleet-pr-babysitter/run.sh"), "attempt"],
+        [pr.replace("run.sh", "worker/deno/lib/other.ts"), "attempt"],
+        [pr, "deferred"],
+      ]
+    ) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: pr,
+        baseLog,
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+        icon,
+      );
+    }
+  }
+});
+
+Deno.test("processCiFailure - diagnostic rules stay paired with their files", async () => {
+  const fixture = await Deno.readTextFile(
+    new URL("./fixtures/semgrep-101249366081.log", import.meta.url),
+  );
+  for (const message of ["", " an exception thrown here is not handled."]) {
+    const pr = fixture.replace(
+      "Details: https://sg.run/gr65",
+      `Details: https://sg.run/gr65${message}`,
+    );
+    const base = pr.replaceAll(
+      "detect-non-literal-regexp",
+      "detect-eval-with-expression",
+    ) +
+      pr.replace(
+        "worker/deno/lib/marker_dedup_author_manifest.ts",
+        "worker/deno/lib/other_module.ts",
+      );
+    for (const [baseLog, marker] of [[base, "attempt"], [pr, "deferred"]]) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: pr,
+        baseLog,
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+      );
+      assertEquals(
+        attemptOutcomes(captured.comments.at(-1) ?? "").includes(
+          "base-unverified",
+        ),
+        false,
+      );
+    }
+  }
+  const cases = [
+    [
+      "a.ts\n❯❱ rule.one\n  1┆ code\n❯❱ rule.two\n  2┆ code",
+      "a.ts\n❯❱ rule.one\n  1┆ code\n❯❱ rule.other\n  2┆ code\nb.ts\n❯❱ rule.two\n  2┆ code",
+    ],
+    [
+      "error[no-explicit-any]: any type is not allowed\n --> a.ts:12:20",
+      "error[no-unused-vars]: unused variable\n --> a.ts:12:20\nerror[no-explicit-any]: any type is not allowed\n --> b.ts:12:20",
+    ],
+    [
+      "In a.sh line 12:\nSC2086: Double quote to prevent globbing.",
+      "In a.sh line 12:\nSC2046: Quote this.\nIn b.sh line 12:\nSC2086: Double quote to prevent globbing.",
+    ],
+  ];
+  const wrap = (s: string) =>
+    `##[endgroup]\n${s}\n##[error]Process completed with exit code 1.\n`;
+  for (const [pr, base] of cases) {
+    for (const [baseLog, marker] of [[base!, "attempt"], [pr!, "deferred"]]) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: wrap(pr!),
+        baseLog: wrap(baseLog!),
+      }, exitLineInput());
+      assertStringIncludes(
+        captured.comments.at(-1) ?? "",
+        `<!-- vibe-ci-fix-${marker} `,
+      );
+      assertEquals(
+        attemptOutcomes(captured.comments.at(-1) ?? "").includes(
+          "base-unverified",
+        ),
+        false,
+      );
+    }
+  }
+});
+
+Deno.test("processCiFailure - formatter identifies the failed file", async () => {
+  const log = (file: string, count: number) =>
+    `##[endgroup]\nfrom ${file}:\nerror: Found 1 not formatted file in ${count} files\n##[error]Process completed with exit code 1.\n`;
+  const same = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log("src/a.ts", 1240),
+    baseLog: log("src/a.ts", 1236),
+  }, exitLineInput());
+  assertStringIncludes(
+    same.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-deferred ",
+  );
+  const different = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log("src/a.ts", 1240),
+    baseLog: log("src/b.ts", 1240),
+  }, exitLineInput());
+  assertStringIncludes(
+    different.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-attempt ",
+  );
+});
+
+/** An input whose only annotation is the runner's generic exit line. */
+function exitLineInput(): CiFixInput {
+  const input = makeInput();
+  input.encodedAnnotations = btoa(JSON.stringify([{
+    path: ".github",
+    start_line: 1,
+    message: "Process completed with exit code 1.",
+  }]));
+  return input;
+}
+
+Deno.test("processCiFailure - a semgrep failure with no failure word in its output is deferred when the base log shows the same rule (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: semgrepLog(SEMGREP_RULE, 57),
+    baseLog: semgrepLog(SEMGREP_RULE, 42),
+  }, exitLineInput());
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+});
+
+Deno.test("processCiFailure - a semgrep failure whose base log names another rule is charged, neither deferred nor held (Issue #4680)", async () => {
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: semgrepLog(SEMGREP_RULE),
+    baseLog: semgrepLog(
+      "javascript.lang.security.audit.detect-eval-with-expression",
+    ),
+  }, exitLineInput());
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+});
+
+Deno.test("processCiFailure - output a passing test prints and changing test tallies do not stop the deferral (Issue #4680)", async () => {
+  const failure = [
+    "##[group]Run deno task test",
+    "##[endgroup]",
+    "parser - parse header => ./tests/parser_test.ts:10:6",
+    "error: AssertionError: expected header to be valid",
+  ];
+  const prLog = [
+    "##[group]Run deno task test",
+    "##[endgroup]",
+    "new test ...",
+    "------- output -------",
+    "ERROR worktree retry failed after 3 attempts: simulated outage",
+    "----- output end -----",
+    "ok (1ms)",
+    ...failure.slice(2),
+    "FAILED | 1407 passed | 1 failed (2m14s)",
+    "1 failed, 42 passed, 3 warnings in 0.31s",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+  const baseLog = [
+    ...failure,
+    "FAILED | 1405 passed | 1 failed (2m31s)",
+    "1 failed, 41 passed, 2 warnings in 0.28s",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: prLog,
+    baseLog,
+  }, exitLineInput());
+
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+});
+
+Deno.test("processCiFailure - npm log paths do not prevent deferral", async () => {
+  const log = (stamp: string) =>
+    jobLog([
+      `src/legacy/report.ts(14,7): error TS2322: incompatible types`,
+      `npm error A complete log of this run can be found in: /home/runner/.npm/_logs/${stamp}-debug-0.log`,
+    ]);
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log("2026-01-01T06_10_07_123Z"),
+    baseLog: log("2026-01-02T07_11_08_456Z"),
+  }, exitLineInput());
+  assertStringIncludes(
+    captured.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-deferred ",
+  );
+});
+
+Deno.test("processCiFailure - shellcheck and Deno diagnostics compare loci", async () => {
+  const shell = (file: string, rule: string) =>
+    `##[endgroup]
+In ./scripts/${file}.sh line 42:
+  ^--^ ${rule} (info): Double quote to prevent globbing and word splitting.
+##[error]Process completed with exit code 1.`;
+  const lint = (file: string) =>
+    `##[endgroup]
+error[no-explicit-any]: any type is not allowed
+ --> worker/deno/lib/${file}.ts:12:20
+##[error]Process completed with exit code 1.`;
+  const check = (file: string) =>
+    `##[endgroup]
+TS2322 [ERROR]: Type string is not assignable to number.
+ at file:///repo/worker/deno/lib/${file}.ts:30:9
+##[error]Process completed with exit code 1.`;
+  for (
+    const [pr, base, marker] of [
+      [shell("deploy", "SC2086"), shell("deploy", "SC2086"), "deferred"],
+      [shell("deploy", "SC2086"), shell("other", "SC2154"), "attempt"],
+      [lint("new"), lint("other"), "attempt"],
+      [check("new"), check("other"), "attempt"],
+    ]
+  ) {
+    const captured = await runDeferralScenario(AGENT_MESSAGE, {
+      failingLog: pr,
+      baseLog: base,
+    }, exitLineInput());
+    assertStringIncludes(
+      captured.comments.at(-1) ?? "",
+      `<!-- vibe-ci-fix-${marker} `,
+    );
+  }
+});
+
+Deno.test("processCiFailure - diagnostic pairing handles real log boundaries", async () => {
+  const cases: [string, string][] = [
+    ...[
+      "autofix/rules.ts",
+      "-rules.ts",
+      "src/routes/+page.svelte",
+      "app/[id]/page.tsx",
+      "app/(auth)/login.ts",
+      "packages/@scope/lib/x.ts",
+      "path with space/a.ts",
+      "docs/2024/notes.ts",
+    ].map((path): [string, string] => [
+      `${path}\n❯❱ rule.one\n1┆ code`,
+      `${path}\n❯❱ rule.other\n1┆ code\nother.ts\n❯❱ rule.one\n1┆ code`,
+    ]),
+    [
+      "a.ts\n❯❱ rule.one\n1┆ code",
+      "a.ts\n❯❱ rule.other\n1┆ code\n[... 10 lines omitted ...]\n❯❱ rule.one\n1┆ code",
+    ],
+    [
+      "In other.sh line 12:\nSC2086: quote\nFor more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote",
+      "In deploy.sh line 12:\nSC2086: quote\nIn other.sh line 12:\nSC2154: variable\nFor more information:\nhttps://www.shellcheck.net/wiki/SC2086 -- quote\nhttps://www.shellcheck.net/wiki/SC2154 -- variable",
+    ],
+    ...[
+      "[shortened a long line from output, adjust with --max-chars-per-line]",
+      "[hid 5 additional lines, adjust with --max-lines-per-finding]",
+    ].map((note): [string, string] => [
+      `a.ts\n❯❱ rule.one\n1┆ code\n${note}\n❯❱ rule.two\n2┆ code`,
+      `a.ts\n❯❱ rule.one\n1┆ code\n${note}\nb.ts\n❯❱ rule.zero\n1┆ code\n${note}\n❯❱ rule.two\n2┆ code`,
+    ]),
+    [
+      "error: TS2322 [ERROR]: incompatible type\n at file:///repo/new.ts:30:9",
+      "error: TS2322 [ERROR]: incompatible type\n at file:///repo/other.ts:30:9\nTS2345 [ERROR]: bad argument\n at file:///repo/new.ts:30:9",
+    ],
+    [
+      "TS2322 [ERROR]: incompatible type\n at file:///repo/new.ts:30:9",
+      "TS2322 [ERROR]: incompatible type\n at file:///repo/other.ts:30:9\nTS2345 [ERROR]: bad argument\n at file:///repo/new.ts:30:9",
+    ],
+  ];
+  const wrap = (s: string) =>
+    `##[endgroup]\n${s}\n##[error]Process completed with exit code 1.\n`;
+  for (const [pr, base] of cases) {
+    for (const [baseLog, marker] of [[base, "attempt"], [pr, "deferred"]]) {
+      const captured = await runDeferralScenario(AGENT_MESSAGE, {
+        failingLog: wrap(pr!),
+        baseLog: wrap(baseLog!),
+      }, exitLineInput());
+      const body = captured.comments.at(-1) ?? "";
+      assertStringIncludes(body, `<!-- vibe-ci-fix-${marker} `);
+      assertEquals(
+        attemptOutcomes(body).includes("base-unverified"),
+        baseLog === base && base.includes("lines omitted"),
+      );
+    }
+  }
+});
+
+Deno.test("processCiFailure - truncated Semgrep file header holds without charging", async () => {
+  const findings = Array.from(
+    { length: 30 },
+    (_, i) =>
+      `❯❱ rule.${i}\n${
+        Array.from({ length: 10 }, () => "1┆ source code").join("\n")
+      }`,
+  ).join("\n");
+  const log = summariseActionsLog(
+    `##[endgroup]\nworker/deno/lib/big.ts\n${findings}\n##[error]Process completed with exit code 1.`,
+  );
+  const captured = await runDeferralScenario(AGENT_MESSAGE, {
+    failingLog: log,
+    baseLog: log,
+  }, exitLineInput());
+  const body = captured.comments.at(-1) ?? "";
+  assertEquals(attemptOutcomes(body), ["base-unverified"]);
+  assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+});
+
+Deno.test("processCiFailure - incomplete excerpts hold without charging", async () => {
+  const pr = "renderer - t case ... FAILED (5ms)";
+  const raw = Array.from(
+    { length: 1400 },
+    (_, i) =>
+      i === 10
+        ? "parser - v case ... FAILED (3ms)"
+        : i === 800
+        ? pr
+        : `test ${i} ... ok`,
+  ).join("\n");
+  const base = summariseActionsLog(raw);
+  assertEquals(base.includes(pr), false);
+  const cases: [string, string][] = [
+    [pr, base],
+    ...["lib/big_module.ts", "fragment of source code"].map(
+      (partial): [string, string] => {
+        const prefix = partial.startsWith("lib/") ? "worker/deno/" : "123┆ ";
+        const rawCut = `${
+          "padding".repeat(3000)
+        }\n${prefix}${partial}\n❯❱ rule.one\n1┆ code\n##[error]Process completed with exit code 1.`;
+        const cut = Array.from(
+          { length: 500 },
+          (_, i) => summariseActionsLog(rawCut, { maxBytes: i + 1 }),
+        ).find((value) => value.split("\n")[1] === partial);
+        assertEquals(typeof cut, "string");
+        return [cut!, cut!];
+      },
+    ),
+  ];
+  for (const [failingLog, baseLog] of cases) {
+    const captured = await runDeferralScenario(AGENT_MESSAGE, {
+      failingLog,
+      baseLog,
+    }, exitLineInput());
+    const body = captured.comments.at(-1) ?? "";
+    assertEquals(attemptOutcomes(body), ["base-unverified"]);
+    assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  }
 });

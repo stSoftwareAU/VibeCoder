@@ -35,6 +35,7 @@ import {
   runDockerQualityCheck,
   runNativeQualityCheck,
   runQualityGateCheck,
+  sudoCarriedEnv,
   untrustedAccountOf,
   untrustedQualityCommandEnv,
 } from "../lib/quality_gate_phase.ts";
@@ -106,6 +107,96 @@ Deno.test("isDockerInfraFailure - detects permission denied", () => {
 
 Deno.test("isDockerInfraFailure - returns false for normal failure", () => {
   assertEquals(isDockerInfraFailure("npm test failed with exit code 1"), false);
+});
+
+// Issue #4891: only the Docker CLI's own whole, unindented error line counts.
+// A test name, a log line or a captured block that quotes the text does not.
+Deno.test("isDockerInfraFailure - a failing test named for docker and not found is not infrastructure (Issue #4891)", () => {
+  const output = [
+    "running 1 test from ./docker_test.ts",
+    "docker: reports not found when the image is missing ... FAILED (2ms)",
+    "",
+    " ERRORS ",
+    "",
+    "docker: reports not found when the image is missing => ./docker_test.ts:1:6",
+    "error: AssertionError: Values are not equal",
+  ].join("\n");
+  assertEquals(isDockerInfraFailure(output), false);
+});
+
+const DENO_DOCKER_FAILURES = [
+  [
+    "running 1 test from ./docker_test.ts",
+    "docker: reports not found when the image is missing ...",
+    "------- output -------",
+    "logged output",
+    "----- output end -----",
+    "docker: reports not found when the image is missing ... FAILED (5ms)",
+    " ERRORS ",
+    "docker: reports not found when the image is missing => ./docker_test.ts:1:6",
+    "error: AssertionError",
+  ].join("\n"),
+  "docker: reports not found ... FAILED (due to 1 failed step) (5ms)",
+];
+
+Deno.test("isDockerInfraFailure - Deno wait and step summary lines are not infrastructure", () => {
+  for (const output of DENO_DOCKER_FAILURES) {
+    assertEquals(isDockerInfraFailure(output), false);
+  }
+  for (const status of ["ok", "FAILED", "ignored", "cancelled", "INCOMPLETE"]) {
+    assertEquals(
+      isDockerInfraFailure(`docker: not found ... ${status}`),
+      false,
+    );
+  }
+});
+
+Deno.test("isDockerInfraFailure - ANSI-coloured result line is not infrastructure (Issue #4891)", () => {
+  assertEquals(
+    isDockerInfraFailure(
+      "docker: reports not found ... \x1b[0;31mFAILED\x1b[0m \x1b[0;38;5;245m(2ms)\x1b[0m",
+    ),
+    false,
+  );
+});
+
+Deno.test("isDockerInfraFailure - text inside a Deno output block is not infrastructure (Issue #4891)", () => {
+  const output = [
+    "------- output -------",
+    "docker: permission denied",
+    "----- output end -----",
+  ].join("\n");
+  assertEquals(isDockerInfraFailure(output), false);
+});
+
+Deno.test("isDockerInfraFailure - an indented quotation is not infrastructure (Issue #4891)", () => {
+  assertEquals(
+    isDockerInfraFailure("  docker: Cannot connect to the Docker daemon"),
+    false,
+  );
+});
+
+Deno.test("isDockerInfraFailure - detects genuine lines around other output (Issue #4891)", () => {
+  const real = [
+    "docker: Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    "bash: docker: command not found",
+    "./quality.sh: line 4: docker: command not found",
+    "\x1b[31mdocker: permission denied while trying to connect\x1b[0m",
+  ];
+  for (const line of real) {
+    assertEquals(
+      isDockerInfraFailure(
+        `docker: reports not found ... FAILED (2ms)\n${line}\nerror: x`,
+      ),
+      true,
+      line,
+    );
+  }
+});
+
+Deno.test("isDockerInfraFailure - terminates on a hostile long line (Issue #4891)", () => {
+  assertEquals(isDockerInfraFailure("docker: " + "a ".repeat(50000)), false);
+  assertEquals(isDockerInfraFailure("a: ".repeat(50000) + "docker"), false);
 });
 
 // =============================================================================
@@ -242,6 +333,43 @@ Deno.test("isMissingCommandFailure - detects reports after inline Deno end marke
       ),
       true,
     );
+  }
+});
+
+Deno.test("runQualityGateCheck - a failing Docker run whose test name quotes docker and not found is fixable (Issue #4891)", async () => {
+  const deps = createMockDeps({
+    getRepoConfig: (_configs, _repo, key) => {
+      if (key === "dockerImage") return "node:20";
+      return "";
+    },
+    runCommand: async (cmd, _opts) => {
+      if (cmd[0] === "docker" && cmd[1] === "version") {
+        return { exitCode: 0, output: "Docker version 27" };
+      }
+      return {
+        exitCode: 1,
+        output:
+          "docker: reports not found when the image is missing ... FAILED (2ms)\nerror: Test failed",
+      };
+    },
+  });
+  const result = await runQualityGateCheck(createParams(), deps);
+  assertEquals(result.action, "failed_fixable");
+  assertStringIncludes(result.retryPrompt!, "reports not found");
+});
+
+Deno.test("runQualityGateCheck - Deno output and failed step summaries remain fixable", async () => {
+  for (const output of DENO_DOCKER_FAILURES) {
+    const deps = createMockDeps({
+      getRepoConfig: (_configs, _repo, key) =>
+        key === "dockerImage" ? "node:20" : "",
+      runCommand: async (cmd) =>
+        cmd[0] === "docker" && cmd[1] === "version"
+          ? { exitCode: 0, output: "Docker version 27" }
+          : { exitCode: 1, output },
+    });
+    const result = await runQualityGateCheck(createParams(), deps);
+    assertEquals(result.action, "failed_fixable");
   }
 });
 
@@ -1143,6 +1271,54 @@ Deno.test("carryEnvThroughSudo - the placement travels in argv, past sudo's env_
       "bash",
       "-c",
       "./quality.sh",
+    ],
+  );
+});
+
+Deno.test("sudoCarriedEnv - the egress proxy travels with the placement, nothing else does (Issue #4877)", () => {
+  const proxy = "http://192.168.128.2:3128";
+  assertEquals(
+    sudoCarriedEnv({
+      PATH: "/usr/bin",
+      HOME: "/home/vibe",
+      CARGO_TARGET_DIR: "/var/tmp/t",
+      HTTPS_PROXY: proxy,
+      https_proxy: proxy,
+      http_proxy: proxy,
+      NO_PROXY: "localhost,127.0.0.1,::1",
+      GH_TOKEN: "ghs_secret",
+    }),
+    {
+      CARGO_TARGET_DIR: "/var/tmp/t",
+      HTTPS_PROXY: proxy,
+      https_proxy: proxy,
+      http_proxy: proxy,
+      NO_PROXY: "localhost,127.0.0.1,::1",
+    },
+  );
+});
+
+Deno.test("sudoCarriedEnv - a proxy URL with credentials stays out of argv (Issue #4877)", () => {
+  assertEquals(
+    sudoCarriedEnv({ HTTPS_PROXY: "http://user:pw@proxy:3128" }),
+    {},
+  );
+});
+
+Deno.test("carryEnvThroughSudo - a proxy URL and a lower-case name pass (Issue #4877)", () => {
+  assertEquals(
+    carryEnvThroughSudo(["sudo", "-n", "-u", "agent", "--", "true"], {
+      https_proxy: "http://192.168.128.2:3128",
+    }),
+    [
+      "sudo",
+      "-n",
+      "-u",
+      "agent",
+      "--",
+      "env",
+      "https_proxy=http://192.168.128.2:3128",
+      "true",
     ],
   );
 });

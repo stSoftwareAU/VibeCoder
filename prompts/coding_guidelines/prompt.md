@@ -889,7 +889,7 @@ the escalation flow below is unaffected.
 
 ### Nor is your own pull request
 
-Raising the PR is your job; deciding it lands is not. `gh pr merge`,
+Deciding whether a PR lands is not your job. `gh pr merge`,
 `gh pr close`, `gh pr reopen`, `gh pr ready` and `gh pr review --approve` on the
 repo you are working are refused with a `[SECURITY] [PR_LIFECYCLE_REFUSED]`
 line, and so are the REST spellings (`gh api -X PUT …/pulls/N/merge`,
@@ -898,9 +898,8 @@ line, and so are the REST spellings (`gh api -X PUT …/pulls/N/merge`,
 which re-checks CI status, branch freshness and the default-branch approval
 gate; a merge you issue directly has none of them. `gh pr create`, `gh pr view`,
 `gh pr list`, `gh pr comment` and `gh pr edit` are unaffected (except that
-changing a PR's base with `--base` is refused too) — finish by creating the PR
-and leave it open. If it should not land, say so in a comment
-rather than closing it.
+changing a PR's base with `--base` is refused too) — leave a PR open once it
+exists. If it should not land, say so in a comment rather than closing it.
 
 ### Blocked on another issue → say so; the worker defers
 
@@ -924,7 +923,7 @@ is paged and no work is lost. After a commit this deferral is honoured only
 when the `Depends on` / `Blocked by` line names an issue the worker reads as
 still open; a closed or unreadable dependency does not defer, and the worker
 hands the issue to a human and raises no PR. A CI-fix run is the exception
-for a check already red on the base branch: `prompts/ci_fix/prompt.md`
+for a check already red on the base branch with the same failure as the pull request's log (or the tree-equivalent merged-PR run of the same workflow): `prompts/ci_fix/prompt.md`
 "Base-branch failures" still ends with
 `Depends on owner/repo#N`, and that line defers that check. That CI-fix
 deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,

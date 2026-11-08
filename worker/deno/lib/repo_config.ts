@@ -12,7 +12,10 @@
 import type { CiProviderConfig, RepoConfig, Result } from "../types.ts";
 import { DEFAULT_REPO_NICE } from "./config_defaults.ts";
 import { compileCheckNamePattern } from "./ci_log_provider.ts";
-import { buildQualityGateBudgetLines } from "./quality_gate_budget.ts";
+import {
+  buildQualityGateBudgetLines,
+  type GatePushGuarantee,
+} from "./quality_gate_budget.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 // =============================================================================
@@ -128,14 +131,20 @@ export function getRepoNice(
  *   run (the baseline gate), so the guidance quotes a measurement instead of
  *   the fleet-wide assumption. `runBudgetSeconds`: the whole run's wall-clock
  *   budget, which settles the question outright for a gate that cannot fit
- *   inside it — the only budget signal the PR-side flows get, since no
- *   `.vibe-run-budget.md` is written for them
+ *   inside it. `pushGuarantee`: what the worker or agent's push path checks
+ *   (Issue #4876). The default `"full-gate"` is for issue completion; CI fixes,
+ *   PR feedback, spelling fixes and custom PR prompts pass their own guarantee
+ *   so a skip record describes the checks that path actually runs.
  * @returns Quality instruction text for inclusion in prompts
  */
 export function buildQualityInstructions(
   repoConfigs: Record<string, RepoConfig> | undefined,
   repo: string,
-  options: { typicalGateSeconds?: number; runBudgetSeconds?: number } = {},
+  options: {
+    typicalGateSeconds?: number;
+    runBudgetSeconds?: number;
+    pushGuarantee?: GatePushGuarantee;
+  } = {},
 ): string {
   const skipQuality = getRepoConfig(repoConfigs, repo, "skipQualityCheck");
   if (skipQuality === "true") {
@@ -151,8 +160,9 @@ export function buildQualityInstructions(
       command,
       options.typicalGateSeconds,
       options.runBudgetSeconds,
+      options.pushGuarantee,
     ),
-    `   - Never start ${command}, the full test suite, a build, or any other long-running command in the background and poll for it. A \`sleep\`/\`pgrep\`/\`echo\` wait loop spends the execute budget, and a model turn per poll, without making progress (Issue #2230). Run one bounded foreground command instead — \`timeout 900 <command> < /dev/null\` — and read its result when it returns. Run only the test files your change touches; the quality gate and CI run everything.`,
+    `   - Never start ${command}, the full test suite, a build, or any other long-running command in the background and poll for it. A \`sleep\`/\`pgrep\`/\`echo\` wait loop spends the execute budget, and a model turn per poll, without making progress (Issue #2230). Run one bounded foreground command instead — \`timeout <seconds> <command> < /dev/null\`, where \`<seconds>\` is sized to the gate's cost stated above, with margin — and read its result when it returns. If the shell tool takes its own timeout argument, set it to match. Run only the test files your change touches; the quality gate and CI run everything.`,
     `   - IMPORTANT: Always redirect stdin from /dev/null (< /dev/null) when running tests, quality checks, or build commands to prevent hanging on unattended machines.`,
   ].join("\n");
 }

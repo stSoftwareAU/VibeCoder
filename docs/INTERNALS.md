@@ -4169,9 +4169,13 @@ while failing anyway.
 comparison that closes it. The baseline phase records **what each failing check
 printed** (`CheckResult.output`, carried through the cache entry), and the
 post-Claude gate asks whether every failing check was failing then, printing the
-same lines or fewer. Lines are compared after masking secrets, stripping ANSI,
-and normalising the wall-clock durations that differ run to run over identical
-content.
+same normalised lines or fewer. Lines are compared after masking secrets,
+stripping ANSI, and normalising the wall-clock durations that differ run to run
+over identical content. This includes compact Deno summaries such as `2m14s`,
+spaced compounds
+such as `2m 14s`, hour compounds such as `1h2m3s`, and standalone units such as
+`12.4s`; the elapsed values are ignored while failure counts and diagnostics
+remain part of the comparison.
 
 When the answer is yes the run stops as an **expected skip**: no PR, no
 `failed`/`failed-once` label, no failure tracking, no repo failure record and no
