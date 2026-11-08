@@ -38,11 +38,13 @@ Closes #4775.
 - No rule copies needed changing for the HOME lookup. The prompt tests cover the
   issue and no-issue paths; existing merged-base and unmerged prompt assertions
   remain in `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`.
-- The separate rewrite sentence is obsolete: rewrite guidance now names the
-  summary in the same sentence, followed by ownership of other summaries. The
-  rewrite requirement and prohibition on follow-up notes remain covered on both
-  issue paths by
-  `worker/deno/tests/fleet_pr_babysitter_test.ts::every repair rewrites CI-checked per-PR summary claims for the pushed head`.
+- The shared `rewrite it in the same fix` assertion is obsolete because the
+  no-issue path now says `rewrite this PR's summary in the same fix`. The rewrite
+  instruction remains covered by
+  `worker/deno/tests/fleet_pr_babysitter_test.ts::repair prompt names the summary for the PR's issue`
+  and `worker/deno/tests/fleet_pr_babysitter_test.ts::repair prompt gives generic summary guidance without an issue number`.
+  `worker/deno/tests/fleet_pr_babysitter_test.ts::every repair rewrites CI-checked per-PR summary claims for the pushed head`
+  now checks both paths and rejects `cover your change` on each.
 
 ## Test Plan
 
@@ -51,8 +53,8 @@ Closes #4775.
 - The prompt tests failed against the previous wording; removing the caller's
   issue-number argument made the caller test fail. Disabling the HOME guard made
   that test reach the agent instead of reporting `HOME is not set`.
-- The rewrite regression test failed against the previous prompt because it
-  contained “cover your change”; it checks both issue-number and generic paths.
+- The new prompt tests distinguish the base wording, which names
+  `pr-summary-<issue>.md`, from the issue-specific and generic guidance.
 - The CI shard command `.github/scripts/deno-test-shard.sh 3 4` could not start
   on the sandboxed macOS host: `mktemp -t` attempted a denied system temporary
   path. CI runs the shard on the pushed head.
