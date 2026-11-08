@@ -121,7 +121,7 @@ function createGhStub(state: {
         data: {
           repository: {
             issue: {
-              userContentEdits: { nodes },
+              userContentEdits: { totalCount: nodes.length, nodes },
               timelineItems: { nodes: [] },
             },
           },

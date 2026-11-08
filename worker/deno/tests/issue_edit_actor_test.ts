@@ -335,3 +335,192 @@ Deno.test("issue_edit_actor - includeDiff asks for and returns each body edit's 
   );
   assertEquals(captured[1]!.join(" ").includes("diff"), false);
 });
+
+/**
+ * A GraphQL fake for an issue with `count` body edits, stored oldest first
+ * (edit `i` is `user${i}`, one minute after edit `i - 1`). It serves the window
+ * GitHub would: `first:N` from the newest end, `last:N` from the oldest end,
+ * with `totalCount` covering the whole connection (Issue #4804).
+ */
+function windowedGraphMock(
+  count: number,
+  captured?: string[][],
+): (args: string[]) => Promise<string> {
+  const oldestFirst = Array.from({ length: count }, (_, i) => ({
+    editedAt: new Date(Date.UTC(2026, 4, 1) + i * 60_000).toISOString(),
+    editor: { login: `user${i}` },
+  }));
+  return (args: string[]) => {
+    captured?.push(args);
+    const query = args.join(" ");
+    const first = /userContentEdits\(first:(\d+)\)/.exec(query);
+    const last = /userContentEdits\(last:(\d+)\)/.exec(query);
+    const nodes = first
+      ? [...oldestFirst].reverse().slice(0, Number(first[1]))
+      : last
+      ? oldestFirst.slice(Math.max(0, count - Number(last[1])))
+      : [];
+    return Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: { totalCount: count, nodes },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    }));
+  };
+}
+
+Deno.test("issue_edit_actor - asks for the newest 100 body edits by default (Issue #4804)", async () => {
+  const captured: string[][] = [];
+
+  await resolveLastIssueEditor(
+    "owner/repo",
+    42,
+    windowedGraphMock(3, captured),
+  );
+
+  assertStringIncludes(
+    captured[0]!.join(" "),
+    "userContentEdits(first:100){totalCount nodes{editedAt editor{login}}}",
+  );
+});
+
+Deno.test("issue_edit_actor - keeps the newest 100 of 150 body edits and reports truncation (Issue #4804)", async () => {
+  const result = await resolveLastIssueEditor(
+    "owner/repo",
+    42,
+    windowedGraphMock(150),
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.bodyHistoryTruncated, true);
+  assertEquals(result.actor?.login, "user149");
+  assertEquals(
+    result.actor?.editedAt,
+    Math.floor(Date.parse("2026-05-01T02:29:00Z") / 1000),
+  );
+  assertEquals(result.actors.length, 100);
+  assertEquals(
+    result.actors.every((a) => a.source === "content-edit"),
+    true,
+  );
+  assertEquals(result.actors[0]?.login, "user149");
+  assertEquals(result.actors.at(-1)?.login, "user50");
+  assertEquals(
+    result.actors.at(-1)?.editedAt,
+    Math.floor(Date.parse("2026-05-01T00:50:00Z") / 1000),
+  );
+  assertEquals(result.actors.some((a) => a.login === "user49"), false);
+});
+
+Deno.test("issue_edit_actor - reports no truncation for a 3-edit history (Issue #4804)", async () => {
+  const result = await resolveLastIssueEditor(
+    "owner/repo",
+    42,
+    windowedGraphMock(3),
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.bodyHistoryTruncated, false);
+  assertEquals(result.actors.map((a) => a.login), [
+    "user2",
+    "user1",
+    "user0",
+  ]);
+});
+
+Deno.test("issue_edit_actor - rejects a body connection without totalCount (Issue #4804)", async () => {
+  const gh = () =>
+    Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: {
+              nodes: [{
+                editedAt: "2026-05-01T10:00:00Z",
+                editor: { login: "alice" },
+              }],
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    }));
+
+  const result = await resolveLastIssueEditor("owner/repo", 42, gh);
+
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "totalCount");
+});
+
+Deno.test("issue_edit_actor - rejects a totalCount smaller than the returned nodes (Issue #4804)", async () => {
+  const gh = () =>
+    Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: {
+              totalCount: 1,
+              nodes: [
+                {
+                  editedAt: "2026-05-01T10:00:00Z",
+                  editor: { login: "alice" },
+                },
+                {
+                  editedAt: "2026-05-01T11:00:00Z",
+                  editor: { login: "bob" },
+                },
+              ],
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    }));
+
+  const result = await resolveLastIssueEditor("owner/repo", 42, gh);
+
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "totalCount");
+});
+
+Deno.test("issue_edit_actor - fails closed when a truncated history has an unparseable editedAt (Issue #4804)", async () => {
+  // 101 edits exist but only 2 are returned, one with a garbage timestamp:
+  // the older edits cannot be placed against the snapshot, so reject.
+  const gh = () =>
+    Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: {
+              totalCount: 101,
+              nodes: [
+                {
+                  editedAt: "2026-05-01T11:00:00Z",
+                  editor: { login: "alice" },
+                },
+                {
+                  editedAt: "not-a-date",
+                  editor: { login: "mallory" },
+                },
+              ],
+            },
+            timelineItems: { nodes: [] },
+          },
+        },
+      },
+    }));
+
+  const result = await resolveLastIssueEditor("owner/repo", 42, gh);
+
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "unparseable editedAt");
+});

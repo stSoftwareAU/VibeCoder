@@ -511,6 +511,10 @@ export interface ContentIntegrityDecisionInput {
  *   verified-unchanged live content, and proceeds without mutating the issue.
  * - Changed, but the editor cannot be resolved: blocks without mutating the
  *   issue, so a transient lookup failure cannot mutate labels.
+ * - Changed, and the body history is truncated beyond GitHub's newest-100
+ *   window with no returned body edit predating the snapshot (Issue #4804):
+ *   blocks without mutating the issue, as an unresolved editor does, and logs
+ *   `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]`.
  * - Changed, and the refreshed baseline could not be persisted: blocks rather
  *   than proceeding on a baseline that was never written (Issue #3868).
  *
@@ -655,6 +659,36 @@ export async function resolveContentIntegrity(
         );
         diag?.logIssueSkipped(repo, issueNumber, "content-editor-unresolved");
         return blockedBy("content-editor-unresolved");
+      }
+
+      // Issue #4804: GitHub lists body edits newest first, so a truncated
+      // window holds the newest 100 and hides older edits. A hidden edit could
+      // post-date the snapshot, so an empty or post-snapshot-only window proves
+      // nothing. The oldest returned body edit settles it only when it predates
+      // the snapshot: then every edit at or after the snapshot is in the window.
+      // Otherwise fail closed, the same route as an unresolved editor.
+      if (editorLookup.bodyHistoryTruncated) {
+        const bodyEditTimes = editorLookup.actors
+          .filter((e) => e.source === "content-edit")
+          .map((e) => e.editedAt);
+        const oldestBodyEditAt = bodyEditTimes.length === 0
+          ? null
+          : Math.min(...bodyEditTimes);
+        if (
+          oldestBodyEditAt === null ||
+          oldestBodyEditAt >= verification.capturedAt
+        ) {
+          const why = oldestBodyEditAt === null
+            ? "no body edit in the window places the snapshot"
+            : "the oldest body edit in the window post-dates the snapshot, so an older unseen edit could too";
+          console.error(
+            `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED] ${repo}#${issueNumber} ` +
+              `has body edits beyond GitHub's newest-100 window, and ${why} — ` +
+              `BLOCKED`,
+          );
+          diag?.logIssueSkipped(repo, issueNumber, "content-editor-unresolved");
+          return blockedBy("content-editor-unresolved");
+        }
       }
 
       // Issue #3879 (SEC-91c772025359): the lookup used to collapse the whole
