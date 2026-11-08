@@ -44,6 +44,8 @@ The shared pre-push gate serves the hook, Step 1b and completion; the babysitter
 runs the same gate before its own push. Verdict diagnostics take precedence over
 network text; unavailable tools or databases do not count as successful checks.
 WIP-preservation pushes remain outside this gate. No VERSION file exists here.
+ShellCheck-only repair checks also leave cargo deny to CI, even when given a
+base ref; the completion gate still runs cargo deny for a whole branch.
 
 ## Evidence
 
@@ -80,7 +82,8 @@ entry points outside the worker's import map can load the gate.
 - `worker/deno/tests/pre_push_gate_cargo_deny_test.ts` covers exact argv,
   infrastructure and verdict mapping, intermediate source-only skips and the
   source-only whole-branch check. The latter was observed failing before the
-  fix.
+  fix. `cargo deny: shellcheck-only mode skips cargo deny even with a baseRef`
+  covers the merge with main's ShellCheck-only repair mode.
 - `worker/deno/tests/fleet_pr_babysitter_cargo_deny_test.ts` (6 tests at head)
   covers verdicts, infrastructure failures, ordering and a source-only repair
   checked before push. The default gate reads the repair’s tracked workflow and

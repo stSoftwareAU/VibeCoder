@@ -103,6 +103,8 @@ interface Captured {
   labelsRemoved: string[];
   gitArgs: string[][];
   commitAndPushCalls: number;
+  /** The `preFlight` spec (5th argument) of each `commitAndPushPending` call. */
+  commitAndPushPreFlights: unknown[];
   agentRuns: number;
   /** Prompts the agent was actually given (Issue #466). */
   agentPrompts: string[];
@@ -457,8 +459,9 @@ function makeGit(
       });
     }) as unknown as GitDeps["runGitCommand"],
 
-    commitAndPushPending: ((..._args: unknown[]) => {
+    commitAndPushPending: ((...args: unknown[]) => {
       captured.commitAndPushCalls++;
+      captured.commitAndPushPreFlights.push(args[4]);
       captured.events.push("git:commitAndPushPending");
       if (script.commitPushError !== undefined) {
         return Promise.resolve({
@@ -734,6 +737,7 @@ async function runProcessor(
     labelsRemoved: [],
     gitArgs: [],
     commitAndPushCalls: 0,
+    commitAndPushPreFlights: [],
     agentRuns: 0,
     agentPrompts: [],
     lockRenewals: [],
@@ -839,6 +843,16 @@ Deno.test("processMergeConflict - resolves a conflict, pushes, comments and clea
     resolved,
     `head="1111111111111111111111111111111111111111"`,
   );
+});
+
+Deno.test("processMergeConflict - the push is gated on the repository's ShellCheck policy (Issue #4631)", async () => {
+  const { captured, result } = await runProcessor(makeInput(), makeGitScript());
+
+  assert(result.ok);
+  // No pre-flight commands are configured, so the spec is ShellCheck-only.
+  assertEquals(captured.commitAndPushPreFlights, [
+    { commands: [], shellcheckOnly: true },
+  ]);
 });
 
 Deno.test("processMergeConflict - records the attempt before touching the branch", async () => {

@@ -46,6 +46,27 @@ Deno.test("cargo deny: baseRef checks a source-only branch", async () => {
   }
 });
 
+Deno.test("cargo deny: shellcheck-only mode skips cargo deny even with a baseRef", async () => {
+  const { root, clone, stdin } = await makeRepo(CI_WITH_DENY, {
+    "src/main.rs": "fn main() { }\n",
+  });
+  try {
+    const seen: Seen[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      baseRef: "origin/main",
+      shellcheckOnly: true,
+      preFlightCommands: [],
+      runner: recordingRunner(seen, () => PASS),
+    });
+    assert(result.ok);
+    assertEquals(denyCommands(seen), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 const CI_WITH_DENY = [
   "name: ci",
   "on: push",

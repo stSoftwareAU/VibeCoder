@@ -46,12 +46,13 @@ import { runGhOrThrow } from "./gh_spawn.ts";
 /**
  * Pre-flight gate specification passed to {@link commitAndPushPending}
  * (Issue #3577). Omit the spec to disable the gate — the repo then commits and
- * pushes with zero added latency. Passing a spec turns on Step 1b's
- * changed-file checks (Issue #3689: deno/cargo fmt, markdownlint, cspell and
- * the Floci deploy test) even when `commands` is empty, then the repo's
- * `cargo deny check` when the push touches a cargo manifest or lock file and
- * the repo's CI runs it (Issue #4626); an empty list only means no repo
- * pre-flight commands run.
+ * pushes with zero added latency, which is what the WIP checkpoint, timeout
+ * preservation and declared hand-off pushes rely on. Passing a spec turns on
+ * Step 1b's changed-file checks (Issue #3689: deno/cargo fmt, markdownlint,
+ * cspell, the Floci deploy test and the repository's ShellCheck policy), then
+ * cargo deny when applicable (Issue #4626), even when `commands` is empty; an
+ * empty list only means no repo pre-flight commands run. A spec with
+ * `shellcheckOnly` runs just the ShellCheck policy (Issue #4631).
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */
@@ -60,6 +61,12 @@ export interface PreFlightGateSpec {
   timeoutSeconds?: number;
   /** Injectable command runner (defaults to the real subprocess runner). */
   runner?: PreFlightRunner;
+  /**
+   * Step 1b validates only the repository's ShellCheck policy for the pushed
+   * scripts, leaving the formatter policy of a repair without pre-flight
+   * commands unchanged (Issue #4631).
+   */
+  shellcheckOnly?: boolean;
 }
 
 /**
@@ -70,7 +77,8 @@ export interface PreFlightGateSpec {
  * to {@link commitAndPushPending}. Returns `undefined` (not an empty spec) so
  * a caller that passes it straight through leaves a repo with no entry
  * ungated; the issue completion phase substitutes `{ commands: [] }` instead,
- * so it still runs the changed-file checks (Issue #3689). Throws on malformed
+ * so it still runs the changed-file checks (Issue #3689), and the PR repair
+ * processors use {@link resolveRepairPreFlightSpec}. Throws on malformed
  * config via `getPreFlightCommands` — but config is already validated at load
  * (Issue #3577), so this is defence in depth.
  */
@@ -80,6 +88,21 @@ export function resolvePreFlightSpec(
 ): PreFlightGateSpec | undefined {
   const commands = getPreFlightCommands(repoConfigs, repo);
   return commands.length > 0 ? { commands } : undefined;
+}
+
+/**
+ * {@link resolvePreFlightSpec} for the PR repair processors (CI-fix, review
+ * feedback, spelling, merge conflict): a repo with no pre-flight commands
+ * still gets the ShellCheck publication check, and nothing else, before the
+ * repair is pushed (Issue #4631). WIP checkpoint, timeout-preservation and
+ * declared hand-off pushes never call this; they stay ungated on purpose.
+ */
+export function resolveRepairPreFlightSpec(
+  repoConfigs: Record<string, RepoConfig> | undefined,
+  repo: string,
+): PreFlightGateSpec {
+  return resolvePreFlightSpec(repoConfigs, repo) ??
+    { commands: [], shellcheckOnly: true };
 }
 
 /**
@@ -794,6 +817,7 @@ export async function gateUnpushedCommits(
     cwd: options.cwd ?? Deno.cwd(),
     stdin: `${ref} ${head.value.stdout.trim()} ${ref} ${remoteSha}\n`,
     preFlightCommands: preFlightAlreadyRan ? [] : preFlight.commands,
+    shellcheckOnly: preFlight.shellcheckOnly,
     timeoutSeconds: preFlight.timeoutSeconds,
     runner: preFlight.runner,
     baseRef,
@@ -841,7 +865,8 @@ export async function gateUnpushedCommits(
  *      runs when no commit is unpushed). When Step 1 committed nothing it
  *      also re-runs the repo's pre-flight commands; when Step 1 committed,
  *      those commands already ran there and are not repeated. A block
- *      refuses the push. The gate output in the
+ *      refuses the push. With no pre-flight spec Step 1b does not run, so
+ *      WIP checkpoint pushes are never refused. The gate output in the
  *      returned error is cut to a head and a tail (as is Step 1's pre-flight
  *      block), because PR processors post it in a comment.
  *   1c. Step 1c — when `options.syncBaseBranch` is set and there is a fix to
@@ -872,7 +897,8 @@ export async function gateUnpushedCommits(
  *   blocks BOTH the commit and the push. There is no override flag. Supplying
  *   a spec, even one with an empty `commands` list, also turns on Step 1b's
  *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
- *   (zero added latency, no gate).
+ *   (zero added latency, no gate); a `shellcheckOnly` spec runs only the
+ *   repository ShellCheck policy (Issue #4631).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly
