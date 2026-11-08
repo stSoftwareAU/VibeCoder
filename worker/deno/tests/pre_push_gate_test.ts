@@ -391,6 +391,40 @@ Deno.test("listPushedFiles: a file behind a directory later replaced by a symlin
   }
 });
 
+Deno.test("listPushedFiles: a symlinked checkout retains real files and skips escaping paths (#4909)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-pp-linked-" });
+  try {
+    const clone = `${root}/clone`;
+    const outside = `${root}/outside`;
+    const link = `${root}/link`;
+    await Deno.mkdir(`${clone}/keep`, { recursive: true });
+    await Deno.mkdir(outside);
+    await Deno.writeTextFile(`${clone}/README.md`, "# Readme\n");
+    await Deno.writeTextFile(`${clone}/keep/ok.md`, "# Ok\n");
+    await Deno.writeTextFile(`${outside}/file.json`, "{}\n");
+    await Deno.symlink(outside, `${clone}/dir`);
+    await Deno.symlink(clone, link);
+    const refs = parsePrePushRefs(
+      `refs/heads/main ${SHA_A} refs/heads/main ${ZERO}\n`,
+    );
+    assert(refs.ok);
+    const files = await listPushedFiles(
+      refs.value,
+      link,
+      () =>
+        Promise.resolve({
+          code: 0,
+          stdout: "README.md\0keep/ok.md\0dir/file.json\0",
+          stderr: "",
+        }),
+    );
+    assert(files.ok);
+    assertEquals(files.value, ["README.md", "keep/ok.md"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("listPushedFiles: an unresolvable checkout returns an Err naming the cause (#4909)", async () => {
   const missing = `${await Deno.makeTempDir({ prefix: "vibe-pp-gone-" })}/gone`;
   let expected = "";

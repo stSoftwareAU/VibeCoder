@@ -27,8 +27,9 @@
  * whose OWN check is red on its default branch produces no findings to diff,
  * so it failed the gate on every run and recorded a host health failure each
  * time. `decidePreExistingGateFailure` compares the failing checks and their
- * output against the untouched tree's instead: same checks, same lines, so the
- * run reproduced a failure it did not cause and ends without failing.
+ * output against the untouched tree's instead: same checks, same normalised
+ * lines, so the run reproduced a failure it did not cause and ends without
+ * failing.
  *
  * Uses Australian English throughout (behaviour, colour, organisation,
  * favour, centre).
@@ -343,8 +344,9 @@ export interface PreExistingGateDecision {
 // deno-lint-ignore no-control-regex -- ANSI SGR sequences are control chars.
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
 
-/** A wall-clock measurement, which differs run to run on identical content. */
-const DURATION_RE = /\b\d+(?:[.,]\d+)?\s*(?:ns|µs|us|ms|s|m)\b/g;
+/** A wall-clock measurement, including compact and spaced h/m compounds. */
+const DURATION_RE =
+  /\b(?:\d+(?:[.,]\d+)?\s*h\s*)?(?:\d+(?:[.,]\d+)?\s*m\s*)?\d+(?:[.,]\d+)?\s*(?:ns|µs|us|ms|s|m)\b/g;
 
 /** The per-check duration line the gate appends (Issue #86). */
 const TIMING_LINE_RE = /⏱/;

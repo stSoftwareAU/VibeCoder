@@ -40,6 +40,9 @@ directory holding `file.json`. Against the unfixed code it failed with
 
 - Added the test above (red on base, green on head). `keep/ok.md` is the
   positive control that nested real files still list.
+- `worker/deno/tests/pre_push_gate_test.ts::listPushedFiles: a symlinked checkout retains real files and skips escaping paths (#4909)`
+  checks both ordinary files and an escaping path through a symlinked checkout.
+  Replacing `realCwd` with `cwd` in the comparison makes this test fail.
 - `tests/completion_phase_pre_push_gate_3689_test.ts`: 29 passed.
   `tests/completion_phase_repo_formatters_test.ts`: 8 passed.
 - Callers checked: `runPrePushGate` and
@@ -53,10 +56,9 @@ directory holding `file.json`. Against the unfixed code it failed with
   `could not resolve checkout ...: <realPath error message>` text. This kills
   the mutation check's three survivors at `pre_push_gate.ts:222` (`false` ->
   `true`, deleted `ok`) and `:224` (negated `instanceof Error` ternary).
-- `deno task test:unit tests/pre_push_gate_test.ts`: 54 passed, 0 failed.
-- `./quality.sh` on this head: every stage passed except `deno tests`, whose one
-  failure is `tests/merge_fast_checks_credentials_4705_test.ts:101`
-  (`spawnFastCheck`). It fails because this host's
-  `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables appear in the expected argv.
-  It does not touch `pre_push_gate.ts`; 33152 other tests passed. The serial
-  pass did not run after that failure. Not re-run on a clean environment.
+- `deno task test:unit tests/pre_push_gate_test.ts`: 55 passed, 0 failed.
+- On the merged tree, formatting, lint, type checking, markdownlint and
+  completeness checks passed. The full unit suite could not complete: Deno
+  panicked in its parallel test runtime on two attempts. The local quality gate
+  also timed out probing Checkov and skipped unavailable Semgrep. The base
+  merge's PR #4914 passed its GitHub checks; CI will run on the pushed head.
