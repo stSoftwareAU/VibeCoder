@@ -28,8 +28,10 @@ uses. A workflow CI does not run for the push is not read: one with no
 and no `push` trigger whose branch filter matches the pushed branch, and, in the
 whole-branch check, one whose `paths` / `paths-ignore` filter selects none of
 the branch's touched paths. An unreadable filter leaves the workflow eligible;
-patterns longer than 200 characters or containing multiple repetitions are
-unreadable to bound regex backtracking.
+patterns longer than 200 characters are unreadable. Multiple wildcards are
+matched using dynamic programming bounded by pattern and path lengths. Job
+settings come from the parsed workflow, preserving column-zero comments and
+cross-job YAML aliases.
 
 The babysitter is not gated. Its repairs run on the host, and the governing
 issue forbids host execution beside the App key until the contained path (#4768,
@@ -91,7 +93,7 @@ not run there.
 
 ## Test Plan
 
-- `worker/deno/tests/cargo_deny_gate_test.ts` (96 tests at head) covers workflow
+- `worker/deno/tests/cargo_deny_gate_test.ts` (99 tests at head) covers workflow
   parsing, matrix expansion and fallback, the actual container workflow,
   triggers, diagnostic classification and runner behaviour. This round adds the
   job- and workflow-level `defaults.run.working-directory` tests, the
@@ -110,7 +112,20 @@ not run there.
   command does not use (and its gate refusal), an `include` on another dimension
   (for `continue-on-error` and for a command key), a schedule-only workflow,
   path filters (`paths`, `paths-ignore`, `!`), push branch filters and
-  tags-only, trigger forms, and a hostile path pattern.
+  tags-only, trigger forms, and a hostile path pattern. The latest review adds
+  column-zero comments, a cross-job alias and multi-wildcard path filters.
+  The README gate test also exercises the comment while checking advisory
+  warnings and blocking bans.
+- The old conservative treatment of multiple repetitions is obsolete: valid
+  patterns now select only matching paths, covered by
+  `cargo_deny_gate_test.ts::workflow: multi-wildcard path filters select only matching paths`
+  and `cargo_deny_gate_test.ts::workflow: a path pattern the gate cannot read selects the path`.
+  Invalid and over-length patterns still leave workflows eligible, as covered
+  by the latter test and
+  `cargo_deny_gate_test.ts::workflow: a hostile path pattern is not read and does not hang`;
+  that test now exceeds the length cap instead of relying on repeated wildcards.
+  The README gate test now includes a column-zero comment; the original
+  comment-free pipeline remains covered by the two README workflow tests.
 - Obsolete: the permanent refusals of a variable or expression before `check`
   and of an environment assignment holding an expression. A check stays
   mandatory; the replacements are
@@ -150,8 +165,8 @@ not run there.
   raising the pattern caps → the hostile-pattern test red (the unreadable
   pattern then rules the workflow out).
 - Regexes checked for backtracking: the new `jobs:` header and job-key patterns
-  are anchored with no overlapping quantifiers; the path-pattern regex is built
-  from a pattern capped at 200 characters and one repetition; unreadable include
+  are anchored with no overlapping quantifiers; path matching uses dynamic
+  programming and a 200-character pattern cap; unreadable include
   or ignore filters leave the workflow eligible (hostile case above);
   `CONTINUE_MATRIX_KEY` is a single `\w-` run.
 - Callers checked for the changed `runCargoDenyGate` result (it now also carries
@@ -179,18 +194,17 @@ not run there.
 
 The test suite does not run cargo-deny end to end; its runner is injected. The
 full local gate (`./quality.sh`) was not run in the PR #4895 review round.
-The CI Semgrep scan flagged the dynamic path-filter regex. Patterns with multiple
-repetitions now take the conservative unreadable-filter path, including in
-ignore filters. The path-filter test covers this fallback; the bounded regex has
-a documented Semgrep suppression. The two cargo-deny test files, Deno format,
-lint and type checks, and markdownlint pass locally. The changed TypeScript
-files pass Semgrep; a full-tree local CI scan reports two pre-existing findings
-in `renovate.json` and `unused_config_detector.ts`. The base PR's Semgrep check
+The CI Semgrep scan flagged the former dynamic path-filter regex; the matcher
+now uses dynamic programming with only single-character class regexes. The two
+cargo-deny test files, Deno format, lint and type checks, and markdownlint pass
+locally. In the preceding review round, the then-changed TypeScript files passed
+Semgrep; a full-tree local scan reported two pre-existing findings in
+`renovate.json` and `unused_config_detector.ts`. The base PR's Semgrep check
 passed. Checkov was not run in that review round.
 
 ## Mutation survivors (PR #4895 review fix)
 
-- `cargo_deny_gate.ts` include-entry guard, `filterPatternRegex` (length cap,
+- `cargo_deny_gate.ts` include-entry guard, the former path matcher (length cap,
   `?`, `+`, class, trailing backslash, invalid regex) and `stringList`: pinned
   by new tests in `worker/deno/tests/cargo_deny_gate_test.ts`; each listed
   mutation was re-applied by hand and turned a test red.

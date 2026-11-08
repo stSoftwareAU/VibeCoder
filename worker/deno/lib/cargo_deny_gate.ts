@@ -27,7 +27,7 @@
  *
  * A workflow CI does not run for the push (a `schedule`-only audit, or a
  * `paths` filter that selects none of the branch's touched paths) is not read:
- * the gate is no stricter than CI.
+ * those trigger and path cases do not cause an extra check.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -837,6 +837,7 @@ function yamlScalar(value: unknown): string | undefined {
 interface ParsedWorkflow {
   on?: unknown;
   defaults?: { run?: { "working-directory"?: unknown } };
+  jobs?: Record<string, ParsedJob | null>;
 }
 
 /** The workflow as YAML parsed it, or null when it is not valid YAML. */
@@ -862,45 +863,74 @@ export interface WorkflowRunContext {
 const FILTER_PATTERN_CAP = 200;
 
 /**
- * A GitHub filter pattern as a regex: `*` is any run but `/`, `**` any run,
+ * Match a GitHub filter pattern: `*` is any run but `/`, `**` any run,
  * `?` and `+` apply to the character before them, `[...]` is a class. Null
  * for a pattern the gate cannot read, which the caller treats as a match.
  */
-function filterPatternRegex(pattern: string): RegExp | null {
+function filterPatternMatches(pattern: string, name: string): boolean | null {
   if (pattern.length > FILTER_PATTERN_CAP) return null;
-  let repetitions = 0;
-  let out = "";
+  const tokens: { kind: string; matches?: (ch: string) => boolean }[] = [];
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i] ?? "";
-    if (ch === "*" || ch === "?" || ch === "+") {
-      // Multiple repetitions can overlap and cause exponential backtracking.
-      if (++repetitions > 1) return null;
-    }
     if (pattern.startsWith("**/", i)) {
-      out += "(?:.*/)?";
+      tokens.push({ kind: "dirs" });
       i += 2;
     } else if (ch === "*") {
       if (pattern[i + 1] === "*") {
-        out += ".*";
+        tokens.push({ kind: "globstar" });
         i++;
-      } else out += "[^/]*";
-    } else if (ch === "?" || ch === "+") out += ch;
-    else if (ch === "[") {
+      } else tokens.push({ kind: "star" });
+    } else if (ch === "?" || ch === "+") {
+      const previous = tokens[tokens.length - 1];
+      if (!previous || previous.kind !== "char") return null;
+      previous.kind = ch;
+    } else if (ch === "[") {
       const close = pattern.indexOf("]", i + 2);
       if (close === -1) return null;
-      out += `[${pattern.slice(i + 1, close).replace(/\\/g, "\\\\")}]`;
+      let regex: RegExp;
+      try {
+        regex = new RegExp(
+          `^[${pattern.slice(i + 1, close).replace(/\\/g, "\\\\")}]$`,
+        );
+      } catch {
+        return null;
+      }
+      tokens.push({ kind: "char", matches: (value) => regex.test(value) });
       i = close;
-    } else if (ch === "\\" && i + 1 < pattern.length) {
-      i++;
-      out += (pattern[i] ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    } else out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    } else {
+      if (ch === "\\" && i + 1 < pattern.length) i++;
+      const literal = pattern[i];
+      tokens.push({ kind: "char", matches: (value) => value === literal });
+    }
   }
-  try {
-    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- One repetition at most; all other input is escaped or a character class.
-    return new RegExp(`^${out}$`);
-  } catch {
-    return null;
+  let next = Array.from(
+    { length: name.length + 1 },
+    (_, i) => i === name.length,
+  );
+  for (let t = tokens.length - 1; t >= 0; t--) {
+    const token = tokens[t]!;
+    const row = Array<boolean>(name.length + 1).fill(false);
+    let slashMatch = false;
+    for (let i = name.length; i >= 0; i--) {
+      const ch = name[i];
+      const matched = ch !== undefined && (token.matches?.(ch) ?? false);
+      if (token.kind === "char") row[i] = matched && next[i + 1]!;
+      else if (token.kind === "?") {
+        row[i] = next[i]! || (matched && next[i + 1]!);
+      } else if (token.kind === "+") {
+        row[i] = matched && (next[i + 1]! || row[i + 1]!);
+      } else if (token.kind === "dirs") {
+        slashMatch ||= ch === "/" && next[i + 1]!;
+        row[i] = next[i]! || slashMatch;
+      } else {
+        row[i] = next[i]! ||
+          (ch !== undefined && (token.kind === "globstar" || ch !== "/") &&
+            row[i + 1]!);
+      }
+    }
+    next = row;
   }
+  return next[0]!;
 }
 
 /**
@@ -914,9 +944,12 @@ function filterSelects(
   let selected = false;
   for (const pattern of patterns) {
     const negated = pattern.startsWith("!");
-    const regex = filterPatternRegex(negated ? pattern.slice(1) : pattern);
-    if (regex === null) return null;
-    if (regex.test(name)) selected = !negated;
+    const matches = filterPatternMatches(
+      negated ? pattern.slice(1) : pattern,
+      name,
+    );
+    if (matches === null) return null;
+    if (matches) selected = !negated;
   }
   return selected;
 }
@@ -1083,13 +1116,15 @@ export function workflowCargoDenyFindings(
       candidate.header < start && start < candidate.end
     );
     if (block !== undefined) {
-      try {
-        const parsed = parseYaml(
-          lines.slice(block.header, block.end).map((line) =>
-            line.slice(block.indent)
-          ).join("\n"),
-        ) as Record<string, ParsedJob | null>;
-        const parsedJob = Object.values(parsed)[0];
+      {
+        const header = (lines[block.header] ?? "").trim().replace(
+          /:\s*(?:#.*)?$/,
+          "",
+        );
+        const key = header.startsWith('"') || header.startsWith("'")
+          ? yamlScalar(parseYaml(header))
+          : header;
+        const parsedJob = key === undefined ? undefined : workflow?.jobs?.[key];
         job = {
           matrix: parsedJob?.strategy?.matrix ?? {},
           defaultWd:
@@ -1097,7 +1132,7 @@ export function workflowCargoDenyFindings(
               workflowWd,
           continueOnError: yamlScalar(parsedJob?.["continue-on-error"]),
         };
-      } catch { /* Unsupported job syntax uses the full-check fallback. */ }
+      }
     }
     findings.push(...stepFindings(lines, start, end, dashIndent, job));
     start = end;

@@ -562,7 +562,12 @@ Deno.test("workflow: the README pipeline marks only its advisories leg as allowe
 });
 
 Deno.test("gate: a failed advisories leg is a warning and a failed bans leg is a verdict (README pipeline)", async () => {
-  const findings = workflowCargoDenyFindings(README_PIPELINE);
+  const findings = workflowCargoDenyFindings(
+    README_PIPELINE.replace(
+      "    strategy:",
+      "# TODO: add a msrv leg\n    strategy:",
+    ),
+  );
   const advisoriesFails = fakeRunner((command) =>
     command.endsWith("'advisories'")
       ? {
@@ -1831,7 +1836,7 @@ Deno.test("workflow: trigger forms as a string, a list or merge_group are read",
 });
 
 Deno.test("workflow: a hostile path pattern is not read and does not hang", () => {
-  const pattern = "**/".repeat(60) + "x";
+  const pattern = "**/".repeat(70) + "x";
   const text = yaml(
     "on:",
     "  pull_request:",
@@ -1870,6 +1875,72 @@ Deno.test("workflow: an include list holding a null or a scalar entry is skipped
   ]);
 });
 
+Deno.test("workflow: column-zero comments preserve matrix and job defaults", () => {
+  const pipeline = README_PIPELINE.replace(
+    "    strategy:",
+    "# TODO: add a msrv leg\n    strategy:",
+  );
+  const findings = workflowCargoDenyFindings(pipeline);
+  assertEquals(checkSubsets(findings), ["advisories", "bans licenses sources"]);
+  assertEquals(findings.map((f) => f.kind === "command" && !!f.allowFailure), [
+    true,
+    false,
+  ]);
+  const text = yaml(
+    "jobs:",
+    "  deny:",
+    "    defaults:",
+    "      run:",
+    "        working-directory: rust",
+    "# a note",
+    "    steps:",
+    "      - run: cargo deny check",
+  );
+  assertEquals(summary(workflowCargoDenyFindings(text)), [[
+    "check",
+    "rust",
+    false,
+  ]]);
+});
+
+Deno.test("workflow: job defaults resolve cross-job YAML aliases", () => {
+  const text = yaml(
+    "jobs:",
+    "  first:",
+    "    defaults: &wd",
+    "      run:",
+    "        working-directory: rust",
+    "    steps:",
+    "      - run: echo ok",
+    "  deny:",
+    "    defaults: *wd",
+    "    steps:",
+    "      - run: cargo deny check",
+  );
+  assertEquals(summary(workflowCargoDenyFindings(text)), [[
+    "check",
+    "rust",
+    false,
+  ]]);
+});
+
+Deno.test("workflow: multi-wildcard path filters select only matching paths", () => {
+  for (
+    const [pattern, match, miss] of [
+      ["**/*.rs", "src/main.rs", "README.md"],
+      ["src/**/*.rs", "src/main.rs", "docs/main.rs"],
+      ["**/Cargo.*", "crates/a/Cargo.toml", "src/main.rs"],
+    ] as const
+  ) {
+    const text = pathFiltered(pattern);
+    assertEquals(workflowCargoDenyFindings(text, { touched: [miss] }), []);
+    assertEquals(
+      workflowCargoDenyFindings(text, { touched: [match] }).length,
+      1,
+    );
+  }
+});
+
 function pathFiltered(pattern: string): string {
   return yaml(
     "on:",
@@ -1905,8 +1976,9 @@ Deno.test("workflow: a path pattern reads *, a literal dot, ? and + as GitHub do
 });
 
 Deno.test("workflow: a path pattern the gate cannot read selects the path", () => {
-  // Multiple repetitions can cause exponential backtracking; conservatively select.
-  assertEquals(pathRuns("*a*a*a*b", "aaaaaaaaaaaaaaaaaaaa"), true);
+  // Multiple repetitions are matched without exponential backtracking.
+  assertEquals(pathRuns("*a*a*a*b", "aaaaaaaaaaaaaaaaaaaa"), false);
+  assertEquals(pathRuns("*a*a*a*b", "aaaaab"), true);
   const ignored = pathFiltered("*a*a*a*b").replace(
     "    paths:",
     "    paths-ignore:",

@@ -26,8 +26,11 @@
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
  *    deploy test are cheap. Then the repo's `cargo deny check` (Issue #4626)
- *    runs when the push changes a Cargo manifest, lock file or deny config and
- *    the repo's CI runs it; missing tools or an unreachable advisory database
+ *    runs for eligible workflows when intermediate pushes or ShellCheck-only
+ *    repairs change a Cargo manifest, lock file or deny config. The whole-branch
+ *    completion check (with a baseRef and not ShellCheck-only) runs it on every
+ *    branch for eligible workflows, regardless of changed cargo inputs.
+ *    Missing tools or an unreachable advisory database
  *    are infrastructure failures, except for an invocation CI allows to fail,
  *    whose failures of every kind are `[PRE_PUSH_WARNING]` lines.
  * 2. Then runs the repo's configured pre-flight commands.
@@ -1635,8 +1638,11 @@ export async function runAffectedShellcheckChecks(opts: {
 
 /**
  * Run the pre-push gate: the always-on changed-file checks first, then the
- * repo's `cargo deny check` (Issue #4626) when the push touches a cargo input
- * and the repo's CI runs it, then the repo's pre-flight commands. `checksRun`
+ * repo's `cargo deny check` (Issue #4626), then the repo's pre-flight commands.
+ * Intermediate pushes and ShellCheck-only repairs run eligible workflows when
+ * pushed paths include a cargo input. The whole-branch completion check (with a
+ * baseRef and not ShellCheck-only) runs eligible workflows on every branch,
+ * regardless of changed cargo inputs. `checksRun`
  * lists the changed-file and cargo-deny commands run. The changed-file checks
  * and the cargo-deny gate run whatever the run budget — they are never skipped;
  * all but the Floci deploy test are fast. Any git, parse or planning error is
