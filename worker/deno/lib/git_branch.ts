@@ -360,6 +360,12 @@ export async function createFeatureBranchFromBase(
  * Returns `true` when the branch was checked out from `origin/<branch>`,
  * `false` when no such remote branch exists (or the checkout failed) —
  * the caller then falls back to creating the branch fresh from base.
+ *
+ * The branch can be held by another worktree of the clone when git refuses
+ * the checkout: a sibling lane worktree (Issue #1564 pattern, Issue #4794) or
+ * the shared clone's primary (Issue #4789). That holder is detached and the
+ * checkout retried once. A holder outside those (e.g. a developer's own
+ * worktree) is left alone, so the function returns `ok: true, value: false`.
  */
 export async function resumeFeatureBranchFromRemote(
   branchName: string,
@@ -378,13 +384,18 @@ export async function resumeFeatureBranchFromRemote(
   // onto the remote checkpoint rather than colliding with it (Issue #356);
   // `branch -D` cannot delete the checked-out branch, and the collision that
   // followed silently reported "no resumable work" over a pushed commit.
+  //
+  // Issue #4794: the holder can be a sibling lane worktree, which is refused
+  // the same way the primary is (Issue #1564). A lane holder is preferred;
+  // only when none holds it is the primary (Issue #4789) the holder.
   const args = buildCheckoutResetBranchArgs(branchName, `origin/${branchName}`);
   let checkoutResult = await runGitCommand(args, options);
   if (checkoutResult.ok && checkoutResult.value.code !== 0) {
-    const holder = await primaryCloneHoldingBranch(
-      checkoutResult.value.stderr,
-      options.cwd,
-    );
+    const holder = heldByLaneWorktree(checkoutResult) ??
+      await primaryCloneHoldingBranch(
+        checkoutResult.value.stderr,
+        options.cwd,
+      );
     if (holder !== undefined && await detachLaneWorktreeHead(holder)) {
       checkoutResult = await runGitCommand(args, options);
     }

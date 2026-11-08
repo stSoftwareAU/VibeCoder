@@ -14,6 +14,12 @@
  * branch — and author-verified, so a same-titled issue somebody else opened is
  * left exactly as it is. A repeat appends a comment rather than filing again.
  *
+ * A private fleet repository is never named on the public issue (Issue #4780,
+ * mirroring #4318): its title is an opaque digest, its body carries only the
+ * refusal count, the timestamp, the tip SHAs and the generic fix, and the full
+ * report — verdict and analysis included — goes to the host log instead.
+ * {@link isRepoPublic} decides, and a failed lookup counts as private.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -25,6 +31,7 @@ import {
   buildConflictAnalysisComment,
   type MilestoneConflictEscalation,
 } from "./milestone_conflict_triage.ts";
+import { isRepoPublic } from "./repo_visibility.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
   type GateRefusalRecord,
@@ -59,7 +66,13 @@ export function gateWedgeDiagnosticTitle(
     `refusing: ${repo} ${milestoneBranch}`;
 }
 
-/** What the diagnostic reports. */
+/**
+ * What the diagnostic reports.
+ *
+ * Filed in full only when the repository is public. A private repository gets
+ * {@link buildPrivateGateWedgeDiagnosticBody} instead, so none of these fields
+ * but the count, timestamp and tip SHAs reach the public issue (Issue #4780).
+ */
 export interface GateWedgeReport {
   /** The monitored repository whose milestone is wedged. */
   repo: string;
@@ -77,7 +90,29 @@ export interface GateWedgeReport {
   analysis?: string;
 }
 
-/** Render the diagnostic body — the same text whether filed or appended. */
+/** Why a refusal is reported at all: it is not charged to the conflict budget. */
+const GATE_WEDGE_NOT_CHARGED =
+  "A gate refusal is deliberately **not charged** to the branch's conflict " +
+  "budget, so nothing concludes it: without this report the identical " +
+  "resolution is rebuilt and refused every cycle, for every issue of the " +
+  "milestone. The milestone's issues are now held back until either side's " +
+  "tip moves, and this is the record of why.";
+
+/** The generic fix, which names no repository, branch or milestone. */
+const GATE_WEDGE_WHAT_TO_FIX = "### What to fix\n\n" +
+  "Fix the **gate**, not the conflict: work out why " +
+  "`milestone_resolution_gate.ts` cannot verify this repository's merged " +
+  "tree, and teach it to. The conflict itself is the worker's to resolve " +
+  "and needs no human (Issue #2388).";
+
+/**
+ * Render the public diagnostic body — the same text whether filed or appended.
+ *
+ * For a public repository only. A private one is filed with
+ * {@link buildPrivateGateWedgeDiagnosticBody}, since this text names the
+ * repository, branches, milestone, conflict key, verdict and analysis
+ * (Issue #4780, #4318).
+ */
 export function buildGateWedgeDiagnosticBody(report: GateWedgeReport): string {
   const { repo, milestoneBranch, defaultBranch, refusal } = report;
   const tips = [
@@ -96,21 +131,75 @@ export function buildGateWedgeDiagnosticBody(report: GateWedgeReport): string {
     `the conflict, and the verification gate then refused the resolution — ` +
     `with the same verdict, on the same conflict, from the same ` +
     `\`${defaultBranch}\` tip, ${refusal.count} time(s) in a row.\n\n` +
-    `A gate refusal is deliberately **not charged** to the branch's conflict ` +
-    `budget, so nothing concludes it: without this report the identical ` +
-    `resolution is rebuilt and refused every cycle, for every issue of the ` +
-    `milestone. The milestone's issues are now held back until either side's ` +
-    `tip moves, and this is the record of why.\n\n` +
+    `${GATE_WEDGE_NOT_CHARGED}\n\n` +
     `### What the gate said\n\n\`\`\`\n${refusal.reason}\n\`\`\`\n\n` +
     `### The merge it refused\n\n${tips}\n` +
     `- Conflict key: \`${refusal.conflictKey}\`\n` +
     `- Last refused at: ${refusal.at}\n\n` +
     (report.analysis ? `${report.analysis}\n\n` : "") +
-    `### What to fix\n\n` +
-    `Fix the **gate**, not the conflict: work out why ` +
-    `\`milestone_resolution_gate.ts\` cannot verify this repository's merged ` +
-    `tree, and teach it to. The conflict itself is the worker's to resolve ` +
-    `and needs no human (Issue #2388).`;
+    GATE_WEDGE_WHAT_TO_FIX;
+}
+
+/**
+ * The title a private repository's wedge is filed under (Issue #4780).
+ *
+ * The public title names the repository and the milestone branch, which a
+ * private fleet repo must not, so this carries the first 12 hex digits of
+ * SHA-256 over `repo + " " + milestoneBranch` instead. The same pair always
+ * gives the same title, so the dedup search still finds the one open
+ * diagnostic, and different branches give different titles.
+ */
+export async function privateGateWedgeDiagnosticTitle(
+  repo: string,
+  milestoneBranch: string,
+): Promise<string> {
+  const digest = new Uint8Array(
+    await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`${repo} ${milestoneBranch}`),
+    ),
+  );
+  const hex = Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  return `Milestone sync gate cannot verify a resolution it keeps ` +
+    `refusing: a private fleet repo (${hex.slice(0, 12)})`;
+}
+
+/**
+ * Render the diagnostic body for a private repository (Issue #4780).
+ *
+ * Keeps the refusal count, the timestamp, the tip SHAs and the generic fix,
+ * and nothing else: no repository, branch name, milestone title, conflict key,
+ * gate verdict or analysis. Those stay on the host log, which
+ * {@link reportGateWedge} writes in full. The same text whether filed or
+ * appended.
+ */
+export function buildPrivateGateWedgeDiagnosticBody(
+  report: GateWedgeReport,
+): string {
+  const { refusal } = report;
+  const tips = [
+    refusal.defaultSha
+      ? `- Default branch tip merged from: \`${refusal.defaultSha}\``
+      : `- Default branch tip: not recorded`,
+    refusal.milestoneSha
+      ? `- Milestone branch tip: \`${refusal.milestoneSha}\``
+      : `- Milestone branch tip: not recorded`,
+  ].join("\n");
+
+  return `## The resolution gate refused the same resolution ${refusal.count} ` +
+    `time(s)\n\n` +
+    `A milestone sync in a private fleet repository conflicted, the worker ` +
+    `resolved the conflict, and the verification gate then refused the ` +
+    `resolution — with the same verdict, on the same conflict, from the same ` +
+    `default branch tip, ${refusal.count} time(s) in a row. The repository, ` +
+    `its branches, the milestone and the verdict are withheld from this ` +
+    `public issue; the operator's host log keeps them.\n\n` +
+    `${GATE_WEDGE_NOT_CHARGED}\n\n` +
+    `### The merge it refused\n\n${tips}\n` +
+    `- Last refused at: ${refusal.at}\n\n` +
+    GATE_WEDGE_WHAT_TO_FIX;
 }
 
 /** Everything the filer needs beyond the report. */
@@ -126,6 +215,11 @@ export interface GateWedgeDiagnosticDeps {
 /**
  * File — or append to — the one worker diagnostic for a wedged gate.
  *
+ * A private repository (or one whose visibility cannot be read) is filed under
+ * the opaque title and body, and its full report goes to the host log instead
+ * (Issue #4780). Nothing that names the repository, its branches, the milestone
+ * or the verdict is sent to GitHub in that case.
+ *
  * Best-effort: a search or a write that fails is said out loud and reported
  * as not filed, so the caller does not record it as done and the next cycle
  * tries again.
@@ -137,10 +231,34 @@ export async function reportGateWedge(
   deps: GateWedgeDiagnosticDeps,
 ): Promise<boolean> {
   const target = deps.targetRepo ?? GATE_WEDGE_DIAGNOSTIC_REPO;
-  const title = gateWedgeDiagnosticTitle(report.repo, report.milestoneBranch);
+  // Issue #4780, mirroring #4318: a failed lookup is unknown, and unknown is
+  // private.
+  const isPublic = await isRepoPublic(report.repo, deps.ghCommandFn);
+  const title = isPublic
+    ? gateWedgeDiagnosticTitle(report.repo, report.milestoneBranch)
+    : await privateGateWedgeDiagnosticTitle(
+      report.repo,
+      report.milestoneBranch,
+    );
   // Redacted on the way out, as every outbound sink must be: the body carries
   // raw gate output, which is whatever the repository's own tooling printed.
-  const body = redactSecrets(buildGateWedgeDiagnosticBody(report));
+  const body = redactSecrets(
+    isPublic
+      ? buildGateWedgeDiagnosticBody(report)
+      : buildPrivateGateWedgeDiagnosticBody(report),
+  );
+  if (!isPublic) {
+    // The operator keeps the verdict and the analysis here, on the host log.
+    logAt(
+      deps.log,
+      "warn",
+      `Milestone sync gate wedge for '${report.milestoneBranch}' in ` +
+        `${report.repo}, which is not public, so ${target} gets only the ` +
+        `opaque diagnostic (Issue #4780). The full report: ${
+          redactSecrets(buildGateWedgeDiagnosticBody(report))
+        }`,
+    );
+  }
 
   let existing: number | undefined;
   try {
