@@ -3388,13 +3388,18 @@ Deno.test("repair prompt gives generic summary guidance without an issue number"
 
 Deno.test("repair caller passes the issue number parsed from the PR branch", async () => {
   const root = await Deno.makeTempDir();
-  assert(Deno.env.get("HOME"), "the repair harness requires HOME to be set");
+  const home = Deno.env.get("HOME");
+  assert(home, "the repair harness requires HOME to be set");
   const head = "a".repeat(40);
   let prompt = "";
   let lockBody = "";
   const commands: string[][] = [];
   let nextCommentId = 10;
-  const capture = async (headRefName: string): Promise<string> => {
+  const capture = async (
+    headRefName: string,
+    missingHome = false,
+  ): Promise<string> => {
+    prompt = "";
     const currentPr = {
       ...pr,
       number: 2516,
@@ -3431,31 +3436,40 @@ Deno.test("repair caller passes the issue number parsed from the PR branch", asy
       );
     };
     try {
-      try {
-        await fix(
-          "owner/repo",
-          currentPr,
-          ["VibeCoderST"],
-          "VibeCoderST",
-          { appId: "1", installationId: "1", privateKeyPath: "/unused" },
-          "/unused",
-          gh,
-          async () => {},
-          99,
-          {
-            stateDir: `${root}/state`,
-            clone: async () => {},
-            run: async (_command, args) => args[0] === "rev-parse" ? head : "",
-            mergeBase: async () => ({ kind: "conflicted" }),
-            journalAttempt: async () => {},
-            startAgent: async (_app, _repo, options) => {
-              prompt = options.prompt;
-              throw new Error("captured prompt");
+      await assertRejects(
+        () =>
+          fix(
+            "owner/repo",
+            currentPr,
+            ["VibeCoderST"],
+            "VibeCoderST",
+            { appId: "1", installationId: "1", privateKeyPath: "/unused" },
+            "/unused",
+            gh,
+            async () => {},
+            99,
+            {
+              stateDir: `${root}/state`,
+              clone: async () => {},
+              run: async (_command, args) =>
+                args[0] === "rev-parse" ? head : "",
+              mergeBase: async () => {
+                if (missingHome) Deno.env.delete("HOME");
+                return { kind: "conflicted" };
+              },
+              journalAttempt: async () => {},
+              startAgent: async (_app, _repo, options) => {
+                prompt = options.prompt;
+                throw new Error("captured prompt");
+              },
             },
-          },
-        );
-      } catch (error) {
-        assertEquals((error as Error).message, "captured prompt");
+          ),
+        Error,
+        missingHome ? "HOME is not set" : "captured prompt",
+      );
+      if (missingHome) {
+        assertEquals(prompt, "", "an agent must not start without HOME");
+        return prompt;
       }
       assert(
         prompt.length > 0,
@@ -3463,6 +3477,7 @@ Deno.test("repair caller passes the issue number parsed from the PR branch", asy
       );
       return prompt;
     } finally {
+      Deno.env.set("HOME", home);
       await Deno.remove(`${root}/state`, { recursive: true });
     }
   };
@@ -3471,6 +3486,7 @@ Deno.test("repair caller passes the issue number parsed from the PR branch", asy
     assertStringIncludes(known, "pr-summary-2453.md");
     const unknown = await capture("feature-without-issue");
     assert(!unknown.includes("docs/archive/pr-summaries/pr-summary-"));
+    await capture("issue-2453-example", true);
   } finally {
     await Deno.remove(root, { recursive: true });
   }
