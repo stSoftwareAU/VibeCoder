@@ -5,7 +5,10 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { run } from "../commands/fleet_pr_babysitter.ts";
+import {
+  HOST_GIT_HARDENING_ARGS,
+  run,
+} from "../commands/fleet_pr_babysitter.ts";
 import type { runGitArgv } from "../lib/git_timeout.ts";
 
 type GitArgvOutput = Awaited<ReturnType<typeof runGitArgv>>;
@@ -46,10 +49,7 @@ Deno.test("run sends git push through the chokepoint with a 30-minute timeout", 
   assert(call !== undefined);
   assertEquals(call.argv, [
     "git",
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.fsmonitor=false",
+    ...HOST_GIT_HARDENING_ARGS,
     "push",
     "origin",
     "HEAD",
@@ -79,10 +79,7 @@ Deno.test("run sends git fetch through the chokepoint with a 30-minute timeout",
   assert(call !== undefined);
   assertEquals(call.argv, [
     "git",
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.fsmonitor=false",
+    ...HOST_GIT_HARDENING_ARGS,
     "fetch",
     "origin",
     refspec,
