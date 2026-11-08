@@ -1,0 +1,72 @@
+##[group]Run semgrep ci
+##[endgroup]
+2026-09-05T04:36:25.6975269Z ┌────────────────┐
+2026-09-05T04:36:25.6975761Z │ Debugging Info │
+2026-09-05T04:36:25.6976212Z └────────────────┘
+2026-09-05T04:36:25.6977664Z
+2026-09-05T04:36:25.6978040Z   SCAN ENVIRONMENT
+2026-09-05T04:36:25.7000406Z   versions    - semgrep 1.173.0 on python 3.12.13
+2026-09-05T04:36:25.7001728Z   environment - running in environment github-actions, triggering event is pull_request
+2026-09-05T04:36:26.1780750Z Fixing git state for github action pull request
+2026-09-05T04:36:26.1795584Z Not on head ref: d18354c516fd14bf6d7fb665e38ad092033ead92; checking that out now.
+2026-09-05T04:36:27.1684522Z Using be9daca4d6743abf0d4ffa2923ba1d46ee659fe3 as the merge-base of be9daca4d6743abf0d4ffa2923ba1d46ee659fe3 and d18354c516fd14bf6d7fb665e38ad092033ead92
+2026-09-05T04:36:27.1685881Z
+2026-09-05T04:36:27.1686285Z   Using git merge base detected from environment for diff scans: be9daca4d6743abf0d4ffa2923ba1d46ee659fe3
+2026-09-05T04:36:28.3128905Z
+2026-09-05T04:36:28.3129362Z
+2026-09-05T04:36:28.3129924Z ┌─────────────┐
+2026-09-05T04:36:28.3130198Z │ Scan Status │
+2026-09-05T04:36:28.3130469Z └─────────────┘
+2026-09-05T04:36:28.3134693Z   Scanning 22 files tracked by git with 1074 Code rules:
+2026-09-05T04:36:28.3260477Z
+2026-09-05T04:36:28.3261827Z   Language      Rules   Files          Origin      Rules
+2026-09-05T04:36:28.3263266Z  ─────────────────────────────        ───────────────────
+2026-09-05T04:36:28.3264528Z   <multilang>      47      22          Community    1074
+2026-09-05T04:36:28.3265205Z   ts              163      21
+2026-09-05T04:36:28.3265779Z
+2026-09-05T04:36:30.6395490Z   Current version has 1 finding.
+2026-09-05T04:36:30.6395879Z
+2026-09-05T04:36:30.6402476Z Skipping baseline scan, because all current findings are in files that didn't exist in the baseline commit.
+2026-09-05T04:36:30.7078908Z
+2026-09-05T04:36:30.7079734Z
+2026-09-05T04:36:30.7080405Z ┌─────────────────────────┐
+2026-09-05T04:36:30.7081482Z │ 1 Blocking Code Finding │
+2026-09-05T04:36:30.7081983Z └─────────────────────────┘
+2026-09-05T04:36:30.7082384Z
+2026-09-05T04:36:30.7082946Z     worker/deno/lib/marker_dedup_author_manifest.ts
+2026-09-05T04:36:30.7083992Z     ❯❱ javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+2026-09-05T04:36:30.7084894Z           ❰❰ Blocking ❱❱
+2026-09-05T04:36:30.7085641Z           RegExp() called with a `argument` function argument, this might allow an attacker to cause a Regular
+2026-09-05T04:36:30.7086839Z           Expression Denial-of-Service (ReDoS) within your application as RegExP blocks the main thread. For
+2026-09-05T04:36:30.7088021Z           this reason, it is recommended to use hardcoded regexes instead. If your regex is run on user-
+2026-09-05T04:36:30.7089277Z           controlled input, consider performing input validation or use a regex checking/sanitization library
+2026-09-05T04:36:30.7091079Z           such as https://www.npmjs.com/package/recheck to verify that the regex does not appear vulnerable to
+2026-09-05T04:36:30.7092123Z           ReDoS.
+2026-09-05T04:36:30.7093033Z           Details: https://sg.run/gr65
+2026-09-05T04:36:30.7093847Z
+2026-09-05T04:36:30.7094603Z           220┆ const declaration = new RegExp(
+2026-09-05T04:36:30.7095375Z           221┆   `\\b(?:const|let|var)\\s+${argument}\\b[^=]*=\\s*([\\s\\S]*?);`,
+2026-09-05T04:36:30.7096062Z           222┆ ).exec(source);
+2026-09-05T04:36:30.7096456Z
+2026-09-05T04:36:30.7096842Z   BLOCKING CODE RULES FIRED:
+2026-09-05T04:36:30.7097602Z     javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+2026-09-05T04:36:30.7098290Z
+2026-09-05T04:36:30.7127020Z
+2026-09-05T04:36:30.7127663Z
+2026-09-05T04:36:30.7128229Z ┌──────────────┐
+2026-09-05T04:36:30.7128648Z │ Scan Summary │
+2026-09-05T04:36:30.7129057Z └──────────────┘
+2026-09-05T04:36:30.7130851Z ✅ CI scan completed successfully.
+2026-09-05T04:36:30.7131606Z  • Findings: 1 (1 blocking)
+2026-09-05T04:36:30.7132045Z  • Rules run: 1074
+2026-09-05T04:36:30.7132436Z  • Targets scanned: 22
+2026-09-05T04:36:30.7132859Z  • Parsed lines: ~99.9%
+2026-09-05T04:36:30.7133112Z  • Scan skipped:
+2026-09-05T04:36:30.7133604Z    ◦ Files matching .semgrepignore patterns: 15
+2026-09-05T04:36:30.7134387Z  • Scan was limited to files changed since baseline commit.
+2026-09-05T04:36:30.7135277Z  • For a detailed list of skipped files and lines, run semgrep with the --verbose flag
+2026-09-05T04:36:30.7135744Z CI scan completed successfully.
+2026-09-05T04:36:30.8470393Z   Has findings for blocking rules so exiting with code 1
+2026-09-05T04:36:30.8537292Z
+2026-09-05T04:36:30.8537857Z A new version of Semgrep is available. See https://semgrep.dev/docs/upgrading
+2026-09-05T04:36:31.5160049Z ##[error]Process completed with exit code 1.
