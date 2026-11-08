@@ -1351,56 +1351,56 @@ export async function runBabysitterRepairContainer(
     ? await createRepairWorkspaceSnapshot(input.baseDir, input.scratch, plan)
     : undefined;
   try {
-  // Built and key-checked before any egress starts, so a bad plan never
-  // starts a proxy.
-  const planArgs = buildBabysitterRunArgs(plan, {
-    clone: input.clone,
-    scratch: input.scratch,
-    ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
-  });
-  await assertBabysitterKeyOutOfRunArgs(planArgs, input.privateKeyPath);
-
-  const baseEnv = baseEnvironment(env);
-  await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
-  // Refused before any egress starts; runRepairProcess checks again before the spawn.
-  refuseIfAborted(input.signal);
-
-  const apple = !plan.egressEnforced && plan.proxyName !== "";
-  let teardown: Teardown | undefined;
-  try {
-    let args = planArgs;
-    if (apple) {
-      const helper = await startAppleEgress(plan, {
-        baseDir: input.baseDir,
-        timeoutMs,
-      });
-      teardown = helper.stop;
-      args = buildBabysitterRunArgs({ ...plan, runArgs: helper.runArgs }, {
-        clone: input.clone,
-        scratch: input.scratch,
-        ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
-      });
-      await assertBabysitterKeyOutOfRunArgs(args, input.privateKeyPath);
-    } else if (plan.egressEnforced) {
-      // Set before the start, so a sidecar half-started by a throw is torn down.
-      teardown = () => stopSidecar(plan);
-      await startSidecar(plan);
-    }
-    await runRepairProcess({
-      spawn,
-      runtime: plan.runtime,
-      containerName,
-      args,
-      baseEnv,
-      token: input.token,
-      timeoutMs,
-      signal: input.signal,
-      log,
+    // Built and key-checked before any egress starts, so a bad plan never
+    // starts a proxy.
+    const planArgs = buildBabysitterRunArgs(plan, {
+      clone: input.clone,
+      scratch: input.scratch,
+      ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
     });
-    return { containerName };
-  } finally {
-    await runTeardown(teardown, log, input.token);
-  }
+    await assertBabysitterKeyOutOfRunArgs(planArgs, input.privateKeyPath);
+
+    const baseEnv = baseEnvironment(env);
+    await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
+    // Refused before any egress starts; runRepairProcess checks again before the spawn.
+    refuseIfAborted(input.signal);
+
+    const apple = !plan.egressEnforced && plan.proxyName !== "";
+    let teardown: Teardown | undefined;
+    try {
+      let args = planArgs;
+      if (apple) {
+        const helper = await startAppleEgress(plan, {
+          baseDir: input.baseDir,
+          timeoutMs,
+        });
+        teardown = helper.stop;
+        args = buildBabysitterRunArgs({ ...plan, runArgs: helper.runArgs }, {
+          clone: input.clone,
+          scratch: input.scratch,
+          ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
+        });
+        await assertBabysitterKeyOutOfRunArgs(args, input.privateKeyPath);
+      } else if (plan.egressEnforced) {
+        // Set before the start, so a sidecar half-started by a throw is torn down.
+        teardown = () => stopSidecar(plan);
+        await startSidecar(plan);
+      }
+      await runRepairProcess({
+        spawn,
+        runtime: plan.runtime,
+        containerName,
+        args,
+        baseEnv,
+        token: input.token,
+        timeoutMs,
+        signal: input.signal,
+        log,
+      });
+      return { containerName };
+    } finally {
+      await runTeardown(teardown, log, input.token);
+    }
   } finally {
     if (workspaceSnapshot) {
       await removeRepairWorkspaceSnapshot(workspaceSnapshot, log);

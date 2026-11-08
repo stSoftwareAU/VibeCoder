@@ -145,17 +145,26 @@ function gitSync(cwd: string, args: string[]): void {
 export function repairHost(config: Record<string, unknown> = {}): RepairHost {
   const root = Deno.realPathSync(Deno.makeTempDirSync());
   const baseDir = `${root}/checkout`;
-  // The whole container/ tree: the image tag hashes every enumerated input.
+  // The whole container/ tree and the deno lock: the image tag hashes every
+  // enumerated input (container_image_hash.ts), and each must exist.
   copyTreeSync(`${REPO_ROOT}/container`, `${baseDir}/container`);
+  Deno.mkdirSync(`${baseDir}/worker/deno`, { recursive: true });
+  Deno.copyFileSync(
+    `${REPO_ROOT}/worker/deno/deno.lock`,
+    `${baseDir}/worker/deno/deno.lock`,
+  );
   Deno.writeTextFileSync(`${baseDir}/README.md`, "tracked\n");
   gitSync(baseDir, ["init", "-q"]);
   gitSync(baseDir, ["add", "."]);
   gitSync(baseDir, ["commit", "-q", "-m", "fixture"]);
 
   const home = `${root}/home`;
-  Deno.mkdirSync(`${home}/.vibe-coder/credentials/claude`, {
-    recursive: true,
-  });
+  // The gh store must exist for the plan; the repair drops its mount.
+  for (const provider of ["claude", "gh"]) {
+    Deno.mkdirSync(`${home}/.vibe-coder/credentials/${provider}`, {
+      recursive: true,
+    });
+  }
   Deno.writeTextFileSync(`${home}/config.json`, JSON.stringify(config));
   return { root, baseDir, home };
 }
@@ -185,10 +194,12 @@ export async function repairPlan(
   const plan = await buildLaunchPlanForCommand(host.baseDir, containerName, {
     env: (name) => environment[name],
     now: () => 1_900_000_000_000,
+    // Only podman is on PATH, so the plan's runtime is podman, as the repair
+    // tests expect.
     probe: (candidate) =>
       Promise.resolve({
-        available: true,
-        path: `/usr/bin/${candidate.executable}`,
+        available: candidate.executable === "podman",
+        path: candidate.executable,
       }),
   });
   const runArgs = [...plan.runArgs];

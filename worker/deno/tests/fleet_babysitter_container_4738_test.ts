@@ -1043,7 +1043,12 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
   // The snapshot is removed when the session ends (Issue #4770), so the
   // container's spawn reads what it mounts while the session runs.
   let seen:
-    | { tracked: string; binary: Uint8Array; untracked: boolean; config: string }
+    | {
+      tracked: string;
+      binary: Uint8Array;
+      untracked: boolean;
+      config: string;
+    }
     | undefined;
   const runSpawn = deps.spawn!;
   deps.spawn = async (runtime, args, options) => {
@@ -1070,10 +1075,10 @@ Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while
     assertEquals(seen.tracked, "tracked worker file\n");
     assertEquals(seen.binary, binaryContent);
     assertEquals(seen.untracked, false, "untracked files are not snapshotted");
+    // The snapshot is removed when the session ends.
     await assertRejects(
       () => Deno.stat(`${f.scratch}/workspace`),
       Deno.errors.NotFound,
-      "the snapshot is removed after the session",
     );
     assert(args.includes(`${f.scratch}:/home/vibe/logs`));
     assert(args.includes("CONFIG_PATH=/workspace/.config.json"));

@@ -184,7 +184,13 @@ Deno.test("the publication reset writes the URL of gh's git protocol, and one re
     await git(repo, "init", "-q");
     await resetRepairCloneGitConfig(repo, "stSoftwareAU/VibeCoder", {
       gh: (args) => {
-        assertEquals(args, ["config", "get", "git_protocol", "-h", "github.com"]);
+        assertEquals(args, [
+          "config",
+          "get",
+          "git_protocol",
+          "-h",
+          "github.com",
+        ]);
         return Promise.resolve("ssh\n");
       },
     });
@@ -194,11 +200,20 @@ Deno.test("the publication reset writes the URL of gh's git protocol, and one re
     );
 
     for (
-      const name of ["owner", "a/b/c", "owner/repo name", "owner.x/repo", "../x"]
+      const name of [
+        "owner",
+        "a/b/c",
+        "owner/repo name",
+        "owner.x/repo",
+        "../x",
+      ]
     ) {
       assertEquals(isValidRepoName(name), false, name);
       await assertRejects(
-        () => resetRepairCloneGitConfig(repo, name, { gh: () => Promise.resolve("ssh") }),
+        () =>
+          resetRepairCloneGitConfig(repo, name, {
+            gh: () => Promise.resolve("ssh"),
+          }),
         Error,
         "Refusing to publish a repair for an invalid repository name",
       );

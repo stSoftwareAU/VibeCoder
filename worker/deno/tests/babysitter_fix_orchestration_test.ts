@@ -814,7 +814,12 @@ Deno.test("container task failures spend substantive attempts while transient ex
           privateKeyPath,
           fakeContainer(spawns, {
             onSpawn: () =>
-              Promise.resolve({ success: false, code, stderr, timedOut: false }),
+              Promise.resolve({
+                success: false,
+                code,
+                stderr,
+                timedOut: false,
+              }),
           }),
         );
         const before = Date.now();
@@ -2470,7 +2475,9 @@ Deno.test("fix replaces agent-controlled git config before host publication (Iss
             '[filter "owned"]\n\tclean = /host/agent-command\n' +
             "[diff]\n\texternal = /host/agent-command\n",
         );
-        await resetRepairCloneGitConfig(dir, repo);
+        await resetRepairCloneGitConfig(dir, repo, {
+          gh: () => Promise.resolve("https\n"),
+        });
         safeConfig = await Deno.readTextFile(configPath);
       };
       await h.attempt();
