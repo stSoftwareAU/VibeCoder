@@ -917,6 +917,14 @@ export function runHardenedRepairGit(
   ], options);
 }
 
+/** `.git` entries that redirect git's config or object lookup elsewhere. */
+const REPAIR_GIT_REDIRECT_FILES: readonly string[] = [
+  "commondir",
+  "gitdir",
+  "config.worktree",
+  "objects/info/alternates",
+];
+
 /** Replace agent-writable local config before any host publication git call. */
 export async function resetRepairCloneGitConfig(
   dir: string,
@@ -931,9 +939,24 @@ export async function resetRepairCloneGitConfig(
   const url = await defaultRemoteUrl(repo, deps.gh);
   const gitDir = `${dir}/.git`;
   const info = await Deno.lstat(gitDir);
-  if (!info.isDirectory || info.isSymlink) {
+  // lstat does not follow links, so a symlinked `.git` is not a directory.
+  if (!info.isDirectory) {
     throw new Error(
       "Refusing host git operations: repair .git is not a directory",
+    );
+  }
+  // The container mounts the clone read-write, so the agent can redirect where
+  // git reads its config, objects and per-worktree settings. Any of these files
+  // would make the config reset below miss the settings git really uses.
+  for (const redirect of REPAIR_GIT_REDIRECT_FILES) {
+    try {
+      await Deno.lstat(`${gitDir}/${redirect}`);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      throw error;
+    }
+    throw new Error(
+      `Refusing host git operations: repair .git/${redirect} redirects git`,
     );
   }
   const config = `${gitDir}/config`;
@@ -2044,7 +2067,8 @@ async function removeFileIfPresent(path: string): Promise<void> {
 function repairFailureClass(message: string) {
   if (
     message.includes("the container runtime is not on PATH") ||
-    message.includes("the worker image is not built")
+    message.includes("the worker image is not built") ||
+    message.includes("No supported container runtime is available")
   ) return "capability" as const;
   return "infrastructure" as const;
 }

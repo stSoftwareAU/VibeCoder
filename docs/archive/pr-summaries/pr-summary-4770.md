@@ -46,13 +46,17 @@ sequenceDiagram
   `max_issue_body_tokens` survive.
 - The agent can write the clone's `.git`, so the host runs publication git with
   `core.hooksPath=/dev/null` and `core.fsmonitor=false` and rewrites the clone's
-  `.git/config` before publication. The host's own global git config is left in
-  place so its credential helper still works.
+  `.git/config` before publication. The reset refuses to publish when `.git` is
+  not a plain directory, or when `.git/commondir`, `.git/gitdir`,
+  `.git/config.worktree` or `.git/objects/info/alternates` exist, because each
+  would redirect git to config the reset does not control. The host's own global
+  git config is left in place so its credential helper still works.
 - Exit status 42 from `babysitter-repair` is a reported task failure and is a
-  `code` failure; a missing runtime or image is `capability`; every other
-  launcher failure is `infrastructure`. Codex stderr retry-after parsing is gone
-  with the Codex spawn, so a quota reset time is no longer carried into the
-  retry record; richer retry is the closed #4656's area.
+  `code` failure; a missing runtime or image (including
+  `ContainerRuntimeUnavailableError`) is `capability`; every other launcher
+  failure is `infrastructure`. Codex stderr retry-after parsing is gone with the
+  Codex spawn, so a quota reset time is no longer carried into the retry record;
+  richer retry is the closed #4656's area.
 - Lock-renewal failure aborts an `AbortSignal` that kills the container by name,
   replacing `child.kill`.
 
@@ -108,6 +112,8 @@ Backend and CLI change; no visual surface changed.
 - **met** — Test: a missing runtime and a missing image each make `fix()` throw
   with the cause. No host agent runs and nothing is pushed. — evidence:
   `worker/deno/tests/babysitter_fix_orchestration_test.ts::a missing container runtime or worker image stops the repair before any spawn, as a capability gap (Issue #4770)`
+  (includes the real `buildPlan` path failing with
+  `ContainerRuntimeUnavailableError`, asserting `capability`, no spawn, no push)
   — reviewer: met
 - **met** — Test: a non-zero container exit throws and nothing is pushed. —
   evidence:
@@ -138,8 +144,11 @@ Backend and CLI change; no visual surface changed.
   orchestration retains locks, trusted git/commit/push and PR-body publication.
   — evidence:
   `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::validateAndCommit and push run no planted pre-commit, pre-push or fsmonitor`,
-  `::repair resets agent-controlled filters, diff and SSH git config before host work`
-  and
+  `::repair resets agent-controlled filters, diff and SSH git config before host work`,
+  `::the publication reset refuses a planted commondir that would redirect git's config to a filter`,
+  `::the publication reset refuses every other git redirection file`,
+  `::the publication reset refuses a .git that is not a plain directory`,
+  `::the publication reset writes a complete trusted config` and
   `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix replaces agent-controlled git config before host publication (Issue #4770)`
   — reviewer: met
 - **met** — `./quality.sh` passes. — evidence: the gate run described in
@@ -178,6 +187,12 @@ Backend and CLI change; no visual surface changed.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
+- **violation** — the config reset was bypassable through the agent-writable
+  `.git/commondir`, and a missing container runtime was classed as
+  infrastructure — evidence: `worker/deno/commands/fleet_pr_babysitter.ts`
+  (`REPAIR_GIT_REDIRECT_FILES`, `repairFailureClass`) — reason: fixed in this
+  diff (redirection files refuse publication; `ContainerRuntimeUnavailableError`
+  is `capability`; tested)
 - **violation** — every token restart failed because the snapshot directory
   already existed — evidence:
   `worker/deno/lib/fleet_babysitter_container.ts:555` — reason: fixed in this
@@ -300,3 +315,13 @@ Backend and CLI change; no visual surface changed.
 
 - Used Deno tasks and tooling for tests, lint, type checks and formatting; no
   Node tooling or manifest was added.
+
+## Mutation and coverage follow-up
+
+- `fleet_pr_babysitter.ts` `.git` shape check: the redundant `isSymlink` operand
+  was removed (lstat reports a link as not a directory); tests cover a symlinked
+  and a gitfile `.git`. The `[core]` header is pinned by
+  `::the publication reset writes a complete trusted config`.
+- `codex_output_adapter.ts:451-458` and `:475-477` are reached by
+  `codex_output_adapter_1695_test.ts::a transport failure in prose is network, never a rate limit`
+  and `::an unrecognised non-zero exit is a task failure`.

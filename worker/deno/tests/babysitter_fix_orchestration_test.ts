@@ -33,6 +33,7 @@ import {
   listBabysitterRetryStates,
   saveBabysitterRetryState,
 } from "../lib/babysitter_retry_state.ts";
+import { ContainerRuntimeUnavailableError } from "../lib/container_runtime.ts";
 import { BABYSITTER_AGENT_PERMISSIONS } from "../lib/fleet_babysitter_app.ts";
 import {
   BABYSITTER_CLONE_MOUNT,
@@ -1976,6 +1977,13 @@ Deno.test("a missing container runtime or worker image stops the repair before a
     {
       container: { imageExists: () => Promise.resolve(false) },
       message: "the worker image is not built",
+    },
+    {
+      container: {
+        buildPlan: () =>
+          Promise.reject(new ContainerRuntimeUnavailableError("linux", [])),
+      },
+      message: "No supported container runtime is available",
     },
   ] as const;
   for (const { container, message } of cases) {

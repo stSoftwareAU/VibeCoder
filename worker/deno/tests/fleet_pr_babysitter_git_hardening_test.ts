@@ -280,3 +280,111 @@ Deno.test("publication git keeps the host's global config, while a planted pre-c
     await Deno.remove(root, { recursive: true });
   }
 });
+
+Deno.test("the publication reset refuses a .git that is not a plain directory", async () => {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-git-shape-" });
+  try {
+    const real = `${root}/real`;
+    await Deno.mkdir(real);
+    await git(real, "init", "-q");
+    const gh = () => Promise.resolve("https\n");
+
+    const linked = `${root}/linked`;
+    await Deno.mkdir(linked);
+    await Deno.symlink(`${real}/.git`, `${linked}/.git`);
+    const gitfile = `${root}/gitfile`;
+    await Deno.mkdir(gitfile);
+    await Deno.writeTextFile(`${gitfile}/.git`, `gitdir: ${real}/.git\n`);
+
+    for (const dir of [linked, gitfile]) {
+      await assertRejects(
+        () => resetRepairCloneGitConfig(dir, "stSoftwareAU/VibeCoder", { gh }),
+        Error,
+        "repair .git is not a directory",
+      );
+    }
+    // The symlink target was left untouched.
+    const config = await Deno.readTextFile(`${real}/.git/config`);
+    assert(!config.includes('remote "origin"'));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the publication reset writes a complete trusted config", async () => {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-git-config-" });
+  try {
+    await git(root, "init", "-q");
+    await Deno.writeTextFile(`${root}/.git/config`, '[filter "x"]\n');
+    await resetRepairCloneGitConfig(root, "stSoftwareAU/VibeCoder", {
+      gh: () => Promise.resolve("https\n"),
+    });
+    const config = await Deno.readTextFile(`${root}/.git/config`);
+    assert(config.startsWith("[core]\n"), config);
+    assertEquals(await git(root, "config", "--local", "core.bare"), "false");
+    assertEquals(
+      await git(root, "config", "--local", "core.repositoryformatversion"),
+      "0",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the publication reset refuses a planted commondir that would redirect git's config to a filter", async () => {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-git-commondir-" });
+  try {
+    const repo = `${root}/repo`;
+    const markers = `${root}/markers`;
+    await Deno.mkdir(repo);
+    await Deno.mkdir(markers);
+    await git(repo, "init", "-q");
+    await Deno.writeTextFile(`${repo}/.gitattributes`, "* filter=x\n");
+    // The agent copies .git inside the clone and points commondir at it.
+    await Deno.mkdir(`${repo}/.x`);
+    await Deno.writeTextFile(
+      `${repo}/.x/config`,
+      `[filter "x"]\n\tclean = touch ${markers}/filter\n`,
+    );
+    await Deno.writeTextFile(`${repo}/.git/commondir`, "../.x\n");
+
+    await assertRejects(
+      () =>
+        resetRepairCloneGitConfig(repo, "stSoftwareAU/VibeCoder", {
+          gh: () => Promise.resolve("https\n"),
+        }),
+      Error,
+      ".git/commondir redirects git",
+    );
+    assertEquals(await markerNames(markers), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the publication reset refuses every other git redirection file", async () => {
+  for (
+    const redirect of [
+      "gitdir",
+      "config.worktree",
+      "objects/info/alternates",
+    ]
+  ) {
+    const root = await Deno.makeTempDir({ prefix: "babysitter-git-redirect-" });
+    try {
+      await git(root, "init", "-q");
+      await Deno.mkdir(`${root}/.git/objects/info`, { recursive: true });
+      await Deno.writeTextFile(`${root}/.git/${redirect}`, "/elsewhere\n");
+      await assertRejects(
+        () =>
+          resetRepairCloneGitConfig(root, "stSoftwareAU/VibeCoder", {
+            gh: () => Promise.resolve("https\n"),
+          }),
+        Error,
+        `.git/${redirect} redirects git`,
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
