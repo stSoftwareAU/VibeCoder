@@ -24,7 +24,7 @@ import {
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { prBaseForSync, resolvePreFlightSpec } from "./git_push.ts";
+import { prBaseForSync, resolveRepairPreFlightSpec } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   commentCarriesOpenPreprReview,
@@ -1756,7 +1756,7 @@ async function _processFeedbackWithHeartbeat(
   //
   // Issue #3577: enforce the repo's pre-flight gate — a non-zero exit blocks
   // both the commit and the push so a broken feedback fix is not pushed.
-  const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
+  const preFlight = resolveRepairPreFlightSpec(processorDeps.repoConfigs, repo);
   // The repo's own formatters run between the commit and the gate (follow-up
   // to #3806): a formatting-only miss in this round is fixed and committed
   // rather than failing the push or reaching CI. Same files the gate checks
