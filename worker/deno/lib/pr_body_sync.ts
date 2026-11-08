@@ -94,6 +94,7 @@ import { escapeRegExp } from "./regexp_escape.ts";
 import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
+  neutraliseOtherIssueClosingKeywords,
   withholdIssueClose,
   withholdsIssueClose,
 } from "./missing_criterion_close_guard.ts";
@@ -158,7 +159,9 @@ export function summaryDigestFromBody(body: string): string | undefined {
  *
  * Mirrors the assembly order in `completion_phase.ts`: summary (or the
  * fallback when it is empty — run through {@link neutraliseSubAgentTierMarkers}
- * either way, Issue #3403), the already-formatted extra sections
+ * either way, Issue #3403; then through {@link neutraliseOtherIssueClosingKeywords},
+ * so a closing keyword quoted in the summary for any other issue cannot close
+ * it on merge, Issue #4783), the already-formatted extra sections
  * (evidence, milestone, bump note — concatenated by the caller in creation
  * order), the worker footer, the idempotency marker, the summary-digest
  * marker (Issue #3315) recording `input.summaryDigest` so a later sync can
@@ -195,13 +198,22 @@ export function assemblePrBody(input: {
   // Issue #3403: neutralise any marker the summary quotes verbatim before it
   // is embedded, so a summary documenting the feature can never be read back
   // as a second, real tier marker.
-  const summaryContent = neutraliseSubAgentTierMarkers(input.summaryContent);
+  // Issue #4783: a closing keyword the summary quotes for any other issue is
+  // neutralised before embedding, so GitHub does not close that issue on merge.
+  const summaryContent = neutraliseOtherIssueClosingKeywords(
+    neutraliseSubAgentTierMarkers(input.summaryContent),
+    input.issueNumber,
+    input.issueIdentity,
+  );
   let body = summaryContent
     ? summaryContent + "\n\n"
     : `## Summary\n\nCloses #${input.issueNumber}.\n\n`;
   const withholdClose = withholdsIssueClose(input.summaryContent);
   if (withholdClose) {
-    const missing = findMissingCriteria(input.summaryContent);
+    // Read from the neutralised summary: the note quotes the unmet criteria
+    // verbatim, and a quoted "close #N" for another issue must not survive
+    // into the body (Issue #4783). The status is unchanged by neutralising.
+    const missing = findMissingCriteria(summaryContent);
     body += buildMissingCriteriaPrNote(
       input.issueNumber,
       missing,
