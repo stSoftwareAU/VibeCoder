@@ -103,11 +103,31 @@ export async function runContainerPreflight(
 ): Promise<void> {
   await preflightBabysitterContainer({ baseDir: checkout }, deps);
 }
-async function main(): Promise<number> {
-  const installFlag = Deno.args.includes("--install-launch-agent");
-  const checkOnly = Deno.args.includes("--check");
+export interface BabysitterSetupDeps {
+  args?: string[];
+  env?: (name: string) => string | undefined;
+  loadConfig?: typeof loadConfig;
+  command?: typeof command;
+  preflight?: typeof runContainerPreflight;
+  runGh?: typeof runGhCommand;
+}
+
+/** The CLI entry point; dependencies are injectable for its setup contract test. */
+export async function main(deps: BabysitterSetupDeps = {}): Promise<number> {
+  const args = deps.args ?? Deno.args;
+  const env = deps.env ?? ((name) => Deno.env.get(name));
+  const argument = (name: string) =>
+    args.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+  const inputValue = (name: string, defaultValue = "") => {
+    const supplied = argument(name);
+    if (supplied !== undefined) return supplied.trim();
+    return (prompt(`${name}${defaultValue ? ` [${defaultValue}]` : ""}:`)
+      ?.trim() || defaultValue);
+  };
+  const installFlag = args.includes("--install-launch-agent");
+  const checkOnly = args.includes("--check");
   if (
-    Deno.args.some((a) =>
+    args.some((a) =>
       a !== "--install-launch-agent" && a !== "--check" &&
       !["--app-id=", "--installation-id=", "--key="].some((p) =>
         a.startsWith(p)
@@ -119,30 +139,30 @@ async function main(): Promise<number> {
       "Usage: setup [--app-id=ID] [--installation-id=ID] [--key=PATH] [--check | --install-launch-agent]",
     );
   }
-  const home = Deno.env.get("HOME");
+  const home = env("HOME");
   if (!home) throw new Error("HOME is not set");
   const checkout = babysitterCheckoutDir();
-  const configPath = Deno.env.get("CONFIG_PATH") ?? `${checkout}/.config.json`;
-  const config = await loadConfig(configPath);
+  const configPath = env("CONFIG_PATH") ?? `${checkout}/.config.json`;
+  const config = await (deps.loadConfig ?? loadConfig)(configPath);
   if (!config.repos.length) {
     throw new Error("No monitored repos in .config.json");
   }
   for (const binary of ["git", "rtk"]) {
-    await command(binary, ["--version"]);
+    await (deps.command ?? command)(binary, ["--version"]);
   }
-  await runContainerPreflight(checkout);
-  await runGhCommand(["--version"]);
+  await (deps.preflight ?? runContainerPreflight)(checkout);
+  await (deps.runGh ?? runGhCommand)(["--version"]);
   if (checkOnly && !argument("app-id")) {
     throw new Error("--check requires --app-id");
   }
   console.log(
     "Enter the App ID from the GitHub App's General settings. The installation will be discovered automatically.",
   );
-  const appId = input("app-id");
+  const appId = inputValue("app-id");
   const requestedInstallation = argument("installation-id");
   const defaultKey = `${home}/.vibe-coder/fleet-pr-babysitter.private-key.pem`;
   const key = await Deno.realPath(expandHome(
-    checkOnly ? argument("key") ?? defaultKey : input("key", defaultKey),
+    checkOnly ? argument("key") ?? defaultKey : inputValue("key", defaultKey),
     home,
   ));
   if (

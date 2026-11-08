@@ -346,7 +346,11 @@ Each repair runs in one container, started by `runBabysitterRepairContainer`
 command with `--dir /babysitter/clone`, `--prompt-file` pointing at the prompt,
 and `--response-file /babysitter/clone/.babysitter-response`. The agent's
 read-only repository token is passed as `GH_TOKEN` by name only, so its value
-never appears on a command line. The agent has the clone's `.git` read-write, so the host runs every git command with `core.hooksPath=/dev/null` and `core.fsmonitor=false` (`HOST_GIT_HARDENING_ARGS`), so a hook or config planted in the clone does not run on the host; fuller shared-clone git protection belongs to a separate issue.
+never appears on a command line. The agent has the clone's `.git` read-write.
+Before host publication, the host replaces its local config with the canonical
+GitHub remote, dropping agent-written hooks, filters, fsmonitor, external diff
+and SSH commands; host `run()` git calls also set the hooks and fsmonitor
+overrides (`HOST_GIT_HARDENING_ARGS`).
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container is
@@ -399,26 +403,32 @@ The repair container receives:
 - the agent's read-only repository token, as `GH_TOKEN`, minted again on each
   token restart;
 - the clone and the scratch directory (prompt file), read-write;
-- the worker checkout, read-only, at `/workspace`. Residual exposure: a
-  gitignored `.config.json` inside that checkout, if one exists, is readable there;
-- the staged copy of the configuration, read-only, in its own directory outside
-  the checkout; `CONFIG_PATH` points the worker at that copy. Residual exposure:
-  the copy is still mounted;
-- the worker log directory, read-write. Residual exposure: it is still mounted;
+- a read-only archive of tracked worker checkout files at `/workspace`; ignored
+  files are excluded, and its `.config.json` is a scrubbed copy;
+- the repair scratch directory at the container log path, so logs do not expose
+  the host's log directory;
 - each enabled provider's credential sub-directory of the Vibe credential
   directory, read-only;
-- a fixed allowlist of host environment variables.
+- the fixed runtime environment allowlist, plus the short-lived `GH_TOKEN`;
+  declared `quality_credentials` configuration is retained, and the existing
+  quality command transport remains responsible for resolving and delivering
+  its declared values.
 
 The plan's named work and agent-state volumes are not mounted. The host `gh`
 credential directory (the `gh` sub-directory of the Vibe credential directory)
 is not mounted, and the host `gh` configuration (`~/.config/gh`) is not in the
 plan's mount list. The operator's custom prompt directories
 (`custom_label_prompts`) are not mounted, and the plan's
-`VIBE_CUSTOM_PROMPT_PATHS` environment variable is dropped. The container does not receive the babysitter App private
-key: before any egress starts, the run arguments are checked, and the repair is
-refused if any mount would reach that key or an ancestor of it
-(`assertBabysitterKeyOutOfRunArgs`). The host keeps the App key, the branch
-locks, the attempt record and every GitHub write.
+`VIBE_CUSTOM_PROMPT_PATHS` environment variable is dropped. The container does
+not receive the babysitter App private key: the host checkout is archived from
+tracked files only, secret-bearing config keys are removed from the config
+snapshot, and the final run arguments are checked against the App key path
+(`assertBabysitterKeyOutOfRunArgs`). Unknown plan mounts fail closed. The host
+keeps the App key, branch locks, attempt record, trusted commit/push, PR-body
+publication and review dismissal. Before host publication, the local clone
+config is replaced with a minimal GitHub HTTPS remote config; this drops all
+agent-written local settings, including hooks, filters, fsmonitor,
+`diff.external` and `core.sshCommand`.
 
 ## Failure behaviour
 

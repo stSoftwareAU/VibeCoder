@@ -882,6 +882,7 @@ Deno.test("the real repair plan mounts no gh credential, key or custom prompt pa
     const args = buildBabysitterRunArgs(plan, {
       clone: f.clone,
       scratch: f.scratch,
+      workspaceSnapshot: `${f.scratch}/worker-snapshot`,
     });
 
     const volumes = volumeValues(args);
@@ -901,6 +902,21 @@ Deno.test("the real repair plan mounts no gh credential, key or custom prompt pa
         );
       }
     }
+    const mounts = volumeValues(args);
+    const base = plan.mounts.find((mount) => mount.target === "/workspace");
+    const logs = plan.mounts.find((mount) => mount.target.endsWith("/logs"));
+    const stagedConfig = plan.mounts.find((mount) =>
+      mount.target.endsWith("/run-config")
+    );
+    assert(base && logs && stagedConfig);
+    assert(mounts.includes(`${f.scratch}/worker-snapshot:/workspace:ro`));
+    assert(!mounts.some((mount) => mount.startsWith(`${base.source}:`)));
+    assert(!mounts.some((mount) => mount.startsWith(`${logs.source}:`)));
+    assert(
+      !mounts.some((mount) => mount.startsWith(`${stagedConfig.source}:`)),
+    );
+    assert(mounts.includes(`${f.scratch}:/home/vibe/logs`));
+    assert(args.includes("CONFIG_PATH=/workspace/.config.json"));
 
     const envSpecs = args.filter((_, i) => args[i - 1] === "--env");
     assert(envSpecs.includes("GH_TOKEN"), "the bare GH_TOKEN is passed");
@@ -918,12 +934,102 @@ Deno.test("the real repair plan mounts no gh credential, key or custom prompt pa
         BABYSITTER_CLONE_MOUNT,
         BABYSITTER_SCRATCH_MOUNT,
         "/home/vibe/.vibe-coder/credentials/claude",
-        "/home/vibe/.vibe-coder/run-config",
         "/home/vibe/logs",
         "/workspace",
       ].sort(),
       "only the clone, scratch, workspace, run-config, logs and enabled provider credential mounts remain",
     );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while keeping declared quality credentials", async () => {
+  const f = await makeFixture();
+  const configStage = `${f.root}/staged`;
+  const logs = `${f.root}/logs`;
+  const credentialRoot = `${f.root}/credentials`;
+  await Deno.mkdir(configStage);
+  await Deno.mkdir(logs);
+  await Deno.mkdir(`${credentialRoot}/claude`, { recursive: true });
+  await Deno.mkdir(`${credentialRoot}/gh`, { recursive: true });
+  await Deno.writeTextFile(
+    `${configStage}/.config.json`,
+    JSON.stringify({
+      repos: ["stSoftwareAU/VibeCoder"],
+      github_app_private_key_path: f.keyPath,
+      imgbb_api_key: "host-imgbb-secret",
+      repo_config: {
+        "stSoftwareAU/VibeCoder": {
+          quality_credentials: {
+            mint: "quality-token-command",
+            passthrough: ["QUALITY_TOKEN"],
+          },
+        },
+      },
+    }),
+  );
+  const name = "vibe-babysitter-snapshot";
+  const plan = fakePlan(f.root, name, [
+    "--volume",
+    `${logs}:/home/vibe/logs`,
+    "--volume",
+    `${REPO_ROOT}:/workspace:ro`,
+    "--volume",
+    `${configStage}:/container/run-config:ro`,
+    "--volume",
+    `${credentialRoot}/gh:/home/vibe/.vibe-coder/credentials/gh:ro`,
+    "--volume",
+    `${credentialRoot}/claude:/home/vibe/.vibe-coder/credentials/claude:ro`,
+    "--env",
+    "CONFIG_PATH=/container/run-config/.config.json",
+  ]);
+  plan.mounts = [
+    { source: "vibe-work", target: "/home/vibe/auto-issue-work", volume: true },
+    { source: logs, target: "/home/vibe/logs" },
+    { source: REPO_ROOT, target: "/workspace", readOnly: true },
+    { source: configStage, target: "/container/run-config", readOnly: true },
+    {
+      source: `${credentialRoot}/gh`,
+      target: "/home/vibe/.vibe-coder/credentials/gh",
+      readOnly: true,
+    },
+    {
+      source: `${credentialRoot}/claude`,
+      target: "/home/vibe/.vibe-coder/credentials/claude",
+      readOnly: true,
+    },
+  ];
+  const { deps, calls } = fakeDeps(f, { overrides: plan });
+  try {
+    await runBabysitterRepairContainer(
+      { ...inputFor(f), baseDir: REPO_ROOT },
+      deps,
+    );
+    const args = spawnAt(calls, 0).args;
+    assert(args.includes(`${f.scratch}/workspace:/workspace:ro`));
+    assert(args.includes(`${f.scratch}:/home/vibe/logs`));
+    assert(args.includes("CONFIG_PATH=/workspace/.config.json"));
+    assert(!args.some((arg) => arg.includes(`${f.keyDir}`)));
+    assert(
+      !volumeValues(args).some((mount) => mount.includes(`${configStage}:`)),
+    );
+    assert(!volumeValues(args).some((mount) => mount.includes(`${logs}:`)));
+    assert(
+      !volumeValues(args).some((mount) => mount.includes("/credentials/gh")),
+    );
+    assert(
+      volumeValues(args).some((mount) => mount.includes("/credentials/claude")),
+    );
+    const safeConfig = await Deno.readTextFile(
+      `${f.scratch}/workspace/.config.json`,
+    );
+    assert(!safeConfig.includes(f.keyPath));
+    assert(!safeConfig.includes("host-imgbb-secret"));
+    assert(safeConfig.includes("quality-token-command"));
+    assert(safeConfig.includes("QUALITY_TOKEN"));
+    assert(!safeConfig.includes("github_app_private_key_path"));
+    assert(!safeConfig.includes("imgbb_api_key"));
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }

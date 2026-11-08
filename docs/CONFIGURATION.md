@@ -472,12 +472,12 @@ The installation is looked up from the App on the owner of `repos`. Keep the
 key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
 mounted into the container. Use a different App from the worker's own
 `github_app_*` identity, since GitHub refuses an approval from a PR's author.
-The fleet PR babysitter's repair container never mounts this configured key: the
-run is refused if its mounts would reach it. The repair container mounts only
-the enabled providers' credential sub-directories (read-only), never the `gh`
-credential directory or the `custom_label_prompts` directories. The staged
-configuration copy, the log directory and the worker checkout (which may hold a
-gitignored `.config.json`) remain mounted as residual exposure; see the
+The fleet PR babysitter's repair container never mounts this configured key.
+Its worker checkout is a read-only archive of tracked files, its config copy is
+scrubbed, and unknown plan mounts are refused. It keeps only enabled provider
+credential sub-directories and declared quality-credential rules; the `gh`
+credential directory, host log directory and `custom_label_prompts` directories
+stay on the host. See the
 [babysitter credential boundary](workflows/fleet-pr-babysitter.md#credentials-across-the-boundary).
 
 The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**

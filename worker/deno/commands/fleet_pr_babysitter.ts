@@ -349,11 +349,11 @@ export async function excludeRepairByproducts(
  * downloaded again on every repair and cannot hit gh's 600 s timeout. The clone
  * copies the history (no alternates, no hardlinks) and its origin is reset to
  * GitHub, so the agent's fetch and push never go through the mirror path. The
- * mirror sits outside the paths the agent can write: the repair agent writes
- * only the clone and the scratch directory, while the container also mounts
- * the worker checkout, the staged config, the log directory and the enabled
- * provider credential directories from the launch plan (see
- * fleet_babysitter_container.ts). A clone may leave a partial
+ * mirror sits outside every repair mount. The container receives a tracked
+ * archive of the worker checkout, a scrubbed config and provider credential
+ * directories; the host log directory and staged config are not mounted (see
+ * fleet_babysitter_container.ts). The agent writes only the clone and scratch
+ * directory. A clone may leave a partial
  * destination, so a failed clone is not retried in place.
  *
  * The clone's `info/exclude` also ignores the tool byproducts in

@@ -23,6 +23,7 @@ import {
   readSharedBabysitterAttempts,
   reconcileTrackedPr,
   repairFailureIdentity,
+  resetRepairCloneGitConfig,
   startBabysitterAgent,
 } from "../commands/fleet_pr_babysitter.ts";
 import {
@@ -2296,6 +2297,37 @@ Deno.test("a successful repair runs no host quality.sh or codex (Issue #4770)", 
         assert(!command.includes("quality.sh"), command);
         assert(!/(^|[\s/])codex(\s|$)/.test(command), command);
       }
+    });
+  });
+});
+
+Deno.test("fix replaces agent-controlled git config before host publication (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        answeringContainer(spawns),
+      );
+      let safeConfig = "";
+      h.deps.resetGitConfig = async (dir, repo) => {
+        await Deno.mkdir(`${dir}/.git`, { recursive: true });
+        const configPath = `${dir}/.git/config`;
+        await Deno.writeTextFile(
+          configPath,
+          "[core]\n\tsshCommand = /host/agent-command\n" +
+            '[filter "owned"]\n\tclean = /host/agent-command\n' +
+            "[diff]\n\texternal = /host/agent-command\n",
+        );
+        await resetRepairCloneGitConfig(dir, repo);
+        safeConfig = await Deno.readTextFile(configPath);
+      };
+      await h.attempt();
+      assert(safeConfig.includes("https://github.com/stSoftwareAU/VibeCoder.git"));
+      assert(!safeConfig.includes("/host/agent-command"));
+      assertEquals(h.state.pushed, 1);
     });
   });
 });

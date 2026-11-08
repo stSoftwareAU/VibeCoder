@@ -5,8 +5,12 @@
  *
  * Uses Australian English spelling (behaviour, neutralise, organisation, etc.)
  */
-import { assertEquals } from "@std/assert";
-import { run, validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
+import { assert, assertEquals } from "@std/assert";
+import {
+  resetRepairCloneGitConfig,
+  run,
+  validateAndCommit,
+} from "../commands/fleet_pr_babysitter.ts";
 import type { runGitArgv } from "../lib/git_timeout.ts";
 
 const HARDENING = [
@@ -96,6 +100,59 @@ Deno.test("validateAndCommit and push run no planted pre-commit, pre-push or fsm
     await run("git", ["push", "-q", "origin", "HEAD"], repo);
 
     assertEquals(await markerNames(markers), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("repair resets agent-controlled filters, diff and SSH git config before host work", async () => {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-git-config-" });
+  try {
+    const repo = `${root}/repo`;
+    const markers = `${root}/markers`;
+    await Deno.mkdir(repo);
+    await Deno.mkdir(markers);
+    await git(repo, "init", "-q");
+    await Deno.writeTextFile(`${repo}/.gitattributes`, "*.txt filter=owned\n");
+    await Deno.writeTextFile(`${repo}/README.md`, "base\n");
+    await git(repo, "add", ".gitattributes", "README.md");
+    await git(repo, "commit", "-q", "-m", "base");
+    const command = `${root}/host-command`;
+    await Deno.writeTextFile(
+      command,
+      `#!/bin/sh\n: > "${markers}/executed"\n`,
+    );
+    await Deno.chmod(command, 0o755);
+    await git(
+      repo,
+      "config",
+      "core.sshCommand",
+      command,
+    );
+    await git(repo, "config", "filter.owned.clean", command);
+    await git(repo, "config", "diff.external", command);
+    await git(repo, "config", "core.fsmonitor", command);
+    await Deno.mkdir(`${repo}/.git/hooks`, { recursive: true });
+    await Deno.writeTextFile(
+      `${repo}/.git/hooks/pre-commit`,
+      `#!/bin/sh\n: > "${markers}/hook"\n`,
+    );
+    await Deno.chmod(`${repo}/.git/hooks/pre-commit`, 0o755);
+
+    await resetRepairCloneGitConfig(repo, "stSoftwareAU/VibeCoder");
+    await Deno.writeTextFile(`${repo}/fix.txt`, "fixed\n");
+    await validateAndCommit(repo, 4770, { login: "fixture-bot", id: "1" });
+    await run("git", ["status", "--porcelain"], repo);
+
+    assertEquals(await markerNames(markers), []);
+    assertEquals(
+      await git(repo, "config", "--local", "--get", "remote.origin.url"),
+      "https://github.com/stSoftwareAU/VibeCoder.git",
+    );
+    const config = await Deno.readTextFile(`${repo}/.git/config`);
+    assert(
+      !/filter\.owned|core\.sshCommand|diff\.external|fsmonitor/.test(config),
+    );
   } finally {
     await Deno.remove(root, { recursive: true });
   }

@@ -1,6 +1,7 @@
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   launchAgentPlist,
+  main,
   missingAppPermissions,
   runContainerPreflight,
 } from "../commands/fleet_pr_babysitter_setup.ts";
@@ -141,4 +142,34 @@ Deno.test("setup refuses an unbuilt worker image and names the rebuild", async (
     Error,
     "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
   );
+});
+
+Deno.test("setup entry point invokes the container preflight and does not install Codex", async () => {
+  const calls: string[] = [];
+  await assertRejects(
+    () =>
+      main({
+        args: ["--check", "--app-id=1"],
+        env: (name) => name === "HOME" ? "/private/home" : undefined,
+        loadConfig: () => Promise.resolve({ repos: ["owner/repo"] } as never),
+        command: (name) => {
+          calls.push(name);
+          return Promise.resolve("version");
+        },
+        preflight: (checkout) => {
+          calls.push(`preflight ${checkout}`);
+          return Promise.resolve();
+        },
+        runGh: () => {
+          calls.push("gh version");
+          return Promise.reject(new Error("stop after preflight"));
+        },
+      }),
+    Error,
+    "stop after preflight",
+  );
+  assertEquals(calls.slice(0, 2), ["git", "rtk"]);
+  assert(calls[2]?.startsWith("preflight "));
+  assertEquals(calls[3], "gh version");
+  assert(!calls.some((call) => call.includes("codex")));
 });
