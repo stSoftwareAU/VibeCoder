@@ -72,10 +72,11 @@ fake `deno` runner in a temporary git repository.
   five guard tests fail (stray file stays, fixture stays rewritten, deleted file
   stays missing); restored afterwards.
 - CI repair: `deno task test tests/mutation_tree_guard_test.ts` passed the 12
-  tests that existed then with the standard permissions (the file now holds
-  15). The local quality gate encountered a Deno permissions pledge panic in
-  the parallel suite and a Checkov timeout. Formatting, lint, type, completeness and Markdown checks
-  passed. The sandbox also refused `/bin/ps` during the shard's process tests.
+  tests that existed then with the standard permissions (the file now holds 15).
+  The local quality gate encountered a Deno permissions pledge panic in the
+  parallel suite and a Checkov timeout. Formatting, lint, type, completeness and
+  Markdown checks passed. The sandbox also refused `/bin/ps` during the shard's
+  process tests.
 - PR #4916 review: `snapshotTree`/`restoreTree` now catch a throw from
   `runGitCommand` (the run timeline refuses a git spawn near the deadline) and
   warn; `runDeno` takes the snapshot inside its `try`, catches a rejecting
@@ -92,8 +93,9 @@ fake `deno` runner in a temporary git repository.
   copies: none found.
 - PR #4916 mutation survivors: `mutation_runner.ts:608` and `:677` (the
   `err instanceof Error ? err.message : String(err)` in the snapshot and restore
-  warnings) are pinned by two tests in `worker/deno/tests/mutation_runner_test.ts`
-  that reject each seam with an `Error` and with a plain string and assert the
-  exact warning. With each ternary negated both tests fail; restored afterwards.
-  The `docs/mutation-check.md` sentence now names the snapshot and restore
-  warnings separately.
+  warnings) are pinned by two tests in
+  `worker/deno/tests/mutation_runner_test.ts` that reject each seam with an
+  `Error` and with a plain string and assert the exact warning. With each
+  ternary negated both tests fail; restored afterwards. The
+  `docs/mutation-check.md` sentence now names the snapshot and restore warnings
+  separately.
