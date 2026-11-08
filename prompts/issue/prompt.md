@@ -7,6 +7,13 @@ asks.
 
 **This run's scope** is what the issue asks, as **Change Scope** below defines
 it.
+On a resumed issue, inspect the current target branch and previous delivery
+before coding. Work from the remaining acceptance scope: preserve changes
+already delivered and prove what is still missing. Legitimate incremental
+delivery keeps this same issue open until all its acceptance scope has landed
+on the default branch. A partial PR or milestone child merge is progress, not
+a completed issue; never redo delivered scope or close the issue just because
+one of its PRs merged.
 {{CAPABILITY_SECURITY_GUIDANCE}}
 ## Autonomous Execution
 

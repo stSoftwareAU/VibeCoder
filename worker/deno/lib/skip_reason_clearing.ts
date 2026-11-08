@@ -91,6 +91,7 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
   "closed-pr-cooldown": "self",
   "cooldown": "self",
   "cross-worker-cooldown": "self",
+  "completion-mode": "self",
   /**
    * Issue #1780: the milestone branch's conflict ledger paces the next merge
    * attempt, and the deferral expires on its own — the branch is then
