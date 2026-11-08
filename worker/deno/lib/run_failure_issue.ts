@@ -53,7 +53,7 @@ import {
   type SelfDiagnosticFiling,
 } from "./self_diagnostic_attestation.ts";
 import { redactedTail } from "./redacted_text.ts";
-import { getRepoVisibility } from "./repo_visibility.ts";
+import { isRepoPublic } from "./repo_visibility.ts";
 
 /** Marker prefix; the body carries `<!-- VIBE_RUN_FAILURE:<class> -->`. */
 export const RUN_FAILURE_MARKER_PREFIX = "VIBE_RUN_FAILURE";
@@ -244,41 +244,6 @@ export function formatRunFailureTitle(failureClass: string): string {
 }
 
 /**
- * Whether the source repository may be named in the public VibeCoder issue
- * (Issue #4318).
- *
- * `repo_visibility` maps anything other than `"public"` to private. A failed
- * lookup is unknown, and unknown is private: the Source line, the release
- * comment and the agent excerpt stay off the public issue.
- *
- * Consequence (Issue #4462): a withheld source leaves the issue without a
- * readable source, so the self-scheduler does not schedule it on its own; it
- * waits for a human `work-on` unless a follow-up occurrence names a public
- * source ({@link runFailureNamesReadableSource}).
- */
-async function sourceIsPublic(
-  repo: string,
-  ghFn: (args: string[]) => Promise<string>,
-): Promise<boolean> {
-  const result = await getRepoVisibility(repo, {
-    runCommand: async (cmd) => {
-      try {
-        const stdout = await ghFn(cmd.slice(1));
-        return { success: true, stdout, stderr: "" };
-      } catch (err) {
-        return {
-          success: false,
-          stdout: "",
-          stderr: err instanceof Error ? err.message : String(err),
-        };
-      }
-    },
-  });
-  if (!result.ok) return false;
-  return result.value === "public";
-}
-
-/**
  * The `**Source:**` line of a disclosed body. Linear: each part is a
  * character class ended by a fixed delimiter, so a hostile body cannot force
  * backtracking beyond one pass per line.
@@ -310,14 +275,14 @@ export function runFailureNamesReadableSource(
  * Issue body: marker first, then the diagnosis a human needs. A private source
  * withholds the Source line, the release comment and the excerpt (Issue #4318),
  * so the body then names no readable source and the self-scheduler waits for a
- * human unless a follow-up names one (Issue #4462, see `sourceIsPublic`).
+ * human unless a follow-up names one (Issue #4462, see `isRepoPublic`).
  */
 export async function formatRunFailureBody(
   report: RunFailureReport,
   classification: RunFailureClassification,
   ghFn: (args: string[]) => Promise<string>,
 ): Promise<string> {
-  const disclose = await sourceIsPublic(report.sourceRepo, ghFn);
+  const disclose = await isRepoPublic(report.sourceRepo, ghFn);
   const o = report.outcome;
   const lines = [
     formatRunFailureMarker(classification.failureClass),
@@ -360,7 +325,7 @@ export async function formatOccurrenceLine(
   epoch: number,
   ghFn: (args: string[]) => Promise<string>,
 ): Promise<string> {
-  const disclose = await sourceIsPublic(report.sourceRepo, ghFn);
+  const disclose = await isRepoPublic(report.sourceRepo, ghFn);
   const when = new Date(epoch * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
   const where = disclose
     ? `${report.sourceRepo}#${report.sourceIssueNumber}, `

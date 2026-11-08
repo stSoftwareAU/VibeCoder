@@ -1387,6 +1387,11 @@ interface LedgerOptions {
   announcements?: AgentAttemptAnnouncement[];
   /** When set, the injected roll-back returns this outcome (Issue #1781). */
   rollbackOutcome?: RollbackOutcome;
+  /**
+   * The repository's visibility as `gh api` reports it (Issue #4780). Omitted
+   * answers nothing, which reads as private; only "public" is answered.
+   */
+  visibility?: "public";
 }
 
 /** Sync deps that charge the ledger, recording every gh argv. */
@@ -1401,6 +1406,9 @@ function ledgerDeps(
     ghCommandFn: (args: string[]): Promise<string> => {
       calls.push([...args]);
       const key = args.join(" ");
+      if (options.visibility === "public" && key.includes(".visibility")) {
+        return Promise.resolve("public");
+      }
       if (key.includes("repos/owner/repo/milestones")) {
         return Promise.resolve(
           JSON.stringify(
@@ -2679,6 +2687,9 @@ Deno.test("syncMilestoneBranches - a resolution the gate refused is not charged 
         }],
         streakPath,
         nowMs: 10_000 + cycle * 1_000,
+        // Public, so the wedged diagnostic keeps the public form asserted below
+        // (Issue #4780).
+        visibility: "public",
       }));
     }
 
