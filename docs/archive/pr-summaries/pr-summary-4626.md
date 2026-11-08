@@ -88,7 +88,7 @@ not run there.
 
 ## Test Plan
 
-- `worker/deno/tests/cargo_deny_gate_test.ts` (92 tests at head) covers workflow
+- `worker/deno/tests/cargo_deny_gate_test.ts` (96 tests at head) covers workflow
   parsing, matrix expansion and fallback, the actual container workflow,
   triggers, diagnostic classification and runner behaviour. This round adds the
   job- and workflow-level `defaults.run.working-directory` tests, the
@@ -166,8 +166,8 @@ not run there.
 - `worker/deno/lib/cargo_deny_gate.ts`’s `WorkDir` type alias has a `true` type
   literal that is erased at runtime and is exempt (untestable) from mutation. So
   are the `allowFailure?: true` type literals on `CargoDenyCiFinding`
-  (`cargo_deny_gate.ts:49`), on `allowFailureFor`'s return type (`:484`) and on
-  `actionVariantFindings`'s `allow` parameter (`:679`). The mutation round also
+  (`cargo_deny_gate.ts:53`), on `allowFailureFor`'s return type (`:511`) and on
+  `actionVariantFindings`'s `allow` parameter (`:706`). The mutation round also
   removed two operands no input can reach: the `previous !== undefined` guard in
   `dropUnresolved` (`cargo` is always kept first) and `wanted.some(...)` on the
   unmatched-`include` push (an entry naming no wanted key adds a combination
@@ -186,4 +186,4 @@ Semgrep and Checkov were not run.
 - `parseWorkflow`'s object/array/null guard was dead: a scalar, list or null
   document has no `on`, `defaults` or jobs, so every operand mutation gave the
   same result. The guard is removed.
-- The 50 mutants past the cap were not run: unchecked.
+- The 48 mutants past the cap were not run: unchecked.
