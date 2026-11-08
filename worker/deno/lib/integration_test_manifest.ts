@@ -56,6 +56,8 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // Issue #1929: drives .github/scripts/detect-image-changes.sh against
   // throwaway git repositories, the same shape as
   // empty_array_expansion_check_test.ts below.
+  "tests/shellcheck_gate_integration_test.ts",
+  "tests/shellcheck_publication_test.ts",
   "tests/container_image_change_filter_test.ts",
   "tests/container_provider_deepseek_test.ts",
   "tests/container_provider_set_test.ts",
@@ -313,6 +315,12 @@ export function isIntegrationTestSource(source: string): boolean {
     line,
     index,
   ) => line.code.padEnd(rawLines[index]!.length)).join("\n");
+  // ShellCheck integration suites explicitly require the host binary.
+  if (
+    /\bimport\s*\{[^}]*\brequireRealShellcheck\b[^}]*\}\s*from\s*["']\.\/support\/shellcheck_support\.ts["']/
+      .test(source) &&
+    /\bawait\s+requireRealShellcheck\s*\(\s*\)/.test(executable)
+  ) return true;
   const names = new Set<string>();
   for (
     const imported of executable.matchAll(

@@ -52,7 +52,8 @@ The configured spelling test failed before forwarding `repoConfigs`: the push
 helper received `undefined` instead of the configured command. The shared
 builder, command and production-callback assertions failed against the old
 feedback record. The strengthened persistent-findings test confirms two verifier
-attempts with no pre-flight spec, no successful push and no review dismissal.
+attempts with a ShellCheck-only spec when no commands are configured, no
+successful push and no review dismissal.
 
 The corrected shared record reaches `buildQualityInstructions`, the standalone
 feedback command and the production feedback callback. The run-core command,
@@ -64,7 +65,7 @@ flowchart LR
     A[Budget skip] --> B{Push flow}
     B -->|Issue completion| C[Worker full gate before PR]
     B -->|CI fix| D[Conditional worker gate and configured pre-flight]
-    B -->|Feedback or spelling| E[Configured pre-flight and changed-file checks, if any]
+    B -->|Feedback or spelling| E[Configured pre-flight or ShellCheck-only, and changed-file checks]
     B -->|PR-review feedback| F[Independent fix verifier even without pre-flight]
     B -->|Custom PR| G[Agent pre-push hook, then worker verifies push]
 ```
@@ -95,7 +96,7 @@ Kept implementation, checks and tests on Deno; no dependencies were added and
   three comment types. The custom PR test asserts the gate refusal and 600 s
   budget.
 - `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)`
-  now checks the prompt and absent pre-flight specs while retaining every
+  now checks the prompt and ShellCheck-only pre-flight specs while retaining every
   existing assertion about verifier attempts, outstanding findings, pushes and
   dismissal.
 

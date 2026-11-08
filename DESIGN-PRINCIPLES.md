@@ -160,8 +160,11 @@ explicit fallback can also select a metered provider.
   subscriptions and selects DeepSeek as logged overflow only when no eligible
   subscription has budget. The chooser fails loudly when no DeepSeek
   credential can be exported; it does not wait or run a host fallback.
-  The chooser is available as a module; production babysitter command
-  orchestration does not call it yet.
+  The container's `babysitter-repair` command
+  (`worker/deno/commands/babysitter_repair.ts`, Issue #4768) calls
+  `chooseBabysitterProvider` and runs the repair session on the chosen
+  provider. The host babysitter's `fix()` does not launch that container yet
+  (#4770 will).
 - **The worker keeps its auto-mode wait policy.** When every eligible
   subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in

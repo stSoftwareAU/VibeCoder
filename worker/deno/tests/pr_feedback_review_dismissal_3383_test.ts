@@ -1159,8 +1159,11 @@ Deno.test("review-fix verifier - persistent findings stay outstanding without pu
   assertEquals(checks, 2);
   assertEquals(
     preFlightSpecs,
-    [undefined, undefined],
-    "no pre-flight commands are configured",
+    [
+      { commands: [], shellcheckOnly: true },
+      { commands: [], shellcheckOnly: true },
+    ],
+    "repairs without configured commands still check ShellCheck",
   );
   assertStringIncludes(
     prompts[0] ?? "",

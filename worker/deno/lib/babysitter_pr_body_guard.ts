@@ -33,9 +33,11 @@
 
 import {
   CLOSING_KEYWORD_RE,
+  COLON_CLOSE_RE,
   findMissingCriteria,
   type IssueIdentity,
   PART_OF_RE,
+  URL_CLOSE_RE,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
 import { maskMarkdownCode } from "./markdown_code_spans.ts";
@@ -84,31 +86,6 @@ const NEGATED_CLOSE_RE =
 
 /** Any `#N` reference, whether same-repository or qualified. */
 const ISSUE_MENTION_RE = /(?<![\w./-])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g;
-
-/**
- * A colon closing phrase such as `Closes: #N` or `resolved : owner/repo#N`.
- * GitHub honours it, and {@link CLOSING_KEYWORD_RE} does not match it.
- * Groups: the lead character, the keyword with its separator, the optional
- * repository qualifier, and the issue number.
- *
- * No two quantifiers overlap: the keyword is a fixed word set, the two runs of
- * whitespace sit either side of a literal `:`, and the qualifier's two runs are
- * split by a literal `/`, so a hostile run is read in linear time.
- */
-const COLON_CLOSE_RE =
-  /(^|[^\w/])((?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:\s*)(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
-
-/**
- * A full-URL closing phrase such as `Fixes https://github.com/owner/repo/issues/N`.
- * GitHub honours it, and {@link CLOSING_KEYWORD_RE} does not match it.
- * Groups: the lead character, the keyword with its whitespace, the owner, the
- * repository, and the issue number.
- *
- * No two quantifiers overlap: the owner and repository runs are split by a
- * literal `/`, and the keyword's whitespace run is followed by a literal `h`.
- */
-const URL_CLOSE_RE =
-  /(^|[^\w/])((?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)https:\/\/github\.com\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/issues\/(\d+)\b/gi;
 
 /** Inputs to {@link guardPrBodyProposal}. */
 export interface PrBodyGuardInput {

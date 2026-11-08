@@ -451,6 +451,42 @@ Deno.test("commitAndPushPending - no preFlight spec: bad unpushed commit still p
   }
 });
 
+Deno.test("commitAndPushPending - no preFlight spec: WIP checkpoint with a ShellCheck diagnostic still pushed (PR #4898 review)", async () => {
+  const branch = "issue-4631-wip";
+  const { tmp, downstream } = await makeRepo("preflight_4631_wip_", branch);
+  try {
+    // CI runs ShellCheck, and the script has an SC2086 diagnostic: a gated
+    // push would be refused, a WIP checkpoint must publish it regardless.
+    await Deno.mkdir(`${downstream}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${downstream}/.github/workflows/shellcheck.yml`,
+      `jobs:\n  lint:\n    env:\n      SHELLCHECK_VERSION: "1.2.3"\n    steps:\n      - run: |\n          find . -name "*.sh" -type f -exec shellcheck {} +\n`,
+    );
+    await Deno.writeTextFile(
+      `${downstream}/wip.sh`,
+      "#!/bin/bash\necho $1\n",
+    );
+    await commitLocally(downstream, "wip.txt", "wip\n");
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    assertEquals(await originSha(downstream, branch), head);
+    const tracked =
+      (await runGit(["ls-tree", "-r", "--name-only", "HEAD"], downstream))
+        .stdout;
+    assert(tracked.includes("wip.sh"), "the uncommitted script was committed");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 // Issue #3689 / PR #3716 review: the execute phase's WIP checkpoints push the
 // agent's commits with no gate, so by the time the completion phase runs they
 // are already on origin and "unpushed" is empty. The whole-branch mode checks

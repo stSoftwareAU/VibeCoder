@@ -525,12 +525,13 @@ export async function runRepoFormatters(
  * Run the formatters over every file the branch changed, then commit.
  *
  * The file list is the pre-push gate's own (`listPushedFiles`): every
- * non-merge commit ahead of `baseRef`, or — with no `baseRef` (the PR base
+ * commit ahead of `baseRef` (for a merge commit, only the paths the merge
+ * itself changed, such as a conflict resolution), or — with no `baseRef` (the PR base
  * could not be resolved, or a PR round whose `commitAndPushPending` Step 1b
  * gate checks only these) — every commit on no remote-tracking ref, so the
  * formatters and
- * the gate that follows always agree on scope. Files merged in from the base
- * are never reformatted. Never throws.
+ * the gate that follows always agree on scope. Files a merge merely
+ * brings in from the base are never reformatted. Never throws.
  */
 export async function formatBranchChanges(
   repoPath: string,
