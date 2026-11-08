@@ -58,7 +58,7 @@ Backend only. `worker/deno/tests/repo_formatters_4129_test.ts` runs the real
   `.markdown` and `.jsonc` files rewritten, an already-canonical file not
   rewritten (mtime unchanged), a symlinked archive file whose outside target is
   left alone, and an over-limit file skipped with a warning. Each of the six
-  surviving mutants (`~~~` operand, linkage test, size-of-blank-line condition,
+  surviving mutants (`~~~` operand, linkage test, next-line-blank condition,
   `.markdown`, `.jsonc`, `rewritten !== current`) was applied by hand and turns
   a test red.
 - `deno task test:unit tests/repo_formatters_4129_test.ts`: 14 passed, 0 failed.
