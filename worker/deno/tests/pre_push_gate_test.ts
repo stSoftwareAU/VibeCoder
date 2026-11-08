@@ -1040,7 +1040,7 @@ const RUST_WORKFLOW = [
   "        working-directory: rust",
   "    steps:",
   `      - run: ${CLIPPY_CMD}`,
-  "      - run: cargo test --workspace --locked",
+  "      - run: cargo test --locked",
   "",
 ].join("\n");
 
@@ -1055,7 +1055,7 @@ const LINT_WORKFLOW = [
   "        working-directory: rust",
   "    steps:",
   `      - run: ${CLIPPY_CMD}`,
-  "      - run: cargo test --workspace --locked",
+  "      - run: cargo test --locked",
   "  tools:",
   "    defaults:",
   "      run:",
@@ -1216,7 +1216,7 @@ Deno.test("planChangedFileChecks: a real workflow scan plans the clippy and test
     { repoRoot: "/r", markdownlintBinary: null, ciCargo: scan },
   );
   assert(result.ok);
-  // `cargo test --workspace` in `rust` is covered by the clippy --all-targets
+  // `cargo test --locked` in `rust` is covered by the clippy --all-targets
   // run, so only the `tools` test build is planned as a compile.
   assertEquals(
     result.value.filter((c) => c.cargo !== undefined).map((c) => [

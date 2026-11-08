@@ -528,10 +528,108 @@ Deno.test("a test-target compile is dropped when clippy with --all-targets runs 
     jobs:
       lint:
         steps:
-          - run: cargo clippy --all-targets -- -D warnings
-          - run: cargo test --workspace
+          - run: cargo clippy --workspace --all-targets -- -D warnings
+          - run: cargo test --all --locked
   `);
   assertEquals(result.checks.map((c) => c.kind), ["clippy"]);
+});
+
+Deno.test("a test-target compile is dropped when clippy has the same features, packages and profile in another order or spelling", () => {
+  const result = scan(`
+    on: pull_request
+    jobs:
+      lint:
+        steps:
+          - run: cargo clippy --tests -p b --package=a --features "x y" --release -- -D warnings
+          - run: cargo test -r --package a -p=b -F x,y
+  `);
+  assertEquals(result.checks.map((c) => c.kind), ["clippy"]);
+});
+
+Deno.test("a test-target compile is kept when its selection differs from the clippy run", () => {
+  const kinds = (clippy: string, test: string) =>
+    scan(`
+      on: pull_request
+      jobs:
+        lint:
+          steps:
+            - run: ${clippy}
+            - run: ${test}
+    `).checks.map((c) => c.kind);
+  const kept = ["clippy", "test-build"];
+  // Clippy has no --workspace but the test run has it and more features.
+  assertEquals(
+    kinds(
+      "cargo clippy --all-targets --locked -- -D warnings",
+      "cargo test --workspace --all-features",
+    ),
+    kept,
+  );
+  assertEquals(
+    kinds("cargo clippy --all-targets", "cargo test --workspace"),
+    kept,
+  );
+  assertEquals(
+    kinds("cargo clippy --all-targets -p a", "cargo test -p b"),
+    kept,
+  );
+  assertEquals(
+    kinds("cargo clippy --all-targets --features x", "cargo test --features y"),
+    kept,
+  );
+  assertEquals(
+    kinds("cargo clippy --all-targets", "cargo test --no-default-features"),
+    kept,
+  );
+  assertEquals(
+    kinds("cargo clippy --all-targets", "cargo test --release"),
+    kept,
+  );
+  assertEquals(
+    kinds("cargo clippy --all-targets", "cargo test --profile ci"),
+    kept,
+  );
+  assertEquals(
+    kinds("cargo clippy --all-targets", "cargo test --target wasm32-wasip1"),
+    kept,
+  );
+  assertEquals(
+    kinds(
+      "cargo clippy --all-targets",
+      "cargo test --manifest-path a/Cargo.toml",
+    ),
+    kept,
+  );
+  assertEquals(
+    kinds("cargo clippy --all-targets", "cargo test --exclude a"),
+    kept,
+  );
+});
+
+Deno.test("a test-target compile is kept when its env or toolchain differs from the clippy run", () => {
+  const envDiffers = scan(`
+    on: pull_request
+    jobs:
+      lint:
+        steps:
+          - run: cargo clippy --all-targets
+          - env:
+              RUSTFLAGS: -D warnings
+            run: cargo test
+  `);
+  assertEquals(envDiffers.checks.map((c) => c.kind), ["clippy", "test-build"]);
+  const toolchainDiffers = scan(`
+    on: pull_request
+    jobs:
+      lint:
+        steps:
+          - run: cargo +nightly clippy --all-targets
+          - run: cargo test
+  `);
+  assertEquals(toolchainDiffers.checks.map((c) => c.kind), [
+    "clippy",
+    "test-build",
+  ]);
 });
 
 Deno.test("a test-target compile is kept when clippy runs in a different directory", () => {
@@ -667,4 +765,110 @@ Deno.test("hostile input: a 200,000-character run line and a long run of spaces 
   assertEquals(spacesThenPipe.unverifiable.length, 1);
   assert(spacesThenPipe.unverifiable[0]!.length < 400);
   assert(performance.now() - started < 10_000);
+});
+
+Deno.test("every cargo-relevant env key is kept and an unrelated key is dropped", () => {
+  const keys = [
+    "RUSTFLAGS",
+    "RUSTDOCFLAGS",
+    "RUSTUP_TOOLCHAIN",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "CARGO_INCREMENTAL",
+    "CARGO_NET_OFFLINE",
+    "CARGO_BUILD_JOBS",
+    "CARGO_PROFILE_DEV_DEBUG",
+    "CARGO_TARGET_DIR",
+  ];
+  for (const key of keys) {
+    const result = scan(`
+      on: pull_request
+      env:
+        ${key}: "1"
+        UNRELATED: "2"
+      jobs:
+        lint:
+          steps:
+            - run: cargo clippy
+    `);
+    assertEquals(result.checks.map((c) => c.env), [{ [key]: "1" }], key);
+  }
+});
+
+Deno.test("every build flag of a test run is kept in the test-target compile", () => {
+  const booleans = [
+    "--workspace",
+    "--all",
+    "--all-features",
+    "--no-default-features",
+    "--locked",
+    "--frozen",
+    "--offline",
+    "--release",
+    "-r",
+    "--lib",
+    "--bins",
+    "--tests",
+    "--examples",
+    "--benches",
+    "--all-targets",
+  ];
+  for (const flag of booleans) {
+    const result = scan(`
+      on: pull_request
+      jobs:
+        test:
+          steps:
+            - run: cargo test ${flag}
+    `);
+    assertEquals(
+      result.checks.map((c) => c.argv),
+      [["cargo", "test", "--no-run", flag]],
+      flag,
+    );
+  }
+  const valued = [
+    "-p",
+    "--package",
+    "--exclude",
+    "--features",
+    "-F",
+    "--profile",
+    "--target",
+    "--manifest-path",
+    "--test",
+    "--bin",
+    "--example",
+    "--bench",
+  ];
+  for (const flag of valued) {
+    for (const spelling of [`${flag} v`, `${flag}=v`]) {
+      const result = scan(`
+        on: pull_request
+        jobs:
+          test:
+            steps:
+              - run: cargo test ${spelling}
+      `);
+      assertEquals(
+        result.checks.map((c) => c.argv),
+        [["cargo", "test", "--no-run", flag, "v"]],
+        spelling,
+      );
+    }
+  }
+});
+
+Deno.test("a workflow that parses to null or a list is unparseable, not a crash", () => {
+  assertEquals(scanWorkflowForCargoChecks(FILE, "null # cargo clippy"), {
+    checks: [],
+    unverifiable: [
+      `${FILE}: the workflow cannot be parsed, so its cargo clippy command cannot be checked`,
+    ],
+  });
+  assertEquals(scanWorkflowForCargoChecks(FILE, "- cargo clippy\n- b"), {
+    checks: [],
+    unverifiable: [
+      `${FILE}: the workflow cannot be parsed, so its cargo clippy command cannot be checked`,
+    ],
+  });
 });

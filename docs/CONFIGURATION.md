@@ -5201,8 +5201,11 @@ checks in stage 1, which only the worker's own gates run (see that bullet):
      its cargo-relevant environment (`RUSTFLAGS` and similar, taken verbatim). A
      test-target compile (`cargo test --no-run`) is derived from a CI
      `cargo test`, `cargo nextest run` or `cargo llvm-cov` only when no clippy
-     run in that directory already compiles the test targets (`--all-targets` or
-     `--tests`). Within a directory, clippy runs before the test-target compile,
+     run in that directory already compiles the same test targets: a clippy run
+     with `--all-targets` or `--tests` covers it only when the toolchain,
+     package selection (`--workspace`, `--all`, `-p`, `--exclude`), features,
+     profile, target, manifest path and env also match. Otherwise the test
+     build is kept, so the checked set is never silently reduced. Within a directory, clippy runs before the test-target compile,
      after cargo fmt. A probe first checks that `cargo` (and `cargo clippy` when
      clippy is planned) runs here. An infrastructure fault (a missing `cargo` or
      `clippy`, a directory that is missing or resolves outside the repo, host

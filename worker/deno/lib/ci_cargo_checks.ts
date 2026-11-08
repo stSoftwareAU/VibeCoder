@@ -555,10 +555,75 @@ function unparsed(fileName: string, text: string): CiCargoScan {
   };
 }
 
+/** Selection flags that take no value, spelled as their canonical form. */
+const SELECTION_BOOLEAN_FLAGS = new Map([
+  ["--workspace", "--workspace"],
+  ["--all", "--workspace"],
+  ["--all-features", "--all-features"],
+  ["--no-default-features", "--no-default-features"],
+  ["--release", "--release"],
+  ["-r", "--release"],
+]);
+
+/** Selection flags that take a value, spelled as their canonical form. */
+const SELECTION_VALUE_FLAGS = new Map([
+  ["-p", "--package"],
+  ["--package", "--package"],
+  ["--exclude", "--exclude"],
+  ["--features", "--features"],
+  ["-F", "--features"],
+  ["--profile", "--profile"],
+  ["--target", "--target"],
+  ["--manifest-path", "--manifest-path"],
+]);
+
+/**
+ * What a cargo check builds, as a sorted list of canonical terms: the toolchain,
+ * the package, feature, profile and target selection, and the env. Words after a
+ * lone `--` are ignored. Two checks with the same selection compile the same
+ * crates, so one covers the other's test targets.
+ */
+function selectionOf(check: CiCargoCheck): string[] {
+  const terms: string[] = [];
+  const toolchain = check.argv[1];
+  if (toolchain?.startsWith("+")) terms.push(`toolchain ${toolchain}`);
+  for (const [key, value] of Object.entries(check.env)) {
+    terms.push(`env ${key}=${value}`);
+  }
+  const words = check.argv.slice(2);
+  const end = words.indexOf("--");
+  const args = end === -1 ? words : words.slice(0, end);
+  for (let i = 0; i < args.length; i++) {
+    const word = args[i]!;
+    const bool = SELECTION_BOOLEAN_FLAGS.get(word);
+    if (bool !== undefined) {
+      terms.push(bool);
+      continue;
+    }
+    const eq = word.indexOf("=");
+    const flag = eq > 0 ? word.slice(0, eq) : word;
+    const canonical = SELECTION_VALUE_FLAGS.get(flag);
+    if (canonical === undefined) continue;
+    let value: string | undefined;
+    if (eq > 0) value = word.slice(eq + 1);
+    else if (i + 1 < args.length) value = args[++i];
+    if (value === undefined) continue;
+    if (canonical === "--features") {
+      for (const feature of value.split(/[,\s]+/)) {
+        if (feature !== "") terms.push(`--features ${feature}`);
+      }
+    } else terms.push(`${canonical} ${value}`);
+  }
+  return terms.sort();
+}
+
 /**
  * Merges checks that are the same command (kind, directory, argv and env), and
- * drops a test-target compile whose directory already has a clippy check with
- * `--all-targets` or `--tests`, because clippy compiles the test targets too.
+ * drops a test-target compile that a clippy check with `--all-targets` or
+ * `--tests` already covers, because clippy compiles the test targets too. Clippy
+ * covers a test build only in the same directory and with the same selection
+ * (toolchain, packages, features, profile, target and env); otherwise the test
+ * build is kept, so the checked set is never silently reduced.
  */
 function finishChecks(checks: readonly CiCargoCheck[]): CiCargoCheck[] {
   const seen = new Map<string, CiCargoCheck>();
@@ -572,16 +637,17 @@ function finishChecks(checks: readonly CiCargoCheck[]): CiCargoCheck[] {
     if (!seen.has(key)) seen.set(key, check);
   }
   const unique = [...seen.values()];
-  const covered = new Set(
+  const covering = new Set(
     unique
       .filter((c) =>
         c.kind === "clippy" &&
         (c.argv.includes("--all-targets") || c.argv.includes("--tests"))
       )
-      .map((c) => c.workingDirectory),
+      .map((c) => JSON.stringify([c.workingDirectory, selectionOf(c)])),
   );
   return unique.filter((c) =>
-    !(c.kind === "test-build" && covered.has(c.workingDirectory))
+    !(c.kind === "test-build" &&
+      covering.has(JSON.stringify([c.workingDirectory, selectionOf(c)])))
   );
 }
 

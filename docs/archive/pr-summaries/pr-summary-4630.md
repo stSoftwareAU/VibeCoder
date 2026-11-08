@@ -11,9 +11,12 @@ compile error is therefore caught before the push, not by a CI run. Closes
   `pull_request` count. It derives each `cargo clippy` command verbatim
   (toolchain, flags such as `--all-targets --locked -- -D warnings`,
   workspace/package/feature selection, working directory, cargo-relevant env).
-  Where no clippy run already compiles the test targets, it derives a
+  Where no clippy run already compiles the same test targets, it derives a
   `cargo test --no-run` from a CI `cargo test`, `cargo nextest run` or
-  `cargo llvm-cov`, keeping only build flags.
+  `cargo llvm-cov`, keeping only build flags. A clippy run with `--all-targets`
+  or `--tests` covers a test build only when the directory, toolchain,
+  package/workspace selection, features, profile, target, manifest path and env
+  all match; otherwise the test build is kept.
 - `worker/deno/lib/pre_push_gate.ts` plans those checks after `cargo fmt`, for
   each directory a pushed Rust-relevant file touches. A toolchain probe runs
   first. A failing lint or test build blocks the push with its output. A missing
@@ -80,7 +83,16 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   workspace/package/features/locked, working directory (step, job, workflow,
   `cd`), `RUSTFLAGS`, toolchain, unverifiable forms, test-build derivation,
   hostile 200,000-character input.
-- `tests/pre_push_gate_test.ts`:
+  Added for the completion-check findings: a test build is kept when clippy
+  `--all-targets` lacks `--workspace` and the test run has
+  `--workspace --all-features` (and for differing `-p`, features, profile,
+  target, manifest path, env and toolchain), and dropped when the selection
+  matches in another order or spelling; every kept env key, every kept
+  test-build flag (both `--flag v` and `--flag=v`), and a workflow that parses
+  to `null` or a list are each pinned, so deleting one entry or the
+  `isMapping` null/array guard turns a test red (each checked by hand).
+- `tests/pre_push_gate_test.ts` (fixtures' covered test build now uses the same
+  selection as its clippy):
   `a clippy lint denied by -D warnings blocks the push, and is not infrastructure`
   (`clippy::must_use_candidate`, `clippy::assert_is_empty`),
   `a compile failure in a test target from CI's test build blocks the push with its output`
@@ -94,7 +106,7 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
 
 - `deno test -A` on `ci_cargo_checks_test.ts`, `pre_push_gate_test.ts`,
   `git_push_preflight_test.ts`, `pr_feedback_processor_pre_flight_4630_test.ts`,
-  `pr_ci_processor_test.ts` after merging main: 186 passed, 0 failed.
+  `pr_ci_processor_test.ts` after merging main and the completion-check fixes: 192 passed, 0 failed.
 - Edited `tests/pr_feedback_review_dismissal_3383_test.ts` expectation:
   `preFlightSpecs` now `[CI_CARGO_ONLY_PRE_FLIGHT, CI_CARGO_ONLY_PRE_FLIGHT]`
   (was `[undefined, undefined]`), required by #4630 (repair pushes now carry the
