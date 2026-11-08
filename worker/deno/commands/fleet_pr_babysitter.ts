@@ -901,7 +901,40 @@ export const HOST_GIT_HARDENING_ARGS: readonly string[] = [
   "core.hooksPath=/dev/null",
   "-c",
   "core.fsmonitor=false",
+  "-c",
+  "submodule.recurse=false",
+  "-c",
+  "diff.ignoreSubmodules=all",
 ];
+
+/** Refuse nested Git metadata and newly introduced gitlinks before host Git. */
+export async function assertRepairTreeSafe(dir: string): Promise<void> {
+  async function scan(path: string): Promise<void> {
+    for await (const entry of Deno.readDir(path)) {
+      if (entry.name === ".git") {
+        if (path === dir) continue;
+        throw new Error(`Refusing host git operations: nested .git in ${path}`);
+      }
+      if (entry.isDirectory) await scan(`${path}/${entry.name}`);
+    }
+  }
+  await scan(dir);
+  const head = await run("git", ["ls-tree", "-rz", "--full-tree", "HEAD"], dir);
+  const index = await run("git", ["ls-files", "--stage", "-z"], dir);
+  const headLinks = new Set(
+    head.split("\0").filter((s) => s.startsWith("160000 ")).map((s) =>
+      s.slice(s.indexOf("\t") + 1)
+    ),
+  );
+  for (const entry of index.split("\0")) {
+    if (
+      entry.startsWith("160000 ") &&
+      !headLinks.has(entry.slice(entry.indexOf("\t") + 1))
+    ) {
+      throw new Error("Refusing host git operations: new index gitlink");
+    }
+  }
+}
 
 /** Run publication git with the same executable-config boundary as `run()`. */
 export function runHardenedRepairGit(
@@ -2292,6 +2325,7 @@ export interface FixDeps {
   startAgent?: typeof startBabysitterAgent;
   /** Replaces agent-controlled local git config before host publication. */
   resetGitConfig?: typeof resetRepairCloneGitConfig;
+  assertTreeSafe?: typeof assertRepairTreeSafe;
   /** Starts the PR lock renewal (default: startBranchUpdateLockRenewal). */
   startLockRenewal?: typeof startBranchUpdateLockRenewal;
   commit?: typeof validateAndCommit;
@@ -3009,6 +3043,7 @@ export async function fix(
       );
     }
     await (deps.resetGitConfig ?? resetRepairCloneGitConfig)(dir, repo);
+    await (deps.assertTreeSafe ?? assertRepairTreeSafe)(dir);
     if ((await exec("git", ["rev-parse", "HEAD"], dir)) !== pr.headRefOid) {
       throw new Error("agent changed HEAD; refusing to push");
     }

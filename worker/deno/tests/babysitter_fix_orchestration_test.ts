@@ -8,6 +8,7 @@ import {
 import {
   appendEvidence,
   appendTrackedPrs,
+  assertRepairTreeSafe,
   attemptKey,
   BABYSITTER_CONTAINER_RESPONSE_FILE,
   BABYSITTER_RESPONSE_FILE,
@@ -317,6 +318,7 @@ function harness(
     armAutoMerge: () => Promise.resolve(),
     startAgent,
     resetGitConfig: () => Promise.resolve(),
+    assertTreeSafe: () => Promise.resolve(),
     journalAttempt: (attempt) => {
       state.journalled.push(attempt);
       return Promise.resolve();
@@ -2495,5 +2497,27 @@ Deno.test("fix replaces agent-controlled git config before host publication (Iss
       assert(!safeConfig.includes("/host/agent-command"));
       assertEquals(h.state.pushed, 1);
     });
+  });
+});
+
+Deno.test("fix refuses a nested repository before finish runs host Git", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    const marker = `${stateDir}/nested-command`;
+    h.deps.resetGitConfig = async (dir) => {
+      await Deno.mkdir(`${dir}/nested/.git`, { recursive: true });
+      await Deno.writeTextFile(
+        `${dir}/nested/.git/config`,
+        `[core]\n\tfsmonitor = touch ${marker}\n`,
+      );
+    };
+    h.deps.assertTreeSafe = assertRepairTreeSafe;
+    await assertRejects(() => h.attempt(), Error, "nested .git");
+    assert(
+      !h.state.commands.some((command) => command.includes("--porcelain")),
+    );
+    assertEquals(h.state.committed, false);
+    assertEquals(h.state.pushed, 0);
+    await assertRejects(() => Deno.stat(marker), Deno.errors.NotFound);
   });
 });

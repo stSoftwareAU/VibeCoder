@@ -353,8 +353,11 @@ never appears on a command line. The agent has the clone's `.git` read-write.
 Before host publication, `resetRepairCloneGitConfig` rewrites the clone's
 `.git/config` as a minimal canonical GitHub remote config, dropping agent-written
 hooks, filters, fsmonitor, external diff and SSH commands. Publication git runs
-with `core.hooksPath=/dev/null` and `core.fsmonitor=false`, and the host's `run()`
-git calls use the same flags (`HOST_GIT_HARDENING_ARGS`).
+with hooks and fsmonitor disabled, submodule recursion off and submodule diffs
+ignored; the host's `run()` git calls use the same flags
+(`HOST_GIT_HARDENING_ARGS`). Before those calls, the host refuses any nested
+`.git` entry and any index gitlink absent from HEAD. Checked-out existing
+submodules are also refused; the staged merge is preserved.
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container is
@@ -434,7 +437,8 @@ snapshot, and the final run arguments are checked against the App key path
 (`assertBabysitterKeyOutOfRunArgs`). Unknown plan mounts fail closed. The host
 keeps the App key, branch locks, attempt record, trusted commit/push, PR-body
 publication and review dismissal. Before host publication, the local clone
-config is replaced with a minimal GitHub HTTPS remote config; this drops all
+config is replaced with a minimal GitHub remote config using the configured
+protocol; this drops
 agent-written local settings, including hooks, filters, fsmonitor,
 `diff.external` and `core.sshCommand`.
 

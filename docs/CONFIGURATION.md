@@ -5134,9 +5134,12 @@ files changed. Markdown outside `docs/archive/pr-summaries/` and
 and trips markdownlint MD018, so a Markdown miss there is left to the check to
 report. Those two directories are the worker's own notes, and `docs/archive/`
 is excluded from the markdownlint globs. After the repository formatters,
-`formatBeforeGate` runs `deno fmt` on the Markdown and JSON the branch changed
-under them and commits that too. A missing formatter or a write failure is
-logged, and the gate still runs.
+`formatBeforeGate` puts each linkage-only line in archive Markdown in a
+paragraph of its own before running `deno fmt` on the Markdown and JSON the
+branch changed under them, then commits the result (Issue #4802). An archive
+file over 1 MiB (`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning and
+left for the gate to report. A missing formatter or a write failure is logged,
+and the gate still runs.
 Only the formatted paths are staged. A formatter that is missing, fails or
 throws never fails the run on its own: it is logged, and the gate that follows
 still runs every check and reports what was left unfixed.

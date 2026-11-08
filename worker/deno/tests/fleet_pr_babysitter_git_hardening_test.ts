@@ -7,6 +7,7 @@
  */
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
+  assertRepairTreeSafe,
   cloneForRepair,
   isValidRepoName,
   resetRepairCloneGitConfig,
@@ -21,7 +22,38 @@ const HARDENING = [
   "core.hooksPath=/dev/null",
   "-c",
   "core.fsmonitor=false",
+  "-c",
+  "submodule.recurse=false",
+  "-c",
+  "diff.ignoreSubmodules=all",
 ];
+
+Deno.test("publication refuses planted nested repositories and index gitlinks", async () => {
+  const root = await Deno.makeTempDir({ prefix: "repair-nested-" });
+  try {
+    await git(root, "init", "-q");
+    await Deno.writeTextFile(`${root}/base`, "base\n");
+    await git(root, "add", "base");
+    await git(root, "commit", "-q", "-m", "base");
+    const nested = `${root}/nested`;
+    await Deno.mkdir(nested);
+    await git(nested, "init", "-q");
+    await git(nested, "config", "core.fsmonitor", "touch /tmp/should-not-run");
+    await assertRejects(() => assertRepairTreeSafe(root), Error, "nested .git");
+    await Deno.remove(nested, { recursive: true });
+    const head = await git(root, "rev-parse", "HEAD");
+    await git(
+      root,
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${head},nested`,
+    );
+    await assertRejects(() => assertRepairTreeSafe(root), Error, "gitlink");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 Deno.test("run puts the hook and fsmonitor neutralising flags before the git subcommand", async () => {
   const calls: string[][] = [];

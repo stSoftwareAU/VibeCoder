@@ -45,12 +45,16 @@ sequenceDiagram
   their value is a string, array or object, so numeric limits such as
   `max_issue_body_tokens` survive.
 - The agent can write the clone's `.git`, so the host runs publication git with
-  `core.hooksPath=/dev/null` and `core.fsmonitor=false` and rewrites the clone's
+  hooks and fsmonitor disabled, submodule recursion off and submodule diffs
+  ignored, and rewrites the clone's
   `.git/config` before publication. The reset refuses to publish when `.git` is
   not a plain directory, or when `.git/commondir`, `.git/gitdir`,
   `.git/config.worktree` or `.git/objects/info/alternates` exist, because each
   would redirect git to config the reset does not control. The host's own global
-  git config is left in place so its credential helper still works.
+  git config is left in place so its credential helper still works. Before host
+  Git runs, nested `.git` entries and index gitlinks absent from HEAD are
+  refused. Checked-out existing submodules are also refused; the staged merge
+  remains intact.
 - Exit status 42 from `babysitter-repair` is a reported task failure and is a
   `code` failure; a missing runtime or image (including
   `ContainerRuntimeUnavailableError`) is `capability`; every other launcher
@@ -92,11 +96,11 @@ Backend and CLI change; no visual surface changed.
   overflow; #4656: Babysitter: recover temporary failures and continue PR
   reconciliation after a repair push (closed); #4771: Prove headless Chromium
   launches in the babysitter repair container (open, not delivered here).
-- Quality gate on the repair working tree: `./quality.sh < /dev/null` passed
-  formatting, lint, type checking and markdownlint, but the parallel Deno test
-  pass failed when Deno 2.9.0 panicked on macOS. Config integration, Semgrep and
-  Checkov were skipped. The CI shard also requires a container runtime that was
-  unavailable on this host; the changed test file passed separately.
+- The earlier quality gate passed static checks but the parallel Deno test pass
+  panicked on macOS; CI passed on the previous PR head. On this repair working
+  tree the whole Deno formatter, linter and type check passed, as did the Git
+  hardening suite and the nested-repository orchestration test. The full
+  orchestration suite needs an unavailable container runtime on this host.
 
 ## Acceptance Criteria
 
@@ -151,9 +155,9 @@ Backend and CLI change; no visual surface changed.
   `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix replaces agent-controlled git config before host publication (Issue #4770)`
   — reviewer: met
 - **partial** — `./quality.sh` passes. — evidence: the repair working-tree run
-  described in Evidence passed the static checks but the Deno test pass panicked
-  on this macOS host — reviewer: partial — reason: CI must confirm the full gate
-  on the pushed head
+  described in Evidence passed the static checks and focused tests, but the
+  container runtime is unavailable on this host — reviewer: partial — reason:
+  CI must confirm the full gate on the pushed head
 - **unrequested** — exit status 42 for a reported task failure
   (`BABYSITTER_TASK_FAILURE_EXIT_CODE` in
   `worker/deno/commands/babysitter_repair.ts`) — reviewer: unrequested — reason:
@@ -206,8 +210,8 @@ Backend and CLI change; no visual surface changed.
 - **violation** — `runHardenedRepairGit` nulled the host's global git config and
   so its credential helper — evidence:
   `worker/deno/commands/fleet_pr_babysitter.ts:901` — reason: fixed in this diff
-  (only the hooks and fsmonitor flags remain; tested that the global config is
-  still honoured)
+  (hooks, fsmonitor and submodule hardening flags remain; tested that the global
+  config is still honoured)
 - **violation** — the task-failure test copied the classifier into the harness
   stub and stayed green without the production mapping — evidence:
   `worker/deno/tests/babysitter_fix_orchestration_test.ts:790` — reason: fixed
@@ -303,9 +307,12 @@ Backend and CLI change; no visual surface changed.
   `fleet_babysitter_app_test.ts` call it. Twinned rule: the runtime and image
   refusal is one helper (`checkRuntimeAndImage`) used by the repair and the
   setup preflight.
-- Results on the repair working tree: all 120 tests in
-  `fleet_pr_babysitter_test.ts` passed; the full gate and shard limitations are
-  in Evidence.
+- Nested Git review: `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::publication refuses planted nested repositories and index gitlinks`
+  covers both refusals; `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix refuses a nested repository before finish runs host Git`
+  verifies refusal before status, commit or push. The hardening flags are shared
+  by `run()` and `runHardenedRepairGit`; the orchestration fixture supplies a
+  guard seam for its simulated clone. Results and host limitations are in
+  Evidence.
 - Docs read and updated: the container repair, credential-boundary and failure
   sections of `docs/workflows/fleet-pr-babysitter.md`, control C36 in
   `docs/THREAT-MODEL.md`, the key section of `docs/CONFIGURATION.md`,
