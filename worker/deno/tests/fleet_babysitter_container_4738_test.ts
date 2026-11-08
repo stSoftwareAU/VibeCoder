@@ -15,8 +15,12 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import type { ContainerLaunchPlan } from "../lib/container_launch.ts";
+import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
+import { REPO_ROOT } from "./fixtures/launcher_harness.ts";
 import {
   assertBabysitterKeyOutOfRunArgs,
+  BABYSITTER_CLONE_MOUNT,
+  BABYSITTER_SCRATCH_MOUNT,
   babysitterCheckoutDir,
   type BabysitterContainerDeps,
   type BabysitterContainerInput,
@@ -811,6 +815,120 @@ Deno.test("repair refuses every spelling of a GH_TOKEN env spec, and accepts an 
   }
 });
 
+Deno.test("buildBabysitterRunArgs drops the custom prompt env spec in the -e and bare-name spellings", async () => {
+  const f = await makeFixture();
+  try {
+    const promptMap = `{"1":"${f.root}/custom-prompts/1"}`;
+    for (
+      const envArg of [
+        ["-e", `VIBE_CUSTOM_PROMPT_PATHS=${promptMap}`],
+        ["--env", "VIBE_CUSTOM_PROMPT_PATHS"],
+        ["-e", "VIBE_CUSTOM_PROMPT_PATHS"],
+      ]
+    ) {
+      const plan = fakePlan(f.root, "vibe-test", envArg);
+      const args = buildBabysitterRunArgs(plan, {
+        clone: f.clone,
+        scratch: f.scratch,
+      });
+      assert(
+        !args.some((arg) => arg.includes("VIBE_CUSTOM_PROMPT_PATHS")),
+        `the custom prompt env spec must not reach the run args (${
+          envArg.join(" ")
+        })`,
+      );
+      assertEquals(
+        args[args.indexOf("GH_TOKEN") - 1],
+        "--env",
+        `control: the repair still passes GH_TOKEN (${envArg.join(" ")})`,
+      );
+    }
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("the real repair plan mounts no gh credential, key or custom prompt path, and passes no GH_, GITHUB_ or SSH_ env (Issue #4770)", async () => {
+  const f = await makeFixture();
+  try {
+    const credentials = `${f.home}/.vibe-coder/credentials`;
+    const gh = `${credentials}/gh`;
+    const claude = `${credentials}/claude`;
+    for (const dir of [`${gh}/prompts`, claude]) {
+      await Deno.mkdir(dir, { recursive: true });
+    }
+    const configFile = `${f.home}/config.json`;
+    await Deno.writeTextFile(configFile, "{}");
+    const environment: Record<string, string> = {
+      HOME: f.home,
+      VIBE_CREDENTIAL_DIR: credentials,
+      CONFIG_PATH: configFile,
+      WORK_DIR: `${f.home}/work`,
+      VIBE_CUSTOM_PROMPT_PATHS: JSON.stringify({ "1": `${gh}/prompts` }),
+    };
+    const plan = await buildLaunchPlanForCommand(
+      REPO_ROOT,
+      "vibe-babysitter-4738",
+      {
+        env: (name) => environment[name],
+        now: () => 1_900_000_000_000,
+        probe: (candidate) =>
+          Promise.resolve({
+            available: true,
+            path: `/usr/bin/${candidate.executable}`,
+          }),
+      },
+    );
+    const args = buildBabysitterRunArgs(plan, {
+      clone: f.clone,
+      scratch: f.scratch,
+    });
+
+    const volumes = volumeValues(args);
+    const paths = volumes.flatMap((value) => value.split(":").slice(0, 2));
+    const forbidden = [
+      gh,
+      f.keyDir,
+      `${f.home}/.vibe-coder/custom-prompts`,
+      "/home/vibe/.vibe-coder/credentials/gh",
+      "/home/vibe/.vibe-coder/custom-prompts",
+    ];
+    for (const path of paths) {
+      for (const dir of forbidden) {
+        assert(
+          path !== dir && !path.startsWith(`${dir}/`),
+          `no mount may reach ${dir}: ${path}`,
+        );
+      }
+    }
+
+    const envSpecs = args.filter((_, i) => args[i - 1] === "--env");
+    assert(envSpecs.includes("GH_TOKEN"), "the bare GH_TOKEN is passed");
+    assertEquals(
+      envSpecs.filter((spec) =>
+        /^(GH_|GITHUB_|SSH_)/.test(spec) && spec !== "GH_TOKEN"
+      ),
+      [],
+      "no GH_, GITHUB_ or SSH_ env except the bare GH_TOKEN",
+    );
+
+    assertEquals(
+      volumes.map((value) => value.split(":")[1]).sort(),
+      [
+        BABYSITTER_CLONE_MOUNT,
+        BABYSITTER_SCRATCH_MOUNT,
+        "/home/vibe/.vibe-coder/credentials/claude",
+        "/home/vibe/.vibe-coder/run-config",
+        "/home/vibe/logs",
+        "/workspace",
+      ].sort(),
+      "only the clone, scratch, workspace, run-config, logs and enabled provider credential mounts remain",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
 Deno.test("buildBabysitterRunArgs refuses a plan whose run args do not end with its image", async () => {
   const f = await makeFixture();
   try {
@@ -1389,11 +1507,12 @@ Deno.test("preflight refuses when the runtime is not on PATH, and never asks for
     assertEquals(calls.spawns.length, 0, "the preflight starts nothing");
 
     const control = fakeDeps(f, { onPath: true });
-    const plan = await preflightBabysitterContainer(
+    await preflightBabysitterContainer(
       { baseDir: "/checkout" },
       control.deps,
     );
-    assertEquals(plan.runtime, "fake-runtime");
+    assertEquals(control.calls.onPath, ["fake-runtime"]);
+    assertEquals(control.calls.built.length, 1, "one plan is built");
     assert(
       builtAt(control.calls, 0).startsWith("vibe-babysitter-"),
       "the preflight plan takes a throwaway babysitter container name",

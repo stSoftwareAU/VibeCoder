@@ -1042,7 +1042,7 @@ export async function preflightBabysitterContainer(
       "onPath" | "buildPlan" | "imageExists" | "env"
     >
   > = {},
-): Promise<ContainerLaunchPlan> {
+): Promise<void> {
   const env = deps.env ?? processEnv;
   const buildPlan = deps.buildPlan ?? defaultBuildPlan;
   const plan = await buildPlan(input.baseDir, throwawayContainerName());
@@ -1052,7 +1052,6 @@ export async function preflightBabysitterContainer(
     imageExists: deps.imageExists ?? babysitterImageExists,
     baseEnv: baseEnvironment(env),
   });
-  return plan;
 }
 
 /** The default plan builder: the worker's own launch plan for the checkout. */

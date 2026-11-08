@@ -2035,6 +2035,7 @@ export async function startBabysitterAgent(
       privateKeyPath: app.privateKeyPath,
       token: minted.token,
       timeoutMs: sessionMs,
+      signal: options.signal,
     }, options.container);
   } catch (error) {
     const message = redactSecrets(

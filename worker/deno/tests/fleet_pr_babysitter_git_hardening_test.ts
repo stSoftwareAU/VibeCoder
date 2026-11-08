@@ -6,10 +6,7 @@
  * Uses Australian English spelling (behaviour, neutralise, organisation, etc.)
  */
 import { assertEquals } from "@std/assert";
-import {
-  run,
-  validateAndCommit,
-} from "../commands/fleet_pr_babysitter.ts";
+import { run, validateAndCommit } from "../commands/fleet_pr_babysitter.ts";
 import type { runGitArgv } from "../lib/git_timeout.ts";
 
 const HARDENING = [

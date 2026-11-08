@@ -1114,6 +1114,27 @@ Deno.test("prior diagnostic cannot inject instructions into the next prompt", as
   });
 });
 
+Deno.test("a budget-exhausted repair keeps the launcher's cause in its failure (Issue #4770)", async () => {
+  const realNow = Date.now;
+  try {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.agents.push({
+        code: 143,
+        stderr: "killed by the watchdog",
+        elapsedMs: 90 * 60_000,
+      });
+      await assertRejects(
+        () => h.attempt(),
+        Error,
+        "agent session budget exhausted: babysitter repair container vibe-babysitter-test exited with code 143: killed by the watchdog",
+      );
+    });
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 Deno.test("runner budget exhaustion is substantive and reaches escalation", async () => {
   const realNow = Date.now;
   try {
@@ -2225,7 +2246,12 @@ Deno.test("a lock renewal failure kills the repair container, so the fix fails w
               const timer = setTimeout(() => resolve(ok), 5_000);
               killed.then(() => {
                 clearTimeout(timer);
-                resolve({ success: false, code: 137, stderr: "", timedOut: false });
+                resolve({
+                  success: false,
+                  code: 137,
+                  stderr: "",
+                  timedOut: false,
+                });
               });
             });
           },
