@@ -82,15 +82,14 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
 - `tests/ci_cargo_checks_test.ts`: verbatim clippy argv,
   workspace/package/features/locked, working directory (step, job, workflow,
   `cd`), `RUSTFLAGS`, toolchain, unverifiable forms, test-build derivation,
-  hostile 200,000-character input.
-  Added for the completion-check findings: a test build is kept when clippy
-  `--all-targets` lacks `--workspace` and the test run has
-  `--workspace --all-features` (and for differing `-p`, features, profile,
-  target, manifest path, env and toolchain), and dropped when the selection
-  matches in another order or spelling; every kept env key, every kept
+  hostile 200,000-character input. Added for the completion-check findings: a
+  test build is kept when clippy `--all-targets` lacks `--workspace` and the
+  test run has `--workspace --all-features` (and for differing `-p`, features,
+  profile, target, manifest path, env and toolchain), and dropped when the
+  selection matches in another order or spelling; every kept env key, every kept
   test-build flag (both `--flag v` and `--flag=v`), and a workflow that parses
-  to `null` or a list are each pinned, so deleting one entry or the
-  `isMapping` null/array guard turns a test red (each checked by hand).
+  to `null` or a list are each pinned, so deleting one entry or the `isMapping`
+  null/array guard turns a test red (each checked by hand).
 - `tests/pre_push_gate_test.ts` (fixtures' covered test build now uses the same
   selection as its clippy):
   `a clippy lint denied by -D warnings blocks the push, and is not infrastructure`
@@ -106,7 +105,8 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
 
 - `deno test -A` on `ci_cargo_checks_test.ts`, `pre_push_gate_test.ts`,
   `git_push_preflight_test.ts`, `pr_feedback_processor_pre_flight_4630_test.ts`,
-  `pr_ci_processor_test.ts` after merging main and the completion-check fixes: 192 passed, 0 failed.
+  `pr_ci_processor_test.ts` after merging main and the completion-check fixes:
+  192 passed, 0 failed.
 - Edited `tests/pr_feedback_review_dismissal_3383_test.ts` expectation:
   `preFlightSpecs` now `[CI_CARGO_ONLY_PRE_FLIGHT, CI_CARGO_ONLY_PRE_FLIGHT]`
   (was `[undefined, undefined]`), required by #4630 (repair pushes now carry the
