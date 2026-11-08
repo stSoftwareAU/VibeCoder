@@ -3321,7 +3321,7 @@ Deno.test("codex agent refuses a relative response file and does not spawn", () 
 // run and another repair. Every repair re-runs the relevant local checks
 // before it reports ready.
 Deno.test("a CI repair must reproduce the failing step locally and see it pass before reporting ready", () => {
-  const prompt = buildRepairPrompt("failed CI", 5016, "owner/repo", "");
+  const prompt = buildRepairPrompt("failed CI", 5016, "owner/repo", null, "");
   assertStringIncludes(prompt, "same command the workflow runs");
   assertStringIncludes(prompt, "confirm it passes before");
   assertStringIncludes(prompt, "quality.sh");
@@ -3333,6 +3333,7 @@ Deno.test("a review repair runs the local checks covering the changed files", ()
     "requested review changes",
     1,
     "owner/repo",
+    null,
     "",
   );
   assertStringIncludes(prompt, "formatter, linter, type or compile check");
@@ -3340,10 +3341,142 @@ Deno.test("a review repair runs the local checks covering the changed files", ()
 });
 
 Deno.test("a conflict repair still checks the packages it touched, not the whole suite", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", null, "");
   assertStringIncludes(prompt, "formatter, linter, type or compile check");
   assertStringIncludes(prompt, "full regression suite");
   assertStringIncludes(prompt, "BABYSITTER_READY");
+});
+
+Deno.test("repair prompt names the summary for the PR's issue", () => {
+  const prompt = buildRepairPrompt(
+    "merge conflict",
+    2516,
+    "owner/repo",
+    2453,
+    "",
+  );
+  assertStringIncludes(
+    prompt,
+    "this PR's is docs/archive/pr-summaries/pr-summary-2453.md",
+  );
+  assertStringIncludes(
+    prompt,
+    "Other summaries, including any the base merge brought in, belong to the PRs that wrote them.",
+  );
+  assert(!prompt.includes("pr-summary-<issue>.md"));
+  assertStringIncludes(
+    prompt,
+    "Rewrite it in the same fix so every claim, count and result matches the pushed head",
+  );
+});
+
+Deno.test("repair prompt gives generic summary guidance without an issue number", () => {
+  const prompt = buildRepairPrompt(
+    "merge conflict",
+    2516,
+    "owner/repo",
+    null,
+    "",
+  );
+  assert(!prompt.includes("docs/archive/pr-summaries/pr-summary-"));
+  assert(!prompt.includes("<issue>"));
+  assertStringIncludes(
+    prompt,
+    "Rewrite it in the same fix so every claim, count and result matches the pushed head",
+  );
+});
+
+Deno.test("repair caller passes the issue number parsed from the PR branch", async () => {
+  const root = await Deno.makeTempDir();
+  const previousHome = Deno.env.get("HOME");
+  const head = "a".repeat(40);
+  let prompt = "";
+  let lockBody = "";
+  const commands: string[][] = [];
+  let nextCommentId = 10;
+  Deno.env.set("HOME", root);
+  const capture = async (headRefName: string): Promise<string> => {
+    const currentPr = {
+      ...pr,
+      number: 2516,
+      title: "repair target",
+      headRefName,
+      headRefOid: head,
+      mergeable: "CONFLICTING",
+      autoMergeRequest: {},
+    };
+    const gh = async (args: string[]): Promise<string> => {
+      commands.push(args);
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify(currentPr);
+      }
+      if (args[0] === "issue" && args[1] === "comment") {
+        lockBody = args[args.indexOf("--body") + 1]!;
+        return `https://github.com/owner/repo/issues/2516#issuecomment-${nextCommentId++}`;
+      }
+      if (args[0] === "api" && args[1]?.includes("/comments?per_page=")) {
+        return JSON.stringify([{
+          id: 10,
+          body: lockBody,
+          created_at: new Date().toISOString(),
+          author: "VibeCoderST",
+        }]);
+      }
+      if (
+        args[0] === "api" && args.includes("POST") &&
+        args[1]?.endsWith("/issues/2516/comments")
+      ) return JSON.stringify({ id: nextCommentId++ });
+      if (args[0] === "api" && args[1]?.includes("/comments")) return "[]\n";
+      throw new Error(
+        `Unexpected repair prompt test gh command: ${args.join(" ")}`,
+      );
+    };
+    try {
+      try {
+        await fix(
+          "owner/repo",
+          currentPr,
+          ["VibeCoderST"],
+          "VibeCoderST",
+          { appId: "1", installationId: "1", privateKeyPath: "/unused" },
+          "/unused",
+          gh,
+          async () => {},
+          99,
+          {
+            stateDir: `${root}/state`,
+            clone: async () => {},
+            run: async (_command, args) => args[0] === "rev-parse" ? head : "",
+            mergeBase: async () => ({ kind: "conflicted" }),
+            journalAttempt: async () => {},
+            startAgent: async (_app, _repo, options) => {
+              prompt = options.prompt;
+              throw new Error("captured prompt");
+            },
+          },
+        );
+      } catch (error) {
+        assertEquals((error as Error).message, "captured prompt");
+      }
+      assert(
+        prompt.length > 0,
+        `repair did not reach agent; gh calls: ${JSON.stringify(commands)}`,
+      );
+      return prompt;
+    } finally {
+      await Deno.remove(`${root}/state`, { recursive: true });
+    }
+  };
+  try {
+    const known = await capture("issue-2453-example");
+    assertStringIncludes(known, "pr-summary-2453.md");
+    const unknown = await capture("feature-without-issue");
+    assert(!unknown.includes("docs/archive/pr-summaries/pr-summary-"));
+  } finally {
+    if (previousHome === undefined) Deno.env.delete("HOME");
+    else Deno.env.set("HOME", previousHome);
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 // Owner rule 2026-11-01: the babysitter honours needs-human.
@@ -3394,6 +3527,7 @@ Deno.test("a review repair may propose a PR description for the runner to apply"
     "requested review changes",
     1,
     "owner/repo",
+    null,
     "",
   );
   assertStringIncludes(prompt, ".babysitter-pr-body");
@@ -3575,7 +3709,7 @@ Deno.test("a check the host cannot run is named but does not withhold readiness"
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(prompt, "name it in your final response");
     assertStringIncludes(
       prompt,
@@ -3587,7 +3721,7 @@ Deno.test("a check the host cannot run is named but does not withhold readiness"
 // Issue #4677: a resolved conflict was discarded over unrelated verifier
 // findings (VibeCoder#4675); other feedback is out of a conflict's scope.
 Deno.test("other open feedback does not withhold readiness from a resolved conflict", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", null, "");
   assertStringIncludes(
     prompt,
     "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
@@ -3729,7 +3863,7 @@ Deno.test("a host-only failure in an unrelated check is named, not a blocker", (
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(
       prompt,
       "unrelated to the files you changed and passes in CI on the base branch",
@@ -3743,7 +3877,7 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(prompt, "reads commit history");
   }
 });
@@ -3751,7 +3885,7 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
 // Issue #4717: a CI repair fixed the failing checks, then held back over the
 // verifier's unrelated findings; a later review repair handles reviews.
 Deno.test("other open feedback does not withhold readiness from a CI repair", () => {
-  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", "");
+  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", null, "");
   assertStringIncludes(
     prompt,
     "Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair",
@@ -3764,7 +3898,7 @@ Deno.test("repair prompt applies the shared evidence policy to test replacements
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(
       prompt,
       "Never remove, skip or weaken tests just to make a check pass",
@@ -3780,11 +3914,11 @@ Deno.test("every repair rewrites CI-checked per-PR summary claims for the pushed
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(prompt, "per-PR summary");
     assertStringIncludes(
       prompt,
-      "rewrite it in the same fix so every claim, count and result matches the pushed head",
+      "Rewrite it in the same fix so every claim, count and result matches the pushed head",
     );
     assertStringIncludes(
       prompt,
@@ -3798,7 +3932,7 @@ Deno.test("every repair rewrites CI-checked per-PR summary claims for the pushed
 // base had deliberately retired behaviour the PR used; the base already
 // carries that decision, and conflicts are never handed to a human.
 Deno.test("a conflict where the base retired behaviour follows the base, not a human", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", null, "");
   assertStringIncludes(prompt, "deliberately removed or replaced behaviour");
   assertStringIncludes(prompt, "follow the base");
   assertStringIncludes(prompt, "never leave a conflict for a human");
@@ -3834,7 +3968,7 @@ Deno.test("a repair never prints environment variables or credentials", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(prompt, "Never print, echo or log");
     assertStringIncludes(prompt, "gh auth status");
   }

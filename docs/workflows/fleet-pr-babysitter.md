@@ -20,29 +20,32 @@ is also pushed when the agent made no change, so the branch is never left
 behind. After a push, the babysitter synchronises the PR description from the
 summary committed at the pushed head, then publishes any description the agent
 proposed (see below), and dismisses a review only after an independent verifier
-judges every finding in it fixed at the published PR head and description
-(Issue #4657). The review must also still be the current review, and the PR head
-must not have changed. A retry with no working-tree changes also synchronises
-the body before dismissal, so a prior failed publication can be repaired. A
-failed body publication or a stale repair checkout leaves the review open. A
-partial or missing verdict, or a head or description that moves while the fixes
-are verified also leaves the review open, without blocking the push. A verifier
+judges every finding in it fixed at the published PR head and description (Issue
+#4657). The review must also still be the current review, and the PR head must
+not have changed. A retry with no working-tree changes also synchronises the
+body before dismissal, so a prior failed publication can be repaired. A failed
+body publication or a stale repair checkout leaves the review open. A partial or
+missing verdict, or a head or description that moves while the fixes are
+verified also leaves the review open, without blocking the push. A verifier
 outage (the verifier failed, was not checked, could not get its credential, or
 the head or description moved while the fixes were verified) additionally keeps
 the pending-publication record. When the pass pushed nothing, it also ends as an
-infrastructure failure with infrastructure backoff, so the next scan re-runs only
-the publication and the verification, never the agent, and no substantive attempt
-is spent. After a push the outage ends no pass as a failure and sets no backoff:
-the kept record is retried on the next scan. A pass that pushed nothing and left
-its reviews open is journalled as a failed repair; a pass that pushed is not.
-Harmless skips, such as an unrelated
-marker-less PR or an already-current description, do not block dismissal. GitHub
-CI then runs the repository's quality and regression checks on the updated
-branch.
+infrastructure failure with infrastructure backoff, so the next scan re-runs
+only the publication and the verification, never the agent, and no substantive
+attempt is spent. After a push the outage ends no pass as a failure and sets no
+backoff: the kept record is retried on the next scan. A pass that pushed nothing
+and left its reviews open is journalled as a failed repair; a pass that pushed
+is not. Harmless skips, such as an unrelated marker-less PR or an
+already-current description, do not block dismissal. GitHub CI then runs the
+repository's quality and regression checks on the updated branch.
 
-When a repository keeps a per-PR summary that CI checks for freshness, the repair
-prompt tells the agent to rewrite it so every claim, count and result matches the
-pushed head. It must replace stale summary text rather than add a follow-up note
+When a repository keeps a per-PR summary that CI checks for freshness, the
+repair prompt names the PR's own `docs/archive/pr-summaries/pr-summary-<N>.md`
+from its `issue-<N>` head branch and tells the agent to rewrite it so every
+claim, count and result matches the pushed head. Summaries brought in by the
+base merge belong to the PRs that wrote them. When the head branch has no issue
+number, the prompt gives the same ownership guidance without an example
+filename. It must replace stale summary text rather than add a follow-up note
 beside it (Issue #4755).
 
 ```mermaid
@@ -142,17 +145,16 @@ different protocol. The clone's `info/exclude` also lists the tool byproducts
 `*.profraw`, `*.profdata`, `lcov.info`, `/mutants.out/` and `/mutants.out.old/`,
 so an untracked copy is never committed as part of a fix (Issue #4827). The
 exclusion covers untracked paths only; a file the repository tracks is still
-committed when a repair edits it. If the fetch fails, the repair fails with git's
-cause, the mirror is kept, and the next pass retries. Passes never remove
+committed when a repair edits it. If the fetch fails, the repair fails with
+git's cause, the mirror is kept, and the next pass retries. Passes never remove
 mirrors; delete a mirror directory to force a fresh download. Codex reads the
-filesystem under its permissions profile, so it can read a mirror, but it
-cannot write to one because
-its write grants are only the clone and scratch directory. Mirrors are not among
-the `~/.vibe-coder/fleet-pr-babysitter*` denylist entries, so do not treat them
-as credential-protected. Every other git command a repair runs through the
-babysitter's generic runner, including the tracking-ref fetches and the push of
-the fix, is also bounded to 30 minutes rather than the 60-second default for
-git.
+filesystem under its permissions profile, so it can read a mirror, but it cannot
+write to one because its write grants are only the clone and scratch directory.
+Mirrors are not among the `~/.vibe-coder/fleet-pr-babysitter*` denylist entries,
+so do not treat them as credential-protected. Every other git command a repair
+runs through the babysitter's generic runner, including the tracking-ref fetches
+and the push of the fix, is also bounded to 30 minutes rather than the 60-second
+default for git.
 
 An optional executable `~/.vibe-coder/fleet-pr-babysitter/health-hook` receives
 the pass exit code as its sole argument. It is bounded to ten minutes; hook
@@ -163,10 +165,10 @@ runs and runs limited to a repository or PR do not report service health.
 The host needs `gh`, `git` and `deno`, and the Claude CLI with a working Claude
 credential for the review verifier (Issue #4657). The read-only verifier uses
 Claude only, regardless of the configured agent provider or fallback; it refuses
-a fallback that cannot enforce its isolation. Without them the verifier
-reports an outage and every review stays open. A pass that pushed nothing is
-retried under infrastructure backoff; after a push the kept publication record
-is retried on the next scan, with no backoff. Codex CLI must be 0.164.0 or newer,
+a fallback that cannot enforce its isolation. Without them the verifier reports
+an outage and every review stays open. A pass that pushed nothing is retried
+under infrastructure backoff; after a push the kept publication record is
+retried on the next scan, with no backoff. Codex CLI must be 0.164.0 or newer,
 because older versions may silently ignore the permissions profile; a
 pre-release counts when its base version is newer (0.166.0-alpha passes,
 0.164.0-beta does not). Setup and each repair check the `codex` on PATH before
@@ -209,23 +211,23 @@ GitHub write (lock, push, branch update, review dismissal, PR description) is
 made by the runner with its own token. The review verifier is a Claude model
 that reads untrusted review text and repository code as the same OS user, so it
 gets the same boundary: its own read-only token for the target repository as
-`GH_TOKEN`, minted per verification, never the runner's write token; no Bash, Edit,
-Write or NotebookEdit, so it can run nothing and write no file; no Read of the
-protected paths listed above or of `/proc`; and the Claude CLI starts without
-project or user settings (`--setting-sources ""`) or ambient MCP servers
+`GH_TOKEN`, minted per verification, never the runner's write token; no Bash,
+Edit, Write or NotebookEdit, so it can run nothing and write no file; no Read of
+the protected paths listed above or of `/proc`; and the Claude CLI starts
+without project or user settings (`--setting-sources ""`) or ambient MCP servers
 (`--strict-mcp-config`), so a hook or MCP entry committed in the PR's checkout
 cannot run a command outside the tool rules. Because it has no shell, the worker
 hands it the evidence as files outside the checkout: the `git diff base...head`
 and a read-only tree at the base ref, and its prompt says the tools are
 unavailable. A check that needs a command run (a test that must go red without
-the fix) is reported as not run, so it is not judged fixed on a claim alone. If its token cannot
-be minted, the pass is an outage. The runner restarts a session with a fresh repository-scoped read token
-when its token approaches expiry, preserving the repair clone. When a review asks
-for a description change, the agent writes the complete new description
-(Markdown) to `.babysitter-pr-body` in the clone. The proposal is data, not
-authority. The runner takes the file out of the clone before the change check,
-so it is never committed. After the push, or on a no-change retry at the
-unchanged head, the description steps run in order:
+the fix) is reported as not run, so it is not judged fixed on a claim alone. If
+its token cannot be minted, the pass is an outage. The runner restarts a session
+with a fresh repository-scoped read token when its token approaches expiry,
+preserving the repair clone. When a review asks for a description change, the
+agent writes the complete new description (Markdown) to `.babysitter-pr-body` in
+the clone. The proposal is data, not authority. The runner takes the file out of
+the clone before the change check, so it is never committed. After the push, or
+on a no-change retry at the unchanged head, the description steps run in order:
 
 1. It synchronises the description from the summary committed at the pushed
    head. The sync is pinned to that commit: just before the edit, the checkout
@@ -245,8 +247,8 @@ unchanged head, the description steps run in order:
    summary, so the proposal is not published. The finish throws
    `ProposalOverGoverningSummaryError` and the reviews stay open. A description
    change on such a PR belongs in the committed summary, which a repair that
-   pushes publishes. With no proposal, the body is edited only to
-   withhold a close that GitHub still honours.
+   pushes publishes. With no proposal, the body is edited only to withhold a
+   close that GitHub still honours.
 3. It strips every complete hidden `<!-- vibe-… -->` marker from the proposal in
    one linear scan. A marker quoted in a Markdown code span in the live body is
    not copied. A stray unclosed `<!--` in the proposal is neutralised, so it
@@ -266,16 +268,16 @@ unchanged head, the description steps run in order:
    has no closing keyword, even beside `Part of #N` or `Refs #N`, but the guard
    honours an explicit non-closing reference the agent chose, namely
    `Part of #N`, `Ref #N`, `Refs #N`, `Refs: #N`, `References #N`,
-   `Related to #N` or `Relates to #N` (in this repository, or with no
-   repository given). That can only leave the issue open, never close it, and a
-   proposal is data and not authority to close, so that reference is not
-   overridden with `Closes #N`. A bare mention such as
-   "addresses the review on #N", or another repository's `owner/repo#N`, is not
-   a closing claim and does not stop the append. The summary is read with the
-   shared committed loader (`loadCommittedPrSummary`) at the verified pushed
-   head sha, using `git ls-tree` and `git show`. The working tree is never read.
-   The loader tries the same candidate paths as the sync, in order: the
-   canonical `docs/archive/pr-summaries/pr-summary-<N>.md`, the legacy
+   `Related to #N` or `Relates to #N` (in this repository, or with no repository
+   given). That can only leave the issue open, never close it, and a proposal is
+   data and not authority to close, so that reference is not overridden with
+   `Closes #N`. A bare mention such as "addresses the review on #N", or another
+   repository's `owner/repo#N`, is not a closing claim and does not stop the
+   append. The summary is read with the shared committed loader
+   (`loadCommittedPrSummary`) at the verified pushed head sha, using
+   `git ls-tree` and `git show`. The working tree is never read. The loader
+   tries the same candidate paths as the sync, in order: the canonical
+   `docs/archive/pr-summaries/pr-summary-<N>.md`, the legacy
    `docs/pr-summary-<N>.md`, then `.pr_summary`. A failed read leaves the review
    open. An unmet criterion, a missing committed summary or unknown evidence
    gives `Part of #N`. So does a negated sentence such as "does not close #N",
@@ -290,15 +292,15 @@ unchanged head, the description steps run in order:
    check runs only in that case. The body reads must include
    `closingIssuesReferences` as an array: a missing key is rejected, not read as
    "no references". Dismissal then waits up to ten reads, one second apart, for
-   the PR head to show the pushed head. Only the reviews that are still requested
-   are dismissed, and only those the independent verifier judged fixed (Issue
-   #4657). Every finding of a review must be judged fixed, by exactly one verdict
-   for that review, at the head and description read after the publication. The
-   verifier reads that published description and the agent's reply. An outage, a
-   partial or missing verdict, or a head or description that moved during
-   verification keeps the review open. The push still stands. An outage also
-   keeps the pending-publication record, so the next scan re-verifies without
-   running the agent.
+   the PR head to show the pushed head. Only the reviews that are still
+   requested are dismissed, and only those the independent verifier judged fixed
+   (Issue #4657). Every finding of a review must be judged fixed, by exactly one
+   verdict for that review, at the head and description read after the
+   publication. The verifier reads that published description and the agent's
+   reply. An outage, a partial or missing verdict, or a head or description that
+   moved during verification keeps the review open. The push still stands. An
+   outage also keeps the pending-publication record, so the next scan
+   re-verifies without running the agent.
 
 A proposal over GitHub's 65,536-character limit is rejected at intake, once
 surrounding whitespace is trimmed, and the review stays open. The composed
@@ -307,18 +309,18 @@ the push and the sync. The limit applies to the whole description, including the
 appended references and markers, so a proposal under the limit can still be
 refused. A refusal leaves the review open.
 
-Any failure leaves the review open, and a later eligible scan retries on the pushed
-head, except a proposal refused over a governing summary (step 2), which a
-retry would refuse again: its pending record is cleared and the review stays
-open until the committed summary changes. A repair that addresses reviews writes a
-pending-publication record, `<attempt key>--publication.json` in the same state
-directory, before the sync. It holds the proposal and whether the repair pushed
-the head. The next eligible scan finds the record before it merges the base or starts the
-agent, and runs the publication again from a clean clone at the PR head; the
-record is removed once the reviews are dismissed, or when the proposal is
-refused over a governing summary. It is found only while the
-scan still sees the same requested review at that head. The retry is idempotent:
-a body that is already current is not edited again. A legacy body that has the
+Any failure leaves the review open, and a later eligible scan retries on the
+pushed head, except a proposal refused over a governing summary (step 2), which
+a retry would refuse again: its pending record is cleared and the review stays
+open until the committed summary changes. A repair that addresses reviews writes
+a pending-publication record, `<attempt key>--publication.json` in the same
+state directory, before the sync. It holds the proposal and whether the repair
+pushed the head. The next eligible scan finds the record before it merges the
+base or starts the agent, and runs the publication again from a clean clone at
+the PR head; the record is removed once the reviews are dismissed, or when the
+proposal is refused over a governing summary. It is found only while the scan
+still sees the same requested review at that head. The retry is idempotent: a
+body that is already current is not edited again. A legacy body that has the
 worker marker but no summary digest is synchronised through the before-push
 diff. On a no-change retry there is no earlier head, so the diff runs against
 git's empty tree: the committed summary counts as changed, and the sync still
@@ -326,9 +328,8 @@ edits only when the rebuilt body differs from the live one. The recoverable next
 action is the thrown error, the open review and the pending-publication record;
 when the proposal was refused over a governing summary the record is cleared, so
 it is the error and the open review, and the fix is to change the committed
-summary and push.
-The guard is `worker/deno/lib/babysitter_pr_body_guard.ts`, and the close
-decision uses the close guard (#3177/#4644) in
+summary and push. The guard is `worker/deno/lib/babysitter_pr_body_guard.ts`,
+and the close decision uses the close guard (#3177/#4644) in
 `worker/deno/lib/missing_criterion_close_guard.ts`.
 
 The runner and the agent exchange files through a runner-owned exchange
@@ -398,13 +399,13 @@ request review gets a separate identity. A legacy create-only attempt file is
 migrated to a five-minute cooldown and then becomes eligible again. No manual
 state-file deletion is part of normal recovery.
 
-Completed repair attempts carry a separate
-`vibe-babysitter-attempt` marker in a fleet-authored PR comment. Hosts count only
-markers written by configured fleet authors, so the configured repair limit
-is shared across hosts and survives a restart. Only consecutive no-change or
-failed outcomes count; a successful push resets the no-progress budget.
-Infrastructure and capability failures do not add an attempt marker. These
-markers cannot be mistaken for a CI escalation that lifts a human hold.
+Completed repair attempts carry a separate `vibe-babysitter-attempt` marker in a
+fleet-authored PR comment. Hosts count only markers written by configured fleet
+authors, so the configured repair limit is shared across hosts and survives a
+restart. Only consecutive no-change or failed outcomes count; a successful push
+resets the no-progress budget. Infrastructure and capability failures do not add
+an attempt marker. These markers cannot be mistaken for a CI escalation that
+lifts a human hold.
 
 A failure is classified from where it is raised: a structured cause (agent
 killed by a signal or exit 137/143, a lock that could not be renewed, a head
@@ -412,43 +413,43 @@ that moved) first, and the error text only as a fallback. Infrastructure, host
 capability (missing tool, full disk) and head or lock races receive bounded
 cooldowns without spending the substantive repair budget and post no attempt
 marker. Codex diagnostics classify provider, authentication, quota, rate-limit,
-network and memory failures as infrastructure; an unreadable or empty
-diagnostic on a non-zero exit is also infrastructure. A reported quota reset
-or retry-after time delays the next attempt. Code failures, runner
-session-budget exhaustion and no-progress
-outcomes spend that budget. A changed head bypasses the old cooldown while
-keeping the attempt history. The retry
-record is saved before any best-effort marker write, and a failed marker write
-never replaces the repair's real error.
+network and memory failures as infrastructure; an unreadable or empty diagnostic
+on a non-zero exit is also infrastructure. A reported quota reset or retry-after
+time delays the next attempt. Code failures, runner session-budget exhaustion
+and no-progress outcomes spend that budget. A changed head bypasses the old
+cooldown while keeping the attempt history. The retry record is saved before any
+best-effort marker write, and a failed marker write never replaces the repair's
+real error.
 
 When substantive attempts reach the configured `maxAutoFixAttempts` limit, the
 record keeps the newest five redacted evidence lines, and the babysitter posts
-an auto-fix cap marker for failed CI or a separate babysitter handoff marker
-for other incidents. Further sessions for that incident stop until
-the head or requested review changes, including green review-feedback and
-merge-conflict incidents. A failed handoff is retried without another agent
-session. The shared tally also bounds sessions on a different host. A moved
-head retains the attempt history and receives a changed-diagnosis prompt with
-fenced, redacted prior evidence.
+an auto-fix cap marker for failed CI or a separate babysitter handoff marker for
+other incidents. Further sessions for that incident stop until the head or
+requested review changes, including green review-feedback and merge-conflict
+incidents. A failed handoff is retried without another agent session. The shared
+tally also bounds sessions on a different host. A moved head retains the attempt
+history and receives a changed-diagnosis prompt with fenced, redacted prior
+evidence.
 
-A fleet-authored marker deduplicates the handoff across hosts and restarts.
-The stall self-repair ladder consumes the CI cap for eligible blocking red-CI stalls and
-skips its first trip. Green review-feedback and conflict lanes do not consume
-that cap, and non-blocking red-CI incidents do not enter the ladder; their safety bound is the paused babysitter incident. No separate
-escalation issue is created. The comment identifies the babysitter handoff, so
-it does not claim ownership of a human `needs-human` label. Explicit human
-holds stay paused until cleared. Waiting paths release the branch lock; the
-next scan logs the cause, next action, and eligible time.
+A fleet-authored marker deduplicates the handoff across hosts and restarts. The
+stall self-repair ladder consumes the CI cap for eligible blocking red-CI stalls
+and skips its first trip. Green review-feedback and conflict lanes do not
+consume that cap, and non-blocking red-CI incidents do not enter the ladder;
+their safety bound is the paused babysitter incident. No separate escalation
+issue is created. The comment identifies the babysitter handoff, so it does not
+claim ownership of a human `needs-human` label. Explicit human holds stay paused
+until cleared. Waiting paths release the branch lock; the next scan logs the
+cause, next action, and eligible time.
 
 Local git validation, staging, commit and merge failures are code failures even
 when the diagnostic contains transport words in file paths or source text.
 Clone, fetch and push failures default to infrastructure after capability
 checks. A push `[rejected]` is a race; `[remote rejected]`, a declined
-pre-receive hook and GH0xx rule violations are code failures. Git disk-full
-and spawn failures count as capability failures for
-every operation. A pending-CI observation preserves an escalated incident's
-handoff head until repair consumes the head change. Handoff markers use that
-incident head, independent of any older successful push on a host.
+pre-receive hook and GH0xx rule violations are code failures. Git disk-full and
+spawn failures count as capability failures for every operation. A pending-CI
+observation preserves an escalated incident's handoff head until repair consumes
+the head change. Handoff markers use that incident head, independent of any
+older successful push on a host.
 
 After a successful push the state records the pushed head and waits for CI and
 independent review. Each later scan observes the PR without taking a lock:
@@ -457,12 +458,12 @@ repository with `skip_auto_merge` and a `needs-human` hold are each recorded as
 what the PR waits on. A green, approved, clean PR is recorded as
 `handed-to-auto-merge-owner`: the shared auto-merge policy and worker sweep
 handle landing it. The babysitter arms candidates through that shared policy
-before repair, subject to its existing gates.
-Failed checks and new requested changes return to the repair scan. A later scan
-reads tracked PRs even when they are no longer in the first page of open
-candidates, and clears retry state after GitHub reports `MERGED` or `CLOSED`.
-A push, a hand-off or a dismissed review is never a merged outcome. Closed
-records are not re-read on later scans; a reopened PR appears in the open list.
+before repair, subject to its existing gates. Failed checks and new requested
+changes return to the repair scan. A later scan reads tracked PRs even when they
+are no longer in the first page of open candidates, and clears retry state after
+GitHub reports `MERGED` or `CLOSED`. A push, a hand-off or a dismissed review is
+never a merged outcome. Closed records are not re-read on later scans; a
+reopened PR appears in the open list.
 
 ```mermaid
 stateDiagram-v2
