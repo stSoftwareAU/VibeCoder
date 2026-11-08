@@ -28,7 +28,7 @@ export type BaseFailureComparison =
 
 /** Lines read from a failure text, and their length; bounds keep hostile input cheap. */
 const MAX_LINES = 2000;
-/** The base excerpt is byte-capped, so it needs no tighter line bound. */
+/** Bound processing even if an injected log exceeds the fetcher's excerpt cap. */
 const MAX_BASE_LINES = 20000;
 const MAX_LINE_CHARS = 500;
 /** Shortest normalised line worth comparing. */
@@ -176,6 +176,7 @@ const JEST_CONSOLE_SECTION = /^● Console$/;
 const VITEST_OUTPUT = /^(?:stdout|stderr) \| /;
 /** The marker `summariseActionsLog` leaves where it dropped lines. */
 const OMISSION_MARKER = /^\[\.\.\. .* \.\.\.\]$/;
+const BYTE_TRUNCATION = /^\[\.\.\. truncated \d+ bytes .+ \.\.\.\]$/i;
 /** Mocha's numbered failure header, whose test name sits on a deeper line. */
 const NUMBERED_FAILURE = /^\d+\)\s+\S/;
 /** How many deeper lines a Mocha failure header may join to reach its test name. */
@@ -203,6 +204,15 @@ function preparedLines(text: string, limit: number): string[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string;
     const trimmed = line.trim();
+    if (OMISSION_MARKER.test(trimmed)) {
+      kept.push(line);
+      denoBlock = false;
+      blockIndent = -1;
+      untilBlank = false;
+      // A byte cap can start in the middle of a line, including a file header.
+      if (BYTE_TRUNCATION.test(trimmed)) i++;
+      continue;
+    }
     if (denoBlock) {
       if (DENO_OUTPUT_END.test(trimmed) || OMISSION_MARKER.test(trimmed)) {
         denoBlock = false;
@@ -530,7 +540,8 @@ export async function compareBaseFailure(options: {
     };
   }
 
-  const baseLines = preparedLines(outcome.excerpt, MAX_BASE_LINES)
+  const preparedBase = preparedLines(outcome.excerpt, MAX_BASE_LINES);
+  const baseLines = preparedBase
     .map(canonicalLine).filter((line) => line.length > 0)
     .map((line) => signature.loose ? loosen(line) : line);
   if (baseLines.length === 0) {
@@ -543,7 +554,7 @@ export async function compareBaseFailure(options: {
   const baseSet = new Set(baseLines);
   const basePairs = new Set(
     diagnosticPairs(
-      preparedLines(outcome.excerpt, MAX_BASE_LINES),
+      preparedBase,
       signature.loose,
     ),
   );
@@ -556,6 +567,16 @@ export async function compareBaseFailure(options: {
     !prLines.every(found) ||
     !signature.pairs.every((pair) => basePairs.has(pair))
   ) {
+    if (
+      outcome.excerpt.split("\n").length > MAX_BASE_LINES ||
+      preparedBase.some((line) => OMISSION_MARKER.test(line.trim())) ||
+      [...basePairs].some((pair) => pair.startsWith('["unidentified-semgrep",'))
+    ) {
+      return {
+        state: "unreadable",
+        reason: "the base run's log omitted evidence needed for comparison",
+      };
+    }
     return { state: "different" };
   }
   return { state: "same", matched: firstLine };

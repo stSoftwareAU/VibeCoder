@@ -6,10 +6,10 @@ can represent a different failure. Closes #4680.
 
 - **Same:** every comparable PR failure line and diagnostic pair appears in the base log; defer
   without charging an attempt.
-- **Different:** a comparable line or diagnostic pair is absent; follow the ordinary
-  charged path.
+- **Different:** a comparable line or diagnostic pair is absent from a complete
+  base excerpt; follow the ordinary charged path.
 - **Unreadable:** no comparable PR line, a Semgrep finding without its file
-  header, or no readable base log; hold without
+  header, a missing match that could be in omitted base output, or no readable base log; hold without
   charging, subject to the existing two-hold bound.
 
 The base evidence remains the same check on the base head, or the same workflow
@@ -56,7 +56,10 @@ result is unreadable. Semgrep's finding-block file line is distinguished from
 source, separator and autofix lines and carried across subsequent rules, including
 paths with punctuation or spaces, at all four severity markers. An omission
 clears the carried file; shortened and hidden-line notices retain it. A missing
-file header makes the comparison unreadable. Both file and rule remain evidence even when the output
+file header makes the comparison unreadable. The first partial line after a
+byte truncation is discarded. A missing base match is unreadable when the base
+excerpt has an omission, a line limit or an unidentified Semgrep finding; a
+positive match still defers. Both file and rule remain evidence even when the output
 contains a failure word. Deno
 formatter `from <path>:` lines identify files and its
 file-count summary is ignored. Deno lint and check locations, and shellcheck
@@ -87,7 +90,13 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
 
 - `deno task test:unit tests/ci_base_failure_signature_test.ts
   tests/pr_ci_processor_deferral_test.ts`:
-  96 passed, 0 failed (52 and 44 tests respectively).
+  98 passed, 0 failed (53 and 45 tests respectively).
+- The obsolete comparison treated missing evidence in a summarised base log as
+  a different failure and could read a byte-cut fragment as a Semgrep file.
+  Complete, identified pairs still distinguish failures; omitted evidence holds
+  without charging. Coverage:
+  `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - incomplete excerpts cannot prove a missing failure`
+  and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - incomplete excerpts hold without charging`.
 - Crossed diagnostic files and rules no longer match independently. Identical
   pairs still defer, including multiple Semgrep rules in one file block.
   Coverage: `worker/deno/tests/ci_base_failure_signature_test.ts::compareBaseFailure - diagnostic rules stay paired with their files`
@@ -104,6 +113,8 @@ are twinned restatements. The new module has a lib-sweep coverage entry.
   and `worker/deno/tests/pr_ci_processor_deferral_test.ts::processCiFailure - truncated Semgrep file header holds without charging`.
   The boundary tests also cover shortened and hidden lines, `autofix` and
   hyphen-prefixed paths, and prefixed Deno check errors.
+  Its former expectation that a missing pair after an omission is different is
+  obsolete; identified pairs in complete excerpts remain covered by those tests.
 - `worker/deno/tests/ci_base_failure_signature_test.ts` covers Jest console
   output, differing formatter and diagnostic file loci, shellcheck rules, and npm log paths.
   `worker/deno/tests/pr_ci_processor_deferral_test.ts` covers deferral using

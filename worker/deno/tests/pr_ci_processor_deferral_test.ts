@@ -1597,7 +1597,10 @@ Deno.test("processCiFailure - diagnostic pairing handles real log boundaries", a
       }, exitLineInput());
       const body = captured.comments.at(-1) ?? "";
       assertStringIncludes(body, `<!-- vibe-ci-fix-${marker} `);
-      assertEquals(attemptOutcomes(body).includes("base-unverified"), false);
+      assertEquals(
+        attemptOutcomes(body).includes("base-unverified"),
+        baseLog === base && base.includes("lines omitted"),
+      );
     }
   }
 });
@@ -1620,4 +1623,45 @@ Deno.test("processCiFailure - truncated Semgrep file header holds without chargi
   const body = captured.comments.at(-1) ?? "";
   assertEquals(attemptOutcomes(body), ["base-unverified"]);
   assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+});
+
+Deno.test("processCiFailure - incomplete excerpts hold without charging", async () => {
+  const pr = "renderer - t case ... FAILED (5ms)";
+  const raw = Array.from(
+    { length: 1400 },
+    (_, i) =>
+      i === 10
+        ? "parser - v case ... FAILED (3ms)"
+        : i === 800
+        ? pr
+        : `test ${i} ... ok`,
+  ).join("\n");
+  const base = summariseActionsLog(raw);
+  assertEquals(base.includes(pr), false);
+  const cases: [string, string][] = [
+    [pr, base],
+    ...["lib/big_module.ts", "fragment of source code"].map(
+      (partial): [string, string] => {
+        const prefix = partial.startsWith("lib/") ? "worker/deno/" : "123┆ ";
+        const rawCut = `${
+          "padding".repeat(3000)
+        }\n${prefix}${partial}\n❯❱ rule.one\n1┆ code\n##[error]Process completed with exit code 1.`;
+        const cut = Array.from(
+          { length: 500 },
+          (_, i) => summariseActionsLog(rawCut, { maxBytes: i + 1 }),
+        ).find((value) => value.split("\n")[1] === partial);
+        assertEquals(typeof cut, "string");
+        return [cut!, cut!];
+      },
+    ),
+  ];
+  for (const [failingLog, baseLog] of cases) {
+    const captured = await runDeferralScenario(AGENT_MESSAGE, {
+      failingLog,
+      baseLog,
+    }, exitLineInput());
+    const body = captured.comments.at(-1) ?? "";
+    assertEquals(attemptOutcomes(body), ["base-unverified"]);
+    assertEquals(body.includes("<!-- vibe-ci-fix-deferred "), false);
+  }
 });

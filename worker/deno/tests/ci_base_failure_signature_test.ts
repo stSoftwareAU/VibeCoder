@@ -11,6 +11,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { summariseActionsLog } from "../lib/github_actions_log_fetcher.ts";
 import {
   type BaseFailureComparison,
   compareBaseFailure,
@@ -21,6 +22,34 @@ import type {
   ActionsLogOutcome,
   fetchGithubActionsLogExcerpt,
 } from "../lib/github_actions_log_fetcher.ts";
+
+Deno.test("compareBaseFailure - incomplete excerpts cannot prove a missing failure", async () => {
+  const pr = "renderer - t case ... FAILED (5ms)";
+  const raw = Array.from(
+    { length: 1400 },
+    (_, i) =>
+      i === 10
+        ? "parser - v case ... FAILED (3ms)"
+        : i === 800
+        ? pr
+        : `test ${i} ... ok`,
+  ).join("\n");
+  const base = summariseActionsLog(raw);
+  assertEquals(base.includes(pr), false);
+  assertEquals(await compareStates(pr, base), "unreadable");
+  for (const partial of ["lib/big_module.ts", "fragment of source code"]) {
+    const prefix = partial.startsWith("lib/") ? "worker/deno/" : "123┆ ";
+    const rawCut = `${
+      "padding".repeat(3000)
+    }\n${prefix}${partial}\n❯❱ rule.one\n1┆ code\n##[error]Process completed with exit code 1.`;
+    const cut = Array.from(
+      { length: 500 },
+      (_, i) => summariseActionsLog(rawCut, { maxBytes: i + 1 }),
+    ).find((value) => value.split("\n")[1] === partial);
+    assertEquals(typeof cut, "string");
+    assertEquals(await compareStates(cut!, cut!), "unreadable");
+  }
+});
 
 Deno.test("compareBaseFailure - same Deno and cargo failures ignore changing tallies", async () => {
   const cases: [string, string][] = [
@@ -914,7 +943,11 @@ Deno.test("compareBaseFailure - diagnostic pairing handles real log boundaries",
   const wrap = (s: string) =>
     `##[endgroup]\n${s}\n##[error]Process completed with exit code 1.\n`;
   for (const [pr, base] of cases) {
-    assertEquals(await compareStates(wrap(pr), wrap(base)), "different", pr);
+    assertEquals(
+      await compareStates(wrap(pr), wrap(base)),
+      base.includes("lines omitted") ? "unreadable" : "different",
+      pr,
+    );
     assertEquals(await compareStates(wrap(pr), wrap(pr)), "same", pr);
   }
   const missingHeader = wrap(

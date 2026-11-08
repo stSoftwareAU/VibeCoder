@@ -526,11 +526,11 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
   signatures:
   - **Same** — every comparable normalised failure line of the pull request appears in
     the base run's log, so the base is red for this failure.
-  - **Different** — the base log was read and at least one comparable pull request failure
-    line or diagnostic pair is absent, so the base is red for another reason and the claim is
-    not verified as this failure.
+  - **Different** — the base excerpt has no omission and at least one comparable pull request
+    failure line or diagnostic pair is absent, so the claim is not verified as this failure.
   - **Unreadable** — either side cannot be compared: the pull request has no
     failure line or failing step output, a Semgrep finding lacks its file header,
+    or a missing base line or pair could have been omitted from the excerpt;
     the check is not a GitHub Actions
     check, or the base log cannot be fetched.
 
@@ -543,8 +543,8 @@ On timeout (exit code 124 or 137), the worker posts a PR comment with the last
     `vibe-ci-fix-deferred` marker, **no `needs-human`** is applied, **no attempt
     is charged**, and the PR resumes automatically when the blocking issue closes
     (Issue #1880, Issue #1849).
-  - **Red, different failure** — the latest matching run failed, but its log
-    is missing a comparable pull request failure line (**Different**). The base is
+  - **Red, different failure** — the latest matching run failed, but its complete
+    excerpt is missing a comparable pull request failure line or pair (**Different**). The base is
     red for another reason, so the claim is not verified as this failure: the
     ordinary charged path runs (the ordinary no-changes reply and one attempt
     charged), with no deferral and no hold.
@@ -676,7 +676,7 @@ flowchart TD
     A["agent: no change,<br/>message ends<br/>'Depends on o/r#N'"] --> B{"base branch's latest<br/>run of the check red?"}
     B -->|"green or no base ref"| D["ordinary no-changes reply<br/>+ attempt charged"]
     B -->|"no evidence: no run,<br/>stale run, lookup failed"| U["base-unverified note<br/>+ attempt marker, no charge"]
-    B -->|yes| S{"base log holds every<br/>comparable PR failure line?"}
+    B -->|yes| S{"base log holds every<br/>comparable PR line and pair?"}
     S -->|same| P{"prior deferral<br/>for this signature?"}
     S -->|different| D
     S -->|unreadable| U
@@ -704,8 +704,8 @@ flowchart TD
     E -->|"success, or no base ref"| O["ordinary no-changes reply<br/>+ attempt charged"]
     E -->|"failure"| L{"base run's failing log contains<br/>all comparable PR failure lines?"}
     L -->|"same: all comparable PR failure lines<br/>appear in the base log"| R["deferred: diagnosis posted once<br/>+ vibe-ci-fix-deferred marker<br/>no needs-human, no attempt"]
-    L -->|"different: base log read,<br/>a PR failure line is missing"| O
-    L -->|"unreadable: no failure line or step output,<br/>non-Actions check, log fetch error"| H{"fewer than two holds<br/>for this signature?"}
+    L -->|"different: complete base excerpt,<br/>a PR line or diagnostic pair is missing"| O
+    L -->|"unreadable: missing evidence or Semgrep header,<br/>non-Actions check, log fetch error"| H{"fewer than two holds<br/>for this signature?"}
     E -->|"no run, stale run,<br/>cancelled or skipped,<br/>lookup failed"| H
     H -->|yes| U["base-unverified note<br/>+ attempt marker, no charge"]
     H -->|no| O
