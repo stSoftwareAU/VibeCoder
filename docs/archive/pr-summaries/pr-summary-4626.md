@@ -14,20 +14,20 @@ the value of (`--config ${{ env.X }}` goes whole), so the line runs a plain
 add offline or ignore flags. A `run:` step runs from its `working-directory`,
 else the job's, else the workflow's `defaults.run.working-directory`. An
 invocation CI allows to fail (`continue-on-error` on the step or the job, a
-literal `true` or a `matrix.<key>` test evaluated per combination, for every
-key the test reads) still runs,
-after the others, but its failure is a `[PRE_PUSH_WARNING]` line and does not
-refuse the push. A `cargo deny` line naming no `check` but holding a variable or
-expression, and a working directory that cannot be reproduced, refuse the push;
-for an invocation CI does not allow to fail, unavailable tools or networks are
-infrastructure failures and audit diagnostics are code verdicts; for one it
-allows to fail, both are warnings. Quoted multiline container scripts are not
-treated as host commands. Jobs are found as the children of the top-level
-`jobs:` key at whatever indent the file uses. A workflow CI does not run for the
-push is not read: one with no `pull_request`, `pull_request_target`,
-`merge_group` or `workflow_call` trigger and no `push` trigger whose branch
-filter matches the pushed branch, and, in the whole-branch check, one whose
-`paths` / `paths-ignore` filter selects none of the branch's touched paths.
+literal `true` or a `matrix.<key>` test evaluated per combination, for every key
+the test reads) still runs, after the others, but its failure is a
+`[PRE_PUSH_WARNING]` line and does not refuse the push. A `cargo deny` line
+naming no `check` but holding a variable or expression, and a working directory
+that cannot be reproduced, refuse the push; for an invocation CI does not allow
+to fail, unavailable tools or networks are infrastructure failures and audit
+diagnostics are code verdicts; for one it allows to fail, both are warnings.
+Quoted multiline container scripts are not treated as host commands. Jobs are
+found as the children of the top-level `jobs:` key at whatever indent the file
+uses. A workflow CI does not run for the push is not read: one with no
+`pull_request`, `pull_request_target`, `merge_group` or `workflow_call` trigger
+and no `push` trigger whose branch filter matches the pushed branch, and, in the
+whole-branch check, one whose `paths` / `paths-ignore` filter selects none of
+the branch's touched paths.
 
 The babysitter is not gated. Its repairs run on the host, and the governing
 issue forbids host execution beside the App key until the contained path (#4768,
@@ -42,14 +42,15 @@ babysitter pushes are checked.
 Advisories can change without a lockfile change, so the whole-branch completion
 check runs CI’s cargo-deny checks regardless of changed cargo paths, but only
 those workflows CI itself runs for the branch (a `schedule`-only audit, or one
-whose `paths` filter selects nothing the branch touches, is skipped). Intermediate
-hooks retain the cargo-input trigger to limit cost. The workflow is the source
-for arguments, working directories, action defaults and which invocations CI
-allows to fail. The parser does not resolve matrix `exclude` entries (an
-excluded combination is checked too), `continue-on-error` tests other than a
-literal true or one matrix key, a `pull_request` `branches` filter (the base
-branch is not known to the gate, so it matches), or commands hidden in scripts. A plain `check`
-covers every subset an unresolved expression could select.
+whose `paths` filter selects nothing the branch touches, is skipped).
+Intermediate hooks retain the cargo-input trigger to limit cost. The workflow is
+the source for arguments, working directories, action defaults and which
+invocations CI allows to fail. The parser does not resolve matrix `exclude`
+entries (an excluded combination is checked too), `continue-on-error` tests
+other than a literal true or one matrix key, a `pull_request` `branches` filter
+(the base branch is not known to the gate, so it matches), or commands hidden in
+scripts. A plain `check` covers every subset an unresolved expression could
+select.
 
 ### Essential Design Decisions
 
@@ -73,13 +74,12 @@ workflow (matrix entries `advisories` and `bans licenses sources`, with
 allowed to fail. Source-only changes reach the gate in the whole-branch pre-PR
 check, so newly published advisories are checked even when the lockfile is
 unchanged, provided CI runs the workflow for the branch (a `schedule`-only
-workflow, a push `branches` filter that excludes the branch, or a `paths`
-filter that selects none of the touched paths is skipped); intermediate hooks
-still skip source-only changes. The repository’s
-container-build workflow contains a scratch-crate command inside a quoted
-container script, which the host gate ignores. The YAML parser uses an explicit
-JSR specifier so reviewer entry points outside the worker's import map can load
-the gate.
+workflow, a push `branches` filter that excludes the branch, or a `paths` filter
+that selects none of the touched paths is skipped); intermediate hooks still
+skip source-only changes. The repository’s container-build workflow contains a
+scratch-crate command inside a quoted container script, which the host gate
+ignores. The YAML parser uses an explicit JSR specifier so reviewer entry points
+outside the worker's import map can load the gate.
 
 Review round (PR #4895): the babysitter files are restored to `origin/main`
 (`git diff origin/main --stat` lists none of them), so the only babysitter text
@@ -102,11 +102,11 @@ not run there.
   adds tests for an include entry that extends every combination, a matrix key
   with no value, an unsafe matrix value, a `continue-on-error` matrix test with
   no combination, an option that carries its own `=` value, the `source` of an
-  unrunnable finding, and a matrix `working-directory` with no value. The
-  second review round adds 11: four-space jobs, a `continue-on-error` test on a
-  key the command does not use (and its gate refusal), an `include` on another
-  dimension (for `continue-on-error` and for a command key), a schedule-only
-  workflow, path filters (`paths`, `paths-ignore`, `!`), push branch filters and
+  unrunnable finding, and a matrix `working-directory` with no value. The second
+  review round adds 11: four-space jobs, a `continue-on-error` test on a key the
+  command does not use (and its gate refusal), an `include` on another dimension
+  (for `continue-on-error` and for a command key), a schedule-only workflow,
+  path filters (`paths`, `paths-ignore`, `!`), push branch filters and
   tags-only, trigger forms, and a hostile path pattern.
 - Obsolete: the permanent refusals of a variable or expression before `check`
   and of an environment assignment holding an expression. A check stays
@@ -124,9 +124,9 @@ not run there.
   `runPrePushGate` (the allowed leg prints `[PRE_PUSH_WARNING] cargo deny:` and
   does not block; the other leg blocks), and a source-only whole-branch check
   that skips a schedule-only, a path-filtered and a `push: branches: [other]`
-  workflow but runs the path-filtered one when the branch touches `deny.toml`. The obsolete ShellCheck-only blanket
-  skip is replaced: cargo input changes are checked, while source-only repairs
-  still skip cargo deny, covered by
+  workflow but runs the path-filtered one when the branch touches `deny.toml`.
+  The obsolete ShellCheck-only blanket skip is replaced: cargo input changes are
+  checked, while source-only repairs still skip cargo deny, covered by
   `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: shellcheck-only mode checks Cargo.lock`
   and
   `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: shellcheck-only mode skips a source-only repair even with a baseRef`.
@@ -140,8 +140,9 @@ not run there.
   missing optional key not "" → 1 red; the stderr warning removed from
   `pre_push_gate.ts` → the pre-push README test red.
 - Red checks, second round: running the new `cargo_deny_gate_test.ts` tests
-  against the previous `cargo_deny_gate.ts` → 10 red (all but the hostile-pattern
-  case); setting `touched` / `branches` to `undefined` in `pre_push_gate.ts` →
+  against the previous `cargo_deny_gate.ts` → 10 red (all but the
+  hostile-pattern case); setting `touched` / `branches` to `undefined` in
+  `pre_push_gate.ts` →
   `cargo deny: baseRef skips a workflow CI does not run for the branch` red;
   raising the pattern caps → the hostile-pattern test red (the unreadable
   pattern then rules the workflow out).
@@ -159,9 +160,9 @@ not run there.
   and the refusal sentence below it); the three `git_push.ts` doc comments on
   `shellcheckOnly`, `resolveRepairPreFlightSpec` and the `commitAndPushPending`
   `@param preFlight` now say a ShellCheck-only spec also runs cargo deny for a
-  cargo input; `docs/workflows/fleet-pr-babysitter.md`
-  and `docs/THREAT-MODEL.md` are back to their base text; no matching list in
-  README or `docs/INTERNALS.md`.
+  cargo input; `docs/workflows/fleet-pr-babysitter.md` and
+  `docs/THREAT-MODEL.md` are back to their base text; no matching list in README
+  or `docs/INTERNALS.md`.
 - `worker/deno/lib/cargo_deny_gate.ts`’s `WorkDir` type alias has a `true` type
   literal that is erased at runtime and is exempt (untestable) from mutation. So
   are the `allowFailure?: true` type literals on `CargoDenyCiFinding`
@@ -178,11 +179,11 @@ Semgrep and Checkov were not run.
 
 ## Mutation survivors (PR #4895 review fix)
 
-- `cargo_deny_gate.ts` include-entry guard, `filterPatternRegex` (length cap, `?`, `+`,
-  class, trailing backslash, invalid regex) and `stringList`: pinned by new tests in
-  `worker/deno/tests/cargo_deny_gate_test.ts`; each listed mutation was re-applied by hand
-  and turned a test red.
-- `parseWorkflow`'s object/array/null guard was dead: a scalar, list or null document has
-  no `on`, `defaults` or jobs, so every operand mutation gave the same result. The guard
-  is removed.
+- `cargo_deny_gate.ts` include-entry guard, `filterPatternRegex` (length cap,
+  `?`, `+`, class, trailing backslash, invalid regex) and `stringList`: pinned
+  by new tests in `worker/deno/tests/cargo_deny_gate_test.ts`; each listed
+  mutation was re-applied by hand and turned a test red.
+- `parseWorkflow`'s object/array/null guard was dead: a scalar, list or null
+  document has no `on`, `defaults` or jobs, so every operand mutation gave the
+  same result. The guard is removed.
 - The 50 mutants past the cap were not run: unchecked.
