@@ -255,13 +255,58 @@ function sortJsonKeys(value: unknown): unknown {
 }
 
 /**
+ * A line that is only a linkage keyword and an issue reference, such as
+ * `Part of #4802` or `Closes owner/repo#12`.
+ *
+ * The line is trimmed before the test, so the pattern carries no leading or
+ * trailing whitespace quantifiers and stray spaces cannot hide a linkage line.
+ */
+const LINKAGE_LINE =
+  /^(?:Closes|Fixes|Resolves|Part of) (?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#\d+\.?$/i;
+
+/**
+ * Give each linkage-only line its own paragraph before `deno fmt` runs.
+ *
+ * `deno fmt` joins adjacent lines into one paragraph, so `Part of #A` over
+ * `Part of #B` would become `Part of #A Part of #B`, which breaks the
+ * reviewer's anchored-line rule (Issue #4802). A blank line goes above and
+ * below each linkage line that touches a non-blank line, so consecutive
+ * linkage lines end up with exactly one blank between them. Lines inside a
+ * fenced code block are left alone, and every other line is unchanged.
+ */
+function isolateLinkageLines(text: string): string {
+  const input = text.split("\n");
+  const output: string[] = [];
+  let inFence = false;
+  for (const [i, line] of input.entries()) {
+    const trimmedStart = line.trimStart();
+    if (trimmedStart.startsWith("```") || trimmedStart.startsWith("~~~")) {
+      inFence = !inFence;
+      output.push(line);
+      continue;
+    }
+    if (inFence || !LINKAGE_LINE.test(line.trim())) {
+      output.push(line);
+      continue;
+    }
+    if ((output.at(-1) ?? "").trim() !== "") output.push("");
+    output.push(line);
+    if ((input[i + 1] ?? "").trim() !== "") output.push("");
+  }
+  return output.join("\n");
+}
+
+/**
  * Format the worker's own archive Markdown and JSON, then commit.
  *
  * Runs after the repository formatters. Only the two worker-owned
  * directories are touched, and only when the repository tracks a Deno
  * config — that is the formatter the pre-push gate will check them with.
- * A missing formatter, a write failure, or a formatter that exits non-zero
- * is logged. This function never throws, so the gate still runs.
+ * Before `deno fmt` runs, each Markdown file has its linkage-only lines
+ * isolated (see {@link isolateLinkageLines}) and each JSON file is rewritten
+ * with sorted keys; a file is written back only when it changed. A missing
+ * formatter, a write failure, or a formatter that exits non-zero is logged.
+ * This function never throws, so the gate still runs.
  */
 export async function formatWorkerOwnedArchive(
   repoPath: string,
@@ -315,18 +360,18 @@ export async function formatWorkerOwnedArchive(
     }
 
     for (const path of archiveFiles) {
-      if (
-        !path.toLowerCase().endsWith(".json") &&
-        !path.toLowerCase().endsWith(".jsonc")
-      ) {
-        continue;
-      }
+      const lower = path.toLowerCase();
+      const isMarkdown = lower.endsWith(".md") || lower.endsWith(".markdown");
+      const isJson = lower.endsWith(".json") || lower.endsWith(".jsonc");
+      if (!isMarkdown && !isJson) continue;
       const absolute = `${repoPath}/${path}`;
       try {
         const current = await Deno.readTextFile(absolute);
-        const canonical = canonicalArchiveJson(current);
-        if (canonical !== undefined && canonical !== current) {
-          await Deno.writeTextFile(absolute, canonical);
+        const rewritten = isMarkdown
+          ? isolateLinkageLines(current)
+          : canonicalArchiveJson(current);
+        if (rewritten !== undefined && rewritten !== current) {
+          await Deno.writeTextFile(absolute, rewritten);
         }
       } catch (error: unknown) {
         deps.logger.warn(

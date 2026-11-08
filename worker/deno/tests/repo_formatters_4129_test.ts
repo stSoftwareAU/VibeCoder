@@ -414,3 +414,105 @@ Deno.test("formatBeforeGate formats worker-owned archive files with the producti
     await Deno.remove(root, { recursive: true });
   }
 });
+
+const LONG_PARAGRAPH =
+  "Another deliberately over-long sentence, far beyond eighty columns, so deno fmt has to re-wrap this paragraph before the gate reads the summary.";
+
+const LINKAGE_SUMMARY = "# Summary\n\n" +
+  "Part of #1\n" +
+  "Part of #2\n\n" +
+  "Prose that ends the paragraph.\n" +
+  "Closes #3\n\n" +
+  `${LONG_PARAGRAPH}\n`;
+
+const FENCED_SUMMARY = "# Summary\n\n" +
+  "```\n" +
+  "Part of #1\n" +
+  "Part of #2\n" +
+  "```\n";
+
+/**
+ * Seed a repository whose only archive file is `summary`, in the seed commit,
+ * then run the production runner over it. The seed commit is the branch's
+ * change, as in the test above.
+ */
+async function formatSeededSummary(
+  root: string,
+  summary: string,
+): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
+  const repo = `${root}/repo`;
+  await new Deno.Command("git", {
+    args: ["init", "-b", "main", repo],
+    stdout: "null",
+    stderr: "piped",
+  }).output();
+  await Deno.mkdir(`${root}/hooks`);
+  for (
+    const [key, value] of [
+      ["user.useConfigOnly", "true"],
+      ["user.name", "Fixture"],
+      ["user.email", "fixture@example.com"],
+      ["core.hooksPath", `${root}/hooks`],
+    ] as const
+  ) {
+    await git(repo, ["config", key, value]);
+  }
+  await writeFile(repo, "worker/deno/deno.json", "{}\n");
+  await writeFile(repo, ARCHIVE[2], summary);
+  await git(repo, ["add", "."]);
+  await git(repo, ["commit", "-m", "seed"]);
+
+  const logger = recordingLogger();
+  await formatBeforeGate(
+    {
+      git: {
+        formatBranchChanges: () =>
+          Promise.resolve({ runs: [], failures: [], committed: false }),
+      },
+      logger,
+      formatterDeps: { ...createRepoFormatterDeps(), logger },
+    },
+    repo,
+    undefined,
+  );
+  return { repo, logger };
+}
+
+Deno.test("formatBeforeGate keeps adjacent linkage lines on lines of their own and still re-wraps prose (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-linkage-" });
+  try {
+    const { repo, logger } = await formatSeededSummary(root, LINKAGE_SUMMARY);
+    const formatted = await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`);
+    const lines = formatted.split("\n");
+    for (const expected of ["Part of #1", "Part of #2", "Closes #3"]) {
+      assert(
+        lines.includes(expected),
+        `${expected} is not on a line of its own:\n${formatted}`,
+      );
+    }
+    assertEquals(formatted.includes("Part of #1 Part of #2"), false, formatted);
+    for (const line of lines) {
+      assert(line.length <= 80, `${ARCHIVE[2]}: ${line}`);
+    }
+    const joined = logger.lines.join("\n");
+    assertEquals(joined.includes("WARNING:"), false, joined);
+    assertEquals(joined.includes("ERROR:"), false, joined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate leaves linkage-looking lines inside a code fence adjacent (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-fence-" });
+  try {
+    const { repo } = await formatSeededSummary(root, FENCED_SUMMARY);
+    const formatted = await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`);
+    assertStringIncludes(
+      formatted,
+      "```\nPart of #1\nPart of #2\n```",
+      formatted,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
