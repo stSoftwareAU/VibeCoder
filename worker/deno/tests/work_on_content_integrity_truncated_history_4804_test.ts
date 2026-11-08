@@ -183,6 +183,7 @@ interface HistoryMockOptions {
   bodyEdits: BodyEdit[];
   /** Overrides the reported `totalCount` (defaults to `bodyEdits.length`). */
   totalBodyEdits?: number;
+  renames?: BodyEdit[];
   actions: string[];
   addedLabels: string[];
   commentBodies: string[];
@@ -231,7 +232,12 @@ function createGhMock(
                 opts.bodyEdits,
                 opts.totalBodyEdits ?? opts.bodyEdits.length,
               ),
-              timelineItems: { nodes: [] },
+              timelineItems: {
+                nodes: (opts.renames ?? []).map((e) => ({
+                  createdAt: e.at,
+                  actor: { login: e.login },
+                })),
+              },
             },
           },
         },
@@ -627,6 +633,70 @@ function workOnAdded(by: string, at: string) {
     created_at: at,
   };
 }
+
+Deno.test(
+  "work_on_content_integrity - an old rename cannot place a truncated body window (PR #4944 review)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: bodyHistory(150, () => "alice"),
+      renames: [{ login: "alice", at: "2026-04-29T00:00:00Z" }],
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-edit-history-truncated",
+    });
+    assertEscalated(actions, addedLabels, commentBodies, config);
+    assertEquals(await capturedAt(config, deps), LONG_AGO_UNIX);
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - a rename cannot make an empty body window re-approvable (PR #4944 review)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: [],
+      totalBodyEdits: 150,
+      renames: [{ login: "alice", at: "2026-05-01T12:00:00Z" }],
+      timeline: [workOnAdded("alice", "2026-05-01T12:05:00Z")],
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-edit-history-truncated",
+    });
+    assertEscalated(actions, addedLabels, commentBodies, config);
+    assertEquals(await capturedAt(config, deps), LONG_AGO_UNIX);
+  },
+);
 
 Deno.test(
   "work_on_content_integrity - a trusted work-on re-add after the newest edit clears a truncated history (PR #4944 review)",

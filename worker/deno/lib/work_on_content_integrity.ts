@@ -765,7 +765,7 @@ export async function resolveContentIntegrity(
           // An empty window leaves the newest edit unknown, so no re-approval
           // can be shown to post-date it: only a fresh edit (which enters the
           // newest-first window) lets the check run.
-          if (newestEditAt !== null) {
+          if (oldestBodyEditAt !== null) {
             const reapproval = await findTrustedReapproval({
               ...reapprovalArgs,
               warnOnStale: true,
