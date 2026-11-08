@@ -148,12 +148,19 @@ Deno.test("a base that conflicts with the head is left for the agent to resolve"
 
 Deno.test("the agent is told to keep the base merge only when one was made", () => {
   for (const why of ["failed CI", "requested review changes"]) {
-    const merged = buildRepairPrompt(why, 1, "owner/repo", "", "Develop");
+    const merged = buildRepairPrompt(
+      why,
+      1,
+      "owner/repo",
+      null,
+      "",
+      "Develop",
+    );
     assertStringIncludes(merged, "merged the latest Develop");
     assertStringIncludes(merged, "one push");
     assertStringIncludes(merged, "do not abort, reset or revert it");
     assertEquals(
-      buildRepairPrompt(why, 1, "owner/repo", "").includes(
+      buildRepairPrompt(why, 1, "owner/repo", null, "").includes(
         "merged the latest",
       ),
       false,

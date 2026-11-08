@@ -893,8 +893,12 @@ interface ParsedWorkflow {
 /** The workflow as YAML parsed it, or null when it is not valid YAML. */
 function parseWorkflow(text: string): ParsedWorkflow | null {
   try {
-    // A scalar or a list has no `on`, `defaults` or jobs to read, so it needs no guard of its own.
-    return (parseYaml(text) ?? null) as ParsedWorkflow | null;
+    const parsed = parseYaml(text);
+    // Bare step sequences are accepted by the scanner as workflow fragments.
+    return parsed !== null && typeof parsed === "object" &&
+        !Array.isArray(parsed)
+      ? parsed as ParsedWorkflow
+      : null;
   } catch {
     // GitHub does not run a workflow that is not valid YAML, so CI has no default to mirror.
     return null;
@@ -1124,7 +1128,7 @@ function jobBlocks(lines: readonly string[]): JobBlock[] {
     if (indentOf(line) === 0) break;
     if (
       indentOf(line) !== indent ||
-      !/^\s*(?:[\w-]+|"[^"]*"|'[^']*'):\s*(?:#.*)?$/.test(line)
+      !/^\s*(?:[\w-]+|"[^"]*"|'[^']*'):\s*(?:&[\w-]+\s*)?(?:#.*)?$/.test(line)
     ) continue;
     let end = i + 1;
     while (
@@ -1158,7 +1162,67 @@ export function workflowCargoDenyFindings(
   const findings: CargoDenyCiFinding[] = [];
   const workflowWd = yamlScalar(workflow?.defaults?.run?.["working-directory"]);
   const jobs = jobBlocks(lines);
-  const stepIndexes = new Map<number, number>();
+  if (workflow !== null) {
+    for (const [key, parsedJob] of Object.entries(workflow.jobs ?? {})) {
+      if (parsedJob === null || !Array.isArray(parsedJob.steps)) continue;
+      const job: JobContext = {
+        matrix: parsedJob.strategy?.matrix ?? {},
+        defaultWd: yamlScalar(parsedJob.defaults?.run?.["working-directory"]) ??
+          workflowWd,
+        continueOnError: yamlScalar(parsedJob["continue-on-error"]),
+      };
+      const block = jobs.find((candidate) => {
+        const header = (lines[candidate.header] ?? "").trim().replace(
+          /:\s*(?:&[\w-]+\s*)?(?:#.*)?$/,
+          "",
+        );
+        return (header.startsWith('"') || header.startsWith("'")
+          ? yamlScalar(parseYaml(header))
+          : header) === key;
+      });
+      const stepsLine = block === undefined
+        ? -1
+        : lines.findIndex((line, i) =>
+          i > block.header && i < block.end &&
+          /^\s*steps:\s*(?:&[\w-]+\s*)?(?:#.*)?$/.test(line) &&
+          indentOf(line) > block.indent
+        );
+      const locations: { start: number; end: number; indent: number }[] = [];
+      if (block !== undefined && stepsLine !== -1) {
+        const stepsIndent = indentOf(lines[stepsLine] ?? "");
+        for (let i = stepsLine + 1; i < block.end;) {
+          const line = lines[i] ?? "";
+          if (!isSkippable(line) && indentOf(line) <= stepsIndent) break;
+          const item = LIST_ITEM.exec(line);
+          if (item === null) {
+            i++;
+            continue;
+          }
+          const indent = (item[1] ?? "").length;
+          let end = i + 1;
+          while (
+            end < block.end &&
+            (isSkippable(lines[end] ?? "") ||
+              indentOf(lines[end] ?? "") > indent)
+          ) end++;
+          locations.push({ start: i, end, indent });
+          i = end;
+        }
+      }
+      for (const [index, step] of parsedJob.steps.entries()) {
+        if (step === null || typeof step !== "object" || Array.isArray(step)) {
+          continue;
+        }
+        const loc = locations[index];
+        findings.push(
+          ...(loc === undefined
+            ? stepFindings(["- step: parsed"], 0, 1, 0, job, step)
+            : stepFindings(lines, loc.start, loc.end, loc.indent, job, step)),
+        );
+      }
+    }
+    return findings;
+  }
   let start = 0;
   while (start < lines.length) {
     const item = LIST_ITEM.exec(lines[start] ?? "");
@@ -1174,52 +1238,13 @@ export function workflowCargoDenyFindings(
       if (!isSkippable(line) && indentOf(line) <= dashIndent) break;
       end++;
     }
-    let job: JobContext = {
+    const job: JobContext = {
       matrix: {},
       defaultWd: workflowWd,
       continueOnError: undefined,
     };
-    let parsedStep: Record<string, unknown> | undefined;
-    const block = jobs.findLast((candidate) =>
-      candidate.header < start && start < candidate.end
-    );
-    if (block !== undefined) {
-      {
-        const header = (lines[block.header] ?? "").trim().replace(
-          /:\s*(?:#.*)?$/,
-          "",
-        );
-        const key = header.startsWith('"') || header.startsWith("'")
-          ? yamlScalar(parseYaml(header))
-          : header;
-        const parsedJob = key === undefined ? undefined : workflow?.jobs?.[key];
-        job = {
-          matrix: parsedJob?.strategy?.matrix ?? {},
-          defaultWd:
-            yamlScalar(parsedJob?.defaults?.run?.["working-directory"]) ??
-              workflowWd,
-          continueOnError: yamlScalar(parsedJob?.["continue-on-error"]),
-        };
-        const stepsLine = lines.findIndex((line, index) =>
-          index > block.header && index < start &&
-          /^\s*steps:\s*(?:#.*)?$/.test(line) && indentOf(line) > block.indent
-        );
-        if (stepsLine !== -1) {
-          const stepIndent = indentOf(lines[stepsLine] ?? "");
-          const intervening = lines.slice(stepsLine + 1, start).some((line) =>
-            !isSkippable(line) && indentOf(line) <= stepIndent &&
-            !LIST_ITEM.test(line)
-          );
-          if (!intervening) {
-            const index = stepIndexes.get(block.header) ?? 0;
-            parsedStep = parsedJob?.steps?.[index];
-            stepIndexes.set(block.header, index + 1);
-          }
-        }
-      }
-    }
     findings.push(
-      ...stepFindings(lines, start, end, dashIndent, job, parsedStep),
+      ...stepFindings(lines, start, end, dashIndent, job),
     );
     start = end;
   }

@@ -1958,6 +1958,64 @@ Deno.test("workflow: step anchors and aliases resolve across keys", () => {
   ]);
 });
 
+Deno.test("workflow: parsed jobs enumerate anchored, aliased and flow steps", () => {
+  const text = yaml(
+    "jobs:",
+    "  first: &job",
+    "    defaults:",
+    "      run:",
+    "        working-directory: crate-a",
+    "    steps: &steps",
+    "      - run: &cmd cargo deny check bans",
+    "        continue-on-error: &allow true",
+    "  second:",
+    "    defaults:",
+    "      run:",
+    "        working-directory: crate-b",
+    "    steps: *steps",
+    "  third:",
+    "    steps: [{run: cargo deny check advisories}]",
+  );
+  const findings = workflowCargoDenyFindings(text);
+  assertEquals(checkSubsets(findings), ["bans", "bans", "advisories"]);
+  assertEquals(findings.map((f) => f.kind === "command" && f.cwd), [
+    "crate-a",
+    "crate-b",
+    ".",
+  ]);
+  assertEquals(findings.map((f) => f.kind === "command" && !!f.allowFailure), [
+    true,
+    true,
+    false,
+  ]);
+});
+
+Deno.test("workflow: anchored job retains matrix and allowed failure", () => {
+  const text = yaml(
+    "jobs:",
+    "  deny: &job",
+    "    defaults:",
+    "      run:",
+    "        working-directory: rust",
+    "    strategy:",
+    "      matrix:",
+    "        checks: [advisories, bans]",
+    "    steps:",
+    "      - run: cargo deny check ${{ matrix.checks }}",
+    "        continue-on-error: ${{ matrix.checks == 'advisories' }}",
+  );
+  const findings = workflowCargoDenyFindings(text);
+  assertEquals(checkSubsets(findings), ["advisories", "bans"]);
+  assertEquals(findings.map((f) => f.kind === "command" && f.cwd), [
+    "rust",
+    "rust",
+  ]);
+  assertEquals(findings.map((f) => f.kind === "command" && !!f.allowFailure), [
+    true,
+    false,
+  ]);
+});
+
 Deno.test("workflow: multi-wildcard path filters select only matching paths", () => {
   for (
     const [pattern, match, miss] of [

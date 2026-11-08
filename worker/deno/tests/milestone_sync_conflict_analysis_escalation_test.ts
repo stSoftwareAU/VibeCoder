@@ -113,6 +113,9 @@ function deps(
     ghCommandFn: (args: string[]): Promise<string> => {
       calls.push(args);
       const key = args.join(" ");
+      // The repository's visibility (Issue #4780): public, so the wedged
+      // diagnostic keeps its public form these tests assert on.
+      if (key.includes(".visibility")) return Promise.resolve("public");
       if (key.includes("repos/owner/repo/milestones")) {
         return Promise.resolve(
           JSON.stringify([{ title: options.milestoneTitle, number: 1 }]),

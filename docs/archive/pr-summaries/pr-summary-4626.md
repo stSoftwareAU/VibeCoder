@@ -30,9 +30,10 @@ whole-branch check, one whose `paths` / `paths-ignore` filter selects none of
 the branch's touched paths. An unreadable filter leaves the workflow eligible;
 patterns longer than 200 characters are unreadable. Multiple wildcards are
 matched using dynamic programming bounded by pattern and path lengths. Job and
-step settings come from the parsed workflow, preserving column-zero comments
-and YAML anchors and aliases. Source lines supply diagnostic locations; the
-line scanner remains the fallback for workflows that do not parse.
+step settings and step enumeration come from the parsed workflow, preserving
+column-zero comments and YAML anchors and aliases, including aliased and flow
+step lists. Source lines supply diagnostic locations where available; the line
+scanner remains the fallback for invalid YAML and bare step fragments.
 
 The babysitter is not gated. Its repairs run on the host, and the governing
 issue forbids host execution beside the App key until the contained path (#4768,
@@ -94,7 +95,7 @@ not run there.
 
 ## Test Plan
 
-- `worker/deno/tests/cargo_deny_gate_test.ts` (100 tests at head) covers workflow
+- `worker/deno/tests/cargo_deny_gate_test.ts` (102 tests at head) covers workflow
   parsing, matrix expansion and fallback, the actual container workflow,
   triggers, diagnostic classification and runner behaviour. This round adds the
   job- and workflow-level `defaults.run.working-directory` tests, the
@@ -117,6 +118,11 @@ not run there.
   column-zero comments, a cross-job alias and multi-wildcard path filters. Step
   anchors and aliases cover run, working directory, continue-on-error, uses and
   action inputs, including a preceding unrelated step.
+  `cargo_deny_gate_test.ts::workflow: parsed jobs enumerate anchored, aliased and flow steps`
+  covers an anchored job and step list, an aliased list with a different job
+  default, and a flow sequence. It failed before the parsed-step enumeration fix.
+  `cargo_deny_gate_test.ts::workflow: anchored job retains matrix and allowed failure`
+  covers matrix expansion, job defaults and the allowed advisory failure.
   The README gate test also exercises the comment while checking advisory
   warnings and blocking bans. Character-class checks cover ranges, negation and
   invalid ranges as well as literal members.
@@ -197,11 +203,11 @@ not run there.
   that reads the same as having none).
 
 The test suite does not run cargo-deny end to end; its runner is injected. The
-full local gate (`./quality.sh`) was run in the latest review round: its
-parallel Deno suite hit a Deno permission-pledge panic twice on this host; the
-focused 113 tests, formatter, linter, type check and markdownlint passed.
-Semgrep and Checkov were skipped because their required local routes were not
-available. The latest merged base PR's CI checks passed.
+focused cargo-deny and pre-push suites pass 115 tests. Repository-wide Deno
+format, lint and type checks pass. In the preceding review round the full local
+gate's parallel Deno suite hit a permission-pledge panic on this host, while
+markdownlint passed; Semgrep and Checkov were unavailable locally.
+The latest merged base PR's CI checks passed.
 The CI Semgrep scan flagged dynamic path-filter regexes; the matcher now uses
 dynamic programming and bounded character-class comparisons without compiling
 workflow input as a regex. The two
@@ -217,7 +223,6 @@ passed. Checkov was not run in that review round.
   `?`, `+`, class, trailing backslash, invalid regex) and `stringList`: pinned
   by new tests in `worker/deno/tests/cargo_deny_gate_test.ts`; each listed
   mutation was re-applied by hand and turned a test red.
-- `parseWorkflow`'s object/array/null guard was dead: a scalar, list or null
-  document has no `on`, `defaults` or jobs, so every operand mutation gave the
-  same result. The guard is removed.
+- `parseWorkflow` treats bare lists as fragments for the line scanner; parsed
+  workflow mappings enumerate their jobs directly.
 - The 48 mutants past the cap were not run: unchecked.
