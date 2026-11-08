@@ -92,12 +92,11 @@ Backend and CLI change; no visual surface changed.
   overflow; #4656: Babysitter: recover temporary failures and continue PR
   reconciliation after a repair push (closed); #4771: Prove headless Chromium
   launches in the babysitter repair container (open, not delivered here).
-- Quality gate:
-  `env -u HTTP_PROXY -u HTTPS_PROXY -u NO_PROXY -u http_proxy -u https_proxy -u no_proxy ./quality.sh < /dev/null`
-  returned `Result: PASSED (with skipped checks)` on the head before this
-  summary was committed. Skipped: config integration (no `.config.json`),
-  Semgrep (registry unreachable), Checkov (unavailable) and the release-tag
-  ruleset check (`api.github.com` unreachable).
+- Quality gate on the repair working tree: `./quality.sh < /dev/null` passed
+  formatting, lint, type checking and markdownlint, but the parallel Deno test
+  pass failed when Deno 2.9.0 panicked on macOS. Config integration, Semgrep and
+  Checkov were skipped. The CI shard also requires a container runtime that was
+  unavailable on this host; the changed test file passed separately.
 
 ## Acceptance Criteria
 
@@ -151,12 +150,10 @@ Backend and CLI change; no visual surface changed.
   `::the publication reset writes a complete trusted config` and
   `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix replaces agent-controlled git config before host publication (Issue #4770)`
   — reviewer: met
-- **met** — `./quality.sh` passes. — evidence: the gate run described in
-  Evidence, `PASSED (with skipped checks)` — reviewer: partial — reason: the
-  reviewer could not run the gate and saw it only through this summary; it was
-  run here on the head with the host proxy variables unset, and it fails only
-  without that unsetting, in `merge_fast_checks_credentials_4705_test.ts`, which
-  this change does not touch
+- **partial** — `./quality.sh` passes. — evidence: the repair working-tree run
+  described in Evidence passed the static checks but the Deno test pass panicked
+  on this macOS host — reviewer: partial — reason: CI must confirm the full gate
+  on the pushed head
 - **unrequested** — exit status 42 for a reported task failure
   (`BABYSITTER_TASK_FAILURE_EXIT_CODE` in
   `worker/deno/commands/babysitter_repair.ts`) — reviewer: unrequested — reason:
@@ -258,6 +255,11 @@ Backend and CLI change; no visual surface changed.
   `spawnBabysitterAgent` cases. Removed functionality: `spawnBabysitterAgent`;
   response-file reading stays covered by the kept `readAgentResponse` cases and
   the orchestration symlink-response tests.
+- Updated
+  `worker/deno/tests/fleet_pr_babysitter_test.ts::repair caller passes the issue number parsed from the PR branch`:
+  the host-agent requirement to reject a missing `HOME` is obsolete with the
+  container launcher. The test still checks the issue-specific summary path and
+  now verifies that the repair reaches the agent with that path without `HOME`.
 - Removed from `worker/deno/tests/fleet_babysitter_app_test.ts`: the three
   `babysitterAgentEnv` cases and
   `production repair forwards CONFIG_PATH and denies canonical credential targets`.
@@ -301,10 +303,9 @@ Backend and CLI change; no visual surface changed.
   `fleet_babysitter_app_test.ts` call it. Twinned rule: the runtime and image
   refusal is one helper (`checkRuntimeAndImage`) used by the repair and the
   setup preflight.
-- Results on the head: `deno task test:unit` on the container, egress,
-  orchestration, app, git-hardening, `fleet_pr_babysitter_test.ts` and
-  `babysitter_repair_4738_test.ts` files passed (277 tests); the full gate
-  result is in Evidence.
+- Results on the repair working tree: all 120 tests in
+  `fleet_pr_babysitter_test.ts` passed; the full gate and shard limitations are
+  in Evidence.
 - Docs read and updated: the container repair, credential-boundary and failure
   sections of `docs/workflows/fleet-pr-babysitter.md`, control C36 in
   `docs/THREAT-MODEL.md`, the key section of `docs/CONFIGURATION.md`,

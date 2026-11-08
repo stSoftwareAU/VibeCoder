@@ -3256,12 +3256,8 @@ Deno.test("repair caller passes the issue number parsed from the PR branch", asy
             },
           ),
         Error,
-        missingHome ? "HOME is not set" : "captured prompt",
+        "captured prompt",
       );
-      if (missingHome) {
-        assertEquals(prompt, "", "an agent must not start without HOME");
-        return prompt;
-      }
       assert(
         prompt.length > 0,
         `repair did not reach agent; gh calls: ${JSON.stringify(commands)}`,
@@ -3276,7 +3272,8 @@ Deno.test("repair caller passes the issue number parsed from the PR branch", asy
     assertStringIncludes(known, "pr-summary-2453.md");
     const unknown = await capture("feature-without-issue");
     assert(!unknown.includes("docs/archive/pr-summaries/pr-summary-"));
-    await capture("issue-2453-example", true);
+    const withoutHome = await capture("issue-2453-example", true);
+    assertStringIncludes(withoutHome, "pr-summary-2453.md");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
