@@ -12,13 +12,13 @@ sequenceDiagram
     participant H as Host babysitter
     participant C as Repair container
     participant G as GitHub
-    H->>H: Mint scoped read token; write prompt.md
+    H->>H: Mint scoped read token, write prompt.md
     H->>C: Launch babysitter-repair with isolated mounts
-    C->>C: Select provider; repair and validate
-    C-->>H: Exchange response; container exits
+    C->>C: Select provider, repair and validate
+    C-->>H: Exchange response, container exits
     H->>H: Check lock and BABYSITTER_READY
-    H->>H: Reset clone git config; commit and push safely
-    H->>G: Publish PR body; independently verify review
+    H->>H: Reset clone git config, commit and push safely
+    H->>G: Publish PR body, independently verify review
 ```
 
 ## Spec
