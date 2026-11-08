@@ -115,7 +115,8 @@ not run there.
   tags-only, trigger forms, and a hostile path pattern. The latest review adds
   column-zero comments, a cross-job alias and multi-wildcard path filters.
   The README gate test also exercises the comment while checking advisory
-  warnings and blocking bans.
+  warnings and blocking bans. Character-class checks cover ranges, negation and
+  invalid ranges as well as literal members.
 - The old conservative treatment of multiple repetitions is obsolete: valid
   patterns now select only matching paths, covered by
   `cargo_deny_gate_test.ts::workflow: multi-wildcard path filters select only matching paths`
@@ -194,8 +195,9 @@ not run there.
 
 The test suite does not run cargo-deny end to end; its runner is injected. The
 full local gate (`./quality.sh`) was not run in the PR #4895 review round.
-The CI Semgrep scan flagged the former dynamic path-filter regex; the matcher
-now uses dynamic programming with only single-character class regexes. The two
+The CI Semgrep scan flagged dynamic path-filter regexes; the matcher now uses
+dynamic programming and bounded character-class comparisons without compiling
+workflow input as a regex. The two
 cargo-deny test files, Deno format, lint and type checks, and markdownlint pass
 locally. In the preceding review round, the then-changed TypeScript files passed
 Semgrep; a full-tree local scan reported two pre-existing findings in

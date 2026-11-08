@@ -862,6 +862,28 @@ export interface WorkflowRunContext {
 /** The most characters of a `paths` or `branches` pattern the gate reads. */
 const FILTER_PATTERN_CAP = 200;
 
+/** Read a single-character class without compiling repository input as a regex. */
+function filterClass(source: string): ((ch: string) => boolean) | null {
+  const negated = source.startsWith("^");
+  const chars = negated ? source.slice(1) : source;
+  if (!chars) return null;
+  const ranges: [number, number][] = [];
+  for (let i = 0; i < chars.length; i++) {
+    const start = chars.charCodeAt(i);
+    if (chars[i + 1] === "-" && i + 2 < chars.length) {
+      const end = chars.charCodeAt(i + 2);
+      if (start > end) return null;
+      ranges.push([start, end]);
+      i += 2;
+    } else ranges.push([start, start]);
+  }
+  return (ch) => {
+    const code = ch.charCodeAt(0);
+    const found = ranges.some(([start, end]) => code >= start && code <= end);
+    return negated ? !found : found;
+  };
+}
+
 /**
  * Match a GitHub filter pattern: `*` is any run but `/`, `**` any run,
  * `?` and `+` apply to the character before them, `[...]` is a class. Null
@@ -887,15 +909,9 @@ function filterPatternMatches(pattern: string, name: string): boolean | null {
     } else if (ch === "[") {
       const close = pattern.indexOf("]", i + 2);
       if (close === -1) return null;
-      let regex: RegExp;
-      try {
-        regex = new RegExp(
-          `^[${pattern.slice(i + 1, close).replace(/\\/g, "\\\\")}]$`,
-        );
-      } catch {
-        return null;
-      }
-      tokens.push({ kind: "char", matches: (value) => regex.test(value) });
+      const matches = filterClass(pattern.slice(i + 1, close));
+      if (!matches) return null;
+      tokens.push({ kind: "char", matches });
       i = close;
     } else {
       if (ch === "\\" && i + 1 < pattern.length) i++;

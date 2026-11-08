@@ -1973,6 +1973,11 @@ Deno.test("workflow: a path pattern reads *, a literal dot, ? and + as GitHub do
   // A character class.
   assertEquals(pathRuns("[ab].rs", "a.rs"), true);
   assertEquals(pathRuns("[ab].rs", "c.rs"), false);
+  assertEquals(pathRuns("[a-c].rs", "b.rs"), true);
+  assertEquals(pathRuns("[a-c].rs", "d.rs"), false);
+  assertEquals(pathRuns("[^a-c].rs", "d.rs"), true);
+  assertEquals(pathRuns("[^a-c].rs", "b.rs"), false);
+  assertEquals(pathRuns("[z-a].rs", "q.rs"), true);
 });
 
 Deno.test("workflow: a path pattern the gate cannot read selects the path", () => {
