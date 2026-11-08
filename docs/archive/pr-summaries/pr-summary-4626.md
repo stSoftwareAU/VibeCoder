@@ -128,8 +128,8 @@ not run there.
 - `worker/deno/lib/cargo_deny_gate.ts`’s `WorkDir` type alias has a `true` type
   literal that is erased at runtime and is exempt (untestable) from mutation. So
   are the `allowFailure?: true` type literals on `CargoDenyCiFinding`
-  (`cargo_deny_gate.ts:48`), on `allowFailureFor`'s return type (`:484`) and on
-  `actionVariantFindings`'s `allow` parameter (`:681`). The mutation round also
+  (`cargo_deny_gate.ts:49`), on `allowFailureFor`'s return type (`:484`) and on
+  `actionVariantFindings`'s `allow` parameter (`:679`). The mutation round also
   removed two operands no input can reach: the `previous !== undefined` guard in
   `dropUnresolved` (`cargo` is always kept first) and `wanted.some(...)` on the
   unmatched-`include` push (an entry naming no wanted key adds a combination
