@@ -343,8 +343,9 @@ export interface PreExistingGateDecision {
 // deno-lint-ignore no-control-regex -- ANSI SGR sequences are control chars.
 const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
 
-/** A wall-clock measurement, which differs run to run on identical content. */
-const DURATION_RE = /\b\d+(?:[.,]\d+)?\s*(?:ns|µs|us|ms|s|m)\b/g;
+/** A wall-clock measurement, including compact and spaced h/m compounds. */
+const DURATION_RE =
+  /\b(?:\d+(?:[.,]\d+)?\s*h\s*)?(?:\d+(?:[.,]\d+)?\s*m\s*)?\d+(?:[.,]\d+)?\s*(?:ns|µs|us|ms|s|m)\b/g;
 
 /** The per-check duration line the gate appends (Issue #86). */
 const TIMING_LINE_RE = /⏱/;
