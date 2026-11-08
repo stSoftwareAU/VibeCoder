@@ -391,6 +391,34 @@ Deno.test("listPushedFiles: a file behind a directory later replaced by a symlin
   }
 });
 
+Deno.test("listPushedFiles: an unresolvable checkout returns an Err naming the cause (#4909)", async () => {
+  const missing = `${await Deno.makeTempDir({ prefix: "vibe-pp-gone-" })}/gone`;
+  let expected = "";
+  try {
+    await Deno.realPath(missing);
+  } catch (err) {
+    assertInstanceOf(err, Error);
+    expected = err.message;
+  }
+  assert(expected !== "");
+  const sha = "a".repeat(40);
+  const refs = parsePrePushRefs(
+    `refs/heads/main ${sha} refs/heads/main ${"0".repeat(40)}\n`,
+  );
+  assert(refs.ok);
+  const files = await listPushedFiles(
+    refs.value,
+    missing,
+    () => Promise.resolve({ code: 0, stdout: "README.md\0", stderr: "" }),
+  );
+  assert(!files.ok);
+  assertEquals(
+    files.error,
+    `could not resolve checkout ${JSON.stringify(missing)}: ${expected}`,
+  );
+  await Deno.remove(missing.slice(0, -"/gone".length), { recursive: true });
+});
+
 Deno.test("runPrePushGate: doc-only push blocked by failing markdownlint", async () => {
   const { root, clone, stdin } = await makeRepoWithDocCommit();
   try {
