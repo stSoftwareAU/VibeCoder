@@ -649,6 +649,7 @@ Deno.test("repo_config - buildQualityInstructions forbids backgrounding any long
   );
   assertStringIncludes(text, "`echo` wait loop");
   assertStringIncludes(text, "one bounded foreground command");
-  assertStringIncludes(text, "timeout 900");
+  assertStringIncludes(text, "timeout <seconds> <command> < /dev/null");
+  assertEquals(text.includes("timeout 900"), false);
   assertStringIncludes(text, "Run only the test files your change touches");
 });

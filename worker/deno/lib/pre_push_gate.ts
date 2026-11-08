@@ -167,7 +167,9 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
  * List the files the push introduces: those touched by non-merge commits
  * reachable from the pushed tips but not from `baseRef` — by default no
  * remote-tracking ref (`--remotes`) — minus deletions, and only those that
- * still exist as files in the working tree. Sorted and unique.
+ * still exist as regular files in the working tree. Files reached through a
+ * symlinked parent directory are skipped too, since they resolve outside the
+ * checkout. Sorted and unique.
  *
  * `baseRef` widens the range to everything the branch has ahead of that ref,
  * including commits a WIP checkpoint already pushed (Issue #3689). It must be
@@ -211,11 +213,29 @@ export async function listPushedFiles(
     const name = part.replace(/^\n+|\n+$/g, "");
     if (name !== "") names.add(name);
   }
+  if (names.size === 0) return { ok: true, value: [] };
+  let realCwd: string;
+  try {
+    realCwd = await Deno.realPath(cwd);
+  } catch (err) {
+    return {
+      ok: false,
+      error: `could not resolve checkout ${JSON.stringify(cwd)}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
   const existing: string[] = [];
   for (const name of names) {
     try {
       const stat = await Deno.lstat(`${cwd}/${name}`);
-      if (stat.isFile) existing.push(name);
+      if (!stat.isFile) continue;
+      // A symlinked parent directory (`dir -> /elsewhere`) makes `dir/file`
+      // resolve outside the checkout even though its own lstat is a file.
+      if ((await Deno.realPath(`${cwd}/${name}`)) !== `${realCwd}/${name}`) {
+        continue;
+      }
+      existing.push(name);
     } catch {
       // Not in the working tree (removed since, or a submodule): nothing to check.
     }
