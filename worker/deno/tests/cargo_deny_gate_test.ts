@@ -1905,6 +1905,16 @@ Deno.test("workflow: a path pattern reads *, a literal dot, ? and + as GitHub do
 });
 
 Deno.test("workflow: a path pattern the gate cannot read selects the path", () => {
+  // Multiple repetitions can cause exponential backtracking; conservatively select.
+  assertEquals(pathRuns("*a*a*a*b", "aaaaaaaaaaaaaaaaaaaa"), true);
+  const ignored = pathFiltered("*a*a*a*b").replace(
+    "    paths:",
+    "    paths-ignore:",
+  );
+  assertEquals(
+    workflowCargoDenyFindings(ignored, { touched: ["a"] }).length,
+    1,
+  );
   // Over the length cap: not read, so it selects instead of failing to match.
   assertEquals(pathRuns("a".repeat(250), "b"), true);
   // An unclosed class.

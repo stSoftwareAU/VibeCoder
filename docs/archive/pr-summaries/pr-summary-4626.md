@@ -27,7 +27,9 @@ uses. A workflow CI does not run for the push is not read: one with no
 `pull_request`, `pull_request_target`, `merge_group` or `workflow_call` trigger
 and no `push` trigger whose branch filter matches the pushed branch, and, in the
 whole-branch check, one whose `paths` / `paths-ignore` filter selects none of
-the branch's touched paths.
+the branch's touched paths. An unreadable filter leaves the workflow eligible;
+patterns longer than 200 characters or containing multiple repetitions are
+unreadable to bound regex backtracking.
 
 The babysitter is not gated. Its repairs run on the host, and the governing
 issue forbids host execution beside the App key until the contained path (#4768,
@@ -41,8 +43,9 @@ babysitter pushes are checked.
 
 Advisories can change without a lockfile change, so the whole-branch completion
 check runs CI’s cargo-deny checks regardless of changed cargo paths, but only
-those workflows CI itself runs for the branch (a `schedule`-only audit, or one
-whose `paths` filter selects nothing the branch touches, is skipped).
+workflows that can be ruled out from readable triggers and filters are skipped
+(for example a `schedule`-only audit). Unreadable filters leave a workflow
+eligible, even when CI would skip it.
 Intermediate hooks retain the cargo-input trigger to limit cost. The workflow is
 the source for arguments, working directories, action defaults and which
 invocations CI allows to fail. The parser does not resolve matrix `exclude`
@@ -148,8 +151,9 @@ not run there.
   pattern then rules the workflow out).
 - Regexes checked for backtracking: the new `jobs:` header and job-key patterns
   are anchored with no overlapping quantifiers; the path-pattern regex is built
-  from a pattern capped at 200 characters and four `**`, and an unreadable one
-  selects (hostile case above); `CONTINUE_MATRIX_KEY` is a single `\w-` run.
+  from a pattern capped at 200 characters and one repetition; unreadable include
+  or ignore filters leave the workflow eligible (hostile case above);
+  `CONTINUE_MATRIX_KEY` is a single `\w-` run.
 - Callers checked for the changed `runCargoDenyGate` result (it now also carries
   `warnings`): `pre_push_gate.ts` is the only production caller; the other
   callers are `cargo_deny_gate_test.ts`. The babysitter no longer calls it.
@@ -174,8 +178,15 @@ not run there.
   that reads the same as having none).
 
 The test suite does not run cargo-deny end to end; its runner is injected. The
-full local gate (`./quality.sh`) was not run in the PR #4895 review round;
-Semgrep and Checkov were not run.
+full local gate (`./quality.sh`) was not run in the PR #4895 review round.
+The CI Semgrep scan flagged the dynamic path-filter regex. Patterns with multiple
+repetitions now take the conservative unreadable-filter path, including in
+ignore filters. The path-filter test covers this fallback; the bounded regex has
+a documented Semgrep suppression. The two cargo-deny test files, Deno format,
+lint and type checks, and markdownlint pass locally. The changed TypeScript
+files pass Semgrep; a full-tree local CI scan reports two pre-existing findings
+in `renovate.json` and `unused_config_detector.ts`. The base PR's Semgrep check
+passed. Checkov was not run in that review round.
 
 ## Mutation survivors (PR #4895 review fix)
 

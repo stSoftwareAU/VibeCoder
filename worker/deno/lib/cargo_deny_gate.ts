@@ -860,8 +860,6 @@ export interface WorkflowRunContext {
 
 /** The most characters of a `paths` or `branches` pattern the gate reads. */
 const FILTER_PATTERN_CAP = 200;
-/** The most `**` a pattern may hold: each can backtrack, so more is not read. */
-const MAX_DOUBLE_STARS = 4;
 
 /**
  * A GitHub filter pattern as a regex: `*` is any run but `/`, `**` any run,
@@ -869,13 +867,15 @@ const MAX_DOUBLE_STARS = 4;
  * for a pattern the gate cannot read, which the caller treats as a match.
  */
 function filterPatternRegex(pattern: string): RegExp | null {
-  if (
-    pattern.length > FILTER_PATTERN_CAP ||
-    pattern.split("**").length > MAX_DOUBLE_STARS + 1
-  ) return null;
+  if (pattern.length > FILTER_PATTERN_CAP) return null;
+  let repetitions = 0;
   let out = "";
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i] ?? "";
+    if (ch === "*" || ch === "?" || ch === "+") {
+      // Multiple repetitions can overlap and cause exponential backtracking.
+      if (++repetitions > 1) return null;
+    }
     if (pattern.startsWith("**/", i)) {
       out += "(?:.*/)?";
       i += 2;
@@ -896,6 +896,7 @@ function filterPatternRegex(pattern: string): RegExp | null {
     } else out += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   try {
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- One repetition at most; all other input is escaped or a character class.
     return new RegExp(`^${out}$`);
   } catch {
     return null;
@@ -904,14 +905,17 @@ function filterPatternRegex(pattern: string): RegExp | null {
 
 /**
  * Whether the filter patterns select `name`: the last pattern that matches
- * decides, and a leading `!` deselects. A pattern the gate cannot read selects.
+ * decides, and a leading `!` deselects. Null means the filter is unreadable.
  */
-function filterSelects(patterns: readonly string[], name: string): boolean {
+function filterSelects(
+  patterns: readonly string[],
+  name: string,
+): boolean | null {
   let selected = false;
   for (const pattern of patterns) {
     const negated = pattern.startsWith("!");
     const regex = filterPatternRegex(negated ? pattern.slice(1) : pattern);
-    if (regex === null) return true;
+    if (regex === null) return null;
     if (regex.test(name)) selected = !negated;
   }
   return selected;
@@ -932,10 +936,10 @@ function namesPass(
 ): boolean {
   if (names === undefined) return true;
   if (include !== undefined) {
-    return names.some((name) => filterSelects(include, name));
+    return names.some((name) => filterSelects(include, name) !== false);
   }
   if (ignore !== undefined) {
-    return names.some((name) => !filterSelects(ignore, name));
+    return names.some((name) => filterSelects(ignore, name) !== true);
   }
   return true;
 }

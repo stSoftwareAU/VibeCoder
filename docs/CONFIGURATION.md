@@ -5236,7 +5236,10 @@ The hook runs two stages:
      of the paths the branch's commits touch (deleted files included;
      `!` patterns, `*`, `**`, `?`, `+` and `[...]` read as GitHub reads them).
      A `pull_request` `branches` filter is not read, a pattern the gate cannot
-     read selects, and an unreadable `on:` runs the workflow. Jobs and their
+     read leaves the workflow eligible, including for ignore filters. Patterns
+     longer than 200 characters or with more than one repetition (`*`, `**`,
+     `?` or `+`) are unreadable to prevent regex backtracking. An unreadable
+     `on:` runs the workflow. Jobs and their
      `defaults` and `continue-on-error` are found at any indent. Quoted
      multiline container scripts are not host commands. The fleet babysitter does not run
      it: its execution belongs inside the worker container (#4768, #4770),
