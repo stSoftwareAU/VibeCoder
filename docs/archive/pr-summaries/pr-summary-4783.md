@@ -40,4 +40,4 @@ Callers of `assemblePrBody` (completion phase, summary sync) both go through the
 - Run: `deno task test:unit` over the four touched/related test files: 149 passed, 0 failed. `deno fmt`, `deno lint`, `deno check lib/pr_body_sync.ts` clean.
 - Docs: `docs/INTERNALS.md` (assemblePrBody paragraph) updated.
 
-Not done: the full `./quality.sh` gate is run separately below if the budget allowed.
+Full gate: `./quality.sh` ran on the final head; every stage passed except `deno tests`, whose parallel pass had one failure unrelated to this change: `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts` (spawnFastCheck argv gains the host's `HTTPS_PROXY`/`HTTP_PROXY` entries, i.e. the worker host's proxy environment leaks into the test). The serial pass did not run after that failure. Not checked: the serial test pass.
