@@ -77,7 +77,10 @@ advises `last:N` for timelines, which stays true; not edited.
   `first:100`; 150 edits give the newest 100 with
   `bodyHistoryTruncated === true`; 3 edits give `false`; missing `totalCount`
   and `totalCount` below node count are rejected; truncated window with garbage
-  `editedAt` is rejected.
+  `editedAt` is rejected; a `totalCount` of 5 with an empty window returns no
+  actor yet `bodyHistoryTruncated === true` (kills the mutation deleting the
+  `bodyHistoryTruncated` property in the no-candidates return,
+  `issue_edit_actor.ts:321`); an empty history gives `false`.
 - Edited fakes only (added `totalCount`; no assertion removed or changed) in
   `issue_finder_test.ts`, `pickup_content_integrity_test.ts` and
   `work_on_content_integrity_{depends_on,editor,escalation_dedup,multi_editor,needs_human_reapproval,reapproval_edit_order,reapproval,self_mismatch}_test.ts`,

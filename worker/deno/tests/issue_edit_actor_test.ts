@@ -524,3 +524,40 @@ Deno.test("issue_edit_actor - fails closed when a truncated history has an unpar
   if (result.ok) return;
   assertStringIncludes(result.error.message, "unparseable editedAt");
 });
+
+Deno.test("issue_edit_actor - reports truncation even when the window yields no candidates (Issue #4804)", async () => {
+  const result = await resolveLastIssueEditor(
+    "owner/repo",
+    42,
+    () =>
+      Promise.resolve(JSON.stringify({
+        data: {
+          repository: {
+            issue: {
+              userContentEdits: { totalCount: 5, nodes: [] },
+              timelineItems: { nodes: [] },
+            },
+          },
+        },
+      })),
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.actor, null);
+  assertEquals(result.actors, []);
+  assertEquals(result.bodyHistoryTruncated, true);
+});
+
+Deno.test("issue_edit_actor - reports no truncation for an empty history (Issue #4804)", async () => {
+  const result = await resolveLastIssueEditor(
+    "owner/repo",
+    42,
+    windowedGraphMock(0),
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.actor, null);
+  assertEquals(result.bodyHistoryTruncated, false);
+});
