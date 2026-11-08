@@ -113,6 +113,8 @@ function fake(
           k.slice(REPO.length + 1)
         ),
       ),
+    snapshotTree: () => Promise.resolve(null),
+    restoreTree: () => Promise.resolve(),
   };
   return { seams, files: fs, calls, clock, removed };
 }
@@ -1959,6 +1961,63 @@ Deno.test("CI package and workspace selections do not combine with touched packa
     assertEquals(
       f.calls[0]?.args.filter((a) => a === "--package").length,
       args.includes("--package") ? 1 : 0,
+    );
+  }
+});
+
+/** Runs the Deno check with one rejecting tree seam and returns the warnings logged. */
+async function warningsFromRejectingSeam(
+  seam: "snapshotTree" | "restoreTree",
+  reason: unknown,
+): Promise<string[]> {
+  const f = fake(denoFiles(), scripted(0));
+  if (seam === "snapshotTree") {
+    f.seams.snapshotTree = () => Promise.reject(reason);
+  } else {
+    f.seams.snapshotTree = () =>
+      Promise.resolve({ untracked: new Set(), modified: new Set() });
+    f.seams.restoreTree = () => Promise.reject(reason);
+  }
+  const warnings: string[] = [];
+  const original = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    const r = await runMutationCheck(input(), f.seams);
+    assert(r.kind === "completed", "a rejecting tree seam changed the verdict");
+  } finally {
+    console.warn = original;
+  }
+  return warnings;
+}
+
+Deno.test("runMutationCheck deno - a rejecting snapshot warns with the Error's message or the string form", async () => {
+  for (
+    const [reason, cause] of [
+      [new Error("snapshot boom"), "snapshot boom"],
+      ["snapshot plain", "snapshot plain"],
+    ] as const
+  ) {
+    const warnings = await warningsFromRejectingSeam("snapshotTree", reason);
+    assertEquals(
+      warnings.filter((w) => w.includes("snapshot")),
+      [`[mutation] could not snapshot the working tree: ${cause}`],
+    );
+  }
+});
+
+Deno.test("runMutationCheck deno - a rejecting restore warns with the Error's message or the string form", async () => {
+  for (
+    const [reason, cause] of [
+      [new Error("restore boom"), "restore boom"],
+      ["restore plain", "restore plain"],
+    ] as const
+  ) {
+    const warnings = await warningsFromRejectingSeam("restoreTree", reason);
+    assertEquals(
+      warnings.filter((w) => w.includes("restore")),
+      [`[mutation] could not restore the working tree: ${cause}`],
     );
   }
 });
