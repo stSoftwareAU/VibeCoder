@@ -44,6 +44,7 @@ import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
 import { buildQualityInstructions } from "../lib/repo_config.ts";
 import { verifyFeedbackFix } from "../lib/pr_feedback_verifier.ts";
 import { HOST_DISK_PARK_NOTE } from "../lib/heavy_build_gate.ts";
+import { CI_CARGO_ONLY_PRE_FLIGHT } from "../lib/git_push.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -1159,8 +1160,8 @@ Deno.test("review-fix verifier - persistent findings stay outstanding without pu
   assertEquals(checks, 2);
   assertEquals(
     preFlightSpecs,
-    [undefined, undefined],
-    "no pre-flight commands are configured",
+    [CI_CARGO_ONLY_PRE_FLIGHT, CI_CARGO_ONLY_PRE_FLIGHT],
+    "no pre-flight commands are configured, so the cargo-only spec gates the push (Issue #4630)",
   );
   assertStringIncludes(
     prompts[0] ?? "",
