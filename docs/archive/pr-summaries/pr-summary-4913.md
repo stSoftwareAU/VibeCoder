@@ -58,3 +58,9 @@ coding-guidelines prompt describe CI/other commands, not this instruction).
 - Ran
   `deno task test:unit tests/claude_env_test.ts tests/repo_config_test.ts tests/agent_env_audit_journal_2400_test.ts tests/agent_state_dir_test.ts`:
   87 passed, 0 failed. fmt, lint and check pass on touched TS files.
+- `./quality.sh` on the head: every stage passed except `deno tests`, which had
+  33158 passing and one failing:
+  `tests/merge_fast_checks_credentials_4705_test.ts:101`, whose expected argv
+  lacks the host's `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` variables. That test
+  does not touch `claude_env.ts` or `repo_config.ts`. The serial pass did not
+  run after that failure.
