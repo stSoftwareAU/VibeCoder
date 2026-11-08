@@ -43,22 +43,23 @@ fake `deno` runner in a temporary git repository.
 
 ## Test Plan
 
-- Added `worker/deno/tests/mutation_tree_guard_test.ts` (12 tests; the first 5 below, then the mutation-check follow-ups): untracked
-  `undefined` removed while a pre-existing untracked file stays; a rewritten
-  tracked fixture is checked out while another file's earlier uncommitted edit
-  stays; a deleted tracked file is restored; `snapshotTree` returns null with
-  the cause warned in a non-git directory; `restoreTree` warns and does not
-  throw when listing fails.
+- Added `worker/deno/tests/mutation_tree_guard_test.ts` (12 tests; the first 5
+  below, then the mutation-check follow-ups): untracked `undefined` removed
+  while a pre-existing untracked file stays; a rewritten tracked fixture is
+  checked out while another file's earlier uncommitted edit stays; a deleted
+  tracked file is restored; `snapshotTree` returns null with the cause warned in
+  a non-git directory; `restoreTree` warns and does not throw when listing
+  fails.
 - Mutation-check follow-up: the two duplicated listing blocks in `listTree`
   became one `listPaths` helper, so each failure check exists once. New tests
   cover a missing directory (`!run.ok`), a failing `git diff` listing
-  (`diff.renames=bogus`), exact snapshot contents, `isUnsafePath` (now
-  exported) for every branch, a nested repository directory refused by
-  `restoreTree`, a stray file that cannot be removed (OS message warned,
-  other files still restored) and one that has already gone (silent).
-  Hand-applied mutants (negated `NotFound` check, negated message ternary,
-  dropped `!run.ok` / `code !== 0` operands, `isUnsafePath` returning
-  undefined) each turn a test red.
+  (`diff.renames=bogus`), exact snapshot contents, `isUnsafePath` (now exported)
+  for every branch, a nested repository directory refused by `restoreTree`, a
+  stray file that cannot be removed (OS message warned, other files still
+  restored) and one that has already gone (silent). Hand-applied mutants
+  (negated `NotFound` check, negated message ternary, dropped `!run.ok` /
+  `code !== 0` operands, `isUnsafePath` returning undefined) each turn a test
+  red.
 - `worker/deno/lib/mutation_tree_guard.ts:59` exempt (untestable): the mutant
   flips `true` inside the `Listed<T>` type alias, which is erased at runtime.
 - Updated the in-memory seam fakes in
