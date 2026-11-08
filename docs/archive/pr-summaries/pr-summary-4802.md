@@ -89,10 +89,11 @@ Backend only. `worker/deno/tests/repo_formatters_4129_test.ts` runs the real
     `test_change_policy.ts` for it. Reviewer patterns accept only `Part of`; the
     formatter also isolates `Closes`/`Fixes`/`Resolves`, so the table is
     `Part of` only.
-- `deno test -A tests/repo_formatters_4129_test.ts` plus the two
-  `review_fleet_prs_test_policy_*_4655_test.ts` files that load
-  `test_change_policy.ts`: 145 passed, 0 failed at head
-  (`worker/deno/tests/repo_formatters_4129_test.ts` holds 18 tests at head).
+- `deno test -A` over three files, 145 passed, 0 failed at head:
+  `worker/deno/tests/repo_formatters_4129_test.ts` (18 tests at head),
+  `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts` (70 tests at
+  head) and `worker/deno/tests/review_fleet_prs_test_policy_wiring_4655_test.ts`
+  (57 tests at head); the last two load `test_change_policy.ts`.
 - Verifier finding on symlinks and size: `listPushedFiles` already excludes
   symlinks and symlinked parents, so a symlinked `.md` never reaches the loop
   (covered by the symlink test); the 1 MiB cap is new and covered by the
