@@ -323,7 +323,7 @@ Deno.test("repo_config - buildQualityInstructions carries the pre-flight record 
     );
     assertStringIncludes(
       preFlightOnly,
-      "PR-review feedback also runs its fix verifier, even without configured pre-flight commands",
+      "The worker does not run a fix verifier",
     );
     assertEquals(preFlightOnly.includes("runs no checks"), false);
     assertStringIncludes(

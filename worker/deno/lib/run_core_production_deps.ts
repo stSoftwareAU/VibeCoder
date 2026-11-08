@@ -2600,7 +2600,9 @@ export async function createProductionRunCoreDeps(
           comment.repo,
           {
             runBudgetSeconds: reactivePhaseTimeout(config, "pr-feedback"),
-            pushGuarantee: "pre-flight-only",
+            pushGuarantee: comment.commentType === "pr_review"
+              ? "pr-review-verifier"
+              : "pre-flight-only",
           },
         );
         const customInstructions = getCustomInstructions(

@@ -190,67 +190,73 @@ function makeClaudeMock(
 // prFeedbackProcessorCommand (commands/pr_feedback_processor.ts)
 // ---------------------------------------------------------------------------
 
-Deno.test("prFeedbackProcessorCommand - the agent prompt carries the pre-flight-only push guarantee (Issue #4876)", async () => {
-  const workDir = await makeWorkDir();
-  try {
-    const recordedOptions: CapturedOptions[] = [];
-    const deps = createMockDeps({
-      logger: makeSilentLogger(),
-      claude: {
-        runClaudeWithRetry: makeClaudeMock(
-          ["Fixed", verdictBlock()],
-          recordedOptions,
-        ),
-      },
-      github: { runGhCommand: makeGh() },
-      git: {
-        setupRepo: () => Promise.resolve({ ok: true, value: workDir }),
-        runGitCommand: makeGit(),
-      },
-    });
-    const config = buildDefaultWorkerConfig({
-      workDir,
-      repoConfig: {
-        "org/repo": { skipMutationCheck: true },
-      },
-    });
+for (const commentType of ["review", "issue", "pr_review"]) {
+  Deno.test(`prFeedbackProcessorCommand - ${commentType} prompt carries its push guarantee (Issue #4876)`, async () => {
+    const workDir = await makeWorkDir();
+    try {
+      const recordedOptions: CapturedOptions[] = [];
+      const deps = createMockDeps({
+        logger: makeSilentLogger(),
+        claude: {
+          runClaudeWithRetry: makeClaudeMock(
+            ["Fixed", verdictBlock()],
+            recordedOptions,
+          ),
+        },
+        github: { runGhCommand: makeGh() },
+        git: {
+          setupRepo: () => Promise.resolve({ ok: true, value: workDir }),
+          runGitCommand: makeGit(),
+        },
+      });
+      const config = buildDefaultWorkerConfig({
+        workDir,
+        repoConfig: {
+          "org/repo": { skipMutationCheck: true },
+        },
+      });
 
-    const result = await prFeedbackProcessorCommand.execute(
-      {
-        operation: "process",
-        repo: "org/repo",
-        "pr-number": 42,
-        "branch-name": "issue-42-fix-bug",
-        "comment-type": "review",
-        "comment-id": "123",
-        "comment-body": "Fix the retry path",
-      },
-      config,
-      deps,
-    );
+      const result = await prFeedbackProcessorCommand.execute(
+        {
+          operation: "process",
+          repo: "org/repo",
+          "pr-number": 42,
+          "branch-name": "issue-42-fix-bug",
+          "comment-type": commentType,
+          "comment-id": "123",
+          "comment-body": "Fix the retry path",
+        },
+        config,
+        deps,
+      );
 
-    assertEquals(result.success, true, result.message);
-    assertEquals(
-      recordedOptions.length >= 1,
-      true,
-      "the agent must be invoked",
-    );
-    const prompt = recordedOptions[0]!.prompt;
-    assertStringIncludes(prompt, PRE_FLIGHT_SENTENCE);
-    assertStringIncludes(
-      prompt,
-      "PR-review feedback also runs its fix verifier",
-    );
-    assertEquals(prompt.includes("runs no checks"), false);
-    assertEquals(
-      prompt.includes(FULL_GATE_SENTENCE),
-      false,
-      "a PR-side prompt must not promise a gate run before the push",
-    );
-  } finally {
-    await Deno.remove(workDir, { recursive: true });
-  }
-});
+      assertEquals(result.success, true, result.message);
+      assertEquals(
+        recordedOptions.length >= 1,
+        true,
+        "the agent must be invoked",
+      );
+      const prompt = recordedOptions[0]!.prompt;
+      assertStringIncludes(prompt, PRE_FLIGHT_SENTENCE);
+      assertEquals(
+        prompt.includes("The worker runs its fix verifier"),
+        commentType === "pr_review",
+      );
+      assertEquals(
+        prompt.includes("The worker does not run a fix verifier"),
+        commentType !== "pr_review",
+      );
+      assertEquals(prompt.includes("runs no checks"), false);
+      assertEquals(
+        prompt.includes(FULL_GATE_SENTENCE),
+        false,
+        "a PR-side prompt must not promise a gate run before the push",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  });
+}
 
 for (const preFlight of [undefined, ["deno fmt --check"]]) {
   Deno.test(`prSpellingProcessorCommand - prompt budget and push checks with ${preFlight ? "configured pre-flight" : "no pre-flight"} (Issue #4876)`, async () => {

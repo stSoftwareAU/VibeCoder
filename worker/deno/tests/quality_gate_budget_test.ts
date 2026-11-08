@@ -200,7 +200,7 @@ Deno.test("quality_gate_budget - each push record names only checks its path run
     assertStringIncludes(preFlightOnly, "pre-flight", `budget ${runBudget}`);
     assertStringIncludes(
       preFlightOnly,
-      "PR-review feedback also runs its fix verifier, even without configured pre-flight commands",
+      "The worker does not run a fix verifier",
       `budget ${runBudget}`,
     );
     assertEquals(preFlightOnly.includes("runs no checks"), false);

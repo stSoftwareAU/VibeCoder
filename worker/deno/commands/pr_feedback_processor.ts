@@ -165,7 +165,9 @@ export const prFeedbackProcessorCommand = {
           repo,
           {
             runBudgetSeconds: config.prFeedbackTimeout || config.claudeTimeout,
-            pushGuarantee: "pre-flight-only",
+            pushGuarantee: commentType === "pr_review"
+              ? "pr-review-verifier"
+              : "pre-flight-only",
           },
         );
         const customInstructions = getCustomInstructions(

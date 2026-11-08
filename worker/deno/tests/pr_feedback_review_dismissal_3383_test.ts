@@ -1145,7 +1145,7 @@ Deno.test("review-fix verifier - persistent findings stay outstanding without pu
     events,
     qualityInstructions: buildQualityInstructions(undefined, "org/repo", {
       runBudgetSeconds: 600,
-      pushGuarantee: "pre-flight-only",
+      pushGuarantee: "pr-review-verifier",
     }),
     runBehaviours: ["ok", "ok", "ok"],
     feedbackVerifierFn: () => {
@@ -1164,7 +1164,7 @@ Deno.test("review-fix verifier - persistent findings stay outstanding without pu
   );
   assertStringIncludes(
     prompts[0] ?? "",
-    "PR-review feedback also runs its fix verifier, even without configured pre-flight commands",
+    "The worker runs its fix verifier even without configured pre-flight commands",
   );
   assertEquals((prompts[0] ?? "").includes("runs no checks"), false);
   assertEquals(result.ok && result.value.processed, false);

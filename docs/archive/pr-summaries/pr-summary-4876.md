@@ -25,8 +25,9 @@ Version bump: none for this change.
   deleting those arguments cannot change the prompt because they equal the
   default.
 - Feedback and spelling records exclude a full gate, describe configured
-  pre-flight and changed-file checks, and explain that PR-review feedback also
-  runs its independent fix verifier without pre-flight configuration.
+  pre-flight and changed-file checks. PR-review feedback records its independent
+  fix verifier even without pre-flight configuration; inline and issue feedback
+  and spelling record that no fix verifier runs.
 - CI fixes describe the conditional worker gate attempt and configured
   pre-flight commands. Custom PR prompts describe the agent pre-push hook and
   the worker's later push verification; their prompt-time budget comes from
@@ -78,19 +79,20 @@ Kept implementation, checks and tests on Deno; no dependencies were added and
 - `worker/deno/tests/quality_gate_budget_test.ts` and
   `worker/deno/tests/repo_config_test.ts` cover fitting and refused budgets for
   each push record. The inaccurate no-checks assertion was replaced with the
-  verifier and changed-file guarantees; the full-gate exclusion remains pinned.
+  conditional verifier and changed-file guarantees; the full-gate exclusion remains pinned.
 - `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts` exercises real
   feedback, spelling and CI commands, capturing agent prompts. Spelling covers
   both absent and configured pre-flight commands and checks the spec passed to
   the push helper. The CI test asserts its retry record is in its temporary work
-  root, and removes that root after the test.
+  root, and removes that root after the test. Feedback tests cover review, issue
+  and `pr_review` comment types.
 - The obsolete host retry-file cleanup was replaced: retry accounting remains
   required, now under the configured work root. Coverage:
   `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts::prCiProcessorCommand - agent receives the CI push guarantee and dedicated budget (Issue #4876)`.
 - `worker/deno/tests/run_core_production_deps_test.ts` captures feedback and
   custom PR prompt instructions from the production callbacks. Both use a 600 s
-  reactive budget distinct from the 3600 s issue budget; feedback uses a
-  `pr_review` input. The custom PR test asserts the gate refusal and 600 s
+  reactive budget distinct from the 3600 s issue budget; feedback covers all
+  three comment types. The custom PR test asserts the gate refusal and 600 s
   budget.
 - `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts::review-fix verifier - persistent findings stay outstanding without push or dismissal, and the PR stays armed (Issue #4291)`
   now checks the prompt and absent pre-flight specs while retaining every
@@ -116,10 +118,17 @@ fail. No untestable exemptions were used.
 
 Validation for the review fix:
 
-- CI command push-guarantee suite: 4 passed, including the isolated retry state
-  assertion.
-- Production dependencies suite: 35 passed.
+- PR-side command push-guarantee suite: 6 passed, including the isolated retry
+  state assertion and all three feedback comment types.
+- Production dependencies suite: 37 passed.
 - Repository Deno formatter and linter: passed.
 - Markdown lint: passed.
 - Repository-wide Deno type check: passed.
 - The configuration manual change is limited to the Issue #1138 budget section.
+
+The previous test assertion that every feedback skip record mentions a verifier
+is obsolete: only `pr_review` runs one. The remaining per-type guarantees are
+covered by `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts::prFeedbackProcessorCommand - review prompt carries its push guarantee (Issue #4876)`
+and the corresponding `issue` and `pr_review` cases, and by the matching
+`worker/deno/tests/run_core_production_deps_test.ts::run-core review feedback callback records its push guarantee (Issue #4876)`
+cases.

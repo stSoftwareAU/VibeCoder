@@ -180,9 +180,9 @@ export function formatQualityGateSkipNote(
  * - `"ci-fix"`: the worker attempts the full gate when Claude leaves
  *   uncommitted changes, then runs configured pre-flight commands before its
  *   push.
- * - `"pre-flight-only"`: PR feedback and spelling fixes do not run a full
- *   gate. Configured pre-flight commands enable changed-file checks; PR-review
- *   feedback also runs an independent fix verifier without that configuration.
+ * - `"pre-flight-only"`: inline/issue feedback and spelling do not run a fix verifier.
+ * - `"pr-review-verifier"`: PR-review feedback runs an independent fix verifier.
+ *   Both exclude a full gate; configured pre-flight enables changed-file checks.
  * - `"agent-pre-push"`: a custom PR prompt's agent hook runs changed-file
  *   checks and configured pre-flight commands when the agent pushes.
  */
@@ -190,6 +190,7 @@ export type GatePushGuarantee =
   | "full-gate"
   | "ci-fix"
   | "pre-flight-only"
+  | "pr-review-verifier"
   | "agent-pre-push";
 
 /**
@@ -214,8 +215,8 @@ export type GatePushGuarantee =
  *   the worker runs the gate before the PR is raised; `"ci-fix"` says the
  *   worker attempts it when Claude leaves uncommitted changes, then runs configured
  *   pre-flight commands before its push; `"pre-flight-only"` (feedback and
- *   spelling fixes) excludes a full gate, while describing conditional
- *   pre-flight/changed-file checks and the PR-review fix verifier;
+ *   spelling fixes) excludes a full gate and fix verifier; `"pr-review-verifier"`
+ *   describes the PR-review verifier. Both describe conditional pre-flight checks;
  *   `"agent-pre-push"` (custom PR prompts) describes the agent's hook, which
  *   runs changed-file checks and configured pre-flight commands when the
  *   agent pushes.
@@ -239,8 +240,13 @@ export function buildQualityGateBudgetLines(
     : `it takes about ${duration}`;
   const recordCore =
     `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have.`;
-  const record = pushGuarantee === "pre-flight-only"
-    ? `${recordCore} This PR already exists. The worker does not run the full gate before this push. Configured pre-flight commands enable changed-file checks and run before the worker push. PR-review feedback also runs its fix verifier, even without configured pre-flight commands. Name exactly which checks you ran, and do not say the worker will run the full gate.`
+  const record = pushGuarantee === "pre-flight-only" ||
+      pushGuarantee === "pr-review-verifier"
+    ? `${recordCore} This PR already exists. The worker does not run the full gate before this push. Configured pre-flight commands enable changed-file checks and run before the worker push. ${
+      pushGuarantee === "pr-review-verifier"
+        ? "The worker runs its fix verifier even without configured pre-flight commands."
+        : "The worker does not run a fix verifier for this flow."
+    } Name exactly which checks you ran, and do not say the worker will run the full gate.`
     : pushGuarantee === "ci-fix"
     ? `${recordCore} The worker attempts the full gate if Claude leaves uncommitted changes after the fix; before its push, it also runs the repository's configured pre-flight commands, if any. If Claude leaves no uncommitted changes and no pre-flight commands are configured, the worker runs no checks before that push. Name exactly which checks you ran.`
     : pushGuarantee === "agent-pre-push"
