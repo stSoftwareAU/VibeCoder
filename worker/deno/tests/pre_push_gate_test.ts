@@ -33,6 +33,75 @@ const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 const ZERO = "0".repeat(40);
 
+Deno.test("ShellCheck policy bounds workflow and delegated script reads", async () => {
+  const root = await Deno.makeTempDir();
+  const path = ".github/workflows/check.yml";
+  try {
+    await Deno.mkdir(`${root}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(`${root}/outside`, SHELLCHECK_WORKFLOW(""));
+    await Deno.symlink(`${root}/outside`, `${root}/${path}`);
+    assertEquals(await repoShellcheckPolicy(root, [path]), {
+      ok: true,
+      value: null,
+    });
+    await Deno.remove(`${root}/${path}`);
+    await Deno.writeTextFile(`${root}/${path}`, "x".repeat(1024 * 1024 + 1));
+    assert(!(await repoShellcheckPolicy(root, [path])).ok);
+    await Deno.writeTextFile(
+      `${root}/${path}`,
+      "jobs:\n  lint:\n    steps:\n      - run: ./check.sh\n",
+    );
+    await Deno.symlink(`${root}/outside`, `${root}/check.sh`);
+    assert(!(await repoShellcheckPolicy(root, [path, "check.sh"])).ok);
+    await Deno.remove(`${root}/check.sh`);
+    await Deno.writeTextFile(`${root}/check.sh`, "x".repeat(1024 * 1024 + 1));
+    assert(!(await repoShellcheckPolicy(root, [path, "check.sh"])).ok);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("unsupported ShellCheck policy ignores Dockerfile but blocks executable shell shebang", async () => {
+  const root = await Deno.makeTempDir();
+  const path = ".github/workflows/check.yml";
+  try {
+    await Deno.mkdir(`${root}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${root}/${path}`,
+      "jobs:\n  lint:\n    steps:\n      - uses: unknown/shellcheck@v1\n",
+    );
+    await Deno.writeTextFile(`${root}/Dockerfile`, "FROM alpine\n");
+    await Deno.writeTextFile(`${root}/script`, "#!/bin/bash\necho $1\n", {
+      mode: 0o755,
+    });
+    const tracked = [path, "Dockerfile", "script"];
+    assert(
+      (await runAffectedShellcheckChecks({
+        cwd: root,
+        changed: ["Dockerfile"],
+        tracked,
+      })).ok,
+    );
+    assert(
+      !(await runAffectedShellcheckChecks({
+        cwd: root,
+        changed: ["script"],
+        tracked,
+      })).ok,
+    );
+    await Deno.remove(`${root}/script`);
+    assert(
+      (await runAffectedShellcheckChecks({
+        cwd: root,
+        changed: ["script"],
+        tracked,
+      })).ok,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("parsePrePushRefs: valid line, blank lines ignored", () => {
   const result = parsePrePushRefs(
     `\nrefs/heads/m ${SHA_A} refs/heads/m ${SHA_B}\n\n`,
@@ -1755,7 +1824,7 @@ Deno.test("repoShellcheckPolicy: invalid policies return explicit errors", async
     await Deno.remove(`${root}/${path}`);
     let readError: Error | undefined;
     try {
-      await Deno.readTextFile(`${root}/${path}`);
+      await Deno.lstat(`${root}/${path}`);
     } catch (error) {
       readError = error as Error;
     }
@@ -2144,6 +2213,7 @@ for (
       await git(clone, "push", "-q", "origin", "HEAD:main");
       await Deno.writeTextFile(`${clone}/notes.txt`, "not a script\n");
       await Deno.writeTextFile(`${clone}/lib.rs`, "fn main() {}\n");
+      await Deno.writeTextFile(`${clone}/Dockerfile`, "FROM alpine\n");
       await git(clone, "add", "-A");
       await git(clone, "commit", "-qm", "non-shell change");
       const seen: string[] = [];
@@ -2157,6 +2227,20 @@ for (
       });
       assert(result.ok, result.ok ? "" : result.error.message);
       assert(!seen.some((command) => command.includes("shellcheck")));
+      await git(clone, "push", "-q", "origin", "HEAD:main");
+      await Deno.writeTextFile(`${clone}/script`, "#!/bin/bash\necho $1\n", {
+        mode: 0o755,
+      });
+      await git(clone, "add", "script");
+      await git(clone, "commit", "-qm", "shell script");
+      const shellResult = await runPrePushGate({
+        cwd: clone,
+        stdin: prePushInput(await git(clone, "rev-parse", "HEAD")),
+        preFlightCommands: [],
+        findShellcheck: () => Promise.resolve(null),
+        runner: recordingRunner(() => false, []),
+      });
+      assert(!shellResult.ok);
     } finally {
       await Deno.remove(root, { recursive: true });
     }

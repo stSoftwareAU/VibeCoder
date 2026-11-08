@@ -4984,7 +4984,7 @@ The gate runs at four points:
    the pre-flight commands when Step 1 committed nothing;
 3. the issue completion phase's `gateBeforePush()`, before the first push and
    again before the retry push that follows push-rejection recovery, over every
-   non-merge commit ahead of the PR base (including commits the execute
+   commit ahead of the PR base (including commits the execute
    phase's ungated WIP checkpoint pushes already put on origin);
 4. the agent's own `git push` through a per-run `pre-push` hook.
 
@@ -5092,8 +5092,8 @@ and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
 fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
 test) still run and can fail the run. Unlike Step 1b, the completion gate
-checks every non-merge commit the branch has ahead of the PR base
-(`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
+checks every commit the branch has ahead of the PR base, including first-parent
+merge diffs, not only commits on no remote-tracking
 ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
 push the agent's commits through `commitAndPushPending` with no spec, so those
 pushes are ungated and the commits are usually already on origin when the
@@ -5150,8 +5150,8 @@ The hook runs two stages:
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
-   remote-tracking ref (merge commits and deleted files excluded; the issue
-   completion phase widens the range to every non-merge commit ahead of the PR
+   remote-tracking ref (merge commits use first-parent diffs and deleted files
+   are excluded from execution; the issue completion phase widens the range to every commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
    config would check, see below). The one exception is the Floci deploy test
@@ -5204,7 +5204,9 @@ The hook runs two stages:
      worker HOME, XDG and external ancestor settings from changing the result.
      A changed ShellCheck workflow or changed or deleted config rechecks the
      remaining tracked files in the policy's scope; deleted scripts and symlinks
-     are omitted. A symlinked config is refused. For a `find` policy the
+     are omitted. A symlinked config or delegated script is refused; symlinked
+     workflows are ignored. Workflow and delegated-script reads are capped at
+     1 MiB. For a `find` policy the
      gate checks the available binary against the version declared by CI
      before running it (an action-managed ShellCheck declares none). A policy
      the gate cannot read (an unsupported command shape, other action input,

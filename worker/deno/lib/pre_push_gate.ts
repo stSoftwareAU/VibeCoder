@@ -12,7 +12,7 @@
  * - `commitAndPushPending` Step 1b, via `gateUnpushedCommits`, over commits
  *   not yet on any remote (final-mile callers that pass a `preFlight` spec);
  * - the issue completion phase, via `gateUnpushedCommits` with a `baseRef`,
- *   over every non-merge commit the branch has ahead of the PR base — so
+ *   over every commit the branch has ahead of the PR base — so
  *   content the execute phase's WIP checkpoints already pushed is checked
  *   before `gh pr create`.
  *
@@ -169,7 +169,8 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
 };
 
 /**
- * List the files the push introduces: those touched by non-merge commits
+ * List the files the push introduces: those touched by commits (including
+ * first-parent changes in merge commits)
  * reachable from the pushed tips but not from `baseRef` — by default no
  * remote-tracking ref (`--remotes`) — minus deletions, and only those that
  * still exist as files in the working tree. Sorted and unique.
@@ -195,7 +196,7 @@ export async function listPushedFiles(
   const result = await git(
     [
       "log",
-      "--no-merges",
+      "--diff-merges=first-parent",
       "--name-only",
       "-z",
       "--format=",
@@ -364,7 +365,9 @@ export async function repoShellcheckPolicy(
     }
     let text: string;
     try {
-      text = await Deno.readTextFile(`${repoRoot}/${path}`);
+      const info = await shellcheckFileInfo(repoRoot, path);
+      if (info === null) continue; // GitHub does not run symlinked workflows.
+      text = await readBoundedPolicyFile(repoRoot, path, info);
     } catch (error) {
       return {
         ok: false,
@@ -588,7 +591,9 @@ async function workflowDelegatesToShellcheck(
     inspected.add(path);
     let text: string;
     try {
-      text = await Deno.readTextFile(`${repoRoot}/${path}`);
+      const info = await shellcheckFileInfo(repoRoot, path);
+      if (!info) throw new Error("not a regular in-repository file");
+      text = await readBoundedPolicyFile(repoRoot, path, info);
     } catch (error) {
       return {
         ok: false,
@@ -1322,13 +1327,31 @@ const defaultShellcheckVersionProbe: ShellcheckVersionProbe = async (
 };
 
 /** Whether a changed path can alter what the repository's ShellCheck CI checks. */
-function touchesShellcheckSurface(changed: readonly string[]): boolean {
-  return changed.some((p) =>
-    /\.(?:sh|bash|ksh|zsh|shlib)$/.test(p) ||
-    ACTION_SHELL_NAMES.has(p.split("/").at(-1) ?? "") ||
-    !p.split("/").at(-1)?.includes(".") ||
-    SHELLCHECK_CONFIGS.has(p.split("/").at(-1) ?? "")
-  );
+async function touchesShellcheckSurface(
+  root: string,
+  changed: readonly string[],
+): Promise<boolean> {
+  for (const p of changed) {
+    const name = p.split("/").at(-1) ?? "";
+    if (
+      /\.(?:sh|bash|ksh|zsh|shlib)$/.test(p) || ACTION_SHELL_NAMES.has(name) ||
+      SHELLCHECK_CONFIGS.has(name)
+    ) return true;
+    if (!name.includes(".")) {
+      try {
+        const info = await shellcheckFileInfo(root, p);
+        if (info?.isFile && await actionShellcheckFile(root, p, info)) {
+          return true;
+        }
+      } catch (error) {
+        if (
+          !(error instanceof Deno.errors.NotFound) &&
+          !(error instanceof Deno.errors.NotADirectory)
+        ) throw error;
+      }
+    }
+  }
+  return false;
 }
 
 const ACTION_SHELL_NAMES = new Set([
@@ -1396,6 +1419,32 @@ async function shellcheckFileInfo(
   return null;
 }
 
+const MAX_POLICY_BYTES = 1024 * 1024;
+
+async function readBoundedPolicyFile(
+  root: string,
+  path: string,
+  info: Deno.FileInfo,
+): Promise<string> {
+  if (!info.isFile || info.size > MAX_POLICY_BYTES) {
+    throw new Error("not a regular file or exceeds policy size limit");
+  }
+  const file = await Deno.open(`${root}/${path}`, { read: true });
+  try {
+    const bytes = new Uint8Array(MAX_POLICY_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = await file.read(bytes.subarray(length));
+      if (count === null) break;
+      length += count;
+    }
+    if (length > MAX_POLICY_BYTES) throw new Error("exceeds policy size limit");
+    return new TextDecoder().decode(bytes.subarray(0, length));
+  } finally {
+    file.close();
+  }
+}
+
 /**
  * Shared ShellCheck validation for hooks, completion and repair publication.
  * A policy the gate cannot read blocks only a push that touches a script, a
@@ -1430,9 +1479,16 @@ export async function runAffectedShellcheckChecks(opts: {
     if (!policy.ok || policy.value !== null) shellcheckWorkflowChanged = true;
   }
   if (!shellcheckPolicy.ok) {
-    return touchesShellcheckSurface(opts.changed) || shellcheckWorkflowChanged
-      ? infrastructureFail(shellcheckPolicy.error)
-      : { ok: true, value: { checksRun: [] } };
+    try {
+      return await touchesShellcheckSurface(opts.cwd, opts.changed) ||
+          shellcheckWorkflowChanged
+        ? infrastructureFail(shellcheckPolicy.error)
+        : { ok: true, value: { checksRun: [] } };
+    } catch (error) {
+      return infrastructureFail(
+        `cannot inspect changed ShellCheck file: ${error}`,
+      );
+    }
   }
   const shellcheckTouchedConfigs =
     opts.changed.some((p) =>
@@ -1593,7 +1649,7 @@ export async function runPrePushGate(opts: {
   findShellcheck?: (repoRoot: string) => Promise<string | null>;
   readShellcheckVersion?: ShellcheckVersionProbe;
   /**
-   * Check every non-merge commit ahead of this ref instead of only commits on
+   * Check every commit ahead of this ref instead of only commits on
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
    */
   baseRef?: string;

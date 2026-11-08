@@ -89,6 +89,57 @@ async function child(
 }
 
 Deno.test(
+  "commitAndPushPending: merge resolution with a ShellCheck diagnostic is refused",
+  async () => {
+    const { root, dir } = await fixture();
+    try {
+      await Deno.writeTextFile(
+        `${dir}/script.sh`,
+        '#!/bin/sh\necho "repair $1"\n',
+      );
+      await git(dir, "add", "script.sh");
+      await git(dir, "commit", "-qm", "repair side");
+      await git(dir, "push", "-q", "origin", "repair");
+      const remote = await git(dir, "rev-parse", "origin/repair");
+      await git(dir, "checkout", "-q", "main");
+      await Deno.writeTextFile(
+        `${dir}/script.sh`,
+        '#!/bin/sh\necho "main $1"\n',
+      );
+      await git(dir, "add", "script.sh");
+      await git(dir, "commit", "-qm", "main side");
+      await git(dir, "push", "-q", "origin", "main");
+      await git(dir, "checkout", "-q", "repair");
+      const merge = await new Deno.Command("git", {
+        cwd: dir,
+        args: ["merge", "--no-commit", "main"],
+        stdout: "null",
+        stderr: "null",
+      }).output();
+      assert(!merge.success);
+      await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
+      await git(dir, "add", "script.sh");
+      await git(dir, "commit", "-qm", "resolve merge");
+      const result = await commitAndPushPending(
+        "repair",
+        "Fix #4631",
+        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        false,
+        resolveRepairPreFlightSpec(undefined, "org/repo"),
+      );
+      assert(!result.ok);
+      assertStringIncludes(result.error.message, "SC2086");
+      assertEquals(
+        await git(dir, "ls-remote", "origin", "refs/heads/repair"),
+        `${remote}\trefs/heads/repair`,
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
   "commitAndPushPending: a repair without pre-flight commands blocks a real ShellCheck diagnostic",
   async () => {
     const { root, dir } = await fixture();

@@ -31,7 +31,9 @@ Version bump: none; no version file changed.
   executable extensionless shell shebangs, with its default exclusions; the
   find policy selects `.sh` files. Targets with a symlink in any path component
   are excluded, and a configuration with a symlink in any component fails
-  closed. Discovery joins shell line continuations and checks
+  closed. Symlinked workflows are ignored; delegated scripts with symlinked
+  components are refused. Workflow and delegated-script reads are capped at
+  1 MiB. Discovery joins shell line continuations and checks
   executable commands, including wrapped invocations, excluding logs, installation
   arguments, comments and script path arrays. ShellCheck container images,
   including registry prefixes and digests, and shell `-c` invocations with
@@ -42,7 +44,9 @@ Version bump: none; no version file changed.
   of being read as positional arguments.
 - A policy the gate cannot read fails a push when it changes a possible shell
   script, a ShellCheck config or a workflow that invokes ShellCheck. Unrelated
-  pushes do not fail solely because of an unsupported workflow.
+  pushes do not fail solely because of an unsupported workflow. Extensionless
+  paths count only when executable and carrying a shell shebang; deleted paths
+  do not count. First-parent merge diffs include resolved files in the scan.
 - The ShellCheck version probe is injectable (`readShellcheckVersion`, beside
   `findShellcheck`). An action-managed policy declares no version, so the probe
   result is not compared.
@@ -95,6 +99,16 @@ again and unchanged. No second copy of the ShellCheck execution rule was found;
 all publication paths call the same implementation.
 
 ## Test Plan
+
+- `pre_push_gate_test.ts::ShellCheck policy bounds workflow and delegated script reads`
+  covers symlinked workflows and scripts and oversized policy files;
+  `pre_push_gate_test.ts::unsupported ShellCheck policy ignores Dockerfile but blocks executable shell shebang`
+  covers non-shell, executable shell and deleted extensionless paths.
+  `shellcheck_publication_test.ts::commitAndPushPending: merge resolution with a ShellCheck diagnostic is refused`
+  exercises a real conflicting merge and verifies the remote remains unchanged.
+  The former missing-workflow assertion expected a `readfile` error; inspection
+  now fails earlier at `lstat`, while the missing workflow remains a policy
+  error, covered by `pre_push_gate_test.ts::repoShellcheckPolicy: invalid policies return explicit errors`.
 
 - `worker/deno/tests/pre_push_gate_test.ts`: policy tests derive the repository
   workflow's version and flags from its text and use a fixture version rather
