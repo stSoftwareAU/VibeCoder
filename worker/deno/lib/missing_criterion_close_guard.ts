@@ -32,6 +32,7 @@
  */
 
 import { parseClosureEntries } from "./acceptance_criteria_gate.ts";
+import { splitMarkdownCode } from "./markdown_code_spans.ts";
 
 /** Longest criterion text quoted back in a comment or PR note. */
 const MAX_QUOTED_LENGTH = 300;
@@ -147,6 +148,63 @@ export function withholdIssueClose(
     issueNumber,
     identity,
   );
+}
+
+/**
+ * Neutralise every closing keyword in `text` that names an issue other than
+ * `issueNumber` (Issue #4783).
+ *
+ * A PR summary is embedded in the PR body as written, so a sentence such as
+ * "... closing references do not close #4674" makes GitHub close #4674 when the
+ * PR merges. Each such keyword is rewritten so that the keyword word alone is
+ * an inline code span: `close` #4674. Only the keyword is wrapped, not the
+ * reference, so the sentence still reads naturally. A backtick between the
+ * keyword and `#N` means neither GitHub nor a raw-regex reader (such as
+ * `extractClosingIssueNumbers` in `pr_body.ts`, which does not mask code) sees
+ * a closing reference. The governing issue is left alone: #3177 and #4126 keep
+ * its own closing keyword in line with the closure block (see
+ * {@link withholdIssueClose} and {@link restoreIssueClose}), and this function
+ * complements them for every other issue.
+ *
+ * Code is inert to GitHub, so only prose segments (`inCode === false`) are
+ * rewritten. A reference is governing, and returned untouched, when its number
+ * is `issueNumber` and either no identity is supplied or its repository
+ * (`owner/repo` when qualified, otherwise the PR's repository) is the issue's
+ * repository. A qualified reference to `issueNumber` with no identity is also
+ * left untouched: {@link withholdIssueClose} handles it, or throws.
+ *
+ * @param text - Markdown to neutralise (a PR summary or assembled body).
+ * @param issueNumber - The governing issue, whose closing keywords are kept.
+ * @param identity - Trusted repositories for the PR and its governing issue.
+ * @returns The text with every other-issue closing keyword code-wrapped.
+ */
+export function neutraliseOtherIssueClosingKeywords(
+  text: string,
+  issueNumber: number,
+  identity?: IssueIdentity,
+): string {
+  return splitMarkdownCode(text)
+    .map((segment) =>
+      segment.inCode ? segment.value : segment.value.replace(
+        CLOSING_KEYWORD_RE,
+        (
+          match: string,
+          lead: string,
+          repo: string | undefined,
+          num: string,
+        ) => {
+          const governing = Number(num) === issueNumber &&
+            (identity === undefined ||
+              (repo ?? identity.prRepo).toLowerCase() ===
+                identity.issueRepo.toLowerCase());
+          if (governing) return match;
+          const rest = match.slice(lead.length);
+          const keyword = /^\w+/.exec(rest)?.[0] ?? rest;
+          return `${lead}\`${keyword}\`${rest.slice(keyword.length)}`;
+        },
+      )
+    )
+    .join("");
 }
 
 /** Restore a governing issue's Part of reference when all criteria are met. */
