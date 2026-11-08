@@ -47,8 +47,9 @@ import { normaliseGhArgs } from "./gh_flag_parser.ts";
  * `gh pr <verb>` sub-verbs that decide a pull request's fate.
  *
  * `create`, `comment`, `edit`, `view`, `list`, `diff` and `checks` are
- * deliberately absent — raising the PR and describing it is exactly what the
- * agent is for.
+ * deliberately absent — they do not decide the PR's fate, so the agent may
+ * use them. The worker raises the PR itself (Issue #4871), and an agent-raised
+ * PR is still tolerated.
  */
 export const PR_LIFECYCLE_VERBS: readonly string[] = [
   "merge",

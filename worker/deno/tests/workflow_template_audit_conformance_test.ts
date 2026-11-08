@@ -75,6 +75,7 @@ import { collectActionPins } from "../lib/workflow_hygiene_check.ts";
 const NON_WORKFLOW_SPEC_IDS: readonly string[] = [
   "npm-dependency-updates",
   "java-dependency-updates",
+  "java-gradle-dependency-updates",
 ];
 
 /**

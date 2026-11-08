@@ -13,7 +13,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Command, CommandResult, WorkerConfig } from "../types.ts";
+import type { CommandResult, WorkerConfig } from "../types.ts";
 import {
   assertSafeGitRef,
   buildCheckoutArgs,
@@ -29,7 +29,10 @@ import {
   type SpellingFixResult,
   type SpellingProcessorDeps,
 } from "../lib/pr_spelling_processor.ts";
-import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createDefaultDeps,
+  type WorkerDeps,
+} from "../lib/issue_worker_wiring.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -41,12 +44,13 @@ export { decodeAnnotations, formatAnnotations };
 export type { CheckAnnotation, SpellingFixResult };
 
 /** The pr-spelling-processor command. */
-export const prSpellingProcessorCommand: Command = {
+export const prSpellingProcessorCommand = {
   name: "pr-spelling-processor",
   description: "Process spelling check failures on PRs (Issue #967, #1230)",
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    workerDeps?: WorkerDeps,
   ): Promise<CommandResult<SpellingFixResult>> {
     const operation = String(args["operation"] ?? "");
 
@@ -106,7 +110,7 @@ export const prSpellingProcessorCommand: Command = {
         };
       }
 
-      const deps = createDefaultDeps();
+      const deps = workerDeps ?? createDefaultDeps();
 
       // Top-level try/catch to prevent silent crashes (Issue #1230)
       try {
@@ -154,10 +158,15 @@ export const prSpellingProcessorCommand: Command = {
         // Build quality and custom instructions from config
         // No run-budget notice is written for this flow, so the whole run's
         // budget is the only gate signal the agent gets (Issue #1138).
+        // The PR already exists. Describe configured pre-flight and
+        // changed-file checks without promising a full gate (Issue #4876).
         const qualityInstructions = buildQualityInstructions(
           config.repoConfig,
           repo,
-          { runBudgetSeconds: config.claudeTimeout },
+          {
+            runBudgetSeconds: config.claudeTimeout,
+            pushGuarantee: "pre-flight-only",
+          },
         );
         const customInstructions = getCustomInstructions(
           config.repoConfig,
@@ -182,6 +191,7 @@ export const prSpellingProcessorCommand: Command = {
           workRoot: config.workDir,
           qualityInstructions,
           customInstructions,
+          repoConfigs: config.repoConfig,
           claudeTimeout: config.claudeTimeout || undefined,
           claudeModel: config.claudeModel || undefined,
         };

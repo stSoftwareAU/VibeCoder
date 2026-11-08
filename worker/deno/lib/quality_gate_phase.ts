@@ -126,11 +126,53 @@ export function untrustedAccountOf(
   return user && user !== "--" ? user : undefined;
 }
 
-/** A variable name that may be carried through `sudo` in argv. */
-const CARRIED_ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+/**
+ * A variable name that may be carried through `sudo` in argv. Lower case is
+ * allowed for the proxy names curl and cargo read only in that form.
+ */
+const CARRIED_ENV_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 
-/** A value that may be carried through `sudo` in argv — a plain path. */
-const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/]+$/;
+/**
+ * A value that may be carried through `sudo` in argv — a plain path, or a
+ * proxy URL or host list (`:` and `,`). No `@`, so no URL with credentials.
+ */
+const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/:,\[\]]+$/;
+
+/**
+ * The egress variables a dropped command needs to reach a registry at all
+ * (Issue #4877). In a container the internal network has no DNS, so without
+ * the proxy every `cargo` and `deno` fetch fails to resolve its host.
+ */
+export const EGRESS_ENV_NAMES: readonly string[] = [
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "https_proxy",
+  "http_proxy",
+  "no_proxy",
+];
+
+/**
+ * The entries of a built environment that must travel through `sudo` in
+ * argv: the cargo target placement (Issue #2247) and the egress proxy
+ * (Issue #4877). Every one is non-secret; a proxy URL that carries
+ * credentials (`user:pass@`) is left out, because argv is visible to `ps`
+ * and to the sudo logs.
+ */
+export function sudoCarriedEnv(
+  env: Record<string, string>,
+): Record<string, string> {
+  const carried: Record<string, string> = {};
+  const target = env["CARGO_TARGET_DIR"];
+  if (target !== undefined) carried["CARGO_TARGET_DIR"] = target;
+  for (const name of EGRESS_ENV_NAMES) {
+    const value = env[name];
+    if (value !== undefined && CARRIED_ENV_VALUE.test(value)) {
+      carried[name] = value;
+    }
+  }
+  return carried;
+}
 
 /**
  * Carry an environment entry through `sudo`'s `env_reset` (Issue #2247).
@@ -141,7 +183,8 @@ const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/]+$/;
  * repository's own command. `--preserve-env` needs the tag the rule does not
  * grant. The value therefore travels in **argv** instead:
  * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
- * Only that non-secret placement travels this way.
+ * Only non-secret values travel this way: the placement and the egress proxy
+ * ({@link sudoCarriedEnv}, Issue #4877).
  *
  * Declared credentials are never carried here. They ride the stdin channel of
  * `credential_channel.ts` (Issue #4705), because a value in argv is visible to
@@ -360,15 +403,13 @@ async function spawnRepositoryCommand(
       cwd: options?.cwd ?? Deno.cwd(),
       repoCredentialEnv,
     });
-    // `sudo`'s env_reset would strip the build-cache placement, so it
-    // travels in argv instead (Issue #2247). A worker-account spawn has no
-    // `sudo`, and `Deno.Command`'s env carries the placement.
-    const target = env["CARGO_TARGET_DIR"];
+    // `sudo`'s env_reset would strip the build-cache placement and the
+    // egress proxy, so they travel in argv instead (Issues #2247, #4877). A
+    // worker-account spawn has no `sudo`, and `Deno.Command`'s env carries
+    // them.
     const placed = carryEnvThroughSudo(
       dropped,
-      !dropToUntrusted || target === undefined
-        ? {}
-        : { CARGO_TARGET_DIR: target },
+      dropToUntrusted ? sudoCarriedEnv(env) : {},
     );
     // `sudo`'s env_reset would also strip the declared credentials, so on a
     // dropped spawn they ride stdin instead (Issue #4705). Nothing secret is
@@ -709,29 +750,32 @@ export async function runNativeQualityCheck(
 // Failure classification
 // =============================================================================
 
-/** Check if output indicates a Docker infrastructure issue. */
-export function isDockerInfraFailure(output: string): boolean {
-  return /docker:.*(not found|Cannot connect|permission denied)/i.test(output);
-}
-
 // A shell's own missing-command report, whole line, unindented: an optional
 // `<shell-or-script>: [line N: ]` prefix, then `<name>: command not found`.
 // Linear: every `[^\s:]+` run stops at the next `:` or space, and there are no
 // nested or overlapping quantifiers.
 const SHELL_MISSING_COMMAND_LINE =
   /^(?:[^\s:]+: (?:line \d+: )?)?[^\s:]+: command not found$/;
+// The Docker CLI's own error line, whole line, unindented: an optional
+// `<shell-or-script>: [line N: ]` prefix, then `docker:` and a message naming
+// a missing binary, an unreachable daemon or a permission fault. Linear for the
+// same reason as the pattern above.
+const DOCKER_INFRA_LINE =
+  /^(?:[^\s:]+: (?:line \d+: )?)?docker: .*(?:not found|Cannot connect|permission denied)/i;
+// Deno's per-test lines end with the test's own name's decoration: the result
+// (including the bare wait line and multiple step/timing groups) or the failure
+// summary (`name => file:line:col`). A test name can look like a Docker error.
+const DENO_TEST_LINE_SUFFIX =
+  / (?:\.\.\.(?: (?:ok|FAILED|ignored|cancelled|INCOMPLETE)(?: \([^)]*\))*)?|=> \S+:\d+:\d+)$/;
 const DENO_OUTPUT_START = /^-{3,} (?:(?:pre|post)-test )?output -{3,}$/;
 const DENO_OUTPUT_END = /^-{3,} (?:(?:pre|post)-test )?output end -{3,}$/;
 
 /**
- * Check if output contains a shell's own missing-command report, such as
- * `bash: foo: command not found` or `./quality.sh: line 3: foo: command not
- * found`. Only whole, unindented lines count. Deno's captured test output (the
- * block from `------- output -------` to `----- output end -----`) is skipped,
- * so a failing gate whose test merely quotes the text is not classed as a
- * missing command (Issue #4829).
+ * The lines of `output` a failure classifier may match: ANSI codes stripped,
+ * trailing whitespace trimmed, and Deno's captured test output (the block from
+ * `------- output -------` to `----- output end -----`) left out.
  */
-export function isMissingCommandFailure(output: string): boolean {
+function* uncapturedLines(output: string): Generator<string> {
   let inDenoOutput = false;
   for (const raw of output.split(/\r?\n/)) {
     // deno-lint-ignore no-control-regex
@@ -748,6 +792,35 @@ export function isMissingCommandFailure(output: string): boolean {
       inDenoOutput = true;
       continue;
     }
+    yield line;
+  }
+}
+
+/**
+ * Check if output contains the Docker CLI's own infrastructure error, such as
+ * `docker: Cannot connect to the Docker daemon` or `docker: Got permission
+ * denied ...`. Only whole, unindented lines count, and Deno's captured test
+ * output and per-test result lines are skipped, so a failing gate whose test
+ * name or log merely quotes the text is not classed as an infrastructure
+ * failure (Issue #4891).
+ */
+export function isDockerInfraFailure(output: string): boolean {
+  for (const line of uncapturedLines(output)) {
+    if (DENO_TEST_LINE_SUFFIX.test(line)) continue;
+    if (DOCKER_INFRA_LINE.test(line)) return true;
+  }
+  return false;
+}
+
+/**
+ * Check if output contains a shell's own missing-command report, such as
+ * `bash: foo: command not found` or `./quality.sh: line 3: foo: command not
+ * found`. Only whole, unindented lines count. Deno's captured test output is
+ * skipped, so a failing gate whose test merely quotes the text is not classed
+ * as a missing command (Issue #4829).
+ */
+export function isMissingCommandFailure(output: string): boolean {
+  for (const line of uncapturedLines(output)) {
     if (SHELL_MISSING_COMMAND_LINE.test(line)) return true;
   }
   return false;

@@ -843,8 +843,8 @@ function refuseClaimedPrLifecycle(
       `or a human's, not the implementing agent's. The worker merges through ` +
       `its own path, which re-checks CI status, branch freshness and the ` +
       `default-branch approval gate; a merge issued here has none of them. ` +
-      `Raise the PR with 'gh pr create' and stop there — 'gh pr view', ` +
-      `'gh pr list', 'gh pr comment' and 'gh pr edit' (other than ` +
+      `'gh pr create', 'gh pr view', 'gh pr list', 'gh pr comment' and ` +
+      `'gh pr edit' (other than ` +
       `--base) are unaffected. If the ` +
       `PR should not land, say so in a comment rather than closing it.`,
   };
