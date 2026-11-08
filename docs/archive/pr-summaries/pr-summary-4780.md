@@ -4,6 +4,8 @@ The milestone gate-wedge diagnostic no longer names a private fleet repository
 in the public `stSoftwareAU/VibeCoder` repo. `reportGateWedge` now checks the
 milestone repository's visibility (the same check #4318 added for run-failure
 issues) and files an opaque report for anything that is not positively public.
+The operator manual describes both diagnostic forms and where to find the full
+private report.
 Closes #4780.
 
 Version bump: `VERSION` is not touched by this change.
@@ -41,7 +43,7 @@ Version bump: `VERSION` is not touched by this change.
 Backend only. `deno task test:unit` over `tests/milestone_gate_wedge_test.ts`,
 `tests/milestone_sync_conflict_analysis_escalation_test.ts`,
 `tests/milestone_branch_sync_test.ts`, `tests/run_failure_issue_test.ts`,
-`tests/repo_visibility_test.ts`: 159 passed, 0 failed.
+`tests/repo_visibility_test.ts`: 149 passed, 0 failed on the review fix.
 
 ## Acceptance Criteria
 
@@ -55,6 +57,8 @@ Backend only. `deno task test:unit` over `tests/milestone_gate_wedge_test.ts`,
 
 ## Test Plan
 
+- Reviewed `docs/INTERNALS.md` against `reportGateWedge` and its public and
+  private body builders; no other copy of the operator-manual rule was found.
 - Added to `worker/deno/tests/milestone_gate_wedge_test.ts`: private create argv
   has opaque title and no repo/branch/milestone title/verdict/conflict
   key/analysis; failed lookup behaves as private; second refusal on the same
@@ -69,13 +73,12 @@ Backend only. `deno task test:unit` over `tests/milestone_gate_wedge_test.ts`,
   so they keep asserting the public form; no assertion removed.
   `milestone_branch_sync_test.ts` opts in only for its wedge test because its
   merge-fallback test relies on a private repo.
-- `./quality.sh`: every stage passed except `deno tests`, which failed 6 tests
-  in `tests/pr_maintenance_command_test.ts` and
-  `tests/merge_fast_checks_credentials_4705_test.ts`.
-  `pr_maintenance_command_test.ts` fails identically on an untouched checkout of
-  the base commit; neither file imports a module this change touches.
-- Not checked: the `merge_fast_checks_credentials_4705_test.ts` failure was not
-  re-run on the base.
+- `./quality.sh` passed formatting, lint, type check, Markdown lint and
+  completeness checks. The full Deno test run aborted in the parallel pass
+  when Deno 2.9.0 panicked restoring test permissions on this host; the serial
+  pass did not run. The base commit's PR #4928 passed its CI gate. Semgrep and
+  Checkov were unavailable at the required versions, and config integration was
+  skipped because its configuration was unavailable.
 - Mutation check: `isRepoPublic` is now pinned directly in
   `tests/repo_visibility_test.ts` (public resolves true and the gh argv drops
   the leading `gh`; private, unrecognised value, `Error` rejection and
