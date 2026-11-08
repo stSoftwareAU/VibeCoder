@@ -28,10 +28,10 @@ guidance without an example filename. Closes #4775.
 
 - Backend prompt and documentation change; no visual surface, dependency or
   lockfile changed.
-- The manual section read was the opening repair-flow description under
-  “Fleet PR babysitter MVP” in `docs/workflows/fleet-pr-babysitter.md`; that
-  file was updated. The matching PR summary rules in `CODING-STANDARDS.md`
-  were checked and remain consistent.
+- The manual section read was the opening repair-flow description under “Fleet
+  PR babysitter MVP” in `docs/workflows/fleet-pr-babysitter.md`; that file was
+  updated. The matching PR summary rules in `CODING-STANDARDS.md` were checked
+  and remain consistent.
 - The known-issue and no-issue prompt outcomes are covered by
   `worker/deno/tests/fleet_pr_babysitter_test.ts`.
 - Deno regression avoided: kept the test and validation path Deno-native; no
@@ -55,8 +55,8 @@ guidance without an example filename. Closes #4775.
   also removes HOME before agent startup, asserts `HOME is not set` and checks
   that no agent started, exercising
   `worker/deno/commands/fleet_pr_babysitter.ts:2799`. Disabling that guard made
-  the test fail: it received `captured prompt` instead of `HOME is not set`.
-  The guard was restored; no production code changed for this coverage repair.
+  the test fail: it received `captured prompt` instead of `HOME is not set`. The
+  guard was restored; no production code changed for this coverage repair.
   Running both targeted files with Deno coverage passed all 134 tests; LCOV
   records `DA:2799,6` for the command, confirming the reported line is reached.
 - No assertions were removed. The existing merged-base and unmerged prompt
