@@ -19,10 +19,10 @@
  * hides the repair's own result. The Apple helper may run in its advisory
  * mode, where host/LAN isolation is not promised (see `apple_egress_launch.ts`).
  *
- * Not working end to end yet: the in-container `babysitter-repair` command is
- * not in the worker image. #4768 will add it, so a real run today fails
- * inside the container. This module is not wired into `fix()` in
- * `commands/fleet_pr_babysitter.ts`; #4774 will wire it.
+ * Not wired in yet: the in-container `babysitter-repair` command now exists
+ * (worker/deno/commands/babysitter_repair.ts, routed by container/entrypoint.sh,
+ * Issue #4768), so a real run reaches it. This module is still not wired into
+ * `fix()` in `commands/fleet_pr_babysitter.ts`; #4774 will wire it.
  */
 
 import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
@@ -48,9 +48,8 @@ export const BABYSITTER_CLONE_MOUNT = "/babysitter/clone";
 /** Where the scratch directory (the prompt file) is mounted inside it. */
 export const BABYSITTER_SCRATCH_MOUNT = "/babysitter/scratch";
 /**
- * The fixed command line after the image. `babysitter-repair` is not in the
- * worker image yet (#4768 adds it), so a real run fails inside the container
- * until then.
+ * The fixed command line after the image. The in-container `babysitter-repair`
+ * command (Issue #4768) is routed by container/entrypoint.sh and runs it.
  */
 export const BABYSITTER_REPAIR_COMMAND: readonly string[] = [
   "babysitter-repair",
@@ -860,8 +859,8 @@ async function runRepairProcess(run: RepairRun): Promise<void> {
  * proxy with no enforcement) through the Apple helper, an enforced plan
  * (docker or podman) through the sidecar. Either is stopped in a `finally`,
  * and a teardown failure is logged, never thrown. A timed-out repair is killed
- * by name. The in-container command is not in the image yet (#4768), so a
- * real run fails inside the container. Reviewer rounds in run.sh still refuse
+ * by name. The in-container command now exists (#4768), so a real run reaches
+ * it. Reviewer rounds in run.sh still refuse
  * enforced plans; that is out of scope here. Not wired into `fix()` yet
  * (#4774).
  */

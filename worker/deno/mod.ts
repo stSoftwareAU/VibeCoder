@@ -130,6 +130,7 @@ import { codexBudgetCommand } from "./commands/codex_budget.ts";
 import { providerFeasibilityCommand } from "./commands/provider_feasibility.ts";
 import { claudeRunnerCommand } from "./commands/claude_runner.ts";
 import { reviewRoundCommand } from "./commands/review_round.ts";
+import { babysitterRepairCommand } from "./commands/babysitter_repair.ts";
 import { answerSanitiserCommand } from "./commands/answer_sanitiser.ts";
 import { partialAnswerCommand } from "./commands/partial_answer.ts";
 import { promptBuilderCommand } from "./commands/prompt_builder.ts";
@@ -340,6 +341,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(providerFeasibilityCommand);
   registry.register(claudeRunnerCommand);
   registry.register(reviewRoundCommand);
+  registry.register(babysitterRepairCommand);
   registry.register(answerSanitiserCommand);
   registry.register(partialAnswerCommand);
   registry.register(promptBuilderCommand);
