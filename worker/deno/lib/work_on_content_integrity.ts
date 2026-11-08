@@ -514,8 +514,10 @@ export interface ContentIntegrityDecisionInput {
  *   issue, so a transient lookup failure cannot mutate labels.
  * - Changed, and the body history is truncated beyond GitHub's newest-100
  *   window with no returned body edit predating the snapshot (Issue #4804):
- *   blocks without mutating the issue, as an unresolved editor does, and logs
- *   `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]`.
+ *   first re-baselines on a trusted re-approval that post-dates the newest
+ *   edit; otherwise logs `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]`, adds
+ *   `needs-human` with one deduplicated comment, and blocks with the
+ *   `content-edit-history-truncated` reason.
  * - Changed, and the refreshed baseline could not be persisted: blocks rather
  *   than proceeding on a baseline that was never written (Issue #3868).
  *

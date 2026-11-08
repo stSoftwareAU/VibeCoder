@@ -697,7 +697,7 @@ Deno.test(
     });
 
     let outcome: WorkOnContentIntegrityOutcome | undefined;
-    await captureConsole(async () => {
+    const { warnings } = await captureConsole(async () => {
       outcome = await runGate(config, deps, gh);
     });
 
@@ -706,6 +706,107 @@ Deno.test(
       reason: "content-edit-history-truncated",
     });
     assertEscalated(actions, addedLabels, commentBodies, config);
+    assertEquals(
+      warnings.filter((line) => line.includes("[REAPPROVAL_PREDATES_EDIT]"))
+        .length,
+      1,
+      `Expected the stale-approval marker on the truncated path, got: ${
+        warnings.join(" | ")
+      }`,
+    );
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - a stale approval is reported once, not again by the uncached re-read, on a truncated history (PR #4944 review)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+    const dir = Deno.makeTempDirSync({ prefix: "truncated-history-stale-" });
+
+    try {
+      // Cached and live timelines both hold the same approval, which
+      // post-dates the snapshot but predates the newest edit (12:00).
+      const stale = [workOnAdded("alice", "2026-05-01T11:59:00Z")];
+      const cache = new TimelineCache(300, dir);
+      await cache.write("owner/repo", 42, stale, true);
+
+      const actions: string[] = [];
+      const addedLabels: string[] = [];
+      const commentBodies: string[] = [];
+      const gh = createGhMock({
+        title: "Fix the bug",
+        body: "Approved specification, reworded",
+        bodyEdits: bodyHistory(150, () => "alice"),
+        actions,
+        addedLabels,
+        commentBodies,
+        timeline: stale,
+      });
+
+      let outcome: WorkOnContentIntegrityOutcome | undefined;
+      const { warnings } = await captureConsole(async () => {
+        outcome = await verifyWorkOnContentIntegrityDetailed(
+          "owner/repo",
+          makeIssue("alice"),
+          config,
+          gh,
+          undefined,
+          deps,
+          cache,
+        );
+      });
+
+      assertEquals(outcome, {
+        verdict: "blocked",
+        reason: "content-edit-history-truncated",
+      });
+      assertEquals(
+        warnings.filter((line) => line.includes("[REAPPROVAL_PREDATES_EDIT]"))
+          .length,
+        1,
+        `The same stale approval must be reported once, got: ${
+          warnings.join(" | ")
+        }`,
+      );
+    } finally {
+      Deno.removeSync(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - an unattributable edit blocks even when the trusted list holds an empty login (PR #4944 review)",
+  async () => {
+    const deps = createMemoryFs();
+    // A stray empty entry must not make an actor-less edit trusted.
+    const config = { ...makeConfig(), allowedAuthors: ["alice", ""] };
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      // GitHub recorded the edit but not the editor (empty login).
+      bodyEdits: bodyHistory(1, () => ""),
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-modified-after-approval",
+    });
+    assertEquals(addedLabels.includes(config.needsHumanLabel), true);
   },
 );
 
