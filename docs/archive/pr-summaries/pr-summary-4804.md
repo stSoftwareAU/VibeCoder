@@ -85,8 +85,8 @@ advises `last:N` for timelines, which stays true; not edited.
   history; a re-add before the newest edit, an untrusted re-add and any re-add
   over an empty window do not; a stale cached timeline gets one live re-read;
   the new reason does not suppress lower tiers (`suppressesLowerTiers`); a stale
-  approval is reported once, not again by the uncached re-read; an unattributable
-  edit blocks even when the trusted list holds an empty login.
+  approval is reported once, not again by the uncached re-read; an
+  unattributable edit blocks even when the trusted list holds an empty login.
 - Added to `worker/deno/tests/issue_edit_actor_test.ts`: default query asks for
   `first:100`; 150 edits give the newest 100 with
   `bodyHistoryTruncated === true`; 3 edits give `false`; missing `totalCount`
