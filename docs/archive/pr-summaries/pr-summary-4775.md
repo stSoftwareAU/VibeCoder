@@ -38,11 +38,26 @@ guidance without an example filename. Closes #4775.
 
 ## Test Plan
 
-- `deno task test:unit tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_single_push_test.ts` — passed (134 passed, 0 failed).
+- `deno task test:unit tests/fleet_pr_babysitter_test.ts tests/fleet_pr_babysitter_single_push_test.ts`
+  — passed (134 passed, 0 failed).
 - `deno fmt --check` on the three changed TypeScript files — passed.
 - `deno lint` on the three changed TypeScript files — passed.
-- `deno check --frozen --lock=deno.lock` on the changed command and test files — passed.
-- The new prompt tests failed against the previous wording. Reverting only the repair caller's issue-number argument made `repair caller passes the issue number parsed from the PR branch` fail because the captured prompt omitted `pr-summary-2453.md`; restoring `issueNumberFromBranch(pr.headRefName)` made it pass.
-- No assertions were removed. The existing merged-base and unmerged prompt assertions in `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts` remain and pass with the new required argument.
-- `./quality.sh < /dev/null` — failed in the unrelated `spawnFastCheck: declared credentials ride the stdin channel, never argv, behind the sudo wrapper` test. Its expected argv included the six HTTP(S) proxy variables; the actual argv contained only `CARGO_TARGET_DIR`. The default-branch commit's changed files do not include that test or its implementation. This failure was not confirmed against a green base-branch CI run. The gate also reported config integration skipped because `.config.json` was unavailable and Checkov skipped because it was not installed or running in Docker/Podman.
+- `deno check --frozen --lock=deno.lock` on the changed command and test files —
+  passed.
+- The new prompt tests failed against the previous wording. Reverting only the
+  repair caller's issue-number argument made
+  `repair caller passes the issue number parsed from the PR branch` fail because
+  the captured prompt omitted `pr-summary-2453.md`; restoring
+  `issueNumberFromBranch(pr.headRefName)` made it pass.
+- No assertions were removed. The existing merged-base and unmerged prompt
+  assertions in `worker/deno/tests/fleet_pr_babysitter_single_push_test.ts`
+  remain and pass with the new required argument.
+- `./quality.sh < /dev/null` — failed in the unrelated
+  `spawnFastCheck: declared credentials ride the stdin channel, never argv, behind the sudo wrapper`
+  test. Its expected argv included the six HTTP(S) proxy variables; the actual
+  argv contained only `CARGO_TARGET_DIR`. The default-branch commit's changed
+  files do not include that test or its implementation. This failure was not
+  confirmed against a green base-branch CI run. The gate also reported config
+  integration skipped because `.config.json` was unavailable and Checkov skipped
+  because it was not installed or running in Docker/Podman.
 - The 14-day review-log observation remains unperformed until after merge.
