@@ -375,8 +375,8 @@ so a file a test run leaves behind is not committed by the worker's recovery
 commit (`git add -A`). An untracked file that was not there when the run
 started is deleted, and a tracked file that a mutant run newly modified is
 checked out again; anything present or modified before the run is left alone,
-and ignored files are never touched. A failure to list or restore the tree is
-logged as a `[mutation] could not restore the working tree:` warning and never
+and ignored files are never touched. A failure to list or restore the tree, including a git spawn the run
+deadline refuses, is logged as a `[mutation] could not restore the working tree:` warning and never
 changes the verdict. Accepted limits: a tracked file that was already modified
 before the run, and that a mutant run changes further, is left as it is,
 because restoring it would lose the earlier edit; empty directories a mutant

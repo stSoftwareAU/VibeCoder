@@ -17,6 +17,11 @@ import {
   runMutationCheck,
 } from "../lib/mutation_runner.ts";
 import {
+  resetRunTimelineForTests,
+  type RunTimeline,
+  setRunTimeline,
+} from "../lib/run_timeline.ts";
+import {
   isUnsafePath,
   restoreTree,
   snapshotTree,
@@ -369,5 +374,145 @@ Deno.test("Issue #4905 - restoreTree is silent when a stray file has already gon
     await Deno.remove(`${repo}/stray.txt`);
     const { warnings } = await captureWarnings(() => restoreTree(repo, before));
     assertEquals(warnings, []);
+  });
+});
+
+/** A timeline past its finish and inside the hard-kill reserve: git spawns are refused. */
+const REFUSING_TIMELINE: RunTimeline = {
+  targetMs: 0,
+  finishMs: 0,
+  hardKillMs: 1,
+  pastTarget: () => true,
+  pastFinish: () => true,
+  remainingToFinishMs: () => 0,
+  clampToFinishMs: () => 0,
+};
+
+Deno.test("Issue #4905 - snapshotTree and restoreTree warn instead of throwing when the run timeline refuses a git spawn", async () => {
+  const repo = await Deno.makeTempDir({ prefix: "mutation-tree-guard-" });
+  try {
+    await makeRepo(repo, { "a.txt": "a\n" });
+    const before = await snapshotTree(repo);
+    assert(before !== null, "the snapshot must succeed with no timeline set");
+    setRunTimeline(REFUSING_TIMELINE);
+    try {
+      const snap = await captureWarnings(() => snapshotTree(repo));
+      assertEquals(snap.value, null);
+      assertEquals(snap.warnings.length, 1);
+      assertStringIncludes(
+        snap.warnings[0] ?? "",
+        "[mutation] could not snapshot the working tree:",
+      );
+      assertStringIncludes(snap.warnings[0] ?? "", "no time left");
+      const restored = await captureWarnings(() => restoreTree(repo, before));
+      assertEquals(restored.warnings.length, 1);
+      assertStringIncludes(
+        restored.warnings[0] ?? "",
+        "[mutation] could not restore the working tree:",
+      );
+      assertStringIncludes(restored.warnings[0] ?? "", "no time left");
+    } finally {
+      resetRunTimelineForTests();
+    }
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+  }
+});
+
+Deno.test("Issue #4905 - a run past its deadline keeps its verdict and removes its temporary directory", async () => {
+  await withRepo(PROJECT, async (repo, scratch) => {
+    const run = async (refuse: boolean) => {
+      const removed: string[] = [];
+      const base = seamsFor(
+        scratch,
+        async (_cmd, _args, opts) =>
+          result(await passesOnlyUnmutated(opts.cwd)),
+      );
+      const seams: MutationRunnerSeams = {
+        ...base,
+        removeDir: (p) => {
+          removed.push(p);
+          return base.removeDir(p);
+        },
+      };
+      if (refuse) setRunTimeline(REFUSING_TIMELINE);
+      try {
+        const outcome = await captureWarnings(() =>
+          runMutationCheck(
+            { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
+            seams,
+          )
+        );
+        return { outcome: outcome.value, warnings: outcome.warnings, removed };
+      } finally {
+        resetRunTimelineForTests();
+      }
+    };
+    const normal = await run(false);
+    const refused = await run(true);
+    assertEquals(normal.outcome.kind, "completed");
+    assertEquals(refused.outcome, normal.outcome);
+    assertEquals(refused.removed.length, 1);
+    assertEquals(await exists(refused.removed[0] ?? ""), false);
+    assert(
+      refused.warnings.some((w) => w.includes("could not snapshot")),
+      "the refused snapshot must be warned",
+    );
+  });
+});
+
+Deno.test("Issue #4905 - a snapshotTree or restoreTree seam that rejects does not change the verdict or skip removeDir", async () => {
+  await withRepo(PROJECT, async (repo, scratch) => {
+    const run = async (reject: boolean) => {
+      const removed: string[] = [];
+      const base = seamsFor(
+        scratch,
+        async (_cmd, _args, opts) =>
+          result(await passesOnlyUnmutated(opts.cwd)),
+      );
+      const seams: MutationRunnerSeams = {
+        ...base,
+        removeDir: (p) => {
+          removed.push(p);
+          return base.removeDir(p);
+        },
+        snapshotTree: reject
+          ? () => Promise.reject(new Error("snapshot boom"))
+          : base.snapshotTree,
+        restoreTree: reject
+          ? () => Promise.reject(new Error("restore boom"))
+          : base.restoreTree,
+      };
+      const outcome = await runMutationCheck(
+        { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
+        seams,
+      );
+      return { outcome, removed };
+    };
+    const normal = await run(false);
+    const snapshotRejects = await run(true);
+    assertEquals(normal.outcome.kind, "completed");
+    assertEquals(snapshotRejects.outcome, normal.outcome);
+    assertEquals(snapshotRejects.removed.length, 1);
+
+    // restoreTree rejecting alone: the snapshot succeeds, the restore throws.
+    const removed: string[] = [];
+    const base = seamsFor(
+      scratch,
+      async (_cmd, _args, opts) => result(await passesOnlyUnmutated(opts.cwd)),
+    );
+    const outcome = await runMutationCheck(
+      { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
+      {
+        ...base,
+        removeDir: (p) => {
+          removed.push(p);
+          return base.removeDir(p);
+        },
+        restoreTree: () => Promise.reject(new Error("restore boom")),
+      },
+    );
+    assertEquals(outcome, normal.outcome);
+    assertEquals(removed.length, 1);
   });
 });

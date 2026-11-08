@@ -45,6 +45,11 @@ function causeOf(result: Result<GitCommandOutput>): string {
   return first !== "" ? first : `git exited with code ${result.value.code}`;
 }
 
+/** A thrown value's message. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** Repo-relative paths from a NUL-separated git listing; empties dropped, nothing trimmed. */
 function splitNul(stdout: string): string[] {
   return stdout.split("\0").filter((p) => p !== "");
@@ -99,7 +104,13 @@ async function listTree(repoPath: string): Promise<Listed<TreeSnapshot>> {
 export async function snapshotTree(
   repoPath: string,
 ): Promise<TreeSnapshot | null> {
-  const listed = await listTree(repoPath);
+  let listed: Listed<TreeSnapshot>;
+  try {
+    listed = await listTree(repoPath);
+  } catch (err) {
+    // runGitCommand throws when the run timeline refuses to spawn git.
+    listed = { ok: false, cause: errorMessage(err) };
+  }
   if (!listed.ok) {
     console.warn(
       `[mutation] could not snapshot the working tree: ${listed.cause}`,
@@ -128,6 +139,20 @@ export async function restoreTree(
   repoPath: string,
   before: TreeSnapshot,
 ): Promise<void> {
+  try {
+    await restoreTreeUnguarded(repoPath, before);
+  } catch (err) {
+    // runGitCommand throws when the run timeline refuses to spawn git.
+    console.warn(
+      `[mutation] could not restore the working tree: ${errorMessage(err)}`,
+    );
+  }
+}
+
+async function restoreTreeUnguarded(
+  repoPath: string,
+  before: TreeSnapshot,
+): Promise<void> {
   const listed = await listTree(repoPath);
   if (!listed.ok) {
     console.warn(
@@ -149,7 +174,7 @@ export async function restoreTree(
       await Deno.remove(`${repoPath}/${path}`);
     } catch (err) {
       if (err instanceof Deno.errors.NotFound) continue;
-      const cause = err instanceof Error ? err.message : String(err);
+      const cause = errorMessage(err);
       console.warn(
         `[mutation] could not restore the working tree: removing ${path}: ${cause}`,
       );

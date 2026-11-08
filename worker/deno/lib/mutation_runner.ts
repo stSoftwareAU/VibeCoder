@@ -595,11 +595,21 @@ async function runDeno(
   };
   // Issue #4905: what the tree holds before any child runs, so the finally
   // below can undo what the test runs leave behind.
-  const treeBefore = runnable.length > 0
-    ? await seams.snapshotTree(repoPath)
-    : null;
+  let treeBefore: TreeSnapshot | null = null;
 
   try {
+    // A rejecting seam must not change the verdict or skip the cleanup below.
+    if (runnable.length > 0) {
+      try {
+        treeBefore = await seams.snapshotTree(repoPath);
+      } catch (err) {
+        console.warn(
+          `[mutation] could not snapshot the working tree: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
     // Baseline: the importing tests must pass unmutated.
     const baselined = new Set<string>();
     for (const m of runnable) {
@@ -659,8 +669,17 @@ async function runDeno(
     if (dropped > 0) return exhausted("mutant_cap");
     return { kind: "completed", language: "deno", survivors, killed, total };
   } finally {
-    if (treeBefore !== null) await seams.restoreTree(repoPath, treeBefore);
-    if (tmpDir !== "") await seams.removeDir(tmpDir);
+    try {
+      if (treeBefore !== null) await seams.restoreTree(repoPath, treeBefore);
+    } catch (err) {
+      console.warn(
+        `[mutation] could not restore the working tree: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    } finally {
+      if (tmpDir !== "") await seams.removeDir(tmpDir);
+    }
   }
 }
 

@@ -43,13 +43,13 @@ fake `deno` runner in a temporary git repository.
 
 ## Test Plan
 
-- Added `worker/deno/tests/mutation_tree_guard_test.ts` (12 tests; the first 5
-  below, then the mutation-check follow-ups): untracked `undefined` removed
-  while a pre-existing untracked file stays; a rewritten tracked fixture is
-  checked out while another file's earlier uncommitted edit stays; a deleted
-  tracked file is restored; `snapshotTree` returns null with the cause warned in
-  a non-git directory; `restoreTree` warns and does not throw when listing
-  fails.
+- Added `worker/deno/tests/mutation_tree_guard_test.ts` (15 tests at head; the
+  first 5 below, then the mutation-check follow-ups and the PR #4916 review
+  tests): untracked `undefined` removed while a pre-existing untracked file
+  stays; a rewritten tracked fixture is checked out while another file's earlier
+  uncommitted edit stays; a deleted tracked file is restored; `snapshotTree`
+  returns null with the cause warned in a non-git directory; `restoreTree` warns
+  and does not throw when listing fails.
 - Mutation-check follow-up: the two duplicated listing blocks in `listTree`
   became one `listPaths` helper, so each failure check exists once. New tests
   cover a missing directory (`!run.ok`), a failing `git diff` listing
@@ -71,10 +71,22 @@ fake `deno` runner in a temporary git repository.
 - Red-check: with the `restoreTree` call in `runDeno` disabled, three of the
   five guard tests fail (stray file stays, fixture stays rewritten, deleted file
   stays missing); restored afterwards.
-- CI repair: `deno task test tests/mutation_tree_guard_test.ts` passes all 12
-  tests with the standard permissions. The local quality gate encountered a
-  Deno permissions pledge panic in the parallel suite and a Checkov timeout.
-  Formatting, lint, type, completeness and Markdown checks passed. The sandbox
-  also refused `/bin/ps` during the shard's process tests.
+- CI repair: `deno task test tests/mutation_tree_guard_test.ts` passes the 12
+  tests that existed then with the standard permissions. The local quality gate
+  encountered a Deno permissions pledge panic in the parallel suite and a
+  Checkov timeout. Formatting, lint, type, completeness and Markdown checks
+  passed. The sandbox also refused `/bin/ps` during the shard's process tests.
+- PR #4916 review: `snapshotTree`/`restoreTree` now catch a throw from
+  `runGitCommand` (the run timeline refuses a git spawn near the deadline) and
+  warn; `runDeno` takes the snapshot inside its `try`, catches a rejecting
+  `snapshotTree`/`restoreTree` seam, and runs `removeDir` in a nested `finally`
+  so the temporary directory is always removed. Three tests in
+  `worker/deno/tests/mutation_tree_guard_test.ts` (a refusing timeline against
+  the guard functions; a refusing timeline through `runMutationCheck`; rejecting
+  seams) assert the verdict equals an unrefused run and `removeDir` is called.
+  With the lib change stashed all three fail
+  (`refusing to spawn git ls-files …:
+  no time left before the run deadline`);
+  restored afterwards.
 - Docs: `docs/mutation-check.md` gains a paragraph on the restore. Twinned
   copies: none found.
