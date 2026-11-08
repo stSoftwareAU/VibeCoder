@@ -27,7 +27,8 @@
  *    run budget — these checks are never skipped for budget; all but the Floci
  *    deploy test are cheap. Then the repo's `cargo deny check` (Issue #4626)
  *    runs for eligible workflows when intermediate pushes or ShellCheck-only
- *    repairs change a Cargo manifest, lock file or deny config. The whole-branch
+ *    repairs change a cargo input (a Cargo manifest, lock file, deny config or
+ *    `.cargo/config.toml`). The whole-branch
  *    completion check (with a baseRef and not ShellCheck-only) runs it on every
  *    branch for eligible workflows, regardless of changed cargo inputs.
  *    Missing tools or an unreachable advisory database

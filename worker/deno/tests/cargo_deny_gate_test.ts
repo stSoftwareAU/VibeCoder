@@ -1924,6 +1924,40 @@ Deno.test("workflow: job defaults resolve cross-job YAML aliases", () => {
   ]]);
 });
 
+Deno.test("workflow: step anchors and aliases resolve across keys", () => {
+  const text = yaml(
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: echo before",
+    "      - run: &deny cargo deny check bans",
+    "        working-directory: &rust rust",
+    "        continue-on-error: &allow true",
+    "      - run: *deny",
+    "        working-directory: *rust",
+    "        continue-on-error: *allow",
+    "      - uses: &action EmbarkStudios/cargo-deny-action@v2",
+    "        with: &inputs",
+    "          command: check bans",
+    "      - uses: *action",
+    "        with: *inputs",
+  );
+  const findings = workflowCargoDenyFindings(text);
+  assertEquals(checkSubsets(findings), ["bans", "bans", "bans", "bans"]);
+  assertEquals(findings.map((f) => f.kind === "command" && f.cwd), [
+    "rust",
+    "rust",
+    ".",
+    ".",
+  ]);
+  assertEquals(findings.map((f) => f.kind === "command" && !!f.allowFailure), [
+    true,
+    true,
+    false,
+    false,
+  ]);
+});
+
 Deno.test("workflow: multi-wildcard path filters select only matching paths", () => {
   for (
     const [pattern, match, miss] of [

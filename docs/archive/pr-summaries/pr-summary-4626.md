@@ -29,9 +29,10 @@ and no `push` trigger whose branch filter matches the pushed branch, and, in the
 whole-branch check, one whose `paths` / `paths-ignore` filter selects none of
 the branch's touched paths. An unreadable filter leaves the workflow eligible;
 patterns longer than 200 characters are unreadable. Multiple wildcards are
-matched using dynamic programming bounded by pattern and path lengths. Job
-settings come from the parsed workflow, preserving column-zero comments and
-cross-job YAML aliases.
+matched using dynamic programming bounded by pattern and path lengths. Job and
+step settings come from the parsed workflow, preserving column-zero comments
+and YAML anchors and aliases. Source lines supply diagnostic locations; the
+line scanner remains the fallback for workflows that do not parse.
 
 The babysitter is not gated. Its repairs run on the host, and the governing
 issue forbids host execution beside the App key until the contained path (#4768,
@@ -93,7 +94,7 @@ not run there.
 
 ## Test Plan
 
-- `worker/deno/tests/cargo_deny_gate_test.ts` (99 tests at head) covers workflow
+- `worker/deno/tests/cargo_deny_gate_test.ts` (100 tests at head) covers workflow
   parsing, matrix expansion and fallback, the actual container workflow,
   triggers, diagnostic classification and runner behaviour. This round adds the
   job- and workflow-level `defaults.run.working-directory` tests, the
@@ -113,7 +114,9 @@ not run there.
   (for `continue-on-error` and for a command key), a schedule-only workflow,
   path filters (`paths`, `paths-ignore`, `!`), push branch filters and
   tags-only, trigger forms, and a hostile path pattern. The latest review adds
-  column-zero comments, a cross-job alias and multi-wildcard path filters.
+  column-zero comments, a cross-job alias and multi-wildcard path filters. Step
+  anchors and aliases cover run, working directory, continue-on-error, uses and
+  action inputs, including a preceding unrelated step.
   The README gate test also exercises the comment while checking advisory
   warnings and blocking bans. Character-class checks cover ranges, negation and
   invalid ranges as well as literal members.
@@ -194,7 +197,11 @@ not run there.
   that reads the same as having none).
 
 The test suite does not run cargo-deny end to end; its runner is injected. The
-full local gate (`./quality.sh`) was not run in the PR #4895 review round.
+full local gate (`./quality.sh`) was run in the latest review round: its
+parallel Deno suite hit a Deno permission-pledge panic twice on this host; the
+focused 113 tests, formatter, linter, type check and markdownlint passed.
+Semgrep and Checkov were skipped because their required local routes were not
+available. The latest merged base PR's CI checks passed.
 The CI Semgrep scan flagged dynamic path-filter regexes; the matcher now uses
 dynamic programming and bounded character-class comparisons without compiling
 workflow input as a regex. The two

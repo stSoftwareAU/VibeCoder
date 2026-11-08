@@ -750,6 +750,7 @@ function stepFindings(
   end: number,
   dashIndent: number,
   job: JobContext,
+  parsed?: Record<string, unknown>,
 ): CargoDenyCiFinding[] {
   const afterDash = LIST_ITEM.exec(lines[start] ?? "")?.[2] ?? "";
   const content = afterDash.trimStart();
@@ -789,6 +790,54 @@ function stepFindings(
 
   const find = (name: string): MappingLine | undefined =>
     keys.find((key) => key.key === name);
+  if (parsed !== undefined) {
+    const ctx: StepContext = {
+      matrix: job.matrix,
+      wd: yamlScalar(parsed["working-directory"]) ?? job.defaultWd,
+      continueOnError: [
+        ...[yamlScalar(parsed["continue-on-error"])].filter((v): v is string =>
+          v !== undefined
+        ),
+        ...(job.continueOnError === undefined ? [] : [job.continueOnError]),
+      ],
+    };
+    const findings: CargoDenyCiFinding[] = [];
+    const uses = yamlScalar(parsed.uses);
+    if (uses !== undefined && ACTION_REPO.test(uses)) {
+      const inputs = new Map<string, string>();
+      if (
+        parsed.with !== null && typeof parsed.with === "object" &&
+        !Array.isArray(parsed.with)
+      ) {
+        for (const [key, value] of Object.entries(parsed.with)) {
+          const scalar = yamlScalar(value);
+          if (scalar !== undefined) inputs.set(key, scalar);
+        }
+      }
+      findings.push(...actionFindings(inputs, ctx));
+    }
+    const run = yamlScalar(parsed.run);
+    if (run !== undefined) {
+      const runKey = find("run");
+      const no = (runKey?.no ?? start + 1) +
+        (runKey !== undefined && BLOCK_INDICATOR.test(scalarValue(runKey.raw))
+          ? 1
+          : 0);
+      findings.push(
+        ...runFindings({
+          key: "run",
+          raw: "|",
+          no,
+          children: run.split("\n").map((text, i) => ({
+            text,
+            indent: 0,
+            no: no + i,
+          })),
+        }, ctx),
+      );
+    }
+    return findings;
+  }
   // A step's own `working-directory` wins over the job's and the workflow's
   // `defaults.run.working-directory`, which apply to `run:` steps only.
   const wdKey = find("working-directory");
@@ -823,6 +872,7 @@ interface ParsedJob {
   strategy?: { matrix?: Record<string, unknown> };
   defaults?: { run?: { "working-directory"?: unknown } };
   "continue-on-error"?: unknown;
+  steps?: Record<string, unknown>[];
 }
 
 /** A parsed YAML scalar as the text GitHub would see, or undefined. */
@@ -1108,6 +1158,7 @@ export function workflowCargoDenyFindings(
   const findings: CargoDenyCiFinding[] = [];
   const workflowWd = yamlScalar(workflow?.defaults?.run?.["working-directory"]);
   const jobs = jobBlocks(lines);
+  const stepIndexes = new Map<number, number>();
   let start = 0;
   while (start < lines.length) {
     const item = LIST_ITEM.exec(lines[start] ?? "");
@@ -1128,6 +1179,7 @@ export function workflowCargoDenyFindings(
       defaultWd: workflowWd,
       continueOnError: undefined,
     };
+    let parsedStep: Record<string, unknown> | undefined;
     const block = jobs.findLast((candidate) =>
       candidate.header < start && start < candidate.end
     );
@@ -1148,9 +1200,27 @@ export function workflowCargoDenyFindings(
               workflowWd,
           continueOnError: yamlScalar(parsedJob?.["continue-on-error"]),
         };
+        const stepsLine = lines.findIndex((line, index) =>
+          index > block.header && index < start &&
+          /^\s*steps:\s*(?:#.*)?$/.test(line) && indentOf(line) > block.indent
+        );
+        if (stepsLine !== -1) {
+          const stepIndent = indentOf(lines[stepsLine] ?? "");
+          const intervening = lines.slice(stepsLine + 1, start).some((line) =>
+            !isSkippable(line) && indentOf(line) <= stepIndent &&
+            !LIST_ITEM.test(line)
+          );
+          if (!intervening) {
+            const index = stepIndexes.get(block.header) ?? 0;
+            parsedStep = parsedJob?.steps?.[index];
+            stepIndexes.set(block.header, index + 1);
+          }
+        }
       }
     }
-    findings.push(...stepFindings(lines, start, end, dashIndent, job));
+    findings.push(
+      ...stepFindings(lines, start, end, dashIndent, job, parsedStep),
+    );
     start = end;
   }
   return findings;
