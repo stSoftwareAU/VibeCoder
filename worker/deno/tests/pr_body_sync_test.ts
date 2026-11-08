@@ -321,6 +321,29 @@ Deno.test("assemblePrBody - Issue #4783: a withheld close quotes unmet criteria 
   assertStringIncludes(body, "do not `close` #4674");
 });
 
+Deno.test("assemblePrBody - Issue #4783: colon and full-URL closing forms for another issue are neutralised", () => {
+  const summary = "## Summary\n\nDid the thing.\n\n" +
+    "## Acceptance Criteria\n\n" +
+    "- **met** — do not close: #4674 and never Closes https://github.com/o/r/issues/4674 — " +
+    "evidence: `x` — reviewer: met\n";
+  const body = assemblePrBody({
+    summaryContent: summary,
+    issueNumber: GOVERNING_ISSUE,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(extractClosingIssueNumbers(body), [GOVERNING_ISSUE]);
+  assertStringIncludes(body, "do not `close`: #4674");
+  assertStringIncludes(body, "`Closes` https://github.com/o/r/issues/4674");
+  assertEquals(/close[sd]?\s*:\s*#4674/i.test(body), false);
+  assertEquals(
+    /closes\s+https:\/\/github\.com\/o\/r\/issues\/4674/.test(body),
+    false,
+  );
+});
+
 // --- subAgentTier (Issue #3403) --------------------------------------------
 
 /** Every occurrence of the sub-agent tier marker in `body`. */

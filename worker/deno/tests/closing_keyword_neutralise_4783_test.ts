@@ -53,3 +53,17 @@ Deno.test("neutraliseOtherIssueClosingKeywords - leaves a hostile long run of sp
   const text = "close" + " ".repeat(20000) + "x";
   assertEquals(neutraliseOtherIssueClosingKeywords(text, GOVERNING), text);
 });
+
+Deno.test("neutraliseOtherIssueClosingKeywords - neutralises colon and full-URL forms for another issue, keeps the governing one, skips code", () => {
+  const text =
+    "Do not close: #4674. Fixes https://github.com/o/r/issues/4674. " +
+    "Closes: #4637. `Closes: #4674`. Resolves https://github.com/o/r/issues/4637.";
+  assertEquals(
+    neutraliseOtherIssueClosingKeywords(text, GOVERNING, {
+      prRepo: "o/r",
+      issueRepo: "o/r",
+    }),
+    "Do not `close`: #4674. `Fixes` https://github.com/o/r/issues/4674. " +
+      "Closes: #4637. `Closes: #4674`. Resolves https://github.com/o/r/issues/4637.",
+  );
+});

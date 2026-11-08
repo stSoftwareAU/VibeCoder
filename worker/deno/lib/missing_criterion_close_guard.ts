@@ -46,6 +46,31 @@ const MAX_QUOTED_LENGTH = 300;
 export const CLOSING_KEYWORD_RE =
   /(^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
 
+/**
+ * A colon closing phrase such as `Closes: #N` or `resolved : owner/repo#N`.
+ * GitHub honours it, and {@link CLOSING_KEYWORD_RE} does not match it.
+ * Groups: the lead character, the keyword with its separator, the optional
+ * repository qualifier, and the issue number.
+ *
+ * No two quantifiers overlap: the keyword is a fixed word set, the two runs of
+ * whitespace sit either side of a literal `:`, and the qualifier's two runs are
+ * split by a literal `/`, so a hostile run is read in linear time.
+ */
+export const COLON_CLOSE_RE =
+  /(^|[^\w/])((?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:\s*)(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
+
+/**
+ * A full-URL closing phrase such as `Fixes https://github.com/owner/repo/issues/N`.
+ * GitHub honours it, and {@link CLOSING_KEYWORD_RE} does not match it.
+ * Groups: the lead character, the keyword with its whitespace, the owner, the
+ * repository, and the issue number.
+ *
+ * No two quantifiers overlap: the owner and repository runs are split by a
+ * literal `/`, and the keyword's whitespace run is followed by a literal `h`.
+ */
+export const URL_CLOSE_RE =
+  /(^|[^\w/])((?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)https:\/\/github\.com\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/issues\/(\d+)\b/gi;
+
 /** `Part of #N` (or `owner/repo#N`): the explicit non-closing reference. */
 export const PART_OF_RE =
   /(^|[^\w/])part\s+of\s+(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
@@ -156,7 +181,8 @@ export function withholdIssueClose(
  *
  * A PR summary is embedded in the PR body as written, so a sentence such as
  * "... closing references do not close #4674" makes GitHub close #4674 when the
- * PR merges. Each such keyword is rewritten so that the keyword word alone is
+ * PR merges. The plain (`close #N`), colon (`close: #N`) and full-URL
+ * (`Fixes https://github.com/o/r/issues/N`) forms are all handled. Each such keyword is rewritten so that the keyword word alone is
  * an inline code span: `close` #4674. Only the keyword is wrapped, not the
  * reference, so the sentence still reads naturally. A backtick between the
  * keyword and `#N` means neither GitHub nor a raw-regex reader (such as
@@ -183,26 +209,50 @@ export function neutraliseOtherIssueClosingKeywords(
   issueNumber: number,
   identity?: IssueIdentity,
 ): string {
+  const isGoverning = (num: string, repo: string | undefined): boolean =>
+    Number(num) === issueNumber &&
+    (identity === undefined ||
+      (repo ?? identity.prRepo).toLowerCase() ===
+        identity.issueRepo.toLowerCase());
+  // Wrap the keyword word alone, keeping the lead and whatever follows it.
+  const wrap = (match: string, lead: string): string => {
+    const rest = match.slice(lead.length);
+    const keyword = /^\w+/.exec(rest)?.[0] ?? rest;
+    return `${lead}\`${keyword}\`${rest.slice(keyword.length)}`;
+  };
   return splitMarkdownCode(text)
     .map((segment) =>
-      segment.inCode ? segment.value : segment.value.replace(
-        CLOSING_KEYWORD_RE,
-        (
-          match: string,
-          lead: string,
-          repo: string | undefined,
-          num: string,
-        ) => {
-          const governing = Number(num) === issueNumber &&
-            (identity === undefined ||
-              (repo ?? identity.prRepo).toLowerCase() ===
-                identity.issueRepo.toLowerCase());
-          if (governing) return match;
-          const rest = match.slice(lead.length);
-          const keyword = /^\w+/.exec(rest)?.[0] ?? rest;
-          return `${lead}\`${keyword}\`${rest.slice(keyword.length)}`;
-        },
-      )
+      segment.inCode ? segment.value : segment.value
+        .replace(
+          CLOSING_KEYWORD_RE,
+          (
+            match: string,
+            lead: string,
+            repo: string | undefined,
+            num: string,
+          ) => isGoverning(num, repo) ? match : wrap(match, lead),
+        )
+        .replace(
+          COLON_CLOSE_RE,
+          (
+            match: string,
+            lead: string,
+            _kw: string,
+            repo: string | undefined,
+            num: string,
+          ) => isGoverning(num, repo) ? match : wrap(match, lead),
+        )
+        .replace(
+          URL_CLOSE_RE,
+          (
+            match: string,
+            lead: string,
+            _kw: string,
+            owner: string,
+            name: string,
+            num: string,
+          ) => isGoverning(num, `${owner}/${name}`) ? match : wrap(match, lead),
+        )
     )
     .join("");
 }

@@ -8,10 +8,14 @@ issue on merge. Closes #4783.
 The keyword word alone is put in a code span (`` `close` #4674 ``). A backtick
 between keyword and `#N` stops GitHub and raw-regex readers
 (`extractClosingIssueNumbers` does not mask code) reading a closing reference,
-and the sentence still reads naturally. Code the summary already holds is left
-byte-identical. The governing issue's own reference is left to the existing
-#3177 / #4126 logic, including a qualified cross-repo reference. Text added to
-the live body by a human is not touched.
+and the sentence still reads naturally. The colon form (`close: #N`) and the
+full-URL form (`Fixes https://github.com/o/r/issues/N`) are neutralised the same
+way, using `COLON_CLOSE_RE` and `URL_CLOSE_RE`, which moved from
+`babysitter_pr_body_guard.ts` to `missing_criterion_close_guard.ts` (exported,
+and imported back) so the two guards share one pattern. Code the summary already
+holds is left byte-identical. The governing issue's own reference is left to the
+existing #3177 / #4126 logic, including a qualified cross-repo reference. Text
+added to the live body by a human is not touched.
 
 Version bump: `VERSION` is not changed by this PR.
 
@@ -52,14 +56,17 @@ changed function, so both inherit it.
 
 ## Test Plan
 
-- `worker/deno/tests/pr_body_sync_test.ts`: three new `assemblePrBody` tests
+- `worker/deno/tests/pr_body_sync_test.ts`: four new `assemblePrBody` tests
   (Issue #4783) — other issue not closed (`[4637]` only), governing
   `Closes #4637` kept, `Part of` with a `missing` entry leaves no closing
-  reference. Red with the neutralise call removed: all three failed.
+  reference, colon and URL forms of another issue neutralised. Red with the
+  neutralise call removed: all four failed.
 - `worker/deno/tests/closing_keyword_neutralise_4783_test.ts` (new): code
   spans/fences left identical, qualified other-repo reference, cross-repo
   identity, hard-wrapped `close\n#12`, hostile long whitespace input returns
-  unchanged.
+  unchanged, colon (`close: #N`) and full-URL
+  (`Fixes https://github.com/o/r/issues/N`) forms neutralised for other issues
+  and kept for the governing one.
 - Edited expectation in
   `worker/deno/tests/missing_criterion_close_guard_3177_test.ts`
   ("cross-repository partial body preserves unrelated issue links"):
@@ -70,9 +77,9 @@ changed function, so both inherit it.
     - Replaced by: `assertStringIncludes(body, "`Fixes`#2422")` and
       `assertEquals(extractClosingIssueNumbers(body), [])`
   - Red check: with the neutralise call removed this test fails.
-- Run: `deno task test:unit` over the four touched/related test files: 149
-  passed, 0 failed. `deno fmt`, `deno lint`, `deno check lib/pr_body_sync.ts`
-  clean.
+- Run: `deno test -A` over the touched/related test files, including the
+  babysitter PR-body guard tests that use the moved patterns: 151 passed, 0
+  failed. `deno fmt`, `deno lint`, `deno check lib/pr_body_sync.ts` clean.
 - Docs: `docs/INTERNALS.md` (assemblePrBody paragraph) updated.
 
 Full gate: `./quality.sh` ran on the final head; every stage passed except
