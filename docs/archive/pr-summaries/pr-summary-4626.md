@@ -18,8 +18,9 @@ literal `true` or a `matrix.<key>` test evaluated per combination) still runs,
 after the others, but its failure is a `[PRE_PUSH_WARNING]` line and does not
 refuse the push. A `cargo deny` line naming no `check` but holding a variable or
 expression, and a working directory that cannot be reproduced, refuse the push;
-unavailable tools or networks are infrastructure failures, and audit
-diagnostics are code verdicts. Quoted multiline container scripts are not
+for an invocation CI does not allow to fail, unavailable tools or networks are
+infrastructure failures and audit diagnostics are code verdicts; for one it
+allows to fail, both are warnings. Quoted multiline container scripts are not
 treated as host commands.
 
 The babysitter is not gated. Its repairs run on the host, and the governing
@@ -74,7 +75,7 @@ not run there.
 
 ## Test Plan
 
-- `worker/deno/tests/cargo_deny_gate_test.ts` (74 tests at head) covers workflow
+- `worker/deno/tests/cargo_deny_gate_test.ts` (81 tests at head) covers workflow
   parsing, matrix expansion and fallback, the actual container workflow,
   triggers, diagnostic classification and runner behaviour. This round adds the
   job- and workflow-level `defaults.run.working-directory` tests, the
@@ -84,7 +85,11 @@ not run there.
   failure is a warning, bans failure is a verdict, an identical invocation CI
   does not allow still blocks, an infrastructure failure of an allowed leg is a
   warning), plus the dropped-option and environment-assignment tests and a
-  hostile-input test for the `continue-on-error` pattern.
+  hostile-input test for the `continue-on-error` pattern. The mutation round adds
+  tests for an include entry that extends every combination, a matrix key with
+  no value, an unsafe matrix value, a `continue-on-error` matrix test with no
+  combination, an option that carries its own `=` value, the `source` of an
+  unrunnable finding, and a matrix `working-directory` with no value.
 - Obsolete: the permanent refusals of a variable or expression before `check`
   and of an environment assignment holding an expression. A check stays
   mandatory; the replacements are
@@ -103,7 +108,7 @@ not run there.
   `cargo deny: shellcheck-only mode skips cargo deny even with a baseRef`.
 - Red checks run on this head, each by breaking one thing and running
   `cargo_deny_gate_test.ts` or `pre_push_gate_cargo_deny_test.ts`: job default
-  ignored → 4 tests red; workflow default ignored → 1 red; never allow failure
+  ignored → 4 red; workflow default ignored → 1 red; never allow failure
   → 4 red; option not dropped with its value → 1 red; `!=` read as `==` → 1
   red; literal true ignored → 2 red; bare key ignored → 1 red; allowed failure
   blocks → 2 red; dedupe allowance OR instead of AND → 1 red; allowed legs run
@@ -121,7 +126,13 @@ not run there.
   and `docs/THREAT-MODEL.md` are back to their base text; no matching list in
   README or `docs/INTERNALS.md`.
 - `worker/deno/lib/cargo_deny_gate.ts`’s `WorkDir` type alias has a `true` type
-  literal that is erased at runtime and is exempt (untestable) from mutation.
+  literal that is erased at runtime and is exempt (untestable) from mutation. So are the `allowFailure?: true` type literals on
+  `CargoDenyCiFinding` (`cargo_deny_gate.ts:48`), on `allowFailureFor`'s return
+  type (`:484`) and on `actionVariantFindings`'s `allow` parameter (`:681`).
+  The mutation round also removed two operands no input can reach: the
+  `previous !== undefined` guard in `dropUnresolved` (`cargo` is always kept
+  first) and `wanted.some(...)` on the unmatched-`include` push (an entry naming
+  no wanted key adds a combination that reads the same as having none).
 
 The test suite does not run cargo-deny end to end; its runner is injected. The
 full local gate (`./quality.sh`) was not run in the PR #4895 review round;

@@ -1415,3 +1415,115 @@ Deno.test("gate: an unreadable workflow blocks a triggered change (fail closed)"
   assertEquals(result.error.kind, "verdict");
   assertStringIncludes(result.error.message, ".github/workflows/ci.yml");
 });
+
+Deno.test("workflow: an include entry that matches every combination is not also a combination of its own", () => {
+  // The entry names no `checks`, so it extends both combinations. A separate
+  // combination for it would lack `checks`, and the whole expansion would fall back.
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        checks: [advisories, bans]",
+    "        include:",
+    "          - experimental: true",
+    "    steps:",
+    "      - run: cargo deny check ${{ matrix.checks }}",
+    "        continue-on-error: ${{ matrix.experimental }}",
+  ));
+  assertEquals(
+    findings.map((f) =>
+      f.kind === "command" ? [f.argv.at(-1), f.allowFailure === true] : f.kind
+    ),
+    [["advisories", true], ["bans", true]],
+  );
+});
+
+Deno.test("workflow: a matrix key with no value falls back and drops its option", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        other: [a, b]",
+    "    steps:",
+    "      - run: cargo deny check --config ${{ matrix.missing }}",
+  ));
+  assertEquals(
+    findings.map((f) => f.kind === "command" ? f.argv : f.kind),
+    [["cargo", "deny", "check"]],
+  );
+});
+
+Deno.test("workflow: an unsafe matrix value falls back to a plain check", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    strategy:",
+    "      matrix:",
+    "        checks: ['bans; echo hi']",
+    "    steps:",
+    "      - run: cargo deny check ${{ matrix.checks }}",
+  ));
+  assertEquals(
+    findings.map((f) => f.kind === "command" ? f.argv : f.kind),
+    [["cargo", "deny", "check"]],
+  );
+});
+
+Deno.test("workflow: a continue-on-error matrix test is not allowed when the matrix cannot be expanded", () => {
+  // `missing` has no value in the matrix, so the command has no combination
+  // to evaluate the test on, and the failure blocks.
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check ${{ matrix.missing }}",
+    "        continue-on-error: ${{ matrix.missing != 'x' }}",
+  ));
+  assertEquals(
+    findings.map((f) =>
+      f.kind === "command" ? f.allowFailure === true : f.kind
+    ),
+    [false],
+  );
+});
+
+Deno.test("workflow: a dropped expression keeps a preceding option that carries its own value", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check --config=deny.toml ${{ env.X }}",
+  ));
+  assertEquals(
+    findings.map((f) => f.kind === "command" ? f.argv : f.kind),
+    [["cargo", "deny", "check", "--config=deny.toml"]],
+  );
+});
+
+Deno.test("workflow: an unrunnable finding names the line it came from", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny $SUBCOMMAND",
+  ));
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]?.kind, "unrunnable");
+  assertEquals(
+    findings[0]?.kind === "unrunnable" && findings[0].source,
+    "line 4",
+  );
+});
+
+Deno.test("workflow: a matrix working directory with no matrix value is unrunnable", () => {
+  const findings = workflowCargoDenyFindings(yaml(
+    "jobs:",
+    "  deny:",
+    "    steps:",
+    "      - run: cargo deny check",
+    "        working-directory: ${{ matrix.dir }}",
+  ));
+  assertEquals(findings.map((f) => f.kind), ["unrunnable"]);
+});

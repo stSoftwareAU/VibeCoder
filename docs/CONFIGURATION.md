@@ -5284,7 +5284,8 @@ The hook runs two stages:
    only the changed-files check.
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
-start, or times out refuses the push; markdownlint configured but
+start, or times out refuses the push (a `cargo deny` invocation CI allows to
+fail is the one exception: it only prints a `[PRE_PUSH_WARNING]`); markdownlint configured but
 `markdownlint-cli2` not found refuses the push; cspell configured and run by
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a ShellCheck CI policy with a missing or mismatched binary, an
@@ -5294,7 +5295,8 @@ test that exits non-zero, including when Floci cannot be started or the `aws` CL
 a deployable template, refuses the push; a `cargo deny` diagnostic (`error[...]`)
 or a CI invocation the hook cannot reproduce refuses the push as a verdict, and
 a missing `cargo deny`, unreachable advisory database, network or host, or a
-timeout refuses it as an infrastructure failure; a missing hook module, spec or
+timeout refuses it as an infrastructure failure (except on an invocation CI
+allows to fail, where each of these is only a `[PRE_PUSH_WARNING]`); a missing hook module, spec or
 `deno` binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).

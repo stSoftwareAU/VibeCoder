@@ -10,7 +10,8 @@
  * Fail closed. A CI invocation that cannot be reproduced locally blocks the
  * push. A failure that shows the tool itself is unavailable (no network, no
  * advisory database, no cargo-deny binary) is an infrastructure deferral,
- * never a pass and never a verdict. Any other non-zero exit is a verdict.
+ * never a pass and never a verdict. Any other non-zero exit is a verdict, unless CI allows the
+ * invocation to fail (see below), when it is a warning.
  *
  * The gate never adds `--offline`, an ignore list or a reduced-scope flag.
  * A `${{ matrix.<key> }}` expression is expanded from the job's literal
@@ -411,9 +412,8 @@ function matrixCombinations(
       matched = true;
       return { ...values, ...combination };
     });
-    if (!matched && wanted.some((key) => values[key] !== undefined)) {
-      combinations.push(values);
-    }
+    // An entry naming no wanted key adds nothing a wanted key could read.
+    if (!matched) combinations.push(values);
   }
   if (combinations.length > MAX_MATRIX_COMBINATIONS) return null;
   const seen = new Set<string>();
@@ -502,11 +502,9 @@ function dropUnresolved(tokens: readonly string[]): string[] {
       kept.push(token);
       continue;
     }
-    const previous = kept.at(-1);
-    if (
-      previous !== undefined && previous.startsWith("-") &&
-      !previous.includes("=")
-    ) kept.pop();
+    // `kept` always holds `cargo`, so there is a previous token; "" is for the types.
+    const previous = kept.at(-1) ?? "";
+    if (previous.startsWith("-") && !previous.includes("=")) kept.pop();
   }
   return kept;
 }

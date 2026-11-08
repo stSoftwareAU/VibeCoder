@@ -28,7 +28,8 @@
  *    deploy test are cheap. Then the repo's `cargo deny check` (Issue #4626)
  *    runs when the push changes a Cargo manifest, lock file or deny config and
  *    the repo's CI runs it; missing tools or an unreachable advisory database
- *    are infrastructure failures.
+ *    are infrastructure failures, except for an invocation CI allows to fail,
+ *    whose failures of every kind are `[PRE_PUSH_WARNING]` lines.
  * 2. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
