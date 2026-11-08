@@ -29,10 +29,12 @@ Version bump: none; no version file changed.
   input or a workflow-level, job-level or step-level `SHELLCHECK_OPTS` override
   is unsupported). The action policy selects its named shell files and
   executable extensionless shell shebangs, with its default exclusions; the
-  find policy selects `.sh` files. Symlinks are not execution targets, and a
-  symlinked configuration fails closed. Discovery checks
+  find policy selects `.sh` files. Targets with a symlink in any path component
+  are excluded, and a configuration with a symlink in any component fails
+  closed. Discovery joins shell line continuations and checks
   executable commands, including wrapped invocations, excluding logs, installation
-  arguments, comments and script path arrays. Unsupported wrappers fail closed.
+  arguments, comments and script path arrays. ShellCheck container images and
+  shell `-c` invocations are detected as unsupported. Unsupported wrappers fail closed.
   YAML block headers accept trailing comments.
 - Value-taking options (`-e -s -S -o -i -P -f -W` and their long forms,
   including `--opt=value` and attached `-Swarning`) consume their value instead
@@ -48,7 +50,7 @@ Version bump: none; no version file changed.
   uses `--norc`. Worker HOME, XDG and external ancestor configs cannot affect
   it.
 - Touched paths retain configuration deletions; execution targets exclude
-  deleted scripts. Unsupported policy, delegation, missing tools and version
+  deleted scripts and paths whose parent has become a file. Unsupported policy, delegation, missing tools and version
   mismatches return incomplete infrastructure results rather than success.
   ShellCheck execution failures propagate the pre-flight result.
   The babysitter classifies structured gate infrastructure errors as
@@ -109,6 +111,14 @@ all publication paths call the same implementation.
   diagnostics (the actual repository workflow, dialect and exclusions, and a
   later edit invalidating a clean result) live in
   `worker/deno/tests/shellcheck_gate_integration_test.ts`.
+- `pre_push_gate_test.ts::ShellCheck discovers continued commands and refuses indirect invocations`
+  covers continued `find` commands, container images and shell `-c` calls.
+  `pre_push_gate_test.ts::ShellCheck skips scripts under symlinked parents and missing directory paths`
+  covers changed and staged paths through a symlinked parent and a directory
+  replaced by a file; `pre_push_gate_test.ts::ShellCheck refuses a configuration below a symlinked directory`
+  covers configuration ancestors. The former treatment of symlinked parents and
+  `NotADirectory` as executable or fatal is obsolete; regular in-tree scripts
+  remain checked by the existing action and find policy tests above.
 - `worker/deno/tests/shellcheck_publication_test.ts`: a PR repair with
   `resolveRepairPreFlightSpec` leaves the remote unchanged on SC2086; a no-spec
   WIP checkpoint with the same diagnostic still pushes; the babysitter refuses

@@ -607,6 +607,11 @@ async function workflowDelegatesToShellcheck(
 
 function isShellcheckInvocation(line: string): boolean {
   const tokens = tokeniseCommand(line);
+  const shellCommand = ["bash", "sh"].includes(tokens[0] ?? "") &&
+    tokens[1] === "-c" && tokens[2] !== undefined &&
+    executableShellCommands(tokens[2]).some(isShellcheckInvocation);
+  const dockerImage = tokens[0] === "docker" && tokens[1] === "run" &&
+    tokens.some((token) => /^koalaman\/shellcheck(?::[^\s]+)?$/.test(token));
   const wrapped = ["xargs", "parallel", "do", "time", "exec", "nice", "timeout"]
     .includes(tokens[0] ?? "") &&
     tokens.slice(1).some((token, index, rest) =>
@@ -615,7 +620,7 @@ function isShellcheckInvocation(line: string): boolean {
     );
   return (tokens[0]?.split("/").at(-1) === "shellcheck" &&
     tokens[1] !== "--version") ||
-    wrapped ||
+    wrapped || shellCommand || dockerImage ||
     (tokens[0] === "find" &&
       tokens.some((t, i) => t === "-exec" && tokens[i + 1] === "shellcheck"));
 }
@@ -624,7 +629,7 @@ function isShellcheckInvocation(line: string): boolean {
 function executableShellCommands(body: string): string[] {
   const commands: string[] = [];
   let inArray = false;
-  for (const line of body.split("\n")) {
+  for (const line of body.replace(/\\\r?\n\s*/g, " ").split("\n")) {
     if (inArray) {
       if (/^\s*\)/.test(line)) inArray = false;
       continue;
@@ -1348,6 +1353,22 @@ async function actionShellcheckFile(
   }
 }
 
+async function shellcheckFileInfo(
+  cwd: string,
+  path: string,
+): Promise<Deno.FileInfo | null> {
+  const parts = path.split("/");
+  let current = cwd;
+  for (const [index, part] of parts.entries()) {
+    current += `/${part}`;
+    const info = await Deno.lstat(current);
+    if (info.isSymlink) return null;
+    if (index === parts.length - 1) return info;
+    if (!info.isDirectory) return null;
+  }
+  return null;
+}
+
 /**
  * Shared ShellCheck validation for hooks, completion and repair publication.
  * A policy the gate cannot read blocks only a push that touches a script, a
@@ -1397,9 +1418,9 @@ export async function runAffectedShellcheckChecks(opts: {
   const existingShellcheckFiles: string[] = [];
   for (const path of shellcheckFiles) {
     try {
-      const info = await Deno.lstat(`${opts.cwd}/${path}`);
+      const info = await shellcheckFileInfo(opts.cwd, path);
       if (
-        info.isFile && !info.isSymlink &&
+        info?.isFile &&
         (shellcheckPolicy.value?.version === null
           ? await actionShellcheckFile(opts.cwd, path, info)
           : path.endsWith(".sh"))
@@ -1407,7 +1428,10 @@ export async function runAffectedShellcheckChecks(opts: {
         existingShellcheckFiles.push(path);
       }
     } catch (error) {
-      if (error instanceof Deno.errors.NotFound) continue;
+      if (
+        error instanceof Deno.errors.NotFound ||
+        error instanceof Deno.errors.NotADirectory
+      ) continue;
       return infrastructureFail(
         `cannot inspect changed ShellCheck file ${path}: ${
           error instanceof Error ? error.message : String(error)
@@ -1418,8 +1442,8 @@ export async function runAffectedShellcheckChecks(opts: {
   if (shellcheckPolicy.value && existingShellcheckFiles.length > 0) {
     for (const path of shellcheckPolicy.value.configFiles) {
       try {
-        const info = await Deno.lstat(`${opts.cwd}/${path}`);
-        if (!info.isFile || info.isSymlink) {
+        const info = await shellcheckFileInfo(opts.cwd, path);
+        if (!info?.isFile) {
           return infrastructureFail(
             `cannot read ShellCheck configuration ${path}: not a regular file`,
           );
@@ -1574,7 +1598,10 @@ export async function runPrePushGate(opts: {
     try {
       if ((await Deno.lstat(`${opts.cwd}/${path}`)).isFile) existing.push(path);
     } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
+      if (
+        !(error instanceof Deno.errors.NotFound) &&
+        !(error instanceof Deno.errors.NotADirectory)
+      ) {
         return infrastructureFail(
           `cannot inspect pushed file ${path}: ${error}`,
         );

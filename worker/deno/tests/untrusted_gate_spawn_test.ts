@@ -168,6 +168,85 @@ Deno.test("a real repository command sees only allowlisted names (Issue #4659)",
   });
 });
 
+const PROXY = "http://192.168.128.2:3128";
+
+Deno.test("the egress proxy reaches the dropped command past sudo's env_reset (Issue #4877)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      {
+        spawn,
+        drop: agentDrop,
+        source: {
+          ...SOURCE,
+          HTTPS_PROXY: PROXY,
+          https_proxy: PROXY,
+          http_proxy: PROXY,
+          NO_PROXY: "localhost,127.0.0.1,::1",
+        },
+        trimRefused: false,
+      },
+    );
+    const final = callAt(calls, calls.length - 1);
+    assertEquals(final.executable, "sudo");
+    const afterEnv = final.args.slice(final.args.indexOf("env") + 1);
+    for (
+      const entry of [
+        `HTTPS_PROXY=${PROXY}`,
+        `https_proxy=${PROXY}`,
+        `http_proxy=${PROXY}`,
+        "NO_PROXY=localhost,127.0.0.1,::1",
+      ]
+    ) {
+      assert(afterEnv.includes(entry), `missing ${entry}: ${final.args}`);
+    }
+    assertEquals(final.args.slice(-2), ["cargo", "check"]);
+    assert(!final.args.some((arg) => arg.includes("secret")));
+  });
+});
+
+Deno.test("a proxy URL that carries credentials never goes into argv (Issue #4877)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      {
+        spawn,
+        drop: agentDrop,
+        source: { ...SOURCE, HTTPS_PROXY: "http://user:pw@proxy:3128" },
+        trimRefused: false,
+      },
+    );
+    const final = callAt(calls, calls.length - 1);
+    assert(!final.args.some((arg) => arg.includes("pw@")), `${final.args}`);
+  });
+});
+
+Deno.test("a command run as the worker carries the proxy in its env, not argv (Issue #4877)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "npm",
+      ["test"],
+      { cwd, timeoutMs: 1000 },
+      {
+        spawn,
+        drop: identityDrop,
+        source: { ...SOURCE, HTTPS_PROXY: PROXY },
+        trimRefused: false,
+      },
+    );
+    const only = callAt(calls, 0);
+    assertEquals([only.executable, ...only.args], ["npm", "test"]);
+    assertEquals(only.options.env?.HTTPS_PROXY, PROXY);
+  });
+});
+
 Deno.test("a usable untrusted account runs the command dropped, with the cargo target carried (Issue #4659)", async () => {
   await withCheckout(async (cwd) => {
     await withCheckout(async (root) => {
