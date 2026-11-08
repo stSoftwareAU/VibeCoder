@@ -170,6 +170,13 @@ the head.
   stderr characters → the long-stderr test failed; swallowing every remove error
   → the stale-remove and both-causes tests failed; removing the try/catch around
   the repair → the thrown-runner test failed.
+- Mutation check (7 survivors): three further tests pin them. The production
+  seams test asserts `productionBabysitterRepairDeps` reads, writes and removes
+  real files, uses `chooseBabysitterProvider` and `runClaudeWithTimeout`, and
+  logs through `console.error` (lines 51-56); the non-Error test asserts the
+  exact message for a thrown string and a thrown `Error` (line 60); the log-seam
+  test asserts the provider choice receives the repair's `log` (line 187). Each
+  deleted property or negated ternary now turns one of them red.
 - Branch outcomes: flags valid or refused; stale clear ok, NotFound or other
   error; prompt read ok, unreadable, blank; provider choice ok or throws; run
   result error, timed out, non-zero, empty, ok; write ok or throws; cleanup ok

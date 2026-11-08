@@ -9,8 +9,11 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   babysitterRepairCommand,
   type BabysitterRepairDeps,
+  productionBabysitterRepairDeps,
   runBabysitterRepair,
 } from "../commands/babysitter_repair.ts";
+import { chooseBabysitterProvider } from "../lib/babysitter_provider_choice.ts";
+import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import type {
   BabysitterProviderChoice,
   BabysitterProviderChoiceDeps,
@@ -568,4 +571,67 @@ Deno.test("non-zero exit quotes both ends of long stderr and keeps the secret ou
     );
     assertEquals(await exists(paths.response), false);
   });
+});
+
+Deno.test("the provider choice is handed the repair's own log seam", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness();
+
+    await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(h.chooseCalls[0]!.log, h.deps.log);
+    h.chooseCalls[0]!.log?.("from the provider choice");
+    assertStringIncludes(h.logs.join("\n"), "from the provider choice");
+  });
+});
+
+Deno.test("a non-Error throw is reported as its string form, an Error as its message", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness();
+    h.deps.chooseProvider = () => Promise.reject("plain string cause");
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.message, "provider choice failed: plain string cause");
+
+    const e = harness(new Error("error object cause"));
+    const errorResult = await runBabysitterRepair(
+      argsFor(paths),
+      CONFIG,
+      e.deps,
+    );
+    assertEquals(
+      errorResult.message,
+      "provider choice failed: error object cause",
+    );
+  });
+});
+
+Deno.test("production deps use real files, the real provider choice and runner, and stderr logging", async () => {
+  const deps = productionBabysitterRepairDeps;
+  assertEquals(deps.chooseProvider, chooseBabysitterProvider);
+  assertEquals(deps.runClaude, runClaudeWithTimeout);
+
+  await inWorkspace(async (paths) => {
+    const file = `${paths.root}/prod.txt`;
+    await deps.writeTextFile(file, "PROD TEXT");
+    assertEquals(await deps.readTextFile(file), "PROD TEXT");
+    assertEquals(await Deno.readTextFile(file), "PROD TEXT");
+    await deps.removeFile(file);
+    assertEquals(await exists(file), false);
+  });
+
+  const original = console.error;
+  const seen: unknown[][] = [];
+  console.error = (...a: unknown[]) => {
+    seen.push(a);
+  };
+  try {
+    deps.log("prod log line");
+  } finally {
+    console.error = original;
+  }
+  assertEquals(seen, [["prod log line"]]);
 });
