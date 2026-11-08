@@ -133,6 +133,9 @@ all publication paths call the same implementation.
   empty-input CLI test need the host ShellCheck. The entire suite is in the
   integration manifest and fails explicitly if the tool is unavailable. The
   babysitter missing-tool case also asserts its infrastructure classification.
+- `worker/deno/tests/git_push_preflight_test.ts`: `commitAndPushPending - no preFlight spec: WIP checkpoint with a ShellCheck diagnostic still pushed (PR #4898 review)`
+  is the hermetic (no ShellCheck binary) WIP case; forcing Step 1b to run with
+  a ShellCheck-only default turned it red (`ShellCheck version mismatch`).
 - Call sites: `worker/deno/tests/pr_round_repo_formatters_test.ts` (feedback and
   CI fix), `worker/deno/tests/pr_merge_conflict_processor_test.ts` and
   `worker/deno/tests/pr_spelling_processor_test.ts` assert the spec each
