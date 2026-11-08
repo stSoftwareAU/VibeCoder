@@ -23,7 +23,8 @@ the repair agent's permissions profile (the protected credential paths are
 with the rustup toolchain pinned and the rustc wrapper variables emptied
 (`worker/deno/lib/fleet_babysitter_cargo_deny_sandbox.ts`, recorded under C36 in
 `docs/THREAT-MODEL.md`). With no isolated runner the default gate cannot start
-the check and nothing is pushed.
+the check and nothing is pushed. The shared sandbox builder's refusal messages
+refer to building the sandbox, since it also serves checks that start no agent.
 
 ## Spec
 
@@ -95,6 +96,10 @@ entry points outside the worker's import map can load the gate.
   stand-in `codex` script). Breaking each of the cwd, inside-clone,
   relative-entry, only-`cargo deny` and `sandbox` subcommand guards on its own
   turned a test red.
+- `worker/deno/tests/fleet_babysitter_sandbox_test.ts::buildBabysitterSandboxArgs refuses an empty protected list`
+  checks the shared builder's refusal wording and retains a positive control for
+  a protected path. The sandbox and cargo-deny sandbox suites passed together
+  (37 tests) after this wording change.
 - `worker/deno/tests/babysitter_fix_orchestration_test.ts` (48 tests at head)
   proves `fix()` hands its cargo-deny runner to the finish and that the check
   runs before the push.
