@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4768",
   "definition": "Run one fleet babysitter repair session in the worker container: choose the provider, run the agent in the mounted clone, and write its final message to the response file, failing loud with no response file on any fault.",
   "status": "claimed",
-  "sweptAt": "2b77b2b5a285fe5b672ab90420992a356f3af737",
+  "sweptAt": "f090cc4da656b90884d77260227a46a990eec2ca",
   "paths": [
     "worker/deno/commands/babysitter_repair.ts"
   ]
