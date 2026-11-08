@@ -2913,6 +2913,8 @@ and configured pre-flight commands when the agent pushes; the worker verifies
 that push afterwards. PR-side callers pass their flow to
 `buildQualityInstructions()`; issue completion uses its full-gate default (Issue #4876). The skip record names that path's checks and tells the
 agent to name the checks it ran.
+Custom PR prompts take their prompt-time budget from `pr_feedback_timeout`,
+the same key that limits their run.
 
 So the instruction the agent receives is budget-aware, and it comes from one
 place: `buildQualityInstructions()` (`worker/deno/lib/repo_config.ts`), spliced
@@ -2945,7 +2947,7 @@ flowchart TD
     B -->|"issue completion"| C{"Gate fits the budget?"}
     B -->|"CI fix"| C
     B -->|"PR feedback / spelling"| C
-    B -->|"custom PR"| J["Agent pre-push hook runs changed-file checks and configured pre-flight"]
+    B -->|"custom PR"| C
     C -->|"yes"| D["Agent runs the full gate"]
     C -->|"no"| E["Targeted checks + skip record naming this flow's push checks"]
     D --> F{"Worker push path"}
@@ -2953,6 +2955,7 @@ flowchart TD
     F -->|"issue completion"| G["Worker full gate before PR creation"]
     F -->|"CI fix"| H["Worker gate attempt if uncommitted changes remain; configured pre-flight before push"]
     F -->|"feedback / spelling"| I["Configured pre-flight and changed-file checks; PR-review fix verifier even without configuration"]
+    F -->|"custom PR"| J["Agent pre-push hook runs changed-file checks and configured pre-flight; worker verifies push"]
     style E fill:#f4a261,stroke:#b5651d,color:#000
     style D fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```

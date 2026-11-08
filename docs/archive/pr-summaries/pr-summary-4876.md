@@ -28,14 +28,16 @@ Version bump: none for this change.
   runs its independent fix verifier without pre-flight configuration.
 - CI fixes describe the conditional worker gate attempt and configured
   pre-flight commands. Custom PR prompts describe the agent pre-push hook and
-  the worker's later push verification.
+  the worker's later push verification; their prompt-time budget comes from
+  `pr_feedback_timeout`, which also limits the run.
+- The CI command resolves retry state under the configured work root, matching
+  the run-core processor and keeping test state in the test's temporary root.
 - The spelling command passes `repoConfigs: config.repoConfig` to its processor,
   matching the configuration its prompt describes.
 
 ### Undiscoverable Facts
 
-- The CI command test uses a fresh check ID and removes its retry record, so
-  repeated test and mutation runs cannot exhaust the worker's retry counter.
+- The CI command test uses its own temporary work root for its retry record.
 
 ## Evidence
 
@@ -79,7 +81,11 @@ Kept implementation, checks and tests on Deno; no dependencies were added and
 - `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts` exercises real
   feedback, spelling and CI commands, capturing agent prompts. Spelling covers
   both absent and configured pre-flight commands and checks the spec passed to
-  the push helper.
+  the push helper. The CI test asserts its retry record is in its temporary work
+  root, and removes that root after the test.
+- The obsolete host retry-file cleanup was replaced: retry accounting remains
+  required, now under the configured work root. Coverage:
+  `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts::prCiProcessorCommand - agent receives the CI push guarantee and dedicated budget (Issue #4876)`.
 - `worker/deno/tests/run_core_production_deps_test.ts` captures feedback and
   custom PR prompt instructions from the production callbacks. Both use a 600 s
   reactive budget distinct from the 3600 s issue budget; feedback uses a
@@ -108,6 +114,8 @@ fail. No untestable exemptions were used.
 
 Validation for the review fix:
 
+- CI command push-guarantee suite: 4 passed, including the isolated retry
+  state assertion.
 - Production dependencies suite: 35 passed.
 - Repository Deno formatter and linter: passed.
 - Markdown lint: passed.

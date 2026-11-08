@@ -42,6 +42,7 @@ import { getWorkerUniqueId } from "../lib/worker_identity.ts";
 import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
+import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
 
 // Re-export library functions for external use
 export { formatCiAnnotations };
@@ -184,6 +185,7 @@ export const prCiProcessorCommand = {
           // Issue #1662: heartbeat, marker and milestone state live in the
           // work root, not in the clone `setupRepo` returned above.
           workRoot: config.workDir,
+          stateDir: resolveCiCheckStateDir(config.workDir),
           qualityInstructions,
           customInstructions,
           // Issue #1824: CI fix uses its own timeout, distinct from the

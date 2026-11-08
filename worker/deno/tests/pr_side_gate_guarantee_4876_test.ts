@@ -19,6 +19,7 @@ import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { prSpellingProcessorCommand } from "../commands/pr_spelling_processor.ts";
 import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
+import { getCiCheckRetryCount } from "../lib/pr_ci_checks.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   type ClaudeDeps,
@@ -369,6 +370,14 @@ Deno.test("prCiProcessorCommand - agent receives the CI push guarantee and dedic
     );
     assertEquals(result.success, true, result.message);
     assertEquals(
+      await getCiCheckRetryCount(
+        resolveCiCheckStateDir(workDir),
+        "org/repo",
+        checkRunId,
+      ),
+      1,
+    );
+    assertEquals(
       recordedOptions.length >= 1,
       true,
       result.data?.summary ?? "the agent must be invoked",
@@ -380,10 +389,5 @@ Deno.test("prCiProcessorCommand - agent receives the CI push guarantee and dedic
     assertEquals(prompt.includes(FULL_GATE_SENTENCE), false);
   } finally {
     await Deno.remove(workDir, { recursive: true });
-    await Deno.remove(
-      `${resolveCiCheckStateDir()}/org_repo_${checkRunId}.retries`,
-    ).catch((error) => {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    });
   }
 });
