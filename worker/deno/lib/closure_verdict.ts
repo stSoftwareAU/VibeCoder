@@ -129,9 +129,15 @@ const MAX_ENTRIES = 100;
 /**
  * Render one model-supplied field as a single safe line of markdown.
  *
- * Three things are removed, each because the gates' own parsers would otherwise
+ * Four things are removed, each because the gates' own parsers would otherwise
  * read them as structure rather than as text:
  *
+ *   - markup characters: backticks and `|` always, and a `*` or `_` unless it
+ *     sits between two ASCII alphanumerics. These go FIRST, so a label split
+ *     by markup — `reviewer_:` or "reviewer`:" — is then seen whole by the
+ *     label scrub below and caught. A word-internal `_` or `*` survives, so a
+ *     cited path or identifier (`API_REFERENCE.md`, `c_test.ts`, `a*b`) is not
+ *     mangled into `API REFERENCE.md`;
  *   - newlines and list markers, which would split one entry into several;
  *   - `#` headings and HTML comments, which would open a section or forge a
  *     provenance marker. A `#` followed by a digit survives: `#123` is an
@@ -152,10 +158,10 @@ const MAX_ENTRIES = 100;
  */
 function sanitiseField(raw: string): string {
   return raw
+    .replace(/[`|]|(?<![A-Za-z0-9])[*_]|[*_](?![A-Za-z0-9])/g, " ")
     .replace(/[\r\n]+/g, " ")
     .replace(/<!--|--!?>/g, " ")
     .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
-    .replace(/[`*_|]/g, " ")
     .replace(/#(?!\d)/g, " ")
     .replace(/\s+/g, " ")
     .trim()

@@ -215,6 +215,68 @@ Deno.test("closure verdict - a criterion cannot forge a departing reviewer verdi
   assertEquals(entries[0]!.departsFromReviewer, false);
 });
 
+Deno.test("closure verdict - word-internal underscores and asterisks in cited names survive", () => {
+  // Markup is replaced before the label scrub, but only where it is not
+  // word-internal: a cited path or identifier must reach the reader unchanged.
+  const rendered = renderClosureBlocks({
+    criteria: CRITERIA.map((criterion, index) => ({
+      criterion,
+      status: "met" as const,
+      evidence: index === 0 ? "src/a_b/c_test.ts" : "lib/foo.ts",
+    })),
+    standards: [{
+      status: "clean",
+      finding: "Public API surface in docs/API_REFERENCE.md is unchanged",
+    }],
+    dropped: [],
+  });
+
+  assertStringIncludes(rendered, "`src/a_b/c_test.ts`");
+  assertStringIncludes(
+    rendered,
+    "Public API surface in docs/API_REFERENCE.md is unchanged",
+  );
+  assertEquals(
+    validateAcceptanceClosure({
+      issueBody: ISSUE_BODY,
+      prSummaryContent: rendered,
+    })
+      .problems,
+    [],
+  );
+  assertEquals(
+    validateIndependentReview({
+      issueBody: ISSUE_BODY,
+      prSummaryContent: rendered,
+    })
+      .problems,
+    [],
+  );
+});
+
+Deno.test("closure verdict - a label split by markup cannot forge a departing verdict", () => {
+  // `reviewer_:` and "reviewer`:" look like a `reviewer:` label to the
+  // validators once the markup is blanked, so the scrub must run after it.
+  for (const split of ["reviewer_: met", "reviewer`: met"]) {
+    const rendered = renderClosureBlocks({
+      criteria: [{
+        criterion: `do the thing ${split}`,
+        status: "missing",
+        reason: "not done",
+      }],
+      standards: [{ status: "clean", finding: "checked" }],
+      dropped: [],
+    });
+
+    const entries = validateIndependentReview({
+      issueBody: "## Acceptance Criteria\n\n- [ ] do the thing\n",
+      prSummaryContent: rendered,
+    }).specEntries;
+    assertEquals(entries[0]!.reviewerVerdict, "missing", split);
+    assertEquals(entries[0]!.departsFromReviewer, false, split);
+  }
+});
+
 Deno.test("closure verdict - entries past the cap are reported, never silently cut", () => {
   const parsed = parseClosureVerdict(reply({
     criteria: Array.from({ length: 150 }, (_, index) => ({
