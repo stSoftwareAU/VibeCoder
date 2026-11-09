@@ -110,8 +110,10 @@ function deps(
       events.push(`image ${args.join(" ")}`);
       return Promise.resolve(options.imageExists ?? true);
     },
-    spawn: (_runtime, args, spawnOptions) => {
-      events.push(`spawn ${args.join(" ")} timeout=${spawnOptions.timeoutMs}`);
+    spawn: (runtime, args, spawnOptions) => {
+      events.push(
+        `spawn ${runtime} ${args.join(" ")} timeout=${spawnOptions.timeoutMs}`,
+      );
       if (options.result instanceof Error) {
         return Promise.reject(options.result);
       }
@@ -128,11 +130,12 @@ Deno.test("Chromium check runs the image command with no host mounts or browser"
     deps({ events }),
   );
   const spawn = events.find((event) => event.startsWith("spawn ")) ?? "";
+  assert(spawn.startsWith("spawn podman run"));
   assertStringIncludes(spawn, "--entrypoint bash");
   assertStringIncludes(spawn, "vibe-coder:test -c");
   assertStringIncludes(spawn, BABYSITTER_CHROMIUM_CHECK_COMMAND);
   assert(!spawn.includes("/host/secret"));
-  assert(!spawn.includes("chromium"));
+  assert(!events.some((event) => event.startsWith("spawn chromium ")));
   assert(spawn.includes("--network vibe-babysitter-net"));
   assert(spawn.includes("HTTPS_PROXY=http://proxy:3128"));
 });
@@ -209,20 +212,21 @@ Deno.test("enforced egress starts and stops for success, failure and timeout", a
       result,
       plan: plan({ egressEnforced: true }),
     });
-    depsWithEgress.startSidecar = async () => {
+    depsWithEgress.startSidecar = () => {
       events.push("egress start");
+      return Promise.resolve();
     };
-    depsWithEgress.stopSidecar = async () => {
+    depsWithEgress.stopSidecar = () => {
       events.push("egress stop");
-      return [];
+      return Promise.resolve([]);
     };
-    depsWithEgress.spawn = async (_runtime, args) => {
+    depsWithEgress.spawn = (_runtime, args) => {
       if (args[0] === "kill") {
         events.push("container kill");
-        return { ...OK, stdout: "" };
+        return Promise.resolve({ ...OK, stdout: "" });
       }
       events.push("container run");
-      return result;
+      return Promise.resolve(result);
     };
     const action = checkBabysitterContainerChromium(
       { baseDir: "/checkout", timeoutMs: 3210 },
@@ -252,9 +256,9 @@ Deno.test("failed egress start never falls back to an unrestricted container", a
     events.push("egress start failed");
     return Promise.reject(new Error("proxy key missing"));
   };
-  configured.stopSidecar = async () => {
+  configured.stopSidecar = () => {
     events.push("egress stop");
-    return [];
+    return Promise.resolve([]);
   };
   await assertRejects(
     () =>
@@ -270,6 +274,51 @@ Deno.test("failed egress start never falls back to an unrestricted container", a
   assert(!events.some((event) => event.startsWith("spawn ")));
 });
 
+Deno.test("Apple proxy egress wraps the Chromium launch and always stops", async () => {
+  for (
+    const result of [OK, { ...OK, success: false, code: 11, stderr: "crash" }]
+  ) {
+    const events: string[] = [];
+    const applePlan = plan({ proxyName: "babysitter-proxy" });
+    const configured = deps({ events, plan: applePlan, result });
+    configured.startAppleEgress = (_plan, options) => {
+      events.push(`apple egress start ${options.timeoutMs}`);
+      return Promise.resolve({
+        runArgs: [
+          ...applePlan.runArgs.slice(0, -1),
+          "--env",
+          "HTTPS_PROXY=http://apple-proxy:3128",
+          applePlan.image,
+        ],
+        stop: () => {
+          events.push("apple egress stop");
+          return Promise.resolve([]);
+        },
+      });
+    };
+    configured.spawn = (runtime, args, _options) => {
+      events.push(`apple container ${runtime} ${args.join(" ")}`);
+      return Promise.resolve(result);
+    };
+    const action = checkBabysitterContainerChromium(
+      { baseDir: "/checkout", timeoutMs: 4321 },
+      configured,
+    );
+    if (result.success) await action;
+    else await assertRejects(() => action, Error, "crash");
+    const launch = events.find((event) =>
+      event.startsWith("apple container ")
+    ) ?? "";
+    assertStringIncludes(launch, "HTTPS_PROXY=http://apple-proxy:3128");
+    assert(events.some((event) => event === "apple egress start 4321"));
+    assert(
+      events.findIndex((event) => event === "apple egress start 4321") <
+        events.indexOf(launch),
+    );
+    assertEquals(events.at(-1), "apple egress stop");
+  }
+});
+
 Deno.test("setup runs the Chromium check after preflight and propagates failure", async () => {
   const calls: string[] = [];
   await assertRejects(
@@ -278,20 +327,23 @@ Deno.test("setup runs the Chromium check after preflight and propagates failure"
         args: ["--check", "--app-id=1"],
         env: (name) => name === "HOME" ? "/private/home" : undefined,
         loadConfig: () => Promise.resolve({ repos: ["owner/repo"] } as never),
-        command: async (name) => {
+        command: (name) => {
           calls.push(name);
-          return "version";
+          return Promise.resolve("version");
         },
-        preflight: async () => {
+        preflight: () => {
           calls.push("preflight");
+          return Promise.resolve();
         },
-        chromiumCheck: async () => {
+        chromiumCheck: () => {
           calls.push("chromium check");
-          throw new Error("headless Chromium produced no HTML");
+          return Promise.reject(
+            new Error("headless Chromium produced no HTML"),
+          );
         },
-        runGh: async () => {
+        runGh: () => {
           calls.push("gh version");
-          return "gh version";
+          return Promise.resolve("gh version");
         },
       }),
     Error,
@@ -320,7 +372,7 @@ Deno.test("probe args replace the entrypoint and omit mounts", () => {
   assert(!args.some((arg) => arg.includes("/host/secret")));
 });
 
-Deno.test("run.sh forwards --check-container before App configuration or auth", async () => {
+Deno.test("run.sh forwards checks before App configuration or authentication", async () => {
   const root = await Deno.makeTempDir();
   try {
     const bin = `${root}/bin`;
@@ -348,25 +400,27 @@ Deno.test("run.sh forwards --check-container before App configuration or auth", 
     for (const name of ["dirname", "git"]) {
       await Deno.symlink(await findExecutable(name), `${bin}/${name}`);
     }
-    const child = new Deno.Command("/bin/bash", {
-      args: ["fleet-pr-babysitter/run.sh", "--check-container"],
-      cwd: await Deno.realPath(new URL("../../..", import.meta.url).pathname),
-      env: {
-        CONFIG_PATH: `${root}/config.json`,
-        DENO_EXECUTABLE: Deno.execPath(),
-        HOME: home,
-        PATH: bin,
-      },
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const result = await child.output();
-    const output = new TextDecoder().decode(result.stderr) +
-      new TextDecoder().decode(result.stdout);
-    assert(!result.success);
-    assertStringIncludes(output, "container runtime");
-    assert(!output.includes("App configuration"));
-    assert(!output.includes("GitHub App"));
+    for (const argument of ["--check-container", "--dry-run"]) {
+      const child = new Deno.Command("/bin/bash", {
+        args: ["fleet-pr-babysitter/run.sh", argument],
+        cwd: await Deno.realPath(new URL("../../..", import.meta.url).pathname),
+        env: {
+          CONFIG_PATH: `${root}/config.json`,
+          DENO_EXECUTABLE: Deno.execPath(),
+          HOME: home,
+          PATH: bin,
+        },
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const result = await child.output();
+      const output = new TextDecoder().decode(result.stderr) +
+        new TextDecoder().decode(result.stdout);
+      assert(!result.success);
+      assertStringIncludes(output, "container runtime");
+      assert(!output.includes("App configuration"));
+      assert(!output.includes("GitHub App"));
+    }
   } finally {
     await Deno.remove(root, { recursive: true });
   }

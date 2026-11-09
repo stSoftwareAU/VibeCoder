@@ -3788,15 +3788,21 @@ if (import.meta.main) {
   const prFilter = prArg === undefined ? undefined : Number(prArg);
   const home = Deno.env.get("HOME");
   if (!home) throw new Error("HOME is not set");
-  const app = await readBabysitterAppConfig(home);
-  const login = await babysitterAppIdentity(app);
+  let app: BabysitterAppConfig | undefined;
+  let login: string | undefined;
+  let identityAnnounced = false;
   await prepareBabysitterStartUp(home, babysitterStateDir());
-  console.log(`Using GitHub App ${login} for babysitter requests.`);
   do {
     try {
       await checkBabysitterContainerChromium({
         baseDir: babysitterCheckoutDir(),
       });
+      app ??= await readBabysitterAppConfig(home);
+      login ??= await babysitterAppIdentity(app);
+      if (!identityAnnounced) {
+        console.log(`Using GitHub App ${login} for babysitter requests.`);
+        identityAnnounced = true;
+      }
       const configPath = Deno.env.get("CONFIG_PATH") ?? ".config.json";
       const config = await loadConfigAndPublishDeployment(
         configPath,

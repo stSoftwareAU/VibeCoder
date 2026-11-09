@@ -103,14 +103,15 @@ From the VibeCoder checkout:
 ./fleet-pr-babysitter/run.sh --check-container
 ```
 
-Setup prompts for the GitHub App ID and private-key path, discovers the App
-installation, and verifies its permissions, repository access and GraphQL quota
-without printing credentials, then saves the App settings for run.sh and adds
-its bot to this host's fleet-lock identities. It checks the required commands
-checks the container runtime and image, then launches headless Chromium inside
-that image; it does not install Codex. The browser check passes only when the
-container command exits zero and stdout contains `<html`. Setup stops with the
-cause if the runtime, image or browser check fails.
+Setup first checks the required commands, container runtime and image, then
+launches headless Chromium inside that image; it does not install Codex. The
+browser check passes only when the container command exits zero and stdout
+contains `<html`. Setup stops with the cause if the runtime, image or browser
+check fails. After those checks, setup prompts for the GitHub App ID and
+private-key path, discovers the App installation, verifies its permissions,
+repository access and GraphQL quota without printing credentials, then saves
+the App settings for run.sh and adds its bot to this host's fleet-lock
+identities.
 For a non-interactive preflight, use `--check` and `--app-id=<id>`; the key
 defaults to `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass
 `--key=<path>`.
@@ -187,8 +188,8 @@ configured agent provider or fallback; it refuses a fallback that cannot enforce
 its isolation. Without them the verifier reports an outage and every review
 stays open. A pass that pushed nothing is retried under infrastructure backoff;
 after a push the kept publication record is retried on the next scan, with no
-backoff. Setup runs the container runtime and image preflight; it no longer
-installs Codex. Before execution, put the App's `<slug>[bot]` login in
+backoff. Setup runs the runtime/image preflight and Chromium launch check; it
+does not install Codex. Before execution, put the App's `<slug>[bot]` login in
 `service_accounts` or `fleet_pr_authors` **on every fleet host**. Run setup on
 each host (or deploy your organisation's fleet configuration) before starting
 repairs. Those workers only trust locks written by known fleet accounts. The MVP

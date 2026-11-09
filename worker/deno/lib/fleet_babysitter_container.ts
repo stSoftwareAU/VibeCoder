@@ -1233,9 +1233,9 @@ export function babysitterCheckoutDir(): string {
 }
 
 /**
- * The two checks a repair needs before it starts: the runtime is on PATH and
- * the worker image is built (Issue #4770). The repair and
- * {@link preflightBabysitterContainer} both run this, so the two cannot drift.
+ * The runtime and image checks shared by repair, setup preflight and the
+ * Chromium self-check (Issue #4770). All three entry points use this helper so
+ * their runtime and image refusals cannot drift.
  */
 async function checkRuntimeAndImage(
   plan: ContainerLaunchPlan,
@@ -1432,10 +1432,11 @@ export async function checkBabysitterContainerChromium(
     }
     const stdout = redactSecrets(result.stdout ?? "").slice(0, STDERR_CAP);
     const stderr = redactSecrets(result.stderr).slice(0, STDERR_CAP);
-    if (!result.success || result.code !== 0) {
+    if (result.code !== 0) {
+      const detail = stderr || stdout;
       throw new Error(
         `headless Chromium container exited with code ${result.code}${
-          stderr ? `: ${stderr}` : ""
+          detail ? `: ${detail}` : ""
         }`,
       );
     }
