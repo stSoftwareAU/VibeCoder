@@ -349,6 +349,11 @@ export async function excludeRepairByproducts(
   );
 }
 
+/** A GitHub `owner/name`; the one rule shared by the repair clone and its publication config reset. */
+export function isValidRepoName(repo: string): boolean {
+  return /^[\w-]+\/[\w.-]+$/.test(repo);
+}
+
 /**
  * Clone a repository for one repair through a per-repository bare mirror under
  * the babysitter state dir (Issue #4727). The first repair downloads the mirror
@@ -368,11 +373,6 @@ export async function excludeRepairByproducts(
  * is never staged as the fix (Issue #4827). `info/exclude` only affects
  * untracked paths, so a repo that tracks one of these paths is unaffected.
  */
-/** A GitHub `owner/name`; the one rule shared by the repair clone and its publication config reset. */
-export function isValidRepoName(repo: string): boolean {
-  return /^[\w-]+\/[\w.-]+$/.test(repo);
-}
-
 export async function cloneForRepair(
   repo: string,
   dir: string,
@@ -894,10 +894,10 @@ export async function recoverTemporaryClones(root: string): Promise<void> {
 }
 /**
  * Git flags for every git command the host runs inside the repair clone.
- * The repair container mounts the whole clone read-write, so the agent can
- * write `.git/hooks` and `.git/config`. Without these flags the host's
- * `add`, `diff`, `commit` and `push` would run those planted hooks and
- * fsmonitor command with the host's privileges. `/dev/null` is not a
+ * `buildBabysitterRunArgs` mounts the clone's `.git` read-only over the
+ * writable working tree. These flags are defence in depth for host git after
+ * the repair: they prevent hooks and fsmonitor commands from running with
+ * the host's privileges. `/dev/null` is not a
  * directory, so git finds no hook there, and `core.fsmonitor=false` stops a
  * planted fsmonitor command from running. `core.useReplaceRefs=false` makes
  * git ignore `refs/replace`, so a planted replacement cannot change what a
@@ -1078,9 +1078,9 @@ export async function resetRepairCloneGitConfig(
       "Refusing host git operations: repair .git is not a directory",
     );
   }
-  // The container mounts the clone read-write, so the agent can redirect where
-  // git reads its config, objects and per-worktree settings. Any of these files
-  // would make the config reset below miss the settings git really uses.
+  // buildBabysitterRunArgs mounts .git read-only over the writable working
+  // tree. As defence in depth, refuse redirects that would make the config
+  // reset below miss the settings git really uses.
   for (const redirect of REPAIR_GIT_REDIRECT_FILES) {
     try {
       await Deno.lstat(`${gitDir}/${redirect}`);

@@ -104,11 +104,11 @@ Backend and CLI change; no visual surface changed.
   overflow; #4656: Babysitter: recover temporary failures and continue PR
   reconciliation after a repair push (closed); #4771: Prove headless Chromium
   launches in the babysitter repair container (open, not delivered here).
-- The earlier quality gate passed static checks but the parallel Deno test pass
-  panicked on macOS; CI passed on the previous PR head. On this repair working
-  tree the whole Deno formatter, linter and type check passed, as did the Git
-  hardening suite and the nested-repository orchestration test. The full
-  orchestration suite needs an unavailable container runtime on this host.
+- The local quality gate passed formatting, lint, type checking, completeness
+  and Markdown checks, but its parallel Deno test pass panicked on macOS and
+  Checkov timed out. Semgrep was unavailable. The Git hardening suite passed all
+  16 tests separately. The current pushed PR head's CI gate passed; CI must run
+  again after this review fix. No container runtime is available on this host.
 - PR #4941 review round:
   `deno test -A tests/fleet_pr_babysitter_git_hardening_test.ts` passed all 16
   tests (six of them new in this round) and `tests/fleet_babysitter_app_test.ts`
@@ -185,10 +185,10 @@ Backend and CLI change; no visual surface changed.
   and
   `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix replaces agent-controlled git config before host publication (Issue #4770)`
   — reviewer: met
-- **partial** — `./quality.sh` passes. — evidence: the repair working-tree run
-  described in Evidence passed the static checks and focused tests, but the
-  container runtime is unavailable on this host — reviewer: partial — reason: CI
-  must confirm the full gate on the pushed head
+- **partial** — `./quality.sh` passes. — evidence: the working-tree run in
+  Evidence passed static checks and the focused suite, but Deno panicked and
+  Checkov timed out — reviewer: partial — reason: CI must confirm the full gate
+  on the pushed head
 - **unrequested** — exit status 42 for a reported task failure
   (`BABYSITTER_TASK_FAILURE_EXIT_CODE` in
   `worker/deno/commands/babysitter_repair.ts`) — reviewer: unrequested — reason:
@@ -265,6 +265,11 @@ Backend and CLI change; no visual surface changed.
   fixed in this diff
 - **violation** — Evidence lacked the issue-number list — evidence:
   `docs/archive/pr-summaries/pr-summary-4770.md:1` — reason: fixed in this diff
+- **violation** — two host-git safety comments described `.git` as writable
+  and `isValidRepoName` detached the clone documentation — evidence:
+  `worker/deno/commands/fleet_pr_babysitter.ts` — reason: fixed in this diff
+  (the comments describe the read-only mount and defence in depth; the clone
+  documentation now immediately precedes `cloneForRepair`)
 - **clean** — Australian English; no hidden paths staged; no named test is
   absent; secrets are redacted before launcher errors are rethrown; the response
   file is always removed from the clone; moved path helpers keep their tests in
