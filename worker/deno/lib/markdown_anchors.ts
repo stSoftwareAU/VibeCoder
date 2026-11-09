@@ -265,11 +265,7 @@ function scanParagraph(
   let current = 0;
   for (const m of text.matchAll(INLINE_LINK)) {
     const index = m.index ?? 0;
-    while (
-      current + 1 < starts.length && (starts[current + 1] ?? Infinity) <= index
-    ) {
-      current++;
-    }
+    while ((starts[current + 1] ?? Infinity) <= index) current++;
     const parsed = parseDestination(m[1] ?? "");
     if (parsed) {
       results.push({

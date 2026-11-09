@@ -222,6 +222,34 @@ Deno.test("crossFileAnchorLinks - never joins table rows (Issue #4870)", () => {
   ]);
 });
 
+Deno.test("crossFileAnchorLinks - never joins a paragraph across a reference definition (Issue #4870)", () => {
+  const separated = ["[a", "[r]: y.md#r", "b](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(separated), [
+    { line: 2, target: "y.md", fragment: "r" },
+  ]);
+
+  // Positive control: without the definition the same two lines are reported.
+  const adjacent = ["[a", "b](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(adjacent), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - never joins a paragraph across a heading or table row (Issue #4870)", () => {
+  const heading = ["[a", "# Title", "b](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(heading), []);
+
+  const row = ["[a", "| cell |", "b](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(row), []);
+
+  // Positive control: without the separating line the same two lines are
+  // reported.
+  const adjacent = ["[a", "b](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(adjacent), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
 Deno.test("crossFileAnchorLinks - skips a wrapped link inside a code span spanning two lines (Issue #4870)", () => {
   const wrappedCode = ["Use `[a", "b](x.md#f)` to link."].join("\n");
   assertEquals(crossFileAnchorLinks(wrappedCode), []);

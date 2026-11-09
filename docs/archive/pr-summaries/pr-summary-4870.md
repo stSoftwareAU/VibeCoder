@@ -63,7 +63,7 @@ extractor-skipped input.
 
 ## Test Plan
 
-Added to `worker/deno/tests/cross_file_anchors_test.ts` (14 tests; existing
+Added to `worker/deno/tests/cross_file_anchors_test.ts` (16 tests; existing
 tests unedited, only the header comment gained a mention of this issue):
 
 - Must report: two-line wrap, three-line wrap, wrap inside a list-item
@@ -86,6 +86,12 @@ Red checks (production code broken on purpose, then restored and byte-compared):
 - Blank line does not flush: 1 red (blank-line negative).
 - The two growth tests stay green under the per-line code, as expected; they
   guard the new join.
+
+Mutation check follow-up: two new tests pin the reference-definition flush
+(`markdown_anchors.ts:319`) and the heading/table-row flush (`:332`); deleting
+either call turns one test red. The `current + 1 < starts.length` operand of the
+line-pointer loop was dead (`starts[current + 1] ?? Infinity` is already
+`Infinity` past the end), so it was removed rather than tested.
 
 No existing test was edited or removed. Twinned rule: `crossFileAnchorLinks` is
 the only extractor of cross-file anchors (`git grep crossFileAnchorLinks`: the
