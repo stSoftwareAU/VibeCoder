@@ -434,8 +434,12 @@ provider, capability or tool-denial gap, and the subscription/CLI preflight
 unproved entitlement or exhausted quota. On that path nothing is dropped
 silently: Claude roles use CLI tool denials, a read-only Codex role has every
 change it makes to the checkout put back by the worker
-(`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356), and Gemini
-and DeepSeek fail closed. See
+(`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356). That
+restoration does not deny Bash or prevent commands and builds outside the
+checkout; Codex receives tool-denial lists as prompt text, not as enforced
+CLI restrictions. Gemini and DeepSeek fail closed. Provider selection alone
+does not disable the model-refusal fallback or provide filesystem/network
+isolation. See
 [Role configuration](ROLE-CONFIGURATION.md).
 
 ## 8. Rollout and safeguards

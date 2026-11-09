@@ -145,10 +145,12 @@ export function assertRoleSupported(
     };
   }
   if (provider === "codex") {
-    // Codex cannot deny named tools. A role call turns delegation off with
-    // features.multi_agent=false, and the issue-run gate puts back anything
-    // a read-only role changes (Issue #4356), so the edit and shell denials
-    // below hold; any other named denial is unsupported.
+    // Codex cannot enforce named tool denials. Role calls disable delegation
+    // with features.multi_agent=false. For a read-only role, the issue-run
+    // gate restores edits to the checkout (Issue #4356), but Bash remains
+    // available: commands and builds can run elsewhere, and their effects
+    // are outside that restoration. This role policy is not filesystem or
+    // network isolation; any other named denial is unsupported.
     const supported = [
       "Edit",
       "MultiEdit",
