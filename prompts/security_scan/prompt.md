@@ -1223,8 +1223,10 @@ assume it.
 
 ### Cloud permission chains (AWS IaC)
 
-Scope: AWS CloudFormation and Terraform only, IAM roles only, in-repo
-resources only. Static: no live cloud calls and no credential testing.
+Scope: AWS CloudFormation and Terraform only, in-repo resources only. The
+chain rules cover IAM roles only; the service-principal bullet also covers
+a trust or resource policy naming an AWS service principal. Static: no live
+cloud calls and no credential testing.
 
 The worker may append a pre-scan section at the end of this prompt. Its
 heading names the cloud permission-chain candidates and the worker
@@ -1254,9 +1256,12 @@ in scratch notes as "not checked".
   `<n>. <file>:<line> — <statement> — hands off <what> to hop <n+1>`.
 - **Service principal without a source condition.** A trust or resource
   policy naming an AWS service principal with no `aws:SourceArn` or
-  `aws:SourceAccount` condition is a finding only when it grants a privileged
-  action and nothing else in the file constrains the caller. Cite the
-  statement; the smallest fix is adding the condition.
+  `aws:SourceAccount` condition is a finding only when it exposes a
+  privileged action and nothing else constrains the caller; for a role
+  trust policy the privilege is the role's permission grants (the exception
+  to the lone-permission rule). File it standalone as `confused-deputy`
+  (CWE-441), not an exploit-chain, one issue against the cap. Cite
+  the statement; the smallest fix is adding the condition.
 - **Wildcard hygiene is not filed here.** A constituent that is only plain
   `Action: "*"` or `Resource: "*"` hygiene belongs to best-practices.
 - **Severity and confidence.** Severity follows Phase 3 step 5. An

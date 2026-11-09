@@ -514,9 +514,11 @@ permission chains in AWS IAM roles declared in CloudFormation and Terraform.
 The worker walks the checkout and lists candidates in the prompt; Claude
 confirms every cited hop before anything is filed.
 
-**Scope.** AWS CloudFormation and Terraform only; IAM roles only; in-repo
-resources only. Nothing is probed live, no credentials are tested, and
-Kubernetes and GCP resources are out of scope.
+**Scope.** AWS CloudFormation and Terraform only; in-repo resources only.
+The chain rules cover IAM roles only; the service-principal source-condition
+check also covers a trust or resource policy naming an AWS service principal.
+Nothing is probed live, no credentials are tested, and Kubernetes and GCP
+resources are out of scope.
 
 ```mermaid
 flowchart TD
@@ -546,9 +548,10 @@ flowchart TD
   role holds privileged grants the caller lacks.
 
 A lone `iam:PassRole`, `sts:AssumeRole` or `ssm:SendCommand` is never a
-finding. Each candidate line names the chain kind, the cited hops
-(`file:line`), the boundary, the conditions, the declared intent and the
-smallest fix.
+finding — the service-principal source-condition check below is the
+exception, since a trust policy exposes the role's own permission grants.
+Each candidate line names the chain kind, the cited hops (`file:line`), the
+boundary, the conditions, the declared intent and the smallest fix.
 
 ### Deny, boundaries, conditions and unknowns
 
@@ -568,7 +571,11 @@ Each complete chain is filed as one `exploit-chain` finding tagged `CWE-269`.
 Its id is `SEC-` from class `exploit-chain`, the entry-hop file, and the
 snippet `<kind>|<caller>|<target>`. The constituent statements are not filed
 as separate issues; the `## Exploit chain` hops cite the IaC lines. The chain
-counts as one standalone finding against the 6-issue cap.
+counts as one standalone finding against the 6-issue cap. A trust or resource
+policy naming an AWS service principal with no `aws:SourceArn` /
+`aws:SourceAccount` condition is filed standalone as a `confused-deputy`
+finding (`CWE-441`), not an exploit-chain, and also counts as one issue
+against the 6-issue cap.
 
 Before filing, the chain is deduplicated against the suppressed and known-open
 lists, and against open issues that already propose the same fix for the same
@@ -1097,8 +1104,10 @@ list:
 
 - **Cloud permission chains (AWS IaC)** — an AssumeRole escalation, a
   PassRole launch through compute, or an SSM SendCommand into a more privileged
-  instance role, traced across CloudFormation and Terraform IAM. Filed as one
-  `exploit-chain` finding (`CWE-269`). See
+  instance role, traced across CloudFormation and Terraform IAM, filed as one
+  `exploit-chain` finding (`CWE-269`); plus a trust or resource policy naming
+  an AWS service principal with no `aws:SourceArn` / `aws:SourceAccount`
+  condition, filed standalone as `confused-deputy` (`CWE-441`). See
   [Cloud permission chains (AWS IaC)](#cloud-permission-chains-aws-iac).
 
 ### OWASP GenAI / LLM Top 10 (2025) — LLM-using repos only
