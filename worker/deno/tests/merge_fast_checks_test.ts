@@ -169,6 +169,29 @@ Deno.test("planFastChecks: a Deno project with no check task type-checks the who
   });
 });
 
+Deno.test("planFastChecks: object-form manifest tasks are included in the plan (Issue #4811)", async () => {
+  const manifest = JSON.stringify({
+    tasks: {
+      check: { command: "deno check src/main.ts", description: "check" },
+      "check:manifests": { command: "deno run check_manifests.ts" },
+      "test:unit": { command: "deno test", dependencies: ["generate"] },
+      test: { command: "deno test --all" },
+    },
+  });
+  await withTree({ "pkgs/app/deno.json": manifest }, async (root) => {
+    const plan = await planFastChecks(root, ["pkgs/app/main.ts"]);
+    const dir = `${root}/pkgs/app`;
+    assertEquals(plan.map((check) => check.args), [
+      ["fmt", "--check"],
+      ["lint"],
+      ["task", "check"],
+      ["task", "check:manifests"],
+      ["task", "test:unit"],
+    ]);
+    assert(plan.every((check) => check.dir === dir));
+  });
+});
+
 Deno.test("planFastChecks: Cargo runs --locked only where a Cargo.lock is committed", async () => {
   await withTree({
     "crate/Cargo.toml": CARGO_MANIFEST,
@@ -915,6 +938,56 @@ Deno.test("spawnFastCheck isolates credentials and uses the untrusted spawn", as
     );
     assert(called);
     assertEquals(result.code, 0);
+  }
+});
+
+Deno.test("spawnFastCheck keeps object-form check tasks read-only only when safe (Issue #4811)", async () => {
+  for (
+    const [task, readOnly] of [
+      [{ command: "deno check main.ts", description: "safe" }, true],
+      [{ command: "deno run -A gen.ts && deno check main.ts" }, false],
+      [{ command: "deno check main.ts", dependencies: ["generate"] }, false],
+    ] as const
+  ) {
+    await withTree({
+      "deno.json": JSON.stringify({ tasks: { check: task } }),
+      "deno.lock": "{}",
+    }, async (root) => {
+      const probeScripts: string[] = [];
+      let commandRan = false;
+      const result = await spawnFastCheck(
+        {
+          dir: root,
+          kind: "deno",
+          label: "deno task check",
+          args: ["task", "check"],
+          timeoutMs: 1000,
+        },
+        {},
+        (_binary, args) => {
+          if (isProbeCall(args)) {
+            probeScripts.push(args[6]!);
+            return probePassed();
+          }
+          commandRan = true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              success: true,
+              stdout: "",
+              stderr: "",
+              timedOut: false,
+            },
+          });
+        },
+        (cmd) => Promise.resolve(["sudo", "-n", "-u", "agent", "--", ...cmd]),
+      );
+      assertEquals(result.code, 0);
+      assertEquals(commandRan, true);
+      assertEquals(probeScripts.length, 1);
+      assertEquals(probeScripts[0]!.includes('test -w "$1"'), !readOnly);
+    });
   }
 });
 

@@ -189,6 +189,8 @@ function tail(output: string): string {
 
 /**
  * Which of a project's tasks verify a resolution.
+ * `readManifestTasks` normalises string and command-bearing object tasks;
+ * dependencies-only tasks are not discovered as checks or suites.
  *
  * @param defined - Every task the project's manifest declares
  * @returns The tasks to run, in order; empty when it declares none of them

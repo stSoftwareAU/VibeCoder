@@ -489,7 +489,16 @@ the event loop. The type check has its own limit: 300 s for a Deno project and
 pre-merge commit and escalated — with both halves: what the verification said
 *and* both sides prepared. A tree with no type check or no unit suite is
 *unverifiable*, and a resolution that cannot be verified is not a resolution —
-it is refused the same way. There are two exceptions, and each names what went
+it is refused the same way.
+
+Deno tasks are discovered in string form or object form when the object has a
+non-empty `command`; descriptions do not affect discovery. Dependencies-only
+tasks are excluded from discovery, although Deno runs their dependencies when
+the task is invoked. An object-form `check` task with dependencies is still the
+repository's type check, but retains the checkout write probe because a
+dependency may write project files.
+
+There are two exceptions, and each names what went
 unchecked. The first is a merge-only cycle (Issue #4326) on a cargo-only tree:
 when the host cannot afford the cargo build, a resolution is pushed with the
 `UNGATED` note and the milestone PR's CI builds it. The second (Issue #4422)
