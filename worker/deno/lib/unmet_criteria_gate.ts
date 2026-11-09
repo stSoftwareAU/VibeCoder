@@ -118,8 +118,8 @@ export function buildUnmetCriteriaGateComment(
     "",
     "These do not block the pull request, which is raised and armed " +
     "anyway. Finish what you can in this session; a criterion still unmet " +
-    "is named for the reviewer on the pull request. A `missing` entry makes " +
-    "the pull request body `Part of #N`, so the issue stays open. No " +
+    "is named for the reviewer on the pull request. A `partial` or `missing` " +
+    "entry makes the pull request body `Part of #N`, so the issue stays open. No " +
     "follow-up issue is filed.",
   ].join("\n");
 }
