@@ -55,4 +55,5 @@ Independent spec and standards reviewers were not dispatched because the run ins
 - Readiness mutation checks each went red: bypassing the command comparison failed the wrong-command test; bypassing the PID-1 comparison failed the wrong-parent test; returning success when no process appeared failed the never-appears test. Mutations were restored.
 - Targeted `deno fmt --check`, `deno lint` and `deno check` passed for the changed TypeScript files.
 - `./quality.sh < /dev/null`: passed, including all Deno tests, lint, type check and formatting. Config integration and Checkov were skipped: `.config.json` was unavailable and Checkov was not installed.
+- `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4825-body.md --labels work-on ../../docs/archive/pr-summaries/pr-summary-4825.md`: passed with 0 blocked and 0 not-checked gates. Markdownlint and Mermaid checks after adding this summary also passed.
 - No assertions protecting orphan survival, absence of a reaping log, or cleanup were removed.
