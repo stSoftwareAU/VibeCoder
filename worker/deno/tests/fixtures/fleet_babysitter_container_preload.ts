@@ -9,8 +9,9 @@ export {};
 
 const root = Deno.env.get("BABYSITTER_REPAIR_FIXTURE");
 if (!root) throw new Error("BABYSITTER_REPAIR_FIXTURE is required");
-const realCheckout = Deno.env.get("BABYSITTER_REAL_CHECKOUT");
-if (!realCheckout) throw new Error("BABYSITTER_REAL_CHECKOUT is required");
+const realCheckoutEnv = Deno.env.get("BABYSITTER_REAL_CHECKOUT");
+if (!realCheckoutEnv) throw new Error("BABYSITTER_REAL_CHECKOUT is required");
+const realCheckout: string = realCheckoutEnv;
 const RealCommand = Deno.Command;
 
 // Exercise a real pending open in the production CLI child process.
