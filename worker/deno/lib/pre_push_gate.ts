@@ -34,9 +34,10 @@
  *    `findCiCargo`: with none, no CI cargo check is planned or run. The
  *    agent's own pre-push hook (`lib/pre_push_gate_cli.ts`) runs under
  *    `--no-config`, where the YAML parser that reads the workflows cannot be
- *    loaded, so it does not run them. The worker's own gates do: `git_push.ts`
- *    `gateUnpushedCommits` (`commitAndPushPending` Step 1b and the completion
- *    phase) passes `repoCiCargoChecks`.
+ *    loaded, so it receives the scan precomputed into its spec and passes it
+ *    back as `findCiCargo`. The worker's own gates pass `repoCiCargoChecks`
+ *    directly: `git_push.ts` `gateUnpushedCommits` (`commitAndPushPending`
+ *    Step 1b and the completion phase).
  * 3. Then runs the repo's `cargo deny check` (Issue #4626) for eligible
  *    workflows when intermediate pushes, ShellCheck-only repairs or
  *    `ciCargoOnly` repairs change a cargo input (a Cargo manifest, lock file,
@@ -2075,9 +2076,10 @@ async function failsOnBaseToo(args: {
  *
  * The CI cargo checks are read from the repo's pull-request workflows by
  * `findCiCargo`, which is opt-in with no default: a caller that does not pass it
- * gets no CI cargo check, planned or run. The agent's own pre-push hook does not
- * pass it (it runs under `--no-config` and cannot load the YAML parser); the
- * worker's gates in `git_push.ts` do. When the scan holds a command that cannot
+ * gets no CI cargo check, planned or run. The agent's own pre-push hook passes
+ * it too, from a scan the worker precomputes into the hook spec before the agent
+ * runs, so the `--no-config` hook never loads the YAML parser itself; the
+ * worker's gates in `git_push.ts` pass it directly. When the scan holds a command that cannot
  * be reproduced here, the push fails with a
  * {@link PrePushGateInfrastructureError}. Before the first CI cargo command
  * runs, every distinct Rust toolchain the plan uses is probed (`cargo +T

@@ -5091,8 +5091,8 @@ environment, so the hook does not gate them; instead its final-mile
 commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
 changed-files check through `runPrePushGate` on the already-committed
 unpushed commits before pushing, and refuses the push on failure (Issue #3689).
-That check includes the CI cargo checks, which the agent's own hook does not
-run (see the CI cargo bullet below).
+That check includes the CI cargo checks, as does the agent's own hook, which
+receives the scan precomputed in its spec (see the CI cargo bullet below).
 WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
 Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 (such as WIP-preservation pushes) are not gated there. The CI-fix and
@@ -5107,7 +5107,7 @@ and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the first stage below: deno
 fmt/lint, cargo fmt, markdownlint, cspell, ShellCheck and the Floci CloudFormation
 deploy test), the CI cargo clippy and test-target compile (which the agent's
-hook does not run) and cargo deny still run and can fail the run. Unlike Step
+hook also runs from its precomputed spec) and cargo deny still run and can fail the run. Unlike Step
 1b, the completion gate checks every commit the branch has
 ahead of the PR base, not only commits on no remote-tracking ref; a merge commit
 contributes only the paths the merge itself changed (a conflict resolution),
@@ -5167,8 +5167,9 @@ or not the repo configures a pre-flight, so a repo with no Step 1b gate still
 has the miss fixed before CI sees it. A hook that throws is logged, and Step 1b
 still checks everything. WIP-preservation pushes pass no hook.
 
-The gate runs two stages. The agent's own hook runs them without the CI cargo
-checks in stage 1, which only the worker's own gates run (see that bullet):
+The gate runs two stages. The agent's own hook runs them with the CI cargo
+checks in stage 1, from the scan precomputed in its spec, as the worker's own
+gates do (see that bullet):
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
