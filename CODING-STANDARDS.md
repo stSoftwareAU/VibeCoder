@@ -1926,9 +1926,10 @@ worker-authored commit.
 
 ## PR Summary and Evidence
 
-At the end of your work, after all commits are complete, create
-`docs/archive/pr-summaries/pr-summary-{issue_number}.md` — the canonical home
-for every PR summary — containing:
+At the end of your work, after all commits are complete, write
+`docs/archive/pr-summaries/pr-summary-{issue_number}.md` (replacing any copy an
+earlier PR for the same issue left on the base) — the canonical home for every
+PR summary — containing:
 
 1. **Summary** — What was changed and why, including `Part of #<n>` when the
    `## Acceptance Criteria` block marks any criterion `partial` or `missing`, otherwise
