@@ -31,6 +31,13 @@ compile error is therefore caught before the push, not by a CI run. Closes
   repair pushes run only the CI cargo checks, the ShellCheck policy and the
   `cargo deny` gate that every gate run applies (#4631, #4626, merged from
   main).
+- Infrastructure is never charged: when the pre-push gate fails with
+  `PrePushGateInfrastructureError` (on the first push or on the retry after push
+  recovery), `pr_ci_processor.ts` writes a no-charge attempt marker and replies
+  that the gate could not run on this host, and `pr_feedback_processor.ts`
+  releases the comment uncharged through its existing host-fault release path
+  (`releaseUncharged`). A lint or compile failure still blocks and is charged as
+  before.
 - Merge with main (#4631, #4909): the ShellCheck policy and `shellcheckOnly`
   stay as main has them. The cargo checks are planned from a changed-file list
   that keeps a file reached through a symlinked parent directory
@@ -112,7 +119,9 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `ciCargoOnly` cases.
 - `tests/git_push_preflight_test.ts`, `tests/pr_ci_processor_test.ts`,
   `tests/pr_feedback_processor_pre_flight_4630_test.ts`: wiring of the
-  cargo-only spec into both repair processors and the ungated WIP path.
+  cargo-only spec into both repair processors and the ungated WIP path;
+  `pr_ci_processor_test.ts` and `pr_feedback_review_dismissal_3383_test.ts` also
+  pin the uncharged release of an infrastructure gate failure.
 
 ## Test Plan
 
