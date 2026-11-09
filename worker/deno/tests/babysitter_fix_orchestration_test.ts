@@ -8,27 +8,51 @@ import {
 import {
   appendEvidence,
   appendTrackedPrs,
+  assertRepairTreeSafe,
   attemptKey,
+  BABYSITTER_CONTAINER_RESPONSE_FILE,
+  BABYSITTER_RESPONSE_FILE,
   classifyBabysitterGitFailure,
   cloneForRepair,
   escalateStuckRepair,
   type EscalationRequest,
   fix,
   type FixDeps,
-  forwardAgentStderr,
   observeTrackedPr,
   pendingPublicationStore,
   readOnlyReviewVerifier,
   readSharedBabysitterAttempts,
   reconcileTrackedPr,
   repairFailureIdentity,
+  resetRepairCloneGitConfig,
+  startBabysitterAgent,
 } from "../commands/fleet_pr_babysitter.ts";
 import {
+  BabysitterFailure,
   babysitterRetryEligible,
   type BabysitterRetryRecord,
   listBabysitterRetryStates,
   saveBabysitterRetryState,
 } from "../lib/babysitter_retry_state.ts";
+import { ContainerRuntimeUnavailableError } from "../lib/container_runtime.ts";
+import { BABYSITTER_AGENT_PERMISSIONS } from "../lib/fleet_babysitter_app.ts";
+import {
+  BABYSITTER_CLONE_MOUNT,
+  BABYSITTER_TASK_FAILURE_EXIT_CODE,
+  type BabysitterContainerDeps,
+  runBabysitterRepairContainer,
+} from "../lib/fleet_babysitter_container.ts";
+import { babysitterHostCredentialPaths } from "../lib/fleet_babysitter_paths.ts";
+import {
+  fakeContainer,
+  fakeTokenExchange,
+  generateTestKeyPem,
+  repairDirs,
+  repairHost,
+  repairPlan,
+  type RuntimeSpawn,
+  withTestKey,
+} from "./fixtures/babysitter_container_fakes_4770.ts";
 import { createLogger } from "../lib/logger.ts";
 import { acquireBranchUpdateLock } from "../lib/pr_branch_lock.ts";
 import type {
@@ -57,10 +81,11 @@ const APP = { appId: "1", installationId: "1", privateKeyPath: "/unused" };
 interface AgentScript {
   code?: number;
   stderr?: string;
-  signal?: string | null;
   response?: string;
   expiresInMs?: number;
   elapsedMs?: number;
+  /** Throws this message as a code-class failure, as a repair the agent failed would. */
+  codeFailure?: string;
   setupScratch?: (scratch: string) => Promise<void>;
   proposal?: string;
 }
@@ -109,6 +134,7 @@ function harness(
     escalations: 0,
     escalateFails: 0,
     markerFailures: 0,
+    markerAttempts: 0,
     reviewId: 10,
     reviewBody: undefined as string | undefined,
     editFailures: 0,
@@ -116,6 +142,8 @@ function harness(
     journalled: [] as Array<
       { repo: string; prNumber: number; headSha: string }
     >,
+    /** Every host command the git/gh boundary was asked to run (Issue #4770). */
+    commands: [] as string[],
   };
   let nextId = 100;
   const gh = (args: string[]): Promise<string> => {
@@ -182,6 +210,7 @@ function harness(
       args[0] === "api" && args[1] === `repos/${REPO}/issues/1/comments` &&
       args.includes("POST")
     ) {
+      state.markerAttempts++;
       if (state.markerFailures > 0) {
         state.markerFailures--;
         return Promise.reject(new Error("marker write 502"));
@@ -206,6 +235,7 @@ function harness(
   };
   const run: NonNullable<FixDeps["run"]> = (command, args) => {
     const joined = `${command} ${args.join(" ")}`;
+    state.commands.push(joined);
     for (const failure of state.runFailures) {
       if (joined.includes(failure.match)) {
         return Promise.reject(new Error(failure.message));
@@ -230,6 +260,9 @@ function harness(
     }
     return Promise.resolve("");
   };
+  // The stub follows startBabysitterAgent's contract: false when beforeSpawn
+  // declines, otherwise true with the agent's final message in the exchange.
+  // Mirror the container wrapper's error text and existing retry classifier.
   const startAgent: NonNullable<FixDeps["startAgent"]> = async (
     _app,
     _repo,
@@ -240,7 +273,7 @@ function harness(
     agentOptions.onTokenExpiry?.(
       new Date(Date.now() + (script.expiresInMs ?? 3_600_000)),
     );
-    if (!await beforeSpawn()) return undefined;
+    if (!await beforeSpawn()) return false;
     state.sessions++;
     await script.setupScratch?.(agentOptions.scratch);
     if (script.proposal) {
@@ -250,32 +283,29 @@ function harness(
       );
     }
     state.prompts.push(agentOptions.prompt);
-    if ((script.code ?? 0) === 0) {
-      await Deno.writeTextFile(
-        agentOptions.responseFile,
-        script.response ?? "done\nBABYSITTER_READY\n",
-      );
-    }
     if (script.elapsedMs) {
       const now = Date.now();
       Date.now = () => now + script.elapsedMs!;
     }
-    return {
-      stderr: new ReadableStream({
-        start(controller) {
-          if (script.stderr) {
-            controller.enqueue(new TextEncoder().encode(script.stderr));
-          }
-          controller.close();
-        },
-      }),
-      status: Promise.resolve({
-        success: (script.code ?? 0) === 0,
-        code: script.code ?? 0,
-        signal: script.signal ?? null,
-      }),
-      kill() {},
-    } as unknown as Deno.ChildProcess;
+    if (script.codeFailure !== undefined) {
+      throw new BabysitterFailure(script.codeFailure, "code");
+    }
+    const code = script.code ?? 0;
+    if (code !== 0) {
+      const message =
+        `babysitter repair container vibe-babysitter-test exited with code ${code}${
+          script.stderr ? `: ${script.stderr}` : ""
+        }; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`;
+      throw new BabysitterFailure(
+        message,
+        code === BABYSITTER_TASK_FAILURE_EXIT_CODE ? "code" : "infrastructure",
+      );
+    }
+    await Deno.writeTextFile(
+      `${agentOptions.exchange}/${BABYSITTER_RESPONSE_FILE}`,
+      script.response ?? "done\nBABYSITTER_READY\n",
+    );
+    return true;
   };
   const deps: FixDeps = {
     stateDir,
@@ -289,6 +319,8 @@ function harness(
     verifyReviews: allVerified,
     armAutoMerge: () => Promise.resolve(),
     startAgent,
+    resetGitConfig: () => Promise.resolve(),
+    assertTreeSafe: () => Promise.resolve(),
     journalAttempt: (attempt) => {
       state.journalled.push(attempt);
       return Promise.resolve();
@@ -418,11 +450,11 @@ Deno.test("transient failure, cooldown, retry, checked repair, CI, review and me
   await withState(async (stateDir) => {
     const h = harness(stateDir);
     // 1. The provider ends the session: an infrastructure failure.
-    h.state.agents.push({ code: 1, signal: "SIGKILL" });
+    h.state.agents.push({ code: 1, stderr: "stream disconnected" });
     await assertRejects(
       () => h.attempt(),
       Error,
-      "agent exited unsuccessfully",
+      "exited with code 1",
     );
     let [record] = await records(stateDir);
     assertEquals(record!.blockerClass, "infrastructure");
@@ -546,9 +578,9 @@ Deno.test("head movement defers, and a head that moves mid-repair spends no subs
     h.state.changes = true;
     const startAgent = h.deps.startAgent!;
     h.deps.startAgent = async (...args) => {
-      const child = await startAgent(...args);
+      const ran = await startAgent(...args);
       h.state.pr = basePr({ headRefOid: "d".repeat(40) }) as never;
-      return child;
+      return ran;
     };
     await assertRejects(() => h.attempt(), Error, "PR changed during the fix");
     const [record] = await records(stateDir);
@@ -619,7 +651,7 @@ Deno.test("an expired read token restarts the session and the repair continues",
   await withState(async (stateDir) => {
     const h = harness(stateDir);
     h.state.changes = true;
-    h.state.agents.push({ code: 143, signal: "SIGTERM", expiresInMs: 60_000 });
+    h.state.agents.push({ code: 143, expiresInMs: 60_000 });
     await h.attempt();
     assertEquals(h.state.sessions, 2);
     assertStringIncludes(h.state.prompts[1]!, "previous read token expired");
@@ -671,15 +703,49 @@ Deno.test("a failed escalation is retried on the next no-progress pass", async (
   });
 });
 
-Deno.test("a failed marker write keeps the retry record and the repair's real error", async () => {
+Deno.test("a non-zero container exit keeps the retry record and the repair's real error (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir, { markerFails: true });
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns, {
+          onSpawn: () =>
+            Promise.resolve({
+              success: false,
+              code: BABYSITTER_TASK_FAILURE_EXIT_CODE,
+              stderr: "task-failure: invalid source",
+              timedOut: false,
+            }),
+        }),
+      );
+      await assertRejects(
+        () => h.attempt(),
+        Error,
+        `exited with code ${BABYSITTER_TASK_FAILURE_EXIT_CODE}: task-failure: invalid source`,
+      );
+      const [record] = await records(stateDir);
+      assertEquals(record!.blockerClass, "code");
+      assertEquals(record!.attempts, { infrastructure: 0, substantive: 1 });
+      assertEquals(h.state.markers.length, 0);
+      assert(record!.nextEligibleAt !== null);
+    });
+  });
+});
+
+Deno.test("a failed marker write never replaces the repair's real error", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir, { markerFails: true });
-    h.state.agents.push({ code: 1, stderr: "task failed: invalid source" });
+    h.state.agents.push({
+      codeFailure: "agent exited unsuccessfully with code 1",
+    });
     await assertRejects(
       () => h.attempt(),
       Error,
       "agent exited unsuccessfully with code 1",
     );
+    assert(h.state.markerAttempts > 0, "the marker write was attempted");
     const [record] = await records(stateDir);
     assertEquals(record!.blockerClass, "code");
     assertEquals(record!.attempts.substantive, 1);
@@ -726,65 +792,91 @@ Deno.test("provider and gh network failures do not spend repair attempts", async
   });
 });
 
-Deno.test("agent stderr preserves the symlink target and reports authentication", async () => {
-  await withState(async (stateDir) => {
-    const target = `${stateDir}/target`;
-    await Deno.mkdir(stateDir, { recursive: true });
-    await Deno.writeTextFile(target, "unchanged");
-    const h = harness(stateDir);
-    h.state.agents.push({
-      code: 1,
-      stderr: "HTTP 401 unauthorized",
-      setupScratch: (scratch) =>
-        Deno.symlink(target, `${scratch}/codex-stderr`),
-    });
-    await assertRejects(() => h.attempt(), Error, "authentication");
-    assertStringIncludes(
-      (await records(stateDir))[0]!.lastOutcome,
-      "authentication",
-    );
-    assertEquals(await Deno.readTextFile(target), "unchanged");
-  });
-});
-
-Deno.test("agent stderr forwards all chunks and retains a bounded tail", async () => {
-  const chunks = [
-    new Uint8Array(70_000).fill(65),
-    new TextEncoder().encode("end"),
-  ];
-  const forwarded: Uint8Array[] = [];
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      for (const chunk of chunks) controller.enqueue(chunk);
-      controller.close();
-    },
-  });
-  const tail = await forwardAgentStderr(stream, (chunk) => {
-    forwarded.push(chunk);
-    return Promise.resolve();
-  });
-  assertEquals(forwarded, chunks);
-  assertEquals(tail.length, 65_536);
-  assert(tail.endsWith("end"));
-});
-
-Deno.test("an empty agent diagnostic retries and a reported retry-after is honoured", async () => {
-  for (const stderr of ["", "HTTP 429 rate limit retry-after: 300"]) {
-    await withState(async (stateDir) => {
-      const h = harness(stateDir);
-      const before = Date.now();
-      h.state.agents.push({ code: 1, stderr });
-      await assertRejects(() => h.attempt());
-      const [record] = await records(stateDir);
-      assertEquals(record!.attempts.substantive, 0);
-      assertEquals(record!.blockerClass, "infrastructure");
-      assertEquals(h.state.markers.length, 0);
-      assert(
-        Date.parse(record!.nextEligibleAt!) >=
-          before + (stderr ? 300_000 : 60_000),
-      );
+Deno.test("container task failures spend substantive attempts while transient exits back off (Issue #4770)", async () => {
+  for (
+    const { code, stderr, blockerClass, substantive } of [
+      {
+        code: BABYSITTER_TASK_FAILURE_EXIT_CODE,
+        stderr: "task-failure: invalid source",
+        blockerClass: "code",
+        substantive: 1,
+      },
+      {
+        code: 1,
+        stderr: "HTTP 429 rate limit",
+        blockerClass: "infrastructure",
+        substantive: 0,
+      },
+    ] as const
+  ) {
+    // The production startBabysitterAgent and runRepairProcess map the exit
+    // code to a failure class; the harness stub does not decide it here.
+    await withTestKey(async (privateKeyPath) => {
+      await withState(async (stateDir) => {
+        const h = harness(stateDir);
+        const spawns: RuntimeSpawn[] = [];
+        h.deps.startAgent = productionAgent(
+          privateKeyPath,
+          fakeContainer(spawns, {
+            onSpawn: () =>
+              Promise.resolve({
+                success: false,
+                code,
+                stderr,
+                timedOut: false,
+              }),
+          }),
+        );
+        const before = Date.now();
+        await assertRejects(() => h.attempt());
+        assertEquals(spawns.length, 1, `${code} ${stderr}`);
+        const [record] = await records(stateDir);
+        assertEquals(record!.attempts.substantive, substantive);
+        assertEquals(record!.blockerClass, blockerClass);
+        assertEquals(h.state.markers.length, substantive);
+        assert(Date.parse(record!.nextEligibleAt!) >= before + 60_000);
+      });
     });
   }
+});
+
+Deno.test("an expired read token restarts the real agent session, which starts again and the repair succeeds (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      // The token expires two minutes and fifteen seconds out: the session
+      // runs for fifteen seconds, and the expiry is inside the restart window.
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns, {
+          onSpawn: (spawn) => {
+            if (spawns.length === 1) {
+              return Promise.resolve({
+                success: false,
+                code: 143,
+                stderr: "",
+                timedOut: false,
+              });
+            }
+            return Deno.writeTextFile(
+              `${cloneMountedBy(spawn)}/${BABYSITTER_CONTAINER_RESPONSE_FILE}`,
+              "done\nBABYSITTER_READY\n",
+            ).then(() => OK_RUN);
+          },
+        }),
+        2 * 60_000 + 15_000,
+      );
+      await h.attempt();
+      assertEquals(spawns.length, 2, "both container spawns are recorded");
+      assertEquals(h.state.pushed, 1);
+      assertEquals(
+        (await records(stateDir))[0]!.reconciliation,
+        "waiting-for-ci-review",
+      );
+    });
+  });
 });
 
 Deno.test("real human gates stay paused", async () => {
@@ -1141,6 +1233,27 @@ Deno.test("prior diagnostic cannot inject instructions into the next prompt", as
   });
 });
 
+Deno.test("a budget-exhausted repair keeps the launcher's cause in its failure (Issue #4770)", async () => {
+  const realNow = Date.now;
+  try {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.agents.push({
+        code: 143,
+        stderr: "killed by the watchdog",
+        elapsedMs: 90 * 60_000,
+      });
+      await assertRejects(
+        () => h.attempt(),
+        Error,
+        "agent session budget exhausted: babysitter repair container vibe-babysitter-test exited with code 143: killed by the watchdog",
+      );
+    });
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 Deno.test("runner budget exhaustion is substantive and reaches escalation", async () => {
   const realNow = Date.now;
   try {
@@ -1149,7 +1262,6 @@ Deno.test("runner budget exhaustion is substantive and reaches escalation", asyn
       for (let i = 0; i < 3; i++) {
         h.state.agents.push({
           code: 143,
-          signal: "SIGTERM",
           elapsedMs: 90 * 60_000,
         });
         await assertRejects(
@@ -1562,11 +1674,11 @@ Deno.test("stale conflict defers until GitHub recomputes mergeability", async ()
 Deno.test("an infrastructure failure journals one failed attempt at the observed head", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);
-    h.state.agents.push({ code: 1, signal: "SIGKILL" });
+    h.state.agents.push({ code: 1 });
     await assertRejects(
       () => h.attempt(),
       Error,
-      "agent exited unsuccessfully",
+      "exited with code 1",
     );
     const [record] = await records(stateDir);
     assertEquals(record!.observedHead, HEAD);
@@ -1578,10 +1690,12 @@ Deno.test("an infrastructure failure journals one failed attempt at the observed
   });
 });
 
-Deno.test("a code failure journals one failed attempt and keeps the repair's real error", async () => {
+Deno.test("a code failure journals one failed attempt and keeps the repair's real error (Issue #4770)", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);
-    h.state.agents.push({ code: 1, stderr: "task failed: invalid source" });
+    h.state.agents.push({
+      codeFailure: "agent exited unsuccessfully with code 1",
+    });
     await assertRejects(
       () => h.attempt(),
       Error,
@@ -1795,5 +1909,720 @@ Deno.test("a failure after a confirmed push journals nothing", async () => {
     const [record] = await records(stateDir);
     assertEquals(record!.reconciliation, "waiting-for-ci-review");
     assertEquals(h.state.journalled, []);
+  });
+});
+
+// Issue #4770: every repair runs in the worker container, with no host
+// fallback. The tests below drive the real startBabysitterAgent (with fake
+// container deps and a fake token exchange) through fix().
+
+const OK_RUN = { success: true, code: 0, stderr: "", timedOut: false };
+
+/**
+ * The production startBabysitterAgent as fix()'s startAgent, with fake
+ * container deps. The App is the test key, since the token mint signs with it.
+ */
+function productionAgent(
+  privateKeyPath: string,
+  container: Partial<BabysitterContainerDeps>,
+  tokenLifetimeMs?: number,
+): NonNullable<FixDeps["startAgent"]> {
+  return (_app, repo, options, beforeSpawn) =>
+    startBabysitterAgent(
+      { appId: "1", installationId: "1", privateKeyPath },
+      repo,
+      {
+        ...options,
+        fetchFn: fakeTokenExchange(
+          {
+            permissions: BABYSITTER_AGENT_PERMISSIONS,
+            ...(tokenLifetimeMs === undefined ? {} : {
+              expires_at: new Date(Date.now() + tokenLifetimeMs).toISOString(),
+            }),
+          },
+          [],
+        ),
+        container,
+      },
+      beforeSpawn,
+    );
+}
+
+/** The host clone directory that a container spawn mounts at the clone mount. */
+function cloneMountedBy(spawn: RuntimeSpawn): string {
+  const suffix = `:${BABYSITTER_CLONE_MOUNT}`;
+  const mount = spawn.args.find((arg) => arg.endsWith(suffix));
+  if (mount === undefined) throw new Error("the spawn mounts no clone");
+  return mount.slice(0, -suffix.length);
+}
+
+/** Container deps for an agent that finishes: it writes its final message to the clone. */
+function answeringContainer(
+  spawns: RuntimeSpawn[],
+): Partial<BabysitterContainerDeps> {
+  return fakeContainer(spawns, {
+    onSpawn: async (spawn) => {
+      await Deno.writeTextFile(
+        `${cloneMountedBy(spawn)}/${BABYSITTER_CONTAINER_RESPONSE_FILE}`,
+        "done\nBABYSITTER_READY\n",
+      );
+      return OK_RUN;
+    },
+  });
+}
+
+Deno.test("a repair starts only the container runtime with babysitter-repair, never codex, an agent or quality.sh (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const dirs = await repairDirs();
+    try {
+      const spawns: RuntimeSpawn[] = [];
+      const started = await startBabysitterAgent(
+        { appId: "1", installationId: "1", privateKeyPath },
+        REPO,
+        {
+          ...dirs,
+          prompt: "repair",
+          fetchFn: fakeTokenExchange(
+            { permissions: BABYSITTER_AGENT_PERMISSIONS },
+            [],
+          ),
+          container: fakeContainer(spawns),
+        },
+        () => Promise.resolve(true),
+      );
+      assertEquals(started, true);
+      assertEquals(spawns.length, 1);
+      for (const spawn of spawns) {
+        assertEquals(spawn.runtime, "podman");
+        const text = `${spawn.runtime} ${spawn.args.join(" ")}`;
+        assert(!/\bcodex\b|quality\.sh/.test(text), text);
+      }
+      assert(spawns[0]!.args.includes("babysitter-repair"));
+    } finally {
+      await Deno.remove(dirs.root, { recursive: true });
+    }
+  });
+});
+
+Deno.test("a token restart reuses the scratch: the real container repair runs twice on one scratch, and the snapshot is removed after each session (Issue #4770)", async () => {
+  const host = repairHost();
+  const dirs = await repairDirs();
+  try {
+    const spawns: RuntimeSpawn[] = [];
+    const deps = fakeContainer(spawns, { host });
+    const input = {
+      baseDir: host.baseDir,
+      clone: dirs.dir,
+      scratch: dirs.scratch,
+      privateKeyPath: `${host.root}/app-key.pem`,
+      token: "ghs_restart_token",
+    };
+    await runBabysitterRepairContainer(input, deps);
+    await runBabysitterRepairContainer(input, deps);
+    assertEquals(spawns.length, 2);
+    await assertRejects(
+      () => Deno.stat(`${dirs.scratch}/workspace`),
+      Deno.errors.NotFound,
+    );
+  } finally {
+    await Deno.remove(host.root, { recursive: true });
+    await Deno.remove(dirs.root, { recursive: true });
+  }
+});
+
+Deno.test("a missing container runtime or worker image stops the repair before any spawn, as a capability gap (Issue #4770)", async () => {
+  const cases = [
+    {
+      container: { onPath: () => Promise.resolve(false) },
+      message: "container runtime is not on PATH",
+    },
+    {
+      container: { imageExists: () => Promise.resolve(false) },
+      message: "the worker image is not built",
+    },
+    {
+      container: {
+        buildPlan: () =>
+          Promise.reject(new ContainerRuntimeUnavailableError("linux", [])),
+      },
+      message: "No supported container runtime is available",
+    },
+  ] as const;
+  for (const { container, message } of cases) {
+    await withTestKey(async (privateKeyPath) => {
+      await withState(async (stateDir) => {
+        const h = harness(stateDir);
+        h.state.changes = true;
+        const spawns: RuntimeSpawn[] = [];
+        h.deps.startAgent = productionAgent(privateKeyPath, {
+          ...fakeContainer(spawns),
+          ...container,
+        });
+        await assertRejects(() => h.attempt(), Error, message);
+        const [record] = await records(stateDir);
+        assertEquals(record!.blockerClass, "capability", message);
+        assertEquals(spawns.length, 0, message);
+        assertEquals(h.state.pushed, 0, message);
+        assertEquals(h.state.committed, false, message);
+      });
+    });
+  }
+});
+
+Deno.test("an egress startup failure aborts fix before any repair spawn or push (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      const host = repairHost();
+      try {
+        const plan = await repairPlan(host, "egress-failure");
+        plan.egressEnforced = true;
+        h.deps.startAgent = productionAgent(privateKeyPath, {
+          ...fakeContainer(spawns, { host }),
+          buildPlan: () => Promise.resolve(plan),
+          startSidecar: () =>
+            Promise.reject(new Error("egress proxy startup failed")),
+          stopSidecar: () => Promise.resolve([]),
+        });
+        await assertRejects(
+          () => h.attempt(),
+          Error,
+          "egress proxy startup failed",
+        );
+        assertEquals(spawns.length, 0);
+        assertEquals(h.state.pushed, 0);
+        assertEquals(h.state.committed, false);
+      } finally {
+        await Deno.remove(host.root, { recursive: true });
+      }
+    });
+  });
+});
+
+Deno.test("a non-zero container exit fails the repair with its code, stderr and the rebuild hint, and pushes nothing (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns, {
+          onSpawn: () =>
+            Promise.resolve({
+              success: false,
+              code: 3,
+              stderr: "boom",
+              timedOut: false,
+            }),
+        }),
+      );
+      const error = await assertRejects(
+        () => h.attempt(),
+        Error,
+        "exited with code 3",
+      );
+      assertStringIncludes(error.message, "boom");
+      assertStringIncludes(error.message, "./run.sh");
+      assertEquals(spawns.length, 1);
+      assertEquals(h.state.pushed, 0);
+      assertEquals(h.state.committed, false);
+      const [record] = await records(stateDir);
+      assertEquals(record!.blockerClass, "infrastructure");
+    });
+  });
+});
+
+Deno.test("the repair container gets no App key, host credential mount or GitHub App env, only the base env and GH_TOKEN (Issue #4770)", async () => {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  const dirs = await repairDirs();
+  try {
+    const home = `${root}/home`;
+    const keyPath = `${home}/.vibe-coder/fleet-pr-babysitter.private-key.pem`;
+    await Deno.mkdir(`${home}/.vibe-coder`, { recursive: true });
+    await Deno.writeTextFile(keyPath, await generateTestKeyPem());
+    // The host environment the process would see, including the App, gh and
+    // SSH variables that the repair must never receive.
+    const hostEnv: Record<string, string> = {
+      PATH: "/usr/bin:/bin",
+      HOME: home,
+      USER: "vibe",
+      LOGNAME: "vibe",
+      TMPDIR: "/tmp",
+      DOCKER_HOST: "unix:///var/run/docker.sock",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      CONTAINER_HOST: "unix:///run/podman.sock",
+      GITHUB_APP_ID: "123",
+      GITHUB_APP_INSTALLATION_ID: "456",
+      GITHUB_APP_PRIVATE_KEY_PATH: keyPath,
+      GITHUB_TOKEN: "ghs_RUNNER_WRITE",
+      GH_TOKEN: "ghs_RUNNER_WRITE",
+      GH_CONFIG_DIR: `${home}/.config/gh`,
+      SSH_AUTH_SOCK: "/tmp/ssh-agent.sock",
+      SSH_KEY_PATH: `${home}/.ssh/id_ed25519`,
+      VIBE_AUDIT_DIR: `${home}/audit`,
+    };
+    const hostPaths = await babysitterHostCredentialPaths(
+      `${home}/.config.json`,
+      home,
+      (name) => hostEnv[name],
+    );
+    const spawns: RuntimeSpawn[] = [];
+    await startBabysitterAgent(
+      { appId: "1", installationId: "1", privateKeyPath: keyPath },
+      REPO,
+      {
+        ...dirs,
+        prompt: "repair",
+        fetchFn: fakeTokenExchange(
+          { permissions: BABYSITTER_AGENT_PERMISSIONS },
+          [],
+        ),
+        container: fakeContainer(spawns, {
+          env: (name) => hostEnv[name],
+          // The real plan mounts the gh credential directory read-only.
+          extraRunArgs: [
+            "--volume",
+            `${home}/.vibe-coder/credentials/gh:/home/vibe/.vibe-coder/credentials/gh:ro`,
+          ],
+        }),
+      },
+      () => Promise.resolve(true),
+    );
+    assertEquals(spawns.length, 1);
+    const [spawn] = spawns;
+    const volumes: string[] = [];
+    for (let i = 0; i < spawn!.args.length; i++) {
+      if (spawn!.args[i] === "--volume") volumes.push(spawn!.args[i + 1]!);
+    }
+    assert(volumes.length > 0);
+    const forbidden = [
+      keyPath,
+      `${home}/.vibe-coder`,
+      `${home}/.config/gh`,
+      ...hostPaths,
+    ];
+    for (const volume of volumes) {
+      const parts = volume.split(":");
+      const source = parts[0]!;
+      const target = parts[1]!;
+      for (const path of forbidden) {
+        assert(
+          source !== path && !source.startsWith(`${path}/`),
+          `mount ${volume} exposes ${path}`,
+        );
+      }
+      assert(
+        !target.endsWith("/credentials/gh"),
+        `mount ${volume} binds the gh credential directory`,
+      );
+    }
+    assert(!spawn!.args.some((arg) => arg.includes(keyPath)));
+    // The environment is the launcher's base allowlist plus the agent's token.
+    assertEquals(Object.keys(spawn!.env).sort(), [
+      "CONTAINER_HOST",
+      "DOCKER_HOST",
+      "GH_TOKEN",
+      "HOME",
+      "LOGNAME",
+      "PATH",
+      "TMPDIR",
+      "USER",
+      "XDG_RUNTIME_DIR",
+    ]);
+    assertEquals(spawn!.env.GH_TOKEN, "ghs_agent_token");
+    for (
+      const name of [
+        "GITHUB_APP_ID",
+        "GITHUB_APP_INSTALLATION_ID",
+        "GITHUB_APP_PRIVATE_KEY_PATH",
+        "GITHUB_TOKEN",
+        "GH_CONFIG_DIR",
+        "SSH_AUTH_SOCK",
+        "SSH_KEY_PATH",
+        "VIBE_AUDIT_DIR",
+      ]
+    ) {
+      assert(!(name in spawn!.env), name);
+      assert(
+        !spawn!.args.some((arg) => arg === name || arg.startsWith(`${name}=`)),
+        name,
+      );
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(dirs.root, { recursive: true });
+  }
+});
+
+Deno.test("the repair container mounts the clone's .git read-only over the writable clone (PR #4941 review)", async () => {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  const dirs = await repairDirs();
+  try {
+    const keyPath = `${root}/key.pem`;
+    await Deno.writeTextFile(keyPath, await generateTestKeyPem());
+    const spawns: RuntimeSpawn[] = [];
+    await startBabysitterAgent(
+      { appId: "1", installationId: "1", privateKeyPath: keyPath },
+      REPO,
+      {
+        ...dirs,
+        prompt: "repair",
+        fetchFn: fakeTokenExchange(
+          { permissions: BABYSITTER_AGENT_PERMISSIONS },
+          [],
+        ),
+        container: fakeContainer(spawns, {}),
+      },
+      () => Promise.resolve(true),
+    );
+    assertEquals(spawns.length, 1);
+    const volumes: string[] = [];
+    spawns[0]!.args.forEach((arg, i) => {
+      if (spawns[0]!.args[i - 1] === "--volume") volumes.push(arg);
+    });
+    const clone = volumes.findIndex((v) =>
+      v.endsWith(`:${BABYSITTER_CLONE_MOUNT}`)
+    );
+    assert(clone >= 0, "control: the clone itself is mounted writable");
+    const hostClone = volumes[clone]!.slice(
+      0,
+      -`:${BABYSITTER_CLONE_MOUNT}`.length,
+    );
+    // The nested mount must follow the clone mount, or the runtime applies it first and the writable clone mount hides it.
+    assertEquals(
+      volumes.indexOf(`${hostClone}/.git:${BABYSITTER_CLONE_MOUNT}/.git:ro`),
+      clone + 1,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(dirs.root, { recursive: true });
+  }
+});
+
+Deno.test("the agent's final message is read from the clone into the exchange, and removed from the clone (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const dirs = await repairDirs();
+    try {
+      const spawns: RuntimeSpawn[] = [];
+      const started = await startBabysitterAgent(
+        { appId: "1", installationId: "1", privateKeyPath },
+        REPO,
+        {
+          ...dirs,
+          prompt: "repair",
+          fetchFn: fakeTokenExchange(
+            { permissions: BABYSITTER_AGENT_PERMISSIONS },
+            [],
+          ),
+          container: fakeContainer(spawns, {
+            onSpawn: async (spawn) => {
+              await Deno.writeTextFile(
+                `${
+                  cloneMountedBy(spawn)
+                }/${BABYSITTER_CONTAINER_RESPONSE_FILE}`,
+                "Done.\nBABYSITTER_READY\n",
+              );
+              return OK_RUN;
+            },
+          }),
+        },
+        () => Promise.resolve(true),
+      );
+      assertEquals(started, true);
+      assertEquals(
+        await Deno.readTextFile(`${dirs.exchange}/${BABYSITTER_RESPONSE_FILE}`),
+        "Done.\nBABYSITTER_READY\n",
+      );
+      assertEquals(
+        await Deno.readTextFile(`${dirs.scratch}/prompt.md`),
+        "repair",
+      );
+      await assertRejects(
+        () => Deno.lstat(`${dirs.dir}/${BABYSITTER_CONTAINER_RESPONSE_FILE}`),
+        Deno.errors.NotFound,
+      );
+    } finally {
+      await Deno.remove(dirs.root, { recursive: true });
+    }
+  });
+});
+
+Deno.test("a completion response planted as a symlink is refused and removed from the clone, and nothing is read (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const dirs = await repairDirs();
+    const secretRoot = await Deno.makeTempDir();
+    try {
+      const secret = `${secretRoot}/secret.txt`;
+      await Deno.writeTextFile(secret, "SECRET-TOKEN-4770");
+      const spawns: RuntimeSpawn[] = [];
+      const error = await assertRejects(
+        () =>
+          startBabysitterAgent(
+            { appId: "1", installationId: "1", privateKeyPath },
+            REPO,
+            {
+              ...dirs,
+              prompt: "repair",
+              fetchFn: fakeTokenExchange(
+                { permissions: BABYSITTER_AGENT_PERMISSIONS },
+                [],
+              ),
+              container: fakeContainer(spawns, {
+                onSpawn: async (spawn) => {
+                  await Deno.symlink(
+                    secret,
+                    `${
+                      cloneMountedBy(spawn)
+                    }/${BABYSITTER_CONTAINER_RESPONSE_FILE}`,
+                  );
+                  return OK_RUN;
+                },
+              }),
+            },
+            () => Promise.resolve(true),
+          ),
+        Error,
+        "refused unsafe agent output",
+      );
+      assert(!error.message.includes("SECRET-TOKEN-4770"));
+      assert(!error.message.includes("did not write"));
+      await assertRejects(
+        () => Deno.lstat(`${dirs.dir}/${BABYSITTER_CONTAINER_RESPONSE_FILE}`),
+        Deno.errors.NotFound,
+      );
+      assertEquals(
+        await Deno.readTextFile(secret),
+        "SECRET-TOKEN-4770",
+        "the link target is untouched",
+      );
+    } finally {
+      await Deno.remove(secretRoot, { recursive: true });
+      await Deno.remove(dirs.root, { recursive: true });
+    }
+  });
+});
+
+Deno.test("a symlinked completion response stops the repair before any push (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns, {
+          onSpawn: async (spawn) => {
+            await Deno.symlink(
+              "/etc/hosts",
+              `${cloneMountedBy(spawn)}/${BABYSITTER_CONTAINER_RESPONSE_FILE}`,
+            );
+            return OK_RUN;
+          },
+        }),
+      );
+      await assertRejects(
+        () => h.attempt(),
+        Error,
+        "refused unsafe agent output",
+      );
+      assertEquals(h.state.pushed, 0);
+      assertEquals(h.state.committed, false);
+    });
+  });
+});
+
+Deno.test("a repair whose container writes no completion response is reported as not written, and pushes nothing (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns),
+      );
+      await assertRejects(
+        () => h.attempt(),
+        Error,
+        "agent did not write its completion response",
+      );
+      assertEquals(spawns.length, 1);
+      assertEquals(h.state.pushed, 0);
+    });
+  });
+});
+
+Deno.test("a lock renewal failure aborts the signal given to the agent before publication (Issue #4770)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    let onRenewalError: ((message: string) => void) | undefined;
+    h.deps.startLockRenewal = (options) => {
+      onRenewalError = options.onError;
+      return { stop() {} };
+    };
+    let signal: AbortSignal | undefined;
+    h.deps.startAgent = async (_app, _repo, options) => {
+      signal = options.signal;
+      assertEquals(signal?.aborted, false);
+      onRenewalError!("Failed to renew PR lock comment 1 on owner/repo: down");
+      assert(signal?.aborted === true, "the renewal failure aborts the agent");
+      // What the container's kill looks like to the wrapper: a failed exit.
+      throw new BabysitterFailure(
+        "babysitter repair container vibe-babysitter-test exited with code 137",
+        "infrastructure",
+      );
+    };
+    await assertRejects(
+      () => h.attempt(),
+      BabysitterFailure,
+      "PR lock renewal failed; agent stopped before publication",
+    );
+    assert(signal?.aborted === true);
+    assertEquals(h.state.pushed, 0);
+  });
+});
+
+Deno.test("a lock renewal failure kills the repair container, so the fix fails with the race failure (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      let onRenewalError: ((message: string) => void) | undefined;
+      h.deps.startLockRenewal = (options) => {
+        onRenewalError = options.onError;
+        return { stop() {} };
+      };
+      const spawns: RuntimeSpawn[] = [];
+      let markKilled!: () => void;
+      const killed = new Promise<void>((resolve) => markKilled = resolve);
+      const ok = { success: true, code: 0, stderr: "", timedOut: false };
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        fakeContainer(spawns, {
+          onSpawn: (spawn) => {
+            if (spawn.args[0] === "kill") {
+              markKilled();
+              return Promise.resolve(ok);
+            }
+            // The repair runs until the renewal failure aborts it. The
+            // fallback timer stops a missing kill from hanging the test.
+            onRenewalError!(
+              "Failed to renew PR lock comment 1 on owner/repo: down",
+            );
+            return new Promise((resolve) => {
+              const timer = setTimeout(() => resolve(ok), 5_000);
+              killed.then(() => {
+                clearTimeout(timer);
+                resolve({
+                  success: false,
+                  code: 137,
+                  stderr: "",
+                  timedOut: false,
+                });
+              });
+            });
+          },
+        }),
+      );
+      await assertRejects(
+        () => h.attempt(),
+        BabysitterFailure,
+        "PR lock renewal failed; agent stopped before publication",
+      );
+      const name = spawns[0]!.args[spawns[0]!.args.indexOf("--name") + 1];
+      assert(
+        spawns.some((spawn) =>
+          spawn.args[0] === "kill" && spawn.args[1] === name
+        ),
+        `the abort kills the container by name: ${JSON.stringify(spawns)}`,
+      );
+      assertEquals(h.state.pushed, 0);
+    });
+  });
+});
+
+Deno.test("a successful repair runs no host quality.sh or codex (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        answeringContainer(spawns),
+      );
+      await h.attempt();
+      assertEquals(h.state.pushed, 1);
+      assertEquals(spawns.map((spawn) => spawn.runtime), ["podman"]);
+      const commands = [
+        ...h.state.commands,
+        ...spawns.map((spawn) => `${spawn.runtime} ${spawn.args.join(" ")}`),
+      ];
+      for (const command of commands) {
+        assert(!command.includes("quality.sh"), command);
+        assert(!/(^|[\s/])codex(\s|$)/.test(command), command);
+      }
+    });
+  });
+});
+
+Deno.test("fix replaces agent-controlled git config before host publication (Issue #4770)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        answeringContainer(spawns),
+      );
+      let safeConfig = "";
+      h.deps.resetGitConfig = async (dir, repo) => {
+        await Deno.mkdir(`${dir}/.git`, { recursive: true });
+        const configPath = `${dir}/.git/config`;
+        await Deno.writeTextFile(
+          configPath,
+          "[core]\n\tsshCommand = /host/agent-command\n" +
+            '[filter "owned"]\n\tclean = /host/agent-command\n' +
+            "[diff]\n\texternal = /host/agent-command\n",
+        );
+        await resetRepairCloneGitConfig(dir, repo, {
+          gh: () => Promise.resolve("https\n"),
+        });
+        safeConfig = await Deno.readTextFile(configPath);
+      };
+      await h.attempt();
+      assert(
+        safeConfig.includes("https://github.com/owner/repo.git"),
+      );
+      assert(!safeConfig.includes("/host/agent-command"));
+      assertEquals(h.state.pushed, 1);
+    });
+  });
+});
+
+Deno.test("fix refuses a nested repository before finish runs host Git", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    const marker = `${stateDir}/nested-command`;
+    h.deps.resetGitConfig = async (dir) => {
+      await Deno.mkdir(`${dir}/nested/.git`, { recursive: true });
+      await Deno.writeTextFile(
+        `${dir}/nested/.git/config`,
+        `[core]\n\tfsmonitor = touch ${marker}\n`,
+      );
+    };
+    h.deps.assertTreeSafe = assertRepairTreeSafe;
+    await assertRejects(() => h.attempt(), Error, "nested .git");
+    assert(
+      !h.state.commands.some((command) => command.includes("--porcelain")),
+    );
+    assertEquals(h.state.committed, false);
+    assertEquals(h.state.pushed, 0);
+    await assertRejects(() => Deno.stat(marker), Deno.errors.NotFound);
   });
 });
