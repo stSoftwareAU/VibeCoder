@@ -101,6 +101,9 @@ Backend and CLI change; no visual surface changed.
   tree the whole Deno formatter, linter and type check passed, as did the Git
   hardening suite and the nested-repository orchestration test. The full
   orchestration suite needs an unavailable container runtime on this host.
+- `deno test --allow-all tests/fleet_pr_babysitter_git_timeout_test.ts` passed
+  all three tests on this head. The push and fetch cases use the shared host Git
+  hardening arguments and continue to check the 30-minute timeout.
 
 ## Acceptance Criteria
 
@@ -246,7 +249,15 @@ Backend and CLI change; no visual surface changed.
   `worker/deno/tests/fleet_babysitter_container_4738_test.ts`,
   `worker/deno/tests/fleet_babysitter_container_egress_4738_test.ts`,
   `worker/deno/tests/babysitter_repair_4738_test.ts` and
-  `worker/deno/tests/fleet_pr_babysitter_setup_test.ts`.
+  `worker/deno/tests/fleet_pr_babysitter_setup_test.ts`. Updated
+  `worker/deno/tests/fleet_pr_babysitter_git_timeout_test.ts` to expect the
+  shared hardening arguments for both push and fetch.
+- The timeout tests' old two-flag expectation became obsolete when submodule
+  hardening was added. The remaining contract is that push and fetch pass all
+  host hardening arguments through the Git chokepoint with a 30-minute timeout;
+  `worker/deno/tests/fleet_pr_babysitter_git_timeout_test.ts::run sends git push through the chokepoint with a 30-minute timeout`
+  and `::run sends git fetch through the chokepoint with a 30-minute timeout`
+  cover it. The separate Git hardening suite checks the security effects.
 - Removed from `worker/deno/tests/fleet_babysitter_sandbox_test.ts` (file
   deleted): the nine `buildBabysitterSandboxArgs` and Codex-floor cases. Removed
   functionality: `buildBabysitterSandboxArgs`, `codexVersionMeetsFloor`; their
