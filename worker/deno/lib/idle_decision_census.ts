@@ -376,6 +376,8 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     // the census. Omitting them over-counts.
     "closed-pr-cooldown": "run-local",
     "cross-worker-cooldown": "run-local",
+    // Production carries the scan's shared-capacity refusals in runLocalHolds.
+    "completion-mode": "modelled",
     // Issue #2532: a sibling slot's hold on this host, carried by the
     // `applyInFlightClaims` overlay. Nothing on GitHub shows it until the
     // claim's assignment lands, and the census is not handed the registry, so
@@ -389,6 +391,7 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "content-modified-after-approval": "run-local",
     "content-check-error": "run-local",
     "content-editor-unresolved": "run-local",
+    "content-edit-history-truncated": "run-local",
     "content-store-unconfigured": "run-local",
     "content-snapshot-persist-failed": "run-local",
     "no-approval-snapshot": "run-local",

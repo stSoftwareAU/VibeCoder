@@ -113,8 +113,9 @@ flowchart TD
    - Never disable or skip tests
    - Create a `.pr_response_message` file summarising the fix
 7. **Quality gate** — If Claude made changes, the worker runs quality checks
-   (`./quality.sh` or the repository's custom quality command). If quality
-   fails, Claude is retried once.
+   (`./quality.sh` or the repository's custom quality command, in the PR
+   checkout). If quality fails, Claude is retried once. `skip_quality_check`
+   skips this step.
 8. **Commit and push** — Changes are committed with the message
    `Fix CI failure ($check_name) for PR #$pr_number` and pushed. When the
    branch is behind its base, the base is merged in just before that push, so

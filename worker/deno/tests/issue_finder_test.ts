@@ -1658,7 +1658,7 @@ function createWorkOnMockGh(opts: {
         data: {
           repository: {
             issue: {
-              userContentEdits: { nodes },
+              userContentEdits: { totalCount: nodes.length, nodes },
               timelineItems: { nodes: [] },
             },
           },

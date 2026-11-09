@@ -10,6 +10,7 @@
 
 import type { IssueSubAgentTier, Result } from "../types.ts";
 import { isIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
+import { splitMarkdownCode } from "./markdown_code_spans.ts";
 
 /** Prefix used in all worker PR body markers. */
 export const WORKER_PR_MARKER_PREFIX = "<!-- vibe-worker-issue-";
@@ -22,6 +23,16 @@ export const WORKER_PR_MARKER_PREFIX = "<!-- vibe-worker-issue-";
  */
 const CLOSING_KEYWORD_PATTERN =
   /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
+
+/**
+ * {@link CLOSING_KEYWORD_PATTERN} with the keyword and `#N` required on the
+ * same line (`[ \t]+`, not `\s+`): GitHub does not honour a keyword whose `#N`
+ * sits on the next line, so `Closes\n#42` closes nothing. Used only by
+ * {@link ensurePrReferencesIssue}, which must not treat such a split as a
+ * reference; the other callers keep the looser pattern they rely on.
+ */
+const GITHUB_CLOSING_KEYWORD_PATTERN =
+  /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+#(\d+)\b/gi;
 
 /** Every `#N` a closing keyword names, as written — duplicates included. */
 function closingIssueReferences(prBody: string): number[] {
@@ -102,27 +113,67 @@ export function extractClosingIssueNumbers(prBody: string): number[] {
 }
 
 /**
+ * Replace every in-code character (but not line breaks) with a non-space
+ * placeholder, so code can never read as prose and a code span between a
+ * keyword and its `#N` ("Closes `x` #42") cannot collapse into a same-line
+ * reference the way blanking it to spaces would.
+ */
+function maskCodeWithPlaceholder(text: string): string {
+  return splitMarkdownCode(text)
+    .map((segment) =>
+      segment.inCode ? segment.value.replace(/[^\n]/g, "\u0001") : segment.value
+    )
+    .join("");
+}
+
+/**
+ * Whether the PR body carries a same-line closing keyword for `issueNumber`
+ * in prose that GitHub would act on (Issue #4808): keywords inside code spans
+ * or fences are masked out first.
+ */
+function hasGithubClosingReference(
+  prBody: string,
+  issueNumber: number,
+): boolean {
+  const masked = maskCodeWithPlaceholder(prBody);
+  for (const match of masked.matchAll(GITHUB_CLOSING_KEYWORD_PATTERN)) {
+    if (Number(match[1]) === issueNumber) return true;
+  }
+  return false;
+}
+
+/**
  * Ensure the PR body contains an issue-closing keyword (Issue #242).
  *
  * GitHub auto-closes issues when a PR body contains keywords like
  * "Closes #N", "Fixes #N", or "Resolves #N". If missing, appends
  * "Closes #N".
  *
+ * Issue #4808: a keyword only counts when GitHub would act on it. A keyword
+ * inside Markdown code (a code span or a fenced block) is masked out first,
+ * and a keyword whose `#N` sits on the next line ("Closes\n#42") does not
+ * count — so such a body gets "Closes #N" appended (prepended when the body
+ * ends inside an unclosed fence, which would swallow an appended line). A
+ * same-line, non-code keyword for the issue leaves the body unchanged.
+ *
  * Issue #520: Always uses closing keywords — "Addresses" does NOT
  * trigger GitHub auto-close and causes infinite loops.
  *
  * @param prBody - The full PR body content
  * @param issueNumber - The issue number to reference
- * @returns Updated PR body (unchanged if keyword already present)
+ * @returns Updated PR body (unchanged if a same-line, non-code closing keyword
+ *   for the issue is already present)
  */
 export function ensurePrReferencesIssue(
   prBody: string,
   issueNumber: number,
 ): string {
-  if (hasClosingKeyword(prBody, issueNumber)) {
-    return prBody;
-  }
-  return `${prBody}\n\nCloses #${issueNumber}`;
+  if (hasGithubClosingReference(prBody, issueNumber)) return prBody;
+  const appended = `${prBody}\n\nCloses #${issueNumber}`;
+  if (hasGithubClosingReference(appended, issueNumber)) return appended;
+  // The body ends inside an unclosed fence, which swallows the appended
+  // keyword too; lead with it so it is prose.
+  return `Closes #${issueNumber}\n\n${prBody}`;
 }
 
 /**

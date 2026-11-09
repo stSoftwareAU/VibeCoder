@@ -472,10 +472,13 @@ The installation is looked up from the App on the owner of `repos`. Keep the
 key out of the checkout and out of `~/.vibe-coder/credentials/`, which is
 mounted into the container. Use a different App from the worker's own
 `github_app_*` identity, since GitHub refuses an approval from a PR's author.
-When the fleet PR babysitter runs under the same host user, its Codex filesystem
-profile denies this configured key along with the worker credential directory,
-the worker App and SSH keys, and the host `gh` store; see the
-[babysitter credential boundary](workflows/fleet-pr-babysitter.md).
+The fleet PR babysitter's repair container never mounts this configured key.
+Its worker checkout is a read-only snapshot of tracked files, its config copy is
+scrubbed, and unknown plan mounts are refused. It keeps only enabled provider
+credential sub-directories and declared quality-credential rules; the `gh`
+credential directory, host log directory and `custom_label_prompts` directories
+stay on the host. See the
+[babysitter credential boundary](workflows/fleet-pr-babysitter.md#credentials-across-the-boundary).
 
 The App needs **Pull requests**, **Issues**, **Contents** and **Workflows**
 read and write, plus **Checks** and **Commit statuses** read. Contents write
@@ -4936,6 +4939,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
 | `blocking_pr_stall_threshold_seconds` | integer | Per-repo blocking-PR stall threshold, overriding the global `blocking_pr_stall_threshold_seconds`. Non-positive or non-integer values fall back to the global setting. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | `fleet_pr_slots` | integer | Per-repo cap on the fleet's open PRs on this repository's default branch (Issue #2663), overriding the global `fleet_pr_slots`. Non-positive or non-integer values fall back to the global setting. |
+| `completion_admission` | object | Opt-in shared implementation capacity (Issue #4942): `{"high": 4, "low": 2}` starts completion mode at four changes and resumes intake at two. Counts live claims and all authors' PRs, deduplicating claim-to-PR conversion. Integer `high > low >= 0` is required. Omitted preserves legacy admission. See [Completion-first admission](workflows/issue-processing.md#completion-first-admission-issue-4942) for shared policy, recovery and fleet rollout. |
 | `claude_model`          | string  | Per-repo base model tier overriding the global base for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                          |
 | `best_planning_model` | string | Per-repo configured best planning model for degraded-model detection. Overrides the global `best_planning_model`; empty falls back to it. |
 | `phase_model_overrides` | object  | Per-repo per-phase model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing).                                                                                                                                                                                                                                           |
@@ -4993,7 +4997,7 @@ The gate runs at four points:
    the pre-flight commands when Step 1 committed nothing;
 3. the issue completion phase's `gateBeforePush()`, before the first push and
    again before the retry push that follows push-rejection recovery, over every
-   non-merge commit ahead of the PR base (including commits the execute
+   commit ahead of the PR base (including commits the execute
    phase's ungated WIP checkpoint pushes already put on origin);
 4. the agent's own `git push` through a per-run `pre-push` hook.
 
@@ -5088,7 +5092,10 @@ every agent run, the worker writes a per-run
 `pre-push` hook into a temporary directory and enables it in the **agent's
 environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
-agent runs goes through it. The worker's own pushes do not carry the agent's
+agent runs goes through it. The hook loads its trusted worker module with that
+worker's Deno configuration and frozen lock file, so a target repository's
+configuration or newer registry version cannot change the hook's dependencies.
+The worker's own pushes do not carry the agent's
 environment, so the hook does not gate them; instead its final-mile
 commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
 same changed-files check through `runPrePushGate` on the already-committed
@@ -5099,11 +5106,11 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
+fmt/lint, cargo fmt, markdownlint, cspell, ShellCheck, cargo deny and the Floci CloudFormation deploy
 test) still run and can fail the run. Unlike Step 1b, the completion gate
-checks every non-merge commit the branch has ahead of the PR base
-(`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
-ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
+checks every commit the branch has ahead of the PR base, not only commits on no
+remote-tracking ref; a merge commit contributes only the paths the merge itself
+changed (a conflict resolution), never the files it brings in from the base. The execute phase's WIP checkpoints (periodic, and once more at phase end)
 push the agent's commits through `commitAndPushPending` with no spec, so those
 pushes are ungated and the commits are usually already on origin when the
 completion phase runs; the whole-branch range is what keeps them from reaching
@@ -5140,9 +5147,12 @@ files changed. Markdown outside `docs/archive/pr-summaries/` and
 and trips markdownlint MD018, so a Markdown miss there is left to the check to
 report. Those two directories are the worker's own notes, and `docs/archive/`
 is excluded from the markdownlint globs. After the repository formatters,
-`formatBeforeGate` runs `deno fmt` on the Markdown and JSON the branch changed
-under them and commits that too. A missing formatter or a write failure is
-logged, and the gate still runs.
+`formatBeforeGate` puts each linkage-only line in archive Markdown in a
+paragraph of its own before running `deno fmt` on the Markdown and JSON the
+branch changed under them, then commits the result (Issue #4802). An archive
+file over 1 MiB (`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning and
+left for the gate to report. A missing formatter or a write failure is logged,
+and the gate still runs.
 Only the formatted paths are staged. A formatter that is missing, fails or
 throws never fails the run on its own: it is logged, and the gate that follows
 still runs every check and reports what was left unfixed.
@@ -5159,8 +5169,9 @@ The hook runs two stages:
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
-   remote-tracking ref (merge commits and deleted files excluded; the issue
-   completion phase widens the range to every non-merge commit ahead of the PR
+   remote-tracking ref (a merge commit contributes only the paths the merge itself
+   changed, never the files it brings in from the base, and deleted files
+   are excluded from execution; the issue completion phase widens the range to every commit ahead of the PR
    base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
    config would check, see below). The one exception is the Floci deploy test
@@ -5199,6 +5210,93 @@ The hook runs two stages:
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
+   - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
+     Intermediate push hooks and ShellCheck-only repair checks run it when
+     pushed changes include a `Cargo.toml`,
+     `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
+     `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
+     `*.yaml` files for each `run:` step whose command is `cargo deny` with a
+     `check` argument, and for each `EmbarkStudios/cargo-deny-action` step,
+     whose inputs (with the action's own defaults) give the argv the action
+     runs. It runs CI's arguments: a `run:` step from its `working-directory`,
+     else the job's, else the workflow's `defaults.run.working-directory`
+     (relative paths only; a default does not apply to an action step), and an
+     action step from the repo root. No `--offline`, ignore list or
+     reduced-scope flag is added. A `${{ matrix.<key> }}` expression, in an
+     action input, a `working-directory` or after `cargo deny` in a `run:`
+     line, expands from the job's literal `strategy.matrix` lists and `include`
+     entries into one invocation per combination (the action README's
+     recommended `command: check ${{ matrix.checks }}` pipeline runs
+     `check advisories` and `check bans licenses sources`). `exclude` entries
+     are not applied, so an excluded combination is checked too. Any other
+     variable or expression in a `run:` line, before or after `check`, is
+     dropped together with the option it was the value of (`--config ${{
+     env.X }}` goes whole), so the line runs a plain `check`; an action input
+     holding one takes that input's own default (an unexpandable `command`
+     becomes a plain `check`, which runs every check and so covers every
+     subset). A `cargo deny` line that names no `check` and holds a variable or
+     expression, or a `working-directory` with `..`, an absolute path or an
+     expression that is not a matrix key, refuses the push. An invocation CI
+     allows to fail (`continue-on-error` on its step or its job, as a literal
+     `true` or as `${{ matrix.<key> }}` / `${{ matrix.<key> == '<value>' }}` /
+     `!=` evaluated for each matrix combination, whichever keys the test
+     reads) still runs, after the others, but its failure prints a `[PRE_PUSH_WARNING] cargo deny:` line on stderr
+     and does not refuse the push, as it does not fail CI; the README
+     pipeline's `advisories` leg is one. The same invocation without that
+     allowance in any combination still refuses. Any other `continue-on-error`
+     value blocks as usual. The hook does not read invocations hidden in a
+     script the step calls, so those forms are not checked. A workflow CI
+     does not run for the branch is not checked: one whose `on:` has no
+     `pull_request`, `pull_request_target`, `merge_group` or `workflow_call`
+     trigger and no `push` trigger whose `branches` / `branches-ignore` filter
+     matches the pushed branch (a `schedule`-only audit, say; a `push` filtered
+     by `tags` alone does not run for a branch push), and, in the whole-branch
+     completion check, one whose `paths` / `paths-ignore` filter selects none
+     of the paths the branch's commits touch (deleted files included;
+     `!` patterns, `*`, `**`, `?`, `+` and `[...]` read as GitHub reads them).
+     A `pull_request` `branches` filter is not read, a pattern the gate cannot
+     read leaves the workflow eligible, including for ignore filters. Patterns
+     longer than 200 characters are unreadable; multiple repetitions are
+     matched with bounded dynamic programming. An unreadable `on:` runs the
+     workflow. Jobs and their
+     `defaults` and `continue-on-error` are found at any indent. Quoted
+     multiline container scripts are not host commands. The fleet babysitter does not run
+     it: its execution belongs inside the worker container (#4768, #4770),
+     never beside the host App key, so babysitter repairs are not checked by
+     it until that contained path exists;
+   - `shellcheck` on changed `.sh` files when a tracked workflow contains the
+     supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or on
+     the action's named shell files and executable extensionless shell scripts for a
+     `ludeeus/action-shellcheck` step (the shape the worker syncs into Bash
+     repositories) that sets only `scandir: .` and `severity`, which the gate
+     runs as `--severity=<level>`. The gate carries the
+     workflow's options (including exclusions, an explicit shell dialect and
+     value-taking options such as `-S warning` or `--enable all`) and runs from
+     the repository root. It selects the nearest tracked `.shellcheckrc` or
+     `shellcheckrc` in each script's repository ancestry, or uses the
+     configured `--rcfile`; absent a repository config, `--norc` prevents
+     worker HOME, XDG and external ancestor settings from changing the result.
+     A changed ShellCheck workflow or changed or deleted config rechecks the
+     remaining tracked files in the policy's scope; deleted scripts and symlinks
+     are omitted. A symlinked config or delegated script is refused; symlinked
+     workflows are ignored. Workflow, configuration and delegated-script reads
+     are capped at 1 MiB and refused above it. For a `find` policy the
+     gate checks the available binary against the version declared by CI
+     before running it (an action-managed ShellCheck declares none). A policy
+     the gate cannot read (an unsupported command shape, other action input,
+     delegated gate or action, or `SHELLCHECK_OPTS` in that workflow), an unreadable config, or an unavailable or
+     mismatched tool is an incomplete infrastructure result, never a
+     successful validation, but only for a push that changes a possible shell
+     script, a ShellCheck config or a ShellCheck workflow. A repository with no CI ShellCheck invocation
+     gets no ShellCheck check. The same validation runs before the PR repair
+     processors (CI fix, review feedback, spelling and merge conflict) publish
+     a repair through `commitAndPushPending`, including repositories without
+     configured pre-flight commands, where it is the only Step 1b check. The
+     fleet babysitter does not run it: its execution belongs inside the worker
+     container (#4768, #4770), never beside the host App key, so babysitter
+     repairs are not ShellCheck-validated until that contained path exists. WIP checkpoint,
+     timeout-preservation and declared hand-off pushes pass no pre-flight spec
+     and stay ungated;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push
      adds or modifies a file whose path starts with `infra/cloudformation/` and
      the repo tracks `infra/cloudformation/test-floci.sh`: it runs
@@ -5220,13 +5318,20 @@ The hook runs two stages:
    only the changed-files check.
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
-start, or times out refuses the push; markdownlint configured but
+start, or times out refuses the push (a `cargo deny` invocation CI allows to
+fail is the one exception: it only prints a `[PRE_PUSH_WARNING]`); markdownlint configured but
 `markdownlint-cli2` not found refuses the push; cspell configured and run by
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
-does not); a Floci deploy test that exits
-non-zero, including when Floci cannot be started or the `aws` CLI is missing for
-a deployable template, refuses the push; a missing hook module, spec or `deno`
-binary refuses the push. Refusals print lines starting
+does not); a ShellCheck CI policy with a missing or mismatched binary, an
+unreadable config, or an unsupported workflow shape is incomplete and refuses
+a push that changes a script, a ShellCheck config or a ShellCheck workflow; a Floci deploy
+test that exits non-zero, including when Floci cannot be started or the `aws` CLI is missing for
+a deployable template, refuses the push; a `cargo deny` diagnostic (`error[...]`)
+or a CI invocation the hook cannot reproduce refuses the push as a verdict, and
+a missing `cargo deny`, unreachable advisory database, network or host, or a
+timeout refuses it as an infrastructure failure (except on an invocation CI
+allows to fail, where each of these is only a `[PRE_PUSH_WARNING]`); a missing hook module, spec or
+`deno` binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
 

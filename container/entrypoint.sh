@@ -748,10 +748,19 @@ cd "${BASE_DIR}"
 # it as `<runtime> run <image> review-round …`, so the round gets this
 # script's staging and the driver's own credential pool rather than an agent
 # login on the host.
+#
+# `babysitter-repair` as the first argument (Issue #4768) runs one headless
+# repair session in a mounted clone instead of the worker loop: the host
+# launcher starts it as `<runtime> run <image> babysitter-repair --dir …
+# --prompt-file … --response-file …`, so the session gets this script's staging
+# and the driver's own credential pool rather than an agent login on the host.
 DRIVER_COMMAND=(run-entrypoint --base-dir "${BASE_DIR}")
 if [[ "${1:-}" == "review-round" ]]; then
   shift
   DRIVER_COMMAND=(review-round)
+elif [[ "${1:-}" == "babysitter-repair" ]]; then
+  shift
+  DRIVER_COMMAND=(babysitter-repair)
 fi
 deno run \
   --frozen --lock="${LOCKFILE}" \

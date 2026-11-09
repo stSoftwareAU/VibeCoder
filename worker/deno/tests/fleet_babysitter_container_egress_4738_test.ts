@@ -283,6 +283,36 @@ function at<T>(items: readonly T[], index: number, label: string): T {
   return item;
 }
 
+Deno.test("apple egress: an abort during the helper start stops the repair before the spawn, and the helper is stopped", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps, h } = harness(f, { kind: "apple" });
+    const controller = new AbortController();
+    const startHelper = deps.startAppleEgress!;
+    deps.startAppleEgress = async (plan, egressOptions) => {
+      const helper = await startHelper(plan, egressOptions);
+      controller.abort();
+      return helper;
+    };
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: controller.signal },
+          deps,
+        ),
+      Error,
+      "the babysitter repair was aborted before the container started",
+    );
+    assertEquals(
+      h.events,
+      ["start-apple", "stop-apple"],
+      "the abort is caught by the check inside runRepairProcess, so nothing spawns",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
 Deno.test("apple egress: the repair runs the helper's args, starts the helper once and stops it after the spawn", async () => {
   const f = await makeFixture();
   try {

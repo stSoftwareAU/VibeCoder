@@ -13,6 +13,7 @@ import { assertEquals } from "@std/assert";
 import { resolveAgentStateDir } from "../lib/agent_state_dir.ts";
 import {
   buildClaudeChildEnv,
+  CLAUDE_BASH_TIMEOUT_ENV,
   CLAUDE_ENV_DENYLIST,
   CLAUDE_SUBAGENT_CAP_ENV,
 } from "../lib/claude_env.ts";
@@ -64,31 +65,27 @@ Deno.test("buildClaudeChildEnv - honours a custom denylist", () => {
   assertEquals(child.KEEP, "yes");
 });
 
-Deno.test("buildClaudeChildEnv - an empty environment gets only the worker defaults", () => {
+Deno.test("buildClaudeChildEnv - an empty environment inherits nothing; the only entries are the audit-journal off switch (Issue #2400), the sub-agent spawn caps (Issue #2575) and the foreground command ceiling (Issue #4913)", () => {
   assertEquals(buildClaudeChildEnv({}), {
     VIBE_AUDIT_DISABLED: "1",
     ...CLAUDE_SUBAGENT_CAP_ENV,
-    BASH_MAX_TIMEOUT_MS: "1800000",
+    ...CLAUDE_BASH_TIMEOUT_ENV,
   });
 });
 
-Deno.test("buildClaudeChildEnv - permits a longer foreground gate without changing the default command timeout (#4913)", () => {
-  const parent = { PATH: "/usr/bin" };
-  const child = buildClaudeChildEnv(parent);
-  assertEquals(child.BASH_MAX_TIMEOUT_MS, "1800000");
-  assertEquals(child.BASH_DEFAULT_TIMEOUT_MS, undefined);
-  assertEquals(parent, { PATH: "/usr/bin" });
+Deno.test("buildClaudeChildEnv - the default child env carries a 30-minute Bash ceiling (Issue #4913)", () => {
+  // The CLI's own default is 600000 ms, which cannot fit a bounded gate run
+  // longer than ten minutes. Literal value, so a constant edit cannot hide it.
+  const child = buildClaudeChildEnv({ PATH: "/usr/bin" });
+  assertEquals(child["BASH_MAX_TIMEOUT_MS"], "1800000");
 });
 
-Deno.test("buildClaudeChildEnv - explicit foreground timeout settings win (#4913)", () => {
-  for (const ceiling of ["300000", "3600000"]) {
-    const child = buildClaudeChildEnv({
-      BASH_MAX_TIMEOUT_MS: ceiling,
-      BASH_DEFAULT_TIMEOUT_MS: "60000",
-    });
-    assertEquals(child.BASH_MAX_TIMEOUT_MS, ceiling);
-    assertEquals(child.BASH_DEFAULT_TIMEOUT_MS, "60000");
-  }
+Deno.test("buildClaudeChildEnv - an explicit BASH_MAX_TIMEOUT_MS in the parent environment wins (Issue #4913)", () => {
+  const child = buildClaudeChildEnv({
+    PATH: "/usr/bin",
+    BASH_MAX_TIMEOUT_MS: "900000",
+  });
+  assertEquals(child["BASH_MAX_TIMEOUT_MS"], "900000");
 });
 
 Deno.test("CLAUDE_ENV_DENYLIST - includes the GitHub App private key variables", () => {

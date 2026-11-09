@@ -15,6 +15,7 @@ import {
   buildHousekeepingSteps,
   CLEANUP_SIGNALS,
   createDefaultHousekeepingDeps,
+  DEFERRED_HOUSEKEEPING_STEP_IDS,
   HOUSEKEEPING_STEP_IDS,
   type HousekeepingDeps,
   type HousekeepingOptions,
@@ -606,4 +607,133 @@ Deno.test("sweepVolatileCliState - a real container stamp still sweeps (Issue #1
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Blocking and deferred scopes (Issue #4822)
+// ---------------------------------------------------------------------------
+
+Deno.test("runStartupHousekeeping - the blocking scope runs every step except the deferred ones, in canonical order (Issue #4822)", async () => {
+  const order: string[] = [];
+  const logs: string[] = [];
+  let configured = 0;
+  const deferred: readonly string[] = DEFERRED_HOUSEKEEPING_STEP_IDS;
+  const expected = HOUSEKEEPING_STEP_IDS.filter((id) => !deferred.includes(id));
+
+  const result = await runStartupHousekeeping(
+    baseOptions(),
+    buildDefaultWorkerConfig(),
+    recordingDeps(order, logs, {
+      env: emptyEnv,
+      configureDecisionStore: () => {
+        configured++;
+      },
+    }),
+    "blocking",
+  );
+
+  assertEquals(order, expected);
+  assertEquals(result.stepsRun, expected);
+  for (const id of deferred) {
+    assertEquals(order.includes(id), false, `${id} must not run blocking`);
+  }
+  // The blocking pass carries the once-per-run work the deferred pass skips.
+  assertEquals(configured, 1);
+  assertEquals(logs.some((line) => line.includes("cli-state-sweep")), true);
+});
+
+Deno.test("runStartupHousekeeping - the deferred scope runs only the deferred steps, in order, and repeats neither the decision store nor the CLI state sweep (Issue #4822)", async () => {
+  const order: string[] = [];
+  const logs: string[] = [];
+  let configured = 0;
+
+  const result = await runStartupHousekeeping(
+    baseOptions(),
+    buildDefaultWorkerConfig(),
+    recordingDeps(order, logs, {
+      env: emptyEnv,
+      configureDecisionStore: () => {
+        configured++;
+      },
+    }),
+    "deferred",
+  );
+
+  assertEquals(order, [...DEFERRED_HOUSEKEEPING_STEP_IDS]);
+  assertEquals(result.stepsRun, [...DEFERRED_HOUSEKEEPING_STEP_IDS]);
+  assertEquals(configured, 0);
+  assertEquals(logs.filter((line) => line.includes("cli-state-sweep")), []);
+});
+
+Deno.test("runStartupHousekeeping - the blocking and deferred scopes together run every step exactly once (Issue #4822)", async () => {
+  const order: string[] = [];
+  const logs: string[] = [];
+
+  await runStartupHousekeeping(
+    baseOptions(),
+    buildDefaultWorkerConfig(),
+    recordingDeps(order, logs, { env: emptyEnv }),
+    "blocking",
+  );
+  await runStartupHousekeeping(
+    baseOptions(),
+    buildDefaultWorkerConfig(),
+    recordingDeps(order, logs, { env: emptyEnv }),
+    "deferred",
+  );
+
+  assertEquals([...order].sort(), [...HOUSEKEEPING_STEP_IDS].sort());
+});
+
+Deno.test("runStartupHousekeeping - the default scope is all, one sequence with the decision store and CLI sweep (Issue #4822)", async () => {
+  const order: string[] = [];
+  const logs: string[] = [];
+  let configured = 0;
+
+  await runStartupHousekeeping(
+    baseOptions(),
+    buildDefaultWorkerConfig(),
+    recordingDeps(order, logs, {
+      env: emptyEnv,
+      configureDecisionStore: () => {
+        configured++;
+      },
+    }),
+  );
+
+  assertEquals(order, [...HOUSEKEEPING_STEP_IDS]);
+  assertEquals(configured, 1);
+});
+
+Deno.test("runStartupHousekeeping - a failing deferred step is recorded in failures, never thrown (Issue #4822)", async () => {
+  const order: string[] = [];
+  const logs: string[] = [];
+
+  const result = await runStartupHousekeeping(
+    baseOptions(),
+    buildDefaultWorkerConfig(),
+    recordingDeps(order, logs, {
+      env: emptyEnv,
+      runStep: (step) => {
+        order.push(step.id);
+        if (step.id === "branch-cleanup-stale") {
+          throw new Error("gh unreachable");
+        }
+        return Promise.resolve({ success: false, message: "sweep refused" });
+      },
+    }),
+    "deferred",
+  );
+
+  assertEquals(order, [...DEFERRED_HOUSEKEEPING_STEP_IDS]);
+  assertEquals(result.failures, [...DEFERRED_HOUSEKEEPING_STEP_IDS]);
+  const text = logs.join("\n");
+  assertStringIncludes(
+    text,
+    "branch-cleanup-stale threw (continuing): gh unreachable",
+  );
+  assertStringIncludes(
+    text,
+    "merged-pr-issue-sweep failed (continuing): sweep refused",
+  );
 });

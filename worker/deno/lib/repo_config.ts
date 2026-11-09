@@ -162,7 +162,7 @@ export function buildQualityInstructions(
       options.runBudgetSeconds,
       options.pushGuarantee,
     ),
-    `   - Never start ${command}, the full test suite, a build, or any other long-running command in the background and poll for it. A \`sleep\`/\`pgrep\`/\`echo\` wait loop spends the execute budget, and a model turn per poll, without making progress (Issue #2230). Run one bounded foreground command instead — \`timeout <seconds> <command> < /dev/null\` — sized to the measured gate duration and remaining run budget above. Request a matching tool-call timeout in milliseconds; a shell timeout cannot extend the tool ceiling. Read the result when it returns. Run only the test files your change touches; the quality gate and CI run everything.`,
+    `   - Never start ${command}, the full test suite, a build, or any other long-running command in the background and poll for it. A \`sleep\`/\`pgrep\`/\`echo\` wait loop spends the execute budget, and a model turn per poll, without making progress (Issue #2230). Run one bounded foreground command instead — \`timeout <seconds> <command> < /dev/null\`, where \`<seconds>\` is sized to the gate's cost stated above, with margin — and read its result when it returns. If the shell tool takes its own timeout argument, set it to match. Run only the test files your change touches; the quality gate and CI run everything.`,
     `   - IMPORTANT: Always redirect stdin from /dev/null (< /dev/null) when running tests, quality checks, or build commands to prevent hanging on unattended machines.`,
   ].join("\n");
 }

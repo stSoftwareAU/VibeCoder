@@ -149,6 +149,7 @@ function createGhMock(state: GhState): (args: string[]) => Promise<string> {
           repository: {
             issue: {
               userContentEdits: {
+                totalCount: 1,
                 nodes: [{
                   editedAt: state.editedAt,
                   editor: { login: state.editor },

@@ -106,10 +106,14 @@ const WAYS_OUT =
  * When a summary says it is only part of the run's issue, but the assembled
  * body would still close that issue (Issue #4126).
  *
- * Route 1: no closing keyword, so `ensurePrReferencesIssue` appends
- * `Closes #N`. Route 2: the summary itself contains a closing keyword,
- * including a negated one such as "does not close #N", which GitHub still
- * honours. A parsed `missing` criterion is the #3177 hold, so it passes.
+ * Route 1: no same-line closing keyword in prose, so `ensurePrReferencesIssue`
+ * appends `Closes #N`. The appender ignores a keyword inside Markdown code
+ * (a code span or fence) and one whose `#N` sits on the next line (Issue
+ * #4808), so a summary whose only close is `` `Closes #N` `` still gets the
+ * appended close. Route 2: the summary itself contains a closing keyword in
+ * prose (code masked), including a negated one such as "does not close #N",
+ * which GitHub still honours. A parsed `missing` criterion is the #3177 hold,
+ * so it passes.
  *
  * @returns The block message, or undefined when the gate passes.
  */
@@ -125,10 +129,9 @@ function partOfStillClosesProblem(
   if (closing !== null) {
     return `${keptOpen} says the issue stays open, but the summary still contains the closing phrase "${closing}". ${WAYS_OUT}`;
   }
-  if (ensurePrReferencesIssue(summary, issueNumber) !== summary) {
-    return `${keptOpen} says the issue stays open, but the summary has no parsed missing criterion, so the worker appends Closes #${issueNumber}. ${WAYS_OUT}`;
-  }
-  return undefined;
+  return ensurePrReferencesIssue(summary, issueNumber) === summary
+    ? undefined
+    : `${keptOpen} says the issue stays open, but the summary has no parsed missing criterion, so the worker appends Closes #${issueNumber}. ${WAYS_OUT}`;
 }
 
 /** The Part-of gate report for one summary. */

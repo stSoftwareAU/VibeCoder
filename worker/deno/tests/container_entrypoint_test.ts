@@ -223,6 +223,45 @@ Deno.test("entrypoint - review-round runs one review round instead of the worker
   }
 });
 
+Deno.test("entrypoint - babysitter-repair runs the driver with babysitter-repair and passes the arguments through (Issue #4768)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDeno(dir);
+    await fakeRepo(dir);
+
+    const { code } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo` },
+      args: [
+        "babysitter-repair",
+        "--dir",
+        "/babysitter/clone",
+        "--prompt-file",
+        "/babysitter/scratch/prompt.md",
+        "--response-file",
+        "/babysitter/clone/.babysitter-response",
+      ],
+    });
+    assertEquals(code, 0);
+
+    const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
+    assertEquals(argv.slice(-7), [
+      "babysitter-repair",
+      "--dir",
+      "/babysitter/clone",
+      "--prompt-file",
+      "/babysitter/scratch/prompt.md",
+      "--response-file",
+      "/babysitter/clone/.babysitter-response",
+    ]);
+    assertEquals(argv.includes("run-entrypoint"), false);
+    assertEquals(argv.includes("--frozen"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("entrypoint - fails loudly when deno is not on PATH", async () => {
   const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
   try {

@@ -183,6 +183,31 @@ async function runOneCycle(
   await runCoreLoop(config, deps);
 }
 
+for (const slots of [1, 3]) {
+  Deno.test(`completion mode: ${slots} issue slot(s) dispatch repair before new implementation`, async () => {
+    let now = 0, repaired = false, scans = 0;
+    const deps = createMockDeps({
+      now: () => now,
+      sleep: async (ms) => {
+        now += ms ?? 30_000;
+      },
+      processCompletionWork: async () => {
+        if (repaired) return { ok: true, value: { processed: false } };
+        repaired = true;
+        return { ok: true, value: { processed: true } };
+      },
+      findNextIssue: async () => {
+        assertEquals(repaired, true);
+        scans++;
+        return { ok: true, value: null };
+      },
+    });
+    await runOneCycle(deps, slots);
+    assertEquals(repaired, true);
+    assert(scans > 0);
+  });
+}
+
 Deno.test("slot pool - maxConcurrentIssues 1: high-water mark 1 and today's serial sequence (Issue #4177)", async () => {
   let inFlight = 0, high = 0;
   const calls: string[] = [];

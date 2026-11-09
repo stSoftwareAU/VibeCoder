@@ -13,13 +13,19 @@
  * - a **title** edit appears as a `RenamedTitleEvent` timeline item
  *   (actor + `createdAt`).
  *
- * Both are read in one GraphQL round-trip and returned as the **full edit
- * history**, newest first (Issue #3879). Reducing the two records to a single
- * newest actor destroyed the provenance a trust decision needs: an untrusted
- * body edit followed by any later trusted edit — a maintainer fixing a typo in
- * the title is enough — reported only the trusted actor, and the untrusted body
- * inherited that trust. Trust is a property of the whole set of editors, not of
- * its maximum, so callers get the set and decide over all of it.
+ * Both are read in one GraphQL round-trip and returned as the **edit history**,
+ * newest first (Issue #3879). Reducing the two records to a single newest actor
+ * destroyed the provenance a trust decision needs: an untrusted body edit
+ * followed by any later trusted edit — a maintainer fixing a typo in the title
+ * is enough — reported only the trusted actor, and the untrusted body inherited
+ * that trust. Trust is a property of the whole set of editors, not of its
+ * maximum, so callers get the set and decide over all of it.
+ *
+ * GitHub lists `userContentEdits` newest first, so the body half asks for
+ * `first: 100`: the newest 100 body edits (Issue #4804). An issue with more
+ * body edits than that reports `bodyHistoryTruncated`, and its older edits are
+ * absent from `actors`. Renames come from the timeline and are not covered by
+ * that flag.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -50,10 +56,12 @@ export interface IssueEditActor {
 /**
  * Outcome of an editor lookup.
  *
- * `ok: true` carries `actors`: every recorded edit, ordered newest first. An
- * empty array means GitHub has no edit record at all (`actor` is then `null`).
- * `ok: false` means the lookup itself could not be completed, and callers
- * that gate on trust must fail closed rather than guess (Issue #3234).
+ * `ok: true` carries `actors`: every recorded edit in the window, ordered
+ * newest first — the newest 100 renames and newest 100 body edits. Renames
+ * are not covered by `bodyHistoryTruncated`. An empty array means no edit
+ * record was returned (`actor` is then `null`). `ok: false` means the lookup
+ * itself could not be completed, and callers that gate on trust must fail
+ * closed rather than guess (Issue #3234).
  *
  * `actor` is the head of `actors`, kept for messaging and for ordering an
  * approval against the most recent edit. A **trust** decision must read
@@ -64,21 +72,28 @@ export type IssueEditActorLookup =
     ok: true;
     actor: IssueEditActor | null;
     actors: IssueEditActor[];
-    bodyHistoryTruncated?: boolean;
+    /**
+     * True when older body edits exist beyond the newest-100 window, so
+     * `actors` lacks them (Issue #4804). A trust decision must not read their
+     * absence as "nobody edited".
+     */
+    bodyHistoryTruncated: boolean;
   }
   | { ok: false; error: Error };
 
 /**
- * Both edit records in one round-trip. `last: 100` is the maximum page size:
- * for any issue with 100 or fewer edits it returns every edit regardless of
- * connection ordering, and the newest is then chosen by timestamp below.
+ * Both edit records in one round-trip. GitHub lists `userContentEdits` newest
+ * first, so `first: 100` is the newest 100 body edits (Issue #4804); the
+ * `totalCount` reports any older edits beyond that window. The timeline is
+ * chronological, so `last: 100` is its newest 100 rename events. The newest
+ * edit is chosen by timestamp below, never by connection order.
  */
 const EDIT_ACTOR_QUERY =
-  `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(last:100){nodes{editedAt editor{login}}} timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){nodes{... on RenamedTitleEvent{createdAt actor{login}}}}}}}`;
+  `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(first:100){totalCount nodes{editedAt editor{login}}} timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){nodes{... on RenamedTitleEvent{createdAt actor{login}}}}}}}`;
 
 /** The claim check needs the newest body snapshots, in GitHub's newest-first connection. */
 const EDIT_ACTOR_DIFF_QUERY = EDIT_ACTOR_QUERY.replace(
-  "userContentEdits(last:100){nodes{editedAt editor{login}}}",
+  "userContentEdits(first:100){totalCount nodes{editedAt editor{login}}}",
   "userContentEdits(first:100){totalCount nodes{editedAt diff editor{login}}}",
 );
 
@@ -148,9 +163,10 @@ function byNewestFirst(a: IssueEditActor, b: IssueEditActor): number {
  * @param ghFn - Injected `gh` CLI runner
  * @param options - `includeDiff` also reads each body edit's `diff` text. Off
  *   by default so the content-integrity gate's query stays small.
- * @returns Every recorded edit actor newest first (with `actor` as the newest
- *   and `null` when the issue has never been edited), or an error when the
- *   lookup could not be completed
+ * @returns Every recorded edit actor in the window, newest first (with `actor`
+ *   as the newest and `null` when the issue has never been edited), flagged
+ *   `bodyHistoryTruncated` when older body edits lie beyond the window, or an
+ *   error when the lookup could not be completed
  */
 export async function resolveLastIssueEditor(
   repo: string,
@@ -230,12 +246,11 @@ export async function resolveLastIssueEditor(
 
   const candidates: IssueEditActor[] = [];
 
+  // Issue #4804: `totalCount` is what tells a truncated window from a complete
+  // one, so a response without a usable count is malformed and is rejected.
   const totalCount = issue.userContentEdits?.totalCount;
-  if (
-    options?.includeDiff &&
-    (!Number.isInteger(totalCount) ||
-      totalCount! < (issue.userContentEdits?.nodes?.length ?? 0))
-  ) {
+  const bodyCount = issue.userContentEdits?.nodes?.length ?? 0;
+  if (!Number.isInteger(totalCount) || totalCount! < bodyCount) {
     return {
       ok: false,
       error: new Error(
@@ -243,12 +258,24 @@ export async function resolveLastIssueEditor(
       ),
     };
   }
-  const bodyHistoryTruncated = options?.includeDiff &&
-    totalCount! > (issue.userContentEdits?.nodes?.length ?? 0);
+  const bodyHistoryTruncated = totalCount! > bodyCount;
 
   const bodyNodes = [...(issue.userContentEdits?.nodes ?? [])].sort((a, b) =>
     Date.parse(a?.editedAt ?? "") - Date.parse(b?.editedAt ?? "")
   );
+  // A truncated window with an unreadable timestamp cannot be placed against
+  // the snapshot, and the older edits it hides cannot be ruled out: fail closed.
+  if (
+    bodyHistoryTruncated &&
+    bodyNodes.some((node) => !Number.isFinite(Date.parse(node?.editedAt ?? "")))
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        "Edit-actor query returned truncated userContentEdits history with an unparseable editedAt",
+      ),
+    };
+  }
   // A malformed timestamp makes adjacency uncertain; never exempt an edit.
   const orderedBodies = bodyNodes.every((node) =>
     Number.isFinite(Date.parse(node?.editedAt ?? ""))
@@ -291,7 +318,7 @@ export async function resolveLastIssueEditor(
       ok: true,
       actor: null,
       actors: [],
-      ...(options?.includeDiff ? { bodyHistoryTruncated } : {}),
+      bodyHistoryTruncated,
     };
   }
 
@@ -303,6 +330,6 @@ export async function resolveLastIssueEditor(
     ok: true,
     actor: candidates[0] ?? null,
     actors: candidates,
-    ...(options?.includeDiff ? { bodyHistoryTruncated } : {}),
+    bodyHistoryTruncated,
   };
 }

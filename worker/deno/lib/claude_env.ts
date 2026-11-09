@@ -210,6 +210,23 @@ export const CLAUDE_SUBAGENT_CAP_ENV: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Foreground command ceiling for every `claude` child (Issue #4913).
+ *
+ * The agent's Bash tool stops a foreground command at 600 000 ms unless
+ * `BASH_MAX_TIMEOUT_MS` raises the ceiling (read by Claude Code 2.1.310, the
+ * version pinned in `container/tools.json`). The prompts require the quality
+ * gate as one bounded foreground command, which a gate running longer than ten
+ * minutes cannot otherwise finish. 1 800 000 ms (30 minutes) matches the 1800 s
+ * default PR-feedback timeout.
+ *
+ * Spawn environment, not an operator setting: an explicit value already in the
+ * parent environment wins, exactly as {@link CLAUDE_SUBAGENT_CAP_ENV} does.
+ */
+export const CLAUDE_BASH_TIMEOUT_ENV: Readonly<Record<string, string>> = {
+  BASH_MAX_TIMEOUT_MS: "1800000",
+};
+
+/**
  * Build the environment for the `claude` child subprocess.
  *
  * Returns a copy of `parentEnv` with every denied variable removed — the
@@ -242,12 +259,9 @@ export function buildClaudeChildEnv(
     if (env[name] === undefined) env[name] = value;
   }
 
-  // Claude's foreground Bash ceiling defaults to 600 s, shorter than some
-  // repository gates (#4913). Allow requests up to the default reactive-phase
-  // budget, without changing the default command timeout or outer watchdogs.
-  // https://code.claude.com/docs/en/env-vars#bash-tool
-  if (env["BASH_MAX_TIMEOUT_MS"] === undefined) {
-    env["BASH_MAX_TIMEOUT_MS"] = "1800000";
+  // Foreground command ceiling (Issue #4913); an explicit parent value wins.
+  for (const [name, value] of Object.entries(CLAUDE_BASH_TIMEOUT_ENV)) {
+    if (env[name] === undefined) env[name] = value;
   }
 
   // Durable transcripts inside the container (Issue #4170): claude stores

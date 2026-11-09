@@ -49,7 +49,6 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
-  assertThrows,
 } from "@std/assert";
 import {
   enforceGhWriteAllowlist,
@@ -67,11 +66,6 @@ import {
 } from "../lib/pr_body_sync.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { buildIdempotencyMarker, closingKeywordLine } from "../lib/pr_body.ts";
-import {
-  BABYSITTER_FILESYSTEM_KEY,
-  BABYSITTER_PERMISSIONS_PROFILE,
-  buildBabysitterSandboxArgs,
-} from "../lib/fleet_babysitter_sandbox.ts";
 import {
   applyPrBody,
   attemptKey,
@@ -101,7 +95,6 @@ import {
   resumePendingPublication,
   runRepairs,
   serialiseOnMirror,
-  spawnBabysitterAgent,
   syncBabysitterPrBodyBeforeDismissal,
   takePrBodyProposal,
   temporaryCloneRoot,
@@ -3123,205 +3116,11 @@ Deno.test("parallel babysitter repairs restrict writes to their own repository",
   assertEquals(results, ["org/one", "org/two"]);
 });
 
-Deno.test("codex agent gets its own read-only token instead of the runner's GH_TOKEN", () => {
-  const runnerToken = "runner-write-token";
-  const agentToken = "agent-read-only-token";
-  const scratch = "/tmp/babysitter-scratch";
-  const dir = "/tmp/babysitter-clone";
-  const responseFile = "/tmp/babysitter-exchange/response";
-  const prompt = "Fix conflicts on PR #1";
-  const protectedPaths = [
-    "/home/u/.vibe-coder/fleet-pr-babysitter",
-    "/home/u/.vibe-coder/fleet-pr-babysitter.private-key.pem",
-  ];
-  const calls: {
-    executable: string;
-    options: Deno.CommandOptions & { timeoutMs: number };
-  }[] = [];
-  spawnBabysitterAgent(
-    {
-      dir,
-      scratch,
-      prompt,
-      agentToken,
-      protectedPaths,
-      codex: "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
-      responseFile,
-    },
-    (executable, options) => {
-      calls.push({ executable, options });
-      return {} as unknown as Deno.ChildProcess;
-    },
-  );
-  const [call] = calls;
-  assert(call);
-  assertEquals(
-    call.executable,
-    "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
-  );
-  const env = call.options.env as Record<string, string>;
-  assertEquals(env.GH_TOKEN, agentToken);
-  assert(env.GH_TOKEN !== runnerToken);
-  assertEquals(env, {
-    TMPDIR: scratch,
-    XDG_CACHE_HOME: scratch,
-    GH_TOKEN: agentToken,
-    GH_CONFIG_DIR: `${scratch}/gh-config`,
-    VIBE_AUDIT_DISABLED: "1",
-  });
-  assertEquals(call.options.timeoutMs, 90 * 60_000);
-  assertEquals(call.options.args, [
-    "exec",
-    "-c",
-    'approval_policy="never"',
-    ...buildBabysitterSandboxArgs({ dir, scratch, protectedPaths }),
-    "--cd",
-    dir,
-    "--output-last-message",
-    responseFile,
-    prompt,
-  ]);
-  assertEquals(call.options.stdin, "null");
-  assertEquals(call.options.stdout, "inherit");
-  assertEquals(call.options.stderr, "piped");
-});
-
-Deno.test("codex agent is not given the workspace-write sandbox and cannot read the credential paths", () => {
-  const keyPath = "/home/u/.vibe-coder/fleet-pr-babysitter.private-key.pem";
-  const protectedPaths = [
-    "/home/u/.vibe-coder/fleet-pr-babysitter",
-    keyPath,
-  ];
-  const calls: string[][] = [];
-  spawnBabysitterAgent(
-    {
-      dir: "/tmp/babysitter-clone",
-      scratch: "/tmp/babysitter-scratch",
-      prompt: "Fix conflicts on PR #1",
-      agentToken: "agent-read-only-token",
-      protectedPaths,
-      codex: "codex",
-      responseFile: "/tmp/babysitter-exchange/response",
-    },
-    (_executable, options) => {
-      calls.push(options.args as string[]);
-      return {} as unknown as Deno.ChildProcess;
-    },
-  );
-  const [args] = calls;
-  assert(args);
-  assert(!args.includes("--sandbox"));
-  assert(!args.includes("workspace-write"));
-  assert(
-    args.includes(`default_permissions="${BABYSITTER_PERMISSIONS_PROFILE}"`),
-  );
-  for (const path of protectedPaths) {
-    assert(
-      args.some((arg) =>
-        arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={ `) &&
-        arg.includes(`${JSON.stringify(path)} = "none"`)
-      ),
-      `missing none override for ${path}`,
-    );
-    assert(
-      !args.some((arg) =>
-        arg.includes(`${JSON.stringify(path)} = "read"`) ||
-        arg.includes(`${JSON.stringify(path)} = "write"`)
-      ),
-      `credential path ${path} is readable or writable`,
-    );
-  }
-  assert(protectedPaths.includes(keyPath));
-});
-
-Deno.test("codex agent refuses to start without protected credential paths", () => {
-  let spawned = false;
-  assertThrows(
-    () =>
-      spawnBabysitterAgent(
-        {
-          dir: "/tmp/babysitter-clone",
-          scratch: "/tmp/babysitter-scratch",
-          prompt: "Fix conflicts on PR #1",
-          agentToken: "agent-read-only-token",
-          protectedPaths: [],
-          codex: "codex",
-          responseFile: "/tmp/babysitter-exchange/response",
-        },
-        () => {
-          spawned = true;
-          return {} as unknown as Deno.ChildProcess;
-        },
-      ),
-    Error,
-  );
-  assertEquals(spawned, false);
-});
-
-Deno.test("codex agent refuses a response file inside the clone or scratch directory", () => {
-  for (
-    const responseFile of [
-      "/tmp/babysitter-clone/response",
-      "/tmp/babysitter-clone",
-      "/tmp/babysitter-scratch/response",
-      "/tmp/babysitter-scratch",
-    ]
-  ) {
-    let spawned = false;
-    assertThrows(
-      () =>
-        spawnBabysitterAgent(
-          {
-            dir: "/tmp/babysitter-clone",
-            scratch: "/tmp/babysitter-scratch",
-            prompt: "Fix conflicts on PR #1",
-            agentToken: "agent-read-only-token",
-            protectedPaths: ["/home/u/.vibe-coder/fleet-pr-babysitter"],
-            codex: "codex",
-            responseFile,
-          },
-          () => {
-            spawned = true;
-            return {} as unknown as Deno.ChildProcess;
-          },
-        ),
-      Error,
-      "writable path",
-    );
-    assertEquals(spawned, false, `spawned with ${responseFile}`);
-  }
-});
-
-Deno.test("codex agent refuses a relative response file and does not spawn", () => {
-  let spawned = false;
-  assertThrows(
-    () =>
-      spawnBabysitterAgent(
-        {
-          dir: "/tmp/babysitter-clone",
-          scratch: "/tmp/babysitter-scratch",
-          prompt: "Fix conflicts on PR #1",
-          agentToken: "agent-read-only-token",
-          protectedPaths: ["/home/u/.vibe-coder/fleet-pr-babysitter"],
-          codex: "codex",
-          responseFile: "response",
-        },
-        () => {
-          spawned = true;
-          return {} as unknown as Deno.ChildProcess;
-        },
-      ),
-    Error,
-    "not absolute",
-  );
-  assertEquals(spawned, false);
-});
-
 // Shift left (Issue #4610): a babysitter push that CI then rejects costs a CI
 // run and another repair. Every repair re-runs the relevant local checks
 // before it reports ready.
 Deno.test("a CI repair must reproduce the failing step locally and see it pass before reporting ready", () => {
-  const prompt = buildRepairPrompt("failed CI", 5016, "owner/repo", "");
+  const prompt = buildRepairPrompt("failed CI", 5016, "owner/repo", null, "");
   assertStringIncludes(prompt, "same command the workflow runs");
   assertStringIncludes(prompt, "confirm it passes before");
   assertStringIncludes(prompt, "quality.sh");
@@ -3333,6 +3132,7 @@ Deno.test("a review repair runs the local checks covering the changed files", ()
     "requested review changes",
     1,
     "owner/repo",
+    null,
     "",
   );
   assertStringIncludes(prompt, "formatter, linter, type or compile check");
@@ -3340,10 +3140,143 @@ Deno.test("a review repair runs the local checks covering the changed files", ()
 });
 
 Deno.test("a conflict repair still checks the packages it touched, not the whole suite", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", null, "");
   assertStringIncludes(prompt, "formatter, linter, type or compile check");
   assertStringIncludes(prompt, "full regression suite");
   assertStringIncludes(prompt, "BABYSITTER_READY");
+});
+
+Deno.test("repair prompt names the summary for the PR's issue", () => {
+  const prompt = buildRepairPrompt(
+    "merge conflict",
+    2516,
+    "owner/repo",
+    2453,
+    "",
+  );
+  assertStringIncludes(
+    prompt,
+    "this PR's is docs/archive/pr-summaries/pr-summary-2453.md: rewrite it in the same fix so every claim, count and result matches the pushed head",
+  );
+  assertStringIncludes(
+    prompt,
+    "Other summaries, including any the base merge brought in, belong to the PRs that wrote them.",
+  );
+  assert(!prompt.includes("pr-summary-<issue>.md"));
+});
+
+Deno.test("repair prompt gives generic summary guidance without an issue number", () => {
+  const prompt = buildRepairPrompt(
+    "merge conflict",
+    2516,
+    "owner/repo",
+    null,
+    "",
+  );
+  assert(!prompt.includes("docs/archive/pr-summaries/pr-summary-"));
+  assert(!prompt.includes("<issue>"));
+  assertStringIncludes(
+    prompt,
+    "rewrite this PR's summary in the same fix so every claim, count and result matches the pushed head",
+  );
+});
+
+Deno.test("repair caller passes the issue number parsed from the PR branch", async () => {
+  const root = await Deno.makeTempDir();
+  const head = "a".repeat(40);
+  let prompt = "";
+  let lockBody = "";
+  const commands: string[][] = [];
+  let nextCommentId = 10;
+  const capture = async (
+    headRefName: string,
+    missingHome = false,
+  ): Promise<string> => {
+    prompt = "";
+    const currentPr = {
+      ...pr,
+      number: 2516,
+      title: "repair target",
+      headRefName,
+      headRefOid: head,
+      mergeable: "CONFLICTING",
+      autoMergeRequest: {},
+    };
+    const gh = async (args: string[]): Promise<string> => {
+      commands.push(args);
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify(currentPr);
+      }
+      if (args[0] === "issue" && args[1] === "comment") {
+        lockBody = args[args.indexOf("--body") + 1]!;
+        return `https://github.com/owner/repo/issues/2516#issuecomment-${nextCommentId++}`;
+      }
+      if (args[0] === "api" && args[1]?.includes("/comments?per_page=")) {
+        return JSON.stringify([{
+          id: 10,
+          body: lockBody,
+          created_at: new Date().toISOString(),
+          author: "VibeCoderST",
+        }]);
+      }
+      if (
+        args[0] === "api" && args.includes("POST") &&
+        args[1]?.endsWith("/issues/2516/comments")
+      ) return JSON.stringify({ id: nextCommentId++ });
+      if (args[0] === "api" && args[1]?.includes("/comments")) return "[]\n";
+      throw new Error(
+        `Unexpected repair prompt test gh command: ${args.join(" ")}`,
+      );
+    };
+    try {
+      await assertRejects(
+        () =>
+          fix(
+            "owner/repo",
+            currentPr,
+            ["VibeCoderST"],
+            "VibeCoderST",
+            { appId: "1", installationId: "1", privateKeyPath: "/unused" },
+            "/unused",
+            gh,
+            async () => {},
+            99,
+            {
+              stateDir: `${root}/state`,
+              clone: async () => {},
+              run: async (_command, args) =>
+                args[0] === "rev-parse" ? head : "",
+              mergeBase: async () => ({ kind: "conflicted" }),
+              env: () => missingHome ? undefined : root,
+              journalAttempt: async () => {},
+              startAgent: async (_app, _repo, options) => {
+                prompt = options.prompt;
+                throw new Error("captured prompt");
+              },
+            },
+          ),
+        Error,
+        "captured prompt",
+      );
+      assert(
+        prompt.length > 0,
+        `repair did not reach agent; gh calls: ${JSON.stringify(commands)}`,
+      );
+      return prompt;
+    } finally {
+      await Deno.remove(`${root}/state`, { recursive: true });
+    }
+  };
+  try {
+    const known = await capture("issue-2453-example");
+    assertStringIncludes(known, "pr-summary-2453.md");
+    const unknown = await capture("feature-without-issue");
+    assert(!unknown.includes("docs/archive/pr-summaries/pr-summary-"));
+    const withoutHome = await capture("issue-2453-example", true);
+    assertStringIncludes(withoutHome, "pr-summary-2453.md");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 // Owner rule 2026-11-01: the babysitter honours needs-human.
@@ -3394,6 +3327,7 @@ Deno.test("a review repair may propose a PR description for the runner to apply"
     "requested review changes",
     1,
     "owner/repo",
+    null,
     "",
   );
   assertStringIncludes(prompt, ".babysitter-pr-body");
@@ -3571,12 +3505,14 @@ Deno.test("an oversized completion response is refused", async () => {
 
 // Issue #4677: CI is the gate, so a check this host cannot run is reported,
 // not a reason to discard an otherwise complete repair.
-Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
+Deno.test("a check the container cannot run is named but does not withhold readiness", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(prompt, "name it in your final response");
+    assertStringIncludes(prompt, "cannot run in this container");
+    assertStringIncludes(prompt, "Chromium at $CHROMIUM_PATH");
     assertStringIncludes(
       prompt,
       "does not by itself withhold BABYSITTER_READY",
@@ -3587,7 +3523,7 @@ Deno.test("a check the host cannot run is named but does not withhold readiness"
 // Issue #4677: a resolved conflict was discarded over unrelated verifier
 // findings (VibeCoder#4675); other feedback is out of a conflict's scope.
 Deno.test("other open feedback does not withhold readiness from a resolved conflict", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", null, "");
   assertStringIncludes(
     prompt,
     "Other open feedback (reviews, verifier or bot comments) is out of scope for a conflict repair and does not withhold BABYSITTER_READY",
@@ -3729,7 +3665,7 @@ Deno.test("a host-only failure in an unrelated check is named, not a blocker", (
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(
       prompt,
       "unrelated to the files you changed and passes in CI on the base branch",
@@ -3743,7 +3679,7 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(prompt, "reads commit history");
   }
 });
@@ -3751,7 +3687,7 @@ Deno.test("a check that reads commit history does not withhold readiness", () =>
 // Issue #4717: a CI repair fixed the failing checks, then held back over the
 // verifier's unrelated findings; a later review repair handles reviews.
 Deno.test("other open feedback does not withhold readiness from a CI repair", () => {
-  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", "");
+  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", null, "");
   assertStringIncludes(
     prompt,
     "Other open feedback (reviews, verifier or bot comments) is out of scope for a CI repair",
@@ -3764,7 +3700,7 @@ Deno.test("repair prompt applies the shared evidence policy to test replacements
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(
       prompt,
       "Never remove, skip or weaken tests just to make a check pass",
@@ -3780,17 +3716,19 @@ Deno.test("every repair rewrites CI-checked per-PR summary claims for the pushed
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
-    assertStringIncludes(prompt, "per-PR summary");
-    assertStringIncludes(
-      prompt,
-      "rewrite it in the same fix so every claim, count and result matches the pushed head",
-    );
-    assertStringIncludes(
-      prompt,
-      "instead of adding a follow-up note beside the old text",
-    );
-    assert(!prompt.includes("update it to cover your change"));
+    for (const issue of [null, 2453]) {
+      const prompt = buildRepairPrompt(why, 1, "owner/repo", issue, "");
+      assertStringIncludes(prompt, "per-PR summary");
+      assertStringIncludes(
+        prompt,
+        "so every claim, count and result matches the pushed head",
+      );
+      assertStringIncludes(
+        prompt,
+        "instead of adding a follow-up note beside the old text",
+      );
+      assert(!prompt.includes("cover your change"));
+    }
   }
 });
 
@@ -3798,7 +3736,7 @@ Deno.test("every repair rewrites CI-checked per-PR summary claims for the pushed
 // base had deliberately retired behaviour the PR used; the base already
 // carries that decision, and conflicts are never handed to a human.
 Deno.test("a conflict where the base retired behaviour follows the base, not a human", () => {
-  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", "");
+  const prompt = buildRepairPrompt("merge conflict", 1, "owner/repo", null, "");
   assertStringIncludes(prompt, "deliberately removed or replaced behaviour");
   assertStringIncludes(prompt, "follow the base");
   assertStringIncludes(prompt, "never leave a conflict for a human");
@@ -3834,7 +3772,7 @@ Deno.test("a repair never prints environment variables or credentials", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
-    const prompt = buildRepairPrompt(why, 1, "owner/repo", "");
+    const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(prompt, "Never print, echo or log");
     assertStringIncludes(prompt, "gh auth status");
   }

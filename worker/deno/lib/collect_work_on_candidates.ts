@@ -635,7 +635,10 @@ export async function collectWorkOnCandidates(
         repoPRs,
         milestoneTitle,
         pushCapableAuthors,
-        resolveFleetPrSlots(config, repo),
+        options.completionAdmissionGate &&
+          config.repoConfig?.[repo]?.completionAdmission
+          ? Number.MAX_SAFE_INTEGER
+          : resolveFleetPrSlots(config, repo),
         issue.number,
       );
       if (blockingPR) {

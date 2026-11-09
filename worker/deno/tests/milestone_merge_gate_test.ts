@@ -23,6 +23,7 @@ import {
   isMergeGateFailure,
   MERGE_GATE_TIMEOUT_MS,
   mergeGateFailureError,
+  readManifestTasks,
   spawnTypeCheck,
   type TypeCheckProject,
   typeCheckTimeoutMs,
@@ -76,6 +77,60 @@ Deno.test("findTypeCheckProjects - reads a `check` task out of a commented deno.
     );
     const projects = await findTypeCheckProjects(dir);
     assertEquals(projects[0]!.args, ["task", "check"]);
+  });
+});
+
+Deno.test("findTypeCheckProjects - object-form `check` task in deno.json is the repository check (Issue #4811)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/deno.json`,
+      JSON.stringify({
+        tasks: {
+          check: { command: "deno check src/main.ts", description: "check" },
+        },
+      }),
+    );
+    assertEquals((await findTypeCheckProjects(dir))[0]!.args, [
+      "task",
+      "check",
+    ]);
+  });
+});
+
+Deno.test("findTypeCheckProjects - object-form `check` task in deno.jsonc is the repository check (Issue #4811)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/deno.jsonc`,
+      `{
+        // Deno supports object-form tasks in JSONC too.
+        "tasks": { "check": { "command": "deno check src/main.ts", "description": "check" } }
+      }`,
+    );
+    assertEquals((await findTypeCheckProjects(dir))[0]!.args, [
+      "task",
+      "check",
+    ]);
+  });
+});
+
+Deno.test("readManifestTasks - empty, malformed and dependencies-only commands are excluded (Issue #4811)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(
+      `${dir}/deno.json`,
+      JSON.stringify({
+        tasks: {
+          empty: "  ",
+          emptyObject: { command: " \t " },
+          malformed: { command: 42 },
+          nullTask: null,
+          primitiveTask: 42,
+          malformedTask: ["deno test"],
+          dependenciesOnly: { dependencies: ["build"] },
+          valid: { command: "deno test" },
+        },
+      }),
+    );
+    assertEquals(await readManifestTasks(`${dir}/deno.json`), ["valid"]);
   });
 });
 
@@ -1521,6 +1576,31 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
       ),
       expected,
       command,
+    );
+  }
+  for (
+    const [task, expected] of [
+      [null, false],
+      [42, false],
+      [{}, false],
+      [{ command: " " }, false],
+      [{ dependencies: ["generate"] }, false],
+      [{ command: "deno check main.ts", description: "safe" }, true],
+      [{ command: "deno run -A gen.ts && deno check main.ts" }, false],
+      [{ command: "deno check main.ts", dependencies: ["generate"] }, false],
+    ] as const
+  ) {
+    assertEquals(
+      await readOnlyFor(
+        {
+          "deno.json": JSON.stringify({ tasks: { check: task } }),
+          "deno.lock": "{}",
+        },
+        "deno",
+        ["task", "check"],
+      ),
+      expected,
+      JSON.stringify(task),
     );
   }
   assertEquals(

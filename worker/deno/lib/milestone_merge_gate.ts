@@ -229,6 +229,16 @@ async function resolveCheckArgs(manifestPath: string): Promise<string[]> {
     : ["check", "**/*.ts"];
 }
 
+/** The command text in a Deno string-form or command-bearing object task. */
+function manifestTaskCommand(task: unknown): string | undefined {
+  const command = typeof task === "string"
+    ? task
+    : (task as { command?: unknown } | null | undefined)?.command;
+  return typeof command === "string" && command.trim().length > 0
+    ? command
+    : undefined;
+}
+
 /**
  * `cargo check` over the whole workspace, every target (Issue #2138) —
  * `--locked` only when a `Cargo.lock` is committed, so a merged lockfile
@@ -244,10 +254,11 @@ export async function cargoCheckArgs(dir: string): Promise<string[]> {
 /**
  * The task names a Deno manifest defines.
  *
- * Only tasks with a non-empty command string count: a manifest whose `tasks`
- * key is malformed defines none, and an unparseable manifest is read the same
- * way — the caller then falls back to a check it can run rather than trying to
- * run a task that may not exist.
+ * String tasks and object tasks with a non-empty `command` count. A
+ * dependencies-only object is excluded because these gates discover commands
+ * to run, not task aliases. A manifest whose `tasks` key is malformed defines
+ * none, and an unparseable manifest is read the same way — the caller then
+ * falls back to a check it can run rather than trying a task that may not exist.
  *
  * Shared with the conflict-resolution gate (Issue #1559), which runs more of a
  * repository's own tasks than a type check alone.
@@ -265,9 +276,7 @@ export async function readManifestTasks(
     const tasks = parsed?.tasks;
     if (!tasks || typeof tasks !== "object") return [];
     return Object.entries(tasks as Record<string, unknown>)
-      .filter(([, command]) =>
-        typeof command === "string" && command.trim().length > 0
-      )
+      .filter(([, task]) => manifestTaskCommand(task) !== undefined)
       .map(([name]) => name);
   } catch {
     // Unparseable manifest — it defines nothing this gate can run.
@@ -652,8 +661,10 @@ export function denoLockfileWriteRefused(dir: string, output: string): boolean {
  * `node_modules` for `nodeModulesDir: "auto"` or beside a `package.json`,
  * and writes `vendor` when vendoring is enabled.
  * A present lockfile and none of the other conditions allow an attempt.
- * A check task must also be a simple `deno check` with known safe flags.
- * Anything else, or a manifest that cannot be read, keeps the write requirement.
+ * A string-form check task, or an object-form check with a non-empty command,
+ * must also be a simple `deno check` with known safe flags and no dependencies.
+ * Dependencies may write files. Anything else, or a manifest that cannot be
+ * read, keeps the write requirement.
  *
  * @param dir - The Deno project directory
  * @param args - Arguments selected for the project check
@@ -675,12 +686,19 @@ export async function denoCheckLeavesDirUntouched(
         stripJsonc(await Deno.readTextFile(`${dir}/${name}`)),
       );
       if (taskCheck) {
-        const command = config?.tasks?.check;
-        if (typeof command !== "string" || /[\r\n]/.test(command)) return false;
+        const task = config?.tasks?.check;
+        const command = manifestTaskCommand(task) ?? "";
+        if (/[\r\n]/.test(command)) return false;
         // Accept only a simple invocation with known non-writing flags. Shell
         // expansions, operators and unknown options retain the write probe.
         const words = command.trim().split(/\s+/);
         if (words[0] !== "deno" || words[1] !== "check") return false;
+        // A dependency may write project files even when this task's command
+        // is read-only, so keep the checkout write probe for the whole task.
+        if (
+          typeof task === "object" &&
+          "dependencies" in task
+        ) return false;
         if (
           !words.slice(2).every((word: string) => {
             if (/^['"]-/.test(word)) return false;

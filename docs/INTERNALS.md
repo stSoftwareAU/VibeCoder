@@ -126,7 +126,10 @@ the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
 formatting-only failure does not spend the agent's one remediation round. It
 leaves agent-authored Markdown unformatted. The worker's own Markdown and JSON
 under `docs/archive/pr-summaries/` and `docs/archive/handover/` are formatted
-afterwards, and a formatter that fails is only logged: the gate still runs and
+afterwards. Before `deno fmt`, each linkage-only line in archive Markdown is
+put in a paragraph of its own (Issue #4802). An archive file over 1 MiB
+(`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning and left for the gate
+to report. A formatter that fails is only logged: the gate still runs and
 reports. The completion phase does the same before its pre-push
 gate; see "Agent pre-push hook and the changed-files check" in
 [CONFIGURATION.md](CONFIGURATION.md).
@@ -350,15 +353,20 @@ bash `worker/run_core.sh` conductor. It sequences:
    scopes are logged with a `[SECURITY]` tag.
 4. **Startup housekeeping** — the one-time disk-space reclaim, log rotation,
    worker-log retention, stale temp-file / work-dir / worktree / Claude-session
-   sweeps, orphaned local + stale remote branch cleanup, and finally the
-   merged-PR issue sweep run as a single in-order Deno sequence
+   sweeps and orphaned local branch cleanup run as an in-order Deno sequence
+   before the first claim. The two GitHub-touching sweeps, stale remote branch
+   cleanup and the merged-PR issue sweep, run in the background alongside the
+   main loop, so they never delay the first claim (Issue #4822)
    ([run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts),); each step
-   is best-effort — a failure is logged loud but never blocks start.
+   is best-effort — a failure is logged loud but never blocks start. Any
+   background sweep still running when the loop ends gets a bounded grace
+   before the exit cleanup; one that outlives it is abandoned and resumes on
+   the next run.
 
-   The last step,
+   The merged-PR issue sweep,
    `merged-pr-issue-sweep`
    ([merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts),
-   Issue #504), is the only one that touches GitHub rather than local disk. It
+   Issue #504), runs last of the background sweeps and touches GitHub. It
    closes every open issue whose fix has already **merged and landed**,
    whoever authored the PR — the set the claim scan refuses for ever as
    `merged-pr-permanent` and which therefore cannot heal itself. It invents no
@@ -408,7 +416,12 @@ bash `worker/run_core.sh` conductor. It sequences:
    When a criterion is marked `partial` or `missing`, the PR itself is raised as
    `Part of #N` rather than `Closes #N`
    (`assemblePrBody`), but a fleet PR's title still names its issue, so the
-   closer check is what actually holds it open.
+   closer check is what actually holds it open. `assemblePrBody` also puts the
+   keyword word of any closing reference the summary quotes for an issue other
+   than the governing one into a code span (`` `close` #M ``, and likewise the
+   colon and full-URL forms), so a negated phrase copied from an acceptance
+   criterion cannot close that issue on merge (Issue #4783); code the summary
+   already holds is left as written.
 
    It spends quota the way the rest of the worker does (Issue #1477): one
    rate-limit pre-flight per sweep, a stop at the first primary-quota
@@ -1117,6 +1130,24 @@ run to measure or compare behaviour across the whole fleet configures
 `fleet_run_archive` (see [Fleet Run Archive](CONFIGURATION.md#-fleet-run-archive)).
 
 ### 📊 PR completion evidence report (Issue #4658)
+
+For the completion-admission pilot (#4942), add `--issue-throughput` to
+`pr-completion-report --collect` and supply `--start` and `--end` seven days
+apart. The additional `issueThroughput` section counts unique closed issues
+whose GitHub closure commit is associated with a PR merged to the repository's
+default branch during that window. Abandoned closures are excluded; manual
+closures and unproven delivery remain explicitly unknown. PRs merged without
+confirmed issue completion and milestone PRs are reported separately.
+
+The same snapshot and verified audit attribution supply issue-to-merge median
+and p90, unattended/human/unknown completion, Quality workflow attempts and
+cancellations per completed issue, and verified repairs delivering no commits.
+Quality means workflow names beginning with `Quality`. Missing workflow names,
+truncated CI history or a closing PR outside the collected PR cohort produce
+unknown ratios rather than zero. No-change repairs are an observed lower bound;
+absence of a delivered-commit list is not evidence of no change. Deployment
+heartbeats remain in the existing deployment section, separate from delivery.
+The seven-day report informs tuning; it never blocks a PR or issue completion.
 
 `deno task pr-completion-report --input <snapshot.json>` reads a normalised,
 read-only evidence snapshot and emits dated JSON. `deno task
@@ -4871,10 +4902,16 @@ things close that loop, and none of them asks a human:
    side's tip moves, which is a different merge and re-arms the ladder. A
    landed sync clears it outright.
 3. **The gate is what gets reported.** A wedge files **one** worker diagnostic
-   in `stSoftwareAU/VibeCoder` naming the repository, the milestone, the gate's
-   verdict and the count — so the *gate* gets fixed — instead of a
-   "needs a human" comment on an arbitrary sibling issue of the milestone,
-   where nobody looks. A conflict is the worker's to resolve end to end.
+   in `stSoftwareAU/VibeCoder` so the *gate* gets fixed, instead of a "needs a
+   human" comment on an arbitrary sibling issue of the milestone, where nobody
+   looks. For a public repository it names the repository, milestone, gate
+   verdict and count. For a private repository, or when the visibility lookup
+   fails, the title ends `a private fleet repo (<12 hex of sha256(repo + " " + branch)>)`;
+   the issue or repeat comment retains only the count, timestamp and tip SHAs
+   alongside generic context and fix text. The full report (repository,
+   branches, milestone, conflict key, verdict and analysis) is redacted and
+   written to the host log at `warn` (Issue #4780). A conflict is the worker's
+   to resolve end to end.
 
 Issue #4328 adds a bound that the wedge does not supply. A gate refusal of the
 resolution is a refusal too: it is counted in `refusedCycles`, and once the

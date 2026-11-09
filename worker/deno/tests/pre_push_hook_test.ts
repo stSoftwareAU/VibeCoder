@@ -5,7 +5,7 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   installPrePushHook,
   PRE_PUSH_HOOK_MARKER,
@@ -74,6 +74,81 @@ Deno.test("installPrePushHook: appends to an existing GIT_CONFIG_COUNT", async (
   }
   const gone = await Deno.stat(result.value.dir).then(() => false, () => true);
   assert(gone);
+});
+
+Deno.test("pre-push hook uses its worker config and lock independently of the target checkout", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe_hook_lock_" });
+  try {
+    const worker = `${root}/worker`;
+    const target = `${root}/target`;
+    await Deno.mkdir(`${worker}/lib`, { recursive: true });
+    await Deno.mkdir(target);
+    await Deno.writeTextFile(
+      `${worker}/deno.json`,
+      JSON.stringify({
+        imports: { "gate-value": "./value.ts" },
+        lock: "./alternative.lock",
+      }),
+    );
+    await Deno.writeTextFile(`${worker}/deno.lock`, '{"version":"5"}\n');
+    await Deno.writeTextFile(`${worker}/alternative.lock`, '{"version":"5"}\n');
+    await Deno.writeTextFile(
+      `${worker}/value.ts`,
+      'export default "worker gate";',
+    );
+    await Deno.writeTextFile(
+      `${worker}/lib/gate.ts`,
+      'import value from "gate-value"; console.log(value);',
+    );
+    await Deno.writeTextFile(`${root}/spec.json`, "{}");
+    await Deno.writeTextFile(
+      `${target}/deno.json`,
+      JSON.stringify({ imports: { "gate-value": "./hostile.ts" } }),
+    );
+    await Deno.writeTextFile(
+      `${target}/hostile.ts`,
+      'throw new Error("target config reached the worker hook");',
+    );
+    const hook = `${root}/hook`;
+    await Deno.writeTextFile(
+      hook,
+      renderPrePushHookScript({
+        denoPath: Deno.execPath(),
+        modulePath: `${worker}/lib/gate.ts`,
+        specPath: `${root}/spec.json`,
+      }),
+    );
+    const allowed = await run("bash", [hook], target);
+    assertEquals(allowed.code, 0, allowed.stderr);
+    assertEquals(allowed.stdout.trim(), "worker gate");
+
+    await Deno.writeTextFile(
+      `${worker}/deno.lock`,
+      JSON.stringify({
+        version: "5",
+        workspace: { dependencies: ["jsr:@std/assert@^1.0.18"] },
+      }),
+    );
+    const staleLock = await run("bash", [hook], target);
+    assertEquals(staleLock.code, 1);
+    assertStringIncludes(staleLock.stderr, "lockfile is out of date");
+    assertEquals(staleLock.stdout, "");
+
+    await Deno.remove(`${worker}/deno.lock`);
+    const missingLock = await run("bash", [hook], target);
+    assertEquals(missingLock.code, 1);
+    assertStringIncludes(missingLock.stderr, "worker Deno lock is missing");
+    assertEquals(missingLock.stdout, "");
+
+    await Deno.writeTextFile(`${worker}/deno.lock`, '{"version":"5"}\n');
+    await Deno.remove(`${worker}/deno.json`);
+    const missingConfig = await run("bash", [hook], target);
+    assertEquals(missingConfig.code, 1);
+    assertStringIncludes(missingConfig.stderr, "worker Deno config is missing");
+    assertEquals(missingConfig.stdout, "");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("installPrePushHook: invalid GIT_CONFIG_COUNT is an error", async () => {

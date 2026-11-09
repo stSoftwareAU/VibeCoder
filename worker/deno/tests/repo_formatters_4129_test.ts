@@ -17,9 +17,15 @@ import {
   createRepoFormatterDeps,
   formatBeforeGate,
   FORMATTER_COMMIT_MESSAGE,
+  isolateLinkageLines,
+  MAX_ARCHIVE_REWRITE_BYTES,
   type RepoFormatterDeps,
 } from "../lib/repo_formatters.ts";
 import type { Logger } from "../types.ts";
+import {
+  PART_OF_OTHER,
+  PART_OF_SAME,
+} from "../../../.claude/skills/review-fleet-prs/scripts/test_change_policy.ts";
 
 const ARCHIVE = [
   "docs/archive/handover/issue-1.md",
@@ -410,6 +416,408 @@ Deno.test("formatBeforeGate formats worker-owned archive files with the producti
     assertStringIncludes(joined, "files changed");
     assertEquals(joined.includes("WARNING:"), false, joined);
     assertEquals(joined.includes("ERROR:"), false, joined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+const LONG_PARAGRAPH =
+  "Another deliberately over-long sentence, far beyond eighty columns, so deno fmt has to re-wrap this paragraph before the gate reads the summary.";
+
+const LINKAGE_SUMMARY = "# Summary\n\n" +
+  "Part of #1\n" +
+  "Part of #2\n\n" +
+  "Prose that ends the paragraph.\n" +
+  "Closes #3\n\n" +
+  `${LONG_PARAGRAPH}\n`;
+
+const FENCED_SUMMARY = "# Summary\n\n" +
+  "```\n" +
+  "Part of #1\n" +
+  "Part of #2\n" +
+  "```\n";
+
+/**
+ * Seed a repository whose only archive file is `summary`, in the seed commit,
+ * then run the production runner over it. The seed commit is the branch's
+ * change, as in the test above.
+ */
+async function formatSeededSummary(
+  root: string,
+  summary: string,
+): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
+  const repo = `${root}/repo`;
+  await new Deno.Command("git", {
+    args: ["init", "-b", "main", repo],
+    stdout: "null",
+    stderr: "piped",
+  }).output();
+  await Deno.mkdir(`${root}/hooks`);
+  for (
+    const [key, value] of [
+      ["user.useConfigOnly", "true"],
+      ["user.name", "Fixture"],
+      ["user.email", "fixture@example.com"],
+      ["core.hooksPath", `${root}/hooks`],
+    ] as const
+  ) {
+    await git(repo, ["config", key, value]);
+  }
+  await writeFile(repo, "worker/deno/deno.json", "{}\n");
+  await writeFile(repo, ARCHIVE[2], summary);
+  await git(repo, ["add", "."]);
+  await git(repo, ["commit", "-m", "seed"]);
+
+  const logger = recordingLogger();
+  await formatBeforeGate(
+    {
+      git: {
+        formatBranchChanges: () =>
+          Promise.resolve({ runs: [], failures: [], committed: false }),
+      },
+      logger,
+      formatterDeps: { ...createRepoFormatterDeps(), logger },
+    },
+    repo,
+    undefined,
+  );
+  return { repo, logger };
+}
+
+Deno.test("formatBeforeGate keeps adjacent linkage lines on lines of their own and still re-wraps prose (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-linkage-" });
+  try {
+    const { repo, logger } = await formatSeededSummary(root, LINKAGE_SUMMARY);
+    const formatted = await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`);
+    const lines = formatted.split("\n");
+    for (const expected of ["Part of #1", "Part of #2", "Closes #3"]) {
+      assert(
+        lines.includes(expected),
+        `${expected} is not on a line of its own:\n${formatted}`,
+      );
+    }
+    assertEquals(formatted.includes("Part of #1 Part of #2"), false, formatted);
+    for (const line of lines) {
+      assert(line.length <= 80, `${ARCHIVE[2]}: ${line}`);
+    }
+    const joined = logger.lines.join("\n");
+    assertEquals(joined.includes("WARNING:"), false, joined);
+    assertEquals(joined.includes("ERROR:"), false, joined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate leaves linkage-looking lines inside a code fence adjacent (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-fence-" });
+  try {
+    const { repo } = await formatSeededSummary(root, FENCED_SUMMARY);
+    const formatted = await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`);
+    assertStringIncludes(
+      formatted,
+      "```\nPart of #1\nPart of #2\n```",
+      formatted,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+/**
+ * Seed a repository with `files` (and optional `links`, path to symlink
+ * target) in one commit, run `beforeFormat`, then run the production runner.
+ */
+async function formatSeededFiles(
+  root: string,
+  files: Record<string, string>,
+  options: {
+    links?: Record<string, string>;
+    beforeFormat?: (repo: string) => Promise<void>;
+  } = {},
+): Promise<{ repo: string; logger: Logger & { lines: string[] } }> {
+  const repo = `${root}/repo`;
+  await new Deno.Command("git", {
+    args: ["init", "-b", "main", repo],
+    stdout: "null",
+    stderr: "piped",
+  }).output();
+  await Deno.mkdir(`${root}/hooks`);
+  for (
+    const [key, value] of [
+      ["user.useConfigOnly", "true"],
+      ["user.name", "Fixture"],
+      ["user.email", "fixture@example.com"],
+      ["core.hooksPath", `${root}/hooks`],
+    ] as const
+  ) {
+    await git(repo, ["config", key, value]);
+  }
+  await writeFile(repo, "worker/deno/deno.json", "{}\n");
+  for (const [path, body] of Object.entries(files)) {
+    await writeFile(repo, path, body);
+  }
+  for (const [path, target] of Object.entries(options.links ?? {})) {
+    const absolute = `${repo}/${path}`;
+    await Deno.mkdir(absolute.slice(0, absolute.lastIndexOf("/")), {
+      recursive: true,
+    });
+    await Deno.symlink(target, absolute);
+  }
+  await git(repo, ["add", "."]);
+  await git(repo, ["commit", "-m", "seed"]);
+  await options.beforeFormat?.(repo);
+
+  const logger = recordingLogger();
+  await formatBeforeGate(
+    {
+      git: {
+        formatBranchChanges: () =>
+          Promise.resolve({ runs: [], failures: [], committed: false }),
+      },
+      logger,
+      formatterDeps: { ...createRepoFormatterDeps(), logger },
+    },
+    repo,
+    undefined,
+  );
+  return { repo, logger };
+}
+
+const TWO_LINKAGE_LINES = "# Summary\n\nPart of #1\nPart of #2\n";
+
+Deno.test("isolateLinkageLines puts blank lines only where a linkage line touches another line (Issue #4802)", () => {
+  assertEquals(isolateLinkageLines("Part of #1"), "Part of #1");
+  assertEquals(isolateLinkageLines("Part of #1\nProse"), "Part of #1\n\nProse");
+  assertEquals(isolateLinkageLines("Prose\nPart of #1"), "Prose\n\nPart of #1");
+  assertEquals(
+    isolateLinkageLines("Prose\n\nPart of #1\n\nProse"),
+    "Prose\n\nPart of #1\n\nProse",
+  );
+  assertEquals(
+    isolateLinkageLines("Part of #1\nPart of #2\nFixes o/r#3."),
+    "Part of #1\n\nPart of #2\n\nFixes o/r#3.",
+  );
+  assertEquals(
+    isolateLinkageLines("Prose\n  Closes #4  \nProse"),
+    "Prose\n\n  Closes #4  \n\nProse",
+  );
+});
+
+Deno.test("isolateLinkageLines leaves prose lines and lines inside either fence style alone (Issue #4802)", () => {
+  const prose = "First line\nsecond line\nThird line";
+  assertEquals(isolateLinkageLines(prose), prose);
+  const backticks = "```\nPart of #1\nPart of #2\n```";
+  assertEquals(isolateLinkageLines(backticks), backticks);
+  const tildes = "~~~\nPart of #1\nPart of #2\n~~~";
+  assertEquals(isolateLinkageLines(tildes), tildes);
+  assertEquals(
+    isolateLinkageLines("~~~\nx\n~~~\nPart of #1\nPart of #2"),
+    "~~~\nx\n~~~\n\nPart of #1\n\nPart of #2",
+  );
+});
+
+Deno.test("isolateLinkageLines closes a fence only on the opener's character and length (Issue #4802)", () => {
+  // A ``` line inside a ~~~ block does not end it, so the later ~~~ does.
+  assertEquals(
+    isolateLinkageLines("~~~text\n```\n~~~\nPart of #3\nPart of #4"),
+    "~~~text\n```\n~~~\n\nPart of #3\n\nPart of #4",
+  );
+  // A shorter ``` run does not close a ```` block, so nothing inside changes.
+  const nested = "````markdown\n```\nPart of #1\nPart of #2\n```\n````";
+  assertEquals(isolateLinkageLines(nested), nested);
+  const tildeInBackticks = "```markdown\n~~~\nPart of #1\nPart of #2\n~~~\n```";
+  assertEquals(isolateLinkageLines(tildeInBackticks), tildeInBackticks);
+  // A closer with an info string is not a closer.
+  const infoCloser = "```\n```text\nPart of #1\nPart of #2\n```";
+  assertEquals(isolateLinkageLines(infoCloser), infoCloser);
+  // Linkage lines after the nested sample are isolated again.
+  assertEquals(
+    isolateLinkageLines(`${nested}\nPart of #5\nPart of #6`),
+    `${nested}\n\nPart of #5\n\nPart of #6`,
+  );
+});
+
+Deno.test("isolateLinkageLines accepts the same Part of shapes as the reviewer's PART_OF_SAME and PART_OF_OTHER (Issue #4802)", () => {
+  const variants = [
+    "Part of #5",
+    "Part of #5.",
+    "Part of #5 .",
+    "Part of #5\t.",
+    "Part of #5 . ",
+    "  Part of #5  ",
+    "part of #5",
+    "PART OF #5",
+    "Part of o/r#5",
+    "Part of o/r#5 .",
+    "Part of o/r#5.",
+    "Part of Owner-1/re.po_2#5",
+    "Part of #5x",
+    "Part of #",
+    "Part of  #5",
+    "Part of #5..",
+    "Part of #5 . .",
+    "Part of o/r/x#5",
+    "Part of /r#5",
+    "Part of o/r #5",
+    "Partof #5",
+  ];
+  for (const line of variants) {
+    const reviewer = PART_OF_SAME.test(line) || PART_OF_OTHER.test(line);
+    const isolated = isolateLinkageLines(`Prose\n${line}\nProse`) !==
+      `Prose\n${line}\nProse`;
+    assertEquals(isolated, reviewer, JSON.stringify(line));
+  }
+  // The table must exercise both outcomes, so it cannot pass vacuously.
+  assert(variants.some((line) => PART_OF_SAME.test(line)));
+  assert(variants.some((line) => PART_OF_OTHER.test(line)));
+  assert(
+    variants.some((line) =>
+      !PART_OF_SAME.test(line) && !PART_OF_OTHER.test(line)
+    ),
+  );
+});
+
+Deno.test("formatBeforeGate keeps linkage lines apart after a mixed-fence block and leaves a nested sample untouched (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-mixed-" });
+  try {
+    const nested = "````markdown\n```\nPart of #1\nPart of #2\n```\n````\n";
+    const { repo } = await formatSeededSummary(
+      root,
+      `# Summary\n\n~~~text\n\`\`\`\n~~~\n\nPart of #3\nPart of #4\n\n${nested}`,
+    );
+    const formatted = await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`);
+    const lines = formatted.split("\n");
+    assert(lines.includes("Part of #3"), formatted);
+    assert(lines.includes("Part of #4"), formatted);
+    assertEquals(formatted.includes("Part of #3 Part of #4"), false, formatted);
+    assertStringIncludes(formatted, nested, formatted);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate still joins adjacent prose lines while isolating linkage lines (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-prose-" });
+  try {
+    const { repo } = await formatSeededFiles(root, {
+      [ARCHIVE[2]]: "# Summary\n\nFirst line\nsecond line\n",
+    });
+    assertEquals(
+      await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`),
+      "# Summary\n\nFirst line second line\n",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate isolates linkage lines in .markdown files and canonicalises .jsonc files (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-ext-" });
+  try {
+    const { repo } = await formatSeededFiles(root, {
+      "docs/archive/handover/note.markdown": TWO_LINKAGE_LINES,
+      "docs/archive/pr-summaries/x.facts.jsonc": UNSORTED_JSON,
+    });
+    assertEquals(
+      await Deno.readTextFile(`${repo}/docs/archive/handover/note.markdown`),
+      "# Summary\n\nPart of #1\n\nPart of #2\n",
+    );
+    assertEquals(
+      await Deno.readTextFile(
+        `${repo}/docs/archive/pr-summaries/x.facts.jsonc`,
+      ),
+      CANONICAL_JSON,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate does not rewrite an archive file that is already canonical (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-nowrite-" });
+  try {
+    const canonicalMarkdown = "# Summary\n\nPart of #1\n\nPart of #2\n";
+    const old = new Date("2001-02-03T04:05:06Z");
+    const paths = [ARCHIVE[1], ARCHIVE[2]];
+    const { repo } = await formatSeededFiles(root, {
+      [ARCHIVE[1]]: CANONICAL_JSON,
+      [ARCHIVE[2]]: canonicalMarkdown,
+    }, {
+      beforeFormat: async (repo) => {
+        for (const path of paths) await Deno.utime(`${repo}/${path}`, old, old);
+      },
+    });
+    for (const path of paths) {
+      const info = await Deno.stat(`${repo}/${path}`);
+      assertEquals(info.mtime?.getTime(), old.getTime(), path);
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate leaves the target of an archive symlink alone (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-symlink-" });
+  try {
+    const outside = `${root}/outside.md`;
+    await Deno.writeTextFile(outside, TWO_LINKAGE_LINES);
+    const { logger } = await formatSeededFiles(root, {}, {
+      links: { "docs/archive/pr-summaries/link.md": outside },
+    });
+    assertEquals(await Deno.readTextFile(outside), TWO_LINKAGE_LINES);
+    const joined = logger.lines.join("\n");
+    assertEquals(joined.includes("WARNING:"), false, joined);
+    assertEquals(joined.includes("could not rewrite"), false, joined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate skips an archive file over the size limit and never formats the rest of the repository (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-big-" });
+  try {
+    const big = `${TWO_LINKAGE_LINES}${
+      "x\n".repeat(MAX_ARCHIVE_REWRITE_BYTES)
+    }`;
+    const readme = "Prose\n\nPart of #1\nPart of #2\n";
+    const unformatted = "const   x  =  1\n";
+    const { repo, logger } = await formatSeededFiles(root, {
+      "deno.json": "{}\n",
+      "README.md": readme,
+      "src/main.ts": unformatted,
+      [ARCHIVE[2]]: big,
+    });
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), big);
+    assertEquals(await Deno.readTextFile(`${repo}/README.md`), readme);
+    assertEquals(await Deno.readTextFile(`${repo}/src/main.ts`), unformatted);
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
+    assertEquals((await git(repo, ["log", "--format=%s"])).trim(), "seed");
+    const joined = logger.lines.join("\n");
+    assertStringIncludes(joined, `skipped ${ARCHIVE[2]}`);
+    assertEquals(joined.includes("Formatter deno fmt"), false, joined);
+    assertEquals(joined.includes("committed worker-owned"), false, joined);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("formatBeforeGate still formats the other archive files when one is over the size limit (Issue #4802)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "fmt4802-bigmix-" });
+  try {
+    const big = `${TWO_LINKAGE_LINES}${
+      "x\n".repeat(MAX_ARCHIVE_REWRITE_BYTES)
+    }`;
+    const { repo } = await formatSeededFiles(root, {
+      "deno.json": "{}\n",
+      [ARCHIVE[0]]: TWO_LINKAGE_LINES,
+      [ARCHIVE[2]]: big,
+    });
+    assertEquals(
+      await Deno.readTextFile(`${repo}/${ARCHIVE[0]}`),
+      "# Summary\n\nPart of #1\n\nPart of #2\n",
+    );
+    assertEquals(await Deno.readTextFile(`${repo}/${ARCHIVE[2]}`), big);
+    assertEquals(await git(repo, ["status", "--porcelain"]), "");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
