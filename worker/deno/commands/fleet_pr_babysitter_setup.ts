@@ -13,6 +13,7 @@ import {
 import {
   babysitterCheckoutDir,
   type BabysitterContainerDeps,
+  checkBabysitterContainerChromium,
   preflightBabysitterContainer,
 } from "../lib/fleet_babysitter_container.ts";
 import { fetchWithTimeout, runWithTimeout } from "../lib/subprocess_timeout.ts";
@@ -92,12 +93,20 @@ export async function runContainerPreflight(
 ): Promise<void> {
   await preflightBabysitterContainer({ baseDir: checkout }, deps);
 }
+/** Prove the baked headless browser launches after the runtime/image preflight. */
+export async function runChromiumCheck(
+  checkout: string,
+  deps: Partial<BabysitterContainerDeps> = {},
+): Promise<void> {
+  await checkBabysitterContainerChromium({ baseDir: checkout }, deps);
+}
 export interface BabysitterSetupDeps {
   args?: string[];
   env?: (name: string) => string | undefined;
   loadConfig?: typeof loadConfig;
   command?: typeof command;
   preflight?: typeof runContainerPreflight;
+  chromiumCheck?: typeof runChromiumCheck;
   runGh?: typeof runGhCommand;
 }
 
@@ -140,6 +149,7 @@ export async function main(deps: BabysitterSetupDeps = {}): Promise<number> {
     await (deps.command ?? command)(binary, ["--version"]);
   }
   await (deps.preflight ?? runContainerPreflight)(checkout);
+  await (deps.chromiumCheck ?? runChromiumCheck)(checkout);
   await (deps.runGh ?? runGhCommand)(["--version"]);
   if (checkOnly && !argument("app-id")) {
     throw new Error("--check requires --app-id");

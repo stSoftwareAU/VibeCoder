@@ -61,7 +61,7 @@ compile error is therefore caught before the push, not by a CI run. Closes
   review-fleet-prs helpers, never load the YAML parser) and writes the derived
   checks (and any unverifiable reasons) into the hook's `pre-push-spec.json`.
   `pre_push_gate_cli.ts` reads that entry and passes it back as `findCiCargo`,
-  so the `--no-config` hook runs the CI cargo checks without loading the YAML
+  so the hook runs the CI cargo checks without loading the YAML
   parser itself. A self-pushed Rust change that fails CI clippy or the test
   build is refused, exactly as the worker's own gates refuse it.
   - Fail closed: when that pre-run scan cannot be produced (`git ls-files`
@@ -82,10 +82,12 @@ compile error is therefore caught before the push, not by a CI run. Closes
     processor every agent run does, through `runAgentTracked`. Other agent runs
     (issue runs, merge-conflict and spelling repairs) pass none, so a failing CI
     cargo check on their own push stays a verdict.
-  - The hook now runs with `--allow-write=${TMPDIR:-/tmp}`: the base comparison
-    makes its scratch worktree directory with `Deno.makeTempDir`, which the
-    previous `--allow-read --allow-run --allow-env` set refused (found by the
-    new compareRef hook test, which failed with `Requires write access`).
+  - The hook runs with `--allow-write=${TMPDIR:-/tmp}` added to main's
+    `--config <worker>/deno.json --frozen --lock <worker>/deno.lock` invocation
+    (PR #4962): the base comparison makes its scratch worktree directory with
+    `Deno.makeTempDir`, which an invocation without `--allow-write` refuses
+    (found by the new compareRef hook test, which failed with
+    `Requires write access`).
 - Infrastructure is not charged, up to a cap (new
   `worker/deno/lib/gate_infra_release.ts`): when the pre-push gate fails with
   `PrePushGateInfrastructureError` (on the first push or on the retry after push
@@ -105,6 +107,14 @@ compile error is therefore caught before the push, not by a CI run. Closes
   (`listPushedFiles(..., containToCheckout = false)`), so the cargo working
   directory containment check still refuses a crate symlinked outside the
   repository, while main's other changed-file checks keep skipping such files.
+- Merge with main (PR #4962): the agent pre-push hook now runs with the worker
+  config and a frozen lock (`--config <worker>/deno.json --frozen --lock
+  <worker>/deno.lock`) instead of `--no-config --no-lock`. This change keeps
+  main's invocation and adds this PR's `--allow-write=${TMPDIR:-/tmp}` to it,
+  so the scratch worktree for the base comparison is still writable. The
+  `--no-config` rationale in the hook docs and `docs/CONFIGURATION.md` is
+  updated to say the hook receives the scan precomputed into its spec and never
+  loads the YAML parser itself.
 - Docs: `docs/CONFIGURATION.md` (pre-flight / pre-push gate section) and
   `docs/INTERNALS.md`; the head also rewrites the agent-hook passages in
   `docs/CONFIGURATION.md` and the `pre_push_gate.ts` module header and
@@ -151,10 +161,10 @@ flowchart LR
 ### Essential Design Decisions
 
 - The scanner is opt-in (`findCiCargo`) and loaded by dynamic import in
-  `gateUnpushedCommits`. The agent's `--no-config` pre-push hook cannot resolve
-  `@std/yaml`, so it never scans the workflows itself; the worker scans them
-  before the agent runs and writes the derived scan into the hook's spec, which
-  the hook passes back as `findCiCargo`.
+  `gateUnpushedCommits`. The agent's pre-push hook never scans the workflows
+  itself (and never loads the YAML parser): the worker scans them before the
+  agent runs and writes the derived scan into the hook's spec, which the hook
+  passes back as `findCiCargo`.
 - Anything the scanner cannot reproduce faithfully fails loud as infrastructure
   instead of dropping to a smaller check set (the issue requires this).
 - A failure the PR base already has is compared by diagnostic message, file and
@@ -239,14 +249,13 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `tests/claude_runner_test.ts` (60 tests at head),
   `tests/git_push_preflight_test.ts` (30 tests at head),
   `tests/pre_push_gate_cli_test.ts` (12 tests at head),
-  `tests/pre_push_hook_test.ts` (12 tests at head),
+  `tests/pre_push_hook_test.ts` (13 tests at head),
   `tests/pr_ci_processor_test.ts` (61 tests at head) and
   `tests/pr_feedback_processor_pre_flight_4630_test.ts` (4 tests at head). The suites that
-  push through the agent's real `--no-config` hook need two environment
-  settings in this container: `VIBE_BASE_DIR` unset (it points the hook at the
-  worker's installed copy, not this checkout) and a `PATH` without the git
-  guard shim (the shim resets `DENO_DIR` to a read-only seed, so the hook cannot
-  fetch `jsr:@std/yaml`); they were run that way. `tests/pre_push_gate_test.ts`
+  push through the agent's real hook now run with the checkout's own worker
+  config and frozen lock (`--config <worker>/deno.json --frozen --lock
+  <worker>/deno.lock`, from main PR #4962), so the previous `--no-config`
+  environment workaround no longer applies. `tests/pre_push_gate_test.ts`
   and `tests/pr_feedback_processor_test.ts` together show 26 failed tests on the
   head and the identical 26 on the base commit (fixtures that commit
   `README.md` with `#Bad` meet the container's real `markdownlint-cli2`); they
@@ -316,16 +325,16 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   Spelling and merge-conflict repairs retain the base branch's ShellCheck-only
   policy. No twinned copy of the changed environment or base-comparison rules
   was found.
-- `./quality.sh` on the head (407958d8): every gate passed except `deno tests`,
-  which reported 16 failed of 33,624 (33,608 passed). Seven of the 16 are the
-  hook tests above that spawn `git push` through the hook (the five new
-  integration tests and two existing ones) and fail only because the container's
-  git shim resets `DENO_DIR`, so the hook's `jsr:@std/yaml` import cannot be
-  fetched; the same tests pass with the environment settings given above. The
-  other nine (three `agent git push` hook cases, five `post.ts main posting
-  safety` cases and one `spawnFastCheck` case) are in code this PR does not
-  touch; the `post.ts` and `spawnFastCheck` ones were not re-run on the base
-  commit.
+- `./quality.sh` on the pre-merge head (407958d8): every gate passed except
+  `deno tests`, which reported 16 failed of 33,624 (33,608 passed). Seven of the
+  16 are the hook tests above that spawn `git push` through the hook (the five
+  new integration tests and two existing ones) and fail only because the
+  container's git shim resets `DENO_DIR`, so the hook's `jsr:@std/yaml` import
+  cannot be fetched; the same tests passed with the pre-merge `--no-config`
+  environment settings. The other nine (three `agent git push` hook cases, five
+  `post.ts main posting safety` cases and one `spawnFastCheck` case) are in code
+  this PR does not touch; the `post.ts` and `spawnFastCheck` ones were not
+  re-run on the base commit.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.

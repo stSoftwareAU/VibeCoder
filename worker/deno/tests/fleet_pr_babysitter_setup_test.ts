@@ -160,6 +160,10 @@ Deno.test("setup entry point invokes the container preflight and does not instal
           calls.push(`preflight ${checkout}`);
           return Promise.resolve();
         },
+        chromiumCheck: () => {
+          calls.push("chromium check");
+          return Promise.resolve();
+        },
         runGh: () => {
           calls.push("gh version");
           return Promise.reject(new Error("stop after preflight"));
@@ -170,6 +174,7 @@ Deno.test("setup entry point invokes the container preflight and does not instal
   );
   assertEquals(calls.slice(0, 2), ["git", "rtk"]);
   assert(calls[2]?.startsWith("preflight "));
-  assertEquals(calls[3], "gh version");
+  assertEquals(calls[3], "chromium check");
+  assertEquals(calls[4], "gh version");
   assert(!calls.some((call) => call.includes("codex")));
 });

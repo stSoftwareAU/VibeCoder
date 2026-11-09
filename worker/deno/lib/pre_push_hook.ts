@@ -25,6 +25,7 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import { dirname } from "node:path";
 import type { Result } from "../types.ts";
 import type { CiCargoScan } from "./ci_cargo_checks.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
@@ -34,8 +35,8 @@ import { posixSingleQuote } from "./shell_quote.ts";
 export const PRE_PUSH_HOOK_MARKER = "Vibe Coder pre-push gate";
 
 /**
- * Render the hook script. It fails closed: a missing Deno binary, module or
- * spec blocks the push rather than silently allowing it. `DENO_DIR` is
+ * Render the hook script. It fails closed: a missing Deno binary, module,
+ * spec, worker `deno.json` or worker `deno.lock` blocks the push rather than silently allowing it. `DENO_DIR` is
  * deliberately not pinned — this is a quality gate, not a security boundary.
  * Writes are limited to the temp directory, where the gate makes the scratch
  * worktree for the PR-base comparison of a failing CI cargo check (Issue #4630).
@@ -48,6 +49,9 @@ export function renderPrePushHookScript(opts: {
   const deno = posixSingleQuote(opts.denoPath);
   const module = posixSingleQuote(opts.modulePath);
   const spec = posixSingleQuote(opts.specPath);
+  const workerDir = dirname(dirname(opts.modulePath));
+  const config = posixSingleQuote(`${workerDir}/deno.json`);
+  const lock = posixSingleQuote(`${workerDir}/deno.lock`);
   return `#!/bin/bash
 # ${PRE_PUSH_HOOK_MARKER} (Issue #3394) — generated per run; do not edit.
 set -uo pipefail
@@ -64,8 +68,16 @@ if [ ! -f ${spec} ]; then
   echo "[PRE_PUSH_BLOCKED] gate spec is missing: "${spec} >&2
   exit 1
 fi
+if [ ! -f ${config} ]; then
+  echo "[PRE_PUSH_BLOCKED] worker Deno config is missing: "${config} >&2
+  exit 1
+fi
+if [ ! -f ${lock} ]; then
+  echo "[PRE_PUSH_BLOCKED] worker Deno lock is missing: "${lock} >&2
+  exit 1
+fi
 
-exec ${deno} run --quiet --no-config --no-lock --allow-read --allow-write="${"$"}{TMPDIR:-/tmp}" --allow-run --allow-env ${module} --spec ${spec} -- "$@"
+exec ${deno} run --quiet --config ${config} --frozen --lock ${lock} --allow-read --allow-write="${"$"}{TMPDIR:-/tmp}" --allow-run --allow-env ${module} --spec ${spec} -- "$@"
 `;
 }
 
@@ -85,9 +97,9 @@ export async function installPrePushHook(opts: {
   timeoutSeconds?: number;
   /**
    * The repo's CI cargo checks, precomputed by the worker before the agent
-   * runs (Issue #4630 review). Written into the hook spec so the `--no-config`
-   * hook can run them without loading the YAML parser itself. Omit to keep the
-   * hook scanning no CI cargo check.
+   * runs (Issue #4630 review). Written into the hook spec so the hook can run
+   * them without loading the YAML parser itself. Omit to keep the hook
+   * scanning no CI cargo check.
    */
   ciCargo?: CiCargoScan;
   /**

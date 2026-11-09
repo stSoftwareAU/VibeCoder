@@ -32,11 +32,10 @@
  *    when the push changes a Rust-relevant file, and only after a probe that
  *    the Rust toolchain runs here. These run only for a caller that passes
  *    `findCiCargo`: with none, no CI cargo check is planned or run. The
- *    agent's own pre-push hook (`lib/pre_push_gate_cli.ts`) runs under
- *    `--no-config`, where the YAML parser that reads the workflows cannot be
- *    loaded, so it receives the scan precomputed into its spec and passes it
- *    back as `findCiCargo`, with the spec's `compareRef` (the PR base, for a
- *    CI-fix or PR-feedback run) as `compareRef`. The worker's own gates pass
+ *    agent's own pre-push hook (`lib/pre_push_gate_cli.ts`) receives the scan
+ *    precomputed into its spec and passes it back as `findCiCargo`, with the
+ *    spec's `compareRef` (the PR base, for a CI-fix or PR-feedback run) as
+ *    `compareRef`. The worker's own gates pass
  *    `repoCiCargoChecks` directly: `git_push.ts` `gateUnpushedCommits`
  *    (`commitAndPushPending` Step 1b and the completion phase).
  * 3. Then runs the repo's `cargo deny check` (Issue #4626) for eligible
@@ -76,8 +75,9 @@ import {
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
-// Types only: a value import would load the YAML parser, which the agent's
-// `--no-config` hook cannot resolve (see the module header).
+// Types only: a value import would load the YAML parser into the hook's
+// runtime graph; the hook receives the scan precomputed into its spec instead
+// (see the module header).
 import type {
   CiCargoCheck,
   CiCargoCheckKind,
@@ -2079,7 +2079,7 @@ async function failsOnBaseToo(args: {
  * `findCiCargo`, which is opt-in with no default: a caller that does not pass it
  * gets no CI cargo check, planned or run. The agent's own pre-push hook passes
  * it too, from a scan the worker precomputes into the hook spec before the agent
- * runs, so the `--no-config` hook never loads the YAML parser itself; the
+ * runs, so the hook never loads the YAML parser itself; the
  * worker's gates in `git_push.ts` pass it directly. When the scan holds a
  * command that cannot be reproduced here (including a scan the worker could not
  * produce before the agent ran), the push fails with a

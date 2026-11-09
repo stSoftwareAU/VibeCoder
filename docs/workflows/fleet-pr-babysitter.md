@@ -98,16 +98,35 @@ From the VibeCoder checkout:
 
 # Repeat every five minutes, after each pass finishes.
 ./fleet-pr-babysitter/run.sh --watch
+
+# Run the image's headless Chromium launch check without App authentication.
+./fleet-pr-babysitter/run.sh --check-container
 ```
 
-Setup prompts for the GitHub App ID and private-key path, discovers the App
-installation, and verifies its permissions, repository access and GraphQL quota
-without printing credentials, then saves the App settings for run.sh and adds
-its bot to this host's fleet-lock identities. It checks the required commands
-and runs the container runtime and image preflight; it does not install Codex.
+Setup first checks the required commands, container runtime and image, then
+launches headless Chromium inside that image; it does not install Codex. The
+browser check passes only when the container command exits zero and stdout
+contains `<html`. Setup stops with the cause if the runtime, image or browser
+check fails. After those checks, setup prompts for the GitHub App ID and
+private-key path, discovers the App installation, verifies its permissions,
+repository access and GraphQL quota without printing credentials, then saves
+the App settings for run.sh and adds its bot to this host's fleet-lock
+identities.
 For a non-interactive preflight, use `--check` and `--app-id=<id>`; the key
 defaults to `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass
 `--key=<path>`.
+
+Each automatic babysitter pass repeats the Chromium check before PR discovery
+or GitHub App authentication. A failure is reported as a failed pass and the
+existing supervisor or watch loop retries it. `--check-container` runs the
+same bounded check on demand before reading App configuration or authenticating;
+it prints the specific runtime, image, timeout, exit or output cause and exits
+non-zero on failure. The check overrides the image entrypoint with `bash`, runs
+`"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank`, and accepts
+only exit zero with HTML on stdout. It keeps the launch plan's network and
+egress settings and removes host mounts from the short-lived probe container.
+Diagnostic checks do not invoke the service-health hook, whether they succeed
+or fail, because they do not run an authenticated babysitter pass.
 
 On the always-on Mac, rerun setup after manual testing and answer yes to the
 launch-agent question. You must also type `INSTALL` to confirm. Setup checks
@@ -171,8 +190,8 @@ configured agent provider or fallback; it refuses a fallback that cannot enforce
 its isolation. Without them the verifier reports an outage and every review
 stays open. A pass that pushed nothing is retried under infrastructure backoff;
 after a push the kept publication record is retried on the next scan, with no
-backoff. Setup runs the container runtime and image preflight; it no longer
-installs Codex. Before execution, put the App's `<slug>[bot]` login in
+backoff. Setup runs the runtime/image preflight and Chromium launch check; it
+does not install Codex. Before execution, put the App's `<slug>[bot]` login in
 `service_accounts` or `fleet_pr_authors` **on every fleet host**. Run setup on
 each host (or deploy your organisation's fleet configuration) before starting
 repairs. Those workers only trust locks written by known fleet accounts. The MVP

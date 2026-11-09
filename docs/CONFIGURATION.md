@@ -5086,7 +5086,10 @@ every agent run, the worker writes a per-run
 `pre-push` hook into a temporary directory and enables it in the **agent's
 environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
-agent runs goes through it. The worker's own pushes do not carry the agent's
+agent runs goes through it. The hook loads its trusted worker module with that
+worker's Deno configuration and frozen lock file, so a target repository's
+configuration or newer registry version cannot change the hook's dependencies.
+The worker's own pushes do not carry the agent's
 environment, so the hook does not gate them; instead its final-mile
 commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
 changed-files check through `runPrePushGate` on the already-committed
@@ -5203,7 +5206,7 @@ gates do (see that bullet):
      processors' cargo-only spec) and in the agent's own pre-push hook: before
      the agent runs, the worker scans the workflows and writes the derived
      checks (and any unverifiable reasons) into the hook's spec file, so the
-     `--no-config` hook runs them without loading the YAML parser itself. If
+     hook runs them without loading the YAML parser itself. If
      that scan cannot be produced (the tracked-file list is unreadable, or the
      scanner fails to load or throws), the worker logs a warning and writes a
      scan with no checks and one unverifiable reason, so a Rust-relevant push
