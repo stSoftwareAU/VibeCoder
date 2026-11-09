@@ -103,20 +103,12 @@ Backend and CLI change; no visual surface changed.
 - PR #4941 review round:
   `deno test -A tests/fleet_pr_babysitter_git_hardening_test.ts` passed all 16
   tests (six of them new in this round) and `tests/fleet_babysitter_app_test.ts`
-  passed with the restored CLI test. In the wider run of the app, orchestration,
-  hardening and `fleet_pr_babysitter_test.ts` files, four
-  `fleet_pr_babysitter_test.ts` cases
-  (`a repo that tracks lcov.info
-  still commits an edit to it`,
-  `a later repair fetches into the mirror and clones
-  from it, without a second bare clone`,
-  `an existing mirror fetches from the newly
-  resolved URL`,
-  `a later repair prunes deleted branches and fetches new tags into
-  the clone`)
-  failed in this sandbox: their fixture repository's push hook needs
-  `https://jsr.io`, which is unreachable here. They also fail at the previous
-  head (`f51a742f`), before this round, code and were not changed.
+  passed with the restored CLI test. Four
+  `worker/deno/tests/fleet_pr_babysitter_test.ts` cases (the lcov.info edit, the
+  mirror-fetch, the newly-resolved-URL and the prune cases) failed in this
+  sandbox: their fixture repository's push hook needs `https://jsr.io`, which is
+  unreachable here. They also fail at the previous head (`f51a742f`), before
+  this round's code, and were not changed.
 - `deno test --allow-all tests/fleet_pr_babysitter_git_timeout_test.ts` passed
   all three tests on this head. The push and fetch cases use the shared host Git
   hardening arguments and continue to check the 30-minute timeout.
