@@ -314,6 +314,16 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   Spelling and merge-conflict repairs retain the base branch's ShellCheck-only
   policy. No twinned copy of the changed environment or base-comparison rules
   was found.
+- `./quality.sh` on the head (407958d8): every gate passed except `deno tests`,
+  which reported 16 failed of 33,624 (33,608 passed). Seven of the 16 are the
+  hook tests above that spawn `git push` through the hook (the five new
+  integration tests and two existing ones) and fail only because the container's
+  git shim resets `DENO_DIR`, so the hook's `jsr:@std/yaml` import cannot be
+  fetched; the same tests pass with the environment settings given above. The
+  other nine (three `agent git push` hook cases, five `post.ts main posting
+  safety` cases and one `spawnFastCheck` case) are in code this PR does not
+  touch; the `post.ts` and `spawnFastCheck` ones were not re-run on the base
+  commit.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.
