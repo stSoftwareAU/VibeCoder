@@ -1210,6 +1210,12 @@ assume it.
   consumes it. This is the same defect as the A01 SSRF line above viewed
   through the feature-abuse lens — **cross-link A01, do not double-file it**
   as a separate SSRF finding.
+- **Secret-bearing field behind a weaker right (A01:2025 — Broken Access
+  Control; cross-link the A01 SSRF line, do not double-file).** Where a stored
+  secret is sent to a configurable endpoint, or a `get` / `list` / `export`
+  returns a secret-bearing field, changing the endpoint or reading the field
+  must require the right to retrieve the secret. Cite the update handler or
+  serialiser and the weaker permission that suffices.
 
 </feature_abuse_design_lens>
 
@@ -1246,6 +1252,11 @@ in scratch notes as "not checked".
   findings. Each `## Exploit chain` line cites the IaC statement instead of
   an issue:
   `<n>. <file>:<line> — <statement> — hands off <what> to hop <n+1>`.
+- **Service principal without a source condition.** A trust or resource
+  policy naming an AWS service principal with no `aws:SourceArn` or
+  `aws:SourceAccount` condition is a finding only when it grants a privileged
+  action and nothing else in the file constrains the caller. Cite the
+  statement; the smallest fix is adding the condition.
 - **Wildcard hygiene is not filed here.** A constituent that is only plain
   `Action: "*"` or `Resource: "*"` hygiene belongs to best-practices.
 - **Severity and confidence.** Severity follows Phase 3 step 5. An
