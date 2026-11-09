@@ -171,6 +171,9 @@ function commandOutput(
     // The egress proxy sidecar reports that it is listening.
     if (args[0] === "logs") return "[EGRESS_PROXY] listening\n";
     if (args[0] === "run") {
+      if (args.includes("--entrypoint") && args.includes("bash")) {
+        return "<html><head></head><body></body></html>\n";
+      }
       const mount = args.find((arg) => /:\/babysitter\/clone(:|$)/.test(arg));
       // The egress proxy sidecar is also a `run`; only the agent mounts the clone.
       if (!mount) return "";
