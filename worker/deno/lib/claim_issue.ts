@@ -50,6 +50,14 @@ import {
 } from "./stream_lock.ts";
 import { getHostname } from "./worker_identity.ts";
 
+import {
+  admitCompletionWork,
+  COMPLETION_PENDING_MARKER,
+  type CompletionPolicy,
+} from "./completion_admission.ts";
+import { makeGitHubCompletionStore } from "./completion_admission_github.ts";
+import { createMilestoneBranchName } from "./git_branch.ts";
+
 /** The claim marker prefix used in issue comments for tie-breaking. */
 export const CLAIM_MARKER_PREFIX = "<!-- CLAIM_LOCK:";
 
@@ -130,6 +138,8 @@ export interface ClaimOptions {
    * `DEFAULT_FLEET_PR_SLOTS`.
    */
   fleetPrSlots?: number;
+  /** Shared reservation applies to implementation claims only (#4942). */
+  completionAdmission?: CompletionPolicy;
   /**
    * Optional iteration-scoped cache. The live fleet-PR re-check always
    * force-refreshes it (bypassing any stale `prs_${user}` entry) and
@@ -238,6 +248,7 @@ export type ClaimFailureReason =
    * begins to avoid a duplicate PR.
    */
   | "fleet_pr_exists"
+  | "completion_mode"
   /**
    * `gh issue edit --add-assignee` returned HTTP 422 — the worker user is
    * not a collaborator on the repo (or the assignee is otherwise invalid).
@@ -1119,6 +1130,8 @@ interface FinaliseWonClaimParams {
   pushCapableAuthors: string[] | undefined;
   milestoneTitle: string | undefined;
   fleetPrSlots: number | undefined;
+  completionAdmission: CompletionPolicy | undefined;
+  sleepFn: (ms: number) => Promise<void>;
   cache: IssueCache | undefined;
   ghCommandFn: (args: string[]) => Promise<string>;
   allClaimComments: ClaimComment[];
@@ -1150,6 +1163,7 @@ async function finaliseWonClaim(
     pushCapableAuthors,
     milestoneTitle,
     fleetPrSlots,
+    completionAdmission,
     cache,
     ghCommandFn,
     allClaimComments,
@@ -1166,7 +1180,7 @@ async function finaliseWonClaim(
     milestoneTitle,
     cache,
     ghCommandFn,
-    fleetPrSlots,
+    completionAdmission ? Number.MAX_SAFE_INTEGER : fleetPrSlots,
   );
   if (blockingPr) {
     incrementCounter("claimConflicts");
@@ -1207,6 +1221,75 @@ async function finaliseWonClaim(
           : `open PR #${blockingPr.number} already targets this work stream`,
       },
     };
+  }
+
+  if (completionAdmission) {
+    let reason: string | undefined;
+    try {
+      const own = allClaimComments.find((c) =>
+        extractWorkerIdFromComment(c.body) === workerId
+      );
+      if (!own || !markerOptions) {
+        throw new Error(
+          "Implementation reservation requires a claim heartbeat",
+        );
+      }
+      const base = milestoneTitle
+        ? createMilestoneBranchName(milestoneTitle)
+        : (await ghCommandFn([
+          "api",
+          `repos/${repo}`,
+          "--jq",
+          ".default_branch",
+        ])).trim();
+      if (!base || base === "null") {
+        throw new Error("Cannot resolve implementation target branch");
+      }
+      const verdict = await admitCompletionWork(
+        makeGitHubCompletionStore({
+          repo,
+          workerId,
+          fleetAuthors: pushCapableAuthors ?? [githubUser],
+          ghCommandFn,
+          sleepFn: params.sleepFn,
+        }),
+        completionAdmission,
+        { issue: issueNumber, base, claimId: own.id, workerId },
+      );
+      console.info(
+        `[completion_admission] ${repo}#${issueNumber} pressure=${verdict.pressure} mode=${verdict.mode}: ${verdict.reason}`,
+      );
+      if (!verdict.allowed) reason = verdict.reason;
+    } catch (error) {
+      reason = `shared capacity unavailable; retry next scan: ${error}`;
+    }
+    if (reason) {
+      await removeOwnClaimComment(repo, issueNumber, workerId, ghCommandFn);
+      try {
+        await ghCommandFn([
+          "issue",
+          "edit",
+          String(issueNumber),
+          "--repo",
+          repo,
+          "--remove-assignee",
+          githubUser,
+        ]);
+      } catch (error) {
+        console.warn(
+          `[completion_admission] claim assignment cleanup failed: ${error}`,
+        );
+      }
+      return {
+        ok: true,
+        value: {
+          claimed: false,
+          competingWorkerCount,
+          reason: "completion_mode",
+          reasonDetail: reason,
+        },
+      };
+    }
   }
 
   await seedMarkerStateForOwnComment(
@@ -1321,11 +1404,13 @@ export async function claimIssue(
   const initialEpoch = markerOptions?.nowFn
     ? markerOptions.nowFn()
     : Math.floor(Date.now() / 1000);
-  const claimCommentBody = markerOptions
-    ? `${claimPrefix}\n${
-      formatHeartbeatMarker(markerOptions.machineId, initialEpoch)
-    }`
-    : claimPrefix;
+  const claimCommentBody =
+    (markerOptions
+      ? `${claimPrefix}\n${
+        formatHeartbeatMarker(markerOptions.machineId, initialEpoch)
+      }`
+      : claimPrefix) +
+    (options.completionAdmission ? `\n${COMPLETION_PENDING_MARKER}` : "");
 
   // Authors whose CLAIM_LOCK markers this worker trusts (Issue #3664).
   // Every marker-driven decision below — the pre-claim check, the stale
@@ -1536,6 +1621,8 @@ export async function claimIssue(
       pushCapableAuthors,
       milestoneTitle,
       fleetPrSlots,
+      completionAdmission: options.completionAdmission,
+      sleepFn,
       cache,
       ghCommandFn,
       allClaimComments,

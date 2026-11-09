@@ -61,7 +61,8 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-function lockPrefix(kind: "branch" | "base-refresh"): string {
+function lockPrefix(kind: "branch" | "base-refresh" | "completion"): string {
+  if (kind === "completion") return "<!-- COMPLETION_ADMISSION_LOCK:";
   return kind === "branch"
     ? BRANCH_UPDATE_LOCK_PREFIX
     : "<!-- BASE_REFRESH_LOCK_4613:";
@@ -128,7 +129,7 @@ export interface BranchUpdateLockOptions {
   /** Lock TTL in seconds (default: 300). */
   lockTtlSeconds?: number;
   /** Separate comment namespace for short base-ownership transactions. */
-  lockKind?: "branch" | "base-refresh";
+  lockKind?: "branch" | "base-refresh" | "completion";
   /** Injected sleep function (for testing). Defaults to real sleep. */
   sleepFn?: (ms: number) => Promise<void>;
   /** Injected gh command function (for testing). Defaults to runGhCommand. */
@@ -202,7 +203,7 @@ export interface CleanStaleLockOptions {
   /** Lock TTL in seconds (default: 300). */
   lockTtlSeconds?: number;
   /** Separate comment namespace for short base-ownership transactions. */
-  lockKind?: "branch" | "base-refresh";
+  lockKind?: "branch" | "base-refresh" | "completion";
   /** Injected gh command function (for testing). Defaults to runGhCommand. */
   ghCommandFn?: (args: string[]) => Promise<string>;
   /** Injected time function (for testing). Returns current Unix timestamp in seconds. */
@@ -239,7 +240,7 @@ interface LockComment extends AlertDedupCommentRow {
 export function buildLockComment(
   workerId: string,
   timestampSeconds: number,
-  lockKind: "branch" | "base-refresh" = "branch",
+  lockKind: "branch" | "base-refresh" | "completion" = "branch",
 ): string {
   return `${lockPrefix(lockKind)}${workerId}:${timestampSeconds} -->`;
 }
@@ -254,7 +255,7 @@ export function buildLockBody(
   workerId: string,
   timestampSeconds: number,
   note?: string,
-  lockKind: "branch" | "base-refresh" = "branch",
+  lockKind: "branch" | "base-refresh" | "completion" = "branch",
 ): string {
   const marker = buildLockComment(workerId, timestampSeconds, lockKind);
   return note && note.length > 0 ? `${marker}\n${note}` : marker;
@@ -267,7 +268,7 @@ export function buildLockBody(
  */
 export function parseLockComment(
   body: string,
-  lockKind: "branch" | "base-refresh" = "branch",
+  lockKind: "branch" | "base-refresh" | "completion" = "branch",
 ): { workerId: string; timestamp: number } | null {
   const marker = body.indexOf(lockPrefix(lockKind));
   if (marker < 0) return null;
@@ -345,7 +346,7 @@ function fetchLockComments(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
-  lockKind: "branch" | "base-refresh" = "branch",
+  lockKind: "branch" | "base-refresh" | "completion" = "branch",
 ): Promise<LockComment[]> {
   return fetchMarkerComments(
     repo,

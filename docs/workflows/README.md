@@ -54,7 +54,8 @@ each workflow page.
 
 **One loop, many queues.** Cron (or launchd) starts the worker; it runs a single
 loop that checks work in **priority order**: PR (Pull Request) feedback (1),
-spelling (1.5) and CI fixes (1.55) first, then branch updates (1.6),
+spelling (1.5) and CI fixes (1.55) first, then completion mode (1.59, only for
+repositories that opt in), branch updates (1.6),
 merge-conflict resolution (1.61), CI nudges and the blocking-PR stall repair
 (1.62, 1.63), PR body digest reconcile (1.64), auto-merge (1.65), issue closure
 (1.67), closed-PR recovery (1.68), milestone completion (1.7),
@@ -149,7 +150,8 @@ flowchart TD
   P09 --> P1["1: PR feedback"]
   P1 --> P15["1.5: Spelling"]
   P15 --> P155["1.55: CI checks"]
-  P155 --> P16["1.6: Branch updates"]
+  P155 --> P159["1.59: Completion mode"]
+  P159 --> P16["1.6: Branch updates"]
   P16 --> P161["1.61: Resolve merge conflicts"]
   P161 --> P162["1.62: Nudge stalled CI"]
   P162 --> P163["1.63: Blocking-PR stall repair"]
@@ -197,6 +199,7 @@ flowchart TD
 | 1        | PR feedback and reviews                               | Authorised commenters or thumbs-up                                                                                                       |
 | 1.5      | Failed spelling/quality checks                        | Spelling, shellcheck, Deno quality checks on open PRs                                                                                    |
 | 1.55 | Failed CI (Continuous Integration)/integration checks | General CI failures on open PRs |
+| 1.59 | Completion mode | Only for repositories opting into `repo_config.<repo>.completion_admission` (Issue #4942): a free issue slot finishes existing PRs (feedback, CI fix, conflict resolution) through the existing handlers, lease and watchdog before it considers new implementation; dispatched just ahead of the issue scan |
 | 1.6      | PR branch updates                                     | Rebase/merge to keep branches current                                                                                                    |
 | 1.61 | Resolve PR merge conflicts | Merge the base into a `CONFLICTING` PR for real — both sides survive, never a side-pick, unless both sides' originating issues are known and one explicitly supersedes the other; labels the PR `merge-conflict`, bounded to two **concluded** attempts, after which the PR is closed and its originating issue re-queued for a fresh PR (once per issue) before `needs-human`. An attempt disrupted before it concluded is re-attempted rather than counted, bounded at 3 |
 | 1.62 | Nudge stalled CI | Re-trigger checks on Vibe Coder PRs idle more than 5 minutes; claims nothing |

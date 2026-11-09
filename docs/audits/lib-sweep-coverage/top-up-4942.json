@@ -1,0 +1,15 @@
+{
+  "issue": 4942,
+  "chunk": "top-up-4942",
+  "title": "top-up: shared completion admission and issue delivery accounting",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4942",
+  "definition": "Review authenticated coordination state, complete paginated reads, bounded distributed admission, live heartbeat recovery, separate maintenance authority, per-repository failure isolation, and GET-only issue completion evidence without inferred human attribution.",
+  "status": "claimed",
+  "sweptAt": "13881efd61c6bdf48a19e988bfea1a12b5b7b5ad",
+  "paths": [
+    "worker/deno/lib/completion_admission.ts",
+    "worker/deno/lib/completion_admission_github.ts",
+    "worker/deno/lib/completion_scheduler.ts",
+    "worker/deno/lib/issue_completion_metrics.ts"
+  ]
+}

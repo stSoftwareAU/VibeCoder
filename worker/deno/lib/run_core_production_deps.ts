@@ -1,5 +1,8 @@
 import { agentTranscriptDir, agentTranscriptPath } from "./agent_transcript.ts";
 import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createCompletionScheduler } from "./completion_scheduler.ts";
+import { makeGitHubCompletionStore } from "./completion_admission_github.ts";
 /**
  * Production dependency wiring for the run-core main event loop.
  *
@@ -1772,7 +1775,8 @@ export async function createProductionRunCoreDeps(
         runLocalHold,
         repo,
         issueNumber,
-      ) || milestonePacedUntil(pacingLedger, repo, milestone) !== undefined;
+      ) || completionHeld(repo, issueNumber) ||
+      milestonePacedUntil(pacingLedger, repo, milestone) !== undefined;
   };
 
   const circuitBreakerConfig: CircuitBreakerConfig = {
@@ -1893,6 +1897,12 @@ export async function createProductionRunCoreDeps(
    * reading names a gate one scan out of date, never blocks a claim.
    */
   let lastScanBlockedDetails: BlockedCandidateInfo[] = [];
+  function completionHeld(repo: string, number: number): boolean {
+    return lastScanBlockedDetails.some((row) =>
+      row.repo === repo &&
+      row.issueNumber === number && row.reason === "completion-mode"
+    );
+  }
 
   /**
    * What the last scan parked for quota (Issue #3628). Read by the idle-hooks
@@ -2107,15 +2117,46 @@ export async function createProductionRunCoreDeps(
   /** The prefetch pass in flight, shared by concurrent callers (#2662). */
   let fleetPrefetchInFlight: Promise<void> | null = null;
 
-  // Issue #2802: set by the stall-repair pass while it reruns one lane on one
-  // stalled PR, so that lane's scan considers that PR only. Lane passes run one
-  // at a time, so a single slot is enough.
-  let stallLaneTarget: { repo: string; prNumber: number } | undefined;
-  const stallLaneScope = () =>
-    stallLaneTarget === undefined ? {} : {
-      repos: [stallLaneTarget.repo],
-      onlyPrNumber: stallLaneTarget.prNumber,
-    };
+  // Scope a stall repair to one PR (#2802), or completion work to one repo
+  // (#4942), without leaking that scope into concurrent maintenance passes.
+  const maintenanceScope = new AsyncLocalStorage<
+    { repos: string[]; onlyPrNumber?: number }
+  >();
+  const stallLaneScope = () => maintenanceScope.getStore() ?? {};
+  const completionScheduler = createCompletionScheduler({
+    policies: new Map(pollRepos.flatMap((repo) => {
+      const policy = config.repoConfig?.[repo]?.completionAdmission;
+      return policy ? [[repo, policy] as const] : [];
+    })),
+    store: (repo) =>
+      makeGitHubCompletionStore({
+        repo,
+        workerId: getWorkerUniqueId(config.workerName),
+        fleetAuthors: maintenanceAuthors,
+      }),
+    defaultBranch: async (repo) => {
+      const result = await getRepoDefaultBranch(repo);
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+    repair: (repo) =>
+      maintenanceScope.run({ repos: [repo] }, async () => {
+        for (
+          const process of [
+            deps.findAndProcessPrFeedback,
+            deps.findAndProcessCiFailure,
+            deps.findAndProcessMergeConflict,
+          ]
+        ) {
+          if (!process) continue;
+          const result = await process();
+          if (!result.ok) throw result.error;
+          if (result.value.processed) return true;
+        }
+        return false;
+      }),
+    log: (message) => logger.info(message),
+  });
 
   // Issue #2889: shared-clone ref sweep closure state. `checkHostDisk`
   // records a low reading here so the sweep forces a run straight after the
@@ -2685,6 +2726,7 @@ export async function createProductionRunCoreDeps(
       const result = await findFailedPrChecks({
         githubUser,
         repos: pollRepos,
+        ...stallLaneScope(),
         logger,
         isRepoAllowed: (repo) => isRepoAllowed(repos, repo),
         isAuthorisedCommenter: () => true,
@@ -3303,6 +3345,7 @@ export async function createProductionRunCoreDeps(
             allowedAuthors: fleetPrAuthorInput.allowedAuthors,
             fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
             repos,
+            ...stallLaneScope(),
             logger,
             isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
             ghCommandFn: runGhCommand,
@@ -3428,7 +3471,7 @@ export async function createProductionRunCoreDeps(
         opts?.deadlineEpochMs === undefined || Date.now() < opts.deadlineEpochMs
       ) {
         await scanConflictQueueStalls({
-          repos,
+          repos: maintenanceScope.getStore()?.repos ?? repos,
           ghCommandFn: runGhCommand,
           logger,
           isTrustedAuthor,
@@ -3667,11 +3710,10 @@ export async function createProductionRunCoreDeps(
             // Rerun the owning lane on this PR only; the lane takes its own
             // lease, which the pass has already given back.
             dispatchLane: async (target, lane: StallLane) => {
-              stallLaneTarget = {
-                repo: target.repo,
-                prNumber: target.prNumber,
-              };
-              try {
+              return await maintenanceScope.run({
+                repos: [target.repo],
+                onlyPrNumber: target.prNumber,
+              }, async () => {
                 const ran = lane === "ci-fix"
                   ? await deps.findAndProcessCiFailure()
                   : await deps.findAndProcessPrFeedback();
@@ -3682,9 +3724,7 @@ export async function createProductionRunCoreDeps(
                     `(processed=${ran.value.processed})`,
                 );
                 return { ok: true, value: undefined };
-              } finally {
-                stallLaneTarget = undefined;
-              }
+              });
             },
           },
         });
@@ -4442,6 +4482,14 @@ export async function createProductionRunCoreDeps(
     },
 
     // -- Priority 2: Issue scanning --
+    ...(pollRepos.some((repo) => config.repoConfig?.[repo]?.completionAdmission)
+      ? {
+        processCompletionWork: async () => ({
+          ok: true as const,
+          value: { processed: await completionScheduler.process() },
+        }),
+      }
+      : {}),
     processedIssues,
 
     // Issue #219: a slot that lost the acquire race drops the winner's
@@ -4553,6 +4601,7 @@ export async function createProductionRunCoreDeps(
         ? new Set([...(options?.excludeRepos ?? []), ...scanExcluded])
         : options?.excludeRepos;
       const result = await findOldestIssue(config, {
+        completionAdmissionGate: completionScheduler.gate,
         githubUser,
         weekPaceEngaged,
         quotaReading,
@@ -6505,7 +6554,10 @@ export async function createProductionRunCoreDeps(
               // `inversion_signal` every cycle.
               runLocalHolds: new Set([
                 ...issues
-                  .filter((i) => runLocalHold(repo, i.number))
+                  .filter((i) =>
+                    runLocalHold(repo, i.number) ||
+                    completionHeld(repo, i.number)
+                  )
                   .map((i) => i.number),
                 ...pacedMilestoneIssueNumbers(
                   pacingLedger,

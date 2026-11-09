@@ -110,6 +110,7 @@ function harness(
     escalateFails: 0,
     markerFailures: 0,
     reviewId: 10,
+    reviewBody: undefined as string | undefined,
     editFailures: 0,
     dismissals: 0,
     journalled: [] as Array<
@@ -134,6 +135,7 @@ function harness(
       return Promise.resolve(
         JSON.stringify([[{
           id: state.reviewId,
+          body: state.reviewBody,
           state: "CHANGES_REQUESTED",
           user: { login: "reviewer" },
         }]]),
@@ -1029,21 +1031,43 @@ Deno.test("the shared attempt tally rejects malformed comment pages", async () =
   );
 });
 
-Deno.test("repair identity and legacy attempt names follow the newest review", () => {
+Deno.test("repair identity falls back to review IDs only when bodies are unavailable", () => {
   const review = (id: number) => ({
     id,
     state: "CHANGES_REQUESTED",
     user: { login: "r" },
   });
   assertEquals(repairFailureIdentity("failed CI", [review(9)]), "failed CI");
-  assertEquals(
-    repairFailureIdentity("requested review changes", [review(3), review(9)]),
-    "requested review changes:9",
+  assert(
+    repairFailureIdentity("requested review changes", [review(3)]) !==
+      repairFailureIdentity("requested review changes", [review(9)]),
   );
   assertEquals(attemptKey(REPO, 1, HEAD, []), `owner--repo--1--${HEAD}`);
   assertEquals(
     attemptKey(REPO, 1, HEAD, [review(3), review(9)]),
     `owner--repo--1--${HEAD}--review-9`,
+  );
+});
+
+Deno.test("review repair identity ignores ordering and IDs while retaining every reviewer and changed ask", () => {
+  const review = (id: number, login: string, body: string) => ({
+    id,
+    user: { login },
+    body,
+    state: "CHANGES_REQUESTED",
+  });
+  const first = review(1, "Reviewer", "Fix the native case");
+  const second = review(2, "Other", "Fix the exit status");
+  const identity = (reviews: typeof first[]) =>
+    repairFailureIdentity("requested review changes", reviews);
+  assertEquals(
+    identity([first, second]),
+    identity([second, { ...first, id: 10, user: { login: "reviewer" } }]),
+  );
+  assert(identity([first, second]) !== identity([first]));
+  assert(
+    identity([first]) !==
+      identity([{ ...first, body: "Fix both native cases" }]),
   );
 });
 
@@ -1308,13 +1332,15 @@ Deno.test("local validation diagnostics spend the budget even in timeout paths",
   });
 });
 
-Deno.test("green review incidents stop sessions after handoff until a new review", async () => {
+Deno.test("reposted review findings retain the exhausted budget; a changed Fix gets a new incident", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);
     h.state.pr = basePr({
       reviewDecision: "CHANGES_REQUESTED",
       statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }],
     });
+    h.state.reviewBody =
+      "**`quality.sh:20`**: The native check has not run.\n\n**Fix:** Run the native check.\n\nReview summary.";
     // No ready signal: leave the review outstanding, without dismissal calls.
     for (let i = 0; i < 3; i++) {
       h.state.agents.push({ response: "cannot complete this repair" });
@@ -1328,10 +1354,44 @@ Deno.test("green review incidents stop sessions after handoff until a new review
     assertEquals(h.state.sessions, 3);
     assertEquals(h.state.escalations, 1);
     h.state.reviewId++;
+    h.state.reviewBody =
+      "**`(earlier review)`**: Earlier finding 1 is not independently verified as fixed (the reviewer's verdict is partly: The code is fixed but validation is still missing.). Original finding: quality.sh:20 — The native check has not run.\n\n**Fix:** Run the native check.\n\nA different summary and checklist.";
+    await h.attempt(3);
+    assertEquals(h.state.sessions, 3, "a new review ID is not a new defect");
+    assertEquals(h.state.escalations, 1);
+    h.state.reviewBody = h.state.reviewBody.replace(
+      "Run the native check.",
+      "Fix the newly failing CLI case.",
+    );
+    h.state.reviewId++;
     h.state.agents.push({ response: "new review diagnostic" });
     await assertRejects(() => h.attempt(3));
     assertEquals(h.state.sessions, 4);
     assertEquals(h.state.locks.length, 0);
+  });
+});
+
+Deno.test("no-ready diagnostics retain the cause, redact secrets and cannot declare their own failure class", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    const token = "gh" + "p_" + "a".repeat(36);
+    h.state.agents.push({
+      response: `Required native engine missing; needs-human token=${token} ${
+        "x".repeat(3000)
+      }`,
+    });
+    const error = await assertRejects(() => h.attempt(), Error);
+    assertStringIncludes(error.message, "Required native engine missing");
+    assert(!error.message.includes(token));
+    assert(error.message.length < 2200);
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    assertStringIncludes(
+      record!.evidence![0]!,
+      "Required native engine missing",
+    );
+    assertEquals(h.state.pushed, 0);
+    assertEquals(h.state.dismissals, 0);
   });
 });
 

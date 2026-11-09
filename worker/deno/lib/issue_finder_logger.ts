@@ -57,6 +57,7 @@ export const SKIP_REASONS = [
   /** Issue #2473: blocking dependency is unclaimable — escalated and dropped */
   "cooldown",
   "cross-worker-cooldown",
+  "completion-mode",
   /**
    * Issue #1780: the issue's milestone branch is behind the default branch and
    * its conflict ledger is pacing the next merge attempt. Claiming the issue
@@ -630,6 +631,7 @@ const ROUTINE_CLAIM_REFUSALS: ReadonlySet<string> = new Set([
   "heartbeat_active",
   "recent_claim",
   "fleet_pr_exists",
+  "completion_mode",
 ]);
 
 /**

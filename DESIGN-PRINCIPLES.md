@@ -586,6 +586,12 @@ parked the whole default-branch work stream for ~21 hours while unassigned
 
 ### One PR per work stream (serialised work)
 
+Opted-in repositories now use [completion-first admission](docs/workflows/issue-processing.md#completion-first-admission-issue-4942)
+(Issue #4942): shared high/low watermarks count active claims and PRs, including
+human PR pressure and final milestone integration. At capacity, free issue
+slots work through the existing PR maintenance handlers. The legacy rule below
+continues for repositories without `completion_admission`.
+
 The worker serialises its work per work stream (each milestone is a work stream;
 non-milestone issues share the default branch work stream). A milestone stream
 runs one PR at a time so each piece of work builds on the previous, and the
