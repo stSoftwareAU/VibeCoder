@@ -83,10 +83,10 @@ flowchart LR
   instead of dropping to a smaller check set (the issue requires this).
 - Repair processors use a cargo-only spec for repos without pre-flight, so the
   full changed-file gate does not newly apply to repair pushes. The ShellCheck
-  policy (#4631) and the cargo-deny gate (#4626, for changed cargo inputs) run in
-  every gate, so these repairs keep both. The spelling and
-  merge-conflict repairs keep main's `resolveRepairPreFlightSpec`
-  (`shellcheckOnly`), with no cargo check.
+  policy (#4631) and the cargo-deny gate (#4626, for changed cargo inputs) run
+  in every gate, so these repairs keep both. The spelling and merge-conflict
+  repairs keep main's `resolveRepairPreFlightSpec` (`shellcheckOnly`), with no
+  cargo check.
 
 ### Undiscoverable Facts
 
