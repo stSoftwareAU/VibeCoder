@@ -91,15 +91,27 @@ const GIT_CREDENTIAL_RUN =
  * work through the GitHub API with its own `token` input (default
  * `github.token`) and never runs git, so the checkout credential plays no part
  * and a job using it is still flagged.
+ *
+ * Each remaining entry was audited against the pinned action's source
+ * (Issue #4869) and kept only because it runs a plain `git push origin` that
+ * relies on the checkout's persisted credential:
+ * `stefanzweifel/git-auto-commit-action` (`git push origin …`) and
+ * `endbug/add-and-commit` (its `github_token` input is documented as not used
+ * to make commits). The others were removed because each authenticates with
+ * its own token and never reads the persisted one, so a job using them is
+ * flagged when its checkout persists credentials:
+ * `ad-m/github-push-action` (pushes to a URL built from its required `token`
+ * input, or over SSH), `peaceiris/actions-gh-pages` (clones and pushes through
+ * a separate work tree using `github_token`/`personal_token`/`deploy_key`),
+ * `jamesives/github-pages-deploy-action` (unsets the checkout's
+ * `http.…extraheader` and adds an origin carrying its own `token`/`ssh_key`),
+ * `crazy-max/ghaction-github-pages` (clones and pushes to a URL built from
+ * `GITHUB_TOKEN`/`GH_PAT`) and `cycjimmy/semantic-release-action`
+ * (semantic-release builds its push URL from `GITHUB_TOKEN`/`GH_TOKEN`).
  */
 export const CREDENTIAL_USING_ACTIONS: readonly string[] = Object.freeze([
   "stefanzweifel/git-auto-commit-action",
-  "ad-m/github-push-action",
   "endbug/add-and-commit",
-  "jamesives/github-pages-deploy-action",
-  "peaceiris/actions-gh-pages",
-  "crazy-max/ghaction-github-pages",
-  "cycjimmy/semantic-release-action",
 ]);
 
 const CREDENTIAL_USING_SET: ReadonlySet<string> = new Set(

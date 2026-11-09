@@ -186,12 +186,64 @@ jobs:
   deploy:
     steps:
       - uses: actions/checkout@v4
-      - uses: peaceiris/actions-gh-pages@v3
+      - uses: stefanzweifel/git-auto-commit-action@v5
 `,
     ),
   ];
   assertEquals(scanCheckoutPersistCredentials(files), []);
 });
+
+Deno.test("scan - endbug/add-and-commit relies on the checkout credential and skips the job", () => {
+  const files = [
+    wf(
+      ".github/workflows/commit.yml",
+      `name: Commit
+jobs:
+  commit:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: endbug/add-and-commit@v9
+`,
+    ),
+  ];
+  assertEquals(scanCheckoutPersistCredentials(files), []);
+});
+
+// Issue #4869: each of these authenticates with its own token (or SSH key) and
+// never reads the checkout's persisted credential, so a persisting checkout in
+// the same job is a real hardening gap and must be flagged.
+const OWN_TOKEN_ACTIONS = [
+  "ad-m/github-push-action@master",
+  "peaceiris/actions-gh-pages@v4",
+  "jamesives/github-pages-deploy-action@v4",
+  "JamesIves/github-pages-deploy-action@v4",
+  "crazy-max/ghaction-github-pages@v4",
+  "cycjimmy/semantic-release-action@v4",
+];
+
+for (const action of OWN_TOKEN_ACTIONS) {
+  Deno.test(`scan - a job using ${action} with a persisting checkout is flagged`, () => {
+    const files = [
+      wf(
+        ".github/workflows/publish.yml",
+        `name: Publish
+jobs:
+  publish:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ${action}
+`,
+      ),
+    ];
+    const findings = scanCheckoutPersistCredentials(files);
+    assertEquals(findings.length, 1);
+    assertEquals(findings[0]!.steps.map((s) => s.job), ["publish"]);
+  });
+
+  Deno.test(`jobNeedsCheckoutCredentials - ${action} is not a credential signal`, () => {
+    assertEquals(jobNeedsCheckoutCredentials([{ uses: action }]), false);
+  });
+}
 
 Deno.test("scan - a job using create-pull-request with a persisting checkout is flagged", () => {
   const files = [
@@ -304,7 +356,9 @@ Deno.test("jobNeedsCheckoutCredentials - create-pull-request alone is not a cred
     false,
   );
   assert(
-    jobNeedsCheckoutCredentials([{ uses: "ad-m/github-push-action@master" }]),
+    jobNeedsCheckoutCredentials([{
+      uses: "stefanzweifel/git-auto-commit-action@v5",
+    }]),
   );
 });
 
@@ -331,7 +385,9 @@ Deno.test("jobNeedsCheckoutCredentials - git fetch/pull/submodule detected", () 
   assert(jobNeedsCheckoutCredentials([{ run: "git pull" }]));
   assert(jobNeedsCheckoutCredentials([{ run: "git submodule update --init" }]));
   assert(
-    jobNeedsCheckoutCredentials([{ uses: "ad-m/github-push-action@master" }]),
+    jobNeedsCheckoutCredentials([{
+      uses: "stefanzweifel/git-auto-commit-action@v5",
+    }]),
   );
   assertEquals(jobNeedsCheckoutCredentials([{ run: "deno test" }]), false);
   // `digit` must not match the `\bgit` word boundary.
