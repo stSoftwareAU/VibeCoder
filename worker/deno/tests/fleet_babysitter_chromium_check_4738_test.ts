@@ -412,6 +412,59 @@ Deno.test("Apple proxy egress wraps the Chromium launch and always stops", async
   }
 });
 
+Deno.test("egress teardown problems are logged verbatim with no token to split on", async () => {
+  // Enforced egress: the sidecar's stop problem survives unchanged.
+  {
+    const events: string[] = [];
+    const configured = deps({
+      events,
+      plan: plan({ egressEnforced: true }),
+    });
+    configured.startSidecar = () => Promise.resolve();
+    configured.stopSidecar = () =>
+      Promise.resolve(["could not remove the egress proxy (exit 1)"]);
+    await checkBabysitterContainerChromium(
+      { baseDir: "/checkout" },
+      configured,
+    );
+    assert(
+      events.includes(
+        "log egress teardown: could not remove the egress proxy (exit 1)",
+      ),
+      `the sidecar stop problem is logged verbatim, got ${
+        JSON.stringify(events)
+      }`,
+    );
+  }
+
+  // Apple egress: the helper's stop problem survives unchanged.
+  {
+    const events: string[] = [];
+    const applePlan = plan({ proxyName: "babysitter-proxy" });
+    const configured = deps({ events, plan: applePlan });
+    configured.startAppleEgress = () =>
+      Promise.resolve({
+        runArgs: [
+          ...applePlan.runArgs.slice(0, -1),
+          "--env",
+          "HTTPS_PROXY=http://apple-proxy:3128",
+          applePlan.image,
+        ],
+        stop: () => Promise.resolve(["egress helper exited with code 1"]),
+      });
+    await checkBabysitterContainerChromium(
+      { baseDir: "/checkout" },
+      configured,
+    );
+    assert(
+      events.includes("log egress teardown: egress helper exited with code 1"),
+      `the Apple stop problem is logged verbatim, got ${
+        JSON.stringify(events)
+      }`,
+    );
+  }
+});
+
 Deno.test("setup runs the Chromium check after preflight and propagates failure", async () => {
   const calls: string[] = [];
   await assertRejects(

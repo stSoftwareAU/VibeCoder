@@ -774,7 +774,9 @@ export async function assertBabysitterKeyOutOfRunArgs(
 
 /** Text with the token replaced and any other secret redacted. */
 function redactToken(text: string, token: string): string {
-  return redactSecrets(text.split(token).join("***"));
+  // An empty token is the Chromium probe's teardown token; splitting on "" would
+  // scatter every character, so only redact secrets then.
+  return redactSecrets(token ? text.split(token).join("***") : text);
 }
 
 /**

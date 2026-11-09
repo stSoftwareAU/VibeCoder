@@ -5,8 +5,9 @@ plan and egress controls. Setup runs it after preflight, the CLI exposes
 `--check-container`, and automatic passes run it before PR discovery or App
 authentication. HTML validation searches complete stdout; diagnostic output
 remains bounded and failure causes keep the tail of the redacted output, so a
-trailing cause survives startup noise. Diagnostic runs never publish
-service-health heartbeats.
+trailing cause survives startup noise. Egress teardown problems are logged
+verbatim: the shared redactor no longer splits an empty token into single
+characters. Diagnostic runs never publish service-health heartbeats.
 
 Closes #4771.
 
@@ -78,6 +79,16 @@ flowchart TD
   characters were kept, so the trailing cause was lost. Remaining behaviour: the
   last 500 characters are kept, so the fatal line survives. Covering path:
   `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts::Chromium check keeps the trailing cause after startup noise`.
+- `egress teardown problems are logged verbatim with no token to split on`
+  reproduced the empty-token redaction defect — the probe tears egress down with
+  an empty token, and `redactToken` split the problem text on `""`, scattering
+  every character with `***` — then passed once the redactor skipped token
+  replacement for an empty token. Obsolete behaviour: an empty token split a
+  teardown problem into single characters, so the cause was unreadable and
+  `redactSecrets` could not match intact secret shapes. Remaining behaviour: an
+  empty token is left to `redactSecrets` only, so the problem text survives
+  verbatim. Covering path:
+  `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts::egress teardown problems are logged verbatim with no token to split on`.
 - `successful and failed container diagnostics suppress service health`
   reproduced the heartbeat defect, then passed for successful HTML and failed
   browser launches. Its successful path has no App configuration; deleting the
@@ -157,7 +168,7 @@ Executed commands:
 - Re-run on the head via `deno task test:unit <file> < /dev/null`, one file at a
   time; every file passed with zero failed:
   - `worker/deno/tests/fleet_babysitter_app_test.ts` (17 tests at head)
-  - `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts` (19 tests
+  - `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts` (20 tests
     at head)
   - `worker/deno/tests/fleet_pr_babysitter_supervisor_test.ts` (3 tests at head)
   - `worker/deno/tests/fleet_pr_babysitter_setup_test.ts` (7 tests at head)
@@ -201,6 +212,8 @@ Executed commands:
   while retaining the git/rtk, preflight and no-Codex assertions. The credential
   fixture retains exact argv, stdin-only credentials and allowlisted-env checks
   with deterministic proxy inputs. Posting checks retain all their assertions.
+  The new teardown test asserts that sidecar and Apple stop problems reach the
+  log verbatim rather than character-scattered.
 - No twinned production rule needed a separate edit: runtime/image and egress
   validation remain shared; the supervisor's existing partial/dry-run health
   exclusion now also covers diagnostics, with success and failure tests.
