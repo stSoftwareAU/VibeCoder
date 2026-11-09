@@ -391,8 +391,8 @@ function isCustomPromptEnvSpec(spec: string): boolean {
  * credential store (`…/credentials/gh`, Issue #4770) or lies under the
  * custom prompt target (`…/.vibe-coder/custom-prompts`), and the plan's
  * `VIBE_CUSTOM_PROMPT_PATHS` env spec. The provider credential sub-directories
- * are kept. Then appends the clone and scratch mounts, `--env GH_TOKEN`, the
- * image and the repair command. Refuses any plan flag that could mount a
+ * are kept. Then appends the clone mount, the clone's `.git` mounted
+ * read-only over it, the scratch mount, `--env GH_TOKEN`, the image and the repair command. Refuses any plan flag that could mount a
  * path or load an env file by another spelling, and any plan env spec that
  * sets GH_TOKEN. Pure; exported for tests.
  */
@@ -523,6 +523,10 @@ export function buildBabysitterRunArgs(
     ...body,
     "--volume",
     `${input.clone}:${BABYSITTER_CLONE_MOUNT}`,
+    // Read-only over the read-write clone: the agent cannot forge objects,
+    // refs or config the host's git later trusts. The host does the staging.
+    "--volume",
+    `${input.clone}/.git:${BABYSITTER_CLONE_MOUNT}/.git:ro`,
     "--volume",
     `${input.scratch}:${BABYSITTER_SCRATCH_MOUNT}`,
     "--env",

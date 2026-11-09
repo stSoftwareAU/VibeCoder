@@ -44,20 +44,25 @@ sequenceDiagram
   credential directories stay. Secret-named config keys are scrubbed only when
   their value is a string, array or object, so numeric limits such as
   `max_issue_body_tokens` survive.
-- The agent can write the clone's `.git`, so the host runs publication git with
-  hooks and fsmonitor disabled, submodule recursion off, submodule diffs ignored
-  and replacement refs ignored (`core.useReplaceRefs=false`; the review
-  verifier's git in the clone carries the same flags), and rewrites the clone's
-  `.git/config` before publication, keeping only the probed `core.ignorecase`
-  and `core.precomposeunicode` traits. The reset refuses to publish when `.git`
-  is not a plain directory, or when `.git/commondir`, `.git/gitdir`,
-  `.git/config.worktree` or `.git/objects/info/alternates` exist, because each
-  would redirect git to config the reset does not control. The host's own global
-  git config is left in place so its credential helper still works. Before host
-  Git runs, nested `.git` entries (including case-variant, NFKC-folded and
-  `git~1` names), index gitlinks absent from HEAD, `refs/replace` refs,
-  `.git/info/grafts` and `.git/shallow` are refused. Checked-out existing
-  submodules are also refused; the staged merge remains intact.
+- The clone's `.git` is mounted read-only over the read-write clone
+  (`<clone>/.git:/babysitter/clone/.git:ro`, after the clone mount in
+  `buildBabysitterRunArgs`), so the agent cannot forge objects, refs or config
+  that host git later reads; the prompt already tells it not to write `.git` and
+  the host stages the files. The working tree stays writable, so as defence in
+  depth the host runs publication git with hooks and fsmonitor disabled,
+  submodule recursion off, submodule diffs ignored and replacement refs ignored
+  (`core.useReplaceRefs=false`; the review verifier's git in the clone carries
+  the same flags), and rewrites the clone's `.git/config` before publication,
+  keeping only the probed `core.ignorecase` and `core.precomposeunicode` traits.
+  The reset refuses to publish when `.git` is not a plain directory, or when
+  `.git/commondir`, `.git/gitdir`, `.git/config.worktree` or
+  `.git/objects/info/alternates` exist, because each would redirect git to
+  config the reset does not control. The host's own global git config is left in
+  place so its credential helper still works. Before host Git runs, nested
+  `.git` entries (including case-variant, NFKC-folded and `git~1` names), index
+  gitlinks absent from HEAD, `refs/replace` refs, `.git/info/grafts` and
+  `.git/shallow` are refused. Checked-out existing submodules are also refused;
+  the staged merge remains intact.
 - Exit status 42 from `babysitter-repair` is a reported task failure and is a
   `code` failure; a missing runtime or image (including
   `ContainerRuntimeUnavailableError`) is `capability`; every other launcher
@@ -160,9 +165,12 @@ Backend and CLI change; no visual surface changed.
 - **met** — The agent-written clone's own hooks, fsmonitor and quality scripts
   are not run on the host: publication git, the review verifier's git and
   committed-summary reads run with hooks and fsmonitor off and replacement refs
-  ignored, and the clone is refused before host git when it holds nested
-  repositories, replacement refs, grafts or a shallow file. The host keeps
-  locks, git/commit/push and PR-body publication. — evidence:
+  ignored, the clone's `.git` is read-only to the agent so it cannot forge
+  objects (PR #4941 review), and the clone is refused before host git when it
+  holds nested repositories, replacement refs, grafts or a shallow file. The
+  host keeps locks, trusted git/commit/push and PR-body publication. — evidence:
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::the repair container mounts the clone's .git read-only over the writable clone (PR #4941 review)`,
+  `worker/deno/tests/fleet_babysitter_container_4738_test.ts::repair drops the named volumes and adds exactly the clone, its read-only .git and scratch mounts`,
   `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::validateAndCommit and push run no planted pre-commit, pre-push or fsmonitor`,
   `::repair resets agent-controlled filters, diff and SSH git config before host work`,
   `::the publication reset refuses a planted commondir that would redirect git's config to a filter`,
@@ -192,8 +200,9 @@ Backend and CLI change; no visual surface changed.
   files and live config are not exposed, for the credential-absence criterion
 - **unrequested** — host git hardening (`HOST_GIT_HARDENING_ARGS`,
   `runHardenedRepairGit`, `resetRepairCloneGitConfig`) — reviewer: unrequested —
-  reason: the container can write the clone's `.git`, so the host's trusted
-  commit and push needed hooks and config neutralised
+  reason: the container writes the clone's working tree (nested repositories,
+  index entries), so the host's trusted commit and push needed hooks and config
+  neutralised; `.git` itself is read-only to the container
 - **unrequested** — `AbortSignal` support, the `startLockRenewal` and
   `resetGitConfig` seams in `FixDeps`, and an injectable setup entry point —
   reviewer: unrequested — reason: replace `child.kill` on lock-renewal failure
@@ -285,8 +294,15 @@ Backend and CLI change; no visual surface changed.
   only caller was the host Codex spawn. The 18 path-helper cases moved to
   `worker/deno/tests/fleet_babysitter_paths_test.ts`.
 - Removed from `worker/deno/tests/fleet_babysitter_codex_test.ts` (file
-  deleted): all six cases. Removed functionality: `ensureBabysitterCodex`; setup
-  no longer installs Codex.
+  deleted): all six cases (five `Deno.test` registrations, one of them in a
+  two-label loop;
+  `git show origin/main:worker/deno/tests/fleet_babysitter_codex_test.ts`).
+  Removed functionality: `ensureBabysitterCodex`; setup no longer installs
+  Codex. Verification:
+  `git grep -n ensureBabysitterCodex -- . ':!docs/archive' ':!docs/audits'`
+  printed no hits on the head, so no caller is left, and
+  `worker/deno/tests/fleet_pr_babysitter_setup_test.ts::setup runs the container preflight (runtime, then image) and installs no Codex`
+  covers the replacement setup behaviour.
 - Removed from `worker/deno/tests/fleet_pr_babysitter_test.ts`: the five
   `spawnBabysitterAgent` cases. Removed functionality: `spawnBabysitterAgent`;
   response-file reading stays covered by the kept `readAgentResponse` cases and
@@ -311,12 +327,12 @@ Backend and CLI change; no visual surface changed.
   clone git and container runtime; real git and tar over the worker checkout).
   The preload requires the real checkout path and narrows it to a string before
   its command stubs use it, so the fixture type-checks. The container's fake
-  agent leaves a FIFO as `.babysitter-pr-body`; the pass
-  must exit non-zero with `timed out opening`, and the same pass without the
-  FIFO must succeed and apply the description (positive control). Red check:
-  replacing `Deno.exit(Deno.exitCode)` in `main` with a comment makes the test
-  fail with `Timed out after 25000ms`. The exchange and `file_utils` tests only
-  prove the reader's open times out, not that the process exits.
+  agent leaves a FIFO as `.babysitter-pr-body`; the pass must exit non-zero with
+  `timed out opening`, and the same pass without the FIFO must succeed and apply
+  the description (positive control). Red check: replacing
+  `Deno.exit(Deno.exitCode)` in `main` with a comment makes the test fail with
+  `Timed out after 25000ms`. The exchange and `file_utils` tests only prove the
+  reader's open times out, not that the process exits.
 - Removed from `worker/deno/tests/fleet_pr_babysitter_audit_test.ts`:
   `babysitter agent disables the inherited host audit journal`. Removed
   functionality: the host Codex spawn's `VIBE_AUDIT_DISABLED` env; the
@@ -359,6 +375,23 @@ Backend and CLI change; no visual surface changed.
   tested with the same repository accepted first and again after the planted
   item is removed. The replacement ref is refused before the HEAD gitlink
   comparison reads HEAD, so that comparison cannot see a replacement.
+- PR #4941 review round, read-only `.git` mount: removing the `.git:ro` volume
+  from `buildBabysitterRunArgs` fails
+  `the repair container mounts the clone's .git read-only over the writable clone (PR #4941 review)`
+  (the `.git:ro` volume is missing next to the clone mount) and both exact-mount
+  cases in `fleet_babysitter_container_4738_test.ts`
+  (`repair spawns the plan's
+  run args, the mounts, GH_TOKEN and the fixed command`,
+  `repair drops the named
+  volumes and adds exactly the clone, its read-only .git and scratch mounts`);
+  restored, 162 tests in the five touched babysitter test files pass. The
+  orchestration test also pins the order (the `.git` mount directly after the
+  clone mount), because a runtime applies a nested mount only after its parent.
+  No test overwrites a blob object from inside a container: the container
+  runtime is unavailable on this host, so the proof that the agent cannot write
+  `.git` is the mount flag the runtime enforces, not an in-container write. The
+  host git hardening and nested-repository refusals stay for the writable
+  working tree.
 - Not red-checked: the `isValidRepoName` sharing and the numeric-limit config
   scrub (both have direct tests that exercise their inputs).
 - Callers checked for the new `startBabysitterAgent` contract: `fix()` is the

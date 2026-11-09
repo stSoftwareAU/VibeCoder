@@ -301,6 +301,8 @@ Deno.test("repair spawns the plan's run args, the mounts, GH_TOKEN and the fixed
       "--volume",
       `${f.clone}:/babysitter/clone`,
       "--volume",
+      `${f.clone}/.git:/babysitter/clone/.git:ro`,
+      "--volume",
       `${f.scratch}:/babysitter/scratch`,
       "--env",
       "GH_TOKEN",
@@ -326,7 +328,7 @@ Deno.test("repair spawns the plan's run args, the mounts, GH_TOKEN and the fixed
   }
 });
 
-Deno.test("repair drops the named volumes and adds exactly the clone and scratch mounts", async () => {
+Deno.test("repair drops the named volumes and adds exactly the clone, its read-only .git and scratch mounts", async () => {
   const f = await makeFixture();
   try {
     const { deps, calls } = fakeDeps(f);
@@ -349,6 +351,7 @@ Deno.test("repair drops the named volumes and adds exactly the clone and scratch
       `${f.root}/logs:/home/vibe/logs`,
       `${f.root}/repo:/workspace:ro`,
       `${f.clone}:/babysitter/clone`,
+      `${f.clone}/.git:/babysitter/clone/.git:ro`,
       `${f.scratch}:/babysitter/scratch`,
     ]);
   } finally {
@@ -932,12 +935,13 @@ Deno.test("the real repair plan mounts no gh credential, key or custom prompt pa
       volumes.map((value) => value.split(":")[1]).sort(),
       [
         BABYSITTER_CLONE_MOUNT,
+        `${BABYSITTER_CLONE_MOUNT}/.git`,
         BABYSITTER_SCRATCH_MOUNT,
         "/home/vibe/.vibe-coder/credentials/claude",
         "/home/vibe/logs",
         "/workspace",
       ].sort(),
-      "only the clone, scratch, workspace, run-config, logs and enabled provider credential mounts remain",
+      "only the clone, its read-only .git, scratch, workspace, run-config, logs and enabled provider credential mounts remain",
     );
   } finally {
     await Deno.remove(f.root, { recursive: true });

@@ -349,21 +349,25 @@ Each repair runs in one container, started by `runBabysitterRepairContainer`
 command with `--dir /babysitter/clone`, `--prompt-file` pointing at the prompt,
 and `--response-file /babysitter/clone/.babysitter-response`. The agent's
 read-only repository token is passed as `GH_TOKEN` by name only, so its value
-never appears on a command line. The agent has the clone's `.git` read-write.
-Before host publication, `resetRepairCloneGitConfig` rewrites the clone's
-`.git/config` as a minimal canonical GitHub remote config, dropping
-agent-written hooks, filters, fsmonitor, external diff and SSH commands. The
-reset keeps `core.ignorecase` and `core.precomposeunicode` by probing the
-clone's filesystem on the host (the agent's config is not read), so a case-only
-rename is still seen as a rename on a case-insensitive filesystem. Publication
-git runs with hooks and fsmonitor disabled, submodule recursion off, submodule
-diffs ignored and replacement objects ignored (`core.useReplaceRefs=false`); the
-host's `run()` git calls and the review verifier's git calls in the clone use
-the same flags (`HOST_GIT_HARDENING_ARGS`). Before those calls, the host refuses
-any nested `.git` entry (matched case-insensitively, with git's `git~1` alias),
-any index gitlink absent from HEAD, any `refs/replace` ref, and a
-`.git/info/grafts` or `.git/shallow` file. Checked-out existing submodules are
-also refused; the staged merge is preserved.
+never appears on a command line. The clone's `.git` is mounted read-only over
+the read-write clone (`<clone>/.git` at `/babysitter/clone/.git:ro`, listed
+after the clone mount), so the agent cannot write objects, refs or config that
+the host's git later trusts, and the host stages the resolved files itself. The
+working tree stays read-write. As defence in depth, before host publication,
+`resetRepairCloneGitConfig` rewrites the clone's `.git/config` as a minimal
+canonical GitHub remote config, dropping agent-written hooks, filters,
+fsmonitor, external diff and SSH commands. The reset keeps `core.ignorecase` and
+`core.precomposeunicode` by probing the clone's filesystem on the host (the
+agent's config is not read), so a case-only rename is still seen as a rename on
+a case-insensitive filesystem. Publication git runs with hooks and fsmonitor
+disabled, submodule recursion off, submodule diffs ignored and replacement
+objects ignored (`core.useReplaceRefs=false`); the host's `run()` git calls and
+the review verifier's git calls in the clone use the same flags
+(`HOST_GIT_HARDENING_ARGS`). Before those calls, the host refuses any nested
+`.git` entry (matched case-insensitively, with git's `git~1` alias), any index
+gitlink absent from HEAD, any `refs/replace` ref, and a `.git/info/grafts` or
+`.git/shallow` file. Checked-out existing submodules are also refused; the
+staged merge is preserved.
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container
@@ -415,7 +419,8 @@ The repair container receives:
 
 - the agent's read-only repository token, as `GH_TOKEN`, minted again on each
   token restart;
-- the clone and the scratch directory (prompt file), read-write;
+- the clone and the scratch directory (prompt file), read-write, with the
+  clone's `.git` mounted read-only over the clone;
 - a tracked-files copy of the worker checkout, written on the host to
   `<scratch>/workspace` (regular tracked files only; ignored files are excluded,
   and its `.config.json` is a scrubbed copy), mounted read-only at `/workspace`.

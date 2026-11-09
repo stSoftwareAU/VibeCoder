@@ -2197,6 +2197,51 @@ Deno.test("the repair container gets no App key, host credential mount or GitHub
   }
 });
 
+Deno.test("the repair container mounts the clone's .git read-only over the writable clone (PR #4941 review)", async () => {
+  const root = await Deno.realPath(await Deno.makeTempDir());
+  const dirs = await repairDirs();
+  try {
+    const keyPath = `${root}/key.pem`;
+    await Deno.writeTextFile(keyPath, await generateTestKeyPem());
+    const spawns: RuntimeSpawn[] = [];
+    await startBabysitterAgent(
+      { appId: "1", installationId: "1", privateKeyPath: keyPath },
+      REPO,
+      {
+        ...dirs,
+        prompt: "repair",
+        fetchFn: fakeTokenExchange(
+          { permissions: BABYSITTER_AGENT_PERMISSIONS },
+          [],
+        ),
+        container: fakeContainer(spawns, {}),
+      },
+      () => Promise.resolve(true),
+    );
+    assertEquals(spawns.length, 1);
+    const volumes: string[] = [];
+    spawns[0]!.args.forEach((arg, i) => {
+      if (spawns[0]!.args[i - 1] === "--volume") volumes.push(arg);
+    });
+    const clone = volumes.findIndex((v) =>
+      v.endsWith(`:${BABYSITTER_CLONE_MOUNT}`)
+    );
+    assert(clone >= 0, "control: the clone itself is mounted writable");
+    const hostClone = volumes[clone]!.slice(
+      0,
+      -`:${BABYSITTER_CLONE_MOUNT}`.length,
+    );
+    // The nested mount must follow the clone mount, or the runtime applies it first and the writable clone mount hides it.
+    assertEquals(
+      volumes.indexOf(`${hostClone}/.git:${BABYSITTER_CLONE_MOUNT}/.git:ro`),
+      clone + 1,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(dirs.root, { recursive: true });
+  }
+});
+
 Deno.test("the agent's final message is read from the clone into the exchange, and removed from the clone (Issue #4770)", async () => {
   await withTestKey(async (privateKeyPath) => {
     const dirs = await repairDirs();
