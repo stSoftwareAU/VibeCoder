@@ -602,6 +602,7 @@ Deno.test("never approved: a failsWithoutChange that does not show the test fail
       "",
       "No — passes without the change",
       "unknown",
+      "Unknown: not run",
       "no",
       "No, it passes",
       "false",
@@ -622,6 +623,8 @@ Deno.test("never approved: a failsWithoutChange that does not show the test fail
       true,
       "notably, it fails without the change",
       "Yes: fails on the base branch",
+      "Removing the git_pull branch in actionKindFor makes the milestone and branch-update tests return unknown",
+      "If the matcher let merge-arm match merge events, unknownMerged would be 0 and the test would fail",
     ] as const
   ) {
     const { d } = await decide(
