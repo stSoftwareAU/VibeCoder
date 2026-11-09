@@ -21,6 +21,7 @@ import {
   startBabysitterAgent,
 } from "../commands/fleet_pr_babysitter.ts";
 import { BabysitterFailure } from "../lib/babysitter_retry_state.ts";
+import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import {
   fakeContainer,
   fakeTokenExchange,
@@ -28,6 +29,126 @@ import {
   type RuntimeSpawn,
   withTestKey,
 } from "./fixtures/babysitter_container_fakes_4770.ts";
+
+Deno.test("the non-watch container repair exits non-zero after cleanup despite a pending special-file open", async () => {
+  const info = await runWithTimeout(Deno.execPath(), ["info", "--json"], {
+    timeoutMs: 10_000,
+  });
+  assert(info.ok);
+  assertEquals(info.value.success, true, info.value.stderr);
+  const { denoDir } = JSON.parse(info.value.stdout);
+  assertEquals(typeof denoDir, "string");
+  // The repair below runs with --cached-only, so cache the babysitter's whole
+  // graph first: a shard's cache may hold only what its own tests loaded.
+  const entry = new URL("../commands/fleet_pr_babysitter.ts", import.meta.url)
+    .pathname;
+  const configFile = new URL("../deno.json", import.meta.url).pathname;
+  const warm = await runWithTimeout(Deno.execPath(), [
+    "cache",
+    "--config",
+    configFile,
+    entry,
+  ], { timeoutMs: 120_000, env: { DENO_DIR: denoDir } });
+  assert(warm.ok);
+  assertEquals(warm.value.success, true, warm.value.stderr);
+  await withTestKey(async (privateKeyPath) => {
+    const home = await Deno.makeTempDir();
+    try {
+      await Deno.chmod(privateKeyPath, 0o600);
+      await writeBabysitterAppConfig(home, {
+        appId: "123",
+        installationId: "456",
+        privateKeyPath,
+      });
+      await Deno.mkdir(`${home}/tmp`);
+      await Deno.mkdir(`${home}/bin`);
+      // A runtime on PATH; the preload answers every call to it.
+      await Deno.writeTextFile(`${home}/bin/docker`, "#!/bin/sh\n");
+      await Deno.chmod(`${home}/bin/docker`, 0o755);
+      for (const provider of ["claude", "gh"]) {
+        await Deno.mkdir(`${home}/.vibe-coder/credentials/${provider}`, {
+          recursive: true,
+        });
+      }
+      const configPath = `${home}/operator-config.json`;
+      await Deno.writeTextFile(
+        configPath,
+        JSON.stringify({
+          repos: ["owner/repo"],
+          fleet_pr_authors: ["babysitter[bot]"],
+        }),
+      );
+      const checkout = new URL("../../..", import.meta.url).pathname
+        .replace(/\/$/, "");
+      const cliArgs = [
+        "run",
+        "--allow-all",
+        "--cached-only",
+        "--config",
+        configFile,
+        "--preload",
+        new URL(
+          "./fixtures/fleet_babysitter_container_preload.ts",
+          import.meta.url,
+        ).pathname,
+        entry,
+        "--repo=owner/repo",
+        "--pr=1",
+      ];
+      const childEnv = {
+        HOME: home,
+        PATH: `${home}/bin:/usr/bin:/bin`,
+        CONFIG_PATH: configPath,
+        TMPDIR: `${home}/tmp`,
+        VIBE_CREDENTIAL_DIR: `${home}/.vibe-coder/credentials`,
+        BABYSITTER_REPAIR_FIXTURE: home,
+        BABYSITTER_REAL_CHECKOUT: checkout,
+        DENO_DIR: denoDir,
+      };
+      const fifo = await new Deno.Command("mkfifo", {
+        args: [`${home}/blocked-fifo`],
+      }).output();
+      assert(fifo.success);
+      // The in-container agent leaves a FIFO as its PR description, so the
+      // runner's read of it never completes.
+      const blocked = await runWithTimeout(Deno.execPath(), cliArgs, {
+        cwd: home,
+        timeoutMs: 25_000,
+        clearEnv: true,
+        env: { ...childEnv, BABYSITTER_BLOCK_OPEN: "1" },
+      });
+      assert(blocked.ok, "non-watch pass exits despite a pending open");
+      assertEquals(blocked.value.timedOut, false, blocked.value.stderr);
+      assertEquals(blocked.value.success, false);
+      assertStringIncludes(blocked.value.stderr, "timed out opening");
+      // The container ran, so the failure is the pending open and not setup.
+      assertStringIncludes(
+        await Deno.readTextFile(`${home}/runtime-run.json`),
+        "babysitter-repair",
+      );
+      // Positive control: with the open not blocked, the same pass succeeds
+      // and applies the description the container's agent proposed.
+      await Deno.remove(`${home}/.local/state/vibe-coder/fleet-pr-babysitter`, {
+        recursive: true,
+      });
+      await Deno.remove(`${home}/runtime-run.json`);
+      const completed = await runWithTimeout(Deno.execPath(), cliArgs, {
+        cwd: home,
+        timeoutMs: 40_000,
+        clearEnv: true,
+        env: childEnv,
+      });
+      assert(completed.ok);
+      assertEquals(completed.value.success, true, completed.value.stderr);
+      assertEquals(
+        await Deno.readTextFile(`${home}/applied-body`),
+        "Reviewed PR description",
+      );
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
+  });
+});
 
 Deno.test("agent launch mints a scoped token and hands the container only that token", async () => {
   if (Deno.env.get("BABYSITTER_TOKEN_TEST_CHILD") !== "1") {
