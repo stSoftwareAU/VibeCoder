@@ -77,6 +77,26 @@ function statedEnv(values: Record<string, string> = {}): EnvLookup {
   });
 }
 
+Deno.test("config - shared completion admission is opt-in per repository", async () => {
+  const raw = {
+    repos: ["owner/repo"],
+    repo_config: {
+      "owner/repo": { completion_admission: { high: 4, low: 2 } },
+    },
+  } as unknown as ConfigFile;
+  await withTempConfig(raw, async (path) => {
+    const config = await loadConfig(path, { env: statedEnv() });
+    assertEquals(config.repoConfig?.["owner/repo"]?.completionAdmission, {
+      high: 4,
+      low: 2,
+    });
+    assertEquals(
+      config.repoConfig?.["owner/other"]?.completionAdmission,
+      undefined,
+    );
+  });
+});
+
 Deno.test("config - the per-run provider override applies to the loaded agent (Issue #2062)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],

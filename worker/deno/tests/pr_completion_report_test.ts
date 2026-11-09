@@ -76,6 +76,71 @@ function input(overrides: Partial<PrCompletionInput> = {}): PrCompletionInput {
   };
 }
 
+Deno.test("issue throughput counts unique delivered issues and separates partial PRs and unknown attribution", () => {
+  const record = {
+    repo: "org/repo",
+    number: 100,
+    createdAt: "2026-10-19T02:00:00Z",
+    mergedAt: "2026-10-20T02:00:00Z",
+    closingPr: 1,
+    relatedPrs: [1],
+  };
+  const report = buildPrCompletionReport(input({
+    prs: [pr(1), pr(2), pr(3, { baseRef: "milestone/next", milestone: true })],
+    actions: [
+      action(1, "implement", "implementation", "fleet"),
+      action(1, "merge", "merge", "fleet"),
+      { ...action(1, "repair", "repair", "fleet"), deliveredCommits: [] },
+    ],
+    issueCompletions: {
+      complete: true,
+      unknownClosures: 1,
+      excludedClosures: 1,
+      records: [record, record],
+    },
+    ciRuns: [1, 2].map((runId) => ({
+      repo: "org/repo",
+      prNumber: 1,
+      runId: String(runId),
+      kind: "workflow_run",
+      workflowName: "Quality",
+      durationMinutes: 2,
+      outcome: runId === 1 ? "cancelled" : "success",
+    })),
+  }));
+  const metrics = report.issueThroughput!;
+  assertEquals(metrics.uniqueCompletedIssues, 1);
+  assertEquals(metrics.unattended, 1);
+  assertEquals(metrics.unknownClosures, 1);
+  assertEquals(metrics.medianIssueToMergeHours, 24);
+  assertEquals(metrics.qualityRunsPerCompletedIssue, 2);
+  assertEquals(metrics.qualityCancellationsPerCompletedIssue, 1);
+  assertEquals(metrics.verifiedNoChangeRepairs, 1);
+  assertEquals(metrics.defaultBranchPrsWithoutConfirmedIssueCompletion, 1);
+  assertEquals(report.delivery.milestonePrs, 1);
+});
+
+Deno.test("issue throughput does not invent unattended delivery or CI coverage for an older closing PR", () => {
+  const report = buildPrCompletionReport(input({
+    issueCompletions: {
+      complete: true,
+      unknownClosures: 0,
+      excludedClosures: 0,
+      records: [{
+        repo: "org/repo",
+        number: 100,
+        createdAt: "2026-10-01T00:00:00Z",
+        mergedAt: "2026-10-20T00:00:00Z",
+        closingPr: 1,
+        relatedPrs: [1],
+      }],
+    },
+  }));
+  assertEquals(report.issueThroughput?.uniqueCompletedIssues, 1);
+  assertEquals(report.issueThroughput?.unknownAttribution, 1);
+  assertEquals(report.issueThroughput?.qualityRunsPerCompletedIssue, null);
+});
+
 Deno.test("failed fleet attempts do not obscure confirmed delivery or satisfy evidence", () => {
   const failed = {
     ...action(1, "failed", "merge", "fleet"),

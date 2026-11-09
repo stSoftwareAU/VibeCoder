@@ -4,7 +4,43 @@ import {
   earlierFindingGaps,
   extractEarlierFindings,
   parseEarlierVerdicts,
+  reviewRepairFindings,
 } from "../lib/earlier_findings.ts";
+
+Deno.test("review retry findings keep original problem and Fix across re-reviews", () => {
+  const first = "**`a.ts:2`**: broken\n\n**Fix:** repair both paths";
+  const second = "**`b.ts:3`**: also broken\n\n**Fix:** repair caller";
+  const gap = earlierFindingGaps([{
+    file: "a.ts",
+    line: 2,
+    problem: "broken",
+    fix: "repair both paths",
+  }], [{
+    index: 1,
+    verdict: "partly",
+    note: "new commentary at another head",
+  }])[0]!;
+  const repost =
+    `**\`(earlier review)\`**: ${gap.problem}\n\n**Fix:** ${gap.fix}`;
+  assertEquals(
+    reviewRepairFindings(first),
+    reviewRepairFindings(repost + "\n\nSummary changed."),
+  );
+  assertEquals(
+    reviewRepairFindings(first + "\n\n" + second),
+    reviewRepairFindings(second + "\n\n" + repost),
+  );
+  assertEquals(reviewRepairFindings("unfamiliar\nreview"), [
+    "unfamiliar review",
+  ]);
+  assertEquals(reviewRepairFindings("unfamiliar\n\n**Fix:** one\n\nalso two"), [
+    "unfamiliar **Fix:** one also two",
+  ]);
+  assertEquals(
+    reviewRepairFindings(first.replace("both paths", "all callers")),
+    ["a.ts:2 — broken **Fix:** repair all callers"],
+  );
+});
 
 Deno.test("earlier findings - preserves every fleet problem and fix, with a whole-comment fallback", () => {
   assertEquals(
