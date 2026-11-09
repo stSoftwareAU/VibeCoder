@@ -16,6 +16,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { join } from "node:path";
 import {
   assertEquals,
   assertNotEquals,
@@ -29,6 +30,7 @@ import {
   createDefaultDeps,
   isDockerInfraFailure,
   isMissingCommandFailure,
+  qualityCommandFile,
   type QualityGateDeps,
   type QualityGateParams,
   runCommandAsWorker,
@@ -805,6 +807,174 @@ Deno.test("runQualityGateCheck - uses custom quality script path", async () => {
     deps,
   );
   assertEquals(fileChecked, "./custom-quality.sh");
+});
+
+// =============================================================================
+// runQualityGateCheck tests — a checkout cwd (Issue #4805)
+// =============================================================================
+
+Deno.test("runQualityGateCheck - a checkout cwd resolves the script and runs the command in it (Issue #4805)", async () => {
+  const checkout = "/srv/checkouts/pr-4805";
+  const existsChecked: string[] = [];
+  const commandCwds: (string | undefined)[] = [];
+  const deps = createMockDeps({
+    fileExists: async (path) => {
+      existsChecked.push(path);
+      return true;
+    },
+    runCommand: async (_cmd, opts) => {
+      commandCwds.push(opts?.cwd);
+      return { exitCode: 0, output: "" };
+    },
+  });
+  const result = await runQualityGateCheck(
+    createParams({ cwd: checkout }),
+    deps,
+  );
+  assertEquals(result.action, "passed");
+  assertEquals(existsChecked, [`${checkout}/quality.sh`]);
+  assertEquals(commandCwds, [checkout]);
+});
+
+Deno.test("runQualityGateCheck - a checkout cwd is the Docker mount, not the process cwd (Issue #4805)", async () => {
+  const checkout = "/srv/checkouts/pr-4805";
+  const dockerRuns: string[][] = [];
+  const deps = createMockDeps({
+    getRepoConfig: (_configs, _repo, key) =>
+      key === "dockerImage" ? "node:20" : "",
+    getCwd: () => "/worker/deno",
+    runCommand: async (cmd, _opts) => {
+      if (cmd[0] === "docker" && cmd[1] === "run") dockerRuns.push(cmd);
+      return { exitCode: 0, output: "" };
+    },
+  });
+  const result = await runQualityGateCheck(
+    createParams({ cwd: checkout }),
+    deps,
+  );
+  assertEquals(result.action, "passed");
+  assertEquals(dockerRuns.length, 1);
+  const mount = dockerRuns[0]?.find((arg) => arg.endsWith(":/workspace"));
+  assertEquals(mount, `${checkout}:/workspace`);
+});
+
+Deno.test("runQualityGateCheck - without a cwd the script and command stay in the process cwd (Issue #4805)", async () => {
+  const existsChecked: string[] = [];
+  const commandCwds: (string | undefined)[] = [];
+  const deps = createMockDeps({
+    fileExists: async (path) => {
+      existsChecked.push(path);
+      return true;
+    },
+    runCommand: async (_cmd, opts) => {
+      commandCwds.push(opts?.cwd);
+      return { exitCode: 0, output: "" };
+    },
+  });
+  await runQualityGateCheck(createParams(), deps);
+  assertEquals(existsChecked, ["./quality.sh"]);
+  assertEquals(commandCwds, [undefined]);
+});
+
+Deno.test("runQualityGateCheck - runs the checkout's quality.sh, not the worker's (Issue #4805)", async () => {
+  const checkout = await Deno.makeTempDir({ prefix: "qg-checkout-" });
+  try {
+    const script = join(checkout, "quality.sh");
+    await Deno.writeTextFile(
+      script,
+      "#!/usr/bin/env bash\necho CHECKOUT-QUALITY-MARKER\nexit 1\n",
+    );
+    await Deno.chmod(script, 0o755);
+    // The worker's own process cwd has no ./quality.sh, so a gate that still
+    // resolved against it would report skipped rather than run the checkout's.
+    const workerDeps = createDefaultDeps();
+    assertEquals(
+      await workerDeps.fileExists("./quality.sh"),
+      false,
+      "precondition: the worker's process cwd has no quality.sh",
+    );
+    // A direct spawn, so the test does not depend on the `agent` account. The
+    // host's dev-server cleanup is replaced too: it kills by process pattern.
+    const deps: QualityGateDeps = {
+      ...workerDeps,
+      cleanupPorts: async () => {},
+      cleanupSubprocesses: async () => {},
+      runCommand: async (cmd, options) => {
+        const out = await new Deno.Command(cmd[0] ?? "", {
+          args: cmd.slice(1),
+          cwd: options?.cwd,
+          stdin: "null",
+          stdout: "piped",
+          stderr: "piped",
+        }).output();
+        return {
+          exitCode: out.code,
+          output: new TextDecoder().decode(out.stdout) +
+            new TextDecoder().decode(out.stderr),
+        };
+      },
+    };
+    const result = await runQualityGateCheck(
+      createParams({ cwd: checkout }),
+      deps,
+    );
+    assertEquals(result.action, "failed_fixable");
+    assertStringIncludes(result.qualityOutput, "CHECKOUT-QUALITY-MARKER");
+  } finally {
+    await Deno.remove(checkout, { recursive: true });
+  }
+});
+
+Deno.test("qualityCommandFile - names the file a path-like command runs (Issue #4805)", () => {
+  assertEquals(qualityCommandFile("./quality.sh"), "./quality.sh");
+  assertEquals(
+    qualityCommandFile("./run_tests.sh --unit-only"),
+    "./run_tests.sh",
+  );
+  assertEquals(qualityCommandFile("/abs/x.sh -a"), "/abs/x.sh");
+  assertEquals(qualityCommandFile("../shared/check.sh"), "../shared/check.sh");
+  assertEquals(qualityCommandFile("scripts/q.sh --x"), "scripts/q.sh");
+  assertEquals(qualityCommandFile("deno task test"), undefined);
+  assertEquals(qualityCommandFile("make test"), undefined);
+  assertEquals(qualityCommandFile(""), undefined);
+});
+
+Deno.test("runQualityGateCheck - a bare quality command that names no file runs, not skipped (Issue #4805)", async () => {
+  let existsChecked = false;
+  const ran: string[][] = [];
+  const deps = createMockDeps({
+    fileExists: async (_path) => {
+      existsChecked = true;
+      return false;
+    },
+    runCommand: async (cmd, _opts) => {
+      ran.push(cmd);
+      return { exitCode: 0, output: "ok" };
+    },
+  });
+  const result = await runQualityGateCheck(
+    createParams({ qualityScript: "deno task test" }),
+    deps,
+  );
+  assertEquals(result.action, "passed");
+  assertEquals(existsChecked, false, "a bare command names no file to check");
+  assertEquals(ran.at(-1)?.at(-1), "deno task test");
+});
+
+Deno.test("runQualityGateCheck - a configured command that names a file checks that file (Issue #4805)", async () => {
+  const existsChecked: string[] = [];
+  const deps = createMockDeps({
+    fileExists: async (path) => {
+      existsChecked.push(path);
+      return false;
+    },
+  });
+  const result = await runQualityGateCheck(
+    createParams({ qualityScript: "./run_tests.sh --unit-only" }),
+    deps,
+  );
+  assertEquals(result.action, "skipped");
+  assertEquals(existsChecked, ["./run_tests.sh"]);
 });
 
 // =============================================================================

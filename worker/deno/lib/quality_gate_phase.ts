@@ -19,6 +19,7 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { resolve } from "node:path";
 import type { RepoConfig } from "../types.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
@@ -360,6 +361,50 @@ export interface QualityGateParams {
   baselineQualityPassed?: boolean;
   baselineQualityOutput?: string;
   defaultTimeoutSeconds?: number;
+  /**
+   * The checkout the gate runs in. Unset keeps the process cwd, which is what
+   * the shell-driven `commands/quality_gate_phase.ts` caller relies on.
+   */
+  cwd?: string;
+}
+
+/**
+ * Bind quality-gate deps to a checkout (Issue #4805).
+ *
+ * The gate's relative paths (`./quality.sh`, the tool probe's file read), its
+ * command cwd and the Docker mount otherwise resolve against the worker's own
+ * process cwd, so the worker's script would run in place of the target
+ * repository's. Relative paths resolve against `cwd`; absolute paths stay
+ * absolute. Everything else delegates unchanged.
+ */
+export function bindQualityDepsToCheckout(
+  deps: QualityGateDeps,
+  cwd: string,
+): QualityGateDeps {
+  const checkout = resolve(cwd);
+  const inCheckout = (path: string): string => resolve(checkout, path);
+  return {
+    ...deps,
+    fileExists: (path) => deps.fileExists(inCheckout(path)),
+    detectMissingTools: (path) => deps.detectMissingTools(inCheckout(path)),
+    runCommand: (cmd, options) =>
+      deps.runCommand(cmd, { ...options, cwd: options?.cwd ?? checkout }),
+    getCwd: () => checkout,
+  };
+}
+
+/**
+ * The file a configured quality command runs, when the command names one by
+ * path (Issue #4805). The first whitespace-delimited token is the file when it
+ * contains a `/` anywhere, so `./`, `../`, `/` and a bare relative path such as
+ * `scripts/q.sh` all count: `./run_tests.sh --unit-only` gives
+ * `./run_tests.sh`, and `scripts/q.sh --x` gives `scripts/q.sh`. A bare command
+ * with no `/`, such as `deno task test` or `make test`, names no file, so the
+ * result is undefined and the caller treats it as present.
+ */
+export function qualityCommandFile(command: string): string | undefined {
+  const first = command.trim().split(/\s+/)[0] ?? "";
+  return first.includes("/") ? first : undefined;
 }
 
 // =============================================================================
@@ -877,7 +922,8 @@ ${TOOL_OUTPUT_IS_DATA_RULE}
  *
  * This performs a single quality check run and classifies the result.
  * The shell wrapper is responsible for the retry loop (calling Claude
- * and then re-invoking this function).
+ * and then re-invoking this function). The run is in `params.cwd` when set,
+ * otherwise in the process cwd (Issue #4805).
  */
 export async function runQualityGateCheck(
   params: QualityGateParams,
@@ -908,10 +954,18 @@ export async function runQualityGateCheck(
     }
     deps = createDefaultDeps(credentials.value.env);
   }
+  if (params.cwd !== undefined) {
+    deps = bindQualityDepsToCheckout(deps, params.cwd);
+  }
   const defaultTimeout = params.defaultTimeoutSeconds ?? 600;
 
-  // Step 1: Check if quality.sh exists
-  const exists = await deps.fileExists(qualityScript);
+  // Step 1: Check if the quality command's file exists. A command that names
+  // no file (`deno task test`) is treated as present and runs. A blank command
+  // is still skipped, as it always was.
+  const scriptFile = qualityCommandFile(qualityScript);
+  const exists = scriptFile === undefined
+    ? qualityScript.trim() !== ""
+    : await deps.fileExists(scriptFile);
   if (!exists) {
     return {
       action: "skipped",
@@ -928,7 +982,9 @@ export async function runQualityGateCheck(
 
   // Step 3: If no Docker image, detect missing tools early
   if (!dockerImage) {
-    const toolResult = await deps.detectMissingTools(qualityScript);
+    const toolResult = await deps.detectMissingTools(
+      scriptFile ?? qualityScript,
+    );
     if (toolResult.ok && toolResult.value.length > 0) {
       const message = deps.formatMissingToolsMsg(
         toolResult.value,

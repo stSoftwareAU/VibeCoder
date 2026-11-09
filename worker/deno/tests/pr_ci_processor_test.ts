@@ -28,6 +28,7 @@ import {
 const HEAD = "a".repeat(40);
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import type { CheckAnnotation } from "../lib/pr_spelling_processor.ts";
+import type { QualityGateParams } from "../lib/quality_gate_phase.ts";
 import { milestoneFixBranchFor } from "../lib/milestone_fix_pr.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import {
@@ -1663,6 +1664,114 @@ Deno.test("processCiFailure - runs quality check and commits uncommitted changes
       commitMessage.includes(input.checkName),
       true,
       `commit message should reference the check name; got: ${commitMessage}`,
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+/**
+ * Run a CI fix on a repo with one uncommitted change, recording every call to
+ * the injected quality gate (Issue #4805). The gate always passes, so Claude is
+ * run once and the remaining change is committed.
+ */
+async function runCiFixWithQualityProbe(
+  tmpDir: string,
+  repoConfigs?: CiProcessorDeps["repoConfigs"],
+): Promise<{ gateCalls: QualityGateParams[]; commitCalled: boolean }> {
+  await initRepoWithStagedFile(tmpDir, "src/file.ts");
+  const gateCalls: QualityGateParams[] = [];
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const { runGitCommand, calls } = makeGitMock([
+    " M src/file.ts\n",
+    " M src/file.ts\n",
+  ]);
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: { runGhCommand: openPrGh() },
+    git: {
+      runGitCommand,
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  const processorDeps: CiProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    stateDir: `${tmpDir}/.ci_check_state`,
+    workDir: tmpDir,
+    workRoot: tmpDir,
+    repoConfigs,
+    qualityGateFn: (params) => {
+      gateCalls.push(params);
+      return Promise.resolve({ action: "passed", qualityOutput: "" });
+    },
+  };
+  const result = await processCiFailure(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  return {
+    gateCalls,
+    commitCalled: calls.some((args) => args[0] === "commit"),
+  };
+}
+
+Deno.test("processCiFailure - the post-Claude quality check runs ./quality.sh in the PR checkout (Issue #4805)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const { gateCalls } = await runCiFixWithQualityProbe(tmpDir);
+    assertEquals(gateCalls.length, 1, "the gate runs once");
+    assertEquals(gateCalls[0]?.qualityScript, "./quality.sh");
+    assertEquals(
+      gateCalls[0]?.cwd,
+      tmpDir,
+      "the gate runs in the PR checkout, not the worker's cwd",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a configured quality_command is the post-Claude gate command (Issue #4805)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const { gateCalls } = await runCiFixWithQualityProbe(tmpDir, {
+      "org/repo": { qualityCommand: "./run_tests.sh --unit-only" },
+    });
+    assertEquals(gateCalls.length, 1, "the gate runs once");
+    assertEquals(gateCalls[0]?.qualityScript, "./run_tests.sh --unit-only");
+    assertEquals(gateCalls[0]?.cwd, tmpDir);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - skip_quality_check means the post-Claude gate never runs, and the change is still committed (Issue #4805)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const { gateCalls, commitCalled } = await runCiFixWithQualityProbe(
+      tmpDir,
+      { "org/repo": { skipQualityCheck: true } },
+    );
+    assertEquals(gateCalls.length, 0, "qualityGateFn must not be called");
+    assertEquals(
+      commitCalled,
+      true,
+      "remaining changes are still committed when the gate is skipped",
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
