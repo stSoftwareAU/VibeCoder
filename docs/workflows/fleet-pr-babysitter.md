@@ -98,16 +98,32 @@ From the VibeCoder checkout:
 
 # Repeat every five minutes, after each pass finishes.
 ./fleet-pr-babysitter/run.sh --watch
+
+# Run the image's headless Chromium launch check without App authentication.
+./fleet-pr-babysitter/run.sh --check-container
 ```
 
 Setup prompts for the GitHub App ID and private-key path, discovers the App
 installation, and verifies its permissions, repository access and GraphQL quota
 without printing credentials, then saves the App settings for run.sh and adds
 its bot to this host's fleet-lock identities. It checks the required commands
-and runs the container runtime and image preflight; it does not install Codex.
+checks the container runtime and image, then launches headless Chromium inside
+that image; it does not install Codex. The browser check passes only when the
+container command exits zero and stdout contains `<html`. Setup stops with the
+cause if the runtime, image or browser check fails.
 For a non-interactive preflight, use `--check` and `--app-id=<id>`; the key
 defaults to `~/.vibe-coder/fleet-pr-babysitter.private-key.pem`, or pass
 `--key=<path>`.
+
+Each automatic babysitter pass repeats the Chromium check before PR discovery
+or GitHub App authentication. A failure is reported as a failed pass and the
+existing supervisor or watch loop retries it. `--check-container` runs the
+same bounded check on demand before reading App configuration or authenticating;
+it prints the specific runtime, image, timeout, exit or output cause and exits
+non-zero on failure. The check overrides the image entrypoint with `bash`, runs
+`"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank`, and accepts
+only exit zero with HTML on stdout. It keeps the launch plan's network and
+egress settings and removes host mounts from the short-lived probe container.
 
 On the always-on Mac, rerun setup after manual testing and answer yes to the
 launch-agent question. You must also type `INSTALL` to confirm. Setup checks

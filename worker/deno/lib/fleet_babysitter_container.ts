@@ -75,6 +75,11 @@ export const BABYSITTER_REPAIR_COMMAND: readonly string[] = [
 ];
 /** Exit status reserved for an agent task failure inside babysitter-repair. */
 export const BABYSITTER_TASK_FAILURE_EXIT_CODE = 42;
+/** Chromium launch probe command executed by the worker image's bash. */
+export const BABYSITTER_CHROMIUM_CHECK_COMMAND =
+  '"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank';
+/** The probe is short; a wedged browser must not hold setup or a repair. */
+export const BABYSITTER_CHROMIUM_CHECK_TIMEOUT_MS = 60_000;
 
 /** A task failure reported through the container's structured exit status. */
 export class BabysitterTaskFailure extends Error {}
@@ -83,6 +88,7 @@ export class BabysitterTaskFailure extends Error {}
 export interface BabysitterSpawnResult {
   success: boolean;
   code: number;
+  stdout?: string;
   stderr: string;
   timedOut: boolean;
 }
@@ -303,8 +309,8 @@ export async function babysitterSpawn(
   if (!result.ok) {
     throw new Error(`cannot start ${runtime}: ${result.error.message}`);
   }
-  const { success, code, stderr, timedOut } = result.value;
-  return { success, code, stderr, timedOut };
+  const { success, code, stdout, stderr, timedOut } = result.value;
+  return { success, code, stdout, stderr, timedOut };
 }
 
 /**
@@ -1287,6 +1293,162 @@ export async function preflightBabysitterContainer(
     imageExists: deps.imageExists ?? babysitterImageExists,
     baseEnv: baseEnvironment(env),
   });
+}
+
+/**
+ * Drop host mounts and command-specific environment from the worker plan while
+ * retaining its runtime restrictions and egress proxy settings.
+ */
+export function buildBabysitterChromiumCheckArgs(
+  plan: ContainerLaunchPlan,
+  containerName = plan.containerName,
+): string[] {
+  const source = plan.runArgs;
+  if (source.length === 0 || source[source.length - 1] !== plan.image) {
+    throw new Error(
+      `the container plan does not end with its image ${plan.image}`,
+    );
+  }
+  const args: string[] = [];
+  for (let i = 0; i < source.length - 1; i++) {
+    const arg = source[i] ?? "";
+    if (arg === "--volume" || arg === "-v" || arg === "--mount") {
+      i++;
+      continue;
+    }
+    if (arg === "--workdir" || arg === "-w") {
+      i++;
+      continue;
+    }
+    if (arg === "--env" || arg === "-e") {
+      const value = source[++i] ?? "";
+      if (/^(?:https?_proxy|HTTPS?_PROXY)=/i.test(value)) {
+        args.push(arg, value);
+      }
+      continue;
+    }
+    if (arg.startsWith("--volume=") || arg.startsWith("--mount=")) continue;
+    if (arg.startsWith("--env=")) {
+      const value = arg.slice("--env=".length);
+      if (/^(?:https?_proxy|HTTPS?_PROXY)=/i.test(value)) args.push(arg);
+      continue;
+    }
+    if (arg === "--name") {
+      args.push(arg, containerName);
+      i++;
+      continue;
+    }
+    args.push(arg);
+  }
+  return [
+    ...args,
+    "--entrypoint",
+    "bash",
+    plan.image,
+    "-c",
+    BABYSITTER_CHROMIUM_CHECK_COMMAND,
+  ];
+}
+
+/** Run Chromium in the worker image under the same launch plan and egress. */
+export async function checkBabysitterContainerChromium(
+  input: { baseDir: string; timeoutMs?: number },
+  deps: Partial<BabysitterContainerDeps> = {},
+): Promise<void> {
+  const env = deps.env ?? processEnv;
+  const buildPlan = deps.buildPlan ?? defaultBuildPlan;
+  const onPath = deps.onPath ??
+    ((runtime: string) => babysitterRuntimeOnPath(runtime, env));
+  const imageExists = deps.imageExists ?? babysitterImageExists;
+  const spawn = deps.spawn ?? babysitterSpawn;
+  const startAppleEgress = deps.startAppleEgress ??
+    ((plan: ContainerLaunchPlan, options: AppleEgressOptions) =>
+      babysitterStartAppleEgress(plan, options, { env }));
+  const startSidecar = deps.startSidecar ??
+    ((plan: ContainerLaunchPlan) => startEgressSidecar(plan));
+  const stopSidecar = deps.stopSidecar ??
+    ((plan: ContainerLaunchPlan) => stopEgressSidecar(plan));
+  const log = deps.log ?? ((message: string) => {
+    console.error(`[babysitter] ${redactSecrets(message).slice(0, CAUSE_CAP)}`);
+  });
+  const timeoutMs = input.timeoutMs ?? BABYSITTER_CHROMIUM_CHECK_TIMEOUT_MS;
+  const containerName = throwawayContainerName();
+  const plan = await buildPlan(input.baseDir, containerName);
+  const baseEnv = baseEnvironment(env);
+  await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
+
+  const apple = !plan.egressEnforced && plan.proxyName !== "";
+  let teardown: Teardown | undefined;
+  try {
+    let args = buildBabysitterChromiumCheckArgs(plan, containerName);
+    if (apple) {
+      const helper = await startAppleEgress(plan, {
+        baseDir: input.baseDir,
+        timeoutMs,
+      });
+      teardown = helper.stop;
+      args = buildBabysitterChromiumCheckArgs(
+        { ...plan, runArgs: helper.runArgs },
+        containerName,
+      );
+    } else if (plan.egressEnforced) {
+      teardown = () => stopSidecar(plan);
+      await startSidecar(plan);
+    }
+
+    let result: BabysitterSpawnResult;
+    try {
+      result = await spawn(plan.runtime, args, {
+        env: baseEnv,
+        timeoutMs,
+      });
+    } catch (error) {
+      throw new Error(
+        `cannot run headless Chromium in the worker container: ${
+          redactSecrets(String(error)).slice(0, CAUSE_CAP)
+        }`,
+      );
+    }
+    if (result.timedOut) {
+      let killCause = "";
+      try {
+        const killed = await spawn(plan.runtime, ["kill", containerName], {
+          env: baseEnv,
+          timeoutMs: INSPECT_TIMEOUT_MS,
+        });
+        if (!killed.success) {
+          killCause = `; container cleanup exited with code ${killed.code}`;
+        }
+      } catch (error) {
+        killCause = `; container cleanup failed: ${
+          redactSecrets(String(error)).slice(0, CAUSE_CAP)
+        }`;
+      }
+      throw new Error(
+        `headless Chromium container timed out after ${
+          Math.round(timeoutMs / 1000)
+        } seconds${killCause}`,
+      );
+    }
+    const stdout = redactSecrets(result.stdout ?? "").slice(0, STDERR_CAP);
+    const stderr = redactSecrets(result.stderr).slice(0, STDERR_CAP);
+    if (!result.success || result.code !== 0) {
+      throw new Error(
+        `headless Chromium container exited with code ${result.code}${
+          stderr ? `: ${stderr}` : ""
+        }`,
+      );
+    }
+    if (!stdout.includes("<html")) {
+      throw new Error(
+        `headless Chromium produced no HTML${
+          stdout ? `: ${stdout}` : " (stdout was empty)"
+        }${stderr ? `; stderr: ${stderr}` : ""}`,
+      );
+    }
+  } finally {
+    await runTeardown(teardown, log, "");
+  }
 }
 
 /** The default plan builder: the worker's own launch plan for the checkout. */

@@ -75,6 +75,7 @@ import {
   babysitterCheckoutDir,
   type BabysitterContainerDeps,
   BabysitterTaskFailure,
+  checkBabysitterContainerChromium,
   runBabysitterRepairContainer,
 } from "../lib/fleet_babysitter_container.ts";
 import {
@@ -3763,17 +3764,26 @@ if (import.meta.main) {
     7,
   );
   const prArg = Deno.args.find((arg) => arg.startsWith("--pr="))?.slice(5);
+  const checkContainer = Deno.args.includes("--check-container");
   if (
     Deno.args.some((arg) =>
-      !["--execute", "--dry-run", "--watch"].includes(arg) &&
+      !["--execute", "--dry-run", "--watch", "--check-container"].includes(
+        arg,
+      ) &&
       !arg.startsWith("--repo=") &&
       !arg.startsWith("--pr=")
     ) || (prArg !== undefined && (!/^[1-9]\d*$/.test(prArg) || !repoFilter)) ||
     repoFilter === "" || (Deno.args.includes("--execute") && !execute)
   ) {
     throw new Error(
-      "Usage: fleet_pr_babysitter.ts [--dry-run] [--watch] [--repo=owner/name [--pr=number]]",
+      "Usage: fleet_pr_babysitter.ts [--dry-run] [--watch] [--check-container] [--repo=owner/name [--pr=number]]",
     );
+  }
+  if (checkContainer) {
+    await checkBabysitterContainerChromium({
+      baseDir: babysitterCheckoutDir(),
+    });
+    Deno.exit(0);
   }
   const prFilter = prArg === undefined ? undefined : Number(prArg);
   const home = Deno.env.get("HOME");
@@ -3784,6 +3794,9 @@ if (import.meta.main) {
   console.log(`Using GitHub App ${login} for babysitter requests.`);
   do {
     try {
+      await checkBabysitterContainerChromium({
+        baseDir: babysitterCheckoutDir(),
+      });
       const configPath = Deno.env.get("CONFIG_PATH") ?? ".config.json";
       const config = await loadConfigAndPublishDeployment(
         configPath,
