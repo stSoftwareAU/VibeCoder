@@ -10,10 +10,11 @@ Version bump: `VERSION` is not changed by this PR.
 
 ### Intent and Rationale
 
-- `_runPostClaudeQualityCheck` called `runQualityGateCheck` with no directory, so
-  `fileExists("./quality.sh")`, the tool probe, the command's cwd and the Docker
-  mount all resolved against the worker process's cwd (the VibeCoder install).
-  The worker's own `quality.sh` was run or skipped in place of the target repo's.
+- `_runPostClaudeQualityCheck` called `runQualityGateCheck` with no directory,
+  so `fileExists("./quality.sh")`, the tool probe, the command's cwd and the
+  Docker mount all resolved against the worker process's cwd (the VibeCoder
+  install). The worker's own `quality.sh` was run or skipped in place of the
+  target repo's.
 - The fix binds the existing check to `workDir` rather than deleting it, as the
   issue's correction says.
 
@@ -28,8 +29,8 @@ Version bump: `VERSION` is not changed by this PR.
   call site reads them through `getRepoConfig`; the shared gate does not, so the
   shell caller keeps its behaviour. A configured command naming no file
   (`deno task test`) must run, not be reported skipped, so the existence check
-  tests only a first token containing `/` (`qualityCommandFile`). A blank command
-  is still skipped.
+  tests only a first token containing `/` (`qualityCommandFile`). A blank
+  command is still skipped.
 - Build-cache placement in the gate's child environment follows the spawn cwd,
   so it now follows the checkout on this lane. This follows from the fix.
 
@@ -39,8 +40,8 @@ Version bump: `VERSION` is not changed by this PR.
 
 ## Evidence
 
-Backend-only change. `worker/deno/lib/quality_gate_phase.ts` (`runQualityGateCheck`,
-`bindQualityDepsToCheckout`, `qualityCommandFile`) and
+Backend-only change. `worker/deno/lib/quality_gate_phase.ts`
+(`runQualityGateCheck`, `bindQualityDepsToCheckout`, `qualityCommandFile`) and
 `worker/deno/lib/pr_ci_processor.ts` (`_runPostClaudeQualityCheck`) changed;
 `docs/workflows/ci-fix.md` step 7 now says the gate runs in the PR checkout and
 that `skip_quality_check` skips it.
@@ -58,11 +59,11 @@ flowchart LR
 
 New tests, all passing on the head via `deno task test:unit` from `worker/deno`:
 
-- `worker/deno/tests/quality_gate_phase_test.ts`: checkout cwd resolves the script
-  and runs the command in it; checkout cwd is the Docker mount; no cwd leaves
-  paths unchanged (control); real-filesystem run executes the checkout's
-  `quality.sh` while the process cwd has none; `qualityCommandFile` cases
-  (`./`, `scripts/q.sh`, absolute, `deno task test`, `make test`, empty); a bare
+- `worker/deno/tests/quality_gate_phase_test.ts`: checkout cwd resolves the
+  script and runs the command in it; checkout cwd is the Docker mount; no cwd
+  leaves paths unchanged (control); real-filesystem run executes the checkout's
+  `quality.sh` while the process cwd has none; `qualityCommandFile` cases (`./`,
+  `scripts/q.sh`, absolute, `deno task test`, `make test`, empty); a bare
   command is not skipped; a configured command naming a file checks that file.
 - `worker/deno/tests/pr_ci_processor_test.ts`: the gate receives `cwd` equal to
   the run's workDir and `./quality.sh`; a configured `qualityCommand` is passed;
@@ -73,21 +74,25 @@ New tests, all passing on the head via `deno task test:unit` from `worker/deno`:
 - Red checks (production change broken on purpose, then restored): dropping the
   `cwd` wrap reddens the three checkout tests; dropping `cwd` at the call site
   reddens the two call-site tests; ignoring `qualityCommand` reddens its test;
-  disabling the skip branch reddens the skip test; reverting `qualityCommandFile`
-  or restoring the old `fileExists(qualityScript)` check reddens the
-  command/file tests; the old `./`-only regex reddens the `scripts/q.sh` case.
+  disabling the skip branch reddens the skip test; reverting
+  `qualityCommandFile` or restoring the old `fileExists(qualityScript)` check
+  reddens the command/file tests; the old `./`-only regex reddens the
+  `scripts/q.sh` case.
 - Callers of `runQualityGateCheck` checked: `commands/quality_gate_phase.ts`
   (passes no `cwd`, covered by the no-cwd control test) and `pr_ci_processor.ts`
   (covered above). Existing tests through `createDefaultDeps` still pass.
 - No assertion was removed from an existing test.
-- Limits: the real-filesystem test overrides `runCommand` with a direct spawn, so
-  the `agent` sudo path is not exercised; `worker/deno` holds no `quality.sh`, so
-  the test asserts that precondition instead of planting a worker-side script.
+- Limits: the real-filesystem test overrides `runCommand` with a direct spawn,
+  so the `agent` sudo path is not exercised; `worker/deno` holds no
+  `quality.sh`, so the test asserts that precondition instead of planting a
+  worker-side script.
 - `./quality.sh` on the head (proxy variables unset): every stage passed except
-  `deno tests` (10 failed, 33487 passed), and the serial pass did not run. All 10
-  failures are in files this change does not touch and trace to the sandbox: the
-  pre-push hook tests in `claude_runner_pre_push_3394_test.ts` and
-  `pre_push_hook_test.ts` hit `JSR package manifest for '@std/yaml' failed to
-  load` (jsr.io unreachable), and `review_fleet_prs_post_claim_4398_test.ts`
-  fails with `Failed to resolve 'osascript' for allow-run`. Config integration,
-  semgrep, Checkov and the release-tag ruleset check were skipped.
+  `deno tests` (10 failed, 33487 passed), and the serial pass did not run. All
+  10 failures are in files this change does not touch and trace to the sandbox:
+  the pre-push hook tests in `claude_runner_pre_push_3394_test.ts` and
+  `pre_push_hook_test.ts` hit
+  `JSR package manifest for '@std/yaml' failed to
+  load` (jsr.io unreachable),
+  and `review_fleet_prs_post_claim_4398_test.ts` fails with
+  `Failed to resolve 'osascript' for allow-run`. Config integration, semgrep,
+  Checkov and the release-tag ruleset check were skipped.
