@@ -30,6 +30,7 @@ import { hasLivePrClaim } from "../lib/claim_pr_comment.ts";
 import { markCommentProcessed } from "../lib/pr_comments.ts";
 import { createLogger } from "../lib/logger.ts";
 import {
+  type ReviewVerificationDeps,
   type ReviewVerificationInput,
   type ReviewVerificationOutcome,
   type VerifierCredentials,
@@ -40,6 +41,10 @@ import {
   syncPrBodyFromSummary,
   type SyncPrBodyInput,
 } from "../lib/pr_body_sync.ts";
+import {
+  defaultPrePrVerifierDeps,
+  type PrePrVerifierDeps,
+} from "../lib/pre_pr_verifier.ts";
 import { loadCommittedPrSummary } from "../lib/pr_summary_loader.ts";
 import {
   type ClosingIssueReference,
@@ -894,7 +899,9 @@ export async function recoverTemporaryClones(root: string): Promise<void> {
  * `add`, `diff`, `commit` and `push` would run those planted hooks and
  * fsmonitor command with the host's privileges. `/dev/null` is not a
  * directory, so git finds no hook there, and `core.fsmonitor=false` stops a
- * planted fsmonitor command from running.
+ * planted fsmonitor command from running. `core.useReplaceRefs=false` makes
+ * git ignore `refs/replace`, so a planted replacement cannot change what a
+ * host read (the committed summary, the HEAD gitlink comparison) sees.
  */
 export const HOST_GIT_HARDENING_ARGS: readonly string[] = [
   "-c",
@@ -905,20 +912,68 @@ export const HOST_GIT_HARDENING_ARGS: readonly string[] = [
   "submodule.recurse=false",
   "-c",
   "diff.ignoreSubmodules=all",
+  "-c",
+  "core.useReplaceRefs=false",
 ];
 
-/** Refuse nested Git metadata and newly introduced gitlinks before host Git. */
+/**
+ * True for a directory entry name git could treat as repository metadata. A
+ * case-insensitive filesystem (the default on macOS) and git's HFS+/NTFS
+ * protections make `.GIT`, `.g\u200cit` and `git~1` open the same repository.
+ */
+function isGitMetadataName(name: string): boolean {
+  const folded = name.normalize("NFKC").replace(
+    /[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g,
+    "",
+  ).toLowerCase();
+  return folded === ".git" || folded === "git~1";
+}
+
+/** `.git` files that change what host git reads or how it reads history. */
+const REPAIR_GIT_HISTORY_FILES: readonly string[] = [
+  "info/grafts",
+  "shallow",
+];
+
+/**
+ * Refuse nested Git metadata, newly introduced gitlinks and agent-written
+ * history rewrites (replacement refs, grafts, a shallow file) before host Git.
+ */
 export async function assertRepairTreeSafe(dir: string): Promise<void> {
   async function scan(path: string): Promise<void> {
     for await (const entry of Deno.readDir(path)) {
-      if (entry.name === ".git") {
-        if (path === dir) continue;
-        throw new Error(`Refusing host git operations: nested .git in ${path}`);
+      if (isGitMetadataName(entry.name)) {
+        // Only the clone's own, exactly spelled `.git` is allowed.
+        if (path === dir && entry.name === ".git") continue;
+        throw new Error(
+          `Refusing host git operations: nested ${entry.name} in ${path}`,
+        );
       }
       if (entry.isDirectory) await scan(`${path}/${entry.name}`);
     }
   }
   await scan(dir);
+  for (const relative of REPAIR_GIT_HISTORY_FILES) {
+    try {
+      await Deno.lstat(`${dir}/.git/${relative}`);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) continue;
+      throw error;
+    }
+    throw new Error(
+      `Refusing host git operations: repair .git/${relative} rewrites history`,
+    );
+  }
+  const replaced = await run("git", [
+    "for-each-ref",
+    "--format=%(refname)",
+    "refs/replace/",
+  ], dir);
+  if (replaced.trim() !== "") {
+    throw new Error(
+      "Refusing host git operations: repair has replacement refs (refs/replace)",
+    );
+  }
   const head = await run("git", ["ls-tree", "-rz", "--full-tree", "HEAD"], dir);
   const index = await run("git", ["ls-files", "--stage", "-z"], dir);
   const headLinks = new Set(
@@ -959,11 +1014,55 @@ const REPAIR_GIT_REDIRECT_FILES: readonly string[] = [
   "objects/info/alternates",
 ];
 
+/**
+ * The filesystem-dependent `core` settings `git clone` records. The reset
+ * rewrites the config, so it carries them over; dropping them makes host
+ * `status` and `add -A` treat a case-only rename as a new file on a
+ * case-insensitive filesystem (the macOS default).
+ */
+export interface RepairFilesystemTraits {
+  ignoreCase: boolean;
+  precomposeUnicode: boolean;
+}
+
+/**
+ * Probe the clone's filesystem on the host, as `git init` does, with files the
+ * host creates and removes itself. The agent-written config is not consulted.
+ */
+export async function probeRepairFilesystem(
+  gitDir: string,
+): Promise<RepairFilesystemTraits> {
+  const id = crypto.randomUUID();
+  async function probe(created: string, lookedUp: string): Promise<boolean> {
+    const file = `${gitDir}/${created}`;
+    await Deno.writeTextFile(file, "", { createNew: true, mode: 0o600 });
+    try {
+      await Deno.lstat(`${gitDir}/${lookedUp}`);
+      return true;
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return false;
+      throw error;
+    } finally {
+      await Deno.remove(file);
+    }
+  }
+  const lower = `babysitter-case-${id}`;
+  // U+00E4 as one code point; the lookup spells it as "a" plus a combining mark.
+  const composed = `babysitter-nfc-${id}-\u00e4`;
+  return {
+    ignoreCase: await probe(lower, lower.toUpperCase()),
+    precomposeUnicode: await probe(composed, composed.normalize("NFD")),
+  };
+}
+
 /** Replace agent-writable local config before any host publication git call. */
 export async function resetRepairCloneGitConfig(
   dir: string,
   repo: string,
-  deps: { gh?: (args: string[]) => Promise<string> } = {},
+  deps: {
+    gh?: (args: string[]) => Promise<string>;
+    probeFilesystem?: typeof probeRepairFilesystem;
+  } = {},
 ): Promise<void> {
   if (!isValidRepoName(repo)) {
     throw new Error(
@@ -993,6 +1092,7 @@ export async function resetRepairCloneGitConfig(
       `Refusing host git operations: repair .git/${redirect} redirects git`,
     );
   }
+  const traits = await (deps.probeFilesystem ?? probeRepairFilesystem)(gitDir);
   const config = `${gitDir}/config`;
   const temporary = `${gitDir}/config.babysitter-${crypto.randomUUID()}`;
   const trustedConfig = [
@@ -1001,6 +1101,8 @@ export async function resetRepairCloneGitConfig(
     "\tfilemode = true",
     "\tbare = false",
     "\tlogallrefupdates = true",
+    ...(traits.ignoreCase ? ["\tignorecase = true"] : []),
+    ...(traits.precomposeUnicode ? ["\tprecomposeunicode = true"] : []),
     '[remote "origin"]',
     `\turl = ${url}`,
     "\tfetch = +refs/heads/*:refs/remotes/origin/*",
@@ -2057,19 +2159,38 @@ export async function babysitterVerifierCredentials(
   return { parentEnv, disallowedTools: ["Bash", ...denied] };
 }
 
-/** The production review verifier, run with the read-only credential above. */
+/**
+ * The verifier's host git, run in the agent-written clone: every call carries
+ * HOST_GIT_HARDENING_ARGS like the publication git calls do.
+ */
+export const hardenedVerifierDeps: PrePrVerifierDeps = {
+  ...defaultPrePrVerifierDeps,
+  runGit: async (args, cwd) => {
+    const r = await runHardenedRepairGit(args, { cwd });
+    return r.ok ? r.value : null;
+  },
+};
+
+/**
+ * The production review verifier, run with the read-only credential above and
+ * the hardened host git. `overrides` replaces a stage for a test; production
+ * passes none.
+ */
 export function readOnlyReviewVerifier(
   app: BabysitterAppConfig,
   repo: string,
   configPath: string,
+  overrides: ReviewVerificationDeps = {},
 ): BabysitterRepairFinishDeps["verifyReviews"] {
   return (input) =>
     verifyBabysitterReviews(input, {
+      verifierDeps: hardenedVerifierDeps,
       credentials: () => {
         const home = Deno.env.get("HOME");
         if (!home) throw new Error("HOME is not set");
         return babysitterVerifierCredentials(app, repo, { home, configPath });
       },
+      ...overrides,
     });
 }
 

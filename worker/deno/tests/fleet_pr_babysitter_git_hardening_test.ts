@@ -10,12 +10,20 @@ import {
   assertRepairTreeSafe,
   cloneForRepair,
   isValidRepoName,
+  probeRepairFilesystem,
+  readOnlyReviewVerifier,
   resetRepairCloneGitConfig,
   run,
   runHardenedRepairGit,
   validateAndCommit,
 } from "../commands/fleet_pr_babysitter.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
 import type { runGitArgv } from "../lib/git_timeout.ts";
+import { loadCommittedPrSummary } from "../lib/pr_summary_loader.ts";
+import {
+  defaultPrePrVerifierDeps,
+  type PrePrVerifierDeps,
+} from "../lib/pre_pr_verifier.ts";
 
 const HARDENING = [
   "-c",
@@ -26,6 +34,8 @@ const HARDENING = [
   "submodule.recurse=false",
   "-c",
   "diff.ignoreSubmodules=all",
+  "-c",
+  "core.useReplaceRefs=false",
 ];
 
 Deno.test("publication refuses planted nested repositories and index gitlinks", async () => {
@@ -418,5 +428,213 @@ Deno.test("the publication reset refuses every other git redirection file", asyn
     } finally {
       await Deno.remove(root, { recursive: true });
     }
+  }
+});
+
+/** A one-commit repository that `assertRepairTreeSafe` accepts. */
+async function cleanRepo(prefix: string): Promise<string> {
+  const root = await Deno.makeTempDir({ prefix });
+  await git(root, "init", "-q");
+  await Deno.mkdir(`${root}/docs/archive/pr-summaries`, { recursive: true });
+  await Deno.writeTextFile(
+    `${root}/docs/archive/pr-summaries/pr-summary-5.md`,
+    "original summary\n",
+  );
+  await git(root, "add", "-A");
+  await git(root, "commit", "-q", "-m", "base");
+  await assertRepairTreeSafe(root);
+  return root;
+}
+
+Deno.test("publication refuses agent-written replacement refs, grafts and shallow files", async () => {
+  const root = await cleanRepo("repair-history-");
+  try {
+    // refs/replace: replace HEAD's commit by an orphan commit.
+    const head = await git(root, "rev-parse", "HEAD");
+    const tree = await git(root, "rev-parse", "HEAD^{tree}");
+    const orphan = await git(root, "commit-tree", tree, "-m", "orphan");
+    await git(root, "replace", head, orphan);
+    await assertRejects(
+      () => assertRepairTreeSafe(root),
+      Error,
+      "replacement refs (refs/replace)",
+    );
+    await git(root, "replace", "-d", head);
+    await assertRepairTreeSafe(root);
+
+    for (
+      const [file, message] of [
+        ["info/grafts", ".git/info/grafts rewrites history"],
+        ["shallow", ".git/shallow rewrites history"],
+      ] as const
+    ) {
+      await Deno.mkdir(`${root}/.git/info`, { recursive: true });
+      await Deno.writeTextFile(`${root}/.git/${file}`, `${head}\n`);
+      await assertRejects(() => assertRepairTreeSafe(root), Error, message);
+      await Deno.remove(`${root}/.git/${file}`);
+      await assertRepairTreeSafe(root);
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("publication refuses a nested repository spelled with another case", async () => {
+  const root = await cleanRepo("repair-case-");
+  try {
+    await Deno.mkdir(`${root}/sub/.GIT`, { recursive: true });
+    await assertRejects(
+      () => assertRepairTreeSafe(root),
+      Error,
+      "nested .GIT",
+    );
+    await Deno.remove(`${root}/sub`, { recursive: true });
+    await Deno.mkdir(`${root}/sub`);
+    await Deno.writeTextFile(`${root}/sub/git~1`, "x");
+    await assertRejects(
+      () => assertRepairTreeSafe(root),
+      Error,
+      "nested git~1",
+    );
+    await Deno.remove(`${root}/sub`, { recursive: true });
+    await assertRepairTreeSafe(root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the committed-summary read ignores a planted replacement object", async () => {
+  const root = await cleanRepo("repair-replace-read-");
+  try {
+    const path = "docs/archive/pr-summaries/pr-summary-5.md";
+    const sha = await git(root, "rev-parse", "HEAD");
+    const blob = await git(root, "rev-parse", `HEAD:${path}`);
+    const forged = await new Deno.Command("git", {
+      args: ["hash-object", "-w", "--stdin"],
+      cwd: root,
+      stdin: "piped",
+      stdout: "piped",
+    }).spawn();
+    const writer = forged.stdin.getWriter();
+    await writer.write(new TextEncoder().encode("forged summary\n"));
+    await writer.close();
+    const forgedBlob = new TextDecoder().decode((await forged.output()).stdout)
+      .trim();
+    await git(root, "replace", blob, forgedBlob);
+
+    const hardened = await loadCommittedPrSummary(
+      root,
+      5,
+      sha,
+      runHardenedRepairGit,
+    );
+    assert(hardened.ok);
+    assertEquals(hardened.value.content.trim(), "original summary");
+    // Positive control: unhardened git reads the planted replacement.
+    const plain = await loadCommittedPrSummary(root, 5, sha, runGitCommand);
+    assert(plain.ok);
+    assertEquals(plain.value.content.trim(), "forged summary");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the review verifier's host git runs no planted fsmonitor in the repair clone", async () => {
+  const root = await cleanRepo("repair-verifier-");
+  try {
+    const markers = await Deno.makeTempDir({ prefix: "repair-verifier-m-" });
+    const fsmonitor = `${root}/../fsmonitor-${crypto.randomUUID()}.sh`;
+    await Deno.writeTextFile(fsmonitor, `#!/bin/sh\n: > "${markers}/ran"\n`);
+    await Deno.chmod(fsmonitor, 0o755);
+    await git(root, "config", "core.fsmonitor", fsmonitor);
+
+    let received: PrePrVerifierDeps | undefined;
+    const verify = readOnlyReviewVerifier(
+      { appId: "123", installationId: "456", privateKeyPath: "/unused" },
+      "owner/repo",
+      "/unused",
+      {
+        credentials: () =>
+          Promise.resolve({ parentEnv: {}, disallowedTools: [] }),
+        verify: (_input, deps) => {
+          received = deps;
+          return Promise.resolve({ status: "not_checked", reason: "stub" });
+        },
+      },
+    );
+    await verify({
+      repo: "owner/repo",
+      prNumber: 1,
+      repoPath: root,
+      title: "fix",
+      body: "body",
+      baseRef: "origin/main",
+      reviews: [{ id: 10, body: "**`a.ts:1`**: problem\n\n**Fix:** fix it" }],
+      timeoutSeconds: 1,
+      logger: { warn() {}, error() {}, info() {}, debug() {} } as never,
+    });
+    assert(received, "the verifier received its deps");
+    await received.runGit(["status", "--porcelain"], root);
+    assertEquals(await markerNames(markers), []);
+    // Positive control: the default deps run the same planted command.
+    await defaultPrePrVerifierDeps.runGit(["status", "--porcelain"], root);
+    assertEquals(await markerNames(markers), ["ran"]);
+    await Deno.remove(markers, { recursive: true });
+    await Deno.remove(fsmonitor);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("the publication reset carries the probed filesystem traits into the trusted config", async () => {
+  for (
+    const traits of [
+      { ignoreCase: true, precomposeUnicode: true },
+      { ignoreCase: true, precomposeUnicode: false },
+      { ignoreCase: false, precomposeUnicode: true },
+      { ignoreCase: false, precomposeUnicode: false },
+    ]
+  ) {
+    const root = await Deno.makeTempDir({ prefix: "babysitter-git-traits-" });
+    try {
+      await git(root, "init", "-q");
+      // The agent claims the opposite of the host's probe.
+      await git(root, "config", "core.ignorecase", String(!traits.ignoreCase));
+      await resetRepairCloneGitConfig(root, "stSoftwareAU/VibeCoder", {
+        gh: () => Promise.resolve("https\n"),
+        probeFilesystem: () => Promise.resolve(traits),
+      });
+      const read = async (key: string) => {
+        try {
+          return await git(root, "config", "--local", "--get", key);
+        } catch {
+          return undefined;
+        }
+      };
+      assertEquals(
+        await read("core.ignorecase"),
+        traits.ignoreCase ? "true" : undefined,
+      );
+      assertEquals(
+        await read("core.precomposeunicode"),
+        traits.precomposeUnicode ? "true" : undefined,
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("the filesystem probe leaves nothing behind in .git", async () => {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-git-probe-" });
+  try {
+    await git(root, "init", "-q");
+    const before = await markerNames(`${root}/.git`);
+    const traits = await probeRepairFilesystem(`${root}/.git`);
+    assertEquals(typeof traits.ignoreCase, "boolean");
+    assertEquals(typeof traits.precomposeUnicode, "boolean");
+    assertEquals(await markerNames(`${root}/.git`), before);
+  } finally {
+    await Deno.remove(root, { recursive: true });
   }
 });
