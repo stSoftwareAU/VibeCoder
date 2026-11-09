@@ -22,6 +22,50 @@ import {
   assessRemoteBranchDeletion,
   renderDeletionDecision,
 } from "../lib/remote_branch_delete.ts";
+import { IssueCache } from "../lib/issue_cache.ts";
+
+/**
+ * The `cleanup-stale` operation (Issue #468, #4822).
+ *
+ * Passes the durable on-volume scan cache (Issue #4303) so the worker's merged
+ * PRs are read once per repo in one batched query, not one query per remote
+ * `issue-*` branch. `ghCommandFn` is a test seam; production passes nothing
+ * and the default `gh` runs.
+ */
+export async function executeCleanupStale(
+  args: Record<string, unknown>,
+  config: WorkerConfig,
+  ghCommandFn?: (args: string[]) => Promise<string>,
+): Promise<CommandResult> {
+  const githubUser = String(args["github-user"] ?? "");
+  if (!githubUser) {
+    return {
+      success: false,
+      message: "Missing required argument: --github-user",
+    };
+  }
+
+  const repos = config.repos ?? [];
+  const result = await cleanupStaleRemoteBranches(repos, githubUser, {
+    cache: new IssueCache(
+      config.workDir ? `${config.workDir}/.gh-scan-cache` : undefined,
+    ),
+    ghCommandFn,
+  });
+
+  if (!result.ok) {
+    return { success: false, message: result.error.message };
+  }
+
+  const { deletedCount, skippedCount } = result.value;
+  return {
+    success: true,
+    message: deletedCount > 0 || skippedCount > 0
+      ? `Stale remote branch cleanup complete: ${deletedCount} deleted, ${skippedCount} skipped`
+      : "No stale remote branches to clean up",
+    data: { deletedCount, skippedCount },
+  };
+}
 
 export const branchCleanupCommand: Command = {
   name: "branch-cleanup",
@@ -99,31 +143,8 @@ export const branchCleanupCommand: Command = {
         };
       }
 
-      case "cleanup-stale": {
-        const githubUser = String(args["github-user"] ?? "");
-        if (!githubUser) {
-          return {
-            success: false,
-            message: "Missing required argument: --github-user",
-          };
-        }
-
-        const repos = config.repos ?? [];
-        const result = await cleanupStaleRemoteBranches(repos, githubUser);
-
-        if (!result.ok) {
-          return { success: false, message: result.error.message };
-        }
-
-        const { deletedCount, skippedCount } = result.value;
-        return {
-          success: true,
-          message: deletedCount > 0 || skippedCount > 0
-            ? `Stale remote branch cleanup complete: ${deletedCount} deleted, ${skippedCount} skipped`
-            : "No stale remote branches to clean up",
-          data: { deletedCount, skippedCount },
-        };
-      }
+      case "cleanup-stale":
+        return executeCleanupStale(args, config);
 
       case "check-branch-has-open-pr": {
         const repo = String(args["repo"] ?? "");
