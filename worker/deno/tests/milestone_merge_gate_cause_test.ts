@@ -139,6 +139,27 @@ Deno.test("checkMergedTree - a tree that cannot be read is tree-unreadable (Issu
   assertEquals(outcome.cause, "tree-unreadable");
 });
 
+Deno.test("checkMergedTree - a tree path that is a file is tree-unreadable (Issue #4847)", async () => {
+  const file = await Deno.makeTempFile();
+  try {
+    const outcome = await gateOver(
+      file,
+      () => Promise.resolve({ code: 0, output: "" }),
+    );
+    assertEquals(outcome.status, "failed", outcome.detail);
+    assertStringIncludes(outcome.detail, "is not a directory");
+    assertEquals(outcome.cause, "tree-unreadable");
+  } finally {
+    await Deno.remove(file);
+  }
+});
+
+Deno.test("isMergeGateCause - a non-string that coerces to a known cause is rejected (Issue #4847)", () => {
+  assertEquals(isMergeGateCause({ toString: () => "check-timed-out" }), false);
+  assertEquals(isMergeGateCause(["tree-check-failed"]), false);
+  assertEquals(isMergeGateCause("check-timed-out"), true);
+});
+
 Deno.test("checkMergedTree - a host rustc older than the tree needs is rust-toolchain-too-old (Issue #4847)", async () => {
   const dir = await cargoTree();
   try {

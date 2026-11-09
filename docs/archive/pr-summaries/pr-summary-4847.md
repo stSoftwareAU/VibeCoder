@@ -94,6 +94,20 @@ ruleset were skipped by the gate itself).
   `unrunnable` (spawn test red); the timeout mapping dropped (timed-out test
   red); the `checkMergedTree` `unrunnable` branch disabled (unrunnable-runner
   test red).
+- Mutation-check follow-up: added
+  `checkMergedTree - a tree path that is a file
+  is tree-unreadable` (kills the
+  dropped `cause` at `milestone_merge_gate.ts:883`) and
+  `isMergeGateCause - a non-string that
+  coerces to a known cause is rejected`
+  (kills the dropped `typeof` operand at `milestone_merge_gate.ts:164`); both
+  went red with the mutation applied.
+- `worker/deno/lib/milestone_merge_gate.ts:277` exempt (untestable):
+  `unrunnable?: true` is a type-only annotation, erased at runtime; the runtime
+  behaviour it types is pinned by the unrunnable-runner and `spawnTypeCheck`
+  tests.
+- `worker/deno/lib/milestone_merge_gate.ts:928` exempt (untestable): the same
+  `unrunnable?: true` type annotation on a local variable, erased at runtime.
 - No existing test was edited or removed. Existing importers of the merge-gate,
   branch-sync and spawn code were run together with the new files: 421 passed, 0
   failed.
