@@ -4,8 +4,9 @@ Milestone merge and resolution gates now recognise Deno string tasks and
 object-form tasks with a non-empty `command`. Object-form checks use the
 repository's `deno task check`, and object-form test tasks are planned by both
 resolution and fast-merge checks. Dependencies-only tasks remain excluded;
-object-form checks with dependencies keep the checkout write probe. Closes
-#4811. Version bump: none in this change.
+object-form checks with dependencies keep the checkout write probe. Real-agent
+test fixtures use the shared reachable-directory helper so mutation baselines
+work under a private `TMPDIR`. Closes #4811. Version bump: none in this change.
 
 ## Spec
 
@@ -56,17 +57,18 @@ dependencies were added.
 
 ## Test Plan
 
-- `deno task test:unit tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/merge_fast_checks_test.ts`
-  — passed: 88 parallel and 94 serial tests.
-- `deno task check:manifests` — passed: 848 passed, 0 failed, 1 ignored.
-- Targeted `deno lint` — passed for the five changed TypeScript files.
+- `deno task test:unit tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/merge_fast_checks_test.ts tests/untrusted_gate_spawn_test.ts`
+  — passed: 128 parallel and 94 serial tests.
+- `deno task check:manifests` — passed through the full quality gate's
+  completeness checks.
+- Targeted `deno lint` — passed for the six changed TypeScript files.
 - Targeted `deno check --frozen --lock=deno.lock` — passed for the two changed
-  modules, `merge_fast_checks.ts`, and the three touched test files.
-- `deno fmt` — passed for the five changed TypeScript files; the full gate also
-  passed formatting across 3,736 files.
-- `timeout 900 ./quality.sh < /dev/null` — passed in 439.0 seconds. Config
-  integration was skipped (`deno or .config.json not available`); Checkov was
-  skipped because it was unavailable.
+  modules, `merge_fast_checks.ts`, and the four touched test files.
+- `deno fmt` — passed for the six changed TypeScript files.
+- `timeout 900 ./quality.sh < /dev/null` — passed, including the full unit
+  suite (494.9 seconds), lint, type check and formatting. Config integration
+  was skipped (`deno or .config.json not available`); Checkov was skipped
+  because it was unavailable.
 - Added
   `worker/deno/tests/milestone_merge_gate_test.ts::findTypeCheckProjects - object-form check task in deno.json is the repository check`
   and
@@ -83,7 +85,8 @@ dependencies were added.
   `worker/deno/tests/merge_fast_checks_test.ts::spawnFastCheck keeps object-form check tasks read-only only when safe`.
 - Extended
   `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement`
-  with safe-command, unsafe-command and dependency-bearing object-form cases.
+  with safe-command, unsafe-command, malformed-task and dependency-bearing
+  object-form cases.
 - Base-implementation red checks: the two object-form check tests,
   task-discovery test and safe object-form read-only case failed against the
   original `milestone_merge_gate.ts` (4 failed, 90 passed). The two object-form
@@ -94,9 +97,26 @@ dependencies were added.
   `worker/deno/tests/merge_fast_checks_test.ts::spawnFastCheck keeps object-form check tasks read-only only when safe`
   fail at the dependency-bearing task (1 failed, 37 passed); restoring the guard
   made the targeted suite pass.
+- Mutation baseline repair: the real-agent credential tests in
+  `worker/deno/tests/untrusted_gate_spawn_test.ts` now use
+  `makeAgentReachableTempDir`. The mutation runner's private `0700` `TMPDIR`
+  previously made both fixtures inaccessible to `agent` (479 passed, 2 failed).
+  The same runner now passes its complete 481-test baseline.
+- Strengthened malformed-task coverage with null and primitive tasks, and
+  direct read-only checks for null, primitive, empty and dependencies-only
+  tasks. Removing the original null guard made the discovery test fail by
+  discarding the valid task too (0 passed, 1 failed).
+- Removed redundant task-shape guards whose mutations were equivalent for
+  JSON manifest values. Optional command access handles absent values; a
+  missing command becomes an empty string and fails the existing `deno check`
+  invocation check before dependency inspection.
+- Diff-scoped `runMutationCheck` with `defaultMutationRunnerSeams`, the complete
+  diff against `origin/main`, and a 900-second budget — completed: 6 killed,
+  0 survivors, 7 candidates (one syntactically invalid mutant). No exemption
+  or mutation-check skip was added.
 - No existing assertions were removed. The existing `spawnTypeCheck` read-only
-  test gained safe-command, unsafe-command and dependency-bearing object-form
-  cases.
+  test gained safe-command, unsafe-command, malformed-task and
+  dependency-bearing object-form cases.
 - Callers checked: `resolveCheckArgs`, `verifyResolvedTree` through
   `resolutionTasksFor`, `planFastChecks` through the same task discovery helper,
   `spawnTypeCheck`, and `spawnFastCheck`.

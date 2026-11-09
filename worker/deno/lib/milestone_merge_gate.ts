@@ -231,14 +231,9 @@ async function resolveCheckArgs(manifestPath: string): Promise<string[]> {
 
 /** The command text in a Deno string-form or command-bearing object task. */
 function manifestTaskCommand(task: unknown): string | undefined {
-  let command: unknown;
-  if (typeof task === "string") {
-    command = task;
-  } else if (
-    task !== null && typeof task === "object" && !Array.isArray(task)
-  ) {
-    command = (task as { command?: unknown }).command;
-  }
+  const command = typeof task === "string"
+    ? task
+    : (task as { command?: unknown } | null | undefined)?.command;
   return typeof command === "string" && command.trim().length > 0
     ? command
     : undefined;
@@ -692,18 +687,18 @@ export async function denoCheckLeavesDirUntouched(
       );
       if (taskCheck) {
         const task = config?.tasks?.check;
-        const command = manifestTaskCommand(task);
-        if (command === undefined || /[\r\n]/.test(command)) return false;
-        // A dependency may write project files even when this task's command
-        // is read-only, so keep the checkout write probe for the whole task.
-        if (
-          task !== null && typeof task === "object" &&
-          "dependencies" in task
-        ) return false;
+        const command = manifestTaskCommand(task) ?? "";
+        if (/[\r\n]/.test(command)) return false;
         // Accept only a simple invocation with known non-writing flags. Shell
         // expansions, operators and unknown options retain the write probe.
         const words = command.trim().split(/\s+/);
         if (words[0] !== "deno" || words[1] !== "check") return false;
+        // A dependency may write project files even when this task's command
+        // is read-only, so keep the checkout write probe for the whole task.
+        if (
+          typeof task === "object" &&
+          "dependencies" in task
+        ) return false;
         if (
           !words.slice(2).every((word: string) => {
             if (/^['"]-/.test(word)) return false;

@@ -122,6 +122,8 @@ Deno.test("readManifestTasks - empty, malformed and dependencies-only commands a
           empty: "  ",
           emptyObject: { command: " \t " },
           malformed: { command: 42 },
+          nullTask: null,
+          primitiveTask: 42,
           malformedTask: ["deno test"],
           dependenciesOnly: { dependencies: ["build"] },
           valid: { command: "deno test" },
@@ -1578,6 +1580,11 @@ Deno.test("spawnTypeCheck - a Deno check is read-only only when it writes nothin
   }
   for (
     const [task, expected] of [
+      [null, false],
+      [42, false],
+      [{}, false],
+      [{ command: " " }, false],
+      [{ dependencies: ["generate"] }, false],
       [{ command: "deno check main.ts", description: "safe" }, true],
       [{ command: "deno run -A gen.ts && deno check main.ts" }, false],
       [{ command: "deno check main.ts", dependencies: ["generate"] }, false],
