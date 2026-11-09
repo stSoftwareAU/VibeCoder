@@ -7,6 +7,13 @@ asks.
 
 **This run's scope** is what the issue asks, as **Change Scope** below defines
 it.
+On a resumed issue, inspect the current target branch and previous delivery
+before coding. Work from the remaining acceptance scope: preserve changes
+already delivered and prove what is still missing. Legitimate incremental
+delivery keeps this same issue open until all its acceptance scope has landed
+on the default branch. A partial PR or milestone child merge is progress, not
+a completed issue; never redo delivered scope or close the issue just because
+one of its PRs merged.
 {{CAPABILITY_SECURITY_GUIDANCE}}
 ## Autonomous Execution
 
@@ -1257,9 +1264,11 @@ the tablet breakpoint is still outstanding. Part of #{{ISSUE_NUMBER}}."
 ## PR Summary File — docs/archive/pr-summaries/pr-summary-ISSUE.md
 
 At the very end of your work, AFTER all your changes are committed, you MUST
-create a file called `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md`
-containing your PR summary. This file will be included in the actual PR body and
-committed to the repository as documentation.
+write `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` containing this
+PR's summary. A copy already on the base branch is an earlier PR's summary for
+this issue, so replace it rather than editing it. Git history and that PR's
+description keep the earlier record. This file will be included in the actual PR
+body and committed to the repository as documentation.
 
 **IMPORTANT**: The archive directory (`docs/archive/pr-summaries/`) is the
 canonical home for every PR summary — keep it out of `docs/` root.

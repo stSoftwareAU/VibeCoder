@@ -1126,6 +1126,24 @@ run to measure or compare behaviour across the whole fleet configures
 
 ### 📊 PR completion evidence report (Issue #4658)
 
+For the completion-admission pilot (#4942), add `--issue-throughput` to
+`pr-completion-report --collect` and supply `--start` and `--end` seven days
+apart. The additional `issueThroughput` section counts unique closed issues
+whose GitHub closure commit is associated with a PR merged to the repository's
+default branch during that window. Abandoned closures are excluded; manual
+closures and unproven delivery remain explicitly unknown. PRs merged without
+confirmed issue completion and milestone PRs are reported separately.
+
+The same snapshot and verified audit attribution supply issue-to-merge median
+and p90, unattended/human/unknown completion, Quality workflow attempts and
+cancellations per completed issue, and verified repairs delivering no commits.
+Quality means workflow names beginning with `Quality`. Missing workflow names,
+truncated CI history or a closing PR outside the collected PR cohort produce
+unknown ratios rather than zero. No-change repairs are an observed lower bound;
+absence of a delivered-commit list is not evidence of no change. Deployment
+heartbeats remain in the existing deployment section, separate from delivery.
+The seven-day report informs tuning; it never blocks a PR or issue completion.
+
 `deno task pr-completion-report --input <snapshot.json>` reads a normalised,
 read-only evidence snapshot and emits dated JSON. `deno task
 pr-completion-report --collect` builds that snapshot itself and reports on it.

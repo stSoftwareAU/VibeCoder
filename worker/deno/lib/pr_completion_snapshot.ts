@@ -1222,6 +1222,9 @@ async function ciRunsFor(
         durationSeconds,
         kind: "workflow_run",
         workflowRunId: runId,
+        ...(asText(run.name) !== null
+          ? { workflowName: asText(run.name)! }
+          : {}),
         ...(typeof run.workflow_id === "number" ||
             typeof run.workflow_id === "string"
           ? { workflowId: String(run.workflow_id) }

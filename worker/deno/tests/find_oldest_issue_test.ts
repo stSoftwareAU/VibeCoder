@@ -21,6 +21,46 @@ import type { WorkerConfig } from "../types.ts";
 
 const ALICE = { login: "alice" };
 
+Deno.test("completion admission gates top-priority before selection without excluding other repositories", async () => {
+  const fixture = (number: number): RepoFixture => ({
+    issues: [{
+      number,
+      title: "Wanted work",
+      url: `https://github.com/owner/repo/issues/${number}`,
+      assignees: [],
+      labels: [{ name: "top-priority" }],
+      createdAt: "2026-01-01T00:00:00Z",
+      author: ALICE,
+      milestone: null,
+    }],
+    timeline: [{
+      event: "labeled",
+      label: { name: "top-priority" },
+      actor: ALICE,
+    }],
+  });
+  const config = makeConfig();
+  const result = await findOldestIssue(config, {
+    githubUser: "bot",
+    cache: createTestCache(),
+    ghCommandFn: createPerRepoMockGh({
+      "owner/repo-a": fixture(1),
+      "owner/repo-b": fixture(2),
+    }),
+    completionAdmissionGate: async (c) =>
+      c.repo === "owner/repo-a" ? "completion mode" : undefined,
+    selectionOptions: { randomFn: () => 0, randomPoolSize: 1 },
+  });
+  assertEquals(result.found, true);
+  assertStringIncludes(result.output, "owner/repo-b|2|");
+  assertEquals(
+    result.blockedDetails?.some((d) =>
+      d.issueNumber === 1 && d.reason === "completion-mode"
+    ),
+    true,
+  );
+});
+
 function createTestCache(): IssueCache {
   const dir = Deno.makeTempDirSync({ prefix: "find-oldest-cross-repo-" });
   return new IssueCache(dir, 600);

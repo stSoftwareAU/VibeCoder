@@ -14,6 +14,7 @@ import {
   validateClaudeMaxTurns,
 } from "./claude_turn_limit.ts";
 import { parseAllocationPolicy } from "./subscription_allocation.ts";
+import { parseCompletionPolicy } from "./completion_admission.ts";
 import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
@@ -266,6 +267,7 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   blocking_pr_stall_threshold_seconds: "blockingPrStallThresholdSeconds",
   // Per-repo fleet PR cap on the default-branch stream (Issue #2663).
   fleet_pr_slots: "fleetPrSlots",
+  completion_admission: "completionAdmission",
 };
 
 /**
@@ -297,6 +299,11 @@ function normaliseRepoConfig(raw: Record<string, unknown>): RepoConfig {
   if (normalised.externalOrchestrationSettings !== undefined) {
     normalised.externalOrchestrationSettings = parseOrchestrationSettings(
       normalised.externalOrchestrationSettings,
+    );
+  }
+  if (normalised.completionAdmission !== undefined) {
+    normalised.completionAdmission = parseCompletionPolicy(
+      normalised.completionAdmission,
     );
   }
   return normalised as RepoConfig;
