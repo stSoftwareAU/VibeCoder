@@ -84,8 +84,11 @@ compile error is therefore caught before the push, not by a CI run. Closes
   directory containment check still refuses a crate symlinked outside the
   repository, while main's other changed-file checks keep skipping such files.
 - Docs: `docs/CONFIGURATION.md` (pre-flight / pre-push gate section) and
-  `docs/INTERNALS.md`; `docs/audits/lib-sweep-coverage/top-up-4630.json` also
-  lists the new module.
+  `docs/INTERNALS.md`; the head also rewrites the agent-hook passages in
+  `docs/CONFIGURATION.md` and the `pre_push_gate.ts` module header and
+  `runPrePushGate` doc comment so they say the hook runs the CI cargo checks
+  from the spec precomputed into it, as this summary already does.
+  `docs/audits/lib-sweep-coverage/top-up-4630.json` also lists the new module.
 - Not done here: the `cargo deny` implementation itself (owned by #4626, merged
   from main). `ciCargoOnly` only keeps it running for changed cargo inputs.
 
