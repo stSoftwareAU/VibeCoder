@@ -56,17 +56,20 @@ dependencies were added.
 
 ## Test Plan
 
-- `deno task test:unit tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/merge_fast_checks_test.ts` — passed: 88 parallel and 93 serial tests.
+- `deno task test:unit tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/merge_fast_checks_test.ts` — passed: 88 parallel and 94 serial tests.
 - `deno task check:manifests` — passed: 848 passed, 0 failed, 1 ignored.
 - Targeted `deno lint` — passed for the five changed TypeScript files.
 - Targeted `deno check --frozen --lock=deno.lock` — passed for the two changed modules, `merge_fast_checks.ts`, and the three touched test files.
 - `deno fmt` — passed for the five changed TypeScript files; the full gate also passed formatting across 3,736 files.
-- `timeout 900 ./quality.sh < /dev/null` — passed in 474.8 seconds. Config integration was skipped (`deno or .config.json not available`); Checkov was skipped because it was unavailable.
-- `worker/deno/tests/milestone_merge_gate_test.ts::findTypeCheckProjects - object-form check task in deno.json is the repository check` and `...deno.jsonc...` — both failed against the original implementation.
-- `worker/deno/tests/milestone_merge_gate_test.ts::readManifestTasks - empty, malformed and dependencies-only commands are excluded` and the object-form cases in `spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement` — failed against the original implementation (4 failed, 90 passed).
-- `worker/deno/tests/milestone_resolution_gate_test.ts::verifyResolvedTree - object-form unit tasks run without quality.sh` and `...object-form test:unit keeps precedence over object-form test` — failed against the original implementation (2 failed, 48 passed).
-- `worker/deno/tests/merge_fast_checks_test.ts::planFastChecks: object-form manifest tasks are included in the plan` and `...spawnFastCheck keeps object-form check tasks read-only only when safe` — failed in the initial unfixed run, alongside the two resolution regressions (4 failures total).
-- Dependency write-probe red check: removing the dependency guard made `spawnFastCheck keeps object-form check tasks read-only only when safe` fail at the dependency-bearing task (1 failed, 37 passed); restoring the guard made the targeted suite pass.
+- `timeout 900 ./quality.sh < /dev/null` — passed in 439.0 seconds. Config integration was skipped (`deno or .config.json not available`); Checkov was skipped because it was unavailable.
+- Added `worker/deno/tests/milestone_merge_gate_test.ts::findTypeCheckProjects - object-form check task in deno.json is the repository check` and `worker/deno/tests/milestone_merge_gate_test.ts::findTypeCheckProjects - object-form check task in deno.jsonc is the repository check`.
+- Added `worker/deno/tests/milestone_merge_gate_test.ts::readManifestTasks - empty, malformed and dependencies-only commands are excluded`.
+- Added `worker/deno/tests/milestone_resolution_gate_test.ts::verifyResolvedTree - object-form unit tasks run without quality.sh` and `worker/deno/tests/milestone_resolution_gate_test.ts::verifyResolvedTree - object-form test:unit keeps precedence over object-form test`.
+- Added `worker/deno/tests/merge_fast_checks_test.ts::planFastChecks: object-form manifest tasks are included in the plan` and `worker/deno/tests/merge_fast_checks_test.ts::spawnFastCheck keeps object-form check tasks read-only only when safe`.
+- Extended `worker/deno/tests/milestone_merge_gate_test.ts::spawnTypeCheck - a Deno check is read-only only when it writes nothing into its directory, a cargo check keeps the write requirement` with safe-command, unsafe-command and dependency-bearing object-form cases.
+- Base-implementation red checks: the two object-form check tests, task-discovery test and safe object-form read-only case failed against the original `milestone_merge_gate.ts` (4 failed, 90 passed). The two object-form resolution tests also failed against that implementation (2 failed, 48 passed). The initial unfixed fast-check run failed its object-form plan and read-only tests too.
+- Dependency write-probe red check: removing the dependency guard made `worker/deno/tests/merge_fast_checks_test.ts::spawnFastCheck keeps object-form check tasks read-only only when safe` fail at the dependency-bearing task (1 failed, 37 passed); restoring the guard made the targeted suite pass.
 - No existing assertions were removed. The existing `spawnTypeCheck` read-only test gained safe-command, unsafe-command and dependency-bearing object-form cases.
 - Callers checked: `resolveCheckArgs`, `verifyResolvedTree` through `resolutionTasksFor`, `planFastChecks` through the same task discovery helper, `spawnTypeCheck`, and `spawnFastCheck`.
 - Documentation checked: the “Every automatic resolution is verified before it is pushed” section in `docs/workflows/milestones.md` and the merged-tree type-check section in `docs/INTERNALS.md`; the latter's generic manifest-task description remains accurate.
+- Remaining unchecked: config integration and Checkov were skipped by the full quality gate; no other known risk remains.
