@@ -48,6 +48,32 @@ failed.
   `CODING-STANDARDS.md`; no other file needs to change — evidence: only that
   file and this summary changed — reviewer: met
 
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Check the existing rules before you add one; every restatement
+  of a rule gives the same answer (Prompt Engineering Guidance) — evidence:
+  `prompts/security_scan/prompt.md:1255-1259` — reviewer: violation — reason:
+  not fixed in this diff, left for the reviewer. The new service-principal
+  bullet covers a "trust or resource policy" while the section scope line says
+  "IAM roles only", and it says a lone statement "is a finding" while the
+  section's "A lone permission is never a finding" bullet says the opposite for
+  an unchained permission. It also names no class, CWE or cap handling. Fixing
+  it means narrowing the scope or that rule to name this exception, or dropping
+  the bullet.
+- **violation (minor)** — Write precise, unambiguous instructions — evidence:
+  `prompts/security_scan/prompt.md:1256-1258` — reviewer: violation — reason:
+  not fixed in this diff, left for the reviewer. "Grants a privileged action"
+  and "nothing else in the file constrains the caller" are qualitative; naming
+  the actions or pointing to the section's privileged-grants criterion would
+  make them concrete.
+- **clean** — language and spelling (Australian English), bullet structure,
+  cross-linking of the A01 bullet to the A01 SSRF line with "do not
+  double-file", DRY and redundancy, positive phrasing; Deno, test and
+  commit-safety standards are out of scope for a prompt-only diff — reviewer:
+  clean
+
 ## Test Plan
 
 - No tests added or edited. Ran the three security-scan prompt tests named under
