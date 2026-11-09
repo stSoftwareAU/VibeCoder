@@ -5,14 +5,15 @@ plan and egress controls. Setup runs it after preflight, the CLI exposes
 `--check-container`, and automatic passes run it before PR discovery or App
 authentication. HTML validation searches complete stdout; diagnostic output
 remains bounded. Diagnostic runs never publish service-health heartbeats.
+
 Closes #4771.
 
-To satisfy the explicit quality-gate criterion, generated pre-push hooks now
-use their trusted worker configuration and frozen lock. Nested hook/posting
-fixtures share the resolved dependency cache while isolating HOME and settings;
-the credential fixture supplies explicit proxy inputs. These changes repair the
-nine failures reproduced by the first full gate without removing assertions,
-skipping tests or weakening checks. `VERSION` is unchanged.
+To satisfy the explicit quality-gate criterion, generated pre-push hooks now use
+their trusted worker configuration and frozen lock. Nested hook/posting fixtures
+share the resolved dependency cache while isolating HOME and settings; the
+credential fixture supplies explicit proxy inputs. These changes repair the nine
+failures reproduced by the first full gate without removing assertions, skipping
+tests or weakening checks. `VERSION` is unchanged.
 
 ## Spec
 
@@ -37,8 +38,8 @@ skipping tests or weakening checks. `VERSION` is unchanged.
 
 ### Undiscoverable Facts
 
-- The first gate reproduced three nested pre-push JSR-resolution failures,
-  five posting-fixture JSR-resolution failures and one ambient-proxy assertion
+- The first gate reproduced three nested pre-push JSR-resolution failures, five
+  posting-fixture JSR-resolution failures and one ambient-proxy assertion
   failure. The `osascript` message was informational; PowerShell is installed.
 - The final `./quality.sh < /dev/null` exited zero: 21 checks passed and two
   optional checks were skipped. Both parallel and serial test passes succeeded.
@@ -77,10 +78,10 @@ flowchart TD
 - Read the babysitter setup/run manual and pre-push-hook manual. Updated
   `docs/workflows/fleet-pr-babysitter.md`, `DESIGN-PRINCIPLES.md` and
   `docs/CONFIGURATION.md` to describe the final behaviour.
-- #4738: Fleet PR babysitter repairs run in the worker container, like
-  reviewer rounds.
-- #4770: Switch babysitter repairs to the worker container and delete the
-  host Codex sandbox and installer.
+- #4738: Fleet PR babysitter repairs run in the worker container, like reviewer
+  rounds.
+- #4770: Switch babysitter repairs to the worker container and delete the host
+  Codex sandbox and installer.
 
 ## Acceptance Criteria
 
@@ -95,8 +96,8 @@ flowchart TD
   — evidence:
   `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts::Chromium check passes only on exit zero with HTML stdout`,
   `::Chromium check accepts HTML beyond the diagnostic cap` and
-  `::Chromium check names missing runtime and image causes before egress`
-  — reviewer: met
+  `::Chromium check names missing runtime and image causes before egress` —
+  reviewer: met
 - **met** — Test: setup fails when the check fails. — evidence:
   `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts::setup runs the Chromium check after preflight and propagates failure`
   — reviewer: met
@@ -113,30 +114,29 @@ flowchart TD
   `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts` and
   `worker/deno/lib/fleet_babysitter_container.ts` — reason: fixed in this diff;
   the independent reviewer confirmed all earlier code/test findings resolved.
-- **violation** — Use standard path helpers and protect frozen-lock behaviour.
-  — evidence: `worker/deno/lib/pre_push_hook.ts` and
+- **violation** — Use standard path helpers and protect frozen-lock behaviour. —
+  evidence: `worker/deno/lib/pre_push_hook.ts` and
   `worker/deno/tests/pre_push_hook_test.ts` — reason: fixed in this diff with
   `dirname` and a real Deno lock-precedence/refusal fixture.
-- **clean** — The final independent Standards review found no remaining
-  code, test or summary violations. It checked assertion preservation,
-  meaningful boundary tests, subprocess isolation, bounded causes, deadline
-  and environment/mount coverage, shared helpers, Deno TypeScript, documentation, dependencies and
-  persisted formats. No dependency or persisted-format change was introduced.
+- **clean** — The final independent Standards review found no remaining code,
+  test or summary violations. It checked assertion preservation, meaningful
+  boundary tests, subprocess isolation, bounded causes, deadline and
+  environment/mount coverage, shared helpers, Deno TypeScript, documentation,
+  dependencies and persisted formats. No dependency or persisted-format change
+  was introduced.
 
 ## Test Plan
 
 The two Deno task commands below run from `worker/deno`; the quality command
 runs from the repository root. Suite paths from the repository root are:
 
-- Babysitter:
-  `worker/deno/tests/fleet_babysitter_app_test.ts`,
+- Babysitter: `worker/deno/tests/fleet_babysitter_app_test.ts`,
   `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts`,
   `worker/deno/tests/fleet_pr_babysitter_supervisor_test.ts`,
   `worker/deno/tests/fleet_pr_babysitter_setup_test.ts`,
   `worker/deno/tests/fleet_babysitter_container_4738_test.ts` and
   `worker/deno/tests/fleet_babysitter_container_egress_4738_test.ts`.
-- Quality regressions:
-  `worker/deno/tests/claude_runner_pre_push_3394_test.ts`,
+- Quality regressions: `worker/deno/tests/claude_runner_pre_push_3394_test.ts`,
   `worker/deno/tests/pre_push_hook_test.ts`,
   `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts` and
   `worker/deno/tests/review_fleet_prs_post_claim_4398_test.ts`.
@@ -147,25 +147,25 @@ Executed commands:
   — 110 passed, zero failed.
 - `deno task test:unit tests/claude_runner_pre_push_3394_test.ts tests/pre_push_hook_test.ts tests/merge_fast_checks_credentials_4705_test.ts tests/review_fleet_prs_post_claim_4398_test.ts < /dev/null`
   — 25 passed, zero failed.
-- `./quality.sh < /dev/null` — exit zero; parallel tests passed in 4m03s,
-  serial tests passed in 3m01s; lint, type checking, formatting, manifests,
-  Markdown, Mermaid, Semgrep and other required checks passed. Config
-  integration lacked local configuration; Checkov lacked its binary/runtime.
-  The normal gate reported `Result: PASSED (with skipped checks)`.
+- `./quality.sh < /dev/null` — exit zero; parallel tests passed in 4m03s, serial
+  tests passed in 3m01s; lint, type checking, formatting, manifests, Markdown,
+  Mermaid, Semgrep and other required checks passed. Config integration lacked
+  local configuration; Checkov lacked its binary/runtime. The normal gate
+  reported `Result: PASSED (with skipped checks)`.
 - `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4771-body.md --labels enhancement,top-priority,work-on ../../docs/archive/pr-summaries/pr-summary-4771.md < /dev/null`
   — zero blocked gates and zero unchecked gates.
 - All nine surviving listed mutations are now killed: diagnostic early exit;
   initial identity state, identity condition, announcement and recorded state;
   setup's real check wrapper; the final-image guard; short volume and mount
-  stripping. The tenth listed mutation removed a redundant empty-length
-  operand: that operand is now deleted, and both empty and wrong-image plans
-  are rejected by the tested image guard. No untestable exemption is claimed.
+  stripping. The tenth listed mutation removed a redundant empty-length operand:
+  that operand is now deleted, and both empty and wrong-image plans are rejected
+  by the tested image guard. No untestable exemption is claimed.
 - Twenty applied Chromium/diagnostic/guard mutations failed their intended
   tests, including replacement with `printf`, whole diagnostic-branch removal,
   truncated HTML validation, heartbeat reporting, deadline removal/override,
-  private environment stripping, inline mounts and spawn-error redaction.
-  This is targeted mutation evidence, not a claim that every possible mutant
-  was tested. All temporary mutations were restored.
+  private environment stripping, inline mounts and spawn-error redaction. This
+  is targeted mutation evidence, not a claim that every possible mutant was
+  tested. All temporary mutations were restored.
 - Disposable hook red checks failed when `--frozen`, the explicit `--lock`,
   either missing-config/lock guard or the whole fix was removed. Omitting
   explicit `--config` is equivalent here: Deno discovers the same trusted
