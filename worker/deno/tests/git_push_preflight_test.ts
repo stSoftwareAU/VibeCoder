@@ -19,6 +19,7 @@ import {
   CI_CARGO_ONLY_PRE_FLIGHT,
   commitAndPushPending,
   gateUnpushedCommits,
+  prBaseCompareRef,
   PrePushGateBlockedError,
 } from "../lib/git_push.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
@@ -1218,4 +1219,12 @@ Deno.test("commitAndPushPending - a push recovery merge needs a fresh verdict", 
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
+});
+
+Deno.test('prBaseCompareRef - origin/<base>, or "" when the base is unknown (Issue #4630 review)', () => {
+  assertEquals(prBaseCompareRef("main"), "origin/main");
+  assertEquals(prBaseCompareRef(" release/1 "), "origin/release/1");
+  assertEquals(prBaseCompareRef(undefined), "");
+  assertEquals(prBaseCompareRef(""), "");
+  assertEquals(prBaseCompareRef("  "), "");
 });

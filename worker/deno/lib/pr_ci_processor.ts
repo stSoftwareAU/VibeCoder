@@ -170,6 +170,7 @@ import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders, getRepoConfig } from "./repo_config.ts";
 import {
   CI_CARGO_ONLY_PRE_FLIGHT,
+  prBaseCompareRef,
   prBaseForSync,
   resolvePreFlightSpec,
   unstageStateAndAssertSafe,
@@ -1975,6 +1976,20 @@ async function _processCiWithHeartbeat(
   // Destructure PromptParts for prompt caching (Issue #1262)
   const { systemPrompt, prompt: userPrompt } = promptResult.value;
 
+  // The PR's base, read before the agent runs: its own `git push` compares a
+  // failing CI cargo check against it (Issue #4630 review), and the final-mile
+  // push below reuses it. Owner rule 2026-11-03: that push also merges the
+  // base in, so the fix and the branch update reach GitHub in one push and CI
+  // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  const compareBaseBranch = await prBaseForSync(
+    input.baseRef,
+    repo,
+    prNumber,
+    (args) => deps.github.runGhCommand(args),
+    (message) => logger.warn(message),
+  );
+  const ciCargoCompareRef = prBaseCompareRef(compareBaseBranch);
+
   // --- CodeGraph repo-context index (Issue #2160, part of #2145) ---
   // The checkout the agent runs in, which is also the `cwd` below — without
   // one the runner writes no MCP configuration at all, so an unnamed clone is
@@ -2036,6 +2051,7 @@ async function _processCiWithHeartbeat(
       repo,
       cwd: processorDeps.workDir,
       logger,
+      ciCargoCompareRef,
       // The browser unless `skip_screenshot_check` (Issue #2925). CodeGraph
       // and Graft ride beside it only when their index built.
       ...graft.mcpConfigOption(
@@ -2142,6 +2158,7 @@ async function _processCiWithHeartbeat(
     rtk,
     runStatsSink,
     lifecycleStatsSink,
+    ciCargoCompareRef,
   );
 
   if (postQualityResult.turnLimitFailure) {
@@ -2174,16 +2191,6 @@ async function _processCiWithHeartbeat(
   // worker's archive notes are formatted afterwards. Never fatal.
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
-  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
-  // pushed, so the fix and the branch update reach GitHub in one push and CI
-  // runs once. Not for a gated head's fix branch, whose PR targets the head.
-  const compareBaseBranch = await prBaseForSync(
-    input.baseRef,
-    repo,
-    prNumber,
-    (args) => deps.github.runGhCommand(args),
-    (message) => logger.warn(message),
-  );
   const syncBaseBranch = fixBranch === undefined
     ? compareBaseBranch
     : undefined;
@@ -3295,6 +3302,8 @@ async function _runPostClaudeQualityCheck(
   /** Issue #3404: collects the retry's stats for the run's USD figure. */
   runStatsSink: (RunStats | undefined)[],
   lifecycleStatsSink: (RunStats | undefined)[],
+  /** The ref the retry's own pushes compare a CI cargo failure against. */
+  ciCargoCompareRef: string,
 ): Promise<PostClaudeQualityResult> {
   const {
     logger,
@@ -3397,6 +3406,7 @@ async function _runPostClaudeQualityCheck(
         repo: input.repo,
         cwd,
         logger,
+        ciCargoCompareRef,
         ...graft.mcpConfigOption(
           codegraph.mcpConfig(browserGranted(repoConfigs, input.repo)),
         ),

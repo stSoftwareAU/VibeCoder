@@ -37,6 +37,8 @@ export const PRE_PUSH_HOOK_MARKER = "Vibe Coder pre-push gate";
  * Render the hook script. It fails closed: a missing Deno binary, module or
  * spec blocks the push rather than silently allowing it. `DENO_DIR` is
  * deliberately not pinned — this is a quality gate, not a security boundary.
+ * Writes are limited to the temp directory, where the gate makes the scratch
+ * worktree for the PR-base comparison of a failing CI cargo check (Issue #4630).
  */
 export function renderPrePushHookScript(opts: {
   denoPath: string;
@@ -63,7 +65,7 @@ if [ ! -f ${spec} ]; then
   exit 1
 fi
 
-exec ${deno} run --quiet --no-config --no-lock --allow-read --allow-run --allow-env ${module} --spec ${spec} -- "$@"
+exec ${deno} run --quiet --no-config --no-lock --allow-read --allow-write="${"$"}{TMPDIR:-/tmp}" --allow-run --allow-env ${module} --spec ${spec} -- "$@"
 `;
 }
 
@@ -88,6 +90,12 @@ export async function installPrePushHook(opts: {
    * hook scanning no CI cargo check.
    */
   ciCargo?: CiCargoScan;
+  /**
+   * The ref a failing CI cargo check is compared against (the PR base, as
+   * `origin/<branch>`; `""` when a comparison is required but the base is
+   * unknown). Written into the spec as `compareRef`; omit for no comparison.
+   */
+  compareRef?: string;
   denoPath?: string;
   modulePath?: string;
   makeTempDir?: () => Promise<string>;
@@ -122,6 +130,9 @@ export async function installPrePushHook(opts: {
           ? {}
           : { timeoutSeconds: opts.timeoutSeconds }),
         ...(opts.ciCargo === undefined ? {} : { ciCargo: opts.ciCargo }),
+        ...(opts.compareRef === undefined
+          ? {}
+          : { compareRef: opts.compareRef }),
       }),
     );
     await Deno.writeTextFile(

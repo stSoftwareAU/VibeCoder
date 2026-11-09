@@ -126,3 +126,60 @@ Deno.test("processPrFeedback - repair push (Issue #4630): a repo's own pre-fligh
   assertEquals(spec?.commands, ["deno task check"]);
   assert(spec?.ciCargoOnly !== true, "a configured repo is not cargo-only");
 });
+
+/** The `ciCargoCompareRef` each agent run of one feedback pass was handed. */
+async function agentCompareRefs(baseRefName: string): Promise<unknown[]> {
+  const workDir = await Deno.makeTempDir({ prefix: "pr-feedback-4630-" });
+  try {
+    const seen: unknown[] = [];
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: ((request: { ciCargoCompareRef?: string }) => {
+          seen.push(request.ciCargoCompareRef);
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: openPrGh((args) =>
+          Promise.resolve(args.includes("baseRefName") ? baseRefName : "")
+        ),
+      } as Partial<GitHubDeps>,
+      git: {
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 0,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+    await processPrFeedback(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      workDir,
+      workRoot: workDir,
+    });
+    return seen;
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+}
+
+Deno.test("processPrFeedback - agent run (Issue #4630 review): the agent's own push compares CI cargo against the PR base", async () => {
+  const seen = await agentCompareRefs("release/1");
+  assert(seen.length >= 1, "expected an agent run");
+  assertEquals(seen[0], "origin/release/1");
+});
+
+Deno.test('processPrFeedback - agent run (Issue #4630 review): an unreadable PR base is "" (comparison required), not undefined', async () => {
+  const seen = await agentCompareRefs("");
+  assert(seen.length >= 1, "expected an agent run");
+  assertEquals(seen[0], "");
+});

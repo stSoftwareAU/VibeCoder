@@ -233,6 +233,49 @@ Deno.test("pre-push cli: a ciCargo spec passes findCiCargo returning the scan", 
   );
 });
 
+Deno.test('pre-push cli: a compareRef spec reaches the gate, "" included; a non-string blocks', async () => {
+  for (const ref of ["origin/main", ""]) {
+    await withSpec(
+      JSON.stringify({ preFlightCommands: [], compareRef: ref }),
+      async (path) => {
+        const h = harness();
+        let seen: Parameters<Gate>[0] | undefined;
+        const code = await h.run(["--spec", path], {
+          gate: (o) => {
+            seen = o;
+            return okGate(o);
+          },
+        });
+        assertEquals(code, 0);
+        assertEquals(seen?.compareRef, ref);
+      },
+    );
+  }
+  await withSpec(
+    JSON.stringify({ preFlightCommands: [] }),
+    async (path) => {
+      const h = harness();
+      let seen: Parameters<Gate>[0] | undefined;
+      await h.run(["--spec", path], {
+        gate: (o) => {
+          seen = o;
+          return okGate(o);
+        },
+      });
+      assertEquals("compareRef" in (seen ?? {}), false);
+    },
+  );
+  await withSpec(
+    JSON.stringify({ preFlightCommands: [], compareRef: 7 }),
+    async (path) => {
+      const h = harness();
+      assertEquals(await h.run(["--spec", path]), 1);
+      assertStringIncludes(h.errs.join(""), "compareRef must be a string");
+      assertEquals(h.gateCalls, 0);
+    },
+  );
+});
+
 Deno.test("pre-push cli: a malformed ciCargo blocks without running the gate", async () => {
   for (
     const bad of [

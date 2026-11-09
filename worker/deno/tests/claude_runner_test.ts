@@ -19,6 +19,7 @@ import {
   getTokenEstimate,
   runClaudeWithRetry,
   runClaudeWithTimeout,
+  scanAgentCiCargoChecks,
   stripEscapeCodes,
   SUMMARISE_DISALLOWED_TOOLS,
   SUMMARISE_SYSTEM_PROMPT,
@@ -1411,5 +1412,147 @@ Deno.test({
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// The agent's own pre-push hook runs the repo CI's cargo checks (Issue #4630
+// review): the worker scans the workflows before the agent runs and writes the
+// scan into the hook spec.
+// ---------------------------------------------------------------------------
+
+const CI_CLIPPY_WORKFLOW = [
+  "on:",
+  "  pull_request:",
+  "jobs:",
+  "  lint:",
+  "    steps:",
+  "      - run: cargo clippy --all-targets -- -D warnings",
+  "",
+].join("\n");
+
+/** A git checkout tracking a CI workflow that runs clippy. */
+async function withClippyCheckout<T>(
+  fn: (checkout: string) => Promise<T>,
+): Promise<T> {
+  const dir = await Deno.makeTempDir({ prefix: "claude_ci_cargo_" });
+  try {
+    const git = async (...args: string[]) => {
+      const out = await new Deno.Command("git", {
+        args,
+        cwd: dir,
+        stdout: "null",
+        stderr: "piped",
+      }).output();
+      assertEquals(out.code, 0, new TextDecoder().decode(out.stderr));
+    };
+    await git("init", "-q");
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/ci.yml`,
+      CI_CLIPPY_WORKFLOW,
+    );
+    await git("add", ".");
+    return await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("scanAgentCiCargoChecks - reads the checkout's CI clippy; no checkout means no scan", async () => {
+  assertEquals(await scanAgentCiCargoChecks(undefined), undefined);
+  await withClippyCheckout(async (checkout) => {
+    const warnings: string[] = [];
+    const scan = await scanAgentCiCargoChecks(
+      checkout,
+      (m) => warnings.push(m),
+    );
+    assertEquals(scan?.unverifiable, []);
+    assertEquals(
+      scan?.checks.map((c) => c.argv.join(" ")),
+      ["cargo clippy --all-targets -- -D warnings"],
+    );
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("scanAgentCiCargoChecks - an unreadable tracked-file list is an unverifiable scan with a warning, not no scan", async () => {
+  const notARepo = await Deno.makeTempDir({ prefix: "claude_ci_cargo_" });
+  try {
+    const warnings: string[] = [];
+    const scan = await scanAgentCiCargoChecks(
+      notARepo,
+      (m) => warnings.push(m),
+    );
+    assertEquals(scan?.checks, []);
+    assertEquals(scan?.unverifiable.length, 1);
+    assertStringIncludes(
+      scan?.unverifiable[0] ?? "",
+      "the worker could not scan the CI workflows before the agent ran: git ls-files",
+    );
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0] ?? "", "git ls-files");
+  } finally {
+    await Deno.remove(notARepo, { recursive: true });
+  }
+});
+
+Deno.test("scanAgentCiCargoChecks - a scanner that cannot be loaded is an unverifiable scan naming the error", async () => {
+  await withClippyCheckout(async (checkout) => {
+    const warnings: string[] = [];
+    const scan = await scanAgentCiCargoChecks(
+      checkout,
+      (m) => warnings.push(m),
+      () => Promise.reject(new Error("cannot resolve @std/yaml")),
+    );
+    assertEquals(scan?.checks, []);
+    assertEquals(scan?.unverifiable, [
+      "the worker could not scan the CI workflows before the agent ran: cannot resolve @std/yaml",
+    ]);
+    assertEquals(warnings.length, 1);
+  });
+});
+
+Deno.test({
+  name:
+    "runClaudeWithTimeout - the hook installed for the agent carries the checkout's CI clippy and the PR base (Issue #4630 review)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    await withClippyCheckout(async (checkout) => {
+      const copy = `${checkout}.spec.json`;
+      // The agent finds its hook through the git config the runner exports.
+      const stubBody =
+        `for v in $(compgen -A variable GIT_CONFIG_VALUE_); do\n` +
+        `  d="\${!v}"\n` +
+        `  [ -f "$d/../pre-push-spec.json" ] && cp "$d/../pre-push-spec.json" '${copy}'\n` +
+        `done\n` +
+        `printf '%s\\n' '{"type":"result","result":"ok"}'\n`;
+      try {
+        const result = await withStubClaude(
+          stubBody,
+          (agentBinaryPath) =>
+            runClaudeWithTimeout({
+              clock: fakeClock(),
+              prompt: "test",
+              agentBinaryPath,
+              timeoutSeconds: 30,
+              killAfterSeconds: 2,
+              cwd: checkout,
+              ciCargoCompareRef: "origin/release/1",
+            }),
+        );
+        assert(result.ok, !result.ok ? result.error.message : "");
+        const spec = JSON.parse(await Deno.readTextFile(copy));
+        assertEquals(
+          spec.ciCargo.checks.map((c: { argv: string[] }) => c.argv.join(" ")),
+          ["cargo clippy --all-targets -- -D warnings"],
+        );
+        assertEquals(spec.ciCargo.unverifiable, []);
+        assertEquals(spec.compareRef, "origin/release/1");
+      } finally {
+        await Deno.remove(copy).catch(() => {});
+      }
+    });
   },
 });

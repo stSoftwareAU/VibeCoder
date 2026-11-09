@@ -35,9 +35,10 @@
  *    agent's own pre-push hook (`lib/pre_push_gate_cli.ts`) runs under
  *    `--no-config`, where the YAML parser that reads the workflows cannot be
  *    loaded, so it receives the scan precomputed into its spec and passes it
- *    back as `findCiCargo`. The worker's own gates pass `repoCiCargoChecks`
- *    directly: `git_push.ts` `gateUnpushedCommits` (`commitAndPushPending`
- *    Step 1b and the completion phase).
+ *    back as `findCiCargo`, with the spec's `compareRef` (the PR base, for a
+ *    CI-fix or PR-feedback run) as `compareRef`. The worker's own gates pass
+ *    `repoCiCargoChecks` directly: `git_push.ts` `gateUnpushedCommits`
+ *    (`commitAndPushPending` Step 1b and the completion phase).
  * 3. Then runs the repo's `cargo deny check` (Issue #4626) for eligible
  *    workflows when intermediate pushes, ShellCheck-only repairs or
  *    `ciCargoOnly` repairs change a cargo input (a Cargo manifest, lock file,
@@ -2079,18 +2080,25 @@ async function failsOnBaseToo(args: {
  * gets no CI cargo check, planned or run. The agent's own pre-push hook passes
  * it too, from a scan the worker precomputes into the hook spec before the agent
  * runs, so the `--no-config` hook never loads the YAML parser itself; the
- * worker's gates in `git_push.ts` pass it directly. When the scan holds a command that cannot
- * be reproduced here, the push fails with a
+ * worker's gates in `git_push.ts` pass it directly. When the scan holds a
+ * command that cannot be reproduced here (including a scan the worker could not
+ * produce before the agent ran), the push fails with a
  * {@link PrePushGateInfrastructureError}. Before the first CI cargo command
  * runs, every distinct Rust toolchain the plan uses is probed (`cargo +T
  * --version`, and `cargo +T clippy --version` for a clippy check). A CI cargo
- * command that fails to start, times out, fails with host disk-full output, or
- * fails with rustup or rustc output saying its toolchain, component or
- * `--target` is not installed is also an infrastructure fault. Any other failing
- * CI cargo command blocks the push, with its output, unless `compareRef` (or
- * `baseRef`) is set and the same command, run in a detached worktree of that
- * ref, fails with every diagnostic the push shows: a failure the PR base already
- * has is then no verdict on the push and is reported as a warning.
+ * command that fails to start, times out, fails with host disk-full output,
+ * fails with a cargo registry or git-dependency network refusal, or fails with
+ * rustup or rustc output saying its toolchain, component or `--target` is not
+ * installed is also an infrastructure fault. Any other failing CI cargo command
+ * blocks the push, with its output, unless `compareRef` (or `baseRef`) is set
+ * and the same command, run in a detached worktree of that ref, fails with every
+ * diagnostic the push shows: a failure the PR base already has is then no
+ * verdict on the push and is reported as a warning. When `compareRef` is set
+ * but that comparison cannot be made (an unusable or unknown ref, a worktree
+ * that cannot be made, a base run that times out, cannot start or fails for the
+ * host, or a push output with no readable diagnostic), the failure is also an
+ * infrastructure fault, not a verdict. The agent's own hook sets `compareRef`
+ * only for a run handed the PR base; with none, a failing check is a verdict.
  *
  * `ciCargoOnly` (repair pushes of repos with no pre-flight configuration, where
  * only the CI cargo checks should gate) runs nothing but those CI cargo checks,

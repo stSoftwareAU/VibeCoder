@@ -1,16 +1,20 @@
 /**
  * Entry point of the agent's git `pre-push` hook (Issue #3394).
  *
- * Run as `deno run --quiet --no-config --no-lock --allow-read --allow-run
- * --allow-env pre_push_gate_cli.ts --spec <path> [-- <remote> <url>]`. It must
- * work under `--no-config`, so nothing in its import graph may rely on an
- * import map (no bare specifiers at runtime).
+ * Run as `deno run --quiet --no-config --no-lock --allow-read
+ * --allow-write=<tmp> --allow-run --allow-env pre_push_gate_cli.ts
+ * --spec <path> [-- <remote> <url>]`. It must work under `--no-config`, so
+ * nothing in its import graph may rely on an import map (no bare specifiers at
+ * runtime).
  *
  * The spec is JSON: `{ "preFlightCommands": string[], "timeoutSeconds"?: n,
- * "ciCargo"?: CiCargoScan }`. The `ciCargo` entry is the repo's CI cargo
- * checks, precomputed by the worker before the agent runs (Issue #4630
- * review): the hook passes them back as `findCiCargo` so the CI cargo checks
+ * "ciCargo"?: CiCargoScan, "compareRef"?: string }`. The `ciCargo` entry is
+ * the repo's CI cargo checks, precomputed by the worker before the agent runs
+ * (Issue #4630 review): the hook passes them back as `findCiCargo` so the CI cargo checks
  * run on the agent's own push without this module loading the YAML parser.
+ * `compareRef` is the PR base (`origin/<branch>`, or `""` when a comparison is
+ * required but the base is unknown): a CI cargo failure the base already has is
+ * no verdict on the push, and an unavailable comparison is infrastructure.
  * A missing or invalid spec, unreadable stdin or any thrown error blocks the
  * push (exit 1). Git's own hook arguments (remote name, URL) are ignored.
  *
@@ -35,6 +39,7 @@ interface PrePushSpec {
   preFlightCommands: string[];
   timeoutSeconds?: number;
   ciCargo?: CiCargoScan;
+  compareRef?: string;
 }
 
 async function readSpec(path: string): Promise<Result<PrePushSpec, string>> {
@@ -67,12 +72,17 @@ async function readSpec(path: string): Promise<Result<PrePushSpec, string>> {
   }
   const ciCargo = readCiCargo(record.ciCargo);
   if (!ciCargo.ok) return { ok: false, error: ciCargo.error };
+  const compareRef = record.compareRef;
+  if (compareRef !== undefined && typeof compareRef !== "string") {
+    return { ok: false, error: "compareRef must be a string" };
+  }
   return {
     ok: true,
     value: {
       preFlightCommands: commands.value,
       timeoutSeconds: timeout,
       ciCargo: ciCargo.value,
+      compareRef,
     },
   };
 }
@@ -225,6 +235,9 @@ export async function runPrePushGateCli(
       preFlightCommands: spec.value.preFlightCommands,
       timeoutSeconds: spec.value.timeoutSeconds,
       ...(ciCargo === undefined ? {} : { findCiCargo: async () => ciCargo }),
+      ...(spec.value.compareRef === undefined
+        ? {}
+        : { compareRef: spec.value.compareRef }),
     });
     if (!result.ok) {
       writeErr(

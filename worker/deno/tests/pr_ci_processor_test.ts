@@ -3713,6 +3713,90 @@ async function finalMilePreFlight(
   }
 }
 
+/**
+ * The `ciCargoCompareRef` each CI-fix agent run was handed for a PR with
+ * `baseRef`: the first run and, because the post-fix quality gate fails fixably
+ * over uncommitted changes, the retry run.
+ */
+async function agentCompareRefs(
+  baseRef: string | undefined,
+  prBase: string,
+): Promise<unknown[]> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const seen: unknown[] = [];
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: ((request: { ciCargoCompareRef?: string }) => {
+          seen.push(request.ciCargoCompareRef);
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: openPrGh((args) =>
+          Promise.resolve(args.includes("baseRefName") ? prBase : "")
+        ),
+      },
+      git: {
+        runGitCommand: ((args: string[]) =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: args[0] === "status" ? " M src/broken.ts\n" : "",
+              stderr: "",
+            },
+          })) as unknown as GitDeps["runGitCommand"],
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+    await processCiFailure(makeInput(baseRef ? { baseRef } : {}), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      qualityGateFn: () =>
+        Promise.resolve({
+          action: "failed_fixable" as const,
+          qualityOutput: "deno check failed",
+          retryPrompt: "./quality.sh failing:\ndeno check failed",
+        }),
+    });
+    return seen;
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+Deno.test("processCiFailure - agent runs (Issue #4630 review): the first run and the quality retry compare CI cargo against the PR base", async () => {
+  assertEquals(await agentCompareRefs("main", "unused"), [
+    "origin/main",
+    "origin/main",
+  ]);
+  assertEquals(await agentCompareRefs(undefined, "release/2"), [
+    "origin/release/2",
+    "origin/release/2",
+  ]);
+});
+
+Deno.test('processCiFailure - agent runs (Issue #4630 review): an unreadable PR base is "" (comparison required) on both runs', async () => {
+  assertEquals(await agentCompareRefs(undefined, ""), ["", ""]);
+});
+
 Deno.test("processCiFailure - repair push (Issue #4630): no pre-flight commands passes the cargo-only spec", async () => {
   const spec = await finalMilePreFlight();
   assertEquals(spec?.ciCargoOnly, true);

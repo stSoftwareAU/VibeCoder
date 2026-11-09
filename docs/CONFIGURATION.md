@@ -5039,8 +5039,8 @@ repo-specific commands in the worker.
   callers that pass a pre-flight spec) still runs the changed-file checks
   described below, and a failure there fails the run. The CI-fix and PR-feedback
   repair pushes are the exception: for such a repo they pass a cargo-only spec
-  (Issue #4630), so only the repo CI's cargo clippy and test-target compile run
-  there. Pushes that pass no spec (such as WIP-preservation pushes) stay
+  (Issue #4630), so only the repo CI's cargo clippy and test-target compile,
+  the ShellCheck policy and `cargo deny` run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
   ungated.
 
 Commands run directly (not through a shell), so each entry is a program plus
@@ -5203,7 +5203,12 @@ gates do (see that bullet):
      processors' cargo-only spec) and in the agent's own pre-push hook: before
      the agent runs, the worker scans the workflows and writes the derived
      checks (and any unverifiable reasons) into the hook's spec file, so the
-     `--no-config` hook runs them without loading the YAML parser itself. The commands are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
+     `--no-config` hook runs them without loading the YAML parser itself. If
+     that scan cannot be produced (the tracked-file list is unreadable, or the
+     scanner fails to load or throws), the worker logs a warning and writes a
+     scan with no checks and one unverifiable reason, so a Rust-relevant push
+     through the hook is refused as an infrastructure fault, not waved through
+     with no CI cargo check. The commands are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
      from workflows triggered on `pull_request`. Each `cargo clippy` run in a
      step is run exactly as written: its `working-directory` (step, job or
      workflow; a plain relative path inside the repo), its `+toolchain` (or the
@@ -5242,7 +5247,16 @@ gates do (see that bullet):
      base ref), a failing check is re-run, as CI wrote it, in a detached
      worktree of that base, and when every diagnostic the push shows (matched by
      message and file, each no more often than on the base; not line) is also on the base, the failure is no verdict
-     on this push and is reported as a `[PRE_PUSH_WARNING]`. A base that passes,
+     on this push and is reported as a `[PRE_PUSH_WARNING]`. The agent's own
+     hook compares too, but only for a run that is handed the PR base: the
+     CI-fix and PR-feedback processors read the PR's base branch before the
+     agent runs and write it into the hook spec as `compareRef`
+     (`origin/<base>`; `""` when the base cannot be read, which makes a failing
+     CI cargo check an infrastructure fault, never a verdict). Another agent
+     run, such as an issue run, merge-conflict or spelling repair, has no
+     `compareRef`, so a failing CI cargo check on its push is a verdict. The
+     hook is allowed to write only to the temp directory, for the base
+     worktree. A base that passes,
      or lacks a diagnostic the push shows, leaves the failure a verdict. An
      unresolvable or unreadable base, a worktree that cannot be made, a base run
      that times out, cannot start or fails for the host, and a push output with
@@ -5396,13 +5410,14 @@ Floci deploy test that exits non-zero, including when Floci cannot be started
 or the `aws` CLI is missing for a deployable template, refuses the push; a CI
 cargo check that fails refuses the push with its output, unless the PR base
 fails with every diagnostic the push shows, when it is a `[PRE_PUSH_WARNING]`
-(in the worker's own
-gates and in the agent's hook, which receives the scan precomputed in its
-spec), while a CI cargo check that cannot
+(in the worker's own gates, and in the agent's hook when its spec carries a
+`compareRef`, the PR base the CI-fix and PR-feedback processors hand it),
+while a CI cargo check that cannot
 start or time out, hits a cargo registry or git-dependency network refusal or
 host disk full, or whose toolchain, component,
 target, directory or command is missing or cannot be reproduced here, or whose
-base comparison cannot be read, refuses it
+base comparison cannot be read, or whose CI workflows the worker could not scan
+before the agent ran, refuses it
 as an infrastructure fault (the
 push is still refused, but the run does not blame the branch, and the checked
 set is not reduced); a `cargo deny` diagnostic (`error[...]`)

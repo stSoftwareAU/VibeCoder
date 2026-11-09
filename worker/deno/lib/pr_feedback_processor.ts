@@ -26,6 +26,7 @@ import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import {
   CI_CARGO_ONLY_PRE_FLIGHT,
+  prBaseCompareRef,
   prBaseForSync,
   resolvePreFlightSpec,
 } from "./git_push.ts";
@@ -1387,15 +1388,28 @@ async function _processFeedbackWithHeartbeat(
     await chargeReviewFailure(error.message);
     return { ok: false, error };
   };
+  let agentCompareBase: { base: string | undefined } | undefined;
   const runAgentTracked: typeof deps.claude.runClaudeWithRetry = async (
     request,
     options,
   ) => {
     if (turnLimit.failure) return { ok: false, error: turnLimit.failure };
     carrier.agentRan = true;
+    // The agent's own `git push` compares a failing CI cargo check against the
+    // PR base (Issue #4630 review); read once, on the first run.
+    agentCompareBase ??= {
+      base: await prBaseForSync(
+        undefined,
+        repo,
+        prNumber,
+        (args) => deps.github.runGhCommand(args),
+        (message) => logger.warn(message),
+      ),
+    };
     const invocation = await deps.claude.runClaudeWithRetry(
       {
         repo,
+        ciCargoCompareRef: prBaseCompareRef(agentCompareBase.base),
         ...request,
         captureInvocationStats: true,
         ...(commentType === "pr_review"

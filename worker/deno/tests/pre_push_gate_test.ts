@@ -2500,7 +2500,7 @@ Deno.test("runPrePushGate: a commented YAML block header still plans the ShellCh
   }
 });
 
-Deno.test("runPrePushGate: without findCiCargo a Rust push runs no CI cargo command (the agent's hook), and with it the same push runs clippy", async () => {
+Deno.test("runPrePushGate: without findCiCargo a Rust push runs no CI cargo command (a hook spec with no ciCargo), and with it the same push runs clippy", async () => {
   const { root, clone, stdin } = await makeRepoWithFiles({
     ...RUST_FILES,
     ".github/workflows/ci.yml": RUST_WORKFLOW,

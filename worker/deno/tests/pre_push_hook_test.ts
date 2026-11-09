@@ -86,6 +86,26 @@ Deno.test("installPrePushHook: invalid GIT_CONFIG_COUNT is an error", async () =
   }
 });
 
+Deno.test('installPrePushHook: writes compareRef into the spec, "" included, and omits it when unset', async () => {
+  for (const compareRef of ["origin/main", "", undefined]) {
+    const result = await installPrePushHook({
+      baseEnv: {},
+      preFlightCommands: [],
+      ...(compareRef === undefined ? {} : { compareRef }),
+    });
+    assert(result.ok);
+    try {
+      const spec = JSON.parse(
+        await Deno.readTextFile(`${result.value.dir}/pre-push-spec.json`),
+      );
+      assertEquals(spec.compareRef, compareRef);
+      assertEquals("compareRef" in spec, compareRef !== undefined);
+    } finally {
+      await result.value.cleanup();
+    }
+  }
+});
+
 Deno.test("installPrePushHook: writes ciCargo into the spec", async () => {
   const scan = {
     checks: [{
@@ -242,6 +262,197 @@ Deno.test("integration: doc-only push is blocked by markdownlint, fixed content 
     );
     assertEquals(allowed.code, 0, allowed.stderr);
     assert((await remoteHead(fx.remote)) !== before);
+  } finally {
+    await hook.cleanup();
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});
+
+// ---- Integration: the repo CI's cargo checks on the agent's own push -------
+// (Issue #4630 review). A fake `cargo` on PATH stands in for the toolchain: it
+// answers `--version` probes, and fails a `clippy` run whenever `src/lib.rs` in
+// its working directory holds the word BAD, with the diagnostic clippy prints.
+
+const FAKE_CARGO = `#!/bin/bash
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then echo "cargo 1.80.0"; exit 0; fi
+done
+for arg in "$@"; do
+  if [ "$arg" = "clippy" ] && [ -f src/lib.rs ] && grep -q BAD src/lib.rs; then
+    printf 'error: this lint is denied\\n  --> src/lib.rs:1:1\\n  = note: \`-D clippy::assert_is_empty\` implied by \`-D warnings\`\\n' >&2
+    exit 101
+  fi
+done
+exit 0
+`;
+
+const CLIPPY_SCAN = {
+  checks: [{
+    kind: "clippy" as const,
+    workingDirectory: ".",
+    argv: ["cargo", "clippy", "--all-targets", "--", "-D", "warnings"],
+    env: {},
+    source: ".github/workflows/ci.yml",
+  }],
+  unverifiable: [] as string[],
+};
+
+/** An agent hook env with the fake cargo first on PATH, built from the checkout's own gate module. */
+async function cargoHookEnv(
+  fx: PushFixture,
+  spec: { ciCargo?: typeof CLIPPY_SCAN; compareRef?: string },
+): Promise<{ env: Record<string, string>; cleanup: () => Promise<void> }> {
+  const bin = `${fx.root}/bin`;
+  await Deno.mkdir(bin, { recursive: true });
+  await Deno.writeTextFile(`${bin}/cargo`, FAKE_CARGO);
+  await Deno.chmod(`${bin}/cargo`, 0o755);
+  const base = Deno.env.toObject();
+  const hook = await installPrePushHook({
+    baseEnv: { ...base, PATH: `${bin}:${base.PATH ?? ""}` },
+    preFlightCommands: [],
+    modulePath: new URL("../lib/pre_push_gate_cli.ts", import.meta.url)
+      .pathname,
+    ...spec,
+  });
+  assert(hook.ok);
+  return { env: hook.value.env, cleanup: hook.value.cleanup };
+}
+
+/** Commits `src/lib.rs` (and a manifest) with `source`, as one commit. */
+async function commitRust(fx: PushFixture, source: string, message: string) {
+  await Deno.mkdir(`${fx.clone}/src`, { recursive: true });
+  await Deno.writeTextFile(`${fx.clone}/Cargo.toml`, '[package]\nname = "d"\n');
+  await Deno.writeTextFile(`${fx.clone}/src/lib.rs`, source);
+  await commitAll(fx.clone, message);
+}
+
+const push = (fx: PushFixture, env: Record<string, string>) =>
+  run("git", ["push", "-q", "origin", "HEAD:main"], fx.clone, env);
+
+Deno.test("integration: an agent's self-pushed Rust change that fails CI clippy is refused; the same push with clippy passing is accepted", async () => {
+  const fx = await makeFixture();
+  const hook = await cargoHookEnv(fx, { ciCargo: CLIPPY_SCAN });
+  try {
+    await commitRust(fx, "pub fn f() {} // BAD\n", "bad");
+    const blocked = await push(fx, hook.env);
+    assert(blocked.code !== 0);
+    assert(blocked.stderr.includes("[PRE_PUSH_BLOCKED]"), blocked.stderr);
+    assert(blocked.stderr.includes("this lint is denied"), blocked.stderr);
+    assertEquals(await remoteHead(fx.remote), "");
+
+    await commitRust(fx, "pub fn f() {}\n", "fixed");
+    const allowed = await push(fx, hook.env);
+    assertEquals(allowed.code, 0, allowed.stderr);
+    assert((await remoteHead(fx.remote)) !== "");
+  } finally {
+    await hook.cleanup();
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});
+
+Deno.test("integration: a hook spec with no ciCargo runs no CI clippy, so the same failing Rust push is accepted", async () => {
+  const fx = await makeFixture();
+  const hook = await cargoHookEnv(fx, {});
+  try {
+    await commitRust(fx, "pub fn f() {} // BAD\n", "bad");
+    const allowed = await push(fx, hook.env);
+    assertEquals(allowed.code, 0, allowed.stderr);
+  } finally {
+    await hook.cleanup();
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});
+
+Deno.test("integration: a CI scan the worker could not produce refuses a Rust push as infrastructure, and lets a doc push through", async () => {
+  const fx = await makeFixture();
+  const reason =
+    "the worker could not scan the CI workflows before the agent ran: git ls-files exited 128";
+  const hook = await cargoHookEnv(fx, {
+    ciCargo: { checks: [], unverifiable: [reason] },
+  });
+  try {
+    await commitRust(fx, "pub fn f() {}\n", "rust");
+    const blocked = await push(fx, hook.env);
+    assert(blocked.code !== 0);
+    assert(
+      blocked.stderr.includes(
+        `CI's cargo checks cannot be reproduced locally: ${reason}`,
+      ),
+      blocked.stderr,
+    );
+    assertEquals(await remoteHead(fx.remote), "");
+
+    // Positive control: the refusal is the unverifiable scan, not the push.
+    await Deno.remove(`${fx.clone}/src`, { recursive: true });
+    await Deno.remove(`${fx.clone}/Cargo.toml`);
+    await Deno.writeTextFile(`${fx.clone}/notes.txt`, "x\n");
+    await commitAll(fx.clone, "notes only");
+    const allowed = await push(fx, hook.env);
+    assertEquals(allowed.code, 0, allowed.stderr);
+  } finally {
+    await hook.cleanup();
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});
+
+Deno.test("integration: the hook compares a failing CI clippy against the PR base (compareRef)", async () => {
+  // Base already red: a repair that leaves it red is not blamed.
+  const same = await makeFixture();
+  const sameHook = await cargoHookEnv(same, {
+    ciCargo: CLIPPY_SCAN,
+    compareRef: "origin/main",
+  });
+  try {
+    await commitRust(same, "pub fn f() {} // BAD\n", "base is red");
+    const seed = await push(same, Deno.env.toObject());
+    assertEquals(seed.code, 0, seed.stderr);
+    await commitRust(same, "pub fn f() {} // BAD\npub fn g() {}\n", "repair");
+    const allowed = await push(same, sameHook.env);
+    assertEquals(allowed.code, 0, allowed.stderr);
+    assert(
+      allowed.stderr.includes("[PRE_PUSH_WARNING]"),
+      `the base-only failure is logged: ${allowed.stderr}`,
+    );
+  } finally {
+    await sameHook.cleanup();
+    await Deno.remove(same.root, { recursive: true });
+  }
+
+  // Base green, the push breaks it: a verdict on the push (positive control for
+  // the comparison above: only the base's state differs).
+  const fresh = await makeFixture();
+  const freshHook = await cargoHookEnv(fresh, {
+    ciCargo: CLIPPY_SCAN,
+    compareRef: "origin/main",
+  });
+  try {
+    await commitRust(fresh, "pub fn f() {}\n", "base is green");
+    const seed = await push(fresh, Deno.env.toObject());
+    assertEquals(seed.code, 0, seed.stderr);
+    await commitRust(fresh, "pub fn f() {} // BAD\n", "repair breaks it");
+    const blocked = await push(fresh, freshHook.env);
+    assert(blocked.code !== 0);
+    assert(blocked.stderr.includes("this lint is denied"), blocked.stderr);
+  } finally {
+    await freshHook.cleanup();
+    await Deno.remove(fresh.root, { recursive: true });
+  }
+});
+
+Deno.test('integration: an unknown PR base (compareRef "") makes a failing CI clippy infrastructure, not a verdict', async () => {
+  const fx = await makeFixture();
+  const hook = await cargoHookEnv(fx, { ciCargo: CLIPPY_SCAN, compareRef: "" });
+  try {
+    await commitRust(fx, "pub fn f() {} // BAD\n", "bad");
+    const blocked = await push(fx, hook.env);
+    assert(blocked.code !== 0);
+    assert(
+      blocked.stderr.includes(
+        "Could not compare the failed CI cargo check against the PR base",
+      ),
+      blocked.stderr,
+    );
+    assert(!blocked.stderr.includes("this lint is denied"), blocked.stderr);
   } finally {
     await hook.cleanup();
     await Deno.remove(fx.root, { recursive: true });

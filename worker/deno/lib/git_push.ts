@@ -120,8 +120,9 @@ export function resolvePreFlightSpec(
 }
 
 /**
- * {@link resolvePreFlightSpec} for the PR repair processors (CI-fix, review
- * feedback, spelling, merge conflict): a repo with no pre-flight commands
+ * {@link resolvePreFlightSpec} for the spelling and merge-conflict PR repair
+ * processors (the CI-fix and PR-feedback processors use
+ * {@link CI_CARGO_ONLY_PRE_FLIGHT} instead): a repo with no pre-flight commands
  * still gets the ShellCheck publication check, plus the CI cargo-deny check
  * when the pushed paths include a cargo input, and nothing else, before the
  * repair is pushed (Issues #4631 and #4626). WIP checkpoint, timeout-preservation and
@@ -563,6 +564,20 @@ export async function prBaseForSync(
     );
   }
   return undefined;
+}
+
+/**
+ * The ref a failing CI cargo check is compared against for a PR repair: the
+ * PR's base as `origin/<branch>`, or `""` when the base is unknown. `""` is not
+ * a usable ref, so `runPrePushGate` reports such a comparison as unavailable
+ * (infrastructure) rather than as a verdict, in the worker's own gate
+ * ({@link CommitAndPushOptions.requireCargoBaseComparison}) and in the agent's
+ * pre-push hook (`RunClaudeOptions.ciCargoCompareRef`) alike (Issue #4630).
+ */
+export function prBaseCompareRef(base: string | undefined): string {
+  return base !== undefined && base.trim() !== ""
+    ? `origin/${base.trim()}`
+    : "";
 }
 
 /**
