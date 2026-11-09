@@ -120,6 +120,86 @@ Deno.test("findUnpinnedInstalls - empty input yields no findings", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Argument tokenisation (Issue #4858) — expressions, quotes, comments
+// ---------------------------------------------------------------------------
+
+/** The spec, package name and version of every finding. */
+function summarise(run: string) {
+  return findUnpinnedInstalls(run).map((f) => ({
+    spec: f.spec,
+    packageName: f.packageName,
+    version: f.version,
+  }));
+}
+
+Deno.test("findUnpinnedInstalls - a GitHub expression is one argument", () => {
+  assertEquals(summarise("npm install -g foo@${{ env.V }}"), [
+    { spec: "foo@${{ env.V }}", packageName: "foo", version: "${{ env.V }}" },
+  ]);
+  assertEquals(summarise("gem install foo -v ${{ env.V }}"), [
+    { spec: "foo", packageName: "foo", version: "${{ env.V }}" },
+  ]);
+  const withQuotes = findUnpinnedInstalls(
+    "npm install -g foo@${{ inputs.v || '1.2.3' }}",
+  );
+  assertEquals(withQuotes.length, 1);
+  assertEquals(withQuotes[0]?.packageName, "foo");
+  assertEquals(withQuotes[0]?.spec, "foo@${{ inputs.v || '1.2.3' }}");
+  assertEquals(withQuotes[0]?.version, "${{ inputs.v || '1.2.3' }}");
+  assertEquals(summarise("gem install foo -v ${{ inputs.v || '1.2.3' }}"), [
+    { spec: "foo", packageName: "foo", version: "${{ inputs.v || '1.2.3' }}" },
+  ]);
+  assertEquals(summarise("npm install -g foo@${{ env.V }} # c"), [
+    { spec: "foo@${{ env.V }}", packageName: "foo", version: "${{ env.V }}" },
+  ]);
+});
+
+Deno.test("findUnpinnedInstalls - a pinned install before a comment or redirection is clean", () => {
+  for (
+    const run of [
+      "npm install -g foo@1.2.3 # comment",
+      "npm install -g foo@1.2.3 2>&1",
+      "npm install -g foo@1.2.3 > /dev/null",
+      "npm install -g foo@1.2.3 >/dev/null 2>&1",
+      "npm install -g foo@1.2.3 2> /dev/null",
+      "npm install -g foo@1.2.3 &> /dev/null",
+      "gem install foo -v 1.2.3 # comment",
+      "gem install foo -v 1.2.3 2>&1",
+      "gem install foo -v 1.2.3 > /dev/null",
+      "gem install foo -v 1.2.3 2>/dev/null",
+    ]
+  ) {
+    assertEquals(findUnpinnedInstalls(run), [], run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - an unpinned package before a comment or redirection is flagged once", () => {
+  for (
+    const run of [
+      "npm install -g foo # comment",
+      "npm install -g foo 2>&1",
+      "npm install -g foo > /dev/null",
+      "gem install foo # comment",
+      "gem install foo > /dev/null",
+      "gem install foo 2>&1",
+    ]
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.map((f) => f.spec), ["foo"], run);
+    assertEquals(found[0]?.packageName, "foo", run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - quoted values stay within one argument", () => {
+  assertEquals(summarise("npm install -g 'foo bar'"), [
+    { spec: "foo bar", packageName: "foo bar", version: null },
+  ]);
+  assertEquals(summarise("npm install -g foo@1.2.3 '#bar'"), [
+    { spec: "#bar", packageName: "#bar", version: null },
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // Command normalisation (Issue #3953) — prefixes, flags, continuations
 // ---------------------------------------------------------------------------
 

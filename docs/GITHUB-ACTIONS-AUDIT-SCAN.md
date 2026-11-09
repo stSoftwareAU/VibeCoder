@@ -1031,8 +1031,13 @@ Local paths, `file:`, `git+`, `http(s):` specs, shell-variable package specs
 is exempt for cargo only; npm and gem still flag variable versions. Cargo
 `--git` / `--path` installs are exempt from version pinning but still require
 `--locked` or `--frozen`. An unlocked external-source finding asks only for
-locking. Cargo quoted values and GitHub expression versions are kept together;
-expression versions, like shell-variable versions, are not statically decidable.
+locking. For npm, npx, gem and cargo alike, quoted values and GitHub
+`${{ … }}` expressions are kept as one token, and unquoted shell comments and
+redirections (`# …`, `2>&1`, `> /dev/null`) are never read as package
+arguments. An expression version, like a shell-variable version, is not
+statically decidable: it is exempt for cargo only, while npm and gem flag the
+real package once, with the whole expression as its version, and never the
+expression's fragments.
 
 **Commands are normalised before matching**. The tool used to
 have to be token 0 and the subcommand token 1, so two everyday spellings —

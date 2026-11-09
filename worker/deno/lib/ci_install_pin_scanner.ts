@@ -642,8 +642,13 @@ function splitCommands(command: string): string[] {
   return segments;
 }
 
-/** Drop unquoted shell comments and redirections from cargo arguments. */
-function cargoShellTokens(tokens: string[]): string[] {
+/**
+ * Drop unquoted shell comments and redirections from command arguments, and
+ * strip the quotes from quoted values. A GitHub `${{ … }}` expression is left
+ * byte-for-byte, so quotes inside it (`'1.2.3'`) are kept. Applies to every
+ * tool (Issue #4858).
+ */
+function shellArgumentTokens(tokens: string[]): string[] {
   const result: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i] as string;
@@ -655,12 +660,25 @@ function cargoShellTokens(tokens: string[]): string[] {
     }
     result.push(
       token.replace(
-        /"((?:\\.|[^"\\])*)"|'([^']*)'/g,
-        (_match, double, single) => double ?? single,
+        /\$\{\{.*?\}\}|"((?:\\.|[^"\\])*)"|'([^']*)'/g,
+        (match, double, single) => double ?? single ?? match,
       ),
     );
   }
   return result;
+}
+
+/**
+ * Tokenise a command's arguments (Issue #4858): a quoted value or a GitHub
+ * `${{ … }}` expression stays within one token, then
+ * {@link shellArgumentTokens} drops unquoted comments and redirections.
+ */
+function shellTokens(command: string): string[] {
+  return shellArgumentTokens(
+    command.match(
+      /(?:\$\{\{.*?\}\}|"(?:\\.|[^"\\])*"|'[^']*'|\$(?!\{\{)|[^\s"'$]+)+/g,
+    ) ?? [],
+  );
 }
 
 /**
@@ -679,6 +697,11 @@ function cargoShellTokens(tokens: string[]): string[] {
  * Comment lines, flags, local/URL/variable specs, and non-install npm
  * subcommands (`npm ci`, `npm config set …`) are ignored.
  *
+ * Every tool's arguments are tokenised the same way ({@link shellTokens}): a
+ * quoted value or a GitHub `${{ … }}` expression is one token, and an
+ * unquoted `#` comment or redirection (`2>&1`, `> /dev/null`) is never read
+ * as a package argument.
+ *
  * Pure — no I/O. Never throws.
  */
 export function findUnpinnedInstalls(run: string): UnpinnedInstall[] {
@@ -694,19 +717,7 @@ export function findUnpinnedInstalls(run: string): UnpinnedInstall[] {
       const command = segment.trim();
       // Quotes are shell syntax, not part of the spec — `"$TOOL"` must
       // read as the variable `$TOOL` so it stays exempt.
-      let tokens = stripCommandPrefix(
-        command.split(/\s+/).filter((t) => t.length > 0).map(unquote),
-      );
-      if (tokens[0] === "cargo") {
-        // Keep quoted values and Actions expressions together within a token.
-        tokens = stripCommandPrefix(
-          cargoShellTokens(
-            command.match(
-              /(?:\$\{\{.*?\}\}|"(?:\\.|[^"\\])*"|'[^']*'|\$(?!\{\{)|[^\s"'$]+)+/g,
-            ) ?? [],
-          ),
-        );
-      }
+      const tokens = stripCommandPrefix(shellTokens(command));
       if (tokens.length === 0) continue;
       // Evidence keeps the command as written; only matching is normalised.
       const line: LogicalLine = { command, anchor: logical.anchor };
