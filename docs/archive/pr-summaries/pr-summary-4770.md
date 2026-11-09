@@ -309,7 +309,9 @@ Backend and CLI change; no visual surface changed.
   which runs the real CLI with
   `worker/deno/tests/fixtures/fleet_babysitter_container_preload.ts` (fake `gh`,
   clone git and container runtime; real git and tar over the worker checkout).
-  The container's fake agent leaves a FIFO as `.babysitter-pr-body`; the pass
+  The preload requires the real checkout path and narrows it to a string before
+  its command stubs use it, so the fixture type-checks. The container's fake
+  agent leaves a FIFO as `.babysitter-pr-body`; the pass
   must exit non-zero with `timed out opening`, and the same pass without the
   FIFO must succeed and apply the description (positive control). Red check:
   replacing `Deno.exit(Deno.exitCode)` in `main` with a comment makes the test
