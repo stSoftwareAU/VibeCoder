@@ -1102,6 +1102,8 @@ export interface RepoConfig {
    * `fleet_pr_slots`.
    */
   fleetPrSlots?: number;
+  /** Opt-in shared implementation high/low watermarks (Issue #4942). */
+  completionAdmission?: { high: number; low: number };
   /** Per-repo verbosity level override (Issue #1330) */
   verbosity?: "minimal" | "concise" | "standard" | "verbose";
   /**

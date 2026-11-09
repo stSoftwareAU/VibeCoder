@@ -1,6 +1,10 @@
 /** Read-only accounting for unattended fleet PR completion (Issue #4658). */
 
 import type { AuditEntry } from "./audit_entry.ts";
+import {
+  buildIssueCompletionMetrics,
+  type IssueCompletionEvidence,
+} from "./issue_completion_metrics.ts";
 import type { WorkerConfig } from "../types.ts";
 import { isIssueExecutorSplitEnabled } from "./issue_executor_split.ts";
 import { resolveIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
@@ -64,6 +68,7 @@ export interface TrustedPrAction {
 }
 
 export interface PrCompletionInput {
+  issueCompletions?: IssueCompletionEvidence;
   cohort: { start: string; end: string; observedAt: string };
   prs: PrCompletionRecord[];
   actions: TrustedPrAction[];
@@ -89,6 +94,7 @@ export interface PrCompletionInput {
     attempt?: number;
     workflowRunId?: string;
     workflowId?: string;
+    workflowName?: string;
     outcome?: string | null;
     durationSeconds?: number | null;
     startedAt?: string | null;
@@ -133,6 +139,7 @@ export interface PrCompletionInput {
 }
 
 export interface PrCompletionReport {
+  issueThroughput?: ReturnType<typeof buildIssueCompletionMetrics>;
   cohort: {
     start: string;
     end: string;
@@ -600,6 +607,10 @@ export function buildPrCompletionReport(
     reviewRounds = 0,
     fixRounds = 0;
   const deliveredKeys = new Set<string>();
+  const issueAttribution = new Map<
+    string,
+    "unattended" | "human" | "unknown"
+  >();
   const pRsByKey = new Map(prs.map((pr) => [keyOf(pr.repo, pr.number), pr]));
   for (const pr of prs) {
     const key = keyOf(pr.repo, pr.number);
@@ -652,6 +663,10 @@ export function buildPrCompletionReport(
         hasVerifiedMerge && !verifiedHuman && actions.every((action) =>
           action.actor === "fleet"
         );
+      issueAttribution.set(
+        key,
+        verifiedHuman ? "human" : verifiedUnattended ? "unattended" : "unknown",
+      );
       if (verifiedHuman) humanAssistedMerged++;
       else if (!historyVerified) unknownMerged++;
       else if (verifiedUnattended) {
@@ -904,6 +919,11 @@ export function buildPrCompletionReport(
     };
   }
   return {
+    ...(input.issueCompletions
+      ? {
+        issueThroughput: buildIssueCompletionMetrics(input, issueAttribution),
+      }
+      : {}),
     cohort: {
       ...input.cohort,
       prCount: prs.length,
@@ -1048,6 +1068,7 @@ export function fingerprintWorkerReviewPolicy(
     isIssueExecutorSplitEnabled("issue", config.repoConfig?.[repo], config),
     resolveIssueSubAgentTier(config, config.repoConfig?.[repo]),
     config.repoConfig?.[repo]?.skipAutoMerge === true,
+    config.repoConfig?.[repo]?.completionAdmission ?? null,
   ]);
   return fingerprintReviewPolicy({
     issue_executor_split: config.issueExecutorSplit,

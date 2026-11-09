@@ -373,6 +373,53 @@ Within a label tier, the final cross-repo selection is **`nice`-aware**. Each re
 
 ### Suppression rules — what can knock out a higher-priority candidate
 
+#### Completion-first admission (Issue #4942)
+
+Repositories opting into `repo_config.<repo>.completion_admission` use shared
+implementation capacity instead of the legacy default-stream PR-only cap.
+Start the busy-repository pilot with `{"high": 4, "low": 2}`. At four logical
+changes, stop new unrelated implementation and drain to two before reopening
+intake. Priority labels do not bypass this rule. Other repositories continue.
+
+Capacity includes live implementation claims, draft and ready PRs from every
+author, and final milestone integration PRs targeting the same branch. A claim
+and its PR occupy one slot. Each milestone child branch has its own one-change
+limit. Human PR metadata contributes pressure; this grants no permission to
+repair, review, dismiss or merge that human's PR.
+
+The existing issue claim wins first, then reserves capacity under the existing
+distributed comment lock before implementation starts. Authenticated state is
+stored on the oldest issue, including after it closes. Initial activation
+reconciles existing live claim heartbeats; new claims awaiting admission are
+marked separately. Claims expire on the existing heartbeat recovery window,
+and claim-to-PR conversion never creates a free slot. Unreadable state delays
+intake for this repository until the next scan. Corrupt authenticated state is
+rebuilt from live evidence, retaining completion mode above the low watermark.
+
+Free issue slots dispatch the existing feedback, CI-fix and conflict handlers
+before considering new implementation. They retain the same repository lease,
+PR ownership, retry logic, watchdog and final base-refresh ownership (#4613).
+Different hosts can repair different PRs concurrently. On one host, repairs
+sharing a clone remain serialised to protect the working tree. Draft resumption
+uses its already-counted slot; running implementations are not interrupted.
+
+One bounded recovery change per target branch may be admitted even when an
+inherited backlog already exceeds the cap: an existing fleet-authored PR must
+explicitly say `Depends on #N` or `Blocked by #N`. This also admits a genuinely
+blocking base-CI repair issue. Normal issue authorisation and dependency checks
+still apply. The recovery reservation stays occupied until its PR closes or
+merges; another priority label cannot create another exception.
+
+Deploy the same revision and per-repository settings to every host before
+enabling the pilot. The first shared state records the watermarks; a host whose
+settings disagree declines new implementation while maintenance continues.
+Policy changes must update that authenticated shared policy and all host
+settings together. Repositories without this option retain their current
+behaviour. No observation period or human acceptance gate is added to merging.
+
+The rules below describe legacy PR-only admission. Completion admission also
+runs before final selection and again at claim time for opted-in repositories.
+
 A `top-priority` issue is **not** automatically picked just because the label is present. Five filters are applied during candidate collection (in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts), [`collect_label_candidates.ts`](../../worker/deno/lib/collect_label_candidates.ts), [`collect_work_on_candidates.ts`](../../worker/deno/lib/collect_work_on_candidates.ts), and [`collect_low_priority_candidates.ts`](../../worker/deno/lib/collect_low_priority_candidates.ts)). Any one of them removes the candidate from its tier — the next-oldest issue in the same tier is then considered, and only if every tier 1 candidate is suppressed does the worker fall through to tier 2.
 
 1. **Milestone occupancy** — [`isMilestoneOccupied`](../../worker/deno/lib/issue_filter.ts) skips an issue when a Vibe Coder — this host or a sibling in `fleet_pr_authors`/`service_accounts` — already has another issue assigned in the same `repo + milestone` work stream. Enforces "one issue per milestone per repo at a time". Human-assigned issues do not count: the match set is the fleet-identity set (`resolveFleetMaintenanceAuthorSet`), never the `allowed_authors` permission list. Since Issue #2532 the gate binds `low-priority` and `idle-task` only — a `top-priority` or `work-on` claim shares a busy stream in its own fresh conversation (Issue #2530), and only the single issue a sibling slot on this host already holds is refused, as `slot-in-flight`.
