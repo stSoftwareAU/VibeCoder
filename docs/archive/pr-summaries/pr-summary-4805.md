@@ -83,3 +83,11 @@ New tests, all passing on the head via `deno task test:unit` from `worker/deno`:
 - Limits: the real-filesystem test overrides `runCommand` with a direct spawn, so
   the `agent` sudo path is not exercised; `worker/deno` holds no `quality.sh`, so
   the test asserts that precondition instead of planting a worker-side script.
+- `./quality.sh` on the head (proxy variables unset): every stage passed except
+  `deno tests` (10 failed, 33487 passed), and the serial pass did not run. All 10
+  failures are in files this change does not touch and trace to the sandbox: the
+  pre-push hook tests in `claude_runner_pre_push_3394_test.ts` and
+  `pre_push_hook_test.ts` hit `JSR package manifest for '@std/yaml' failed to
+  load` (jsr.io unreachable), and `review_fleet_prs_post_claim_4398_test.ts`
+  fails with `Failed to resolve 'osascript' for allow-run`. Config integration,
+  semgrep, Checkov and the release-tag ruleset check were skipped.
