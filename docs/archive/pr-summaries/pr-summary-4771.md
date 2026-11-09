@@ -15,8 +15,8 @@ Version bump: none; `VERSION` is unchanged for this change.
 
 - Prove the image's baked Chromium executable launches before the babysitter
   relies on browser support.
-- Reuse the existing launch plan, runtime/image validation and egress helpers
-  so the probe follows the repair container's configured authority.
+- Reuse the existing launch plan, runtime/image validation and egress helpers so
+  the probe follows the repair container's configured authority.
 
 ### Essential Design Decisions
 
@@ -53,8 +53,8 @@ flowchart TD
 
 - Backend/CLI change; tests and command output provide the evidence. No visual
   surface changed.
-- `container/Containerfile` runs Playwright Chromium with `args: ['--no-sandbox']`
-  during image build. The host command
+- `container/Containerfile` runs Playwright Chromium with
+  `args: ['--no-sandbox']` during image build. The host command
   `timeout 30 "$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank`
   exited zero and printed HTML.
 - `deno run --allow-all worker/deno/commands/fleet_pr_babysitter.ts --check-container`
@@ -93,16 +93,41 @@ native tooling.
 
 ## Test Plan
 
-- `deno task test:unit tests/fleet_babysitter_app_test.ts tests/fleet_babysitter_chromium_check_4738_test.ts tests/fleet_pr_babysitter_setup_test.ts tests/fleet_babysitter_container_4738_test.ts tests/fleet_babysitter_container_egress_4738_test.ts < /dev/null` — passed: 100 tests, 0 failed.
-- `deno fmt --check`, `deno lint` and `deno check --frozen --lock=deno.lock` on the seven changed TypeScript files — all passed.
-- `timeout 900 ./quality.sh < /dev/null` — failed: all non-test checks passed except config integration and Checkov, which were skipped; the parallel Deno suite reported 33,477 passed, 10 failed and 10 ignored. The failures are listed under Acceptance Criteria.
-- `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4771-body.md --labels enhancement,top-priority,work-on ../../docs/archive/pr-summaries/pr-summary-4771.md` — blocked only by the required independent Spec and Standards review markers and verdicts, which this run did not produce because delegation was prohibited.
-- Host Chromium flags — `--headless --no-sandbox --dump-dom about:blank` returned HTML with exit zero; the real image launch remains unverified because no container runtime is installed.
-- Runtime/image failure tests went red when their corresponding validation was removed. The exit-code and HTML-output test went red when either result guard was removed. Timeout cleanup and egress tests went red when container kill or teardown handling was removed; the cleanup-error test went red when its failure check was removed.
-- Setup failure propagation went red when the setup call was removed. The `run.sh` test went red when either `--check-container` forwarding or the automatic-pass probe was removed; both paths fail before App configuration or authentication.
-- Existing assertion changed in `worker/deno/tests/fleet_pr_babysitter_setup_test.ts`: `assertEquals(calls[3], "gh version");`
-  - Required by: "run it from `worker/deno/commands/fleet_pr_babysitter_setup.ts` after the preflight."
-  - Replaced by: `assertEquals(calls[3], "chromium check");` and `assertEquals(calls[4], "gh version");`
-- Changed entry points checked: setup `main`, the CLI `--check-container` path, the automatic babysitter pass, and `fleet-pr-babysitter/run.sh` forwarding.
-- Deno regression avoided: used Deno tasks, lint, formatter and type checker; no Node tooling or dependency was added.
-- Test files named above exist at the repository root. The full gate also skipped config integration because its required configuration was unavailable and Checkov because no supported Checkov installation was present.
+- `deno task test:unit tests/fleet_babysitter_app_test.ts tests/fleet_babysitter_chromium_check_4738_test.ts tests/fleet_pr_babysitter_setup_test.ts tests/fleet_babysitter_container_4738_test.ts tests/fleet_babysitter_container_egress_4738_test.ts < /dev/null`
+  — passed: 100 tests, 0 failed.
+- `deno fmt --check`, `deno lint` and `deno check --frozen --lock=deno.lock` on
+  the seven changed TypeScript files — all passed.
+- `timeout 900 ./quality.sh < /dev/null` — failed: all non-test checks passed
+  except config integration and Checkov, which were skipped; the parallel Deno
+  suite reported 33,477 passed, 10 failed and 10 ignored. The failures are
+  listed under Acceptance Criteria.
+- `deno task pr-summary-check --base main --issue-body-file /tmp/issue-4771-body.md --labels enhancement,top-priority,work-on ../../docs/archive/pr-summaries/pr-summary-4771.md`
+  — blocked only by the required independent Spec and Standards review markers
+  and verdicts, which this run did not produce because delegation was
+  prohibited.
+- Host Chromium flags — `--headless --no-sandbox --dump-dom about:blank`
+  returned HTML with exit zero; the real image launch remains unverified because
+  no container runtime is installed.
+- Runtime/image failure tests went red when their corresponding validation was
+  removed. The exit-code and HTML-output test went red when either result guard
+  was removed. Timeout cleanup and egress tests went red when container kill or
+  teardown handling was removed; the cleanup-error test went red when its
+  failure check was removed.
+- Setup failure propagation went red when the setup call was removed. The
+  `run.sh` test went red when either `--check-container` forwarding or the
+  automatic-pass probe was removed; both paths fail before App configuration or
+  authentication.
+- Existing assertion changed in
+  `worker/deno/tests/fleet_pr_babysitter_setup_test.ts`:
+  `assertEquals(calls[3], "gh version");`
+  - Required by: "run it from
+    `worker/deno/commands/fleet_pr_babysitter_setup.ts` after the preflight."
+  - Replaced by: `assertEquals(calls[3], "chromium check");` and
+    `assertEquals(calls[4], "gh version");`
+- Changed entry points checked: setup `main`, the CLI `--check-container` path,
+  the automatic babysitter pass, and `fleet-pr-babysitter/run.sh` forwarding.
+- Deno regression avoided: used Deno tasks, lint, formatter and type checker; no
+  Node tooling or dependency was added.
+- Test files named above exist at the repository root. The full gate also
+  skipped config integration because its required configuration was unavailable
+  and Checkov because no supported Checkov installation was present.
