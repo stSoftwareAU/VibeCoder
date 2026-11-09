@@ -16,6 +16,7 @@ import {
   neutraliseSubAgentTierMarkers,
   subAgentTierFromBody,
 } from "../lib/pr_body.ts";
+import { maskMarkdownCode } from "../lib/markdown_code_spans.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
 // --- extractClosingIssueNumbers (Issue #1113) ---
@@ -151,6 +152,21 @@ Deno.test("pr_body - ensurePrReferencesIssue returns promptly on a long run of s
   const body = "Closes" + " \t".repeat(25000);
   const result = ensurePrReferencesIssue(body, 42);
   assertEquals(result, body + "\n\nCloses #42");
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue appends when a code span separates the keyword from #N (Issue #4808)", () => {
+  const body = "Closes `x` #42";
+  assertEquals(
+    ensurePrReferencesIssue(body, 42),
+    "Closes `x` #42\n\nCloses #42",
+  );
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue leads with the close when the body ends inside an unclosed fence (Issue #4808)", () => {
+  const body = "Sum\n\n```\ncode\n\nCloses #42\n";
+  const result = ensurePrReferencesIssue(body, 42);
+  assertEquals(result, `Closes #42\n\n${body}`);
+  assertEquals(extractClosingIssueNumbers(maskMarkdownCode(result)), [42]);
 });
 
 // --- buildMilestonePrSection ---

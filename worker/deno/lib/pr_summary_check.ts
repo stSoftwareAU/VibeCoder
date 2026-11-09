@@ -129,10 +129,9 @@ function partOfStillClosesProblem(
   if (closing !== null) {
     return `${keptOpen} says the issue stays open, but the summary still contains the closing phrase "${closing}". ${WAYS_OUT}`;
   }
-  if (ensurePrReferencesIssue(summary, issueNumber) !== summary) {
-    return `${keptOpen} says the issue stays open, but the summary has no parsed missing criterion, so the worker appends Closes #${issueNumber}. ${WAYS_OUT}`;
-  }
-  return undefined;
+  return ensurePrReferencesIssue(summary, issueNumber) === summary
+    ? undefined
+    : `${keptOpen} says the issue stays open, but the summary has no parsed missing criterion, so the worker appends Closes #${issueNumber}. ${WAYS_OUT}`;
 }
 
 /** The Part-of gate report for one summary. */
