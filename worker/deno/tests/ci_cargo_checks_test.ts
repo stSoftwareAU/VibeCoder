@@ -872,3 +872,124 @@ Deno.test("a workflow that parses to null or a list is unparseable, not a crash"
     ],
   });
 });
+
+// ---- PR #4896 review: a cd on its own line, and nextest's --profile ---------
+
+Deno.test("a cd on its own line holds for the later lines of the same step only", () => {
+  const result = scan(`
+    on: pull_request
+    jobs:
+      lint:
+        steps:
+          - run: |
+              cd rust
+              cargo clippy --all-targets -- -D warnings
+              cd ../tools
+          - run: cargo clippy
+          - working-directory: app
+            run: |
+              echo start
+              cd rust
+              cargo test --no-run
+              cd nested
+              cargo clippy
+  `);
+  assertEquals(
+    result.checks.map((c) => [c.kind, c.workingDirectory]),
+    [
+      ["clippy", "rust"],
+      ["clippy", "."],
+      ["test-build", "app/rust"],
+      ["clippy", "app/rust/nested"],
+    ],
+  );
+  assertEquals(result.unverifiable, []);
+});
+
+Deno.test("a cd the scanner cannot follow makes the later cargo lines of that step unverifiable", () => {
+  for (
+    const unfollowable of [
+      "cd $HOME/rust",
+      "cd",
+      "cd a b",
+      "pushd rust",
+      "popd",
+      "cd rust || true",
+    ]
+  ) {
+    const result = scan(`
+      on: pull_request
+      jobs:
+        lint:
+          steps:
+            - run: |
+                ${unfollowable}
+                cargo clippy --all-targets -- -D warnings
+    `);
+    assertEquals(result.checks, [], unfollowable);
+    assertEquals(result.unverifiable.length, 1, unfollowable);
+    assertStringIncludes(result.unverifiable[0]!, "cd form", unfollowable);
+  }
+});
+
+Deno.test("nextest's --profile names a nextest profile and is not passed to cargo as a build profile", () => {
+  const argvOf = (line: string) =>
+    scan(`
+      on: pull_request
+      jobs:
+        test:
+          steps:
+            - run: ${line}
+    `).checks.map((c) => c.argv);
+  assertEquals(argvOf("cargo nextest run --workspace --profile ci"), [[
+    "cargo",
+    "test",
+    "--no-run",
+    "--workspace",
+  ]]);
+  assertEquals(argvOf("cargo nextest run -P ci --locked"), [[
+    "cargo",
+    "test",
+    "--no-run",
+    "--locked",
+  ]]);
+  assertEquals(argvOf("cargo nextest run --profile=ci -p core"), [[
+    "cargo",
+    "test",
+    "--no-run",
+    "-p",
+    "core",
+  ]]);
+  assertEquals(
+    argvOf("cargo nextest run --cargo-profile release --profile ci"),
+    [["cargo", "test", "--no-run", "--profile", "release"]],
+  );
+  assertEquals(argvOf("cargo nextest run --cargo-profile=release"), [[
+    "cargo",
+    "test",
+    "--no-run",
+    "--profile",
+    "release",
+  ]]);
+  assertEquals(argvOf("cargo llvm-cov nextest --workspace --profile ci"), [[
+    "cargo",
+    "test",
+    "--no-run",
+    "--workspace",
+  ]]);
+  // cargo test and llvm-cov without nextest keep --profile as cargo's profile.
+  assertEquals(argvOf("cargo test --profile release"), [[
+    "cargo",
+    "test",
+    "--no-run",
+    "--profile",
+    "release",
+  ]]);
+  assertEquals(argvOf("cargo llvm-cov --profile release"), [[
+    "cargo",
+    "test",
+    "--no-run",
+    "--profile",
+    "release",
+  ]]);
+});

@@ -3372,3 +3372,263 @@ Deno.test("runPrePushGate: an unsupported ShellCheck workflow still refuses a sc
     await Deno.remove(root, { recursive: true });
   }
 });
+
+// ---- CI cargo: every toolchain probed, missing capability, base failures ----
+// (PR #4896 review)
+
+const STABLE_CLIPPY: CiCargoCheck = {
+  ...CLIPPY_CHECK,
+  env: {},
+  argv: ["cargo", "+stable", "clippy", "--all-targets"],
+};
+const MSRV_TEST_BUILD: CiCargoCheck = {
+  kind: "test-build",
+  workingDirectory: "rust",
+  argv: ["cargo", "+1.74.0", "test", "--no-run"],
+  env: {},
+  source: "ci.yml",
+};
+const MISSING_TOOLCHAIN =
+  "error: toolchain '1.74.0-x86_64-unknown-linux-gnu' is not installed";
+
+Deno.test("runPrePushGate: a second toolchain that is missing is infrastructure, and no CI cargo command runs", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) =>
+          c === "cargo +1.74.0 --version"
+            ? { code: 1, stderr: MISSING_TOOLCHAIN }
+            : {},
+        calls,
+      ),
+      scanOf(STABLE_CLIPPY, MSRV_TEST_BUILD),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(result.error.message.includes("cargo +1.74.0 --version"));
+    assert(result.error.message.includes("is not installed"));
+    // The stable toolchain was probed too, so the probe covered both.
+    assert(calls.some((c) => c.command === "cargo +stable --version"));
+    assertEquals(ciRuns(calls), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a clippy component missing from a second toolchain is probed and is infrastructure", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const beta: CiCargoCheck = {
+      ...STABLE_CLIPPY,
+      argv: ["cargo", "+beta", "clippy", "--all-targets"],
+    };
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) =>
+          c === "cargo +beta clippy --version"
+            ? {
+              code: 1,
+              stderr:
+                "error: 'cargo-clippy' is not installed for the toolchain 'beta'",
+            }
+            : {},
+        calls,
+      ),
+      scanOf(STABLE_CLIPPY, beta),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(result.error.message.includes("cargo +beta clippy --version"));
+    assertEquals(ciRuns(calls), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: rustup and rustc output for a missing toolchain, component or target is infrastructure, not a block", async () => {
+  const outputs = [
+    MISSING_TOOLCHAIN,
+    "error: 'cargo-clippy' is not installed for the toolchain 'stable'",
+    "error[E0463]: can't find crate for `core`\n  |\n  = note: the `wasm32-unknown-unknown` target may not be installed\n",
+  ];
+  for (const stderr of outputs) {
+    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    try {
+      const result = await gateRust(
+        clone,
+        stdin,
+        scriptedRunner(
+          (c) => c === CLIPPY_CMD ? { code: 101, stderr } : {},
+          [],
+        ),
+      );
+      assert(!result.ok, stderr);
+      assertInstanceOf(result.error, PrePushGateInfrastructureError, stderr);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("runPrePushGate: a lint whose source excerpt quotes 'is not installed' still blocks", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const stderr = [
+      "error: this could be a `const fn` (clippy::must_use_candidate)",
+      "  --> rust/src/lib.rs:1:1",
+      '12 |     let x = "error: toolchain is not installed";',
+      "   = note: the lint is denied by `-D warnings`",
+      "",
+    ].join("\n");
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner((c) => c === CLIPPY_CMD ? { code: 101, stderr } : {}, []),
+    );
+    assert(!result.ok);
+    assert(!(result.error instanceof PrePushGateInfrastructureError));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+const LINT_A =
+  "error: this could be a `const fn`\n  --> src/a.rs:4:1\n   = note: `-D clippy::must_use_candidate` implied by `-D warnings`\n";
+const LINT_B = "error: unused variable: `x`\n  --> src/b.rs:9:5\n";
+
+/** Gate `clone` with the base-comparison ref set to its first commit. */
+async function gateAgainstBase(
+  clone: string,
+  stdin: string,
+  answer: (onBase: boolean) => Partial<PreFlightCommandResult>,
+  calls: RanCall[],
+  compareRef?: string,
+) {
+  const ref = compareRef ?? await git(clone, "rev-parse", "HEAD~1");
+  const runner: PreFlightRunner = (command, options) => {
+    calls.push({ command, cwd: options.cwd, env: options.env });
+    const onBase = (options.cwd ?? "").includes("vibe-base-check-");
+    return Promise.resolve({
+      started: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+      ...(command === CLIPPY_CMD ? answer(onBase) : {}),
+    });
+  };
+  return await runPrePushGate({
+    cwd: clone,
+    stdin,
+    preFlightCommands: [],
+    runner,
+    findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
+    compareRef: ref,
+  });
+}
+
+Deno.test("runPrePushGate: a clippy failure the PR base already has is no verdict on the push", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateAgainstBase(
+      clone,
+      stdin,
+      () => ({ code: 101, stderr: LINT_A }),
+      calls,
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assert(!result.value.checksRun.includes(CLIPPY_CMD));
+    // The base run was CI's own command, in the same directory of the base tree.
+    const baseRun = calls.find((c) =>
+      c.command === CLIPPY_CMD && c.cwd?.includes("vibe-base-check-")
+    );
+    assert(baseRun, "clippy must run on the base tree");
+    assert(baseRun.cwd?.endsWith("/tree/rust"), baseRun.cwd);
+    assertEquals(baseRun.env, { RUSTFLAGS: "-D warnings" });
+    // The scratch worktree is gone afterwards.
+    const worktrees = await git(clone, "worktree", "list");
+    assertEquals(worktrees.split("\n").length, 1, worktrees);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a clippy failure that is new on the push blocks, whatever the base shows", async () => {
+  const cases: [
+    string,
+    (onBase: boolean) => Partial<PreFlightCommandResult>,
+  ][] = [
+    [
+      "the base passes",
+      (onBase) => onBase ? {} : { code: 101, stderr: LINT_A },
+    ],
+    [
+      "the push adds a diagnostic the base lacks",
+      (onBase) => ({ code: 101, stderr: onBase ? LINT_A : LINT_A + LINT_B }),
+    ],
+    [
+      "the base fails for the host",
+      (onBase) =>
+        onBase
+          ? {
+            code: 101,
+            stderr: "error: No space left on device (os error 28)",
+          }
+          : { code: 101, stderr: LINT_A },
+    ],
+    [
+      "the base run times out",
+      (onBase) =>
+        onBase
+          ? { code: TIMEOUT_EXIT_CODE, timedOut: true }
+          : { code: 101, stderr: LINT_A },
+    ],
+    [
+      "the push's output holds no diagnostic that can be compared",
+      () => ({ code: 101, stderr: `error[${"A".repeat(200_000)}` }),
+    ],
+  ];
+  for (const [name, answer] of cases) {
+    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    try {
+      const result = await gateAgainstBase(clone, stdin, answer, []);
+      assert(!result.ok, name);
+      assertInstanceOf(result.error, PreFlightGateError, name);
+      assert(!(result.error instanceof PrePushGateInfrastructureError), name);
+      assertEquals(result.error.command, CLIPPY_CMD, name);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("runPrePushGate: a comparison ref that cannot be resolved leaves the failure a verdict", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    for (const ref of ["origin/no-such-branch", "--upload-pack=x", "a..b"]) {
+      const calls: RanCall[] = [];
+      const result = await gateAgainstBase(
+        clone,
+        stdin,
+        () => ({ code: 101, stderr: LINT_A }),
+        calls,
+        ref,
+      );
+      assert(!result.ok, ref);
+      assertInstanceOf(result.error, PreFlightGateError, ref);
+      assert(
+        !calls.some((c) => c.cwd?.includes("vibe-base-check-")),
+        `${ref}: nothing may run on a base tree that was not made`,
+      );
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

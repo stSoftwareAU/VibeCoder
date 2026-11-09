@@ -30,7 +30,10 @@
  *   a line. Command forms other than those above (for example `cargo hack`) are
  *   not recognised.
  * - A `cd` is honoured only as `cd <one plain word>` in its own `&&` or `;`
- *   segment. Any other `cd` form makes the following cargo commands unverifiable.
+ *   segment, and holds for the rest of the step's run block, as in the shell.
+ *   Any other `cd` form (and `pushd`, `popd`, or a `cd` on a line that
+ *   `isNonFailing` skips) makes the following cargo commands in that step
+ *   unverifiable.
  * - Unreadable tracked workflow files carry no text to inspect, so they are
  *   ignored by `repoCiCargoChecks`.
  *
@@ -244,6 +247,8 @@ interface CargoCommand {
   inline: Record<string, string>;
   /** The words after the subcommand (and after `run`, `test` or `nextest` where they belong to it). */
   args: Word[];
+  /** A nextest run: its `--profile` names a nextest profile, not a cargo one. */
+  nextest?: boolean;
 }
 
 /** The cargo command a segment runs, or `null` when it is not a clippy or test one. */
@@ -276,6 +281,7 @@ function cargoCommand(words: readonly Word[]): CargoCommand | null {
       toolchain,
       inline,
       args: words.slice(i + 2),
+      nextest: true,
     };
   }
   if (sub === "llvm-cov") {
@@ -286,6 +292,7 @@ function cargoCommand(words: readonly Word[]): CargoCommand | null {
       toolchain,
       inline,
       args: words.slice(i + skip),
+      nextest: next === "nextest",
     };
   }
   return null;
@@ -296,13 +303,39 @@ function cargoCommand(words: readonly Word[]): CargoCommand | null {
  * as separate words. Everything after a lone `--` is dropped, and so is any
  * other word. Returns `null` for `--doc`, which is not a compile of the test
  * targets.
+ *
+ * For a nextest run (`nextest`), `--profile` and `-P` select a profile from
+ * `.config/nextest.toml`, not a cargo build profile, so they and their value
+ * are dropped; nextest's own `--cargo-profile` is cargo's `--profile`. A cargo
+ * build profile that `cargo llvm-cov nextest` takes under `--profile` is
+ * therefore not reproduced: the compile uses the default profile, which can
+ * never block a push for a profile that cargo does not define.
  */
-function keptTestFlags(args: readonly Word[]): string[] | null {
+function keptTestFlags(
+  args: readonly Word[],
+  nextest = false,
+): string[] | null {
   const kept: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const text = args[i]!.text;
     if (text === "--") break;
     if (text === "--doc") return null;
+    if (nextest) {
+      if (text === "--profile" || text === "-P") {
+        i++;
+        continue;
+      }
+      if (text.startsWith("--profile=") || text.startsWith("-P")) continue;
+      if (text === "--cargo-profile" && i + 1 < args.length) {
+        kept.push("--profile", args[i + 1]!.text);
+        i++;
+        continue;
+      }
+      if (text.startsWith("--cargo-profile=")) {
+        kept.push("--profile", text.slice("--cargo-profile=".length));
+        continue;
+      }
+    }
     if (TEST_BOOLEAN_FLAGS.has(text)) {
       kept.push(text);
       continue;
@@ -451,26 +484,32 @@ interface JobContext {
   unverifiable: string[];
 }
 
+/** Whether a command word changes the shell's directory. */
+function changesDirectory(word: string | undefined): boolean {
+  return word === "cd" || word === "pushd" || word === "popd";
+}
+
 /**
  * Reads one logical command line: its segments in order, tracking the working
  * directory through `cd`, and records each cargo command as a check or as an
- * unverifiable reason.
+ * unverifiable reason. Returns the directory the shell is in afterwards (`null`
+ * when it is no longer known), which the next line of the same step starts in.
  */
 function scanLine(
   ctx: JobContext,
   line: string,
-  startDir: string,
+  startDir: string | null,
   stepEnv: Mapping,
-): void {
+): string | null {
   const lexed = lexLine(stripCiRedirect(line));
   const shown = snippet(line);
   // `null` means the directory is no longer known after an unsupported `cd`.
   let dir: string | null = startDir;
   for (const words of lexed.segments) {
-    if (words[0]?.text === "cd") {
+    if (changesDirectory(words[0]?.text)) {
       const target = words[1];
-      dir = dir !== null && words.length === 2 && target !== undefined &&
-          !target.risky
+      dir = words[0]!.text === "cd" && dir !== null && words.length === 2 &&
+          target !== undefined && !target.risky
         ? joinDirectory(dir, target.text)
         : null;
       continue;
@@ -526,7 +565,7 @@ function scanLine(
     if (command.kind === "clippy") {
       argv = [...prefix, "clippy", ...command.args.map((w) => w.text)];
     } else {
-      const flags = keptTestFlags(command.args);
+      const flags = keptTestFlags(command.args, command.nextest === true);
       if (flags === null) continue;
       argv = [...prefix, "test", "--no-run", ...flags];
     }
@@ -538,6 +577,7 @@ function scanLine(
       source: ctx.fileName,
     });
   }
+  return dir;
 }
 
 /**
@@ -694,10 +734,19 @@ export function scanWorkflowForCargoChecks(
       ) continue;
       const dir = scalarText(step["working-directory"]) ?? jobDir;
       const stepEnv = isMapping(step.env) ? step.env : {};
+      // The shell keeps its directory from one line of a run block to the next.
+      let current: string | null = dir;
       for (const line of logicalLines(step.run)) {
         if (line.trimStart().startsWith("#")) continue;
-        if (isNonFailing(line)) continue;
-        scanLine(ctx, line, dir, stepEnv);
+        if (isNonFailing(line)) {
+          // Not scanned, but a `cd` here may or may not have taken effect.
+          const lexed = lexLine(stripCiRedirect(line));
+          if (lexed.segments.some((w) => changesDirectory(w[0]?.text))) {
+            current = null;
+          }
+          continue;
+        }
+        current = scanLine(ctx, line, current, stepEnv);
       }
     }
   }

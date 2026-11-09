@@ -32,6 +32,12 @@ import {
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { PrePushGateInfrastructureError } from "./pre_push_gate.ts";
 import {
+  countGateInfraReleases,
+  GATE_INFRA_RELEASE_CAP,
+  gateInfraReleaseMarker,
+  safeGateDetail,
+} from "./gate_infra_release.ts";
+import {
   commentCarriesOpenPreprReview,
   renderPreprReviewResolved,
 } from "./prepr_review_record.ts";
@@ -1893,12 +1899,72 @@ async function _processFeedbackWithHeartbeat(
   // PR #4896 review: the pre-push gate could not run (no toolchain, host
   // disk full, a CI command it cannot reproduce). That is no verdict on the
   // fix, so the feedback is released for the next cycle, never charged.
-  const gateInfraRelease = async (error: Error) =>
-    await releaseUncharged(
+  // A release is bounded (PR #4896 review): each one leaves a marker comment,
+  // and a comment already released GATE_INFRA_RELEASE_CAP times is charged
+  // instead, so a lasting fault cannot re-run an agent session for ever.
+  const gateInfraRelease = async (error: Error) => {
+    const key = `comment-${commentType}-${commentId}`.replace(
+      /[^A-Za-z0-9_.:-]/g,
+      "_",
+    ).slice(0, 80);
+    const gh = (args: string[]) => deps.github.runGhCommand(args);
+    const trusted = await resolveAlertDedupAuthors(
+      processorDeps.claimAuthorOptions ?? {},
+      (message) => logger.warn(message, { repo, prNumber }),
+    );
+    const prior = await countGateInfraReleases(
+      gh,
+      repo,
+      prNumber,
+      key,
+      trusted,
+    );
+    if (prior === null) {
+      logger.warn(
+        "PR feedback: the earlier gate-infrastructure releases could not be counted — releasing again (PR #4896)",
+        { repo, prNumber, commentId },
+      );
+    } else if (prior >= GATE_INFRA_RELEASE_CAP) {
+      logger.warn(
+        `PR feedback: already released ${prior} times for a pre-push gate infrastructure fault — charging this attempt (PR #4896)`,
+        { repo, prNumber, commentId, error: error.message },
+      );
+      return undefined;
+    }
+    try {
+      await gh([
+        "pr",
+        "comment",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--body",
+        `The pre-push gate could not run on this host, so this feedback was not pushed (release ${
+          (prior ?? 0) + 1
+        } of ${GATE_INFRA_RELEASE_CAP}; after that it counts as a failed attempt). Gate detail: ${
+          safeGateDetail(error.message)
+        }\n\n${gateInfraReleaseMarker(key)}`,
+      ]);
+    } catch (postError) {
+      logger.warn(
+        "PR feedback: the gate-infrastructure release could not be recorded on the PR — charging this attempt (PR #4896)",
+        {
+          repo,
+          prNumber,
+          commentId,
+          error: postError instanceof Error
+            ? postError.message
+            : String(postError),
+        },
+      );
+      return undefined;
+    }
+    return await releaseUncharged(
       "the pre-push gate failed as infrastructure, not the PR's fault (PR #4896)",
       error.message,
       "the pre-push gate could not run — not charged as a failed attempt (PR #4896)",
     );
+  };
   if (
     !finaliseResult.ok &&
     finaliseResult.error instanceof PrePushGateInfrastructureError

@@ -18,12 +18,29 @@ compile error is therefore caught before the push, not by a CI run. Closes
   package/workspace selection, features, profile, target, manifest path and env
   all match; otherwise the test build is kept.
 - `worker/deno/lib/pre_push_gate.ts` plans those checks after `cargo fmt`, for
-  each directory a pushed Rust-relevant file touches. A toolchain probe runs
-  first. A failing lint or test build blocks the push with its output. A missing
-  toolchain, a command that cannot start or times out, host disk-full output, a
+  each directory a pushed Rust-relevant file touches. Before any CI cargo
+  command runs, every distinct toolchain the plan uses is probed (`cargo +T
+  --version`, and `cargo +T clippy --version` where a clippy check uses it). A
+  failing lint or test build blocks the push with its output, unless the PR base
+  already fails the same way (below). A missing toolchain, component or
+  `--target` (probe failure, or rustup/rustc output saying it is not
+  installed), a command that cannot start or times out, host disk-full output, a
   working directory that is missing or escapes the repo, or a CI command the
   scanner cannot reproduce is a `PrePushGateInfrastructureError`: the push is
   refused but the branch is not blamed, and the checked set is never reduced.
+- Base-failure comparison: when the gate knows the PR base (`compareRef`, set
+  from `syncBaseBranch` by `commitAndPushPending`, or the completion gate's
+  `baseRef`), a failing CI cargo check is re-run, as CI wrote it, in a detached
+  worktree of that base. If every diagnostic the push shows (message and file,
+  not line) is also on the base, the failure is a `[PRE_PUSH_WARNING]`, not a
+  verdict. A base that passes, times out, fails for the host or lacks a
+  diagnostic, an unresolvable ref, or no known base leaves it a verdict.
+- Scanner fixes: a `cd <dir>` on its own line now holds for the rest of that
+  step's run block (any `cd` form it cannot follow, including `pushd`, `popd`
+  and a `cd ... || true`, makes the later cargo lines of the step
+  unverifiable), and `cargo nextest run` / `cargo llvm-cov nextest` drop
+  `--profile`/`-P` (a nextest profile) and map `--cargo-profile` to cargo's
+  `--profile`.
 - `worker/deno/lib/git_push.ts` wires `repoCiCargoChecks` into
   `gateUnpushedCommits` (so Step 1b of `commitAndPushPending` and the completion
   phase run it). New `CI_CARGO_ONLY_PRE_FLIGHT` spec; `pr_ci_processor.ts` and
@@ -31,13 +48,18 @@ compile error is therefore caught before the push, not by a CI run. Closes
   repair pushes run only the CI cargo checks, the ShellCheck policy and the
   `cargo deny` gate that every gate run applies (#4631, #4626, merged from
   main).
-- Infrastructure is never charged: when the pre-push gate fails with
+- Infrastructure is not charged, up to a cap (new
+  `worker/deno/lib/gate_infra_release.ts`): when the pre-push gate fails with
   `PrePushGateInfrastructureError` (on the first push or on the retry after push
-  recovery), `pr_ci_processor.ts` writes a no-charge attempt marker and replies
-  that the gate could not run on this host, and `pr_feedback_processor.ts`
-  releases the comment uncharged through its existing host-fault release path
-  (`releaseUncharged`). A lint or compile failure still blocks and is charged as
-  before.
+  recovery), `pr_ci_processor.ts` writes no attempt marker and replies that the
+  gate could not run on this host, and `pr_feedback_processor.ts` posts a short
+  comment and releases the comment uncharged through its existing host-fault
+  release path (`releaseUncharged`). Each release carries a
+  `vibe-gate-infra-release` marker; after two fleet-authored markers for the
+  same comment (feedback) or failure signature (CI fix) the next fault is
+  charged like any failed attempt, so a lasting fault cannot re-run the agent
+  without end. An unreadable PR or no trusted author is unknown, and releases
+  again. A lint or compile failure still blocks and is charged as before.
 - Merge with main (#4631, #4909): the ShellCheck policy and `shellcheckOnly`
   stay as main has them. The cargo checks are planned from a changed-file list
   that keeps a file reached through a symlinked parent directory
@@ -45,7 +67,8 @@ compile error is therefore caught before the push, not by a CI run. Closes
   directory containment check still refuses a crate symlinked outside the
   repository, while main's other changed-file checks keep skipping such files.
 - Docs: `docs/CONFIGURATION.md` (pre-flight / pre-push gate section) and
-  `docs/INTERNALS.md`.
+  `docs/INTERNALS.md`; `docs/audits/lib-sweep-coverage/top-up-4630.json` also
+  lists the new module.
 - Not done here: the `cargo deny` implementation itself (owned by #4626, merged
   from main). `ciCargoOnly` only keeps it running for changed cargo inputs.
 
@@ -56,10 +79,13 @@ flowchart LR
     R -- no --> OK[push]
     R -- yes --> S[scan PR workflows]
     S -- unreproducible --> I[infrastructure fault]
-    S --> T[probe cargo / clippy]
+    S --> T[probe every toolchain]
     T -- missing --> I
     T --> C[run CI clippy, then test build]
-    C -- lint or compile error --> B[block with output]
+    C -- lint or compile error --> D{PR base fails the same way?}
+    D -- yes --> OK
+    D -- no --> B[block with output]
+    C -- toolchain or target not installed --> I
     C -- disk full / timeout --> I
     C -- clean --> OK
 ```
@@ -81,6 +107,10 @@ flowchart LR
   `@std/yaml`, so that hook runs no CI cargo check; the worker's own gates do.
 - Anything the scanner cannot reproduce faithfully fails loud as infrastructure
   instead of dropping to a smaller check set (the issue requires this).
+- A failure the PR base already has is compared by diagnostic message and file,
+  not line number, on a detached worktree of the base: cheap, and it never
+  excuses a diagnostic the base lacks. Re-running on the base costs one extra
+  cargo build, only when a check has already failed.
 - Repair processors use a cargo-only spec for repos without pre-flight, so the
   full changed-file gate does not newly apply to repair pushes. The ShellCheck
   policy (#4631) and the cargo-deny gate (#4626, for changed cargo inputs) run
@@ -125,24 +155,58 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
 
 ## Test Plan
 
-- `deno test -A` on `ci_cargo_checks_test.ts`, `pre_push_gate_test.ts`,
-  `git_push_preflight_test.ts`, `pr_feedback_processor_pre_flight_4630_test.ts`,
-  `pr_ci_processor_test.ts` after merging main and the completion-check fixes:
-  192 passed, 0 failed.
-- Edited `tests/pr_feedback_review_dismissal_3383_test.ts` expectation:
-  `preFlightSpecs` now `[CI_CARGO_ONLY_PRE_FLIGHT, CI_CARGO_ONLY_PRE_FLIGHT]`
-  (was `[undefined, undefined]`), required by #4630 (repair pushes now carry the
-  cargo-only spec). It goes red if the processor passes `undefined` again. 30
-  passed.
-- `./quality.sh` on the head before that last test edit: all stages passed
-  except `deno tests`, with 2 failures. One was the test above, now fixed. The
-  other, `tests/merge_fast_checks_credentials_4705_test.ts`, fails only because
-  this host has `HTTP(S)_PROXY` set; with the proxy variables unset it passes
-  6/6, so it is unrelated. The full gate was not re-run after the one-line test
-  fix.
-- Callers of the changed shared items: `git_push.ts` `gateUnpushedCommits`
-  (completion phase, `commitAndPushPending`) and both repair processors checked;
-  the agent hook (`pre_push_gate_cli.ts`) deliberately passes no `findCiCargo`.
-- Not checked: a real `cargo clippy` run against a Rust repo (tests use injected
-  runners and real workflow scans); `if:` conditions, matrices and reusable
-  workflows are not evaluated (documented as known limits).
+- `./quality.sh` was not run on this head (run budget); the targeted checks
+  were: `deno fmt`, `deno lint` and `deno check` on every changed `.ts` file
+  (clean), and `deno task test:unit` on `ci_cargo_checks_test.ts`,
+  `pre_push_gate_test.ts`, `git_push_preflight_test.ts`,
+  `pr_feedback_processor_pre_flight_4630_test.ts`, `pr_ci_processor_test.ts`,
+  `pr_feedback_review_dismissal_3383_test.ts`, `gate_infra_release_test.ts` and
+  `pr_round_repo_formatters_test.ts`: 296 passed, 0 failed.
+- PR #4896 review tests, each shown red by breaking only its own code:
+  - `worker/deno/tests/pre_push_gate_test.ts` (probe only the first check, and
+    drop the missing-capability line test, and `every` to `some` in the base
+    comparison): `a second toolchain that is missing is infrastructure, and no
+    CI cargo command runs`, `a clippy component missing from a second toolchain
+    is probed and is infrastructure`, `rustup and rustc output for a missing
+    toolchain, component or target is infrastructure, not a block`, `a clippy
+    failure that is new on the push blocks, whatever the base shows` (all red).
+    Also green-by-design: `a clippy failure the PR base already has is no
+    verdict on the push`, `a lint whose source excerpt quotes 'is not
+    installed' still blocks`, `a comparison ref that cannot be resolved leaves
+    the failure a verdict`.
+  - `worker/deno/tests/ci_cargo_checks_test.ts` (reset the directory per line,
+    and stop treating nextest differently): `a cd on its own line holds for the
+    later lines of the same step only`, `a cd the scanner cannot follow makes
+    the later cargo lines of that step unverifiable`, `nextest's --profile
+    names a nextest profile and is not passed to cargo as a build profile`
+    (all red).
+  - `worker/deno/tests/git_push_preflight_test.ts` (stop passing the base ref
+    from `syncBaseBranch`): both `a CI clippy failure the PR base ...` tests
+    went red.
+  - `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts` and
+    `worker/deno/tests/pr_ci_processor_test.ts` (raise the cap to 9999): `a
+    gate-infrastructure fault is released only up to the cap, then charged` and
+    `a CI fix released for a gate fault records the release, and the third is
+    charged` went red.
+  - `worker/deno/tests/gate_infra_release_test.ts` pins the key allow-list, the
+    trusted-author count and the unknown outcome.
+- Edited expectations: `pr_feedback_review_dismissal_3383_test.ts`
+  `assertGateInfraFaultReleases` now expects the one marker comment a release
+  posts (it expected none); it goes red if the marker comment is dropped.
+  `preFlightSpecs` there, and the observed spec in
+  `pr_round_repo_formatters_test.ts`, are now `CI_CARGO_ONLY_PRE_FLIGHT` (was
+  `{ commands: [], shellcheckOnly: true }`), required by #4630 (a repo with no
+  pre-flight commands gets the cargo-only spec on a repair push).
+- Callers of the changed shared items: `gateUnpushedCommits` (completion phase
+  with `baseRef`, `commitAndPushPending` with `syncBaseBranch`), both repair
+  processors and the agent hook (`pre_push_gate_cli.ts`, which passes no
+  `findCiCargo` and no `compareRef`) checked. Spelling and merge-conflict
+  repairs use `shellcheckOnly`, which plans no cargo check, so they need no
+  base comparison.
+- A pre-existing `merge_fast_checks_credentials_4705_test.ts` failure under
+  `HTTP(S)_PROXY` is unrelated.
+- Not checked: a real `cargo clippy` run against a Rust repo (tests use
+  injected runners and real workflow scans); `if:` conditions, matrices and
+  reusable workflows are not evaluated (documented as known limits); a gated
+  head's fix branch (no `syncBaseBranch`) gets no base comparison; the
+  `llvm-cov nextest` build profile is not reproduced.

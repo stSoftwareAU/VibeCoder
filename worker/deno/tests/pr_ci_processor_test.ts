@@ -3533,7 +3533,10 @@ Deno.test("processCiFailure - repair push (Issue #4630): a repo's own pre-flight
  * marker is written, so the PR's fix budget is not charged, and the comment
  * says the gate could not run rather than "failed to push".
  */
-async function runCiGateInfraFault(retryOnly: boolean): Promise<string[]> {
+async function runCiGateInfraFault(
+  retryOnly: boolean,
+  priorReleases?: number,
+): Promise<string[]> {
   const tmpDir = await Deno.makeTempDir();
   try {
     const commentBodies: string[] = [];
@@ -3555,6 +3558,19 @@ async function runCiGateInfraFault(retryOnly: boolean): Promise<string[]> {
       github: {
         runGhCommand: (args: string[]) => {
           if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+          // The release count: one trusted-author marker row per earlier release.
+          if (
+            args[0] === "api" &&
+            args.some((a) => a.includes("vibe-gate-infra-release"))
+          ) {
+            return Promise.resolve(
+              Array.from(
+                { length: priorReleases ?? 0 },
+                () => "fleet-bot\ttrue",
+              )
+                .concat(["stranger\ttrue", "fleet-bot\tfalse"]).join("\n"),
+            );
+          }
           if (args[0] === "pr" && args[1] === "comment") {
             const body = args[args.indexOf("--body") + 1];
             if (body !== undefined) commentBodies.push(body);
@@ -3589,6 +3605,7 @@ async function runCiGateInfraFault(retryOnly: boolean): Promise<string[]> {
       stateDir: `${tmpDir}/.ci_check_state`,
       workDir: tmpDir,
       workRoot: tmpDir,
+      ...(priorReleases === undefined ? {} : { fleetLogins: ["fleet-bot"] }),
     });
     assertEquals(result.ok, true);
     assertEquals(result.ok && result.value.changesPushed, false);
@@ -3619,4 +3636,31 @@ Deno.test("PR #4896: a CI fix whose pre-push gate fails as infrastructure is not
 
 Deno.test("PR #4896: a CI fix whose retry after push recovery fails as infrastructure is not charged", async () => {
   assertInfraFaultNotCharged(await runCiGateInfraFault(true));
+});
+
+Deno.test("PR #4896: a CI fix released for a gate fault records the release, and the third is charged", async () => {
+  // Two earlier releases by the fleet (a stranger's and an unmarked row do not
+  // count): the next fault is charged like any failed attempt.
+  const charged = await runCiGateInfraFault(false, 2);
+  assertEquals(
+    charged.some((b) => b.includes("vibe-ci-fix-attempt")),
+    true,
+    `a repeated gate fault must be charged: ${charged.join("\n---\n")}`,
+  );
+  assertEquals(
+    charged.some((b) => b.includes("vibe-gate-infra-release")),
+    false,
+  );
+
+  const released = await runCiGateInfraFault(false, 1);
+  assertInfraFaultNotCharged(released);
+  assertEquals(
+    released.some((b) =>
+      /<!-- vibe-gate-infra-release key=ci-[\w.:-]+ -->/.test(b)
+    ),
+    true,
+    `the release is recorded for the next cycle to count: ${
+      released.join("\n")
+    }`,
+  );
 });

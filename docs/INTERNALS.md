@@ -3405,7 +3405,12 @@ remote, a prompt-build failure) is charged the same way as a failed attempt,
 except an agent error caused by a host-disk fault, which is released without a
 charge (Issue #4511, see `docs/CONTAINER.md`).
 A branch the host could not check out releases the review **uncharged**, with
-no reply and no attempt counted.
+no reply and no attempt counted. A pre-push gate that fails as infrastructure
+(PR #4896) is released uncharged too, but only twice per comment: each release
+posts a comment carrying a `vibe-gate-infra-release` marker, and a comment with
+two fleet-authored markers already is charged like any other failed attempt. The
+CI-fix processor bounds its gate-infrastructure releases per failure signature
+the same way.
 
 ---
 

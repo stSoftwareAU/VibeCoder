@@ -283,6 +283,8 @@ interface RunOptions {
   finaliseError?: string;
   /** The pre-push gate could not run: no verdict on the branch (#4630). */
   finaliseInfraError?: string;
+  /** Trusted-author options, so earlier gate-infrastructure releases can be counted. */
+  claimAuthorOptions?: PrFeedbackProcessorDeps["claimAuthorOptions"];
   unpushedState?: number | "error" | "throw";
 }
 
@@ -391,6 +393,9 @@ async function runScenario(options: RunOptions) {
       workDir,
       workRoot: workDir,
       feedbackVerifierFn: options.feedbackVerifierFn,
+      ...(options.claimAuthorOptions
+        ? { claimAuthorOptions: options.claimAuthorOptions }
+        : {}),
       qualityInstructions: options.qualityInstructions,
       describeUnpushedFn: async () => {
         options.events.push("measure-unpushed");
@@ -1423,7 +1428,15 @@ async function assertGateInfraFaultReleases(
     0,
     `an infrastructure fault must not be charged: ${events.join(", ")}`,
   );
-  assertEquals(captured.comments.length, 0);
+  // The release is recorded on the PR (one visible comment carrying the
+  // marker the next cycle counts), and nothing else is posted.
+  assertEquals(captured.comments.length, 1, captured.comments.join("\n---\n"));
+  assert(
+    captured.comments[0]!.includes(
+      `<!-- vibe-gate-infra-release key=comment-${commentType}-${commentId} -->`,
+    ),
+    captured.comments[0],
+  );
   // A `pr_review` carries no mark of its own (Issue #3383); any other comment
   // has its claim mark taken back so the next scan rediscovers it.
   assertEquals(
@@ -1432,6 +1445,74 @@ async function assertGateInfraFaultReleases(
   );
   assert(warns.some((w) => w.includes("infrastructure")));
 }
+
+/**
+ * A repeated gate-infrastructure fault stops being released: with the cap's
+ * worth of earlier fleet-authored markers on the PR, the feedback is charged.
+ */
+async function runRepeatedGateFault(priorReleases: number) {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const inner = makeReactionGithub(captured, false).runGhCommand as (
+    args: string[],
+  ) => Promise<string>;
+  const { result } = await runScenario({
+    input: makeInput({ commentType: "pr_review", commentId: "rv-777" }),
+    events,
+    captured,
+    githubOverride: {
+      runGhCommand: (args: string[]) => {
+        if (
+          args[0] === "api" &&
+          args.some((a) => a.includes("vibe-gate-infra-release"))
+        ) {
+          return Promise.resolve(
+            Array.from({ length: priorReleases }, () => "fleet-bot\ttrue")
+              .concat(["stranger\ttrue", "fleet-bot\tfalse"]).join("\n"),
+          );
+        }
+        return inner(args);
+      },
+    },
+    claimAuthorOptions: { fleetAuthors: ["fleet-bot"] },
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 0,
+      finalUnpushedCount: 1,
+    },
+    finaliseInfraError: "CI's cargo checks cannot be reproduced locally",
+  });
+  return { events, captured, result };
+}
+
+Deno.test("PR #4896: a gate-infrastructure fault is released only up to the cap, then charged", async () => {
+  const { events, captured } = await runRepeatedGateFault(2);
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    1,
+    `the repeated fault must be charged: ${events.join(", ")}`,
+  );
+  assertEquals(
+    captured.comments.some((c) => c.includes("vibe-gate-infra-release")),
+    false,
+    "no further release is recorded once the cap is reached",
+  );
+});
+
+Deno.test("PR #4896: a gate-infrastructure fault below the cap is still released and recorded", async () => {
+  const { events, captured, result } = await runRepeatedGateFault(1);
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+    events.join(", "),
+  );
+  assertEquals(result.ok && result.value.processed, false);
+  assertEquals(
+    captured.comments.filter((c) => c.includes("release 2 of 2")).length,
+    1,
+    captured.comments.join("\n---\n"),
+  );
+});
 
 Deno.test("PR #4896: a pr_review whose pre-push gate fails as infrastructure is released, not charged", async () => {
   await assertGateInfraFaultReleases("pr_review", "rv-555");

@@ -176,6 +176,11 @@ import {
 } from "./git_push.ts";
 import { mdSafe } from "./mutation_gate.ts";
 import { PrePushGateInfrastructureError } from "./pre_push_gate.ts";
+import {
+  countGateInfraReleases,
+  GATE_INFRA_RELEASE_CAP,
+  gateInfraReleaseMarker,
+} from "./gate_infra_release.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
@@ -2637,6 +2642,38 @@ async function _processCiWithHeartbeat(
     );
   }
 
+  // A gate-infrastructure release is bounded (PR #4896 review): the reply below
+  // carries a marker, and a signature already released GATE_INFRA_RELEASE_CAP
+  // times is charged like any other failed attempt, so a lasting gate fault
+  // cannot re-run a full fix session on every cycle without end.
+  const gateInfraKey = `ci-${signature}`.replace(/[^A-Za-z0-9_.:-]/g, "_")
+    .slice(0, 80);
+  let gateInfraMarker = "";
+  if (gateInfraFault !== undefined && !actuallyPushed) {
+    const prior = await countGateInfraReleases(
+      (args) => deps.github.runGhCommand(args),
+      repo,
+      prNumber,
+      gateInfraKey,
+      processorDeps.fleetLogins ?? [],
+    );
+    if (prior !== null && prior >= GATE_INFRA_RELEASE_CAP) {
+      logger.warn(
+        `CI fix already released ${prior} times for a pre-push gate infrastructure fault — charging this attempt (PR #4896)`,
+        { repo, prNumber, error: gateInfraFault },
+      );
+      gateInfraFault = undefined;
+    } else {
+      if (prior === null) {
+        logger.warn(
+          "The earlier gate-infrastructure releases could not be counted — releasing again (PR #4896)",
+          { repo, prNumber },
+        );
+      }
+      gateInfraMarker = `\n\n${gateInfraReleaseMarker(gateInfraKey)}`;
+    }
+  }
+
   // Issue #1879: every comment this run posts carries the marker the next
   // host counts. An `infrastructure` blip is deliberately not charged, so it
   // writes no marker (see `consumesAutoFixAttempt`). `no-change` is the
@@ -2674,7 +2711,7 @@ async function _processCiWithHeartbeat(
         // brackets (a `<!-- vibe-… -->` marker must never be forged), bounded.
         `Gate detail: ${
           mdSafe(gateInfraFault).replace(/[<>]/g, "").slice(0, 300)
-        }${markerSuffix}`,
+        }${gateInfraMarker}${markerSuffix}`,
       deps,
     );
   } else if (hasChanges && pushSucceeded && actuallyPushed) {

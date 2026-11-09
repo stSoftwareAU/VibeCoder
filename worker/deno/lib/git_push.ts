@@ -755,6 +755,10 @@ export type PrePushGateOutcome =
  * checks the whole branch before it raises the PR. It is a no-op only when
  * the branch has no commit of its own ahead of `baseRef`. That mode never
  * reads the remote head: the range is local, so no `ls-remote` or `fetch` runs.
+ *
+ * `compareRef` (the PR base, for a repair push) lets the CI cargo checks tell a
+ * failure the base already has from a new one; with a `baseRef` it defaults to
+ * that ref.
  */
 export async function gateUnpushedCommits(
   branchName: string,
@@ -762,6 +766,7 @@ export async function gateUnpushedCommits(
   preFlight: PreFlightGateSpec,
   preFlightAlreadyRan = false,
   baseRef?: string,
+  compareRef?: string,
 ): Promise<
   Result<
     PrePushGateOutcome,
@@ -858,6 +863,7 @@ export async function gateUnpushedCommits(
     ciCargoOnly: preFlight.ciCargoOnly,
     findCiCargo: repoCiCargoChecks,
     baseRef,
+    compareRef,
   });
   if (!gate.ok) {
     // A lookup that failed is not a verdict: pass it on unmarked.
@@ -1130,6 +1136,9 @@ export async function commitAndPushPending(
       options,
       preFlight,
       committedNewChanges,
+      undefined,
+      // A CI cargo failure the PR base already has is no verdict on this push.
+      options.syncBaseBranch ? `origin/${options.syncBaseBranch}` : undefined,
     );
     if (!gate.ok) {
       return { ok: false, error: gate.error };

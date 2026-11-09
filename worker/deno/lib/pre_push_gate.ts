@@ -1830,19 +1830,214 @@ function isQuotedSourceLine(line: string): boolean {
 }
 
 /**
+ * Whether one line of cargo, rustc or rustup output says that the toolchain,
+ * component or target the command asked for is not installed here. That is the
+ * host's state, not a verdict on the commit. The tests are anchored on the
+ * line start, use `includes` and run once per line, so they are linear.
+ */
+function isMissingRustCapabilityLine(line: string): boolean {
+  const text = line.trim();
+  if (text.startsWith("error:")) {
+    return text.includes("is not installed") ||
+      text.includes("rustup could not choose a version") ||
+      text.includes("is not applicable to the") ||
+      text.includes("unavailable for download") ||
+      text.includes("does not support target");
+  }
+  // rustc's own note when the standard library of a `--target` is absent.
+  return text.startsWith("= note:") &&
+    text.includes("target may not be installed");
+}
+
+/**
  * Whether a failed CI cargo check reflects the host rather than the commit: the
  * command could not start or timed out, or it exited non-zero with host
- * disk-full output. Disk-full text counts only in the tool's own lines, so a
+ * disk-full output, or with output saying the toolchain, component or target is
+ * not installed. Disk-full text counts only in the tool's own lines, so a
  * source excerpt that quotes it does not turn a lint failure into a host fault.
  * The disk-full test is `isHostDiskFaultText` in `host_fault.ts`.
  */
 function isHostFaultOfCheck(error: PreFlightGateError): boolean {
   if (error.reason === "not-started" || error.reason === "timeout") return true;
   if (error.reason !== "non-zero-exit") return false;
-  const toolLines = error.output.split("\n").filter((line) =>
-    !isQuotedSourceLine(line)
-  );
+  const lines = error.output.split("\n");
+  if (lines.some(isMissingRustCapabilityLine)) return true;
+  const toolLines = lines.filter((line) => !isQuotedSourceLine(line));
   return isHostDiskFaultText(toolLines.join("\n"));
+}
+
+/**
+ * Probes the Rust toolchain of every CI cargo check before any of them runs:
+ * one `cargo [+toolchain] --version` per distinct directory, toolchain and env,
+ * and `cargo [+toolchain] clippy --version` where a clippy check uses that
+ * toolchain. Returns why the toolchain is unavailable, or null when every probe
+ * passed. A directory that is missing or leaves the repository is reported the
+ * same way. A `--target` is not probed here: rustc names a missing one in its
+ * own output, which {@link isHostFaultOfCheck} reads.
+ */
+async function probeCargoToolchains(
+  cargoChecks: readonly ChangedFileCheck[],
+  opts: {
+    cwd: string;
+    runner?: PreFlightRunner;
+    timeoutSeconds?: number;
+  },
+): Promise<string | null> {
+  const groups = new Map<
+    string,
+    { check: ChangedFileCheck; clippy: boolean }
+  >();
+  for (const check of cargoChecks) {
+    const escape = await cwdEscape(opts.cwd, check.cwd);
+    if (escape !== null) {
+      return `CI's ${check.label} cannot run here: ${escape}`;
+    }
+    const key = JSON.stringify([
+      check.cwd,
+      check.cargo?.toolchain ?? null,
+      Object.entries(check.env ?? {}).sort(),
+    ]);
+    const group = groups.get(key) ?? { check, clippy: false };
+    if (check.cargo?.kind === "clippy") group.clippy = true;
+    groups.set(key, group);
+  }
+  for (const { check, clippy } of groups.values()) {
+    const toolchain = check.cargo?.toolchain === undefined
+      ? []
+      : [`+${check.cargo.toolchain}`];
+    const probes = [["cargo", ...toolchain, "--version"]];
+    if (clippy) probes.push(["cargo", ...toolchain, "clippy", "--version"]);
+    const probe = await runPreFlightGate(
+      probes.map((argv) => argv.join(" ")),
+      {
+        cwd: check.cwd,
+        env: check.env,
+        runner: opts.runner,
+        timeoutSeconds: opts.timeoutSeconds,
+      },
+    );
+    if (!probe.ok) {
+      const how = probe.error.reason === "not-started"
+        ? "could not be started"
+        : probe.error.reason === "timeout"
+        ? "timed out"
+        : `exited ${probe.error.exitCode}`;
+      return `Rust toolchain unavailable here: \`${probe.error.command}\` ${how}: ${
+        firstOutputLine(probe.error.output)
+      }`;
+    }
+  }
+  return null;
+}
+
+/** A git ref that is safe to hand to `git` as a revision: no option, no `..`. */
+const SAFE_COMPARE_REF = /^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$/;
+
+/**
+ * The diagnostics of a failed cargo run, each as `message @ file` (the line
+ * number is dropped, since a push moves lines), or the message alone when no
+ * `-->` location follows. Summary lines that count other diagnostics are left
+ * out so the set does not depend on how many there are.
+ */
+function diagnosticSignatures(output: string): Set<string> {
+  const found = new Set<string>();
+  const lines = output.split("\n").map((line) => line.trim());
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const head = /^(?:error|warning)(?:\[[A-Za-z0-9]{1,20}\])?: /.exec(line);
+    if (head === null) continue;
+    const message = line.slice(head[0].length);
+    if (
+      message.includes("could not compile") ||
+      message.startsWith("aborting due to") ||
+      message.includes(" generated ") || message.includes("previous error")
+    ) continue;
+    const next = lines[i + 1] ?? "";
+    const file = next.startsWith("-->")
+      ? next.slice(3).trim().split(":")[0] ?? ""
+      : "";
+    found.add(file === "" ? message : `${message} @ ${file}`);
+  }
+  return found;
+}
+
+/**
+ * Whether a CI cargo check that failed on this push fails on the PR base too,
+ * with every diagnostic the push shows (Issue #4630 review: a failure the base
+ * already has is not this repair's defect). The check runs again, as CI wrote
+ * it, in a detached worktree of `ref`. Returns true only when that is
+ * established: an unresolvable ref, a worktree that cannot be made, a base run
+ * that passes, times out, cannot start or fails for the host, and a push that
+ * shows a diagnostic the base lacks (or none that can be read) all return
+ * false, so the failure stays a verdict.
+ *
+ * SIMPLE-ON-PURPOSE: a diagnostic is matched by message and file, not line — upgrade when two identical diagnostics in one file must be told apart
+ */
+async function failsOnBaseToo(args: {
+  repoRoot: string;
+  ref: string;
+  check: ChangedFileCheck;
+  headOutput: string;
+  git: PrePushGit;
+  runner?: PreFlightRunner;
+  timeoutSeconds?: number;
+}): Promise<boolean> {
+  if (!SAFE_COMPARE_REF.test(args.ref) || args.ref.includes("..")) return false;
+  const headSignatures = diagnosticSignatures(args.headOutput);
+  if (headSignatures.size === 0) return false;
+  const prefix = args.repoRoot.endsWith("/")
+    ? args.repoRoot
+    : `${args.repoRoot}/`;
+  const relative = args.check.cwd === args.repoRoot
+    ? ""
+    : args.check.cwd.startsWith(prefix)
+    ? args.check.cwd.slice(prefix.length)
+    : null;
+  if (relative === null) return false;
+  const resolved = await args.git(
+    ["rev-parse", "--verify", "--quiet", `${args.ref}^{commit}`],
+    args.repoRoot,
+  );
+  const sha = resolved.stdout.trim();
+  if (resolved.code !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) return false;
+
+  const scratch = await Deno.makeTempDir({ prefix: "vibe-base-check-" });
+  const tree = `${scratch}/tree`;
+  let added = false;
+  try {
+    const add = await args.git(
+      ["worktree", "add", "--detach", tree, sha],
+      args.repoRoot,
+    );
+    if (add.code !== 0) return false;
+    added = true;
+    const base = await runPreFlightGate([args.check.command], {
+      cwd: relative === "" ? tree : `${tree}/${relative}`,
+      env: args.check.env,
+      runner: args.runner,
+      timeoutSeconds: args.timeoutSeconds,
+    });
+    if (base.ok) return false;
+    if (base.error.reason !== "non-zero-exit") return false;
+    if (isHostFaultOfCheck(base.error)) return false;
+    const baseSignatures = diagnosticSignatures(base.error.output);
+    return [...headSignatures].every((sig) => baseSignatures.has(sig));
+  } finally {
+    if (added) {
+      const removed = await args.git(
+        ["worktree", "remove", "--force", tree],
+        args.repoRoot,
+      );
+      if (removed.code !== 0) {
+        console.warn(
+          `[PRE_PUSH_WARNING] could not remove the base worktree ${tree}: ${
+            firstOutputLine(removed.stderr)
+          }`,
+        );
+      }
+    }
+    await Deno.remove(scratch, { recursive: true });
+  }
 }
 
 /**
@@ -1862,10 +2057,15 @@ function isHostFaultOfCheck(error: PreFlightGateError): boolean {
  * worker's gates in `git_push.ts` do. When the scan holds a command that cannot
  * be reproduced here, the push fails with a
  * {@link PrePushGateInfrastructureError}. Before the first CI cargo command
- * runs, the Rust toolchain is probed. A CI cargo command that
- * fails to start, times out, or fails with host disk-full output is also an
- * infrastructure fault. Any other failing CI cargo command blocks the push, with
- * its output.
+ * runs, every distinct Rust toolchain the plan uses is probed (`cargo +T
+ * --version`, and `cargo +T clippy --version` for a clippy check). A CI cargo
+ * command that fails to start, times out, fails with host disk-full output, or
+ * fails with rustup or rustc output saying its toolchain, component or
+ * `--target` is not installed is also an infrastructure fault. Any other failing
+ * CI cargo command blocks the push, with its output, unless `compareRef` (or
+ * `baseRef`) is set and the same command, run in a detached worktree of that
+ * ref, fails with every diagnostic the push shows: a failure the PR base already
+ * has is then no verdict on the push and is reported as a warning.
  *
  * `ciCargoOnly` (repair pushes of repos with no pre-flight configuration, where
  * only the CI cargo checks should gate) runs nothing but those CI cargo checks,
@@ -1915,6 +2115,12 @@ export async function runPrePushGate(opts: {
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
    */
   baseRef?: string;
+  /**
+   * The PR base the CI cargo checks are compared with: a check that fails here
+   * and fails the same way on this ref is not a verdict on the push. Defaults
+   * to `baseRef`. Without either, a failing CI cargo check always blocks.
+   */
+  compareRef?: string;
 }): Promise<Result<{ checksRun: string[] }, Error>> {
   const git = opts.git ?? defaultPrePushGit;
   const fail = (message: string): Result<never, Error> => ({
@@ -2039,7 +2245,7 @@ export async function runPrePushGate(opts: {
     ? plan.value.filter((c) => c.cargo !== undefined)
     : plan.value;
   const cargoChecks = checks.filter((c) => c.cargo !== undefined);
-  const clippyPlanned = cargoChecks.some((c) => c.cargo?.kind === "clippy");
+  const compareRef = opts.compareRef ?? opts.baseRef;
   let probed = false;
   const checksRun: string[] = [...shellcheck.value.checksRun];
   for (const check of checks) {
@@ -2054,45 +2260,14 @@ export async function runPrePushGate(opts: {
       continue;
     }
 
-    const escape = await cwdEscape(opts.cwd, check.cwd);
-    if (escape !== null) {
-      return infrastructureFail(
-        `CI's ${check.label} cannot run here: ${escape}`,
-      );
-    }
-    // The probe runs once, before the first CI cargo command, in its directory
-    // and with its toolchain. A toolchain that is missing or cannot start is
-    // no verdict on the commit, and no CI cargo command is run past it.
+    // Before the first CI cargo command, every toolchain the plan uses is
+    // probed (not only this check's), in its own directory and env: a toolchain
+    // that is missing or cannot start is no verdict on the commit, and no CI
+    // cargo command is run past it.
     if (!probed) {
       probed = true;
-      const toolchain = check.cargo.toolchain === undefined
-        ? []
-        : [`+${check.cargo.toolchain}`];
-      const probes = [["cargo", ...toolchain, "--version"]];
-      if (clippyPlanned) {
-        probes.push(["cargo", ...toolchain, "clippy", "--version"]);
-      }
-      const probe = await runPreFlightGate(
-        probes.map((argv) => argv.join(" ")),
-        {
-          cwd: check.cwd,
-          env: check.env,
-          runner: opts.runner,
-          timeoutSeconds: opts.timeoutSeconds,
-        },
-      );
-      if (!probe.ok) {
-        const how = probe.error.reason === "not-started"
-          ? "could not be started"
-          : probe.error.reason === "timeout"
-          ? "timed out"
-          : `exited ${probe.error.exitCode}`;
-        return infrastructureFail(
-          `Rust toolchain unavailable here: \`${probe.error.command}\` ${how}: ${
-            firstOutputLine(probe.error.output)
-          }`,
-        );
-      }
+      const unavailable = await probeCargoToolchains(cargoChecks, opts);
+      if (unavailable !== null) return infrastructureFail(unavailable);
     }
 
     const result = await runPreFlightGate([check.command], {
@@ -2108,6 +2283,24 @@ export async function runPrePushGate(opts: {
             firstOutputLine(result.error.output)
           } — a host fault, not a verdict on the commit`,
         );
+      }
+      // A failure the PR base already has is not this repair's defect.
+      if (
+        compareRef !== undefined &&
+        await failsOnBaseToo({
+          repoRoot: opts.cwd,
+          ref: compareRef,
+          check,
+          headOutput: result.error.output,
+          git,
+          runner: opts.runner,
+          timeoutSeconds: opts.timeoutSeconds,
+        })
+      ) {
+        console.warn(
+          `[PRE_PUSH_WARNING] CI's ${check.label} (\`${check.command}\`) fails the same way on ${compareRef}: not a verdict on this push`,
+        );
+        continue;
       }
       return { ok: false, error: result.error };
     }

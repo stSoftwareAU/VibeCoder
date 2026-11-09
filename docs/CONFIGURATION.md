@@ -5213,16 +5213,37 @@ checks in stage 1, which only the worker's own gates run (see that bullet):
      package selection (`--workspace`, `--all`, `-p`, `--exclude`), features,
      profile, target, manifest path and env also match. Otherwise the test
      build is kept, so the checked set is never silently reduced. Within a directory, clippy runs before the test-target compile,
-     after cargo fmt. A probe first checks that `cargo` (and `cargo clippy` when
-     clippy is planned) runs here. An infrastructure fault (a missing `cargo` or
-     `clippy`, a directory that is missing or resolves outside the repo, host
-     disk full, a timeout, or a CI command with a `${{ }}` expression, a pipe or
-     shell syntax the gate does not reproduce) is reported as an infrastructure
-     fault, not as a verdict on the commit, and it never reduces the set of
-     checks run. Disk full is recognised only in the build's own error lines,
-     not in quoted source excerpts (gutter lines, `-->` locations, `= note` and
-     `= help`). A failing clippy lint or test build is a verdict and blocks the
-     push with its output. Known limits: an `if:` on the step is not evaluated,
+     after cargo fmt. A `cd <dir>` on its own line holds for the rest of that
+     step's run block, as in the shell; any `cd` form the scanner cannot follow
+     (`pushd`, `popd`, a variable, a `cd ... || true`) makes the later cargo
+     lines of that step unverifiable. For `cargo nextest run` (and `cargo
+     llvm-cov nextest`), `--profile` and `-P` name a nextest profile and are
+     dropped, and `--cargo-profile` becomes cargo's `--profile`. Before any CI
+     cargo command runs, a probe checks every distinct toolchain the plan uses
+     (per directory and env): `cargo [+toolchain] --version`, and `cargo
+     [+toolchain] clippy --version` where a clippy check uses it. An
+     infrastructure fault (a missing `cargo` or `clippy`, a toolchain,
+     component or `--target` that rustup or rustc reports as not installed, a
+     directory that is missing or resolves outside the repo, host disk full, a
+     timeout, or a CI command with a `${{ }}` expression, a pipe or shell syntax
+     the gate does not reproduce) is reported as an infrastructure fault, not as
+     a verdict on the commit, and it never reduces the set of checks run. Disk
+     full is recognised only in the build's own error lines, not in quoted
+     source excerpts (gutter lines, `-->` locations, `= note` and `= help`). A
+     failing clippy lint or test build is a verdict and blocks the push with its
+     output, unless the PR base already fails the same way: when the push knows
+     the PR base (the repair processors' base branch, or the completion gate's
+     base ref), a failing check is re-run, as CI wrote it, in a detached
+     worktree of that base, and when every diagnostic the push shows (matched by
+     message and file, not line) is also on the base, the failure is no verdict
+     on this push and is reported as a `[PRE_PUSH_WARNING]`. A base that passes,
+     times out, fails for the host or lacks a diagnostic, or a ref that cannot
+     be resolved, leaves it a verdict. A CI-fix or review-feedback repair
+     released uncharged because its gate failed as infrastructure leaves a PR
+     comment carrying a `vibe-gate-infra-release` marker, and after two such
+     releases (counted from fleet-authored markers) the next one is charged like
+     any other failed attempt, so a lasting fault cannot re-run the agent for
+     ever. Known limits: an `if:` on the step is not evaluated,
      matrix entries are not expanded, reusable workflows are not followed, a
      cargo run reached through a script the step calls is not detected, and
      steps with `continue-on-error: true` or a line ending in `|| true` are
@@ -5367,8 +5388,9 @@ Floci deploy test that exits non-zero, including when Floci cannot be started
 or the `aws` CLI is missing for a deployable template, refuses the push; a CI
 cargo check that fails refuses the push with its output (in the worker's own
 gates; the agent's hook runs none of them), while a CI cargo check that cannot
-start or time out, hits host disk full, or whose toolchain, directory or
-command cannot be reproduced here refuses it as an infrastructure fault (the
+start or time out, hits host disk full, or whose toolchain, component,
+target, directory or command is missing or cannot be reproduced here refuses it
+as an infrastructure fault (the
 push is still refused, but the run does not blame the branch, and the checked
 set is not reduced); a `cargo deny` diagnostic (`error[...]`)
 or a CI invocation the hook cannot reproduce refuses the push as a verdict, and
