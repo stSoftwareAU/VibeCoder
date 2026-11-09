@@ -1212,7 +1212,7 @@ assume it.
   as a separate SSRF finding.
 - **Secret-bearing field behind a weaker right (A01:2025 — Broken Access
   Control; cross-link the A01 SSRF line, do not double-file).** Where a stored
-  secret is sent to a configurable endpoint, or a `get` / `list` / `export`
+  secret is sent to a configurable endpoint, or a `get`/`list`/`export`
   returns a secret-bearing field, changing the endpoint or reading the field
   must require the right to retrieve the secret. Cite the update handler or
   serialiser and the weaker permission that suffices.
@@ -1223,10 +1223,9 @@ assume it.
 
 ### Cloud permission chains (AWS IaC)
 
-Scope: AWS CloudFormation and Terraform only, in-repo resources only. The
-chain rules cover IAM roles only; the service-principal bullet also covers
-a trust or resource policy naming an AWS service principal. Static: no live
-cloud calls and no credential testing.
+Scope: AWS CloudFormation and Terraform only, in-repo resources only. Chain
+rules cover IAM roles only. Static: no live cloud calls and no credential
+testing.
 
 The worker may append a pre-scan section at the end of this prompt. Its
 heading names the cloud permission-chain candidates and the worker

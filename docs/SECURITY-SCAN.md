@@ -573,7 +573,9 @@ snippet `<kind>|<caller>|<target>`. The constituent statements are not filed
 as separate issues; the `## Exploit chain` hops cite the IaC lines. The chain
 counts as one standalone finding against the 6-issue cap. A trust or resource
 policy naming an AWS service principal with no `aws:SourceArn` /
-`aws:SourceAccount` condition is filed standalone as a `confused-deputy`
+`aws:SourceAccount` condition is a finding only when it exposes a privileged
+action — for a role trust policy, the role's permission grants — and nothing
+else constrains the caller. It is filed standalone as a `confused-deputy`
 finding (`CWE-441`), not an exploit-chain, and also counts as one issue
 against the 6-issue cap.
 
@@ -1107,7 +1109,9 @@ list:
   instance role, traced across CloudFormation and Terraform IAM, filed as one
   `exploit-chain` finding (`CWE-269`); plus a trust or resource policy naming
   an AWS service principal with no `aws:SourceArn` / `aws:SourceAccount`
-  condition, filed standalone as `confused-deputy` (`CWE-441`). See
+  condition, a finding only when it exposes a privileged action and nothing
+  else constrains the caller, filed standalone as `confused-deputy`
+  (`CWE-441`). See
   [Cloud permission chains (AWS IaC)](#cloud-permission-chains-aws-iac).
 
 ### OWASP GenAI / LLM Top 10 (2025) — LLM-using repos only

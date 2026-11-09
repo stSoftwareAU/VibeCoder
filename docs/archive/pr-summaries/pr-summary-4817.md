@@ -2,9 +2,9 @@
 
 Adds a secret-bearing field gate to the feature-abuse design lens and an AWS
 service-principal source-condition check to the cloud permission chains
-section of `prompts/security_scan/prompt.md` (the two bullets total 149
-words), and updates the operator manual's restatements in
-`docs/SECURITY-SCAN.md` so they give the same answer.
+section of `prompts/security_scan/prompt.md` (148 words added in total), and
+updates the operator manual's restatements in `docs/SECURITY-SCAN.md` so
+they give the same answer.
 
 Closes #4817.
 
@@ -26,11 +26,11 @@ Closes #4817.
   (CWE-441), not an exploit-chain; for a role trust policy the privileged
   action is the role's own permission grants, which is the exception to the
   lone-permission rule.
-- The section scope line is widened so the service-principal bullet covers a
-  trust or resource policy naming an AWS service principal, while the three
-  chain rules keep their IAM-roles-only scope. The operator manual's scope,
-  lone-permission and finding-list restatements are updated to say the same
-  thing.
+- The section scope line scopes the chain rules to IAM roles only; the
+  service-principal bullet names the trust or resource policy it covers. The
+  operator manual's scope, lone-permission, filing and finding-list
+  restatements are updated to say the same thing, including the "finding
+  only when it exposes a privileged action" gate.
 - Wording is paraphrased; no upstream text is copied.
 
 ### Undiscoverable Facts
@@ -52,7 +52,7 @@ failed. `markdownlint-cli2` over the published Markdown set: 0 issues.
 - No tests added or edited. Ran the seven prompt-drift / docs tests named
   under Evidence: 72 passed, 0 failed.
 - The gate's checks that cover this markdown-only diff were run directly and
-  pass: `deno fmt --check` (3736 files), `deno lint` (3714 files),
+  pass: `deno fmt --check` (3738 files), `deno lint` (3716 files),
   `deno check` and `markdownlint-cli2` (0 issues).
 - The full `./quality.sh` was not run to completion in this container; CI runs
   it on the pushed head.
@@ -65,7 +65,7 @@ failed. `markdownlint-cli2` over the published Markdown set: 0 issues.
 
 - **met** — The two bullets are in the prompt and the added text is at most 150
   words. — evidence:
-  `prompts/security_scan/prompt.md:1213-1218 (secret-bearing field bullet) and :1257-1264 (service-principal bullet); the two bullets total 149 words`
+  `prompts/security_scan/prompt.md:1213-1218 (secret-bearing field bullet) and :1256-1263 (service-principal bullet); the added prompt text totals 148 words, within the 150-word budget`
   — reviewer: met
 - **met** — A prompt-drift test, if the repository has one for this prompt,
   still passes. No new human step, gate or needs-human path is added. —
@@ -86,7 +86,7 @@ failed. `markdownlint-cli2` over the published Markdown set: 0 issues.
   rules before adding one): the section scope said 'IAM roles only' while the
   bullet covered a 'trust or resource policy', the lone-permission rule names
   `sts:AssumeRole`, and the chain-only filing rules left the bullet with no
-  class, CWE or cap handling. — evidence: `prompts/security_scan/prompt.md:1257-1264` — reason: fixed in this diff (scope widened to a trust or resource policy naming an AWS service principal; the bullet names its lone-permission exception, files standalone as `confused-deputy`/CWE-441 against the cap; `docs/SECURITY-SCAN.md` restatements updated to match).
+  class, CWE or cap handling. — evidence: `prompts/security_scan/prompt.md:1256-1263` — reason: fixed in this diff (the scope line scopes the chain rules to IAM roles only and the bullet names the trust or resource policy it covers; the bullet names its lone-permission exception, files standalone as `confused-deputy`/CWE-441 against the cap, and the added prompt text totals 148 words within the 150-word budget; `docs/SECURITY-SCAN.md` restatements updated to match, including the 'finding only when it exposes a privileged action' gate in the filing and class-list entries).
 - **clean** — Checked and found compliant: Australian English in the added
   text, the thin-pointer AGENTS.md rule (no standards added there), the
   secret-bearing field bullet (A01 cross-link, one rule, no duplicate),
