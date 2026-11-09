@@ -28,8 +28,9 @@ compile error is therefore caught before the push, not by a CI run. Closes
   `gateUnpushedCommits` (so Step 1b of `commitAndPushPending` and the completion
   phase run it). New `CI_CARGO_ONLY_PRE_FLIGHT` spec; `pr_ci_processor.ts` and
   `pr_feedback_processor.ts` pass it when a repo has no pre-flight commands, so
-  repair pushes run only the CI cargo checks and the ShellCheck policy that
-  every gate run applies (#4631, merged from main).
+  repair pushes run only the CI cargo checks, the ShellCheck policy and the
+  `cargo deny` gate that every gate run applies (#4631, #4626, merged from
+  main).
 - Merge with main (#4631, #4909): the ShellCheck policy and `shellcheckOnly`
   stay as main has them. The cargo checks are planned from a changed-file list
   that keeps a file reached through a symlinked parent directory
@@ -38,7 +39,8 @@ compile error is therefore caught before the push, not by a CI run. Closes
   repository, while main's other changed-file checks keep skipping such files.
 - Docs: `docs/CONFIGURATION.md` (pre-flight / pre-push gate section) and
   `docs/INTERNALS.md`.
-- Not done here: `cargo deny` (owned by #4626, still open).
+- Not done here: the `cargo deny` implementation itself (owned by #4626, merged
+  from main). `ciCargoOnly` only keeps it running for changed cargo inputs.
 
 ```mermaid
 flowchart LR
@@ -74,14 +76,15 @@ flowchart LR
   instead of dropping to a smaller check set (the issue requires this).
 - Repair processors use a cargo-only spec for repos without pre-flight, so the
   full changed-file gate does not newly apply to repair pushes. The ShellCheck
-  policy (#4631) runs in every gate, so these repairs keep it. The spelling and
+  policy (#4631) and the cargo-deny gate (#4626, for changed cargo inputs) run in
+  every gate, so these repairs keep both. The spelling and
   merge-conflict repairs keep main's `resolveRepairPreFlightSpec`
   (`shellcheckOnly`), with no cargo check.
 
 ### Undiscoverable Facts
 
-- #4625 (shared validation contract) is closed; #4626 (cargo deny) is open and
-  untouched.
+- #4625 (shared validation contract) is closed; #4626 (cargo deny) is merged
+  from main and its gate is kept under `ciCargoOnly`.
 - `docs/audits/lib-sweep-coverage/top-up-4630.json` registers the new lib module
   with the security-sweep ledger.
 

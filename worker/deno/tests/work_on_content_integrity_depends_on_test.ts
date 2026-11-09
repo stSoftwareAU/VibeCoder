@@ -97,6 +97,7 @@ function createGhMock(actions: string[]): (args: string[]) => Promise<string> {
           repository: {
             issue: {
               userContentEdits: {
+                totalCount: 1,
                 nodes: [{
                   editedAt: new Date(Date.now() + 3600_000).toISOString(),
                   editor: { login: "stservice" },

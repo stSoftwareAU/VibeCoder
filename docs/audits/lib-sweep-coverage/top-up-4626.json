@@ -1,0 +1,12 @@
+{
+  "issue": 4626,
+  "chunk": "top-up-4626",
+  "title": "top-up: cargo-deny CI gate module",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4626",
+  "definition": "module added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: cargo_deny_gate.ts, the local run of the repository's CI cargo deny check before a push (#4626)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/cargo_deny_gate.ts"
+  ],
+  "sweptAt": "eb861bdb251e8921bd2bb36d6b57cfbd14b63f77"
+}

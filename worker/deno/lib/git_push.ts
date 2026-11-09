@@ -49,15 +49,16 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * pushes with zero added latency, which is what the WIP checkpoint, timeout
  * preservation and declared hand-off pushes rely on. Passing a spec turns on
  * Step 1b's changed-file checks (Issue #3689: deno/cargo fmt, markdownlint,
- * cspell, the Floci deploy test and the repository's ShellCheck policy) even
- * when `commands` is empty; an empty list only means no repo pre-flight
- * commands run. A spec with `shellcheckOnly` runs just the ShellCheck policy
- * (Issue #4631).
+ * cspell, the Floci deploy test and the repository's ShellCheck policy), then
+ * cargo deny when applicable (Issue #4626), even when `commands` is empty; an
+ * empty list only means no repo pre-flight commands run. A spec with
+ * `shellcheckOnly` runs the ShellCheck policy and cargo deny for changed cargo
+ * inputs (Issues #4631 and #4626).
  *
  * `ciCargoOnly` (Issue #4630) narrows Step 1b to the repo CI's own cargo
- * clippy and test-target compile plus the ShellCheck policy: no fmt, lint,
- * markdownlint, cspell or Floci checks, and no pre-flight commands. See
- * {@link CI_CARGO_ONLY_PRE_FLIGHT}.
+ * clippy and test-target compile plus the ShellCheck policy and cargo deny for
+ * changed cargo inputs: no fmt, lint, markdownlint, cspell or Floci checks, and
+ * no pre-flight commands. See {@link CI_CARGO_ONLY_PRE_FLIGHT}.
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */
@@ -67,15 +68,16 @@ export interface PreFlightGateSpec {
   /** Injectable command runner (defaults to the real subprocess runner). */
   runner?: PreFlightRunner;
   /**
-   * Run only the repo CI's cargo clippy and test-target compile (and the
-   * ShellCheck policy) over the unpushed commits (Issue #4630). Omit for the
-   * full changed-file gate.
+   * Run only the repo CI's cargo clippy and test-target compile (plus the
+   * ShellCheck policy and cargo deny for changed cargo inputs) over the
+   * unpushed commits (Issue #4630). Omit for the full changed-file gate.
    */
   ciCargoOnly?: boolean;
   /**
-   * Step 1b validates only the repository's ShellCheck policy for the pushed
-   * scripts, leaving the formatter policy of a repair without pre-flight
-   * commands unchanged (Issue #4631).
+   * Step 1b validates the repository's ShellCheck policy for the pushed
+   * scripts, plus the CI cargo-deny check when the pushed paths include a
+   * cargo input, and leaves the formatter policy of a repair without
+   * pre-flight commands unchanged (Issues #4631 and #4626).
    */
   shellcheckOnly?: boolean;
 }
@@ -84,7 +86,8 @@ export interface PreFlightGateSpec {
  * The gate the repair processors (CI fix and PR feedback) pass when a repo has
  * no pre-flight commands (Issue #4630). Their repairs otherwise reach the
  * branch with no gate, and CI then fails on clippy. Only the repo CI's cargo
- * clippy and test-target compile run. Frozen so that no caller can change the
+ * clippy and test-target compile run, plus the ShellCheck policy and the CI
+ * cargo-deny check for changed cargo inputs (Issues #4631 and #4626). Frozen so that no caller can change the
  * shared spec. To inject a runner, copy it: `{ ...CI_CARGO_ONLY_PRE_FLIGHT,
  * runner }`.
  */
@@ -119,8 +122,9 @@ export function resolvePreFlightSpec(
 /**
  * {@link resolvePreFlightSpec} for the PR repair processors (CI-fix, review
  * feedback, spelling, merge conflict): a repo with no pre-flight commands
- * still gets the ShellCheck publication check, and nothing else, before the
- * repair is pushed (Issue #4631). WIP checkpoint, timeout-preservation and
+ * still gets the ShellCheck publication check, plus the CI cargo-deny check
+ * when the pushed paths include a cargo input, and nothing else, before the
+ * repair is pushed (Issues #4631 and #4626). WIP checkpoint, timeout-preservation and
  * declared hand-off pushes never call this; they stay ungated on purpose.
  */
 export function resolveRepairPreFlightSpec(
@@ -899,7 +903,8 @@ export async function gateUnpushedCommits(
  *      also re-runs the repo's pre-flight commands; when Step 1 committed,
  *      those commands already ran there and are not repeated. A spec with
  *      `ciCargoOnly` (Issue #4630) runs only the repo CI's cargo clippy and
- *      test-target compile, and the ShellCheck policy, in this step. A block
+ *      test-target compile, the ShellCheck policy and cargo deny for changed
+ *      cargo inputs (Issue #4626), in this step. A block
  *      refuses the push. With no pre-flight spec Step 1b does not run, so
  *      WIP checkpoint pushes are never refused. The gate output in the
  *      returned error is cut to a head and a tail (as is Step 1's pre-flight
@@ -933,10 +938,11 @@ export async function gateUnpushedCommits(
  *   blocks BOTH the commit and the push. There is no override flag. Supplying
  *   a spec, even one with an empty `commands` list, also turns on Step 1b's
  *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
- *   (zero added latency, no gate); a `shellcheckOnly` spec runs only the
- *   repository ShellCheck policy (Issue #4631). A spec with `ciCargoOnly`
- *   narrows Step 1b to the repo CI's cargo checks and that ShellCheck policy
- *   (Issue #4630).
+ *   (zero added latency, no gate); a `shellcheckOnly` spec runs the
+ *   repository ShellCheck policy, plus the CI cargo-deny check when the pushed
+ *   paths include a cargo input (Issues #4631 and #4626). A spec with
+ *   `ciCargoOnly` narrows Step 1b to the repo CI's cargo checks, that
+ *   ShellCheck policy and the same cargo-deny check (Issue #4630).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly

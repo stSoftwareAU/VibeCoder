@@ -102,6 +102,7 @@ function createGhMock(state: {
           repository: {
             issue: {
               userContentEdits: {
+                totalCount: 1,
                 nodes: [{
                   editedAt: state.editAt,
                   editor: { login: "mallory" },

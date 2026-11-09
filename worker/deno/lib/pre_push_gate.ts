@@ -16,7 +16,7 @@
  *   content the execute phase's WIP checkpoints already pushed is checked
  *   before `gh pr create`.
  *
- * It does three things, in order:
+ * It does four things, in order:
  *
  * 1. Always runs a fast check over just the files the push introduces
  *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
@@ -37,7 +37,16 @@
  *    loaded, so it does not run them. The worker's own gates do: `git_push.ts`
  *    `gateUnpushedCommits` (`commitAndPushPending` Step 1b and the completion
  *    phase) passes `repoCiCargoChecks`.
- * 3. Then runs the repo's configured pre-flight commands.
+ * 3. Then runs the repo's `cargo deny check` (Issue #4626) for eligible
+ *    workflows when intermediate pushes, ShellCheck-only repairs or
+ *    `ciCargoOnly` repairs change a cargo input (a Cargo manifest, lock file,
+ *    deny config or `.cargo/config.toml`). The whole-branch completion check
+ *    (with a baseRef, and neither ShellCheck-only nor `ciCargoOnly`) runs it on
+ *    every branch for eligible workflows, regardless of changed cargo inputs.
+ *    Missing tools or an unreachable advisory database are infrastructure
+ *    failures, except for an invocation CI allows to fail, whose failures of
+ *    every kind are `[PRE_PUSH_WARNING]` lines.
+ * 4. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
  * call, an unquotable path, a ShellCheck policy the runner cannot interpret,
@@ -59,6 +68,7 @@ import {
   runPreFlightGate,
   tokeniseCommand,
 } from "./pre_flight_gate.ts";
+import { runCargoDenyGate } from "./cargo_deny_gate.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
@@ -190,6 +200,16 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
   }
   return { code, stdout, stderr };
 };
+
+/** The branch names the refs push (`refs/heads/` stripped), or undefined when none. */
+function pushedBranches(refs: readonly PrePushRef[]): string[] | undefined {
+  const names = refs.flatMap((ref) =>
+    ref.remoteRef.startsWith("refs/heads/")
+      ? [ref.remoteRef.slice("refs/heads/".length)]
+      : []
+  );
+  return names.length === 0 ? undefined : names;
+}
 
 /**
  * List the files the push introduces: those touched by commits (including
@@ -1828,8 +1848,9 @@ function isHostFaultOfCheck(error: PreFlightGateError): boolean {
 /**
  * Run the pre-push gate: the always-on changed-file checks first (cargo fmt
  * among them), then the CI cargo checks (Issue #4630) when a Rust-relevant file
- * changed, then the repo's pre-flight commands. `checksRun` lists the
- * changed-file and CI cargo commands run.
+ * changed, then the repo's `cargo deny check` (Issue #4626), then the repo's
+ * pre-flight commands. `checksRun` lists the changed-file, CI cargo and
+ * cargo-deny commands run.
  * The changed-file checks run whatever the run
  * budget — they are never skipped; all but the Floci deploy test are fast. Any
  * git, parse or planning error is an `Err`, never a pass.
@@ -1847,14 +1868,23 @@ function isHostFaultOfCheck(error: PreFlightGateError): boolean {
  * its output.
  *
  * `ciCargoOnly` (repair pushes of repos with no pre-flight configuration, where
- * only the CI cargo checks should gate) runs nothing but those CI cargo checks
- * and the repository's ShellCheck policy (Issue #4631, which every gate run
- * applies): the changed files are still listed and the CI cargo scan still
+ * only the CI cargo checks should gate) runs nothing but those CI cargo checks,
+ * the repository's ShellCheck policy (Issue #4631) and the cargo-deny gate
+ * (Issue #4626), which every gate run applies: the changed files are still listed and the CI cargo scan still
  * read, but the other changed-file checks, their binary lookups and the repo's
  * pre-flight commands are skipped. Only the Rust-relevant changed files are
  * planned, so no other checker's planning error can block the push. With no
  * `findCiCargo`, `ciCargoOnly` plans and runs no cargo check. `shellcheckOnly`
  * plans no changed-file check at all, so it reads no CI cargo scan either.
+ *
+ * The cargo-deny gate runs for eligible workflows when the pushed paths include
+ * a cargo input (a Cargo manifest, lock file, deny config or
+ * `.cargo/config.toml`); intermediate pushes, ShellCheck-only repairs and
+ * `ciCargoOnly` repairs all work this way. The whole-branch completion check
+ * (with a baseRef, and neither ShellCheck-only nor `ciCargoOnly`) runs it on
+ * every branch for eligible workflows, regardless of changed cargo inputs. A
+ * cargo-deny failure that shows the tool or advisory database could not be
+ * reached is a {@link PrePushGateInfrastructureError}.
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -2082,6 +2112,32 @@ export async function runPrePushGate(opts: {
       return { ok: false, error: result.error };
     }
     checksRun.push(check.command);
+  }
+
+  const cargoDeny = await runCargoDenyGate({
+    cwd: opts.cwd,
+    changed: contained.value,
+    always: !opts.shellcheckOnly && !opts.ciCargoOnly &&
+      opts.baseRef !== undefined,
+    // The touched paths decide a workflow's `paths` filter only over the whole
+    // branch; a push of the newest commits alone would miss earlier ones.
+    context: {
+      touched: opts.baseRef === undefined ? undefined : touched.value,
+      branches: pushedBranches(refs.value),
+    },
+    tracked,
+    runner: opts.runner,
+    timeoutSeconds: opts.timeoutSeconds,
+  });
+  if (!cargoDeny.ok) {
+    return cargoDeny.error.kind === "infrastructure"
+      ? infrastructureFail(cargoDeny.error.message)
+      : fail(cargoDeny.error.message);
+  }
+  checksRun.push(...cargoDeny.value.checksRun);
+  // A check CI allows to fail is reported, never counted as run or a block.
+  for (const warning of cargoDeny.value.warnings) {
+    console.warn(`[PRE_PUSH_WARNING] cargo deny: ${warning}`);
   }
 
   const preFlight = await runPreFlightGate(
