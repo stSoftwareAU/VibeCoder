@@ -19,6 +19,12 @@
 
 import type { Result } from "../types.ts";
 import {
+  type DeferredSweep,
+  settleDeferredSweeps,
+  startDeferredSweep,
+  type SweepTimer,
+} from "./deferred_startup_sweep.ts";
+import {
   type AgentProviderSelector,
   selectAgentProvider,
   setConfiguredAgentProviderId,
@@ -617,8 +623,25 @@ export interface RunCoreDeps {
   rotateLogFiles: () => Promise<void>;
   cleanupStaleTempFiles: () => Promise<void>;
   recoverStuckIssues: () => Promise<void>;
+  /**
+   * Stale branch cleanup. Issue #4822: run in the background alongside the
+   * main loop, not awaited before it, and always before
+   * {@link cleanupMergedBranches}. A rejection is logged and does not stop
+   * the merged cleanup.
+   */
   cleanupStaleBranches: () => Promise<void>;
   checkFeatureAvailability: () => Promise<void>;
+
+  /**
+   * Grace the run gives the background startup cleanups once the main loop
+   * has ended, before abandoning them (ms). Absent means the production
+   * default (`DEFERRED_SWEEP_GRACE_MS`). Tests only.
+   */
+  deferredSweepGraceMs?: number;
+  /**
+   * Timer behind that grace. Absent means the real `setTimeout`. Tests only.
+   */
+  deferredSweepTimer?: SweepTimer;
 
   // Health checks
   /**
@@ -796,7 +819,9 @@ export interface RunCoreDeps {
    */
   ensureAutoMerge: (opts?: EnsureAutoMergeOptions) => Promise<Result<void>>;
 
-  // Priority 1.66: Branch cleanup
+  // Startup branch cleanup (Issue #4822): run in the background alongside the
+  // main loop, after cleanupStaleBranches. Not a priority handler. A failed
+  // Result is logged; it does not change the run's outcome.
   cleanupMergedBranches: () => Promise<Result<void>>;
 
   // Priority 1.67: Close issues for merged PRs
@@ -2075,7 +2100,8 @@ export function buildPriorityDispatchTable(
             : { ok: false as const, error: r.error }
         ),
     },
-    // Branch cleanup runs once at initialisation, not every cycle
+    // Branch cleanup runs once at startup (in the background, Issue #4822),
+    // not every cycle
     {
       priority: 1.67,
       name: "Close Issues for Merged PRs",
@@ -2305,13 +2331,20 @@ export function buildPriorityDispatchTable(
 /**
  * Run the initialisation sequence before the main loop.
  *
+ * The two branch cleanups do not run here: they start as one background
+ * sweep (Issue #4822), pushed onto `deferredSweeps` for the caller to settle
+ * when the loop ends. The sweep is not awaited, so the first claim is not
+ * delayed by it.
+ *
+ * @param deferredSweeps - Caller-owned list the started sweep is pushed onto
  * @returns Result with error details if any step fails fatally
  */
 function runInitialisation(
   deps: RunCoreDeps,
+  deferredSweeps: DeferredSweep[],
 ): Promise<Result<void>> {
   // Issue #1587: initialisation issues `gh` calls (stuck-issue recovery,
-  // the two branch cleanups, the feature-availability probe) outside
+  // the branch cleanups, the feature-availability probe) outside
   // priority dispatch, so they were counted but attributed to nothing.
   // Async-scoped (Issue #213), never enterPriority/exitPriority.
   return withPriorityContext("Initialisation", async () => {
@@ -2357,12 +2390,43 @@ function runInitialisation(
     try {
       await deps.recoverStuckIssues();
     } catch { /* best-effort */ }
-    try {
-      await deps.cleanupStaleBranches();
-    } catch { /* best-effort */ }
-    try {
-      await deps.cleanupMergedBranches();
-    } catch { /* best-effort */ }
+    // Issue #4822: the two branch cleanups run in the background alongside
+    // the main loop, stale first, then merged. Each is best-effort on its
+    // own, so a failure in one does not stop the other.
+    deferredSweeps.push(
+      startDeferredSweep(
+        "startup-branch-cleanup",
+        async () => {
+          try {
+            await deps.cleanupStaleBranches();
+          } catch (error) {
+            deps.logError(
+              `Stale branch cleanup failed (continuing): ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+          try {
+            const merged = await deps.cleanupMergedBranches();
+            if (!merged.ok) {
+              deps.logError(
+                `Merged branch cleanup failed (continuing): ${merged.error.message}`,
+              );
+            }
+          } catch (error) {
+            deps.logError(
+              `Merged branch cleanup failed (continuing): ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        },
+        {
+          log: (message) => deps.log(message),
+          logError: (message) => deps.logError(message),
+        },
+      ),
+    );
     try {
       await deps.checkFeatureAvailability();
     } catch { /* best-effort */ }
@@ -6403,6 +6467,10 @@ export async function runCoreLoop(
   deps.addSignalListener("SIGTERM", shutdownHandler);
   deps.addSignalListener("SIGINT", shutdownHandler);
 
+  // Issue #4822: background startup sweeps started by initialisation. Held
+  // here so the outer `finally` can give them a bounded grace on every exit.
+  const deferredSweeps: DeferredSweep[] = [];
+
   try {
     // --- Pre-flight GitHub rate-limit gate ---
     // `gh api rate_limit` is a free call. If the primary GraphQL quota is
@@ -6433,7 +6501,7 @@ export async function runCoreLoop(
     }
 
     // --- Initialisation ---
-    const initResult = await runInitialisation(deps);
+    const initResult = await runInitialisation(deps, deferredSweeps);
     if (!initResult.ok) {
       return buildResult(initResult.error.message);
     }
@@ -7701,6 +7769,22 @@ export async function runCoreLoop(
     }
 
     // --- Cleanup ---
+    // Issue #4822: a startup branch cleanup still running gets a bounded
+    // grace here, on every exit path. It is abandoned, not killed, if the
+    // grace expires. Its progress persists, so the next run resumes it.
+    try {
+      await settleDeferredSweeps(
+        deferredSweeps,
+        {
+          log: (message) => deps.log(message),
+          logError: (message) => deps.logError(message),
+        },
+        {
+          graceMs: deps.deferredSweepGraceMs,
+          timer: deps.deferredSweepTimer,
+        },
+      );
+    } catch { /* best-effort */ }
     // Issue #2670 (shutdown/rate-limit path): the per-issue claim is released
     // inside the scan loop (success/failure/skip). For an issue interrupted
     // mid-processing, `cleanupInProgressIssue()` unassigns the worker — so the

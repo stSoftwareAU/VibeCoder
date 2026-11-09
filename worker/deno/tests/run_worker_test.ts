@@ -3,9 +3,10 @@
  *
  * These cover the orchestration order and fail-loud behaviour of the conductor
  * that replaced `worker/run_core.sh`: PID guard → claim → bootstrap → validate
- * → GitHub user → gh scopes → housekeeping → main loop →
- * cleanup. Every side effect is injected so the sequence is asserted without
- * touching git, the process table, or the network.
+ * → GitHub user → gh scopes → housekeeping (blocking) → main loop →
+ * cleanup, with the GitHub startup sweeps running in the background alongside
+ * the main loop (Issue #4822). Every side effect is injected so the sequence is
+ * asserted without touching git, the process table, or the network.
  *
  * Australian English spelling throughout (behaviour, defence, authorised).
  */
@@ -44,6 +45,7 @@ import {
   EGRESS_SELFCHECK_FAILURE_MARKER,
 } from "../lib/egress_selfcheck.ts";
 import { ROOT_FS_FAULT_EXIT_STATUS } from "../lib/root_filesystem_fault.ts";
+import type { SweepTimer } from "../lib/deferred_startup_sweep.ts";
 
 /** Recording harness capturing the order and arguments of every seam. */
 interface Recorder {
@@ -1346,4 +1348,177 @@ Deno.test("runWorker records actual Apple controls before claiming and refuses a
     console.error = originalError;
     await Deno.remove(home, { recursive: true });
   }
+});
+
+// =============================================================================
+// GitHub startup sweeps run alongside the main loop, not before it (Issue #4822)
+// =============================================================================
+
+/** Yield one macrotask: a deterministic hand-off, not a wall-clock wait. */
+const macrotask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+/** A grace timer that has already expired, so a sweep that never ends is abandoned at once. */
+const expiredTimer: SweepTimer = {
+  start: () => ({ expired: Promise.resolve(), cancel: () => {} }),
+};
+
+Deno.test("runWorker - the GitHub startup sweeps start before the loop and are settled before cleanup (Issue #4822)", async () => {
+  const rec = newRecorder();
+  const logs: string[] = [];
+  let sweepGateOpen = false;
+  let sweepFinished = false;
+  let gateOpenAtLoop: boolean | undefined;
+  let sweepFinishedAtCleanup: boolean | undefined;
+  let releaseSweepGate!: () => void;
+  const sweepGate = new Promise<void>((resolve) => {
+    releaseSweepGate = resolve;
+  });
+  const openSweepGate = () => {
+    sweepGateOpen = true;
+    releaseSweepGate();
+  };
+  // Hang guard only: if the driver awaited the sweep before the loop, the loop
+  // would never run and this test would hang. The guard opens the gate after
+  // a long while and records that it did, so that regression fails an
+  // assertion instead. The normal path reaches the loop in milliseconds and
+  // clears the guard, so it never fires there (it is not a sleep).
+  let hangGuardFired = false;
+  const breaker = setTimeout(() => {
+    hangGuardFired = true;
+    openSweepGate();
+  }, 10_000);
+  try {
+    const result = await runWorker(
+      baseOptions(),
+      stubDeps(rec, {
+        log: (message) => logs.push(message),
+        runDeferredHousekeeping: async () => {
+          rec.calls.push("deferred-start");
+          await sweepGate;
+          // Still has work once the gate opens: it finishes a macrotask later.
+          await macrotask();
+          sweepFinished = true;
+          rec.calls.push("deferred-finished");
+        },
+        runMainLoop: () => {
+          rec.calls.push("loop");
+          gateOpenAtLoop = sweepGateOpen;
+          // The loop lets the sweep finish just before it returns.
+          clearTimeout(breaker);
+          openSweepGate();
+          return Promise.resolve({
+            success: true,
+            message: "planned shutdown",
+          });
+        },
+        cleanup: () => {
+          rec.calls.push("cleanup");
+          rec.cleanupCalled = true;
+          sweepFinishedAtCleanup = sweepFinished;
+          return Promise.resolve();
+        },
+      }),
+    );
+
+    assertEquals(result.outcome, "completed");
+    assertEquals(
+      hangGuardFired,
+      false,
+      "the driver awaited the sweep before the main loop (the hang guard fired)",
+    );
+    assertEquals(
+      gateOpenAtLoop,
+      false,
+      "the main loop ran while the sweep was still blocked",
+    );
+    assertEquals(
+      sweepFinishedAtCleanup,
+      true,
+      "cleanup ran only after the sweep finished",
+    );
+    assertEquals(rec.calls, [
+      "guard",
+      "claim",
+      "bootstrap",
+      "validate",
+      "credentials",
+      "github-user",
+      "identity",
+      "gh-scopes",
+      "housekeeping",
+      "deferred-start",
+      "loop",
+      "deferred-finished",
+      "cleanup",
+    ]);
+    assert(
+      logs.some((line) =>
+        line.includes(
+          "startup sweeps (branch-cleanup-stale, merged-pr-issue-sweep) " +
+            "running in the background alongside the main loop (Issue #4822)",
+        )
+      ),
+      logs.join("\n"),
+    );
+  } finally {
+    clearTimeout(breaker);
+  }
+});
+
+Deno.test("runWorker - a background startup sweep that rejects is logged and changes neither the outcome nor the cleanup (Issue #4822)", async () => {
+  const rec = newRecorder();
+  const errors: string[] = [];
+  const result = await runWorker(
+    baseOptions(),
+    stubDeps(rec, {
+      logError: (message) => errors.push(message),
+      runDeferredHousekeeping: () => {
+        rec.calls.push("deferred-start");
+        return Promise.reject(new Error("gh rate limited"));
+      },
+    }),
+  );
+
+  assertEquals(result.outcome, "completed");
+  assertEquals(result.exitCode, 0);
+  assert(rec.calls.includes("loop"), "the main loop still ran");
+  assertEquals(rec.cleanupCalled, true);
+  assertEquals(rec.calls.at(-1), "cleanup");
+  assert(
+    errors.some((line) =>
+      line.includes("startup-housekeeping failed (continuing): gh rate limited")
+    ),
+    errors.join("\n"),
+  );
+});
+
+Deno.test("runWorker - a background startup sweep that never finishes is abandoned after the grace, not waited on (Issue #4822)", async () => {
+  const rec = newRecorder();
+  const errors: string[] = [];
+  const result = await runWorker(
+    {
+      ...baseOptions(),
+      deferredSweepGraceMs: 0,
+      deferredSweepTimer: expiredTimer,
+    },
+    stubDeps(rec, {
+      logError: (message) => errors.push(message),
+      runDeferredHousekeeping: () => {
+        rec.calls.push("deferred-start");
+        // Never settles: the grace is the only thing that ends the wait.
+        return new Promise<void>(() => {});
+      },
+    }),
+  );
+
+  assertEquals(result.outcome, "completed");
+  assert(rec.calls.includes("loop"), "the main loop still ran");
+  assertEquals(rec.cleanupCalled, true);
+  assert(
+    errors.some((line) =>
+      line.includes("still running after the 0 ms grace") &&
+      line.includes("startup-housekeeping")
+    ),
+    errors.join("\n"),
+  );
 });
