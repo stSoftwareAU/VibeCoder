@@ -47,13 +47,34 @@ failed.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — The two bullets are in the prompt and the added text is at most 150 words. — evidence: `prompts/security scan/prompt.md:1213-1218 (secret-bearing field bullet) and :1255-1259 (service-principal bullet); the added lines total 120 words` — reviewer: met
-- **met** — A prompt-drift test, if the repository has one for this prompt, still passes. No new human step, gate or needs-human path is added. — evidence: `worker/deno/tests: idle task template test.ts, security scan defensive labels test.ts, security scan house vocabulary test.ts, security scan secret redaction 3047 test.ts, fence coverage repair test.ts and references doc test.ts pass (64 passed, 0 failed); neither bullet adds a human step, gate or n` — reviewer: met
-- **met** — prompts/security scan/prompt.md is not twinned with CODING-STANDARDS.md ; no other file needs to change. — evidence: `git diff main...HEAD touches only prompts/security scan/prompt.md and the PR summary docs/archive/pr-summaries/pr-summary-4817.md; CODING-STANDARDS.md is untouched` — reviewer: met
+- **met** — The two bullets are in the prompt and the added text is at most 150
+  words. — evidence:
+  `prompts/security scan/prompt.md:1213-1218 (secret-bearing field bullet) and :1255-1259 (service-principal bullet); the added lines total 120 words`
+  — reviewer: met
+- **met** — A prompt-drift test, if the repository has one for this prompt,
+  still passes. No new human step, gate or needs-human path is added. —
+  evidence:
+  `worker/deno/tests: idle task template test.ts, security scan defensive labels test.ts, security scan house vocabulary test.ts, security scan secret redaction 3047 test.ts, fence coverage repair test.ts and references doc test.ts pass (64 passed, 0 failed); neither bullet adds a human step, gate or n`
+  — reviewer: met
+- **met** — prompts/security scan/prompt.md is not twinned with
+  CODING-STANDARDS.md ; no other file needs to change. — evidence:
+  `git diff main...HEAD touches only prompts/security scan/prompt.md and the PR summary docs/archive/pr-summaries/pr-summary-4817.md; CODING-STANDARDS.md is untouched`
+  — reviewer: met
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — The service-principal bullet restates and contradicts existing rules (Prompt Engineering Guidance: check the existing rules before adding one). The section scope line says 'IAM roles only', but the bullet covers a 'trust or resource policy', so 'resource policy' falls outside that scope. The bullet — evidence: `prompts/security scan/prompt.md:1255-1259` — reason: NOT fixed: this turn permits no code changes, and these lines were added by this diff. Fix the bullet in this diff — scope it to 'role trust policy', name its exception to the lone-permission rule, and give its class, CWE and cap handling — or drop it. 'fixed in this diff' would be false, so the gat
-- **clean** — Checked and found compliant: Australian English in the added text, the thin-pointer AGENTS.md rule (no standards added there), the secret-bearing field bullet (A01 cross-link, one rule, no duplicate), prompt-drift tests (64 pass), no new gate or human step, and a minimal diff with no unrequested cha
+- **violation** — The service-principal bullet restates and contradicts existing
+  rules (Prompt Engineering Guidance: check the existing rules before adding
+  one). The section scope line says 'IAM roles only', but the bullet covers a
+  'trust or resource policy', so 'resource policy' falls outside that scope. The
+  bullet — evidence: `prompts/security scan/prompt.md:1255-1259` — reason: NOT
+  fixed: this turn permits no code changes, and these lines were added by this
+  diff. Fix the bullet in this diff — scope it to 'role trust policy', name its
+  exception to the lone-permission rule, and give its class, CWE and cap
+  handling — or drop it. 'fixed in this diff' would be false, so the gat
+- **clean** — Checked and found compliant: Australian English in the added text,
+  the thin-pointer AGENTS.md rule (no standards added there), the secret-bearing
+  field bullet (A01 cross-link, one rule, no duplicate), prompt-drift tests (64
+  pass), no new gate or human step, and a minimal diff with no unrequested cha
