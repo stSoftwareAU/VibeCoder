@@ -355,7 +355,7 @@ after the clone mount), so the agent cannot write objects, refs or config that
 the host's git later trusts, and the host stages the resolved files itself. The
 working tree stays read-write. As defence in depth, before host publication,
 `resetRepairCloneGitConfig` rewrites the clone's `.git/config` as a minimal
-canonical GitHub remote config, dropping agent-written hooks, filters,
+canonical GitHub remote config, dropping any local hooks, filters,
 fsmonitor, external diff and SSH commands. The reset keeps `core.ignorecase` and
 `core.precomposeunicode` by probing the clone's filesystem on the host (the
 agent's config is not read), so a case-only rename is still seen as a rename on
@@ -365,7 +365,8 @@ objects ignored (`core.useReplaceRefs=false`); the host's `run()` git calls and
 the review verifier's git calls in the clone use the same flags
 (`HOST_GIT_HARDENING_ARGS`). Before those calls, the host refuses any nested
 `.git` entry (matched case-insensitively, with git's `git~1` alias), any index
-gitlink absent from HEAD, any `refs/replace` ref, and a `.git/info/grafts` or
+gitlink absent from both HEAD and the pending merge parent, any `refs/replace`
+ref, and a `.git/info/grafts` or
 `.git/shallow` file. Checked-out existing submodules are also refused; the
 staged merge is preserved.
 

@@ -945,8 +945,8 @@ const REPAIR_GIT_HISTORY_FILES: readonly string[] = [
 ];
 
 /**
- * Refuse nested Git metadata, newly introduced gitlinks and agent-written
- * history rewrites (replacement refs, grafts, a shallow file) before host Git.
+ * As defence in depth for the read-only .git mount, refuse nested Git metadata,
+ * unexpected index gitlinks and history rewrites before host Git.
  */
 export async function assertRepairTreeSafe(dir: string): Promise<void> {
   async function scan(path: string): Promise<void> {
@@ -984,11 +984,23 @@ export async function assertRepairTreeSafe(dir: string): Promise<void> {
     );
   }
   const head = await run("git", ["ls-tree", "-rz", "--full-tree", "HEAD"], dir);
+  let mergeHead: string | undefined;
+  try {
+    mergeHead = (await Deno.readTextFile(`${dir}/.git/MERGE_HEAD`)).trim();
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  if (mergeHead !== undefined && !/^[0-9a-f]{40,64}$/.test(mergeHead)) {
+    throw new Error("Refusing host git operations: invalid MERGE_HEAD");
+  }
+  const merged = mergeHead
+    ? await run("git", ["ls-tree", "-rz", "--full-tree", mergeHead], dir)
+    : "";
   const index = await run("git", ["ls-files", "--stage", "-z"], dir);
   const headLinks = new Set(
-    head.split("\0").filter((s) => s.startsWith("160000 ")).map((s) =>
-      s.slice(s.indexOf("\t") + 1)
-    ),
+    (head + merged).split("\0").filter((s) => s.startsWith("160000 ")).map((
+      s,
+    ) => s.slice(s.indexOf("\t") + 1)),
   );
   for (const entry of index.split("\0")) {
     if (
@@ -1036,7 +1048,7 @@ export interface RepairFilesystemTraits {
 
 /**
  * Probe the clone's filesystem on the host, as `git init` does, with files the
- * host creates and removes itself. The agent-written config is not consulted.
+ * host creates and removes itself. The existing clone config is not consulted.
  */
 export async function probeRepairFilesystem(
   gitDir: string,
@@ -1064,7 +1076,7 @@ export async function probeRepairFilesystem(
   };
 }
 
-/** Replace agent-writable local config before any host publication git call. */
+/** Reset local config as defence in depth before host publication git calls. */
 export async function resetRepairCloneGitConfig(
   dir: string,
   repo: string,
@@ -1136,7 +1148,7 @@ export async function resetRepairCloneGitConfig(
       if (!(removeError instanceof Deno.errors.NotFound)) throw removeError;
     }
     throw new Error(
-      `Could not replace agent-controlled git config before publication: ${
+      `Could not replace local git config before publication: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
@@ -1154,7 +1166,7 @@ export async function run(
   runGit: typeof runGitArgv = runGitArgv,
 ): Promise<string> {
   // git goes through the timeout/audit chokepoint (Issue #1553), with the
-  // agent-writable hooks and fsmonitor neutralised (HOST_GIT_HARDENING_ARGS).
+  // hooks and fsmonitor neutralised as defence in depth (HOST_GIT_HARDENING_ARGS).
   if (command === "git") {
     const git = await runGit([command, ...HOST_GIT_HARDENING_ARGS, ...args], {
       cwd,
@@ -2453,7 +2465,7 @@ export interface FixDeps {
    * `${options.exchange}/${BABYSITTER_RESPONSE_FILE}`.
    */
   startAgent?: typeof startBabysitterAgent;
-  /** Replaces agent-controlled local git config before host publication. */
+  /** Resets local git config as defence in depth before host publication. */
   resetGitConfig?: typeof resetRepairCloneGitConfig;
   assertTreeSafe?: typeof assertRepairTreeSafe;
   /** Starts the PR lock renewal (default: startBranchUpdateLockRenewal). */

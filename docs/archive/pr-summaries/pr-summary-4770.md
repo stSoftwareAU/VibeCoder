@@ -60,7 +60,8 @@ sequenceDiagram
   config the reset does not control. The host's own global git config is left in
   place so its credential helper still works. Before host Git runs, nested
   `.git` entries (including case-variant, NFKC-folded and `git~1` names), index
-  gitlinks absent from HEAD, `refs/replace` refs, `.git/info/grafts` and
+  gitlinks absent from HEAD and the pending merge parent, `refs/replace` refs,
+  `.git/info/grafts` and
   `.git/shallow` are refused. Checked-out existing submodules are also refused;
   the staged merge remains intact.
 - Exit status 42 from `babysitter-repair` is a reported task failure and is a
@@ -121,6 +122,14 @@ Backend and CLI change; no visual surface changed.
 - `deno test --allow-all tests/fleet_pr_babysitter_git_timeout_test.ts` passed
   all three tests on this head. The push and fetch cases use the shared host Git
   hardening arguments and continue to check the 30-minute timeout.
+- This review fix passed the 17 Git hardening tests and 149 container manifest
+  tests, plus Deno formatting, lint and type checking. The base-merge gitlink
+  regression was observed failing before the fix. The full gate passed its
+  static and completeness checks, but Deno's parallel test runner panicked
+  while restoring test permissions; its serial pass did not run. Semgrep was
+  unavailable and the installed Checkov did not match the pinned version. The
+  focused orchestration suite had 49 passes and 17 failures on this host,
+  which has no supported container runtime. The pushed head needs CI.
 
 ## Acceptance Criteria
 
@@ -433,6 +442,16 @@ Backend and CLI change; no visual surface changed.
   `docs/THREAT-MODEL.md`, the key section of `docs/CONFIGURATION.md`,
   `docs/workflows/fleet-pr-babysitter-github-app.md` and the design principle in
   `DESIGN-PRINCIPLES.md`.
+- The container manifest's retained macOS checksum pins have no host installer
+  reader; its field comment and `container/tools.json` now say so.
+
+- A base merge can stage a gitlink absent from the PR head. The guard accepts
+  paths in either HEAD or the pending merge parent, while still refusing a
+  planted index gitlink. The previously HEAD-only restriction is obsolete;
+  `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::a base merge adding a gitlink can be published`
+  covers the merge and commit, and
+  `::publication refuses planted nested repositories and index gitlinks`
+  retains refusal coverage. The new test failed before the fix.
 
 ### Deno regression avoided
 

@@ -65,6 +65,35 @@ Deno.test("publication refuses planted nested repositories and index gitlinks", 
   }
 });
 
+Deno.test("a base merge adding a gitlink can be published", async () => {
+  const root = await Deno.makeTempDir({ prefix: "repair-merged-gitlink-" });
+  try {
+    await git(root, "init", "-q");
+    await Deno.writeTextFile(`${root}/base`, "base\n");
+    await git(root, "add", "base");
+    await git(root, "commit", "-q", "-m", "base");
+    const head = await git(root, "rev-parse", "HEAD");
+    await git(root, "checkout", "-q", "-b", "base-branch");
+    await git(
+      root,
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${head},module`,
+    );
+    await git(root, "commit", "-q", "-m", "add submodule");
+    await git(root, "checkout", "-q", "--detach", head);
+    await git(root, "merge", "--no-commit", "--no-ff", "base-branch");
+    await assertRepairTreeSafe(root);
+    await validateAndCommit(root, 7, { login: "fixture-bot", id: "1" });
+    assert(
+      (await git(root, "ls-tree", "HEAD", "module")).startsWith("160000 "),
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("run puts the hook and fsmonitor neutralising flags before the git subcommand", async () => {
   const calls: string[][] = [];
   const runGit = ((argv: readonly string[]) => {
