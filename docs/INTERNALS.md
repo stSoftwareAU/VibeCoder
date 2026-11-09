@@ -126,7 +126,10 @@ the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
 formatting-only failure does not spend the agent's one remediation round. It
 leaves agent-authored Markdown unformatted. The worker's own Markdown and JSON
 under `docs/archive/pr-summaries/` and `docs/archive/handover/` are formatted
-afterwards, and a formatter that fails is only logged: the gate still runs and
+afterwards. Before `deno fmt`, each linkage-only line in archive Markdown is
+put in a paragraph of its own (Issue #4802). An archive file over 1 MiB
+(`MAX_ARCHIVE_REWRITE_BYTES`) is skipped with a warning and left for the gate
+to report. A formatter that fails is only logged: the gate still runs and
 reports. The completion phase does the same before its pre-push
 gate; see "Agent pre-push hook and the changed-files check" in
 [CONFIGURATION.md](CONFIGURATION.md).
@@ -1122,6 +1125,24 @@ run to measure or compare behaviour across the whole fleet configures
 `fleet_run_archive` (see [Fleet Run Archive](CONFIGURATION.md#-fleet-run-archive)).
 
 ### 📊 PR completion evidence report (Issue #4658)
+
+For the completion-admission pilot (#4942), add `--issue-throughput` to
+`pr-completion-report --collect` and supply `--start` and `--end` seven days
+apart. The additional `issueThroughput` section counts unique closed issues
+whose GitHub closure commit is associated with a PR merged to the repository's
+default branch during that window. Abandoned closures are excluded; manual
+closures and unproven delivery remain explicitly unknown. PRs merged without
+confirmed issue completion and milestone PRs are reported separately.
+
+The same snapshot and verified audit attribution supply issue-to-merge median
+and p90, unattended/human/unknown completion, Quality workflow attempts and
+cancellations per completed issue, and verified repairs delivering no commits.
+Quality means workflow names beginning with `Quality`. Missing workflow names,
+truncated CI history or a closing PR outside the collected PR cohort produce
+unknown ratios rather than zero. No-change repairs are an observed lower bound;
+absence of a delivered-commit list is not evidence of no change. Deployment
+heartbeats remain in the existing deployment section, separate from delivery.
+The seven-day report informs tuning; it never blocks a PR or issue completion.
 
 `deno task pr-completion-report --input <snapshot.json>` reads a normalised,
 read-only evidence snapshot and emits dated JSON. `deno task

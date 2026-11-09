@@ -1,8 +1,18 @@
-/** Offline boundaries for the real babysitter CLI's repair orchestration. */
+/**
+ * Offline boundaries for the real babysitter CLI's container repair (Issue
+ * #4770): `gh`, `git` against the repair clone and the container runtime are
+ * faked, so the CLI runs end to end with no network, no container and no
+ * credentials. The worker checkout is read through real git, as the repair
+ * snapshots it.
+ */
 export {};
 
 const root = Deno.env.get("BABYSITTER_REPAIR_FIXTURE");
 if (!root) throw new Error("BABYSITTER_REPAIR_FIXTURE is required");
+const realCheckoutEnv = Deno.env.get("BABYSITTER_REAL_CHECKOUT");
+if (!realCheckoutEnv) throw new Error("BABYSITTER_REAL_CHECKOUT is required");
+const realCheckout: string = realCheckoutEnv;
+const RealCommand = Deno.Command;
 
 // Exercise a real pending open in the production CLI child process.
 if (Deno.env.get("BABYSITTER_BLOCK_OPEN") === "1") {
@@ -120,6 +130,9 @@ function commandOutput(
       // The mirror clone's last argv element is the directory git creates.
       if (args.includes("--bare")) {
         Deno.mkdirSync(args[args.length - 1]!);
+      } else {
+        // The repair clone has the `.git` directory the config reset checks.
+        Deno.mkdirSync(`${args[args.length - 1]!}/.git`, { recursive: true });
       }
       return "";
     }
@@ -128,6 +141,11 @@ function commandOutput(
       return "";
     }
     if (args.includes("fetch") || args.includes("checkout")) return "";
+    // The tree-safety check: HEAD and the index hold no gitlinks or refs/replace.
+    if (
+      args.includes("ls-tree") || args.includes("ls-files") ||
+      args.includes("for-each-ref")
+    ) return "";
     // The repair clone's byproduct excludes (Issue #4827); git answers relative.
     if (args.join(" ") === "rev-parse --git-path info/exclude") {
       return ".git/info/exclude\n";
@@ -141,33 +159,56 @@ function commandOutput(
     }
     if (args.includes("status") && args.includes("--porcelain")) return "";
   }
+  // Disk headroom check for the clone: plenty free.
+  if (executable === "df") {
+    return "Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture 1000000000 1 999999999 1% /\n";
+  }
   if (executable === "rtk" && args[0] === "--version") return "rtk 1";
-  if (executable === "codex") {
-    if (args[0] === "--version") return "codex-cli 0.164.0";
-    if (args[0] === "exec") {
+  if (executable === "podman" || executable === "docker") {
+    // The runtime: the image is built, and `run` is the in-container agent,
+    // which leaves its completion response and a proposed PR description.
+    if (args[0] === "image" && args[1] === "inspect") return "";
+    // The egress proxy sidecar reports that it is listening.
+    if (args[0] === "logs") return "[EGRESS_PROXY] listening\n";
+    if (args[0] === "run") {
+      const mount = args.find((arg) => /:\/babysitter\/clone(:|$)/.test(arg));
+      // The egress proxy sidecar is also a `run`; only the agent mounts the clone.
+      if (!mount) return "";
+      const clone = mount.slice(0, mount.indexOf(":/babysitter/clone"))
+        .replace(/^.*=/, "");
       Deno.writeTextFileSync(
-        `${args[args.indexOf("--cd") + 1]}/.babysitter-pr-body`,
-        "Reviewed PR description\n",
-      );
-      Deno.writeTextFileSync(`${root}/agent-spawn.json`, JSON.stringify(args));
-      Deno.writeTextFileSync(
-        args[args.indexOf("--output-last-message") + 1]!,
+        `${clone}/.babysitter-response`,
         "BABYSITTER_READY\n",
       );
+      Deno.writeTextFileSync(
+        `${clone}/.babysitter-pr-body`,
+        "Reviewed PR description\n",
+      );
+      Deno.writeTextFileSync(`${root}/runtime-run.json`, JSON.stringify(args));
       return "";
     }
+    return "";
   }
   throw new Error(
     `Unexpected fixture command: ${executable} ${args.join(" ")}`,
   );
 }
 
-// No real subprocess can escape the fixture, including gh writes or Codex.
+// No real subprocess can escape the fixture, including gh writes or the
+// container runtime. Only git and tar against the worker checkout run for real.
 Deno.Command = class {
   constructor(
     private executable: string,
     private options: Deno.CommandOptions = {},
-  ) {}
+  ) {
+    const args = options.args?.map(String) ?? [];
+    if (
+      (executable === "git" || executable === "tar") &&
+      (options.cwd === realCheckout || args.includes(realCheckout))
+    ) {
+      return new RealCommand(executable, options) as never;
+    }
+  }
 
   async output(): Promise<Deno.CommandOutput> {
     return {
@@ -183,14 +224,28 @@ Deno.Command = class {
 
   spawn(): Deno.ChildProcess {
     const output = this.output();
+    // Readable streams that carry the faked output, as a real child's do.
+    const stream = (pick: "stdout" | "stderr") =>
+      new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue((await output)[pick]);
+          controller.close();
+        },
+      });
     return {
+      pid: 1,
+      stdin: new WritableStream<Uint8Array>(),
+      stdout: stream("stdout"),
+      stderr: stream("stderr"),
       output: () => output,
       status: output.then(({ success, code, signal }) => ({
         success,
         code,
         signal,
       })),
-    } as Deno.ChildProcess;
+      kill() {},
+      [Symbol.asyncDispose]: () => Promise.resolve(),
+    } as unknown as Deno.ChildProcess;
   }
 } as unknown as typeof Deno.Command;
 

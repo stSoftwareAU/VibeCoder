@@ -16,6 +16,7 @@ import {
   neutraliseSubAgentTierMarkers,
   subAgentTierFromBody,
 } from "../lib/pr_body.ts";
+import { maskMarkdownCode } from "../lib/markdown_code_spans.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
 // --- extractClosingIssueNumbers (Issue #1113) ---
@@ -99,6 +100,73 @@ Deno.test("pr_body - ensurePrReferencesIssue does not duplicate existing keyword
   const body = "Body text. Fixes #99.";
   const result = ensurePrReferencesIssue(body, 99);
   assertEquals(result, body);
+});
+
+// --- ensurePrReferencesIssue: code and line breaks (Issue #4808) ---
+
+Deno.test("pr_body - ensurePrReferencesIssue appends when the only close is in a code span (Issue #4808)", () => {
+  const body = "Some PR body.\n\n`Closes #42`.\n";
+  assertEquals(
+    ensurePrReferencesIssue(body, 42),
+    "Some PR body.\n\n`Closes #42`.\n\n\nCloses #42",
+  );
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue appends when the only close is in a fenced block (Issue #4808)", () => {
+  const body = "Summary text.\n\n```\nCloses #42\n```\n";
+  assertEquals(
+    ensurePrReferencesIssue(body, 42),
+    "Summary text.\n\n```\nCloses #42\n```\n\n\nCloses #42",
+  );
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue appends when the keyword and #N are split by a line break (Issue #4808)", () => {
+  const body = "Closes\n#42.";
+  assertEquals(
+    ensurePrReferencesIssue(body, 42),
+    "Closes\n#42.\n\nCloses #42",
+  );
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue leaves a plain same-line close unchanged (Issue #4808)", () => {
+  const body = "Closes #42.";
+  assertEquals(ensurePrReferencesIssue(body, 42), body);
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue ignores a code-span close when a prose close exists (Issue #4808)", () => {
+  const body = "Example: `Closes #42` in code.\n\nFixes #42 for real.";
+  assertEquals(ensurePrReferencesIssue(body, 42), body);
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue appends for a qualified owner/repo#N reference (Issue #4808)", () => {
+  // A cross-repository reference never matches the same-repository pattern, so
+  // the local "Closes #42" is appended.
+  const body = "Closes owner/repo#42.";
+  assertEquals(
+    ensurePrReferencesIssue(body, 42),
+    "Closes owner/repo#42.\n\nCloses #42",
+  );
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue returns promptly on a long run of spaces and tabs (Issue #4808)", () => {
+  const body = "Closes" + " \t".repeat(25000);
+  const result = ensurePrReferencesIssue(body, 42);
+  assertEquals(result, body + "\n\nCloses #42");
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue appends when a code span separates the keyword from #N (Issue #4808)", () => {
+  const body = "Closes `x` #42";
+  assertEquals(
+    ensurePrReferencesIssue(body, 42),
+    "Closes `x` #42\n\nCloses #42",
+  );
+});
+
+Deno.test("pr_body - ensurePrReferencesIssue leads with the close when the body ends inside an unclosed fence (Issue #4808)", () => {
+  const body = "Sum\n\n```\ncode\n\nCloses #42\n";
+  const result = ensurePrReferencesIssue(body, 42);
+  assertEquals(result, `Closes #42\n\n${body}`);
+  assertEquals(extractClosingIssueNumbers(maskMarkdownCode(result)), [42]);
 });
 
 // --- buildMilestonePrSection ---

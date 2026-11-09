@@ -273,3 +273,26 @@ Deno.test("codex adapter - a 402 Insufficient Balance is an exhausted allowance,
   assertEquals(failure?.category, "quota-exhausted");
   assertEquals(failure?.httpStatus, 402);
 });
+
+Deno.test("codex adapter - a transport failure in prose is network, never a rate limit", () => {
+  const stderr = "error: stream disconnected before completion: ECONNRESET";
+  const failure = CODEX_OUTPUT_ADAPTER.classify(
+    { stdout: "", stderr, exitCode: 1 },
+    CODEX_OUTPUT_ADAPTER.decode(""),
+  );
+
+  assertEquals(failure?.category, "network");
+  assertEquals(failure?.evidence, "prose");
+  assertStringIncludes(failure?.message ?? "", "could not reach the API");
+});
+
+Deno.test("codex adapter - an unrecognised non-zero exit is a task failure", () => {
+  const failure = CODEX_OUTPUT_ADAPTER.classify(
+    { stdout: "", stderr: "something odd happened", exitCode: 3 },
+    CODEX_OUTPUT_ADAPTER.decode(""),
+  );
+
+  assertEquals(failure?.category, "task-failure");
+  assertEquals(failure?.evidence, "process");
+  assertStringIncludes(failure?.message ?? "", "exited 3");
+});

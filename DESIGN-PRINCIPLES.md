@@ -163,8 +163,12 @@ explicit fallback can also select a metered provider.
   The container's `babysitter-repair` command
   (`worker/deno/commands/babysitter_repair.ts`, Issue #4768) calls
   `chooseBabysitterProvider` and runs the repair session on the chosen
-  provider. The host babysitter's `fix()` does not launch that container yet
-  (#4770 will).
+  provider. The host babysitter's `fix()` launches that container for every
+  repair (Issue #4770), so the repair agent never runs on the host. The
+  container receives a fresh snapshot copied from tracked worker checkout paths and a
+  scrubbed config; the clone's `.git` is mounted read-only. As defence in depth,
+  before publication the host still resets the local Git config and uses
+  hardened Git settings for publication commands.
 - **The worker keeps its auto-mode wait policy.** When every eligible
   subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in
@@ -585,6 +589,12 @@ parked the whole default-branch work stream for ~21 hours while unassigned
 `top-priority` issues sat filtered out of selection.
 
 ### One PR per work stream (serialised work)
+
+Opted-in repositories now use [completion-first admission](docs/workflows/issue-processing.md#completion-first-admission-issue-4942)
+(Issue #4942): shared high/low watermarks count active claims and PRs, including
+human PR pressure and final milestone integration. At capacity, free issue
+slots work through the existing PR maintenance handlers. The legacy rule below
+continues for repositories without `completion_admission`.
 
 The worker serialises its work per work stream (each milestone is a work stream;
 non-milestone issues share the default branch work stream). A milestone stream

@@ -19,7 +19,7 @@ import type {
 } from "./issue_finder_logger.ts";
 import type { ContentApprovalDeps } from "./content_approval_tracker.ts";
 import type { SelfDiagnosticDeps } from "./collect_self_diagnostic_candidates.ts";
-import type { SelectionOptions } from "./issue_priority.ts";
+import type { IssueCandidate, SelectionOptions } from "./issue_priority.ts";
 import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
 import {
   checkParentBlocked,
@@ -53,6 +53,10 @@ import {
  * Options for the issue finder.
  */
 export interface FindIssuesOptions {
+  /** Shared capacity preview; the implementation claim rechecks atomically. */
+  completionAdmissionGate?: (
+    candidate: IssueCandidate,
+  ) => Promise<string | undefined>;
   /** GitHub username of the worker */
   githubUser: string;
   /** Optional gh command function for testing */

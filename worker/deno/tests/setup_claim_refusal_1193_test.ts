@@ -70,6 +70,37 @@ function makeState(): PhaseState {
   };
 }
 
+Deno.test("setup passes the repository completion policy into the authoritative claim", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const policy = { high: 4, low: 2 };
+    let seen: unknown;
+    const ctx = makeContext({
+      config: makeConfig({
+        workDir: dir,
+        repoConfig: { [REPO]: { completionAdmission: policy } },
+      }),
+    });
+    const deps = createMockDeps({
+      issues: {
+        claimIssue: async (options) => {
+          seen = options.completionAdmission;
+          return {
+            ok: true,
+            value: { claimed: false, reason: "completion_mode" },
+          };
+        },
+      },
+    });
+    const result = await workOnIssueSetupBranch(ctx, makeState(), deps);
+    assertEquals(seen, policy);
+    assertEquals(result.status, "early_exit");
+    assertEquals(result.status === "early_exit" && result.claimNotHeld, true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test(
   "setupBranch - a refused claim reports that this run holds none",
   async () => {

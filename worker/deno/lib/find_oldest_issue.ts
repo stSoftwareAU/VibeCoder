@@ -715,6 +715,23 @@ export async function findOldestIssue(
     );
   }
 
+  if (options.completionAdmissionGate) {
+    const filterAdmission = async (candidates: IssueCandidate[]) => {
+      const allowed: IssueCandidate[] = [];
+      for (const candidate of candidates) {
+        const reason = await options.completionAdmissionGate!(candidate);
+        if (reason) noteCooldown(candidate, "completion-mode", reason);
+        else allowed.push(candidate);
+      }
+      return allowed;
+    };
+    filteredLabel = await filterAdmission(filteredLabel);
+    filteredWorkOn = await filterAdmission(filteredWorkOn);
+    filteredSelfDiagnostic = await filterAdmission(filteredSelfDiagnostic);
+    filteredLowPriority = await filterAdmission(filteredLowPriority);
+    filteredIdleTask = await filterAdmission(filteredIdleTask);
+  }
+
   const selectionResult: SelectionResult = {
     selected: null,
     labelCandidates: filteredLabel,

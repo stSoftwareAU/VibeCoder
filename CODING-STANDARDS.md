@@ -1541,8 +1541,9 @@ which of the three you chose, and why, in the PR summary.
 
 ## Quality Gates
 
-Iterate with the fast checks — `deno fmt`, `deno lint`, `deno check`, and only
-the test files your change touches. Then run `deno task check:manifests`
+Iterate with the fast checks — `deno fmt` from `worker/deno` (hand-wrap
+Markdown elsewhere), `deno lint`, `deno check`, and only the test files your
+change touches. Then run `deno task check:manifests`
 (Issue #1483): the tree-scanning completeness tests — every new `lib/` module
 claimed by a sweep slice, every `VIBE_*` name registered, every prompt and
 integration suite in its manifest — in a few seconds, under read and env
@@ -1925,9 +1926,10 @@ worker-authored commit.
 
 ## PR Summary and Evidence
 
-At the end of your work, after all commits are complete, create
-`docs/archive/pr-summaries/pr-summary-{issue_number}.md` — the canonical home
-for every PR summary — containing:
+At the end of your work, after all commits are complete, write
+`docs/archive/pr-summaries/pr-summary-{issue_number}.md` (replacing any copy an
+earlier PR for the same issue left on the base) — the canonical home for every
+PR summary — containing:
 
 1. **Summary** — What was changed and why, including `Part of #<n>` when the
    `## Acceptance Criteria` block marks any criterion `partial` or `missing`, otherwise

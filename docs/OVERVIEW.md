@@ -143,7 +143,9 @@ other Vibe Coders. Coordination is through GitHub only:
   worker does not start a second issue for a milestone branch while the fleet
   already has an open PR for that branch. The default branch holds one fleet PR
   per slot: a non-milestone issue waits only once the fleet's open PRs there
-  reach `fleet_pr_slots` (default `8`, Issue #2663). Human PRs never count.
+  reach `fleet_pr_slots` (default `8`, Issue #2663). Human PRs do not count in
+  this legacy mode. Opt-in `completion_admission` counts live claims and all
+  authors' PR pressure, then assigns free slots to existing PR repair (#4942).
 - **One issue per work stream** — A work stream is a merge target: the default
   branch, plus each open milestone. The worker enforces one in-flight issue per
   work stream, so a repository runs as many issues concurrently as it has

@@ -100,6 +100,24 @@ function originalOf(finding: string | EarlierFinding): string | EarlierFinding {
     : finding;
 }
 
+/** Stable problem/Fix text for retry identity; review verdicts are not new work. */
+export function reviewRepairFindings(body: string): string[] {
+  return extractEarlierFindings(body).map((finding) => {
+    const original = originalOf(finding) as string;
+    // Posted findings end their Fix paragraph before the review summary and
+    // checklist. Unknown formats stay whole so we never discard an unknown ask.
+    const recognised = /^\*\*`[^`]+`\*\*:/.test(finding) ||
+      GAP_TEXT_HEAD.test(finding);
+    const fixAt = recognised ? original.indexOf("\n\n**Fix:** ") : -1;
+    const end = fixAt < 0 ? -1 : original.indexOf("\n\n", fixAt + 2);
+    const text = end < 0 ? original : original.slice(0, end);
+    // The initial post uses a Markdown location; a repeated gap quotes the
+    // same location as plain text with an em dash (earlierFindingGaps above).
+    return text.replace(/^\*\*`([^`]+)`\*\*: /, "$1 — ")
+      .replace(/\s+/g, " ").trim();
+  }).sort();
+}
+
 /**
  * The code owes a blocking finding for each missing, duplicate or unresolved
  * verdict. The finding names the reviewer's verdict and note and quotes the

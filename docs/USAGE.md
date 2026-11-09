@@ -811,6 +811,7 @@ flowchart TD
     P1["🔴 Priority 1 — PR Feedback & Reviews"]
     P15["🟠 Priority 1.5 — Failed Spelling/Quality Checks"]
     P155["🟠 Priority 1.55 — Failed CI/Integration Checks"]
+    P159["🟠 Priority 1.59 — Completion Mode (opt-in: finish existing PRs before new implementation)"]
     P16["🟡 Priority 1.6 — PR Branch Updates (rebase/merge)"]
     P161["🟡 Priority 1.61 — Resolve PR Merge Conflicts"]
     P162["🟡 Priority 1.62 — Nudge Stalled CI"]
@@ -837,12 +838,13 @@ flowchart TD
     P25["🟤 Priority 2.5 — `low-priority` label (fallback when no eligible higher-tier candidate exists in any repo)"]
     P29["⚪ Priority 2.9 — `idle-task` label (worker-filed busywork; only self-appliable label)"]
 
-    P09 --> P1 --> P15 --> P155 --> P16 --> P161 --> P162 --> P163 --> P164 --> P165 --> P166 --> P167 --> P168 --> P17 --> P171 --> P172 --> P173 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
+    P09 --> P1 --> P15 --> P155 --> P159 --> P16 --> P161 --> P162 --> P163 --> P164 --> P165 --> P166 --> P167 --> P168 --> P17 --> P171 --> P172 --> P173 --> P175 --> P178 --> P179 --> P18 --> P181 --> P185 --> P186 --> P187 --> P19 --> P2 --> P25 --> P29
 
     style P09 fill:#d00000,stroke:#9d0208,color:#fff
     style P1 fill:#d00000,stroke:#9d0208,color:#fff
     style P15 fill:#dc2f02,stroke:#d00000,color:#fff
     style P155 fill:#e85d04,stroke:#dc2f02,color:#fff
+    style P159 fill:#e85d04,stroke:#dc2f02,color:#fff
     style P16 fill:#f48c06,stroke:#e85d04,color:#000
     style P161 fill:#f48c06,stroke:#e85d04,color:#000
     style P162 fill:#f48c06,stroke:#e85d04,color:#000

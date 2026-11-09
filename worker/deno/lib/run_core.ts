@@ -710,6 +710,8 @@ export interface RunCoreDeps {
 
   // Priority 1: PR feedback
   findAndProcessPrFeedback: () => Promise<Result<PriorityHandlerResult>>;
+  /** Reuse existing repair lanes when a repository is draining (#4942). */
+  processCompletionWork?: () => Promise<Result<PriorityHandlerResult>>;
 
   // Priority 1.5: Spelling checks
   findAndProcessSpellingFailure: () => Promise<Result<PriorityHandlerResult>>;
@@ -2920,6 +2922,10 @@ async function runIssueScanLoop(
     // Issue #2662: keep the prefetch-served listings current for this scan.
     await refreshFleetPrPrefetch(deps);
 
+    if (await runCompletionPass(config, deps, tracker, endTime, "serial")) {
+      continue;
+    }
+
     // Find next issue
     const findResult = await deps.findNextIssue({
       excludeIssues: deferredClaims,
@@ -3509,6 +3515,38 @@ async function executePriorityHandler(
       recordStepDuration(handler.name, deps.now() - handlerStartMs);
     }
   });
+}
+
+/** Dispatch completion work through the existing watchdog and slot owner. */
+async function runCompletionPass(
+  config: RunCoreConfig,
+  deps: RunCoreDeps,
+  tracker: WorkProgressTracker,
+  endTime: number,
+  slotId: string,
+): Promise<boolean> {
+  if (!deps.processCompletionWork) return false;
+  let processed = false;
+  const outcome = await executePriorityHandler(
+    {
+      priority: 1.59,
+      name: "Completion Mode",
+      agentBacked: true,
+      execute: async () => {
+        const result = await deps.processCompletionWork!();
+        processed = result.ok && result.value.processed;
+        return result;
+      },
+    },
+    config,
+    deps,
+    tracker,
+    endTime,
+    `[${slotId}] `,
+  );
+  if (outcome.kind === "rate-limit-error") throw outcome.error;
+  if (outcome.kind === "rate-limited") return false;
+  return processed;
 }
 
 /**
@@ -4386,6 +4424,24 @@ async function runSlot(
         );
         return;
       }
+
+      // A free implementation slot can finish existing PRs using the same
+      // watchdog, repository leases and distributed PR owners as lane m1.
+      const completionProcessed = await runInMaintenanceLane({
+        tryAcquire: (repo, ref, options) => {
+          const acquired = pool.registry.tryAcquire(repo, ref, slotId, {
+            maintenance: true,
+            reserve: options?.reserve === true,
+          });
+          if (acquired) noteSlotActivity(slotId, "claim", deps.now());
+          return acquired;
+        },
+        release: (repo) => {
+          pool.registry.releaseRepoLease(repo);
+          noteSlotActivity(slotId, "idle", deps.now());
+        },
+      }, () => runCompletionPass(config, deps, tracker, endTime, slotId));
+      if (completionProcessed) continue;
 
       // Find the next issue outside the work streams siblings hold.
       let scanSummary: DiagnosticSummary | undefined;

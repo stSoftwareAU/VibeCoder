@@ -91,6 +91,7 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
   "closed-pr-cooldown": "self",
   "cooldown": "self",
   "cross-worker-cooldown": "self",
+  "completion-mode": "self",
   /**
    * Issue #1780: the milestone branch's conflict ledger paces the next merge
    * attempt, and the deferral expires on its own — the branch is then
@@ -125,6 +126,9 @@ export const SKIP_REASON_CLEARING: Record<SkipReason, GateClearing> = {
   // person (a trusted re-approval, or operator configuration).
   "content-check-error": "self",
   "content-editor-unresolved": "self",
+  // PR #4944 review: a persistently truncated edit history never changes on
+  // its own, so it is escalated and must not hold the repo's lower tiers.
+  "content-edit-history-truncated": "human",
   "content-snapshot-persist-failed": "self",
   "content-modified-after-approval": "human",
   "no-approval-snapshot": "human",

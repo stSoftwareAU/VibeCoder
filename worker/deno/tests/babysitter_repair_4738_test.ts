@@ -14,6 +14,7 @@ import {
 } from "../commands/babysitter_repair.ts";
 import { chooseBabysitterProvider } from "../lib/babysitter_provider_choice.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { BABYSITTER_TASK_FAILURE_EXIT_CODE } from "../lib/fleet_babysitter_container.ts";
 import type {
   BabysitterProviderChoice,
   BabysitterProviderChoiceDeps,
@@ -249,8 +250,34 @@ Deno.test("classified agent failure reaches stderr and leaves no response", asyn
     assertEquals(result.success, false);
     assertStringIncludes(result.message, "authentication");
     assertStringIncludes(result.message, "login failed");
+    assertEquals(result.exitCode, 1);
     assert(!result.message.includes("fixture-secret"));
     assertEquals(h.logs.at(-1), result.message);
+    assertEquals(await exists(paths.response), false);
+  });
+});
+
+Deno.test("a task-failure category carries the reserved retry exit status", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({
+        exitCode: 1,
+        stderr: "",
+        agentFailure: {
+          category: "task-failure",
+          message: "tests failed",
+          evidence: "structured",
+          terminal: true,
+          errors: [],
+        },
+      }),
+    );
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+    assertEquals(result.success, false);
+    assertEquals(result.exitCode, BABYSITTER_TASK_FAILURE_EXIT_CODE);
+    assertStringIncludes(result.message, "task-failure: tests failed");
     assertEquals(await exists(paths.response), false);
   });
 });

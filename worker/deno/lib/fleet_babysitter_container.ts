@@ -10,6 +10,13 @@
  * mounted in their place, and the agent's read-only token is passed by name
  * alone (`--env GH_TOKEN`), so its value is never on a command line.
  *
+ * Keeps only a tracked, sanitised worker checkout, the repair scratch and
+ * enabled provider credential directories. Tracked paths are copied into a
+ * fresh snapshot, and its configuration is scrubbed. Host logs are redirected
+ * to scratch. The GitHub store, App config
+ * copy, log directory, custom prompts and named volumes do not cross this
+ * boundary.
+ *
  * Egress (Issue #4769): a plan that enforces egress (docker or podman) gets
  * its internal network and proxy from `startEgressSidecar`. A plan with a
  * proxy and no enforcement (Apple container) gets its run arguments from the
@@ -19,10 +26,11 @@
  * hides the repair's own result. The Apple helper may run in its advisory
  * mode, where host/LAN isolation is not promised (see `apple_egress_launch.ts`).
  *
- * Not wired in yet: the in-container `babysitter-repair` command now exists
- * (worker/deno/commands/babysitter_repair.ts, routed by container/entrypoint.sh,
- * Issue #4768), so a real run reaches it. This module is still not wired into
- * `fix()` in `commands/fleet_pr_babysitter.ts`; #4770 will wire it.
+ * The in-container `babysitter-repair` command (worker/deno/commands/
+ * babysitter_repair.ts, routed by container/entrypoint.sh, Issue #4768) is
+ * what a run reaches. This module is the only way `fix()` in
+ * `commands/fleet_pr_babysitter.ts` runs a repair (Issue #4770), with no host
+ * fallback.
  */
 
 import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
@@ -37,9 +45,14 @@ import {
 import {
   canonicalPathIncludingMissingTail,
   normaliseAbsolutePath,
-} from "./fleet_babysitter_sandbox.ts";
+} from "./fleet_babysitter_paths.ts";
+import {
+  CUSTOM_PROMPT_PATH_MAP_ENV,
+  CUSTOM_PROMPTS_TARGET_SUBDIR,
+} from "./custom_prompt_mounts.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { startEgressSidecar, stopEgressSidecar } from "./egress_sidecar.ts";
+import { runGitCommand } from "./git_timeout.ts";
 
 /** A repair may run for 90 minutes before it is killed. */
 export const BABYSITTER_REPAIR_TIMEOUT_MS = 90 * 60_000;
@@ -60,6 +73,11 @@ export const BABYSITTER_REPAIR_COMMAND: readonly string[] = [
   "--response-file",
   `${BABYSITTER_CLONE_MOUNT}/.babysitter-response`,
 ];
+/** Exit status reserved for an agent task failure inside babysitter-repair. */
+export const BABYSITTER_TASK_FAILURE_EXIT_CODE = 42;
+
+/** A task failure reported through the container's structured exit status. */
+export class BabysitterTaskFailure extends Error {}
 
 /** What one runtime process did. */
 export interface BabysitterSpawnResult {
@@ -90,6 +108,11 @@ export interface BabysitterAppleEgress {
 export interface BabysitterContainerDeps {
   /** Is the runtime executable on PATH (default: babysitterRuntimeOnPath). */
   onPath: (runtime: string) => Promise<boolean>;
+  /**
+   * The worker checkout the repair snapshots, read by startBabysitterAgent
+   * (default: babysitterCheckoutDir()). Tests point it at a temp git repo.
+   */
+  checkoutDir?: () => string;
   /** Default: buildLaunchPlanForCommand(baseDir, containerName). */
   buildPlan: (
     baseDir: string,
@@ -148,6 +171,12 @@ export interface BabysitterContainerInput {
   token: string;
   /** Default {@link BABYSITTER_REPAIR_TIMEOUT_MS}. */
   timeoutMs?: number;
+  /**
+   * Aborts the repair (Issue #4770). An abort before the container starts
+   * refuses the run. An abort while it runs kills the container by name, so
+   * the runtime process returns; a failed kill is logged.
+   */
+  signal?: AbortSignal;
 }
 
 /** The only host environment variables a repair or kill receives. */
@@ -307,17 +336,69 @@ export async function babysitterImageExists(
 }
 
 /**
+ * The container destination of a `--volume` value: the field after the first
+ * colon, up to the next colon (an option such as `ro` follows it). Empty when
+ * the value has no colon.
+ */
+function volumeDestination(value: string): string {
+  const first = value.indexOf(":");
+  if (first === -1) return "";
+  const rest = value.slice(first + 1);
+  const second = rest.indexOf(":");
+  return second === -1 ? rest : rest.slice(0, second);
+}
+
+/**
+ * True when a container destination is the `gh` credential store, as the plan
+ * mounts it at `<credentials>/gh` (Issue #4770). Provider sub-directories such
+ * as `<credentials>/claude` are not matched.
+ */
+function isGhCredentialDestination(destination: string): boolean {
+  return destination.replace(/\/+$/, "").endsWith("/credentials/gh");
+}
+
+/**
+ * True when a container destination is the operator's custom prompt target,
+ * `<home>/.vibe-coder/custom-prompts`, or lies under it on a path-segment
+ * boundary (Issue #4770). The container home is the image account's, so the
+ * match is on the segments, not on a fixed account name. A sibling such as
+ * `custom-prompts-other` does not match.
+ */
+function isCustomPromptDestination(destination: string): boolean {
+  const escaped = CUSTOM_PROMPTS_TARGET_SUBDIR.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&",
+  );
+  return new RegExp(`(^|/)${escaped}(/|$)`).test(
+    destination.replace(/\/+$/, ""),
+  );
+}
+
+/**
+ * True when an `--env` spec is the plan's custom prompt path map, by name or
+ * with a value (`VIBE_CUSTOM_PROMPT_PATHS=…`). The repair does not use it.
+ */
+function isCustomPromptEnvSpec(spec: string): boolean {
+  return spec === CUSTOM_PROMPT_PATH_MAP_ENV ||
+    spec.startsWith(`${CUSTOM_PROMPT_PATH_MAP_ENV}=`);
+}
+
+/**
  * The run arguments, without the runtime. They begin with the plan's own
  * `run`. Starts from the plan's run arguments, drops every `--volume` whose
  * source is one of the plan's named volumes (the work and agent-state
- * volumes), then appends the clone and scratch mounts, `--env GH_TOKEN`, the
- * image and the repair command. Refuses any plan flag that could mount a
+ * volumes), every `--volume` whose container destination is the `gh`
+ * credential store (`…/credentials/gh`, Issue #4770) or lies under the
+ * custom prompt target (`…/.vibe-coder/custom-prompts`), and the plan's
+ * `VIBE_CUSTOM_PROMPT_PATHS` env spec. The provider credential sub-directories
+ * are kept. Then appends the clone mount, the clone's `.git` mounted
+ * read-only over it, the scratch mount, `--env GH_TOKEN`, the image and the repair command. Refuses any plan flag that could mount a
  * path or load an env file by another spelling, and any plan env spec that
  * sets GH_TOKEN. Pure; exported for tests.
  */
 export function buildBabysitterRunArgs(
   plan: ContainerLaunchPlan,
-  input: { clone: string; scratch: string },
+  input: { clone: string; scratch: string; workspaceSnapshot?: string },
 ): string[] {
   const runArgs = plan.runArgs;
   if (runArgs.length === 0 || runArgs[runArgs.length - 1] !== plan.image) {
@@ -326,6 +407,30 @@ export function buildBabysitterRunArgs(
     );
   }
   const named = new Set([...plan.volumes, ...plan.resettableVolumes]);
+  const baseTarget = plan.runArgs.find((arg) =>
+    arg.startsWith("VIBE_BASE_DIR=")
+  )
+    ?.slice("VIBE_BASE_DIR=".length);
+  const configSpec = plan.runArgs.find((arg) => arg.startsWith("CONFIG_PATH="));
+  const configTarget = configSpec?.slice("CONFIG_PATH=".length)
+    .replace(/\/.config\.json$/, "");
+  const logMount = plan.mounts?.find((mount) =>
+    !mount.volume && mount.target.endsWith("/logs")
+  );
+  const baseMount = baseTarget
+    ? plan.mounts?.find((mount) => mount.target === baseTarget)
+    : undefined;
+  const configMount = configTarget
+    ? plan.mounts?.find((mount) => mount.target === configTarget)
+    : undefined;
+  if (
+    plan.mounts?.length &&
+    (!baseMount || !configMount || !logMount || !input.workspaceSnapshot)
+  ) {
+    throw new Error(
+      "refusing repair launch: plan is missing the checkout, config, log or sanitised workspace transport",
+    );
+  }
   const bodyArgs = runArgs.slice(0, -1);
   const body: string[] = [];
   for (let i = 0; i < bodyArgs.length; i++) {
@@ -347,11 +452,57 @@ export function buildBabysitterRunArgs(
       const colon = value.indexOf(":");
       const src = colon === -1 ? value : value.slice(0, colon);
       i++;
-      if (named.has(src)) continue;
+      const destination = volumeDestination(value);
+      const mount = plan.mounts?.find((candidate) =>
+        candidate.target === destination
+      );
+      if (named.has(src) || isGhCredentialDestination(destination)) continue;
+      if (baseMount && destination === baseTarget) {
+        body.push(arg, `${input.workspaceSnapshot ?? src}:${destination}:ro`);
+        continue;
+      }
+      if (configMount && destination === configTarget) continue;
+      if (logMount && destination === logMount.target) {
+        body.push(arg, `${input.scratch}:${destination}`);
+        continue;
+      }
+      if (isCustomPromptDestination(destination)) continue;
+      if (mount && mount.source.includes("/credentials/")) {
+        // The enabled provider credential directories retain the launcher's
+        // read-only contract. The `gh` store was removed above.
+        body.push(arg, value);
+        continue;
+      }
+      if (mount && mount.volume) continue;
+      if (mount) {
+        throw new Error(
+          `refusing repair mount ${destination}: no repair transport permits it`,
+        );
+      }
+      if (plan.mounts?.length) {
+        throw new Error(
+          `refusing unclassified repair mount ${destination}`,
+        );
+      }
       body.push(arg, value);
       continue;
     }
-    body.push(arg);
+    if (
+      (arg === "--env" || arg === "-e") && i + 1 < bodyArgs.length &&
+      isCustomPromptEnvSpec(bodyArgs[i + 1] ?? "")
+    ) {
+      i++;
+      continue;
+    }
+    if (
+      arg.startsWith("--env=") &&
+      isCustomPromptEnvSpec(arg.slice("--env=".length))
+    ) continue;
+    if (arg.startsWith("CONFIG_PATH=") && baseTarget) {
+      body.push(`CONFIG_PATH=${baseTarget}/.config.json`);
+    } else {
+      body.push(arg);
+    }
   }
   for (let i = 0; i < body.length; i++) {
     const arg = body[i] ?? "";
@@ -372,6 +523,10 @@ export function buildBabysitterRunArgs(
     ...body,
     "--volume",
     `${input.clone}:${BABYSITTER_CLONE_MOUNT}`,
+    // Read-only over the read-write clone: the agent cannot forge objects,
+    // refs or config the host's git later trusts. The host does the staging.
+    "--volume",
+    `${input.clone}/.git:${BABYSITTER_CLONE_MOUNT}/.git:ro`,
     "--volume",
     `${input.scratch}:${BABYSITTER_SCRATCH_MOUNT}`,
     "--env",
@@ -381,11 +536,175 @@ export function buildBabysitterRunArgs(
   ];
 }
 
+const REPAIR_CONFIG_SECRET_KEY =
+  /(?:api_?key|private_?key|ssh_?key|token|password|secret)/i;
+
+/**
+ * Remove host-only secret values while keeping declared quality credential
+ * rules. A secret-named key is dropped only when its value is a string, array
+ * or object; numeric and boolean limits such as `max_issue_body_tokens` stay.
+ */
+function sanitiseRepairConfig(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitiseRepairConfig);
+  if (value === null || typeof value !== "object") return value;
+  const clean: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "quality_credentials" || key === "qualityCredentials") {
+      clean[key] = item;
+    } else if (
+      REPAIR_CONFIG_SECRET_KEY.test(key) &&
+      (typeof item === "string" || Array.isArray(item) ||
+        (item !== null && typeof item === "object"))
+    ) {
+      continue;
+    } else {
+      clean[key] = sanitiseRepairConfig(item);
+    }
+  }
+  return clean;
+}
+
+/**
+ * Remove a workspace snapshot left under scratch by an earlier session of the
+ * same repair (a token restart reuses the scratch). A symlink is unlinked
+ * itself and never followed.
+ */
+async function clearLeftoverWorkspace(path: string): Promise<void> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  if (info.isSymlink) {
+    await Deno.remove(path);
+    return;
+  }
+  await Deno.remove(path, { recursive: true });
+}
+
+/** Remove the snapshot after its session; only a failure other than NotFound is logged. */
+async function removeRepairWorkspaceSnapshot(
+  path: string,
+  log: (message: string) => void,
+): Promise<void> {
+  try {
+    await Deno.remove(path, { recursive: true });
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    log(
+      `could not remove the repair workspace snapshot: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/** Create a checkout snapshot containing tracked regular files and scrubbed config. */
+async function createRepairWorkspaceSnapshot(
+  baseDir: string,
+  scratch: string,
+  plan: ContainerLaunchPlan,
+): Promise<string> {
+  const path = `${scratch}/workspace`;
+  await clearLeftoverWorkspace(path);
+  await Deno.mkdir(path, { mode: 0o700 });
+  const sourceConfig = plan.mounts.find((mount) =>
+    mount.target.endsWith("/run-config")
+  );
+  if (!sourceConfig) {
+    throw new Error("repair launch plan has no staged config mount");
+  }
+  const config = JSON.parse(
+    await Deno.readTextFile(`${sourceConfig.source}/.config.json`),
+  );
+  try {
+    const env = {
+      PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+      HOME: Deno.env.get("HOME") ?? "/tmp",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_PARAMETERS: "",
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_OPTIONAL_LOCKS: "0",
+    };
+    const tree = await runGitCommand(
+      ["-C", baseDir, "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+      { env, timeoutSeconds: 60 },
+    );
+    if (!tree.ok) throw tree.error;
+    if (tree.value.code !== 0) {
+      throw new Error(
+        `could not list tracked worker checkout files: ${tree.value.stderr.trim()}`,
+      );
+    }
+    if (tree.value.stdout.includes("\uFFFD")) {
+      throw new Error("tracked worker checkout paths are not valid UTF-8");
+    }
+    const entries = tree.value.stdout.split("\0").filter(Boolean).map(
+      (entry) => {
+        const tab = entry.indexOf("\t");
+        if (tab < 0) throw new Error("malformed git tree entry");
+        const [mode, type] = entry.slice(0, tab).split(" ");
+        const name = entry.slice(tab + 1);
+        const segments = name.split("/");
+        if (
+          !name || name.startsWith("/") || name.includes("\\") ||
+          segments.some((segment) =>
+            segment === "" || segment === "." || segment === ".."
+          )
+        ) throw new Error(`unsafe tracked path in worker checkout: ${name}`);
+        if (type !== "blob" || (mode !== "100644" && mode !== "100755")) {
+          throw new Error(
+            `unsupported tracked entry in worker checkout: ${name} (${mode} ${type})`,
+          );
+        }
+        return { mode, name };
+      },
+    );
+    const sourceRoot = await Deno.realPath(baseDir);
+    for (const entry of entries) {
+      const source = `${sourceRoot}/${entry.name}`;
+      const sourceInfo = await Deno.lstat(source);
+      if (!sourceInfo.isFile || sourceInfo.isSymlink) {
+        throw new Error(
+          `tracked checkout path is not a regular file: ${entry.name}`,
+        );
+      }
+      if (await Deno.realPath(source) !== source) {
+        throw new Error(
+          `tracked checkout path escapes its root: ${entry.name}`,
+        );
+      }
+      const destination = `${path}/${entry.name}`;
+      const parent = destination.slice(0, destination.lastIndexOf("/"));
+      await Deno.mkdir(parent, { recursive: true, mode: 0o700 });
+      await Deno.writeFile(destination, await Deno.readFile(source), {
+        createNew: true,
+        mode: entry.mode === "100755" ? 0o700 : 0o600,
+      });
+    }
+    await Deno.writeTextFile(
+      `${path}/.config.json`,
+      JSON.stringify(sanitiseRepairConfig(config)),
+      { mode: 0o600 },
+    );
+    return path;
+  } catch (error) {
+    await Deno.remove(path, { recursive: true });
+    throw error;
+  }
+}
+
 /**
  * The lexical, canonical and normalised-then-canonical forms of a path. A
  * source like `<root>/missing/../link` collapses its `..` textually in the
  * canonical form, so the normalised-then-canonical form is needed to follow
- * a symlink there (as `babysitterProtectedPaths` does).
+ * a symlink there (as `babysitterProtectedPaths` in fleet_babysitter_paths.ts
+ * does).
  */
 async function pathForms(path: string): Promise<string[]> {
   const normalised = normaliseAbsolutePath(path);
@@ -795,7 +1114,7 @@ async function runTeardown(
   }
 }
 
-/** One repair spawn: the arguments, the environment and the timeout. */
+/** One repair spawn: the arguments, the environment, the timeout and the abort. */
 interface RepairRun {
   spawn: BabysitterContainerDeps["spawn"];
   runtime: string;
@@ -804,33 +1123,79 @@ interface RepairRun {
   baseEnv: Record<string, string>;
   token: string;
   timeoutMs: number;
+  signal?: AbortSignal;
+  log: (message: string) => void;
+}
+
+/** Refuses a repair whose signal has already aborted (Issue #4770). */
+function refuseIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw new Error(
+      "the babysitter repair was aborted before the container started",
+    );
+  }
+}
+
+/**
+ * Kills the container by name (Issue #4767). Returns the failure, or undefined
+ * when the kill worked. Never throws.
+ */
+async function killContainer(run: RepairRun): Promise<string | undefined> {
+  try {
+    const kill = await run.spawn(run.runtime, ["kill", run.containerName], {
+      env: run.baseEnv,
+      timeoutMs: 30_000,
+    });
+    if (kill.success) return undefined;
+    return `exit code ${kill.code}: ${describeStderr(kill.stderr, run.token)}`;
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/**
+ * Kills the container after an abort (Issue #4770). A failed kill is reported
+ * through `log`, redacted, and never thrown.
+ */
+async function killAfterAbort(run: RepairRun): Promise<void> {
+  const failure = await killContainer(run);
+  if (failure !== undefined) {
+    report(
+      run.log,
+      redactToken(
+        `could not kill container ${run.containerName} after abort: ${failure}`,
+        run.token,
+      ),
+    );
+  }
 }
 
 /**
  * Runs the repair and throws on a timeout (after killing it by name), or on a
- * non-zero exit. The kill's own failure is named in the error.
+ * non-zero exit. The kill's own failure is named in the error. An abort while
+ * the repair runs kills the container by name, so the spawn returns; the
+ * listener is removed when the run ends (Issue #4770).
  */
 async function runRepairProcess(run: RepairRun): Promise<void> {
-  const result = await run.spawn(run.runtime, run.args, {
-    env: { ...run.baseEnv, GH_TOKEN: run.token },
-    timeoutMs: run.timeoutMs,
-  });
+  refuseIfAborted(run.signal);
+  const kills: Promise<void>[] = [];
+  const onAbort = (): void => {
+    kills.push(killAfterAbort(run));
+  };
+  run.signal?.addEventListener("abort", onAbort, { once: true });
+  let result: BabysitterSpawnResult;
+  try {
+    result = await run.spawn(run.runtime, run.args, {
+      env: { ...run.baseEnv, GH_TOKEN: run.token },
+      timeoutMs: run.timeoutMs,
+    });
+  } finally {
+    run.signal?.removeEventListener("abort", onAbort);
+    await Promise.all(kills);
+  }
   if (result.timedOut) {
     const minutes = Math.round(run.timeoutMs / 60_000);
-    let killFailure: string | undefined;
-    try {
-      const kill = await run.spawn(run.runtime, ["kill", run.containerName], {
-        env: run.baseEnv,
-        timeoutMs: 30_000,
-      });
-      if (!kill.success) {
-        killFailure = `exit code ${kill.code}: ${
-          describeStderr(kill.stderr, run.token)
-        }`;
-      }
-    } catch (error) {
-      killFailure = error instanceof Error ? error.message : String(error);
-    }
+    const killFailure = await killContainer(run);
     if (killFailure !== undefined) {
       throw new Error(
         `babysitter repair timed out after ${minutes} minutes; container ${run.containerName} not killed; kill failed: ${killFailure}`,
@@ -841,12 +1206,95 @@ async function runRepairProcess(run: RepairRun): Promise<void> {
     );
   }
   if (!result.success) {
-    throw new Error(
+    const message =
       `babysitter repair container ${run.containerName} exited with code ${result.code}: ${
         describeStderr(result.stderr, run.token)
-      }`,
+      }; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`;
+    if (result.code === BABYSITTER_TASK_FAILURE_EXIT_CODE) {
+      throw new BabysitterTaskFailure(message);
+    }
+    throw new Error(message);
+  }
+}
+
+/**
+ * The checkout root: the directory holding worker/deno, derived from this
+ * module's location as the setup command derives it (Issue #4770).
+ */
+export function babysitterCheckoutDir(): string {
+  return decodeURIComponent(new URL("../../..", import.meta.url).pathname)
+    .replace(/\/$/, "");
+}
+
+/**
+ * The two checks a repair needs before it starts: the runtime is on PATH and
+ * the worker image is built (Issue #4770). The repair and
+ * {@link preflightBabysitterContainer} both run this, so the two cannot drift.
+ */
+async function checkRuntimeAndImage(
+  plan: ContainerLaunchPlan,
+  checks: {
+    onPath: BabysitterContainerDeps["onPath"];
+    imageExists: BabysitterContainerDeps["imageExists"];
+    baseEnv: Record<string, string>;
+  },
+): Promise<void> {
+  if (!await checks.onPath(plan.runtime)) {
+    throw new Error(
+      `cannot run ${plan.runtime}: the container runtime is not on PATH`,
     );
   }
+  if (
+    !await checks.imageExists(
+      plan.runtime,
+      plan.imageInspectArgs,
+      checks.baseEnv,
+    )
+  ) {
+    throw new Error(
+      "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
+    );
+  }
+}
+
+/** The container name for a run that is never started (the preflight's plan). */
+function throwawayContainerName(): string {
+  return `vibe-babysitter-${Date.now().toString(36)}-${
+    crypto.randomUUID().slice(0, 8)
+  }`;
+}
+
+/**
+ * Builds the babysitter's launch plan and runs the repair's runtime and image
+ * checks, without starting anything (Issue #4770). The plan is built under a
+ * throwaway container name. Throws the same refusals as the repair.
+ */
+export async function preflightBabysitterContainer(
+  input: { baseDir: string },
+  deps: Partial<
+    Pick<
+      BabysitterContainerDeps,
+      "onPath" | "buildPlan" | "imageExists" | "env"
+    >
+  > = {},
+): Promise<void> {
+  const env = deps.env ?? processEnv;
+  const buildPlan = deps.buildPlan ?? defaultBuildPlan;
+  const plan = await buildPlan(input.baseDir, throwawayContainerName());
+  await checkRuntimeAndImage(plan, {
+    onPath: deps.onPath ??
+      ((runtime: string) => babysitterRuntimeOnPath(runtime, env)),
+    imageExists: deps.imageExists ?? babysitterImageExists,
+    baseEnv: baseEnvironment(env),
+  });
+}
+
+/** The default plan builder: the worker's own launch plan for the checkout. */
+function defaultBuildPlan(
+  baseDir: string,
+  containerName: string,
+): Promise<ContainerLaunchPlan> {
+  return buildLaunchPlanForCommand(baseDir, containerName);
 }
 
 /**
@@ -858,9 +1306,9 @@ async function runRepairProcess(run: RepairRun): Promise<void> {
  * (docker or podman) through the sidecar. Either is stopped in a `finally`,
  * and a teardown failure is logged, never thrown. A timed-out repair is killed
  * by name. The in-container command now exists (#4768), so a real run reaches
- * it. Reviewer rounds in run.sh still refuse
- * enforced plans; that is out of scope here. Not wired into `fix()` yet
- * (#4770).
+ * it. Reviewer rounds in run.sh still refuse enforced plans; that is out of
+ * scope here. This is the only way `fix()` runs a repair (Issue #4770), with
+ * no host fallback.
  */
 export async function runBabysitterRepairContainer(
   input: BabysitterContainerInput,
@@ -888,9 +1336,7 @@ export async function runBabysitterRepairContainer(
   const timeoutMs = input.timeoutMs ?? BABYSITTER_REPAIR_TIMEOUT_MS;
   const onPath = deps.onPath ??
     ((runtime: string) => babysitterRuntimeOnPath(runtime, env));
-  const buildPlan = deps.buildPlan ??
-    ((baseDir: string, containerName: string) =>
-      buildLaunchPlanForCommand(baseDir, containerName));
+  const buildPlan = deps.buildPlan ?? defaultBuildPlan;
   const imageExists = deps.imageExists ?? babysitterImageExists;
   const spawn = deps.spawn ?? babysitterSpawn;
   const startAppleEgress = deps.startAppleEgress ??
@@ -903,62 +1349,65 @@ export async function runBabysitterRepairContainer(
   const log = deps.log ??
     ((message: string) => console.error(`[babysitter] ${message}`));
 
-  const containerName = `vibe-babysitter-${Date.now().toString(36)}-${
-    crypto.randomUUID().slice(0, 8)
-  }`;
+  const containerName = throwawayContainerName();
   const plan = await buildPlan(input.baseDir, containerName);
-
-  // Built and key-checked before any egress starts, so a bad plan never
-  // starts a proxy.
-  const planArgs = buildBabysitterRunArgs(plan, {
-    clone: input.clone,
-    scratch: input.scratch,
-  });
-  await assertBabysitterKeyOutOfRunArgs(planArgs, input.privateKeyPath);
-
-  if (!await onPath(plan.runtime)) {
-    throw new Error(
-      `cannot run ${plan.runtime}: the container runtime is not on PATH`,
-    );
-  }
-  const baseEnv = baseEnvironment(env);
-  if (!await imageExists(plan.runtime, plan.imageInspectArgs, baseEnv)) {
-    throw new Error(
-      "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
-    );
-  }
-
-  const apple = !plan.egressEnforced && plan.proxyName !== "";
-  let teardown: Teardown | undefined;
+  const workspaceSnapshot = plan.mounts?.length
+    ? await createRepairWorkspaceSnapshot(input.baseDir, input.scratch, plan)
+    : undefined;
   try {
-    let args = planArgs;
-    if (apple) {
-      const helper = await startAppleEgress(plan, {
-        baseDir: input.baseDir,
-        timeoutMs,
-      });
-      teardown = helper.stop;
-      args = buildBabysitterRunArgs({ ...plan, runArgs: helper.runArgs }, {
-        clone: input.clone,
-        scratch: input.scratch,
-      });
-      await assertBabysitterKeyOutOfRunArgs(args, input.privateKeyPath);
-    } else if (plan.egressEnforced) {
-      // Set before the start, so a sidecar half-started by a throw is torn down.
-      teardown = () => stopSidecar(plan);
-      await startSidecar(plan);
-    }
-    await runRepairProcess({
-      spawn,
-      runtime: plan.runtime,
-      containerName,
-      args,
-      baseEnv,
-      token: input.token,
-      timeoutMs,
+    // Built and key-checked before any egress starts, so a bad plan never
+    // starts a proxy.
+    const planArgs = buildBabysitterRunArgs(plan, {
+      clone: input.clone,
+      scratch: input.scratch,
+      ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
     });
-    return { containerName };
+    await assertBabysitterKeyOutOfRunArgs(planArgs, input.privateKeyPath);
+
+    const baseEnv = baseEnvironment(env);
+    await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
+    // Refused before any egress starts; runRepairProcess checks again before the spawn.
+    refuseIfAborted(input.signal);
+
+    const apple = !plan.egressEnforced && plan.proxyName !== "";
+    let teardown: Teardown | undefined;
+    try {
+      let args = planArgs;
+      if (apple) {
+        const helper = await startAppleEgress(plan, {
+          baseDir: input.baseDir,
+          timeoutMs,
+        });
+        teardown = helper.stop;
+        args = buildBabysitterRunArgs({ ...plan, runArgs: helper.runArgs }, {
+          clone: input.clone,
+          scratch: input.scratch,
+          ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
+        });
+        await assertBabysitterKeyOutOfRunArgs(args, input.privateKeyPath);
+      } else if (plan.egressEnforced) {
+        // Set before the start, so a sidecar half-started by a throw is torn down.
+        teardown = () => stopSidecar(plan);
+        await startSidecar(plan);
+      }
+      await runRepairProcess({
+        spawn,
+        runtime: plan.runtime,
+        containerName,
+        args,
+        baseEnv,
+        token: input.token,
+        timeoutMs,
+        signal: input.signal,
+        log,
+      });
+      return { containerName };
+    } finally {
+      await runTeardown(teardown, log, input.token);
+    }
   } finally {
-    await runTeardown(teardown, log, input.token);
+    if (workspaceSnapshot) {
+      await removeRepairWorkspaceSnapshot(workspaceSnapshot, log);
+    }
   }
 }

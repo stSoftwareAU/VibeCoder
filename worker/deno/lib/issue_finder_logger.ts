@@ -57,6 +57,7 @@ export const SKIP_REASONS = [
   /** Issue #2473: blocking dependency is unclaimable — escalated and dropped */
   "cooldown",
   "cross-worker-cooldown",
+  "completion-mode",
   /**
    * Issue #1780: the issue's milestone branch is behind the default branch and
    * its conflict ledger is pacing the next merge attempt. Claiming the issue
@@ -71,6 +72,11 @@ export const SKIP_REASONS = [
   "content-check-error",
   /** Issue #3715: the actor behind the edit could not be resolved */
   "content-editor-unresolved",
+  /**
+   * PR #4944 review: more body edits than GitHub's newest-100 window, and the
+   * window cannot place the snapshot — escalated, not a transient fault
+   */
+  "content-edit-history-truncated",
   /** Issue #3874: workDir names no store, so no baseline exists to verify */
   "content-store-unconfigured",
   /** Issue #3868: the refreshed approval baseline could not be persisted */
@@ -625,6 +631,7 @@ const ROUTINE_CLAIM_REFUSALS: ReadonlySet<string> = new Set([
   "heartbeat_active",
   "recent_claim",
   "fleet_pr_exists",
+  "completion_mode",
 ]);
 
 /**
