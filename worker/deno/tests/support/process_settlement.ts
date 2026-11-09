@@ -12,15 +12,18 @@ export interface WaitForOrphanOptions {
   intervalMs?: number;
 }
 
+export type ProcessSettlement =
+  | { settled: true; lastObservedState: ProcessObservation }
+  | { settled: false; lastObservedState: ProcessObservation | undefined };
+
 /**
  * Wait a bounded time for a captured PID to have its final command and become
  * an orphan adopted by PID 1. The injected observation and sleep keep tests
- * deterministic; timeout errors include the last observed process state.
+ * deterministic; an unsettled result carries the last observed process state.
  */
 export async function waitForSettledOrphan(
-  pid: number,
   options: WaitForOrphanOptions,
-): Promise<void> {
+): Promise<ProcessSettlement> {
   const maxAttempts = options.maxAttempts ?? 50;
   const intervalMs = options.intervalMs ?? 100;
   let lastObservation: ProcessObservation | undefined;
@@ -31,13 +34,10 @@ export async function waitForSettledOrphan(
       lastObservation?.command === options.expectedCommand &&
       lastObservation.parentPid === 1
     ) {
-      return;
+      return { settled: true, lastObservedState: lastObservation };
     }
     if (attempt + 1 < maxAttempts) await options.sleep(intervalMs);
   }
 
-  throw new Error(
-    `orphan ${pid} did not settle after ${maxAttempts} observations; ` +
-      `last observed state=${JSON.stringify(lastObservation ?? null)}`,
-  );
+  return { settled: false, lastObservedState: lastObservation };
 }

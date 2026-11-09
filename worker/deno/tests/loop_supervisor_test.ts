@@ -1497,7 +1497,7 @@ Deno.test({
       pids = [pid];
       // The shell may exit before nohup has exec'd sleep; wait on the captured
       // PID until it has the final command line and is adopted by init.
-      await waitForSettledOrphan(pid, {
+      const settlement = await waitForSettledOrphan({
         expectedCommand: command,
         observe: async () => ({
           command: await getCommand(pid),
@@ -1505,6 +1505,12 @@ Deno.test({
         }),
         sleep: delay,
       });
+      assert(
+        settlement.settled,
+        `orphan ${pid} did not settle; last observed state=${
+          JSON.stringify(settlement.lastObservedState)
+        }`,
+      );
       await registerProbe(stateDir, pid, await Deno.realPath(harness.tmpDir));
       child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });
       await delay(3000);
