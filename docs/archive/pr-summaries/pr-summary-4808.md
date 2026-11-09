@@ -4,10 +4,9 @@
 issue the way GitHub does: Markdown code (code spans and fences) is masked out
 first (each in-code character becomes a non-space placeholder, so a code span
 between the keyword and `#N` cannot join them), and the keyword and `#N` must
-sit on the same line. A summary whose only
-`Closes #N` is in backticks, in a fenced block, or wrapped as `Closes` / `#N`
-now gets `Closes #N` appended, as `prompts/issue/prompt.md` promises. Closes
-#4808.
+sit on the same line. A summary whose only `Closes #N` is in backticks, in a
+fenced block, or wrapped as `Closes` / `#N` now gets `Closes #N` appended, as
+`prompts/issue/prompt.md` promises. Closes #4808.
 
 ## Spec
 
@@ -55,9 +54,9 @@ Backend-only change; no UI files touched. Behaviour is pinned by tests in
 
 - `worker/deno/tests/pr_body_test.ts`: code span, fenced block, `Closes\n#42`,
   plain same-line close (unchanged), code span plus real close (unchanged),
-  qualified reference, long whitespace run, a code span between keyword and
-  `#N` (`Closes \`x\` #42`), and a body ending in an unclosed fence (the close
-  is led with and survives masking).
+  qualified reference, long whitespace run, a code span between keyword and `#N`
+  (`Closes \`x\` #42`), and a body ending in an unclosed fence (the close is led
+  with and survives masking).
 - `worker/deno/tests/pr_body_sync_test.ts`: `assemblePrBody` with a code-span
   close yields a body where `extractClosingIssueNumbers(maskMarkdownCode(body))`
   includes 42; a withheld (`partial`) closure does not gain a prose close.
