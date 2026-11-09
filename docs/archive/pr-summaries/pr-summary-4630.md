@@ -11,6 +11,9 @@ compile error is therefore caught before the push, not by a CI run. Closes
   `pull_request` count. It derives each `cargo clippy` command verbatim
   (toolchain, flags such as `--all-targets --locked -- -D warnings`,
   workspace/package/feature selection, working directory, cargo-relevant env).
+  Output-directory overrides (`CARGO_TARGET_DIR` and
+  `CARGO_BUILD_TARGET_DIR`) are excluded so the worker retains its own cache
+  isolation; target-specific compiler and linker settings remain.
   Where no clippy run already compiles the same test targets, it derives a
   `cargo test --no-run` from a CI `cargo test`, `cargo nextest run` or
   `cargo llvm-cov`, keeping only build flags. A clippy run with `--all-targets`
@@ -25,18 +28,19 @@ compile error is therefore caught before the push, not by a CI run. Closes
   uses it). A failing lint or test build blocks the push with its output, unless
   the PR base already fails the same way (below). A missing toolchain, component
   or `--target` (probe failure, or rustup/rustc output saying it is not
-  installed), a command that cannot start or times out, host disk-full output, a
-  working directory that is missing or escapes the repo, or a CI command the
-  scanner cannot reproduce is a `PrePushGateInfrastructureError`: the push is
+  installed), a command that cannot start or times out, registry/network or
+  host disk-full output, a working directory that is missing or escapes the
+  repo, or a CI command the scanner cannot reproduce is a
+  `PrePushGateInfrastructureError`: the push is
   refused but the branch is not blamed, and the checked set is never reduced.
-- Base-failure comparison: when the gate knows the PR base (`compareRef`, set
-  from `syncBaseBranch` by `commitAndPushPending`, or the completion gate's
-  `baseRef`), a failing CI cargo check is re-run, as CI wrote it, in a detached
+- Base-failure comparison: the repair processors pass the PR base independently
+  of whether they merge it into the repair branch; the completion gate uses its
+  `baseRef`. A failing CI cargo check is re-run, as CI wrote it, in a detached
   worktree of that base. If every diagnostic the push shows (message, file and
   how many times; not line) is also on the base, the failure is a
-  `[PRE_PUSH_WARNING]`, not a verdict. A base that passes, times out, fails for
-  the host or lacks a diagnostic, an unresolvable ref, or no known base leaves
-  it a verdict.
+  `[PRE_PUSH_WARNING]`, not a verdict. A base that passes or lacks a diagnostic
+  leaves it a verdict. An unavailable repair base or a host failure during
+  comparison is infrastructure, not a branch verdict.
 - Scanner fixes: a `cd <dir>` on its own line now holds for the rest of that
   step's run block (any `cd` form it cannot follow, including `pushd`, `popd`, a
   `cd` after `then`/`do`/`else`/`{` and a `cd ... || true`, makes the later
@@ -158,78 +162,43 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
 
 ## Test Plan
 
-- `./quality.sh` was not run on this head (run budget); the targeted checks
-  were: `deno fmt`, `deno lint` and `deno check` on every changed `.ts` file
-  (clean), and `deno task test:unit` on `ci_cargo_checks_test.ts`,
-  `pre_push_gate_test.ts`, `git_push_preflight_test.ts`,
-  `pr_feedback_processor_pre_flight_4630_test.ts`, `pr_ci_processor_test.ts`,
-  `pr_feedback_review_dismissal_3383_test.ts`, `gate_infra_release_test.ts` and
-  `pr_round_repo_formatters_test.ts`: 298 passed, 0 failed.
-- PR #4896 review tests, each shown red by breaking only its own code:
-  - `worker/deno/tests/pre_push_gate_test.ts` (probe only the first check, and
-    drop the missing-capability line test, and `every` to `some` in the base
-    comparison):
-    `a second toolchain that is missing is infrastructure, and no
-    CI cargo command runs`,
-    `a clippy component missing from a second toolchain
-    is probed and is infrastructure`,
-    `rustup and rustc output for a missing
-    toolchain, component or target is infrastructure, not a block`,
-    `a clippy
-    failure that is new on the push blocks, whatever the base shows`
-    (all red). Review round 2:
-    `a clippy failure that is new on the push
-    blocks, whatever the base shows`
-    gained a case where the push repeats a diagnostic the base shows once
-    (counts per signature; red when the comparison goes back to a set). Also
-    green-by-design:
-    `a clippy failure the PR base already has is no
-    verdict on the push`,
-    `a lint whose source excerpt quotes 'is not
-    installed' still blocks`,
-    `a comparison ref that cannot be resolved leaves
-    the failure a verdict`.
-  - `worker/deno/tests/ci_cargo_checks_test.ts` (reset the directory per line,
-    and stop treating nextest differently):
-    `a cd on its own line holds for the
-    later lines of the same step only`,
-    `a cd the scanner cannot follow makes
-    the later cargo lines of that step unverifiable`
-    (gained `if ...; then cd rust; fi`, `for ...; do cd $d; done` and
-    `{ cd rust; }` cases; red when keywords are no longer skipped),
-    `nextest's --profile
-    names a nextest profile and is not passed to cargo as a build profile`
-    (all red).
-  - `worker/deno/tests/git_push_preflight_test.ts` (stop passing the base ref
-    from `syncBaseBranch`): both `a CI clippy failure the PR base ...` tests
-    went red.
-  - `worker/deno/tests/pr_feedback_review_dismissal_3383_test.ts` and
-    `worker/deno/tests/pr_ci_processor_test.ts` (raise the cap to 9999):
-    `a
-    gate-infrastructure fault is released only up to the cap, then charged`
-    and
-    `a CI fix released for a gate fault records the release, and the third is
-    charged`
-    went red.
-  - `worker/deno/tests/gate_infra_release_test.ts` pins the key allow-list, the
-    trusted-author count and the unknown outcome.
-- Edited expectations: `pr_feedback_review_dismissal_3383_test.ts`
-  `assertGateInfraFaultReleases` now expects the one marker comment a release
-  posts (it expected none); it goes red if the marker comment is dropped.
-  `preFlightSpecs` there, and the observed spec in
-  `pr_round_repo_formatters_test.ts`, are now `CI_CARGO_ONLY_PRE_FLIGHT` (was
-  `{ commands: [], shellcheckOnly: true }`), required by #4630 (a repo with no
-  pre-flight commands gets the cargo-only spec on a repair push).
-- Callers of the changed shared items: `gateUnpushedCommits` (completion phase
-  with `baseRef`, `commitAndPushPending` with `syncBaseBranch`), both repair
-  processors and the agent hook (`pre_push_gate_cli.ts`, which passes no
-  `findCiCargo` and no `compareRef`) checked. Spelling and merge-conflict
-  repairs use `shellcheckOnly`, which plans no cargo check, so they need no base
-  comparison.
-- A pre-existing `merge_fast_checks_credentials_4705_test.ts` failure under
-  `HTTP(S)_PROXY` is unrelated.
-- Not checked: a real `cargo clippy` run against a Rust repo (tests use injected
-  runners and real workflow scans); `if:` conditions, matrices and reusable
-  workflows are not evaluated (documented as known limits); a gated head's fix
-  branch (no `syncBaseBranch`) gets no base comparison; the `llvm-cov nextest`
-  build profile is not reproduced.
+- From `worker/deno`, `deno fmt --check`, `deno lint` and
+  `deno task check` cover the Deno tree. Targeted `deno task test:unit`
+  covers `ci_cargo_checks_test.ts`, `pre_push_gate_test.ts`,
+  `pre_push_gate_cargo_deny_test.ts`, `git_push_preflight_test.ts`,
+  `pr_ci_processor_test.ts`, `pr_feedback_processor_pre_flight_4630_test.ts`,
+  `pr_feedback_review_dismissal_3383_test.ts` and
+  `pr_round_repo_formatters_test.ts` and `pr_push_base_sync_test.ts`:
+  317 passed. The real ShellCheck
+  publication suite ran separately: 7 passed.
+- The obsolete environment contract copied the CI output directory into local
+  builds. The remaining contract preserves target-specific settings while
+  ignoring both output directory keys, including expressions:
+  `worker/deno/tests/ci_cargo_checks_test.ts::cargo output directories are ignored even when expressions`
+  and `::every cargo-relevant env key is kept and an unrelated key is dropped`.
+- The old repair spec used `shellcheckOnly`; the replacement uses
+  `CI_CARGO_ONLY_PRE_FLIGHT` while retaining ShellCheck and cargo-deny checks.
+  Coverage: `worker/deno/tests/shellcheck_publication_test.ts::commitAndPushPending: a cargo-only repair blocks a real ShellCheck diagnostic`
+  and `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: ciCargoOnly mode checks Cargo.lock`.
+  The changed spec expectations in `pr_feedback_review_dismissal_3383_test.ts`
+  and `pr_round_repo_formatters_test.ts` still verify processor wiring.
+- The former two-log Git call sequence in the ls-files failure test became
+  three logs because the cargo check collects its own changed-file list. Failure
+  to list tracked files still blocks:
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: git ls-files failure is an error`.
+- A failed or unavailable base comparison formerly produced a branch verdict;
+  it now produces infrastructure when the base cannot be checked, while a new
+  diagnostic remains blocking. Coverage:
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: an unavailable base comparison is infrastructure`,
+  `::runPrePushGate: a base host fault is infrastructure` and
+  `::runPrePushGate: a clippy failure that is new on the push blocks, whatever the base shows`.
+  `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - a fix branch compares the PR base without merging it`
+  and the gated-head case in `pr_ci_processor_test.ts` cover the independent
+  comparison ref. Registry refusal on the head is covered by
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: an unreachable registry is infrastructure`.
+- The agent hook passes no scanner or comparison ref. Spelling and
+  merge-conflict repairs retain the base branch's ShellCheck-only policy.
+  No twinned copy of the changed environment or base-comparison rules was found.
+- Not checked: a real cargo clippy run against a Rust repository (the tests use
+  injected runners and real workflow scans). Workflow conditions, matrices,
+  reusable workflows and the llvm-cov nextest build profile are not reproduced.

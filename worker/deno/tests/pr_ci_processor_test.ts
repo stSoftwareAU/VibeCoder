@@ -2271,6 +2271,7 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
     const stateDir = `${tmpDir}/.ci_check_state`;
     const gitCommands: string[][] = [];
     const commitAndPushCalls: string[] = [];
+    const pushOptions: Record<string, unknown>[] = [];
     const ghCalls: string[][] = [];
     let claudeRan = false;
     let fixBranchCheckoutBeforeClaude = false;
@@ -2317,8 +2318,13 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
             value: { code: 0, stdout: "", stderr: "" },
           });
         }) as unknown as GitDeps["runGitCommand"],
-        commitAndPushPending: ((branchName: string) => {
+        commitAndPushPending: ((
+          branchName: string,
+          _message: string,
+          options: Record<string, unknown>,
+        ) => {
           commitAndPushCalls.push(branchName);
+          pushOptions.push(options);
           return Promise.resolve({
             ok: true,
             value: {
@@ -2345,6 +2351,7 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
         repo: "org/repo",
         prNumber: GATED_PR_NUMBER,
         branchName: GATED_MILESTONE_HEAD,
+        baseRef: "main",
         checkRunId: "gated-happy-1",
       }),
       {
@@ -2375,6 +2382,9 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
       [GATED_FIX_BRANCH],
       "the fix, not the PR's own head, receives the commit and push",
     );
+    assertEquals(pushOptions[0]?.compareBaseBranch, "main");
+    assertEquals(pushOptions[0]?.syncBaseBranch, undefined);
+    assertEquals(pushOptions[0]?.requireCargoBaseComparison, true);
     assertEquals(
       gitCommands.some((args) =>
         args[0] === "push" && args.includes("--delete")

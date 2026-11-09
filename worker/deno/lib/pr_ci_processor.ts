@@ -2174,18 +2174,21 @@ async function _processCiWithHeartbeat(
   // Owner rule 2026-11-03: merge the PR's base in just before the fix is
   // pushed, so the fix and the branch update reach GitHub in one push and CI
   // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  const compareBaseBranch = await prBaseForSync(
+    input.baseRef,
+    repo,
+    prNumber,
+    (args) => deps.github.runGhCommand(args),
+    (message) => logger.warn(message),
+  );
   const syncBaseBranch = fixBranch === undefined
-    ? await prBaseForSync(
-      input.baseRef,
-      repo,
-      prNumber,
-      (args) => deps.github.runGhCommand(args),
-      (message) => logger.warn(message),
-    )
+    ? compareBaseBranch
     : undefined;
   const pushOptions = {
     cwd: processorDeps.workDir,
     expectedAncestor: beforeSha,
+    requireCargoBaseComparison: true,
+    ...(compareBaseBranch !== undefined ? { compareBaseBranch } : {}),
     ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
   };
   const finaliseResult = await deps.git.commitAndPushPending(

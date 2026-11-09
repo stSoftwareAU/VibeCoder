@@ -554,10 +554,10 @@ export async function prBaseForSync(
       ".baseRefName",
     ])).trim();
     if (base !== "") return base;
-    warn(`PR #${prNumber} reported no base branch; fix pushed without it`);
+    warn(`PR #${prNumber} reported no base branch; base merge unavailable`);
   } catch (error) {
     warn(
-      `Could not read the base branch of PR #${prNumber}; fix pushed without it: ${
+      `Could not read the base branch of PR #${prNumber}; base merge unavailable: ${
         error instanceof Error ? error.message : String(error)
       }`,
     );
@@ -1140,7 +1140,11 @@ export async function commitAndPushPending(
       committedNewChanges,
       undefined,
       // A CI cargo failure the PR base already has is no verdict on this push.
-      options.syncBaseBranch ? `origin/${options.syncBaseBranch}` : undefined,
+      (options.compareBaseBranch ?? options.syncBaseBranch)
+        ? `origin/${options.compareBaseBranch ?? options.syncBaseBranch}`
+        : options.requireCargoBaseComparison
+        ? ""
+        : undefined,
     );
     if (!gate.ok) {
       return { ok: false, error: gate.error };

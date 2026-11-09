@@ -667,6 +667,30 @@ Deno.test("commitAndPushPending - a CI clippy failure the PR base already has do
   }
 });
 
+Deno.test("commitAndPushPending - a fix branch compares the PR base without merging it", async () => {
+  const branch = "issue-4630-fix-branch";
+  const { tmp, downstream } = await makeRepo("preflight_fix_base_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const { runner, clippyTrees } = baseAwareRunner(
+      CLIPPY_ASSERT_IS_EMPTY,
+      CLIPPY_ASSERT_IS_EMPTY,
+    );
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG, compareBaseBranch: "main" },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(clippyTrees, ["head", "base"]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test("commitAndPushPending - a CI clippy failure the PR base does not have still refuses the repair push (PR #4896)", async () => {
   const branch = "issue-4630-base-passes";
   const { tmp, downstream } = await makeRepo("preflight_4896_new_", branch);

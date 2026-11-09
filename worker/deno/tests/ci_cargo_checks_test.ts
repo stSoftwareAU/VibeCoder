@@ -777,7 +777,7 @@ Deno.test("every cargo-relevant env key is kept and an unrelated key is dropped"
     "CARGO_NET_OFFLINE",
     "CARGO_BUILD_JOBS",
     "CARGO_PROFILE_DEV_DEBUG",
-    "CARGO_TARGET_DIR",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER",
   ];
   for (const key of keys) {
     const result = scan(`
@@ -792,6 +792,21 @@ Deno.test("every cargo-relevant env key is kept and an unrelated key is dropped"
     `);
     assertEquals(result.checks.map((c) => c.env), [{ [key]: "1" }], key);
   }
+});
+
+Deno.test("cargo output directories are ignored even when expressions", () => {
+  const result = scan(`
+    on: pull_request
+    env:
+      CARGO_TARGET_DIR: \${{ runner.temp }}/target
+      CARGO_BUILD_TARGET_DIR: /tmp/target
+    jobs:
+      lint:
+        steps:
+          - run: cargo clippy
+  `);
+  assertEquals(result.unverifiable, []);
+  assertEquals(result.checks.map((c) => c.env), [{}]);
 });
 
 Deno.test("every build flag of a test run is kept in the test-target compile", () => {

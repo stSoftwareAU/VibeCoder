@@ -3503,6 +3503,22 @@ const LINT_A =
   "error: this could be a `const fn`\n  --> src/a.rs:4:1\n   = note: `-D clippy::must_use_candidate` implied by `-D warnings`\n";
 const LINT_B = "error: unused variable: `x`\n  --> src/b.rs:9:5\n";
 
+Deno.test("runPrePushGate: an unreachable registry is infrastructure", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const result = await gateAgainstBase(clone, stdin, () => ({
+      code: 101,
+      stderr:
+        "error: failed to get `serde` as a dependency\nCaused by:\n  Could not resolve host: index.crates.io\n",
+    }), []);
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assertStringIncludes(result.error.message, "Could not resolve host");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 /** Gate `clone` with the base-comparison ref set to its first commit. */
 async function gateAgainstBase(
   clone: string,
@@ -3577,27 +3593,6 @@ Deno.test("runPrePushGate: a clippy failure that is new on the push blocks, what
       "the push repeats a diagnostic the base shows once, in the same file",
       (onBase) => ({ code: 101, stderr: onBase ? LINT_A : LINT_A + LINT_A }),
     ],
-    [
-      "the base fails for the host",
-      (onBase) =>
-        onBase
-          ? {
-            code: 101,
-            stderr: "error: No space left on device (os error 28)",
-          }
-          : { code: 101, stderr: LINT_A },
-    ],
-    [
-      "the base run times out",
-      (onBase) =>
-        onBase
-          ? { code: TIMEOUT_EXIT_CODE, timedOut: true }
-          : { code: 101, stderr: LINT_A },
-    ],
-    [
-      "the push's output holds no diagnostic that can be compared",
-      () => ({ code: 101, stderr: `error[${"A".repeat(200_000)}` }),
-    ],
   ];
   for (const [name, answer] of cases) {
     const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
@@ -3613,7 +3608,7 @@ Deno.test("runPrePushGate: a clippy failure that is new on the push blocks, what
   }
 });
 
-Deno.test("runPrePushGate: a comparison ref that cannot be resolved leaves the failure a verdict", async () => {
+Deno.test("runPrePushGate: an unavailable base comparison is infrastructure", async () => {
   const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
   try {
     for (const ref of ["origin/no-such-branch", "--upload-pack=x", "a..b"]) {
@@ -3626,11 +3621,46 @@ Deno.test("runPrePushGate: a comparison ref that cannot be resolved leaves the f
         ref,
       );
       assert(!result.ok, ref);
-      assertInstanceOf(result.error, PreFlightGateError, ref);
+      assertInstanceOf(result.error, PrePushGateInfrastructureError, ref);
       assert(
         !calls.some((c) => c.cwd?.includes("vibe-base-check-")),
         `${ref}: nothing may run on a base tree that was not made`,
       );
+    }
+    const noDiagnostic = await gateAgainstBase(
+      clone,
+      stdin,
+      () => ({ code: 101, stderr: `error[${"A".repeat(200_000)}` }),
+      [],
+    );
+    assert(!noDiagnostic.ok);
+    assertInstanceOf(noDiagnostic.error, PrePushGateInfrastructureError);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a base host fault is infrastructure", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    for (
+      const failure of [
+        { code: 101, stderr: "error: No space left on device (os error 28)" },
+        { code: TIMEOUT_EXIT_CODE, timedOut: true },
+        {
+          code: 101,
+          stderr: "warning: spurious network error: Could not resolve host",
+        },
+      ]
+    ) {
+      const result = await gateAgainstBase(
+        clone,
+        stdin,
+        (onBase) => onBase ? failure : { code: 101, stderr: LINT_A },
+        [],
+      );
+      assert(!result.ok);
+      assertInstanceOf(result.error, PrePushGateInfrastructureError);
     }
   } finally {
     await Deno.remove(root, { recursive: true });

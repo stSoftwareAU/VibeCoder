@@ -82,6 +82,7 @@ import type {
   CiCargoScan,
 } from "./ci_cargo_checks.ts";
 import { isHostDiskFaultText } from "./host_fault.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 
 /**
  * The gate could not read the repository state it needs: a `git log`,
@@ -1857,12 +1858,21 @@ function isMissingRustCapabilityLine(line: string): boolean {
  * source excerpt that quotes it does not turn a lint failure into a host fault.
  * The disk-full test is `isHostDiskFaultText` in `host_fault.ts`.
  */
+function cargoNetworkFaultLine(lines: string[]): string | undefined {
+  return lines.find((line) =>
+    !isQuotedSourceLine(line) &&
+    /^(?:(?:warning|error): )?spurious network error|^(?:\[\d+\] )?(?:fatal: unable to access|failed to download|download of config\.json failed|Could not resolve host|Couldn't resolve host|Couldn't connect|failed to connect|Network is unreachable|Connection (?:refused|timed out|reset))/i
+      .test(line.trim())
+  )?.trim().replace(/\/\/[^\s/@]+@/g, "//***@");
+}
+
 function isHostFaultOfCheck(error: PreFlightGateError): boolean {
   if (error.reason === "not-started" || error.reason === "timeout") return true;
   if (error.reason !== "non-zero-exit") return false;
   const lines = error.output.split("\n");
   if (lines.some(isMissingRustCapabilityLine)) return true;
   const toolLines = lines.filter((line) => !isQuotedSourceLine(line));
+  if (cargoNetworkFaultLine(toolLines) !== undefined) return true;
   return isHostDiskFaultText(toolLines.join("\n"));
 }
 
@@ -1967,10 +1977,8 @@ function diagnosticSignatures(output: string): Map<string, number> {
  * with every diagnostic the push shows, no more often than the base (Issue #4630 review: a failure the base
  * already has is not this repair's defect). The check runs again, as CI wrote
  * it, in a detached worktree of `ref`. Returns true only when that is
- * established: an unresolvable ref, a worktree that cannot be made, a base run
- * that passes, times out, cannot start or fails for the host, and a push that
- * shows a diagnostic more often than the base (or none that can be read) all return
- * false, so the failure stays a verdict.
+ * established. An unavailable ref, worktree or base run is unknown; a passing
+ * base or a diagnostic the base lacks is different.
  *
  * SIMPLE-ON-PURPOSE: a diagnostic is matched by message, file and count, not line — upgrade when a moved instance of a repeated diagnostic must be told from a new one
  */
@@ -1982,10 +1990,12 @@ async function failsOnBaseToo(args: {
   git: PrePushGit;
   runner?: PreFlightRunner;
   timeoutSeconds?: number;
-}): Promise<boolean> {
-  if (!SAFE_COMPARE_REF.test(args.ref) || args.ref.includes("..")) return false;
+}): Promise<"same" | "different" | "unknown"> {
+  if (!SAFE_COMPARE_REF.test(args.ref) || args.ref.includes("..")) {
+    return "unknown";
+  }
   const headSignatures = diagnosticSignatures(args.headOutput);
-  if (headSignatures.size === 0) return false;
+  if (headSignatures.size === 0) return "unknown";
   const prefix = args.repoRoot.endsWith("/")
     ? args.repoRoot
     : `${args.repoRoot}/`;
@@ -1994,13 +2004,13 @@ async function failsOnBaseToo(args: {
     : args.check.cwd.startsWith(prefix)
     ? args.check.cwd.slice(prefix.length)
     : null;
-  if (relative === null) return false;
+  if (relative === null) return "unknown";
   const resolved = await args.git(
     ["rev-parse", "--verify", "--quiet", `${args.ref}^{commit}`],
     args.repoRoot,
   );
   const sha = resolved.stdout.trim();
-  if (resolved.code !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) return false;
+  if (resolved.code !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) return "unknown";
 
   const scratch = await Deno.makeTempDir({ prefix: "vibe-base-check-" });
   const tree = `${scratch}/tree`;
@@ -2010,7 +2020,7 @@ async function failsOnBaseToo(args: {
       ["worktree", "add", "--detach", tree, sha],
       args.repoRoot,
     );
-    if (add.code !== 0) return false;
+    if (add.code !== 0) return "unknown";
     added = true;
     const base = await runPreFlightGate([args.check.command], {
       cwd: relative === "" ? tree : `${tree}/${relative}`,
@@ -2018,13 +2028,15 @@ async function failsOnBaseToo(args: {
       runner: args.runner,
       timeoutSeconds: args.timeoutSeconds,
     });
-    if (base.ok) return false;
-    if (base.error.reason !== "non-zero-exit") return false;
-    if (isHostFaultOfCheck(base.error)) return false;
+    if (base.ok) return "different";
+    if (base.error.reason !== "non-zero-exit") return "unknown";
+    if (isHostFaultOfCheck(base.error)) return "unknown";
     const baseSignatures = diagnosticSignatures(base.error.output);
     return [...headSignatures].every(([sig, count]) =>
-      count <= (baseSignatures.get(sig) ?? 0)
-    );
+        count <= (baseSignatures.get(sig) ?? 0)
+      )
+      ? "same"
+      : "different";
   } finally {
     if (added) {
       const removed = await args.git(
@@ -2283,14 +2295,16 @@ export async function runPrePushGate(opts: {
       if (isHostFaultOfCheck(result.error)) {
         return infrastructureFail(
           `CI's ${check.label} (\`${check.command}\`) did not finish on this host (${result.error.reason}): ${
-            firstOutputLine(result.error.output)
+            redactSecrets(
+              cargoNetworkFaultLine(result.error.output.split("\n")) ??
+                firstOutputLine(result.error.output),
+            )
           } — a host fault, not a verdict on the commit`,
         );
       }
       // A failure the PR base already has is not this repair's defect.
-      if (
-        compareRef !== undefined &&
-        await failsOnBaseToo({
+      if (compareRef !== undefined) {
+        const comparison = await failsOnBaseToo({
           repoRoot: opts.cwd,
           ref: compareRef,
           check,
@@ -2298,12 +2312,18 @@ export async function runPrePushGate(opts: {
           git,
           runner: opts.runner,
           timeoutSeconds: opts.timeoutSeconds,
-        })
-      ) {
-        console.warn(
-          `[PRE_PUSH_WARNING] CI's ${check.label} (\`${check.command}\`) fails the same way on ${compareRef}: not a verdict on this push`,
-        );
-        continue;
+        });
+        if (comparison === "unknown") {
+          return infrastructureFail(
+            "Could not compare the failed CI cargo check against the PR base",
+          );
+        }
+        if (comparison === "same") {
+          console.warn(
+            `[PRE_PUSH_WARNING] CI's ${check.label} (\`${check.command}\`) fails the same way on ${compareRef}: not a verdict on this push`,
+          );
+          continue;
+        }
       }
       return { ok: false, error: result.error };
     }

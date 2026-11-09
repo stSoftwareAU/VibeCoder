@@ -157,6 +157,9 @@ function scalarText(value: unknown): string | undefined {
 
 /** Whether an env key is one of the cargo-relevant keys kept for a check. */
 function keptEnvKey(key: string): boolean {
+  if (key === "CARGO_TARGET_DIR" || key === "CARGO_BUILD_TARGET_DIR") {
+    return false;
+  }
   return ENV_KEYS.has(key) || ENV_PREFIXES.some((p) => key.startsWith(p));
 }
 
