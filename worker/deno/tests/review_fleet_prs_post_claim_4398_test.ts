@@ -260,10 +260,20 @@ for (
     }
 
     const denoDir = Deno.execPath().replace(/\/[^/]*$/, "");
+    const cacheInfo = await new Deno.Command(Deno.execPath(), {
+      args: ["info", "--json"],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(cacheInfo.code, 0, new TextDecoder().decode(cacheInfo.stderr));
+    const denoCache = JSON.parse(new TextDecoder().decode(cacheInfo.stdout))
+      .denoDir;
     const out = await new Deno.Command(Deno.execPath(), {
       args: [
         "run",
-        "--no-lock",
+        "--frozen",
+        `--config=${new URL("../deno.json", import.meta.url).pathname}`,
+        `--lock=${new URL("../deno.lock", import.meta.url).pathname}`,
         "--allow-run=gh,osascript",
         "--allow-read",
         "--allow-write",
@@ -273,6 +283,7 @@ for (
         `--state-dir=${home}/state`,
       ],
       env: {
+        DENO_DIR: denoCache,
         HOME: home,
         TMPDIR: home,
         PATH: `${bin}:${denoDir}:/usr/bin:/bin`,

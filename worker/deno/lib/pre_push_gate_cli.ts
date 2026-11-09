@@ -1,10 +1,12 @@
 /**
  * Entry point of the agent's git `pre-push` hook (Issue #3394).
  *
- * Run as `deno run --quiet --no-config --no-lock --allow-read --allow-run
- * --allow-env pre_push_gate_cli.ts --spec <path> [-- <remote> <url>]`. It must
- * work under `--no-config`, so nothing in its import graph may rely on an
- * import map (no bare specifiers at runtime).
+ * The hook runs it as `deno run --quiet --config <worker>/deno.json --frozen
+ * --lock <worker>/deno.lock --allow-read --allow-run --allow-env
+ * pre_push_gate_cli.ts --spec <path> [-- <remote> <url>]`, using the trusted
+ * worker config and an explicit frozen lock. The import graph also keeps
+ * working standalone under `--no-config --no-lock` (no bare specifiers at
+ * runtime), which `shellcheck_publication_test.ts` still exercises.
  *
  * The spec is JSON: `{ "preFlightCommands": string[], "timeoutSeconds"?: n }`.
  * A missing or invalid spec, unreadable stdin or any thrown error blocks the

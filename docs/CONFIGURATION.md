@@ -5083,7 +5083,10 @@ every agent run, the worker writes a per-run
 `pre-push` hook into a temporary directory and enables it in the **agent's
 environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
-agent runs goes through it. The worker's own pushes do not carry the agent's
+agent runs goes through it. The hook loads its trusted worker module with that
+worker's Deno configuration and frozen lock file, so a target repository's
+configuration or newer registry version cannot change the hook's dependencies.
+The worker's own pushes do not carry the agent's
 environment, so the hook does not gate them; instead its final-mile
 commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
 same changed-files check through `runPrePushGate` on the already-committed

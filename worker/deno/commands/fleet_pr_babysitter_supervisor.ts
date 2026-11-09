@@ -154,12 +154,13 @@ async function pass(args: string[], dir: string): Promise<number> {
     try {
       if (
         args.some((arg) =>
-          arg === "--dry-run" || arg.startsWith("--repo=") ||
+          arg === "--dry-run" || arg === "--check-container" ||
+          arg.startsWith("--repo=") ||
           arg.startsWith("--pr=")
         )
       ) {
         throw new Deno.errors.NotFound(
-          "A partial or dry run does not report service health",
+          "A partial, dry or diagnostic run does not report service health",
         );
       }
       await Deno.stat(hook);
