@@ -2,7 +2,6 @@ import { assert, assertEquals } from "@std/assert";
 import {
   ensureBabysitterAuditDir,
   prepareBabysitterStartUp,
-  spawnBabysitterAgent,
 } from "../commands/fleet_pr_babysitter.ts";
 import { auditGitMutation, isAuditJournalEnabled } from "../lib/audit_hook.ts";
 import {
@@ -79,29 +78,4 @@ Deno.test("babysitter audit setup preserves existing locations and disabled mode
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
-});
-
-Deno.test("babysitter agent disables the inherited host audit journal", () => {
-  let handed: Deno.CommandOptions | undefined;
-  spawnBabysitterAgent(
-    {
-      dir: "/work/clone",
-      scratch: "/work/scratch",
-      prompt: "repair the pull request",
-      agentToken: "token",
-      protectedPaths: ["/home/babysitter/.vibe-coder/fleet-pr-babysitter"],
-      codex: "codex",
-      responseFile: "/work/response.md",
-    },
-    (_executable, options) => {
-      handed = options;
-      return {} as Deno.ChildProcess;
-    },
-  );
-  assertEquals(handed?.env?.VIBE_AUDIT_DISABLED, "1");
-  const combined: Record<string, string | undefined> = {
-    VIBE_AUDIT_DIR: "/home/babysitter/state/audit",
-    ...(handed?.env ?? {}),
-  };
-  assertEquals(isAuditJournalEnabled((name) => combined[name]), false);
 });

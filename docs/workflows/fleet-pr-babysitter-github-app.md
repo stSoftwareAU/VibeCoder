@@ -20,7 +20,7 @@ needs to do the following:
 2. Clear **Active** under **Webhook**. The babysitter polls and does not need
    inbound webhooks. Select **Only on this account** for installation scope if
    all monitored repositories belong to this organisation.
-3. Under **Repository permissions**, grant the following. The Codex agent's
+3. Under **Repository permissions**, grant the following. The repair agent's
    read-only token is narrowed from these grants and needs the App to hold
    Contents, Pull requests, Issues, Checks and Actions read, which are already
    granted below:
@@ -91,8 +91,9 @@ If more than one installation matches, pass `--installation-id=<id>` to setup.
 No accessible configured repositories, incomplete discovery, authentication
 failures and API errors still fail the pass. Configure the bot as a trusted lock author on every fleet host;
 setup can verify only its own host. The runner's installation token is
-refreshed during long passes. The Codex agent gets a separate read-only token
-for the target repository, which is not refreshed and needs the App to hold
+refreshed during long passes. The repair agent gets a separate read-only token
+for the target repository, passed to its container, which is not refreshed during
+the run and needs the App to hold
 Contents, Pull requests, Issues, Checks and Actions read (already granted).
 Keep tokens out of command-line arguments and logs.
 

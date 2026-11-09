@@ -71,8 +71,8 @@ export interface ContainerProviderPin {
   sha256: Record<string, string>;
   /**
    * `<os>-<arch>` (e.g. `darwin-arm64`) to SHA-256 of the same release's
-   * asset for a non-container host. The fleet PR babysitter installs Codex
-   * from these on a host whose own CLI is missing or too old.
+   * asset for a non-container host. No host installer currently reads these
+   * pins; the fleet PR babysitter runs repairs in a container.
    */
   hostSha256?: Record<string, string>;
   /**

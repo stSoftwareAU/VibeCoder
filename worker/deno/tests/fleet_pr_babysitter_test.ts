@@ -49,7 +49,6 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
-  assertThrows,
 } from "@std/assert";
 import {
   enforceGhWriteAllowlist,
@@ -67,11 +66,6 @@ import {
 } from "../lib/pr_body_sync.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { buildIdempotencyMarker, closingKeywordLine } from "../lib/pr_body.ts";
-import {
-  BABYSITTER_FILESYSTEM_KEY,
-  BABYSITTER_PERMISSIONS_PROFILE,
-  buildBabysitterSandboxArgs,
-} from "../lib/fleet_babysitter_sandbox.ts";
 import {
   applyPrBody,
   attemptKey,
@@ -101,7 +95,6 @@ import {
   resumePendingPublication,
   runRepairs,
   serialiseOnMirror,
-  spawnBabysitterAgent,
   syncBabysitterPrBodyBeforeDismissal,
   takePrBodyProposal,
   temporaryCloneRoot,
@@ -3123,200 +3116,6 @@ Deno.test("parallel babysitter repairs restrict writes to their own repository",
   assertEquals(results, ["org/one", "org/two"]);
 });
 
-Deno.test("codex agent gets its own read-only token instead of the runner's GH_TOKEN", () => {
-  const runnerToken = "runner-write-token";
-  const agentToken = "agent-read-only-token";
-  const scratch = "/tmp/babysitter-scratch";
-  const dir = "/tmp/babysitter-clone";
-  const responseFile = "/tmp/babysitter-exchange/response";
-  const prompt = "Fix conflicts on PR #1";
-  const protectedPaths = [
-    "/home/u/.vibe-coder/fleet-pr-babysitter",
-    "/home/u/.vibe-coder/fleet-pr-babysitter.private-key.pem",
-  ];
-  const calls: {
-    executable: string;
-    options: Deno.CommandOptions & { timeoutMs: number };
-  }[] = [];
-  spawnBabysitterAgent(
-    {
-      dir,
-      scratch,
-      prompt,
-      agentToken,
-      protectedPaths,
-      codex: "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
-      responseFile,
-    },
-    (executable, options) => {
-      calls.push({ executable, options });
-      return {} as unknown as Deno.ChildProcess;
-    },
-  );
-  const [call] = calls;
-  assert(call);
-  assertEquals(
-    call.executable,
-    "/home/u/.vibe-coder/codex/0.164.0-aarch64-apple-darwin/codex",
-  );
-  const env = call.options.env as Record<string, string>;
-  assertEquals(env.GH_TOKEN, agentToken);
-  assert(env.GH_TOKEN !== runnerToken);
-  assertEquals(env, {
-    TMPDIR: scratch,
-    XDG_CACHE_HOME: scratch,
-    GH_TOKEN: agentToken,
-    GH_CONFIG_DIR: `${scratch}/gh-config`,
-    VIBE_AUDIT_DISABLED: "1",
-  });
-  assertEquals(call.options.timeoutMs, 90 * 60_000);
-  assertEquals(call.options.args, [
-    "exec",
-    "-c",
-    'approval_policy="never"',
-    ...buildBabysitterSandboxArgs({ dir, scratch, protectedPaths }),
-    "--cd",
-    dir,
-    "--output-last-message",
-    responseFile,
-    prompt,
-  ]);
-  assertEquals(call.options.stdin, "null");
-  assertEquals(call.options.stdout, "inherit");
-  assertEquals(call.options.stderr, "piped");
-});
-
-Deno.test("codex agent is not given the workspace-write sandbox and cannot read the credential paths", () => {
-  const keyPath = "/home/u/.vibe-coder/fleet-pr-babysitter.private-key.pem";
-  const protectedPaths = [
-    "/home/u/.vibe-coder/fleet-pr-babysitter",
-    keyPath,
-  ];
-  const calls: string[][] = [];
-  spawnBabysitterAgent(
-    {
-      dir: "/tmp/babysitter-clone",
-      scratch: "/tmp/babysitter-scratch",
-      prompt: "Fix conflicts on PR #1",
-      agentToken: "agent-read-only-token",
-      protectedPaths,
-      codex: "codex",
-      responseFile: "/tmp/babysitter-exchange/response",
-    },
-    (_executable, options) => {
-      calls.push(options.args as string[]);
-      return {} as unknown as Deno.ChildProcess;
-    },
-  );
-  const [args] = calls;
-  assert(args);
-  assert(!args.includes("--sandbox"));
-  assert(!args.includes("workspace-write"));
-  assert(
-    args.includes(`default_permissions="${BABYSITTER_PERMISSIONS_PROFILE}"`),
-  );
-  for (const path of protectedPaths) {
-    assert(
-      args.some((arg) =>
-        arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={ `) &&
-        arg.includes(`${JSON.stringify(path)} = "none"`)
-      ),
-      `missing none override for ${path}`,
-    );
-    assert(
-      !args.some((arg) =>
-        arg.includes(`${JSON.stringify(path)} = "read"`) ||
-        arg.includes(`${JSON.stringify(path)} = "write"`)
-      ),
-      `credential path ${path} is readable or writable`,
-    );
-  }
-  assert(protectedPaths.includes(keyPath));
-});
-
-Deno.test("codex agent refuses to start without protected credential paths", () => {
-  let spawned = false;
-  assertThrows(
-    () =>
-      spawnBabysitterAgent(
-        {
-          dir: "/tmp/babysitter-clone",
-          scratch: "/tmp/babysitter-scratch",
-          prompt: "Fix conflicts on PR #1",
-          agentToken: "agent-read-only-token",
-          protectedPaths: [],
-          codex: "codex",
-          responseFile: "/tmp/babysitter-exchange/response",
-        },
-        () => {
-          spawned = true;
-          return {} as unknown as Deno.ChildProcess;
-        },
-      ),
-    Error,
-  );
-  assertEquals(spawned, false);
-});
-
-Deno.test("codex agent refuses a response file inside the clone or scratch directory", () => {
-  for (
-    const responseFile of [
-      "/tmp/babysitter-clone/response",
-      "/tmp/babysitter-clone",
-      "/tmp/babysitter-scratch/response",
-      "/tmp/babysitter-scratch",
-    ]
-  ) {
-    let spawned = false;
-    assertThrows(
-      () =>
-        spawnBabysitterAgent(
-          {
-            dir: "/tmp/babysitter-clone",
-            scratch: "/tmp/babysitter-scratch",
-            prompt: "Fix conflicts on PR #1",
-            agentToken: "agent-read-only-token",
-            protectedPaths: ["/home/u/.vibe-coder/fleet-pr-babysitter"],
-            codex: "codex",
-            responseFile,
-          },
-          () => {
-            spawned = true;
-            return {} as unknown as Deno.ChildProcess;
-          },
-        ),
-      Error,
-      "writable path",
-    );
-    assertEquals(spawned, false, `spawned with ${responseFile}`);
-  }
-});
-
-Deno.test("codex agent refuses a relative response file and does not spawn", () => {
-  let spawned = false;
-  assertThrows(
-    () =>
-      spawnBabysitterAgent(
-        {
-          dir: "/tmp/babysitter-clone",
-          scratch: "/tmp/babysitter-scratch",
-          prompt: "Fix conflicts on PR #1",
-          agentToken: "agent-read-only-token",
-          protectedPaths: ["/home/u/.vibe-coder/fleet-pr-babysitter"],
-          codex: "codex",
-          responseFile: "response",
-        },
-        () => {
-          spawned = true;
-          return {} as unknown as Deno.ChildProcess;
-        },
-      ),
-    Error,
-    "not absolute",
-  );
-  assertEquals(spawned, false);
-});
-
 // Shift left (Issue #4610): a babysitter push that CI then rejects costs a CI
 // run and another repair. Every repair re-runs the relevant local checks
 // before it reports ready.
@@ -3457,12 +3256,8 @@ Deno.test("repair caller passes the issue number parsed from the PR branch", asy
             },
           ),
         Error,
-        missingHome ? "HOME is not set" : "captured prompt",
+        "captured prompt",
       );
-      if (missingHome) {
-        assertEquals(prompt, "", "an agent must not start without HOME");
-        return prompt;
-      }
       assert(
         prompt.length > 0,
         `repair did not reach agent; gh calls: ${JSON.stringify(commands)}`,
@@ -3477,7 +3272,8 @@ Deno.test("repair caller passes the issue number parsed from the PR branch", asy
     assertStringIncludes(known, "pr-summary-2453.md");
     const unknown = await capture("feature-without-issue");
     assert(!unknown.includes("docs/archive/pr-summaries/pr-summary-"));
-    await capture("issue-2453-example", true);
+    const withoutHome = await capture("issue-2453-example", true);
+    assertStringIncludes(withoutHome, "pr-summary-2453.md");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -3709,12 +3505,14 @@ Deno.test("an oversized completion response is refused", async () => {
 
 // Issue #4677: CI is the gate, so a check this host cannot run is reported,
 // not a reason to discard an otherwise complete repair.
-Deno.test("a check the host cannot run is named but does not withhold readiness", () => {
+Deno.test("a check the container cannot run is named but does not withhold readiness", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(prompt, "name it in your final response");
+    assertStringIncludes(prompt, "cannot run in this container");
+    assertStringIncludes(prompt, "Chromium at $CHROMIUM_PATH");
     assertStringIncludes(
       prompt,
       "does not by itself withhold BABYSITTER_READY",
