@@ -995,7 +995,9 @@ export async function checkMergedTree(
       // A cargo check that hit its time limit says nothing about the merged
       // tree: on a cold ephemeral target it is the build that ran out of
       // time, not a bad resolution. It is left to CI, as a skipped cargo
-      // build is (Issue #4786). A Deno timeout stays a failure.
+      // build is (Issue #4786). A Deno timeout still fails the gate, with
+      // cause `check-timed-out`, so the sync does not charge it as a bad tree
+      // (Issue #4847).
       if (project.kind === "cargo" && result.timedOut) {
         skippedCargo = true;
         cargoTimedOut.push(where);
