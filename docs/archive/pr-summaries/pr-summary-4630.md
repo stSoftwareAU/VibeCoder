@@ -11,15 +11,14 @@ compile error is therefore caught before the push, not by a CI run. Closes
   `pull_request` count. It derives each `cargo clippy` command verbatim
   (toolchain, flags such as `--all-targets --locked -- -D warnings`,
   workspace/package/feature selection, working directory, cargo-relevant env).
-  Output-directory overrides (`CARGO_TARGET_DIR` and
-  `CARGO_BUILD_TARGET_DIR`) are excluded so the worker retains its own cache
-  isolation; target-specific compiler and linker settings remain.
-  Where no clippy run already compiles the same test targets, it derives a
-  `cargo test --no-run` from a CI `cargo test`, `cargo nextest run` or
-  `cargo llvm-cov`, keeping only build flags. A clippy run with `--all-targets`
-  or `--tests` covers a test build only when the directory, toolchain,
-  package/workspace selection, features, profile, target, manifest path and env
-  all match; otherwise the test build is kept.
+  Output-directory overrides (`CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR`)
+  are excluded so the worker retains its own cache isolation; target-specific
+  compiler and linker settings remain. Where no clippy run already compiles the
+  same test targets, it derives a `cargo test --no-run` from a CI `cargo test`,
+  `cargo nextest run` or `cargo llvm-cov`, keeping only build flags. A clippy
+  run with `--all-targets` or `--tests` covers a test build only when the
+  directory, toolchain, package/workspace selection, features, profile, target,
+  manifest path and env all match; otherwise the test build is kept.
 - `worker/deno/lib/pre_push_gate.ts` plans those checks after `cargo fmt`, for
   each directory a pushed Rust-relevant file touches. Before any CI cargo
   command runs, every distinct toolchain the plan uses is probed
@@ -28,11 +27,11 @@ compile error is therefore caught before the push, not by a CI run. Closes
   uses it). A failing lint or test build blocks the push with its output, unless
   the PR base already fails the same way (below). A missing toolchain, component
   or `--target` (probe failure, or rustup/rustc output saying it is not
-  installed), a command that cannot start or times out, registry/network or
-  host disk-full output, a working directory that is missing or escapes the
-  repo, or a CI command the scanner cannot reproduce is a
-  `PrePushGateInfrastructureError`: the push is
-  refused but the branch is not blamed, and the checked set is never reduced.
+  installed), a command that cannot start or times out, registry/network or host
+  disk-full output, a working directory that is missing or escapes the repo, or
+  a CI command the scanner cannot reproduce is a
+  `PrePushGateInfrastructureError`: the push is refused but the branch is not
+  blamed, and the checked set is never reduced.
 - Base-failure comparison: the repair processors pass the PR base independently
   of whether they merge it into the repair branch; the completion gate uses its
   `baseRef`. A failing CI cargo check is re-run, as CI wrote it, in a detached
@@ -56,12 +55,15 @@ compile error is therefore caught before the push, not by a CI run. Closes
   main).
 - The agent's own `git push` now runs the same checks (Issue #4630 review):
   before the agent starts, `claude_runner.ts` scans the repo's workflows with
-  `repoCiCargoChecks` and writes the derived checks (and any unverifiable
-  reasons) into the hook's `pre-push-spec.json`. `pre_push_gate_cli.ts` reads
-  that entry and passes it back as `findCiCargo`, so the `--no-config` hook
-  runs the CI cargo checks without loading the YAML parser itself. A
-  self-pushed Rust change that fails CI clippy or the test build is refused,
-  exactly as the worker's own gates refuse it.
+  `repoCiCargoChecks` (loaded with a dynamic `import()` inside
+  `scanAgentCiCargoChecks`, not a top-level import, so scripts that reach
+  `claude_runner.ts` without the worker's import map, such as the
+  review-fleet-prs helpers, never load the YAML parser) and writes the derived
+  checks (and any unverifiable reasons) into the hook's `pre-push-spec.json`.
+  `pre_push_gate_cli.ts` reads that entry and passes it back as `findCiCargo`,
+  so the `--no-config` hook runs the CI cargo checks without loading the YAML
+  parser itself. A self-pushed Rust change that fails CI clippy or the test
+  build is refused, exactly as the worker's own gates refuse it.
 - Infrastructure is not charged, up to a cap (new
   `worker/deno/lib/gate_infra_release.ts`): when the pre-push gate fails with
   `PrePushGateInfrastructureError` (on the first push or on the retry after push
@@ -185,9 +187,8 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
 
 - From `worker/deno`, `deno fmt --check`, `deno lint`, `deno task check` and
   `deno task check:manifests` cover the Deno tree and pass on the head. The
-  changed suites were run with `deno test`:
-  `tests/claude_runner_test.ts` (56 passed),
-  `tests/git_push_preflight_test.ts` (29 passed) and
+  changed suites were run with `deno test`: `tests/claude_runner_test.ts` (56
+  passed), `tests/git_push_preflight_test.ts` (29 passed) and
   `tests/pre_push_gate_cli_test.ts` (11 passed). The suites whose tests push
   through the agent's real `--no-config` pre-push hook —
   `tests/pre_push_hook_test.ts`, `tests/pr_feedback_processor_test.ts` and
@@ -202,16 +203,18 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   and `::every cargo-relevant env key is kept and an unrelated key is dropped`.
 - The old repair spec used `shellcheckOnly`; the replacement uses
   `CI_CARGO_ONLY_PRE_FLIGHT` while retaining ShellCheck and cargo-deny checks.
-  Coverage: `worker/deno/tests/shellcheck_publication_test.ts::commitAndPushPending: a cargo-only repair blocks a real ShellCheck diagnostic`
-  and `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: ciCargoOnly mode checks Cargo.lock`.
+  Coverage:
+  `worker/deno/tests/shellcheck_publication_test.ts::commitAndPushPending: a cargo-only repair blocks a real ShellCheck diagnostic`
+  and
+  `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: ciCargoOnly mode checks Cargo.lock`.
   The changed spec expectations in `pr_feedback_review_dismissal_3383_test.ts`
   and `pr_round_repo_formatters_test.ts` still verify processor wiring.
-- The former two-log Git call sequence in the ls-files failure test became
-  three logs because the cargo check collects its own changed-file list. Failure
-  to list tracked files still blocks:
+- The former two-log Git call sequence in the ls-files failure test became three
+  logs because the cargo check collects its own changed-file list. Failure to
+  list tracked files still blocks:
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: git ls-files failure is an error`.
-- A failed or unavailable base comparison formerly produced a branch verdict;
-  it now produces infrastructure when the base cannot be checked, while a new
+- A failed or unavailable base comparison formerly produced a branch verdict; it
+  now produces infrastructure when the base cannot be checked, while a new
   diagnostic remains blocking. Coverage:
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: an unavailable base comparison is infrastructure`,
   `::runPrePushGate: a base host fault is infrastructure` and
@@ -224,14 +227,16 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   base-comparison ref: a self-pushed CI cargo failure is a verdict, since the
   hook does not know the PR base. Coverage:
   `worker/deno/tests/pre_push_hook_test.ts::installPrePushHook: writes ciCargo into the spec`
-  and `worker/deno/tests/pre_push_gate_cli_test.ts::pre-push cli: a ciCargo spec passes findCiCargo returning the scan`
+  and
+  `worker/deno/tests/pre_push_gate_cli_test.ts::pre-push cli: a ciCargo spec passes findCiCargo returning the scan`
   (deleting the `findCiCargo` wiring turns that test red). The unreadable-base
-  path is `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)`,
+  path is
+  `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)`,
   and the feedback fix-branch wiring is
   `worker/deno/tests/pr_feedback_processor_test.ts::processPrFeedback - a gated-head fix branch compares the PR base and requires the comparison`.
-  Spelling and merge-conflict repairs retain the base branch's
-  ShellCheck-only policy. No twinned copy of the changed environment or
-  base-comparison rules was found.
+  Spelling and merge-conflict repairs retain the base branch's ShellCheck-only
+  policy. No twinned copy of the changed environment or base-comparison rules
+  was found.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.
