@@ -32,11 +32,11 @@ Version bump: `VERSION` is not changed by this PR.
 Documentation and prompt wording only; no code changed. Related rules checked:
 the "Describe the final state of the branch" rewrite list in
 `prompts/issue/prompt.md` (a review fix, a retry, a base merge, a resumed
-attempt) still holds and the new sentence agrees with it. A grep of `prompts/`,
-`CODING-STANDARDS.md` and `docs/` (outside `docs/archive/`) for "create/write …
-pr-summary-" found no other restatement. `worker/deno/lib/pr_summary_loader.ts`
-is unchanged: it reads whatever sits at the path at the head, which is now the
-replaced summary.
+attempt) still holds and the new sentence agrees with it. `docs/USAGE.md:81`
+also describes creating the file as permanent documentation; it is unchanged
+because the issue limits this fix to the two instruction sentences.
+`worker/deno/lib/pr_summary_loader.ts` is unchanged: it reads whatever sits at
+the path at the head, which is now the replaced summary.
 
 ## Test Plan
 
@@ -44,7 +44,8 @@ replaced summary.
   wording, and a test over prompt prose would only pin incidental text.
 - `deno task test:unit tests/breakpoint_sides_3656_docs_test.ts` from
   `worker/deno` (a prompt-wording drift test over the same file): passed.
-- `./quality.sh` on the head, with the host proxy variables unset: PASSED, with
-  config integration and Checkov skipped and the release-tag ruleset check
-  skipped (GitHub API unreachable). With the proxy variables set it fails
-  `deno tests`, in a file this change does not touch.
+- `./quality.sh --sequential`: formatter, lint, type check and markdownlint
+  passed. The full Deno test stage failed on this host in the parallel pass:
+  Deno panicked while restoring test permissions, including on a rerun with
+  proxy variables unset. The base PR #4940's four CI test shards passed.
+  Config integration and Checkov were skipped on this host.
