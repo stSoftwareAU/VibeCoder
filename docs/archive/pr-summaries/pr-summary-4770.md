@@ -45,14 +45,19 @@ sequenceDiagram
   their value is a string, array or object, so numeric limits such as
   `max_issue_body_tokens` survive.
 - The agent can write the clone's `.git`, so the host runs publication git with
-  hooks and fsmonitor disabled, submodule recursion off and submodule diffs
-  ignored, and rewrites the clone's `.git/config` before publication. The reset
+  hooks and fsmonitor disabled, submodule recursion off, submodule diffs ignored
+  and replacement refs ignored (`core.useReplaceRefs=false`; the review
+  verifier's git in the clone carries the same flags), and rewrites the clone's
+  `.git/config` before publication, keeping only the probed `core.ignorecase`
+  and `core.precomposeunicode` traits. The reset
   refuses to publish when `.git` is not a plain directory, or when
   `.git/commondir`, `.git/gitdir`, `.git/config.worktree` or
   `.git/objects/info/alternates` exist, because each would redirect git to
   config the reset does not control. The host's own global git config is left in
   place so its credential helper still works. Before host Git runs, nested
-  `.git` entries and index gitlinks absent from HEAD are refused. Checked-out
+  `.git` entries (including case-variant, NFKC-folded and `git~1` names), index
+  gitlinks absent from HEAD, `refs/replace` refs, `.git/info/grafts` and
+  `.git/shallow` are refused. Checked-out
   existing submodules are also refused; the staged merge remains intact.
 - Exit status 42 from `babysitter-repair` is a reported task failure and is a
   `code` failure; a missing runtime or image (including
@@ -153,10 +158,12 @@ Backend and CLI change; no visual surface changed.
   and
   `worker/deno/tests/babysitter_fix_orchestration_test.ts::the repair container gets no App key, host credential mount or GitHub App env, only the base env and GH_TOKEN (Issue #4770)`
   — reviewer: met
-- **met** — No repository-controlled quality command is launched on the host,
-  including checks added to `validateAndCommit` or pre-push hooks. Host
-  orchestration retains locks, trusted git/commit/push and PR-body publication.
-  — evidence:
+- **met** — The agent-written clone's own hooks, fsmonitor and quality scripts
+  are not run on the host: publication git, the review verifier's git and
+  committed-summary reads run with hooks and fsmonitor off and replacement refs
+  ignored, and the clone is refused before host git when it holds nested
+  repositories, replacement refs, grafts or a shallow file. The host keeps
+  locks, git/commit/push and PR-body publication. — evidence:
   `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::validateAndCommit and push run no planted pre-commit, pre-push or fsmonitor`,
   `::repair resets agent-controlled filters, diff and SSH git config before host work`,
   `::the publication reset refuses a planted commondir that would redirect git's config to a filter`,
@@ -375,7 +382,10 @@ Backend and CLI change; no visual surface changed.
   production wiring builds. Callers checked for `HOST_GIT_HARDENING_ARGS`:
   `run()` and `runHardenedRepairGit` (every publication, body-sync and
   committed-summary read) and the verifier; the untouched `git`/`gh` calls
-  elsewhere in the file run outside the clone.
+  elsewhere in the file are not hardened: `baseAlreadyMerged` and
+  `mergeBaseForRepair` run plain git in the clone, but only before the agent
+  starts, so the agent has not yet written its `.git`; the others run outside
+  the clone.
 - Docs read and updated: the container repair, credential-boundary and failure
   sections of `docs/workflows/fleet-pr-babysitter.md`, control C36 in
   `docs/THREAT-MODEL.md`, the key section of `docs/CONFIGURATION.md`,
