@@ -16,7 +16,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   assertEquals,
   assertNotEquals,
@@ -879,7 +879,6 @@ Deno.test("runQualityGateCheck - without a cwd the script and command stay in th
 Deno.test("runQualityGateCheck - runs the checkout's quality.sh, not the worker's (Issue #4805)", async () => {
   const checkout = await Deno.makeTempDir({ prefix: "qg-checkout-" });
   const workerDir = await Deno.makeTempDir({ prefix: "qg-worker-" });
-  const originalCwd = Deno.cwd();
   try {
     for (
       const [dir, marker, code] of [
@@ -894,19 +893,23 @@ Deno.test("runQualityGateCheck - runs the checkout's quality.sh, not the worker'
       );
       await Deno.chmod(script, 0o755);
     }
-    // The worker's process cwd holds its own, distinguishable quality.sh, so a
-    // gate that still resolved against it would pass with the worker's marker.
-    Deno.chdir(workerDir);
+    // Model a worker cwd with its own distinguishable quality.sh without
+    // changing process-wide state shared by parallel tests.
     // A direct spawn, so the test does not depend on the `agent` account. The
     // host's dev-server cleanup is replaced too: it kills by process pattern.
+    const defaults = createDefaultDeps();
     const deps: QualityGateDeps = {
-      ...createDefaultDeps(),
+      ...defaults,
+      getCwd: () => workerDir,
+      fileExists: (path) => defaults.fileExists(resolve(workerDir, path)),
+      detectMissingTools: (path) =>
+        defaults.detectMissingTools(resolve(workerDir, path)),
       cleanupPorts: async () => {},
       cleanupSubprocesses: async () => {},
       runCommand: async (cmd, options) => {
         const out = await new Deno.Command(cmd[0] ?? "", {
           args: cmd.slice(1),
-          cwd: options?.cwd,
+          cwd: options?.cwd ?? workerDir,
           stdin: "null",
           stdout: "piped",
           stderr: "piped",
@@ -926,7 +929,6 @@ Deno.test("runQualityGateCheck - runs the checkout's quality.sh, not the worker'
     assertStringIncludes(result.qualityOutput, "CHECKOUT-QUALITY-MARKER");
     assertEquals(result.qualityOutput.includes("WORKER-QUALITY-MARKER"), false);
   } finally {
-    Deno.chdir(originalCwd);
     await Deno.remove(checkout, { recursive: true });
     await Deno.remove(workerDir, { recursive: true });
   }
