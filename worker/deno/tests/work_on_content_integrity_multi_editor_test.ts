@@ -131,6 +131,7 @@ function createGhMock(
           repository: {
             issue: {
               userContentEdits: {
+                totalCount: (opts.bodyEdits ?? []).length,
                 nodes: (opts.bodyEdits ?? []).map((e) => ({
                   editedAt: e.at,
                   editor: { login: e.login },

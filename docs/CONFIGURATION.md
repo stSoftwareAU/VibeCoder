@@ -5093,7 +5093,7 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell and the Floci CloudFormation deploy
+fmt/lint, cargo fmt, markdownlint, cspell, ShellCheck, cargo deny and the Floci CloudFormation deploy
 test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every commit the branch has ahead of the PR base, not only commits on no
 remote-tracking ref; a merge commit contributes only the paths the merge itself
@@ -5197,6 +5197,60 @@ The hook runs two stages:
      --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
+   - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
+     Intermediate push hooks and ShellCheck-only repair checks run it when
+     pushed changes include a `Cargo.toml`,
+     `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
+     `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
+     `*.yaml` files for each `run:` step whose command is `cargo deny` with a
+     `check` argument, and for each `EmbarkStudios/cargo-deny-action` step,
+     whose inputs (with the action's own defaults) give the argv the action
+     runs. It runs CI's arguments: a `run:` step from its `working-directory`,
+     else the job's, else the workflow's `defaults.run.working-directory`
+     (relative paths only; a default does not apply to an action step), and an
+     action step from the repo root. No `--offline`, ignore list or
+     reduced-scope flag is added. A `${{ matrix.<key> }}` expression, in an
+     action input, a `working-directory` or after `cargo deny` in a `run:`
+     line, expands from the job's literal `strategy.matrix` lists and `include`
+     entries into one invocation per combination (the action README's
+     recommended `command: check ${{ matrix.checks }}` pipeline runs
+     `check advisories` and `check bans licenses sources`). `exclude` entries
+     are not applied, so an excluded combination is checked too. Any other
+     variable or expression in a `run:` line, before or after `check`, is
+     dropped together with the option it was the value of (`--config ${{
+     env.X }}` goes whole), so the line runs a plain `check`; an action input
+     holding one takes that input's own default (an unexpandable `command`
+     becomes a plain `check`, which runs every check and so covers every
+     subset). A `cargo deny` line that names no `check` and holds a variable or
+     expression, or a `working-directory` with `..`, an absolute path or an
+     expression that is not a matrix key, refuses the push. An invocation CI
+     allows to fail (`continue-on-error` on its step or its job, as a literal
+     `true` or as `${{ matrix.<key> }}` / `${{ matrix.<key> == '<value>' }}` /
+     `!=` evaluated for each matrix combination, whichever keys the test
+     reads) still runs, after the others, but its failure prints a `[PRE_PUSH_WARNING] cargo deny:` line on stderr
+     and does not refuse the push, as it does not fail CI; the README
+     pipeline's `advisories` leg is one. The same invocation without that
+     allowance in any combination still refuses. Any other `continue-on-error`
+     value blocks as usual. The hook does not read invocations hidden in a
+     script the step calls, so those forms are not checked. A workflow CI
+     does not run for the branch is not checked: one whose `on:` has no
+     `pull_request`, `pull_request_target`, `merge_group` or `workflow_call`
+     trigger and no `push` trigger whose `branches` / `branches-ignore` filter
+     matches the pushed branch (a `schedule`-only audit, say; a `push` filtered
+     by `tags` alone does not run for a branch push), and, in the whole-branch
+     completion check, one whose `paths` / `paths-ignore` filter selects none
+     of the paths the branch's commits touch (deleted files included;
+     `!` patterns, `*`, `**`, `?`, `+` and `[...]` read as GitHub reads them).
+     A `pull_request` `branches` filter is not read, a pattern the gate cannot
+     read leaves the workflow eligible, including for ignore filters. Patterns
+     longer than 200 characters are unreadable; multiple repetitions are
+     matched with bounded dynamic programming. An unreadable `on:` runs the
+     workflow. Jobs and their
+     `defaults` and `continue-on-error` are found at any indent. Quoted
+     multiline container scripts are not host commands. The fleet babysitter does not run
+     it: its execution belongs inside the worker container (#4768, #4770),
+     never beside the host App key, so babysitter repairs are not checked by
+     it until that contained path exists;
    - `shellcheck` on changed `.sh` files when a tracked workflow contains the
      supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or on
      the action's named shell files and executable extensionless shell scripts for a
@@ -5251,15 +5305,20 @@ The hook runs two stages:
    only the changed-files check.
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
-start, or times out refuses the push; markdownlint configured but
+start, or times out refuses the push (a `cargo deny` invocation CI allows to
+fail is the one exception: it only prints a `[PRE_PUSH_WARNING]`); markdownlint configured but
 `markdownlint-cli2` not found refuses the push; cspell configured and run by
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a ShellCheck CI policy with a missing or mismatched binary, an
 unreadable config, or an unsupported workflow shape is incomplete and refuses
 a push that changes a script, a ShellCheck config or a ShellCheck workflow; a Floci deploy
 test that exits non-zero, including when Floci cannot be started or the `aws` CLI is missing for
-a deployable template, refuses the push; a missing hook module, spec or `deno`
-binary refuses the push. Refusals print lines starting
+a deployable template, refuses the push; a `cargo deny` diagnostic (`error[...]`)
+or a CI invocation the hook cannot reproduce refuses the push as a verdict, and
+a missing `cargo deny`, unreachable advisory database, network or host, or a
+timeout refuses it as an infrastructure failure (except on an invocation CI
+allows to fail, where each of these is only a `[PRE_PUSH_WARNING]`); a missing hook module, spec or
+`deno` binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
 
