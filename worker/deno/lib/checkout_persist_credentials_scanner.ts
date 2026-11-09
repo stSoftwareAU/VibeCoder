@@ -86,7 +86,11 @@ const GIT_CREDENTIAL_RUN =
  * `peter-evans/create-pull-request` is deliberately absent: it sets up its
  * own credential from its `token`/`branch-token` input (default
  * `github.token`) before it touches the remote, so a job using it still gets
- * flagged when its checkout persists credentials.
+ * flagged when its checkout persists credentials. So is release-please-action
+ * (`googleapis/…` and its old name `google-github-actions/…`): it does all its
+ * work through the GitHub API with its own `token` input (default
+ * `github.token`) and never runs git, so the checkout credential plays no part
+ * and a job using it is still flagged.
  */
 export const CREDENTIAL_USING_ACTIONS: readonly string[] = Object.freeze([
   "stefanzweifel/git-auto-commit-action",
@@ -95,8 +99,6 @@ export const CREDENTIAL_USING_ACTIONS: readonly string[] = Object.freeze([
   "jamesives/github-pages-deploy-action",
   "peaceiris/actions-gh-pages",
   "crazy-max/ghaction-github-pages",
-  "googleapis/release-please-action",
-  "google-github-actions/release-please-action",
   "cycjimmy/semantic-release-action",
 ]);
 

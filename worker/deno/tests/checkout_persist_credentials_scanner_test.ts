@@ -235,10 +235,71 @@ jobs:
   assertEquals(scanCheckoutPersistCredentials(files), []);
 });
 
+Deno.test("scan - a job using release-please-action with a persisting checkout is flagged", () => {
+  for (
+    const action of [
+      "googleapis/release-please-action",
+      "google-github-actions/release-please-action",
+    ]
+  ) {
+    const files = [
+      wf(
+        ".github/workflows/release.yml",
+        `name: Release
+on: push
+jobs:
+  release:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ${action}@v4
+        with:
+          token: \${{ secrets.RELEASE_TOKEN }}
+`,
+      ),
+    ];
+    const findings = scanCheckoutPersistCredentials(files);
+    assertEquals(findings.length, 1, action);
+    assertEquals(findings[0]!.steps.map((s) => s.job), ["release"], action);
+  }
+});
+
+Deno.test("scan - a job using release-please-action with persist-credentials: false is not flagged", () => {
+  const files = [
+    wf(
+      ".github/workflows/release.yml",
+      `name: Release
+on: push
+jobs:
+  release:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: googleapis/release-please-action@v4
+        with:
+          token: \${{ secrets.RELEASE_TOKEN }}
+`,
+    ),
+  ];
+  assertEquals(scanCheckoutPersistCredentials(files), []);
+});
+
 Deno.test("jobNeedsCheckoutCredentials - create-pull-request alone is not a credential signal", () => {
   assertEquals(
     jobNeedsCheckoutCredentials([{
       uses: "peter-evans/create-pull-request@v8",
+    }]),
+    false,
+  );
+  assertEquals(
+    jobNeedsCheckoutCredentials([{
+      uses: "googleapis/release-please-action@v4",
+    }]),
+    false,
+  );
+  assertEquals(
+    jobNeedsCheckoutCredentials([{
+      uses: "google-github-actions/release-please-action@v4",
     }]),
     false,
   );
