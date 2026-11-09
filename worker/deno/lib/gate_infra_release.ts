@@ -45,8 +45,9 @@ export function safeGateDetail(text: string): string {
 
 /**
  * How many releases the PR's trusted comments already record for `key`, or
- * `null` when they cannot be read (the caller then keeps releasing, since an
- * unreadable PR is no evidence of a lasting fault).
+ * `null` when they cannot be read, or when `trustedAuthors` is empty so that no
+ * marker could be trusted (the caller then keeps releasing, since an unreadable
+ * PR is no evidence of a lasting fault).
  */
 export async function countGateInfraReleases(
   gh: (args: string[]) => Promise<string>,

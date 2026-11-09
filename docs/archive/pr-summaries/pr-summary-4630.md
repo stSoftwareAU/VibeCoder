@@ -59,7 +59,8 @@ compile error is therefore caught before the push, not by a CI run. Closes
   same comment (feedback) or failure signature (CI fix) the next fault is
   charged like any failed attempt, so a lasting fault cannot re-run the agent
   without end. An unreadable PR or no trusted author is unknown, and releases
-  again. A lint or compile failure still blocks and is charged as before.
+  again. A lint or compile failure still blocks the push and is charged, unless
+  the PR base already has it (see "Base-failure comparison").
 - Merge with main (#4631, #4909): the ShellCheck policy and `shellcheckOnly`
   stay as main has them. The cargo checks are planned from a changed-file list
   that keeps a file reached through a symlinked parent directory

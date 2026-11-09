@@ -44,7 +44,14 @@ Deno.test("only trusted authors' marked comments count", async () => {
     ["fleet-bot"],
   );
   assertEquals(count, 2);
-  assertEquals(calls[0]?.[1], "repos/org/repo/issues/7/comments");
+  assertEquals(calls[0]?.slice(0, 5), [
+    "api",
+    "repos/org/repo/issues/7/comments",
+    "--paginate",
+    "--jq",
+    calls[0]?.[4],
+  ]);
+  assertEquals(calls[0]?.length, 5);
   assertEquals(
     calls[0]?.at(-1)?.includes("vibe-gate-infra-release key=ci-sig -->"),
     true,

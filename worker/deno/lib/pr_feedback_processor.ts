@@ -1898,10 +1898,11 @@ async function _processFeedbackWithHeartbeat(
   if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
   // PR #4896 review: the pre-push gate could not run (no toolchain, host
   // disk full, a CI command it cannot reproduce). That is no verdict on the
-  // fix, so the feedback is released for the next cycle, never charged.
+  // fix, so the feedback is released for the next cycle, uncharged.
   // A release is bounded (PR #4896 review): each one leaves a marker comment,
   // and a comment already released GATE_INFRA_RELEASE_CAP times is charged
-  // instead, so a lasting fault cannot re-run an agent session for ever.
+  // instead (as is one whose marker cannot be posted), so a lasting fault
+  // cannot re-run an agent session for ever.
   const gateInfraRelease = async (error: Error) => {
     const key = `comment-${commentType}-${commentId}`.replace(
       /[^A-Za-z0-9_.:-]/g,

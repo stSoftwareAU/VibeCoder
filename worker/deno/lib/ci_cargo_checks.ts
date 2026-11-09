@@ -12,8 +12,9 @@
  * comment lines and lines that `isNonFailing` (so `|| true` lines do not count),
  * and steps marked `continue-on-error`. Each `&&` or `;` segment that is a cargo
  * command becomes a check. The working directory comes from the step, job or
- * workflow `working-directory`, or a preceding `cd <dir> &&`, and must be a
- * plain relative path inside the repository. The environment keeps only
+ * workflow `working-directory`, or a preceding `cd <dir>` (in an earlier segment
+ * or on an earlier line of the same step), and must be a plain relative path
+ * inside the repository. The environment keeps only
  * cargo-relevant keys (`RUSTFLAGS` and similar). The toolchain comes from a
  * `dtolnay/rust-toolchain`, `actions-rust-lang/setup-rust-toolchain` or
  * `actions-rs/toolchain` step in the same job, unless the command names one.
@@ -304,16 +305,17 @@ function cargoCommand(words: readonly Word[]): CargoCommand | null {
  * other word. Returns `null` for `--doc`, which is not a compile of the test
  * targets.
  *
- * For a nextest run (`nextest`), `--profile` and `-P` select a profile from
- * `.config/nextest.toml`, not a cargo build profile, so they and their value
- * are dropped; nextest's own `--cargo-profile` is cargo's `--profile`. A cargo
+ * For a nextest run (`nextest`), `--profile` selects a profile from
+ * `.config/nextest.toml`, not a cargo build profile, so it and its value are
+ * dropped (nextest's short `-P` is in neither flag set, so it is never kept);
+ * nextest's own `--cargo-profile` is cargo's `--profile`. A cargo
  * build profile that `cargo llvm-cov nextest` takes under `--profile` is
  * therefore not reproduced: the compile uses the default profile, which can
  * never block a push for a profile that cargo does not define.
  */
 function keptTestFlags(
   args: readonly Word[],
-  nextest = false,
+  nextest: boolean,
 ): string[] | null {
   const kept: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -321,11 +323,11 @@ function keptTestFlags(
     if (text === "--") break;
     if (text === "--doc") return null;
     if (nextest) {
-      if (text === "--profile" || text === "-P") {
+      if (text === "--profile") {
         i++;
         continue;
       }
-      if (text.startsWith("--profile=") || text.startsWith("-P")) continue;
+      if (text.startsWith("--profile=")) continue;
       if (text === "--cargo-profile" && i + 1 < args.length) {
         kept.push("--profile", args[i + 1]!.text);
         i++;
@@ -508,9 +510,10 @@ function scanLine(
   for (const words of lexed.segments) {
     if (changesDirectory(words[0]?.text)) {
       const target = words[1];
+      // Two words, so `target` is set.
       dir = words[0]!.text === "cd" && dir !== null && words.length === 2 &&
-          target !== undefined && !target.risky
-        ? joinDirectory(dir, target.text)
+          !target!.risky
+        ? joinDirectory(dir, target!.text)
         : null;
       continue;
     }

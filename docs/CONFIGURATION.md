@@ -5386,7 +5386,9 @@ unreadable config, or an unsupported workflow shape is incomplete and refuses
 a push that changes a script, a ShellCheck config or a ShellCheck workflow; a
 Floci deploy test that exits non-zero, including when Floci cannot be started
 or the `aws` CLI is missing for a deployable template, refuses the push; a CI
-cargo check that fails refuses the push with its output (in the worker's own
+cargo check that fails refuses the push with its output, unless the PR base
+fails with every diagnostic the push shows, when it is a `[PRE_PUSH_WARNING]`
+(in the worker's own
 gates; the agent's hook runs none of them), while a CI cargo check that cannot
 start or time out, hits host disk full, or whose toolchain, component,
 target, directory or command is missing or cannot be reproduced here refuses it

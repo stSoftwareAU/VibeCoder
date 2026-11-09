@@ -744,7 +744,9 @@ export type PrePushGateOutcome =
  * forty zeros when the branch has no local tracking ref. Pre-flight commands
  * are skipped when Step 1 already ran them this call. Any failure — including
  * being unable to determine the state — is returned as an error so the caller
- * refuses to push (fail closed). Only a verdict on the branch's content is a
+ * refuses to push (fail closed), except a failing CI cargo check that fails the
+ * same way on `compareRef` (the PR base), which `runPrePushGate` logs as a
+ * `[PRE_PUSH_WARNING]` and lets through. Only a verdict on the branch's content is a
  * {@link PrePushGateBlockedError}; a failed git or remote lookup is a
  * `PrePushGateInfrastructureError` with no `[PRE_PUSH_BLOCKED]`
  * prefix, so it is not reported as the branch failing its checks.

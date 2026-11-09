@@ -993,3 +993,32 @@ Deno.test("nextest's --profile names a nextest profile and is not passed to carg
     "release",
   ]]);
 });
+
+Deno.test("a cd after a cd the scanner could not follow does not revive the directory", () => {
+  const result = scan(`
+    on: pull_request
+    jobs:
+      lint:
+        steps:
+          - run: |
+              cd $HOME/tools
+              cd rust
+              cargo clippy --all-targets
+  `);
+  assertEquals(result.checks, []);
+  assertEquals(result.unverifiable.length, 1);
+  assertStringIncludes(result.unverifiable[0]!, "cd form");
+});
+
+Deno.test("a nextest --cargo-profile with no value after it keeps no profile", () => {
+  const result = scan(`
+    on: pull_request
+    jobs:
+      test:
+        steps:
+          - run: cargo nextest run --workspace --cargo-profile
+  `);
+  assertEquals(result.checks.map((c) => c.argv), [
+    ["cargo", "test", "--no-run", "--workspace"],
+  ]);
+});
