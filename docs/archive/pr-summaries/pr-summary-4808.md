@@ -22,8 +22,8 @@ now gets `Closes #N` appended, as `prompts/issue/prompt.md` promises. Closes
 
 ### Essential Design Decisions
 
-- A qualified `owner/repo#N` reference never matched the pattern, so a body
-  that only has one still gets the plain `Closes #N` appended (pinned by test).
+- A qualified `owner/repo#N` reference never matched the pattern, so a body that
+  only has one still gets the plain `Closes #N` appended (pinned by test).
 - The withheld-close path (`withholdIssueClose`) and the cross-repo early return
   in `assemblePrBody` are unchanged and still run before the appender.
 - `pr_summary_check.ts` route 1 (#4126) calls the same function, so a summary
@@ -38,7 +38,8 @@ now gets `Closes #N` appended, as `prompts/issue/prompt.md` promises. Closes
 ## Evidence
 
 Backend-only change; no UI files touched. Behaviour is pinned by tests in
-`worker/deno/tests/pr_body_test.ts` and `worker/deno/tests/pr_body_sync_test.ts`.
+`worker/deno/tests/pr_body_test.ts` and
+`worker/deno/tests/pr_body_sync_test.ts`.
 
 ## Test Plan
 
@@ -49,10 +50,11 @@ Backend-only change; no UI files touched. Behaviour is pinned by tests in
   close yields a body where `extractClosingIssueNumbers(maskMarkdownCode(body))`
   includes 42; a withheld (`partial`) closure does not gain a prose close.
 - `worker/deno/tests/pr_summary_check_test.ts`: the #4126 code-span-close case
-  moved to its own test and now expects `blocked`; `lib/pr_summary_check.ts`
-  doc comment updated to match.
-- Red check: with the appender's decision reverted to `hasClosingKeyword(prBody,
-  issueNumber)`, the code-span, fence, line-break and `assemblePrBody` tests
-  fail; restored, they pass.
+  moved to its own test and now expects `blocked`; `lib/pr_summary_check.ts` doc
+  comment updated to match.
+- Red check: with the appender's decision reverted to
+  `hasClosingKeyword(prBody,
+  issueNumber)`, the code-span, fence, line-break
+  and `assemblePrBody` tests fail; restored, they pass.
 - Not checked: nothing outstanding beyond the full gate result recorded by the
   worker.
