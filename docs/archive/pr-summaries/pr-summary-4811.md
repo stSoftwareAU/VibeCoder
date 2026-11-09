@@ -65,10 +65,10 @@ dependencies were added.
 - Targeted `deno check --frozen --lock=deno.lock` — passed for the two changed
   modules, `merge_fast_checks.ts`, and the four touched test files.
 - `deno fmt` — passed for the six changed TypeScript files.
-- `timeout 900 ./quality.sh < /dev/null` — passed, including the full unit
-  suite (494.9 seconds), lint, type check and formatting. Config integration
-  was skipped (`deno or .config.json not available`); Checkov was skipped
-  because it was unavailable.
+- `timeout 900 ./quality.sh < /dev/null` — passed, including the full unit suite
+  (494.9 seconds), lint, type check and formatting. Config integration was
+  skipped (`deno or .config.json not available`); Checkov was skipped because it
+  was unavailable.
 - Added
   `worker/deno/tests/milestone_merge_gate_test.ts::findTypeCheckProjects - object-form check task in deno.json is the repository check`
   and
@@ -102,18 +102,18 @@ dependencies were added.
   `makeAgentReachableTempDir`. The mutation runner's private `0700` `TMPDIR`
   previously made both fixtures inaccessible to `agent` (479 passed, 2 failed).
   The same runner now passes its complete 481-test baseline.
-- Strengthened malformed-task coverage with null and primitive tasks, and
-  direct read-only checks for null, primitive, empty and dependencies-only
-  tasks. Removing the original null guard made the discovery test fail by
-  discarding the valid task too (0 passed, 1 failed).
-- Removed redundant task-shape guards whose mutations were equivalent for
-  JSON manifest values. Optional command access handles absent values; a
-  missing command becomes an empty string and fails the existing `deno check`
-  invocation check before dependency inspection.
+- Strengthened malformed-task coverage with null and primitive tasks, and direct
+  read-only checks for null, primitive, empty and dependencies-only tasks.
+  Removing the original null guard made the discovery test fail by discarding
+  the valid task too (0 passed, 1 failed).
+- Removed redundant task-shape guards whose mutations were equivalent for JSON
+  manifest values. Optional command access handles absent values; a missing
+  command becomes an empty string and fails the existing `deno check` invocation
+  check before dependency inspection.
 - Diff-scoped `runMutationCheck` with `defaultMutationRunnerSeams`, the complete
-  diff against `origin/main`, and a 900-second budget — completed: 6 killed,
-  0 survivors, 7 candidates (one syntactically invalid mutant). No exemption
-  or mutation-check skip was added.
+  diff against `origin/main`, and a 900-second budget — completed: 6 killed, 0
+  survivors, 7 candidates (one syntactically invalid mutant). No exemption or
+  mutation-check skip was added.
 - No existing assertions were removed. The existing `spawnTypeCheck` read-only
   test gained safe-command, unsafe-command, malformed-task and
   dependency-bearing object-form cases.
