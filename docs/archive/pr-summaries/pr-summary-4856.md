@@ -38,15 +38,19 @@ Version bump: none; this wording correction does not change the release version.
   `runClaudeWithTimeoutBody` refuses a non-Claude provider when Claude config
   isolation is requested; `runPrePrVerifier` sets that isolation and pins Claude
   for its read-only mode.
-- `assertRoleSupported` still makes the existing role decision. Its Codex
-  commentary now distinguishes delegation disabling and checkout restoration
-  from tool denial and filesystem/network isolation.
+- `assertRoleSupported` still makes the existing role decision. Its module
+  header, JSDoc and Codex commentary now state the rule the function applies:
+  only the Claude CLI (Claude and DeepSeek) enforces `--disallowed-tools`;
+  Gemini is refused; Codex is admitted with `Bash` still not denied because
+  delegation is off and the read-only checkout restoration applies.
+  `docs/MANAGER-WORKER-CONTRACT.md` states the same for the external review
+  gate.
 - Backend/documentation-only change; no browser evidence applies.
 
 ## Test Plan
 
 - No tests added or changed; this issue corrects comments and documentation.
-- `deno fmt --check` on the four changed TypeScript files: passed.
+- `deno fmt --check` on the five changed TypeScript files: passed.
 - `./quality.sh < /dev/null`: passed. Deno tests, lint, type check, formatter,
   markdownlint and semgrep passed. Config integration was skipped; the gate
   reported `deno or .config.json not available` (Deno was available here, so

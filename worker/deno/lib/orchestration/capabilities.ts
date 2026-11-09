@@ -8,10 +8,14 @@
  * argv keeps.
  *
  * Enforcement rule (Issue #3641 section 6): a denied tool counts as enforced
- * only when the argv itself carries the denial. A denial folded into the
- * prompt, or dropped, is not enforcement. The role is refused rather than
- * trusted to obey a prompt. Under this rule Codex (prompt-only denial) and
- * Gemini (denial dropped) cannot carry a role that denies any tool.
+ * only when the argv itself carries the denial. Only the Claude Code CLI
+ * carries `--disallowed-tools`, so Claude and DeepSeek (the same CLI on a
+ * different endpoint) enforce it; a denial folded into the prompt is not
+ * enforcement. Gemini receives the list as prompt text and is refused. Codex
+ * is the stated exception: it is admitted for Edit, MultiEdit, Write,
+ * NotebookEdit, Bash, Task and Agent because its role calls disable
+ * delegation and a read-only role's checkout restoration applies, but `Bash`
+ * is not denied.
  *
  * Australian English spelling throughout (behaviour, recognised).
  */
@@ -120,12 +124,21 @@ export function providerCapabilities(
  * Whether a role may run on `selection`, or the refusal that says why not.
  *
  * Checks, in order: the provider is a known target with a descriptor; the
- * role's required capabilities are present; and every tool in `requiredTools`
- * is enforced through the argv. Never throws for an unsupported selection.
+ * role's required capabilities are present; and, except for the Codex
+ * exception below, the denied tools in `requiredTools` are enforced through
+ * the argv or the selection is refused. Never throws for an unsupported
+ * selection.
+ *
+ * `--disallowed-tools` enforcement holds only for the Claude CLI — Claude,
+ * and DeepSeek through the same CLI. Gemini receives the list as prompt text
+ * and is refused. Codex is the stated exception: it is admitted for Edit,
+ * MultiEdit, Write, NotebookEdit, Bash, Task and Agent because its role
+ * calls disable delegation and a read-only role's checkout restoration
+ * applies, but `Bash` is not denied.
  *
  * @param selection - The provider, model and effort the role would run with.
  * @param role - The role the call plays.
- * @param requiredTools - Tools the role must be able to deny.
+ * @param requiredTools - Tools the role asks to deny.
  * @returns The refusal, or undefined when the role may run.
  */
 export function assertRoleSupported(
