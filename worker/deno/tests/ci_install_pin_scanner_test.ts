@@ -163,10 +163,20 @@ Deno.test("findUnpinnedInstalls - a pinned install before a comment or redirecti
       "npm install -g foo@1.2.3 >/dev/null 2>&1",
       "npm install -g foo@1.2.3 2> /dev/null",
       "npm install -g foo@1.2.3 &> /dev/null",
+      "npm install -g foo@1.2.3 >& out.log",
+      "npm install -g foo@1.2.3 2>& 1",
+      "npm install -g foo@1.2.3 <<< y",
+      "npm install -g foo@1.2.3 <> f",
+      "npm install -g foo@1.2.3 >&2",
+      "npm install -g foo@1.2.3 <&-",
       "gem install foo -v 1.2.3 # comment",
       "gem install foo -v 1.2.3 2>&1",
       "gem install foo -v 1.2.3 > /dev/null",
       "gem install foo -v 1.2.3 2>/dev/null",
+      "gem install foo -v 1.2.3 >& install.log",
+      "gem install foo -v 1.2.3 2>& 1",
+      "gem install foo -v 1.2.3 <<< y",
+      "gem install foo -v 1.2.3 <> f",
     ]
   ) {
     assertEquals(findUnpinnedInstalls(run), [], run);
@@ -179,9 +189,17 @@ Deno.test("findUnpinnedInstalls - an unpinned package before a comment or redire
       "npm install -g foo # comment",
       "npm install -g foo 2>&1",
       "npm install -g foo > /dev/null",
+      "npm install -g foo >& out.log",
+      "npm install -g foo 2>& 1",
+      "npm install -g foo <<< y",
+      "npm install -g foo <> f",
       "gem install foo # comment",
       "gem install foo > /dev/null",
       "gem install foo 2>&1",
+      "gem install foo >& install.log",
+      "gem install foo 2>& 1",
+      "gem install foo <<< y",
+      "gem install foo <> f",
     ]
   ) {
     const found = findUnpinnedInstalls(run);
