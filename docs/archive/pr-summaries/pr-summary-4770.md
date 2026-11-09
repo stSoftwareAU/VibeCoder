@@ -49,16 +49,15 @@ sequenceDiagram
   and replacement refs ignored (`core.useReplaceRefs=false`; the review
   verifier's git in the clone carries the same flags), and rewrites the clone's
   `.git/config` before publication, keeping only the probed `core.ignorecase`
-  and `core.precomposeunicode` traits. The reset
-  refuses to publish when `.git` is not a plain directory, or when
-  `.git/commondir`, `.git/gitdir`, `.git/config.worktree` or
-  `.git/objects/info/alternates` exist, because each would redirect git to
-  config the reset does not control. The host's own global git config is left in
-  place so its credential helper still works. Before host Git runs, nested
-  `.git` entries (including case-variant, NFKC-folded and `git~1` names), index
-  gitlinks absent from HEAD, `refs/replace` refs, `.git/info/grafts` and
-  `.git/shallow` are refused. Checked-out
-  existing submodules are also refused; the staged merge remains intact.
+  and `core.precomposeunicode` traits. The reset refuses to publish when `.git`
+  is not a plain directory, or when `.git/commondir`, `.git/gitdir`,
+  `.git/config.worktree` or `.git/objects/info/alternates` exist, because each
+  would redirect git to config the reset does not control. The host's own global
+  git config is left in place so its credential helper still works. Before host
+  Git runs, nested `.git` entries (including case-variant, NFKC-folded and
+  `git~1` names), index gitlinks absent from HEAD, `refs/replace` refs,
+  `.git/info/grafts` and `.git/shallow` are refused. Checked-out existing
+  submodules are also refused; the staged merge remains intact.
 - Exit status 42 from `babysitter-repair` is a reported task failure and is a
   `code` failure; a missing runtime or image (including
   `ContainerRuntimeUnavailableError`) is `capability`; every other launcher
