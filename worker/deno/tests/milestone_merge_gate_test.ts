@@ -80,7 +80,7 @@ Deno.test("findTypeCheckProjects - reads a `check` task out of a commented deno.
   });
 });
 
-Deno.test("findTypeCheckProjects - object-form `check` tasks are the repository check (Issue #4811)", async () => {
+Deno.test("findTypeCheckProjects - object-form `check` task in deno.json is the repository check (Issue #4811)", async () => {
   await withTempDir(async (dir) => {
     await writeFile(
       `${dir}/deno.json`,
@@ -95,6 +95,9 @@ Deno.test("findTypeCheckProjects - object-form `check` tasks are the repository 
       "check",
     ]);
   });
+});
+
+Deno.test("findTypeCheckProjects - object-form `check` task in deno.jsonc is the repository check (Issue #4811)", async () => {
   await withTempDir(async (dir) => {
     await writeFile(
       `${dir}/deno.jsonc`,
