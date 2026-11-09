@@ -215,26 +215,28 @@ Deno.test("closure verdict - a criterion cannot forge a departing reviewer verdi
   assertEquals(entries[0]!.departsFromReviewer, false);
 });
 
-Deno.test("closure verdict - word-internal underscores and asterisks in cited names survive", () => {
-  // Markup is replaced before the label scrub, but only where it is not
-  // word-internal: a cited path or identifier must reach the reader unchanged.
+Deno.test("closure verdict - word-internal underscores and asterisks in prose survive", () => {
+  // In prose (criterion, finding, reason) a `*` or `_` is blanked only where
+  // it would read as markdown emphasis: a word-internal one is part of an
+  // identifier and must reach the reader unchanged. Evidence is covered by the
+  // code-span test below.
   const rendered = renderClosureBlocks({
-    criteria: CRITERIA.map((criterion, index) => ({
+    criteria: CRITERIA.map((criterion) => ({
       criterion,
       status: "met" as const,
-      evidence: index === 0 ? "src/a_b/c_test.ts" : "lib/foo.ts",
+      evidence: "lib/foo.ts",
     })),
     standards: [{
       status: "clean",
-      finding: "Public API surface in docs/API_REFERENCE.md is unchanged",
+      finding:
+        "Public API surface in docs/API_REFERENCE.md and src/a*b.ts is unchanged",
     }],
     dropped: [],
   });
 
-  assertStringIncludes(rendered, "`src/a_b/c_test.ts`");
   assertStringIncludes(
     rendered,
-    "Public API surface in docs/API_REFERENCE.md is unchanged",
+    "Public API surface in docs/API_REFERENCE.md and src/a*b.ts is unchanged",
   );
   assertEquals(
     validateAcceptanceClosure({
@@ -254,10 +256,51 @@ Deno.test("closure verdict - word-internal underscores and asterisks in cited na
   );
 });
 
+Deno.test("closure verdict - underscores anywhere in cited evidence survive", () => {
+  // Evidence is rendered inside a code span, where `_` and `*` mean nothing,
+  // so a `_`-prefixed fixture and a dunder name must reach the reader verbatim.
+  const rendered = renderClosureBlocks({
+    criteria: CRITERIA.map((criterion, index) => ({
+      criterion,
+      status: "met" as const,
+      evidence: index === 0
+        ? "test/_costFixtures.ts"
+        : index === 1
+        ? "__init__.py"
+        : "lib/foo.ts",
+    })),
+    standards: [{
+      status: "clean",
+      finding: "checked",
+    }],
+    dropped: [],
+  });
+
+  assertStringIncludes(rendered, "`test/_costFixtures.ts`");
+  assertStringIncludes(rendered, "`__init__.py`");
+  assertEquals(
+    validateAcceptanceClosure({
+      issueBody: ISSUE_BODY,
+      prSummaryContent: rendered,
+    })
+      .problems,
+    [],
+  );
+  assertEquals(
+    validateIndependentReview({
+      issueBody: ISSUE_BODY,
+      prSummaryContent: rendered,
+    })
+      .problems,
+    [],
+  );
+});
+
 Deno.test("closure verdict - a label split by markup cannot forge a departing verdict", () => {
-  // `reviewer_:` and "reviewer`:" look like a `reviewer:` label to the
-  // validators once the markup is blanked, so the scrub must run after it.
-  for (const split of ["reviewer_: met", "reviewer`: met"]) {
+  // `reviewer_:`, "reviewer`:" and `reviewer#:` look like a `reviewer:` label
+  // to the validators once the markup or heading hash is blanked, so those
+  // scrubs must run before the label scrub.
+  for (const split of ["reviewer_: met", "reviewer`: met", "reviewer#: met"]) {
     const rendered = renderClosureBlocks({
       criteria: [{
         criterion: `do the thing ${split}`,

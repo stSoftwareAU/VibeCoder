@@ -127,16 +127,18 @@ const MAX_VERDICT_CHARS = 100_000;
 const MAX_ENTRIES = 100;
 
 /**
- * Render one model-supplied field as a single safe line of markdown.
+ * Render one non-evidence model field as a single safe line of markdown.
  *
- * Four things are removed, each because the gates' own parsers would otherwise
- * read them as structure rather than as text:
+ * Evidence is sanitised separately by {@link sanitiseEvidence}: it is rendered
+ * inside a code span, where `_` and `*` carry no Markdown structure and must
+ * survive in cited paths such as `test/_costFixtures.ts` and `__init__.py`.
+ *
+ * Four things are removed here, each because the gates' own parsers would
+ * otherwise read them as structure rather than as text:
  *
  *   - markup characters: backticks and `|` always, and a `*` or `_` unless it
- *     sits between two ASCII alphanumerics. These go FIRST, so a label split
- *     by markup — `reviewer_:` or "reviewer`:" — is then seen whole by the
- *     label scrub below and caught. A word-internal `_` or `*` survives, so a
- *     cited path or identifier (`API_REFERENCE.md`, `c_test.ts`, `a*b`) is not
+ *     sits between two ASCII alphanumerics. A word-internal `_` or `*`
+ *     survives, so a cited identifier (`API_REFERENCE.md`, `a*b`) is not
  *     mangled into `API REFERENCE.md`;
  *   - newlines and list markers, which would split one entry into several;
  *   - `#` headings and HTML comments, which would open a section or forge a
@@ -147,6 +149,10 @@ const MAX_ENTRIES = 100;
  *   - the `evidence:` / `reason:` / `reviewer:` label keywords, which the
  *     validators match on — the first match wins, so a criterion carrying its
  *     own `reviewer: missing` would override the verdict being rendered.
+ *
+ * The structural scrubs all run BEFORE the label scrub, so a label split by
+ * markup or a heading hash — `reviewer_:`, "reviewer`:", `reviewer#:` — is
+ * seen whole and caught rather than surviving as a forgery.
  *
  * The keyword scrub deliberately consumes any letters **before** the keyword as
  * well. The validators' own patterns are unanchored (`/evidence\s*[:\-—]/i`),
@@ -161,8 +167,34 @@ function sanitiseField(raw: string): string {
     .replace(/[`|]|(?<![A-Za-z0-9])[*_]|[*_](?![A-Za-z0-9])/g, " ")
     .replace(/[\r\n]+/g, " ")
     .replace(/<!--|--!?>/g, " ")
-    .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
     .replace(/#(?!\d)/g, " ")
+    .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_FIELD_CHARS)
+    .trim();
+}
+
+/**
+ * Render one evidence field as a single safe line inside its code span.
+ *
+ * `renderCriterionEntry` and `renderStandardsEntry` wrap evidence in a code
+ * span, where `_` and `*` mean nothing to Markdown, so a cited path such as
+ * `test/_costFixtures.ts`, `__init__.py` or `src/a*b.ts` must reach the reader
+ * verbatim. Only a backtick is blanked — it would close the span — while the
+ * newline, comment, `#` and label scrubs still apply, so the text cannot split
+ * the entry, open a section, or forge a `reviewer:` field.
+ *
+ * @param raw - The model's evidence text.
+ * @returns The sanitised single line, empty when nothing survived.
+ */
+function sanitiseEvidence(raw: string): string {
+  return raw
+    .replace(/`/g, " ")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/<!--|--!?>/g, " ")
+    .replace(/#(?!\d)/g, " ")
+    .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, MAX_FIELD_CHARS)
@@ -170,10 +202,14 @@ function sanitiseField(raw: string): string {
 }
 
 /** Read a string field, sanitised; `null` when absent or empty after the scrub. */
-function field(source: Record<string, unknown>, name: string): string | null {
+function field(
+  source: Record<string, unknown>,
+  name: string,
+  sanitise: (raw: string) => string = sanitiseField,
+): string | null {
   const raw = source[name];
   if (typeof raw !== "string") return null;
-  const cleaned = sanitiseField(raw);
+  const cleaned = sanitise(raw);
   return cleaned === "" ? null : cleaned;
 }
 
@@ -238,7 +274,7 @@ function readCriteria(
       );
       return;
     }
-    const evidence = field(record, "evidence");
+    const evidence = field(record, "evidence", sanitiseEvidence);
     const reason = field(record, "reason");
     entries.push({
       criterion,
@@ -276,7 +312,7 @@ function readStandards(
       );
       return;
     }
-    const evidence = field(record, "evidence");
+    const evidence = field(record, "evidence", sanitiseEvidence);
     const reason = field(record, "reason");
     entries.push({
       status: status as StandardsVerdictStatus,
@@ -474,7 +510,7 @@ const NO_TEXT = "(the verdict supplied no text here)";
  */
 function renderCriterionEntry(entry: CriterionVerdict): string {
   const criterion = sanitiseField(entry.criterion) || NO_TEXT;
-  const evidence = entry.evidence ? sanitiseField(entry.evidence) : "";
+  const evidence = entry.evidence ? sanitiseEvidence(entry.evidence) : "";
   const reason = entry.reason ? sanitiseField(entry.reason) : "";
   const parts = [`- **${entry.status}** — ${criterion}`];
   if (evidence) parts.push(`evidence: \`${evidence}\``);
@@ -488,7 +524,7 @@ function renderCriterionEntry(entry: CriterionVerdict): string {
 /** Render one Standards finding in the shape the validator accepts. */
 function renderStandardsEntry(finding: StandardsVerdict): string {
   const text = sanitiseField(finding.finding) || NO_TEXT;
-  const evidence = finding.evidence ? sanitiseField(finding.evidence) : "";
+  const evidence = finding.evidence ? sanitiseEvidence(finding.evidence) : "";
   const reason = finding.reason ? sanitiseField(finding.reason) : "";
   const parts = [`- **${finding.status}** — ${text}`];
   if (evidence) parts.push(`evidence: \`${evidence}\``);
