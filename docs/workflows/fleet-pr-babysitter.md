@@ -125,6 +125,8 @@ non-zero on failure. The check overrides the image entrypoint with `bash`, runs
 `"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank`, and accepts
 only exit zero with HTML on stdout. It keeps the launch plan's network and
 egress settings and removes host mounts from the short-lived probe container.
+Diagnostic checks do not invoke the service-health hook, whether they succeed
+or fail, because they do not run an authenticated babysitter pass.
 
 On the always-on Mac, rerun setup after manual testing and answer yes to the
 launch-agent question. You must also type `INSTALL` to confirm. Setup checks

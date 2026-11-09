@@ -3,6 +3,7 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import type { ContainerLaunchPlan } from "../lib/container_launch.ts";
 import {
@@ -12,7 +13,22 @@ import {
   buildBabysitterChromiumCheckArgs,
   checkBabysitterContainerChromium,
 } from "../lib/fleet_babysitter_container.ts";
-import { main as setupMain } from "../commands/fleet_pr_babysitter_setup.ts";
+import {
+  main as setupMain,
+  runChromiumCheck,
+} from "../commands/fleet_pr_babysitter_setup.ts";
+import { withTestKey } from "./fixtures/babysitter_container_fakes_4770.ts";
+import { writeBabysitterAppConfig } from "../lib/fleet_babysitter_app.ts";
+import { runWithTimeout } from "../lib/subprocess_timeout.ts";
+
+async function denoCacheDir(): Promise<string> {
+  const info = await runWithTimeout(Deno.execPath(), ["info", "--json"], {
+    timeoutMs: 10_000,
+  });
+  assert(info.ok);
+  assertEquals(info.value.success, true, info.value.stderr);
+  return JSON.parse(info.value.stdout).denoDir;
+}
 
 const HTML = "<!doctype html><html><head></head><body></body></html>";
 
@@ -133,8 +149,13 @@ Deno.test("Chromium check runs the image command with no host mounts or browser"
   assert(spawn.startsWith("spawn podman run"));
   assertStringIncludes(spawn, "--entrypoint bash");
   assertStringIncludes(spawn, "vibe-coder:test -c");
-  assertStringIncludes(spawn, BABYSITTER_CHROMIUM_CHECK_COMMAND);
+  assertStringIncludes(
+    spawn,
+    '"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank',
+  );
   assert(!spawn.includes("/host/secret"));
+  assert(!spawn.includes("CONFIG_PATH"));
+  assertStringIncludes(spawn, "timeout=60000");
   assert(!events.some((event) => event.startsWith("spawn chromium ")));
   assert(spawn.includes("--network vibe-babysitter-net"));
   assert(spawn.includes("HTTPS_PROXY=http://proxy:3128"));
@@ -166,6 +187,13 @@ Deno.test("Chromium check passes only on exit zero with HTML stdout", async () =
         : "plain text",
     );
   }
+});
+
+Deno.test("Chromium check accepts HTML beyond the diagnostic cap", async () => {
+  await checkBabysitterContainerChromium(
+    { baseDir: "/checkout" },
+    deps({ result: { ...OK, stdout: "startup output ".repeat(50) + HTML } }),
+  );
 });
 
 Deno.test("Chromium check names missing runtime and image causes before egress", async () => {
@@ -313,7 +341,7 @@ Deno.test("timeout reports container cleanup failures and still tears down egres
       Error,
       killResult instanceof Error
         ? "container cleanup failed: Error: kill denied by runtime"
-        : "container cleanup exited with code 17",
+        : "container cleanup exited with code 17: kill denied",
     );
     assert(events.includes("egress stop"));
   }
@@ -399,10 +427,7 @@ Deno.test("setup runs the Chromium check after preflight and propagates failure"
 
 Deno.test("setup preflight is followed by the real injectable Chromium check", async () => {
   const calls: string[] = [];
-  await checkBabysitterContainerChromium(
-    { baseDir: "/checkout" },
-    deps({ events: calls }),
-  );
+  await runChromiumCheck("/checkout", deps({ events: calls }));
   assert(
     calls.some((event) => event.includes(BABYSITTER_CHROMIUM_CHECK_COMMAND)),
   );
@@ -415,6 +440,186 @@ Deno.test("probe args replace the entrypoint and omit mounts", () => {
   assertEquals(args.at(-1), BABYSITTER_CHROMIUM_CHECK_COMMAND);
   assert(!args.includes("--volume"));
   assert(!args.some((arg) => arg.includes("/host/secret")));
+});
+
+Deno.test("probe args reject empty and mismatched image plans", () => {
+  for (const runArgs of [[], ["run", "different-image"]]) {
+    assertThrows(
+      () => buildBabysitterChromiumCheckArgs(plan({ runArgs })),
+      Error,
+      "the container plan does not end with its image vibe-coder:test",
+    );
+  }
+});
+
+Deno.test("probe args remove short volumes and mount options", () => {
+  for (const option of ["-v", "--mount"]) {
+    const args = buildBabysitterChromiumCheckArgs(plan({
+      runArgs: [
+        "run",
+        option,
+        "/host/private:/container/private",
+        "vibe-coder:test",
+      ],
+    }));
+    assertEquals(args, [
+      "run",
+      "--entrypoint",
+      "bash",
+      "vibe-coder:test",
+      "-c",
+      '"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank',
+    ]);
+  }
+});
+
+Deno.test("successful and failed container diagnostics suppress service health", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const bin = `${root}/bin`;
+    const home = `${root}/home`;
+    const state = `${home}/.vibe-coder/fleet-pr-babysitter`;
+    await Deno.mkdir(bin);
+    await Deno.mkdir(state, { recursive: true });
+    for (const provider of ["gh", "claude"]) {
+      await Deno.mkdir(`${home}/.vibe-coder/credentials/${provider}`, {
+        recursive: true,
+      });
+    }
+    await Deno.writeTextFile(`${root}/config.json`, "{}\n");
+    await Deno.writeTextFile(
+      `${state}/health-hook`,
+      `#!/bin/sh\nprintf '%s' "$1" > '${root}/health-result'\n`,
+      { mode: 0o700 },
+    );
+    const cacheDir = await denoCacheDir();
+    for (const fails of [false, true]) {
+      await Deno.writeTextFile(
+        `${bin}/docker`,
+        `#!/bin/sh
+printf '%s\\n' "$*" >> '${root}/runtime-calls'
+case "$*" in
+  *CHROMIUM_PATH*) printf '<html></html>'; exit ${fails ? 7 : 0};;
+  logs*) printf '[EGRESS_PROXY] listening\\n';;
+  run*) /bin/cat > /dev/null;;
+esac
+`,
+        { mode: 0o755 },
+      );
+      const result = await runWithTimeout(Deno.execPath(), [
+        "run",
+        "--allow-all",
+        "--cached-only",
+        "worker/deno/commands/fleet_pr_babysitter_supervisor.ts",
+        "--check-container",
+      ], {
+        cwd: new URL("../../..", import.meta.url).pathname,
+        clearEnv: true,
+        env: {
+          DENO_DIR: cacheDir,
+          HOME: home,
+          PATH: `${bin}:/usr/bin:/bin`,
+          CONFIG_PATH: `${root}/config.json`,
+          VIBE_CREDENTIAL_DIR: `${home}/.vibe-coder/credentials`,
+        },
+        timeoutMs: 30_000,
+      });
+      assert(result.ok);
+      assertEquals(result.value.timedOut, false, result.value.stderr);
+      assertEquals(result.value.code, fails ? 1 : 0, result.value.stderr);
+      assertStringIncludes(
+        await Deno.readTextFile(`${root}/runtime-calls`),
+        "--entrypoint bash",
+      );
+      await assertRejects(
+        () => Deno.stat(`${root}/health-result`),
+        Deno.errors.NotFound,
+      );
+      assert(!result.value.stdout.includes("GitHub App"));
+      assert(!result.value.stderr.includes("App configuration"));
+      await assertRejects(
+        () =>
+          Deno.stat(
+            `${home}/.local/state/vibe-coder/fleet-pr-babysitter/deployment-health.json`,
+          ),
+        Deno.errors.NotFound,
+      );
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("watch announces its App identity once across two successful browser probes", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const root = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${root}/bin`);
+      await Deno.writeTextFile(`${root}/bin/docker`, "#!/bin/sh\n", {
+        mode: 0o755,
+      });
+      await Deno.chmod(privateKeyPath, 0o600);
+      await writeBabysitterAppConfig(root, {
+        appId: "123",
+        installationId: "456",
+        privateKeyPath,
+      });
+      for (const provider of ["gh", "claude"]) {
+        await Deno.mkdir(`${root}/.vibe-coder/credentials/${provider}`, {
+          recursive: true,
+        });
+      }
+      // The preload stops at access discovery after the browser and identity checks.
+      await Deno.writeTextFile(
+        `${root}/config.json`,
+        JSON.stringify({ repos: ["owner/repo"] }),
+      );
+      const result = await runWithTimeout(Deno.execPath(), [
+        "run",
+        "--allow-all",
+        "--cached-only",
+        "--preload",
+        new URL(
+          "./fixtures/fleet_babysitter_container_preload.ts",
+          import.meta.url,
+        ).pathname,
+        new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
+        "--watch",
+        "--dry-run",
+      ], {
+        cwd: new URL("../../..", import.meta.url).pathname,
+        clearEnv: true,
+        env: {
+          DENO_DIR: await denoCacheDir(),
+          HOME: root,
+          PATH: `${root}/bin:/usr/bin:/bin`,
+          CONFIG_PATH: `${root}/config.json`,
+          BABYSITTER_REPAIR_FIXTURE: root,
+          BABYSITTER_REAL_CHECKOUT: new URL("../../..", import.meta.url)
+            .pathname.replace(/\/$/, ""),
+          BABYSITTER_WATCH_PROBES: "1",
+          VIBE_CREDENTIAL_DIR: `${root}/.vibe-coder/credentials`,
+        },
+        timeoutMs: 30_000,
+      });
+      assert(result.ok);
+      assertEquals(result.value.code, 0, result.value.stderr);
+      assertEquals(
+        result.value.stdout.match(
+          /Using GitHub App babysitter\[bot\] for babysitter requests\./g,
+        )?.length,
+        1,
+        result.value.stderr,
+      );
+      assertEquals(
+        (await Deno.readTextFile(`${root}/browser-probes`)).trim().split("\n")
+          .length,
+        2,
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
 });
 
 Deno.test("run.sh forwards checks before App configuration or authentication", async () => {
@@ -445,11 +650,14 @@ Deno.test("run.sh forwards checks before App configuration or authentication", a
     for (const name of ["dirname", "git"]) {
       await Deno.symlink(await findExecutable(name), `${bin}/${name}`);
     }
+    const cacheDir = await denoCacheDir();
     for (const argument of ["--check-container", "--dry-run"]) {
       const child = new Deno.Command("/bin/bash", {
         args: ["fleet-pr-babysitter/run.sh", argument],
         cwd: await Deno.realPath(new URL("../../..", import.meta.url).pathname),
+        clearEnv: true,
         env: {
+          DENO_DIR: cacheDir,
           CONFIG_PATH: `${root}/config.json`,
           DENO_EXECUTABLE: Deno.execPath(),
           HOME: home,
@@ -469,4 +677,53 @@ Deno.test("run.sh forwards checks before App configuration or authentication", a
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("Chromium check preserves explicit timeout and redacts spawn failure causes", async () => {
+  const token = "ghp_" + "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8";
+  const events: string[] = [];
+  const error = await assertRejects(
+    () =>
+      checkBabysitterContainerChromium(
+        { baseDir: "/checkout", timeoutMs: 1234 },
+        deps({ events, result: new Error(`daemon refused ${token}`) }),
+      ),
+    Error,
+    "cannot run headless Chromium in the worker container: Error: daemon refused",
+  );
+  assert(!error.message.includes(token));
+  assertStringIncludes(
+    events.find((event) => event.startsWith("spawn ")) ?? "",
+    "timeout=1234",
+  );
+});
+
+Deno.test("probe args strip inline mounts and private environments and retain proxy values", () => {
+  const args = buildBabysitterChromiumCheckArgs(plan({
+    runArgs: [
+      "run",
+      "--volume=/host/secret:/secret",
+      "--mount=type=bind,src=/private,dst=/private",
+      "--env=CONFIG_PATH=/private/config.json",
+      "--env=HTTPS_PROXY=http://proxy:3128",
+      "-e",
+      "PRIVATE_VALUE=secret",
+      "-e",
+      "http_proxy=http://proxy:3128",
+      "-w",
+      "/workspace",
+      "vibe-coder:test",
+    ],
+  }));
+  assertEquals(args, [
+    "run",
+    "--env=HTTPS_PROXY=http://proxy:3128",
+    "-e",
+    "http_proxy=http://proxy:3128",
+    "--entrypoint",
+    "bash",
+    "vibe-coder:test",
+    "-c",
+    '"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank',
+  ]);
 });

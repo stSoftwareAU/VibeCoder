@@ -1304,7 +1304,7 @@ export function buildBabysitterChromiumCheckArgs(
   containerName = plan.containerName,
 ): string[] {
   const source = plan.runArgs;
-  if (source.length === 0 || source[source.length - 1] !== plan.image) {
+  if (source[source.length - 1] !== plan.image) {
     throw new Error(
       `the container plan does not end with its image ${plan.image}`,
     );
@@ -1417,7 +1417,11 @@ export async function checkBabysitterContainerChromium(
           timeoutMs: INSPECT_TIMEOUT_MS,
         });
         if (!killed.success) {
-          killCause = `; container cleanup exited with code ${killed.code}`;
+          const detail = redactSecrets(killed.stderr || killed.stdout || "")
+            .slice(0, CAUSE_CAP);
+          killCause = `; container cleanup exited with code ${killed.code}${
+            detail ? `: ${detail}` : ""
+          }`;
         }
       } catch (error) {
         killCause = `; container cleanup failed: ${
@@ -1440,7 +1444,7 @@ export async function checkBabysitterContainerChromium(
         }`,
       );
     }
-    if (!stdout.includes("<html")) {
+    if (!(result.stdout ?? "").includes("<html")) {
       throw new Error(
         `headless Chromium produced no HTML${
           stdout ? `: ${stdout}` : " (stdout was empty)"

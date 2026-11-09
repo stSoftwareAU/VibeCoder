@@ -25,6 +25,7 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import { dirname } from "node:path";
 import type { Result } from "../types.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
@@ -45,6 +46,9 @@ export function renderPrePushHookScript(opts: {
   const deno = posixSingleQuote(opts.denoPath);
   const module = posixSingleQuote(opts.modulePath);
   const spec = posixSingleQuote(opts.specPath);
+  const workerDir = dirname(dirname(opts.modulePath));
+  const config = posixSingleQuote(`${workerDir}/deno.json`);
+  const lock = posixSingleQuote(`${workerDir}/deno.lock`);
   return `#!/bin/bash
 # ${PRE_PUSH_HOOK_MARKER} (Issue #3394) — generated per run; do not edit.
 set -uo pipefail
@@ -61,8 +65,16 @@ if [ ! -f ${spec} ]; then
   echo "[PRE_PUSH_BLOCKED] gate spec is missing: "${spec} >&2
   exit 1
 fi
+if [ ! -f ${config} ]; then
+  echo "[PRE_PUSH_BLOCKED] worker Deno config is missing: "${config} >&2
+  exit 1
+fi
+if [ ! -f ${lock} ]; then
+  echo "[PRE_PUSH_BLOCKED] worker Deno lock is missing: "${lock} >&2
+  exit 1
+fi
 
-exec ${deno} run --quiet --no-config --no-lock --allow-read --allow-run --allow-env ${module} --spec ${spec} -- "$@"
+exec ${deno} run --quiet --config ${config} --frozen --lock ${lock} --allow-read --allow-run --allow-env ${module} --spec ${spec} -- "$@"
 `;
 }
 
