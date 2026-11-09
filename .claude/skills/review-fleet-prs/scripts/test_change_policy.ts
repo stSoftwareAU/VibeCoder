@@ -174,18 +174,18 @@ export function quoteFound(
   );
 }
 
-const NEGATIVE_LEADING_WORD = /^(?:no|false)\b/;
+const NEGATIVE_LEADING_WORD = /^(?:no|false|unknown)\b/;
 const NEGATIVE_CONTAINS = [
   "does not fail",
   "doesn't fail",
   "passes without",
   "would pass",
   "not verified",
-  "unknown",
 ];
 
-// Positive only: `true`, or a statement that is not led by no/false and does
-// not say the test passes without the change.
+// Positive only: `true`, or a statement that is not led by no/false/unknown and
+// does not say the test passes without the change. An `unknown` value or
+// identifier later in a positive statement is fine.
 function failsWithout(v: TestChangeNote["failsWithoutChange"]): boolean {
   if (v === true) return true;
   if (typeof v !== "string") return false;
