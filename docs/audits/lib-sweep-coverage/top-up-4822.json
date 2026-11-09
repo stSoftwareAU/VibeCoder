@@ -1,0 +1,12 @@
+{
+  "issue": 4822,
+  "chunk": "top-up-4822",
+  "title": "top-up: deferred startup sweep helper",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4822",
+  "definition": "module added to worker/deno/lib/ after the chunk-12 slices recorded their coverage: deferred_startup_sweep.ts, the background start and bounded settle of startup sweeps that must not delay the first claim (#4822)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/deferred_startup_sweep.ts"
+  ],
+  "sweptAt": "2dd7d382467b45cd9309d59709f857fbaa235809"
+}

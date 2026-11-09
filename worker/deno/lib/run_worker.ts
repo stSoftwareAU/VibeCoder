@@ -9,8 +9,10 @@
  * path:
  *
  *   PID guard → claim PID → bootstrap prelude → config validation →
- *   GitHub-user resolution → gh-scope publication → startup housekeeping →
- *   memory-pressure watchdog (macOS) → run-core main loop → cleanup.
+ *   GitHub-user resolution → gh-scope publication → startup housekeeping
+ *   (blocking steps) → memory-pressure watchdog (macOS) → run-core main loop
+ *   (the GitHub startup sweeps run in the background alongside it, Issue
+ *   #4822) → cleanup, which first settles those sweeps.
  *
  * The individual steps were migrated to Deno by the earlier #3484 sub-issues
  * (#3501 bootstrap, #3502 housekeeping + signal cleanup, #1124 main loop). This
@@ -48,10 +50,18 @@ import {
   runBootstrap,
 } from "./run_bootstrap.ts";
 import {
+  DEFERRED_HOUSEKEEPING_STEP_IDS,
   type HousekeepingOptions,
   runSignalCleanup,
   runStartupHousekeeping,
 } from "./run_housekeeping.ts";
+import {
+  type DeferredSweep,
+  type DeferredSweepSink,
+  settleDeferredSweeps,
+  startDeferredSweep,
+  type SweepTimer,
+} from "./deferred_startup_sweep.ts";
 import {
   skipSoftwareUpdateFromEnv,
   softwareUpdateOptionsFromEnv,
@@ -155,6 +165,18 @@ export interface RunWorkerOptions {
    * writes nothing every parallel worker can see.
    */
   setEnv?: (name: string, value: string) => void;
+  /**
+   * Timer that bounds the wait for background startup sweeps once the main
+   * loop has ended (Issue #4822). Tests inject a fake; production leaves it
+   * unset and gets the real timer.
+   */
+  deferredSweepTimer?: SweepTimer;
+  /**
+   * Grace, in milliseconds, the run gives a still-running background startup
+   * sweep after the main loop has ended (Issue #4822). Tests inject a short
+   * grace; production leaves it unset and gets the default.
+   */
+  deferredSweepGraceMs?: number;
 }
 
 /**
@@ -192,6 +214,15 @@ export interface RunWorkerDeps {
   logGhScopes(): Promise<void>;
   /** Run the one-time startup housekeeping sequence (best-effort). */
   runHousekeeping(
+    options: HousekeepingOptions,
+    config: WorkerConfig,
+  ): Promise<void>;
+  /**
+   * The GitHub-touching startup sweeps (Issue #4822), started in the background
+   * alongside the main loop so they never delay the first claim. Optional so
+   * older dependency sets keep working; the production set always has it.
+   */
+  runDeferredHousekeeping?(
     options: HousekeepingOptions,
     config: WorkerConfig,
   ): Promise<void>;
@@ -520,7 +551,10 @@ export function createDefaultRunWorkerDeps(
       }
     },
     runHousekeeping: async (options, config) => {
-      await runStartupHousekeeping(options, config);
+      await runStartupHousekeeping(options, config, {}, "blocking");
+    },
+    runDeferredHousekeeping: async (options, config) => {
+      await runStartupHousekeeping(options, config, {}, "deferred");
     },
     runMainLoop: async ({ repoDir, workDir, githubUser, config }) => {
       const result = await runCoreCommand.execute({
@@ -676,6 +710,15 @@ export async function runWorker(
     AGENT_TRANSCRIPT_ENV,
     String(options.config.agentTranscriptEnabled === true),
   );
+
+  // Issue #4822: the GitHub-touching startup sweeps run in the background
+  // alongside the main loop. The handle is declared out here so the `finally`
+  // below settles it on every exit path, before cleanup.
+  let deferredSweep: DeferredSweep | undefined;
+  const sweepSink: DeferredSweepSink = {
+    log: (message) => deps.log(message),
+    logError: (message) => deps.logError(message),
+  };
 
   try {
     // Step 3: Bootstrap prelude — PATH, run-id, logging, updates. It writes
@@ -872,17 +915,34 @@ ${credentialFailure}`);
     // Step 6: Publish gh token scopes (best-effort, security visibility).
     await deps.logGhScopes();
 
-    // Step 7: One-time startup housekeeping (best-effort — never aborts).
-    await deps.runHousekeeping(
-      {
-        workDir,
-        logDir,
-        tmpDir,
-        defaultBranch: bootstrap.defaultBranch,
-        githubUser,
-      },
-      options.config,
-    );
+    // Step 7: One-time startup housekeeping, blocking steps (best-effort —
+    // never aborts).
+    const housekeepingOptions: HousekeepingOptions = {
+      workDir,
+      logDir,
+      tmpDir,
+      defaultBranch: bootstrap.defaultBranch,
+      githubUser,
+    };
+    await deps.runHousekeeping(housekeepingOptions, options.config);
+
+    // Step 7.5: The GitHub-touching sweeps (Issue #4822) start now, in the
+    // background, and are NOT awaited here: a long branch cleanup must not
+    // delay the first claim. The `finally` below settles them, with a bounded
+    // grace, so they are never silently dropped.
+    if (deps.runDeferredHousekeeping) {
+      const runDeferred = deps.runDeferredHousekeeping;
+      deps.log(
+        `[run-worker] startup sweeps (${
+          DEFERRED_HOUSEKEEPING_STEP_IDS.join(", ")
+        }) running in the background alongside the main loop (Issue #4822)`,
+      );
+      deferredSweep = startDeferredSweep(
+        "startup-housekeeping",
+        () => runDeferred(housekeepingOptions, options.config),
+        sweepSink,
+      );
+    }
 
     // Step 8: Run the main event loop.
     const loop = await deps.runMainLoop({
@@ -929,6 +989,15 @@ ${credentialFailure}`);
       reason: loop.message,
     };
   } finally {
+    // Issue #4822: give any background startup sweep still running a bounded
+    // grace before cleanup. It is abandoned, not killed, if the grace expires,
+    // and it never throws, so this cannot hold up or wedge the exit.
+    if (deferredSweep) {
+      await settleDeferredSweeps([deferredSweep], sweepSink, {
+        graceMs: options.deferredSweepGraceMs,
+        timer: options.deferredSweepTimer,
+      });
+    }
     // Exit cleanup — the bash `cleanup_on_exit` trap replacement. Removes the
     // PID file and tears down orphan-prone descendants (`claude`, `deno test`).
     // The wait scales with the configured slot count (Issue #4182).

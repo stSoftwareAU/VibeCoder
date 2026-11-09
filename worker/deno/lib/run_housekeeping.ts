@@ -3,8 +3,8 @@
  *
  * `worker/run_core.sh` historically ran a block of one-time startup housekeeping
  * (disk-space reclaim, log rotation, worker-log retention, stale temp-file /
- * work-dir / worktree / session sweeps, and a once-at-startup branch cleanup)
- * and installed a bash
+ * work-dir / worktree / session sweeps, and the GitHub branch and merged-PR
+ * sweeps) and installed a bash
  * `trap` (`cleanup_on_exit`) that terminated descendant processes and removed
  * the PID file on SIGINT/SIGTERM/exit. Each individual step already had a Deno
  * implementation — the bash was only orchestration glue.
@@ -14,6 +14,9 @@
  * - {@link runStartupHousekeeping} runs the housekeeping steps **in order**,
  *   each best-effort (a failing step is logged loud, Issue #3234, but never
  *   aborts the sequence — disk/workdir buildup is self-healing, not fatal).
+ *   Its scope splits the sequence in two (Issue #4822): the blocking steps run
+ *   before the first claim, and the deferred GitHub-touching steps run in the
+ *   background alongside the main loop.
  * - {@link runSignalCleanup} performs the one-shot cleanup the old bash trap
  *   did: terminate the current process's descendants (orphan-prone `claude` /
  *   `deno test` children) and remove the PID file.
@@ -76,9 +79,11 @@ import { configureDecisionWarnStore } from "./decision_warn_dedup.ts";
  * (plain or gzipped) that have aged out. This step was orphaned by the Deno
  * housekeeping migration (#3484) when `run_core.sh` was deleted.
  *
- * `merged-pr-issue-sweep` runs **last** (Issue #504): it is the only step that
- * touches GitHub state rather than local disk, and it must not delay the
- * reclaim steps the worker needs before it can run at all.
+ * `branch-cleanup-stale` and `merged-pr-issue-sweep` touch GitHub state rather
+ * than local disk (Issue #4822). They are listed in
+ * {@link DEFERRED_HOUSEKEEPING_STEP_IDS} and run in the background alongside
+ * the main loop, so neither delays the reclaim steps or the first claim.
+ * `merged-pr-issue-sweep` stays last in this canonical order (Issue #504).
  */
 export const HOUSEKEEPING_STEP_IDS = [
   "audit-chain-verify",
@@ -93,6 +98,17 @@ export const HOUSEKEEPING_STEP_IDS = [
   "work-volume-prune",
   "work-volume-tiers",
   "branch-cleanup-orphaned",
+  "branch-cleanup-stale",
+  "merged-pr-issue-sweep",
+] as const;
+
+/**
+ * The GitHub-touching steps that run in the background alongside the main loop
+ * (Issue #4822), so a long sweep never delays the first claim. A subset of
+ * {@link HOUSEKEEPING_STEP_IDS}, in canonical order. Scope `"deferred"` runs
+ * exactly these; scope `"blocking"` runs every other step.
+ */
+export const DEFERRED_HOUSEKEEPING_STEP_IDS = [
   "branch-cleanup-stale",
   "merged-pr-issue-sweep",
 ] as const;
@@ -470,34 +486,57 @@ export function createDefaultHousekeepingDeps(
  * @param config - Worker configuration (forwarded to each command).
  * @param depsOverride - Partial dependency overrides (production defaults fill
  *   the rest). Tests inject a recording set to assert order and arguments.
+ * @param scope - Which steps run (Issue #4822). `"all"` (the default) runs
+ *   every step as one sequence. `"blocking"` runs every step except the
+ *   {@link DEFERRED_HOUSEKEEPING_STEP_IDS}, and must finish before the first
+ *   claim. `"deferred"` runs only those, in the background alongside the main
+ *   loop. The blocking pass has already configured the decision store and run
+ *   the CLI-state sweep, so the deferred pass does neither again.
  * @returns The sequence outcome, including the ordered steps that ran.
  */
 export async function runStartupHousekeeping(
   options: HousekeepingOptions,
   config: WorkerConfig,
   depsOverride: Partial<HousekeepingDeps> = {},
+  scope: "all" | "blocking" | "deferred" = "all",
 ): Promise<HousekeepingResult> {
   const deps: HousekeepingDeps = {
     ...createDefaultHousekeepingDeps(),
     ...depsOverride,
   };
-  // Load decisions before the merged-PR sweep so hourly restarts stay quiet.
-  deps.configureDecisionStore(options.workDir);
-  // Volatile CLI runtime state first (Issue #4245): the registries must be
-  // gone before anything can spawn the agent this cycle.
   const envFn = deps.env ?? processEnvLookup;
-  try {
-    const summary = await sweepVolatileCliState(options.workDir, envFn);
-    deps.log(`[housekeeping] cli-state-sweep: ${summary}`);
-  } catch (err) {
-    deps.logError(
-      `[housekeeping] cli-state-sweep failed (continuing): ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    );
+  if (scope !== "deferred") {
+    // Load decisions before the merged-PR sweep so hourly restarts stay quiet.
+    deps.configureDecisionStore(options.workDir);
+    // Volatile CLI runtime state first (Issue #4245): the registries must be
+    // gone before anything can spawn the agent this cycle. Never repeated in
+    // the deferred pass: by then this run has spawned agents, and sweeping
+    // their live registries would break them.
+    try {
+      const summary = await sweepVolatileCliState(options.workDir, envFn);
+      deps.log(`[housekeeping] cli-state-sweep: ${summary}`);
+    } catch (err) {
+      deps.logError(
+        `[housekeeping] cli-state-sweep failed (continuing): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
-  const steps = buildHousekeepingSteps(options, envFn);
+  const deferredIds = new Set<string>(DEFERRED_HOUSEKEEPING_STEP_IDS);
+  // A threshold the blocking pass refused is already announced there, so the
+  // deferred pass builds its steps without repeating that warning.
+  const steps = buildHousekeepingSteps(
+    options,
+    envFn,
+    scope === "deferred" ? () => {} : undefined,
+  ).filter((step) => {
+    const isDeferred = deferredIds.has(step.id);
+    if (scope === "deferred") return isDeferred;
+    if (scope === "blocking") return !isDeferred;
+    return true;
+  });
   const stepsRun: HousekeepingStepId[] = [];
   const results: HousekeepingStepResult[] = [];
   const failures: HousekeepingStepId[] = [];
