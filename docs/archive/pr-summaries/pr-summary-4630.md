@@ -235,11 +235,13 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
 
 - From `worker/deno`, `deno fmt --check`, `deno lint`, `deno task check` and
   `deno task check:manifests` cover the Deno tree and pass on the head. The
-  changed suites were run with `deno test -A` on the head: `tests/claude_runner_test.ts` (60
-  tests at head, all passed), `tests/git_push_preflight_test.ts` (30),
-  `tests/pre_push_gate_cli_test.ts` (12), `tests/pre_push_hook_test.ts` (12),
-  `tests/pr_ci_processor_test.ts` (61) and
-  `tests/pr_feedback_processor_pre_flight_4630_test.ts` (4). The suites that
+  changed suites were run with `deno test -A` on the head, each passing in full:
+  `tests/claude_runner_test.ts` (60 tests at head),
+  `tests/git_push_preflight_test.ts` (30 tests at head),
+  `tests/pre_push_gate_cli_test.ts` (12 tests at head),
+  `tests/pre_push_hook_test.ts` (12 tests at head),
+  `tests/pr_ci_processor_test.ts` (61 tests at head) and
+  `tests/pr_feedback_processor_pre_flight_4630_test.ts` (4 tests at head). The suites that
   push through the agent's real `--no-config` hook need two environment
   settings in this container: `VIBE_BASE_DIR` unset (it points the hook at the
   worker's installed copy, not this checkout) and a `PATH` without the git

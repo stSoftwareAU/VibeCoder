@@ -5255,8 +5255,9 @@ gates do (see that bullet):
      CI cargo check an infrastructure fault, never a verdict). Another agent
      run, such as an issue run, merge-conflict or spelling repair, has no
      `compareRef`, so a failing CI cargo check on its push is a verdict. The
-     hook is allowed to write only to the temp directory, for the base
-     worktree. A base that passes,
+     hook's Deno process is allowed to write only to the temp directory, for
+     the base worktree; the git and cargo commands it runs are not limited to
+     it. A base that passes,
      or lacks a diagnostic the push shows, leaves the failure a verdict. An
      unresolvable or unreadable base, a worktree that cannot be made, a base run
      that times out, cannot start or fails for the host, and a push output with
