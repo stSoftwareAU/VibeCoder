@@ -25,3 +25,4 @@ Backend/prompt-only change; no UI. Doc-drift test `worker/deno/tests/pr_review_b
 - Added `worker/deno/tests/pr_review_brief_gone_verification_4812_test.ts`. Passed with `pr_review_brief_own_bump_4522_test.ts` and `pr_review_brief_shared_3395_test.ts` (11 passed, 0 failed).
 - Red check: with the prompt sentence reverted the new test failed on the missing sentence; restored, it passes. The pinned phrase is new in the base section (the base ended "same conditions as `failsWithoutChange`.").
 - Twinned rule: grepped for "same conditions as `failsWithoutChange`"; only the brief held it.
+- `./quality.sh`: every stage passed except `deno tests`, where 6 tests failed in `worker/deno/tests/merge_fallback_issue_test.ts` and `worker/deno/tests/pr_maintenance_command_test.ts`. Neither touches the review brief; not investigated further here.
