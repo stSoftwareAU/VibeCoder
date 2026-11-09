@@ -152,7 +152,7 @@ export function anchorSet(markdown: string): Set<string> {
 
 /** One cross-file `#fragment` link found by {@link crossFileAnchorLinks}. */
 export interface CrossFileAnchorLink {
-  /** 1-based line number the link appears on. */
+  /** 1-based line number of the link's opening `[`. */
   line: number;
   /** The link's target path, exactly as written (not yet resolved). */
   target: string;
@@ -166,7 +166,7 @@ export interface CrossFileAnchorLink {
  * Deliberately linear — the link-text class excludes `[`, and the
  * angle-bracket and bare destination classes exclude `<`/`(` respectively,
  * so every scan is bounded at the next start candidate instead of running to
- * end of line (Issue #3337).
+ * the end of the paragraph (Issue #3337).
  */
 const INLINE_LINK =
   /\[[^\[\]]*\]\(\s*(<[^<>]*>|[^\s()<]+)(?:\s+"[^"]*")?\s*\)/g;
@@ -178,13 +178,36 @@ const INLINE_LINK =
  */
 const REF_DEF = /^[ \t]{0,3}\[[^\]]+\]:\s*(<[^>]*>|[^\s]+)/;
 
+/**
+ * An ATX heading line (`# Title` … `###### Title`). A heading is a single-line
+ * block, so its links are scanned on their own and never joined to the lines
+ * around it (Issue #4870).
+ */
+const HEADING_LINE = /^\s*#{1,6}(?:\s|$)/;
+
+/**
+ * A table row: a line whose first non-space character is `|`. Table rows are
+ * single-line blocks, so their links are scanned on their own, never joined
+ * to a neighbouring row (Issue #4870).
+ */
+const TABLE_ROW = /^\s*\|/;
+
+/**
+ * A list-item marker (`-`, `*`, `+`, `1.`, `1)`) followed by whitespace. An
+ * item starts a new paragraph, but the lines after it that carry no marker
+ * continue it, so a link wrapped inside an item is still found (Issue #4870).
+ */
+const LIST_ITEM_LINE = /^\s*(?:[-*+]|\d{1,9}[.)])\s/;
+
 /** Any URI with a scheme (`https:`, `mailto:`, …), not a relative path. */
 const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
 /**
- * Replace every inline code span (`` `x` ``, `` ``x`` ``, …) on a single
- * line with spaces of the same length, so link-like text inside code spans
- * is never mistaken for a real Markdown link (Issue #3337).
+ * Replace every inline code span (`` `x` ``, `` ``x`` ``, …) in a piece of
+ * text with spaces of the same length, so link-like text inside code spans is
+ * never mistaken for a real Markdown link (Issue #3337). The text may be a
+ * whole paragraph joined across lines, so a code span that wraps is blanked
+ * too (Issue #4870).
  */
 function blankCodeSpans(line: string): string {
   return line.replace(/(`+)(.*?)\1/g, (m) => " ".repeat(m.length));
@@ -216,24 +239,88 @@ function parseDestination(
 }
 
 /**
+ * Scan one paragraph, or one single-line block, for inline links (Issue
+ * #4870). The lines are joined with a single space, which is the same length
+ * as the newline it stands in for, so offsets stay simple. Code spans are
+ * blanked across the join, so a wrapped code span is blanked too. Each link
+ * is reported on the line its opening `[` sits on.
+ */
+function scanParagraph(
+  paragraph: NumberedLine[],
+  results: CrossFileAnchorLink[],
+): void {
+  if (paragraph.length === 0) return;
+
+  const starts: number[] = [];
+  let offset = 0;
+  for (const { line } of paragraph) {
+    starts.push(offset);
+    offset += line.length + 1;
+  }
+
+  const text = blankCodeSpans(paragraph.map(({ line }) => line).join(" "));
+
+  // Match indices arrive in ascending order, so one forward pointer maps each
+  // link to its line in linear time over the whole paragraph.
+  let current = 0;
+  for (const m of text.matchAll(INLINE_LINK)) {
+    const index = m.index ?? 0;
+    while (
+      current + 1 < starts.length && (starts[current + 1] ?? Infinity) <= index
+    ) {
+      current++;
+    }
+    const parsed = parseDestination(m[1] ?? "");
+    if (parsed) {
+      results.push({
+        line: paragraph[current]?.lineNumber ?? 0,
+        target: parsed.target,
+        fragment: parsed.fragment,
+      });
+    }
+  }
+}
+
+/**
  * Extract every relative link to a `.md` file that carries a `#fragment`
  * from a Markdown document: inline links (including the angle-bracket form
- * and an optional `"title"`) and reference definitions. Links inside fenced
- * code blocks or inline code spans are skipped, as are links with a URL
- * scheme (`https:`, `mailto:`, …) — MD051-style checkers only validate
- * in-file fragments, so cross-file ones like these need their own guard
- * (Issue #3337).
+ * and an optional `"title"`) and reference definitions. Inline links are
+ * matched per paragraph rather than per physical line, so link text that
+ * soft-wraps across lines is found (Issue #4870); each link is reported on
+ * the line its opening `[` sits on. A paragraph is never joined across a
+ * blank line, a fenced code block, a heading, a table row or the start of
+ * another list item — headings and table rows are scanned one line at a
+ * time. Links inside fenced code blocks or inline code spans are skipped, as
+ * are links with a URL scheme (`https:`, `mailto:`, …) — MD051-style checkers
+ * only validate in-file fragments, so cross-file ones like these need their
+ * own guard (Issue #3337).
  */
 export function crossFileAnchorLinks(
   markdown: string,
 ): CrossFileAnchorLink[] {
   const results: CrossFileAnchorLink[] = [];
+  let paragraph: NumberedLine[] = [];
+  let previousLineNumber = 0;
+  const flush = (): void => {
+    scanParagraph(paragraph, results);
+    paragraph = [];
+  };
 
-  for (const { lineNumber, line } of linesOutsideFences(markdown)) {
-    const blanked = blankCodeSpans(line);
+  for (const numbered of linesOutsideFences(markdown)) {
+    const { lineNumber, line } = numbered;
+    // A gap in line numbers means a fenced block was skipped between the two
+    // lines: never join across it.
+    if (lineNumber !== previousLineNumber + 1) flush();
+    previousLineNumber = lineNumber;
 
-    const refMatch = blanked.match(REF_DEF);
+    if (line.trim() === "") {
+      flush();
+      continue;
+    }
+
+    const refMatch = blankCodeSpans(line).match(REF_DEF);
     if (refMatch) {
+      flush();
       const parsed = parseDestination(refMatch[1] ?? "");
       if (parsed) {
         results.push({
@@ -245,17 +332,16 @@ export function crossFileAnchorLinks(
       continue;
     }
 
-    for (const m of blanked.matchAll(INLINE_LINK)) {
-      const parsed = parseDestination(m[1] ?? "");
-      if (parsed) {
-        results.push({
-          line: lineNumber,
-          target: parsed.target,
-          fragment: parsed.fragment,
-        });
-      }
+    if (HEADING_LINE.test(line) || TABLE_ROW.test(line)) {
+      flush();
+      scanParagraph([numbered], results);
+      continue;
     }
+
+    if (LIST_ITEM_LINE.test(line)) flush();
+    paragraph.push(numbered);
   }
+  flush();
 
   return results;
 }

@@ -9,7 +9,8 @@
  *
  *   1. {@link crossFileAnchorLinks} itself — an evasion table of inputs it
  *      must and must not report, including code-fence and code-span
- *      exclusions.
+ *      exclusions, and link text that soft-wraps across lines, matched per
+ *      paragraph (Issue #4870).
  *   2. {@link decodeFragment} — well-formed and malformed percent-escapes.
  *   3. A growth check that the link-extraction regex stays linear against a
  *      hostile, link-shaped input.
@@ -101,6 +102,150 @@ Deno.test("crossFileAnchorLinks - skips everything it must not report (Issue #33
 });
 
 // ---------------------------------------------------------------------------
+// 1b. crossFileAnchorLinks — soft-wrapped link text (Issue #4870)
+// ---------------------------------------------------------------------------
+
+Deno.test("crossFileAnchorLinks - finds a link whose text wraps over two lines (Issue #4870)", () => {
+  const markdown = [
+    "Intro line.",
+    "See [the setup",
+    "guide](guide.md#setup) for details.",
+  ].join("\n");
+
+  assertEquals(crossFileAnchorLinks(markdown), [
+    { line: 2, target: "guide.md", fragment: "setup" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - finds a link whose text wraps over three lines (Issue #4870)", () => {
+  const markdown = [
+    "Read [the very long",
+    "setup guide that",
+    "wraps](setup.md#install) now.",
+  ].join("\n");
+
+  assertEquals(crossFileAnchorLinks(markdown), [
+    { line: 1, target: "setup.md", fragment: "install" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - reports a wrapped link in a list item continuation on the item's line (Issue #4870)", () => {
+  const markdown = [
+    "Steps:",
+    "- see [the",
+    "  guide](guide.md#setup)",
+  ].join("\n");
+
+  assertEquals(crossFileAnchorLinks(markdown), [
+    { line: 2, target: "guide.md", fragment: "setup" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - finds a wrapped angle-bracket link with a title (Issue #4870)", () => {
+  const markdown = [
+    "See [the setup",
+    'guide](<guide.md#setup> "Setup guide") now.',
+  ].join("\n");
+
+  assertEquals(crossFileAnchorLinks(markdown), [
+    { line: 1, target: "guide.md", fragment: "setup" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - finds a wrapped link that is the second link in a paragraph (Issue #4870)", () => {
+  const markdown = [
+    "Plain [one](one.md#first) link.",
+    "Then [the",
+    "second](two.md#second) wraps.",
+  ].join("\n");
+
+  assertEquals(crossFileAnchorLinks(markdown), [
+    { line: 1, target: "one.md", fragment: "first" },
+    { line: 2, target: "two.md", fragment: "second" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - never joins a paragraph across a blank line (Issue #4870)", () => {
+  const separated = ["Intro [text", "", "more](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(separated), []);
+
+  // Positive control: with the blank line removed the same link is reported.
+  const joined = ["Intro [text", "more](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(joined), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - never joins a paragraph across a fenced block (Issue #4870)", () => {
+  const fenced = ["[text", "```md", "code", "```", "more](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(fenced), []);
+
+  // Positive control: with the fence removed the same two lines are reported.
+  const adjacent = ["[text", "more](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(adjacent), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - never joins two list items (Issue #4870)", () => {
+  const items = ["- [a", "- b](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(items), []);
+
+  // Positive control: the two lines joined with one space, which is what
+  // removing the line break between the items would give.
+  const joined = "- [a - b](x.md#f)";
+  assertEquals(crossFileAnchorLinks(joined), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - never joins a heading to the line after it (Issue #4870)", () => {
+  const heading = ["# [a", "b](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(heading), []);
+
+  // Positive control: the same two lines joined with one space is one heading
+  // line, which is scanned on its own and reported.
+  const joined = "# [a b](x.md#f)";
+  assertEquals(crossFileAnchorLinks(joined), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - never joins table rows (Issue #4870)", () => {
+  const rows = ["| [a |", "| b](x.md#f) |"].join("\n");
+  assertEquals(crossFileAnchorLinks(rows), []);
+
+  // Positive control: the two rows joined with one space.
+  const joined = "| [a | | b](x.md#f) |";
+  assertEquals(crossFileAnchorLinks(joined), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - skips a wrapped link inside a code span spanning two lines (Issue #4870)", () => {
+  const wrappedCode = ["Use `[a", "b](x.md#f)` to link."].join("\n");
+  assertEquals(crossFileAnchorLinks(wrappedCode), []);
+
+  // Positive control: without the closing backtick the span does not close,
+  // so the same wrapped link is a real link and is reported.
+  const unclosed = ["Use `[a", "b](x.md#f) to link."].join("\n");
+  assertEquals(crossFileAnchorLinks(unclosed), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - skips a wrapped link inside a fenced block (Issue #4870)", () => {
+  const fenced = ["```md", "[a", "b](x.md#f)", "```"].join("\n");
+  assertEquals(crossFileAnchorLinks(fenced), []);
+
+  // Positive control: the same two lines outside the fence are reported.
+  const outside = ["[a", "b](x.md#f)"].join("\n");
+  assertEquals(crossFileAnchorLinks(outside), [
+    { line: 1, target: "x.md", fragment: "f" },
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // 2. decodeFragment
 // ---------------------------------------------------------------------------
 
@@ -174,6 +319,24 @@ Deno.test("crossFileAnchorLinks - stays linear against REF_DEF unterminated labe
   assertLinearGrowth(
     "crossFileAnchorLinks on a single unterminated reference-definition label",
     (chars) => "[" + "a".repeat(chars),
+    (input) => crossFileAnchorLinks(input),
+    { baseChars: 20_000 },
+  );
+});
+
+Deno.test("crossFileAnchorLinks - stays linear against many link-text opens in one soft-wrapped paragraph (Issue #4870)", () => {
+  assertLinearGrowth(
+    "crossFileAnchorLinks on many lines each opening a link, with no blank line",
+    (chars) => "[a\n".repeat(Math.ceil(chars / 3)),
+    (input) => crossFileAnchorLinks(input),
+    { baseChars: 20_000 },
+  );
+});
+
+Deno.test("crossFileAnchorLinks - stays linear against many lines each holding an unmatched backtick (Issue #4870)", () => {
+  assertLinearGrowth(
+    "crossFileAnchorLinks on many lines each holding one backtick, joined into one paragraph",
+    (chars) => "x `y\n".repeat(Math.ceil(chars / 5)),
     (input) => crossFileAnchorLinks(input),
     { baseChars: 20_000 },
   );
