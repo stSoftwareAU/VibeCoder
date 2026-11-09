@@ -3,13 +3,11 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
-  assertThrows,
 } from "@std/assert";
 import {
   accessibleBabysitterRepositories,
   appConfigPath,
   BABYSITTER_AGENT_PERMISSIONS,
-  babysitterAgentEnv,
   configureBabysitterLockTrust,
   mintBabysitterAgentToken,
   parseBabysitterAppConfig,
@@ -18,14 +16,21 @@ import {
   writeBabysitterAppConfig,
 } from "../lib/fleet_babysitter_app.ts";
 import type { FetchFn } from "../lib/github_app_auth.ts";
-import { BABYSITTER_FILESYSTEM_KEY } from "../lib/fleet_babysitter_sandbox.ts";
 import {
   babysitterVerifierCredentials,
   startBabysitterAgent,
 } from "../commands/fleet_pr_babysitter.ts";
+import { BabysitterFailure } from "../lib/babysitter_retry_state.ts";
 import { runWithTimeout } from "../lib/subprocess_timeout.ts";
+import {
+  fakeContainer,
+  fakeTokenExchange,
+  repairDirs,
+  type RuntimeSpawn,
+  withTestKey,
+} from "./fixtures/babysitter_container_fakes_4770.ts";
 
-Deno.test("production repair forwards CONFIG_PATH and denies canonical credential targets", async () => {
+Deno.test("the non-watch container repair exits non-zero after cleanup despite a pending special-file open", async () => {
   const info = await runWithTimeout(Deno.execPath(), ["info", "--json"], {
     timeoutMs: 10_000,
   });
@@ -33,15 +38,16 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
   assertEquals(info.value.success, true, info.value.stderr);
   const { denoDir } = JSON.parse(info.value.stdout);
   assertEquals(typeof denoDir, "string");
-  // The repair below runs with --cached-only, so make sure the babysitter's
-  // whole graph (including every JSR manifest) is cached first. A shard's
-  // cache may hold only what that shard's own tests loaded, which left
-  // '@std/crypto/meta.json' missing and failed the run on CI.
+  // The repair below runs with --cached-only, so cache the babysitter's whole
+  // graph first: a shard's cache may hold only what its own tests loaded.
+  const entry = new URL("../commands/fleet_pr_babysitter.ts", import.meta.url)
+    .pathname;
+  const configFile = new URL("../deno.json", import.meta.url).pathname;
   const warm = await runWithTimeout(Deno.execPath(), [
     "cache",
     "--config",
-    new URL("../deno.json", import.meta.url).pathname,
-    new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
+    configFile,
+    entry,
   ], { timeoutMs: 120_000, env: { DENO_DIR: denoDir } });
   assert(warm.ok);
   assertEquals(warm.value.success, true, warm.value.stderr);
@@ -55,155 +61,96 @@ Deno.test("production repair forwards CONFIG_PATH and denies canonical credentia
         privateKeyPath,
       });
       await Deno.mkdir(`${home}/tmp`);
-      await Deno.mkdir(`${home}/target/nested`, { recursive: true });
-      await Deno.mkdir(`${home}/links`);
-      await Deno.symlink(`${home}/target/nested`, `${home}/links/directory`);
-      await Deno.symlink(`${home}/target`, `${home}/links/credentials`);
-      await Deno.writeTextFile(`${home}/target/ssh.pem`, "test credential");
-      await Deno.writeTextFile(
-        `${home}/lexical-key.pem`,
-        "test credential alias",
-      );
-      await Deno.symlink(`${home}/lexical-key.pem`, `${home}/links/ssh.pem`);
+      await Deno.mkdir(`${home}/bin`);
+      // A runtime on PATH; the preload answers every call to it.
+      await Deno.writeTextFile(`${home}/bin/docker`, "#!/bin/sh\n");
+      await Deno.chmod(`${home}/bin/docker`, 0o755);
+      for (const provider of ["claude", "gh"]) {
+        await Deno.mkdir(`${home}/.vibe-coder/credentials/${provider}`, {
+          recursive: true,
+        });
+      }
       const configPath = `${home}/operator-config.json`;
-      const config = {
-        repos: ["owner/repo"],
-        fleet_pr_authors: ["babysitter[bot]"],
-        github_app_private_key_path: `${home}/worker-app.pem`,
-        pr_reviewer_app: {
-          private_key_path: `${home}/links/credentials/missing/reviewer.pem`,
-        },
-        ssh_key_path: `${home}/links/directory/../ssh.pem`,
-        gh_config_dir: `${home}/host-gh`,
-      };
-      await Deno.writeTextFile(configPath, JSON.stringify(config));
       await Deno.writeTextFile(
-        `${home}/.config.json`,
+        configPath,
         JSON.stringify({
-          ...config,
-          github_app_private_key_path: `${home}/decoy-worker.pem`,
-          pr_reviewer_app: { private_key_path: `${home}/decoy-reviewer.pem` },
-          ssh_key_path: `${home}/decoy-ssh.pem`,
-          gh_config_dir: `${home}/decoy-gh`,
+          repos: ["owner/repo"],
+          fleet_pr_authors: ["babysitter[bot]"],
         }),
       );
+      const checkout = new URL("../../..", import.meta.url).pathname
+        .replace(/\/$/, "");
       const cliArgs = [
         "run",
-        // Match the host launcher: Deno's narrower permission checks can
-        // normalise '..' before realPath reaches the filesystem.
         "--allow-all",
         "--cached-only",
         "--config",
-        new URL("../deno.json", import.meta.url).pathname,
+        configFile,
         "--preload",
         new URL(
-          "./fixtures/fleet_babysitter_repair_preload.ts",
+          "./fixtures/fleet_babysitter_container_preload.ts",
           import.meta.url,
         ).pathname,
-        new URL("../commands/fleet_pr_babysitter.ts", import.meta.url).pathname,
+        entry,
         "--repo=owner/repo",
         "--pr=1",
       ];
       const childEnv = {
         HOME: home,
+        PATH: `${home}/bin:/usr/bin:/bin`,
         CONFIG_PATH: configPath,
         TMPDIR: `${home}/tmp`,
+        VIBE_CREDENTIAL_DIR: `${home}/.vibe-coder/credentials`,
         BABYSITTER_REPAIR_FIXTURE: home,
+        BABYSITTER_REAL_CHECKOUT: checkout,
         DENO_DIR: denoDir,
       };
-      if (Deno.build.os !== "windows") {
-        const fifo = await new Deno.Command("mkfifo", {
-          args: [`${home}/blocked-fifo`],
-        }).output();
-        assert(fifo.success);
-        const blocked = await runWithTimeout(Deno.execPath(), cliArgs, {
-          cwd: home,
-          timeoutMs: 12_000,
-          clearEnv: true,
-          env: { ...childEnv, BABYSITTER_BLOCK_OPEN: "1" },
-        });
-        assert(blocked.ok, "non-watch pass exits despite a pending open");
-        assertEquals(blocked.value.success, false);
-        assertStringIncludes(blocked.value.stderr, "timed out opening");
-        await Deno.remove(
-          `${home}/.local/state/vibe-coder/fleet-pr-babysitter`,
-          {
-            recursive: true,
-          },
-        );
-        await Deno.remove(`${home}/clone-calls.log`);
-      }
-      const result = await runWithTimeout(Deno.execPath(), cliArgs, {
+      const fifo = await new Deno.Command("mkfifo", {
+        args: [`${home}/blocked-fifo`],
+      }).output();
+      assert(fifo.success);
+      // The in-container agent leaves a FIFO as its PR description, so the
+      // runner's read of it never completes.
+      const blocked = await runWithTimeout(Deno.execPath(), cliArgs, {
         cwd: home,
-        timeoutMs: 20_000,
+        timeoutMs: 25_000,
+        clearEnv: true,
+        env: { ...childEnv, BABYSITTER_BLOCK_OPEN: "1" },
+      });
+      assert(blocked.ok, "non-watch pass exits despite a pending open");
+      assertEquals(blocked.value.timedOut, false, blocked.value.stderr);
+      assertEquals(blocked.value.success, false);
+      assertStringIncludes(blocked.value.stderr, "timed out opening");
+      // The container ran, so the failure is the pending open and not setup.
+      assertStringIncludes(
+        await Deno.readTextFile(`${home}/runtime-run.json`),
+        "babysitter-repair",
+      );
+      // Positive control: with the open not blocked, the same pass succeeds
+      // and applies the description the container's agent proposed.
+      await Deno.remove(`${home}/.local/state/vibe-coder/fleet-pr-babysitter`, {
+        recursive: true,
+      });
+      await Deno.remove(`${home}/runtime-run.json`);
+      const completed = await runWithTimeout(Deno.execPath(), cliArgs, {
+        cwd: home,
+        timeoutMs: 40_000,
         clearEnv: true,
         env: childEnv,
       });
-      assert(result.ok);
-      assertEquals(result.value.success, true, result.value.stderr);
-      assertStringIncludes(result.value.stdout, "agent made no changes");
-      assertStringIncludes(
-        await Deno.readTextFile(`${home}/attempt-marker.txt`),
-        "vibe-babysitter-attempt signature=",
-      );
-      // The repair clones through a mirror, then points origin at GitHub over
-      // the protocol gh reports (ssh in the fixture).
-      assertEquals(
-        await Deno.readTextFile(`${home}/origin-url`),
-        "git@github.com:owner/repo.git",
-      );
-      const cloneCalls = (await Deno.readTextFile(`${home}/clone-calls.log`))
-        .trim().split("\n");
-      assertEquals(cloneCalls.length, 2);
-      assert(
-        cloneCalls[0]!.startsWith(
-          "clone --bare git@github.com:owner/repo.git ",
-        ),
-        cloneCalls[0],
-      );
-      assert(cloneCalls[1]!.startsWith("clone --no-checkout --no-hardlinks "));
-      const args: string[] = JSON.parse(
-        await Deno.readTextFile(`${home}/agent-spawn.json`),
-      );
-      const profile = args.find((arg) =>
-        arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={`)
-      );
-      assert(profile);
+      assert(completed.ok);
+      assertEquals(completed.value.success, true, completed.value.stderr);
       assertEquals(
         await Deno.readTextFile(`${home}/applied-body`),
         "Reviewed PR description",
       );
-      const bodyFile = await Deno.readTextFile(`${home}/body-file`);
-      const writablePaths = [...profile.matchAll(/"([^"]+)" = "write"/g)]
-        .map((match) => match[1]!);
-      assertEquals(writablePaths.length, 2, "clone and scratch write grants");
-      for (const writable of writablePaths) {
-        assert(bodyFile !== writable && !bodyFile.startsWith(`${writable}/`));
-      }
-      for (
-        const path of [
-          privateKeyPath,
-          `${home}/host-gh`,
-          `${home}/worker-app.pem`,
-          `${home}/links/credentials/missing/reviewer.pem`,
-          `${await Deno.realPath(`${home}/target`)}/missing/reviewer.pem`,
-          `${home}/links/ssh.pem`,
-          await Deno.realPath(`${home}/lexical-key.pem`),
-          await Deno.realPath(`${home}/target/ssh.pem`),
-        ]
-      ) {
-        assertStringIncludes(profile, `${JSON.stringify(path)} = "none"`);
-      }
-      for (const name of ["worker.pem", "reviewer.pem", "ssh.pem", "gh"]) {
-        assert(!profile.includes(`${home}/decoy-${name}`));
-      }
     } finally {
       await Deno.remove(home, { recursive: true });
     }
   });
 });
 
-Deno.test("agent launch mints a scoped token and passes it to Codex", async () => {
+Deno.test("agent launch mints a scoped token and hands the container only that token", async () => {
   if (Deno.env.get("BABYSITTER_TOKEN_TEST_CHILD") !== "1") {
     const result = await new Deno.Command(Deno.execPath(), {
       args: [
@@ -231,237 +178,169 @@ Deno.test("agent launch mints a scoped token and passes it to Codex", async () =
     return;
   }
   await withTestKey(async (privateKeyPath) => {
-    const home = await Deno.makeTempDir();
+    const dirs = await repairDirs();
     try {
       const requests: Array<{ url: string; body: unknown }> = [];
-      let env: Record<string, string> | undefined;
-      let args: string[] = [];
-      const configPath = `${home}/worker-config.json`;
-      await Deno.writeTextFile(
-        configPath,
-        JSON.stringify({
-          ssh_key_path: "~/fleet/id_ed25519",
-          gh_config_dir: "~/gh-fleet",
-          github_app_private_key_path: "~/worker-app.pem",
-          pr_reviewer_app: { private_key_path: "~/reviewer-app.pem" },
-        }),
-      );
-      const hostEnv: Record<string, string> = {
-        VIBE_CREDENTIAL_DIR: `${home}/custom-credentials`,
-        GH_CONFIG_DIR: `${home}/host-gh-config`,
-      };
-      await startBabysitterAgent(
+      const spawns: RuntimeSpawn[] = [];
+      const started = await startBabysitterAgent(
         { appId: "123", installationId: "456", privateKeyPath },
         "owner/repo",
         {
-          dir: "/clone",
-          scratch: "/scratch",
+          ...dirs,
           prompt: "repair",
-          responseFile: "/exchange/response",
-          home,
-          configPath,
-          env: (name) => hostEnv[name],
+          fetchFn: fakeTokenExchange(
+            { permissions: BABYSITTER_AGENT_PERMISSIONS },
+            requests,
+          ),
+          container: fakeContainer(spawns),
         },
         () => Promise.resolve(true),
-        fakeTokenExchange(
-          { permissions: BABYSITTER_AGENT_PERMISSIONS },
-          requests,
-        ),
-        (_executable, options) => {
-          env = options.env as Record<string, string>;
-          args = options.args as string[];
-          return {} as Deno.ChildProcess;
-        },
-        () => Promise.resolve("codex"),
       );
+      assertEquals(started, true);
       assertEquals(requests[0]!.body, {
         repositories: ["repo"],
         permissions: BABYSITTER_AGENT_PERMISSIONS,
       });
-      assertEquals(env?.GH_TOKEN, "ghs_agent_token");
+      assertEquals(spawns.length, 1);
+      const [spawn] = spawns;
+      assertEquals(spawn!.runtime, "podman");
+      assertEquals(spawn!.env.GH_TOKEN, "ghs_agent_token");
       assertEquals(Deno.env.get("GH_TOKEN"), "runner-write-token");
-      assertEquals(env?.GH_TOKEN === Deno.env.get("GH_TOKEN"), false);
-      assert(
-        args.some((arg) =>
-          arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={ `) &&
-          arg.includes(`${JSON.stringify(privateKeyPath)} = "none"`)
-        ),
-      );
-      const profile = args.find((arg) =>
-        arg.startsWith(`${BABYSITTER_FILESYSTEM_KEY}={`)
-      )!;
-      for (
-        const path of [
-          `${home}/custom-credentials`,
-          `${home}/.vibe-coder/credentials`,
-          `${home}/host-gh-config`,
-          `${home}/gh-fleet`,
-          `${home}/.config/gh`,
-          `${home}/worker-app.pem`,
-          `${home}/reviewer-app.pem`,
-          `${home}/fleet/id_ed25519`,
-        ]
-      ) {
-        assert(profile.includes(`${JSON.stringify(path)} = "none"`), path);
-      }
+      assert(spawn!.env.GH_TOKEN !== Deno.env.get("GH_TOKEN"));
+      assert(spawn!.args.includes("babysitter-repair"));
     } finally {
-      await Deno.remove(home, { recursive: true });
+      await Deno.remove(dirs.root, { recursive: true });
     }
   });
 });
 
 Deno.test("agent launch does not record an attempt when token minting fails", async () => {
   await withTestKey(async (privateKeyPath) => {
-    const home = await Deno.makeTempDir();
+    const dirs = await repairDirs();
     try {
       let guarded = false;
-      let spawned = false;
+      const spawns: RuntimeSpawn[] = [];
       await assertRejects(() =>
         startBabysitterAgent(
           { appId: "123", installationId: "456", privateKeyPath },
           "owner/repo",
           {
-            dir: "/clone",
-            scratch: "/scratch",
+            ...dirs,
             prompt: "repair",
-            responseFile: "/exchange/response",
-            home,
-            configPath: `${home}/missing-config.json`,
+            fetchFn: () =>
+              Promise.resolve(new Response("exchange failed", { status: 500 })),
+            container: fakeContainer(spawns),
           },
           () => {
             guarded = true;
             return Promise.resolve(true);
           },
-          () =>
-            Promise.resolve(new Response("exchange failed", { status: 500 })),
-          () => {
-            spawned = true;
-            return {} as Deno.ChildProcess;
-          },
-          () => Promise.resolve("codex"),
         )
       );
       assertEquals(guarded, false);
-      assertEquals(spawned, false);
+      assertEquals(spawns.length, 0);
     } finally {
-      await Deno.remove(home, { recursive: true });
+      await Deno.remove(dirs.root, { recursive: true });
     }
   });
 });
 
 Deno.test("agent session ends before the read token expires and reports its expiry", async () => {
   await withTestKey(async (privateKeyPath) => {
-    const home = await Deno.makeTempDir();
+    const dirs = await repairDirs();
     try {
       const expiry = new Date(Date.now() + 10 * 60_000);
-      let sessionMs = 0;
       let observedExpiry: Date | undefined;
+      const spawns: RuntimeSpawn[] = [];
       await startBabysitterAgent(
         { appId: "123", installationId: "456", privateKeyPath },
         "owner/repo",
         {
-          dir: "/clone",
-          scratch: "/scratch",
+          ...dirs,
           prompt: "repair",
-          home,
-          configPath: `${home}/missing-config.json`,
-          responseFile: "/exchange/response",
           maxSessionMs: 9 * 60_000,
           onTokenExpiry: (value) => observedExpiry = value,
+          fetchFn: fakeTokenExchange({
+            permissions: BABYSITTER_AGENT_PERMISSIONS,
+            expires_at: expiry.toISOString(),
+          }, []),
+          container: fakeContainer(spawns),
         },
         () => Promise.resolve(true),
-        fakeTokenExchange({
-          permissions: BABYSITTER_AGENT_PERMISSIONS,
-          expires_at: expiry.toISOString(),
-        }, []),
-        (_executable, options) => {
-          sessionMs = options.timeoutMs as number;
-          return {} as Deno.ChildProcess;
-        },
-        () => Promise.resolve("codex"),
       );
       assertEquals(observedExpiry?.toISOString(), expiry.toISOString());
+      const sessionMs = spawns[0]!.timeoutMs;
       assert(sessionMs > 7 * 60_000 && sessionMs < 8 * 60_000);
     } finally {
-      await Deno.remove(home, { recursive: true });
+      await Deno.remove(dirs.root, { recursive: true });
     }
   });
 });
 
-Deno.test("agent launch refuses a relative HOME before minting a token or spawning", async () => {
+Deno.test("agent launch refuses a token that expires too soon for a safe session, before any container", async () => {
   await withTestKey(async (privateKeyPath) => {
-    let fetched = false;
-    let guarded = false;
-    let spawned = false;
-    await assertRejects(
-      () =>
-        startBabysitterAgent(
-          { appId: "123", installationId: "456", privateKeyPath },
-          "owner/repo",
-          {
-            dir: "/clone",
-            scratch: "/scratch",
-            prompt: "repair",
-            responseFile: "/exchange/response",
-            home: "relative",
-            configPath: "/missing-config.json",
-          },
-          () => {
-            guarded = true;
-            return Promise.resolve(true);
-          },
-          () => {
-            fetched = true;
-            return Promise.resolve(new Response("", { status: 500 }));
-          },
-          () => {
-            spawned = true;
-            return {} as Deno.ChildProcess;
-          },
-          () => Promise.resolve("codex"),
-        ),
-      Error,
-      "must be an absolute path",
-    );
-    assertEquals(fetched, false);
-    assertEquals(guarded, false);
-    assertEquals(spawned, false);
+    const dirs = await repairDirs();
+    try {
+      let guarded = false;
+      const spawns: RuntimeSpawn[] = [];
+      const error = await assertRejects(
+        () =>
+          startBabysitterAgent(
+            { appId: "123", installationId: "456", privateKeyPath },
+            "owner/repo",
+            {
+              ...dirs,
+              prompt: "repair",
+              fetchFn: fakeTokenExchange({
+                permissions: BABYSITTER_AGENT_PERMISSIONS,
+                expires_at: new Date(Date.now() + 60_000).toISOString(),
+              }, []),
+              container: fakeContainer(spawns),
+            },
+            () => {
+              guarded = true;
+              return Promise.resolve(true);
+            },
+          ),
+        BabysitterFailure,
+        "expires before a safe session can start",
+      );
+      assertEquals(error.blockerClass, "infrastructure");
+      assertEquals(guarded, false);
+      assertEquals(spawns.length, 0);
+    } finally {
+      await Deno.remove(dirs.root, { recursive: true });
+    }
   });
 });
 
-Deno.test("agent launch does not spawn an already attempted head", async () => {
+Deno.test("agent launch does not start a container for an already attempted head", async () => {
   await withTestKey(async (privateKeyPath) => {
-    const home = await Deno.makeTempDir();
+    const dirs = await repairDirs();
     try {
       const requests: Array<{ url: string; body: unknown }> = [];
-      let spawned = false;
-      const result = await startBabysitterAgent(
+      const spawns: RuntimeSpawn[] = [];
+      const started = await startBabysitterAgent(
         { appId: "123", installationId: "456", privateKeyPath },
         "owner/repo",
         {
-          dir: "/clone",
-          scratch: "/scratch",
+          ...dirs,
           prompt: "repair",
-          responseFile: "/exchange/response",
-          home,
-          configPath: `${home}/missing-config.json`,
+          fetchFn: fakeTokenExchange(
+            { permissions: BABYSITTER_AGENT_PERMISSIONS },
+            requests,
+          ),
+          container: fakeContainer(spawns),
         },
         () => Promise.resolve(false),
-        fakeTokenExchange(
-          { permissions: BABYSITTER_AGENT_PERMISSIONS },
-          requests,
-        ),
-        () => {
-          spawned = true;
-          return {} as Deno.ChildProcess;
-        },
-        () => Promise.resolve("codex"),
       );
       assertEquals(requests.length, 1);
-      assertEquals(result, undefined);
-      assertEquals(spawned, false);
+      assertEquals(started, false);
+      assertEquals(spawns.length, 0);
+      // The prompt is written only once the session is allowed to start.
+      await assertRejects(() => Deno.stat(`${dirs.scratch}/prompt.md`));
     } finally {
-      await Deno.remove(home, { recursive: true });
+      await Deno.remove(dirs.root, { recursive: true });
     }
   });
 });
@@ -630,72 +509,6 @@ Deno.test("App token refresh recovers after a transient failure", async () => {
 // runner's write token; it gets its own single-repo, read-only installation token.
 // =============================================================================
 
-/**
- * Generate a fresh 2048-bit RSA key at test time, as a PKCS#8 PEM string.
- *
- * Generated per call rather than committed, so no key material lives in source.
- * The PEM header and footer are concatenated so no literal PEM block appears.
- */
-async function generateTestKeyPem(): Promise<string> {
-  const pair = await crypto.subtle.generateKey(
-    {
-      name: "RSASSA-PKCS1-v1_5",
-      modulusLength: 2048,
-      publicExponent: new Uint8Array([1, 0, 1]),
-      hash: "SHA-256",
-    },
-    true,
-    ["sign", "verify"],
-  );
-  const der = new Uint8Array(
-    await crypto.subtle.exportKey("pkcs8", pair.privateKey),
-  );
-  const lines = btoa(String.fromCharCode(...der)).match(/.{1,64}/g)!;
-  const header = "-----BEGIN " + "PRIVATE KEY-----";
-  const footer = "-----END " + "PRIVATE KEY-----";
-  return [header, ...lines, footer].join("\n") + "\n";
-}
-
-/** Run `run` with a generated test key written to a temp file, removed afterwards. */
-async function withTestKey(
-  run: (privateKeyPath: string) => Promise<void>,
-): Promise<void> {
-  const dir = await Deno.makeTempDir();
-  try {
-    const privateKeyPath = `${dir}/app-key.pem`;
-    await Deno.writeTextFile(privateKeyPath, await generateTestKeyPem());
-    await run(privateKeyPath);
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-}
-
-/**
- * Fake GitHub token exchange: records each request, answers 201 with a token
- * and the given extra response fields (e.g. the granted `permissions`).
- */
-function fakeTokenExchange(
-  response: Record<string, unknown>,
-  requests: Array<{ url: string; body: unknown }>,
-): FetchFn {
-  return (url, init) => {
-    requests.push({
-      url: url.toString(),
-      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
-    });
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          token: "ghs_agent_token",
-          expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
-          ...response,
-        }),
-        { status: 201, headers: { "Content-Type": "application/json" } },
-      ),
-    );
-  };
-}
-
 Deno.test("babysitter agent token - scope is frozen read-only permissions", () => {
   assertEquals(Object.isFrozen(BABYSITTER_AGENT_PERMISSIONS), true);
   assertEquals(BABYSITTER_AGENT_PERMISSIONS, {
@@ -767,63 +580,6 @@ Deno.test("babysitter agent token - rejects when GitHub reports no permissions",
 
     assertStringIncludes(error.message, "read-only");
   });
-});
-
-Deno.test("babysitter agent env - gives the agent its token and scratch directories only", () => {
-  assertEquals(babysitterAgentEnv("/scratch/agent", "ghs_agent_token"), {
-    TMPDIR: "/scratch/agent",
-    XDG_CACHE_HOME: "/scratch/agent",
-    GH_TOKEN: "ghs_agent_token",
-    GH_CONFIG_DIR: "/scratch/agent/gh-config",
-  });
-});
-
-// Issue #4722: the inherited GH_CONFIG_DIR (or ~/.config/gh) is a protected
-// path, so gh failed reading it; the agent gets an empty one in its scratch.
-Deno.test("babysitter agent env - points gh at a config directory in scratch", () => {
-  const env = babysitterAgentEnv("/scratch/agent", "ghs_agent_token");
-  assert(env.GH_CONFIG_DIR!.startsWith("/scratch/agent/"));
-});
-
-Deno.test("babysitter agent env - rejects an empty token", () => {
-  assertThrows(() => babysitterAgentEnv("/scratch/agent", ""), Error, "token");
-});
-
-Deno.test("agent launch stops before mint, attempt or spawn when Codex cannot be provided", async () => {
-  let fetched = false;
-  let attempted = false;
-  let spawned = false;
-  await assertRejects(
-    () =>
-      startBabysitterAgent(
-        { appId: "123", installationId: "456", privateKeyPath: "/key" },
-        "owner/repo",
-        {
-          dir: "/clone",
-          scratch: "/scratch",
-          prompt: "repair",
-          responseFile: "/exchange/response",
-          home: "/home",
-          configPath: "/missing-config.json",
-        },
-        () => {
-          attempted = true;
-          return Promise.resolve(true);
-        },
-        () => {
-          fetched = true;
-          return Promise.resolve(new Response());
-        },
-        () => {
-          spawned = true;
-          return {} as Deno.ChildProcess;
-        },
-        () => Promise.reject(new Error("Codex install failed")),
-      ),
-    Error,
-    "Codex install failed",
-  );
-  assertEquals([fetched, attempted, spawned], [false, false, false]);
 });
 
 Deno.test("access discovery uses metadata-only credentials and rechecks changed access", async () => {

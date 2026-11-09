@@ -5,7 +5,10 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 import { assert, assertEquals, assertRejects } from "@std/assert";
-import { run } from "../commands/fleet_pr_babysitter.ts";
+import {
+  HOST_GIT_HARDENING_ARGS,
+  run,
+} from "../commands/fleet_pr_babysitter.ts";
 import type { runGitArgv } from "../lib/git_timeout.ts";
 
 type GitArgvOutput = Awaited<ReturnType<typeof runGitArgv>>;
@@ -44,7 +47,13 @@ Deno.test("run sends git push through the chokepoint with a 30-minute timeout", 
   assertEquals(calls.length, 1);
   const call = calls[0];
   assert(call !== undefined);
-  assertEquals(call.argv, ["git", "push", "origin", "HEAD"]);
+  assertEquals(call.argv, [
+    "git",
+    ...HOST_GIT_HARDENING_ARGS,
+    "push",
+    "origin",
+    "HEAD",
+  ]);
   assertEquals(call.options.cwd, "/some/dir");
   assertEquals(call.options.timeoutSeconds, 1800);
   assertEquals(result, "ok");
@@ -68,7 +77,13 @@ Deno.test("run sends git fetch through the chokepoint with a 30-minute timeout",
   assertEquals(calls.length, 1);
   const call = calls[0];
   assert(call !== undefined);
-  assertEquals(call.argv, ["git", "fetch", "origin", refspec]);
+  assertEquals(call.argv, [
+    "git",
+    ...HOST_GIT_HARDENING_ARGS,
+    "fetch",
+    "origin",
+    refspec,
+  ]);
   assertEquals(call.options.cwd, "/some/dir");
   assertEquals(call.options.timeoutSeconds, 1800);
   assertEquals(result, "ok");

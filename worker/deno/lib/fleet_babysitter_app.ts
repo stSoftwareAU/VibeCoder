@@ -204,8 +204,8 @@ export async function babysitterAppIdentity(
  * Start fail-closed, refreshing the installation token before it expires.
  *
  * The token this sets is the runner's write token, used for the runner's own
- * writes. It is NOT given to the Codex agent, which gets its own read-only token
- * from {@link mintBabysitterAgentToken} (Issue #4572).
+ * writes. It is NOT given to the babysitter agent, which gets its own read-only
+ * token from {@link mintBabysitterAgentToken} (Issue #4572).
  */
 export async function startBabysitterAppAuth(
   config: BabysitterAppConfig,
@@ -251,7 +251,7 @@ export async function startBabysitterAppAuth(
 }
 
 /**
- * Permissions the Codex agent's own token carries (Issue #4572).
+ * Permissions the babysitter agent's own token carries (Issue #4572).
  *
  * The agent only reads. Every write (labels, comments, pushes, merges) is made
  * by the runner with its own token, so the agent's credential cannot write.
@@ -266,7 +266,8 @@ export const BABYSITTER_AGENT_PERMISSIONS: Readonly<Record<string, string>> =
   });
 
 /**
- * Mint the Codex agent's own read-only token, reaching one repository (Issue #4572).
+ * Mint the babysitter agent's own read-only token, reaching one repository
+ * (Issue #4572).
  *
  * The agent only reads; every write is the runner's. The token is freshly
  * minted for one repository and its expiry is returned so the caller can end
@@ -310,30 +311,4 @@ export async function mintBabysitterAgentToken(
     }
   }
   return { token: minted.token, expiresAt: minted.expiresAt };
-}
-
-/**
- * The environment the Codex agent runs with (Issue #4572).
- *
- * Carries the agent's own token. TMPDIR and XDG_CACHE_HOME point at the agent's
- * scratch directory, so its temporary and cache files stay out of the runner's.
- *
- * @throws Error when the token is empty.
- */
-export function babysitterAgentEnv(
-  scratch: string,
-  token: string,
-): Record<string, string> {
-  if (token.trim() === "") {
-    throw new Error("Refusing to start the babysitter agent without a token");
-  }
-  // Issue #4722: the inherited GH_CONFIG_DIR and ~/.config/gh are protected
-  // paths, and gh reads its configuration even with GH_TOKEN set, so it would
-  // fail. An empty directory in scratch leaves it the agent's token only.
-  return {
-    TMPDIR: scratch,
-    XDG_CACHE_HOME: scratch,
-    GH_TOKEN: token,
-    GH_CONFIG_DIR: `${scratch}/gh-config`,
-  };
 }

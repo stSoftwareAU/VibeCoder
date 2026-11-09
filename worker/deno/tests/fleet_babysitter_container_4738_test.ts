@@ -15,8 +15,13 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import type { ContainerLaunchPlan } from "../lib/container_launch.ts";
+import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
+import { REPO_ROOT } from "./fixtures/launcher_harness.ts";
 import {
   assertBabysitterKeyOutOfRunArgs,
+  BABYSITTER_CLONE_MOUNT,
+  BABYSITTER_SCRATCH_MOUNT,
+  babysitterCheckoutDir,
   type BabysitterContainerDeps,
   type BabysitterContainerInput,
   type BabysitterEnvReader,
@@ -25,6 +30,7 @@ import {
   babysitterSpawn,
   type BabysitterSpawnResult,
   buildBabysitterRunArgs,
+  preflightBabysitterContainer,
   runBabysitterRepairContainer,
 } from "../lib/fleet_babysitter_container.ts";
 
@@ -295,6 +301,8 @@ Deno.test("repair spawns the plan's run args, the mounts, GH_TOKEN and the fixed
       "--volume",
       `${f.clone}:/babysitter/clone`,
       "--volume",
+      `${f.clone}/.git:/babysitter/clone/.git:ro`,
+      "--volume",
       `${f.scratch}:/babysitter/scratch`,
       "--env",
       "GH_TOKEN",
@@ -320,7 +328,7 @@ Deno.test("repair spawns the plan's run args, the mounts, GH_TOKEN and the fixed
   }
 });
 
-Deno.test("repair drops the named volumes and adds exactly the clone and scratch mounts", async () => {
+Deno.test("repair drops the named volumes and adds exactly the clone, its read-only .git and scratch mounts", async () => {
   const f = await makeFixture();
   try {
     const { deps, calls } = fakeDeps(f);
@@ -343,8 +351,128 @@ Deno.test("repair drops the named volumes and adds exactly the clone and scratch
       `${f.root}/logs:/home/vibe/logs`,
       `${f.root}/repo:/workspace:ro`,
       `${f.clone}:/babysitter/clone`,
+      `${f.clone}/.git:/babysitter/clone/.git:ro`,
       `${f.scratch}:/babysitter/scratch`,
     ]);
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair drops the gh credential store mount and keeps the provider credential mounts (Issue #4770)", async () => {
+  const f = await makeFixture();
+  try {
+    const gh = `${f.root}/host/credentials/gh`;
+    const claude = `${f.root}/host/credentials/claude`;
+    const ghExtra = `${f.root}/host/credentials/gh-extra`;
+    const credentialMounts = (options: string): string[] => [
+      "--volume",
+      `${gh}:/home/vibe/.vibe-coder/credentials/gh${options}`,
+      "--volume",
+      `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+      "--volume",
+      `${ghExtra}:/home/vibe/.vibe-coder/credentials/gh-extra:ro`,
+    ];
+    for (const options of [":ro", ""]) {
+      const plan = fakePlan(f.root, "vibe-test", credentialMounts(options));
+      const args = buildBabysitterRunArgs(plan, {
+        clone: f.clone,
+        scratch: f.scratch,
+      });
+      const mounts = volumeValues(args);
+      assertEquals(
+        mounts.filter((value) => value.startsWith(`${gh}:`)),
+        [],
+        `the gh store must not be mounted (options "${options}")`,
+      );
+      assert(
+        mounts.includes(
+          `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+        ),
+        "a provider credential mount stays",
+      );
+      assert(
+        mounts.includes(
+          `${ghExtra}:/home/vibe/.vibe-coder/credentials/gh-extra:ro`,
+        ),
+        "a sibling directory named gh-extra is not the gh store",
+      );
+    }
+
+    // The run the repair spawns carries no gh store mount either.
+    const { deps, calls } = fakeDeps(f, {
+      extra: credentialMounts(":ro"),
+    });
+    await runBabysitterRepairContainer(inputFor(f), deps);
+    const spawned = volumeValues(spawnAt(calls, 0).args);
+    assertEquals(
+      spawned.filter((value) => value.startsWith(`${gh}:`)),
+      [],
+      "the repair run mounts no gh store",
+    );
+    assert(
+      spawned.includes(
+        `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+      ),
+      "the repair run keeps the provider credential mount",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair drops the custom prompt mount and its env spec, and keeps provider mounts (Issue #4770)", async () => {
+  const f = await makeFixture();
+  try {
+    const label = `${f.home}/.vibe-coder/credentials/gh/label.md`;
+    const claude = `${f.root}/host/credentials/claude`;
+    const sibling = `${f.root}/host/custom-prompts-other`;
+    const promptMap = JSON.stringify({
+      [label]: "/home/vibe/.vibe-coder/custom-prompts/1/label.md",
+    });
+    const planExtra = (envArg: string[]): string[] => [
+      "--volume",
+      `${label}:/home/vibe/.vibe-coder/custom-prompts/1:ro`,
+      "--volume",
+      `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+      "--volume",
+      `${sibling}:/home/vibe/.vibe-coder/custom-prompts-other:ro`,
+      ...envArg,
+    ];
+    for (
+      const envArg of [
+        ["--env", `VIBE_CUSTOM_PROMPT_PATHS=${promptMap}`],
+        [`--env=VIBE_CUSTOM_PROMPT_PATHS=${promptMap}`],
+      ]
+    ) {
+      const plan = fakePlan(f.root, "vibe-test", planExtra(envArg));
+      const args = buildBabysitterRunArgs(plan, {
+        clone: f.clone,
+        scratch: f.scratch,
+      });
+      const mounts = volumeValues(args);
+      assertEquals(
+        mounts.filter((value) => value.startsWith(`${label}:`)),
+        [],
+        `the custom prompt mount must not be mounted (${envArg[0]})`,
+      );
+      assert(
+        !args.some((arg) => arg.includes("VIBE_CUSTOM_PROMPT_PATHS")),
+        `the custom prompt env spec must not reach the run args (${envArg[0]})`,
+      );
+      assert(
+        mounts.includes(
+          `${claude}:/home/vibe/.vibe-coder/credentials/claude:ro`,
+        ),
+        "a provider credential mount stays",
+      );
+      assert(
+        mounts.includes(
+          `${sibling}:/home/vibe/.vibe-coder/custom-prompts-other:ro`,
+        ),
+        "a sibling named custom-prompts-other is not the custom prompt target",
+      );
+    }
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }
@@ -685,6 +813,300 @@ Deno.test("repair refuses every spelling of a GH_TOKEN env spec, and accepts an 
       1,
       "control: other env accepted",
     );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("buildBabysitterRunArgs drops the custom prompt env spec in the -e and bare-name spellings", async () => {
+  const f = await makeFixture();
+  try {
+    const promptMap = `{"1":"${f.root}/custom-prompts/1"}`;
+    for (
+      const envArg of [
+        ["-e", `VIBE_CUSTOM_PROMPT_PATHS=${promptMap}`],
+        ["--env", "VIBE_CUSTOM_PROMPT_PATHS"],
+        ["-e", "VIBE_CUSTOM_PROMPT_PATHS"],
+      ]
+    ) {
+      const plan = fakePlan(f.root, "vibe-test", envArg);
+      const args = buildBabysitterRunArgs(plan, {
+        clone: f.clone,
+        scratch: f.scratch,
+      });
+      assert(
+        !args.some((arg) => arg.includes("VIBE_CUSTOM_PROMPT_PATHS")),
+        `the custom prompt env spec must not reach the run args (${
+          envArg.join(" ")
+        })`,
+      );
+      assertEquals(
+        args[args.indexOf("GH_TOKEN") - 1],
+        "--env",
+        `control: the repair still passes GH_TOKEN (${envArg.join(" ")})`,
+      );
+    }
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("the real repair plan mounts no gh credential, key or custom prompt path, and passes no GH_, GITHUB_ or SSH_ env (Issue #4770)", async () => {
+  const f = await makeFixture();
+  try {
+    const credentials = `${f.home}/.vibe-coder/credentials`;
+    const gh = `${credentials}/gh`;
+    const claude = `${credentials}/claude`;
+    for (const dir of [`${gh}/prompts`, claude]) {
+      await Deno.mkdir(dir, { recursive: true });
+    }
+    const configFile = `${f.home}/config.json`;
+    await Deno.writeTextFile(configFile, "{}");
+    const environment: Record<string, string> = {
+      HOME: f.home,
+      VIBE_CREDENTIAL_DIR: credentials,
+      CONFIG_PATH: configFile,
+      WORK_DIR: `${f.home}/work`,
+      VIBE_CUSTOM_PROMPT_PATHS: JSON.stringify({ "1": `${gh}/prompts` }),
+    };
+    const plan = await buildLaunchPlanForCommand(
+      REPO_ROOT,
+      "vibe-babysitter-4738",
+      {
+        env: (name) => environment[name],
+        now: () => 1_900_000_000_000,
+        probe: (candidate) =>
+          Promise.resolve({
+            available: true,
+            path: `/usr/bin/${candidate.executable}`,
+          }),
+      },
+    );
+    const args = buildBabysitterRunArgs(plan, {
+      clone: f.clone,
+      scratch: f.scratch,
+      workspaceSnapshot: `${f.scratch}/worker-snapshot`,
+    });
+
+    const volumes = volumeValues(args);
+    const paths = volumes.flatMap((value) => value.split(":").slice(0, 2));
+    const forbidden = [
+      gh,
+      f.keyDir,
+      `${f.home}/.vibe-coder/custom-prompts`,
+      "/home/vibe/.vibe-coder/credentials/gh",
+      "/home/vibe/.vibe-coder/custom-prompts",
+    ];
+    for (const path of paths) {
+      for (const dir of forbidden) {
+        assert(
+          path !== dir && !path.startsWith(`${dir}/`),
+          `no mount may reach ${dir}: ${path}`,
+        );
+      }
+    }
+    const mounts = volumeValues(args);
+    const base = plan.mounts.find((mount) => mount.target === "/workspace");
+    const logs = plan.mounts.find((mount) => mount.target.endsWith("/logs"));
+    const stagedConfig = plan.mounts.find((mount) =>
+      mount.target.endsWith("/run-config")
+    );
+    assert(base && logs && stagedConfig);
+    assert(mounts.includes(`${f.scratch}/worker-snapshot:/workspace:ro`));
+    assert(!mounts.some((mount) => mount.startsWith(`${base.source}:`)));
+    assert(!mounts.some((mount) => mount.startsWith(`${logs.source}:`)));
+    assert(
+      !mounts.some((mount) => mount.startsWith(`${stagedConfig.source}:`)),
+    );
+    assert(mounts.includes(`${f.scratch}:/home/vibe/logs`));
+    assert(args.includes("CONFIG_PATH=/workspace/.config.json"));
+
+    const envSpecs = args.filter((_, i) => args[i - 1] === "--env");
+    assert(envSpecs.includes("GH_TOKEN"), "the bare GH_TOKEN is passed");
+    assertEquals(
+      envSpecs.filter((spec) =>
+        /^(GH_|GITHUB_|SSH_)/.test(spec) && spec !== "GH_TOKEN"
+      ),
+      [],
+      "no GH_, GITHUB_ or SSH_ env except the bare GH_TOKEN",
+    );
+
+    assertEquals(
+      volumes.map((value) => value.split(":")[1]).sort(),
+      [
+        BABYSITTER_CLONE_MOUNT,
+        `${BABYSITTER_CLONE_MOUNT}/.git`,
+        BABYSITTER_SCRATCH_MOUNT,
+        "/home/vibe/.vibe-coder/credentials/claude",
+        "/home/vibe/logs",
+        "/workspace",
+      ].sort(),
+      "only the clone, its read-only .git, scratch, workspace, run-config, logs and enabled provider credential mounts remain",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair mounts a tracked checkout snapshot and a scrubbed config while keeping declared quality credentials", async () => {
+  const f = await makeFixture();
+  const workerCheckout = `${f.root}/worker-checkout`;
+  await Deno.mkdir(workerCheckout);
+  await Deno.writeTextFile(
+    `${workerCheckout}/tracked.txt`,
+    "tracked worker file\n",
+  );
+  const binaryContent = new Uint8Array([0, 255, 1, 128, 10]);
+  await Deno.writeFile(`${workerCheckout}/tracked.bin`, binaryContent);
+  await Deno.writeTextFile(
+    `${workerCheckout}/untracked-secret.txt`,
+    "host-only credential\n",
+  );
+  for (
+    const args of [
+      ["init", "-q", workerCheckout],
+      ["-C", workerCheckout, "add", "tracked.txt", "tracked.bin"],
+      [
+        "-C",
+        workerCheckout,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "fixture",
+      ],
+    ]
+  ) {
+    const result = await new Deno.Command("git", {
+      args,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(result.success, new TextDecoder().decode(result.stderr));
+  }
+  const configStage = `${f.root}/staged`;
+  const logs = `${f.root}/logs`;
+  const credentialRoot = `${f.root}/credentials`;
+  await Deno.mkdir(configStage);
+  await Deno.mkdir(logs);
+  await Deno.mkdir(`${credentialRoot}/claude`, { recursive: true });
+  await Deno.mkdir(`${credentialRoot}/gh`, { recursive: true });
+  await Deno.writeTextFile(
+    `${configStage}/.config.json`,
+    JSON.stringify({
+      repos: ["stSoftwareAU/VibeCoder"],
+      github_app_private_key_path: f.keyPath,
+      imgbb_api_key: "host-imgbb-secret",
+      max_issue_body_tokens: 1000,
+      recent_activity_max_tokens: 500,
+      repo_config: {
+        "stSoftwareAU/VibeCoder": {
+          quality_credentials: {
+            mint: "quality-token-command",
+            passthrough: ["QUALITY_TOKEN"],
+          },
+        },
+      },
+    }),
+  );
+  const name = "vibe-babysitter-snapshot";
+  const plan = fakePlan(f.root, name, [
+    "--volume",
+    `${logs}:/home/vibe/logs`,
+    "--volume",
+    `${workerCheckout}:/workspace:ro`,
+    "--volume",
+    `${configStage}:/container/run-config:ro`,
+    "--volume",
+    `${credentialRoot}/gh:/home/vibe/.vibe-coder/credentials/gh:ro`,
+    "--volume",
+    `${credentialRoot}/claude:/home/vibe/.vibe-coder/credentials/claude:ro`,
+    "--env",
+    "CONFIG_PATH=/container/run-config/.config.json",
+  ]);
+  plan.mounts = [
+    { source: "vibe-work", target: "/home/vibe/auto-issue-work", volume: true },
+    { source: logs, target: "/home/vibe/logs" },
+    { source: workerCheckout, target: "/workspace", readOnly: true },
+    { source: configStage, target: "/container/run-config", readOnly: true },
+    {
+      source: `${credentialRoot}/gh`,
+      target: "/home/vibe/.vibe-coder/credentials/gh",
+      readOnly: true,
+    },
+    {
+      source: `${credentialRoot}/claude`,
+      target: "/home/vibe/.vibe-coder/credentials/claude",
+      readOnly: true,
+    },
+  ];
+  const { deps, calls } = fakeDeps(f, { overrides: plan });
+  // The snapshot is removed when the session ends (Issue #4770), so the
+  // container's spawn reads what it mounts while the session runs.
+  let seen:
+    | {
+      tracked: string;
+      binary: Uint8Array;
+      untracked: boolean;
+      config: string;
+    }
+    | undefined;
+  const runSpawn = deps.spawn!;
+  deps.spawn = async (runtime, args, options) => {
+    const snapshot = `${f.scratch}/workspace`;
+    seen = {
+      tracked: await Deno.readTextFile(`${snapshot}/tracked.txt`),
+      binary: await Deno.readFile(`${snapshot}/tracked.bin`),
+      untracked: await Deno.stat(`${snapshot}/untracked-secret.txt`).then(
+        () => true,
+        () => false,
+      ),
+      config: await Deno.readTextFile(`${snapshot}/.config.json`),
+    };
+    return await runSpawn(runtime, args, options);
+  };
+  try {
+    await runBabysitterRepairContainer(
+      { ...inputFor(f), baseDir: workerCheckout },
+      deps,
+    );
+    const args = spawnAt(calls, 0).args;
+    assert(args.includes(`${f.scratch}/workspace:/workspace:ro`));
+    assert(seen, "the container ran with the snapshot");
+    assertEquals(seen.tracked, "tracked worker file\n");
+    assertEquals(seen.binary, binaryContent);
+    assertEquals(seen.untracked, false, "untracked files are not snapshotted");
+    // The snapshot is removed when the session ends.
+    await assertRejects(
+      () => Deno.stat(`${f.scratch}/workspace`),
+      Deno.errors.NotFound,
+    );
+    assert(args.includes(`${f.scratch}:/home/vibe/logs`));
+    assert(args.includes("CONFIG_PATH=/workspace/.config.json"));
+    assert(!args.some((arg) => arg.includes(`${f.keyDir}`)));
+    assert(
+      !volumeValues(args).some((mount) => mount.includes(`${configStage}:`)),
+    );
+    assert(!volumeValues(args).some((mount) => mount.includes(`${logs}:`)));
+    assert(
+      !volumeValues(args).some((mount) => mount.includes("/credentials/gh")),
+    );
+    assert(
+      volumeValues(args).some((mount) => mount.includes("/credentials/claude")),
+    );
+    const safeConfig = seen.config;
+    assert(!safeConfig.includes(f.keyPath));
+    assert(!safeConfig.includes("host-imgbb-secret"));
+    assert(safeConfig.includes("quality-token-command"));
+    assert(safeConfig.includes("QUALITY_TOKEN"));
+    assert(!safeConfig.includes("github_app_private_key_path"));
+    assert(!safeConfig.includes("imgbb_api_key"));
+    // Numeric limits are not secrets: a key named `*_tokens` keeps its value.
+    assertEquals(JSON.parse(safeConfig).max_issue_body_tokens, 1000);
+    assertEquals(JSON.parse(safeConfig).recent_activity_max_tokens, 500);
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }
@@ -1208,6 +1630,261 @@ Deno.test("babysitterSpawn passes the given env to the child", async () => {
     assertEquals(result.code, 0, `child env wrong: ${result.stderr}`);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * Fake deps for an abort test. The repair spawn runs `onRepairStarted` and
+ * then blocks until a kill arrives. The kill returns `killResult`, or throws
+ * when it is an Error, and it releases the blocked repair (exit 137).
+ */
+function blockingDeps(
+  f: Fixture,
+  killResult: BabysitterSpawnResult | Error,
+  onRepairStarted: () => void,
+): { deps: Partial<BabysitterContainerDeps>; calls: Calls } {
+  const { deps, calls } = fakeDeps(f);
+  let release: (result: BabysitterSpawnResult) => void = () => {};
+  const repairExited = new Promise<BabysitterSpawnResult>((resolve) => {
+    release = resolve;
+  });
+  deps.spawn = (runtime, args, opts) => {
+    calls.spawns.push({
+      runtime,
+      args: [...args],
+      env: { ...opts.env },
+      timeoutMs: opts.timeoutMs,
+    });
+    if (args[0] !== "kill") {
+      onRepairStarted();
+      return repairExited;
+    }
+    release({ success: false, code: 137, stderr: "", timedOut: false });
+    return killResult instanceof Error
+      ? Promise.reject(killResult)
+      : Promise.resolve(killResult);
+  };
+  return { deps, calls };
+}
+
+Deno.test("babysitterCheckoutDir is the checkout root, with no trailing slash", async () => {
+  const root = babysitterCheckoutDir();
+  assert(!root.endsWith("/"), root);
+  const stat = await Deno.stat(
+    `${root}/worker/deno/lib/fleet_babysitter_container.ts`,
+  );
+  assert(stat.isFile);
+});
+
+Deno.test("preflight refuses when the runtime is not on PATH, and never asks for the image", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps, calls } = fakeDeps(f, { onPath: false });
+    await assertRejects(
+      () => preflightBabysitterContainer({ baseDir: "/checkout" }, deps),
+      Error,
+      "cannot run fake-runtime: the container runtime is not on PATH",
+    );
+    assertEquals(calls.onPath, ["fake-runtime"]);
+    assertEquals(calls.imageExists, []);
+    assertEquals(calls.spawns.length, 0, "the preflight starts nothing");
+
+    const control = fakeDeps(f, { onPath: true });
+    await preflightBabysitterContainer(
+      { baseDir: "/checkout" },
+      control.deps,
+    );
+    assertEquals(control.calls.onPath, ["fake-runtime"]);
+    assertEquals(control.calls.built.length, 1, "one plan is built");
+    assert(
+      builtAt(control.calls, 0).startsWith("vibe-babysitter-"),
+      "the preflight plan takes a throwaway babysitter container name",
+    );
+    assertEquals(
+      control.calls.spawns.length,
+      0,
+      "the preflight starts nothing",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("preflight refuses when the worker image is not built, and starts nothing", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps, calls } = fakeDeps(f, { imageExists: false });
+    await assertRejects(
+      () => preflightBabysitterContainer({ baseDir: "/checkout" }, deps),
+      Error,
+      "the worker image is not built; start the Vibe Coder (./run.sh) once to build it",
+    );
+    assertEquals(calls.imageExists, [{
+      runtime: "fake-runtime",
+      args: ["image", "inspect", "vibe-coder:test"],
+    }]);
+    assertEquals(calls.spawns.length, 0, "the preflight starts nothing");
+
+    const control = fakeDeps(f, { imageExists: true });
+    await preflightBabysitterContainer({ baseDir: "/checkout" }, control.deps);
+    assertEquals(control.calls.spawns.length, 0);
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("abort while the repair runs kills the container by name, and the run settles", async () => {
+  const f = await makeFixture();
+  try {
+    const controller = new AbortController();
+    const { deps, calls } = blockingDeps(f, OK, () => controller.abort());
+    const logged: string[] = [];
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: controller.signal },
+          { ...deps, log: (message) => logged.push(message) },
+        ),
+      Error,
+      "exited with code 137",
+    );
+    assertEquals(calls.spawns.length, 2);
+    const name = builtAt(calls, 0);
+    assertEquals(spawnAt(calls, 1).runtime, "fake-runtime");
+    assertEquals(spawnAt(calls, 1).args, ["kill", name]);
+    assertEquals(spawnAt(calls, 1).timeoutMs, 30_000);
+    assert(!("GH_TOKEN" in spawnAt(calls, 1).env), "the kill carries no token");
+    assertEquals(logged, [], "a kill that worked logs nothing");
+
+    // The listener is removed when the run ends, so a later abort starts no kill.
+    const late = new AbortController();
+    const after = fakeDeps(f);
+    await runBabysitterRepairContainer(
+      { ...inputFor(f), signal: late.signal },
+      after.deps,
+    );
+    late.abort();
+    assertEquals(
+      after.calls.spawns.length,
+      1,
+      "an abort after the run ends starts no kill",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("a failed kill after an abort is logged, redacted, and not thrown", async () => {
+  const f = await makeFixture();
+  try {
+    const controller = new AbortController();
+    const failed: BabysitterSpawnResult = {
+      success: false,
+      code: 1,
+      stderr: `no such container ${TOKEN}`,
+      timedOut: false,
+    };
+    const { deps, calls } = blockingDeps(
+      f,
+      failed,
+      () => controller.abort(),
+    );
+    const logged: string[] = [];
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: controller.signal },
+          { ...deps, log: (message) => logged.push(message) },
+        ),
+      Error,
+      "exited with code 137",
+    );
+    const name = builtAt(calls, 0);
+    assertEquals(logged.length, 1, "the failed kill is logged once");
+    assertStringIncludes(
+      logged[0]!,
+      `could not kill container ${name} after abort`,
+    );
+    assertStringIncludes(logged[0]!, "exit code 1: no such container ***");
+    assert(!logged[0]!.includes(TOKEN), "the token is redacted from the log");
+
+    const thrownController = new AbortController();
+    const thrown = blockingDeps(
+      f,
+      new Error("spawn broke"),
+      () => thrownController.abort(),
+    );
+    const thrownLogged: string[] = [];
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: thrownController.signal },
+          { ...thrown.deps, log: (message) => thrownLogged.push(message) },
+        ),
+      Error,
+      "exited with code 137",
+    );
+    assertEquals(thrownLogged.length, 1, "a kill that throws is logged too");
+    assertStringIncludes(thrownLogged[0]!, "spawn broke");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair refuses an already-aborted signal before the runtime starts", async () => {
+  const f = await makeFixture();
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    const { deps, calls } = fakeDeps(f);
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), signal: controller.signal },
+          deps,
+        ),
+      Error,
+      "aborted before the container started",
+    );
+    assertEquals(calls.spawns.length, 0, "no runtime process starts");
+
+    const control = fakeDeps(f);
+    await runBabysitterRepairContainer(inputFor(f), control.deps);
+    assertEquals(
+      control.calls.spawns.length,
+      1,
+      "the same run, unaborted, starts",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair's non-zero exit names the rebuild hint and keeps the stderr cause", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps } = fakeDeps(f, {
+      spawnResults: [{
+        success: false,
+        code: 3,
+        stderr: "provider choice failed: no budget",
+        timedOut: false,
+      }],
+    });
+    const error = await assertRejects(
+      () => runBabysitterRepairContainer(inputFor(f), deps),
+      Error,
+    );
+    assertStringIncludes(
+      error.message,
+      "exited with code 3: provider choice failed: no budget",
+    );
+    assertStringIncludes(
+      error.message,
+      "; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it",
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
   }
 });
 
