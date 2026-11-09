@@ -39,23 +39,51 @@ from `worker/deno`.
 
 ## Test Plan
 
-- Added in `worker/deno/tests/closure_verdict_test.ts`: "underscores anywhere
-  in cited evidence survive" (evidence `test/_costFixtures.ts` and
-  `__init__.py` render unchanged and pass both gates). Extended "a label split
-  by markup cannot forge a departing verdict" with `reviewer#: met`. Renamed
-  "word-internal underscores and asterisks in cited names survive" to "…in
-  prose survive" and gave it the asterisk fixture (`src/a*b.ts`) it was
-  missing.
+- Added in `worker/deno/tests/closure_verdict_test.ts`:
+  - "underscores anywhere in cited evidence survive" — evidence
+    `test/_costFixtures.ts` and `__init__.py` render unchanged and pass both
+    gates.
+  - "parsed evidence keeps every underscore through parse and render" — the
+    model's reply is parsed before it is rendered, so the code-span sanitiser
+    must run at every evidence call site, not only the direct render. The test
+    sends a reply through `parseClosureVerdict` (covering the two parse sites
+    `readCriteria` and `readStandards`), then `renderClosureBlocks` (covering
+    the two render sites `renderCriterionEntry` and `renderStandardsEntry`).
+    It gives criterion evidence `test/_costFixtures.ts` and `__init__.py`, and
+    a Standards `violation` whose evidence is `test/_preload.ts:12` with reason
+    `fixed in this diff`; it asserts each parsed `evidence` equals the input,
+    that the rendered block contains each path unchanged inside its code span,
+    and that both gates report no problems.
+  - Extended "a label split by markup cannot forge a departing verdict" with
+    `reviewer#: met`. Renamed "word-internal underscores and asterisks in cited
+    names survive" to "…in prose survive" and gave it the asterisk fixture
+    (`src/a*b.ts`) it was missing.
+- Entry points checked: `readCriteria` and `readStandards` (parse) by the new
+  parsed-evidence test, `renderCriterionEntry` by "underscores anywhere in
+  cited evidence survive", and `renderStandardsEntry` by the new test's
+  Standards half. Reverting any one of `readCriteria`, `readStandards` or
+  `renderStandardsEntry` back to `sanitiseField` goes red (see below).
 - Obsolete behaviour: the old evidence assertion `src/a_b/c_test.ts` relied on
   the word-internal rule; evidence now keeps every `_` and `*` in its code
   span, so the stronger evidence test replaces it. Remaining behaviour still
   covered: word-internal `_` and `*` in prose, and the forged-label
   protection, now including `#`.
-- Red check (mutation): restoring the old markup blanking in `sanitiseEvidence`
-  fails "underscores anywhere in cited evidence survive" (`test/ costFixtures.ts`,
-  `init .py`); moving the `#` scrub back below the label scrub fails the
-  `reviewer#:` loop case (reviewer verdict read `met` instead of `missing`).
-- `deno task test:unit tests/closure_verdict_test.ts`: 28 passed, 0 failed.
+- Red check (mutation), each revert runs the 29 tests in
+  `tests/closure_verdict_test.ts`:
+  - restoring the old markup blanking in `sanitiseEvidence` fails "underscores
+    anywhere in cited evidence survive" (`test/ costFixtures.ts`,
+    `init .py`);
+  - moving the `#` scrub back below the label scrub fails the `reviewer#:`
+    loop case (reviewer verdict read `met` instead of `missing`);
+  - reverting `readCriteria`'s `field(record, "evidence", sanitiseEvidence)` to
+    `field(record, "evidence")` fails "parsed evidence keeps every underscore
+    through parse and render" (`test/ costFixtures.ts`);
+  - reverting `readStandards`'s evidence field likewise fails it
+    (`test/ preload.ts:12`);
+  - reverting `renderStandardsEntry`'s `sanitiseEvidence(finding.evidence)` to
+    `sanitiseField(finding.evidence)` fails it (`test/ preload.ts:12` in the
+    rendered span).
+- `deno task test:unit tests/closure_verdict_test.ts`: 29 passed, 0 failed.
   Other importers (`closure_verdict_prompt_test.ts`,
   `closure_verdict_recovery_test.ts`, `completion_phase_closure_render_test.ts`,
   `fence_coverage_verifier_test.ts`, `standing_violation_3196_test.ts`,

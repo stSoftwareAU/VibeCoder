@@ -296,6 +296,58 @@ Deno.test("closure verdict - underscores anywhere in cited evidence survive", ()
   );
 });
 
+Deno.test("closure verdict - parsed evidence keeps every underscore through parse and render", () => {
+  // The model's reply is parsed before it is rendered, so the code-span
+  // sanitiser must run at the parse call sites (readCriteria, readStandards)
+  // as well as the render call sites (renderCriterionEntry,
+  // renderStandardsEntry). A `_`-prefixed fixture, a dunder name and a
+  // `_`-prefixed `file:line` must all reach the rendered block verbatim.
+  const parsed = parseClosureVerdict(reply({
+    criteria: CRITERIA.map((criterion, index) => ({
+      criterion,
+      status: "met" as const,
+      evidence: index === 0
+        ? "test/_costFixtures.ts"
+        : index === 1
+        ? "__init__.py"
+        : "lib/foo.ts",
+    })),
+    standards: [{
+      status: "violation",
+      finding: "a fixture path was rewritten into a file that does not exist",
+      evidence: "test/_preload.ts:12",
+      reason: "fixed in this diff",
+    }],
+  }));
+
+  assert(parsed.ok, "the verdict must parse");
+  assertEquals(parsed.value.criteria[0]!.evidence, "test/_costFixtures.ts");
+  assertEquals(parsed.value.criteria[1]!.evidence, "__init__.py");
+  assertEquals(parsed.value.standards[0]!.evidence, "test/_preload.ts:12");
+
+  const rendered = renderClosureBlocks(parsed.value);
+  assertStringIncludes(rendered, "`test/_costFixtures.ts`");
+  assertStringIncludes(rendered, "`__init__.py`");
+  assertStringIncludes(rendered, "`test/_preload.ts:12`");
+
+  assertEquals(
+    validateAcceptanceClosure({
+      issueBody: ISSUE_BODY,
+      prSummaryContent: rendered,
+    })
+      .problems,
+    [],
+  );
+  assertEquals(
+    validateIndependentReview({
+      issueBody: ISSUE_BODY,
+      prSummaryContent: rendered,
+    })
+      .problems,
+    [],
+  );
+});
+
 Deno.test("closure verdict - a label split by markup cannot forge a departing verdict", () => {
   // `reviewer_:`, "reviewer`:" and `reviewer#:` look like a `reviewer:` label
   // to the validators once the markup or heading hash is blanked, so those
