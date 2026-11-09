@@ -275,10 +275,12 @@ Deno.test("failed egress start never falls back to an unrestricted container", a
 });
 
 Deno.test("timeout reports container cleanup failures and still tears down egress", async () => {
-  for (const killResult of [
-    { ...OK, success: false, code: 17, stderr: "kill denied" },
-    new Error("kill denied by runtime"),
-  ]) {
+  for (
+    const killResult of [
+      { ...OK, success: false, code: 17, stderr: "kill denied" },
+      new Error("kill denied by runtime"),
+    ]
+  ) {
     const events: string[] = [];
     const configured = deps({
       events,
@@ -295,13 +297,19 @@ Deno.test("timeout reports container cleanup failures and still tears down egres
           ? Promise.reject(killResult)
           : Promise.resolve(killResult);
       }
-      return Promise.resolve({ ...OK, success: false, code: 124, timedOut: true });
+      return Promise.resolve({
+        ...OK,
+        success: false,
+        code: 124,
+        timedOut: true,
+      });
     };
     await assertRejects(
-      () => checkBabysitterContainerChromium(
-        { baseDir: "/checkout" },
-        configured,
-      ),
+      () =>
+        checkBabysitterContainerChromium(
+          { baseDir: "/checkout" },
+          configured,
+        ),
       Error,
       killResult instanceof Error
         ? "container cleanup failed: Error: kill denied by runtime"
