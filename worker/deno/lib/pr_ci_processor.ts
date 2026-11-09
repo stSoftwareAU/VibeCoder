@@ -3258,6 +3258,8 @@ async function _runPostClaudeQualityCheck(
 
   // Step 2: Run quality gate (native or Docker via quality_gate_phase)
   const qualityFn = qualityGateFn ?? runQualityGateCheck;
+  const qualityCommand =
+    getRepoConfig(repoConfigs, input.repo, "qualityCommand") || "./quality.sh";
   let qualityResult: QualityGateRunResult;
   if (getRepoConfig(repoConfigs, input.repo, "skipQualityCheck") === "true") {
     logger.info(
@@ -3269,9 +3271,7 @@ async function _runPostClaudeQualityCheck(
     try {
       qualityResult = await qualityFn({
         repo: input.repo,
-        qualityScript:
-          getRepoConfig(repoConfigs, input.repo, "qualityCommand") ||
-          "./quality.sh",
+        qualityScript: qualityCommand,
         repoConfigs,
         cwd,
       });
@@ -3297,7 +3297,12 @@ async function _runPostClaudeQualityCheck(
       },
     );
     const retryPrompt = qualityResult.retryPrompt ??
-      buildRetryPrompt(qualityResult.qualityOutput);
+      buildRetryPrompt(
+        qualityResult.qualityOutput,
+        100,
+        undefined,
+        qualityCommand,
+      );
     const retryResult = await deps.claude.runClaudeWithRetry(
       {
         // The same index the first attempt was handed (Issue #2160) — it is

@@ -511,6 +511,17 @@ Deno.test("buildRetryPrompt - keeps the remediation instruction", () => {
   );
 });
 
+Deno.test("buildRetryPrompt - names a configured quality command (Issue #4805)", () => {
+  const prompt = buildRetryPrompt(
+    "Error: boom",
+    100,
+    undefined,
+    "./run_tests.sh --unit-only",
+  );
+  assertStringIncludes(prompt, "./run_tests.sh --unit-only");
+  assertStringIncludes(prompt, "Please fix all issues");
+});
+
 // =============================================================================
 // runQualityGateCheck tests — quality script not found
 // =============================================================================
@@ -659,6 +670,22 @@ Deno.test("runQualityGateCheck - returns fixable failure for normal test errors"
   const result = await runQualityGateCheck(createParams(), deps);
   assertEquals(result.action, "failed_fixable");
   assertStringIncludes(result.retryPrompt!, "Expected true, got false");
+  assertStringIncludes(result.retryPrompt!, "Please fix all issues");
+});
+
+Deno.test("runQualityGateCheck - the retry prompt names a configured quality command (Issue #4805)", async () => {
+  const deps = createMockDeps({
+    runCommand: async (_cmd, _opts) => ({
+      exitCode: 1,
+      output: "FAIL: src/auth.test.ts\nExpected true, got false",
+    }),
+  });
+  const result = await runQualityGateCheck(
+    createParams({ qualityScript: "deno task test" }),
+    deps,
+  );
+  assertEquals(result.action, "failed_fixable");
+  assertStringIncludes(result.retryPrompt!, "deno task test");
   assertStringIncludes(result.retryPrompt!, "Please fix all issues");
 });
 
