@@ -101,6 +101,22 @@ unchanged). Callers of `cleanupStaleRemoteBranches` through the command:
   tests red; removing the `cache` option from `executeCleanupStale` turns the
   batched test and the fallback test red (through the deletion count, since the
   fake has no per-branch answers for the uncached path).
+- Mutation check (follow-up): `branch_cleanup_command_stale_batch_test.ts` now
+  routes `operation: "cleanup-stale"` through `branchCleanupCommand.execute`
+  (kills the `return executeCleanupStale(...)` mutant at line 147);
+  `run_core_deferred_branch_cleanup_test.ts` asserts the exact logged text for a
+  thrown `Error` and a thrown string, from both the stale and the merged cleanup
+  (kills the ternary negations at `run_core.ts` 2405 and 2419), and makes the
+  failure log itself throw so the report must come through the sweep sink's
+  `logError` (kills the deleted `logError` property at 2426).
+- `worker/deno/commands/branch_cleanup.ts:57` exempt (untestable):
+  `cleanupStaleRemoteBranches` never returns an `ok: false` Result (its only
+  return is `ok: true`; every failure is caught inside), so the `!result.ok`
+  guard is a type-level obligation with no reachable input, and the command
+  module has no seam to inject a failing result.
+- `worker/deno/lib/run_core.ts:2425` exempt (untestable): the sink's `log`
+  property is part of the `DeferredSweepSink` interface but `startDeferredSweep`
+  only ever calls `logError`, so no observable behaviour depends on it.
 - No existing test was edited or had an assertion removed; 43 existing suites
   that mention the cleanups pass unchanged.
 - `./quality.sh < /dev/null` on the final head: passed (config integration,

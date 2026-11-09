@@ -12,7 +12,10 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { executeCleanupStale } from "../commands/branch_cleanup.ts";
+import {
+  branchCleanupCommand,
+  executeCleanupStale,
+} from "../commands/branch_cleanup.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { WorkerConfig } from "../types.ts";
 
@@ -285,4 +288,17 @@ Deno.test("cleanup-stale - a missing --github-user is refused before any gh call
     message: "Missing required argument: --github-user",
   });
   assertEquals(fake.calls.length, 0);
+});
+
+Deno.test("cleanup-stale - the branch-cleanup command routes the operation to executeCleanupStale", async () => {
+  const result = await branchCleanupCommand.execute(
+    { operation: "cleanup-stale", "github-user": "bot" },
+    { ...buildDefaultWorkerConfig(), repos: [] },
+  );
+
+  assertEquals(result, {
+    success: true,
+    message: "No stale remote branches to clean up",
+    data: { deletedCount: 0, skippedCount: 0 },
+  });
 });

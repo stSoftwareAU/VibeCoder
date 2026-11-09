@@ -397,3 +397,89 @@ Deno.test(
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// 6. The logged text is exact for an Error and for a non-Error rejection.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "run core deferred branch cleanup - thrown Errors log their message and thrown non-Errors log their string form",
+  async () => {
+    const cases: {
+      stale: unknown;
+      merged: unknown;
+      expected: string[];
+    }[] = [
+      {
+        stale: new Error("stale boom"),
+        merged: new Error("merged boom"),
+        expected: [
+          "Stale branch cleanup failed (continuing): stale boom",
+          "Merged branch cleanup failed (continuing): merged boom",
+        ],
+      },
+      {
+        stale: "stale plain",
+        merged: "merged plain",
+        expected: [
+          "Stale branch cleanup failed (continuing): stale plain",
+          "Merged branch cleanup failed (continuing): merged plain",
+        ],
+      },
+    ];
+
+    for (const { stale, merged, expected } of cases) {
+      const errors: string[] = [];
+      const deps = depsThatShutDownAtFirstScan({
+        logError: (message: string) => errors.push(message),
+        cleanupStaleBranches: () => Promise.reject(stale),
+        cleanupMergedBranches: () => Promise.reject(merged),
+      });
+
+      const config = createDefaultRunCoreConfig();
+      config.runDurationSeconds = 3600;
+      await runCoreLoop(config, deps);
+
+      assertEquals(
+        errors.filter((e) => e.includes("branch cleanup failed")),
+        expected,
+      );
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// 7. The sweep's own sink reports through the run's logError.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "run core deferred branch cleanup - a failure inside the failure log is reported through the sweep sink",
+  async () => {
+    const errors: string[] = [];
+    let first = true;
+    const deps = depsThatShutDownAtFirstScan({
+      logError: (message: string) => {
+        errors.push(message);
+        if (first && message.startsWith("Stale branch cleanup failed")) {
+          first = false;
+          throw new Error("log sink down");
+        }
+      },
+      cleanupStaleBranches: () => Promise.reject(new Error("stale boom")),
+    });
+
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+    await runCoreLoop(config, deps);
+
+    assert(
+      errors.some((e) =>
+        e.includes("[deferred-sweep] startup-branch-cleanup failed") &&
+        e.includes("log sink down")
+      ),
+      `expected the sweep sink to report the failure, got: ${
+        errors.join(" | ")
+      }`,
+    );
+  },
+);
