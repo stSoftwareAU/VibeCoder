@@ -34,8 +34,8 @@ import { posixSingleQuote } from "./shell_quote.ts";
 export const PRE_PUSH_HOOK_MARKER = "Vibe Coder pre-push gate";
 
 /**
- * Render the hook script. It fails closed: a missing Deno binary, module or
- * spec blocks the push rather than silently allowing it. `DENO_DIR` is
+ * Render the hook script. It fails closed: a missing Deno binary, module,
+ * spec, worker `deno.json` or worker `deno.lock` blocks the push rather than silently allowing it. `DENO_DIR` is
  * deliberately not pinned — this is a quality gate, not a security boundary.
  */
 export function renderPrePushHookScript(opts: {
