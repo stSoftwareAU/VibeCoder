@@ -36,8 +36,8 @@ Version bump: none; this wording correction does not change the release version.
   the list as one prompt sentence for Codex and Gemini.
 - `runRetryLadder` can switch `agentProvider` after a model refusal.
   `runClaudeWithTimeoutBody` refuses a non-Claude provider when Claude config
-  isolation is requested; `runPrePrVerifier` sets that isolation and pins
-  Claude for its read-only mode.
+  isolation is requested; `runPrePrVerifier` sets that isolation and pins Claude
+  for its read-only mode.
 - `assertRoleSupported` still makes the existing role decision. Its Codex
   commentary now distinguishes delegation disabling and checkout restoration
   from tool denial and filesystem/network isolation.
