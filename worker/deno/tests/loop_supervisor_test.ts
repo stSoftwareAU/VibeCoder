@@ -25,6 +25,7 @@ import {
   WATCHDOG_MARGIN_SECONDS,
 } from "../lib/container_watchdog.ts";
 import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
+import { waitForSettledOrphan } from "./support/process_settlement.ts";
 
 // Resolve <repo-root>/loop.sh from this test file's location, without
 // depending on @std/path. The test lives at
@@ -1494,20 +1495,16 @@ Deno.test({
       const pid = Number(new TextDecoder().decode(result.stdout).trim());
       assert(result.success && Number.isInteger(pid) && pid > 0);
       pids = [pid];
-      // The shell may exit before nohup has exec'd sleep: wait for the final
-      // command line and for re-parenting to init; no pgrep snapshot.
-      let settled = false;
-      for (let i = 0; i < 100 && !settled; i++) {
-        settled = (await getCommand(pid)) === command &&
-          await parentPidOf(pid) === 1;
-        if (!settled) await delay(100);
-      }
-      assert(
-        settled,
-        `orphan ${pid} never became "${command}" under init; command=${
-          JSON.stringify(await getCommand(pid))
-        } ppid=${await parentPidOf(pid)}`,
-      );
+      // The shell may exit before nohup has exec'd sleep; wait on the captured
+      // PID until it has the final command line and is adopted by init.
+      await waitForSettledOrphan(pid, {
+        expectedCommand: command,
+        observe: async () => ({
+          command: await getCommand(pid),
+          parentPid: await parentPidOf(pid),
+        }),
+        sleep: delay,
+      });
       await registerProbe(stateDir, pid, await Deno.realPath(harness.tmpDir));
       child = spawnLoopLogging(harness.tmpDir, { VIBE_STATE_DIR: stateDir });
       await delay(3000);
