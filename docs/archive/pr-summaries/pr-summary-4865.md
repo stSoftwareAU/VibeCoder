@@ -28,3 +28,5 @@ Backend-only change; no UI files touched. `buildUnmetCriteriaGateComment` is exe
 - Extended `worker/deno/tests/unmet_criteria_gate_test.ts::buildUnmetCriteriaGateComment - names each criterion and does not claim the PR is withheld` to assert the `partial` or `missing` wording and that the `missing`-only phrasing is absent. Red check: restoring the old sentence made that test fail; restored, `deno task test:unit tests/unmet_criteria_gate_test.ts` passed (6 passed).
 - Removed from existing tests: nothing.
 - Docs sweep: grepped `README.md`, `docs/` (excluding archive) and `prompts/` for the old "`missing` entry makes" wording and found no other hit.
+- Quality gate: `./quality.sh` did not finish within 300s or 600s (two runs). Every stage that reported passed, including semgrep and markdownlint. The unit-test stage after "release-tag ruleset" never reported.
+<!-- vibe-quality-gate-skipped reason="gate did not complete within the foreground time bound; targeted fmt, lint and unit tests passed" -->
