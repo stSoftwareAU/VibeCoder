@@ -3574,6 +3574,10 @@ Deno.test("runPrePushGate: a clippy failure that is new on the push blocks, what
       (onBase) => ({ code: 101, stderr: onBase ? LINT_A : LINT_A + LINT_B }),
     ],
     [
+      "the push repeats a diagnostic the base shows once, in the same file",
+      (onBase) => ({ code: 101, stderr: onBase ? LINT_A : LINT_A + LINT_A }),
+    ],
+    [
       "the base fails for the host",
       (onBase) =>
         onBase

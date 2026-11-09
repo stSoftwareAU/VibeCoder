@@ -1936,11 +1936,11 @@ const SAFE_COMPARE_REF = /^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$/;
 /**
  * The diagnostics of a failed cargo run, each as `message @ file` (the line
  * number is dropped, since a push moves lines), or the message alone when no
- * `-->` location follows. Summary lines that count other diagnostics are left
- * out so the set does not depend on how many there are.
+ * `-->` location follows, with how many times it appears. Summary lines that
+ * count other diagnostics are left out so the counts do not depend on them.
  */
-function diagnosticSignatures(output: string): Set<string> {
-  const found = new Set<string>();
+function diagnosticSignatures(output: string): Map<string, number> {
+  const found = new Map<string, number>();
   const lines = output.split("\n").map((line) => line.trim());
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -1956,22 +1956,23 @@ function diagnosticSignatures(output: string): Set<string> {
     const file = next.startsWith("-->")
       ? next.slice(3).trim().split(":")[0] ?? ""
       : "";
-    found.add(file === "" ? message : `${message} @ ${file}`);
+    const key = file === "" ? message : `${message} @ ${file}`;
+    found.set(key, (found.get(key) ?? 0) + 1);
   }
   return found;
 }
 
 /**
  * Whether a CI cargo check that failed on this push fails on the PR base too,
- * with every diagnostic the push shows (Issue #4630 review: a failure the base
+ * with every diagnostic the push shows, no more often than the base (Issue #4630 review: a failure the base
  * already has is not this repair's defect). The check runs again, as CI wrote
  * it, in a detached worktree of `ref`. Returns true only when that is
  * established: an unresolvable ref, a worktree that cannot be made, a base run
  * that passes, times out, cannot start or fails for the host, and a push that
- * shows a diagnostic the base lacks (or none that can be read) all return
+ * shows a diagnostic more often than the base (or none that can be read) all return
  * false, so the failure stays a verdict.
  *
- * SIMPLE-ON-PURPOSE: a diagnostic is matched by message and file, not line — upgrade when two identical diagnostics in one file must be told apart
+ * SIMPLE-ON-PURPOSE: a diagnostic is matched by message, file and count, not line — upgrade when a moved instance of a repeated diagnostic must be told from a new one
  */
 async function failsOnBaseToo(args: {
   repoRoot: string;
@@ -2021,7 +2022,9 @@ async function failsOnBaseToo(args: {
     if (base.error.reason !== "non-zero-exit") return false;
     if (isHostFaultOfCheck(base.error)) return false;
     const baseSignatures = diagnosticSignatures(base.error.output);
-    return [...headSignatures].every((sig) => baseSignatures.has(sig));
+    return [...headSignatures].every(([sig, count]) =>
+      count <= (baseSignatures.get(sig) ?? 0)
+    );
   } finally {
     if (added) {
       const removed = await args.git(

@@ -5235,7 +5235,7 @@ checks in stage 1, which only the worker's own gates run (see that bullet):
      the PR base (the repair processors' base branch, or the completion gate's
      base ref), a failing check is re-run, as CI wrote it, in a detached
      worktree of that base, and when every diagnostic the push shows (matched by
-     message and file, not line) is also on the base, the failure is no verdict
+     message and file, each no more often than on the base; not line) is also on the base, the failure is no verdict
      on this push and is reported as a `[PRE_PUSH_WARNING]`. A base that passes,
      times out, fails for the host or lacks a diagnostic, or a ref that cannot
      be resolved, leaves it a verdict. A CI-fix or review-feedback repair

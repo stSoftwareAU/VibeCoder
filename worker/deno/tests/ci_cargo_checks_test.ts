@@ -915,6 +915,9 @@ Deno.test("a cd the scanner cannot follow makes the later cargo lines of that st
       "pushd rust",
       "popd",
       "cd rust || true",
+      "if [ -d rust ]; then cd rust; fi",
+      "for d in rust; do cd $d; done",
+      "{ cd rust; }",
     ]
   ) {
     const result = scan(`

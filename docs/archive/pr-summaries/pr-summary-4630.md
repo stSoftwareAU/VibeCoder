@@ -32,15 +32,17 @@ compile error is therefore caught before the push, not by a CI run. Closes
 - Base-failure comparison: when the gate knows the PR base (`compareRef`, set
   from `syncBaseBranch` by `commitAndPushPending`, or the completion gate's
   `baseRef`), a failing CI cargo check is re-run, as CI wrote it, in a detached
-  worktree of that base. If every diagnostic the push shows (message and file,
-  not line) is also on the base, the failure is a `[PRE_PUSH_WARNING]`, not a
-  verdict. A base that passes, times out, fails for the host or lacks a
-  diagnostic, an unresolvable ref, or no known base leaves it a verdict.
+  worktree of that base. If every diagnostic the push shows (message, file and
+  how many times; not line) is also on the base, the failure is a
+  `[PRE_PUSH_WARNING]`, not a verdict. A base that passes, times out, fails for
+  the host or lacks a diagnostic, an unresolvable ref, or no known base leaves
+  it a verdict.
 - Scanner fixes: a `cd <dir>` on its own line now holds for the rest of that
-  step's run block (any `cd` form it cannot follow, including `pushd`, `popd`
-  and a `cd ... || true`, makes the later cargo lines of the step unverifiable),
-  and `cargo nextest run` / `cargo llvm-cov nextest` drop `--profile`/`-P` (a
-  nextest profile) and map `--cargo-profile` to cargo's `--profile`.
+  step's run block (any `cd` form it cannot follow, including `pushd`, `popd`, a
+  `cd` after `then`/`do`/`else`/`{` and a `cd ... || true`, makes the later
+  cargo lines of the step unverifiable), and `cargo nextest run` /
+  `cargo llvm-cov nextest` drop `--profile`/`-P` (a nextest profile) and map
+  `--cargo-profile` to cargo's `--profile`.
 - `worker/deno/lib/git_push.ts` wires `repoCiCargoChecks` into
   `gateUnpushedCommits` (so Step 1b of `commitAndPushPending` and the completion
   phase run it). New `CI_CARGO_ONLY_PRE_FLIGHT` spec; `pr_ci_processor.ts` and
@@ -108,10 +110,10 @@ flowchart LR
   `@std/yaml`, so that hook runs no CI cargo check; the worker's own gates do.
 - Anything the scanner cannot reproduce faithfully fails loud as infrastructure
   instead of dropping to a smaller check set (the issue requires this).
-- A failure the PR base already has is compared by diagnostic message and file,
-  not line number, on a detached worktree of the base: cheap, and it never
-  excuses a diagnostic the base lacks. Re-running on the base costs one extra
-  cargo build, only when a check has already failed.
+- A failure the PR base already has is compared by diagnostic message, file and
+  count, not line number, on a detached worktree of the base: cheap, and it
+  never excuses a diagnostic the base lacks. Re-running on the base costs one
+  extra cargo build, only when a check has already failed.
 - Repair processors use a cargo-only spec for repos without pre-flight, so the
   full changed-file gate does not newly apply to repair pushes. The ShellCheck
   policy (#4631) and the cargo-deny gate (#4626, for changed cargo inputs) run
@@ -162,7 +164,7 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `pre_push_gate_test.ts`, `git_push_preflight_test.ts`,
   `pr_feedback_processor_pre_flight_4630_test.ts`, `pr_ci_processor_test.ts`,
   `pr_feedback_review_dismissal_3383_test.ts`, `gate_infra_release_test.ts` and
-  `pr_round_repo_formatters_test.ts`: 296 passed, 0 failed.
+  `pr_round_repo_formatters_test.ts`: 298 passed, 0 failed.
 - PR #4896 review tests, each shown red by breaking only its own code:
   - `worker/deno/tests/pre_push_gate_test.ts` (probe only the first check, and
     drop the missing-capability line test, and `every` to `some` in the base
@@ -175,7 +177,12 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
     toolchain, component or target is infrastructure, not a block`,
     `a clippy
     failure that is new on the push blocks, whatever the base shows`
-    (all red). Also green-by-design:
+    (all red). Review round 2:
+    `a clippy failure that is new on the push
+    blocks, whatever the base shows`
+    gained a case where the push repeats a diagnostic the base shows once
+    (counts per signature; red when the comparison goes back to a set). Also
+    green-by-design:
     `a clippy failure the PR base already has is no
     verdict on the push`,
     `a lint whose source excerpt quotes 'is not
@@ -187,7 +194,9 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
     `a cd on its own line holds for the
     later lines of the same step only`,
     `a cd the scanner cannot follow makes
-    the later cargo lines of that step unverifiable`,
+    the later cargo lines of that step unverifiable`
+    (gained `if ...; then cd rust; fi`, `for ...; do cd $d; done` and
+    `{ cd rust; }` cases; red when keywords are no longer skipped),
     `nextest's --profile
     names a nextest profile and is not passed to cargo as a build profile`
     (all red).

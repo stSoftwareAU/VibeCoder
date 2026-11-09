@@ -32,8 +32,8 @@
  *   not recognised.
  * - A `cd` is honoured only as `cd <one plain word>` in its own `&&` or `;`
  *   segment, and holds for the rest of the step's run block, as in the shell.
- *   Any other `cd` form (and `pushd`, `popd`, or a `cd` on a line that
- *   `isNonFailing` skips) makes the following cargo commands in that step
+ *   Any other `cd` form (and `pushd`, `popd`, a `cd` after `then`, `do`,
+ *   `else` or `{`, or a `cd` on a line that `isNonFailing` skips) makes the following cargo commands in that step
  *   unverifiable.
  * - Unreadable tracked workflow files carry no text to inspect, so they are
  *   ignored by `repoCiCargoChecks`.
@@ -486,9 +486,30 @@ interface JobContext {
   unverifiable: string[];
 }
 
+/** Shell keywords that may precede a command inside a compound command. */
+const COMPOUND_KEYWORDS = new Set([
+  "if",
+  "then",
+  "else",
+  "elif",
+  "do",
+  "while",
+  "until",
+  "!",
+  "{",
+  "(",
+]);
+
 /** Whether a command word changes the shell's directory. */
 function changesDirectory(word: string | undefined): boolean {
   return word === "cd" || word === "pushd" || word === "popd";
+}
+
+/** A segment's command words after any leading compound-command keywords. */
+function afterKeywords(segment: Word[]): { lead: number; words: Word[] } {
+  let lead = 0;
+  while (COMPOUND_KEYWORDS.has(segment[lead]?.text ?? "")) lead++;
+  return { lead, words: segment.slice(lead) };
 }
 
 /**
@@ -507,12 +528,15 @@ function scanLine(
   const shown = snippet(line);
   // `null` means the directory is no longer known after an unsupported `cd`.
   let dir: string | null = startDir;
-  for (const words of lexed.segments) {
+  for (const segment of lexed.segments) {
+    // A `cd` after `then`, `do` or `{` runs conditionally or in a group, so the
+    // directory afterwards is not known.
+    const { lead, words } = afterKeywords(segment);
     if (changesDirectory(words[0]?.text)) {
       const target = words[1];
       // Two words, so `target` is set.
-      dir = words[0]!.text === "cd" && dir !== null && words.length === 2 &&
-          !target!.risky
+      dir = lead === 0 && words[0]!.text === "cd" && dir !== null &&
+          words.length === 2 && !target!.risky
         ? joinDirectory(dir, target!.text)
         : null;
       continue;
@@ -744,7 +768,11 @@ export function scanWorkflowForCargoChecks(
         if (isNonFailing(line)) {
           // Not scanned, but a `cd` here may or may not have taken effect.
           const lexed = lexLine(stripCiRedirect(line));
-          if (lexed.segments.some((w) => changesDirectory(w[0]?.text))) {
+          if (
+            lexed.segments.some((w) =>
+              changesDirectory(afterKeywords(w).words[0]?.text)
+            )
+          ) {
             current = null;
           }
           continue;
