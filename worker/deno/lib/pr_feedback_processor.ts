@@ -30,6 +30,7 @@ import {
   resolvePreFlightSpec,
 } from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
+import { PrePushGateInfrastructureError } from "./pre_push_gate.ts";
 import {
   commentCarriesOpenPreprReview,
   renderPreprReviewResolved,
@@ -947,6 +948,57 @@ async function _processFeedbackWithHeartbeat(
     }
   };
 
+  /**
+   * Release the comment for a later cycle without charging an attempt: the
+   * failure is the host's, not the PR's (Issue #4511). The processed mark is
+   * taken back so the comment is rediscovered. If the mark cannot be removed
+   * the comment would never be rediscovered, so this returns `undefined` and
+   * the caller charges the failure after all.
+   */
+  const releaseUncharged = async (
+    reason: string,
+    error: string,
+    summaryReason: string,
+  ): Promise<
+    | {
+      ok: true;
+      value: { processed: false; changesPushed: false; summary: string };
+    }
+    | undefined
+  > => {
+    const markError = await removeProcessedMark(
+      repo,
+      commentType,
+      commentId,
+      (args: string[]) => deps.github.runGhCommand(args),
+      (message: string) => logger.warn(message, { repo, prNumber }),
+    );
+    if (markError !== null) {
+      logger.warn(
+        `Could not release the eyes reaction — charging the attempt instead, ` +
+          `since the comment will not be rediscovered (${reason})`,
+        { repo, prNumber, commentId, error: markError.message },
+      );
+      return undefined;
+    }
+    if (commentType === "pr_review") carrier.reviewSettlement = "released";
+    logger.warn(`PR feedback released, not charged: ${reason}`, {
+      repo,
+      prNumber,
+      commentId,
+      error,
+    });
+    return {
+      ok: true,
+      value: {
+        processed: false,
+        changesPushed: false,
+        summary:
+          `PR feedback for ${repo}#${prNumber} released: ${summaryReason}`,
+      },
+    };
+  };
+
   /** Charge this run's outcome as a failed attempt on the claimed review. */
   const chargeReviewFailure = async (message: string): Promise<void> => {
     carrier.reviewSettlement = "charged";
@@ -1409,43 +1461,12 @@ async function _processFeedbackWithHeartbeat(
     // disk has room. If the mark cannot be removed the comment would never
     // be rediscovered, so the failure is charged after all (below).
     if (isHostDiskFaultText(claudeResult.error.message)) {
-      const markError = await removeProcessedMark(
-        repo,
-        commentType,
-        commentId,
-        (args: string[]) => deps.github.runGhCommand(args),
-        (message: string) => logger.warn(message, { repo, prNumber }),
+      const released = await releaseUncharged(
+        "the host is short of disk, not the PR's fault (Issue #4511, park Issue #4360)",
+        claudeResult.error.message,
+        "the host is short of disk (Issue #4360) — not charged as a failed attempt (Issue #4511)",
       );
-      if (markError === null) {
-        if (commentType === "pr_review") {
-          carrier.reviewSettlement = "released";
-        }
-        logger.warn(
-          "PR feedback released, not charged: the host is short of disk, " +
-            "not the PR's fault (Issue #4511, park Issue #4360)",
-          {
-            repo,
-            prNumber,
-            commentId,
-            error: claudeResult.error.message,
-          },
-        );
-        return {
-          ok: true,
-          value: {
-            processed: false,
-            changesPushed: false,
-            summary:
-              `PR feedback for ${repo}#${prNumber} released: the host is short of disk (Issue #4360) — not charged as a failed attempt (Issue #4511)`,
-          },
-        };
-      }
-      logger.warn(
-        "Could not release the eyes reaction after a host-disk park — " +
-          "charging the attempt instead, since the comment will not be " +
-          "rediscovered (Issue #4511)",
-        { repo, prNumber, commentId, error: markError.message },
-      );
+      if (released) return released;
     }
     // Handle failure — report via comment failure handler. Issue #3383:
     // routed through chargeReviewFailure so a `pr_review` claim's failed
@@ -1869,6 +1890,23 @@ async function _processFeedbackWithHeartbeat(
     };
   };
   if (verifierFailure) return await holdUnverifiedReview(verifierFailure);
+  // PR #4896 review: the pre-push gate could not run (no toolchain, host
+  // disk full, a CI command it cannot reproduce). That is no verdict on the
+  // fix, so the feedback is released for the next cycle, never charged.
+  const gateInfraRelease = async (error: Error) =>
+    await releaseUncharged(
+      "the pre-push gate failed as infrastructure, not the PR's fault (PR #4896)",
+      error.message,
+      "the pre-push gate could not run — not charged as a failed attempt (PR #4896)",
+    );
+  if (
+    !finaliseResult.ok &&
+    finaliseResult.error instanceof PrePushGateInfrastructureError
+  ) {
+    await syncBodyFromVerifiedHead();
+    const released = await gateInfraRelease(finaliseResult.error);
+    if (released) return released;
+  }
   if (commentType === "pr_review" && !finaliseResult.ok) {
     return await holdUnverifiedReview(finaliseResult.error);
   }
@@ -1931,6 +1969,11 @@ async function _processFeedbackWithHeartbeat(
               `retry after push recovery left ${finalUnpushedCount} commit(s) unpushed`;
           }
         } else {
+          if (retryFinalise.error instanceof PrePushGateInfrastructureError) {
+            await syncBodyFromVerifiedHead();
+            const released = await gateInfraRelease(retryFinalise.error);
+            if (released) return released;
+          }
           failureDetail = retryFinalise.error.message;
         }
       }

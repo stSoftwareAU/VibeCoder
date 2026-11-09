@@ -45,6 +45,7 @@ import { buildQualityInstructions } from "../lib/repo_config.ts";
 import { verifyFeedbackFix } from "../lib/pr_feedback_verifier.ts";
 import { HOST_DISK_PARK_NOTE } from "../lib/heavy_build_gate.ts";
 import { CI_CARGO_ONLY_PRE_FLIGHT } from "../lib/git_push.ts";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -280,6 +281,8 @@ interface RunOptions {
   feedbackVerifierFn?: PrFeedbackProcessorDeps["feedbackVerifierFn"];
   qualityInstructions?: string;
   finaliseError?: string;
+  /** The pre-push gate could not run: no verdict on the branch (#4630). */
+  finaliseInfraError?: string;
   unpushedState?: number | "error" | "throw";
 }
 
@@ -352,6 +355,15 @@ async function runScenario(options: RunOptions) {
       commitAndPushPending:
         (async (...args: Parameters<GitDeps["commitAndPushPending"]>) => {
           preFlightSpecs.push(args[4]);
+          if (options.finaliseInfraError) {
+            options.events.push("commitAndPushPending");
+            return {
+              ok: false,
+              error: new PrePushGateInfrastructureError(
+                options.finaliseInfraError,
+              ),
+            };
+          }
           if (options.finaliseError) {
             return { ok: false, error: new Error(options.finaliseError) };
           }
@@ -1374,3 +1386,57 @@ for (const remoteState of ["confirmed", "unconfirmed", "throw"] as const) {
     );
   });
 }
+
+/**
+ * PR #4896 review: the CI cargo checks a repair push now runs can fail as
+ * infrastructure (no toolchain, host disk full, a workflow command the scanner
+ * cannot reproduce). That is no verdict on the fix, so the feedback is
+ * released for the next cycle, never charged as a failed attempt.
+ */
+async function assertGateInfraFaultReleases(
+  commentType: "pr_review" | "issue",
+  commentId: string,
+): Promise<void> {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const warns: string[] = [];
+  const { result } = await runScenario({
+    input: makeInput({ commentType, commentId }),
+    events,
+    captured,
+    logger: makeWarnCapturingLogger(warns),
+    githubOverride: makeReactionGithub(captured, false),
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 0,
+      finalUnpushedCount: 1,
+    },
+    finaliseInfraError:
+      "CI cargo check could not run: cargo clippy is not installed",
+  });
+
+  assert(events.includes("commitAndPushPending"));
+  assertEquals(result.ok, true);
+  assertEquals(result.ok && result.value.processed, false);
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+    `an infrastructure fault must not be charged: ${events.join(", ")}`,
+  );
+  assertEquals(captured.comments.length, 0);
+  // A `pr_review` carries no mark of its own (Issue #3383); any other comment
+  // has its claim mark taken back so the next scan rediscovers it.
+  assertEquals(
+    captured.calls.filter((c) => c.includes("DELETE")).length,
+    commentType === "pr_review" ? 0 : 1,
+  );
+  assert(warns.some((w) => w.includes("infrastructure")));
+}
+
+Deno.test("PR #4896: a pr_review whose pre-push gate fails as infrastructure is released, not charged", async () => {
+  await assertGateInfraFaultReleases("pr_review", "rv-555");
+});
+
+Deno.test("PR #4896: an issue comment whose pre-push gate fails as infrastructure is released, not charged", async () => {
+  await assertGateInfraFaultReleases("issue", "ic-321");
+});

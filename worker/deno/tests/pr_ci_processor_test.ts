@@ -16,6 +16,7 @@ import {
   resolveCiCheckStateDir,
 } from "../lib/pr_ci_processor.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
   getCiCheckRetryCount,
   recordCiCheckRetry,
@@ -3523,4 +3524,99 @@ Deno.test("processCiFailure - repair push (Issue #4630): a repo's own pre-flight
   });
   assertEquals(spec?.commands, ["deno task check"]);
   assertEquals(spec?.ciCargoOnly === true, false);
+});
+
+/**
+ * PR #4896 review: a repair push now runs the repo's CI cargo checks, which
+ * can fail as infrastructure (no toolchain, host disk full, a workflow command
+ * the scanner cannot reproduce). That is no verdict on the fix: no attempt
+ * marker is written, so the PR's fix budget is not charged, and the comment
+ * says the gate could not run rather than "failed to push".
+ */
+async function runCiGateInfraFault(retryOnly: boolean): Promise<string[]> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const commentBodies: string[] = [];
+    let pushCalls = 0;
+    const infra = () => ({
+      ok: false,
+      error: new PrePushGateInfrastructureError(
+        "CI cargo check could not run: cargo clippy is not installed",
+      ),
+    });
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({
+            ok: true,
+            value: { output: "Fixed", exitCode: 0, timedOut: false },
+          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: (args: string[]) => {
+          if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+          if (args[0] === "pr" && args[1] === "comment") {
+            const body = args[args.indexOf("--body") + 1];
+            if (body !== undefined) commentBodies.push(body);
+          }
+          return Promise.resolve("");
+        },
+      },
+      git: {
+        commitAndPushPending: (() => {
+          pushCalls++;
+          if (!retryOnly || pushCalls > 1) return Promise.resolve(infra());
+          return Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: true,
+              commitsPushed: 0,
+              finalUnpushedCount: 1,
+            },
+          });
+        }) as unknown as GitDeps["commitAndPushPending"],
+        recoverFromPushRejection: (() =>
+          Promise.resolve({
+            ok: true,
+            value: undefined,
+          })) as unknown as GitDeps["recoverFromPushRejection"],
+      },
+    });
+    const result = await processCiFailure(makeInput(), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+    });
+    assertEquals(result.ok, true);
+    assertEquals(result.ok && result.value.changesPushed, false);
+    assertEquals(pushCalls, retryOnly ? 2 : 1);
+    return commentBodies;
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+function assertInfraFaultNotCharged(commentBodies: string[]): void {
+  assertEquals(
+    commentBodies.some((b) => b.includes("vibe-ci-fix-attempt")),
+    false,
+    `no attempt marker may be written: ${commentBodies.join("\n---\n")}`,
+  );
+  assertEquals(commentBodies.some((b) => b.includes("failed to push")), false);
+  assertEquals(
+    commentBodies.some((b) => b.includes("could not run")),
+    true,
+    "the PR is told the gate could not run",
+  );
+}
+
+Deno.test("PR #4896: a CI fix whose pre-push gate fails as infrastructure is not charged", async () => {
+  assertInfraFaultNotCharged(await runCiGateInfraFault(false));
+});
+
+Deno.test("PR #4896: a CI fix whose retry after push recovery fails as infrastructure is not charged", async () => {
+  assertInfraFaultNotCharged(await runCiGateInfraFault(true));
 });

@@ -174,6 +174,8 @@ import {
   resolvePreFlightSpec,
   unstageStateAndAssertSafe,
 } from "./git_push.ts";
+import { mdSafe } from "./mutation_gate.ts";
+import { PrePushGateInfrastructureError } from "./pre_push_gate.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
@@ -2202,6 +2204,10 @@ async function _processCiWithHeartbeat(
   // step and git's own words. Reaches both the log and the PR comment, so a
   // human never gets a bare "please check the branch status" again.
   let pushFailureDetail = "";
+  // PR #4896 review: the pre-push gate could not run (no toolchain, host disk
+  // full, a CI command it cannot reproduce). That is no verdict on the fix,
+  // so no attempt is charged and the PR is told the gate could not run.
+  let gateInfraFault: string | undefined;
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -2247,6 +2253,12 @@ async function _processCiWithHeartbeat(
           failureDetail = retryFinalise.ok
             ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
             : retryFinalise.error.message;
+          if (
+            !retryFinalise.ok &&
+            retryFinalise.error instanceof PrePushGateInfrastructureError
+          ) {
+            gateInfraFault = retryFinalise.error.message;
+          }
         }
       }
       if (!pushSucceeded) {
@@ -2262,6 +2274,9 @@ async function _processCiWithHeartbeat(
     }
   } else {
     pushFailureDetail = finaliseResult.error.message;
+    if (finaliseResult.error instanceof PrePushGateInfrastructureError) {
+      gateInfraFault = finaliseResult.error.message;
+    }
     logger.error("commitAndPushPending failed", {
       error: finaliseResult.error.message,
     });
@@ -2628,7 +2643,8 @@ async function _processCiWithHeartbeat(
   // honest outcome whenever nothing reached the pull request — a fix made
   // locally but never pushed left the head exactly as the last run found it.
   const attemptMarker = _buildAttemptMarker({
-    charge: consumesAutoFixAttempt(failureClassification.category),
+    charge: gateInfraFault === undefined &&
+      consumesAutoFixAttempt(failureClassification.category),
     signature,
     checkName,
     head: beforeSha,
@@ -2643,7 +2659,25 @@ async function _processCiWithHeartbeat(
     : `\n\n${attemptMarker}`;
 
   // Reply with outcome — only claim "pushed" if push actually succeeded
-  if (hasChanges && pushSucceeded && actuallyPushed) {
+  if (gateInfraFault !== undefined && !actuallyPushed) {
+    logger.warn(
+      "CI fix not pushed and not charged: the pre-push gate failed as " +
+        "infrastructure, not the PR's fault (PR #4896)",
+      { repo, prNumber, error: gateInfraFault },
+    );
+    await replyToComment(
+      repo,
+      prNumber,
+      `I made a fix for the CI failure (**${safeCheckName}**), but the pre-push gate could not run on this host, so nothing was pushed. ` +
+        `This is a host fault, not a verdict on the fix, and it does not count as a fix attempt; the worker tries again on a later cycle.\n\n` +
+        // Gate output is untrusted text: no backticks, line breaks or angle
+        // brackets (a `<!-- vibe-… -->` marker must never be forged), bounded.
+        `Gate detail: ${
+          mdSafe(gateInfraFault).replace(/[<>]/g, "").slice(0, 300)
+        }${markerSuffix}`,
+      deps,
+    );
+  } else if (hasChanges && pushSucceeded && actuallyPushed) {
     const base = customMessage ??
       `I've pushed a fix for the CI failure (**${safeCheckName}**). Please review the changes.`;
     // Issue #630: a force-push that silently rewrote the branch would be an
