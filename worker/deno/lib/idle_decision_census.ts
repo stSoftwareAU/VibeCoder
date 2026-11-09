@@ -391,6 +391,7 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     "content-modified-after-approval": "run-local",
     "content-check-error": "run-local",
     "content-editor-unresolved": "run-local",
+    "content-edit-history-truncated": "run-local",
     "content-store-unconfigured": "run-local",
     "content-snapshot-persist-failed": "run-local",
     "no-approval-snapshot": "run-local",

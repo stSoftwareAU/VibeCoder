@@ -136,7 +136,7 @@ function createGhMock(
         data: {
           repository: {
             issue: {
-              userContentEdits: { nodes },
+              userContentEdits: { totalCount: nodes.length, nodes },
               timelineItems: { nodes: [] },
             },
           },
@@ -535,6 +535,7 @@ Deno.test(
             repository: {
               issue: {
                 userContentEdits: {
+                  totalCount: 1,
                   nodes: [{
                     editedAt: new Date(Date.now() + 3600_000).toISOString(),
                     editor: { login: "attacker" },

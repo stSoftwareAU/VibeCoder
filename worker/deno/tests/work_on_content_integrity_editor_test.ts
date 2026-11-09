@@ -116,7 +116,7 @@ function createGhMock(
         data: {
           repository: {
             issue: {
-              userContentEdits: { nodes },
+              userContentEdits: { totalCount: nodes.length, nodes },
               timelineItems: { nodes: [] },
             },
           },
