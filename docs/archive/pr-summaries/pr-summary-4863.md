@@ -35,7 +35,8 @@ Version bump: no version files changed for this comment-only correction.
 
 ## Test Plan
 
-- Modified existing test comment only; no assertions were removed or changed.
+- `worker/deno/tests/milestone_merge_only_4326_test.ts` — modified the opening
+  comment only; no assertions were removed or changed.
 - `deno fmt --check tests/milestone_merge_only_4326_test.ts` — passed.
 - `deno lint tests/milestone_merge_only_4326_test.ts` — passed.
 - `deno check --frozen --lock=deno.lock tests/milestone_merge_only_4326_test.ts`
