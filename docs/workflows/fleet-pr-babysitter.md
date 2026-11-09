@@ -449,10 +449,11 @@ tracked paths only, secret-bearing config keys are removed from the config
 snapshot, and the final run arguments are checked against the App key path
 (`assertBabysitterKeyOutOfRunArgs`). Unknown plan mounts fail closed. The host
 keeps the App key, branch locks, attempt record, trusted commit/push, PR-body
-publication and review dismissal. Before host publication, the local clone
-config is replaced with a minimal GitHub remote config using the configured
-protocol; this drops agent-written local settings, including hooks, filters,
-fsmonitor, `diff.external` and `core.sshCommand`.
+publication and review dismissal. As defence in depth (the clone's `.git` is
+read-only to the agent), before host publication the local clone config is
+replaced with a minimal GitHub remote config using the configured protocol;
+this would drop any hooks, filters, fsmonitor, `diff.external` or
+`core.sshCommand` settings found in it.
 
 ## Failure behaviour
 

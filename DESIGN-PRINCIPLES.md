@@ -166,8 +166,9 @@ explicit fallback can also select a metered provider.
   provider. The host babysitter's `fix()` launches that container for every
   repair (Issue #4770), so the repair agent never runs on the host. The
   container receives a fresh snapshot copied from tracked worker checkout paths and a
-  scrubbed config; before publication the host replaces agent-writable local
-  Git config and uses hardened Git settings for publication commands.
+  scrubbed config; the clone's `.git` is mounted read-only. As defence in depth,
+  before publication the host still resets the local Git config and uses
+  hardened Git settings for publication commands.
 - **The worker keeps its auto-mode wait policy.** When every eligible
   subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in

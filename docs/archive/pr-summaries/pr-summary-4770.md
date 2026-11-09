@@ -200,9 +200,10 @@ Backend and CLI change; no visual surface changed.
   files and live config are not exposed, for the credential-absence criterion
 - **unrequested** — host git hardening (`HOST_GIT_HARDENING_ARGS`,
   `runHardenedRepairGit`, `resetRepairCloneGitConfig`) — reviewer: unrequested —
-  reason: the container writes the clone's working tree (nested repositories,
-  index entries), so the host's trusted commit and push needed hooks and config
-  neutralised; `.git` itself is read-only to the container
+  reason: the container writes the clone's working tree (for example nested
+  repositories), so the host's trusted commit and push needed hooks and config
+  neutralised; `.git` itself, index included, is read-only to the container, so
+  the host reset is defence in depth
 - **unrequested** — `AbortSignal` support, the `startLockRenewal` and
   `resetGitConfig` seams in `FixDeps`, and an injectable setup entry point —
   reviewer: unrequested — reason: replace `child.kill` on lock-renewal failure
@@ -384,7 +385,9 @@ Backend and CLI change; no visual surface changed.
   run args, the mounts, GH_TOKEN and the fixed command`,
   `repair drops the named
   volumes and adds exactly the clone, its read-only .git and scratch mounts`);
-  restored, 162 tests in the five touched babysitter test files pass. The
+  restored, the 113 tests in the two touched test files
+  (`worker/deno/tests/fleet_babysitter_container_4738_test.ts` 49 and
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts` 64) pass. The
   orchestration test also pins the order (the `.git` mount directly after the
   clone mount), because a runtime applies a nested mount only after its parent.
   No test overwrites a blob object from inside a container: the container
