@@ -5,7 +5,8 @@ yours — unless you ask it to.
 
 This page is the operator-facing statement of that policy: what the worker will
 and will not do to a PR authored by a trusted human, how to hand it a PR, how to
-take it back, and why your open PR never parks the worker's queue. The two configuration lists behind it are described in the
+take it back, and how its metadata contributes to opt-in completion admission
+without granting maintenance authority. The two configuration lists are described in the
 [Configuration Reference](CONFIGURATION.md#-fleet-pr-authors-fleet-aware-pr-maintenance);
 the incident that produced the policy is recorded in
 [Lessons learnt](LESSONS-LEARNT.md#-a-set-defined-by-trust-is-not-a-set-defined-by-ownership).
@@ -39,7 +40,7 @@ For a PR authored by a trusted human, with no invitation:
 | Enable auto-merge / merge it               | Never              | Yes      | Yes                      |
 | Post a CI nudge comment                    | Never              | Yes      | No — the nudge scan lists by author only |
 | Add or remove a label, add a reaction      | Never              | Yes      | Yes                      |
-| Wait behind it before raising its own PR   | Never              | Yes      | Never                    |
+| Count it towards new-work admission       | Completion mode only | Yes    | Completion mode only     |
 
 The five PR-maintenance scans — PR feedback, CI fix, spelling, auto-merge and
 the CI nudge — list PRs by author through the **push-capable** set
@@ -52,6 +53,11 @@ repository's un-filtered open-PR listing, so a human PR's *metadata* is now
 visible to it. It admits bot logins and nothing else, so an uninvited human PR
 is still never **admitted**: no scan claims it, reads its comments, or writes to
 it.
+
+**Completion admission exception (Issue #4942):** an opted-in repository counts
+human PR metadata towards shared target-branch congestion. This grants no
+permission to edit, review or merge the PR. The legacy selection rule described
+below still applies where `completion_admission` is omitted.
 
 The last row is the one that changed. The worker used to defer to your open PR
 through the wider fleet-owned set (`resolveFleetPrAuthorSet`), which meant one
@@ -72,7 +78,7 @@ flowchart TD
     C -- no --> F{"Author is a bot<br/>and the head branch is<br/>in this repository?"}
     F -- yes --> M
     F -- no --> D["Leave it completely alone"]
-    D --> E["Issue selection ignores it:<br/>the queue keeps moving"]
+    D --> E["Legacy intake ignores it;<br/>completion mode counts pressure"]
     style M fill:#2d6a4f,stroke:#1b4332,color:#fff
     style D fill:#9d0208,stroke:#6a040f,color:#fff
     style E fill:#2d6a4f,stroke:#1b4332,color:#fff

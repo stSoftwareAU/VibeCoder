@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { loadConfig } from "../lib/config.ts";
 import { atomicWrite } from "../lib/file_utils.ts";
 import { fingerprintWorkerReviewPolicy } from "../lib/pr_completion_report.ts";
+import { fnv1a64Hex } from "../lib/auto_fix_attempt_tracker.ts";
+import { reviewRepairFindings } from "../lib/earlier_findings.ts";
 import {
   appendPrDiscoveryEvent,
   reportHostId,
@@ -571,8 +573,15 @@ export function attemptKey(
 
 export function repairFailureIdentity(why: string, reviews: Review[]): string {
   if (why !== "requested review changes") return why;
-  const newest = Math.max(...reviews.map((review) => review.id), 0);
-  return `${why}:${newest}`;
+  const findings = reviews.map((review) => [
+    review.user.login.toLowerCase(),
+    // An absent body may represent inline feedback we cannot fingerprint.
+    // Preserve the old per-review behaviour for that case only.
+    review.body?.trim()
+      ? reviewRepairFindings(review.body)
+      : [`unavailable-body:${review.id}`],
+  ]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return `${why}:findings-v1:${fnv1a64Hex(JSON.stringify(findings))}`;
 }
 
 function legacyAttemptPath(
@@ -3159,8 +3168,11 @@ export async function fix(
       !response.trimEnd().endsWith("\nBABYSITTER_READY") &&
       response.trim() !== "BABYSITTER_READY"
     ) {
-      throw new Error(
-        "agent did not report that its fix was ready; refusing to push",
+      throw new BabysitterFailure(
+        "agent did not report that its fix was ready; refusing to push. " +
+          "Untrusted agent explanation: " +
+          redactSecrets(response).slice(0, 2000),
+        "code",
       );
     }
     await (deps.resetGitConfig ?? resetRepairCloneGitConfig)(dir, repo);

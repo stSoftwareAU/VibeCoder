@@ -6,6 +6,35 @@ import {
 import type { GhJson } from "../lib/pr_completion_snapshot.ts";
 import type { WorkerConfig } from "../types.ts";
 
+Deno.test("pr-completion-report --issue-throughput collects completed-issue evidence", async () => {
+  let issueReads = 0;
+  const dir = await Deno.makeTempDir();
+  try {
+    const result = await runPrCompletionCollect(
+      {
+        collect: true,
+        "issue-throughput": true,
+        repos: "org/repo",
+        "audit-dir": dir,
+        start: "2026-11-01T00:00:00Z",
+        end: "2026-11-08T00:00:00Z",
+        "expected-revision": "a".repeat(40),
+      },
+      { repos: ["org/repo"] } as WorkerConfig,
+      async (path) => {
+        if (path === "repos/org/repo") return { default_branch: "main" };
+        if (path.includes("issues?state=closed")) issueReads++;
+        return [];
+      },
+    );
+    assertEquals(result.success, true, result.message);
+    assertEquals(issueReads, 1);
+    assertEquals(result.data?.report.issueThroughput?.uniqueCompletedIssues, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("pr-completion-report reads a snapshot and returns dated metrics", async () => {
   const dir = await Deno.makeTempDir();
   try {

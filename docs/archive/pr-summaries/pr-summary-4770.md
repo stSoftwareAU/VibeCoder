@@ -107,8 +107,8 @@ Backend and CLI change; no visual surface changed.
 - The local quality gate passed formatting, lint, type checking, completeness
   and Markdown checks, but its parallel Deno test pass panicked on macOS and
   Checkov timed out. Semgrep was unavailable. The Git hardening suite passed all
-  16 tests separately. The current pushed PR head's CI gate passed; CI must run
-  again after this review fix. No container runtime is available on this host.
+  16 tests separately. The pre-merge PR head's CI gate passed; CI must run
+  again after the base merge. No container runtime was available on that host.
 - PR #4941 review round:
   `deno test -A tests/fleet_pr_babysitter_git_hardening_test.ts` passed all 16
   tests (six of them new in this round) and `tests/fleet_babysitter_app_test.ts`

@@ -36,6 +36,7 @@ import {
   type GhJson,
 } from "../lib/pr_completion_snapshot.ts";
 import { splitList } from "./audit_chain_verify.ts";
+import { collectIssueCompletions } from "../lib/issue_completion_metrics.ts";
 
 const DAY_MS = 86_400_000;
 const DEFAULT_WINDOW_DAYS = 14;
@@ -238,6 +239,13 @@ export async function runPrCompletionCollect(
       ...(ciCallBudget !== undefined ? { ciCallBudget } : {}),
       gh,
     });
+    if (args["issue-throughput"] === true) {
+      snapshot.input.issueCompletions = await collectIssueCompletions(
+        repos,
+        snapshot.input.cohort,
+        gh,
+      );
+    }
     const report = buildPrCompletionReport(snapshot.input);
     if (writeSnapshot !== undefined) {
       const written = await atomicWrite({
