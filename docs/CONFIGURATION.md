@@ -5095,10 +5095,10 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 (such as WIP-preservation pushes) are not gated there. The CI-fix and
 PR-feedback repair processors pass a cargo-only spec when the repo has no
 pre-flight commands (Issue #4630), so their repair pushes run only the repo
-CI's cargo clippy and test-target compile, the ShellCheck policy (Issue
-#4631) and cargo deny for changed cargo inputs (Issue #4626), through Step 1b,
-and not the other changed-file checks listed below. Repos with pre-flight commands keep their own
-spec. The completion phase's
+CI's cargo clippy and test-target compile, the ShellCheck policy
+(Issue #4631) and cargo deny for changed cargo inputs (Issue #4626), through
+Step 1b, and not the other changed-file checks listed below. Repos with
+pre-flight commands keep their own spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the first stage below: deno
