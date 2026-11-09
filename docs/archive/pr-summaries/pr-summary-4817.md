@@ -3,6 +3,7 @@
 Adds two bullets to `prompts/security_scan/prompt.md` (about 120 words in
 total): a secret-bearing field gate in the feature-abuse design lens, and an AWS
 service-principal source-condition check in the cloud permission chains section.
+
 Closes #4817.
 
 ## Spec
