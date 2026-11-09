@@ -61,12 +61,12 @@ New tests, all passing on the head via `deno task test:unit` from `worker/deno`:
 
 - `worker/deno/tests/quality_gate_phase_test.ts`: checkout cwd resolves the
   script and runs the command in it; checkout cwd is the Docker mount; no cwd
-  leaves paths unchanged (control); hermetic real-filesystem run: the checkout and the
-  process cwd (`Deno.chdir` to a second temp dir, restored in `finally`) each
-  hold a `quality.sh` printing a different marker, and only the checkout's
-  marker appears; `qualityCommandFile` cases (`./`,
-  `scripts/q.sh`, absolute, `deno task test`, `make test`, empty); a bare
-  command is not skipped; a configured command naming a file checks that file.
+  leaves paths unchanged (control); hermetic real-filesystem run: the checkout
+  and the process cwd (`Deno.chdir` to a second temp dir, restored in `finally`)
+  each hold a `quality.sh` printing a different marker, and only the checkout's
+  marker appears; `qualityCommandFile` cases (`./`, `scripts/q.sh`, absolute,
+  `deno task test`, `make test`, empty); a bare command is not skipped; a
+  configured command naming a file checks that file.
 - `worker/deno/tests/pr_ci_processor_test.ts`: the gate receives `cwd` equal to
   the run's workDir and `./quality.sh`; a configured `qualityCommand` is passed;
   `skipQualityCheck` never calls the gate and the change is still committed.
@@ -88,10 +88,11 @@ New tests, all passing on the head via `deno task test:unit` from `worker/deno`:
   so the `agent` sudo path is not exercised. The test no longer depends on the
   ambient cwd: it passes from both the repo root and `worker/deno`.
 - The eight test files the mutation check named as failing its baseline
-  (`fence_coverage_verifier`, `pr_ci_processor`, `quality_gate_credentials_4705`,
-  `quality_gate_phase`, `repo_formatters_4113`, `tool_output_treat_as_data_3046`,
-  `untrusted_command_env`, `untrusted_gate_spawn`) pass together from the repo
-  root on the head: 221 passed, 0 failed.
+  (`fence_coverage_verifier`, `pr_ci_processor`,
+  `quality_gate_credentials_4705`, `quality_gate_phase`, `repo_formatters_4113`,
+  `tool_output_treat_as_data_3046`, `untrusted_command_env`,
+  `untrusted_gate_spawn`) pass together from the repo root on the head: 221
+  passed, 0 failed.
 - `./quality.sh` on the head (proxy variables unset): every stage passed except
   `deno tests` (10 failed, 33487 passed), and the serial pass did not run. All
   10 failures are in files this change does not touch and trace to the sandbox:
