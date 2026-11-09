@@ -167,7 +167,7 @@ import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip.ts";
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
-import { getCiProviders } from "./repo_config.ts";
+import { getCiProviders, getRepoConfig } from "./repo_config.ts";
 import {
   CI_CARGO_ONLY_PRE_FLIGHT,
   prBaseForSync,
@@ -406,7 +406,10 @@ export interface CiProcessorDeps {
   startLockRenewalFn?: typeof startBranchUpdateLockRenewal;
   /** Lock renewal interval override in milliseconds (Issue #3754, tests). */
   lockRenewalIntervalMs?: number;
-  /** Repo-specific config for quality gate Docker image selection (Issue #1456). */
+  /**
+   * Repo-specific config: the quality gate's Docker image, `quality_command`
+   * and `skip_quality_check` (Issue #1456).
+   */
   repoConfigs?: Record<string, RepoConfig>;
   /** Function to run the quality gate (injectable for testing — Issue #1456). */
   qualityGateFn?: (params: QualityGateParams) => Promise<QualityGateRunResult>;
@@ -3269,7 +3272,9 @@ interface PostClaudeQualityResult {
  * Mirrors the shell `work_on_ci_failure` behaviour:
  * 1. Check for uncommitted changes via `git status --porcelain`. If none,
  *    return immediately.
- * 2. Run `./quality.sh` (via {@link runQualityGateCheck}) to verify the fix.
+ * 2. Run the repository's configured quality command (`quality_command`,
+ *    default `./quality.sh`) via {@link runQualityGateCheck}, in the PR
+ *    checkout, to verify the fix. `skip_quality_check` skips this step.
  * 3. On a fixable failure, give Claude a single retry with the failure output.
  * 4. Stage and commit any remaining uncommitted changes so the push step
  *    includes them. Worker-owned state files (e.g. `.pr_response_message`) are
@@ -3331,22 +3336,33 @@ async function _runPostClaudeQualityCheck(
 
   // Step 2: Run quality gate (native or Docker via quality_gate_phase)
   const qualityFn = qualityGateFn ?? runQualityGateCheck;
+  const qualityCommand =
+    getRepoConfig(repoConfigs, input.repo, "qualityCommand") || "./quality.sh";
   let qualityResult: QualityGateRunResult;
-  try {
-    qualityResult = await qualityFn({
-      repo: input.repo,
-      qualityScript: "./quality.sh",
-      repoConfigs,
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    logger.warn(
-      "Quality gate threw during post-Claude check — continuing to commit",
-      {
-        error: message,
-      },
+  if (getRepoConfig(repoConfigs, input.repo, "skipQualityCheck") === "true") {
+    logger.info(
+      "skip_quality_check is set — skipping post-Claude quality check",
+      { repo: input.repo, prNumber: input.prNumber },
     );
-    qualityResult = { action: "passed", qualityOutput: "" };
+    qualityResult = { action: "skipped", qualityOutput: "" };
+  } else {
+    try {
+      qualityResult = await qualityFn({
+        repo: input.repo,
+        qualityScript: qualityCommand,
+        repoConfigs,
+        cwd,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        "Quality gate threw during post-Claude check — continuing to commit",
+        {
+          error: message,
+        },
+      );
+      qualityResult = { action: "passed", qualityOutput: "" };
+    }
   }
 
   // Step 3: If fixable, give Claude one more attempt
@@ -3359,7 +3375,12 @@ async function _runPostClaudeQualityCheck(
       },
     );
     const retryPrompt = qualityResult.retryPrompt ??
-      buildRetryPrompt(qualityResult.qualityOutput);
+      buildRetryPrompt(
+        qualityResult.qualityOutput,
+        100,
+        undefined,
+        qualityCommand,
+      );
     const retryResult = await deps.claude.runClaudeWithRetry(
       {
         // The same index the first attempt was handed (Issue #2160) — it is
