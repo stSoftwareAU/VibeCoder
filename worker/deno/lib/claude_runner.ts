@@ -23,7 +23,7 @@ import {
   ensureAgentMcpConfig,
 } from "./agent_mcp_config.ts";
 import { agentPreFlightCommands } from "./agent_pre_flight.ts";
-import { type CiCargoScan, repoCiCargoChecks } from "./ci_cargo_checks.ts";
+import type { CiCargoScan } from "./ci_cargo_checks.ts";
 import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import type { EnvLookup } from "./env_lookup.ts";
@@ -1214,6 +1214,11 @@ async function scanAgentCiCargoChecks(
   try {
     const tracked = await runGitCommand(["ls-files", "-z"], { cwd });
     if (!tracked.ok || tracked.value.code !== 0) return undefined;
+    // Loaded here, not imported at the top: a static import would put the YAML
+    // parser (`@std/yaml/parse`) into the graph of every script that reaches
+    // this module without the worker's import map (the review-fleet-prs
+    // helpers run with no config), so they could not resolve it.
+    const { repoCiCargoChecks } = await import("./ci_cargo_checks.ts");
     return await repoCiCargoChecks(
       cwd,
       tracked.value.stdout.split("\0").filter((path) => path !== ""),
