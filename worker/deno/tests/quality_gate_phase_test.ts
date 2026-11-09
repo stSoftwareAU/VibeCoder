@@ -878,25 +878,29 @@ Deno.test("runQualityGateCheck - without a cwd the script and command stay in th
 
 Deno.test("runQualityGateCheck - runs the checkout's quality.sh, not the worker's (Issue #4805)", async () => {
   const checkout = await Deno.makeTempDir({ prefix: "qg-checkout-" });
+  const workerDir = await Deno.makeTempDir({ prefix: "qg-worker-" });
+  const originalCwd = Deno.cwd();
   try {
-    const script = join(checkout, "quality.sh");
-    await Deno.writeTextFile(
-      script,
-      "#!/usr/bin/env bash\necho CHECKOUT-QUALITY-MARKER\nexit 1\n",
-    );
-    await Deno.chmod(script, 0o755);
-    // The worker's own process cwd has no ./quality.sh, so a gate that still
-    // resolved against it would report skipped rather than run the checkout's.
-    const workerDeps = createDefaultDeps();
-    assertEquals(
-      await workerDeps.fileExists("./quality.sh"),
-      false,
-      "precondition: the worker's process cwd has no quality.sh",
-    );
+    for (
+      const [dir, marker, code] of [
+        [checkout, "CHECKOUT-QUALITY-MARKER", 1],
+        [workerDir, "WORKER-QUALITY-MARKER", 0],
+      ] as const
+    ) {
+      const script = join(dir, "quality.sh");
+      await Deno.writeTextFile(
+        script,
+        `#!/usr/bin/env bash\necho ${marker}\nexit ${code}\n`,
+      );
+      await Deno.chmod(script, 0o755);
+    }
+    // The worker's process cwd holds its own, distinguishable quality.sh, so a
+    // gate that still resolved against it would pass with the worker's marker.
+    Deno.chdir(workerDir);
     // A direct spawn, so the test does not depend on the `agent` account. The
     // host's dev-server cleanup is replaced too: it kills by process pattern.
     const deps: QualityGateDeps = {
-      ...workerDeps,
+      ...createDefaultDeps(),
       cleanupPorts: async () => {},
       cleanupSubprocesses: async () => {},
       runCommand: async (cmd, options) => {
@@ -920,8 +924,11 @@ Deno.test("runQualityGateCheck - runs the checkout's quality.sh, not the worker'
     );
     assertEquals(result.action, "failed_fixable");
     assertStringIncludes(result.qualityOutput, "CHECKOUT-QUALITY-MARKER");
+    assertEquals(result.qualityOutput.includes("WORKER-QUALITY-MARKER"), false);
   } finally {
+    Deno.chdir(originalCwd);
     await Deno.remove(checkout, { recursive: true });
+    await Deno.remove(workerDir, { recursive: true });
   }
 });
 
