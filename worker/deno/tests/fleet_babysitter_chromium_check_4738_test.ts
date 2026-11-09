@@ -274,6 +274,43 @@ Deno.test("failed egress start never falls back to an unrestricted container", a
   assert(!events.some((event) => event.startsWith("spawn ")));
 });
 
+Deno.test("timeout reports container cleanup failures and still tears down egress", async () => {
+  for (const killResult of [
+    { ...OK, success: false, code: 17, stderr: "kill denied" },
+    new Error("kill denied by runtime"),
+  ]) {
+    const events: string[] = [];
+    const configured = deps({
+      events,
+      plan: plan({ egressEnforced: true }),
+    });
+    configured.startSidecar = () => Promise.resolve();
+    configured.stopSidecar = () => {
+      events.push("egress stop");
+      return Promise.resolve([]);
+    };
+    configured.spawn = (_runtime, args) => {
+      if (args[0] === "kill") {
+        return killResult instanceof Error
+          ? Promise.reject(killResult)
+          : Promise.resolve(killResult);
+      }
+      return Promise.resolve({ ...OK, success: false, code: 124, timedOut: true });
+    };
+    await assertRejects(
+      () => checkBabysitterContainerChromium(
+        { baseDir: "/checkout" },
+        configured,
+      ),
+      Error,
+      killResult instanceof Error
+        ? "container cleanup failed: Error: kill denied by runtime"
+        : "container cleanup exited with code 17",
+    );
+    assert(events.includes("egress stop"));
+  }
+});
+
 Deno.test("Apple proxy egress wraps the Chromium launch and always stops", async () => {
   for (
     const result of [OK, { ...OK, success: false, code: 11, stderr: "crash" }]

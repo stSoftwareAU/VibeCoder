@@ -170,10 +170,10 @@ explicit fallback can also select a metered provider.
   runtime/image preflight, and `--check-container` exposes it for diagnosis.
   The probe uses the plan's egress, has no host mounts and a 60-second deadline;
   a failed automatic check follows the existing pass retry path. The
-  container receives a fresh snapshot copied from tracked worker checkout paths and a
-  scrubbed config; the clone's `.git` is mounted read-only. As defence in depth,
-  before publication the host still resets the local Git config and uses
-  hardened Git settings for publication commands.
+  container receives a fresh snapshot copied from tracked worker checkout
+  paths and a scrubbed config; the clone's `.git` is mounted read-only. As
+  defence in depth, before publication the host still resets the local Git
+  config and uses hardened Git settings for publication commands.
 - **The worker keeps its auto-mode wait policy.** When every eligible
   subscription is exhausted or unavailable, auto-mode selection waits for the
   subscription reset (`retryAt` from `selectAutomaticProvider` in
