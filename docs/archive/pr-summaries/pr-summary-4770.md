@@ -46,15 +46,14 @@ sequenceDiagram
   `max_issue_body_tokens` survive.
 - The agent can write the clone's `.git`, so the host runs publication git with
   hooks and fsmonitor disabled, submodule recursion off and submodule diffs
-  ignored, and rewrites the clone's
-  `.git/config` before publication. The reset refuses to publish when `.git` is
-  not a plain directory, or when `.git/commondir`, `.git/gitdir`,
-  `.git/config.worktree` or `.git/objects/info/alternates` exist, because each
-  would redirect git to config the reset does not control. The host's own global
-  git config is left in place so its credential helper still works. Before host
-  Git runs, nested `.git` entries and index gitlinks absent from HEAD are
-  refused. Checked-out existing submodules are also refused; the staged merge
-  remains intact.
+  ignored, and rewrites the clone's `.git/config` before publication. The reset
+  refuses to publish when `.git` is not a plain directory, or when
+  `.git/commondir`, `.git/gitdir`, `.git/config.worktree` or
+  `.git/objects/info/alternates` exist, because each would redirect git to
+  config the reset does not control. The host's own global git config is left in
+  place so its credential helper still works. Before host Git runs, nested
+  `.git` entries and index gitlinks absent from HEAD are refused. Checked-out
+  existing submodules are also refused; the staged merge remains intact.
 - Exit status 42 from `babysitter-repair` is a reported task failure and is a
   `code` failure; a missing runtime or image (including
   `ContainerRuntimeUnavailableError`) is `capability`; every other launcher
@@ -101,6 +100,23 @@ Backend and CLI change; no visual surface changed.
   tree the whole Deno formatter, linter and type check passed, as did the Git
   hardening suite and the nested-repository orchestration test. The full
   orchestration suite needs an unavailable container runtime on this host.
+- PR #4941 review round:
+  `deno test -A tests/fleet_pr_babysitter_git_hardening_test.ts` passed all 16
+  tests (six of them new in this round) and `tests/fleet_babysitter_app_test.ts`
+  passed with the restored CLI test. In the wider run of the app, orchestration,
+  hardening and `fleet_pr_babysitter_test.ts` files, four
+  `fleet_pr_babysitter_test.ts` cases
+  (`a repo that tracks lcov.info
+  still commits an edit to it`,
+  `a later repair fetches into the mirror and clones
+  from it, without a second bare clone`,
+  `an existing mirror fetches from the newly
+  resolved URL`,
+  `a later repair prunes deleted branches and fetches new tags into
+  the clone`)
+  failed in this sandbox: their fixture repository's push hook needs
+  `https://jsr.io`, which is unreachable here. They also fail at the previous
+  head (`f51a742f`), before this round, code and were not changed.
 - `deno test --allow-all tests/fleet_pr_babysitter_git_timeout_test.ts` passed
   all three tests on this head. The push and fetch cases use the shared host Git
   hardening arguments and continue to check the 30-minute timeout.
@@ -154,13 +170,19 @@ Backend and CLI change; no visual surface changed.
   `::the publication reset refuses a planted commondir that would redirect git's config to a filter`,
   `::the publication reset refuses every other git redirection file`,
   `::the publication reset refuses a .git that is not a plain directory`,
-  `::the publication reset writes a complete trusted config` and
+  `::the publication reset writes a complete trusted config`,
+  `::the review verifier's host git runs no planted fsmonitor in the repair clone`,
+  `::the committed-summary read ignores a planted replacement object`,
+  `::publication refuses agent-written replacement refs, grafts and shallow files`,
+  `::publication refuses a nested repository spelled with another case`,
+  `::the publication reset carries the probed filesystem traits into the trusted config`
+  and
   `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix replaces agent-controlled git config before host publication (Issue #4770)`
   — reviewer: met
 - **partial** — `./quality.sh` passes. — evidence: the repair working-tree run
   described in Evidence passed the static checks and focused tests, but the
-  container runtime is unavailable on this host — reviewer: partial — reason:
-  CI must confirm the full gate on the pushed head
+  container runtime is unavailable on this host — reviewer: partial — reason: CI
+  must confirm the full gate on the pushed head
 - **unrequested** — exit status 42 for a reported task failure
   (`BABYSITTER_TASK_FAILURE_EXIT_CODE` in
   `worker/deno/commands/babysitter_repair.ts`) — reviewer: unrequested — reason:
@@ -179,13 +201,14 @@ Backend and CLI change; no visual surface changed.
   reviewer: unrequested — reason: replace `child.kill` on lock-renewal failure
   and make the setup preflight testable
 - **unrequested** — sweep-ledger changes (`top-up-4593.json` and
-  `top-up-4664.json` deleted, `top-up-4770.json` added), the deleted
-  `worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`, and docs
+  `top-up-4664.json` deleted, `top-up-4770.json` added), the replaced
+  `worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts` (now
+  `worker/deno/tests/fixtures/fleet_babysitter_container_preload.ts`), and docs
   edits in `docs/CONFIGURATION.md`,
   `docs/workflows/fleet-pr-babysitter-github-app.md` and `DESIGN-PRINCIPLES.md`
   — reviewer: unrequested — reason: the ledger gate treats a path with no file
-  as stale, the fixture served only the deleted Codex CLI test, and the docs
-  carried stale Codex wording
+  as stale, the old fixture drove the deleted Codex spawn, and the docs carried
+  stale Codex wording
 
 ## Standards Review
 
@@ -282,9 +305,18 @@ Backend and CLI change; no visual surface changed.
   (`worker/deno/tests/fixtures/fleet_babysitter_repair_preload.ts`, deleted);
   the container's environment is asserted in the orchestration credential test.
   That CLI test also covered the ssh origin and the pending-open exit; the
-  origin URL now follows `defaultRemoteUrl` (tested), and the pending-open case
-  keeps unit coverage in `worker/deno/tests/fleet_babysitter_exchange_test.ts`
-  and `worker/deno/tests/file_utils_test.ts`.
+  origin URL now follows `defaultRemoteUrl` (tested). The non-watch exit
+  (`Deno.exit(Deno.exitCode)` in `main`) is again covered at CLI level by
+  `worker/deno/tests/fleet_babysitter_app_test.ts::the non-watch container repair exits non-zero after cleanup despite a pending special-file open`,
+  which runs the real CLI with
+  `worker/deno/tests/fixtures/fleet_babysitter_container_preload.ts` (fake `gh`,
+  clone git and container runtime; real git and tar over the worker checkout).
+  The container's fake agent leaves a FIFO as `.babysitter-pr-body`; the pass
+  must exit non-zero with `timed out opening`, and the same pass without the
+  FIFO must succeed and apply the description (positive control). Red check:
+  replacing `Deno.exit(Deno.exitCode)` in `main` with a comment makes the test
+  fail with `Timed out after 25000ms`. The exchange and `file_utils` tests only
+  prove the reader's open times out, not that the process exits.
 - Removed from `worker/deno/tests/fleet_pr_babysitter_audit_test.ts`:
   `babysitter agent disables the inherited host audit journal`. Removed
   functionality: the host Codex spawn's `VIBE_AUDIT_DISABLED` env; the
@@ -311,6 +343,22 @@ Backend and CLI change; no visual surface changed.
   restored
   (`publication git keeps the host's global config, while a planted pre-commit hook still does not run`
   fails); exit-42 mapping removed.
+- PR #4941 review round red checks (break, red, restore): removing
+  `core.useReplaceRefs=false` from `HOST_GIT_HARDENING_ARGS` fails
+  `the committed-summary read ignores a planted replacement object` and the
+  `run puts the hook and fsmonitor neutralising flags before the git subcommand`
+  expectation; removing `verifierDeps: hardenedVerifierDeps` from
+  `readOnlyReviewVerifier` fails
+  `the review verifier's host git runs no planted fsmonitor in the repair clone`
+  (the default deps run the planted fsmonitor, as its positive control shows);
+  removing the `ignorecase`/`precomposeunicode` lines from the trusted config
+  fails
+  `the publication reset carries the probed filesystem traits into the trusted config`
+  (the fixture plants the opposite `core.ignorecase` in the agent's config). The
+  `refs/replace`, grafts, shallow and case-variant `.git` refusals are each
+  tested with the same repository accepted first and again after the planted
+  item is removed. The replacement ref is refused before the HEAD gitlink
+  comparison reads HEAD, so that comparison cannot see a replacement.
 - Not red-checked: the `isValidRepoName` sharing and the numeric-limit config
   scrub (both have direct tests that exercise their inputs).
 - Callers checked for the new `startBabysitterAgent` contract: `fix()` is the
@@ -318,12 +366,24 @@ Backend and CLI change; no visual surface changed.
   `fleet_babysitter_app_test.ts` call it. Twinned rule: the runtime and image
   refusal is one helper (`checkRuntimeAndImage`) used by the repair and the
   setup preflight.
-- Nested Git review: `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::publication refuses planted nested repositories and index gitlinks`
-  covers both refusals; `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix refuses a nested repository before finish runs host Git`
+- Nested Git review:
+  `worker/deno/tests/fleet_pr_babysitter_git_hardening_test.ts::publication refuses planted nested repositories and index gitlinks`
+  covers both refusals;
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts::fix refuses a nested repository before finish runs host Git`
   verifies refusal before status, commit or push. The hardening flags are shared
   by `run()` and `runHardenedRepairGit`; the orchestration fixture supplies a
   guard seam for its simulated clone. Results and host limitations are in
-  Evidence.
+  Evidence. Review-round additions: `assertRepairTreeSafe` also refuses
+  `refs/replace`, `.git/info/grafts`, `.git/shallow` and case-variant or `git~1`
+  nested repository names; the verifier's git carries `HOST_GIT_HARDENING_ARGS`
+  (`hardenedVerifierDeps`); the reset probes the filesystem on the host for
+  `core.ignorecase` and `core.precomposeunicode` (`probeRepairFilesystem`).
+  `readOnlyReviewVerifier` gained an `overrides` argument that production never
+  passes; it is the seam the verifier-git test uses to receive the deps the
+  production wiring builds. Callers checked for `HOST_GIT_HARDENING_ARGS`:
+  `run()` and `runHardenedRepairGit` (every publication, body-sync and
+  committed-summary read) and the verifier; the untouched `git`/`gh` calls
+  elsewhere in the file run outside the clone.
 - Docs read and updated: the container repair, credential-boundary and failure
   sections of `docs/workflows/fleet-pr-babysitter.md`, control C36 in
   `docs/THREAT-MODEL.md`, the key section of `docs/CONFIGURATION.md`,
