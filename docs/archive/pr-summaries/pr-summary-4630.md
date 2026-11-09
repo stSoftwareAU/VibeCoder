@@ -54,6 +54,14 @@ compile error is therefore caught before the push, not by a CI run. Closes
   repair pushes run only the CI cargo checks, the ShellCheck policy and the
   `cargo deny` gate that every gate run applies (#4631, #4626, merged from
   main).
+- The agent's own `git push` now runs the same checks (Issue #4630 review):
+  before the agent starts, `claude_runner.ts` scans the repo's workflows with
+  `repoCiCargoChecks` and writes the derived checks (and any unverifiable
+  reasons) into the hook's `pre-push-spec.json`. `pre_push_gate_cli.ts` reads
+  that entry and passes it back as `findCiCargo`, so the `--no-config` hook
+  runs the CI cargo checks without loading the YAML parser itself. A
+  self-pushed Rust change that fails CI clippy or the test build is refused,
+  exactly as the worker's own gates refuse it.
 - Infrastructure is not charged, up to a cap (new
   `worker/deno/lib/gate_infra_release.ts`): when the pre-push gate fails with
   `PrePushGateInfrastructureError` (on the first push or on the retry after push
@@ -110,8 +118,10 @@ flowchart LR
 ### Essential Design Decisions
 
 - The scanner is opt-in (`findCiCargo`) and loaded by dynamic import in
-  `gateUnpushedCommits`: the agent's `--no-config` pre-push hook cannot resolve
-  `@std/yaml`, so that hook runs no CI cargo check; the worker's own gates do.
+  `gateUnpushedCommits`. The agent's `--no-config` pre-push hook cannot resolve
+  `@std/yaml`, so it never scans the workflows itself; the worker scans them
+  before the agent runs and writes the derived scan into the hook's spec, which
+  the hook passes back as `findCiCargo`.
 - Anything the scanner cannot reproduce faithfully fails loud as infrastructure
   instead of dropping to a smaller check set (the issue requires this).
 - A failure the PR base already has is compared by diagnostic message, file and
@@ -159,18 +169,32 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   cargo-only spec into both repair processors and the ungated WIP path;
   `pr_ci_processor_test.ts` and `pr_feedback_review_dismissal_3383_test.ts` also
   pin the uncharged release of an infrastructure gate failure.
+- `tests/pre_push_hook_test.ts` and `tests/pre_push_gate_cli_test.ts`: the
+  precomputed `ciCargo` scan is written into the hook spec and the CLI passes it
+  back as `findCiCargo` (a malformed `ciCargo` blocks the hook without running
+  the gate).
+- `tests/git_push_preflight_test.ts::commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)`:
+  a repair push that must compare the base but has no readable base fails a
+  failing clippy as `PrePushGateInfrastructureError`, never as a charged
+  verdict.
+- `tests/pr_feedback_processor_test.ts::processPrFeedback - a gated-head fix branch compares the PR base and requires the comparison`:
+  the fix-branch push carries `compareBaseBranch` (the PR base) and
+  `requireCargoBaseComparison: true` with no `syncBaseBranch`.
 
 ## Test Plan
 
-- From `worker/deno`, `deno fmt --check`, `deno lint` and
-  `deno task check` cover the Deno tree. Targeted `deno task test:unit`
-  covers `ci_cargo_checks_test.ts`, `pre_push_gate_test.ts`,
-  `pre_push_gate_cargo_deny_test.ts`, `git_push_preflight_test.ts`,
-  `pr_ci_processor_test.ts`, `pr_feedback_processor_pre_flight_4630_test.ts`,
-  `pr_feedback_review_dismissal_3383_test.ts` and
-  `pr_round_repo_formatters_test.ts` and `pr_push_base_sync_test.ts`:
-  317 passed. The real ShellCheck
-  publication suite ran separately: 7 passed.
+- From `worker/deno`, `deno fmt --check`, `deno lint`, `deno task check` and
+  `deno task check:manifests` cover the Deno tree and pass on the head. The
+  changed suites were run with `deno test`:
+  `tests/claude_runner_test.ts` (56 passed),
+  `tests/git_push_preflight_test.ts` (29 passed) and
+  `tests/pre_push_gate_cli_test.ts` (11 passed). The suites whose tests push
+  through the agent's real `--no-config` pre-push hook —
+  `tests/pre_push_hook_test.ts`, `tests/pr_feedback_processor_test.ts` and
+  `tests/pre_push_gate_test.ts` — pass in CI but not in this container, because
+  the hook resolves `jsr:@std/yaml@^1.0.12`, which needs the JSR registry; the
+  non-push tests in each pass here (4 of 6, 45 of 54, 64 of 133). The real
+  ShellCheck publication suite ran separately: 7 passed.
 - The obsolete environment contract copied the CI output directory into local
   builds. The remaining contract preserves target-specific settings while
   ignoring both output directory keys, including expressions:
@@ -196,9 +220,18 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   and the gated-head case in `pr_ci_processor_test.ts` cover the independent
   comparison ref. Registry refusal on the head is covered by
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: an unreachable registry is infrastructure`.
-- The agent hook passes no scanner or comparison ref. Spelling and
-  merge-conflict repairs retain the base branch's ShellCheck-only policy.
-  No twinned copy of the changed environment or base-comparison rules was found.
+- The agent hook now passes the precomputed CI cargo scan from its spec, but no
+  base-comparison ref: a self-pushed CI cargo failure is a verdict, since the
+  hook does not know the PR base. Coverage:
+  `worker/deno/tests/pre_push_hook_test.ts::installPrePushHook: writes ciCargo into the spec`
+  and `worker/deno/tests/pre_push_gate_cli_test.ts::pre-push cli: a ciCargo spec passes findCiCargo returning the scan`
+  (deleting the `findCiCargo` wiring turns that test red). The unreadable-base
+  path is `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)`,
+  and the feedback fix-branch wiring is
+  `worker/deno/tests/pr_feedback_processor_test.ts::processPrFeedback - a gated-head fix branch compares the PR base and requires the comparison`.
+  Spelling and merge-conflict repairs retain the base branch's
+  ShellCheck-only policy. No twinned copy of the changed environment or
+  base-comparison rules was found.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.

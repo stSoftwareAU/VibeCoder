@@ -1853,10 +1853,12 @@ function isMissingRustCapabilityLine(line: string): boolean {
 /**
  * Whether a failed CI cargo check reflects the host rather than the commit: the
  * command could not start or timed out, or it exited non-zero with host
- * disk-full output, or with output saying the toolchain, component or target is
- * not installed. Disk-full text counts only in the tool's own lines, so a
- * source excerpt that quotes it does not turn a lint failure into a host fault.
- * The disk-full test is `isHostDiskFaultText` in `host_fault.ts`.
+ * disk-full output, with output saying the toolchain, component or target is
+ * not installed, or with a cargo registry or git-dependency network refusal.
+ * Disk-full text counts only in the tool's own lines, so a source excerpt that
+ * quotes it does not turn a lint failure into a host fault. The disk-full test
+ * is `isHostDiskFaultText` in `host_fault.ts`; the network test is
+ * {@link cargoNetworkFaultLine}.
  */
 function cargoNetworkFaultLine(lines: string[]): string | undefined {
   return lines.find((line) =>
@@ -1974,11 +1976,17 @@ function diagnosticSignatures(output: string): Map<string, number> {
 
 /**
  * Whether a CI cargo check that failed on this push fails on the PR base too,
- * with every diagnostic the push shows, no more often than the base (Issue #4630 review: a failure the base
- * already has is not this repair's defect). The check runs again, as CI wrote
- * it, in a detached worktree of `ref`. Returns true only when that is
- * established. An unavailable ref, worktree or base run is unknown; a passing
- * base or a diagnostic the base lacks is different.
+ * with every diagnostic the push shows, no more often than the base (Issue
+ * #4630 review: a failure the base already has is not this repair's defect).
+ * The check runs again, as CI wrote it, in a detached worktree of `ref`.
+ *
+ * Returns `"same"` when the base fails with every diagnostic the push shows
+ * (matched by message, file and count; not line), `"different"` when the base
+ * passes or lacks a diagnostic the push shows, and `"unknown"` when neither can
+ * be established: an unsafe or unresolvable ref, a push output with no readable
+ * diagnostic, a working directory outside the repo, a worktree that cannot be
+ * made, or a base run that times out, cannot start or fails for the host.
+ * Callers turn `"unknown"` into an infrastructure fault, never a verdict.
  *
  * SIMPLE-ON-PURPOSE: a diagnostic is matched by message, file and count, not line — upgrade when a moved instance of a repeated diagnostic must be told from a new one
  */

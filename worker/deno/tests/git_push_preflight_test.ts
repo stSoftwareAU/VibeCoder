@@ -21,6 +21,7 @@ import {
   gateUnpushedCommits,
   PrePushGateBlockedError,
 } from "../lib/git_push.ts";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
   type PreFlightCommandResult,
   PreFlightGateError,
@@ -686,6 +687,36 @@ Deno.test("commitAndPushPending - a fix branch compares the PR base without merg
     );
     assert(result.ok, result.ok ? "" : result.error.message);
     assertEquals(clippyTrees, ["head", "base"]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)", async () => {
+  const branch = "issue-4630-no-base";
+  const { tmp, downstream } = await makeRepo("preflight_4896_nobase_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const { runner } = cargoRunner(CLIPPY_ASSERT_IS_EMPTY);
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      {
+        cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
+        requireCargoBaseComparison: true,
+      },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+
+    assert(!result.ok, "an unreadable base comparison must refuse the push");
+    if (!result.ok) {
+      assert(result.error instanceof PrePushGateInfrastructureError);
+      assert(!result.error.message.includes("[PRE_PUSH_BLOCKED]"));
+    }
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

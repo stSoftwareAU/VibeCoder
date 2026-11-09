@@ -86,6 +86,33 @@ Deno.test("installPrePushHook: invalid GIT_CONFIG_COUNT is an error", async () =
   }
 });
 
+Deno.test("installPrePushHook: writes ciCargo into the spec", async () => {
+  const scan = {
+    checks: [{
+      kind: "clippy" as const,
+      workingDirectory: ".",
+      argv: ["cargo", "clippy", "--all-targets"],
+      env: {},
+      source: ".github/workflows/ci.yml",
+    }],
+    unverifiable: ["ci.yml: the workflow cannot be reproduced"],
+  };
+  const result = await installPrePushHook({
+    baseEnv: {},
+    preFlightCommands: [],
+    ciCargo: scan,
+  });
+  assert(result.ok);
+  try {
+    const spec = JSON.parse(
+      await Deno.readTextFile(`${result.value.dir}/pre-push-spec.json`),
+    );
+    assertEquals(spec.ciCargo, scan);
+  } finally {
+    await result.value.cleanup();
+  }
+});
+
 // ---- Integration: real git push through the hook ---------------------------
 
 const GIT_ID = ["-c", "user.email=t@e", "-c", "user.name=t"];

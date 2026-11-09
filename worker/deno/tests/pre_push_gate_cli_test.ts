@@ -203,3 +203,52 @@ Deno.test("pre-push cli: a throwing gate blocks", async () => {
     assertStringIncludes(h2.errs.join(""), "plain string");
   });
 });
+
+Deno.test("pre-push cli: a ciCargo spec passes findCiCargo returning the scan", async () => {
+  const scan = {
+    checks: [{
+      kind: "clippy" as const,
+      workingDirectory: ".",
+      argv: ["cargo", "clippy", "--all-targets"],
+      env: {},
+      source: ".github/workflows/ci.yml",
+    }],
+    unverifiable: [],
+  };
+  await withSpec(
+    JSON.stringify({ preFlightCommands: [], ciCargo: scan }),
+    async (path) => {
+      const h = harness();
+      let seen: Parameters<Gate>[0] | undefined;
+      const code = await h.run(["--spec", path], {
+        gate: (o) => {
+          seen = o;
+          return okGate(o);
+        },
+      });
+      assertEquals(code, 0);
+      assert(seen?.findCiCargo !== undefined);
+      assertEquals(await seen!.findCiCargo!("/fake/cwd", []), scan);
+    },
+  );
+});
+
+Deno.test("pre-push cli: a malformed ciCargo blocks without running the gate", async () => {
+  for (
+    const bad of [
+      '"x"',
+      '{"checks":{},"unverifiable":[]}',
+      '{"checks":[{"kind":"lint"}],"unverifiable":[]}',
+    ]
+  ) {
+    await withSpec(
+      `{"preFlightCommands":[],"ciCargo":${bad}}`,
+      async (path) => {
+        const h = harness();
+        assertEquals(await h.run(["--spec", path]), 1);
+        assertStringIncludes(h.errs.join(""), "[PRE_PUSH_BLOCKED]");
+        assertEquals(h.gateCalls, 0);
+      },
+    );
+  }
+});

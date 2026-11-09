@@ -23,7 +23,9 @@ import {
   ensureAgentMcpConfig,
 } from "./agent_mcp_config.ts";
 import { agentPreFlightCommands } from "./agent_pre_flight.ts";
+import { type CiCargoScan, repoCiCargoChecks } from "./ci_cargo_checks.ts";
 import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
@@ -1198,6 +1200,29 @@ export function killCompletionCapMs(killAfterSeconds: number): number {
   ) * 1000;
 }
 
+/**
+ * The repo CI's cargo checks, precomputed before the agent starts so its own
+ * `--no-config` pre-push hook can run them from the hook spec without loading
+ * the YAML parser (Issue #4630 review). Best-effort: without a checkout, or
+ * when the tracked-file list cannot be read, no scan is written and the hook
+ * runs the changed-file checks and pre-flight as before.
+ */
+async function scanAgentCiCargoChecks(
+  cwd: string | undefined,
+): Promise<CiCargoScan | undefined> {
+  if (cwd === undefined) return undefined;
+  try {
+    const tracked = await runGitCommand(["ls-files", "-z"], { cwd });
+    if (!tracked.ok || tracked.value.code !== 0) return undefined;
+    return await repoCiCargoChecks(
+      cwd,
+      tracked.value.stdout.split("\0").filter((path) => path !== ""),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 export async function runClaudeWithTimeout(
   options: RunClaudeOptions,
 ): Promise<Result<ClaudeExecutionResult>> {
@@ -1480,11 +1505,16 @@ async function runClaudeWithTimeoutBody(
 
     // Agent self-pushes bypassed the worker's pre-flight chokepoint (Issue
     // #3394): install a per-run git pre-push hook, active only for the agent's
-    // env. Fail closed, like the shim.
+    // env. Fail closed, like the shim. The repo CI's cargo checks are scanned
+    // here, before the agent runs, and written into the hook spec, so the
+    // `--no-config` hook runs them on the agent's own push (Issue #4630
+    // review) without loading the YAML parser itself.
+    const agentCiCargo = await scanAgentCiCargoChecks(cwd);
     const hookOutcome = await installPrePushHook({
       baseEnv: ghGuard?.env ?? baseEnv,
       preFlightCommands: options.preFlightCommands ??
         agentPreFlightCommands(repo),
+      ...(agentCiCargo === undefined ? {} : { ciCargo: agentCiCargo }),
     });
     if (!hookOutcome.ok) {
       return {

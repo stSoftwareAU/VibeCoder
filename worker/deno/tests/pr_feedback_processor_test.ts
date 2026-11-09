@@ -1035,6 +1035,73 @@ Deno.test("processPrFeedback - does not sync the PR body on a gated-head fix bra
   assertEquals(syncCalled, false);
 });
 
+Deno.test("processPrFeedback - a gated-head fix branch compares the PR base and requires the comparison", async () => {
+  const GATED_RULES = JSON.stringify([{ type: "pull_request" }]);
+  const pushOptions: Record<string, unknown>[] = [];
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "Fixed the issue", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrGh((args: string[]) => {
+      if (args[0] === "api" && String(args[1]).includes("/rules/branches/")) {
+        return Promise.resolve(GATED_RULES);
+      }
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.resolve("main");
+      }
+      return Promise.resolve("");
+    }),
+  };
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: ((
+        _branch: string,
+        _message: string,
+        options: Record<string, unknown>,
+      ) => {
+        pushOptions.push(options);
+        return Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 1,
+            finalUnpushedCount: 0,
+          },
+        });
+      }) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    syncPrBodyFn: () =>
+      Promise.resolve({
+        ok: true,
+        value: { status: "updated", issueNumber: 42 },
+      }),
+  };
+
+  const result = await processPrFeedback(
+    makeInput({ branchName: "milestone/4690-gated" }),
+    processorDeps,
+  );
+  assertEquals(result.ok, true);
+  assertEquals(pushOptions.length, 1);
+  assertEquals(pushOptions[0]?.compareBaseBranch, "main");
+  assertEquals(pushOptions[0]?.syncBaseBranch, undefined);
+  assertEquals(pushOptions[0]?.requireCargoBaseComparison, true);
+});
+
 Deno.test("processPrFeedback - a failing PR body sync does not fail the run", async () => {
   const processorDeps = makeSuccessfulPushDeps(() =>
     Promise.resolve({ ok: false, error: new Error("gh pr edit boom") })

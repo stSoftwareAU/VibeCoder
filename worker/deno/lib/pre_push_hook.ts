@@ -26,6 +26,7 @@
  */
 
 import type { Result } from "../types.ts";
+import type { CiCargoScan } from "./ci_cargo_checks.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
 
@@ -80,6 +81,13 @@ export async function installPrePushHook(opts: {
   baseEnv: Record<string, string>;
   preFlightCommands: readonly string[];
   timeoutSeconds?: number;
+  /**
+   * The repo's CI cargo checks, precomputed by the worker before the agent
+   * runs (Issue #4630 review). Written into the hook spec so the `--no-config`
+   * hook can run them without loading the YAML parser itself. Omit to keep the
+   * hook scanning no CI cargo check.
+   */
+  ciCargo?: CiCargoScan;
   denoPath?: string;
   modulePath?: string;
   makeTempDir?: () => Promise<string>;
@@ -113,6 +121,7 @@ export async function installPrePushHook(opts: {
         ...(opts.timeoutSeconds === undefined
           ? {}
           : { timeoutSeconds: opts.timeoutSeconds }),
+        ...(opts.ciCargo === undefined ? {} : { ciCargo: opts.ciCargo }),
       }),
     );
     await Deno.writeTextFile(

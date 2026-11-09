@@ -5197,11 +5197,12 @@ checks in stage 1, which only the worker's own gates run (see that bullet):
    - **CI's cargo clippy and test-target compile** (Issue #4630), when the push
      changes a Rust-relevant file (a `.rs` file, `Cargo.toml`, `Cargo.lock`,
      `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
-     `.clippy.toml`) in a directory the repo's CI runs cargo in. Only the
-     worker's own gates run these (Step 1b, the completion gate and the repair
-     processors' cargo-only spec). The agent's own pre-push hook runs none of
-     them: it runs under `--no-config`, where the YAML parser that reads the
-     workflows cannot be loaded. The commands are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
+     `.clippy.toml`) in a directory the repo's CI runs cargo in. These run in
+     the worker's own gates (Step 1b, the completion gate and the repair
+     processors' cargo-only spec) and in the agent's own pre-push hook: before
+     the agent runs, the worker scans the workflows and writes the derived
+     checks (and any unverifiable reasons) into the hook's spec file, so the
+     `--no-config` hook runs them without loading the YAML parser itself. The commands are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
      from workflows triggered on `pull_request`. Each `cargo clippy` run in a
      step is run exactly as written: its `working-directory` (step, job or
      workflow; a plain relative path inside the repo), its `+toolchain` (or the
@@ -5227,7 +5228,8 @@ checks in stage 1, which only the worker's own gates run (see that bullet):
      [+toolchain] clippy --version` where a clippy check uses it. An
      infrastructure fault (a missing `cargo` or `clippy`, a toolchain,
      component or `--target` that rustup or rustc reports as not installed, a
-     directory that is missing or resolves outside the repo, host disk full, a
+     directory that is missing or resolves outside the repo, a cargo registry or
+     git-dependency network refusal, host disk full, a
      timeout, or a CI command with a `${{ }}` expression, a pipe or shell syntax
      the gate does not reproduce) is reported as an infrastructure fault, not as
      a verdict on the commit, and it never reduces the set of checks run. Disk
@@ -5240,8 +5242,10 @@ checks in stage 1, which only the worker's own gates run (see that bullet):
      worktree of that base, and when every diagnostic the push shows (matched by
      message and file, each no more often than on the base; not line) is also on the base, the failure is no verdict
      on this push and is reported as a `[PRE_PUSH_WARNING]`. A base that passes,
-     times out, fails for the host or lacks a diagnostic, or a ref that cannot
-     be resolved, leaves it a verdict. A CI-fix or review-feedback repair
+     or lacks a diagnostic the push shows, leaves the failure a verdict. An
+     unresolvable or unreadable base, a worktree that cannot be made, a base run
+     that times out, cannot start or fails for the host, and a push output with
+     no readable diagnostic are infrastructure faults. A CI-fix or review-feedback repair
      released uncharged because its gate failed as infrastructure leaves a PR
      comment carrying a `vibe-gate-infra-release` marker, and after two such
      releases (counted from fleet-authored markers) the next one is charged like
@@ -5392,9 +5396,12 @@ or the `aws` CLI is missing for a deployable template, refuses the push; a CI
 cargo check that fails refuses the push with its output, unless the PR base
 fails with every diagnostic the push shows, when it is a `[PRE_PUSH_WARNING]`
 (in the worker's own
-gates; the agent's hook runs none of them), while a CI cargo check that cannot
-start or time out, hits host disk full, or whose toolchain, component,
-target, directory or command is missing or cannot be reproduced here refuses it
+gates and in the agent's hook, which receives the scan precomputed in its
+spec), while a CI cargo check that cannot
+start or time out, hits a cargo registry or git-dependency network refusal or
+host disk full, or whose toolchain, component,
+target, directory or command is missing or cannot be reproduced here, or whose
+base comparison cannot be read, refuses it
 as an infrastructure fault (the
 push is still refused, but the run does not blame the branch, and the checked
 set is not reduced); a `cargo deny` diagnostic (`error[...]`)
