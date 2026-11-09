@@ -4,7 +4,9 @@ Added a bounded headless Chromium launch check using the babysitter container
 plan and egress controls. Setup runs it after preflight, the CLI exposes
 `--check-container`, and automatic passes run it before PR discovery or App
 authentication. HTML validation searches complete stdout; diagnostic output
-remains bounded. Diagnostic runs never publish service-health heartbeats.
+remains bounded and failure causes keep the tail of the redacted output, so a
+trailing cause survives startup noise. Diagnostic runs never publish
+service-health heartbeats.
 
 Closes #4771.
 
@@ -31,8 +33,9 @@ tests or weakening checks. `VERSION` is unchanged.
   routes arguments to Deno. Use the image's `--no-sandbox` Chromium flag.
 - Remove host mounts and non-egress environment values, retain egress controls,
   enforce a 60-second default deadline and kill the named container on timeout.
-- Accept only exit zero with `<html` anywhere in stdout. Redact and truncate
-  diagnostic text separately, including failed container-cleanup causes.
+- Accept only exit zero with `<html` anywhere in stdout. Redact diagnostic
+  text and keep its tail separately (headless Chromium prints D-Bus startup
+  noise before the fatal line), including failed container-cleanup causes.
 - Resolve the pre-push hook's configuration and frozen lock beside its trusted
   worker module, independently of the target checkout's configuration.
 
@@ -68,6 +71,14 @@ flowchart TD
   changed.
 - `Chromium check accepts HTML beyond the diagnostic cap` reproduced the
   truncated-output defect before the full-stdout guard was fixed.
+- `Chromium check keeps the trailing cause after startup noise` reproduced the
+  head-truncated cause defect — a non-zero exit with more than 500 characters
+  of D-Bus noise before a FATAL line reported only the noise and dropped the
+  cause — then passed once the code kept the tail. Obsolete behaviour: the
+  first 500 characters were kept, so the trailing cause was lost. Remaining
+  behaviour: the last 500 characters are kept, so the fatal line survives.
+  Covering path:
+  `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts::Chromium check keeps the trailing cause after startup noise`.
 - `successful and failed container diagnostics suppress service health`
   reproduced the heartbeat defect, then passed for successful HTML and failed
   browser launches. Its successful path has no App configuration; deleting the
@@ -95,6 +106,7 @@ flowchart TD
   empty output, a missing runtime and a missing image each fail with the cause.
   — evidence:
   `worker/deno/tests/fleet_babysitter_chromium_check_4738_test.ts::Chromium check passes only on exit zero with HTML stdout`,
+  `::Chromium check keeps the trailing cause after startup noise`,
   `::Chromium check accepts HTML beyond the diagnostic cap` and
   `::Chromium check names missing runtime and image causes before egress` —
   reviewer: met
@@ -144,7 +156,7 @@ runs from the repository root. Suite paths from the repository root are:
 Executed commands:
 
 - `deno task test:unit tests/fleet_babysitter_app_test.ts tests/fleet_babysitter_chromium_check_4738_test.ts tests/fleet_pr_babysitter_supervisor_test.ts tests/fleet_pr_babysitter_setup_test.ts tests/fleet_babysitter_container_4738_test.ts tests/fleet_babysitter_container_egress_4738_test.ts < /dev/null`
-  — 110 passed, zero failed.
+  — 111 passed, zero failed.
 - `deno task test:unit tests/claude_runner_pre_push_3394_test.ts tests/pre_push_hook_test.ts tests/merge_fast_checks_credentials_4705_test.ts tests/review_fleet_prs_post_claim_4398_test.ts < /dev/null`
   — 25 passed, zero failed.
 - `./quality.sh < /dev/null` — exit zero; parallel tests passed in 4m03s, serial

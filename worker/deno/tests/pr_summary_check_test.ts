@@ -385,7 +385,7 @@ Deno.test("runPrSummaryCheck - Part of #N with a parsed missing entry passes (Is
   assertEquals(statusOf(r.value, "#4126"), "passed");
 });
 
-Deno.test("runPrSummaryCheck - Part of another issue, a plain close, and a code-span mention pass (Issue #4126)", async () => {
+Deno.test("runPrSummaryCheck - Part of another issue, a plain close, and a code-span Part of mention pass (Issue #4126)", async () => {
   const other = await withPartOf("Part of #99. The parent stays open.");
   assert(other.ok);
   assertEquals(statusOf(other.value, "#4126"), "passed");
@@ -400,12 +400,6 @@ Deno.test("runPrSummaryCheck - Part of another issue, a plain close, and a code-
   assert(spanned.ok);
   assertEquals(statusOf(spanned.value, "#4126"), "passed");
 
-  const closingInCode = await withPartOf(
-    "Part of #42.\n\nThe example keyword is `Closes #42`.",
-  );
-  assert(closingInCode.ok);
-  assertEquals(statusOf(closingInCode.value, "#4126"), "passed");
-
   const wrapped = await withPartOf("Part of\n#42 stays open.");
   assert(wrapped.ok);
   assertEquals(statusOf(wrapped.value, "#4126"), "blocked");
@@ -414,6 +408,20 @@ Deno.test("runPrSummaryCheck - Part of another issue, a plain close, and a code-
   assert(refs.ok);
   assertEquals(statusOf(refs.value, "#4126"), "blocked");
   assertStringIncludes(partOfProblem(refs.value), "Refs #42");
+});
+
+Deno.test("runPrSummaryCheck - Part of #N with a closing keyword only in a code span blocks, because the append would close the issue (Issue #4126, #4808)", async () => {
+  // The appender ignores a keyword inside Markdown code, so it appends a real
+  // "Closes #42" to the assembled body. That contradicts "Part of #42".
+  const closingInCode = await withPartOf(
+    "Part of #42.\n\nThe example keyword is `Closes #42`.",
+  );
+  assert(closingInCode.ok);
+  assertEquals(statusOf(closingInCode.value, "#4126"), "blocked");
+  assertStringIncludes(
+    partOfProblem(closingInCode.value),
+    "the worker appends Closes #42",
+  );
 });
 
 Deno.test("runPrSummaryCheck - Part of still closes is not checked without an issue number (Issue #4126)", async () => {

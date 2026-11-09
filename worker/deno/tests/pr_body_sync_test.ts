@@ -24,6 +24,7 @@ import {
   extractClosingIssueNumbers,
   WORKER_PR_MARKER_PREFIX,
 } from "../lib/pr_body.ts";
+import { maskMarkdownCode } from "../lib/markdown_code_spans.ts";
 import {
   APPLIED_BUMP_NOTE_PREFIX,
   MILESTONE_CHILD_BUMP_NOTE,
@@ -260,6 +261,42 @@ Deno.test("assemblePrBody - records the summary digest marker right after the wo
     digestMarker,
   );
   assertEquals(summaryDigestFromBody(body), digest);
+});
+
+// --- Issue #4808: a closing keyword inside Markdown code does not count ----
+
+Deno.test("assemblePrBody - a close held only in a code span is re-asserted in prose (Issue #4808)", () => {
+  const body = assemblePrBody({
+    summaryContent:
+      "## Summary\n\nDid the thing, see `Closes #42` for the form.",
+    issueNumber: 42,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(
+    extractClosingIssueNumbers(maskMarkdownCode(body)).includes(42),
+    true,
+  );
+});
+
+Deno.test("assemblePrBody - a withheld closure is not re-asserted by the appender (Issue #4808)", () => {
+  const body = assemblePrBody({
+    summaryContent:
+      "## Summary\n\nDid part of the thing.\n\n## Acceptance Criteria\n\n" +
+      "- **partial** — Deliver the CLI — evidence: one path — reason: another remains",
+    issueNumber: 42,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertStringIncludes(body, "## Not closing #42");
+  assertEquals(
+    extractClosingIssueNumbers(maskMarkdownCode(body)).includes(42),
+    false,
+  );
 });
 
 // --- Issue #4783: closing keywords the summary quotes for another issue -----

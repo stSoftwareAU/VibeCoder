@@ -189,6 +189,26 @@ Deno.test("Chromium check passes only on exit zero with HTML stdout", async () =
   }
 });
 
+Deno.test("Chromium check keeps the trailing cause after startup noise", async () => {
+  const noiseLine =
+    '[ERROR:dbus.cc(123)] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")';
+  const cause =
+    "FATAL:zygote_host_impl_linux.cc(89)] Running as root without --no-sandbox is not supported";
+  const stderr = `${noiseLine}\n`.repeat(5) + cause;
+  assert(stderr.length > 500, "fixture must exceed the diagnostic cap");
+  await assertRejects(
+    () =>
+      checkBabysitterContainerChromium(
+        { baseDir: "/checkout" },
+        deps({
+          result: { ...OK, success: false, code: 133, stderr },
+        }),
+      ),
+    Error,
+    cause,
+  );
+});
+
 Deno.test("Chromium check accepts HTML beyond the diagnostic cap", async () => {
   await checkBabysitterContainerChromium(
     { baseDir: "/checkout" },

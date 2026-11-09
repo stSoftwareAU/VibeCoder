@@ -1434,8 +1434,11 @@ export async function checkBabysitterContainerChromium(
         } seconds${killCause}`,
       );
     }
-    const stdout = redactSecrets(result.stdout ?? "").slice(0, STDERR_CAP);
-    const stderr = redactSecrets(result.stderr).slice(0, STDERR_CAP);
+    // Keep the tail of the redacted output: Chromium prints D-Bus and other
+    // startup noise before the line that names the failure, so the head would
+    // drop the cause.
+    const stdout = redactSecrets(result.stdout ?? "").slice(-STDERR_CAP);
+    const stderr = redactSecrets(result.stderr).slice(-STDERR_CAP);
     if (result.code !== 0) {
       const detail = stderr || stdout;
       throw new Error(
