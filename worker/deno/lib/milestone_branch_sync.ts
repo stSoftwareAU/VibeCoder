@@ -39,7 +39,10 @@ import type { RepoLease } from "./maintenance_lane.ts";
 import type { SyncClaim } from "./milestone_sync_claim.ts";
 import { validateGitHubMilestonesJson } from "./validation.ts";
 import {
+  describeMergeGateCause,
   isMergeGateFailure,
+  MERGE_GATE_UNVERIFIED_CAUSES,
+  mergeGateFailureCause,
   type MergeGateOutcome,
 } from "./milestone_merge_gate.ts";
 import { parseJsonArrayPages } from "./json_array_pages.ts";
@@ -870,12 +873,13 @@ export function failedConflictRung(
  * Judge a failed sync against the branch's conflict budget (Issue #1778).
  *
  * Only a conflict every automatic rung reached and none could settle is the
- * branch's to answer for. A gate that refused the tree or the resolution, a
- * push a repository ruleset declined, and an ordinary git failure are all
- * conclusions the branch is not charged for — each keeps whatever reporting
- * it already had. So is a conflict on a branch that was never offered the
- * agent this cycle: charging it would spend an attempt on a rung it never
- * climbed.
+ * branch's to answer for. A gate that refused the resolution, a merged tree
+ * the gate could not verify (Issue #4847), a push a repository ruleset
+ * declined, and an ordinary git failure are all conclusions the branch is not
+ * charged for — each keeps whatever reporting it already had. A merged tree
+ * the repository's own check actually rejects is charged (Issue #4304). So is a
+ * conflict on a branch that was never offered the agent this cycle: charging
+ * it would spend an attempt on a rung it never climbed.
  *
  * Two endings of an agent run are told apart (Issue #2305):
  *
@@ -913,6 +917,26 @@ export const CONFLICT_RESOLVER_DECLINED = "the conflict resolver declined";
 export const MERGE_GATE_REFUSED_TREE = "the merge gate refused the merged tree";
 
 /**
+ * Ledger reason when the merge gate could not verify the merged tree (Issue
+ * #4847). Verification was unavailable (a timed-out or unrunnable check, an
+ * unreadable tree, a toolchain too old for the tree), so this is not a verdict
+ * on the tree. It is not charged. The cause follows in parentheses.
+ */
+export const MERGE_GATE_UNVERIFIED_TREE =
+  "the merge gate could not verify the merged tree";
+
+/**
+ * Whether a ledger reason records a merge-gate refusal (Issue #4847). A reason
+ * written by an older worker carries the bare {@link MERGE_GATE_REFUSED_TREE};
+ * a newer one adds the cause in parentheses. Both match. The unverified reason
+ * does not: it is not a refusal.
+ */
+export function isMergeGateRefusedReason(reason: string): boolean {
+  return reason === MERGE_GATE_REFUSED_TREE ||
+    reason.startsWith(`${MERGE_GATE_REFUSED_TREE} (`);
+}
+
+/**
  * Ledger reason when a merge-only cycle withholds the agent because a cargo
  * build would not fit the host (Issue #4326). Never charged: the branch waits
  * for the host to recover, and {@link escalateRepeatedRefusal} never climbs it.
@@ -938,7 +962,7 @@ export const AGENT_DEFERRED_CYCLE_BUDGET = "agent deferred: cycle budget";
  */
 function climbsRecoveryLadder(reason: string): boolean {
   return reason === CONFLICT_RESOLVER_DECLINED ||
-    reason === MERGE_GATE_REFUSED_TREE ||
+    isMergeGateRefusedReason(reason) ||
     (reason.includes("Refusing to resolve the merge") &&
       reason.includes("conflicted file"));
 }
@@ -1089,9 +1113,30 @@ export function judgeSyncFailure(
     // refuses is a conflict git could not see. It is charged, so the budget,
     // the roll-back and the `merge-fallback` flag answer it, exactly as they
     // answer a textual conflict — it is never handed to a human.
+    //
+    // Issue #4847: only a check that ran and rejected the tree is a verdict on
+    // it. A check that timed out, could not be run, could not read the tree or
+    // needed a newer rustc was not verified, so it is not charged. It is
+    // re-checked next cycle, and `escalateRepeatedRefusal` bounds the repeats.
+    const cause = mergeGateFailureCause(error);
+    if (cause === undefined) {
+      return {
+        outcome: "failed",
+        reason: MERGE_GATE_REFUSED_TREE,
+      };
+    }
+    if (MERGE_GATE_UNVERIFIED_CAUSES.has(cause)) {
+      return {
+        outcome: "not-charged",
+        reason: `${MERGE_GATE_UNVERIFIED_TREE} (${
+          describeMergeGateCause(cause)
+        })`,
+        refusal: true,
+      };
+    }
     return {
       outcome: "failed",
-      reason: MERGE_GATE_REFUSED_TREE,
+      reason: `${MERGE_GATE_REFUSED_TREE} (${describeMergeGateCause(cause)})`,
     };
   }
   if (isRuleViolationPush(error.message)) {
@@ -3277,6 +3322,14 @@ export async function syncMilestoneBranches(
                   `roll-back; the branch waits for a cycle with the runway ` +
                   `(Issue #4517)`,
               );
+            } else if (judged.reason.startsWith(MERGE_GATE_UNVERIFIED_TREE)) {
+              // Issue #4847: the check could not verify the tree, which says
+              // nothing about the tree. The cause is in the reason.
+              log(
+                `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
+                  `${judged.reason}; not charged, re-checked next cycle, and ` +
+                  `counted toward the roll-back ceiling (Issue #4847)`,
+              );
             } else if (!agentAllowed && conflictError?.gateFailure) {
               log(
                 `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
@@ -3385,7 +3438,7 @@ export async function syncMilestoneBranches(
                       : isConflictBudgetExhausted(entry));
                   if (
                     exhausted && climbsRecoveryLadder(verdict.reason) &&
-                    verdict.reason !== MERGE_GATE_REFUSED_TREE
+                    !isMergeGateRefusedReason(verdict.reason)
                   ) {
                     // A resolver decline waits one cycle (Issue #4328). A
                     // merged-tree check failure that fills the budget rolls
@@ -3482,8 +3535,10 @@ export async function syncMilestoneBranches(
             } else if (isMergeGateFailure(syncResult.error)) {
               // Issue #4304: a merged tree the repo's own check rejects is
               // charged to the conflict budget above (`judgeSyncFailure`), so
-              // the roll-back and the `merge-fallback` flag answer it. Nothing
-              // is posted for a human; the loud WARNING log above stands.
+              // the roll-back and the `merge-fallback` flag answer it. A tree
+              // the gate could not verify is not charged there (Issue #4847).
+              // Nothing is posted for a human; the loud WARNING log above
+              // stands.
             } else if (
               entry && !entry.escalated &&
               entry.count >= MILESTONE_SYNC_ESCALATION_THRESHOLD
