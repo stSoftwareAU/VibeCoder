@@ -25,7 +25,15 @@
  *    when the push changes `infra/cloudformation/` and the repo tracks its
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
- *    deploy test are cheap.
+ *    deploy test are cheap. Then the repo's `cargo deny check` (Issue #4626)
+ *    runs for eligible workflows when intermediate pushes or ShellCheck-only
+ *    repairs change a cargo input (a Cargo manifest, lock file, deny config or
+ *    `.cargo/config.toml`). The whole-branch
+ *    completion check (with a baseRef and not ShellCheck-only) runs it on every
+ *    branch for eligible workflows, regardless of changed cargo inputs.
+ *    Missing tools or an unreachable advisory database
+ *    are infrastructure failures, except for an invocation CI allows to fail,
+ *    whose failures of every kind are `[PRE_PUSH_WARNING]` lines.
  * 2. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
@@ -44,6 +52,7 @@ import {
   runPreFlightGate,
   tokeniseCommand,
 } from "./pre_flight_gate.ts";
+import { runCargoDenyGate } from "./cargo_deny_gate.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
@@ -167,6 +176,16 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
   }
   return { code, stdout, stderr };
 };
+
+/** The branch names the refs push (`refs/heads/` stripped), or undefined when none. */
+function pushedBranches(refs: readonly PrePushRef[]): string[] | undefined {
+  const names = refs.flatMap((ref) =>
+    ref.remoteRef.startsWith("refs/heads/")
+      ? [ref.remoteRef.slice("refs/heads/".length)]
+      : []
+  );
+  return names.length === 0 ? undefined : names;
+}
 
 /**
  * List the files the push introduces: those touched by commits (including
@@ -1620,10 +1639,16 @@ export async function runAffectedShellcheckChecks(opts: {
 
 /**
  * Run the pre-push gate: the always-on changed-file checks first, then the
- * repo's pre-flight commands. `checksRun` lists the changed-file commands run.
- * The changed-file checks run whatever the run
- * budget — they are never skipped; all but the Floci deploy test are fast. Any
- * git, parse or planning error is an `Err`, never a pass.
+ * repo's `cargo deny check` (Issue #4626), then the repo's pre-flight commands.
+ * Intermediate pushes and ShellCheck-only repairs run eligible workflows when
+ * pushed paths include a cargo input. The whole-branch completion check (with a
+ * baseRef and not ShellCheck-only) runs eligible workflows on every branch,
+ * regardless of changed cargo inputs. `checksRun`
+ * lists the changed-file and cargo-deny commands run. The changed-file checks
+ * and the cargo-deny gate run whatever the run budget — they are never skipped;
+ * all but the Floci deploy test are fast. Any git, parse or planning error is
+ * an `Err`, never a pass. A cargo-deny failure that shows the tool or advisory
+ * database could not be reached is a {@link PrePushGateInfrastructureError}.
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -1732,6 +1757,31 @@ export async function runPrePushGate(opts: {
     });
     if (!result.ok) return { ok: false, error: result.error };
     checksRun.push(check.command);
+  }
+
+  const cargoDeny = await runCargoDenyGate({
+    cwd: opts.cwd,
+    changed: contained.value,
+    always: !opts.shellcheckOnly && opts.baseRef !== undefined,
+    // The touched paths decide a workflow's `paths` filter only over the whole
+    // branch; a push of the newest commits alone would miss earlier ones.
+    context: {
+      touched: opts.baseRef === undefined ? undefined : touched.value,
+      branches: pushedBranches(refs.value),
+    },
+    tracked,
+    runner: opts.runner,
+    timeoutSeconds: opts.timeoutSeconds,
+  });
+  if (!cargoDeny.ok) {
+    return cargoDeny.error.kind === "infrastructure"
+      ? infrastructureFail(cargoDeny.error.message)
+      : fail(cargoDeny.error.message);
+  }
+  checksRun.push(...cargoDeny.value.checksRun);
+  // A check CI allows to fail is reported, never counted as run or a block.
+  for (const warning of cargoDeny.value.warnings) {
+    console.warn(`[PRE_PUSH_WARNING] cargo deny: ${warning}`);
   }
 
   const preFlight = await runPreFlightGate(opts.preFlightCommands, {
