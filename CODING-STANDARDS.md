@@ -1373,8 +1373,9 @@ Issue #1135 — still spawns a real agent and still lets the runner kill it; it
 simply no longer waits out a stopwatch to do it.
 
 - **Do not** reduce iteration counts to make a "performance test" fast enough
-  to pass as a unit test. If you need to confirm performance, write a benchmark
-  and include the results in the PR summary.
+  to pass as a unit test. If you need to confirm performance, prefer
+  deterministic evidence (work counts); write a benchmark only for timings, and
+  report any results in the PR summary as indicative evidence, never a gate.
 - **Guard super-linearity by behaviour first** — catastrophic backtracking on
   an adversarial input of any real size does not cost a little more than some
   threshold, it never returns. So the first form to reach for is not a

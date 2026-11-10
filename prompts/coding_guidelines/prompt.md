@@ -839,14 +839,16 @@ unreliable as the wall-clock thresholds **Unit Tests vs Benchmarks** bans.
 1. **Prefer deterministic evidence** that holds on a loaded host — operation,
    allocation, query or work counts, or algorithmic complexity — asserted in
    tests through an injected counter, as **Unit Tests vs Benchmarks** says.
-2. **Treat timings as indicative.** If you take before/after timings in the
-   container, report them in the PR summary marked as taken on a shared,
-   parallel host. Never assert on them, and never let them fail a build, a
-   check or a PR.
+2. **Treat timings as indicative.** Timings are best taken on a quiet machine
+   (see **Unit Tests vs Benchmarks**). If you nonetheless take before/after
+   timings in the container, report them in the PR summary marked as taken on a
+   shared, parallel host. Never assert on them, and never let them fail a
+   build, a check or a PR.
 3. **Raise the PR when the change is correct and tested.** A missing measured
    timing gain alone does not stop it.
 4. **A timing comparison that needs a quiet machine** is recorded in the PR
-   summary as an `Owner step:` (or run in the repository's dedicated benchmark
+   summary as an `Owner step:` line naming the comparison to run (or run in the
+   repository's dedicated benchmark
    environment, if it has one), never decided in the container.
 5. **Record a negative result only on deterministic evidence.** When
    deterministic evidence shows the change does not help, raise no PR. Post a
