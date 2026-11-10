@@ -168,6 +168,44 @@ export interface WorkflowSpec {
    * Issue #1753.
    */
   visibilityScope?: "any" | "public-only";
+  /**
+   * The template is a Dependabot configuration (`.github/dependabot.yml`),
+   * not a GitHub Actions workflow. Dependabot reads it only from that path.
+   *
+   * Issue #4904.
+   */
+  dependabotConfig?: boolean;
+  /**
+   * Detection-pattern groups evaluated against `.github/dependabot.yml`
+   * for a `dependabotConfig` spec, in place of `detectionPatternGroups`
+   * (which still apply to workflow files). Tool-name patterns such as
+   * `dependabot` or `renovate` appear in almost any Dependabot config
+   * (header comments, docs URLs), so the config is matched only on its
+   * `package-ecosystem` entry. Falls back to `detectionPatternGroups`
+   * when omitted.
+   *
+   * Issue #4904.
+   */
+  dependabotConfigPatternGroups?: string[][];
+}
+
+/** The repo-relative path Dependabot reads its configuration from (Issue #4904). */
+export const DEPENDABOT_CONFIG_PATH = ".github/dependabot.yml";
+
+/** The fallback path Dependabot also reads its configuration from (Issue #4904). */
+export const DEPENDABOT_CONFIG_YAML_PATH = ".github/dependabot.yaml";
+
+/**
+ * The repo-relative path a spec's template belongs at: the Dependabot
+ * configuration path for a `dependabotConfig` spec, otherwise the
+ * workflow file under `.github/workflows/`.
+ *
+ * Issue #4904.
+ */
+export function specRepoPath(spec: WorkflowSpec): string {
+  return spec.dependabotConfig
+    ? DEPENDABOT_CONFIG_PATH
+    : `.github/workflows/${spec.suggestedFilename}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -701,8 +739,14 @@ const npmDependencyUpdates: WorkflowSpec = {
     "npm-check-updates",
     "ncu",
   ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: npm",
+    'package-ecosystem: "npm"',
+    "package-ecosystem: 'npm'",
+  ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template: `# Dependabot configuration (place in .github/dependabot.yml)
 version: 2
@@ -824,8 +868,14 @@ const javaDependencyUpdates: WorkflowSpec = {
     "renovate",
     "versions-maven-plugin",
   ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: maven",
+    'package-ecosystem: "maven"',
+    "package-ecosystem: 'maven'",
+  ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template:
     `# Dependabot configuration for Maven (place in .github/dependabot.yml)
@@ -853,8 +903,14 @@ const javaGradleDependencyUpdates: WorkflowSpec = {
     "renovate",
     "gradle-versions-plugin",
   ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: gradle",
+    'package-ecosystem: "gradle"',
+    "package-ecosystem: 'gradle'",
+  ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-gradle-dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template:
     `# Dependabot configuration for Gradle (place in .github/dependabot.yml)

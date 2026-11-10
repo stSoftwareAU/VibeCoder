@@ -30,6 +30,8 @@ import {
 } from "../lib/workflow_auditor.ts";
 import {
   capabilityLabelForGroup,
+  DEPENDABOT_CONFIG_YAML_PATH,
+  specRepoPath,
   type WorkflowSpec,
 } from "../lib/workflow_definitions.ts";
 import {
@@ -260,10 +262,7 @@ function categoryLabel(spec: WorkflowSpec): string {
  */
 function requiredCheckGuidance(spec: WorkflowSpec): string {
   if (spec.category !== "security") return "";
-  const checkNames = checkNamesFromWorkflow(
-    spec.template,
-    `.github/workflows/${spec.suggestedFilename}`,
-  );
+  const checkNames = checkNamesFromWorkflow(spec.template, specRepoPath(spec));
   return `\n${requiredStatusCheckSection(checkNames)}\n`;
 }
 
@@ -294,7 +293,8 @@ export const COPY_PINS_AS_GIVEN_RULE =
  * The file-scoped checks the committed workflow has to survive.
  *
  * Rendered from {@link WORKFLOW_FILE_CHECKS} rather than hand-copied, so a
- * check added to the audit reaches every issue body the next sync files.
+ * check added to the audit reaches every workflow issue body the next sync
+ * files.
  */
 function workflowCheckSection(): string {
   const labels = WORKFLOW_FILE_CHECKS.map((check) => `- ${check.label}`)
@@ -306,14 +306,61 @@ The file as committed must yield no finding from any of these checks:
 ${labels}`;
 }
 
-/** Build the issue body for a missing workflow. */
+/**
+ * Build the issue body for a missing Dependabot configuration (Issue #4904).
+ *
+ * Dependabot reads a single config (`.github/dependabot.yml` or `.yaml`), so
+ * the body has the implementer merge this ecosystem's `updates` entry into an
+ * existing file rather than replace it. A Dependabot configuration carries no
+ * `uses:` pins and no workflow-file checks, so neither the pins rule nor the
+ * checks section is rendered.
+ */
+function dependabotConfigIssueBody(
+  spec: WorkflowSpec,
+  pins: ResolvedPins,
+): string {
+  const tag = deduplicationTag(spec.id);
+  const path = specRepoPath(spec);
+
+  return `## ${spec.name}
+
+**Category:** ${categoryLabel(spec)}
+**Suggested filename:** \`${path}\`
+
+### Why this configuration is needed
+
+This repository is missing the **${spec.name}** Dependabot configuration. Adding it will improve the repository's dependency management.
+
+### Suggested Dependabot configuration
+
+\`\`\`yaml
+${applyResolvedPins(spec.template, pins).trim()}
+\`\`\`
+
+### How to apply
+
+1. Copy the YAML above **verbatim** — ${COPY_VERBATIM_CLAUSE}.
+2. If \`${path}\` or \`${DEPENDABOT_CONFIG_YAML_PATH}\` already exists, add the \`updates\` entry from the template to that file's existing \`updates:\` list rather than replacing the file. A repository that needs several ecosystems keeps one \`version: 2\` file with one entry each. Otherwise save the template as \`${path}\`.
+3. Push to the default branch.
+
+---
+*Raised automatically by VibeCoder workflow sync.*
+${tag}`;
+}
+
+/**
+ * Build the issue body for a missing workflow. A `dependabotConfig` spec gets
+ * the Dependabot configuration body instead (Issue #4904); every other spec's
+ * body names its `.github/workflows/` file.
+ */
 export function issueBody(spec: WorkflowSpec, pins: ResolvedPins): string {
+  if (spec.dependabotConfig) return dependabotConfigIssueBody(spec, pins);
   const tag = deduplicationTag(spec.id);
 
   return `## ${spec.name}
 
 **Category:** ${categoryLabel(spec)}
-**Suggested filename:** \`.github/workflows/${spec.suggestedFilename}\`
+**Suggested filename:** \`${specRepoPath(spec)}\`
 
 ### Why this workflow is needed
 
@@ -335,13 +382,23 @@ ${applyResolvedPins(spec.template, pins).trim()}
 
 1. Copy the YAML above **verbatim** — ${COPY_VERBATIM_CLAUSE}.
 2. ${COPY_PINS_AS_GIVEN_RULE}
-3. Save it as \`.github/workflows/${spec.suggestedFilename}\` and push to the default branch.
+3. Save it as \`${specRepoPath(spec)}\` and push to the default branch.
 
 ${workflowCheckSection()}
 ${requiredCheckGuidance(spec)}
 ---
 *Raised automatically by VibeCoder workflow sync.*
 ${tag}`;
+}
+
+/**
+ * The repo-relative path a partial match was found in (Issue #4904).
+ *
+ * A `dependabotConfig` spec's `foundIn` is already the full path; every other
+ * spec's `foundIn` is a bare workflow filename.
+ */
+function partialFilePath(spec: WorkflowSpec, foundIn: string): string {
+  return spec.dependabotConfig ? foundIn : `.github/workflows/${foundIn}`;
 }
 
 /**
@@ -383,15 +440,21 @@ export function issueBodyPartial(
   const missingList = missingGroups.length > 0
     ? missingGroups.map(formatGroup).join("\n")
     : "_None._";
+  const filePath = partialFilePath(spec, foundIn);
+  // A Dependabot configuration has no `uses:` pins and no workflow-file checks.
+  const pinsRule = spec.dependabotConfig ? "" : ` ${COPY_PINS_AS_GIVEN_RULE}`;
+  const checksBlock = spec.dependabotConfig
+    ? ""
+    : `${workflowCheckSection()}\n`;
 
   return `## ${spec.name} — Partial Match
 
 **Category:** ${categoryLabel(spec)}
-**Workflow file:** \`.github/workflows/${foundIn}\`
+**Workflow file:** \`${filePath}\`
 
 ### Current status
 
-The **${spec.name}** workflow appears to be partially configured in \`.github/workflows/${foundIn}\`. The auditor checks each capability by substring-matching a finite list of expected patterns, so a "not detected" entry below may also mean the workflow is configured correctly via an alternative implementation that is not in the auditor's pattern list. Please review before treating the gap as a real one — and close this issue as not-applicable if every capability is in fact present via an unlisted alternative.
+The **${spec.name}** workflow appears to be partially configured in \`${filePath}\`. The auditor checks each capability by substring-matching a finite list of expected patterns, so a "not detected" entry below may also mean the workflow is configured correctly via an alternative implementation that is not in the auditor's pattern list. Please review before treating the gap as a real one — and close this issue as not-applicable if every capability is in fact present via an unlisted alternative.
 
 ### Capabilities detected
 
@@ -409,13 +472,12 @@ ${applyResolvedPins(spec.template, pins).trim()}
 
 ### How to complete
 
-1. Review \`.github/workflows/${foundIn}\` and confirm whether each "not detected" capability above is genuinely missing or implemented via an alternative the auditor does not recognise.
-2. If the capability is genuinely missing, add an implementation for it — copy the relevant step from the suggested template above **verbatim** (${COPY_VERBATIM_CLAUSE}), or use any equivalent configuration that performs the same capability. ${COPY_PINS_AS_GIVEN_RULE}
+1. Review \`${filePath}\` and confirm whether each "not detected" capability above is genuinely missing or implemented via an alternative the auditor does not recognise.
+2. If the capability is genuinely missing, add an implementation for it — copy the relevant step from the suggested template above **verbatim** (${COPY_VERBATIM_CLAUSE}), or use any equivalent configuration that performs the same capability.${pinsRule}
 3. If every capability is in fact present via alternatives, close this issue as not-applicable. No workflow change is needed.
 4. Otherwise, commit the additions to the default branch.
 
-${workflowCheckSection()}
-${requiredCheckGuidance(spec)}
+${checksBlock}${requiredCheckGuidance(spec)}
 ---
 *Raised automatically by VibeCoder workflow sync.*
 ${tag}`;
