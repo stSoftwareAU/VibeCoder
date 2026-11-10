@@ -40,6 +40,7 @@ import {
 } from "../lib/repo_config.ts";
 import type { CommentType } from "../lib/pr_comments.ts";
 import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
+import { readRepairBaseMergeDecision } from "../lib/repair_base_merge_4943.ts";
 
 // Re-export library functions for external use
 export { buildFeedbackCommitMessage, decodeCommentBody, summariseLargeComment };
@@ -143,16 +144,27 @@ export const prFeedbackProcessorCommand = {
           { cwd: repoWorkDir },
         );
 
-        // Sync feature branch with default branch (Issue #230)
+        // Sync feature branch with default branch (Issue #230), only for a
+        // genuine conflict (Issue #4943): a behind-only PR is refreshed by the
+        // shared base-refresh owner (Issue #4613), not by a base merge here.
         const defaultBranchResult = await deps.git.getRepoDefaultBranch(repo);
         const defaultBranch = defaultBranchResult.ok
           ? defaultBranchResult.value
           : "main";
-        await deps.git.syncFeatureBranchWithDefault(
-          branchName,
-          defaultBranch,
-          { cwd: repoWorkDir },
-        );
+        const baseMerge = await readRepairBaseMergeDecision({
+          repo,
+          prNumber,
+          gh: deps.github.runGhCommand,
+          source: "pr-feedback-processor",
+          base: defaultBranch,
+        });
+        if (baseMerge.merge) {
+          await deps.git.syncFeatureBranchWithDefault(
+            branchName,
+            defaultBranch,
+            { cwd: repoWorkDir },
+          );
+        }
 
         // Build quality and custom instructions from config
         // This flow writes no run-budget notice (no progress extension), so

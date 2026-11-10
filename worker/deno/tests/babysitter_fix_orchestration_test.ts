@@ -1950,6 +1950,8 @@ Deno.test("an agent that makes no change journals one failed attempt", async () 
 Deno.test("an owner-class failure journals nothing, as it is already a needs-human wait", async () => {
   await withState(async (stateDir) => {
     const h = harness(stateDir);
+    // Issue #4943: only a conflicting PR reaches the base merge.
+    h.state.pr = basePr({ mergeable: "CONFLICTING" });
     h.deps.mergeBase = () =>
       Promise.reject(new Error("needs-human label is set by the owner"));
     await assertRejects(

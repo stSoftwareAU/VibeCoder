@@ -43,6 +43,7 @@ import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
 import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
+import { readRepairBaseMergeDecision } from "../lib/repair_base_merge_4943.ts";
 
 // Re-export library functions for external use
 export { formatCiAnnotations };
@@ -138,16 +139,27 @@ export const prCiProcessorCommand = {
           { cwd: repoWorkDir },
         );
 
-        // Sync feature branch with default branch (Issue #230)
+        // Sync feature branch with default branch (Issue #230), only for a
+        // genuine conflict (Issue #4943): a behind-only PR is refreshed by the
+        // shared base-refresh owner (Issue #4613), not by a base merge here.
         const defaultBranchResult = await deps.git.getRepoDefaultBranch(repo);
         const defaultBranch = defaultBranchResult.ok
           ? defaultBranchResult.value
           : "main";
-        await deps.git.syncFeatureBranchWithDefault(
-          branchName,
-          defaultBranch,
-          { cwd: repoWorkDir },
-        );
+        const baseMerge = await readRepairBaseMergeDecision({
+          repo,
+          prNumber,
+          gh: deps.github.runGhCommand,
+          source: "pr-ci-processor",
+          base: defaultBranch,
+        });
+        if (baseMerge.merge) {
+          await deps.git.syncFeatureBranchWithDefault(
+            branchName,
+            defaultBranch,
+            { cwd: repoWorkDir },
+          );
+        }
 
         // Run pre-setup command if configured
         await runPreSetupCommand(repo, repoWorkDir, config.repoConfig);
