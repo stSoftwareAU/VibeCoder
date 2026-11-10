@@ -38,6 +38,7 @@ import {
   getCustomInstructions,
   runPreSetupCommand,
 } from "../lib/repo_config.ts";
+import { readRepairBaseMergeDecision } from "../lib/repair_base_merge_4943.ts";
 
 // Re-export library functions for external use
 export { decodeAnnotations, formatAnnotations };
@@ -141,16 +142,27 @@ export const prSpellingProcessorCommand = {
           { cwd: repoWorkDir },
         );
 
-        // Sync feature branch with default branch (Issue #230)
+        // Sync feature branch with default branch (Issue #230), only for a
+        // genuine conflict (Issue #4943): a behind-only PR is refreshed by the
+        // shared base-refresh owner (Issue #4613), not by a base merge here.
         const defaultBranchResult = await deps.git.getRepoDefaultBranch(repo);
         const defaultBranch = defaultBranchResult.ok
           ? defaultBranchResult.value
           : "main";
-        await deps.git.syncFeatureBranchWithDefault(
-          branchName,
-          defaultBranch,
-          { cwd: repoWorkDir },
-        );
+        const baseMerge = await readRepairBaseMergeDecision({
+          repo,
+          prNumber,
+          gh: deps.github.runGhCommand,
+          source: "pr-spelling-processor",
+          base: defaultBranch,
+        });
+        if (baseMerge.merge) {
+          await deps.git.syncFeatureBranchWithDefault(
+            branchName,
+            defaultBranch,
+            { cwd: repoWorkDir },
+          );
+        }
 
         // Run pre-setup command if configured
         await runPreSetupCommand(repo, repoWorkDir, config.repoConfig);

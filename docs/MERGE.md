@@ -367,14 +367,19 @@ the PR against its future head, and lands it once the checks pass there.
 **Base-refresh churn guard (Issue #4943).** On a strict base with no merge
 queue, a behind-only PR is refreshed only through `requestReadyBranchUpdate`
 ([`required_branch_checks_4613.ts`](../worker/deno/lib/required_branch_checks_4613.ts)),
-under the shared per-base owner. Every updater lane passes a `source`:
-branch-update loop, `pr-maintenance`, auto-merge sweep, merge-block repair,
-babysitter (`babysitter-behind`) and `review-fleet-prs`. A CI or review repair
-(babysitter `fix()`, `pr-ci-processor`, `pr-feedback-processor`) merges the base
-only when GitHub reports the PR `CONFLICTING`; for a behind-only, `MERGEABLE`,
-`UNKNOWN` or unreadable PR the base merge is skipped. Previously every babysitter
-repair merged the base, and the CI and feedback processors always synced the
-default branch, so each repair added a merge commit and re-ran CI on PRs not
+under the shared per-base owner. The lanes pass these `source` values:
+`branch-update-loop`, `auto-merge-sweep`, `merge-block-repair`,
+`merge-block-escalation` (`lib/merge_block_escalation.ts`), `babysitter-behind`
+(the babysitter's behind-only refresh), `pr-maintenance`
+(`commands/pr_maintenance.ts`) and `review-fleet-prs` (the review-fleet
+skill's `branch_update.ts`). A caller that omits `source` logs
+`source=unspecified`. A CI or review repair merges the base only when GitHub
+reports the PR `CONFLICTING`. Its `source` values are `babysitter-repair`
+(babysitter `fix()`), `pr-ci-processor`, `pr-feedback-processor` and
+`pr-spelling-processor`, which is gated the same way. For a behind-only,
+`MERGEABLE`, `UNKNOWN` or unreadable PR the base merge is skipped. Previously
+every babysitter repair merged the base, and the CI, feedback and spelling
+processors always synced the default branch, so each repair added a merge commit and re-ran CI on PRs not
 selected for final integration. The trade-off: a failure that appears only
 against the newer base is reproduced after the PR is refreshed as the owner, not
 inside the repair. Each decision logs one line to the host's stderr log,

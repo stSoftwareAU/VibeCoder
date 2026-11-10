@@ -5,7 +5,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertMatch } from "@std/assert";
+import { assert, assertEquals, assertMatch, assertRejects } from "@std/assert";
 import {
   decideRepairBaseMerge,
   formatBaseRefreshDecision,
@@ -170,30 +170,37 @@ Deno.test("parseRefreshOwner rejects look-alike messages", () => {
   }
 });
 
+/**
+ * A fake gh that answers only a `pr view … --json mergeable` request with
+ * `reply`; any other request is an error, so a production call that asked for
+ * the wrong field fails the test rather than being answered.
+ */
+function mergeableGh(reply: string, calls: string[][]) {
+  return (args: string[]): Promise<string> => {
+    calls.push(args);
+    const json = args.indexOf("--json");
+    const asksMergeable = args.includes("pr") && args.includes("view") &&
+      json >= 0 && args[json + 1] === "mergeable";
+    return asksMergeable
+      ? Promise.resolve(reply)
+      : Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
+  };
+}
+
 Deno.test("readRepairBaseMergeDecision merges for CONFLICTING and logs one line", async () => {
   const calls: string[][] = [];
   const lines: string[] = [];
   const decision = await readRepairBaseMergeDecision({
     repo: "owner/repo",
     prNumber: 12,
-    gh: (args) => {
-      calls.push(args);
-      return Promise.resolve('{"mergeable":"CONFLICTING"}');
-    },
+    gh: mergeableGh('{"mergeable":"CONFLICTING"}', calls),
     source: "pr-ci-processor",
     base: "main",
     log: (line) => lines.push(line),
   });
   assertEquals(decision.merge, true);
-  assertEquals(calls, [[
-    "pr",
-    "view",
-    "12",
-    "--repo",
-    "owner/repo",
-    "--json",
-    "mergeable",
-  ]]);
+  assertEquals(calls.length, 1, "exactly one gh request");
+  assertEquals(calls[0]![calls[0]!.indexOf("--json") + 1], "mergeable");
   assertEquals(lines.length, 1);
   assertMatch(
     lines[0]!,
@@ -234,7 +241,20 @@ Deno.test("readRepairBaseMergeDecision refuses when gh throws, naming the cause"
   assertMatch(lines[0]!, /outcome=base-merge-skipped /);
 });
 
-Deno.test("readRepairBaseMergeDecision refuses garbled JSON", async () => {
+Deno.test("the mergeable fake answers only a mergeable request, with an error otherwise", async () => {
+  const gh = mergeableGh('{"mergeable":"MERGEABLE"}', []);
+  assertEquals(
+    await gh(["pr", "view", "12", "--json", "mergeable"]),
+    '{"mergeable":"MERGEABLE"}',
+  );
+  await assertRejects(
+    () => gh(["pr", "view", "12", "--json", "title"]),
+    Error,
+    "unexpected gh call",
+  );
+});
+
+Deno.test("readRepairBaseMergeDecision refuses garbled JSON and names the parse cause", async () => {
   const lines: string[] = [];
   const decision = await readRepairBaseMergeDecision({
     repo: "owner/repo",
@@ -245,23 +265,34 @@ Deno.test("readRepairBaseMergeDecision refuses garbled JSON", async () => {
     log: (line) => lines.push(line),
   });
   assertEquals(decision.merge, false);
-  assert(decision.reason.includes("mergeability unreadable"));
+  assert(decision.reason.startsWith("mergeability unreadable: "));
+  // The JSON.parse message (for example "... in JSON at position 1") is the cause.
+  assertMatch(decision.reason, /JSON at position \d+/);
   assertEquals(lines.length, 1);
   assertMatch(lines[0]!, /outcome=base-merge-skipped /);
 });
 
 Deno.test("logBaseRefreshDecision never throws, even when the sink throws", () => {
-  logBaseRefreshDecision(
-    {
-      source: "pr-ci-processor",
-      outcome: "base-merge-skipped",
-      repo: "owner/repo",
-      prNumber: 1,
-      reason: "x",
-    },
+  const facts = {
+    source: "pr-ci-processor",
+    outcome: "base-merge-skipped" as const,
+    repo: "owner/repo",
+    prNumber: 1,
+    reason: "x",
+  };
+  const result = logBaseRefreshDecision(
+    facts,
     () => {
       throw new Error("sink down");
     },
     "build=abc123",
   );
+  assertEquals(result, undefined);
+  // Logging keeps working after a throwing sink: a later call with a working
+  // sink writes exactly the one expected line.
+  const lines: string[] = [];
+  logBaseRefreshDecision(facts, (line) => lines.push(line), "build=abc123");
+  assertEquals(lines, [
+    '[base-refresh] source=pr-ci-processor outcome=base-merge-skipped repo=owner/repo pr=#1 base=none owner=none reason="x" build=abc123',
+  ]);
 });

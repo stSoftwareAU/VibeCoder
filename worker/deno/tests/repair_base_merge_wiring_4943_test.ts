@@ -1,6 +1,6 @@
 /**
- * Wiring tests for the base-merge gate in the CI-fix and PR-feedback
- * processors (Issue #4943). Each processor merges the base into the PR branch
+ * Wiring tests for the base-merge gate in the CI-fix, PR-feedback and
+ * spelling-fix processors (Issue #4943). Each processor merges the base into the PR branch
  * only when GitHub reports the PR `CONFLICTING`; a behind-only PR, or an
  * unreadable mergeability, must not reach `syncFeatureBranchWithDefault`.
  *
@@ -10,6 +10,7 @@
 import { assertEquals } from "@std/assert";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
+import { prSpellingProcessorCommand } from "../commands/pr_spelling_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitDeps, GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -40,7 +41,7 @@ function mergeableOnlyGh(
  * the only route into the base merge, so its call count is the gate's effect.
  */
 async function runWith(
-  processor: "ci" | "feedback",
+  processor: "ci" | "feedback" | "spelling",
   read: () => Promise<string>,
 ): Promise<{ syncCalls: string[][]; mergeableReads: string[][] }> {
   const syncCalls: string[][] = [];
@@ -89,6 +90,20 @@ async function runWith(
         config,
         deps,
       );
+    } else if (processor === "spelling") {
+      await prSpellingProcessorCommand.execute(
+        {
+          operation: "process",
+          repo: REPO,
+          "pr-number": String(PR_NUMBER),
+          "branch-name": BRANCH,
+          "check-run-id": "123",
+          "check-name": "spelling",
+          "encoded-annotations": btoa("[]"),
+        },
+        config,
+        deps,
+      );
     } else {
       await prFeedbackProcessorCommand.execute(
         {
@@ -114,10 +129,12 @@ async function runWith(
 const mergeableJson = (mergeable: string) => () =>
   Promise.resolve(JSON.stringify({ mergeable }));
 
-for (const processor of ["ci", "feedback"] as const) {
+for (const processor of ["ci", "feedback", "spelling"] as const) {
   const label = processor === "ci"
     ? "pr-ci-processor"
-    : "pr-feedback-processor";
+    : processor === "feedback"
+    ? "pr-feedback-processor"
+    : "pr-spelling-processor";
 
   Deno.test(`${label} does not sync the base for a behind-only (MERGEABLE) PR (Issue #4943)`, async () => {
     const { syncCalls, mergeableReads } = await runWith(
