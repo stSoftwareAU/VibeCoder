@@ -141,7 +141,10 @@ flowchart LR
 - Rule applied to this PR's own diff: the "behaviour another issue delivers is
   planned, not present" rule was applied to every sentence on the page naming
   #4955 to #4959; each reads "Not yet: #N". No hit left.
-- `./quality.sh < /dev/null`: see the gate note below.
+- `./quality.sh < /dev/null` on the final head's code: Result PASSED (with
+  skipped checks: config integration, checkov). An earlier run failed the
+  semgrep stage on two dynamic `RegExp` calls in the test; both were replaced
+  and the stage passes.
 
 Not done / not checked: the image pin, config block, spawn wiring, sync, stats
 line and report section do not exist yet (#4955 to #4958), so the drift test's
