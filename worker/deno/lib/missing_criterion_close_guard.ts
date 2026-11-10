@@ -91,16 +91,61 @@ export interface IssueIdentity {
   issueRepo: string;
 }
 
+/** The parts of one closing-reference match, read from its capture groups. */
+interface ReferenceParts {
+  /** The character before the reference, kept as written. */
+  lead: string;
+  /** The repository the reference names, or undefined when unqualified. */
+  repo: string | undefined;
+  /** The issue number, as written. */
+  num: string;
+}
+
+/** Maps a match's capture groups, in order, to its parts. */
+type ReferenceExtractor = (
+  groups: readonly (string | undefined)[],
+) => ReferenceParts;
+
+/** Plain and `Part of` references: lead, optional repository, number (groups 1-3). */
+const plainParts: ReferenceExtractor = (groups) => ({
+  lead: groups[0] ?? "",
+  repo: groups[1],
+  num: groups[2] ?? "",
+});
+
+/** Colon references: lead, optional repository, number (groups 1, 3, 4). */
+const colonParts: ReferenceExtractor = (groups) => ({
+  lead: groups[0] ?? "",
+  repo: groups[2],
+  num: groups[3] ?? "",
+});
+
+/** Full-URL references: lead, owner and repository, number (groups 1, 3, 4, 5). */
+const urlParts: ReferenceExtractor = (groups) => ({
+  lead: groups[0] ?? "",
+  repo: `${groups[2] ?? ""}/${groups[3] ?? ""}`,
+  num: groups[4] ?? "",
+});
+
+/**
+ * Rewrite each match of `pattern` that names `issueNumber` as `replacement`
+ * followed by the reference (`Part of #N`, or `Part of owner/repo#N` when the
+ * match names a repository), keeping the lead character. A match for another
+ * number, or for another repository when an identity is given, is returned
+ * untouched. A qualified match with no identity throws.
+ */
 function rewriteReference(
   body: string,
   pattern: RegExp,
   replacement: string,
   issueNumber: number,
   identity?: IssueIdentity,
+  extract: ReferenceExtractor = plainParts,
 ): string {
   return body.replace(
     pattern,
-    (match: string, lead: string, repo: string | undefined, num: string) => {
+    (match: string, ...groups: (string | undefined)[]) => {
+      const { lead, repo, num } = extract(groups);
       if (Number(num) !== issueNumber) return match;
       if (repo && !identity) {
         throw new MissingIssueIdentityError();
@@ -155,24 +200,67 @@ export function withholdsIssueClose(summary: string): boolean {
 }
 
 /**
- * Rewrite every closing keyword that names `issueNumber` as `Part of #N`,
- * leaving keywords for other issues untouched.
+ * Rewrite every closing reference that names `issueNumber` as `Part of #N`,
+ * leaving references to other issues untouched. Handles the plain
+ * (`Closes #N`), colon (`Closes: #N`) and full-URL
+ * (`Fixes https://github.com/o/r/issues/N`) forms. The plain form is rewritten
+ * wherever it appears, as before. The colon and full-URL forms are rewritten
+ * in prose only: code is inert to GitHub, so a reference inside a code span or
+ * fenced block is left as written (Issue #4637). {@link restoreIssueClose}
+ * turns every `Part of` reference to the issue back into the plain `Closes #N`
+ * form, so a colon or URL original round-trips to the plain form, not
+ * byte-for-byte.
  *
  * @param body - The PR body.
  * @param issueNumber - The issue the PR must not close.
+ * @param identity - Trusted repositories for the PR and its governing issue.
  */
 export function withholdIssueClose(
   body: string,
   issueNumber: number,
   identity?: IssueIdentity,
 ): string {
-  return rewriteReference(
+  const plain = rewriteReference(
     body,
     CLOSING_KEYWORD_RE,
     "Part of",
     issueNumber,
     identity,
   );
+  const colon = rewriteProse(
+    plain,
+    COLON_CLOSE_RE,
+    issueNumber,
+    identity,
+    colonParts,
+  );
+  return rewriteProse(colon, URL_CLOSE_RE, issueNumber, identity, urlParts);
+}
+
+/**
+ * {@link rewriteReference} applied to the prose segments of `text` only
+ * (Issue #4637): a code span or fenced block is copied unchanged, so a
+ * reference inside it is inert and is left as written.
+ */
+function rewriteProse(
+  text: string,
+  pattern: RegExp,
+  issueNumber: number,
+  identity: IssueIdentity | undefined,
+  extract: ReferenceExtractor,
+): string {
+  return splitMarkdownCode(text)
+    .map((segment) =>
+      segment.inCode ? segment.value : rewriteReference(
+        segment.value,
+        pattern,
+        "Part of",
+        issueNumber,
+        identity,
+        extract,
+      )
+    )
+    .join("");
 }
 
 /**
