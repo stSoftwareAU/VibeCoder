@@ -482,6 +482,42 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "Issue #4952 - the advisory says the PR may still be a draft when the draft state is unknown and gh pr ready fails",
+  async () => {
+    const comments: string[] = [];
+    const gh = ghFake({
+      lookups: [new Error("HTTP 502"), new Error("HTTP 502")],
+      readyReadFails: true,
+      readyFails: true,
+    });
+    const state = makeState();
+    state.completionAdvisoryComment = "- A finding to note";
+    const result = await recoverAndFinaliseExistingPr(
+      PR_URL,
+      makeContext(),
+      state,
+      BODY,
+      makeDeps(gh, comments).deps,
+      {},
+    );
+
+    assert(result.status === "failure", "the run fails, not continues");
+    assertEquals(readyCalls(gh.calls).length, 1, "ready was attempted");
+    assertEquals(comments.length, 1, "one advisory per run");
+    assertStringIncludes(comments[0]!, "may still be a draft");
+    assertStringIncludes(comments[0]!, "`gh pr ready` failed");
+    assert(
+      !comments[0]!.includes("is still a draft"),
+      "an unknown state is not described as a known draft",
+    );
+    assert(
+      !comments[0]!.includes("auto-merge stays armed"),
+      "a still-draft PR is not described as armed",
+    );
+  },
+);
+
 // ---------------------------------------------------------------------------
 // markDraftReadyAndAwaitCi
 // ---------------------------------------------------------------------------

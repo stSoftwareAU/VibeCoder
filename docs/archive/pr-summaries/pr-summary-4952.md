@@ -3,16 +3,18 @@
 A completed run could release its claim as "raised #N" while the PR it had
 reached was still a draft and unarmed (PR #4896 sat so for about 28 hours).
 Completion now retries an unreadable draft state once, marks a draft ready, and
-fails the run (`interrupted`, retried, never filed) when `gh pr ready` fails on
-a known draft instead of continuing. The REST-fallback creation path, which can
+fails the run (`interrupted`, retried, never filed) whenever `gh pr ready`
+fails, whether the draft state is known or not, instead of continuing. The REST-fallback creation path, which can
 return an already-open draft, runs the same ready step when the REST draft flag
 says draft or cannot be read. The fallback is entered on any primary rate-limit
 message, and while the GraphQL quota is latched `gh pr view` and `gh pr ready`
 are skipped, so the draft flag is read over REST and a REST-confirmed draft is
 treated as known. The auto-merge sweep also readies an orphaned fleet draft (no
 continuation or mutation-hold marker, open issue with no fleet assignee) and
-arms it in the same pass. Two criteria are `partial` (the documented fail-open
-paths where the draft state cannot be read), so this is `Part of #4952`.
+arms it in the same pass. Every stated criterion is now met, so this is
+`Closes #4952`. The follow-up commits on this branch (after PR #5033 merged)
+close the former fail-open path: an unreadable draft state whose `gh pr ready`
+fails now fails the run too.
 
 ## Spec
 
@@ -31,11 +33,15 @@ paths where the draft state cannot be read), so this is `Part of #4952`.
   outcome then names the PR with the failure attached, not a plain raise.
   `interrupted` is transient and never auto-filed; the next run retries.
   A failed post-PR ready step skips the whole-body infrastructure retry.
-- Unknown state (lookup null after one retry): the ready helper's own `isDraft`
-  read decides. Draft → same rules as a known draft (CI-start guard of Issue
-  #4160 and failure on a failed ready). Not draft or unreadable → the old
-  behaviour (arm as before; a failed ready only warns), so a wholly failing `gh`
-  is not turned into a failed run.
+- Unknown state (lookup null after one retry): `gh pr ready` is still tried. A
+  failed ready fails the run `interrupted` and never arms, whatever the state;
+  `gh pr ready` on an already-ready PR succeeds, so a failure means the PR may
+  still be a draft. The failure reason and advisory then say "may still be a
+  draft" (a known draft keeps "is still a draft"). A successful ready on an
+  unknown state arms as before, unless the helper's own `isDraft` read says
+  draft, which applies the CI-start guard of Issue #4160. This replaces the
+  earlier fail-open choice (a wholly failing `gh` armed and released the claim);
+  the cost is that a wholly failing `gh` now fails the run, which is retried.
 - The self-heal reads the hold marker only at the anchored position the worker
   writes it (start of the body), so a quotation mid-body does not hold a draft.
   "Unclaimed" means no assignee among the fleet logins (claim = assignee,
@@ -57,7 +63,7 @@ paths where the draft state cannot be read), so this is `Part of #4952`.
   latched, and `spawnGh` (`gh_spawn.ts`) skips every non-`gh api` call while it
   is. `true` → `readyDraftBeforeArming` with a known draft, so a ready the latch
   skips fails the run `interrupted` instead of releasing the claim as raised;
-  `false` → left alone and armed; unreadable → the unknown-state fail-open rule.
+  `false` → left alone and armed; unreadable → the unknown-state rule above.
   GitHub has no REST ready-for-review endpoint, so a latched draft is retried by
   the next run, not readied here.
 - `markDraftReadyAndAwaitCi` replaces the boolean `markReadyAndAwaitCi`
@@ -76,10 +82,10 @@ Backend only; no UI file is touched.
 ```mermaid
 flowchart TD
     A[Completion reaches an existing PR] --> B{Draft?}
-    B -->|known draft, or unknown after 1 retry| C[markDraftReadyAndAwaitCi]
+    B -->|draft, or unknown after 1 retry| C[markDraftReadyAndAwaitCi]
     B -->|not draft| G[arm as before]
     C -->|ready, CI started| G
-    C -->|known draft, gh pr ready fails| F[failure interrupted: PR still a draft, next run retries]
+    C -->|gh pr ready fails, state known or not| F[failure interrupted: PR may still be a draft, next run retries]
     S[Auto-merge sweep] --> D{Fleet draft, no hold marker, issue open and unassigned?}
     D -->|yes| C
     D -->|no| K[skip as before]
@@ -105,17 +111,12 @@ flowchart TD
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **partial** — A test drives completion with an existing draft PR on every path
+- **met** — A test drives completion with an existing draft PR on every path
   that ends with the claim released ("raised #N"), and asserts `gh pr ready` and
-  the auto-merge arming — evidence:
-  `worker/deno/tests/completion_draft_ready_4952_test.ts` (recover path,
-  creation-error path, REST fallback via `workOnIssueCompletion` with the
-  latch's skip behaviour modelled) — reviewer: partial — reason: two paths still
-  release the claim as raised with the draft neither readied nor armed, both the
-  documented fail-open: the unknown-state path (lookup, head read and
-  `gh pr ready` all fail), and the REST-fallback path when its REST draft-flag
-  read also fails; a REST-confirmed draft on the fallback path now fails the run
-  `interrupted` instead
+  the auto-merge arming. — evidence:
+  `worker/deno/tests/completion_draft_ready_4952_test.ts` (recover path, known
+  and unknown state, creation-error path, REST fallback latched and recovered)
+  — reviewer: met
 - **met** — A self-healing pass marks ready (and arms) an open fleet draft PR
   that has no draft-continuation or mutation-hold marker in its body and whose
   issue is unclaimed. Covered by a test. — evidence:
@@ -123,18 +124,15 @@ flowchart TD
   `worker/deno/tests/auto_merge_sweep_draft_heal_4952_test.ts`,
   `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` —
   reviewer: met
-- **partial** — `markReadyAndAwaitCi` failures are logged as WARNING with the PR
+- **met** — `markReadyAndAwaitCi` failures are logged as WARNING with the PR
   number. The release comment does not claim that the PR was raised ready when
   it was not. — evidence:
   `worker/deno/tests/completion_draft_ready_4952_test.ts` (failed ready fails
-  the run and names the PR) — reviewer: partial — reason: the WARNING and the
-  failed run are done for a known draft; when the lookup, the helper's own read
-  and `gh pr ready` all fail, the run still continues (documented fail-open);
-  the rendered release-comment text was not read, only the run outcome category
-  and reason
-- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4952.json` —
-  reviewer: unrequested — reason: the repository's completeness gate requires
-  every new lib module to be claimed by a sweep slice
+  the run, names the PR, and the advisory says the PR may still be a draft) —
+  reviewer: met
+- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-4952.json`
+  (delivered by PR #5033) — reviewer: unrequested — reason: the repository's
+  completeness gate requires every new lib module to be claimed by a sweep slice
 
 ## Standards Review
 
@@ -143,6 +141,11 @@ flowchart TD
 - **violation** — unknown-state completion path armed without the CI-start guard
   — evidence: `worker/deno/lib/phases/completion_phase.ts:991` — reason: fixed
   in this diff
+- **violation** — doc comments in `draft_continuation_pr.ts` and
+  `completion_phase.ts` (and the failure reason and advisory text) still
+  described the fail-open rule or "is still a draft" for an unknown state —
+  evidence: `worker/deno/lib/phases/completion_phase.ts:789` — reason: fixed in
+  this diff
 - **violation** — missing `assignees` key read as "no assignees" — evidence:
   `worker/deno/lib/draft_pr_self_heal.ts:131` — reason: fixed in this diff
 - **violation** — marker read with `includes()` over a mixed body — evidence:
@@ -243,3 +246,22 @@ flowchart TD
 - Formatting, lint and diff checks passed. Tests use checksum-verified local
   copies of the locked dependencies because Deno cannot connect to JSR here.
   Full quality gate not rerun on this revision; CI remains required.
+
+### Unknown-state ready failure (this branch, after PR #5033 merged)
+
+- `readyDraftBeforeArming` (`worker/deno/lib/phases/completion_phase.ts`) fails
+  the run on any failed `gh pr ready` and never arms after it; it returns
+  `draftStateKnown`, threaded to `stillDraftFailure` and
+  `postCompletionAdvisory` for the wording.
+- Tests in `worker/deno/tests/completion_draft_ready_4952_test.ts`: the
+  unknown-state failed-ready and latched-unreadable-flag tests now expect
+  `interrupted`, the PR named, nothing armed and "may still be a draft"; a new
+  advisory test covers the unknown-state comment. Edited expectations: the old
+  `continue` + armed assertions are replaced (required by "If marking it ready
+  fails, the claim is not released with 'raised #N'"). Red-checks: old warn-only
+  branch restored → both tests red; unknown-state wording forced to the known
+  wording → the reason tests red.
+- Docs read and updated: `docs/workflows/issue-processing.md` (draft completion
+  bullet), module doc of `worker/deno/lib/draft_continuation_pr.ts`.
+- Callers of `readyDraftBeforeArming` checked: recovery (`recoverAndFinaliseExistingPr`)
+  and the REST-fallback path in `completionBody`; both use `stillDraftFailure`.
