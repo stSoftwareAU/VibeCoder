@@ -30,4 +30,4 @@ Backend only. `worker/deno/tests/setup_workflow_sync_test.ts` drives `syncWorkfl
 - Callers of `hasMissingRootClosure` checked: the purge reopen path still uses it unchanged (covered by existing purge tests).
 - Docs updated: `docs/SETUP.md`, `docs/EXTENDING.md` (both passages), `SECURITY.md` (workflow_sync row).
 
-<!-- vibe-quality-gate-skipped reason="full ./quality.sh not run in this session; targeted tests and fmt run instead; the worker re-runs the gate before the PR" -->
+- Ran `./quality.sh < /dev/null` on the head: `Result: PASSED (with skipped checks)` (config integration and checkov skipped by the gate itself).
