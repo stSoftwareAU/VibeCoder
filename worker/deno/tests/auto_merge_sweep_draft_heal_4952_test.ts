@@ -147,8 +147,40 @@ Deno.test("#4952 - a hook that throws leaves the draft skipped and warns naming 
     w.message.includes("self-heal threw")
   );
   assert(warned, "a warning names the self-heal failure");
+  assertEquals(warned.context?.repo, REPO);
   assertEquals(warned.context?.prNumber, 7);
   assertEquals(warned.context?.error, "gh exploded");
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("#4952 - a skipped draft clears its recorded branch-refresh refusal", async () => {
+  resetAnnouncedDraftsForTest();
+  const run = sweep(
+    [{ number: 7, headRefName: "issue-7-fix", isDraft: true }],
+    () => Promise.resolve(false),
+  );
+  const notified: Array<{ repo: string; prNumber: number; active: boolean }> =
+    [];
+  const state = new Map([[`${REPO}#7`, {
+    reason: "mergeability-unknown" as const,
+    streak: 2,
+    lastSeenAtMs: Date.now(),
+    notified: true,
+  }]]);
+  const result = await sweepAutoMerge({
+    ...run.options,
+    branchRefreshRefusals: {
+      load: () => Promise.resolve(state),
+      save: () => Promise.resolve(),
+      notify: ({ repo, prNumber, active }) => {
+        notified.push({ repo, prNumber, active });
+        return Promise.resolve();
+      },
+    },
+  });
+  assert(result.ok);
+  assertEquals(notified, [{ repo: REPO, prNumber: 7, active: false }]);
+  assertEquals(state.size, 0);
   resetAnnouncedDraftsForTest();
 });
 
