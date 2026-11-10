@@ -1050,7 +1050,10 @@ line the command starts on). Heredoc bodies and quoted scripts are
 independently normalised, including opening lines, continuations and nested
 quotes, without changing the outer quote state. Single-line quoted text is
 examined when it contains a command separator or is a shell `-c` or SSH
-argument. Heredoc delimiters undergo shell quote removal; only closed
+argument. A double-quoted `-c`/SSH script has one level of double-quote
+escaping (`\"`, `\\`, `\$`, `` \` ``) dropped before it is re-scanned, so an
+escaped quote inside it does not split into a made-up package name. Heredoc
+delimiters undergo shell quote removal; only closed
 arithmetic spans suppress heredoc recognition. It splits at
 `;`, `|`, `&&`, `||`, background `&` and subshell parentheses outside quotes
 and expressions, and strips shell keywords (`then`, `do`, `else`, `elif`, `!`,

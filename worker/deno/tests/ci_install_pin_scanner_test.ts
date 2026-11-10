@@ -226,16 +226,22 @@ Deno.test("findUnpinnedInstalls - a backslash escape outside quotes keeps one ar
     findUnpinnedInstalls('npm install -g foo@1.2.3 --loglevel=\\"warn\\"'),
     [],
   );
-  // Escaped quotes inside a `sh -c` script no longer mint made-up package
-  // names from the tail of a split version.
-  const gem = findUnpinnedInstalls(
-    'sh -c "gem install bundler -v \\"2.5.0\\" && bundle install"',
+  // Escaped quotes inside a `sh -c` script resolve to one level of double
+  // quotes before the nested script is re-scanned, so a pinned install stays
+  // clean and no made-up package name is minted from a split version.
+  assertEquals(
+    findUnpinnedInstalls(
+      'sh -c "gem install bundler -v \\"2.5.0\\" && bundle install"',
+    ),
+    [],
   );
-  assertEquals(gem.map((f) => f.packageName), ["bundler"]);
-  const npm = findUnpinnedInstalls('sh -c "npm install -g \\"pnpm@9.1.0\\""');
-  assertEquals(npm.length, 1);
-  assertEquals(npm[0]?.packageName, '"pnpm');
-  assertEquals(npm[0]?.version, '9.1.0"');
+  assertEquals(
+    findUnpinnedInstalls('sh -c "npm install -g \\"pnpm@9.1.0\\""'),
+    [],
+  );
+  const npm = findUnpinnedInstalls('sh -c "npm install -g \\"pnpm\\""');
+  assertEquals(npm.map((f) => f.packageName), ["pnpm"]);
+  assertEquals(npm[0]?.version, null);
 });
 
 // ---------------------------------------------------------------------------

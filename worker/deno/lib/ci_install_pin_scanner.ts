@@ -372,6 +372,16 @@ function hasArithmeticClose(text: string): boolean {
 }
 
 /**
+ * Drop one level of double-quote escaping from script text captured inside a
+ * double-quoted `-c`/ssh argument (Issue #4858). The outer shell already
+ * resolved `\"`, `\\`, `\$` and `` \` `` when it built the argument, so a
+ * re-scan of the captured text must not read them as literal backslashes.
+ */
+function dropDoubleQuoteEscapes(text: string): string {
+  return text.replace(/\\(["\\$`])/g, "$1");
+}
+
+/**
  * Join backslash continuations and multiline quotes or expressions, while
  * independently normalising heredoc bodies and quoted scripts without
  * changing outer quote state. Fall back to physical lines for unfinished input.
@@ -423,7 +433,12 @@ function joinContinuations(run: string): LogicalLine[] {
       ) {
         if (spliceStart >= 0) nestedText += line.slice(spliceStart, i);
         nestedLines.push(nestedText);
-        out.push(...joinContinuations(nestedLines.join("\n")));
+        const script = nestedLines.join("\n");
+        out.push(
+          ...joinContinuations(
+            nestedQuote === '"' ? dropDoubleQuoteEscapes(script) : script,
+          ),
+        );
         nestedLines = [];
         nestedText = "";
         nestedQuote = "";
@@ -525,7 +540,12 @@ function joinContinuations(run: string): LogicalLine[] {
     }
     out.push({ command: `${buffer}${line}`.trim(), anchor });
     if (nestedLines.length) {
-      out.push(...joinContinuations(nestedLines.join("\n")));
+      const script = nestedLines.join("\n");
+      out.push(
+        ...joinContinuations(
+          nestedQuote === '"' ? dropDoubleQuoteEscapes(script) : script,
+        ),
+      );
     }
     buffer = "";
     anchor = null;
