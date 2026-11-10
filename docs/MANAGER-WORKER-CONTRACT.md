@@ -429,7 +429,9 @@ orchestration path never sets `--agents`
 (`worker/deno/lib/orchestration/issue_run_gate.ts:112`) and refuses a provider
 that cannot carry a role before any paid work: `assertRoleSupported`
 (`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
-provider, capability or tool-denial gap, and the subscription/CLI preflight
+provider and, for providers other than Codex, a capability or tool-denial gap;
+the Codex branch skips both checks and admits only the allow-listed tools
+after a delegation-off probe. The subscription/CLI preflight
 (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
 unproved entitlement or exhausted quota. On that path nothing is dropped
 silently: Claude roles use CLI tool denials, a read-only Codex role has every
@@ -466,7 +468,9 @@ isolation. See
 - **Invariant (delivered).** On the external orchestration path, a provider that
   cannot carry a role fails loud before any paid work: `assertRoleSupported`
   (`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
-  provider, capability or tool-denial gap, and the subscription/CLI preflight
+  provider and, for providers other than Codex, a capability or tool-denial gap
+  (the Codex branch skips both checks and admits only the allow-listed tools
+  after a delegation-off probe), and the subscription/CLI preflight
   (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
   unproved entitlement or exhausted quota. The gate never falls back to
   `--agents` or a metered API

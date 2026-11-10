@@ -12,10 +12,11 @@
  * carries `--disallowed-tools`, so Claude and DeepSeek (the same CLI on a
  * different endpoint) enforce it; a denial folded into the prompt is not
  * enforcement. Gemini receives the list as prompt text and is refused. Codex
- * is the stated exception: it is admitted for Edit, MultiEdit, Write,
- * NotebookEdit, Bash, Task and Agent because its role calls disable
- * delegation and a read-only role's checkout restoration applies, but `Bash`
- * is not denied.
+ * is the stated exception: its branch skips both the role-capability and the
+ * argv-enforcement checks, admitting Edit, MultiEdit, Write, NotebookEdit,
+ * Bash, Task and Agent after only the delegation-off probe and the
+ * denied-tool allow-list. A Codex manager is therefore admitted although
+ * Codex cannot compact its stream, and `Bash` is not denied.
  *
  * Australian English spelling throughout (behaviour, recognised).
  */
@@ -124,17 +125,18 @@ export function providerCapabilities(
  * Whether a role may run on `selection`, or the refusal that says why not.
  *
  * Checks, in order: the provider is a known target with a descriptor; the
- * role's required capabilities are present; and, except for the Codex
- * exception below, the denied tools in `requiredTools` are enforced through
- * the argv or the selection is refused. Never throws for an unsupported
- * selection.
+ * role's required capabilities are present; and the denied tools in
+ * `requiredTools` are enforced through the argv or the selection is refused.
+ * The Codex branch below returns before both the role-capability and the
+ * argv-enforcement checks: it admits Edit, MultiEdit, Write, NotebookEdit,
+ * Bash, Task and Agent after only the delegation-off probe and the
+ * denied-tool allow-list, so a Codex manager is admitted although Codex
+ * cannot compact its stream and `Bash` is not denied. Never throws for an
+ * unsupported selection.
  *
  * `--disallowed-tools` enforcement holds only for the Claude CLI — Claude,
  * and DeepSeek through the same CLI. Gemini receives the list as prompt text
- * and is refused. Codex is the stated exception: it is admitted for Edit,
- * MultiEdit, Write, NotebookEdit, Bash, Task and Agent because its role
- * calls disable delegation and a read-only role's checkout restoration
- * applies, but `Bash` is not denied.
+ * and is refused.
  *
  * @param selection - The provider, model and effort the role would run with.
  * @param role - The role the call plays.

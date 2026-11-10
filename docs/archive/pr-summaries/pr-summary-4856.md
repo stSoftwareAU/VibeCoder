@@ -25,6 +25,10 @@ Version bump: none; this wording correction does not change the release version.
   Bash or reverse commands and builds outside that checkout.
 - The read-only pre-PR verifier explicitly selects Claude and requests Claude
   config isolation; a non-Claude fallback is refused before spawn.
+- The Codex branch in `assertRoleSupported` skips both the role-capability
+  (compaction) and the argv-enforcement checks: it admits only the allow-listed
+  tools after a delegation-off probe, so a Codex manager is admitted although
+  Codex cannot compact its stream and `Bash` is not denied.
 
 ### Undiscoverable Facts
 
@@ -41,10 +45,11 @@ Version bump: none; this wording correction does not change the release version.
 - `assertRoleSupported` still makes the existing role decision. Its module
   header, JSDoc and Codex commentary now state the rule the function applies:
   only the Claude CLI (Claude and DeepSeek) enforces `--disallowed-tools`;
-  Gemini is refused; Codex is admitted with `Bash` still not denied because
-  delegation is off and the read-only checkout restoration applies.
-  `docs/MANAGER-WORKER-CONTRACT.md` states the same for the external review
-  gate.
+  Gemini is refused; the Codex branch skips both the role-capability and the
+  argv-enforcement checks, admitting only the allow-listed tools after a
+  delegation-off probe, so a Codex manager is admitted although Codex cannot
+  compact its stream and `Bash` is not denied. `docs/MANAGER-WORKER-CONTRACT.md`
+  states the same for the external review gate and the fail-loud invariant.
 - Backend/documentation-only change; no browser evidence applies.
 
 ## Test Plan
