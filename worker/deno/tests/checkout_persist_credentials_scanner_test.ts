@@ -211,7 +211,9 @@ jobs:
 
 // Issue #4869: each of these authenticates with its own token (or SSH key) and
 // never reads the checkout's persisted credential, so a persisting checkout in
-// the same job is a real hardening gap and must be flagged.
+// the same job is a real hardening gap and must be flagged. A plain
+// `ad-m/github-push-action` step is its HTTPS mode; its `ssh: true` mode is a
+// signal and is tested separately below.
 const OWN_TOKEN_ACTIONS = [
   "ad-m/github-push-action@master",
   "peaceiris/actions-gh-pages@v4",
@@ -244,6 +246,72 @@ jobs:
     assertEquals(jobNeedsCheckoutCredentials([{ uses: action }]), false);
   });
 }
+
+Deno.test("scan - ad-m/github-push-action in SSH mode relies on the checkout ssh-key and skips the job", () => {
+  for (const ssh of ["true", '"true"']) {
+    const files = [
+      wf(
+        ".github/workflows/push.yml",
+        `name: Push
+jobs:
+  build:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: \${{ secrets.DEPLOY_KEY }}
+          persist-credentials: true
+      - uses: ad-m/github-push-action@master
+        with:
+          ssh: ${ssh}
+`,
+      ),
+    ];
+    assertEquals(scanCheckoutPersistCredentials(files), [], ssh);
+  }
+});
+
+Deno.test("scan - ad-m/github-push-action with ssh: false is HTTPS mode and is flagged", () => {
+  const files = [
+    wf(
+      ".github/workflows/push.yml",
+      `name: Push
+jobs:
+  build:
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ad-m/github-push-action@master
+        with:
+          github_token: \${{ secrets.GITHUB_TOKEN }}
+          ssh: false
+`,
+    ),
+  ];
+  assertEquals(scanCheckoutPersistCredentials(files).length, 1);
+});
+
+Deno.test("jobNeedsCheckoutCredentials - ad-m/github-push-action is a signal only with ssh: true", () => {
+  const uses = "ad-m/github-push-action@master";
+  assert(jobNeedsCheckoutCredentials([{ uses, with: { ssh: true } }]));
+  assert(jobNeedsCheckoutCredentials([{ uses, with: { ssh: "true" } }]));
+  assert(jobNeedsCheckoutCredentials([{ uses, with: { ssh: " TRUE " } }]));
+  assertEquals(jobNeedsCheckoutCredentials([{ uses }]), false);
+  assertEquals(
+    jobNeedsCheckoutCredentials([{ uses, with: { ssh: false } }]),
+    false,
+  );
+  assertEquals(
+    jobNeedsCheckoutCredentials([{ uses, with: { ssh: "false" } }]),
+    false,
+  );
+  // `ssh: true` on an unrelated action is not a signal.
+  assertEquals(
+    jobNeedsCheckoutCredentials([{
+      uses: "peaceiris/actions-gh-pages@v4",
+      with: { ssh: true },
+    }]),
+    false,
+  );
+});
 
 Deno.test("scan - a job using create-pull-request with a persisting checkout is flagged", () => {
   const files = [

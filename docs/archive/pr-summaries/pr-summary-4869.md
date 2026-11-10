@@ -3,12 +3,15 @@
 Audited every entry of `CREDENTIAL_USING_ACTIONS` against the pinned action's
 real credential handling and kept only the actions that push with the checkout's
 persisted credential. Removed: `googleapis/release-please-action` and its old
-name `google-github-actions/release-please-action`, `ad-m/github-push-action`,
+name `google-github-actions/release-please-action`,
 `peaceiris/actions-gh-pages`, `jamesives/github-pages-deploy-action`,
 `crazy-max/ghaction-github-pages` and `cycjimmy/semantic-release-action`. A job
 using one of them whose `actions/checkout` persists credentials is now flagged
 (`BP-PERSIST-CREDS-…`). Kept: `stefanzweifel/git-auto-commit-action` and
-`endbug/add-and-commit`. Closes #4869.
+`endbug/add-and-commit`. `ad-m/github-push-action` is a conditional signal: it
+skips the job only with `with.ssh` true (boolean or `"true"`), because that mode
+pushes with the SSH key `actions/checkout` persisted; its HTTPS mode is flagged.
+Closes #4869.
 
 ## Spec
 
@@ -24,10 +27,15 @@ using one of them whose `actions/checkout` persists credentials is now flagged
 - Audit result, from each action's source on its default branch:
   - release-please-action: GitHub API with its own `token` input; never runs
     git.
-  - `ad-m/github-push-action`: `start.sh` requires its `token`/`github_token`
-    input and pushes to `…//oauth2:<token>@host/repo.git` (or `git@` over SSH).
-    The untrusted issue comment suggesting "signal only when `ssh: true`" was
-    not adopted: the SSH mode does not use the checkout credential either.
+  - `ad-m/github-push-action`: HTTPS mode (default) requires its
+    `token`/`github_token` input and pushes to
+    `…//oauth2:<token>@host/repo.git`, so it ignores the persisted credential.
+    With `ssh: true` it pushes to `git@<host>:<repo>.git` and has no SSH key
+    input, so it relies on the key `actions/checkout` persisted (its README's
+    deploy-key example uses checkout `ssh-key` + `persist-credentials: true`);
+    PR #4985 review corrected an earlier claim that SSH mode ignores it. Hence
+    `stepUsesSshPush` in the scanner makes `ssh: true` a signal and HTTPS mode
+    is flagged.
   - `peaceiris/actions-gh-pages`: `set-tokens.ts` builds a token or deploy-key
     URL and `git-utils.ts` clones and pushes through a separate work dir.
   - `JamesIves/github-pages-deploy-action`: `git.ts` unsets the checkout's
@@ -65,14 +73,22 @@ this run, not taken from the issue's description.
   flagged` test and
   a `jobNeedsCheckoutCredentials - <action> is not a
   credential signal` test;
-  added a test that `endbug/add-and-commit` still skips the job. The existing
-  known-push-action skip test and the `ad-m` positive assertions now use
-  `stefanzweifel/git-auto-commit-action`.
+  added a test that `endbug/add-and-commit` still skips the job. Added
+  `scan - ad-m/github-push-action in SSH mode relies on the checkout ssh-key and skips the job`
+  (boolean and string `true`),
+  `scan - ad-m/github-push-action with ssh: false is HTTPS mode and is flagged`
+  and
+  `jobNeedsCheckoutCredentials - ad-m/github-push-action is a signal only with ssh: true`.
+  The existing known-push-action skip test and the plain-`ad-m` positive
+  assertions now use `stefanzweifel/git-auto-commit-action`; the peaceiris
+  fixture in the skip test was replaced, and peaceiris jobs with a persisting
+  checkout are now flagged (covered by the own-token test loop).
 - Extended
   `jobNeedsCheckoutCredentials - create-pull-request alone is not a credential signal`
   with `false` assertions for both release-please coordinates.
-- Red check: with the scanner restored to the base version, 14 tests fail (27
-  passed); with the fix, all 41 pass.
+- Red check: with only the `ad-m` SSH signal line removed from the head scanner,
+  2 tests fail (the SSH-mode scan test and the `ssh: true` signal test; 42
+  passed); with it restored all 44 pass.
 - Docs: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` lists the kept push actions and
   names the removed ones as not signals.
 - `deno fmt`, `deno lint` and the scanner unit test file passed.
