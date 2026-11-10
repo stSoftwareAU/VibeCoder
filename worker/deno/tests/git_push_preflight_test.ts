@@ -19,6 +19,7 @@ import {
   CI_CARGO_ONLY_PRE_FLIGHT,
   commitAndPushPending,
   gateUnpushedCommits,
+  issueRunCompareRef,
   prBaseCompareRef,
   PrePushGateBlockedError,
 } from "../lib/git_push.ts";
@@ -1227,4 +1228,25 @@ Deno.test('prBaseCompareRef - origin/<base>, or "" when the base is unknown (Iss
   assertEquals(prBaseCompareRef(undefined), "");
   assertEquals(prBaseCompareRef(""), "");
   assertEquals(prBaseCompareRef("  "), "");
+});
+
+Deno.test("issueRunCompareRef - the milestone, else the base, else the default branch; blank names are skipped (Issue #4630 review)", () => {
+  assertEquals(
+    issueRunCompareRef({
+      milestoneBranch: "milestone/1",
+      baseBranch: "main",
+      defaultBranch: "trunk",
+    }),
+    "origin/milestone/1",
+  );
+  assertEquals(
+    issueRunCompareRef({ baseBranch: "main", defaultBranch: "trunk" }),
+    "origin/main",
+  );
+  assertEquals(
+    issueRunCompareRef({ baseBranch: "", defaultBranch: "trunk" }),
+    "origin/trunk",
+  );
+  assertEquals(issueRunCompareRef({ defaultBranch: "trunk" }), "origin/trunk");
+  assertEquals(issueRunCompareRef({ baseBranch: " " }), "");
 });

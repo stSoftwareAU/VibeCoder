@@ -65,8 +65,8 @@ compile error is therefore caught before the push, not by a CI run. Closes
   and writes the derived
   checks (and any unverifiable reasons) into the hook's `pre-push-spec.json`.
   `pre_push_gate_cli.ts` reads that entry and passes it back as `findCiCargo`,
-  so the hook runs the CI cargo checks without loading the YAML
-  parser itself. A self-pushed Rust change that fails CI clippy or the test
+  so the hook runs the CI cargo checks without importing the workflow
+  scanner (it still reaches a YAML parser through `cargo_deny_gate.ts`). A self-pushed Rust change that fails CI clippy or the test
   build is refused, exactly as the worker's own gates refuse it.
   - Fail closed: when that pre-run scan cannot be produced (`git ls-files`
     fails, or the scanner fails to load or throws), `scanAgentCiCargoChecks`
@@ -84,8 +84,10 @@ compile error is therefore caught before the push, not by a CI run. Closes
     `[PRE_PUSH_WARNING]` on the agent's own push too. In the CI processor both
     agent runs (the fix and the quality retry) carry it; in the feedback
     processor every agent run does, through `runAgentTracked`. Issue runs
-    (the execute run, with the milestone branch or else the base branch, and
-    the completion rebase pass, with its PR base) and spelling repairs (the
+    (the execute run, with the milestone branch or else the base branch; the
+    completion rebase pass, with its PR base; and the in-run recovery agents
+    of the pre-push gate, screenshot, summary-rule, PR-body-length,
+    security-fix and quality-gate retries, through `issueRunCompareRef`) and spelling repairs (the
     PR base, read once before the agent runs and reused for the base merge)
     carry it too. Only merge-conflict repairs pass none, so a failing CI
     cargo check on their own push stays a verdict.
@@ -305,6 +307,15 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `::integration: the hook compares a failing CI clippy against the PR base (compareRef)`
   and
   `::integration: an unknown PR base (compareRef "") makes a failing CI clippy infrastructure, not a verdict`;
+  `worker/deno/tests/agent_run_compare_ref_4630_test.ts` (four tests: the
+  screenshot, summary-rule, PR-body-length and quality-gate remediation agents
+  each get the run's base as `ciCargoCompareRef`; red with `issueRunCompareRef`
+  removed from those four call sites), the same assertion added to
+  `worker/deno/tests/pre_push_gate_retry_test.ts`, `security_fix_gate_retry_test.ts`
+  and `execute_phase_agent_provider_pin_4346_test.ts`, the spelling pair in
+  `pr_spelling_processor_test.ts` (an unreadable base gives `""`, `release/2`
+  gives `origin/release/2`) and
+  `git_push_preflight_test.ts::issueRunCompareRef - the milestone, else the base, else the default branch; blank names are skipped (Issue #4630 review)`;
   `worker/deno/tests/claude_runner_test.ts::scanAgentCiCargoChecks - an unreadable tracked-file list is an unverifiable scan with a warning, not no scan`,
   `::scanAgentCiCargoChecks - a scanner that cannot be loaded is an unverifiable scan naming the error`
   and

@@ -5264,7 +5264,9 @@ gates do (see that bullet):
      hook compares too, but only for a run that is handed the PR base: the
      CI-fix, PR-feedback and spelling processors read the PR's base branch
      before the agent runs, and issue runs pass theirs (the milestone branch,
-     else the base branch), and each is written into the hook spec as
+     else the base branch) on the execute run, the completion rebase pass and
+     the in-run recovery agents (pre-push gate, screenshot, summary-rule,
+     PR-body-length, security-fix and quality-gate remediation), and each is written into the hook spec as
      `compareRef` (`origin/<base>`; `""` when the base cannot be read, which
      makes a failing CI cargo check an infrastructure fault, never a verdict).
      A merge-conflict repair has no `compareRef`, so a failing CI cargo check
@@ -5428,7 +5430,8 @@ or the `aws` CLI is missing for a deployable template, refuses the push; a CI
 cargo check that fails refuses the push with its output, unless the PR base
 fails with every diagnostic the push shows, when it is a `[PRE_PUSH_WARNING]`
 (in the worker's own gates, and in the agent's hook when its spec carries a
-`compareRef`, the PR base the CI-fix and PR-feedback processors hand it),
+`compareRef`, the PR base the CI-fix, PR-feedback and spelling processors and
+the issue-run agents hand it),
 while a CI cargo check that cannot
 start or time out, hits a cargo registry or git-dependency network refusal or
 host disk full, or whose toolchain, component,

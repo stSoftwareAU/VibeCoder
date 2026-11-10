@@ -581,6 +581,25 @@ export function prBaseCompareRef(base: string | undefined): string {
 }
 
 /**
+ * {@link prBaseCompareRef} for an issue run's agent: the milestone branch when
+ * the run targets one, else the run's base branch, else the default branch,
+ * taking the first that is not blank (Issue #4630 review).
+ */
+export function issueRunCompareRef(
+  state: {
+    milestoneBranch?: string;
+    baseBranch?: string;
+    defaultBranch?: string;
+  },
+): string {
+  return prBaseCompareRef(
+    [state.milestoneBranch, state.baseBranch, state.defaultBranch].find((
+      branch,
+    ) => branch !== undefined && branch.trim() !== ""),
+  );
+}
+
+/**
  * What {@link CommitAndPushPendingResult.finalUnpushedCount} was measured
  * against (Issue #211).
  *

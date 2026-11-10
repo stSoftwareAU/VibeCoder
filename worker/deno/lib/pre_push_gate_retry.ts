@@ -25,6 +25,7 @@
  * Australian English throughout.
  */
 
+import { issueRunCompareRef } from "./git_push.ts";
 import {
   type IssueContext,
   type PhaseState,
@@ -161,6 +162,9 @@ export async function runPrePushGateRecoveryTurn(
         killAfterSeconds: config.claudeKillAfter,
         model: config.claudeModel || undefined,
         cwd: state.repoPath,
+        // The run base, so a CI cargo failure the base already has is no verdict on
+        // the agent's own push (Issue #4630 review).
+        ciCargoCompareRef: issueRunCompareRef(state),
         logger,
         // Resume the same session, as invokeAgent in execute_phase.ts does.
         sessionResumeState: state.sessionResumeState,
