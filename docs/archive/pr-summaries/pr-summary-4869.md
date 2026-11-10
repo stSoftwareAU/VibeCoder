@@ -11,6 +11,7 @@ using one of them whose `actions/checkout` persists credentials is now flagged
 `endbug/add-and-commit`. `ad-m/github-push-action` is a conditional signal: it
 skips the job only with `with.ssh` true (boolean or `"true"`), because that mode
 pushes with the SSH key `actions/checkout` persisted; its HTTPS mode is flagged.
+
 Closes #4869.
 
 ## Spec
