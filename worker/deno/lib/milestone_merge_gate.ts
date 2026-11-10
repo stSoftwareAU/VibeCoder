@@ -117,6 +117,59 @@ export type MergeGateStatus =
   /** The repository defines no type check, so none was run. */
   | "skipped";
 
+/**
+ * Why the gate failed a merged tree (Issue #4847). A refusal on the tree's
+ * merits is `tree-check-failed`; every other cause means the tree was not
+ * verified, so the sync must not charge it as a bad tree.
+ */
+export type MergeGateCause =
+  /** The repository's own check ran and rejected the merged tree. */
+  | "tree-check-failed"
+  /** The check hit its time limit (a Deno check; cargo is left to CI). */
+  | "check-timed-out"
+  /** The check could not be started, or its command could not run. */
+  | "check-could-not-run"
+  /** The merged tree's directory is missing or could not be read. */
+  | "tree-unreadable"
+  /** The host's `rustc` is older than a workspace package requires (Issue #3255). */
+  | "rust-toolchain-too-old";
+
+/**
+ * The causes that mean the tree was not verified at all (Issue #4847): the
+ * check could not give a verdict, so nothing shows the tree is bad. Every cause
+ * except `tree-check-failed`.
+ */
+export const MERGE_GATE_UNVERIFIED_CAUSES: ReadonlySet<MergeGateCause> =
+  new Set<MergeGateCause>([
+    "check-timed-out",
+    "check-could-not-run",
+    "tree-unreadable",
+    "rust-toolchain-too-old",
+  ]);
+
+/**
+ * Fixed short phrase for each cause (Issue #4847). It names no path and no
+ * tool output, so it is safe to carry into a ledger reason and an issue body.
+ */
+const MERGE_GATE_CAUSE_PHRASES: Readonly<Record<MergeGateCause, string>> = {
+  "tree-check-failed": "the repository's check failed",
+  "check-timed-out": "the check timed out",
+  "check-could-not-run": "the check could not be run",
+  "tree-unreadable": "the tree could not be read",
+  "rust-toolchain-too-old": "Rust toolchain too old",
+};
+
+/** Whether a value is one of the known merge-gate causes (Issue #4847). */
+export function isMergeGateCause(value: unknown): value is MergeGateCause {
+  return typeof value === "string" &&
+    Object.hasOwn(MERGE_GATE_CAUSE_PHRASES, value);
+}
+
+/** The fixed short phrase that describes a cause (Issue #4847). */
+export function describeMergeGateCause(cause: MergeGateCause): string {
+  return MERGE_GATE_CAUSE_PHRASES[cause];
+}
+
 /** Outcome of {@link checkMergedTree}. */
 export interface MergeGateOutcome {
   status: MergeGateStatus;
@@ -124,6 +177,11 @@ export interface MergeGateOutcome {
   detail: string;
   /** Trimmed tail of the check output; empty when nothing ran. */
   output: string;
+  /**
+   * Set on every `failed` outcome {@link checkMergedTree} returns (Issue #4847),
+   * naming why the tree was refused or could not be verified.
+   */
+  cause?: MergeGateCause;
   /**
    * Set only when a `cargo check` failed because the host's `rustc` is older
    * than the `rust-version` a workspace package of the merged tree requires
@@ -210,6 +268,13 @@ export type TypeCheckRunner = (
      * tell a timeout from a failing check. Set by the production runner only.
      */
     timedOut?: boolean;
+    /**
+     * Set when the check could not be started at all, and the failure is not a
+     * host account refusal (Issue #4847). The caller reports the tree as
+     * `check-could-not-run`, not as a failing check. Set by the production
+     * runner only.
+     */
+    unrunnable?: true;
   }
 >;
 
@@ -229,6 +294,16 @@ async function resolveCheckArgs(manifestPath: string): Promise<string[]> {
     : ["check", "**/*.ts"];
 }
 
+/** The command text in a Deno string-form or command-bearing object task. */
+function manifestTaskCommand(task: unknown): string | undefined {
+  const command = typeof task === "string"
+    ? task
+    : (task as { command?: unknown } | null | undefined)?.command;
+  return typeof command === "string" && command.trim().length > 0
+    ? command
+    : undefined;
+}
+
 /**
  * `cargo check` over the whole workspace, every target (Issue #2138) —
  * `--locked` only when a `Cargo.lock` is committed, so a merged lockfile
@@ -244,10 +319,11 @@ export async function cargoCheckArgs(dir: string): Promise<string[]> {
 /**
  * The task names a Deno manifest defines.
  *
- * Only tasks with a non-empty command string count: a manifest whose `tasks`
- * key is malformed defines none, and an unparseable manifest is read the same
- * way — the caller then falls back to a check it can run rather than trying to
- * run a task that may not exist.
+ * String tasks and object tasks with a non-empty `command` count. A
+ * dependencies-only object is excluded because these gates discover commands
+ * to run, not task aliases. A manifest whose `tasks` key is malformed defines
+ * none, and an unparseable manifest is read the same way — the caller then
+ * falls back to a check it can run rather than trying a task that may not exist.
  *
  * Shared with the conflict-resolution gate (Issue #1559), which runs more of a
  * repository's own tasks than a type check alone.
@@ -265,9 +341,7 @@ export async function readManifestTasks(
     const tasks = parsed?.tasks;
     if (!tasks || typeof tasks !== "object") return [];
     return Object.entries(tasks as Record<string, unknown>)
-      .filter(([, command]) =>
-        typeof command === "string" && command.trim().length > 0
-      )
+      .filter(([, task]) => manifestTaskCommand(task) !== undefined)
       .map(([name]) => name);
   } catch {
     // Unparseable manifest — it defines nothing this gate can run.
@@ -652,8 +726,10 @@ export function denoLockfileWriteRefused(dir: string, output: string): boolean {
  * `node_modules` for `nodeModulesDir: "auto"` or beside a `package.json`,
  * and writes `vendor` when vendoring is enabled.
  * A present lockfile and none of the other conditions allow an attempt.
- * A check task must also be a simple `deno check` with known safe flags.
- * Anything else, or a manifest that cannot be read, keeps the write requirement.
+ * A string-form check task, or an object-form check with a non-empty command,
+ * must also be a simple `deno check` with known safe flags and no dependencies.
+ * Dependencies may write files. Anything else, or a manifest that cannot be
+ * read, keeps the write requirement.
  *
  * @param dir - The Deno project directory
  * @param args - Arguments selected for the project check
@@ -675,12 +751,19 @@ export async function denoCheckLeavesDirUntouched(
         stripJsonc(await Deno.readTextFile(`${dir}/${name}`)),
       );
       if (taskCheck) {
-        const command = config?.tasks?.check;
-        if (typeof command !== "string" || /[\r\n]/.test(command)) return false;
+        const task = config?.tasks?.check;
+        const command = manifestTaskCommand(task) ?? "";
+        if (/[\r\n]/.test(command)) return false;
         // Accept only a simple invocation with known non-writing flags. Shell
         // expansions, operators and unknown options retain the write probe.
         const words = command.trim().split(/\s+/);
         if (words[0] !== "deno" || words[1] !== "check") return false;
+        // A dependency may write project files even when this task's command
+        // is read-only, so keep the checkout write probe for the whole task.
+        if (
+          typeof task === "object" &&
+          "dependencies" in task
+        ) return false;
         if (
           !words.slice(2).every((word: string) => {
             if (/^['"]-/.test(word)) return false;
@@ -740,12 +823,14 @@ export const spawnTypeCheck = async (
     readOnlyCheckout,
   });
   if (!result.ok) {
+    // A spawn that failed for any reason but the host's account is a check
+    // that could not run (Issue #4847), not a verdict on the merged tree.
     return {
       code: 1,
       output: result.error.message,
       ...(result.error instanceof GateAccountUnavailable
         ? { accountUnavailable: result.error.message }
-        : {}),
+        : { unrunnable: true }),
     };
   }
   const { code, stdout, stderr, timedOut } = result.value;
@@ -795,6 +880,7 @@ export async function checkMergedTree(
         detail:
           `merged tree '${repoDir}' is not a directory — nothing checked it`,
         output: "",
+        cause: "tree-unreadable",
       };
     }
   } catch (err) {
@@ -802,6 +888,7 @@ export async function checkMergedTree(
       status: "failed",
       detail: `merged tree '${repoDir}' could not be read — nothing checked it`,
       output: tail(err instanceof Error ? err.message : String(err)),
+      cause: "tree-unreadable",
     };
   }
 
@@ -838,6 +925,7 @@ export async function checkMergedTree(
       output: string;
       accountUnavailable?: string;
       timedOut?: boolean;
+      unrunnable?: true;
     };
     // The cause the first attempt named when it could not reach the registry
     // (Issue #4786); set only when the check was retried offline.
@@ -873,11 +961,22 @@ export async function checkMergedTree(
         status: "failed",
         detail: `${where} could not be run`,
         output: tail(message),
+        cause: "check-could-not-run",
       };
     }
     if (result.accountUnavailable) {
       leftToCi.push(`${where}: ${result.accountUnavailable}`);
       continue;
+    }
+    // A check the runner could not start is not a verdict on the tree, so it
+    // is not reported as a failing check (Issue #4847).
+    if (result.unrunnable) {
+      return {
+        status: "failed",
+        detail: `${where} could not be run`,
+        output: tail(result.output),
+        cause: "check-could-not-run",
+      };
     }
     // The offline retry could not reach the registry either: the cargo half
     // cannot be verified here, so it is left to CI as a timed-out check is
@@ -896,7 +995,9 @@ export async function checkMergedTree(
       // A cargo check that hit its time limit says nothing about the merged
       // tree: on a cold ephemeral target it is the build that ran out of
       // time, not a bad resolution. It is left to CI, as a skipped cargo
-      // build is (Issue #4786). A Deno timeout stays a failure.
+      // build is (Issue #4786). A Deno timeout still fails the gate, with
+      // cause `check-timed-out`, so the sync does not charge it as a bad tree
+      // (Issue #4847).
       if (project.kind === "cargo" && result.timedOut) {
         skippedCargo = true;
         cargoTimedOut.push(where);
@@ -924,12 +1025,16 @@ export async function checkMergedTree(
           detail: describeRustToolchainGap(where, result.code, gap),
           output: tail(result.output),
           toolchainGap: gap,
+          cause: "rust-toolchain-too-old",
         };
       }
+      // A Deno check that hit its time limit did not reach a verdict on the
+      // tree, so it is not charged as a failing check (Issue #4847).
       return {
         status: "failed",
         detail: `${where} failed (exit ${result.code})`,
         output: tail(result.output),
+        cause: result.timedOut ? "check-timed-out" : "tree-check-failed",
       };
     }
     // A check that passed only on the offline retry says so (Issue #4786).
@@ -979,8 +1084,8 @@ export function mergeGateFailureError(
   milestoneBranch: string,
   defaultBranch: string,
   outcome: MergeGateOutcome,
-): Error {
-  const err = new Error(
+): MergeGateFailureError {
+  const err: MergeGateFailureError = new Error(
     `Refused to push the merge of '${defaultBranch}' into ` +
       `'${milestoneBranch}': the merged tree does not pass the repository's ` +
       `own check (Issue #974) — ${outcome.detail}${
@@ -988,7 +1093,29 @@ export function mergeGateFailureError(
       }`,
   );
   err.name = MILESTONE_MERGE_GATE_ERROR;
+  if (outcome.cause !== undefined) err.gateCause = outcome.cause;
   return err;
+}
+
+/**
+ * The merge-gate refusal, carrying why the gate failed the tree (Issue #4847).
+ */
+export interface MergeGateFailureError extends Error {
+  /** The cause the gate named. Read it through {@link mergeGateFailureCause}. */
+  gateCause?: MergeGateCause;
+}
+
+/**
+ * The cause a merge-gate refusal carries (Issue #4847), or undefined when the
+ * error is not a refusal or carries no known cause. A forged or unknown value
+ * is rejected, so nothing it holds reaches a ledger reason.
+ */
+export function mergeGateFailureCause(
+  err: unknown,
+): MergeGateCause | undefined {
+  if (!isMergeGateFailure(err)) return undefined;
+  const cause = (err as MergeGateFailureError).gateCause;
+  return isMergeGateCause(cause) ? cause : undefined;
 }
 
 /** Whether an error is the merge-gate refusal. */

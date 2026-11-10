@@ -201,3 +201,19 @@ Not done / risk: the label description keeps "do not re-attempt without new
 evidence"; the `negative_result_lesson_docs_test.ts:76` assertion message still
 says "close-out label" (message text only); the failing sandbox tests were not
 re-run in a networked environment.
+
+### PR #5028 review revision
+
+- The hand-off and USAGE now instruct the operator to re-add `work-on` after
+  clearing the two blocking labels. Removed the unrelated issue-number suffix
+  from discovery cleanup's target-repository comment, retaining code provenance.
+- A regression drives the real hand-off followed by discovery-label cleanup;
+  both emitted comments name the recovery step and contain no `#<digits>`.
+  It fails without the wording fix. All 17 tests in the hand-off, no-number and
+  escalation-cleanup suites pass.
+- Corrected the no-change phase header to name the negative-result exception.
+- Governing requirement: #4911, "Hand a negative-result issue to a human instead
+  of closing it, with a comment that cites no issue number". The milestone PR
+  links that original requirement directly, rather than relying on #5027.
+- Formatting, lint and diff checks passed. Tests used checksum-verified copies
+  of the locked packages; full quality gate not rerun here. CI remains required.

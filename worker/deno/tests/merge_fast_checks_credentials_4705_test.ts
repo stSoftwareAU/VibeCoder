@@ -105,15 +105,23 @@ Deno.test("spawnFastCheck: declared credentials ride the stdin channel, never ar
     { NPM_TOKEN: DECLARED },
     recordingSpawn(calls, { code: 0, stderr: "" }),
     sudoAgent,
+    {
+      source: {
+        PATH: "/usr/bin:/bin",
+        CARGO_TARGET_DIR: "/fixture/target",
+        GH_TOKEN: "synthetic-ambient-secret",
+        HTTPS_PROXY: "http://proxy.test:3128",
+        NO_PROXY: "localhost",
+      },
+    },
   );
   assertEquals(result.code, 0);
   assertEquals(calls.length, 1);
   const { executable, args, options } = calls[0]!;
 
   // The argv begins with the sudo drop and the fixed wrapper, then the
-  // original command. Its CARGO_TARGET_DIR env prefix is present only when the
-  // spawn environment the command builder produced carries that variable; this
-  // test does not plant it, so the expected prefix follows from that env.
+  // original command. The target and egress proxy settings cross sudo's
+  // env_reset as explicit non-secret environment assignments.
   assertEquals(executable, "sudo");
   assertEquals(args.slice(0, 6), ["-n", "-u", "agent", "--", "sh", "-c"]);
   const target = options?.env?.["CARGO_TARGET_DIR"];
@@ -123,6 +131,11 @@ Deno.test("spawnFastCheck: declared credentials ride the stdin channel, never ar
   assertEquals(args.slice(7), [
     "vibe-credential-channel",
     ...prefix,
+    "HTTPS_PROXY=http://proxy.test:3128",
+    "NO_PROXY=localhost",
+    "GIT_CONFIG_COUNT=1",
+    "GIT_CONFIG_KEY_0=safe.directory",
+    "GIT_CONFIG_VALUE_0=/tmp",
     "cargo",
     "fmt",
     "--all",

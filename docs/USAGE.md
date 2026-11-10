@@ -482,8 +482,8 @@ ends with no change and the issue carries `negative-result`, the worker — not
 the agent — hands the issue to a human. It posts a hand-off comment (which cites
 no issue number), adds `needs-human` through the escalation path, unassigns
 itself and leaves the issue open. A human closes the issue if the result
-stands; removing both `needs-human` and `negative-result` returns it to the
-queue. This path adds no new gate: it only applies once the agent has recorded
+stands; to return it to the queue, remove both `needs-human` and
+`negative-result`, then re-add `work-on` (discovery cleanup removes it). This path adds no new gate: it only applies once the agent has recorded
 `negative-result` on a run that made no change, so it never holds back a
 correct, tested performance PR, and the worker never applies the label itself.
 The agent must not label an ordinary timing-only uncertainty `negative-result`.

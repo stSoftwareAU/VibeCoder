@@ -353,15 +353,20 @@ bash `worker/run_core.sh` conductor. It sequences:
    scopes are logged with a `[SECURITY]` tag.
 4. **Startup housekeeping** — the one-time disk-space reclaim, log rotation,
    worker-log retention, stale temp-file / work-dir / worktree / Claude-session
-   sweeps, orphaned local + stale remote branch cleanup, and finally the
-   merged-PR issue sweep run as a single in-order Deno sequence
+   sweeps and orphaned local branch cleanup run as an in-order Deno sequence
+   before the first claim. The two GitHub-touching sweeps, stale remote branch
+   cleanup and the merged-PR issue sweep, run in the background alongside the
+   main loop, so they never delay the first claim (Issue #4822)
    ([run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts),); each step
-   is best-effort — a failure is logged loud but never blocks start.
+   is best-effort — a failure is logged loud but never blocks start. Any
+   background sweep still running when the loop ends gets a bounded grace
+   before the exit cleanup; one that outlives it is abandoned and resumes on
+   the next run.
 
-   The last step,
+   The merged-PR issue sweep,
    `merged-pr-issue-sweep`
    ([merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts),
-   Issue #504), is the only one that touches GitHub rather than local disk. It
+   Issue #504), runs last of the background sweeps and touches GitHub. It
    closes every open issue whose fix has already **merged and landed**,
    whoever authored the PR — the set the claim scan refuses for ever as
    `merged-pr-permanent` and which therefore cannot heal itself. It invents no
@@ -4200,8 +4205,11 @@ stripping ANSI, and normalising the wall-clock durations that differ run to run
 over identical content. This includes compact Deno summaries such as `2m14s`,
 spaced compounds
 such as `2m 14s`, hour compounds such as `1h2m3s`, and standalone units such as
-`12.4s`; the elapsed values are ignored while failure counts and diagnostics
-remain part of the comparison.
+`12.4s`. Clock-format elapsed times are normalised too: pytest's trailing
+`(0:01:15)` after a duration, and Maven's `01:15 min` or `02:03 h`. Source
+locations such as `file.ts:12:5` and ordinary timestamps are kept. The elapsed
+values are ignored while failure counts and diagnostics remain part of the
+comparison.
 
 When the answer is yes the run stops as an **expected skip**: no PR, no
 `failed`/`failed-once` label, no failure tracking, no repo failure record and no
@@ -5349,7 +5357,8 @@ is the branch's to answer for:
 | The **worker** ended the run at the cycle deadline              | `disrupted` — nothing was judged, so nothing is charged (Issues #1693, #2305) |
 | Conflicted with too little of the cycle left to cover a rung     | `not-charged` — `agent deferred: cycle budget` (Issue #2309); not counted in `refusedCycles` and never climbs: the branch waits for a cycle with the runway (Issue #4517) |
 | Conflicted and the agent is withheld by the cargo budget         | `not-charged` — not counted in `refusedCycles` and never climbs; the branch waits for disk (Issue #4588) |
-| Merge gate refused the merged tree (`isMergeGateFailure`)        | `failed` — one attempt charged, as for a textual conflict (Issue #4304) |
+| Merge gate refused the merged tree because the repository's own check genuinely failed (`isMergeGateFailure`, cause `tree-check-failed`) | `failed` — one attempt charged, as for a textual conflict; reason `the merge gate refused the merged tree (the repository's check failed)` (Issues #4304, #4847) |
+| Merge gate could not verify the merged tree (`isMergeGateFailure`, causes `check-timed-out`, `check-could-not-run`, `tree-unreadable`, `rust-toolchain-too-old`) | `not-charged` — counted in `refusedCycles` and re-checked next cycle; the fourth consecutive one is `failed` and climbs to the hand-off, as a repeated resolution refusal does; reason `the merge gate could not verify the merged tree (the check timed out \| the check could not be run \| the tree could not be read \| Rust toolchain too old)` (Issues #4304, #4847) |
 | Merge gate refused the resolution (`gateFailure`)                | `not-charged` — counted in `refusedCycles`, and the fourth consecutive one is `failed` and climbs to the hand-off (Issues #4328, #4517); the gate keeps its own escalation, reported once |
 | A repository ruleset declined the push (`isRuleViolationPush`)  | `not-charged` — `push rejected by ruleset` |
 | Any other git failure                                           | `not-charged` — `non-conflict git failure: …` |
@@ -5499,8 +5508,12 @@ consequences are worth naming:
   branch is counted, and when it repairs nothing the fetch failure stands.
 - **Only a charged failure spends the budget.** A conflict every granted rung
   left undecided is charged, and so is a merge-gate refusal of a clean merge
-  (Issue #4304: it is a conflict git could not see, answered by the same
-  roll-back and `merge-fallback` flag); a ruleset-refused push or any other
+  whose repository check genuinely failed (Issues #4304, #4847: it is a
+  conflict git could not see, answered by the same roll-back and
+  `merge-fallback` flag); a merge gate that could not verify the tree at all
+  (a timeout, a check that could not run, an unreadable tree, a host rustc too
+  old) is not charged, but is bounded like a repeated resolution refusal; a
+  ruleset-refused push or any other
   `not-charged` verdict is not — charging the branch for a fault that
   is not its own is what Issues #1772 and #1778 removed. The one exception is a gate
   refusal of the resolution that has repeated `MILESTONE_REFUSAL_CEILING` cycles in a row,

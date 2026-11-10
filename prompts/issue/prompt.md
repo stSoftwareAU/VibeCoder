@@ -337,12 +337,7 @@ guessing.
    list as updated, read every passage that mentions the changed surface,
    not only the section you edited. Then re-run every grep **on the final
    head, after editing**. Name the section you read and the doc files you
-   updated in the PR summary. When the change adds a member to an existing
-   set — a field, enum variant, kind, flag or column — also grep for one or
-   two of its existing sibling members: every list of the set those hits find
-   names the new member, or is reworded so it no longer reads as complete.
-   Name those siblings in the PR summary. Fleet PRs that grepped only the new
-   name left a list one short (GRQ-AutoTrader#2460, #2481, #2682, #2792).
+   updated in the PR summary.
    Before new prompt or doc text states how another component behaves —
    above all an exclusive or negative claim ("the only …", "never …", "the
    worker does not …") — open the code that implements it and cite that file

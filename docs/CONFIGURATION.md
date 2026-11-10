@@ -1945,6 +1945,16 @@ precedence over built-in defaults.
 
 ### ⚙️ Operational Defaults
 
+Claude Code also has a separate per-command foreground ceiling. VibeCoder
+sets `BASH_MAX_TIMEOUT_MS=1800000` (30 minutes) in the Claude child environment
+and in the DeepSeek child environment (`deepseek` runs the same CLI) so a gate
+longer than Claude's default 10-minute ceiling can finish (#4913, #4926).
+An explicit parent environment value wins. `BASH_DEFAULT_TIMEOUT_MS` is left
+unchanged: the agent must request a tool timeout sized to the gate and the
+remaining run budget. The phase deadline and stall watchdogs still apply;
+this setting does not extend them. See
+[Claude Code environment variables](https://code.claude.com/docs/en/env-vars).
+
 These values have built-in defaults and can be overridden in `.config.json`
 . Only values that differ from the defaults need to be stored — if a
 default changes in the codebase, the new default flows to all installations
@@ -5083,7 +5093,10 @@ every agent run, the worker writes a per-run
 `pre-push` hook into a temporary directory and enables it in the **agent's
 environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
-agent runs goes through it. The worker's own pushes do not carry the agent's
+agent runs goes through it. The hook loads its trusted worker module with that
+worker's Deno configuration and frozen lock file, so a target repository's
+configuration or newer registry version cannot change the hook's dependencies.
+The worker's own pushes do not carry the agent's
 environment, so the hook does not gate them; instead its final-mile
 commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
 same changed-files check through `runPrePushGate` on the already-committed

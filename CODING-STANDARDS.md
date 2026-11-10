@@ -375,6 +375,132 @@ Deno.test("should have validateConfig function", async () => {
 });
 ```
 
+### Dummy tests and "how" tests are refused
+
+This is the one rule set every reviewer applies to tests: the fleet PR
+reviewer, the worker's pre-PR verifier, the test audit and any human review.
+Other prompts and documents point here rather than restating it. A new or
+edited test that breaks a rule below is a **blocking** review finding (a
+request for changes), never a style note.
+
+1. **Dummy tests are refused.** A dummy test passes whatever the code does.
+   It asserts nothing; or it asserts only success, presence or non-emptiness
+   (`is_ok()`, `is_some()`, `!is_empty()`, `assertExists`, `toBeDefined`, a
+   bare truthy `assert(x)`); or it restates the implementation (the expected
+   value computed the way the code computes it); or it exists only to lift
+   coverage; or it is ignored or skipped without a stated reason.
+
+   ```rust
+   // Bad: passes for any amount at all, including the wrong one.
+   #[test]
+   fn parses_amount() {
+       assert!(parse_amount("12.50").is_ok());
+   }
+
+   // Good: the value, and the error with its message.
+   #[test]
+   fn parses_amount() {
+       assert_eq!(parse_amount("12.50"), Ok(Cents(1250)));
+       assert_eq!(
+           parse_amount("12,50").unwrap_err().to_string(),
+           "amount must use a decimal point: 12,50",
+       );
+   }
+   ```
+
+   An ignore carries its reason where the next reader sees it:
+   `#[ignore = "needs a live broker"]`, or a comment on the line above
+   `Deno.test.ignore(...)` or `it.skip(...)`.
+
+2. **"How" tests are refused.** A "how" test is coupled to the
+   implementation rather than the behaviour. It asserts that internal
+   functions or mocks were called, call counts or call order, private state or
+   intermediate steps, or it reaches past the public entry point to poke an
+   internal. "How" tests are worse than useless: they pass while the
+   behaviour is wrong, and they fail when a correct refactor lands, so they
+   cost every future change and protect nothing.
+
+   ```typescript
+   // Bad: pins which helper ran and how often, not what the caller gets.
+   it("sends the welcome mail", async () => {
+     const render = vi.spyOn(templates, "render");
+     await signUp({ email: "a@example.com" });
+     expect(render).toHaveBeenCalledTimes(1);
+   });
+
+   // Good: drives the entry point; asserts what was delivered.
+   it("sends the welcome mail", async () => {
+     const mailbox = fakeMailbox();
+     await signUp({ email: "a@example.com" }, { mail: mailbox });
+     expect(mailbox.delivered()).toEqual([
+       { to: "a@example.com", subject: "Welcome" },
+     ]);
+   });
+   ```
+
+3. **A behaviour ("what") test is required instead.** It drives the public
+   entry point and asserts an observable outcome: a returned value, a stored
+   record, a served response, an emitted error and its message. It covers the
+   error and edge branches, not only the happy path. A mock or fake is allowed
+   only at a real external boundary (the network, a broker, the clock), and
+   the test still asserts the outcome, never the mock interaction; see **Fake
+   the external service, do not assert the request** below.
+
+   ```typescript
+   // Bad: a fake clock is fine; asserting that it was read is not.
+   Deno.test("expires a session", () => {
+     const clock = fakeClock("2026-01-01T00:31:00Z");
+     expire(session, clock);
+     assertSpyCalls(clock.now, 1);
+   });
+
+   // Good: the same fake clock; the outcome is asserted.
+   Deno.test("expires a session after 30 minutes", () => {
+     const clock = fakeClock("2026-01-01T00:31:00Z");
+     assertEquals(sessionState(startedAt("00:00"), clock), "expired");
+   });
+   ```
+
+4. **Coverage is never a reason to accept a weak test.** A build that fails
+   because a real branch has no meaningful test is the correct result. Write
+   a real test for the branch; never write a token one to turn the build
+   green.
+
+   ```rust
+   // Bad: reaches the error branch for the coverage report, checks nothing.
+   #[test]
+   fn covers_error_branch() {
+       let _ = load_config("missing.toml");
+   }
+
+   // Good: the error branch's outcome is the assertion.
+   #[test]
+   fn missing_config_names_the_file() {
+       let err = load_config("missing.toml").unwrap_err();
+       assert_eq!(err.to_string(), "config not found: missing.toml");
+   }
+   ```
+
+**The dummy-test scan enforces part of this deterministically** (Issue
+#5016). The fleet reviewer and the pre-PR verifier run
+`worker/deno/lib/dummy_test_scan.ts` over the change's diff. It judges only
+the tests the change adds or edits, in Rust (`#[test]`, `#[tokio::test]`) and
+Deno/TypeScript (`Deno.test`, and `it` / `test` in test files):
+
+- a test with no assertion, a test whose only assertions are success,
+  presence or non-emptiness checks, and an ignore or skip with no reason are
+  blocking findings the code adds whatever the model's reply says;
+- a mock-interaction assertion (`toHaveBeenCalled`, `assertSpyCalls`,
+  mockall's `.times(n)`, a call count) is a checklist item the reviewer must
+  judge against rule 3, and an unjudged or `missing` item blocks;
+- a test with no visible assertion that calls a helper defined in view is
+  judged by the helper's assertions; in an edited file, a call to a function
+  out of view makes it a checklist item instead, since that function may be
+  the helper that asserts.
+
+The scan sees only the diff. Everything else in this section is the
+reviewer's to judge.
+
 ### Documentation-drift tests
 
 Rule 5 bans keyword checks over documentation; this subsection is the one
@@ -1856,15 +1982,14 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   helper's list of callers are where these go stale.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
-- **Adding a member owes a docs change too.** When you add a field, enum
-  variant, kind, flag, column or row element to an existing set, grep for one
-  or two **existing sibling members**, not the new one — the new name is in no
-  doc yet, so a grep for it comes back clean. Every doc comment, module doc,
-  manual page or API description that lists the set names the new member in
-  the same change, or is reworded so it no longer reads as complete. Name the
-  siblings you grepped in the PR summary; fleet PRs that grepped only the new
-  name left a list one short
-  (GRQ-AutoTrader#2460, #2481, #2682, #2792).
+- **Adding a member owes a docs change too.** When the change adds a member to
+  something a comment or doc lists or counts (a field, enum variant, flag,
+  column, case, exit, refusal or output), that list names the new member in the
+  same change, or is reworded so it no longer reads as complete. Against the
+  final code, re-read the doc comment of each item you changed, its file's
+  header, and every list you wrote or edited. For a named set listed in other
+  files, grep for one or two **existing sibling members**, not the new one: the
+  new name is in no doc yet.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,

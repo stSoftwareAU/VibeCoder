@@ -29,7 +29,20 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    New behaviour and real bug fixes usually need a test that would fail on
    the externally meaningful regression; existing coverage may suffice.
    Refactors and UI restyles may need no new test. {{NO_TEST_ADDED_NOTE}}
-   A missing safety net that matters is a finding. Flag new assertions on
+   A missing safety net that matters is a finding.
+   Apply the Vibe Coder rule **Dummy tests and "how" tests are refused**
+   (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused), in short: a new or edited test that asserts nothing, asserts
+   only success, presence or non-emptiness, restates the implementation,
+   exists only for coverage, or is skipped without a reason is a dummy
+   test; one that asserts which internal functions or mocks were called,
+   how often or in what order, private state or intermediate steps is a
+   "how" test. Both are blocking findings. The fix is a behaviour test that
+   drives the public entry point and asserts the observable outcome,
+   including the error and its message and the edge branches; a mock stands
+   only at a real external boundary, and the test asserts the outcome, not
+   the mock. Coverage never justifies a weak test. The code adds the
+   deterministic dummy-test scan's findings itself, and lists what it cannot
+   judge alone under step 7. Flag new assertions on
    incidental CSS values, DOM shape, component/private function names or
    version strings unless the linked issue makes these an explicit
    contract. Prefer user-visible browser behaviour and semantic locators
@@ -74,9 +87,10 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
      intentionally changed (the governing issue or the code shows it) and the
      required behaviour is still covered by a `replacement` or `existing`
      test. Verify every cited test yourself at the head: the file must exist
-     and contain the name given. For genuinely removed functionality, evidence
-     that the behaviour and its callers are gone (`gone` coverage of production
-     code) is the relevant proof; never demand a fabricated replacement test for it.
+     and contain the name given as literal text. For genuinely removed
+     functionality, evidence that the behaviour and its callers are gone (`gone`
+     coverage of production code) is the relevant proof; never demand a
+     fabricated replacement test for it.
    - Where applicable, a reproducible regression or mutation check shows that
      the replacement fails without the fix. A boolean claim, a vacuous
      assertion or the implementer's own assertion is not proof.
@@ -116,8 +130,11 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
      when every `coverage` entry has role `gone`.
    - `coverage`: an array of `{role, path, name?}`. `role` is `replacement`,
      `existing` or `gone`; `path` is repo-relative at the pull request head.
-     `replacement` and `existing` must exist at the head and contain `name`
-     when given. `gone` is for removed production code (a production file
+     `replacement` and `existing` must exist at the head and, when `name` is
+     given, contain it as literal text in the file's source. For a test whose
+     name is built at run time (a template literal or a loop), give a fixed
+     part of the name that appears in the source. `gone` is for removed
+     production code (a production file
      absent at the head, or one that no longer contains `name`, and that
      existed at the base ref). A renamed or deleted test is not `gone`
      coverage: it counts for nothing, and a note is refused when it is the
@@ -132,7 +149,9 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
      coverage role.
    - `verification`: a short reproducible check (the command or mutation and
      the observed result, at least three words). It is required under the
-     same conditions as `failsWithoutChange`.
+     same conditions as `failsWithoutChange`, and also when every `coverage`
+     entry is `gone`: there it is the search or build that showed the removed
+     code and its callers are gone.
    The code verifies the cited coverage and the governing issue at the head;
    a claim you make alone never approves a change. The worker's pre-PR
    verifier applies this same policy, because it uses this brief.

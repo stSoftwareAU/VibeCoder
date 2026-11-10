@@ -50,7 +50,7 @@ export function buildNegativeResultHandoff(): NegativeResultHandoff {
       "legacy result, if present, are indicative only and do not settle the " +
       "issue.",
     nextStep: "Close the issue if the result stands, or remove `needs-human` " +
-      `and \`${NEGATIVE_RESULT_LABEL}\` to send it back to the queue.`,
+      `and \`${NEGATIVE_RESULT_LABEL}\`, then re-add \`work-on\` to send it back to the queue.`,
   };
 }
 

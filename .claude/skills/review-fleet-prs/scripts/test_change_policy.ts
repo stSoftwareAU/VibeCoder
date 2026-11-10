@@ -27,7 +27,10 @@ import {
   wasLabelAddedByAllowedAuthor,
 } from "../../../../worker/deno/lib/issue_query.ts";
 import { stripWorkerRecordBlocks } from "../../../../worker/deno/lib/worker_record_block.ts";
-import { resolveLastIssueEditor } from "../../../../worker/deno/lib/issue_edit_actor.ts";
+import {
+  resolveLastIssueEditor,
+  unsettledHistoryWindows,
+} from "../../../../worker/deno/lib/issue_edit_actor.ts";
 import type { RunGh } from "./needs_human.ts";
 
 const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
@@ -174,18 +177,18 @@ export function quoteFound(
   );
 }
 
-const NEGATIVE_LEADING_WORD = /^(?:no|false)\b/;
+const NEGATIVE_LEADING_WORD = /^(?:no|false|unknown)\b/;
 const NEGATIVE_CONTAINS = [
   "does not fail",
   "doesn't fail",
   "passes without",
   "would pass",
   "not verified",
-  "unknown",
 ];
 
-// Positive only: `true`, or a statement that is not led by no/false and does
-// not say the test passes without the change.
+// Positive only: `true`, or a statement that is not led by no/false/unknown and
+// does not say the test passes without the change. An `unknown` value or
+// identifier later in a positive statement is fine.
 function failsWithout(v: TestChangeNote["failsWithoutChange"]): boolean {
   if (v === true) return true;
   if (typeof v !== "string") return false;
@@ -359,12 +362,7 @@ async function workerClaimProblem(
         firstLine(lookup.error)
       }`;
     }
-    const oldestBody = lookup.actors.filter((a) => a.source === "content-edit")
-      .at(-1);
-    if (
-      lookup.bodyHistoryTruncated &&
-      (!oldestBody || oldestBody.editedAt >= added.addedAt)
-    ) {
+    if (unsettledHistoryWindows(lookup, added.addedAt).length > 0) {
       return `${ref} has incomplete edit history since its ${label} label was added; it is ignored`;
     }
     const untrustedEdits = lookup.actors.filter((a) => {
@@ -705,7 +703,8 @@ function neverExisted(where: string, fix?: string): Problem {
   };
 }
 
-// Coverage: each entry is checked at the head; at least one must pass.
+// Coverage: every `replacement` and `existing` entry must resolve at the head
+// (the `name` is matched as literal text in the file's source).
 // A gone entry naming a test file shows nothing was removed, so it never
 // counts as proof. It is reported only when no other entry in the note passes
 // (an extra renamed-test entry beside verified coverage does not fail the note).

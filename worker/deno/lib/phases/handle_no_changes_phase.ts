@@ -7,8 +7,9 @@
  * deliverable (Issue #4298), and otherwise retries the approved issue with the
  * run's output carried forward (Issue #4227). Output that names files to
  * change is a failed implementation, not analysis, so it is retried (Issue
- * #2687). Nothing here hands an approved issue to a human. Single
- * responsibility: classify the "no changes" outcome and communicate it back
+ * #2687). A labelled negative result is the one worker-side hand-off to a
+ * human (Issue #4911). Single responsibility: classify the "no changes" outcome
+ * and communicate it back
  * to GitHub.
  *
  * Extracted from worker/deno/lib/issue_worker.ts (Issue #1527).

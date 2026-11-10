@@ -389,15 +389,14 @@ not after a reviewer finds it weeks later.
   <base>...HEAD | grep -n '<old phrase>'`) and fix each hit that still gives
   the old answer. An example or parenthetical that contradicts its own rule is
   the same blocking self-review finding as two contradictory rules.
-- **Adding a member owes a docs change too.** When you add a field, enum
-  variant, kind, flag, column or row element to an existing set, grep for one
-  or two **existing sibling members**, not the new one — the new name is in no
-  doc yet, so a grep for it comes back clean. Every doc comment, module doc,
-  manual page or API description that lists the set names the new member in
-  the same change, or is reworded so it no longer reads as complete. Name the
-  siblings you grepped in the PR summary; fleet PRs that grepped only the new
-  name left a list one short
-  (GRQ-AutoTrader#2460, #2481, #2682, #2792).
+- **Adding a member owes a docs change too.** When the change adds a member to
+  something a comment or doc lists or counts (a field, enum variant, flag,
+  column, case, exit, refusal or output), that list names the new member in the
+  same change, or is reworded so it no longer reads as complete. Against the
+  final code, re-read the doc comment of each item you changed, its file's
+  header, and every list you wrote or edited. For a named set listed in other
+  files, grep for one or two **existing sibling members**, not the new one: the
+  new name is in no doc yet.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
@@ -1264,6 +1263,15 @@ contract checks for APIs. Avoid pinning incidental CSS, DOM or private code.
 
 Every test must exercise real code: source a module, call a function with test
 data, and assert on results, exit codes, or side effects.
+
+**Never write a dummy test or a "how" test.** Reviewers refuse both as
+blocking findings under the Vibe Coder rule **Dummy tests and "how" tests are
+refused** (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused), and a deterministic scan of the diff refuses a test with
+no assertion, a test asserting only success, presence or non-emptiness, and
+an ignore or skip without a reason. Write a behaviour test: drive the public
+entry point and assert the observable outcome, including the error and its
+message. If a real branch has no meaningful test, the red build is correct:
+write a real test, never a token one for coverage.
 
 **Good** — calls a real function and asserts on the result:
 

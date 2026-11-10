@@ -15,6 +15,7 @@ import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
 import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
+import { makeAgentReachableTempDir } from "./support/gate_child_env.ts";
 import {
   ALLOWED_ENV_NAMES,
   asUntrustedUser,
@@ -69,6 +70,9 @@ function recordingSpawn(first: Spawned = { ok: true, value: OK }) {
 async function withCheckout(fn: (cwd: string) => Promise<void>): Promise<void> {
   const cwd = await Deno.makeTempDir({ prefix: "vibe_4659_" });
   try {
+    // The `.git` marker stops the worktree-root walk (Issue #4927) here, so a
+    // test never reads the shared temp directory above the checkout.
+    await Deno.mkdir(`${cwd}/.git`);
     await fn(cwd);
   } finally {
     await Deno.remove(cwd, { recursive: true });
@@ -247,6 +251,141 @@ Deno.test("a command run as the worker carries the proxy in its env, not argv (I
   });
 });
 
+Deno.test("a dropped cargo command trusts its checkout for git, carried in argv (Issue #4927)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+    );
+    const final = callAt(calls, calls.length - 1);
+    assertEquals(final.executable, "sudo");
+    const afterEnv = final.args.slice(final.args.indexOf("env") + 1);
+    for (
+      const entry of [
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=safe.directory",
+        `GIT_CONFIG_VALUE_0=${cwd}`,
+      ]
+    ) {
+      assert(afterEnv.includes(entry), `missing ${entry}: ${final.args}`);
+    }
+    assertEquals(final.args.slice(-2), ["cargo", "check"]);
+  });
+});
+
+Deno.test("a command run as the worker gets no git safe.directory entry (Issue #4927)", async () => {
+  await withCheckout(async (cwd) => {
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      { spawn, drop: identityDrop, source: SOURCE, trimRefused: false },
+    );
+    assertEquals(calls.length, 1);
+    const only = callAt(calls, 0);
+    const names = Object.keys(only.options.env ?? {});
+    assertEquals(names.filter((name) => name.startsWith("GIT_CONFIG")), []);
+    assertEquals(only.args.filter((arg) => arg.includes("GIT_CONFIG")), []);
+  });
+});
+
+Deno.test("a checkout whose path holds a space gets no git entry and does not throw (Issue #4927)", async () => {
+  const cwd = await Deno.makeTempDir({ prefix: "vibe 4927 " });
+  try {
+    // The `.git` marker stops the worktree-root walk here; the space in `cwd`
+    // is what CARRIED_ENV_VALUE then rejects.
+    await Deno.mkdir(`${cwd}/.git`);
+    const { calls, spawn } = recordingSpawn();
+    const result = await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+    );
+    assert(result.ok, `the command was refused: ${JSON.stringify(result)}`);
+    const final = callAt(calls, calls.length - 1);
+    assertEquals(final.args.filter((arg) => arg.includes("GIT_CONFIG")), []);
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("real sudo: an agent git command runs in a worker-owned checkout (Issue #4927)", async () => {
+  // Skipped where this host cannot drop to the agent account.
+  if (!await canRunAsUntrustedUser()) return;
+  // Under /tmp, not TMPDIR, so the account can reach the directory (Issue #4733).
+  const cwd = await makeAgentReachableTempDir("issue-4927-");
+  try {
+    const init = await new Deno.Command("git", {
+      args: ["init", "-q"],
+      cwd,
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    assertEquals(init.code, 0);
+    const result = await runRepositoryCommand(
+      "git",
+      ["rev-parse", "--git-dir"],
+      { cwd, timeoutMs: 20_000 },
+    );
+    assert(result.ok, `the command was refused: ${JSON.stringify(result)}`);
+    assertEquals(result.value.code, 0, result.value.stderr);
+  } finally {
+    await Deno.remove(cwd, { recursive: true });
+  }
+});
+
+Deno.test("real sudo: an agent git command runs from a subdirectory of a worker-owned checkout (Issue #4927)", async () => {
+  if (!await canRunAsUntrustedUser()) return;
+  const root = await makeAgentReachableTempDir("issue-4927-sub-");
+  try {
+    const init = await new Deno.Command("git", {
+      args: ["init", "-q"],
+      cwd: root,
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    assertEquals(init.code, 0);
+    const cwd = `${root}/crates/app`;
+    await Deno.mkdir(cwd, { recursive: true });
+    await Deno.chmod(`${root}/crates`, 0o777);
+    await Deno.chmod(cwd, 0o777);
+    const result = await runRepositoryCommand(
+      "git",
+      ["rev-parse", "--show-toplevel"],
+      { cwd, timeoutMs: 20_000 },
+    );
+    assert(
+      result.ok,
+      `the command was refused: ${result.ok ? "" : result.error.message}`,
+    );
+    assertEquals(result.value.code, 0, result.value.stderr);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("a dropped command in a nested project dir trusts the worktree root (Issue #4927)", async () => {
+  await withCheckout(async (root) => {
+    const cwd = `${root}/crates/app`;
+    await Deno.mkdir(cwd, { recursive: true });
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+    );
+    const final = callAt(calls, calls.length - 1);
+    assert(final.args.includes(`GIT_CONFIG_VALUE_0=${root}`), `${final.args}`);
+    assert(!final.args.includes(`GIT_CONFIG_VALUE_0=${cwd}`));
+  });
+});
+
 Deno.test("a usable untrusted account runs the command dropped, with the cargo target carried (Issue #4659)", async () => {
   await withCheckout(async (cwd) => {
     await withCheckout(async (root) => {
@@ -276,6 +415,9 @@ Deno.test("a usable untrusted account runs the command dropped, with the cargo t
           "--",
           "env",
           `CARGO_TARGET_DIR=${target}`,
+          "GIT_CONFIG_COUNT=1",
+          "GIT_CONFIG_KEY_0=safe.directory",
+          `GIT_CONFIG_VALUE_0=${cwd}`,
           "cargo",
           "test",
         ],
@@ -818,7 +960,19 @@ Deno.test("no declared credentials means no wrapper and no stdin (Issue #4705)",
     const final = callAt(calls, 1);
     assertEquals(
       final.args,
-      ["-n", "-u", "agent", "--", "/bin/sh", "-c", CHANNEL_SCRIPT],
+      [
+        "-n",
+        "-u",
+        "agent",
+        "--",
+        "env",
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=safe.directory",
+        `GIT_CONFIG_VALUE_0=${cwd}`,
+        "/bin/sh",
+        "-c",
+        CHANNEL_SCRIPT,
+      ],
     );
     assertEquals(final.options.stdin, undefined);
   });
@@ -826,9 +980,8 @@ Deno.test("no declared credentials means no wrapper and no stdin (Issue #4705)",
 
 /** Run {@link CHANNEL_SCRIPT} for real as `agent` through the host's sudo. */
 async function runAsAgentForReal(credentials: Record<string, string>) {
-  const cwd = await Deno.makeTempDir({ prefix: "vibe_4705_real_" });
+  const cwd = await makeAgentReachableTempDir("vibe_4705_real_");
   try {
-    await Deno.chmod(cwd, 0o777);
     return await runRepositoryCommand(
       "/bin/sh",
       ["-c", CHANNEL_SCRIPT],

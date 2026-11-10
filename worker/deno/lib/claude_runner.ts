@@ -596,7 +596,13 @@ export interface RunClaudeOptions {
   cwd?: string;
   /** Logger instance. */
   logger?: Logger;
-  /** Disallowed tools (default: ["EnterPlanMode", "ExitPlanMode"]). */
+  /**
+   * Tools Claude's CLI denies with `--disallowed-tools` (default:
+   * `["EnterPlanMode", "ExitPlanMode"]`). Codex and Gemini receive the list
+   * as a prompt request only. Callers relying on enforcement must verify the
+   * adapter and every permitted fallback; this is not process, filesystem or
+   * network isolation.
+   */
   disallowedTools?: string[];
   /**
    * Sub-agent definitions for this run (Issue #2342), handed to the Claude
@@ -709,7 +715,7 @@ export interface RunClaudeOptions {
   /** Effort level override — low, medium, high, xhigh, max (Issue #1403, #2620). */
   effort?: string;
   /**
-   * Coding-agent provider for **this invocation only** (Issue #4109).
+   * Coding-agent provider selected for **this invocation** (Issue #4109).
    *
    * A registered id (`"codex"`) or a descriptor. Selecting a provider here
    * mutates no process-wide state, so a Quorum run can drive two planners and
@@ -717,7 +723,10 @@ export interface RunClaudeOptions {
    * uses the active provider exactly as before.
    *
    * Naming a provider the running image did not install fails loudly, naming
-   * the installed set (Issue #3234).
+   * the installed set (Issue #3234). Selection alone does not disable the
+   * model-refusal provider fallback or provide filesystem/network isolation.
+   * Callers relying on a provider-specific tool restriction must check the
+   * selected adapter and every permitted fallback.
    */
   agentProvider?: AgentProviderSelector;
   /**

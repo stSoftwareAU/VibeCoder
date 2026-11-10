@@ -16,6 +16,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { join, resolve } from "node:path";
 import {
   assertEquals,
   assertNotEquals,
@@ -27,8 +28,11 @@ import {
   buildRetryPrompt,
   carryEnvThroughSudo,
   createDefaultDeps,
+  gitSafeDirectoryEnv,
+  gitWorktreeRoot,
   isDockerInfraFailure,
   isMissingCommandFailure,
+  qualityCommandFile,
   type QualityGateDeps,
   type QualityGateParams,
   runCommandAsWorker,
@@ -509,6 +513,17 @@ Deno.test("buildRetryPrompt - keeps the remediation instruction", () => {
   );
 });
 
+Deno.test("buildRetryPrompt - names a configured quality command (Issue #4805)", () => {
+  const prompt = buildRetryPrompt(
+    "Error: boom",
+    100,
+    undefined,
+    "./run_tests.sh --unit-only",
+  );
+  assertStringIncludes(prompt, "./run_tests.sh --unit-only");
+  assertStringIncludes(prompt, "Please fix all issues");
+});
+
 // =============================================================================
 // runQualityGateCheck tests — quality script not found
 // =============================================================================
@@ -660,6 +675,22 @@ Deno.test("runQualityGateCheck - returns fixable failure for normal test errors"
   assertStringIncludes(result.retryPrompt!, "Please fix all issues");
 });
 
+Deno.test("runQualityGateCheck - the retry prompt names a configured quality command (Issue #4805)", async () => {
+  const deps = createMockDeps({
+    runCommand: async (_cmd, _opts) => ({
+      exitCode: 1,
+      output: "FAIL: src/auth.test.ts\nExpected true, got false",
+    }),
+  });
+  const result = await runQualityGateCheck(
+    createParams({ qualityScript: "deno task test" }),
+    deps,
+  );
+  assertEquals(result.action, "failed_fixable");
+  assertStringIncludes(result.retryPrompt!, "deno task test");
+  assertStringIncludes(result.retryPrompt!, "Please fix all issues");
+});
+
 Deno.test("runQualityGateCheck - a credential delivery fault is infrastructure, not a fixable failure (Issue #4705)", async () => {
   const deps = createMockDeps({
     runCommand: async (_cmd, _opts) => ({
@@ -805,6 +836,183 @@ Deno.test("runQualityGateCheck - uses custom quality script path", async () => {
     deps,
   );
   assertEquals(fileChecked, "./custom-quality.sh");
+});
+
+// =============================================================================
+// runQualityGateCheck tests — a checkout cwd (Issue #4805)
+// =============================================================================
+
+Deno.test("runQualityGateCheck - a checkout cwd resolves the script and runs the command in it (Issue #4805)", async () => {
+  const checkout = "/srv/checkouts/pr-4805";
+  const existsChecked: string[] = [];
+  const commandCwds: (string | undefined)[] = [];
+  const deps = createMockDeps({
+    fileExists: async (path) => {
+      existsChecked.push(path);
+      return true;
+    },
+    runCommand: async (_cmd, opts) => {
+      commandCwds.push(opts?.cwd);
+      return { exitCode: 0, output: "" };
+    },
+  });
+  const result = await runQualityGateCheck(
+    createParams({ cwd: checkout }),
+    deps,
+  );
+  assertEquals(result.action, "passed");
+  assertEquals(existsChecked, [`${checkout}/quality.sh`]);
+  assertEquals(commandCwds, [checkout]);
+});
+
+Deno.test("runQualityGateCheck - a checkout cwd is the Docker mount, not the process cwd (Issue #4805)", async () => {
+  const checkout = "/srv/checkouts/pr-4805";
+  const dockerRuns: string[][] = [];
+  const deps = createMockDeps({
+    getRepoConfig: (_configs, _repo, key) =>
+      key === "dockerImage" ? "node:20" : "",
+    getCwd: () => "/worker/deno",
+    runCommand: async (cmd, _opts) => {
+      if (cmd[0] === "docker" && cmd[1] === "run") dockerRuns.push(cmd);
+      return { exitCode: 0, output: "" };
+    },
+  });
+  const result = await runQualityGateCheck(
+    createParams({ cwd: checkout }),
+    deps,
+  );
+  assertEquals(result.action, "passed");
+  assertEquals(dockerRuns.length, 1);
+  const mount = dockerRuns[0]?.find((arg) => arg.endsWith(":/workspace"));
+  assertEquals(mount, `${checkout}:/workspace`);
+});
+
+Deno.test("runQualityGateCheck - without a cwd the script and command stay in the process cwd (Issue #4805)", async () => {
+  const existsChecked: string[] = [];
+  const commandCwds: (string | undefined)[] = [];
+  const deps = createMockDeps({
+    fileExists: async (path) => {
+      existsChecked.push(path);
+      return true;
+    },
+    runCommand: async (_cmd, opts) => {
+      commandCwds.push(opts?.cwd);
+      return { exitCode: 0, output: "" };
+    },
+  });
+  await runQualityGateCheck(createParams(), deps);
+  assertEquals(existsChecked, ["./quality.sh"]);
+  assertEquals(commandCwds, [undefined]);
+});
+
+Deno.test("runQualityGateCheck - runs the checkout's quality.sh, not the worker's (Issue #4805)", async () => {
+  const checkout = await Deno.makeTempDir({ prefix: "qg-checkout-" });
+  const workerDir = await Deno.makeTempDir({ prefix: "qg-worker-" });
+  try {
+    for (
+      const [dir, marker, code] of [
+        [checkout, "CHECKOUT-QUALITY-MARKER", 1],
+        [workerDir, "WORKER-QUALITY-MARKER", 0],
+      ] as const
+    ) {
+      const script = join(dir, "quality.sh");
+      await Deno.writeTextFile(
+        script,
+        `#!/usr/bin/env bash\necho ${marker}\nexit ${code}\n`,
+      );
+      await Deno.chmod(script, 0o755);
+    }
+    // Model a worker cwd with its own distinguishable quality.sh without
+    // changing process-wide state shared by parallel tests.
+    // A direct spawn, so the test does not depend on the `agent` account. The
+    // host's dev-server cleanup is replaced too: it kills by process pattern.
+    const defaults = createDefaultDeps();
+    const deps: QualityGateDeps = {
+      ...defaults,
+      getCwd: () => workerDir,
+      fileExists: (path) => defaults.fileExists(resolve(workerDir, path)),
+      detectMissingTools: (path) =>
+        defaults.detectMissingTools(resolve(workerDir, path)),
+      cleanupPorts: async () => {},
+      cleanupSubprocesses: async () => {},
+      runCommand: async (cmd, options) => {
+        const out = await new Deno.Command(cmd[0] ?? "", {
+          args: cmd.slice(1),
+          cwd: options?.cwd ?? workerDir,
+          stdin: "null",
+          stdout: "piped",
+          stderr: "piped",
+        }).output();
+        return {
+          exitCode: out.code,
+          output: new TextDecoder().decode(out.stdout) +
+            new TextDecoder().decode(out.stderr),
+        };
+      },
+    };
+    const result = await runQualityGateCheck(
+      createParams({ cwd: checkout }),
+      deps,
+    );
+    assertEquals(result.action, "failed_fixable");
+    assertStringIncludes(result.qualityOutput, "CHECKOUT-QUALITY-MARKER");
+    assertEquals(result.qualityOutput.includes("WORKER-QUALITY-MARKER"), false);
+  } finally {
+    await Deno.remove(checkout, { recursive: true });
+    await Deno.remove(workerDir, { recursive: true });
+  }
+});
+
+Deno.test("qualityCommandFile - names the file a path-like command runs (Issue #4805)", () => {
+  assertEquals(qualityCommandFile("./quality.sh"), "./quality.sh");
+  assertEquals(
+    qualityCommandFile("./run_tests.sh --unit-only"),
+    "./run_tests.sh",
+  );
+  assertEquals(qualityCommandFile("/abs/x.sh -a"), "/abs/x.sh");
+  assertEquals(qualityCommandFile("../shared/check.sh"), "../shared/check.sh");
+  assertEquals(qualityCommandFile("scripts/q.sh --x"), "scripts/q.sh");
+  assertEquals(qualityCommandFile("deno task test"), undefined);
+  assertEquals(qualityCommandFile("make test"), undefined);
+  assertEquals(qualityCommandFile(""), undefined);
+});
+
+Deno.test("runQualityGateCheck - a bare quality command that names no file runs, not skipped (Issue #4805)", async () => {
+  let existsChecked = false;
+  const ran: string[][] = [];
+  const deps = createMockDeps({
+    fileExists: async (_path) => {
+      existsChecked = true;
+      return false;
+    },
+    runCommand: async (cmd, _opts) => {
+      ran.push(cmd);
+      return { exitCode: 0, output: "ok" };
+    },
+  });
+  const result = await runQualityGateCheck(
+    createParams({ qualityScript: "deno task test" }),
+    deps,
+  );
+  assertEquals(result.action, "passed");
+  assertEquals(existsChecked, false, "a bare command names no file to check");
+  assertEquals(ran.at(-1)?.at(-1), "deno task test");
+});
+
+Deno.test("runQualityGateCheck - a configured command that names a file checks that file (Issue #4805)", async () => {
+  const existsChecked: string[] = [];
+  const deps = createMockDeps({
+    fileExists: async (path) => {
+      existsChecked.push(path);
+      return false;
+    },
+  });
+  const result = await runQualityGateCheck(
+    createParams({ qualityScript: "./run_tests.sh --unit-only" }),
+    deps,
+  );
+  assertEquals(result.action, "skipped");
+  assertEquals(existsChecked, ["./run_tests.sh"]);
 });
 
 // =============================================================================
@@ -1302,6 +1510,58 @@ Deno.test("sudoCarriedEnv - a proxy URL with credentials stays out of argv (Issu
   assertEquals(
     sudoCarriedEnv({ HTTPS_PROXY: "http://user:pw@proxy:3128" }),
     {},
+  );
+});
+
+Deno.test("gitSafeDirectoryEnv - a relative path gets no entry (Issue #4927)", () => {
+  assertEquals(gitSafeDirectoryEnv("relative/checkout"), {});
+});
+
+Deno.test("gitSafeDirectoryEnv - a plain absolute path trusts only that checkout (Issue #4927)", async () => {
+  const checkout = await Deno.makeTempDir({ prefix: "vibe-4927-abs-" });
+  try {
+    // The `.git` marker stops the worktree-root walk here, so the test never
+    // reads the shared temp directory above the checkout.
+    await Deno.mkdir(`${checkout}/.git`);
+    assertEquals(gitSafeDirectoryEnv(checkout), {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "safe.directory",
+      GIT_CONFIG_VALUE_0: checkout,
+    });
+  } finally {
+    await Deno.remove(checkout, { recursive: true });
+  }
+});
+
+Deno.test("gitSafeDirectoryEnv - a nested project dir trusts the worktree root (Issue #4927)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-4927-root-" });
+  try {
+    await Deno.mkdir(`${root}/.git`);
+    await Deno.mkdir(`${root}/crates/app`, { recursive: true });
+    assertEquals(gitWorktreeRoot(`${root}/crates/app`), root);
+    assertEquals(gitWorktreeRoot(root), root);
+    assertEquals(gitSafeDirectoryEnv(`${root}/crates/app`), {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "safe.directory",
+      GIT_CONFIG_VALUE_0: root,
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gitWorktreeRoot - a linked worktree's .git file marks the root, and no .git falls back to cwd (Issue #4927)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-4927-link-" });
+  try {
+    await Deno.writeTextFile(`${root}/.git`, "gitdir: /elsewhere\n");
+    await Deno.mkdir(`${root}/a/b`, { recursive: true });
+    assertEquals(gitWorktreeRoot(`${root}/a/b`), root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+  assertEquals(
+    gitWorktreeRoot("/nonexistent-4927/a/b"),
+    "/nonexistent-4927/a/b",
   );
 });
 

@@ -118,6 +118,15 @@ function commandOutput(
     ) {
       return "[]";
     }
+    // No failing check run, so the repair proceeds as before.
+    if (
+      args[0] === "api" &&
+      args[1]?.startsWith(
+        `repos/owner/repo/commits/${"a".repeat(40)}/check-runs?per_page=100`,
+      )
+    ) {
+      return JSON.stringify({ total: 0, runs: [] });
+    }
   }
   // Liveness probe for interrupted babysitter clones; success means "owner alive", so nothing is removed.
   if (executable === "/bin/kill" && args[0] === "-0") return "";
@@ -171,6 +180,17 @@ function commandOutput(
     // The egress proxy sidecar reports that it is listening.
     if (args[0] === "logs") return "[EGRESS_PROXY] listening\n";
     if (args[0] === "run") {
+      if (args.includes("--entrypoint") && args.includes("bash")) {
+        if (
+          Deno.env.get("BABYSITTER_WATCH_PROBES") === "1" &&
+          args.at(-1)?.includes("$CHROMIUM_PATH")
+        ) {
+          Deno.writeTextFileSync(`${root}/browser-probes`, "probe\n", {
+            append: true,
+          });
+        }
+        return "<html><head></head><body></body></html>\n";
+      }
       const mount = args.find((arg) => /:\/babysitter\/clone(:|$)/.test(arg));
       // The egress proxy sidecar is also a `run`; only the agent mounts the clone.
       if (!mount) return "";
@@ -266,6 +286,9 @@ globalThis.fetch = (input, init) => {
     url ===
       "https://api.github.com/installation/repositories?per_page=100&page=1"
   ) {
+    if (Deno.env.get("BABYSITTER_WATCH_PROBES") === "1") {
+      throw new Error("fixture stops at access discovery");
+    }
     return Promise.resolve(Response.json({
       total_count: 1,
       repositories: [{ full_name: "owner/repo" }],
@@ -275,8 +298,13 @@ globalThis.fetch = (input, init) => {
 };
 
 // GitHub consistency is immediate in the in-memory lock fixture.
+let watchWaits = 0;
 globalThis.setTimeout = new Proxy(globalThis.setTimeout, {
   apply(target, receiver, [handler, delay, ...args]) {
+    if (delay === 300_000 && Deno.env.get("BABYSITTER_WATCH_PROBES") === "1") {
+      if (++watchWaits === 2) Deno.exit(0);
+      delay = 0;
+    }
     return Reflect.apply(target, receiver, [
       handler,
       delay === 3_000 ? 0 : delay,

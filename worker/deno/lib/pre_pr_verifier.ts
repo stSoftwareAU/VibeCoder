@@ -19,11 +19,13 @@
  * The boundary, stated honestly:
  * - The checkout is a `git clone --shared` of the issue checkout with its
  *   `origin` removed, so it has no push destination.
- * - The model's `gh`, `git push`, `curl`, `wget`, web and sub-agent tools are
- *   denied through `disallowedTools`.
- * - `disallowedTools` is a denylist, not a network sandbox: another program
- *   run through `Bash` could still reach the network. The gh guard below is
- *   the backstop for `gh`.
+ * - Claude's CLI enforces `disallowedTools`; Codex and Gemini receive the list
+ *   as prompt text. Read-only mode explicitly selects Claude and requests
+ *   Claude config isolation; a non-Claude provider fallback is refused by the
+ *   runner before spawn.
+ * - Tool denials are not a network sandbox: another program run through
+ *   `Bash` could still reach the network. The gh guard below is the backstop
+ *   for `gh`.
  * - The agent-side gh guard the runner installs still applies.
  * - The issue checkout is compared before and after, so a change that
  *   `git status` (untracked files included, ignored files not) or HEAD shows
@@ -85,6 +87,11 @@ import {
   REVIEW_CHECKLISTS_FILE,
 } from "./review_checklists.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
+import {
+  applyDummyTestScan,
+  dummyTestNotesReview,
+  scanDummyTests,
+} from "./dummy_test_scan.ts";
 import {
   earlierFindingGaps,
   type EarlierVerdict,
@@ -1059,6 +1066,7 @@ async function verifyInCheckout(
     );
   }
   const capabilityJudgement = judgeCapabilityFixtures(diffResult.stdout);
+  const dummyTestScan = scanDummyTests(diffResult.stdout);
   const capabilityReview = renderCapabilityReview(
     capabilityLoad,
     capabilityContextFromChange({
@@ -1074,10 +1082,17 @@ async function verifyInCheckout(
         "capability security guidance was not checked",
     );
   }
-  const mergedChecks = mergeCapabilityReview(
+  const capabilityChecks = mergeCapabilityReview(
     reviewChecklists,
     checklistExpected,
     capabilityReview,
+  );
+  // The dummy-test scan's notes are checklist items the verifier must judge
+  // (Issue #5016); its findings are added after the reply, below.
+  const mergedChecks = mergeCapabilityReview(
+    capabilityChecks.markdown,
+    capabilityChecks.state,
+    dummyTestNotesReview(dummyTestScan),
   );
   const metItems = metClosureItems(input.summaryContent);
   // Every existing caller of a changed function owes a verdict (Issue #3779).
@@ -1192,7 +1207,10 @@ async function verifyInCheckout(
       : { ...parsed, findings: [...parsed.findings, ...gaps] };
     return {
       status: "checked",
-      review: applyCapabilityJudgement(withGaps, capabilityJudgement),
+      review: applyDummyTestScan(
+        applyCapabilityJudgement(withGaps, capabilityJudgement),
+        dummyTestScan,
+      ),
       run,
     };
   } catch (error) {

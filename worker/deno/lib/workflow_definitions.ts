@@ -168,6 +168,44 @@ export interface WorkflowSpec {
    * Issue #1753.
    */
   visibilityScope?: "any" | "public-only";
+  /**
+   * The template is a Dependabot configuration (`.github/dependabot.yml`),
+   * not a GitHub Actions workflow. Dependabot reads it only from that path.
+   *
+   * Issue #4904.
+   */
+  dependabotConfig?: boolean;
+  /**
+   * Detection-pattern groups evaluated against `.github/dependabot.yml`
+   * for a `dependabotConfig` spec, in place of `detectionPatternGroups`
+   * (which still apply to workflow files). Tool-name patterns such as
+   * `dependabot` or `renovate` appear in almost any Dependabot config
+   * (header comments, docs URLs), so the config is matched only on its
+   * `package-ecosystem` entry. Falls back to `detectionPatternGroups`
+   * when omitted.
+   *
+   * Issue #4904.
+   */
+  dependabotConfigPatternGroups?: string[][];
+}
+
+/** The repo-relative path Dependabot reads its configuration from (Issue #4904). */
+export const DEPENDABOT_CONFIG_PATH = ".github/dependabot.yml";
+
+/** The fallback path Dependabot also reads its configuration from (Issue #4904). */
+export const DEPENDABOT_CONFIG_YAML_PATH = ".github/dependabot.yaml";
+
+/**
+ * The repo-relative path a spec's template belongs at: the Dependabot
+ * configuration path for a `dependabotConfig` spec, otherwise the
+ * workflow file under `.github/workflows/`.
+ *
+ * Issue #4904.
+ */
+export function specRepoPath(spec: WorkflowSpec): string {
+  return spec.dependabotConfig
+    ? DEPENDABOT_CONFIG_PATH
+    : `.github/workflows/${spec.suggestedFilename}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -634,7 +672,7 @@ ${CHECKOUT_NO_CREDENTIALS}
           deno-version: v2.x
       - run: deno lint
       - run: deno fmt --check
-      - run: deno check mod.ts
+      - run: deno check .
       # Run tests with coverage and upload to Codecov (Issue #1636).
       # The codecov-action is a no-op when no test files are found.
       - run: deno test --allow-read --allow-env --coverage=cov_profile
@@ -695,14 +733,25 @@ const npmDependencyUpdates: WorkflowSpec = {
   appliesTo: ["Node", "React/Web"],
   rootProjectMarkers: ["package.json"],
   triggers: ["schedule"],
+  // Bare `dependabot`/`ncu` removed: they match `concurrency:` and fleet-template comments (Issue #4903).
   detectionPatternGroups: [[
-    "dependabot",
+    "package-ecosystem: npm",
+    'package-ecosystem: "npm"',
+    "package-ecosystem: 'npm'",
     "renovate",
     "npm-check-updates",
-    "ncu",
+    "npx ncu",
+    "ncu -u",
+    "ncu --upgrade",
+  ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: npm",
+    'package-ecosystem: "npm"',
+    "package-ecosystem: 'npm'",
   ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template: `# Dependabot configuration (place in .github/dependabot.yml)
 version: 2
@@ -824,8 +873,14 @@ const javaDependencyUpdates: WorkflowSpec = {
     "renovate",
     "versions-maven-plugin",
   ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: maven",
+    'package-ecosystem: "maven"',
+    "package-ecosystem: 'maven'",
+  ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template:
     `# Dependabot configuration for Maven (place in .github/dependabot.yml)
@@ -853,8 +908,14 @@ const javaGradleDependencyUpdates: WorkflowSpec = {
     "renovate",
     "gradle-versions-plugin",
   ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: gradle",
+    'package-ecosystem: "gradle"',
+    "package-ecosystem: 'gradle'",
+  ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-gradle-dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template:
     `# Dependabot configuration for Gradle (place in .github/dependabot.yml)

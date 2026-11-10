@@ -6,6 +6,10 @@ import {
   applyCapabilityJudgement,
   type CapabilityFixtureJudgement,
 } from "../../../../worker/deno/lib/capability_security_guidance.ts";
+import {
+  applyDummyTestScan,
+  type DummyTestScan,
+} from "../../../../worker/deno/lib/dummy_test_scan.ts";
 // Posts one /review-fleet-prs review (Issue #2678).
 //
 // Input: a JSON file { pr: <one "ready" entry from gate.ts>, review: <the
@@ -118,6 +122,7 @@ export function reviewForPost(
   raw: unknown,
   pr: Pick<Input["pr"], "checklistState" | "previousFindings"> & {
     capabilityJudgement?: CapabilityFixtureJudgement;
+    dummyTestScan?: DummyTestScan;
   },
 ): FableReview {
   const state = pr.checklistState as ChecklistState | undefined;
@@ -144,9 +149,13 @@ export function reviewForPost(
       ),
     ],
   };
-  return pr.capabilityJudgement
+  const withCapability = pr.capabilityJudgement
     ? applyCapabilityJudgement(withEarlier, pr.capabilityJudgement)
     : withEarlier;
+  // The dummy-test scan's findings block whatever the model said (#5016).
+  return pr.dummyTestScan
+    ? applyDummyTestScan(withCapability, pr.dummyTestScan)
+    : withCapability;
 }
 
 async function run(cmd: string, args: string[]) {

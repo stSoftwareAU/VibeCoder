@@ -121,6 +121,92 @@ Deno.test("normaliseGateOutputLines - compound durations and existing formats no
   }
 });
 
+Deno.test("normaliseGateOutputLines - pytest clock suffix after a duration compares as pre-existing", () => {
+  const baselineOutput = "1 failed, 2 passed in 72.12s (0:01:12)";
+  const currentOutput = "1 failed, 2 passed in 75.12s (0:01:15)";
+  assertEquals(
+    normaliseGateOutputLines(currentOutput),
+    normaliseGateOutputLines(baselineOutput),
+  );
+
+  const decision = decidePreExistingGateFailure(
+    { passed: false, failedChecks: [check("pytest", baselineOutput)] },
+    [check("pytest", currentOutput)],
+  );
+  assertEquals(decision.preExisting, true);
+  assertEquals(decision.reason, "pre_existing");
+  assertEquals(decision.newLines, []);
+});
+
+Deno.test("normaliseGateOutputLines - Maven clock elapsed times compare as pre-existing", () => {
+  const pairs: Array<[string, string]> = [
+    ["Total time:  01:15 min", "Total time:  02:03 min"],
+    ["Total time:  02:03 h", "Total time:  03:04 h"],
+  ];
+  for (const [baseline, current] of pairs) {
+    assertEquals(
+      normaliseGateOutputLines(baseline),
+      normaliseGateOutputLines(current),
+      `${baseline} vs ${current}`,
+    );
+  }
+});
+
+Deno.test("normaliseGateOutputLines - source locations, timestamps and counts stay in the comparison", () => {
+  const pairs: Array<[string, string]> = [
+    ["src/app.ts:12:5 error", "src/app.ts:13:5 error"],
+    ["at 12:30:45 server started", "at 12:31:45 server started"],
+    ["src/app.ts:12:05 min", "src/app.ts:13:05 min"],
+    [
+      "1 failed, 2 passed in 75.12s (0:01:15)",
+      "2 failed, 2 passed in 75.12s (0:01:15)",
+    ],
+  ];
+  for (const [baseline, current] of pairs) {
+    const same = normaliseGateOutputLines(baseline).join("\n") ===
+      normaliseGateOutputLines(current).join("\n");
+    assertEquals(same, false, `${baseline} vs ${current} must differ`);
+  }
+
+  const decision = decidePreExistingGateFailure(
+    {
+      passed: false,
+      failedChecks: [
+        check(
+          "pytest",
+          "FAILED tests/a.py::test_x\n1 failed, 2 passed in 72.12s (0:01:12)",
+        ),
+      ],
+    },
+    [
+      check(
+        "pytest",
+        "FAILED tests/a.py::test_y\n1 failed, 2 passed in 75.12s (0:01:15)",
+      ),
+    ],
+  );
+  assertEquals(decision.preExisting, false);
+  assertEquals(decision.reason, "new_output");
+});
+
+Deno.test("normaliseGateOutputLines - clock-format matching handles hostile digits and whitespace", () => {
+  const spacedRun = "1:11 ".repeat(20000) + "x";
+  const padded = "1:11" + " ".repeat(50000) + "x";
+  const digitRun = "9".repeat(50000) + ":11 min";
+  const trailingRun = "1s (".repeat(20000) + "x";
+  const trailingDigits = "1s (" + "9".repeat(50000) + ":11";
+
+  assertEquals(normaliseGateOutputLines(spacedRun), [spacedRun]);
+  assertEquals(normaliseGateOutputLines(padded), ["1:11 x"]);
+  assertEquals(normaliseGateOutputLines(digitRun), [digitRun]);
+  assertEquals(normaliseGateOutputLines(trailingRun), [
+    "<duration> (".repeat(20000) + "x",
+  ]);
+  assertEquals(normaliseGateOutputLines(trailingDigits), [
+    "<duration> (" + "9".repeat(50000) + ":11",
+  ]);
+});
+
 Deno.test("normaliseGateOutputLines - duration matching handles hostile digits and whitespace", () => {
   const digitRun = "9".repeat(50000);
   const whitespaceRun = "1m ".repeat(20000) + "x";

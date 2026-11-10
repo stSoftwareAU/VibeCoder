@@ -19,7 +19,11 @@ import {
   DEEPSEEK_ENV_SECRET_ALLOWLIST,
   isDeniedDeepSeekEnvVar,
 } from "../lib/deepseek_env.ts";
-import { buildClaudeChildEnv, CLAUDE_ENV_DENYLIST } from "../lib/claude_env.ts";
+import {
+  buildClaudeChildEnv,
+  CLAUDE_BASH_TIMEOUT_ENV,
+  CLAUDE_ENV_DENYLIST,
+} from "../lib/claude_env.ts";
 import { buildCodexChildEnv, CODEX_ENV_DENYLIST } from "../lib/codex_env.ts";
 import { buildGeminiChildEnv, GEMINI_ENV_DENYLIST } from "../lib/gemini_env.ts";
 
@@ -145,6 +149,27 @@ Deno.test("buildDeepSeekChildEnv - an empty ANTHROPIC_BASE_URL is not an operato
   // it is treated as unset rather than honoured.
   const env = buildDeepSeekChildEnv({ ANTHROPIC_BASE_URL: "" });
   assertEquals(env.ANTHROPIC_BASE_URL, DEEPSEEK_ANTHROPIC_BASE_URL);
+});
+
+// ---------------------------------------------------------------------------
+// The foreground command ceiling reaches the DeepSeek child (Issue #4926)
+// ---------------------------------------------------------------------------
+
+Deno.test("buildDeepSeekChildEnv - defaults BASH_MAX_TIMEOUT_MS to 30 minutes (Issue #4926)", () => {
+  const env = buildDeepSeekChildEnv({ PATH: "/usr/bin" });
+  assertEquals(env.BASH_MAX_TIMEOUT_MS, "1800000");
+  assertEquals(
+    env.BASH_MAX_TIMEOUT_MS,
+    CLAUDE_BASH_TIMEOUT_ENV.BASH_MAX_TIMEOUT_MS,
+  );
+});
+
+Deno.test("buildDeepSeekChildEnv - an explicit parent BASH_MAX_TIMEOUT_MS wins (Issue #4926)", () => {
+  const env = buildDeepSeekChildEnv({
+    PATH: "/usr/bin",
+    BASH_MAX_TIMEOUT_MS: "900000",
+  });
+  assertEquals(env.BASH_MAX_TIMEOUT_MS, "900000");
 });
 
 // ---------------------------------------------------------------------------

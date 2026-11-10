@@ -60,6 +60,15 @@ async function runScenario(
     await git(clone, "add", "b.txt");
     await git(clone, "commit", "-m", "new");
 
+    const cacheInfo = await new Deno.Command(Deno.execPath(), {
+      args: ["info", "--json"],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(cacheInfo.success, new TextDecoder().decode(cacheInfo.stderr));
+    const denoCache = JSON.parse(new TextDecoder().decode(cacheInfo.stdout))
+      .denoDir;
+
     const script = [
       `out="${root}"`,
       `env | grep '^GIT_CONFIG_VALUE_' > "$out/cfg.txt"`,
@@ -77,6 +86,11 @@ async function runScenario(
         killAfterSeconds: 2,
         agentBinaryPath: stub.path,
         cwd: clone,
+        parentEnv: {
+          PATH: Deno.env.get("PATH") ?? "",
+          HOME: root,
+          DENO_DIR: denoCache,
+        },
         ...opts,
       });
       assert(result.ok, `expected ok, got ${!result.ok && result.error}`);

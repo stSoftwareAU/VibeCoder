@@ -22,7 +22,14 @@ import {
 } from "../setup/workflow_sync.ts";
 import { resolveActionPins } from "../lib/action_pin_resolver.ts";
 import { PINNED_ACTIONS, SEMGREP_IMAGE } from "../lib/pinned_actions.ts";
+import { buildClosingComment } from "../lib/purge_stale_workflow_issues.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
+import {
+  DEPENDABOT_CONFIG_PATH,
+  DEPENDABOT_CONFIG_YAML_PATH,
+  WORKFLOW_SPECS,
+  type WorkflowSpec,
+} from "../lib/workflow_definitions.ts";
 
 /** The fleet login every fixture issue is authored by. */
 const FLEET_AUTHOR = "vibe-coder-bot";
@@ -128,6 +135,12 @@ function buildMockRunner(config: {
         return Promise.resolve(fail("Network error"));
       }
       return Promise.resolve(ok(JSON.stringify(config.languagesApi ?? {})));
+    }
+
+    // Dependabot configuration (Issue #4904): absent, so the auditor's fetch
+    // reads a 404 for both names rather than an empty file.
+    if (joined.includes(`repos/${repo}/contents/.github/dependabot.`)) {
+      return Promise.resolve(fail("Not Found (HTTP 404)"));
     }
 
     // Workflow audit: directory listing
@@ -502,6 +515,84 @@ Deno.test("syncWorkflowsForRepo - files Cargo again after a missing root marker 
     true,
   );
 });
+
+// Issue #4887: a public-only request closed as not applicable on a private
+// repo must not suppress the request once the repo is public. The fixture is
+// the exact comment buildClosingComment posts on a not-applicable close, so
+// the wording workflow-sync reads back cannot drift from what the purge
+// actually writes.
+const PRIVATE_REPO_CLOSURE = buildClosingComment(
+  { number: 4800, specId: "dependency-review", kind: "missing" },
+  "not-applicable",
+);
+
+for (
+  const scenario of [
+    "fleet not-applicable closure",
+    "human comment",
+    "ordinary closure",
+    "fleet marker without applicability phrase",
+  ] as const
+) {
+  Deno.test(`syncWorkflowsForRepo - dependency-review closed on a private repo, repo now public: ${scenario}`, async () => {
+    const tag = deduplicationTag("dependency-review");
+    const { runner: base, state } = buildMockRunner({});
+    const runner: NonNullable<WorkflowSyncOptions["runCommand"]> = (cmd) => {
+      const joined = cmd.join(" ");
+      if (joined.includes("gh api repos/owner/repo --jq .visibility")) {
+        return Promise.resolve(ok("public"));
+      }
+      if (joined.includes("gh issue list") && joined.includes(tag)) {
+        return Promise.resolve(
+          ok(
+            JSON.stringify([{
+              number: 4800,
+              body: tag,
+              state: "CLOSED",
+              author: { login: FLEET_AUTHOR },
+            }]),
+          ),
+        );
+      }
+      if (joined.includes("gh issue view")) {
+        return Promise.resolve(
+          ok(
+            JSON.stringify({
+              comments: [{
+                body: scenario === "ordinary closure"
+                  ? "completed"
+                  : scenario === "fleet marker without applicability phrase"
+                  ? "Closed for another reason.\n\n<!-- vibe-coder:purge-not-applicable:dependency-review -->"
+                  : PRIVATE_REPO_CLOSURE,
+                author: {
+                  login: scenario === "human comment" ? "human" : FLEET_AUTHOR,
+                },
+              }],
+            }),
+          ),
+        );
+      }
+      return base!(cmd);
+    };
+    const result = await syncWorkflowsForRepo("owner/repo", {
+      runCommand: runner,
+      fleetAuthors: [FLEET_AUTHOR],
+      resolvePins: cataloguePins,
+    });
+    assertEquals(result.ok, true);
+    // Positive control: the same run files other missing workflows.
+    assertEquals(
+      state.issuesCreated.some((issue) =>
+        issue.body.includes(deduplicationTag("gitleaks"))
+      ),
+      true,
+    );
+    assertEquals(
+      state.issuesCreated.some((issue) => issue.body.includes(tag)),
+      scenario === "fleet not-applicable closure",
+    );
+  });
+}
 
 for (
   const scenario of [
@@ -1909,3 +2000,82 @@ for (const thrown of [new Error("listing exploded"), "listing exploded"]) {
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// Dependabot configuration specs (Issue #4904)
+// ---------------------------------------------------------------------------
+
+/** The specs whose template is a Dependabot configuration, sorted. */
+const DEPENDABOT_SPEC_IDS = [
+  "java-dependency-updates",
+  "java-gradle-dependency-updates",
+  "npm-dependency-updates",
+];
+
+/** Look up a catalogue spec by id, failing loudly if it is absent. */
+function specNamed(id: string): WorkflowSpec {
+  const spec = WORKFLOW_SPECS.find((s) => s.id === id);
+  if (spec === undefined) throw new Error(`no workflow spec "${id}"`);
+  return spec;
+}
+
+Deno.test("WORKFLOW_SPECS - dependabotConfig is set on exactly the Dependabot configuration specs", () => {
+  const flagged = WORKFLOW_SPECS.filter((s) => s.dependabotConfig === true)
+    .map((s) => s.id)
+    .sort();
+  assertEquals(flagged, DEPENDABOT_SPEC_IDS);
+});
+
+for (const id of DEPENDABOT_SPEC_IDS) {
+  Deno.test(`issueBody - ${id} files the Dependabot path, not a workflow`, () => {
+    const body = issueBody(specNamed(id), cataloguePinMap());
+
+    assertEquals(
+      body.includes(`**Suggested filename:** \`${DEPENDABOT_CONFIG_PATH}\``),
+      true,
+      "a Dependabot body should suggest the Dependabot config path",
+    );
+    assertEquals(
+      body.includes(`save the template as \`${DEPENDABOT_CONFIG_PATH}\``),
+      true,
+      "a Dependabot body should say to save the template at the Dependabot config path",
+    );
+    assertEquals(
+      body.includes(DEPENDABOT_CONFIG_YAML_PATH),
+      true,
+      "a Dependabot body should name the .yaml config the auditor accepts",
+    );
+    assertEquals(
+      body.includes(".github/workflows/"),
+      false,
+      "a Dependabot body should never name .github/workflows/",
+    );
+    assertEquals(
+      body.includes("to that file's existing `updates:` list"),
+      true,
+      "a Dependabot body should say to merge into an existing updates list",
+    );
+    assertEquals(
+      body.includes(COPY_PINS_AS_GIVEN_RULE),
+      false,
+      "a Dependabot config has no uses: pins to copy as given",
+    );
+    assertEquals(
+      body.includes("### Checks the committed file must pass"),
+      false,
+      "a Dependabot body should carry no workflow-file checks section",
+    );
+    for (const check of WORKFLOW_FILE_CHECKS) {
+      assertEquals(
+        body.includes(check.label),
+        false,
+        `a Dependabot body should not name the "${check.id}" check`,
+      );
+    }
+  });
+}
+
+Deno.test("issueBody - a workflow spec still names its .github/workflows file", () => {
+  const body = issueBody(PIN_FIXTURE_SPEC, cataloguePinMap());
+  assertEquals(body.includes(".github/workflows/pin-fixture.yml"), true);
+});

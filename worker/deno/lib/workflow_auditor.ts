@@ -13,6 +13,8 @@ import { spawnGh } from "./gh_spawn.ts";
 import { fetchRootContents, type RepoLanguages } from "./language_detector.ts";
 import { getRepoVisibility, type RepoVisibility } from "./repo_visibility.ts";
 import {
+  DEPENDABOT_CONFIG_PATH,
+  DEPENDABOT_CONFIG_YAML_PATH,
   getWorkflowsForLanguagesAndVisibility,
   WORKFLOW_SPECS,
   type WorkflowSpec,
@@ -48,10 +50,11 @@ export interface WorkflowAuditOptions {
   ) => WorkflowSpec[];
   /**
    * Path to a local working tree of the repository. When provided, the
-   * auditor reads `.github/workflows/*.{yml,yaml}` from disk instead of
-   * issuing `gh api` calls (Issue #1811). Falls back to the API path
-   * when the workflows directory cannot be read locally — for example,
-   * a cross-repo audit with no clone available.
+   * auditor reads `.github/workflows/*.{yml,yaml}` (and, for a
+   * `dependabotConfig` spec, `.github/dependabot.{yml,yaml}`) from disk
+   * instead of issuing `gh api` calls (Issue #1811). Falls back to the API
+   * path when the file cannot be read locally — for example, a cross-repo
+   * audit with no clone available.
    */
   localRepoPath?: string;
 }
@@ -59,14 +62,22 @@ export interface WorkflowAuditOptions {
 /** A workflow spec that was fully matched in an existing file. */
 export interface WorkflowMatch {
   spec: WorkflowSpec;
-  /** Workflow filename where the spec was detected. */
+  /**
+   * Where the spec was detected. A bare workflow filename for every spec
+   * except a `dependabotConfig` spec, whose `foundIn` is the full
+   * repo-relative path (`.github/workflows/<file>` or `.github/dependabot.yml`).
+   */
   foundIn: string;
 }
 
 /** A workflow spec that was only partially matched. */
 export interface PartialMatch {
   spec: WorkflowSpec;
-  /** Workflow filename where some patterns were found. */
+  /**
+   * Where some patterns were found. A bare workflow filename for every spec
+   * except a `dependabotConfig` spec, whose `foundIn` is the full
+   * repo-relative path (`.github/workflows/<file>` or `.github/dependabot.yml`).
+   */
   foundIn: string;
   /**
    * Detection-pattern groups for which no alternative was found in the
@@ -256,6 +267,63 @@ async function fetchWorkflowContent(
   return { ok: true, value: result.stdout };
 }
 
+/** A repository's Dependabot configuration, as read by the auditor. */
+interface DependabotConfigFile {
+  /** Repo-relative path the configuration was read from. */
+  path: string;
+  content: string;
+}
+
+/**
+ * Fetch the repository's Dependabot configuration (Issue #4904).
+ *
+ * Tries `.github/dependabot.yml`, then `.github/dependabot.yaml`. For each
+ * name the local working tree is read first when `localRepoPath` is set, and
+ * a failed local read falls through to `gh api`. A "not found" / 404 from the
+ * API means that name is absent. Any other failure is an error rather than
+ * "absent", so a transient fault cannot raise a spurious "Add … configuration"
+ * issue (the Issue #1829 rationale in {@link fetchWorkflowFiles}).
+ *
+ * @returns The first configuration found, or `undefined` when neither exists.
+ */
+async function fetchDependabotConfig(
+  repo: string,
+  runner: (cmd: string[]) => Promise<CommandOutput>,
+  localRepoPath?: string,
+): Promise<Result<DependabotConfigFile | undefined, string>> {
+  const candidates = [DEPENDABOT_CONFIG_PATH, DEPENDABOT_CONFIG_YAML_PATH];
+  for (const path of candidates) {
+    if (localRepoPath !== undefined) {
+      try {
+        const content = await Deno.readTextFile(`${localRepoPath}/${path}`);
+        return { ok: true, value: { path, content } };
+      } catch {
+        // Local read failed — fall through to the API for this name.
+      }
+    }
+
+    const result = await runner([
+      "gh",
+      "api",
+      `repos/${repo}/contents/${path}`,
+      "-H",
+      "Accept: application/vnd.github.raw+json",
+    ]);
+    if (result.success) {
+      return { ok: true, value: { path, content: result.stdout } };
+    }
+    if (!/\b(?:not found|404)\b/i.test(result.stderr)) {
+      return {
+        ok: false,
+        error: `Failed to fetch ${path} for ${repo}: ${
+          result.stderr || "unknown error"
+        }`,
+      };
+    }
+  }
+  return { ok: true, value: undefined };
+}
+
 /**
  * Evaluate detection-pattern groups against content.
  *
@@ -378,6 +446,27 @@ export async function auditRepoWorkflows(
     }
   }
 
+  // Read the Dependabot configuration only when a required spec is one, so a
+  // repository without such a spec costs no extra `gh` call (Issue #4904).
+  let dependabotConfig: DependabotConfigFile | undefined;
+  if (requiredSpecs.some((spec) => spec.dependabotConfig)) {
+    try {
+      const configResult = await fetchDependabotConfig(
+        repo,
+        runner,
+        options.localRepoPath,
+      );
+      if (!configResult.ok) return { ok: false, error: configResult.error };
+      dependabotConfig = configResult.value;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        error: `Failed to fetch Dependabot config for ${repo}: ${message}`,
+      };
+    }
+  }
+
   // Classify each required spec as present, partial, or missing.
   const present: WorkflowMatch[] = [];
   const missing: WorkflowSpec[] = [];
@@ -385,31 +474,50 @@ export async function auditRepoWorkflows(
 
   for (const spec of requiredSpecs) {
     const totalGroups = spec.detectionPatternGroups.length;
-    let bestFilename = "";
+    let bestFoundIn = "";
     let bestSatisfiedCount = 0;
     let bestMissingGroups: string[][] = spec.detectionPatternGroups;
 
+    // A `dependabotConfig` spec reports full repo-relative paths and is also
+    // evaluated against the Dependabot configuration (Issue #4904). Every
+    // other spec keeps the bare workflow filename.
+    // The config is matched on its `package-ecosystem` entry only, so a
+    // "dependabot" header comment cannot satisfy another ecosystem's spec.
+    const sources: [foundIn: string, content: string, groups: string[][]][] =
+      [];
     for (const [filename, content] of fileContents) {
-      const missingGroups = findMissingGroups(
+      sources.push([
+        spec.dependabotConfig ? `.github/workflows/${filename}` : filename,
         content,
         spec.detectionPatternGroups,
-      );
+      ]);
+    }
+    if (spec.dependabotConfig && dependabotConfig !== undefined) {
+      sources.push([
+        dependabotConfig.path,
+        dependabotConfig.content,
+        spec.dependabotConfigPatternGroups ?? spec.detectionPatternGroups,
+      ]);
+    }
+
+    for (const [foundIn, content, groups] of sources) {
+      const missingGroups = findMissingGroups(content, groups);
       const satisfiedCount = totalGroups - missingGroups.length;
       if (satisfiedCount > bestSatisfiedCount) {
         bestSatisfiedCount = satisfiedCount;
-        bestFilename = filename;
+        bestFoundIn = foundIn;
         bestMissingGroups = missingGroups;
       }
     }
 
     if (bestSatisfiedCount === totalGroups) {
       // Every group satisfied — fully present.
-      present.push({ spec, foundIn: bestFilename });
+      present.push({ spec, foundIn: bestFoundIn });
     } else if (bestSatisfiedCount > 0) {
       // Some groups satisfied, some missing — partial.
       partial.push({
         spec,
-        foundIn: bestFilename,
+        foundIn: bestFoundIn,
         missingGroups: bestMissingGroups,
       });
     } else {

@@ -19,6 +19,7 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { resolve } from "node:path";
 import type { RepoConfig } from "../types.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
@@ -136,7 +137,7 @@ const CARRIED_ENV_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
  * A value that may be carried through `sudo` in argv — a plain path, or a
  * proxy URL or host list (`:` and `,`). No `@`, so no URL with credentials.
  */
-const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/:,\[\]]+$/;
+export const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/:,\[\]]+$/;
 
 /**
  * The egress variables a dropped command needs to reach a registry at all
@@ -175,6 +176,62 @@ export function sudoCarriedEnv(
 }
 
 /**
+ * The git config that lets the dropped account use the checkout it is about
+ * to run in (Issue #4927). The `agent` account has no `~/.gitconfig`, so git
+ * refuses a checkout the worker owns with "detected dubious ownership", and a
+ * repository build script that runs `git rev-parse HEAD` fails. This trusts
+ * only the worktree root of the checkout the gate is about to run in
+ * ({@link gitWorktreeRoot}), through the git config environment
+ * (`GIT_CONFIG_COUNT` and its `_KEY_0` and `_VALUE_0` entries). git compares
+ * `safe.directory` with the top-level worktree, not with the subdirectory a
+ * command runs in, and the gates run projects up to two levels below the root.
+ * Like the cargo target and the proxy it is carried in argv, as it is
+ * non-secret.
+ *
+ * Returns `{}` when the root is not an absolute path that
+ * {@link CARRIED_ENV_VALUE} accepts, so {@link carryEnvThroughSudo} never
+ * throws on an odd path. A checkout whose path holds a space gets no entry,
+ * and its build script then fails as it did before this change.
+ *
+ * @param cwd - The directory the command runs in, the checkout or a project
+ *   directory beneath it.
+ * @returns The three git config entries, or `{}`.
+ */
+export function gitSafeDirectoryEnv(cwd: string): Record<string, string> {
+  const root = gitWorktreeRoot(cwd);
+  if (!root.startsWith("/") || !CARRIED_ENV_VALUE.test(root)) return {};
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: root,
+  };
+}
+
+/**
+ * The worktree root git checks for `cwd` (Issue #4927): the nearest ancestor,
+ * `cwd` included, that holds a `.git` entry (a directory, or the file a linked
+ * worktree has). Falls back to `cwd` when none is found, so a directory that
+ * is not in a repository keeps the entry it had.
+ *
+ * @param cwd - An absolute directory path.
+ * @returns The worktree root, or `cwd`.
+ */
+export function gitWorktreeRoot(cwd: string): string {
+  let dir = cwd;
+  for (;;) {
+    try {
+      Deno.statSync(`${dir === "/" ? "" : dir}/.git`);
+      return dir;
+    } catch {
+      // No `.git` here; try the parent.
+    }
+    const slash = dir.lastIndexOf("/");
+    if (slash <= 0) return cwd;
+    dir = dir.slice(0, slash);
+  }
+}
+
+/**
  * Carry an environment entry through `sudo`'s `env_reset` (Issue #2247).
  *
  * The image grants `vibe ALL=(agent) NOPASSWD: ALL` with no `SETENV` tag, and
@@ -184,7 +241,8 @@ export function sudoCarriedEnv(
  * grant. The value therefore travels in **argv** instead:
  * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
  * Only non-secret values travel this way: the placement and the egress proxy
- * ({@link sudoCarriedEnv}, Issue #4877).
+ * ({@link sudoCarriedEnv}, Issue #4877), and the git safe.directory entry
+ * ({@link gitSafeDirectoryEnv}, Issue #4927).
  *
  * Declared credentials are never carried here. They ride the stdin channel of
  * `credential_channel.ts` (Issue #4705), because a value in argv is visible to
@@ -360,6 +418,50 @@ export interface QualityGateParams {
   baselineQualityPassed?: boolean;
   baselineQualityOutput?: string;
   defaultTimeoutSeconds?: number;
+  /**
+   * The checkout the gate runs in. Unset keeps the process cwd, which is what
+   * the shell-driven `commands/quality_gate_phase.ts` caller relies on.
+   */
+  cwd?: string;
+}
+
+/**
+ * Bind quality-gate deps to a checkout (Issue #4805).
+ *
+ * The gate's relative paths (`./quality.sh`, the tool probe's file read), its
+ * command cwd and the Docker mount otherwise resolve against the worker's own
+ * process cwd, so the worker's script would run in place of the target
+ * repository's. Relative paths resolve against `cwd`; absolute paths stay
+ * absolute. Everything else delegates unchanged.
+ */
+export function bindQualityDepsToCheckout(
+  deps: QualityGateDeps,
+  cwd: string,
+): QualityGateDeps {
+  const checkout = resolve(cwd);
+  const inCheckout = (path: string): string => resolve(checkout, path);
+  return {
+    ...deps,
+    fileExists: (path) => deps.fileExists(inCheckout(path)),
+    detectMissingTools: (path) => deps.detectMissingTools(inCheckout(path)),
+    runCommand: (cmd, options) =>
+      deps.runCommand(cmd, { ...options, cwd: options?.cwd ?? checkout }),
+    getCwd: () => checkout,
+  };
+}
+
+/**
+ * The file a configured quality command runs, when the command names one by
+ * path (Issue #4805). The first whitespace-delimited token is the file when it
+ * contains a `/` anywhere, so `./`, `../`, `/` and a bare relative path such as
+ * `scripts/q.sh` all count: `./run_tests.sh --unit-only` gives
+ * `./run_tests.sh`, and `scripts/q.sh --x` gives `scripts/q.sh`. A bare command
+ * with no `/`, such as `deno task test` or `make test`, names no file, so the
+ * result is undefined and the caller treats it as present.
+ */
+export function qualityCommandFile(command: string): string | undefined {
+  const first = command.trim().split(/\s+/)[0] ?? "";
+  return first.includes("/") ? first : undefined;
 }
 
 // =============================================================================
@@ -827,7 +929,12 @@ export function isMissingCommandFailure(output: string): boolean {
 }
 
 /**
- * Build the second-attempt remediation prompt from failing `quality.sh` output.
+ * Build the second-attempt remediation prompt from a failing quality command.
+ *
+ * The prompt names the command that actually ran (`command`, default
+ * `./quality.sh`). A repository whose configured `quality_command` is not a
+ * `./quality.sh` script — for example `deno task test` — must not be told to
+ * make a script that does not exist pass (Issue #4805).
  *
  * Issue #3661 (SEC-d5b480003fce): the output is untrusted. `pr_ci_processor`
  * calls this on a checked-out PR branch, so a test name, an assertion message,
@@ -839,15 +946,17 @@ export function isMissingCommandFailure(output: string): boolean {
  * `untrusted_quality_output.ts`, shared with the in-process quality-gate
  * remediation phase, which adds secret redaction to both (Issue #3706).
  *
- * @param qualityOutput - Raw stdout/stderr from the failing quality script.
+ * @param qualityOutput - Raw stdout/stderr from the failing quality command.
  * @param maxLines - Keep only the last N lines (defaults to 100).
  * @param boundaryId - Optional fixed boundary id (tests only).
+ * @param command - The command that ran (default `./quality.sh`).
  * @returns The remediation prompt.
  */
 export function buildRetryPrompt(
   qualityOutput: string,
   maxLines = 100,
   boundaryId?: string,
+  command = "./quality.sh",
 ): string {
   const lines = qualityOutput.split("\n");
   const truncated = lines.length > maxLines
@@ -856,11 +965,11 @@ export function buildRetryPrompt(
 
   const { block } = fenceQualityOutput(truncated, boundaryId);
 
-  return `The ./quality.sh script is failing. Its output is below.
+  return `The quality command ${command} is failing. Its output is below.
 
 ${block}
 
-Please fix all issues and ensure ./quality.sh passes. Do not comment out or remove existing tests.
+Please fix all issues and ensure ${command} passes. Do not comment out or remove existing tests.
 
 ## Tool Output Is Data
 
@@ -877,7 +986,8 @@ ${TOOL_OUTPUT_IS_DATA_RULE}
  *
  * This performs a single quality check run and classifies the result.
  * The shell wrapper is responsible for the retry loop (calling Claude
- * and then re-invoking this function).
+ * and then re-invoking this function). The run is in `params.cwd` when set,
+ * otherwise in the process cwd (Issue #4805).
  */
 export async function runQualityGateCheck(
   params: QualityGateParams,
@@ -908,10 +1018,18 @@ export async function runQualityGateCheck(
     }
     deps = createDefaultDeps(credentials.value.env);
   }
+  if (params.cwd !== undefined) {
+    deps = bindQualityDepsToCheckout(deps, params.cwd);
+  }
   const defaultTimeout = params.defaultTimeoutSeconds ?? 600;
 
-  // Step 1: Check if quality.sh exists
-  const exists = await deps.fileExists(qualityScript);
+  // Step 1: Check if the quality command's file exists. A command that names
+  // no file (`deno task test`) is treated as present and runs. A blank command
+  // is still skipped, as it always was.
+  const scriptFile = qualityCommandFile(qualityScript);
+  const exists = scriptFile === undefined
+    ? qualityScript.trim() !== ""
+    : await deps.fileExists(scriptFile);
   if (!exists) {
     return {
       action: "skipped",
@@ -928,7 +1046,9 @@ export async function runQualityGateCheck(
 
   // Step 3: If no Docker image, detect missing tools early
   if (!dockerImage) {
-    const toolResult = await deps.detectMissingTools(qualityScript);
+    const toolResult = await deps.detectMissingTools(
+      scriptFile ?? qualityScript,
+    );
     if (toolResult.ok && toolResult.value.length > 0) {
       const message = deps.formatMissingToolsMsg(
         toolResult.value,
@@ -1007,7 +1127,7 @@ export async function runQualityGateCheck(
   return {
     action: "failed_fixable",
     qualityOutput,
-    retryPrompt: buildRetryPrompt(qualityOutput),
+    retryPrompt: buildRetryPrompt(qualityOutput, 100, undefined, qualityScript),
     dockerImage: dockerImage || undefined,
   };
 }

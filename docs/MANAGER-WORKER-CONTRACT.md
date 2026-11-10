@@ -34,7 +34,7 @@ phases, except where they share the provider seam; the billing policy itself
   are registered in `AGENT_PROVIDERS`
   (`worker/deno/lib/agent_provider.ts:1200`). A provider CLI is not a vendor.
   The `deepseek` child environment points `ANTHROPIC_BASE_URL` at DeepSeek's
-  endpoint (`worker/deno/lib/deepseek_env.ts:166-167`), so the vendor and the
+  endpoint (`worker/deno/lib/deepseek_env.ts:180-181`), so the vendor and the
   CLI are different axes.
 - **Model:** the identifier passed to a provider CLI for one phase, such as
   `sonnet`, `haiku` or `opus` for Claude. The `issue` default is
@@ -96,7 +96,7 @@ Per-provider behaviour, from the same file:
   triggers `warnDeepSeekAgentsUnsupported` (`:1167`,
   `worker/deno/lib/deepseek_executor.ts:255`). `settingsJson` is dropped
   silently, with `settingsJson: undefined` at `:1178`. `buildChildEnv` (`:1184`)
-  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:158`).
+  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:165`).
 
 Prompt templates. The advisor and executor instructions are built in code, and
 the template carries only a placeholder.
@@ -140,7 +140,7 @@ current.
 | Issue-reviewer switch  | `worker/deno/lib/config.ts:1013-1014`                                                                      | `issue_reviewer_agents` (host only, default `true`) toggles the two reviewer definitions.                                                                                                                                                                                                                                                                                                                                                 |
 | PR review claim lease  | `worker/deno/lib/pr_review_claim_lease.ts:29`, `:33`, `:70`, `:102`                                        | A `pr_review` claim comment is a lease, not a dismissal. `createClaimLeaseRenewer` (`:102`) renews it every `PR_REVIEW_CLAIM_RENEW_MS` (five minutes, `:33`) by editing the comment body, and `isLeaseLive` (`:70`) deems it live while its last beat is inside `PR_REVIEW_CLAIM_LEASE_MS` (`:29`, the fleet heartbeat live window). A host that stops renewing lets the lease lapse, and the review becomes reclaimable by another host. |
 | Post-PR reviewer model | `worker/deno/lib/config_defaults.ts:1136`, `:1247`, `worker/deno/lib/pr_feedback_processor.ts:803`         | PR feedback and review runs resolve their model from the phase default: `PHASE_MODEL_DEFAULTS.pr_feedback` is `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`, not the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL` is only the fallback model passed to `estimatePhaseRunUsd` for cost estimation.                                                                                                             |
-| External review gate   | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial it cannot enforce, and the subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run.           |
+| External review gate   | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial the provider cannot enforce on the argv (Gemini, which receives the list only as prompt text); Codex is the stated exception, admitted with `Bash` still not denied because delegation is off and the read-only checkout restoration applies. The subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run.           |
 
 The code has no `pr_review` key: `PHASE_MODEL_DEFAULTS`
 (`worker/deno/lib/config_defaults.ts:1236`) lists `pr_feedback` instead, pinned
@@ -365,7 +365,7 @@ stateDiagram-v2
     deletes `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_HOME`, and fails closed
     when a Codex home is selected.
   - DeepSeek: `ANTHROPIC_AUTH_TOKEN` is set only from `DEEPSEEK_API_KEY`
-    (`worker/deno/lib/deepseek_env.ts:172-173`).
+    (`worker/deno/lib/deepseek_env.ts:186-187`).
   - Gemini: `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`) delegates
     to `buildAgentChildEnv` with a Gemini denylist and secret allowlist.
 - **The gap today.** The edit guard exists only for Claude. Gemini drops
@@ -429,13 +429,19 @@ orchestration path never sets `--agents`
 (`worker/deno/lib/orchestration/issue_run_gate.ts:112`) and refuses a provider
 that cannot carry a role before any paid work: `assertRoleSupported`
 (`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
-provider, capability or tool-denial gap, and the subscription/CLI preflight
+provider and, for providers other than Codex, a capability or tool-denial gap;
+the Codex branch skips both checks and admits only the allow-listed tools
+after a delegation-off probe. The subscription/CLI preflight
 (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
 unproved entitlement or exhausted quota. On that path nothing is dropped
 silently: Claude roles use CLI tool denials, a read-only Codex role has every
 change it makes to the checkout put back by the worker
-(`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356), and Gemini
-and DeepSeek fail closed. See
+(`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356). That
+restoration does not deny Bash or prevent commands and builds outside the
+checkout; Codex receives tool-denial lists as prompt text, not as enforced
+CLI restrictions. Gemini and DeepSeek fail closed. Provider selection alone
+does not disable the model-refusal fallback or provide filesystem/network
+isolation. See
 [Role configuration](ROLE-CONFIGURATION.md).
 
 ## 8. Rollout and safeguards
@@ -462,7 +468,9 @@ and DeepSeek fail closed. See
 - **Invariant (delivered).** On the external orchestration path, a provider that
   cannot carry a role fails loud before any paid work: `assertRoleSupported`
   (`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
-  provider, capability or tool-denial gap, and the subscription/CLI preflight
+  provider and, for providers other than Codex, a capability or tool-denial gap
+  (the Codex branch skips both checks and admits only the allow-listed tools
+  after a delegation-off probe), and the subscription/CLI preflight
   (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
   unproved entitlement or exhausted quota. The gate never falls back to
   `--agents` or a metered API
