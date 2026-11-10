@@ -12,7 +12,12 @@ export async function readRepoFile(
   relPath: string,
   maxBytes = MAX_REPO_FILE_BYTES,
 ): Promise<string> {
-  const segments = relPath.split(/[\\/]/);
+  // Split on '/' only: git ls-files and readDir both report paths with '/'
+  // separators, and a backslash is an ordinary POSIX filename byte. Splitting
+  // on backslashes too would let a decoy regular directory pass these lstat
+  // checks while the final open follows a same-named backslash symlink out of
+  // the checkout.
+  const segments = relPath.split("/");
   // An empty path splits to [""], so the empty-segment check refuses it too.
   if (
     /^([\\/]|[A-Za-z]:)/.test(relPath) ||
@@ -20,6 +25,9 @@ export async function readRepoFile(
   ) {
     throw new Error(`Refusing unsafe repo path: ${relPath}`);
   }
+  // Check and open the same joined path, so nothing the lstats saw can differ
+  // from what is opened.
+  const checkedPath = segments.join("/");
   // lstat each component (not repoRoot itself) so a symlink anywhere refuses.
   for (let i = 0; i < segments.length; i++) {
     const stat = await Deno.lstat(
@@ -32,7 +40,7 @@ export async function readRepoFile(
       throw new Error(`Refusing non-regular repo file: ${relPath}`);
     }
   }
-  using file = await Deno.open(`${repoRoot}/${relPath}`, { read: true });
+  using file = await Deno.open(`${repoRoot}/${checkedPath}`, { read: true });
   const stat = await file.stat();
   if (!stat.isFile || stat.size > maxBytes) {
     throw new Error(

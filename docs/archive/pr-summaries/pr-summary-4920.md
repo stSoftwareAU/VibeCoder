@@ -19,10 +19,15 @@ Version bump: no `VERSION` change is part of this diff.
 
 ### Essential Design Decisions
 
-- `readRepoFile` lstats every component below `repoRoot` (not `repoRoot` itself,
-  which may legitimately be a link), requires a regular file, and reads at most
-  `MAX_REPO_FILE_BYTES` (1 MiB). It also rejects absolute, empty, `.` and `..`
-  segments.
+- `readRepoFile` splits the path on `/` only (both `git ls-files` and `readDir`
+  report `/`-separated names, and a backslash is an ordinary POSIX filename
+  byte), then lstats every component below `repoRoot` (not `repoRoot` itself,
+  which may legitimately be a link) and opens the same joined path. It requires
+  a regular file, reads at most `MAX_REPO_FILE_BYTES` (1 MiB), and rejects
+  absolute, empty, `.` and `..` segments. Splitting on backslashes too while
+  opening the raw string previously let a decoy regular directory pass the lstat
+  checks while the open followed a same-named backslash symlink out of the
+  checkout.
 - A refusal throws; each caller keeps its existing catch path.
   `repoCiRunsCspell` skips that workflow. `loadDenoScopes` tries the next config
   name and otherwise leaves the root out, so its files are checked unfiltered.
@@ -41,21 +46,43 @@ Version bump: no `VERSION` change is part of this diff.
 Backend-only change; no UI. Tests:
 
 - `worker/deno/tests/repo_file_read_test.ts`: regular read, file symlink,
-  symlinked parent, unsafe paths, size cap (including the exact-cap positive
+  symlinked parent, backslash-named symlink beside a decoy directory, regular
+  backslash-named file, unsafe paths, size cap (including the exact-cap positive
   case), NotFound, directory.
 - `worker/deno/tests/pre_push_gate_test.ts`: `repoCiRunsCspell` and
   `loadDenoScopes` each refuse a symlink to a file outside the checkout and an
-  oversized file, each with a regular-file positive control.
+  oversized file, each with a regular-file positive control; `repoCiRunsCspell`
+  also refuses a backslash-named symlink beside a decoy directory.
 - `docs/audits/lib-sweep-coverage/top-up-4920.json`: registers the new module in
   the sweep ledger.
+
+### Test change evidence
+
+The review's path-confinement finding changed `readRepoFile`'s path handling,
+so per CODING-STANDARDS.md TDD rule 3:
+
+- Obsolete behaviour: splitting the relative path on both `/` and `\` for the
+  lstat checks while opening the raw string, which let a decoy regular directory
+  pass the checks while the open followed a same-named backslash symlink out of
+  the checkout.
+- Remaining behaviour: split on `/` only and open the same joined path, so every
+  refusal the earlier PR added (symlink in any `/`-separated component,
+  non-regular file, size cap, unsafe path) still holds, and a regular
+  backslash-named file is now read correctly rather than reported unreadable.
+- Covering tests: `tests/repo_file_read_test.ts::readRepoFile: a backslash-named
+  symlink beside a decoy directory is refused`,
+  `tests/repo_file_read_test.ts::readRepoFile: a regular backslash-named file is
+  readable`, and `tests/pre_push_gate_test.ts::repoCiRunsCspell: a
+  backslash-named symlink beside a decoy directory does not count`.
 
 ## Test Plan
 
 - `cd worker/deno && deno task test:unit tests/repo_file_read_test.ts tests/pre_push_gate_test.ts tests/ci_mutation_contract_test.ts`:
-  passed (106 parallel, 78 serial).
-- Red check: with both `pre_push_gate.ts` call sites reverted to
-  `Deno.readTextFile`, the four new `pre_push_gate_test.ts` tests (symlinked and
-  oversized workflow, symlinked and oversized `deno.json`) fail.
+  passed (109 parallel, 78 serial).
+- Red check: with the split reverted to `/[\\/]/` and the open reverted to the
+  raw string, the three new decoy/backslash tests (the two `repo_file_read_test.ts`
+  cases and the `repoCiRunsCspell` case) fail — the decoy directory passes the
+  lstats and the outside file's text is returned.
 - Existing `ci_mutation_contract_test.ts` still passes; no assertions were
   removed from any existing test.
 - `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
@@ -76,9 +103,11 @@ Backend-only change; no UI. Tests:
   `[""]`, which the empty-segment check already refuses), so it was removed. The
   oversize test now asserts the `within the size cap` message, which kills the
   `stat.size > maxBytes` mutant. The `""` path was already in the unsafe-path
-  test.
-- `worker/deno/lib/repo_file_read.ts:37` exempt (untestable): the `!stat.isFile`
+  test. The decoy/backslash tests kill the `split` separator mutant (splitting
+  on both separators again makes the decoy directory pass while the symlink is
+  followed).
+- `worker/deno/lib/repo_file_read.ts:45` exempt (untestable): the `!stat.isFile`
   operand after `Deno.open` guards only a file swapped for a non-regular one
   between the `lstat` and the `open`; that race cannot be triggered
-  deterministically in a test, and the earlier `lstat` check at line 31 already
+  deterministically in a test, and the earlier `lstat` check at line 39 already
   refuses every non-regular file present at check time.

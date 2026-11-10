@@ -44,6 +44,38 @@ Deno.test("readRepoFile: refuses a file under a symlinked parent directory", asy
   }
 });
 
+Deno.test("readRepoFile: a backslash-named symlink beside a decoy directory is refused", async () => {
+  const outside = await Deno.makeTempDir();
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${outside}/secret.yml`, "outside");
+    // Decoy regular file at the path a backslash-splitting reader would lstat.
+    await Deno.mkdir(`${dir}/x`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/x/y.yml`, "decoy");
+    // The tracked name is one backslash-containing filename, symlinked out.
+    await Deno.symlink(`${outside}/secret.yml`, `${dir}/x\\y.yml`);
+    await assertRejects(
+      () => readRepoFile(dir, "x\\y.yml"),
+      Error,
+      "symlink",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("readRepoFile: a regular backslash-named file is readable", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/sub`);
+    await Deno.writeTextFile(`${dir}/sub/a\\b.yml`, "hello");
+    assertEquals(await readRepoFile(dir, "sub/a\\b.yml"), "hello");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("readRepoFile: refuses parent-directory and absolute paths", async () => {
   const dir = await Deno.makeTempDir();
   try {

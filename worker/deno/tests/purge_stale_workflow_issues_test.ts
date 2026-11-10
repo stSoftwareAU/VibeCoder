@@ -11,6 +11,8 @@ import { testStageEnv } from "../lib/unit_test_passes.ts";
 import {
   type CommandOutput,
   extractSpecIdFromIssueBody,
+  MISSING_ROOT_CLOSURE_PHRASE,
+  PRIVATE_REPO_CLOSURE_PHRASE,
   type PurgeOptions,
   purgeStaleWorkflowIssuesForAllRepos,
   purgeStaleWorkflowIssuesForRepo,
@@ -379,7 +381,7 @@ Deno.test("purge - closes trusted missing and partial Cargo requests without a r
   assertEquals(state.closedIssues.length, 2);
   assertEquals(
     state.closedIssues.every((issue) =>
-      issue.comment?.includes("requires a root project marker that is absent")
+      issue.comment?.includes(MISSING_ROOT_CLOSURE_PHRASE)
     ),
     true,
   );
@@ -615,7 +617,10 @@ Deno.test("purgeStaleWorkflowIssuesForRepo - private repo: closes public-only sp
   assertEquals(state.closedIssues.length, 1);
   assertEquals(state.closedIssues[0]!.number, 1750);
   const comment = state.closedIssues[0]!.comment ?? "";
-  assertEquals(comment.includes("not applicable"), true);
+  // Tie the posted comment to the phrase workflow-sync reads back (Issue #4887):
+  // rewording buildClosingComment must fail this test rather than silently
+  // letting hasApplicabilityClosure stop matching real closures.
+  assertEquals(comment.includes(PRIVATE_REPO_CLOSURE_PHRASE), true);
   assertEquals(comment.includes("#1750"), true);
   // Idempotency marker carries the spec ID.
   assertEquals(

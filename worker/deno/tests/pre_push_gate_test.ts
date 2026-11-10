@@ -1694,6 +1694,29 @@ Deno.test("repoCiRunsCspell: a symlinked workflow outside the checkout does not 
   }
 });
 
+Deno.test("repoCiRunsCspell: a backslash-named symlink beside a decoy directory does not count", async () => {
+  const outside = await Deno.makeTempDir();
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${outside}/ci.yml`, CSPELL_STEP);
+    // Decoy regular file at the path a backslash-splitting reader would lstat.
+    await Deno.mkdir(`${dir}/.github/workflows/x`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/.github/workflows/x/y.yml`, CSPELL_STEP);
+    // The tracked name is one backslash-containing filename, symlinked out.
+    await Deno.symlink(
+      `${outside}/ci.yml`,
+      `${dir}/.github/workflows/x\\y.yml`,
+    );
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/x\\y.yml"]),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
 Deno.test("repoCiRunsCspell: a workflow over the size cap does not count", async () => {
   const dir = await Deno.makeTempDir();
   try {

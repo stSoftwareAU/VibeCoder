@@ -1,0 +1,12 @@
+{
+  "issue": 4921,
+  "chunk": "top-up-4921",
+  "title": "top-up: fleet PR babysitter base-failure deferral",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4921",
+  "definition": "Review that the fleet PR babysitter defers a failed-CI repair only when every failing check is verified red on the base with the same failure, and that every unreadable or unverifiable reading repairs as before.",
+  "status": "claimed",
+  "sweptAt": "d17e53a7f19b13b6ece56cb860df122eb0233d0f",
+  "paths": [
+    "worker/deno/lib/babysitter_base_failure.ts"
+  ]
+}
