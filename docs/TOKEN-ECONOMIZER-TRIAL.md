@@ -86,7 +86,7 @@ may be open on it, or neither result means anything.
 ## 3. 🪟 The window
 
 The window opens when the **first switched-on run completes**, not on the day
-the key is set. It is first judged at whichever comes **later**: **7 days**, or
+the key is set. It is first judged at whichever comes later: **7 days**, or
 **60** completed switched-on implementation runs.
 
 A shorter window measures nothing. Micro-skills needs three sessions to confirm
