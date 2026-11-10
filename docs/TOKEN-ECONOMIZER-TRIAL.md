@@ -35,8 +35,8 @@ from this fleet's own runs (§4).
 **Pinned commit.** The trial runs the plugin at commit
 `264e7a7f32f0112a06aa83a97b9c2c4681563968`, the tip of upstream `main` when this
 page was written (committed 2026-11-08T22:09:30Z, read with
-`gh api repos/microsoft/TokenEconomizer/commits/HEAD`). The container
-sub-issue vendors that one commit into the image as a source tarball checked
+`gh api repos/microsoft/TokenEconomizer/commits/HEAD`). The container sub-issue
+(#4955) is to vendor that one commit into the image as a source tarball checked
 against a recorded sha256; it is never cloned at run time. Not yet: #4955 pins
 this commit, so today the image carries nothing of TokenEconomizer. The commit
 named here and the pin in the image are one value, changed in one PR, and the
@@ -74,9 +74,10 @@ may be open on it, or neither result means anything.
   trial window is open on it. GRQ-23 is not used because it is reserved for the
   sequential Graft and CodeGraph windows of the
   [Repo-context Trial](REPO-CONTEXT-TRIAL.md), which would overlap this one.
-- **Fleet-wide settings** such as RTK and the advisor/executor split are alike on
-  every host, so they affect both sides of the comparison equally and need no
-  adjustment.
+- **Fleet-wide settings** such as RTK and the advisor/executor split are on by
+  default, so unless a host has opted out they affect both sides of the
+  comparison equally. A host that has opted out is not a concurrent control: see
+  the exclusion in §5.
 - **Agent provider: Claude Code.** On GRQ-25, a run that goes through any other
   provider counts as plugin-off: it is recorded as off, it is not in the
   switched-on population, and the cost comparison reads Claude Code
@@ -133,7 +134,7 @@ Two comparisons are taken, and both are written down before the window opens.
   with the switch off.
 - **Concurrent.** The **other hosts' runs in the same window** and **on the same
   repositories**, with the switch off. A repository with runs on only one side is
-  left out of both.
+  left out of both sides of that comparison.
 
 **If the two comparisons disagree** on any clause of §4, the **concurrent
 comparison decides**. It shares the window's dates, so a model change, a prompt
@@ -145,6 +146,9 @@ Exclusions:
 
 - A host with another trial window open on the same dates is not a concurrent
   control.
+- A host whose RTK or advisor/executor-split setting differs from the trial
+  host's is not a concurrent control, because its runs would differ in more than
+  the plugin.
 - A run through a provider other than Claude Code is in neither comparison.
 - A run from before the run records carry the plugin's on/off flag is excluded
   rather than assumed to be a control run.
@@ -189,10 +193,12 @@ covers.
 ## 8. 🧹 The purge list
 
 This is every file, image layer, config key, doc section, callback field and
-learnings directory the trial adds. The verdict issue
-([#4959](https://github.com/stSoftwareAU/VibeCoder/issues/4959)) removes exactly
-this list when the bar is missed or a stop rule fired, and the drift test fails
-when a file that names the plugin is missing from it.
+learnings directory the trial adds. Not yet:
+[#4959](https://github.com/stSoftwareAU/VibeCoder/issues/4959), the verdict
+issue, will remove exactly this list when the bar is missed or a stop rule
+fired. The drift test fails when a text file anywhere in the repository, other
+than the historical records under `docs/archive/` and `docs/audits/`, names the
+plugin and is missing from the list.
 
 State is `present` when the path exists and names the plugin today, and
 `planned #N` when issue #N is to add it.
@@ -218,7 +224,8 @@ State is `present` when the path exists and names the plugin today, and
 **What stays.** This page, with its Status changed to *purged* and the measured
 figures added, as the record of the negative result. After a purge,
 `git grep -i tokeneconomizer` and `git grep token_economizer` find only this
-page.
+page and the historical records under `docs/archive/` and `docs/audits/`, which a
+purge leaves alone.
 
 ## 9. 🔗 Related documentation
 

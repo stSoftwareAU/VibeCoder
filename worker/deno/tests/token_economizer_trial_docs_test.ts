@@ -14,14 +14,17 @@
  *   "Not yet" exactly while no file under `container/` pins one;
  * - the config keys the page names are the keys the code names, and the page
  *   says "Not yet" exactly while no code names the block;
- * - the purge list names every file that names the plugin, each with a state
- *   that matches the file;
+ * - the purge list names every text file in the repository that names the
+ *   plugin, each with a state that matches the file;
  * - the phrases each section keeps, and the links from the pages that point
  *   here.
  *
  * The checks are one pure function over a map of repo-relative paths to text,
  * so a fixture can break one rule and the test can see that rule refuse it.
- * The live repository is read once and must pass. There are no wall-clock
+ * The live corpus is every text file under the repository root, except the
+ * dependency and version-control trees, the worker state under `graft/` and
+ * `.codegraph/`, and the historical records under `docs/archive/` and
+ * `docs/audits/`. It is read once and must pass. There are no wall-clock
  * thresholds and no network calls.
  *
  * Australian English spelling used throughout.
@@ -41,6 +44,8 @@ const DOC = "docs/TOKEN-ECONOMIZER-TRIAL.md";
 const TEST_PATH = "worker/deno/tests/token_economizer_trial_docs_test.ts";
 /** `tests/` is three levels below the repo root. */
 const REPO_ROOT = new URL("../../../", import.meta.url);
+/** The same root as a filesystem path, with its trailing slash. */
+const REPO_ROOT_PATH = decodeURIComponent(REPO_ROOT.pathname);
 
 /** The plugin's name in any spelling the repo uses. */
 const MENTION = /token[-_ ]?economizer/i;
@@ -64,34 +69,18 @@ const PURGE_KINDS = [
   "Learnings directory",
 ];
 
-const CORPUS_FILES = ["README.md", "SECURITY.md"];
-const CORPUS_DIRS = [
-  "docs",
-  "container",
-  "worker/deno/lib",
-  "worker/deno/commands",
-  "worker/deno/tests",
-  "prompts",
-  ".github",
-];
-const CORPUS_SKIP_DIRS = [
-  "docs/archive",
-  "docs/audits",
-  "docs/evidence",
-  "docs/images",
-  "docs/social",
-];
-const CORPUS_EXTENSIONS = [
-  ".md",
-  ".ts",
-  ".json",
-  ".jsonc",
-  ".sh",
-  ".yml",
-  ".yaml",
-  ".toml",
-];
+/** A `Status` row in the header table, read as one table cell. */
+const STATUS_ROW = /^\| \*\*Status\*\* \| (.*) \|$/m;
+/** Names skipped at any depth: version control and installed dependencies. */
+const WALK_SKIP_NAMES = [".git", "node_modules"];
+/**
+ * Repo-relative directories skipped where they sit: worker state, and the
+ * historical records that a purge leaves alone.
+ */
+const WALK_SKIP_PATHS = ["graft", ".codegraph", "docs/archive", "docs/audits"];
 const MAX_CORPUS_BYTES = 2 * 1024 * 1024;
+/** A file with a NUL byte in its first bytes is binary, and is not read. */
+const BINARY_PROBE_BYTES = 1024;
 
 /**
  * Each section and the phrases it must keep. A phrase is matched against the
@@ -463,17 +452,19 @@ function purgeProblems(
 }
 
 /**
- * Rule R4: the header table says "not started", and each section keeps its
- * phrases. Returns the problems rather than throwing.
+ * Rule R4: the header table's Status cell says "not started", and each section
+ * keeps its phrases. Returns the problems rather than throwing.
  */
 function structureProblems(page: string): string[] {
   const problems: string[] = [];
-  // The header table sits above the first section, so it is not in any section.
-  const head = page.indexOf("\n## ");
-  const headText = flatWholeFile(head === -1 ? page : page.slice(0, head));
-  if (!headText.includes("not started")) {
+  const status = STATUS_ROW.exec(page)?.[1];
+  if (status === undefined) {
     problems.push(
-      `${DOC}: the header table must say "not started" until the window opens: set its Status row to not started`,
+      `${DOC}: the header table has no **Status** row: add one, with its state, and say not started until the window opens`,
+    );
+  } else if (!/\bnot started\b/.test(status)) {
+    problems.push(
+      `${DOC}: the Status cell must say "not started" until the window opens: set it to not started`,
     );
   }
   for (const [title, pins] of STRUCTURE) {
@@ -524,44 +515,41 @@ function driftProblems(page: string, files: Map<string, string>): string[] {
   return problems;
 }
 
-/** Walk one corpus directory, skipping the excluded and dependency trees. */
+/** Repo-relative path of an entry in `dir`; `dir` is "" at the root. */
+function childPath(dir: string, name: string): string {
+  return dir === "" ? name : `${dir}/${name}`;
+}
+
+/** Walk one directory of the repository, skipping the excluded trees. */
 async function walk(files: Map<string, string>, dir: string): Promise<void> {
-  if (CORPUS_SKIP_DIRS.includes(dir)) return;
-  for await (const entry of Deno.readDir(new URL(`${dir}/`, REPO_ROOT))) {
-    const path = `${dir}/${entry.name}`;
+  const listing = dir === "" ? "" : `${dir}/`;
+  for await (const entry of Deno.readDir(`${REPO_ROOT_PATH}${listing}`)) {
+    if (WALK_SKIP_NAMES.includes(entry.name)) continue;
+    const path = childPath(dir, entry.name);
     if (entry.isDirectory) {
-      if (entry.name !== "node_modules" && entry.name !== ".git") {
-        await walk(files, path);
-      }
+      if (!WALK_SKIP_PATHS.includes(path)) await walk(files, path);
     } else if (entry.isFile) {
       await addFile(files, path);
     }
   }
 }
 
-/** Add one corpus file, if its name and size qualify. */
+/** Add one repository file to the corpus, unless it is large or binary. */
 async function addFile(
   files: Map<string, string>,
   path: string,
 ): Promise<void> {
-  const name = path.slice(path.lastIndexOf("/") + 1);
-  if (
-    name !== "Containerfile" &&
-    !CORPUS_EXTENSIONS.some((ext) => name.endsWith(ext))
-  ) {
-    return;
-  }
-  const url = new URL(path, REPO_ROOT);
-  const info = await Deno.stat(url);
-  if (info.size > MAX_CORPUS_BYTES) return;
-  files.set(path, await Deno.readTextFile(url));
+  const file = `${REPO_ROOT_PATH}${path}`;
+  if ((await Deno.stat(file)).size > MAX_CORPUS_BYTES) return;
+  const bytes = await Deno.readFile(file);
+  if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return;
+  files.set(path, new TextDecoder().decode(bytes));
 }
 
-/** The live repository's files the drift rules read, keyed by repo path. */
+/** Every text file in the repository, keyed by repo-relative path. */
 async function readCorpus(): Promise<Map<string, string>> {
   const files = new Map<string, string>();
-  for (const file of CORPUS_FILES) await addFile(files, file);
-  for (const dir of CORPUS_DIRS) await walk(files, dir);
+  await walk(files, "");
   return files;
 }
 
@@ -601,6 +589,7 @@ const NAMED_PATH = "worker/deno/lib/tokenEconomizerConfig.ts";
 const CONFIG_TEXT =
   "// The token_economizer block: enabled, learnings_repo, microskills, loopguard.\n";
 const SH_PATH = "container/toolchains/token_economizer.sh";
+const TYPES_PATH = "worker/deno/types.ts";
 const PURGE_SEPARATOR = "| ---- | ---- | ---- | ----- |";
 
 function withFile(
@@ -678,7 +667,7 @@ Deno.test("the live trial page passes every drift rule against the live reposito
   );
 });
 
-Deno.test("the live corpus walk reads the files the drift rules depend on", async () => {
+Deno.test("the live corpus walk reads the whole repository", async () => {
   const corpus = await liveCorpus();
   for (
     const path of [
@@ -686,14 +675,20 @@ Deno.test("the live corpus walk reads the files the drift rules depend on", asyn
       TEST_PATH,
       "container/Containerfile",
       "docs/RTK-OUTPUT-TRIAL.md",
+      "CODING-STANDARDS.md",
+      "worker/deno/deno.json",
     ]
   ) {
     assert(corpus.has(path), `the live corpus must contain ${path}`);
   }
   for (const path of corpus.keys()) {
     assert(
-      !CORPUS_SKIP_DIRS.some((dir) => path.startsWith(`${dir}/`)),
-      `the live corpus must skip the excluded docs directories: ${path}`,
+      !WALK_SKIP_PATHS.some((dir) => path.startsWith(`${dir}/`)),
+      `the live corpus must skip the excluded directories: ${path}`,
+    );
+    assert(
+      !path.split("/").some((part) => WALK_SKIP_NAMES.includes(part)),
+      `the live corpus must skip version-control and dependency trees: ${path}`,
     );
     assert(!path.includes("\\"), `corpus keys use forward slashes: ${path}`);
   }
@@ -998,6 +993,32 @@ Deno.test("purge drift: a file naming the plugin must be on the purge list, a fi
   );
 });
 
+Deno.test("purge drift: a file outside the old corpus roots that names the plugin needs a purge row", async () => {
+  const live = await livePage();
+  const corpus = withFile(
+    await liveCorpus(),
+    TYPES_PATH,
+    "// token_economizer: the plugin's types\n",
+  );
+  const problems = driftProblems(live, corpus);
+  assert(
+    problems.some((p) => p.includes(TYPES_PATH) && p.includes("purge list")),
+    `expected the uncovered types file to be refused; got:\n${
+      problems.join("\n")
+    }`,
+  );
+  assertEquals(
+    driftProblems(
+      withPurgeRow(
+        live,
+        `| Source | the plugin's types | \`${TYPES_PATH}\` | present |`,
+      ),
+      corpus,
+    ),
+    [],
+  );
+});
+
 Deno.test("purge drift: a planned row whose file now names the plugin is refused", async () => {
   const live = await livePage();
   const corpus = await liveCorpus();
@@ -1100,27 +1121,40 @@ Deno.test("structure pins: a phrase moved outside its section is refused", async
   assertEquals(structureProblems(live), []);
 });
 
-Deno.test("structure pins: the header table must say not started", async () => {
+Deno.test("structure pins: the Status cell must say not started", async () => {
   const live = await livePage();
-  const started = replacePhrase(live, "not started", "in progress");
-  const problems = structureProblems(started);
+  assertEquals(structureProblems(live), []);
+  const kept = live.replace(STATUS_ROW, "| **Status** | kept |");
+  assert(kept !== live, "fixture: the page has a Status row");
+  const problems = structureProblems(kept);
   assert(
     problems.some((p) => p.includes('"not started"')),
-    `expected the header status to be refused; got:\n${problems.join("\n")}`,
+    `expected a Status cell of "kept" to be refused; got:\n${
+      problems.join("\n")
+    }`,
   );
-  assertEquals(structureProblems(live), []);
+  const missing = live.replace(STATUS_ROW, "");
+  assert(
+    structureProblems(missing).some((p) => p.includes("**Status** row")),
+    "expected a page with no Status row to be refused",
+  );
 });
 
 Deno.test("the pages that name the trial link to it", async () => {
-  const sources: Array<[string, string]> = [
-    ["README.md", DOC],
-    ["docs/RTK-OUTPUT-TRIAL.md", "TOKEN-ECONOMIZER-TRIAL.md"],
-    ["docs/REPO-CONTEXT-TRIAL.md", "TOKEN-ECONOMIZER-TRIAL.md"],
-  ];
-  for (const [source, target] of sources) {
+  const readme = await readRepoDoc("README.md");
+  assert(
+    flat(section(readme, "Documentation")).includes(`](${DOC})`),
+    `README.md must link ${DOC} in its Documentation section`,
+  );
+  for (
+    const source of ["docs/RTK-OUTPUT-TRIAL.md", "docs/REPO-CONTEXT-TRIAL.md"]
+  ) {
+    const page = await readRepoDoc(source);
     assert(
-      (await readRepoDoc(source)).includes(`](${target})`),
-      `${source} must link ${target}`,
+      flat(section(page, "Related documentation")).includes(
+        "](TOKEN-ECONOMIZER-TRIAL.md)",
+      ),
+      `${source} must link TOKEN-ECONOMIZER-TRIAL.md in its Related documentation section`,
     );
   }
 });
