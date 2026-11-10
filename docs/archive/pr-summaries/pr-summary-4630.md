@@ -84,13 +84,16 @@ compile error is therefore caught before the push, not by a CI run. Closes
     `[PRE_PUSH_WARNING]` on the agent's own push too. In the CI processor both
     agent runs (the fix and the quality retry) carry it; in the feedback
     processor every agent run does, through `runAgentTracked`. Issue runs
-    (the execute run, with the milestone branch or else the base branch; the
+    (the execute run, with the milestone branch, else the base branch, else the
+    default branch, skipping blank names; the
     completion rebase pass, with its PR base; and the in-run recovery agents
     of the pre-push gate, screenshot, summary-rule, PR-body-length,
     security-fix and quality-gate retries, through `issueRunCompareRef`) and spelling repairs (the
     PR base, read once before the agent runs and reused for the base merge)
-    carry it too. Only merge-conflict repairs pass none, so a failing CI
-    cargo check on their own push stays a verdict.
+    carry it too. Merge-conflict repairs pass none, and neither do the other
+    agent runs with a checkout (the custom PR prompt agent, the closure-verdict
+    agent, and the planning, refinement, question, revision and quorum runs),
+    so a failing CI cargo check on their own push stays a verdict.
   - The hook runs with `--allow-write=${TMPDIR:-/tmp}` added to main's
     `--config <worker>/deno.json --frozen --lock <worker>/deno.lock` invocation
     (PR #4962): the base comparison makes its scratch worktree directory with
@@ -258,7 +261,7 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `deno task check:manifests` cover the Deno tree and pass on the head. The
   changed suites were run with `deno test -A` on the head, each passing in full:
   `tests/claude_runner_test.ts` (60 tests at head),
-  `tests/git_push_preflight_test.ts` (30 tests at head),
+  `tests/git_push_preflight_test.ts` (31 tests at head),
   `tests/pre_push_gate_cli_test.ts` (12 tests at head),
   `tests/pre_push_hook_test.ts` (13 tests at head),
   `tests/pr_ci_processor_test.ts` (61 tests at head) and
@@ -363,9 +366,8 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `worker/deno/lib/phases/execute_phase.ts`, at the `ciCargoCompareRef` call
   sites; the comment in `execute_phase.ts` no longer contains an apostrophe,
   which the executor-phase tests' brace scan tripped over. No behaviour
-  changed. `tests/phase_executor_tiers_4174_test.ts` and
-  `tests/execute_phase_issue_executor_split_2342_test.ts` (15 tests) pass on
-  the head with `deno test -A`.
+  changed. the executor-phase suites that scan those files pass on the head with
+  `deno test -A`.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.

@@ -5264,12 +5264,13 @@ gates do (see that bullet):
      hook compares too, but only for a run that is handed the PR base: the
      CI-fix, PR-feedback and spelling processors read the PR's base branch
      before the agent runs, and issue runs pass theirs (the milestone branch,
-     else the base branch) on the execute run, the completion rebase pass and
+     else the base branch, else the default branch, skipping blank names) on the execute run, the completion rebase pass and
      the in-run recovery agents (pre-push gate, screenshot, summary-rule,
      PR-body-length, security-fix and quality-gate remediation), and each is written into the hook spec as
      `compareRef` (`origin/<base>`; `""` when the base cannot be read, which
      makes a failing CI cargo check an infrastructure fault, never a verdict).
-     A merge-conflict repair has no `compareRef`, so a failing CI cargo check
+     A merge-conflict repair, like any other agent run without a PR or issue base
+     (planning, refinement, question, revision, quorum), has no `compareRef`, so a failing CI cargo check
      on its push is a verdict. Only error-level diagnostics are compared; a
      warning never fails a CI cargo command, so a warning the push adds does
      not make a base-only failure a verdict. The
