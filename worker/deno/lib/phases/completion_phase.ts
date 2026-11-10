@@ -739,14 +739,20 @@ const MUTATION_HOLD_WARNING =
  * and the next run retries it. An unknown state is not a reason to arm after a
  * failed ready. When the ready succeeds, a state that could not be read is
  * treated as a known draft only when the helper's own head read says `isDraft`
- * is true; otherwise auto-merge is armed as it was before.
+ * is true; otherwise auto-merge is armed as it was before. `draftStateKnown` is
+ * false only when the state could not be read and the head read does not say
+ * `isDraft` is true; it words a failed ready as "may still be a draft".
  */
 async function readyDraftBeforeArming(
   repo: string,
   prNumber: number,
   unknownState: boolean,
   deps: WorkerDeps,
-): Promise<{ ciStarted: boolean; readyFailure: boolean }> {
+): Promise<{
+  ciStarted: boolean;
+  readyFailure: boolean;
+  draftStateKnown: boolean;
+}> {
   const logger = deps.logger;
   const result = await markDraftReadyAndAwaitCi({
     repo,
@@ -776,17 +782,28 @@ async function readyDraftBeforeArming(
       { repo, prNumber, draftStateKnown: knownDraft },
     );
   }
-  return { ciStarted, readyFailure };
+  return { ciStarted, readyFailure, draftStateKnown: knownDraft };
 }
 
-/** The run fails when a known draft stayed a draft (Issue #4952). */
-function stillDraftFailure(prNumber: number, state: PhaseState): PhaseResult {
+/**
+ * The run fails when `gh pr ready` failed, whether or not the draft state was
+ * known (Issue #4952). The reason says "is still a draft" for a known draft
+ * and "may still be a draft" for an unknown state, which is unproven.
+ */
+function stillDraftFailure(
+  prNumber: number,
+  state: PhaseState,
+  draftStateKnown: boolean,
+): PhaseResult {
   state.completionDraftReadyFailed = true;
+  const draftClaim = draftStateKnown
+    ? "is still a draft"
+    : "may still be a draft";
   return {
     category: "interrupted",
     status: "failure",
     reason:
-      `Run interrupted before the pull request was ready — PR #${prNumber} is still a draft because \`gh pr ready\` failed; the next run retries it (Issue #4952)`,
+      `Run interrupted before the pull request was ready — PR #${prNumber} ${draftClaim} because \`gh pr ready\` failed; the next run retries it (Issue #4952)`,
   };
 }
 
@@ -794,7 +811,8 @@ function stillDraftFailure(prNumber: number, state: PhaseState): PhaseResult {
  * Post completion-gate findings that survived the in-session note, once
  * (Issue #4234). A failed post is logged and never stops the pull request
  * or its auto-merge. `stillDraft` is true when `gh pr ready` failed, so the
- * pull request is still a draft and auto-merge is not armed (Issue #4952).
+ * pull request is still a draft, or may be one when `draftStateKnown` is false,
+ * and auto-merge is not armed (Issue #4952).
  */
 async function postCompletionAdvisory(
   repo: string,
@@ -802,6 +820,7 @@ async function postCompletionAdvisory(
   state: PhaseState,
   deps: WorkerDeps,
   stillDraft: boolean,
+  draftStateKnown: boolean,
 ): Promise<void> {
   const findings = [
     state.screenshotAdvisoryComment,
@@ -822,7 +841,8 @@ async function postCompletionAdvisory(
       "is not armed; the next run continues this branch."
     : stillDraft
     ? "The implementing run was told about these findings once, in that same " +
-      "session. They did not block this pull request, but it is still a draft " +
+      "session. They did not block this pull request, but it " +
+      `${draftStateKnown ? "is still a draft" : "may still be a draft"} ` +
       "because `gh pr ready` failed: auto-merge is not armed, and the next run " +
       "retries marking it ready."
     : "The implementing run was told about these findings once, in that same " +
@@ -983,8 +1003,10 @@ export async function recoverAndFinaliseExistingPr(
   }
   const prState = prLookup?.state ?? null;
   const prAlreadyMerged = prState === "MERGED";
-  // Issue #4952: set when `gh pr ready` failed on a known draft, so it is still a draft.
+  // Issue #4952: set when `gh pr ready` failed, so the PR may still be a draft.
   let readyFailure = false;
+  // Issue #4952: whether the draft state was known when `gh pr ready` failed.
+  let readyDraftStateKnown = true;
 
   // Post-recovery finalisation (best-effort)
   try {
@@ -1023,9 +1045,9 @@ export async function recoverAndFinaliseExistingPr(
       // auto-merge path. Auto-merge waits for
       // the ready-for-review CI to start: the draft's checks were skipped,
       // and a skipped required check counts as passing (Issue #4160).
-      // Issue #4952: a known draft that fails to become ready fails the run
-      // below. A state that could not be read keeps `ciStarted` true unless
-      // the ready step's head read says it is a draft.
+      // Issue #4952: a failed ready fails the run below and never arms, whatever
+      // the draft state. A successful ready on a state that could not be read
+      // keeps `ciStarted` true unless the ready step's head read says draft.
       let ciStarted = true;
       if (state.mutationHold) {
         // Issue #4617: a survivor the repository's CI blocks on holds the pull
@@ -1065,6 +1087,7 @@ export async function recoverAndFinaliseExistingPr(
         );
         ciStarted = ready.ciStarted;
         readyFailure = ready.readyFailure;
+        readyDraftStateKnown = ready.draftStateKnown;
       }
       const reviewRecord = state.preprReviewFindings ?? [];
       if (reviewRecord.length > 0) {
@@ -1076,7 +1099,14 @@ export async function recoverAndFinaliseExistingPr(
       }
     }
 
-    await postCompletionAdvisory(repo, prNumber, state, deps, readyFailure);
+    await postCompletionAdvisory(
+      repo,
+      prNumber,
+      state,
+      deps,
+      readyFailure,
+      readyDraftStateKnown,
+    );
   } catch (err) {
     logger.warn("Post-recovery finalisation error (non-fatal)", {
       error: err instanceof Error ? err.message : String(err),
@@ -1121,7 +1151,9 @@ export async function recoverAndFinaliseExistingPr(
   }
 
   // Issue #4952: the PR is still a draft, so the run is not released as raised.
-  if (readyFailure) return stillDraftFailure(prNumber, state);
+  if (readyFailure) {
+    return stillDraftFailure(prNumber, state, readyDraftStateKnown);
+  }
   return { status: "continue" };
 }
 
@@ -3985,6 +4017,8 @@ async function completionBody(
   // Issue #4952: set by the ready step below for a REST-fallback PR.
   let ciStarted = true;
   let readyFailure = false;
+  // Issue #4952: whether the draft state was known when `gh pr ready` failed.
+  let readyDraftStateKnown = true;
 
   // Post-PR finalisation
   try {
@@ -4066,6 +4100,7 @@ async function completionBody(
         );
         ciStarted = ready.ciStarted;
         readyFailure = ready.readyFailure;
+        readyDraftStateKnown = ready.draftStateKnown;
       }
     }
     // Issue #4617: a held pull request is a draft and is not armed.
@@ -4108,7 +4143,14 @@ async function completionBody(
       warn: (m: string) => logger.warn(m),
     });
 
-    await postCompletionAdvisory(repo, prNumber, state, deps, readyFailure);
+    await postCompletionAdvisory(
+      repo,
+      prNumber,
+      state,
+      deps,
+      readyFailure,
+      readyDraftStateKnown,
+    );
   } catch (err) {
     // Post-PR finalisation is best-effort
     logger.warn("Post-PR finalisation error (non-fatal)", {
@@ -4128,6 +4170,8 @@ async function completionBody(
   }
 
   // Issue #4952: the PR exists but is still a draft, so the run is not released as raised.
-  if (readyFailure) return stillDraftFailure(prNumber, state);
+  if (readyFailure) {
+    return stillDraftFailure(prNumber, state, readyDraftStateKnown);
+  }
   return { status: "continue" };
 }

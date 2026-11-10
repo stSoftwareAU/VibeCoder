@@ -1167,9 +1167,11 @@ reads that signal at both ends
   state (after one retry), the ready step is still attempted. A failed ready
   then fails the run as `interrupted` exactly like a known draft, whatever the
   ready step's own head read says, so auto-merge is never armed after a failed
-  ready. Only a successful ready on an unknown state arms as before, unless the
-  head read says `isDraft` true (Issue #4952). Auto-merge on a draft waits for its ready-for-review CI
-  to start; if that cannot be confirmed, the sweep arms it (Issue #4160). The
+  ready. A successful ready on an unknown state arms as before, except when the
+  head read says `isDraft` true: that PR is treated as a known draft and armed
+  only once its ready-for-review CI has started (Issue #4952). Auto-merge on a
+  draft waits for its ready-for-review CI to start; if that cannot be
+  confirmed, the sweep arms it (Issue #4160). The
   REST fallback runs when `gh pr create` hits the primary GraphQL quota, and
   the PR it returns can be an open draft continuation on the branch, so its
   draft flag is read over the quota-exempt REST endpoint (`readPrDraftViaRest`)

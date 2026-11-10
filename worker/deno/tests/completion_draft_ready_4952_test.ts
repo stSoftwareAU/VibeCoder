@@ -280,6 +280,11 @@ Deno.test(
     assertStringIncludes(result.reason, `PR #${PR}`);
     assertEquals(readyCalls(gh.calls).length, 1, "ready was attempted");
     assertEquals(armed, [], "auto-merge is not armed after a failed ready");
+    assertStringIncludes(result.reason, "may still be a draft");
+    assert(
+      !result.reason.includes("is still a draft"),
+      "an unknown state is not reported as a known draft",
+    );
     const warning = warns.find((w) =>
       w.message.includes("Could not mark the PR ready")
     );
@@ -325,7 +330,7 @@ Deno.test(
     assert(result.status === "failure", "the run fails, not continues");
     assertEquals(result.category, "interrupted");
     assertStringIncludes(result.reason, `PR #${PR}`);
-    assertStringIncludes(result.reason, "still a draft");
+    assertStringIncludes(result.reason, "is still a draft");
     assertEquals(readyCalls(gh.calls).length, 1);
     assertEquals(armed, [], "auto-merge is not armed on a draft");
     const warning = warns.find((w) =>
@@ -754,6 +759,11 @@ Deno.test(
     assert(run.result.status === "failure", "the run fails, not continues");
     assertEquals(run.result.category, "interrupted");
     assertStringIncludes(run.result.reason, `PR #${PR}`);
+    assertStringIncludes(run.result.reason, "may still be a draft");
+    assert(
+      !run.result.reason.includes("is still a draft"),
+      "an unknown state is not reported as a known draft",
+    );
     assert(readyCalls(run.calls).length >= 1, "ready was attempted");
     assertEquals(run.armed, [], "auto-merge is not armed after a failed ready");
   },
@@ -1013,6 +1023,7 @@ Deno.test("completion - a failed ready does not repeat verifier or PR side effec
   for (
     const run of [
       await runRestFallback({ draft: true, latched: true }),
+      await runRestFallback({ draft: "unreadable", latched: true }),
       await runRestFallback({ draft: true, latched: false, readyFails: true }),
       await runExistingDraftCompletion("branch", true),
       await runExistingDraftCompletion("create-error", true),
