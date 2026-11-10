@@ -39,10 +39,14 @@ now-public repo, with the real closing-comment text from `buildClosingComment`.
 
 ## Test Plan
 
-- Added three tests in `worker/deno/tests/setup_workflow_sync_test.ts`
+- Added four tests in `worker/deno/tests/setup_workflow_sync_test.ts`
   (`dependency-review closed on a private repo, repo now public`: fleet
-  not-applicable closure re-files; human comment and ordinary closure do not).
+  not-applicable closure re-files; human comment, ordinary closure, and a fleet comment carrying the marker
+  but no applicability phrase do not).
   Each asserts a positive control (gitleaks still filed).
+- Mutation check: replacing the `phrases.some(...)` operand at
+  `purge_stale_workflow_issues.ts:299` with `true` now turns the
+  marker-without-phrase test red (59 passed, 1 failed); restored, 60 pass.
 - Red check: with base `purge_stale_workflow_issues.ts` and `workflow_sync.ts`
   restored, the fleet-closure test fails and the other two stay green (they pin
   the guard); with the fix all pass.

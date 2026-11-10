@@ -513,6 +513,7 @@ for (
     "fleet not-applicable closure",
     "human comment",
     "ordinary closure",
+    "fleet marker without applicability phrase",
   ] as const
 ) {
   Deno.test(`syncWorkflowsForRepo - dependency-review closed on a private repo, repo now public: ${scenario}`, async () => {
@@ -542,6 +543,8 @@ for (
               comments: [{
                 body: scenario === "ordinary closure"
                   ? "completed"
+                  : scenario === "fleet marker without applicability phrase"
+                  ? "Closed for another reason.\n\n<!-- vibe-coder:purge-not-applicable:dependency-review -->"
                   : PRIVATE_REPO_CLOSURE,
                 author: {
                   login: scenario === "human comment" ? "human" : FLEET_AUTHOR,
