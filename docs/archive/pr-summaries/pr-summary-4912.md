@@ -75,9 +75,11 @@ $ grep -rniE "measurable improvement|should not be re-attempted|closes it as not
   structural coverage; `./quality.sh` (including markdownlint and cspell)
   passes. — evidence: both tests pass; the gate's markdownlint, mermaid and
   semgrep stages passed — reviewer: partial — reason: the full `./quality.sh`
-  did not finish inside the container (it timed out after the semgrep and
-  release-tag stages); the worker re-runs it before the PR. No cspell config
-  exists in this repository.
+  ran to the end in the container but its deno tests stage reported 11 failures
+  in 7 test files this diff does not touch, all caused by the container (no
+  access to `jsr.io`, no `osascript`, proxy environment variables); every other
+  stage passed (see Test Plan). The worker re-runs it before the PR. No cspell
+  config exists in this repository.
 
 ## Standards Review
 
@@ -106,10 +108,15 @@ $ grep -rniE "measurable improvement|should not be re-attempted|closes it as not
 - Only the doc comment of
   `worker/deno/tests/negative_result_lesson_docs_test.ts` changed; no assertion
   was removed or edited.
-- `./quality.sh`: markdownlint, mermaid, semgrep passed; the run did not
-  complete in the container, so the rest is not verified here.
+- `./quality.sh` (run to the end; the deno tests stage took 10 minutes): markdownlint,
+  mermaid, semgrep, release-tag ruleset, deno lint, type check and fmt passed.
+  The deno tests stage failed 11 tests (33487 passed) in
+  `claude_runner_pre_push_3394_test.ts`, `merge_fast_checks_credentials_4705_test.ts`,
+  `pre_push_hook_test.ts` and `review_fleet_prs_post_claim_4398_test.ts`: they
+  need `jsr.io`, `osascript` or an unproxied environment, none of which the
+  container has, and none read the files this branch edits.
 
-<!-- vibe-quality-gate-skipped reason="full gate did not complete inside the container within budget; targeted tests and the gate's lint stages passed" -->
+<!-- vibe-quality-gate-skipped reason="deno tests stage failed 11 environment-bound tests (jsr.io, osascript, proxy env) unrelated to this prose-only diff; every other stage passed" -->
 
 Related rules checked: Unit Tests vs Benchmarks, `### Benchmarks`, Human
 Escalation, the issue prompt's no-hand-back exception.
