@@ -1164,19 +1164,22 @@ reads that signal at both ends
   draft, and the next run retries. This post-PR failure skips the whole-body
   infrastructure retry, so the verifier and posted comments are not repeated.
   When the state lookup cannot read the draft
-  state (after one retry), the ready step's own head read decides: `isDraft`
-  true is handled exactly like a known draft, while `isDraft` false or an
-  unreadable head read only warns on a failed ready, and arming proceeds as
-  before (Issue #4952). Auto-merge on a draft waits for its ready-for-review CI
+  state (after one retry), the ready step is still attempted. A failed ready
+  then fails the run as `interrupted` exactly like a known draft, whatever the
+  ready step's own head read says, so auto-merge is never armed after a failed
+  ready. Only a successful ready on an unknown state arms as before, unless the
+  head read says `isDraft` true (Issue #4952). Auto-merge on a draft waits for its ready-for-review CI
   to start; if that cannot be confirmed, the sweep arms it (Issue #4160). The
   REST fallback runs when `gh pr create` hits the primary GraphQL quota, and
   the PR it returns can be an open draft continuation on the branch, so its
   draft flag is read over the quota-exempt REST endpoint (`readPrDraftViaRest`)
   and the same ready step runs unless that read says the PR is ready. While the
-  quota is latched, `gh pr view` and `gh pr ready` are skipped: a REST-confirmed draft that cannot be readied fails
-  the run as `interrupted` (retried), a REST-confirmed ready PR is left alone,
-  and a flag that cannot be read keeps the fail-open rule above. The body says `Closes #N` unless an entry is
-  `partial` or `missing`, which keeps `Part of #N`. An orphaned draft left
+  quota is latched, `gh pr view` and `gh pr ready` are skipped: a REST-confirmed
+  draft that cannot be readied fails the run as `interrupted` (retried), a
+  REST-confirmed ready PR is left alone, and a flag that cannot be read is an
+  unknown state whose failed ready fails the run the same way. The body says
+  `Closes #N` unless an entry is `partial` or `missing`, which keeps
+  `Part of #N`. An orphaned draft left
   anyway is readied by the sweep self-heal (Issue #4952).
 
 - **A timed-out run keeps a draft.** A run that times out (or is released on
