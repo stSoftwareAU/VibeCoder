@@ -19,13 +19,17 @@
  * It does two things, in order:
  *
  * 1. Always runs a fast check over just the files the push introduces
- *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`, `cspell` and ShellCheck when the repo's CI runs
- *    them, and the Floci CloudFormation deploy test
+ *    (`deno fmt --check`, `deno lint`, `deno test` (Issue #4930),
+ *    `cargo fmt --check`, `markdownlint-cli2`, `cspell` and ShellCheck when the
+ *    repo's CI runs them, and the Floci CloudFormation deploy test
  *    when the push changes `infra/cloudformation/` and the repo tracks its
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
- *    deploy test are cheap. Then the repo's `cargo deny check` (Issue #4626)
+ *    deploy test and the `deno test` run are cheap. The `deno test` check runs the
+ *    changed test files, the same-named tests of changed sources and every test
+ *    that depends on a changed file (a doc, prompt or differently named or
+ *    indirectly imported source), via the repo's own `test:unit` task so integration suites like
+ *    CI's shards are excluded. Then the repo's `cargo deny check` (Issue #4626)
  *    runs for eligible workflows when intermediate pushes or ShellCheck-only
  *    repairs change a cargo input (a Cargo manifest, lock file, deny config or
  *    `.cargo/config.toml`). The whole-branch
@@ -58,6 +62,8 @@ import {
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
+import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
+import { stripJsonc } from "./jsonc.ts";
 import { readRepoFile } from "./repo_file_read.ts";
 
 /**
@@ -904,11 +910,55 @@ function quoteArguments(args: string[]): Result<string, string> {
 }
 
 /**
- * Plan the always-on changed-file format/lint commands. `denoScopes` maps a
- * deno root to its parsed include/exclude config: explicit paths override
- * deno's own `include`, so a file the repo's `deno fmt` / `deno lint` would
- * not check is dropped here instead of being passed to deno. A root with no
- * entry is unfiltered.
+ * The root-relative test files a root's `deno test` check runs: each changed
+ * `_test.ts` under `tests/`, the `tests/<name>_test.ts` sibling of each
+ * changed non-test `.ts` source outside `tests/`, and the `referenced` tests
+ * ({@link loadReferencedUnitTests}) whose text names a changed file. Only files
+ * `tracked` still holds count, so a deleted test is not run. Deduplicated and
+ * sorted.
+ */
+function plannedUnitTestFiles(
+  rel: string[],
+  tracked: string[],
+  root: string,
+  referenced: readonly string[],
+): string[] {
+  const trackedSet = new Set(tracked);
+  const isTracked = (file: string) =>
+    trackedSet.has(root === "." ? file : `${root}/${file}`);
+  const testFiles = new Set<string>();
+  for (const file of referenced) {
+    if (isTracked(file)) testFiles.add(file);
+  }
+  for (const file of rel) {
+    if (file.startsWith("tests/") && file.endsWith("_test.ts")) {
+      if (isTracked(file)) testFiles.add(file);
+    } else if (
+      file.endsWith(".ts") && !file.endsWith("_test.ts") &&
+      !file.startsWith("tests/")
+    ) {
+      const base = file.slice(file.lastIndexOf("/") + 1, -".ts".length);
+      const sibling = `tests/${base}_test.ts`;
+      if (isTracked(sibling)) testFiles.add(sibling);
+    }
+  }
+  // The unit runner refuses a list with no unit suite in it, and CI's unit
+  // shards do not run the integration suites, so a changed one is left out.
+  return [...testFiles].filter((f) => !INTEGRATION_TEST_FILES.includes(f))
+    .sort();
+}
+
+/**
+ * Plan the always-on changed-file format, lint and unit-test commands.
+ * `denoScopes` maps a deno root to its parsed include/exclude config: explicit
+ * paths override deno's own `include`, so a file the repo's `deno fmt` /
+ * `deno lint` would not check is dropped here instead of being passed to deno.
+ * A root with no entry is unfiltered. `denoUnitTestRoots` lists the roots
+ * whose changed tests get a `deno test` check (see
+ * {@link loadDenoUnitTestRoots}); absent means no `deno test` check. It is a
+ * the changed test files, the same-named tests of changed sources and the
+ * `denoReferencedTests` — run via the repo's own `test:unit` task, so
+ * integration suites like CI's shards are not run here.
  */
 export function planChangedFileChecks(
   changed: string[],
@@ -926,6 +976,13 @@ export function planChangedFileChecks(
      */
     cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
+    /** Deno roots whose `test:unit` task the changed tests run through. */
+    denoUnitTestRoots?: string[];
+    /**
+     * Per deno root, the root-relative tests whose text names a changed file
+     * (see {@link loadReferencedUnitTests}); they run beside the changed tests.
+     */
+    denoReferencedTests?: Record<string, string[]>;
     shellcheckPolicy?: ShellcheckPolicy | null;
     shellcheckBinary?: string | null;
     shellcheckFiles?: string[];
@@ -970,6 +1027,23 @@ export function planChangedFileChecks(
         cwd: dirCwd(root),
         command: `${base} ${quoted.value}`,
       });
+    }
+    if (opts.denoUnitTestRoots?.includes(root)) {
+      const unitTestFiles = plannedUnitTestFiles(
+        rel,
+        tracked,
+        root,
+        opts.denoReferencedTests?.[root] ?? [],
+      );
+      if (unitTestFiles.length > 0) {
+        const quoted = quoteAll(unitTestFiles);
+        if (!quoted.ok) return quoted;
+        checks.push({
+          label: `deno test (${root})`,
+          cwd: dirCwd(root),
+          command: `deno task test:unit ${quoted.value}`,
+        });
+      }
     }
   }
 
@@ -1195,22 +1269,188 @@ export async function loadDenoScopes(
   for (
     const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
   ) {
-    for (const name of ["deno.json", "deno.jsonc"]) {
-      let text: string;
-      try {
-        text = await readRepoFile(
-          repoRoot,
-          root === "." ? name : `${root}/${name}`,
-        );
-      } catch {
-        continue; // This config name is absent; try the other.
-      }
-      const parsed = parseDenoScope(text);
-      if (parsed !== null) scopes[root] = parsed;
-      break; // Deno prefers deno.json; do not fall through to deno.jsonc.
-    }
+    const text = await readDenoConfigText(repoRoot, root);
+    if (text === null) continue;
+    const parsed = parseDenoScope(text);
+    if (parsed !== null) scopes[root] = parsed;
   }
   return scopes;
+}
+
+/**
+ * A deno root's config text: `deno.json`, else `deno.jsonc` when `deno.json` is
+ * absent or unreadable (a symlink, a non-regular file or one over the size cap
+ * is unreadable); null when neither can be read. Deno prefers `deno.json`, so
+ * the two are never both used.
+ */
+async function readDenoConfigText(
+  repoRoot: string,
+  root: string,
+): Promise<string | null> {
+  for (const name of ["deno.json", "deno.jsonc"]) {
+    try {
+      return await readRepoFile(
+        repoRoot,
+        root === "." ? name : `${root}/${name}`,
+      );
+    } catch {
+      // This config name is absent or unreadable; try the other.
+    }
+  }
+  return null;
+}
+
+/** Whether a deno.json(c) document's `tasks` object defines `test:unit`. */
+function definesUnitTestTask(text: string): boolean {
+  const stripped = stripJsonc(text);
+  let parsed: { tasks?: unknown } | null;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch {
+    return false;
+  }
+  const tasks = parsed?.tasks;
+  return typeof tasks === "object" && tasks !== null &&
+    Object.hasOwn(tasks, "test:unit");
+}
+
+/**
+ * The deno roots whose config defines a `test:unit` task (Issue #4930), so the
+ * gate can run the repo's own unit suite for changed tests. Root discovery
+ * matches {@link loadDenoScopes}; a root whose config is unreadable or
+ * unparseable is left out.
+ */
+export async function loadDenoUnitTestRoots(
+  repoRoot: string,
+  tracked: string[],
+): Promise<string[]> {
+  const roots: string[] = [];
+  for (
+    const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
+  ) {
+    const text = await readDenoConfigText(repoRoot, root);
+    if (text === null) continue;
+    if (definesUnitTestTask(text)) roots.push(root);
+  }
+  return roots;
+}
+
+/**
+ * Strings whose presence in a test's source marks it as reading `file` (a
+ * repo-relative path): the path itself, its base name when no other tracked
+ * file shares it (else its last two segments), and, for a non-`.ts` file such
+ * as a doc or prompt, its directory followed by `/` (a test that lists it) and
+ * each ancestor directory followed by `/${` so a path built in a template
+ * literal is caught. A deliberate over-approximation: running an
+ * unrelated test costs time, missing a reader lets a break reach CI.
+ */
+function referenceTokens(
+  file: string,
+  basenameCounts: ReadonlyMap<string, number>,
+): string[] {
+  const parts = file.split("/");
+  const base = parts[parts.length - 1] as string;
+  const tokens = [
+    file,
+    basenameCounts.get(base) === 1 ? base : parts.slice(-2).join("/"),
+  ];
+  if (!file.endsWith(".ts")) {
+    // A test that lists the directory names neither the file nor a template.
+    if (parts.length > 1) tokens.push(`${parts.slice(0, -1).join("/")}/`);
+    for (let i = 1; i < parts.length; i++) {
+      tokens.push(`${parts.slice(0, i).join("/")}/\${`);
+    }
+  }
+  return tokens;
+}
+
+/** The `./x.ts` / `../x.ts` module specifiers quoted in a TypeScript source. */
+function relativeTsSpecifiers(text: string): string[] {
+  return [...text.matchAll(/["'`](\.{1,2}\/[^"'`\s]+\.ts)["'`]/g)].map((m) =>
+    m[1] as string
+  );
+}
+
+/** `specifier` resolved against the directory of `from`, both tracked paths. */
+function resolveSpecifier(from: string, specifier: string): string {
+  const parts = from.split("/").slice(0, -1);
+  for (const part of specifier.split("/")) {
+    if (part === "..") parts.pop();
+    else if (part !== ".") parts.push(part);
+  }
+  return parts.join("/");
+}
+
+/**
+ * Per deno root, the root-relative `_test.ts` files under `tests/` a change can
+ * break (Issue #4930), so a change to a source, doc or prompt runs the tests
+ * that depend on it, not only a same-named one. A TypeScript file under the
+ * root is a seed when it is changed, or when it sits under `tests/` and its text
+ * names a changed file (see {@link referenceTokens}); a test is selected when it
+ * is a seed or imports one,
+ * directly or through other files (relative `.ts` specifiers). Changed tests
+ * themselves are left out (they run anyway). A tracked file that cannot be read
+ * is skipped.
+ */
+export async function loadReferencedUnitTests(
+  repoRoot: string,
+  tracked: string[],
+  changed: string[],
+  roots: string[],
+): Promise<Record<string, string[]>> {
+  const basenameCounts = new Map<string, number>();
+  for (const path of tracked) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+  }
+  const tokens = [
+    ...new Set(
+      changed.filter((p) => !p.endsWith("_test.ts")).flatMap((p) =>
+        referenceTokens(p, basenameCounts)
+      ),
+    ),
+  ];
+  const referenced: Record<string, string[]> = {};
+  if (tokens.length === 0) return referenced;
+  for (const root of roots) {
+    const prefix = root === "." ? "" : `${root}/`;
+    const importers = new Map<string, string[]>();
+    const seeds = new Set(changed);
+    const testPaths: string[] = [];
+    for (const path of tracked) {
+      if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
+      let text: string;
+      try {
+        text = await readRepoFile(repoRoot, path);
+      } catch {
+        continue; // Deleted, a symlink or unreadable: nothing to run.
+      }
+      for (const specifier of relativeTsSpecifiers(text)) {
+        const target = resolveSpecifier(path, specifier);
+        importers.set(target, [...(importers.get(target) ?? []), path]);
+      }
+      if (!path.startsWith(`${prefix}tests/`)) continue;
+      // Only the test tree is read for names: a source that merely quotes a
+      // doc path in a message depends on nothing, and one that does read it
+      // has a test that names it.
+      if (tokens.some((t) => text.includes(t))) seeds.add(path);
+      if (path.endsWith("_test.ts")) testPaths.push(path);
+    }
+    const reached = new Set(seeds);
+    const queue = [...seeds];
+    for (const file of queue) {
+      for (const importer of importers.get(file) ?? []) {
+        if (!reached.has(importer)) {
+          reached.add(importer);
+          queue.push(importer);
+        }
+      }
+    }
+    referenced[root] = testPaths
+      .filter((t) => reached.has(t) && !changed.includes(t))
+      .map((t) => t.slice(prefix.length));
+  }
+  return referenced;
 }
 
 /**
@@ -1651,7 +1891,7 @@ export async function runAffectedShellcheckChecks(opts: {
  * regardless of changed cargo inputs. `checksRun`
  * lists the changed-file and cargo-deny commands run. The changed-file checks
  * and the cargo-deny gate run whatever the run budget — they are never skipped;
- * all but the Floci deploy test are fast. Any git, parse or planning error is
+ * all but the Floci deploy test and the `deno test` run are fast. Any git, parse or planning error is
  * an `Err`, never a pass. A cargo-deny failure that shows the tool or advisory
  * database could not be reached is a {@link PrePushGateInfrastructureError}.
  */
@@ -1744,12 +1984,21 @@ export async function runPrePushGate(opts: {
   });
   if (!shellcheck.ok) return shellcheck;
 
+  const denoUnitTestRoots = await loadDenoUnitTestRoots(opts.cwd, tracked);
   const plan = planChangedFileChecks(changed.value, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
+    denoUnitTestRoots,
+    denoReferencedTests: await loadReferencedUnitTests(
+      opts.cwd,
+      tracked,
+      // Deleted and renamed-away paths too: a test can still name them.
+      opts.shellcheckOnly ? [] : touched.value,
+      denoUnitTestRoots,
+    ),
   });
   if (!plan.ok) return fail(plan.error);
 
