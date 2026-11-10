@@ -1032,7 +1032,8 @@ is exempt for cargo only; npm and gem still flag variable versions. Cargo
 `--git` / `--path` installs are exempt from version pinning but still require
 `--locked` or `--frozen`. An unlocked external-source finding asks only for
 locking. For npm, npx, gem and cargo alike, quoted values and GitHub
-`${{ … }}` expressions are kept as one token, and unquoted shell comments and
+`${{ … }}` expressions are kept as one token, a backslash outside quotes
+escapes the next character, and unquoted shell comments and
 redirections (`# …`, `2>&1`, `> /dev/null`) are never read as package
 arguments. An expression version, like a shell-variable version, is not
 statically decidable: it is exempt for cargo only, while npm and gem flag the

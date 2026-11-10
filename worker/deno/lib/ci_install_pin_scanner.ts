@@ -660,8 +660,9 @@ function shellArgumentTokens(tokens: string[]): string[] {
     }
     result.push(
       token.replace(
-        /\$\{\{.*?\}\}|"((?:\\.|[^"\\])*)"|'([^']*)'/g,
-        (match, double, single) => double ?? single ?? match,
+        /\$\{\{.*?\}\}|"((?:\\.|[^"\\])*)"|'([^']*)'|\\(.)/g,
+        (match, double, single, escaped) =>
+          double ?? single ?? escaped ?? match,
       ),
     );
   }
@@ -670,13 +671,14 @@ function shellArgumentTokens(tokens: string[]): string[] {
 
 /**
  * Tokenise a command's arguments (Issue #4858): a quoted value or a GitHub
- * `${{ … }}` expression stays within one token, then
- * {@link shellArgumentTokens} drops unquoted comments and redirections.
+ * `${{ … }}` expression stays within one token, a backslash outside quotes
+ * escapes the next character, then {@link shellArgumentTokens} drops
+ * unquoted comments and redirections.
  */
 function shellTokens(command: string): string[] {
   return shellArgumentTokens(
     command.match(
-      /(?:\$\{\{.*?\}\}|"(?:\\.|[^"\\])*"|'[^']*'|\$(?!\{\{)|[^\s"'$]+)+/g,
+      /(?:\$\{\{.*?\}\}|"(?:\\.|[^"\\])*"|'[^']*'|\$(?!\{\{)|[^\s"'$\\]+|\\.)+/g,
     ) ?? [],
   );
 }

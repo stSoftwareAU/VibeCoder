@@ -220,6 +220,24 @@ Deno.test("findUnpinnedInstalls - quoted values stay within one argument", () =>
   ]);
 });
 
+Deno.test("findUnpinnedInstalls - a backslash escape outside quotes keeps one argument", () => {
+  // An escaped quote in a flag value no longer splits the word.
+  assertEquals(
+    findUnpinnedInstalls('npm install -g foo@1.2.3 --loglevel=\\"warn\\"'),
+    [],
+  );
+  // Escaped quotes inside a `sh -c` script no longer mint made-up package
+  // names from the tail of a split version.
+  const gem = findUnpinnedInstalls(
+    'sh -c "gem install bundler -v \\"2.5.0\\" && bundle install"',
+  );
+  assertEquals(gem.map((f) => f.packageName), ["bundler"]);
+  const npm = findUnpinnedInstalls('sh -c "npm install -g \\"pnpm@9.1.0\\""');
+  assertEquals(npm.length, 1);
+  assertEquals(npm[0]?.packageName, '"pnpm');
+  assertEquals(npm[0]?.version, '9.1.0"');
+});
+
 // ---------------------------------------------------------------------------
 // Command normalisation (Issue #3953) — prefixes, flags, continuations
 // ---------------------------------------------------------------------------
