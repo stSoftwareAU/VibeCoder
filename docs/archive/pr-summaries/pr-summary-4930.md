@@ -55,8 +55,8 @@ Closes #4930.
 - An earlier PR for this issue (#5014) was closed on a gitleaks `private-key`
   finding in a WIP checkpoint commit that had added a Deno transpile cache
   (`worker/deno/gen/...github_app_auth.ts.js`); the final tree never held it.
-  This branch is the same change re-applied as one clean commit on `main`, so
-  no history carries that file.
+  This branch is the same change re-applied as one clean commit on `main`, so no
+  history carries that file.
 - `./quality.sh` on this branch fails five `pr_maintenance_command_test.ts`
   tests that fail identically on `origin/main` at `73d1964a` (see Test Plan).
 
