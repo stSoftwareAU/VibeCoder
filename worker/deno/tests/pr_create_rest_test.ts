@@ -451,8 +451,14 @@ Deno.test("readPrDraftViaRest - reads .draft over the quota-exempt REST path (Is
   assertEquals(await readPrDraftViaRest("acme/widgets", 9, rec.fn), true);
   assertEquals(rec.calls.length, 1);
   assertEquals(rec.calls[0]![0], "api");
-  assert(rec.calls[0]!.includes("repos/acme/widgets/pulls/9"));
-  assert(rec.calls[0]!.includes(".draft"));
+  assertEquals(rec.calls[0], [
+    "api",
+    "-X",
+    "GET",
+    "repos/acme/widgets/pulls/9",
+    "--jq",
+    ".draft",
+  ]);
   assertEquals(
     await readPrDraftViaRest("acme/widgets", 9, () => Promise.resolve("false")),
     false,
@@ -482,5 +488,7 @@ Deno.test("readPrDraftViaRest - an unreadable flag is null, never a guess (Issue
   const rec = recorder(() => "true");
   assertEquals(await readPrDraftViaRest("bad repo", 9, rec.fn), null);
   assertEquals(await readPrDraftViaRest("acme/widgets", 0, rec.fn), null);
+  assertEquals(await readPrDraftViaRest("acme/widgets", 1.5, rec.fn), null);
+  assertEquals(await readPrDraftViaRest("acme/widgets", NaN, rec.fn), null);
   assertEquals(rec.calls.length, 0);
 });

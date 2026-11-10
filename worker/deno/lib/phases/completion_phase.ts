@@ -4033,9 +4033,9 @@ async function completionBody(
     }
     // Issue #4952: the REST fallback can return a PR already open on this
     // branch, which may be a draft continuation (lib/pr_create_rest.ts). The
-    // fallback runs only once the GraphQL quota is latched, so `gh pr view`
-    // and `gh pr ready` are skipped there: the draft flag is read over the
-    // quota-exempt REST endpoint. A REST-confirmed draft is a known draft, so
+    // fallback is entered on any primary rate-limit message, and while the
+    // GraphQL quota is latched `gh pr view` and `gh pr ready` are skipped: the
+    // draft flag is read over the quota-exempt REST endpoint. A REST-confirmed draft is a known draft, so
     // a ready that cannot run fails the run (the next run retries it) rather
     // than releasing the claim as raised. A REST-confirmed ready PR is left
     // alone; a flag that cannot be read keeps the fail-open unknown-state rule.

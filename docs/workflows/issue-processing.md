@@ -1167,11 +1167,11 @@ reads that signal at both ends
   unreadable head read only warns on a failed ready, and arming proceeds as
   before (Issue #4952). Auto-merge on a draft waits for its ready-for-review CI
   to start; if that cannot be confirmed, the sweep arms it (Issue #4160). The
-  same ready step runs on a PR the REST fallback returns when `gh pr create`
-  hits the primary GraphQL quota, since that PR can be an open draft
-  continuation on the branch. The latch skips `gh pr view` and `gh pr ready`
-  there, so the draft flag is read over the quota-exempt REST endpoint
-  (`readPrDraftViaRest`): a REST-confirmed draft that cannot be readied fails
+  REST fallback runs when `gh pr create` hits the primary GraphQL quota, and
+  the PR it returns can be an open draft continuation on the branch, so its
+  draft flag is read over the quota-exempt REST endpoint (`readPrDraftViaRest`)
+  and the same ready step runs unless that read says the PR is ready. While the
+  quota is latched, `gh pr view` and `gh pr ready` are skipped: a REST-confirmed draft that cannot be readied fails
   the run as `interrupted` (retried), a REST-confirmed ready PR is left alone,
   and a flag that cannot be read keeps the fail-open rule above. The body says `Closes #N` unless an entry is
   `partial` or `missing`, which keeps `Part of #N`. An orphaned draft left

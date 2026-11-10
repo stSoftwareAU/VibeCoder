@@ -5,9 +5,11 @@ reached was still a draft and unarmed (PR #4896 sat so for about 28 hours).
 Completion now retries an unreadable draft state once, marks a draft ready, and
 fails the run (`interrupted`, retried, never filed) when `gh pr ready` fails on
 a known draft instead of continuing. The REST-fallback creation path, which can
-return an already-open draft, runs the same ready step; the fallback runs only
-while the GraphQL quota is latched (`gh pr view` and `gh pr ready` are skipped),
-so it reads the draft flag over REST and treats a REST-confirmed draft as known. The auto-merge sweep
+return an already-open draft, runs the same ready step when the REST draft flag
+says draft or cannot be read. The fallback is entered on any primary
+rate-limit message, and while the GraphQL quota is latched `gh pr view` and
+`gh pr ready` are skipped, so the draft flag is read over REST and a
+REST-confirmed draft is treated as known. The auto-merge sweep
 also readies an orphaned fleet draft (no continuation or mutation-hold marker,
 open issue with no fleet assignee) and arms it in the same pass. Two criteria
 are `partial` (the documented fail-open paths where the draft state cannot be
@@ -51,8 +53,9 @@ read), so this is `Part of #4952`.
   completion-exit `adoptAgentRaisedPrBody`.
 - The REST-fallback path reads `GET repos/<repo>/pulls/<n>` `.draft`
   (`readPrDraftViaRest`, `pr_create_rest.ts`; PR #5033 review) because that path
-  runs only once the quota is latched, and `spawnGh` (`gh_spawn.ts`) skips every
-  non-`gh api` call then. `true` → `readyDraftBeforeArming` with a known draft,
+  is entered on any primary rate-limit message, which usually means the quota
+  is latched, and `spawnGh` (`gh_spawn.ts`) skips every non-`gh api` call while
+  it is. `true` → `readyDraftBeforeArming` with a known draft,
   so a ready the latch skips fails the run `interrupted` instead of releasing
   the claim as raised; `false` → left alone and armed; unreadable → the
   unknown-state fail-open rule. GitHub has no REST ready-for-review endpoint, so
