@@ -26,8 +26,8 @@ attribution for every base-refresh decision. Part of #4943.
   feedback, spelling and babysitter commands do not write that summary, so each
   persists its own `base-merge-allowed` / `base-merge-skipped` tally in a
   cumulative `base_refresh_counters.json` (`persistBaseRefreshCounter`).
-  Persistence directory per lane: the CI, feedback and spelling commands use
-  the worker `config.workDir`; the babysitter uses `babysitterStateDir()` (the
+  Persistence directory per lane: the CI, feedback and spelling commands use the
+  worker `config.workDir`; the babysitter uses `babysitterStateDir()` (the
   `fleet-pr-babysitter` state directory).
 - The startup banner is extended with
   `[base-refresh] startup repair-base-merge=conflicting-only … version=… commit=…`
@@ -126,8 +126,8 @@ Related existing behaviour checked:
   `worker/deno/tests/repair_base_merge_wiring_4943_test.ts::counts consecutive UNKNOWN reads in the #4831 refusal state and clears them on a known read`
   (asserts each processor's `base_refresh_counters.json` tally),
   `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts::a conflicting repair is tallied as base-merge-allowed in the babysitter state dir (Issue #4943)`
-  — reviewer: met (worker-process lanes feed `fault_tolerance_summary.json`;
-  the standalone repair commands persist `base_refresh_counters.json`; the
+  — reviewer: met (worker-process lanes feed `fault_tolerance_summary.json`; the
+  standalone repair commands persist `base_refresh_counters.json`; the
   standalone behind-only refresh callers (babysitter-behind, `pr-maintenance`,
   the reviewer script) remain log-line only)
 - **partial** — "Use current code and available redacted runtime evidence ...
@@ -167,18 +167,19 @@ Related existing behaviour checked:
 - `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts` — `fix()` skips
   `mergeBase` for failed CI and review repairs of a MERGEABLE PR, calls it for
   CONFLICTING; log outcome asserted.
-- Mutation closure and #4831 babysitter proof: `babysitter_base_merge_policy_4943_test.ts`
-  now drives `fix()` with an `UNKNOWN` PR twice (streak 2, `mergeBase` never
-  called, fleet-health line), then a `MERGEABLE` read (streak cleared), and
-  asserts the persisted `base-merge-allowed` / `base-merge-skipped` tallies in
-  the babysitter state directory. Red checks: skipping `trackRepairMergeability`
-  turned the UNKNOWN test red; negating the outcome ternary turned the line
-  assertions and both tally tests red.
+- Mutation closure and #4831 babysitter proof:
+  `babysitter_base_merge_policy_4943_test.ts` now drives `fix()` with an
+  `UNKNOWN` PR twice (streak 2, `mergeBase` never called, fleet-health line),
+  then a `MERGEABLE` read (streak cleared), and asserts the persisted
+  `base-merge-allowed` / `base-merge-skipped` tallies in the babysitter state
+  directory. Red checks: skipping `trackRepairMergeability` turned the UNKNOWN
+  test red; negating the outcome ternary turned the line assertions and both
+  tally tests red.
 - Counter persistence and startup: `repair_base_merge_4943_test.ts` covers
-  `persistBaseRefreshCounter` (accumulation, garbled file restart, no
-  directory, unwritable directory) and `formatStartupBuildLines`; the wiring
-  test asserts each processor's tally (`baseRefresh.base-merge-skipped.<lane>`
-  = 3 over two UNKNOWN reads and one MERGEABLE read).
+  `persistBaseRefreshCounter` (accumulation, garbled file restart, no directory,
+  unwritable directory) and `formatStartupBuildLines`; the wiring test asserts
+  each processor's tally (`baseRefresh.base-merge-skipped.<lane>` = 3 over two
+  UNKNOWN reads and one MERGEABLE read).
 - `worker/deno/tests/base_refresh_churn_4943_test.ts` — competing lanes against
   one strict base: one owner gets `update-branch`;
   unready/draft/conflicting/unreviewed PRs get none; failed-CI, merged, closed
@@ -209,7 +210,7 @@ Related existing behaviour checked:
 - `docs/MERGE.md` is hand-wrapped like the base file (the root docs are outside
   the gate's `deno fmt` run); `markdownlint-cli2` reports 0 issues.
 - Follow-up run (review findings): the touched and related processor, babysitter
-  and run-core test files pass except
-  `run_core_production_deps_test.ts` "recheckAgentAuth - an auth failure clears
-  the active provider cache (Issue #4267)", which fails identically with this
-  change stashed, so it is pre-existing.
+  and run-core test files pass except `run_core_production_deps_test.ts`
+  "recheckAgentAuth - an auth failure clears the active provider cache (Issue
+  #4267)", which fails identically with this change stashed, so it is
+  pre-existing.
