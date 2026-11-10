@@ -13,7 +13,7 @@
  *                          the check itself declares that a human step, not a
  *                          code change, is what clears it; Issue #2726).
  *   1. infrastructure     (specific external-failure patterns are unambiguous —
- *                          e.g. ETIMEDOUT, ENOTFOUND, 5xx — and runtime "Error:"
+ *                          e.g. ETIMEDOUT, ENOTFOUND, 502/503/504 — and runtime "Error:"
  *                          prefixes from such failures should not be misread as
  *                          lint findings).
  *   2. history-rewrite-required
@@ -246,6 +246,13 @@ const INFRA_TEXT_PATTERNS: ReadonlyArray<string> = [
   "502 bad gateway",
   "503 service unavailable",
   "504 gateway timeout",
+  // Download clients: @actions/tool-cache (setup-deno, setup-node) and curl -f.
+  "unexpected http response: 502",
+  "unexpected http response: 503",
+  "unexpected http response: 504",
+  "the requested url returned error: 502",
+  "the requested url returned error: 503",
+  "the requested url returned error: 504",
   "runner lost connection",
   "the runner has received a shutdown signal",
   "lost communication with the server",

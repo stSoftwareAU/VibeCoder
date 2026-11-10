@@ -617,3 +617,70 @@ Deno.test("ci_failure_classifier - a gate-free log keeps humanStep absent", () =
   assertEquals(result.category, "code-fix-required");
   assertEquals("humanStep" in result, false);
 });
+
+// =============================================================================
+// Download-client 502/503/504 responses (Issue #4965)
+//
+// @actions/tool-cache (setup-deno, setup-node) and curl -f report a failed
+// download as an `error:`-shaped line, which the code-fix regex would claim.
+// A 502/503/504 from the download host is an outage, not a code finding.
+// =============================================================================
+
+const DOWNLOAD_5XX_CASES: ReadonlyArray<readonly [string, string]> = [
+  ["Error: Unexpected HTTP response: 504", "unexpected http response: 504"],
+  ["Error: Unexpected HTTP response: 503", "unexpected http response: 503"],
+  ["Error: Unexpected HTTP response: 502", "unexpected http response: 502"],
+  [
+    "curl: (22) The requested URL returned error: 502",
+    "the requested url returned error: 502",
+  ],
+  [
+    "curl: (22) The requested URL returned error: 503",
+    "the requested url returned error: 503",
+  ],
+  [
+    "curl: (22) The requested URL returned error: 504",
+    "the requested url returned error: 504",
+  ],
+];
+
+Deno.test("ci_failure_classifier - download-client 502/503/504 routes to infrastructure (Issue #4965)", () => {
+  for (const [message, pattern] of DOWNLOAD_5XX_CASES) {
+    const result = classifyCiFailure(
+      "Soak on macos-latest / Run",
+      [{ message }],
+    );
+    assertEquals(result.category, "infrastructure", message);
+    assertEquals(result.signals.includes(`text:${pattern}`), true, message);
+    // The infrastructure verdict outranks the code-fix `error:` signal.
+    assertEquals(
+      result.signals.includes("regex:(^|\\s)error:"),
+      false,
+      message,
+    );
+  }
+});
+
+Deno.test("ci_failure_classifier - download-client 502/503/504 in the log excerpt routes to infrastructure (Issue #4965)", () => {
+  for (const [text, pattern] of DOWNLOAD_5XX_CASES) {
+    const result = classifyCiFailure("Soak on macos-latest / Run", [], text);
+    assertEquals(result.category, "infrastructure", text);
+    assertEquals(result.signals.includes(`text:${pattern}`), true, text);
+  }
+});
+
+Deno.test("ci_failure_classifier - bare 500 and 4xx download responses stay code-fix-required (Issue #4965)", () => {
+  for (
+    const message of [
+      "Error: Unexpected HTTP response: 500",
+      "Error: Unexpected HTTP response: 404",
+      "curl: (22) The requested URL returned error: 404",
+    ]
+  ) {
+    const result = classifyCiFailure(
+      "Soak on macos-latest / Run",
+      [{ message }],
+    );
+    assertEquals(result.category, "code-fix-required", message);
+  }
+});
