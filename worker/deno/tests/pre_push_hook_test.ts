@@ -527,7 +527,12 @@ Deno.test('integration: an unknown PR base (compareRef "") makes a failing CI cl
       ),
       blocked.stderr,
     );
-    assert(!blocked.stderr.includes("this lint is denied"), blocked.stderr);
+    // The head's diagnostics are retained, labelled as an unavailable comparison.
+    assert(
+      blocked.stderr.includes("Head diagnostics (comparison unavailable):"),
+      blocked.stderr,
+    );
+    assert(blocked.stderr.includes("this lint is denied"), blocked.stderr);
   } finally {
     await hook.cleanup();
     await Deno.remove(fx.root, { recursive: true });
