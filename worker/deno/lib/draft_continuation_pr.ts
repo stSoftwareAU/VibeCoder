@@ -11,8 +11,9 @@
  * that run completes, completion marks the draft ready and it takes the
  * normal review and auto-merge path, even with a criterion still unmet
  * (Issue #4234); the body says `Closes #N` unless an entry is `missing`.
- * When marking it ready fails, the run is not released as having raised it
- * ready: completion fails the run so the next run retries (Issue #4952).
+ * When marking a known draft ready fails, the run is not released as having
+ * raised it ready: completion fails the run so the next run retries (Issue
+ * #4952). A draft whose state could not be read only warns on a failed ready.
  *
  * Best-effort: the branch is the deliverable that matters, so a `gh` failure
  * is reported, never thrown.

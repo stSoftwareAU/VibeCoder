@@ -842,11 +842,13 @@ async function postFindingsComment(
  * either way — PRs do not merge until they have a review approval and CI is
  * green, and GitHub enforces both.
  *
- * Issue #4952: a draft PR, or one whose draft state cannot be read, is marked
- * ready. When `gh pr ready` fails the PR is still a draft, so the run returns
- * a `failure` (category `interrupted`) naming the PR instead of `continue`,
- * and the claim is not released as having raised it ready; the next run
- * retries it.
+ * Issue #4952: a draft PR is marked ready. When `gh pr ready` fails on a
+ * known draft the PR is still a draft, so the run returns a `failure`
+ * (category `interrupted`) naming the PR instead of `continue`, and the claim
+ * is not released as having raised it ready; the next run retries it. A PR
+ * whose draft state cannot be read after one retry is still marked ready
+ * best-effort, but a failed ready there only warns: the run continues and
+ * arms as before.
  *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
@@ -907,7 +909,7 @@ export async function recoverAndFinaliseExistingPr(
   }
   const prState = prLookup?.state ?? null;
   const prAlreadyMerged = prState === "MERGED";
-  // Issue #4952: set when `gh pr ready` failed, so the PR is still a draft.
+  // Issue #4952: set when `gh pr ready` failed on a known draft, so it is still a draft.
   let readyFailure = false;
 
   // Post-recovery finalisation (best-effort)
@@ -947,8 +949,8 @@ export async function recoverAndFinaliseExistingPr(
       // auto-merge path. Auto-merge waits for
       // the ready-for-review CI to start: the draft's checks were skipped,
       // and a skipped required check counts as passing (Issue #4160).
-      // Issue #4952: a draft whose state could not be read is marked ready
-      // too. A failed ready leaves the PR a draft, so the run fails below.
+      // Issue #4952: a known draft that fails to become ready fails the run
+      // below. A state that could not be read keeps `ciStarted` true.
       let ciStarted = true;
       if (state.mutationHold) {
         // Issue #4617: a survivor the repository's CI blocks on holds the pull
@@ -969,7 +971,11 @@ export async function recoverAndFinaliseExistingPr(
           log: (message) => logger.warn(message, { repo, prNumber }),
         });
       } else if (prLookup === null || prLookup.isDraft === true) {
-        if (prLookup === null) {
+        // Issue #4952: an unknown state (null after the retry) is marked ready
+        // best-effort. Its CI result and a failed ready do not change the
+        // outcome, so the run arms exactly as it did before this change.
+        const unknownState = prLookup === null;
+        if (unknownState) {
           logger.warn(
             "PR draft state could not be read; attempting to mark it ready (Issue #4952)",
             { repo, prNumber },
@@ -982,13 +988,18 @@ export async function recoverAndFinaliseExistingPr(
           sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
           log: (message) => logger.warn(message, { repo, prNumber }),
         });
-        ciStarted = result.ciStarted;
+        if (!unknownState) ciStarted = result.ciStarted;
         if (result.ready) {
           logger.info("Marked the draft continuation PR ready (Issue #4146)", {
             repo,
             prNumber,
             ciStarted,
           });
+        } else if (unknownState) {
+          logger.warn(
+            "Could not mark the PR ready with its draft state unknown; the run continues and auto-merge is armed as before (Issue #4952)",
+            { repo, prNumber },
+          );
         } else {
           readyFailure = true;
           logger.warn(

@@ -871,8 +871,8 @@ not merge until they have a review approval and CI is green, and GitHub
 enforces both. No review, finding or label withholds arming or disarms a PR;
 only the routing holds above (a closed milestone route, a retargeted base, a
 retargeted sync PR, an open-children summary PR) and a draft do. The one
-draft the sweep arms is an orphaned fleet draft, which it readies first (Issue
-#4952; see *Drafts are skipped, not failed* above).
+draft the sweep arms is an orphaned fleet draft, which it readies first (Issue #4952;
+see *Drafts are skipped, not failed* above).
 When a pre-PR verifier finding or a Standards violation survives its recovery
 turn on an existing PR (Issues #3382, #3796), the completion phase posts the
 findings on that PR and still arms it. A top-level findings comment whose

@@ -76,13 +76,16 @@ type LookupReply = { isDraft?: boolean } | Error;
  *
  * `lookups` answers the state lookups in order, the last repeating.
  * `viewIsDraft` is the `isDraft` in the ready step's head read (undefined
- * leaves it out). `readyFails` makes `gh pr ready` throw. Once ready, the
- * head commit gains one new check run, so CI counts as started at once.
+ * leaves it out). `readyReadFails` makes that head read throw, so the check
+ * runs cannot be snapshotted. `readyFails` makes `gh pr ready` throw. Once
+ * ready, the head commit gains one new check run, so CI counts as started at
+ * once.
  */
 function ghFake(opts: {
   lookups: LookupReply[];
   viewIsDraft?: boolean;
   readyFails?: boolean;
+  readyReadFails?: boolean;
 }) {
   const calls: string[][] = [];
   let lookupReads = 0;
@@ -100,6 +103,9 @@ function ghFake(opts: {
         );
       }
       if (args.includes(READY_FIELDS)) {
+        if (opts.readyReadFails) {
+          return Promise.reject(new Error("HTTP 502"));
+        }
         return Promise.resolve(JSON.stringify({
           headRefOid: SHA,
           ...(opts.viewIsDraft !== undefined
@@ -227,6 +233,56 @@ Deno.test(
     );
     assert(warning !== undefined, "the unreadable draft state is warned");
     assertEquals(warning.context?.prNumber, PR);
+  },
+);
+
+Deno.test(
+  "Issue #4952 - unknown state + gh pr ready fails → continue, still armed, and a WARN names the PR",
+  async () => {
+    const gh = ghFake({
+      lookups: [new Error("HTTP 502"), new Error("HTTP 502")],
+      viewIsDraft: true,
+      readyFails: true,
+    });
+    const { deps, armed, warns } = makeDeps(gh);
+
+    const result = await recover(deps);
+
+    assertEquals(
+      result,
+      { status: "continue" },
+      "an unknown state never fails",
+    );
+    assertEquals(readyCalls(gh.calls).length, 1, "ready was attempted");
+    assertEquals(armed, [PR], "arming happens exactly as before");
+    const warning = warns.find((w) =>
+      w.message.includes(
+        "Could not mark the PR ready with its draft state unknown",
+      )
+    );
+    assert(warning !== undefined, "the failed ready is warned");
+    assertEquals(warning.context?.prNumber, PR);
+  },
+);
+
+Deno.test(
+  "Issue #4952 - unknown state + unreadable head read → ready is marked and the PR is still armed",
+  async () => {
+    const gh = ghFake({
+      lookups: [new Error("HTTP 502"), new Error("HTTP 502")],
+      readyReadFails: true,
+    });
+    const { deps, armed } = makeDeps(gh);
+
+    const result = await recover(deps);
+
+    assertEquals(result, { status: "continue" });
+    assertEquals(readyCalls(gh.calls).length, 1);
+    assertEquals(
+      armed,
+      [PR],
+      "the CI wait cannot be read, but an unknown state keeps ciStarted true",
+    );
   },
 );
 

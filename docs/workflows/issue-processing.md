@@ -1157,9 +1157,14 @@ reads that signal at both ends
 - **Degraded runs follow the same rule.** A fallback model changes nothing
   here.
 - **Completion marks a draft ready.** Completion rewrites a draft's body, runs
-  `gh pr ready` and arms squash auto-merge, even when a criterion is still
-  unmet. The body says `Closes #N` unless an entry is `partial` or `missing`, which keeps
-  `Part of #N`.
+  `gh pr ready` on a draft (or on an unreadable draft state) and arms squash
+  auto-merge, even when a criterion is still unmet. A failed ready on a known
+  draft releases the run as `interrupted` (a failure naming the PR as blocked):
+  the PR stays an unarmed draft and the next run retries. An unreadable state
+  only warns, naming the PR number, and arming proceeds. The body says
+  `Closes #N` unless an entry is `partial` or `missing`, which keeps
+  `Part of #N`. An orphaned draft left anyway is readied by the sweep self-heal
+  (Issue #4952).
 
 - **A timed-out run keeps a draft.** A run that times out (or is released on
   schedule) with its work preserved on the branch opens a DRAFT PR saying
@@ -1172,7 +1177,7 @@ reads that signal at both ends
 - **Ready, and merging as soon as possible.** When the resumed run completes,
   completion rewrites the draft's body (`Closes #N`, or `Part of #N` while an
   entry is `partial` or `missing`), runs `gh pr ready` and arms squash auto-merge in the
-  same step, rather than waiting for the sweep.
+  same step unless a known draft's ready fails, rather than waiting for the sweep.
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
 only the pure scope assessment both this gate and `claim_freshness.ts` read.
