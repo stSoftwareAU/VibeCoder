@@ -27,6 +27,7 @@ Backend-only change; no UI. Tests:
 
 - `worker/deno/tests/repo_file_read_test.ts`: regular read, file symlink, symlinked parent, unsafe paths, size cap (including the exact-cap positive case), NotFound, directory.
 - `worker/deno/tests/pre_push_gate_test.ts`: `repoCiRunsCspell` and `loadDenoScopes` each refuse a symlink to a file outside the checkout and an oversized file, each with a regular-file positive control.
+- `docs/audits/lib-sweep-coverage/top-up-4920.json`: registers the new module in the sweep ledger.
 
 ## Test Plan
 
@@ -35,4 +36,5 @@ Backend-only change; no UI. Tests:
 - Existing `ci_mutation_contract_test.ts` still passes; no assertions were removed from any existing test.
 - `deno fmt --check`, `deno lint` and `deno check` on the touched files: clean.
 - Callers of the changed readers checked: `runPrePushGate` (`repoCiRunsCspell`, `loadDenoScopes`) and `repo_formatters.ts` (`loadDenoScopes`), both of which go through the same exported function.
-- Full `./quality.sh` was not run in this session.
+- `./quality.sh` was run once on the first commit: every check passed except two. The completeness check (`tests/lib_sweep_coverage_test.ts`) wanted `repo_file_read.ts` claimed by a sweep slice; this PR adds `docs/audits/lib-sweep-coverage/top-up-4920.json` and that test now passes (39 passed).
+- The other failure was five `tests/pr_maintenance_command_test.ts` cases (`update-open-pr-branches ...`). The log shows `gh command skipped: GraphQL primary quota exhausted` on this host, so they depend on live GitHub quota, not on this change; the gate was not re-run in full after the slice was added.
