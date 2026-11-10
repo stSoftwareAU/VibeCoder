@@ -391,6 +391,80 @@ Deno.test("fix resumes a failed publication without another agent session (PR #4
   });
 });
 
+// Issue #4921: a failing check already red on the base is the base's failure
+// to fix, so CI-fix defers the PR: no agent, no pushed commit, no charged attempt.
+Deno.test("a failed-CI PR whose every failing check is red on the base is deferred, not repaired", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    const calls: Array<
+      { repo: string; headSha: string; baseRef: string; rollup: unknown }
+    > = [];
+    h.deps.classifyBaseFailure = (options) => {
+      calls.push({
+        repo: options.repo,
+        headSha: options.headSha,
+        baseRef: options.baseRef,
+        rollup: options.rollup,
+      });
+      return Promise.resolve({
+        kind: "defer",
+        checks: [{ name: "test", baseRunId: 7 }],
+      });
+    };
+    h.state.changes = true;
+    await h.attempt();
+    assertEquals(h.state.sessions, 0);
+    assertEquals(h.state.committed, false);
+    assertEquals(h.state.pushed, 0);
+    assertEquals(h.state.journalled, []);
+    assertEquals(await records(stateDir), []);
+    assertEquals(calls, [{
+      repo: REPO,
+      headSha: HEAD,
+      baseRef: "main",
+      rollup: [{ conclusion: "FAILURE" }],
+    }]);
+  });
+});
+
+Deno.test("a failed-CI PR not deferred by the base check still repairs, and the prompt forbids repairing a base-red check", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.deps.classifyBaseFailure = () =>
+      Promise.resolve({
+        kind: "repair",
+        reason: `the base's run of "test" is green, not red`,
+      });
+    h.state.agents.push({});
+    await h.attempt();
+    assertEquals(h.state.sessions, 1);
+    assertStringIncludes(
+      h.state.prompts[0]!,
+      "do not repair it in this PR",
+    );
+  });
+});
+
+Deno.test("a review repair never consults the base-failure classifier", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }],
+    });
+    let consulted = 0;
+    h.deps.classifyBaseFailure = () => {
+      consulted++;
+      return Promise.reject(new Error("consulted for a review repair"));
+    };
+    h.state.agents.push({});
+    h.state.changes = true;
+    await h.attempt();
+    assertEquals(consulted, 0);
+    assertEquals(h.state.sessions, 1);
+  });
+});
+
 async function withState<T>(
   action: (stateDir: string) => Promise<T>,
 ): Promise<T> {
