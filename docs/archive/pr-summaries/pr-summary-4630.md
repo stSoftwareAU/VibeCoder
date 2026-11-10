@@ -39,9 +39,11 @@ compile error is therefore caught before the push, not by a CI run. Closes
   how many times; not line) is also on the base, the failure is a
   `[PRE_PUSH_WARNING]`, not a verdict. Only error-level diagnostics are
   compared: a warning never fails a CI cargo command, so a warning the push
-  adds, or cargo's `warning: build failed, waiting for other jobs to
-  finish...`, does not make a base-only failure a verdict. A base that passes
-  or lacks an error the push shows leaves it a verdict. An unavailable repair base or a host failure during
+  adds, or cargo's
+  `warning: build failed, waiting for other jobs to
+  finish...`, does not make
+  a base-only failure a verdict. A base that passes or lacks an error the push
+  shows leaves it a verdict. An unavailable repair base or a host failure during
   comparison is infrastructure, not a branch verdict.
 - Scanner fixes: a `cd <dir>` on its own line now holds for the rest of that
   step's run block (any `cd` form it cannot follow, including `pushd`, `popd`, a
@@ -62,38 +64,38 @@ compile error is therefore caught before the push, not by a CI run. Closes
   `scanAgentCiCargoChecks`, not a top-level import, so scripts that reach
   `claude_runner.ts` without the worker's import map, such as the
   review-fleet-prs helpers, never reach its bare `@std/yaml/parse` specifier)
-  and writes the derived
-  checks (and any unverifiable reasons) into the hook's `pre-push-spec.json`.
-  `pre_push_gate_cli.ts` reads that entry and passes it back as `findCiCargo`,
-  so the hook runs the CI cargo checks without importing the workflow
-  scanner (it still reaches a YAML parser through `cargo_deny_gate.ts`). A self-pushed Rust change that fails CI clippy or the test
-  build is refused, exactly as the worker's own gates refuse it.
+  and writes the derived checks (and any unverifiable reasons) into the hook's
+  `pre-push-spec.json`. `pre_push_gate_cli.ts` reads that entry and passes it
+  back as `findCiCargo`, so the hook runs the CI cargo checks without importing
+  the workflow scanner (it still reaches a YAML parser through
+  `cargo_deny_gate.ts`). A self-pushed Rust change that fails CI clippy or the
+  test build is refused, exactly as the worker's own gates refuse it.
   - Fail closed: when that pre-run scan cannot be produced (`git ls-files`
     fails, or the scanner fails to load or throws), `scanAgentCiCargoChecks`
     logs a warning and writes a scan with no checks and one `unverifiable`
     reason, so a Rust-relevant push through the hook is refused as
-    infrastructure instead of running no CI cargo check. A run with no
-    checkout writes no scan.
+    infrastructure instead of running no CI cargo check. A run with no checkout
+    writes no scan.
   - PR-base comparison: the CI-fix and PR-feedback processors read the PR base
     before the agent runs and pass `origin/<base>` as
-    `RunClaudeOptions.ciCargoCompareRef` (`""` when the base cannot be read,
-    via `prBaseCompareRef`, which makes a failing check an infrastructure fault,
-    as `requireCargoBaseComparison` does for the worker's own push). It is
-    written into the spec as `compareRef` and `pre_push_gate_cli.ts` passes it
-    to `runPrePushGate`, so a failure the base already has is a
+    `RunClaudeOptions.ciCargoCompareRef` (`""` when the base cannot be read, via
+    `prBaseCompareRef`, which makes a failing check an infrastructure fault, as
+    `requireCargoBaseComparison` does for the worker's own push). It is written
+    into the spec as `compareRef` and `pre_push_gate_cli.ts` passes it to
+    `runPrePushGate`, so a failure the base already has is a
     `[PRE_PUSH_WARNING]` on the agent's own push too. In the CI processor both
     agent runs (the fix and the quality retry) carry it; in the feedback
-    processor every agent run does, through `runAgentTracked`. Issue runs
-    (the execute run, with the milestone branch, else the base branch, else the
-    default branch, skipping blank names; the
-    completion rebase pass, with its PR base; and the in-run recovery agents
-    of the pre-push gate, screenshot, summary-rule, PR-body-length,
-    security-fix and quality-gate retries, through `issueRunCompareRef`) and spelling repairs (the
-    PR base, read once before the agent runs and reused for the base merge)
-    carry it too. Merge-conflict repairs pass none, and neither do the other
-    agent runs with a checkout (the custom PR prompt agent, the closure-verdict
-    agent, and the planning, refinement, question, revision and quorum runs),
-    so a failing CI cargo check on their own push stays a verdict.
+    processor every agent run does, through `runAgentTracked`. Issue runs (the
+    execute run, with the milestone branch, else the base branch, else the
+    default branch, skipping blank names; the completion rebase pass, with its
+    PR base; and the in-run recovery agents of the pre-push gate, screenshot,
+    summary-rule, PR-body-length, security-fix and quality-gate retries, through
+    `issueRunCompareRef`) and spelling repairs (the PR base, read once before
+    the agent runs and reused for the base merge) carry it too. Merge-conflict
+    repairs pass none, and neither do the other agent runs with a checkout (the
+    custom PR prompt agent, the closure-verdict agent, and the planning,
+    refinement, question, revision and quorum runs), so a failing CI cargo check
+    on their own push stays a verdict.
   - The hook runs with `--allow-write=${TMPDIR:-/tmp}` added to main's
     `--config <worker>/deno.json --frozen --lock <worker>/deno.lock` invocation
     (PR #4962): the base comparison makes its scratch worktree directory with
@@ -120,15 +122,16 @@ compile error is therefore caught before the push, not by a CI run. Closes
   directory containment check still refuses a crate symlinked outside the
   repository, while main's other changed-file checks keep skipping such files.
 - Merge with main (PR #4962): the agent pre-push hook now runs with the worker
-  config and a frozen lock (`--config <worker>/deno.json --frozen --lock
-  <worker>/deno.lock`) instead of `--no-config --no-lock`. This change keeps
-  main's invocation and adds this PR's `--allow-write=${TMPDIR:-/tmp}` to it,
-  so the scratch worktree for the base comparison is still writable. The
-  `--no-config` rationale in the hook docs and `docs/CONFIGURATION.md` is
-  updated to say the hook receives the scan precomputed into its spec and
-  never imports the workflow scanner (`ci_cargo_checks.ts` and its bare
-  `@std/yaml/parse` specifier); the hook still reaches a YAML parser through
-  `cargo_deny_gate.ts`.
+  config and a frozen lock
+  (`--config <worker>/deno.json --frozen --lock
+  <worker>/deno.lock`) instead
+  of `--no-config --no-lock`. This change keeps main's invocation and adds this
+  PR's `--allow-write=${TMPDIR:-/tmp}` to it, so the scratch worktree for the
+  base comparison is still writable. The `--no-config` rationale in the hook
+  docs and `docs/CONFIGURATION.md` is updated to say the hook receives the scan
+  precomputed into its spec and never imports the workflow scanner
+  (`ci_cargo_checks.ts` and its bare `@std/yaml/parse` specifier); the hook
+  still reaches a YAML parser through `cargo_deny_gate.ts`.
 - Docs: `docs/CONFIGURATION.md` (pre-flight / pre-push gate section) and
   `docs/INTERNALS.md`; the head also rewrites the agent-hook passages in
   `docs/CONFIGURATION.md` and the `pre_push_gate.ts` module header and
@@ -176,9 +179,9 @@ flowchart LR
 
 - The scanner is opt-in (`findCiCargo`) and loaded by dynamic import in
   `gateUnpushedCommits`. The agent's pre-push hook never scans the workflows
-  itself (and never imports the workflow scanner): the worker scans them before the
-  agent runs and writes the derived scan into the hook's spec, which the hook
-  passes back as `findCiCargo`.
+  itself (and never imports the workflow scanner): the worker scans them before
+  the agent runs and writes the derived scan into the hook's spec, which the
+  hook passes back as `findCiCargo`.
 - Anything the scanner cannot reproduce faithfully fails loud as infrastructure
   instead of dropping to a smaller check set (the issue requires this).
 - A failure the PR base already has is compared by diagnostic message, file and
@@ -236,17 +239,19 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   clippy; a scan the worker could not produce refuses a Rust push as
   infrastructure and lets a notes-only push through; a base-red push is a
   `[PRE_PUSH_WARNING]` and accepted, a base-green push that breaks clippy is
-  refused; `compareRef: ""` refuses as `Could not compare the failed CI cargo
+  refused; `compareRef: ""` refuses as
+  `Could not compare the failed CI cargo
   check against the PR base`.
 - `tests/claude_runner_test.ts`: `scanAgentCiCargoChecks` reads a checkout's CI
   clippy, returns an unverifiable scan with a warning for an unreadable
   tracked-file list and for a scanner that cannot be loaded, and returns nothing
   with no checkout; `runClaudeWithTimeout` installs a hook whose spec (read by a
   stub agent) carries the checkout's clippy check and the `ciCargoCompareRef`.
-- `tests/pr_ci_processor_test.ts`, `tests/pr_feedback_processor_pre_flight_4630_test.ts`
-  and `tests/git_push_preflight_test.ts`: every CI-fix agent run (fix and
-  quality retry) and the feedback agent run get `origin/<base>`, or `""` when
-  the base is unreadable; `prBaseCompareRef` itself.
+- `tests/pr_ci_processor_test.ts`,
+  `tests/pr_feedback_processor_pre_flight_4630_test.ts` and
+  `tests/git_push_preflight_test.ts`: every CI-fix agent run (fix and quality
+  retry) and the feedback agent run get `origin/<base>`, or `""` when the base
+  is unreadable; `prBaseCompareRef` itself.
 - `tests/git_push_preflight_test.ts::commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)`:
   a repair push that must compare the base but has no readable base fails a
   failing clippy as `PrePushGateInfrastructureError`, never as a charged
@@ -265,16 +270,18 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `tests/pre_push_gate_cli_test.ts` (12 tests at head),
   `tests/pre_push_hook_test.ts` (13 tests at head),
   `tests/pr_ci_processor_test.ts` (61 tests at head) and
-  `tests/pr_feedback_processor_pre_flight_4630_test.ts` (4 tests at head). The suites that
-  push through the agent's real hook now run with the checkout's own worker
-  config and frozen lock (`--config <worker>/deno.json --frozen --lock
-  <worker>/deno.lock`, from main PR #4962), so the previous `--no-config`
-  environment workaround no longer applies. `tests/pre_push_gate_test.ts`
-  and `tests/pr_feedback_processor_test.ts` together show 26 failed tests on the
-  head and the identical 26 on the base commit (fixtures that commit
-  `README.md` with `#Bad` meet the container's real `markdownlint-cli2`); they
-  are not caused by this change. The real ShellCheck publication suite was not
-  re-run on this head.
+  `tests/pr_feedback_processor_pre_flight_4630_test.ts` (4 tests at head). The
+  suites that push through the agent's real hook now run with the checkout's own
+  worker config and frozen lock
+  (`--config <worker>/deno.json --frozen --lock
+  <worker>/deno.lock`, from main
+  PR #4962), so the previous `--no-config` environment workaround no longer
+  applies. `tests/pre_push_gate_test.ts` and
+  `tests/pr_feedback_processor_test.ts` together show 26 failed tests on the
+  head and the identical 26 on the base commit (fixtures that commit `README.md`
+  with `#Bad` meet the container's real `markdownlint-cli2`); they are not
+  caused by this change. The real ShellCheck publication suite was not re-run on
+  this head.
 - The obsolete environment contract copied the CI output directory into local
   builds. The remaining contract preserves target-specific settings while
   ignoring both output directory keys, including expressions:
@@ -314,8 +321,9 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   screenshot, summary-rule, PR-body-length and quality-gate remediation agents
   each get the run's base as `ciCargoCompareRef`; red with `issueRunCompareRef`
   removed from those four call sites), the same assertion added to
-  `worker/deno/tests/pre_push_gate_retry_test.ts`, `security_fix_gate_retry_test.ts`
-  and `execute_phase_agent_provider_pin_4346_test.ts`, the spelling pair in
+  `worker/deno/tests/pre_push_gate_retry_test.ts`,
+  `security_fix_gate_retry_test.ts` and
+  `execute_phase_agent_provider_pin_4346_test.ts`, the spelling pair in
   `pr_spelling_processor_test.ts` (an unreadable base gives `""`, `release/2`
   gives `origin/release/2`) and
   `git_push_preflight_test.ts::issueRunCompareRef - the milestone, else the base, else the default branch; blank names are skipped (Issue #4630 review)`;
@@ -330,21 +338,21 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   failure returning no scan (two `scanAgentCiCargoChecks` tests red); the CLI
   dropping `compareRef` (the CLI test and both compareRef hook tests red); the
   runner dropping `compareRef` or the `ciCargo` spread from the installed spec
-  (the hook-installed test red, once each); the feedback processor, the CI
-  first run and the CI quality retry each dropping `ciCargoCompareRef` (their
-  tests red, once each); the hook script without `--allow-write` (the compareRef
-  hook test red with `Requires write access`). Branch outcomes: `prBaseCompareRef`
+  (the hook-installed test red, once each); the feedback processor, the CI first
+  run and the CI quality retry each dropping `ciCargoCompareRef` (their tests
+  red, once each); the hook script without `--allow-write` (the compareRef hook
+  test red with `Requires write access`). Branch outcomes: `prBaseCompareRef`
   `undefined`, `""`, whitespace and a padded name are each asserted in
   `tests/git_push_preflight_test.ts::prBaseCompareRef - origin/<base>, or "" when the base is unknown (Issue #4630 review)`;
   `scanAgentCiCargoChecks` has the no-checkout, success, `git ls-files` failure
   (`!ok` and non-zero exit share one `failed` helper) and scanner-load-failure
-  outcomes tested. `tests/pr_push_base_sync_test.ts::a spelling fix asks for its PR's base to be merged in before the push`
+  outcomes tested.
+  `tests/pr_push_base_sync_test.ts::a spelling fix asks for its PR's base to be merged in before the push`
   asserts the spelling agent gets `origin/<base>` as its compare ref, and
   `tests/pre_push_gate_test.ts::runPrePushGate: a warning the push adds does not turn a base-only failure into a verdict (Issue #4630 review)`
   covers a plain rustc warning and cargo's build-failed notice. Merge-conflict
   repairs still carry no `compareRef`: their push stays a verdict, as
-  documented. The unreadable-base
-  path is
+  documented. The unreadable-base path is
   `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)`,
   and the feedback fix-branch wiring is
   `worker/deno/tests/pr_feedback_processor_test.ts::processPrFeedback - a gated-head fix branch compares the PR base and requires the comparison`.
@@ -365,8 +373,8 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `worker/deno/lib/phases/completion_phase.ts` and one in
   `worker/deno/lib/phases/execute_phase.ts`, at the `ciCargoCompareRef` call
   sites; the comment in `execute_phase.ts` no longer contains an apostrophe,
-  which the executor-phase tests' brace scan tripped over. No behaviour
-  changed. the executor-phase suites that scan those files pass on the head with
+  which the executor-phase tests' brace scan tripped over. No behaviour changed.
+  the executor-phase suites that scan those files pass on the head with
   `deno test -A`.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
