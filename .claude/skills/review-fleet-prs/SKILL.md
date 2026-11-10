@@ -51,6 +51,14 @@ escalation.
    a test that would fail on the regression, unless existing tests already
    cover it. A refactor, docs, config, workflow or presentation change may not
    need one. Do not reward assertions that pin incidental CSS, DOM or internals.
+   Dummy tests and "how" tests are blocking findings, under the one shared
+   rule set in
+   [`CODING-STANDARDS.md`](../../../CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused)
+   that the brief applies. The gate's deterministic dummy-test scan
+   (`worker/deno/lib/dummy_test_scan.ts`) records its result on the entry as
+   `dummyTestScan`; `post.ts` adds its findings whatever the reply says, and
+   what it cannot judge alone is already a checklist item in
+   `reviewChecklists`.
 4. **Test changes are judged for meaningful protection; the test-change policy
    applies to every repo, with no opt-in.** The test is never removed,
    skipped, weakened or loosened just to make the quality gate pass, and the
@@ -317,7 +325,8 @@ fields as follows:
   reviewer's reply then carries a `checklist` array with a verdict per item,
   and any `missing` item sends the PR back. When the change uses a
   capability from the trusted VibeCoder guidance, that value also lists
-  those checks. They are the same checks the pre-PR verifier renders.
+  those checks, and when the dummy-test scan found a mock-interaction
+  assertion or a test asserting nothing in view, it lists those too. They are the same checks the pre-PR verifier renders.
   A pull request cannot replace them with a weaker copy. Pass the entry to `post.ts`
   verbatim: its `checklistState` (the load problem and the items owed a
   verdict) lets `post.ts` add a blocking finding itself for a file that could

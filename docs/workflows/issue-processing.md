@@ -1161,7 +1161,9 @@ reads that signal at both ends
   still unmet. A failed ready on a known draft releases the run as
   `interrupted`: the run outcome names the PR with the failure attached, the
   claim comment does not report it as raised ready, the PR stays an unarmed
-  draft, and the next run retries. When the state lookup cannot read the draft
+  draft, and the next run retries. This post-PR failure skips the whole-body
+  infrastructure retry, so the verifier and posted comments are not repeated.
+  When the state lookup cannot read the draft
   state (after one retry), the ready step's own head read decides: `isDraft`
   true is handled exactly like a known draft, while `isDraft` false or an
   unreadable head read only warns on a failed ready, and arming proceeds as

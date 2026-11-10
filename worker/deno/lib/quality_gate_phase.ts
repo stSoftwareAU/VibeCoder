@@ -137,7 +137,7 @@ const CARRIED_ENV_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
  * A value that may be carried through `sudo` in argv — a plain path, or a
  * proxy URL or host list (`:` and `,`). No `@`, so no URL with credentials.
  */
-const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/:,\[\]]+$/;
+export const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/:,\[\]]+$/;
 
 /**
  * The egress variables a dropped command needs to reach a registry at all
@@ -176,6 +176,62 @@ export function sudoCarriedEnv(
 }
 
 /**
+ * The git config that lets the dropped account use the checkout it is about
+ * to run in (Issue #4927). The `agent` account has no `~/.gitconfig`, so git
+ * refuses a checkout the worker owns with "detected dubious ownership", and a
+ * repository build script that runs `git rev-parse HEAD` fails. This trusts
+ * only the worktree root of the checkout the gate is about to run in
+ * ({@link gitWorktreeRoot}), through the git config environment
+ * (`GIT_CONFIG_COUNT` and its `_KEY_0` and `_VALUE_0` entries). git compares
+ * `safe.directory` with the top-level worktree, not with the subdirectory a
+ * command runs in, and the gates run projects up to two levels below the root.
+ * Like the cargo target and the proxy it is carried in argv, as it is
+ * non-secret.
+ *
+ * Returns `{}` when the root is not an absolute path that
+ * {@link CARRIED_ENV_VALUE} accepts, so {@link carryEnvThroughSudo} never
+ * throws on an odd path. A checkout whose path holds a space gets no entry,
+ * and its build script then fails as it did before this change.
+ *
+ * @param cwd - The directory the command runs in, the checkout or a project
+ *   directory beneath it.
+ * @returns The three git config entries, or `{}`.
+ */
+export function gitSafeDirectoryEnv(cwd: string): Record<string, string> {
+  const root = gitWorktreeRoot(cwd);
+  if (!root.startsWith("/") || !CARRIED_ENV_VALUE.test(root)) return {};
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: root,
+  };
+}
+
+/**
+ * The worktree root git checks for `cwd` (Issue #4927): the nearest ancestor,
+ * `cwd` included, that holds a `.git` entry (a directory, or the file a linked
+ * worktree has). Falls back to `cwd` when none is found, so a directory that
+ * is not in a repository keeps the entry it had.
+ *
+ * @param cwd - An absolute directory path.
+ * @returns The worktree root, or `cwd`.
+ */
+export function gitWorktreeRoot(cwd: string): string {
+  let dir = cwd;
+  for (;;) {
+    try {
+      Deno.statSync(`${dir === "/" ? "" : dir}/.git`);
+      return dir;
+    } catch {
+      // No `.git` here; try the parent.
+    }
+    const slash = dir.lastIndexOf("/");
+    if (slash <= 0) return cwd;
+    dir = dir.slice(0, slash);
+  }
+}
+
+/**
  * Carry an environment entry through `sudo`'s `env_reset` (Issue #2247).
  *
  * The image grants `vibe ALL=(agent) NOPASSWD: ALL` with no `SETENV` tag, and
@@ -185,7 +241,8 @@ export function sudoCarriedEnv(
  * grant. The value therefore travels in **argv** instead:
  * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
  * Only non-secret values travel this way: the placement and the egress proxy
- * ({@link sudoCarriedEnv}, Issue #4877).
+ * ({@link sudoCarriedEnv}, Issue #4877), and the git safe.directory entry
+ * ({@link gitSafeDirectoryEnv}, Issue #4927).
  *
  * Declared credentials are never carried here. They ride the stdin channel of
  * `credential_channel.ts` (Issue #4705), because a value in argv is visible to

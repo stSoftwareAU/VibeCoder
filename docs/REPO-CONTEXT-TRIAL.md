@@ -286,3 +286,6 @@ _Template — fill in when the CodeGraph window closes._
   `rtk_output.enabled` switch: same shape, a different candidate.
 - **[brief trial](BRIEF-TRIAL.md)** — the sibling protocol for brief, removed
   on analysis before its window opened (Issue #2699).
+- **[TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md)** — the sibling protocol
+  for the TokenEconomizer plugin: same shape of bar, a different candidate and
+  host.

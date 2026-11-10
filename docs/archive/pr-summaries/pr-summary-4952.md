@@ -30,6 +30,7 @@ paths where the draft state cannot be read), so this is `Part of #4952`.
 - A failed ready on a **known** draft returns `failure` / `interrupted`: the run
   outcome then names the PR with the failure attached, not a plain raise.
   `interrupted` is transient and never auto-filed; the next run retries.
+  A failed post-PR ready step skips the whole-body infrastructure retry.
 - Unknown state (lookup null after one retry): the ready helper's own `isDraft`
   read decides. Draft → same rules as a known draft (CI-start guard of Issue
   #4160 and failure on a failed ready). Not draft or unreadable → the old
@@ -226,3 +227,19 @@ flowchart TD
 - `worker/deno/lib/auto_merge_sweep.ts:385` (deleted `clearRefusal` call) —
   killed by the new test "a skipped draft clears its recorded branch-refresh
   refusal" in the same file.
+
+### PR #5033 review revision
+
+- A known draft whose ready step fails records a per-attempt flag. Completion
+  returns its interrupted result without repeating the whole completion body;
+  the next run retries normally. The flag is cleared at the next attempt.
+- Four completion scenarios (REST quota latch, recovered quota, branch recovery,
+  and create-error recovery) assert one verifier invocation, one issue-link
+  operation, one ready attempt and one advisory comment, with auto-merge unarmed.
+  The regression failed before the guard; all 22 draft-completion tests pass.
+- The clean-verifier fixture does not manufacture a pre-PR review record:
+  current completion resets that field and has no production setter. No
+  exactly-once claim is made for that dormant record path.
+- Formatting, lint and diff checks passed. Tests use checksum-verified local
+  copies of the locked dependencies because Deno cannot connect to JSR here.
+  Full quality gate not rerun on this revision; CI remains required.

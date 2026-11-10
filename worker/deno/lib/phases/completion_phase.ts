@@ -667,13 +667,13 @@ async function postPreprReviewRecord(
   recordPreprReviewChangesRequested(findings.length);
 }
 
-async function reportSummaryRuleBlock(
+function reportSummaryRuleBlock(
   block: SummaryRuleBlock,
   ctx: IssueContext,
   state: PhaseState,
   _prBody: string,
   deps: WorkerDeps,
-): Promise<PhaseResult | null> {
+): PhaseResult | null {
   const { reason, comment } = block;
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
@@ -781,7 +781,8 @@ async function readyDraftBeforeArming(
 }
 
 /** The run fails when a known draft stayed a draft (Issue #4952). */
-function stillDraftFailure(prNumber: number): PhaseResult {
+function stillDraftFailure(prNumber: number, state: PhaseState): PhaseResult {
+  state.completionDraftReadyFailed = true;
   return {
     category: "interrupted",
     status: "failure",
@@ -1117,7 +1118,7 @@ export async function recoverAndFinaliseExistingPr(
   }
 
   // Issue #4952: the PR is still a draft, so the run is not released as raised.
-  if (readyFailure) return stillDraftFailure(prNumber);
+  if (readyFailure) return stillDraftFailure(prNumber, state);
   return { status: "continue" };
 }
 
@@ -1265,6 +1266,7 @@ async function runCompletionAttempt(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  state.completionDraftReadyFailed = false;
   const blocksBefore = state.securityGateBlocks?.length ?? 0;
   const summaryBlocksBefore = state.summaryRuleBlocks?.length ?? 0;
   const result = await completionBody(ctx, state, deps);
@@ -1305,7 +1307,8 @@ async function runCompletionAttempt(
   const summaryRuleBlocked =
     (state.summaryRuleBlocks?.length ?? 0) > summaryBlocksBefore;
   if (
-    result.status !== "failure" || gateBlocked || summaryRuleBlocked
+    result.status !== "failure" || gateBlocked || summaryRuleBlocked ||
+    state.completionDraftReadyFailed
   ) {
     return result;
   }
@@ -4117,6 +4120,6 @@ async function completionBody(
   }
 
   // Issue #4952: the PR exists but is still a draft, so the run is not released as raised.
-  if (readyFailure) return stillDraftFailure(prNumber);
+  if (readyFailure) return stillDraftFailure(prNumber, state);
   return { status: "continue" };
 }

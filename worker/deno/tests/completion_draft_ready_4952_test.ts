@@ -593,6 +593,10 @@ async function runRestFallback(
 
   const calls: string[][] = [];
   const armed: number[] = [];
+  const comments: string[] = [];
+  let verifierCalls = 0;
+  let linkCalls = 0;
+  state.completionAdvisoryComment = "review advisory fixture";
   let ready = false;
   const runGhCommand = (args: string[]): Promise<string> => {
     calls.push([...args]);
@@ -639,9 +643,23 @@ async function runRestFallback(
       error: () => undefined,
       debug: () => undefined,
     } as never,
+    claude: {
+      runPrePrVerifier: () => {
+        verifierCalls++;
+        return Promise.resolve({
+          status: "not_checked",
+          reason: "test records verifier invocation",
+        });
+      },
+    },
     github: {
       createClient: () =>
-        ({ postComment: () => Promise.resolve(undefined) }) as never,
+        ({
+          postComment: (_repo: string, _number: number, body: string) => {
+            comments.push(body);
+            return Promise.resolve(undefined);
+          },
+        }) as never,
       runGhCommand,
     },
     git: {
@@ -666,6 +684,10 @@ async function runRestFallback(
         }),
     },
     pr: {
+      linkPrToIssue: () => {
+        linkCalls++;
+        return Promise.resolve({ ok: true, value: undefined });
+      },
       // The pre-checks are GraphQL-backed, so they are dead at the quota.
       findExistingPrForIssue: () =>
         Promise.resolve({
@@ -689,7 +711,7 @@ async function runRestFallback(
 
   const result = await workOnIssueCompletion(ctx, state, deps);
   await Deno.remove(repoPath, { recursive: true });
-  return { result, calls, armed };
+  return { result, calls, armed, comments, verifierCalls, linkCalls };
 }
 
 Deno.test(
@@ -759,9 +781,11 @@ Deno.test(
     assert(run.result.status === "failure", "the run fails, not continues");
     assertEquals(run.result.category, "interrupted");
     assertStringIncludes(run.result.reason, `PR #${PR}`);
-    // "interrupted" is an infrastructure category, so the body gets one
-    // bounded in-process retry (Issue #1550) and ready is attempted again.
-    assert(readyCalls(run.calls).length >= 1, "ready was attempted");
+    assertEquals(
+      readyCalls(run.calls).length,
+      1,
+      "only the next run retries ready",
+    );
     assertEquals(run.armed, [], "auto-merge is not armed on a draft");
   },
 );
@@ -812,6 +836,10 @@ async function runExistingDraftCompletion(
 
   const calls: string[][] = [];
   const armed: number[] = [];
+  const comments: string[] = [];
+  let verifierCalls = 0;
+  let linkCalls = 0;
+  state.completionAdvisoryComment = "review advisory fixture";
   let created = false;
   let ready = false;
   const runGhCommand = (args: string[]): Promise<string> => {
@@ -853,9 +881,23 @@ async function runExistingDraftCompletion(
       error: () => undefined,
       debug: () => undefined,
     } as never,
+    claude: {
+      runPrePrVerifier: () => {
+        verifierCalls++;
+        return Promise.resolve({
+          status: "not_checked",
+          reason: "test records verifier invocation",
+        });
+      },
+    },
     github: {
       createClient: () =>
-        ({ postComment: () => Promise.resolve(undefined) }) as never,
+        ({
+          postComment: (_repo: string, _number: number, body: string) => {
+            comments.push(body);
+            return Promise.resolve(undefined);
+          },
+        }) as never,
       runGhCommand,
     },
     git: {
@@ -880,6 +922,10 @@ async function runExistingDraftCompletion(
         }),
     },
     pr: {
+      linkPrToIssue: () => {
+        linkCalls++;
+        return Promise.resolve({ ok: true, value: undefined });
+      },
       findExistingPrForBranch: () =>
         Promise.resolve(
           route === "branch"
@@ -906,7 +952,7 @@ async function runExistingDraftCompletion(
 
   const result = await workOnIssueCompletion(ctx, state, deps);
   await Deno.remove(repoPath, { recursive: true });
-  return { result, calls, armed };
+  return { result, calls, armed, comments, verifierCalls, linkCalls };
 }
 
 Deno.test(
@@ -935,9 +981,11 @@ Deno.test(
     assert(run.result.status === "failure", "the run fails, not continues");
     assertEquals(run.result.category, "interrupted");
     assertStringIncludes(run.result.reason, `PR #${PR}`);
-    // "interrupted" may get one bounded in-process retry, so ready may be
-    // attempted more than once.
-    assert(readyCalls(run.calls).length >= 1, "ready was attempted");
+    assertEquals(
+      readyCalls(run.calls).length,
+      1,
+      "only the next run retries ready",
+    );
     assertEquals(run.armed, [], "auto-merge is not armed on a draft");
   },
 );
@@ -958,3 +1006,25 @@ Deno.test(
     assertEquals(run.armed, [PR]);
   },
 );
+
+Deno.test("completion - a failed ready does not repeat verifier or PR side effects (PR #5033 review)", async () => {
+  for (
+    const run of [
+      await runRestFallback({ draft: true, latched: true }),
+      await runRestFallback({ draft: true, latched: false, readyFails: true }),
+      await runExistingDraftCompletion("branch", true),
+      await runExistingDraftCompletion("create-error", true),
+    ]
+  ) {
+    assert(run.result.status === "failure");
+    assertEquals(run.result.category, "interrupted");
+    assertEquals(run.verifierCalls, 1, "no second paid verifier pass");
+    assertEquals(run.linkCalls, 1, "no duplicate issue link comment");
+    assertEquals(readyCalls(run.calls).length, 1, "next run owns the retry");
+    assertEquals(
+      run.comments.filter((b) => b.includes("review advisory fixture")).length,
+      1,
+    );
+    assertEquals(run.armed, []);
+  }
+});
