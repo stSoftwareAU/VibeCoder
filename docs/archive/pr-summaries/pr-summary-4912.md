@@ -108,13 +108,14 @@ $ grep -rniE "measurable improvement|should not be re-attempted|closes it as not
 - Only the doc comment of
   `worker/deno/tests/negative_result_lesson_docs_test.ts` changed; no assertion
   was removed or edited.
-- `./quality.sh` (run to the end; the deno tests stage took 10 minutes): markdownlint,
-  mermaid, semgrep, release-tag ruleset, deno lint, type check and fmt passed.
-  The deno tests stage failed 11 tests (33487 passed) in
-  `claude_runner_pre_push_3394_test.ts`, `merge_fast_checks_credentials_4705_test.ts`,
-  `pre_push_hook_test.ts` and `review_fleet_prs_post_claim_4398_test.ts`: they
-  need `jsr.io`, `osascript` or an unproxied environment, none of which the
-  container has, and none read the files this branch edits.
+- `./quality.sh` (run to the end; the deno tests stage took 10 minutes):
+  markdownlint, mermaid, semgrep, release-tag ruleset, deno lint, type check and
+  fmt passed. The deno tests stage failed 11 tests (33487 passed) in
+  `claude_runner_pre_push_3394_test.ts`,
+  `merge_fast_checks_credentials_4705_test.ts`, `pre_push_hook_test.ts` and
+  `review_fleet_prs_post_claim_4398_test.ts`: they need `jsr.io`, `osascript` or
+  an unproxied environment, none of which the container has, and none read the
+  files this branch edits.
 
 <!-- vibe-quality-gate-skipped reason="deno tests stage failed 11 environment-bound tests (jsr.io, osascript, proxy env) unrelated to this prose-only diff; every other stage passed" -->
 
