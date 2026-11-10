@@ -50,7 +50,7 @@ function makeContext(config: WorkerConfig): IssueContext {
   };
 }
 
-function makeState(repoPath: string): PhaseState {
+function makeState(repoPath: string, claudeOutput = ""): PhaseState {
   return {
     branchName: BRANCH,
     baseBranch: "main",
@@ -59,7 +59,7 @@ function makeState(repoPath: string): PhaseState {
     clarityStatus: "assessed_clear",
     // The turn-capped invocation never reached the success path that fills
     // this, so the realistic state is empty here.
-    claudeOutput: "",
+    claudeOutput,
     executeStartTime: Date.now() - 1_800_000,
     executeStartHeadSha: "abc123",
     baselineQualityPassed: true,
@@ -92,6 +92,8 @@ async function runWithError(options: {
   error: Error;
   /** Files `git status --porcelain` reports as uncommitted; `[]` is clean. */
   dirty?: string[];
+  /** Output already on the phase state, e.g. from an earlier invocation. */
+  stateOutput?: string;
 }): Promise<TurnLimitRun> {
   const repoPath = await Deno.makeTempDir({ prefix: "turn_limit_4949_" });
   const commits: string[] = [];
@@ -164,7 +166,7 @@ async function runWithError(options: {
     const config = makeConfig();
     const result = await workOnIssueExecuteClaude(
       makeContext(config),
-      makeState(repoPath),
+      makeState(repoPath, options.stateOutput),
       deps,
     );
     return { result, invocations, commits, noteAtCommit };
@@ -222,6 +224,19 @@ Deno.test("execute_phase #4949 - a turn-capped run with uncommitted work preserv
   const reason = "reason" in run.result ? run.result.reason ?? "" : "";
   assertStringIncludes(reason, TURN_LIMIT_HEADING);
   assertStringIncludes(reason, NOTE);
+});
+
+Deno.test("execute_phase #4949 - output already on the phase state is enough to inspect the tree when the error carries none", async () => {
+  const run = await runWithError({
+    error: new AgentTurnLimitError(TURN_LIMIT_MESSAGE),
+    stateOutput: "output from an earlier invocation",
+  });
+  assertEquals(categoryOf(run.result), "interrupted");
+  assertEquals(run.commits.length, 1, `commits: ${run.commits.join(" | ")}`);
+  assertStringIncludes(
+    run.commits[0] ?? "",
+    "wip: execute hit the agent turn limit after",
+  );
 });
 
 Deno.test("execute_phase #4949 - any other error keeps internal_error and the bounded infrastructure retry", async () => {

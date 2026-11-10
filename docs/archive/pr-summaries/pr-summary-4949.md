@@ -86,7 +86,7 @@ flowchart LR
 
 ## Test Plan
 
-- `worker/deno/tests/execute_phase_turn_limit_4949_test.ts` (new, four tests):
+- `worker/deno/tests/execute_phase_turn_limit_4949_test.ts` (new, five tests):
   clean-tree turn cap is `interrupted`, one invocation, `classifyRunFailure`
   gives `not_code_fixable` / `interrupted`; dirty-tree turn cap commits
   `wip: execute hit the agent turn limit after …` and writes the handover note;
@@ -98,7 +98,9 @@ flowchart LR
 - Red checks (break made on purpose, then restored): whole new branch disabled →
   2 red; only the retry bypass disabled → 2 red (invocation count and the
   dirty-tree test's retry); only the tree inspection pointed back at
-  `state.claudeOutput` → 1 red (dirty-tree test).
+  `state.claudeOutput` → 1 red (dirty-tree test); `state.claudeOutput ||`
+  replaced with `false ||` (the mutation check's survivor at
+  `execute_phase.ts:1535`) → 1 red (state-output test).
 - Ran: `deno task test:unit` over the new file,
   `execute_phase_handover_test.ts`, `execute_phase_usage_limit_test.ts`,
   `execute_phase_failed_run_4147_test.ts`, `handover_note_test.ts`,
