@@ -28,6 +28,8 @@ import {
   buildRetryPrompt,
   carryEnvThroughSudo,
   createDefaultDeps,
+  gitSafeDirectoryEnv,
+  gitWorktreeRoot,
   isDockerInfraFailure,
   isMissingCommandFailure,
   qualityCommandFile,
@@ -1508,6 +1510,58 @@ Deno.test("sudoCarriedEnv - a proxy URL with credentials stays out of argv (Issu
   assertEquals(
     sudoCarriedEnv({ HTTPS_PROXY: "http://user:pw@proxy:3128" }),
     {},
+  );
+});
+
+Deno.test("gitSafeDirectoryEnv - a relative path gets no entry (Issue #4927)", () => {
+  assertEquals(gitSafeDirectoryEnv("relative/checkout"), {});
+});
+
+Deno.test("gitSafeDirectoryEnv - a plain absolute path trusts only that checkout (Issue #4927)", async () => {
+  const checkout = await Deno.makeTempDir({ prefix: "vibe-4927-abs-" });
+  try {
+    // The `.git` marker stops the worktree-root walk here, so the test never
+    // reads the shared temp directory above the checkout.
+    await Deno.mkdir(`${checkout}/.git`);
+    assertEquals(gitSafeDirectoryEnv(checkout), {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "safe.directory",
+      GIT_CONFIG_VALUE_0: checkout,
+    });
+  } finally {
+    await Deno.remove(checkout, { recursive: true });
+  }
+});
+
+Deno.test("gitSafeDirectoryEnv - a nested project dir trusts the worktree root (Issue #4927)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-4927-root-" });
+  try {
+    await Deno.mkdir(`${root}/.git`);
+    await Deno.mkdir(`${root}/crates/app`, { recursive: true });
+    assertEquals(gitWorktreeRoot(`${root}/crates/app`), root);
+    assertEquals(gitWorktreeRoot(root), root);
+    assertEquals(gitSafeDirectoryEnv(`${root}/crates/app`), {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "safe.directory",
+      GIT_CONFIG_VALUE_0: root,
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gitWorktreeRoot - a linked worktree's .git file marks the root, and no .git falls back to cwd (Issue #4927)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-4927-link-" });
+  try {
+    await Deno.writeTextFile(`${root}/.git`, "gitdir: /elsewhere\n");
+    await Deno.mkdir(`${root}/a/b`, { recursive: true });
+    assertEquals(gitWorktreeRoot(`${root}/a/b`), root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+  assertEquals(
+    gitWorktreeRoot("/nonexistent-4927/a/b"),
+    "/nonexistent-4927/a/b",
   );
 });
 

@@ -70,6 +70,18 @@ const SUDO_SET_NAMES = [
 ];
 
 /**
+ * Names the worker puts on a dropped child so git trusts the checkout
+ * (Issue #4927). They are carried through `sudo` in argv, and are permitted
+ * only when the child shows it ran through the sudo drop to the untrusted
+ * account.
+ */
+const GIT_SAFE_DIRECTORY_NAMES = [
+  "GIT_CONFIG_COUNT",
+  "GIT_CONFIG_KEY_0",
+  "GIT_CONFIG_VALUE_0",
+];
+
+/**
  * The task body a repository would declare: it lists the child's variable
  * names on one line that starts `ENV `, then reports the invoking uid `sudo`
  * recorded and the account the task ran as on a line that starts `SUDO `, then fails so the gate reports it. One
@@ -177,8 +189,8 @@ function ranThroughSudoDrop(output: string): boolean {
 /**
  * Assert the child saw only names the allowlist, the shell, the task runner or
  * the build cache put there. The parent credential is not among them. The
- * names `sudo` adds are permitted only when the child ran through the drop to
- * the untrusted account.
+ * names `sudo` adds, and the git safe.directory names (Issue #4927), are
+ * permitted only when the child ran through the drop to the untrusted account.
  */
 export function assertOnlyAllowlistedNames(output: string): void {
   const permitted = new Set([
@@ -186,7 +198,9 @@ export function assertOnlyAllowlistedNames(output: string): void {
     ...SHELL_SET_NAMES,
     ...DENO_TASK_SET_NAMES,
     ...BUILD_CACHE_NAMES,
-    ...(ranThroughSudoDrop(output) ? SUDO_SET_NAMES : []),
+    ...(ranThroughSudoDrop(output)
+      ? [...SUDO_SET_NAMES, ...GIT_SAFE_DIRECTORY_NAMES]
+      : []),
   ]);
   const names = probedNames(output);
   const leaked = names.filter((name) => !permitted.has(name));
