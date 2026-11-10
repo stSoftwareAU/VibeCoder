@@ -268,7 +268,13 @@ at the unchanged head, the description steps run in order:
    or `missing` criterion and the proposal, if any, has no `partial` or
    `missing` criterion of its own. The summary's own wording does not decide it:
    for a fully met summary the guard appends `Closes #N` unless the proposal
-   already has a closing keyword for the issue. It differs from the canonical
+   already has a closing keyword for the issue that GitHub would honour. The
+   keyword counts only when it and `#N` (or this repository's `owner/repo#N`)
+   are on one line, separated by spaces or tabs only, and outside Markdown
+   code. A keyword whose `#N` is on the next line (hard-wrapped), split from it
+   by a code span (``Closes `x` #N``), or quoted in code does not stop the
+   append. A colon or full-URL closing form, and an explicit non-closing
+   reference, still settle it as before. It differs from the canonical
    assembler on purpose: the assembler appends `Closes #N` whenever the summary
    has no closing keyword, even beside `Part of #N` or `Refs #N`, but the guard
    honours an explicit non-closing reference the agent chose, namely

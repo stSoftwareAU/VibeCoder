@@ -5,13 +5,18 @@ import {
   assertThrows,
 } from "@std/assert";
 import {
+  assertWithheld,
   githubClosesIssue,
   guardPrBodyProposal,
   isIssueCloseAllowed,
   PR_BODY_LIMIT,
   stripVibeMarkers,
 } from "../lib/babysitter_pr_body_guard.ts";
-import { buildIdempotencyMarker, closingKeywordLine } from "../lib/pr_body.ts";
+import {
+  buildIdempotencyMarker,
+  closingKeywordLine,
+  hasGithubClosingReference,
+} from "../lib/pr_body.ts";
 import {
   buildSummaryDigestMarker,
   issueNumberFromMarker,
@@ -205,6 +210,145 @@ Deno.test("a fully met issue keeps its legitimate Closes, with no duplicate", ()
     headRefName: "feature",
   });
   assertEquals(output, proposal + `\n\n${buildIdempotencyMarker(4637)}`);
+});
+
+Deno.test("a close split by a line break does not settle the close, so Closes #N is appended (Issue #4964)", () => {
+  const proposal = "Rewritten.\n\nCloses\n#4637.";
+  const output = guardPrBodyProposal({
+    proposal,
+    liveBody: liveBodyFor(4637, "Closes #4637"),
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+    headRefName: "issue-4637-thing",
+  });
+  assertEquals(
+    output,
+    `${proposal}\n\nCloses #4637\n\n${buildIdempotencyMarker(4637)}`,
+  );
+  assert(hasGithubClosingReference(output, 4637, REPO));
+});
+
+Deno.test("a close with code between the keyword and #N does not settle the close, so Closes #N is appended (Issue #4964)", () => {
+  const proposal = "Rewritten.\n\nCloses `x` #4637.";
+  const output = guardPrBodyProposal({
+    proposal,
+    liveBody: liveBodyFor(4637, "Closes #4637"),
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+    headRefName: "issue-4637-thing",
+  });
+  assertEquals(
+    output,
+    `${proposal}\n\nCloses #4637\n\n${buildIdempotencyMarker(4637)}`,
+  );
+  assert(hasGithubClosingReference(output, 4637, REPO));
+});
+
+Deno.test("a same-repository qualified close is honoured, and another repository's is not (Issue #4964)", () => {
+  const same = "Rewritten.\n\nCloses owner/repo#4637";
+  const sameOutput = guardPrBodyProposal({
+    proposal: same,
+    liveBody: liveBodyFor(4637, "Closes #4637"),
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+    headRefName: "issue-4637-thing",
+  });
+  assertEquals(sameOutput, `${same}\n\n${buildIdempotencyMarker(4637)}`);
+  const other = "Rewritten.\n\nCloses other/repo#4637";
+  const otherOutput = guardPrBodyProposal({
+    proposal: other,
+    liveBody: liveBodyFor(4637, "Closes #4637"),
+    summary: FULLY_MET_SUMMARY,
+    repo: REPO,
+    headRefName: "issue-4637-thing",
+  });
+  assertEquals(
+    otherOutput,
+    `${other}\n\nCloses #4637\n\n${buildIdempotencyMarker(4637)}`,
+  );
+});
+
+Deno.test("a same-line close joined by a tab or written as Fixes is left unchanged (Issue #4964)", () => {
+  for (const close of ["Closes\t#4637", "Fixes #4637"]) {
+    const proposal = `Rewritten.\n\n${close}`;
+    const output = guardPrBodyProposal({
+      proposal,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "issue-4637-thing",
+    });
+    assertEquals(
+      output,
+      `${proposal}\n\n${buildIdempotencyMarker(4637)}`,
+      close,
+    );
+  }
+});
+
+Deno.test("a withheld issue's close split by a line break, by code, or in colon or URL form leaves no effective close (Issue #4964)", () => {
+  const closeLeft =
+    /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:\s*#4674|(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+https:\/\/github\.com\/\S+\/issues\/4674/i;
+  for (
+    const form of [
+      "Closes\n#4674",
+      "Closes `x` #4674",
+      "Closes: #4674",
+      "Fixes https://github.com/owner/repo/issues/4674",
+    ]
+  ) {
+    const output = guardPrBodyProposal({
+      proposal: `Rewritten.\n\n${form}`,
+      liveBody: liveBodyFor(4674, "Closes #4674"),
+      summary: partSummary("partial"),
+      repo: REPO,
+      headRefName: "issue-4674-thing",
+    });
+    assertEquals(hasGithubClosingReference(output, 4674, REPO), false, form);
+    assertEquals(closingKeywordLine(output, 4674), null, form);
+    assertEquals(closeLeft.test(output), false, form);
+    if (form.includes("`")) {
+      // A code span is inert, and its bare #4674 still counts as a mention
+      // under the existing rule, so no Part of is appended for this form.
+      assertStringIncludes(output, "#4674", form);
+    } else {
+      assertStringIncludes(output, "Part of #4674", form);
+    }
+  }
+});
+
+Deno.test("the withhold backstop still refuses a real close for the withheld issue, and not one inside code (Issue #4964)", () => {
+  for (
+    const survivor of [
+      "Closes #4674",
+      "Closes owner/repo#4674",
+      "Closes: #4674",
+      "Closes\n#4674",
+    ]
+  ) {
+    assertThrows(
+      () => assertWithheld(survivor, 4674, REPO),
+      Error,
+      "still closes #4674",
+      survivor,
+    );
+  }
+  assertWithheld("Closes `x` #4674", 4674, REPO);
+  assertWithheld("`Closes #4674`", 4674, REPO);
+});
+
+Deno.test("a closing keyword quoted as code is not an effective close (Issue #4964)", () => {
+  const output = guardPrBodyProposal({
+    proposal:
+      "Rewritten. Use `Closes #4674` in the body.\n\n```\nCloses #4674\n```",
+    liveBody: liveBodyFor(4674, "Closes #4674"),
+    summary: partSummary("partial"),
+    repo: REPO,
+    headRefName: "issue-4674-thing",
+  });
+  assertEquals(hasGithubClosingReference(output, 4674, REPO), false);
+  assertEquals(closingKeywordLine(output, 4674), null);
+  assertStringIncludes(output, "Part of #4674");
 });
 
 Deno.test("a proposal that only says Part of a fully met issue is left as written, not closed", () => {

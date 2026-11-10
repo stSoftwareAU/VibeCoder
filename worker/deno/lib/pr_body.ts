@@ -27,12 +27,15 @@ const CLOSING_KEYWORD_PATTERN =
 /**
  * {@link CLOSING_KEYWORD_PATTERN} with the keyword and `#N` required on the
  * same line (`[ \t]+`, not `\s+`): GitHub does not honour a keyword whose `#N`
- * sits on the next line, so `Closes\n#42` closes nothing. Used only by
- * {@link ensurePrReferencesIssue}, which must not treat such a split as a
- * reference; the other callers keep the looser pattern they rely on.
+ * sits on the next line, so `Closes\n#42` closes nothing. Used by
+ * {@link ensurePrReferencesIssue} and {@link hasGithubClosingReference}, which
+ * must not treat such a split as a reference; the other callers keep the
+ * looser pattern they rely on. Groups: the optional repository qualifier
+ * (`owner/repo`, present only for a cross-repository reference) and the issue
+ * number.
  */
 const GITHUB_CLOSING_KEYWORD_PATTERN =
-  /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+#(\d+)\b/gi;
+  /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
 
 /** Every `#N` a closing keyword names, as written — duplicates included. */
 function closingIssueReferences(prBody: string): number[] {
@@ -116,9 +119,11 @@ export function extractClosingIssueNumbers(prBody: string): number[] {
  * Replace every in-code character (but not line breaks) with a non-space
  * placeholder, so code can never read as prose and a code span between a
  * keyword and its `#N` ("Closes `x` #42") cannot collapse into a same-line
- * reference the way blanking it to spaces would.
+ * reference the way blanking it to spaces would. Used by
+ * {@link hasGithubClosingReference} and, as the withhold backstop's masker, by
+ * the babysitter guard's `assertWithheld` (Issue #4964).
  */
-function maskCodeWithPlaceholder(text: string): string {
+export function maskCodeWithPlaceholder(text: string): string {
   return splitMarkdownCode(text)
     .map((segment) =>
       segment.inCode ? segment.value.replace(/[^\n]/g, "\u0001") : segment.value
@@ -130,14 +135,28 @@ function maskCodeWithPlaceholder(text: string): string {
  * Whether the PR body carries a same-line closing keyword for `issueNumber`
  * in prose that GitHub would act on (Issue #4808): keywords inside code spans
  * or fences are masked out first.
+ *
+ * A same-repository `#N` always counts. A cross-repository `owner/repo#N`
+ * counts only when `repo` is given and names the same repository,
+ * case-insensitively (Issue #4964). With no `repo`, a qualified reference
+ * never counts.
+ *
+ * @param prBody - The PR body, or the text to check
+ * @param issueNumber - The issue number to look for
+ * @param repo - The pull request's repository, `owner/name`, when known
+ * @returns true if a same-line, non-code closing keyword for the issue counts
  */
-function hasGithubClosingReference(
+export function hasGithubClosingReference(
   prBody: string,
   issueNumber: number,
+  repo?: string,
 ): boolean {
   const masked = maskCodeWithPlaceholder(prBody);
+  const repoKey = repo?.toLowerCase();
   for (const match of masked.matchAll(GITHUB_CLOSING_KEYWORD_PATTERN)) {
-    if (Number(match[1]) === issueNumber) return true;
+    if (Number(match[2]) !== issueNumber) continue;
+    const qualifier = match[1]?.toLowerCase();
+    if (qualifier === undefined || qualifier === repoKey) return true;
   }
   return false;
 }
