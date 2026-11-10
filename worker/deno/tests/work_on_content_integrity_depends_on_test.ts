@@ -103,7 +103,7 @@ function createGhMock(actions: string[]): (args: string[]) => Promise<string> {
                   editor: { login: "stservice" },
                 }],
               },
-              timelineItems: { nodes: [] },
+              timelineItems: { totalCount: 0, nodes: [] },
             },
           },
         },

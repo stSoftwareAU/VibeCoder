@@ -24,8 +24,9 @@
  * GitHub lists `userContentEdits` newest first, so the body half asks for
  * `first: 100`: the newest 100 body edits (Issue #4804). An issue with more
  * body edits than that reports `bodyHistoryTruncated`, and its older edits are
- * absent from `actors`. Renames come from the timeline and are not covered by
- * that flag.
+ * absent from `actors`. The rename half reads the newest 100 title renames
+ * (`timelineItems(last: 100)`, Issue #4947) and reports `renameHistoryTruncated`
+ * in the same way, using the connection's `totalCount`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -57,8 +58,9 @@ export interface IssueEditActor {
  * Outcome of an editor lookup.
  *
  * `ok: true` carries `actors`: every recorded edit in the window, ordered
- * newest first — the newest 100 renames and newest 100 body edits. Renames
- * are not covered by `bodyHistoryTruncated`. An empty array means no edit
+ * newest first — the newest 100 renames and the newest 100 body edits, each
+ * window flagged by its own truncation flag (`renameHistoryTruncated`,
+ * `bodyHistoryTruncated`). An empty array means no edit
  * record was returned (`actor` is then `null`). `ok: false` means the lookup
  * itself could not be completed, and callers that gate on trust must fail
  * closed rather than guess (Issue #3234).
@@ -78,18 +80,73 @@ export type IssueEditActorLookup =
      * absence as "nobody edited".
      */
     bodyHistoryTruncated: boolean;
+    /**
+     * True when older title renames exist beyond the newest-100 window, so
+     * `actors` lacks them (Issue #4947). A trust decision must not read their
+     * absence as "nobody renamed".
+     */
+    renameHistoryTruncated: boolean;
   }
   | { ok: false; error: Error };
+
+/** A truncated edit-history window, and whether its returned edits settle it. */
+export interface UnsettledHistoryWindow {
+  /** Which record the truncated window belongs to. */
+  source: "content-edit" | "rename";
+  /** Unix seconds of the oldest returned edit in the window, or null when none is returned. */
+  oldestAt: number | null;
+}
+
+/**
+ * The truncated windows that do not yet settle a snapshot (Issues #4804, #4947).
+ *
+ * GitHub lists the newest edits first, so a truncated window hides older edits
+ * that could post-date the snapshot. The window is settled only when its oldest
+ * returned edit predates the snapshot: then every edit at or after the snapshot
+ * is inside the window. A window with no returned edit, or whose oldest edit
+ * post-dates the snapshot, is unsettled. The body window is listed first.
+ *
+ * @param lookup - A successful editor lookup
+ * @param snapshotAt - Unix seconds of the snapshot the edits are judged against
+ * @returns each unsettled truncated window; empty when every window is settled
+ */
+export function unsettledHistoryWindows(
+  lookup: Extract<IssueEditActorLookup, { ok: true }>,
+  snapshotAt: number,
+): UnsettledHistoryWindow[] {
+  const oldestOf = (
+    source: UnsettledHistoryWindow["source"],
+  ): number | null => {
+    const times = lookup.actors
+      .filter((e) => e.source === source)
+      .map((e) => e.editedAt);
+    return times.length === 0 ? null : Math.min(...times);
+  };
+  const windows: UnsettledHistoryWindow[] = [];
+  if (lookup.bodyHistoryTruncated) {
+    windows.push({
+      source: "content-edit",
+      oldestAt: oldestOf("content-edit"),
+    });
+  }
+  if (lookup.renameHistoryTruncated) {
+    windows.push({ source: "rename", oldestAt: oldestOf("rename") });
+  }
+  return windows.filter((w) => w.oldestAt === null || w.oldestAt >= snapshotAt);
+}
 
 /**
  * Both edit records in one round-trip. GitHub lists `userContentEdits` newest
  * first, so `first: 100` is the newest 100 body edits (Issue #4804); the
  * `totalCount` reports any older edits beyond that window. The timeline is
- * chronological, so `last: 100` is its newest 100 rename events. The newest
- * edit is chosen by timestamp below, never by connection order.
+ * chronological, so `last: 100` with `itemTypes:[RENAMED_TITLE_EVENT]` is its
+ * newest 100 rename events (Issue #4947); with that filter `totalCount` counts
+ * only renames, so a count above the returned nodes marks older renames as
+ * hidden. The newest edit is chosen by timestamp below, never by connection
+ * order.
  */
 const EDIT_ACTOR_QUERY =
-  `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(first:100){totalCount nodes{editedAt editor{login}}} timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){nodes{... on RenamedTitleEvent{createdAt actor{login}}}}}}}`;
+  `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){userContentEdits(first:100){totalCount nodes{editedAt editor{login}}} timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){totalCount nodes{... on RenamedTitleEvent{createdAt actor{login}}}}}}}`;
 
 /** The claim check needs the newest body snapshots, in GitHub's newest-first connection. */
 const EDIT_ACTOR_DIFF_QUERY = EDIT_ACTOR_QUERY.replace(
@@ -114,6 +171,7 @@ interface EditActorResponse {
           >;
         };
         timelineItems?: {
+          totalCount?: number;
           nodes?: Array<
             { createdAt?: string | null; actor?: { login?: string } | null }
           >;
@@ -163,10 +221,11 @@ function byNewestFirst(a: IssueEditActor, b: IssueEditActor): number {
  * @param ghFn - Injected `gh` CLI runner
  * @param options - `includeDiff` also reads each body edit's `diff` text. Off
  *   by default so the content-integrity gate's query stays small.
- * @returns Every recorded edit actor in the window, newest first (with `actor`
- *   as the newest and `null` when the issue has never been edited), flagged
- *   `bodyHistoryTruncated` when older body edits lie beyond the window, or an
- *   error when the lookup could not be completed
+ * @returns Every recorded edit actor in the newest-100 body and rename windows,
+ *   newest first (with `actor` as the newest and `null` when the issue has
+ *   never been edited), flagged `bodyHistoryTruncated` when older body edits
+ *   lie beyond their window and `renameHistoryTruncated` when older renames do,
+ *   or an error when the lookup could not be completed
  */
 export async function resolveLastIssueEditor(
   repo: string,
@@ -303,7 +362,36 @@ export async function resolveLastIssueEditor(
     });
   }
 
-  for (const node of issue.timelineItems?.nodes ?? []) {
+  // Issue #4947: `totalCount` is what tells a truncated rename window from a
+  // complete one, so a response without a usable count is malformed and is
+  // rejected, exactly as for body edits.
+  const renameTotal = issue.timelineItems?.totalCount;
+  const renameNodes = issue.timelineItems?.nodes ?? [];
+  const renameCount = renameNodes.length;
+  if (!Number.isInteger(renameTotal) || renameTotal! < renameCount) {
+    return {
+      ok: false,
+      error: new Error(
+        "Edit-actor query returned invalid timelineItems totalCount",
+      ),
+    };
+  }
+  const renameHistoryTruncated = renameTotal! > renameCount;
+  // A truncated window with an unreadable timestamp cannot be placed against
+  // the snapshot, and the older renames it hides cannot be ruled out: fail closed.
+  if (
+    renameHistoryTruncated &&
+    renameNodes.some((node) => toUnixSeconds(node?.createdAt) === null)
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        "Edit-actor query returned truncated timelineItems history with an unparseable createdAt",
+      ),
+    };
+  }
+
+  for (const node of renameNodes) {
     const editedAt = toUnixSeconds(node?.createdAt);
     if (editedAt === null) continue;
     candidates.push({
@@ -319,6 +407,7 @@ export async function resolveLastIssueEditor(
       actor: null,
       actors: [],
       bodyHistoryTruncated,
+      renameHistoryTruncated,
     };
   }
 
@@ -331,5 +420,6 @@ export async function resolveLastIssueEditor(
     actor: candidates[0] ?? null,
     actors: candidates,
     bodyHistoryTruncated,
+    renameHistoryTruncated,
   };
 }

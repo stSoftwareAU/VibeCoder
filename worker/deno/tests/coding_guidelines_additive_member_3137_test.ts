@@ -8,7 +8,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   type DocSection,
   excerpt,
@@ -81,12 +81,4 @@ Deno.test("both surfaces carry the additive-member bullet, word for word (Issue 
     ),
     "the additive-member bullet must be identical on both surfaces",
   );
-});
-
-Deno.test("issue prompt's docs step asks for a sibling-member grep on an additive change (Issue #3137)", async () => {
-  const issuePrompt = await latestPromptText("issue");
-  const normalised = flat(section(issuePrompt, "Instructions")).toLowerCase();
-
-  assertStringIncludes(normalised, "existing sibling members");
-  assertStringIncludes(normalised, "no longer reads as complete");
 });

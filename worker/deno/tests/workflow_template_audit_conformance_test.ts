@@ -136,6 +136,24 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "workflow templates - NON_WORKFLOW_SPEC_IDS agrees with the dependabotConfig flag",
+  () => {
+    // The flag is what the auditor and workflow-sync read to route a spec to
+    // `.github/dependabot.yml`; this list is what the workflow scans skip.
+    // They must name the same specs (Issue #4904).
+    const flagged = WORKFLOW_SPECS.filter((s) => s.dependabotConfig === true)
+      .map((s) => s.id)
+      .sort();
+    assertEquals(
+      flagged,
+      [...NON_WORKFLOW_SPEC_IDS].sort(),
+      "a spec flagged dependabotConfig must be listed in NON_WORKFLOW_SPEC_IDS, " +
+        "and the reverse",
+    );
+  },
+);
+
 /** The exact set of file-scoped checks a rendered template is held to. */
 const EXPECTED_CHECK_IDS: readonly string[] = [
   "action-pins",
