@@ -46,8 +46,8 @@ the archive's `pyproject.toml`) at build, and installs only the archive's
 `plugin/` and `tokeneconomizer/` trees under `/opt/tokeneconomizer`. The
 `tokeneconomizer` wrapper at `/usr/local/bin/tokeneconomizer` answers
 `--version` with the pinned version and commit. Nothing in the image invokes the
-plugin yet: the `token_economizer` block (#4956) is what would, so the command
-sits unused until then. The commit named here and the pin in the image are one
+plugin yet. The `token_economizer` block that #4955 adds is parsed but not
+read, and #4956 wires it into runs, so the command sits unused until then. The commit named here and the pin in the image are one
 value, changed in one PR, and the drift test fails when they differ.
 
 **The block.** The switches are one `token_economizer` block in a host's
@@ -233,7 +233,8 @@ list. Gitignored local files, such as agent worktrees
 and an operator's `.config.json`, are not repository files and are not read.
 
 State is `present` when the path exists and names the plugin today, and
-`planned #N` when issue #N is to add it.
+`planned #N` when issue #N is to add it. A row with no path (`—`) is
+`planned #N`, because nothing in the repository can show that it exists yet.
 
 | Kind | What | Path | State |
 | ---- | ---- | ---- | ----- |
@@ -263,7 +264,7 @@ State is `present` when the path exists and names the plugin today, and
 | Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | planned #4958 |
 | Callback field | the new optional fields on the run callback | `docs/CALLBACKS.md` | planned #4958 |
 | Report section | the weekly report's comparison section | — | planned #4958 |
-| Host config | the `token_economizer` block in the trial host's gitignored `.config.json`, with `enabled` set to `false` first; a purge removes the block there | — | present |
+| Host config | the `token_economizer` block in the trial host's gitignored `.config.json`, with `enabled` set to `false` first; a purge removes the block there | — | planned #4956 |
 
 **What stays.** This page, with its Status changed to *purged* and the measured
 figures added, as the record of the negative result. After a purge,

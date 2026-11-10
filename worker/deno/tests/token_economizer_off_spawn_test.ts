@@ -18,14 +18,14 @@
  *    over several representative requests, is deep-equal to the no-block
  *    baseline.
  *
- *    HONEST SCOPE: the builders take no config today, so this equality pins the
- *    OFF STATE by construction. Nothing on the spawn path reads the block, so
- *    the equality cannot tell an enabled host from a disabled one. #4956 MUST
- *    keep this test and add an `enabled: true` case whose argv or env differs.
- *    The baseline is built by the same builders, so an UNCONDITIONAL change to
- *    a builder moves both sides and this equality stays green. Only the trace
- *    scan in (2) catches a planted trace; a non-trace change to today's spawn
- *    is not caught until a literal snapshot of it is pinned.
+ *    HONEST SCOPE: the builders take no config today, so the equality with the
+ *    no-block baseline pins the OFF STATE by construction. Nothing on the spawn
+ *    path reads the block, so that equality cannot tell an enabled host from a
+ *    disabled one. The baseline is built by the same builders, so it cannot
+ *    catch an unconditional change to a builder either. The literal golden
+ *    spawn (`GOLDEN_ARGV`, `GOLDEN_ADDED_ENV_KEYS`) is what pins today's argv
+ *    and env, and every disabled host is also checked against it. #4956 MUST
+ *    keep these tests and add an `enabled: true` case whose argv or env differs.
  *
  * 2. No plugin trace. No argv element or env key/value carries a token
  *    economizer name (`/token[-_ ]?economizer/i`), a `--plugin-dir` argument,
@@ -83,6 +83,124 @@ const DISABLED_HOSTS: readonly {
     },
   },
 ];
+
+/**
+ * The golden request: a plain prompt with a fixed model, effort and phase and no
+ * optional fields. It carries no session id, MCP path or timestamp, so the argv
+ * it produces is stable and every element is pinned below.
+ */
+const GOLDEN_PROMPT = "Summarise the open issue.";
+const GOLDEN_MODEL = "fixture-model";
+const GOLDEN_EFFORT = "high";
+const GOLDEN_PHASE = "plan";
+
+/**
+ * Today's argv for `GOLDEN_PROMPT` at `GOLDEN_MODEL`, `GOLDEN_EFFORT` and
+ * `GOLDEN_PHASE`, per provider, copied from the unmodified builders.
+ *
+ * update when the builders legitimately change; #4956 must keep these and add an enabled:true case
+ */
+const GOLDEN_ARGV: Readonly<Record<string, readonly string[]>> = {
+  [CLAUDE_PROVIDER_ID]: [
+    "--model",
+    "fixture-model",
+    "--effort",
+    "high",
+    "--max-turns",
+    "100",
+    "--dangerously-skip-permissions",
+    "--verbose",
+    "--output-format",
+    "stream-json",
+    "-p",
+    "Summarise the open issue.",
+  ],
+  [CODEX_PROVIDER_ID]: [
+    "exec",
+    "--json",
+    "--skip-git-repo-check",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--model",
+    "fixture-model",
+    "-c",
+    'model_reasoning_effort="high"',
+    "Summarise the open issue.",
+  ],
+};
+
+/**
+ * The env keys `buildChildEnv` adds beyond the parent fixture, per provider,
+ * sorted. Every parent key must also survive with its value unchanged, which is
+ * checked separately.
+ *
+ * update when the builders legitimately change; #4956 must keep these and add an enabled:true case
+ */
+const GOLDEN_ADDED_ENV_KEYS: Readonly<Record<string, readonly string[]>> = {
+  [CLAUDE_PROVIDER_ID]: [
+    "BASH_MAX_TIMEOUT_MS",
+    "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS",
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH",
+    "VIBE_AUDIT_DISABLED",
+  ],
+  [CODEX_PROVIDER_ID]: ["VIBE_AUDIT_DISABLED"],
+};
+
+/**
+ * The pin for one provider, copied out. A provider with no pin fails loudly.
+ *
+ * @param table - The pins, keyed by provider id.
+ * @param providerId - The provider to look up.
+ * @returns A fresh copy of the pinned list.
+ */
+function pinFor(
+  table: Readonly<Record<string, readonly string[]>>,
+  providerId: string,
+): string[] {
+  const pinned = table[providerId];
+  if (pinned === undefined) {
+    throw new Error(`no golden pin for provider ${providerId}`);
+  }
+  return [...pinned];
+}
+
+/**
+ * Assert that a provider's golden spawn matches the literal pins above.
+ *
+ * @param providerId - The provider to check.
+ * @param fixture - The temp fixture supplying the parent environment.
+ */
+function assertGoldenSpawn(providerId: string, fixture: Fixture): void {
+  const provider = resolveAgentProvider(providerId);
+  const argv = provider.buildInvocation({
+    prompt: GOLDEN_PROMPT,
+    env: envFrom(fixture.parentEnv),
+    model: GOLDEN_MODEL,
+    effort: GOLDEN_EFFORT,
+    phase: GOLDEN_PHASE,
+  });
+  assertEquals(
+    argv,
+    pinFor(GOLDEN_ARGV, providerId),
+    `${providerId} golden argv`,
+  );
+
+  const childEnv = provider.buildChildEnv(fixture.parentEnv);
+  const addedKeys = Object.keys(childEnv)
+    .filter((key) => !(key in fixture.parentEnv))
+    .sort();
+  assertEquals(
+    addedKeys,
+    pinFor(GOLDEN_ADDED_ENV_KEYS, providerId),
+    `${providerId} golden added env keys`,
+  );
+  for (const [key, value] of Object.entries(fixture.parentEnv)) {
+    assertEquals(
+      childEnv[key],
+      value,
+      `${providerId} parent env key ${key} survives unchanged`,
+    );
+  }
+}
 
 /** The PreToolUse hook settings a run carries, as `settingsJson` takes them. */
 const SETTINGS_JSON = JSON.stringify({
@@ -357,7 +475,7 @@ Deno.test("token_economizer off - the trace detector flags each plugin trace sep
 
 for (const providerId of PROVIDER_IDS) {
   for (const host of DISABLED_HOSTS) {
-    Deno.test(`token_economizer off - ${providerId} - ${host.label}: loads as disabled and spawns the no-block argv and env`, async () => {
+    Deno.test(`token_economizer off - ${providerId} - ${host.label}: loads as disabled, spawns the same argv and env as the no-block host, and matches the golden spawn`, async () => {
       await withFixture(async (fixture) => {
         const baselineConfig = await loadHost(undefined);
         assertEquals(
@@ -374,6 +492,7 @@ for (const providerId of PROVIDER_IDS) {
           `"${host.label}" loads as a disabled host (positive control)`,
         );
         assertEquals(spawnsFor(providerId, fixture), baseline);
+        assertGoldenSpawn(providerId, fixture);
       });
     });
   }

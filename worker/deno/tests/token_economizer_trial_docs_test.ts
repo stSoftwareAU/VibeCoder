@@ -1171,20 +1171,39 @@ Deno.test("SHA drift: a non-JSON container file is read line by line, and naming
   );
 });
 
+/** The live Claude Code version the manifest pins, read from its parsed JSON. */
+async function liveClaudeVersion(): Promise<string> {
+  const pinned = claudeVersionPinned(await liveCorpus());
+  assert(pinned.version !== undefined, `fixture: ${pinned.problem}`);
+  return pinned.version;
+}
+
+/** The version with its last numeric component incremented: 2.1.310 gives 2.1.311. */
+function bumpVersion(version: string): string {
+  const parts = version.split(".");
+  const last = parts.pop() ?? "";
+  assert(/^\d+$/.test(last), `fixture: ${version} must end in a number`);
+  return [...parts, String(Number(last) + 1)].join(".");
+}
+
 Deno.test("Claude Code version: a manifest bump the page does not follow is refused, and the page updated with it passes", async () => {
   const live = await livePage();
   const corpus = await liveCorpus();
+  const pinnedVersion = await liveClaudeVersion();
+  const bumpedVersion = bumpVersion(pinnedVersion);
   const bumped = withFile(
     corpus,
     TOOLS_PATH,
     editManifest(manifestOf(corpus), (manifest) => {
-      entryWithId(manifest, "providers", CLAUDE_ID).version = "2.1.311";
+      entryWithId(manifest, "providers", CLAUDE_ID).version = bumpedVersion;
     }),
   );
   const problems = driftProblems(live, bumped);
   assert(
     problems.some((p) =>
-      p.includes("2.1.310") && p.includes("2.1.311") && p.includes(TOOLS_PATH)
+      p.includes(pinnedVersion) &&
+      p.includes(bumpedVersion) &&
+      p.includes(TOOLS_PATH)
     ),
     `expected the bumped Claude Code version to be refused, naming both values; got:\n${
       problems.join("\n")
@@ -1195,8 +1214,8 @@ Deno.test("Claude Code version: a manifest bump the page does not follow is refu
     driftProblems(
       replaceOnce(
         live,
-        "This image's Claude Code: **2.1.310**",
-        "This image's Claude Code: **2.1.311**",
+        `This image's Claude Code: **${pinnedVersion}**`,
+        `This image's Claude Code: **${bumpedVersion}**`,
       ),
       bumped,
     ),
@@ -1209,6 +1228,7 @@ Deno.test("Claude Code version: the page must state the image's version and quot
   const live = await livePage();
   const corpus = await liveCorpus();
   assertEquals(driftProblems(live, corpus), []);
+  const pinnedVersion = await liveClaudeVersion();
   const unquoted = driftProblems(
     replaceOnce(live, `${CLAUDE_ROW}\n`, ""),
     corpus,
@@ -1222,7 +1242,7 @@ Deno.test("Claude Code version: the page must state the image's version and quot
   const unstated = driftProblems(
     replaceOnce(
       live,
-      "This image's Claude Code: **2.1.310**",
+      `This image's Claude Code: **${pinnedVersion}**`,
       "This image's Claude Code is pending",
     ),
     corpus,

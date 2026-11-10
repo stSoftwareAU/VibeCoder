@@ -4,8 +4,8 @@
 # TokenEconomizer is the Microsoft plugin the worker's own trial drives. The
 # image carries one source archive at one pinned commit, verified against a
 # recorded sha256 and never cloned at run time. Nothing in the image invokes it
-# yet: the `token_economizer` config block (Issue #4956) is what would, so the
-# command sits on the PATH unused until then.
+# yet. The `token_economizer` config block is added by Issue #4955; Issue #4956
+# wires that block into runs, so until then the command sits on the PATH unused.
 #
 # Pins live in container/tools.json, read here with jq rather than restated:
 # the version, the commit and the archive checksum. The Containerfile only
@@ -114,7 +114,7 @@ done
 
 # The version the wrapper reports must be the version the source declares.
 # `q` stops sed at the first match, so no pipe is closed early under pipefail.
-source_version="$(sed -n '/^version = /{s/^version = "\(.*\)"[[:space:]]*$/\1/p;q}' "${src}/pyproject.toml")"
+source_version="$(sed -n '/^version = /{s/^version = "\(.*\)"[[:space:]]*$/\1/p;q;}' "${src}/pyproject.toml")"
 if [[ "${source_version}" != "${version}" ]]; then
     echo "[${TOOLCHAIN_ID}] pyproject.toml declares version \"${source_version}\", but ${MANIFEST} pins ${version}" >&2
     exit 1
@@ -122,7 +122,7 @@ fi
 
 # The package's own floor, read from its pyproject.toml. Only the >=MAJOR.MINOR
 # form is understood; anything else fails loud rather than guessing a floor.
-min_python="$(sed -n '/^requires-python/{s/^requires-python[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p;q}' "${src}/pyproject.toml")"
+min_python="$(sed -n '/^requires-python/{s/^requires-python[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p;q;}' "${src}/pyproject.toml")"
 requirement_re='^>=([0-9]+)\.([0-9]+)$'
 if [[ ! "${min_python}" =~ ${requirement_re} ]]; then
     echo "[${TOOLCHAIN_ID}] pyproject.toml requires-python \"${min_python}\" is not of the form >=MAJOR.MINOR" >&2
@@ -149,13 +149,19 @@ cp -a "${src}/plugin" "${src}/tokeneconomizer" "${INSTALL_DIR}/"
 
 # No symlink under the install directory may resolve outside it. Checked after
 # the copy, because the copy is what the image will hold; a failure removes
-# the two trees this fragment installed.
-install_real="$(readlink -f "${INSTALL_DIR}")"
+# the two trees this fragment installed. readlink -f is GNU-only, so paths are
+# resolved with python3's realpath, which macOS and Linux share.
+resolve_path() {
+    python3 -I -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1" < /dev/null
+}
+install_real="$(resolve_path "${INSTALL_DIR}")"
 escaped=0
 while IFS= read -r -d '' link; do
-    target="$(readlink -f "${link}")"
-    case "${target}" in
-        "${install_real}"/*) ;;
+    target="$(resolve_path "${link}")"
+    # The trailing slash keeps a sibling such as /opt/tokeneconomizer-x from
+    # passing as a prefix of /opt/tokeneconomizer.
+    case "${target}/" in
+        "${install_real}/"*) ;;
         *)
             echo "[${TOOLCHAIN_ID}] symlink ${link} resolves to ${target}, outside ${INSTALL_DIR}" >&2
             escaped=1
@@ -191,7 +197,7 @@ if [ "\${1:-}" = "--version" ]; then
     echo "tokeneconomizer ${version} (commit ${commit})"
     exit 0
 fi
-exec ${INSTALL_DIR}/plugin/scripts/te "\$@"
+exec "${INSTALL_DIR}/plugin/scripts/te" "\$@"
 EOF
 install -d "${BIN_DIR}"
 install -m 0755 "${wrapper}" "${BIN_DIR}/tokeneconomizer"

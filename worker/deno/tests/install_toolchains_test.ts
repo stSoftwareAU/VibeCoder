@@ -1561,10 +1561,17 @@ interface TeFixture {
  * A stand-in for the pinned source archive: the real top-level directory and
  * the layout the fragment relies on, with the bytes each case chooses.
  * `escapeLink` adds a symlink to that absolute path, for the containment case.
+ * `relativeLink` adds a relative symlink at `at`, a path under the archive's
+ * top level, pointing at `target` as written.
  */
 async function buildTeFixture(
   dir: string,
-  options: { version: string; requiresPython?: string; escapeLink?: string },
+  options: {
+    version: string;
+    requiresPython?: string;
+    escapeLink?: string;
+    relativeLink?: { at: string; target: string };
+  },
 ): Promise<TeFixture> {
   const pin = await committedTokenEconomizer();
   const root = `${dir}/fixture`;
@@ -1607,6 +1614,12 @@ async function buildTeFixture(
   );
   if (options.escapeLink !== undefined) {
     await Deno.symlink(options.escapeLink, `${top}/plugin/lib/escape`);
+  }
+  if (options.relativeLink !== undefined) {
+    await Deno.symlink(
+      options.relativeLink.target,
+      `${top}/${options.relativeLink.at}`,
+    );
   }
 
   const archive = `${dir}/tokeneconomizer.tar.gz`;
@@ -1887,6 +1900,121 @@ Deno.test("container/toolchains/tokeneconomizer.sh - a symlink that resolves out
     assert(
       !(await pathExists(`${dir}/prefix/bin/tokeneconomizer`)),
       "no wrapper may be installed for an escaping archive",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * Asserts that the fragment refused a relative symlink `plugin/<name>` leaving
+ * the install directory: it aborted naming that symlink, and nothing it
+ * installed or wrapped survived.
+ */
+async function assertRelativeEscapeRefused(
+  dir: string,
+  run: TeRun,
+  name: string,
+): Promise<void> {
+  const prefix = `${dir}/prefix/opt/tokeneconomizer`;
+  assert(
+    run.code !== 0,
+    `a relative symlink plugin/${name} leaving the install directory must fail the build`,
+  );
+  assertStringIncludes(
+    run.stderr,
+    `symlink ${prefix}/plugin/${name} resolves to`,
+  );
+  assertStringIncludes(run.stderr, "outside");
+  assert(
+    !(await pathExists(`${prefix}/plugin`)) &&
+      !(await pathExists(`${prefix}/tokeneconomizer`)),
+    "the trees installed before the escape was found must be removed",
+  );
+  assert(
+    !(await pathExists(`${dir}/prefix/bin/tokeneconomizer`)),
+    "no wrapper may be installed for an escaping archive",
+  );
+}
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a relative symlink climbing out of the install directory aborts, naming it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    // plugin/ sits one level inside the install directory, so ../../ lands in
+    // the directory beside it: a real target outside the install prefix.
+    await Deno.mkdir(`${dir}/prefix/opt/outside`, { recursive: true });
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      relativeLink: { at: "plugin/escape", target: "../../outside" },
+    });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    await assertRelativeEscapeRefused(dir, run, "escape");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a relative symlink through a missing component that climbs out aborts, naming it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    // `missing` does not exist, so the guard must resolve its `..` without
+    // touching the disk. From plugin/ the three `..` climb out of the install
+    // directory, landing in prefix/opt/outside.
+    await Deno.mkdir(`${dir}/prefix/opt/outside`, { recursive: true });
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      relativeLink: {
+        at: "plugin/escape",
+        target: "missing/../../../outside",
+      },
+    });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    await assertRelativeEscapeRefused(dir, run, "escape");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a relative symlink that stays inside the install directory is accepted", async () => {
+  // The positive control for the two escape cases above: the same placement
+  // and depth, with a target that climbs but stays under the install directory.
+  // The real plugin/lib/tokeneconomizer link is in this fixture too.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      relativeLink: { at: "plugin/alias", target: "../tokeneconomizer" },
+    });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    assertEquals(run.code, 0, run.stderr);
+    assert(
+      !run.stderr.includes("resolves to"),
+      "an in-prefix relative symlink must not be reported as an escape",
+    );
+    const prefix = `${dir}/prefix/opt/tokeneconomizer`;
+    assertEquals(
+      await Deno.readLink(`${prefix}/plugin/alias`),
+      "../tokeneconomizer",
+    );
+    assertEquals(
+      await Deno.readLink(`${prefix}/plugin/lib/tokeneconomizer`),
+      "../../tokeneconomizer",
+    );
+    assert(
+      await pathExists(`${prefix}/plugin`),
+      "plugin/ must be installed when every symlink stays inside",
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
