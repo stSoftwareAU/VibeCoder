@@ -13,12 +13,19 @@
  *
  * A PR is healed only when every rule below holds; any doubt leaves it a draft:
  * - it is a draft, and its head branch names an issue (`issue-<N>-…`);
- * - its body carries no {@link DRAFT_CONTINUATION_MARKER}. The check is a
- *   plain `includes`, deliberately: a false hold leaves a draft for a human
- *   or the next run, which is the safe direction, whereas a false heal would
- *   publish a deliberate hold;
+ * - its body does not open with {@link DRAFT_CONTINUATION_MARKER}. The check is
+ *   anchored, not a substring match: every hold body the worker writes puts the
+ *   marker on its first line (`buildDraftContinuationBody`,
+ *   `buildUnmetDraftBody` and `buildMutationHoldDraftBody` in
+ *   `draft_continuation_pr.ts`). A body that merely quotes the marker
+ *   mid-body, in a code span or in prose, is not a hold and may be healed. A
+ *   body that opens with it, after any leading whitespace, is held. A false
+ *   hold leaves a draft for a human or the next run, which is the safe
+ *   direction, whereas a false heal would publish a deliberate hold;
  * - the issue is OPEN and no assignee is a fleet author (case-insensitive).
- *   A fleet-author assignee is a live claim (see `claim_issue.ts`).
+ *   A fleet-author assignee is a live claim (see `claim_issue.ts`). An issue
+ *   read without an `assignees` array is a malformed response, so it is
+ *   refused rather than read as unclaimed.
  *
  * Never throws: every failure is logged and reported as `false`.
  *
@@ -97,9 +104,12 @@ export async function readyOrphanedDraftPr(
       );
       return false;
     }
-    // Fail closed: a body that merely mentions the marker is held (see module
-    // doc for why `includes` is deliberate).
-    if (view.body.includes(DRAFT_CONTINUATION_MARKER)) return false;
+    // Fail closed on a hold: the worker writes the marker as the first line,
+    // so a body that opens with it (after leading whitespace) is held. A body
+    // that only quotes the marker mid-body is not a hold (see module doc).
+    if (view.body.trimStart().startsWith(DRAFT_CONTINUATION_MARKER)) {
+      return false;
+    }
 
     const branch = typeof view.headRefName === "string"
       ? view.headRefName
@@ -128,8 +138,14 @@ export async function readyOrphanedDraftPr(
       return false;
     }
     if (issue.state !== "OPEN") return false;
-    const assignees = Array.isArray(issue.assignees) ? issue.assignees : [];
-    const claimed = assignees.some((assignee) =>
+    if (!Array.isArray(issue.assignees)) {
+      log(
+        `issue #${issueNumber} read for PR #${prNumber} has no assignees ` +
+          "field, so its draft stays a draft (Issue #4952)",
+      );
+      return false;
+    }
+    const claimed = issue.assignees.some((assignee) =>
       isFleetAuthor(
         (assignee as { login?: string | null } | null)?.login,
         [...fleetAuthors],
