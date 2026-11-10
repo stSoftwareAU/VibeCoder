@@ -175,6 +175,13 @@ issue is "never handed to a human" now name the one worker-side exception.
   custom-label test red; `!outcome.value.labelAdded` branch deleted →
   rejected-label test red; adding `#N` to the comment text → no-numbers test
   red. Each restored.
+- Mutation survivors (`negative_result_close.ts:105`, `:108`, `:109`, `:121` —
+  deleted `repo`, `reason`, `nextStep`, `error` properties) are now pinned: the
+  direct hand-off test records the repo each comment and label is addressed to
+  and asserts the comment carries the `**Why:**` reason and `**Next step:**`
+  text; a new test asserts the failed-hand-off warning carries `repo`,
+  `issueNumber` and `error`. Each of the four deletions was applied by hand and
+  turned `negative_result_close_4298_test.ts` red; each restored.
 - Removed from `worker/deno/tests/negative_result_close_4298_test.ts`:
   `assert(!calls.addLabel.includes("needs-human"), "nobody is paged")` and
   `assertStringIncludes(calls.closed[0]!, "negative-result")`. Required by:

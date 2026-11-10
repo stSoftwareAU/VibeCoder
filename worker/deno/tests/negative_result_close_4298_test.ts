@@ -22,7 +22,10 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { GitHubClient, GitHubComment, GitHubIssue } from "../types.ts";
 import { findImageReferences } from "../lib/untrusted_image_signal.ts";
-import { handOffNegativeResultIssue } from "../lib/negative_result_close.ts";
+import {
+  buildNegativeResultHandoff,
+  handOffNegativeResultIssue,
+} from "../lib/negative_result_close.ts";
 import type { EscalateToHumanDeps } from "../lib/needs_human_escalation.ts";
 
 const BENCHMARK_OUTPUT =
@@ -40,10 +43,12 @@ interface Recorder {
   comments: string[];
   labelsAdded: string[];
   closed: string[];
+  /** The repo each write was addressed to. */
+  repos: string[];
 }
 
 function makeRecorder(): Recorder {
-  return { events: [], comments: [], labelsAdded: [], closed: [] };
+  return { events: [], comments: [], labelsAdded: [], closed: [], repos: [] };
 }
 
 interface ClientOptions {
@@ -63,19 +68,21 @@ function makeClient(
   return {
     getIssue: () => Promise.resolve({ labels } as unknown as GitHubIssue),
     getIssueComments: () => Promise.resolve(opts.existingComments ?? []),
-    addLabel: (_r, _n, label) => {
+    addLabel: (r, _n, label) => {
       if (opts.addLabelRejects) {
         return Promise.reject(new Error("GitHub returned 422"));
       }
+      rec.repos.push(`label:${r}`);
       rec.events.push(`label:${label}`);
       rec.labelsAdded.push(label);
       return Promise.resolve();
     },
     removeLabel: () => Promise.resolve(),
-    postComment: (_r, _n, body) => {
+    postComment: (r, _n, body) => {
       if (opts.postRejects) {
         return Promise.reject(new Error("GitHub returned 502"));
       }
+      rec.repos.push(`comment:${r}`);
       rec.events.push("comment");
       rec.comments.push(body);
       return Promise.resolve(undefined);
@@ -178,6 +185,14 @@ Deno.test("#4911 - a labelled negative result is handed to a human, comment firs
     "the escalation label is added",
   );
   assertEquals(rec.closed, [], "the worker never closes the issue");
+  assertEquals(
+    rec.repos,
+    ["comment:org/repo", "label:org/repo"],
+    "the comment and the label are addressed to the issue's repo",
+  );
+  const handoff = buildNegativeResultHandoff();
+  assertStringIncludes(rec.comments[0]!, `**Why:** ${handoff.reason}`);
+  assertStringIncludes(rec.comments[0]!, `**Next step:** ${handoff.nextStep}`);
   assertEquals(
     rec.events,
     ["comment", "ensure", "label:needs-human", "unassign:testbot"],
@@ -404,5 +419,45 @@ Deno.test("#4911 - a failed hand-off falls through to the ordinary retry and nev
   assertEquals(result.status, "failure", "the ordinary retry takes over");
   assertEquals(handOffComments(rec), [], "no hand-off comment landed");
   assert(!rec.labelsAdded.includes("needs-human"), "no label was added");
+  assertEquals(rec.closed, [], "closeIssue is never called");
+});
+
+Deno.test("#4911 - a failed direct hand-off warns with the repo, issue and error and returns false", async () => {
+  const rec = makeRecorder();
+  const warnings: Array<
+    { message: string; context?: Record<string, unknown> }
+  > = [];
+  const logger = createMockDeps({
+    logger: {
+      warn: (message, context) => {
+        warnings.push({ message, context });
+      },
+    },
+  }).logger;
+
+  const handedOff = await handOffNegativeResultIssue({
+    ghClient: makeClient(rec, ["work-on", "performance", "negative-result"], {
+      postRejects: true,
+    }),
+    repo: "org/repo",
+    issueNumber: 77,
+    githubUser: "testbot",
+    needsHumanLabel: "needs-human",
+    logger,
+    deps: directDeps(rec),
+  });
+
+  assertEquals(handedOff, false);
+  const failure = warnings.find((w) =>
+    w.message === "Failed to hand the negative-result issue to a human"
+  );
+  assert(failure, "the failed hand-off is logged");
+  assertEquals(failure.context?.repo, "org/repo");
+  assertEquals(failure.context?.issueNumber, 77);
+  assert(
+    typeof failure.context?.error === "string" &&
+      failure.context.error.length > 0,
+    "the warning carries the failure's message",
+  );
   assertEquals(rec.closed, [], "closeIssue is never called");
 });
