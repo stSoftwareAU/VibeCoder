@@ -54,9 +54,13 @@ Callers of `withholdIssueClose` checked: `assemblePrBody` (`pr_body_sync.ts`,
 passes identity), `guardPrBodyProposal` (`babysitter_pr_body_guard.ts`, runs its
 own code-aware colon/URL pass first, then this one; the babysitter suites pass),
 `buildUnmetDraftBody` and `buildMutationHoldDraftBody`
-(`draft_continuation_pr.ts`, no identity: a prose URL naming the governing issue
-would throw, like a qualified plain reference already does; their body has
-already been through `assemblePrBody`), `alignIssueCloseWithClosure`. Issues
+(`draft_continuation_pr.ts`; they take an optional `IssueIdentity`, and
+`convertToDraftContinuation` forwards one. `completion_phase.ts` passes
+`{ prRepo: repo, issueRepo: repo }` at both mutation-hold body builds and both
+`convertToDraftContinuation` calls, so a qualified colon or URL reference to
+the governing issue is rewritten there instead of throwing
+`MissingIssueIdentityError`; the body they receive is not always one that has
+been through `assemblePrBody`, e.g. a met-criteria body), `alignIssueCloseWithClosure`. Issues
 cited: #4637, #4126 and #3177 (titles checked with `gh issue view`).
 
 Docs: `docs/INTERNALS.md` (the closure-block paragraph under the merged-PR
@@ -79,6 +83,11 @@ The issue states no acceptance-criteria heading; nothing it asks is left undone.
   phrases block and are named; a parsed `missing` entry passes; code-span and
   other-number phrases are not named; a long run of spaces after `close` is
   handled).
+- Added to `worker/deno/tests/draft_continuation_mutation_hold_test.ts`: for
+  `Closes: #N`, `Closes: o/r#N` and a full-URL `Fixes`, both
+  `buildMutationHoldDraftBody` and `buildUnmetDraftBody` given the identity do
+  not throw and leave only `Part of`. With `draft_continuation_pr.ts` reverted
+  to base, 4 of these 6 are red (the qualified colon and URL cases).
 - Red checks: lib reverted to base, 8 of the new lib tests red; URL pass
   dropped, 4 URL tests red; colon pass dropped, 6 colon tests red; code skip
   removed, the code/prose test red; gate helper removed, the colon and URL

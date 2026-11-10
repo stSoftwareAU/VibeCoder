@@ -867,7 +867,10 @@ export async function recoverAndFinaliseExistingPr(
   // does not drop the validation-incomplete note.
   const recoverBody = state.mutationHold
     ? degradePrBodyToGitHubLimit(
-      buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold),
+      buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold, {
+        prRepo: repo,
+        issueRepo: repo,
+      }),
       {
         summaryPath: `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
         issueNumber,
@@ -950,6 +953,7 @@ export async function recoverAndFinaliseExistingPr(
           prNumber,
           body: prBody,
           draftBody: recoverBody,
+          identity: { prRepo: repo, issueRepo: repo },
           gh: deps.github.runGhCommand,
           log: (message) => logger.warn(message, { repo, prNumber }),
         });
@@ -3705,7 +3709,10 @@ async function completionBody(
   // opens it later over REST as a draft; the drain never arms auto-merge.
   const createBody = state.mutationHold
     ? degradePrBodyToGitHubLimit(
-      buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold),
+      buildMutationHoldDraftBody(issueNumber, prBody, state.mutationHold, {
+        prRepo: repo,
+        issueRepo: repo,
+      }),
       {
         summaryPath: `docs/archive/pr-summaries/pr-summary-${issueNumber}.md`,
         issueNumber,
@@ -3926,6 +3933,7 @@ async function completionBody(
         prNumber,
         body: prBody,
         draftBody: createBody,
+        identity: { prRepo: repo, issueRepo: repo },
         gh: deps.github.runGhCommand,
         log: (message) => logger.warn(message, { repo, prNumber }),
       });
