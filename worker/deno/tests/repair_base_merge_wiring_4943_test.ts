@@ -7,7 +7,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertMatch } from "@std/assert";
+import { assert, assertEquals, assertMatch } from "@std/assert";
 import { readBranchRefreshRefusals } from "../lib/branch_refresh_refusal_streak.ts";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
@@ -135,15 +135,19 @@ async function runWith(
   return { syncCalls, mergeableReads, lines };
 }
 
-/** The one decision line a processor logs, with every field named. */
-function decisionLine(
+/** Assert the one decision line a processor logs, with every field named. */
+function assertDecisionLine(
+  line: string,
   source: string,
   outcome: string,
   reason: RegExp,
-): RegExp {
-  return new RegExp(
-    `^\\[base-refresh\\] source=${source} outcome=${outcome} repo=owner/repo pr=#${PR_NUMBER} base=${DEFAULT_BRANCH} owner=none reason="${reason.source}`,
-  );
+): void {
+  const prefix =
+    `[base-refresh] source=${source} outcome=${outcome} repo=owner/repo pr=#${PR_NUMBER} base=${DEFAULT_BRANCH} owner=none reason="`;
+  assert(line.startsWith(prefix), `${line} should start with ${prefix}`);
+  const rest = line.slice(prefix.length);
+  assertMatch(rest, reason);
+  assertEquals(rest.search(reason), 0, `reason should open ${rest}`);
 }
 
 const mergeableJson = (mergeable: string) => () =>
@@ -165,9 +169,11 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     );
     const decisions = baseRefreshLines(lines);
     assertEquals(decisions.length, 1, lines.join("\n"));
-    assertMatch(
+    assertDecisionLine(
       decisions[0]!,
-      decisionLine(label, "base-merge-skipped", /GitHub reports mergeable/),
+      label,
+      "base-merge-skipped",
+      /GitHub reports mergeable/,
     );
     // Positive control: the gate was reached, so the absent sync is the gate.
     assertEquals(mergeableReads.length, 1, "mergeable read reached the gate");
@@ -181,9 +187,11 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     );
     const decisions = baseRefreshLines(lines);
     assertEquals(decisions.length, 1, lines.join("\n"));
-    assertMatch(
+    assertDecisionLine(
       decisions[0]!,
-      decisionLine(label, "base-merge-allowed", /genuine conflict/),
+      label,
+      "base-merge-allowed",
+      /genuine conflict/,
     );
     assertEquals(mergeableReads.length, 1, "mergeable read reached the gate");
     assertEquals(syncCalls, [[BRANCH, DEFAULT_BRANCH]]);
@@ -198,13 +206,11 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     assertEquals(syncCalls, []);
     const decisions = baseRefreshLines(lines);
     assertEquals(decisions.length, 1, lines.join("\n"));
-    assertMatch(
+    assertDecisionLine(
       decisions[0]!,
-      decisionLine(
-        label,
-        "base-merge-skipped",
-        /mergeability unreadable: gh pr view: HTTP 503/,
-      ),
+      label,
+      "base-merge-skipped",
+      /mergeability unreadable: gh pr view: HTTP 503/,
     );
   });
 
