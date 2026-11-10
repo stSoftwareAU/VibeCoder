@@ -2938,6 +2938,8 @@ Deno.test("loadReferencedUnitTests: a test naming a changed source, doc or promp
       readsAmbiguousByPath: 'read("prompts/a/prompt.md")',
       unrelated: 'import "../lib/other.ts"; // a/prompt.md is not this one',
       alsoChanged: 'import "../lib/pre_gate.ts";',
+      // Only the bare base name, which is unique among the tracked files.
+      namesBareBase: 'const file = "pre_gate.ts";',
       // Reaches pre_gate.ts only through lib/wrapper.ts, and a doc only through
       // a tests/support helper that names it.
       viaWrapper: 'import "../lib/wrapper.ts";',
@@ -2996,6 +2998,7 @@ Deno.test("loadReferencedUnitTests: a test naming a changed source, doc or promp
       "worker/deno": [
         "tests/alsoChanged_test.ts",
         "tests/importsSource_test.ts",
+        "tests/namesBareBase_test.ts",
         "tests/viaWrapper_test.ts",
       ],
     });
@@ -3026,6 +3029,7 @@ Deno.test("loadReferencedUnitTests: a test naming a changed source, doc or promp
       {
         "worker/deno": [
           "tests/importsSource_test.ts",
+          "tests/namesBareBase_test.ts",
           "tests/viaWrapper_test.ts",
         ],
       },

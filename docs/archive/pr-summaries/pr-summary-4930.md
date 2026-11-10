@@ -110,8 +110,13 @@ are called by `runPrePushGate`.
   `tasks !== null` dropped, ancestor tokens on `.ts` files, `..` resolution, the
   `.` skip, the visited check, the seed set, the changed-test exclusion, the
   tests-only text scan and the integration filter: each turns a test red.
+- Mutation survivors from the second completion check: `pre_push_gate.ts` line
+  1354 (the path itself as a reference token) was dead, since the base name or
+  last two segments are always a substring of the path, so the token is removed;
+  line 1404 (the base-name count) is now pinned by `namesBareBase`, a test that
+  names only the bare base name, which turns red when the count is not recorded.
 - `deno task test:unit tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_cargo_deny_test.ts tests/pre_push_gate_retry_test.ts`:
-  all passed (148 before the last additions; the 106-test
+  all passed (148 before the last additions; the 111-test
   `pre_push_gate_test.ts` passes after them).
 - `./quality.sh < /dev/null` on the final head: every check passed except
   `deno tests`, whose only failures are five tests in

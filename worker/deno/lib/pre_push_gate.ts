@@ -955,9 +955,9 @@ function plannedUnitTestFiles(
  * `deno lint` would not check is dropped here instead of being passed to deno.
  * A root with no entry is unfiltered. `denoUnitTestRoots` lists the roots
  * whose changed tests get a `deno test` check (see
- * {@link loadDenoUnitTestRoots}); absent means no `deno test` check. It is a
- * the changed test files, the same-named tests of changed sources and the
- * `denoReferencedTests` — run via the repo's own `test:unit` task, so
+ * {@link loadDenoUnitTestRoots}); absent means no `deno test` check. The check
+ * runs the changed test files, the same-named tests of changed sources and the
+ * `denoReferencedTests` beside them, via the repo's own `test:unit` task, so
  * integration suites like CI's shards are not run here.
  */
 export function planChangedFileChecks(
@@ -1337,8 +1337,8 @@ export async function loadDenoUnitTestRoots(
 
 /**
  * Strings whose presence in a test's source marks it as reading `file` (a
- * repo-relative path): the path itself, its base name when no other tracked
- * file shares it (else its last two segments), and, for a non-`.ts` file such
+ * repo-relative path): its base name when no other tracked file shares it
+ * (else its last two segments), and, for a non-`.ts` file such
  * as a doc or prompt, its directory followed by `/` (a test that lists it) and
  * each ancestor directory followed by `/${` so a path built in a template
  * literal is caught. A deliberate over-approximation: running an
@@ -1350,8 +1350,9 @@ function referenceTokens(
 ): string[] {
   const parts = file.split("/");
   const base = parts[parts.length - 1] as string;
+  // The last two segments (or the base name) are a substring of the path, so a
+  // text naming the whole path matches them too and the path needs no token.
   const tokens = [
-    file,
     basenameCounts.get(base) === 1 ? base : parts.slice(-2).join("/"),
   ];
   if (!file.endsWith(".ts")) {
