@@ -8,6 +8,7 @@
  */
 
 import { assert, assertEquals, assertMatch } from "@std/assert";
+import { BASE_REFRESH_COUNTERS_FILE } from "../lib/repair_base_merge_4943.ts";
 import { readBranchRefreshRefusals } from "../lib/branch_refresh_refusal_streak.ts";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
@@ -235,6 +236,13 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
         (await readBranchRefreshRefusals(workDir)).has(`${REPO}#${PR_NUMBER}`),
         false,
       );
+      // The standalone command tallies its decisions durably beside the streak.
+      const tally = JSON.parse(
+        await Deno.readTextFile(`${workDir}/${BASE_REFRESH_COUNTERS_FILE}`),
+      );
+      assertEquals(tally.counters, {
+        [`baseRefresh.base-merge-skipped.${label}`]: 3,
+      });
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }

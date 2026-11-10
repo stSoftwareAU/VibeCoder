@@ -408,9 +408,13 @@ at the threshold). The per-cycle fault-tolerance summary
 (`fault_tolerance_summary.json`) carries them for the lanes that run inside the
 worker process (`branch-update-loop`, `auto-merge-sweep`, `merge-block-repair`).
 The CI, feedback, spelling and babysitter commands are separate processes that
-do not write that summary, so for them the `[base-refresh]` lines and the
-refusal state and comment above are the signal. At startup the worker prints
-`[base-refresh] startup repair-base-merge=conflicting-only …` beside the
+do not write that summary, so each one tallies its own `base-merge-allowed` and
+`base-merge-skipped` decisions in a cumulative `base_refresh_counters.json`
+(`{"counters": {"baseRefresh.<outcome>.<source>": n}}`) beside its refusal
+state: under the worker's work directory for the CI, feedback and spelling
+commands, and under the babysitter's state directory for `babysitter-repair`.
+An automatic follow-up reads those files, not the log. At startup the worker
+prints `[base-refresh] startup repair-base-merge=conflicting-only …` beside the
 `[worker-build]` banner, so a host that does not print it predates this change.
 
 **A queue removal is a red check, not a re-run.** When the queue removes a PR

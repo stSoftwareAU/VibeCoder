@@ -18,6 +18,12 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { basePr, harness } from "./support/babysitter_harness.ts";
+import { BASE_REFRESH_COUNTERS_FILE } from "../lib/repair_base_merge_4943.ts";
+import {
+  BRANCH_REFRESH_REFUSAL_FILE,
+  branchRefreshRefusalKey,
+  readBranchRefreshRefusals,
+} from "../lib/branch_refresh_refusal_streak.ts";
 /**
  * Silence the babysitter's console output, and hand back every stderr line
  * (console.warn) it wrote while the action ran, so the base-refresh diagnostics
@@ -119,5 +125,79 @@ Deno.test("a conflicting PR merges the base once, and a conflicted merge still r
     );
     assertEquals(allowed.length, 1, lines.join("\n"));
     assertMatch(allowed[0]!, ALLOWED_LINE);
+  });
+});
+
+/**
+ * Forget the babysitter's per-PR retry back-off between two passes, keeping the
+ * #4831 refusal streak and the decision counters under test.
+ */
+const forgetRetryBackoff = async (stateDir: string) => {
+  const keep = new Set([
+    BRANCH_REFRESH_REFUSAL_FILE,
+    BASE_REFRESH_COUNTERS_FILE,
+  ]);
+  for await (const entry of Deno.readDir(stateDir)) {
+    if (!keep.has(entry.name)) {
+      await Deno.remove(`${stateDir}/${entry.name}`, { recursive: true });
+    }
+  }
+};
+
+const readStreak = async (stateDir: string): Promise<number | undefined> => {
+  const state = await readBranchRefreshRefusals(stateDir);
+  return state.get(branchRefreshRefusalKey("owner/repo", 1))?.streak;
+};
+
+const readCounters = async (
+  stateDir: string,
+): Promise<Record<string, number>> =>
+  JSON.parse(
+    await Deno.readTextFile(`${stateDir}/${BASE_REFRESH_COUNTERS_FILE}`),
+  ).counters;
+
+Deno.test("an UNKNOWN mergeability read skips the base merge and counts a #4831 refusal streak that a known read clears (Issue #4943)", async () => {
+  await withConsole(async (stateDir, lines) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({ mergeable: "UNKNOWN" });
+    await h.attempt();
+    assertEquals(h.state.mergeBaseCalls, []);
+    assertEquals(await readStreak(stateDir), 1);
+    await forgetRetryBackoff(stateDir);
+    await h.attempt();
+    assertEquals(h.state.mergeBaseCalls, []);
+    assertEquals(await readStreak(stateDir), 2);
+    assert(
+      lines.some((line) =>
+        line.includes("[base-refresh] fleet health: repair mergeability") &&
+        line.includes("owner/repo#1 still UNKNOWN after 2 consecutive reads")
+      ),
+      lines.join("\n"),
+    );
+    // The skipped decisions are tallied durably in the babysitter state dir.
+    assertEquals(
+      (await readCounters(stateDir))[
+        "baseRefresh.base-merge-skipped.babysitter-repair"
+      ],
+      2,
+    );
+
+    h.state.pr = basePr({ mergeable: "MERGEABLE" });
+    await forgetRetryBackoff(stateDir);
+    await h.attempt();
+    assertEquals(await readStreak(stateDir), undefined);
+    assertEquals(h.state.mergeBaseCalls, []);
+  });
+});
+
+Deno.test("a conflicting repair is tallied as base-merge-allowed in the babysitter state dir (Issue #4943)", async () => {
+  await withConsole(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({ mergeable: "CONFLICTING" });
+    h.state.mergeBaseResult = { kind: "conflicted" };
+    await h.attempt();
+    assertEquals(await readCounters(stateDir), {
+      "baseRefresh.base-merge-allowed.babysitter-repair": 1,
+    });
   });
 });

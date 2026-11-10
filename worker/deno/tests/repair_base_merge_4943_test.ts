@@ -7,11 +7,15 @@
 
 import { assert, assertEquals, assertMatch } from "@std/assert";
 import {
+  BASE_REFRESH_COUNTERS_FILE,
+  baseRefreshCounterName,
   decideRepairBaseMerge,
   formatBaseRefreshDecision,
   formatBaseRefreshStartup,
+  formatStartupBuildLines,
   logBaseRefreshDecision,
   parseRefreshOwner,
+  persistBaseRefreshCounter,
   readRepairBaseMergeDecision,
   type RepairMergeabilityTracker,
   trackRepairMergeability,
@@ -464,4 +468,59 @@ Deno.test("formatBaseRefreshStartup states the policy and the build stamp", () =
     formatBaseRefreshStartup({ version: "1.2.3", commit: "abc123" }),
     "[base-refresh] startup repair-base-merge=conflicting-only refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> version=1.2.3 commit=abc123",
   );
+});
+
+Deno.test("formatStartupBuildLines prints the build banner then the base-refresh policy from one stamp", () => {
+  const info = { version: "1.2.3", commit: "abc123" };
+  assertEquals(formatStartupBuildLines(info), [
+    "[worker-build] version=1.2.3 commit=abc123",
+    formatBaseRefreshStartup(info),
+  ]);
+});
+
+Deno.test("persistBaseRefreshCounter accumulates named decision counters across calls and restarts the tally on a garbled file (Issue #4943)", async () => {
+  const dir = await Deno.makeTempDir();
+  const read = async () =>
+    JSON.parse(await Deno.readTextFile(`${dir}/${BASE_REFRESH_COUNTERS_FILE}`))
+      .counters;
+  try {
+    const skipped = { outcome: "base-merge-skipped", source: "pr-ci" } as const;
+    await persistBaseRefreshCounter(dir, skipped);
+    await persistBaseRefreshCounter(dir, skipped);
+    await persistBaseRefreshCounter(dir, {
+      outcome: "base-merge-allowed",
+      source: "pr-ci",
+    });
+    assertEquals(await read(), {
+      "baseRefresh.base-merge-skipped.pr-ci": 2,
+      "baseRefresh.base-merge-allowed.pr-ci": 1,
+    });
+    assertEquals(
+      baseRefreshCounterName(skipped),
+      "baseRefresh.base-merge-skipped.pr-ci",
+    );
+
+    await Deno.writeTextFile(`${dir}/${BASE_REFRESH_COUNTERS_FILE}`, "{oops");
+    await persistBaseRefreshCounter(dir, skipped);
+    assertEquals(await read(), { "baseRefresh.base-merge-skipped.pr-ci": 1 });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("persistBaseRefreshCounter writes nothing without a directory and never throws on an unwritable one (Issue #4943)", async () => {
+  await persistBaseRefreshCounter(undefined, {
+    outcome: "base-merge-skipped",
+    source: "pr-ci",
+  });
+  const file = await Deno.makeTempFile();
+  try {
+    // A regular file cannot be a directory: persistence fails quietly.
+    await persistBaseRefreshCounter(file, {
+      outcome: "base-merge-skipped",
+      source: "pr-ci",
+    });
+  } finally {
+    await Deno.remove(file);
+  }
 });

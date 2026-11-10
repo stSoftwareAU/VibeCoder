@@ -160,6 +160,7 @@ export const prSpellingProcessorCommand = {
           gh: deps.github.runGhCommand,
           source: "pr-spelling-processor",
           base: defaultBranch,
+          counterDir: config.workDir,
           tracker: createRepairMergeabilityTracker({
             workDir: config.workDir,
             gh: deps.github.runGhCommand,

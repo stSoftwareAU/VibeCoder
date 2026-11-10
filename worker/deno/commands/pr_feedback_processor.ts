@@ -162,6 +162,7 @@ export const prFeedbackProcessorCommand = {
           gh: deps.github.runGhCommand,
           source: "pr-feedback-processor",
           base: defaultBranch,
+          counterDir: config.workDir,
           tracker: createRepairMergeabilityTracker({
             workDir: config.workDir,
             gh: deps.github.runGhCommand,

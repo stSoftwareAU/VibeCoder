@@ -21,14 +21,18 @@ attribution for every base-refresh decision. Part of #4943.
   the second consecutive `UNKNOWN`, and a known read clears the streak and
   updates the comment. No polling loop is added.
 - Each decision increments a named counter `baseRefresh.<outcome>.<source>`
-  (plus `baseRefresh.repeatedMergeabilityUnknown`). The existing per-cycle
-  `fault_tolerance_summary.json` carries them for the lanes inside the worker
-  process; the standalone CI, feedback, spelling and babysitter commands do not
-  write that summary, so their signal is the log lines and the #4831 refusal
-  state and comment.
+  (plus `baseRefresh.repeatedMergeabilityUnknown`). Lanes inside the worker
+  process feed the per-cycle `fault_tolerance_summary.json`. The standalone CI,
+  feedback, spelling and babysitter commands do not write that summary, so each
+  persists its own `base-merge-allowed` / `base-merge-skipped` tally in a
+  cumulative `base_refresh_counters.json` (`persistBaseRefreshCounter`).
+  Persistence directory per lane: the CI, feedback and spelling commands use
+  the worker `config.workDir`; the babysitter uses `babysitterStateDir()` (the
+  `fleet-pr-babysitter` state directory).
 - The startup banner is extended with
   `[base-refresh] startup repair-base-merge=conflicting-only … version=… commit=…`
-  beside `[worker-build]`.
+  beside `[worker-build]`; `commands/run_core.ts` prints both from
+  `formatStartupBuildLines`, which is unit-tested.
 - `docs/MERGE.md` documents the guard, the trade-off, the recovery, the counters
   and which update classes are prevented or remain.
 
@@ -52,10 +56,15 @@ Version bump: `VERSION` is not changed by this PR.
   churn); a genuine conflict is picked up on a later cycle once GitHub reports
   it. A repeated `UNKNOWN` is counted by the #4831 refusal streak; an unreadable
   or garbled read is inconclusive and leaves the streak as it was.
-- The streak state file `.branch_refresh_refusals_v1` is shared with the
-  auto-merge sweep, which loads and saves the whole file per pass; a concurrent
-  sweep save can drop a repair-lane increment, which only delays the one comment
-  by a read.
+- The streak state file `.branch_refresh_refusals_v1` is per state directory.
+  The CI, feedback and spelling lanes write it under the worker `workDir`, which
+  the auto-merge sweep also loads and saves whole per pass, so a concurrent
+  sweep save (or its unconditional `clearRefusal`) can drop or reset a
+  processor-lane increment; that only delays the one comment by a read. The
+  babysitter repair lane writes it under `babysitterStateDir()`, a separate
+  directory the sweep never reads, so the sweep's comment and clear logic never
+  sees a babysitter streak and the babysitter lane owns its own comment and
+  clear.
 - Trade-off accepted: a CI failure that appears only against the newer base is
   not reproduced inside the repair; it surfaces once the PR is refreshed as the
   owner.
@@ -107,21 +116,29 @@ Related existing behaviour checked:
   repair-lane mergeability read — evidence:
   `worker/deno/tests/repair_base_merge_4943_test.ts::trackRepairMergeability posts one waiting notice at the second consecutive UNKNOWN read and one recovered notice after (Issue #4831)`,
   `worker/deno/tests/repair_base_merge_wiring_4943_test.ts::counts consecutive UNKNOWN reads in the #4831 refusal state and clears them on a known read`
-  — reviewer: met
-- **partial** — "runtime counters permit automatic follow-up" — evidence:
-  `worker/deno/tests/repair_base_merge_4943_test.ts::logBaseRefreshDecision counts each decision by outcome and source`
-  — reviewer: partial — reason: the named counters reach
-  `fault_tolerance_summary.json` only for lanes inside the worker process; the
-  standalone CI, feedback, spelling and babysitter commands do not write that
-  summary, so those lanes rely on log lines and the #4831 refusal state.
+  (CI, feedback and spelling lanes),
+  `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts::an UNKNOWN mergeability read skips the base merge and counts a #4831 refusal streak that a known read clears (Issue #4943)`
+  (babysitter repair lane: `mergeBase` not called, streak reaches 2, a later
+  MERGEABLE read clears it) — reviewer: met
+- **met** — "runtime counters permit automatic follow-up" — evidence:
+  `worker/deno/tests/repair_base_merge_4943_test.ts::logBaseRefreshDecision counts each decision by outcome and source`,
+  `worker/deno/tests/repair_base_merge_4943_test.ts::persistBaseRefreshCounter accumulates named decision counters across calls and restarts the tally on a garbled file (Issue #4943)`,
+  `worker/deno/tests/repair_base_merge_wiring_4943_test.ts::counts consecutive UNKNOWN reads in the #4831 refusal state and clears them on a known read`
+  (asserts each processor's `base_refresh_counters.json` tally),
+  `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts::a conflicting repair is tallied as base-merge-allowed in the babysitter state dir (Issue #4943)`
+  — reviewer: met (worker-process lanes feed `fault_tolerance_summary.json`;
+  the standalone repair commands persist `base_refresh_counters.json`; the
+  standalone behind-only refresh callers (babysitter-behind, `pr-maintenance`,
+  the reviewer script) remain log-line only)
 - **partial** — "Use current code and available redacted runtime evidence ...
   Extend existing startup/version diagnostics" — evidence:
+  `worker/deno/tests/repair_base_merge_4943_test.ts::formatStartupBuildLines prints the build banner then the base-refresh policy from one stamp`,
   `worker/deno/tests/repair_base_merge_4943_test.ts::formatBaseRefreshStartup states the policy and the build stamp`
   — reviewer: partial — reason: the startup banner is extended and every
   decision line carries the build stamp, but redacted runtime evidence for the
   inspected repositories was not available to this run, so the cause is
-  established from code paths; the startup line's call in `commands/run_core.ts`
-  is not unit-tested (it starts the whole worker).
+  established from code paths; the `run_core.ts` call site is a loop over the
+  tested `formatStartupBuildLines`.
 
 ## Standards Review
 
@@ -150,6 +167,18 @@ Related existing behaviour checked:
 - `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts` — `fix()` skips
   `mergeBase` for failed CI and review repairs of a MERGEABLE PR, calls it for
   CONFLICTING; log outcome asserted.
+- Mutation closure and #4831 babysitter proof: `babysitter_base_merge_policy_4943_test.ts`
+  now drives `fix()` with an `UNKNOWN` PR twice (streak 2, `mergeBase` never
+  called, fleet-health line), then a `MERGEABLE` read (streak cleared), and
+  asserts the persisted `base-merge-allowed` / `base-merge-skipped` tallies in
+  the babysitter state directory. Red checks: skipping `trackRepairMergeability`
+  turned the UNKNOWN test red; negating the outcome ternary turned the line
+  assertions and both tally tests red.
+- Counter persistence and startup: `repair_base_merge_4943_test.ts` covers
+  `persistBaseRefreshCounter` (accumulation, garbled file restart, no
+  directory, unwritable directory) and `formatStartupBuildLines`; the wiring
+  test asserts each processor's tally (`baseRefresh.base-merge-skipped.<lane>`
+  = 3 over two UNKNOWN reads and one MERGEABLE read).
 - `worker/deno/tests/base_refresh_churn_4943_test.ts` — competing lanes against
   one strict base: one owner gets `update-branch`;
   unready/draft/conflicting/unreviewed PRs get none; failed-CI, merged, closed
@@ -179,3 +208,8 @@ Related existing behaviour checked:
   passed, 5 failed); config integration and checkov were skipped.
 - `docs/MERGE.md` is hand-wrapped like the base file (the root docs are outside
   the gate's `deno fmt` run); `markdownlint-cli2` reports 0 issues.
+- Follow-up run (review findings): the touched and related processor, babysitter
+  and run-core test files pass except
+  `run_core_production_deps_test.ts` "recheckAgentAuth - an auth failure clears
+  the active provider cache (Issue #4267)", which fails identically with this
+  change stashed, so it is pre-existing.

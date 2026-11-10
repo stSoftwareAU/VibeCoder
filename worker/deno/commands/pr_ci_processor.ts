@@ -155,6 +155,7 @@ export const prCiProcessorCommand = {
           gh: deps.github.runGhCommand,
           source: "pr-ci-processor",
           base: defaultBranch,
+          counterDir: config.workDir,
           tracker: createRepairMergeabilityTracker({
             workDir: config.workDir,
             gh: deps.github.runGhCommand,

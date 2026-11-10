@@ -12,6 +12,7 @@ import {
   createRepairMergeabilityTracker,
   decideRepairBaseMerge,
   logBaseRefreshDecision,
+  persistBaseRefreshCounter,
   trackRepairMergeability,
 } from "../lib/repair_base_merge_4943.ts";
 import { fileURLToPath } from "node:url";
@@ -3114,6 +3115,10 @@ export async function fix(
       prNumber: pr.number,
       base: pr.baseRefName,
       reason: baseMerge.reason,
+    });
+    await persistBaseRefreshCounter(stateDir, {
+      source: "babysitter-repair",
+      outcome: baseMerge.merge ? "base-merge-allowed" : "base-merge-skipped",
     });
     const sync: BaseSync = baseMerge.merge
       ? await (deps.mergeBase ?? mergeBaseForRepair)(dir, pr.baseRefName)

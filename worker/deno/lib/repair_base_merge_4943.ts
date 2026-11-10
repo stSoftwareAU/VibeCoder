@@ -13,6 +13,7 @@
  */
 import { redactSecrets } from "./secret_redaction.ts";
 import {
+  formatBuildBanner,
   formatBuildStamp,
   type WorkerBuildInfo,
   workerBuildInfoOnce,
@@ -138,6 +139,63 @@ function defaultStamp(): string {
   }
 }
 
+/** The named counter a decision increments: `baseRefresh.<outcome>.<source>`. */
+export function baseRefreshCounterName(
+  facts: Pick<BaseRefreshDecisionFacts, "outcome" | "source">,
+): string {
+  return `baseRefresh.${facts.outcome}.${cleanField(facts.source, FIELD_CAP)}`;
+}
+
+/** Where the standalone commands accumulate their decision counters. */
+export const BASE_REFRESH_COUNTERS_FILE = "base_refresh_counters.json";
+
+/**
+ * Add one decision to the durable `{dir}/base_refresh_counters.json`
+ * (`{ counters: { "baseRefresh.<outcome>.<source>": n } }`, cumulative). The
+ * standalone CI, feedback, spelling and babysitter commands do not write the
+ * worker's per-cycle `fault_tolerance_summary.json`, so this file is how an
+ * automatic follow-up reads their `baseRefresh.*` totals without parsing logs.
+ * Never throws: persistence must not change the refresh or repair outcome.
+ */
+export async function persistBaseRefreshCounter(
+  dir: string | undefined,
+  facts: Pick<BaseRefreshDecisionFacts, "outcome" | "source">,
+): Promise<void> {
+  if (!dir) return;
+  try {
+    const path = `${dir}/${BASE_REFRESH_COUNTERS_FILE}`;
+    let counters: Record<string, number> = {};
+    try {
+      const parsed: unknown = JSON.parse(await Deno.readTextFile(path));
+      const stored = (parsed as { counters?: unknown } | null)?.counters;
+      if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+        for (const [name, count] of Object.entries(stored)) {
+          if (typeof count === "number" && Number.isFinite(count)) {
+            counters[name] = count;
+          }
+        }
+      }
+    } catch {
+      counters = {}; // missing or garbled: start the tally again
+    }
+    const name = baseRefreshCounterName(facts);
+    counters[name] = (counters[name] ?? 0) + 1;
+    await Deno.mkdir(dir, { recursive: true });
+    const temp = `${path}.${crypto.randomUUID()}.tmp`;
+    await Deno.writeTextFile(
+      temp,
+      JSON.stringify(
+        { timestamp: new Date().toISOString(), counters },
+        null,
+        2,
+      ),
+    );
+    await Deno.rename(temp, path);
+  } catch {
+    // Diagnostics are best effort.
+  }
+}
+
 /**
  * Write one diagnostic line to stderr (console.warn), so a command that prints
  * JSON on stdout stays parseable. Never throws: logging must not change the
@@ -152,9 +210,7 @@ export function logBaseRefreshDecision(
     // The named counters land in the per-cycle fault-tolerance summary, so an
     // automatic follow-up can read `baseRefresh.<outcome>.<source>` totals
     // without parsing logs.
-    incrementCounter(
-      `baseRefresh.${facts.outcome}.${cleanField(facts.source, FIELD_CAP)}`,
-    );
+    incrementCounter(baseRefreshCounterName(facts));
     log(formatBaseRefreshDecision(facts, stamp ?? defaultStamp()));
   } catch {
     // Diagnostics are best effort; swallow so the caller's result stands.
@@ -170,6 +226,16 @@ export function formatBaseRefreshStartup(info: WorkerBuildInfo): string {
   return `[base-refresh] startup repair-base-merge=conflicting-only refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> ${
     formatBuildStamp(info)
   }`;
+}
+
+/**
+ * The worker's startup build lines, in print order: the `[worker-build]` banner
+ * (Issue #3138) then the base-refresh policy line, both from one build stamp.
+ * `commands/run_core.ts` prints exactly these, so the extension of the existing
+ * startup/version diagnostics is covered by testing this function.
+ */
+export function formatStartupBuildLines(info: WorkerBuildInfo): string[] {
+  return [formatBuildBanner(info), formatBaseRefreshStartup(info)];
 }
 
 const OWNER_MESSAGE =
@@ -320,6 +386,8 @@ export async function readRepairBaseMergeDecision(input: {
   log?: (line: string) => void;
   /** Applies the #4831 transient-refusal recovery to an `UNKNOWN` read. */
   tracker?: RepairMergeabilityTracker;
+  /** Directory the decision counter is persisted to (standalone commands). */
+  counterDir?: string;
 }): Promise<RepairBaseMergeDecision> {
   let decision: RepairBaseMergeDecision;
   try {
@@ -365,5 +433,9 @@ export async function readRepairBaseMergeDecision(input: {
     },
     input.log,
   );
+  await persistBaseRefreshCounter(input.counterDir, {
+    source: input.source,
+    outcome: decision.merge ? "base-merge-allowed" : "base-merge-skipped",
+  });
   return decision;
 }
