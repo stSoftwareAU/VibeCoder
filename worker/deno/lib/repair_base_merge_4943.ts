@@ -123,12 +123,13 @@ function defaultStamp(): string {
 }
 
 /**
- * Write one diagnostic line. Never throws: logging must not change the
+ * Write one diagnostic line to stderr (console.warn), so a command that prints
+ * JSON on stdout stays parseable. Never throws: logging must not change the
  * outcome of the refresh or repair it describes.
  */
 export function logBaseRefreshDecision(
   facts: BaseRefreshDecisionFacts,
-  log: (line: string) => void = console.log,
+  log: (line: string) => void = console.warn,
   stamp?: string,
 ): void {
   try {

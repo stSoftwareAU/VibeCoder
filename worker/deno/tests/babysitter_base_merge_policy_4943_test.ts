@@ -230,8 +230,9 @@ function harness(stateDir: string) {
 }
 
 /**
- * Silence the babysitter's console output, and hand back every line it wrote
- * while the action ran, so the base-refresh diagnostics can be asserted.
+ * Silence the babysitter's console output, and hand back every stderr line
+ * (console.warn) it wrote while the action ran, so the base-refresh diagnostics
+ * can be asserted.
  */
 async function withConsole<T>(
   action: (stateDir: string, lines: string[]) => Promise<T>,
@@ -241,10 +242,10 @@ async function withConsole<T>(
   const originalLog = console.log;
   const originalWarn = console.warn;
   const originalError = console.error;
-  console.log = (...parts: unknown[]) => {
+  console.log = () => {};
+  console.warn = (...parts: unknown[]) => {
     lines.push(parts.map(String).join(" "));
   };
-  console.warn = () => {};
   console.error = () => {};
   try {
     return await action(`${root}/state`, lines);

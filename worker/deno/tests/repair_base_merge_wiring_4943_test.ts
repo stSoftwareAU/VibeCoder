@@ -46,8 +46,8 @@ async function runWith(
   const syncCalls: string[][] = [];
   const mergeableReads: string[][] = [];
   const workDir = await Deno.makeTempDir();
-  const originalLog = console.log;
-  console.log = () => {};
+  const originalWarn = console.warn;
+  console.warn = () => {};
   try {
     const deps = createMockDeps({
       github: { runGhCommand: mergeableOnlyGh(read, mergeableReads) },
@@ -105,7 +105,7 @@ async function runWith(
       );
     }
   } finally {
-    console.log = originalLog;
+    console.warn = originalWarn;
     await Deno.remove(workDir, { recursive: true });
   }
   return { syncCalls, mergeableReads };

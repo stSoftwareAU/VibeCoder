@@ -242,15 +242,15 @@ class FakeFleet {
   }
 }
 
-/** Ask for a refresh, capturing the console.log lines the call emits. */
+/** Ask for a refresh, capturing the console.warn lines the call emits. */
 async function askLogged(
   fleet: FakeFleet,
   prNumber: number,
   source: string,
 ): Promise<Logged> {
-  const original = console.log;
+  const original = console.warn;
   const lines: string[] = [];
-  console.log = (...args: unknown[]) => {
+  console.warn = (...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   };
   try {
@@ -269,7 +269,7 @@ async function askLogged(
       lines: lines.filter((line) => line.startsWith("[base-refresh]")),
     };
   } finally {
-    console.log = original;
+    console.warn = original;
   }
 }
 

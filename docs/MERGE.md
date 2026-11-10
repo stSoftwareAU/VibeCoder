@@ -377,11 +377,12 @@ repair merged the base, and the CI and feedback processors always synced the
 default branch, so each repair added a merge commit and re-ran CI on PRs not
 selected for final integration. The trade-off: a failure that appears only
 against the newer base is reproduced after the PR is refreshed as the owner, not
-inside the repair. Each decision logs one line,
+inside the repair. Each decision logs one line to the host's stderr log,
 `[base-refresh] source=… outcome=… repo=… pr=#N base=… owner=#N/worker|none reason="…" version=… commit=…`,
 with outcomes `refresh-requested`, `refresh-skipped`, `base-merge-allowed` or
-`base-merge-skipped`. Grep the host log for `[base-refresh]` and count by source
-and outcome to attribute churn. The version and commit are the worker's build
+`base-merge-skipped`. It goes to stderr so a command that prints JSON on stdout
+stays parseable. Grep the host's stderr log for `[base-refresh]` and count by
+source and outcome to attribute churn. The version and commit are the worker's build
 stamp, so a deployed worker older than this change shows no such lines. Still
 necessary: genuine conflicts, the owner's own refresh, the non-strict-base direct
 `update-branch` path, and local `updatePrBranch` for conflict repair. Merge-queue
