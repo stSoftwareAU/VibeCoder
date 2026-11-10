@@ -21,7 +21,11 @@ states). Closes #4875.
 - The passage points at the per-path guarantee in `docs/CONFIGURATION.md` ("The
   full gate is conditional on the budget left") instead of restating it, so the
   two cannot drift. It does not claim a worker-run full gate for every repair:
-  only issue completion is named as running one.
+  only issue completion is named as running one, a CI fix is described as
+  attempting it only when Claude leaves uncommitted changes (then configured
+  pre-flight, possibly nothing), PR feedback and spelling fixes as running no
+  full gate, and a custom PR prompt as relying on the agent's pre-push hook —
+  matching `docs/CONFIGURATION.md`.
 
 ### Undiscoverable Facts
 

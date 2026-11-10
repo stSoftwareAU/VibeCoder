@@ -1229,9 +1229,12 @@ The agent is then told to run the targeted checks and record the skip with a
 carrying that note, the full gate was not run in **that agent session**, and the
 note does not by itself prove that any other check ran. What covered the PR
 depends on its path: issue completion runs the full worker gate before the PR is
-raised, whereas a CI fix, PR feedback, a spelling fix or a custom PR prompt
-runs only that path's own pre-flight, verifier and changed-file checks (the note
-names them; see
+raised. A CI fix attempts that gate only when Claude leaves uncommitted changes,
+then runs configured pre-flight commands, and may run nothing. PR feedback and
+spelling fixes run no full gate (changed-file checks only where pre-flight
+commands are configured, plus the PR-review fix verifier for review feedback),
+and a custom PR prompt relies on the agent's pre-push hook. The note names the
+checks that path runs; see
 [docs/CONFIGURATION.md → The full gate is conditional on the budget left](CONFIGURATION.md#the-full-gate-is-conditional-on-the-budget-left-issue-1138)).
 CI covers only the jobs the target repository actually runs, so some of the
 skipped checks may have no other copy; treat any coverage you cannot find as
