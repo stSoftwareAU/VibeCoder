@@ -79,6 +79,6 @@ Docs updated: `docs/USAGE.md` (read "What is never escalated" and the new except
   Required by: "does **not** close the issue" and "adds `needs-human` with a paired comment in the same run".
 - Callers of `handOffNegativeResultIssue`: only `handle_no_changes_phase.ts`, which passes the required `needsHumanLabel` and the `ensureLabelExists` seam.
 - Twinned rules: the prompts/docs restating "never handed to a human" were updated (listed above); no other twin found.
-- Final gate: `./quality.sh` on the earlier head — all stages passed except `deno tests`, which failed only on the network/tooling faults named above. The gate was re-run after the final edits; see the commit history for its result.
+- Final gate: `./quality.sh` re-run after the last code edits — every stage passed (including `needs-human chokepoint`, lint, type check, fmt, markdownlint, semgrep) except `deno tests`, where exactly the same 11 tests failed on the sandbox network/tooling faults named above; no test touching this change failed.
 
 Not done / risk: the label description keeps "do not re-attempt without new evidence"; the `negative_result_lesson_docs_test.ts:76` assertion message still says "close-out label" (message text only); the failing sandbox tests were not re-run in a networked environment.
