@@ -165,6 +165,29 @@ Deno.test("crossFileAnchorLinks - finds a wrapped link that is the second link i
   ]);
 });
 
+Deno.test("crossFileAnchorLinks - reports a link at column 0 of a continuation line on that line (Issue #4870)", () => {
+  const markdown = [
+    "For details see",
+    "[the guide](x.md#f).",
+  ].join("\n");
+
+  assertEquals(crossFileAnchorLinks(markdown), [
+    { line: 2, target: "x.md", fragment: "f" },
+  ]);
+});
+
+Deno.test("crossFileAnchorLinks - reports a wrapped link whose opening bracket ends a non-first line on that line (Issue #4870)", () => {
+  const markdown = [
+    "Intro words here.",
+    "And see [",
+    "the guide](x.md#f).",
+  ].join("\n");
+
+  assertEquals(crossFileAnchorLinks(markdown), [
+    { line: 2, target: "x.md", fragment: "f" },
+  ]);
+});
+
 Deno.test("crossFileAnchorLinks - never joins a paragraph across a blank line (Issue #4870)", () => {
   const separated = ["Intro [text", "", "more](x.md#f)"].join("\n");
   assertEquals(crossFileAnchorLinks(separated), []);

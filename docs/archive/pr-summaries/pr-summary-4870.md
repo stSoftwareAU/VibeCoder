@@ -63,12 +63,15 @@ extractor-skipped input.
 
 ## Test Plan
 
-Added to `worker/deno/tests/cross_file_anchors_test.ts` (16 tests; existing
+Added to `worker/deno/tests/cross_file_anchors_test.ts` (18 tests; existing
 tests unedited, only the header comment gained a mention of this issue):
 
 - Must report: two-line wrap, three-line wrap, wrap inside a list-item
   continuation (reported on the item's line), wrap with angle-bracket
-  destination and title, a wrapped link as the second link of a paragraph.
+  destination and title, a wrapped link as the second link of a paragraph, a
+  link at column 0 of a continuation line (reported on that line), and a
+  wrapped link whose opening `[` ends a non-first line (reported on that
+  line).
 - Must not report or join, each with a positive control (the same input with
   only the separation removed is reported): blank line between the halves, a
   fenced block between them, two list items, a heading, table rows, a code span
@@ -78,7 +81,7 @@ tests unedited, only the header comment gained a mention of this issue):
 
 Red checks (production code broken on purpose, then restored and byte-compared):
 
-- Original per-line loop: 9 new tests red (the five positives, and the
+- Original per-line loop: 10 new tests red (the six positives, and the
   blank-line, fence and wrapped-code-span negatives via their positive controls,
   and the wrapped link inside a fence).
 - No gap, heading, table or list-item boundaries: 4 red (fence, two list items,
@@ -92,6 +95,13 @@ Mutation check follow-up: two new tests pin the reference-definition flush
 either call turns one test red. The `current + 1 < starts.length` operand of the
 line-pointer loop was dead (`starts[current + 1] ?? Infinity` is already
 `Infinity` past the end), so it was removed rather than tested.
+
+Line-mapping edges: two further tests pin the offset-to-line pointer at its
+boundaries. Changing `<= index` to `< index` in the line-pointer loop
+(`markdown_anchors.ts:268`) turns only the column-0 continuation test red (it
+reports line 1 instead of 2); dropping the `+ 1` from the offset accumulation
+(`markdown_anchors.ts:258`) turns only the opening-bracket test red (line 3
+instead of 2). Every other test stays green under each mutation.
 
 No existing test was edited or removed. Twinned rule: `crossFileAnchorLinks` is
 the only extractor of cross-file anchors (`git grep crossFileAnchorLinks`: the
