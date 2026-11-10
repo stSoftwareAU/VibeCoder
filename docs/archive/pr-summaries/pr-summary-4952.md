@@ -176,9 +176,9 @@ flowchart TD
 
 ## Mutation check follow-up
 
-- `worker/deno/lib/auto_merge_sweep.ts:377` (deleted `repo` property) — killed by
-  `worker/deno/tests/auto_merge_sweep_draft_heal_4952_test.ts` ("a hook that
+- `worker/deno/lib/auto_merge_sweep.ts:377` (deleted `repo` property) — killed
+  by `worker/deno/tests/auto_merge_sweep_draft_heal_4952_test.ts` ("a hook that
   throws..."), which now asserts the warning context carries `repo`.
-- `worker/deno/lib/auto_merge_sweep.ts:385` (deleted `clearRefusal` call) — killed
-  by the new test "a skipped draft clears its recorded branch-refresh refusal" in
-  the same file.
+- `worker/deno/lib/auto_merge_sweep.ts:385` (deleted `clearRefusal` call) —
+  killed by the new test "a skipped draft clears its recorded branch-refresh
+  refusal" in the same file.
