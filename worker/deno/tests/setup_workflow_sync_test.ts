@@ -22,6 +22,7 @@ import {
 } from "../setup/workflow_sync.ts";
 import { resolveActionPins } from "../lib/action_pin_resolver.ts";
 import { PINNED_ACTIONS, SEMGREP_IMAGE } from "../lib/pinned_actions.ts";
+import { buildClosingComment } from "../lib/purge_stale_workflow_issues.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 import {
   DEPENDABOT_CONFIG_PATH,
@@ -514,6 +515,84 @@ Deno.test("syncWorkflowsForRepo - files Cargo again after a missing root marker 
     true,
   );
 });
+
+// Issue #4887: a public-only request closed as not applicable on a private
+// repo must not suppress the request once the repo is public. The fixture is
+// the exact comment buildClosingComment posts on a not-applicable close, so
+// the wording workflow-sync reads back cannot drift from what the purge
+// actually writes.
+const PRIVATE_REPO_CLOSURE = buildClosingComment(
+  { number: 4800, specId: "dependency-review", kind: "missing" },
+  "not-applicable",
+);
+
+for (
+  const scenario of [
+    "fleet not-applicable closure",
+    "human comment",
+    "ordinary closure",
+    "fleet marker without applicability phrase",
+  ] as const
+) {
+  Deno.test(`syncWorkflowsForRepo - dependency-review closed on a private repo, repo now public: ${scenario}`, async () => {
+    const tag = deduplicationTag("dependency-review");
+    const { runner: base, state } = buildMockRunner({});
+    const runner: NonNullable<WorkflowSyncOptions["runCommand"]> = (cmd) => {
+      const joined = cmd.join(" ");
+      if (joined.includes("gh api repos/owner/repo --jq .visibility")) {
+        return Promise.resolve(ok("public"));
+      }
+      if (joined.includes("gh issue list") && joined.includes(tag)) {
+        return Promise.resolve(
+          ok(
+            JSON.stringify([{
+              number: 4800,
+              body: tag,
+              state: "CLOSED",
+              author: { login: FLEET_AUTHOR },
+            }]),
+          ),
+        );
+      }
+      if (joined.includes("gh issue view")) {
+        return Promise.resolve(
+          ok(
+            JSON.stringify({
+              comments: [{
+                body: scenario === "ordinary closure"
+                  ? "completed"
+                  : scenario === "fleet marker without applicability phrase"
+                  ? "Closed for another reason.\n\n<!-- vibe-coder:purge-not-applicable:dependency-review -->"
+                  : PRIVATE_REPO_CLOSURE,
+                author: {
+                  login: scenario === "human comment" ? "human" : FLEET_AUTHOR,
+                },
+              }],
+            }),
+          ),
+        );
+      }
+      return base!(cmd);
+    };
+    const result = await syncWorkflowsForRepo("owner/repo", {
+      runCommand: runner,
+      fleetAuthors: [FLEET_AUTHOR],
+      resolvePins: cataloguePins,
+    });
+    assertEquals(result.ok, true);
+    // Positive control: the same run files other missing workflows.
+    assertEquals(
+      state.issuesCreated.some((issue) =>
+        issue.body.includes(deduplicationTag("gitleaks"))
+      ),
+      true,
+    );
+    assertEquals(
+      state.issuesCreated.some((issue) => issue.body.includes(tag)),
+      scenario === "fleet not-applicable closure",
+    );
+  });
+}
 
 for (
   const scenario of [

@@ -52,7 +52,7 @@ import {
 } from "../lib/action_pin_resolver.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 import {
-  hasMissingRootClosure,
+  hasApplicabilityClosure,
   reconcileInapplicableWorkflowIssues,
 } from "../lib/purge_stale_workflow_issues.ts";
 import { createSetupRunCommand } from "./setup_command_runner.ts";
@@ -155,8 +155,9 @@ export function partialDeduplicationTag(specId: string): string {
 /**
  * Check if an issue already exists in the target repo carrying the given tag.
  *
- * Searches all states for fleet-authored matches. A trusted missing-root-project
- * closure retires a closed match; a failed comment lookup skips the spec.
+ * Searches all states for fleet-authored matches. A trusted applicability
+ * closure (missing root project, or a public-only spec on a private repo)
+ * retires a closed match; a failed comment lookup skips the spec.
  */
 async function issueExistsByTag(
   repo: string,
@@ -166,7 +167,7 @@ async function issueExistsByTag(
   log: (message: string) => void,
 ): Promise<boolean> {
   // Search both states: a closed issue suppresses recreation unless a trusted
-  // missing-root-project closure retired it. Issue #1829: a
+  // applicability closure retired it (Issue #4887). Issue #1829: a
   // dedup limited to `--state open` allowed setup to re-raise issues
   // for workflows that were already present and had a prior sync issue
   // closed against them.
@@ -214,7 +215,7 @@ async function issueExistsByTag(
   for (const row of verified) {
     if (row.state !== "CLOSED" || !specId) return true;
     if (
-      !await hasMissingRootClosure(
+      !await hasApplicabilityClosure(
         repo,
         row.number,
         specId,
