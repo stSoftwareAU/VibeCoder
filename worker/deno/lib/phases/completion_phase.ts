@@ -243,7 +243,7 @@ import type { DegradedShortfall } from "../degraded_delivery.ts";
 import {
   buildMutationHoldDraftBody,
   convertToDraftContinuation,
-  markReadyAndAwaitCi,
+  markDraftReadyAndAwaitCi,
 } from "../draft_continuation_pr.ts";
 import {
   assessUnmetCriteria,
@@ -842,6 +842,12 @@ async function postFindingsComment(
  * either way — PRs do not merge until they have a review approval and CI is
  * green, and GitHub enforces both.
  *
+ * Issue #4952: a draft PR, or one whose draft state cannot be read, is marked
+ * ready. When `gh pr ready` fails the PR is still a draft, so the run returns
+ * a `failure` (category `interrupted`) naming the PR instead of `continue`,
+ * and the claim is not released as having raised it ready; the next run
+ * retries it.
+ *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
  */
@@ -893,9 +899,16 @@ export async function recoverAndFinaliseExistingPr(
 
   // Issue #1559: Check PR state up front so we can suppress the redundant
   // "PR created" link comment when the PR is already merged.
-  const prLookup = await lookupPrState(repo, prNumber, deps);
+  let prLookup = await lookupPrState(repo, prNumber, deps);
+  // Issue #4952: an unreadable state (a gh error) is retried once, so a draft
+  // whose state the first read missed is still marked ready.
+  if (prLookup === null && prNumber > 0) {
+    prLookup = await lookupPrState(repo, prNumber, deps);
+  }
   const prState = prLookup?.state ?? null;
   const prAlreadyMerged = prState === "MERGED";
+  // Issue #4952: set when `gh pr ready` failed, so the PR is still a draft.
+  let readyFailure = false;
 
   // Post-recovery finalisation (best-effort)
   try {
@@ -934,6 +947,8 @@ export async function recoverAndFinaliseExistingPr(
       // auto-merge path. Auto-merge waits for
       // the ready-for-review CI to start: the draft's checks were skipped,
       // and a skipped required check counts as passing (Issue #4160).
+      // Issue #4952: a draft whose state could not be read is marked ready
+      // too. A failed ready leaves the PR a draft, so the run fails below.
       let ciStarted = true;
       if (state.mutationHold) {
         // Issue #4617: a survivor the repository's CI blocks on holds the pull
@@ -953,19 +968,34 @@ export async function recoverAndFinaliseExistingPr(
           gh: deps.github.runGhCommand,
           log: (message) => logger.warn(message, { repo, prNumber }),
         });
-      } else if (prLookup?.isDraft === true) {
-        ciStarted = await markReadyAndAwaitCi({
+      } else if (prLookup === null || prLookup.isDraft === true) {
+        if (prLookup === null) {
+          logger.warn(
+            "PR draft state could not be read; attempting to mark it ready (Issue #4952)",
+            { repo, prNumber },
+          );
+        }
+        const result = await markDraftReadyAndAwaitCi({
           repo,
           prNumber,
           gh: deps.github.runGhCommand,
           sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
           log: (message) => logger.warn(message, { repo, prNumber }),
         });
-        logger.info("Marked the draft continuation PR ready (Issue #4146)", {
-          repo,
-          prNumber,
-          ciStarted,
-        });
+        ciStarted = result.ciStarted;
+        if (result.ready) {
+          logger.info("Marked the draft continuation PR ready (Issue #4146)", {
+            repo,
+            prNumber,
+            ciStarted,
+          });
+        } else {
+          readyFailure = true;
+          logger.warn(
+            "Could not mark the draft PR ready; the run is not released as having raised it ready (Issue #4952)",
+            { repo, prNumber },
+          );
+        }
       }
       const reviewRecord = state.preprReviewFindings ?? [];
       if (reviewRecord.length > 0) {
@@ -1021,6 +1051,15 @@ export async function recoverAndFinaliseExistingPr(
     }
   }
 
+  // Issue #4952: the PR is still a draft, so the run is not released as raised.
+  if (readyFailure) {
+    return {
+      category: "interrupted",
+      status: "failure",
+      reason:
+        `Run interrupted before the pull request was ready — PR #${prNumber} is still a draft because \`gh pr ready\` failed; the next run retries it (Issue #4952)`,
+    };
+  }
   return { status: "continue" };
 }
 

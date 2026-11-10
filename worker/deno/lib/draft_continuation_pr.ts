@@ -11,6 +11,8 @@
  * that run completes, completion marks the draft ready and it takes the
  * normal review and auto-merge path, even with a criterion still unmet
  * (Issue #4234); the body says `Closes #N` unless an entry is `missing`.
+ * When marking it ready fails, the run is not released as having raised it
+ * ready: completion fails the run so the next run retries (Issue #4952).
  *
  * Best-effort: the branch is the deliverable that matters, so a `gh` failure
  * is reported, never thrown.
@@ -218,20 +220,16 @@ export function buildMutationHoldDraftBody(
   ].join("\n");
 }
 
-/**
- * Mark a draft continuation ready and wait for its CI to start (Issue
- * #4160). Draft PRs skip CI (Issue #4152) and GitHub counts a skipped
- * required check as passing, so arming auto-merge straight after `gh pr
- * ready` could merge on the draft's skipped checks before the
- * ready-for-review run registers.
- *
- * Returns `true` once the head commit carries a check run that was not there
- * before the PR was marked ready and was not skipped — the caller arms
- * auto-merge only then. Returns `false` when marking it ready fails or no
- * such run appears within `timeoutMs`; auto-merge is then left for the
- * sweep, which arms it once CI has run. Never throws.
- */
-export async function markReadyAndAwaitCi(args: {
+/** What {@link markDraftReadyAndAwaitCi} reports (Issues #4160, #4952). */
+export interface MarkReadyResult {
+  /** False only when `gh pr ready` threw: the PR is still a draft. */
+  ready: boolean;
+  /** True once ready-for-review CI has started, so auto-merge may be armed. */
+  ciStarted: boolean;
+}
+
+/** The arguments shared by {@link markDraftReadyAndAwaitCi} and its wrapper. */
+interface MarkReadyArgs {
   repo: string;
   prNumber: number;
   gh: (args: string[]) => Promise<string>;
@@ -239,7 +237,32 @@ export async function markReadyAndAwaitCi(args: {
   log: (message: string) => void;
   timeoutMs?: number;
   pollMs?: number;
-}): Promise<boolean> {
+}
+
+/**
+ * Mark a draft continuation ready and wait for its CI to start (Issues #4160,
+ * #4952). Draft PRs skip CI (Issue #4152) and GitHub counts a skipped required
+ * check as passing, so arming auto-merge straight after `gh pr ready` could
+ * merge on the draft's skipped checks before the ready-for-review run
+ * registers.
+ *
+ * One `gh pr view` reads the head commit and `isDraft`. When `isDraft` is
+ * exactly `false` the PR is already ready: `gh pr ready` and the CI wait are
+ * skipped and the result is `{ ready: true, ciStarted: true }`. When `isDraft`
+ * is missing, the draft is marked ready as before.
+ *
+ * `ready` is `false` only when `gh pr ready` throws, so the PR is still a
+ * draft; the caller can then fail the run rather than release it as raised
+ * (Issue #4952). `ciStarted` is `true` once the head commit carries a check
+ * run that was not there before the PR was marked ready and was not skipped —
+ * the caller arms auto-merge only then. `ciStarted` is `false` when the check
+ * runs cannot be read, or when no such run appears within `timeoutMs`;
+ * auto-merge is then left for the sweep, which arms it once CI has run.
+ * Never throws.
+ */
+export async function markDraftReadyAndAwaitCi(
+  args: MarkReadyArgs,
+): Promise<MarkReadyResult> {
   const { repo, prNumber, gh, sleep, log } = args;
   const timeoutMs = args.timeoutMs ?? 120_000;
   const pollMs = args.pollMs ?? 10_000;
@@ -256,9 +279,20 @@ export async function markReadyAndAwaitCi(args: {
       ]),
     ) as { id: number; conclusion: string | null }[];
   try {
-    ({ headRefOid } = JSON.parse(
-      await gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid"]),
-    ) as { headRefOid: string });
+    const view = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        pr,
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid,isDraft",
+      ]),
+    ) as { headRefOid: string; isDraft?: unknown };
+    headRefOid = view.headRefOid;
+    // Issue #4952: already ready, so there is nothing to mark and no CI wait.
+    if (view.isDraft === false) return { ready: true, ciStarted: true };
     before = new Set((await checkRuns()).map((run) => run.id));
   } catch (err) {
     log(
@@ -270,16 +304,16 @@ export async function markReadyAndAwaitCi(args: {
     await gh(["pr", "ready", pr, "--repo", repo]);
   } catch (err) {
     log(`could not mark PR #${prNumber} ready: ${errText(err)}`);
-    return false;
+    return { ready: false, ciStarted: false };
   }
-  if (!before) return false;
+  if (!before) return { ready: true, ciStarted: false };
   try {
     // Checked at once, then every `pollMs` up to and including `timeoutMs`.
     for (let waited = 0;; waited += pollMs) {
       const started = (await checkRuns()).some((run) =>
         !before.has(run.id) && run.conclusion !== "skipped"
       );
-      if (started) return true;
+      if (started) return { ready: true, ciStarted: true };
       if (waited >= timeoutMs) break;
       await sleep(pollMs);
     }
@@ -291,7 +325,19 @@ export async function markReadyAndAwaitCi(args: {
   } catch (err) {
     log(`could not read PR #${prNumber}'s check runs: ${errText(err)}`);
   }
-  return false;
+  return { ready: true, ciStarted: false };
+}
+
+/**
+ * Mark a draft continuation ready and report whether its CI has started
+ * (Issue #4160). A thin wrapper over {@link markDraftReadyAndAwaitCi} that
+ * drops the `ready` flag: `true` only when auto-merge may be armed. Never
+ * throws.
+ */
+export async function markReadyAndAwaitCi(
+  args: MarkReadyArgs,
+): Promise<boolean> {
+  return (await markDraftReadyAndAwaitCi(args)).ciStarted;
 }
 
 function errText(err: unknown): string {

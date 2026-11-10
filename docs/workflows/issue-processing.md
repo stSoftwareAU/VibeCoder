@@ -1164,7 +1164,8 @@ reads that signal at both ends
 - **A timed-out run keeps a draft.** A run that times out (or is released on
   schedule) with its work preserved on the branch opens a DRAFT PR saying
   `Part of #N` — never a closing keyword, never auto-merge (the sweep skips
-  drafts, Issue #1800) — via
+  drafts, Issue #1800; a continuation draft carries the marker, so the
+  orphaned-draft self-heal of Issue #4952 never readies it) — via
   [`draft_continuation_pr.ts`](../../worker/deno/lib/draft_continuation_pr.ts).
   The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so the
   next run re-claims it, resumes the branch and finishes.

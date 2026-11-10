@@ -29,7 +29,15 @@
  * 4. **Every PR is armed for auto-merge** (Issue #4291) — PRs do not merge
  *    until they have a review approval and CI is green, and GitHub enforces
  *    both. The sweep never withholds arming, or disarms, for a review, a
- *    finding or a label; only the routing holds in item 3 disarm.
+ *    finding or a label; only the routing holds in item 3 disarm. The one
+ *    exception is a draft, which GitHub will not arm: it is armed only once
+ *    item 5 has marked it ready.
+ * 5. **An orphaned fleet draft is readied, then armed** (Issue #4952) — a
+ *    draft whose issue has no live claim and whose body carries no
+ *    draft-continuation or mutation-hold marker is marked ready by the
+ *    `readyOrphanedDraft` hook, and armed in the same pass once its
+ *    ready-for-review CI has started. Every other draft is skipped (Issue
+ *    #1800), so a held or claimed draft is never published by the sweep.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -62,8 +70,9 @@ export interface SweepablePr {
   baseRefName?: string;
   /**
    * True when the PR is a draft (Issue #1800): GitHub refuses to arm
-   * auto-merge on one, so the sweep skips it. Unset means unknown, and an
-   * unknown is attempted as before.
+   * auto-merge on one, so the sweep skips it unless `readyOrphanedDraft`
+   * marks it ready (Issue #4952). Unset means unknown, and an unknown is
+   * attempted as before.
    */
   isDraft?: boolean;
   /** Labels from the listing; `needs-human` means a person owns the PR. */
@@ -73,10 +82,12 @@ export interface SweepablePr {
 /**
  * Draft PRs already announced by this process, keyed `repo#pr` (Issue #1800).
  *
- * A draft stays a draft for as long as its author wants eyes on it — hours,
- * sometimes days — and the sweep runs every cycle. One line when the draft
- * is first seen says everything the next hundred would; the outcome is
- * recorded every sweep regardless.
+ * A draft the sweep leaves alone stays a draft for as long as its author
+ * wants eyes on it — hours, sometimes days — and the sweep runs every cycle.
+ * A draft the self-heal readies (Issue #4952) is armed rather than skipped,
+ * so it is never announced. One line when a skipped draft is first seen says
+ * everything the next hundred would; the outcome is recorded every sweep
+ * regardless.
  */
 const announcedDrafts = new Set<string>();
 
@@ -154,6 +165,14 @@ export interface SweepAutoMergeOptions {
     | { action: "hold"; outcome: EnableAutoMergeResult }
     | { action: "proceed"; disarmed: boolean }
   >;
+  /**
+   * Ready an orphaned fleet draft so it can be armed in this pass (Issue
+   * #4952). Resolves `true` only when the PR was marked ready and its
+   * ready-for-review CI started; `false` leaves the draft skipped as before.
+   * A throw is logged and treated as `false`. Omitted, drafts are skipped
+   * exactly as before.
+   */
+  readyOrphanedDraft?: (repo: string, pr: SweepablePr) => Promise<boolean>;
   /** Attempt the merge for one PR. */
   attemptMerge: (
     repo: string,
@@ -212,6 +231,7 @@ export async function sweepAutoMerge(
     isMergeQueueBase,
     checkBaseIntegrity,
     attemptMerge,
+    readyOrphanedDraft,
     recordOutcome,
     invalidateOpenPrCache,
     branchRefreshRefusals,
@@ -340,18 +360,40 @@ export async function sweepAutoMerge(
         // "Pull Request is still a draft", and every cycle used to log that
         // refusal as a failure. A draft is the author asking for eyes, not
         // a merge candidate — skip it, and say so once per process.
+        //
+        // Issue #4952: the one exception is an orphaned fleet draft, which
+        // the hook readies. A readied PR falls through to the normal path
+        // below, so it is armed in this same pass.
         if (pr.isDraft === true) {
-          await clearRefusal(repo, pr.number);
-          const key = `${repo}#${pr.number}`;
-          if (!announcedDrafts.has(key)) {
-            announcedDrafts.add(key);
-            logger.info(
-              "Auto-merge sweep: skipping draft PR — auto-merge cannot be " +
-                "armed until it is marked ready for review (Issue #1800)",
-              { repo, prNumber: pr.number },
-            );
+          let readied = false;
+          if (readyOrphanedDraft) {
+            try {
+              readied = await readyOrphanedDraft(repo, pr);
+            } catch (err) {
+              logger.warn(
+                "Auto-merge sweep: orphaned draft self-heal threw — the " +
+                  "draft stays skipped (Issue #4952)",
+                {
+                  repo,
+                  prNumber: pr.number,
+                  error: errorMessage(err),
+                },
+              );
+            }
           }
-          continue;
+          if (!readied) {
+            await clearRefusal(repo, pr.number);
+            const key = `${repo}#${pr.number}`;
+            if (!announcedDrafts.has(key)) {
+              announcedDrafts.add(key);
+              logger.info(
+                "Auto-merge sweep: skipping draft PR — auto-merge cannot be " +
+                  "armed until it is marked ready for review (Issue #1800)",
+                { repo, prNumber: pr.number },
+              );
+            }
+            continue;
+          }
         }
 
         // Issue #1774: one live `pr view` before the merge attempt. A PR
