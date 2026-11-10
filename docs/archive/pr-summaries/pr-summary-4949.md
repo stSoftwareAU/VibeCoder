@@ -74,13 +74,13 @@ flowchart LR
 - **symptom** — a run stopped at the Claude turn cap in the execute phase was
   released as `infrastructure-error` / `worker-crash`, retried once and
   auto-filed.
-- **status** — `verified` — the new tests drive `workOnIssueExecuteClaude` with
-  an `AgentTurnLimitError`; against the base `execute_phase.ts` the file does
-  not even compile (no `TURN_LIMIT_HEADING`), and with only the new branch
-  disabled (`if (false && …)`) two of the four tests fail (category
-  `internal_error`, two invocations). Base-branch behaviour read from
-  `execute_phase.ts` at HEAD: every `!claudeResult.ok` returned
-  `internal_error`.
+- **status** — `verified` — the regression test was observed failing against the
+  unfixed code and passing after the fix: with the new `AgentTurnLimitError`
+  branch disabled (`if (false && …)`, which restores the base behaviour of
+  mapping every error to `internal_error`) two of the four tests fail (category
+  `internal_error`, two invocations); with it enabled all four pass. Against the
+  literal base file the test does not compile, because `TURN_LIMIT_HEADING` is
+  new.
 - **regression test** —
   `worker/deno/tests/execute_phase_turn_limit_4949_test.ts::execute_phase #4949 - a turn-capped run with a clean tree is released as interrupted and not retried`
 
