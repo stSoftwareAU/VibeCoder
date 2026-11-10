@@ -192,6 +192,9 @@ export interface WorkflowSpec {
 /** The repo-relative path Dependabot reads its configuration from (Issue #4904). */
 export const DEPENDABOT_CONFIG_PATH = ".github/dependabot.yml";
 
+/** The fallback path Dependabot also reads its configuration from (Issue #4904). */
+export const DEPENDABOT_CONFIG_YAML_PATH = ".github/dependabot.yaml";
+
 /**
  * The repo-relative path a spec's template belongs at: the Dependabot
  * configuration path for a `dependabotConfig` spec, otherwise the

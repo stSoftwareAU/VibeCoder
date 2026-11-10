@@ -14,6 +14,7 @@ import { fetchRootContents, type RepoLanguages } from "./language_detector.ts";
 import { getRepoVisibility, type RepoVisibility } from "./repo_visibility.ts";
 import {
   DEPENDABOT_CONFIG_PATH,
+  DEPENDABOT_CONFIG_YAML_PATH,
   getWorkflowsForLanguagesAndVisibility,
   WORKFLOW_SPECS,
   type WorkflowSpec,
@@ -290,7 +291,7 @@ async function fetchDependabotConfig(
   runner: (cmd: string[]) => Promise<CommandOutput>,
   localRepoPath?: string,
 ): Promise<Result<DependabotConfigFile | undefined, string>> {
-  const candidates = [DEPENDABOT_CONFIG_PATH, ".github/dependabot.yaml"];
+  const candidates = [DEPENDABOT_CONFIG_PATH, DEPENDABOT_CONFIG_YAML_PATH];
   for (const path of candidates) {
     if (localRepoPath !== undefined) {
       try {

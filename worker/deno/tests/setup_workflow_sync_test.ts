@@ -24,6 +24,8 @@ import { resolveActionPins } from "../lib/action_pin_resolver.ts";
 import { PINNED_ACTIONS, SEMGREP_IMAGE } from "../lib/pinned_actions.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 import {
+  DEPENDABOT_CONFIG_PATH,
+  DEPENDABOT_CONFIG_YAML_PATH,
   WORKFLOW_SPECS,
   type WorkflowSpec,
 } from "../lib/workflow_definitions.ts";
@@ -1950,9 +1952,19 @@ for (const id of DEPENDABOT_SPEC_IDS) {
     const body = issueBody(specNamed(id), cataloguePinMap());
 
     assertEquals(
-      body.includes(".github/dependabot.yml"),
+      body.includes(`**Suggested filename:** \`${DEPENDABOT_CONFIG_PATH}\``),
       true,
-      "a Dependabot body should name .github/dependabot.yml",
+      "a Dependabot body should suggest the Dependabot config path",
+    );
+    assertEquals(
+      body.includes(`save the template as \`${DEPENDABOT_CONFIG_PATH}\``),
+      true,
+      "a Dependabot body should say to save the template at the Dependabot config path",
+    );
+    assertEquals(
+      body.includes(DEPENDABOT_CONFIG_YAML_PATH),
+      true,
+      "a Dependabot body should name the .yaml config the auditor accepts",
     );
     assertEquals(
       body.includes(".github/workflows/"),
@@ -1960,7 +1972,7 @@ for (const id of DEPENDABOT_SPEC_IDS) {
       "a Dependabot body should never name .github/workflows/",
     );
     assertEquals(
-      body.includes("to its existing `updates:` list"),
+      body.includes("to that file's existing `updates:` list"),
       true,
       "a Dependabot body should say to merge into an existing updates list",
     );

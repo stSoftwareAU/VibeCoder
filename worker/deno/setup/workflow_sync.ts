@@ -30,6 +30,7 @@ import {
 } from "../lib/workflow_auditor.ts";
 import {
   capabilityLabelForGroup,
+  DEPENDABOT_CONFIG_YAML_PATH,
   specRepoPath,
   type WorkflowSpec,
 } from "../lib/workflow_definitions.ts";
@@ -306,11 +307,11 @@ ${labels}`;
 /**
  * Build the issue body for a missing Dependabot configuration (Issue #4904).
  *
- * Dependabot reads a single `.github/dependabot.yml`, so the body has the
- * implementer merge this ecosystem's `updates` entry into an existing file
- * rather than replace it. A Dependabot configuration carries no `uses:` pins
- * and no workflow-file checks, so neither the pins rule nor the checks section
- * is rendered.
+ * Dependabot reads a single config (`.github/dependabot.yml` or `.yaml`), so
+ * the body has the implementer merge this ecosystem's `updates` entry into an
+ * existing file rather than replace it. A Dependabot configuration carries no
+ * `uses:` pins and no workflow-file checks, so neither the pins rule nor the
+ * checks section is rendered.
  */
 function dependabotConfigIssueBody(
   spec: WorkflowSpec,
@@ -337,7 +338,7 @@ ${applyResolvedPins(spec.template, pins).trim()}
 ### How to apply
 
 1. Copy the YAML above **verbatim** — ${COPY_VERBATIM_CLAUSE}.
-2. If \`${path}\` already exists, add the \`updates\` entry from the template to its existing \`updates:\` list rather than replacing the file. A repository that needs several ecosystems keeps one \`version: 2\` file with one entry each. Otherwise save the template as \`${path}\`.
+2. If \`${path}\` or \`${DEPENDABOT_CONFIG_YAML_PATH}\` already exists, add the \`updates\` entry from the template to that file's existing \`updates:\` list rather than replacing the file. A repository that needs several ecosystems keeps one \`version: 2\` file with one entry each. Otherwise save the template as \`${path}\`.
 3. Push to the default branch.
 
 ---
