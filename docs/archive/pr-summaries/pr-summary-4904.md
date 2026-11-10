@@ -77,6 +77,25 @@ Backend only; no UI. Tests: `worker/deno/tests/setup_workflow_sync_test.ts`,
   `.github/workflows/deps.yml`; and `foundIn` pinned on a partial match. Red
   checks: config applied to every spec, 1 failed; `-H` dropped, 1 failed; config
   patterns falling back to the tool-name group, 4 failed.
+- Maven and Gradle config coverage in `workflow_auditor_test.ts`, pinning the
+  `dependabotConfigPatternGroups` of `java-dependency-updates` and
+  `java-gradle-dependency-updates`: a `package-ecosystem: maven`-only
+  `.github/dependabot.yml` for a Node+Java repo (`package.json` + `pom.xml`)
+  makes `java-dependency-updates` present with `foundIn` `.github/dependabot.yml`
+  and leaves `npm-dependency-updates` missing; the reverse (npm-only) leaves
+  Maven missing; with `rootFiles: ["build.gradle"]`, a maven-only config leaves
+  `java-gradle-dependency-updates` missing and a `package-ecosystem: gradle`
+  entry makes it present; quoted `"maven"` / `'maven'` and `"gradle"` /
+  `'gradle'` entries are also present. These kill the three surviving
+  `workflow_definitions.ts` mutations (each deleted `package-ecosystem: maven`
+  array element in its quote form). The one remaining survivor is recorded
+  exempt below.
+- Mutation exempt (untestable): `worker/deno/lib/workflow_auditor.ts:316` —
+  deleted object property `ok` — exempt (untestable): `auditRepoWorkflows`
+  re-wraps a failed `fetchDependabotConfig` as `{ ok: false, error:
+  configResult.error }`, so deleting the inner `ok: false` still leaves
+  `!configResult.ok` true and the public `Result` identical; no output-level
+  test can tell it apart.
 - Red checks: `issueBody` ignoring the flag, 3 failed; auditor skipping the
   config fetch, 4 failed; flag dropped from the Gradle spec, 3 failed; npm
   patterns removed, the hand-written-config test failed. Each was restored.
@@ -88,9 +107,13 @@ Backend only; no UI. Tests: `worker/deno/tests/setup_workflow_sync_test.ts`,
   detection group, so a partial match is unreachable for them.
 - Seven workflow test files (the three changed plus `workflow_definitions_test.ts`,
   `workflow_file_checks_test.ts`, `workflow_auditor_local_path_test.ts` and
-  `workflow_auditor_local_path_fallback_test.ts`): 237 passed, 0 failed.
-- Docs updated: `docs/EXTENDING.md` (workflow-sync section) and the
-  `workflow-sync` row in `docs/SETUP.md`.
+  `workflow_auditor_local_path_fallback_test.ts`): 245 passed, 0 failed.
+- Docs updated: `docs/EXTENDING.md` (workflow-sync section — the
+  Dependabot-config body carries neither the pins rule nor the workflow-file
+  checks, the verbatim/pins/checks bullets now name workflow bodies only, and
+  the `How to apply` diagram label matches) and the `workflow-sync` row in
+  `docs/SETUP.md`. The `workflowCheckSection` doc comment in `workflow_sync.ts`
+  now says a check reaches every *workflow* issue body.
 - `./quality.sh`: lint, type check, fmt, markdownlint and semgrep passed. The
   deno unit step failed on one test, `merge_fallback_issue_test.ts` ("routes the
   label creation through the caller's gh"), which fails identically on a clean

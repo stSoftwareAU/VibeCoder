@@ -1791,3 +1791,181 @@ Deno.test("workflow_auditor - a workflow file naming renovate still satisfies np
   );
   assertEquals(match?.foundIn, ".github/workflows/deps.yml");
 });
+
+Deno.test("workflow_auditor - a maven-only dependabot.yml makes java-dependency-updates present and leaves npm-dependency-updates missing", async () => {
+  const mavenOnlyConfig = `version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+`;
+  const { runner } = dependabotAwareRunner({
+    [DEPENDABOT_YML_API_PATH]: ok(mavenOnlyConfig),
+  });
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    makeLanguages(["Node", "Java"]),
+    { runCommand: runner },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const mavenMatch = result.value.present.find((m) =>
+    m.spec.id === "java-dependency-updates"
+  );
+  assertEquals(mavenMatch?.foundIn, ".github/dependabot.yml");
+  assertEquals(
+    result.value.missing.some((s) => s.id === "java-dependency-updates"),
+    false,
+  );
+  assertEquals(
+    result.value.missing.some((s) => s.id === "npm-dependency-updates"),
+    true,
+  );
+});
+
+Deno.test("workflow_auditor - an npm-only dependabot.yml leaves java-dependency-updates missing", async () => {
+  const npmOnlyConfig = `version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+`;
+  const { runner } = dependabotAwareRunner({
+    [DEPENDABOT_YML_API_PATH]: ok(npmOnlyConfig),
+  });
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    makeLanguages(["Node", "Java"]),
+    { runCommand: runner },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  assertEquals(
+    result.value.present.some((m) => m.spec.id === "npm-dependency-updates"),
+    true,
+  );
+  assertEquals(
+    result.value.missing.some((s) => s.id === "java-dependency-updates"),
+    true,
+  );
+});
+
+Deno.test("workflow_auditor - a maven-only dependabot.yml leaves the Gradle spec missing", async () => {
+  const mavenOnlyConfig = `version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+`;
+  const languages: RepoLanguages = {
+    detected: [{ language: "Java", confidence: "api" }],
+    primary: "Java",
+    raw: { Java: 200 },
+    rootFiles: ["build.gradle"],
+  };
+  const { runner } = dependabotAwareRunner({
+    [DEPENDABOT_YML_API_PATH]: ok(mavenOnlyConfig),
+  });
+  const result = await auditRepoWorkflows("owner/repo", languages, {
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  assertEquals(
+    result.value.missing.some((s) => s.id === "java-gradle-dependency-updates"),
+    true,
+  );
+  assertEquals(
+    result.value.present.some((m) =>
+      m.spec.id === "java-gradle-dependency-updates"
+    ),
+    false,
+  );
+});
+
+Deno.test("workflow_auditor - a gradle entry in dependabot.yml makes java-gradle-dependency-updates present", async () => {
+  const gradleConfig = `version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: /
+`;
+  const languages: RepoLanguages = {
+    detected: [{ language: "Java", confidence: "api" }],
+    primary: "Java",
+    raw: { Java: 200 },
+    rootFiles: ["build.gradle"],
+  };
+  const { runner } = dependabotAwareRunner({
+    [DEPENDABOT_YML_API_PATH]: ok(gradleConfig),
+  });
+  const result = await auditRepoWorkflows("owner/repo", languages, {
+    runCommand: runner,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const match = result.value.present.find((m) =>
+    m.spec.id === "java-gradle-dependency-updates"
+  );
+  assertEquals(match?.foundIn, ".github/dependabot.yml");
+  assertEquals(
+    result.value.missing.some((s) => s.id === "java-gradle-dependency-updates"),
+    false,
+  );
+});
+
+for (const quoted of [`"maven"`, `'maven'`]) {
+  Deno.test(
+    `workflow_auditor - a dependabot.yml with package-ecosystem: ${quoted} makes java-dependency-updates present`,
+    async () => {
+      const { runner } = dependabotAwareRunner({
+        [DEPENDABOT_YML_API_PATH]: ok(
+          `version: 2\nupdates:\n  - package-ecosystem: ${quoted}\n    directory: /\n`,
+        ),
+      });
+      const result = await auditRepoWorkflows(
+        "owner/repo",
+        makeLanguages(["Java"]),
+        { runCommand: runner },
+      );
+      assertEquals(result.ok, true);
+      if (!result.ok) return;
+      assertEquals(
+        result.value.present.some((m) =>
+          m.spec.id === "java-dependency-updates"
+        ),
+        true,
+      );
+    },
+  );
+}
+
+for (const quoted of [`"gradle"`, `'gradle'`]) {
+  Deno.test(
+    `workflow_auditor - a dependabot.yml with package-ecosystem: ${quoted} makes java-gradle-dependency-updates present`,
+    async () => {
+      const languages: RepoLanguages = {
+        detected: [{ language: "Java", confidence: "api" }],
+        primary: "Java",
+        raw: { Java: 200 },
+        rootFiles: ["build.gradle"],
+      };
+      const { runner } = dependabotAwareRunner({
+        [DEPENDABOT_YML_API_PATH]: ok(
+          `version: 2\nupdates:\n  - package-ecosystem: ${quoted}\n    directory: /\n`,
+        ),
+      });
+      const result = await auditRepoWorkflows("owner/repo", languages, {
+        runCommand: runner,
+      });
+      assertEquals(result.ok, true);
+      if (!result.ok) return;
+      assertEquals(
+        result.value.present.some((m) =>
+          m.spec.id === "java-gradle-dependency-updates"
+        ),
+        true,
+      );
+    },
+  );
+}

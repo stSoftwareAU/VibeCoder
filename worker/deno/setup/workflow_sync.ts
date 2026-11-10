@@ -292,7 +292,8 @@ export const COPY_PINS_AS_GIVEN_RULE =
  * The file-scoped checks the committed workflow has to survive.
  *
  * Rendered from {@link WORKFLOW_FILE_CHECKS} rather than hand-copied, so a
- * check added to the audit reaches every issue body the next sync files.
+ * check added to the audit reaches every workflow issue body the next sync
+ * files.
  */
 function workflowCheckSection(): string {
   const labels = WORKFLOW_FILE_CHECKS.map((check) => `- ${check.label}`)
