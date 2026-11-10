@@ -843,19 +843,23 @@ improvement is demonstrated.**
 4. **Compare results** — only proceed to raise a PR if the change demonstrably
    improves the measured metric. Include the before/after numbers in the PR
    summary.
-5. **No gain = close the issue** — if there is no meaningful improvement, **do
+5. **No gain = record it** — if there is no meaningful improvement, **do
    not create a PR**. Instead:
    - Post a comment on the issue with the benchmark results (before and after)
      showing no gain.
    - Include a brief explanation of what was tried and why it did not help.
    - Add the `negative-result` label to the issue.
    - State plainly in that comment that this is a negative result and the issue
-     should not be re-attempted. **Do not run `gh issue close` yourself** — the
-     `gh` guard refuses issue-lifecycle verbs on the issue you are working
-     (see **Issue Lifecycle Is Not Yours To Change** below). The comment plus
-     the `negative-result` label is the record, and the worker closes the
-     issue when the run ends (Issue #4298). A negative result is still
-     valuable learning — record it clearly.
+     should not be re-attempted. **Do not run `gh issue close` yourself, and do
+     not add `needs-human` yourself** — the `gh` guard refuses issue-lifecycle
+     verbs on the issue you are working (see **Issue Lifecycle Is Not Yours To
+     Change** below). The comment plus the `negative-result` label is the
+     record. When the run ends, the worker hands the issue to a human: it adds
+     `needs-human`, leaves the issue open and unassigns itself (Issue #4298,
+     Issue #4911). Only deterministic evidence that the change does not help
+     justifies `negative-result`; a noisy timing on a shared host does not, so
+     do not use it as the reason. A negative result is still valuable learning
+     — record it clearly.
 
 **Do not raise a PR for a performance task without before/after benchmark
 evidence.** A PR with no demonstrated improvement wastes reviewer time and will

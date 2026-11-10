@@ -1,12 +1,16 @@
 /**
- * A negative-result issue is closed by the worker (Issue #4298).
- *
- * A performance task whose benchmarks show no gain ends with a results
- * comment and the `negative-result` label, and no code change. The coding
- * guidelines used to leave the close to a human, so the issue sat open — and,
- * as an approved issue with no PR, was retried on every cycle. The worker now
- * closes it. Both directions: labelled, it is closed; unlabelled, the ordinary
+ * A negative-result issue is handed to a human (Issue #4298, revised by Issue
+ * #4911). A performance task whose benchmarks show no gain ends with a results
+ * comment and the `negative-result` label, and no code change. The worker no
+ * longer closes it on the agent's word: it posts a `needs-human` escalation
+ * through the shared helper and leaves the issue open, out of the queue.
+ * Both directions: labelled, it is handed off; unlabelled, the ordinary
  * no-change retry is untouched.
+ *
+ * Phase-level cases cover only the routes that never reach the label
+ * escalation's `ensureLabelExists`, which the phase cannot inject and which
+ * would otherwise run a real `gh`. The labelled path is driven through
+ * `handOffNegativeResultIssue` with injected deps.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -16,37 +20,104 @@ import { workOnIssueHandleNoChanges } from "../lib/phases/handle_no_changes_phas
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
-import type { GitHubClient, GitHubIssue } from "../types.ts";
+import type { GitHubClient, GitHubComment, GitHubIssue } from "../types.ts";
 import { findImageReferences } from "../lib/untrusted_image_signal.ts";
+import { handOffNegativeResultIssue } from "../lib/negative_result_close.ts";
+import type { EscalateToHumanDeps } from "../lib/needs_human_escalation.ts";
 
 const BENCHMARK_OUTPUT =
   "Benchmarked the parser before and after the buffer change: 412 ms and " +
   "409 ms over ten runs, inside the noise. Posted the results and added the " +
   "negative-result label.";
 
-interface Calls {
+/** A fixed clock, so the dedup window is deterministic. */
+const NOW_MS = Date.parse("2026-11-10T12:00:00Z");
+
+/** Everything the mock client records, in call order where it matters. */
+interface Recorder {
+  /** Ordered log of the side effects that matter to the hand-off. */
+  events: string[];
+  comments: string[];
+  labelsAdded: string[];
   closed: string[];
-  addLabel: string[];
 }
 
-function makeClient(calls: Calls, labels: string[]): GitHubClient {
+function makeRecorder(): Recorder {
+  return { events: [], comments: [], labelsAdded: [], closed: [] };
+}
+
+interface ClientOptions {
+  /** Comments `getIssueComments` returns — the dedup scan reads these. */
+  existingComments?: GitHubComment[];
+  /** Make `postComment` reject, as a failed GitHub write would. */
+  postRejects?: boolean;
+}
+
+function makeClient(
+  rec: Recorder,
+  labels: string[],
+  opts: ClientOptions = {},
+): GitHubClient {
   return {
     getIssue: () => Promise.resolve({ labels } as unknown as GitHubIssue),
-    getIssueComments: () => Promise.resolve([]),
+    getIssueComments: () => Promise.resolve(opts.existingComments ?? []),
     addLabel: (_r, _n, label) => {
-      calls.addLabel.push(label);
+      rec.events.push(`label:${label}`);
+      rec.labelsAdded.push(label);
       return Promise.resolve();
     },
     removeLabel: () => Promise.resolve(),
-    postComment: () => Promise.resolve(undefined),
+    postComment: (_r, _n, body) => {
+      if (opts.postRejects) {
+        return Promise.reject(new Error("GitHub returned 502"));
+      }
+      rec.events.push("comment");
+      rec.comments.push(body);
+      return Promise.resolve(undefined);
+    },
     editIssue: () => Promise.resolve(),
     assignIssue: () => Promise.resolve(),
-    unassignIssue: () => Promise.resolve(),
+    unassignIssue: (_r, _n, users) => {
+      rec.events.push(`unassign:${users.join(",")}`);
+      return Promise.resolve();
+    },
     closeIssue: (_r, _n, comment) => {
-      calls.closed.push(comment ?? "");
+      rec.events.push("close");
+      rec.closed.push(comment ?? "");
       return Promise.resolve();
     },
   } as GitHubClient;
+}
+
+/** Deps for the direct hand-off: a stubbed label ensure and a fixed clock. */
+function directDeps(rec: Recorder): EscalateToHumanDeps {
+  return {
+    github: {
+      ensureLabelExists: () => {
+        rec.events.push("ensure");
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    },
+    now: () => NOW_MS,
+  };
+}
+
+/** A comment as the fleet would read it back: its own author, created now. */
+function priorComment(body: string): GitHubComment {
+  return {
+    id: 1,
+    body,
+    author: "testbot",
+    createdAt: new Date(NOW_MS).toISOString(),
+    reactions: { thumbsUp: 0, eyes: 0, confused: 0 },
+  } as unknown as GitHubComment;
+}
+
+/** The hand-off comments in a recording (the retry's own comment is not one). */
+function handOffComments(rec: Recorder): string[] {
+  return rec.comments.filter((body) =>
+    body.includes("Negative result needs review")
+  );
 }
 
 function makeContext(overrides?: Partial<IssueContext>): IssueContext {
@@ -77,32 +148,80 @@ function makeState(): PhaseState {
   };
 }
 
-Deno.test("#4298 - a no-change run that recorded a negative result closes the issue", async () => {
-  const calls: Calls = { closed: [], addLabel: [] };
-  const deps = createMockDeps({
-    github: {
-      createClient: () =>
-        makeClient(calls, ["work-on", "performance", "negative-result"]),
-    },
+Deno.test("#4911 - a labelled negative result is handed to a human, comment first, never closed", async () => {
+  const rec = makeRecorder();
+  const handedOff = await handOffNegativeResultIssue({
+    ghClient: makeClient(rec, ["work-on", "performance", "negative-result"]),
+    repo: "org/repo",
+    issueNumber: 77,
+    githubUser: "testbot",
+    needsHumanLabel: "needs-human",
+    logger: createMockDeps().logger,
+    deps: directDeps(rec),
   });
 
-  const result = await workOnIssueHandleNoChanges(
-    makeContext(),
-    makeState(),
-    deps,
+  assertEquals(handedOff, true);
+  assertEquals(rec.comments.length, 1, "one hand-off comment is posted");
+  assertStringIncludes(rec.comments[0]!, "## Negative result needs review");
+  assertStringIncludes(
+    rec.comments[0]!,
+    "<!-- needs-human-escalation: negative-result-handoff:77 -->",
   );
-
-  assertEquals(result.status, "early_exit");
-  assertEquals(calls.closed.length, 1, "the worker closes it");
-  assertStringIncludes(calls.closed[0]!, "negative-result");
-  assert(!calls.addLabel.includes("needs-human"), "nobody is paged");
+  assertEquals(
+    rec.labelsAdded,
+    ["needs-human"],
+    "the escalation label is added",
+  );
+  assertEquals(rec.closed, [], "the worker never closes the issue");
+  assertEquals(
+    rec.events,
+    ["comment", "ensure", "label:needs-human", "unassign:testbot"],
+    "the label lands only after the comment, and the worker unassigns itself",
+  );
 });
 
-Deno.test("#4298 - without the label the no-change run is still retried", async () => {
-  const calls: Calls = { closed: [], addLabel: [] };
+Deno.test("#4911 - a second hand-off finds its own earlier comment and posts nothing new", async () => {
+  const labels = ["work-on", "performance", "negative-result"];
+  const first = makeRecorder();
+  await handOffNegativeResultIssue({
+    ghClient: makeClient(first, labels),
+    repo: "org/repo",
+    issueNumber: 77,
+    githubUser: "testbot",
+    needsHumanLabel: "needs-human",
+    logger: createMockDeps().logger,
+    deps: directDeps(first),
+  });
+  const earlier = first.comments[0]!;
+
+  const second = makeRecorder();
+  const handedOff = await handOffNegativeResultIssue({
+    ghClient: makeClient(second, labels, {
+      existingComments: [priorComment(earlier)],
+    }),
+    repo: "org/repo",
+    issueNumber: 77,
+    githubUser: "testbot",
+    needsHumanLabel: "needs-human",
+    logger: createMockDeps().logger,
+    deps: directDeps(second),
+  });
+
+  assertEquals(handedOff, true, "the earlier hand-off still counts as success");
+  assertEquals(second.comments, [], "no second comment is posted");
+  assertEquals(
+    second.labelsAdded,
+    ["needs-human"],
+    "the label is re-applied idempotently",
+  );
+  assertEquals(second.closed, [], "the issue is still never closed");
+});
+
+Deno.test("#4911 - without the label the no-change run is not handed off", async () => {
+  const rec = makeRecorder();
   const deps = createMockDeps({
     github: {
-      createClient: () => makeClient(calls, ["work-on", "performance"]),
+      createClient: () => makeClient(rec, ["work-on", "performance"]),
     },
   });
 
@@ -113,18 +232,20 @@ Deno.test("#4298 - without the label the no-change run is still retried", async 
   );
 
   assertEquals(result.status, "failure");
-  assertEquals(calls.closed, [], "an unfinished issue stays open");
+  assertEquals(handOffComments(rec), [], "no hand-off comment is posted");
+  assert(!rec.labelsAdded.includes("needs-human"), "nobody is paged");
+  assertEquals(rec.closed, [], "an unfinished issue is not closed");
 });
 
-Deno.test("#4298 - an untrusted image keeps a negative-result issue open (Issue #1385)", async () => {
+Deno.test("#4911 - an untrusted image keeps a negative result out of the hand-off (Issue #1385)", async () => {
   // The label is the agent's own record, and an image can steer the agent to
-  // apply it. Like the already-resolved close, nothing the run said may close
-  // the issue when an untrusted author's image sat in front of it.
-  const calls: Calls = { closed: [], addLabel: [] };
+  // apply it. Like the already-resolved close, nothing the run said may hand
+  // the issue off when an untrusted author's image sat in front of it.
+  const rec = makeRecorder();
   const deps = createMockDeps({
     github: {
       createClient: () =>
-        makeClient(calls, ["work-on", "performance", "negative-result"]),
+        makeClient(rec, ["work-on", "performance", "negative-result"]),
     },
   });
   const body = "Benchmark it. ![chart](https://evil.test/c.png)";
@@ -138,6 +259,33 @@ Deno.test("#4298 - an untrusted image keeps a negative-result issue open (Issue 
     deps,
   );
 
-  assertEquals(calls.closed, [], "must NOT close on the run's own record");
   assertEquals(result.status, "failure");
+  assertEquals(handOffComments(rec), [], "no hand-off comment is posted");
+  assert(!rec.labelsAdded.includes("needs-human"), "no label is added");
+  assertEquals(rec.closed, [], "must NOT close on the run's own record");
+});
+
+Deno.test("#4911 - a failed hand-off falls through to the ordinary retry and never closes", async () => {
+  // The comment post rejects, so the hand-off has nothing on the issue and no
+  // label is attempted. The run must retry, not close.
+  const rec = makeRecorder();
+  const deps = createMockDeps({
+    github: {
+      createClient: () =>
+        makeClient(rec, ["work-on", "performance", "negative-result"], {
+          postRejects: true,
+        }),
+    },
+  });
+
+  const result = await workOnIssueHandleNoChanges(
+    makeContext(),
+    makeState(),
+    deps,
+  );
+
+  assertEquals(result.status, "failure", "the ordinary retry takes over");
+  assertEquals(handOffComments(rec), [], "no hand-off comment landed");
+  assert(!rec.labelsAdded.includes("needs-human"), "no label was added");
+  assertEquals(rec.closed, [], "closeIssue is never called");
 });
