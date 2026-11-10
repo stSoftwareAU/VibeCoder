@@ -1945,6 +1945,15 @@ precedence over built-in defaults.
 
 ### ⚙️ Operational Defaults
 
+Claude Code also has a separate per-command foreground ceiling. VibeCoder
+sets `BASH_MAX_TIMEOUT_MS=1800000` (30 minutes) in the Claude child environment
+so a gate longer than Claude's default 10-minute ceiling can finish (#4913).
+An explicit parent environment value wins. `BASH_DEFAULT_TIMEOUT_MS` is left
+unchanged: the agent must request a tool timeout sized to the gate and the
+remaining run budget. The phase deadline and stall watchdogs still apply;
+this setting does not extend them. See
+[Claude Code environment variables](https://code.claude.com/docs/en/env-vars).
+
 These values have built-in defaults and can be overridden in `.config.json`
 . Only values that differ from the defaults need to be stored — if a
 default changes in the codebase, the new default flows to all installations

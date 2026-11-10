@@ -46,6 +46,16 @@ Deno.test("buildUnmetCriteriaGateComment - names each criterion and does not cla
   assertStringIncludes(comment, "- **missing** — The docs table lists opus.");
   assertStringIncludes(comment, "raised and armed anyway");
   assertStringIncludes(comment, "`Part of #N`");
+  // A `partial` entry withholds the close too, not only a `missing` one.
+  const flatComment = comment.replace(/\s+/g, " ");
+  assertStringIncludes(
+    flatComment,
+    "A `partial` or `missing` entry makes the pull request body `Part of #N`",
+  );
+  assert(
+    !flatComment.includes("A `missing` entry makes"),
+    "the note must not name only `missing` as withholding the close",
+  );
   assertEquals(WITHHELD.test(comment), false, comment);
   assert(!comment.includes("⛔"), "the heading must not read as a stop sign");
 });
