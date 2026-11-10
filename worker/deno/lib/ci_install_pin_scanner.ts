@@ -653,7 +653,7 @@ function shellArgumentTokens(tokens: string[]): string[] {
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i] as string;
     if (token.startsWith("#")) break;
-    const redirect = token.match(/^(?:\d*|&)(?:>>?|<<<|<>|<<?)&?(.*)$/);
+    const redirect = token.match(/^(?:\d*|&)(?:>>?|<<<|<<-|<>|<<?)&?(.*)$/);
     if (redirect) {
       if (!redirect[1]) i++;
       continue;

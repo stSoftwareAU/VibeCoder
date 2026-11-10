@@ -167,6 +167,7 @@ Deno.test("findUnpinnedInstalls - a pinned install before a comment or redirecti
       "npm install -g foo@1.2.3 2>& 1",
       "npm install -g foo@1.2.3 <<< y",
       "npm install -g foo@1.2.3 <> f",
+      "npm install -g foo@1.2.3 <<- EOF",
       "npm install -g foo@1.2.3 >&2",
       "npm install -g foo@1.2.3 <&-",
       "gem install foo -v 1.2.3 # comment",
@@ -193,6 +194,7 @@ Deno.test("findUnpinnedInstalls - an unpinned package before a comment or redire
       "npm install -g foo 2>& 1",
       "npm install -g foo <<< y",
       "npm install -g foo <> f",
+      "npm install -g foo <<- EOF",
       "gem install foo # comment",
       "gem install foo > /dev/null",
       "gem install foo 2>&1",
@@ -200,6 +202,7 @@ Deno.test("findUnpinnedInstalls - an unpinned package before a comment or redire
       "gem install foo 2>& 1",
       "gem install foo <<< y",
       "gem install foo <> f",
+      "gem install foo <<- EOF",
     ]
   ) {
     const found = findUnpinnedInstalls(run);

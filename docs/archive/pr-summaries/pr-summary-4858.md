@@ -4,9 +4,9 @@
 with one shared tokeniser instead of `command.split(/\s+/)`. A `${{ … }}`
 expression and a quoted value stay one token, and unquoted `#` comments and
 redirections are never read as package arguments — including a bare operator
-whose target follows on the next word (`>& out.log`, `2>& 1`, `<<< y`, `<> f`)
-and the attached forms (`>&2`, `2>&1`, `<&-`). Closes #4858 (which also owns
-#4859).
+whose target follows on the next word (`>& out.log`, `2>& 1`, `<<< y`, `<> f`,
+`<<- EOF`) and the attached forms (`>&2`, `2>&1`, `<&-`). Closes #4858 (which
+also owns #4859).
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -28,11 +28,11 @@ Version bump: `VERSION` is not touched by this change.
 - Quote-stripping leaves `${{ … }}` spans byte-for-byte, so evidence and version
   text keep the expression as written (this also fixes the same alteration for
   cargo).
-- A redirection operator is matched as `(?:>>?|<<<|<>|<<?)&?`, so `<<<` and
-  `<>` are operators in their own right and a trailing `&` (`>&`, `2>&`) is the
-  operator, not its target. When the captured target is empty the operator is
-  bare and the next token is skipped; attached targets (`>&2`, `2>&1`, `<&-`)
-  keep the operator token out of the arguments.
+- A redirection operator is matched as `(?:>>?|<<<|<<-|<>|<<?)&?`, so `<<<`,
+  `<<-` and `<>` are operators in their own right and a trailing `&` (`>&`,
+  `2>&`) is the operator, not its target. When the captured target is empty the
+  operator is bare and the next token is skipped; attached targets (`>&2`,
+  `2>&1`, `<&-`) keep the operator token out of the arguments.
 
 ### Undiscoverable Facts
 
@@ -52,17 +52,19 @@ Backend only (no UI files). Probe before the fix, run on the base code:
   expression stays one argument (npm and gem, including
   `${{ inputs.v || '1.2.3' }}` kept verbatim and a trailing comment); pinned
   install before a comment or redirection is clean (bare and attached, `2>&1`,
-  `&>`, plus the bare operators `>& out.log`, `2>& 1`, `<<< y`, `<> f` and the
-  attached `>&2` / `<&-`); an unpinned package before a comment or redirection
-  yields exactly one `foo` finding (the same bare-operator forms, with targets
-  chosen not to start with `/` so `SPEC_EXEMPT` cannot hide a skip failure);
+  `&>`, plus the bare operators `>& out.log`, `2>& 1`, `<<< y`, `<> f`,
+  `<<- EOF` and the attached `>&2` / `<&-`); an unpinned package before a
+  comment or redirection yields exactly one `foo` finding (the same
+  bare-operator forms including `<<- EOF`, with targets chosen not to start
+  with `/` so `SPEC_EXEMPT` cannot hide a skip failure);
   quoted values stay within one argument (`'foo bar'`, quoted `'#bar'`).
 - Red check: with the old `split(/\s+/)…map(unquote)` tokenisation restored, all
   four new tests fail (and six existing cargo tests); with only the
   verbatim-expression quote handling reverted, the expression test fails at the
-  `foo@${{ inputs.v || '1.2.3' }}` assertion; with the old redirection match
-  `…(?:>>?|<<?)…` restored, the two redirection tests fail on the bare-operator
-  cases (`>& out.log`, `2>& 1`, `<<< y`, `<> f`).
+  `foo@${{ inputs.v || '1.2.3' }}` assertion; with `<<-` dropped from the
+  redirection match, restoring the previous head's `(?:>>?|<<<|<>|<<?)&?`,
+  the two redirection tests fail on the `<<- EOF` cases (the heredoc delimiter
+  `EOF` is read back as a package).
 - No existing assertion was removed or edited.
 - Ran `deno task test:unit` on `ci_install_pin_scanner_test.ts`,
   `issue_3642_ci_install_pin_test.ts`, `issue_4683_cargo_install_pins_test.ts`
