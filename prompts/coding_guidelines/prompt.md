@@ -1262,6 +1262,15 @@ contract checks for APIs. Avoid pinning incidental CSS, DOM or private code.
 Every test must exercise real code: source a module, call a function with test
 data, and assert on results, exit codes, or side effects.
 
+**Never write a dummy test or a "how" test.** Reviewers refuse both as
+blocking findings under the Vibe Coder rule **Dummy tests and "how" tests are
+refused** (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused), and a deterministic scan of the diff refuses a test with
+no assertion, a test asserting only success, presence or non-emptiness, and
+an ignore or skip without a reason. Write a behaviour test: drive the public
+entry point and assert the observable outcome, including the error and its
+message. If a real branch has no meaningful test, the red build is correct:
+write a real test, never a token one for coverage.
+
 **Good** — calls a real function and asserts on the result:
 
 ```typescript
