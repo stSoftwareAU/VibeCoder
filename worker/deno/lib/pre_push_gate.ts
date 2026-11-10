@@ -64,6 +64,7 @@ import {
 } from "./deno_scope.ts";
 import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
 import { stripJsonc } from "./jsonc.ts";
+import { readRepoFile } from "./repo_file_read.ts";
 
 /**
  * The gate could not read the repository state it needs: a `git log`,
@@ -1257,7 +1258,8 @@ export function planFormatterFixes(
 /**
  * Parse each deno root's `deno.json` / `deno.jsonc` scope from the working
  * tree. A root whose config is unreadable or unparseable is left out, so its
- * files are checked unfiltered and deno itself reports the broken config.
+ * files are checked unfiltered and deno itself reports the broken config. A
+ * symlink anywhere in the path, or a file over the size cap, is unreadable.
  */
 export async function loadDenoScopes(
   repoRoot: string,
@@ -1277,17 +1279,20 @@ export async function loadDenoScopes(
 
 /**
  * A deno root's config text: `deno.json`, else `deno.jsonc` when `deno.json` is
- * absent or unreadable; null when neither can be read. Deno prefers
- * `deno.json`, so the two are never both used.
+ * absent or unreadable (a symlink, a non-regular file or one over the size cap
+ * is unreadable); null when neither can be read. Deno prefers `deno.json`, so
+ * the two are never both used.
  */
 async function readDenoConfigText(
   repoRoot: string,
   root: string,
 ): Promise<string | null> {
-  const dir = root === "." ? repoRoot : `${repoRoot}/${root}`;
   for (const name of ["deno.json", "deno.jsonc"]) {
     try {
-      return await Deno.readTextFile(`${dir}/${name}`);
+      return await readRepoFile(
+        repoRoot,
+        root === "." ? name : `${root}/${name}`,
+      );
     } catch {
       // This config name is absent or unreadable; try the other.
     }
@@ -1416,9 +1421,9 @@ export async function loadReferencedUnitTests(
       if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
       let text: string;
       try {
-        text = await Deno.readTextFile(`${repoRoot}/${path}`);
+        text = await readRepoFile(repoRoot, path);
       } catch {
-        continue; // Deleted or unreadable: nothing to run.
+        continue; // Deleted, a symlink or unreadable: nothing to run.
       }
       for (const specifier of relativeTsSpecifiers(text)) {
         const target = resolveSpecifier(path, specifier);
@@ -1463,7 +1468,8 @@ export function findMarkdownlintBinary(
  * Whether the repo's own CI runs cspell: a tracked workflow under
  * `.github/workflows/` with a `run:` or `uses:` step that names cspell.
  * Comment lines are ignored. A repo with a cspell config but no such step
- * is not blocked by cspell, since its required CI never runs it.
+ * is not blocked by cspell, since its required CI never runs it. A symlink
+ * anywhere in the path, or a file over the size cap, is unreadable and skipped.
  */
 export async function repoCiRunsCspell(
   repoRoot: string,
@@ -1474,7 +1480,7 @@ export async function repoCiRunsCspell(
     if (!/\.ya?ml$/.test(path)) continue;
     let text: string;
     try {
-      text = await Deno.readTextFile(`${repoRoot}/${path}`);
+      text = await readRepoFile(repoRoot, path);
     } catch {
       continue;
     }

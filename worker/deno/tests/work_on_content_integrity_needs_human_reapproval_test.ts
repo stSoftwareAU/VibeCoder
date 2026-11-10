@@ -155,7 +155,7 @@ function createGhMock(state: GhState): (args: string[]) => Promise<string> {
                   editor: { login: state.editor },
                 }],
               },
-              timelineItems: { nodes: [] },
+              timelineItems: { totalCount: 0, nodes: [] },
             },
           },
         },

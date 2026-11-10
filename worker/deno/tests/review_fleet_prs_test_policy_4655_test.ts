@@ -108,10 +108,18 @@ interface Fx {
   // Title and body edit history per issue (the GraphQL edit-actor lookup),
   // keyed "owner/repo#N". An Error fails the read.
   editors?: Record<string, Editor[] | Error>;
+  // Title renames per issue (the RenamedTitleEvent window of the same lookup),
+  // keyed "owner/repo#N", oldest first. The newest 100 are served.
+  renames?: Record<string, Rename[]>;
+  // The renames connection's totalCount per issue; default: renames.length.
+  renameTotals?: Record<string, number>;
 }
 
 // One body edit; `diff` is only served when the query asks for it.
 type Editor = { editedAt: string; editor: string; diff?: string };
+
+// One title rename: when it happened and who renamed the issue.
+type Rename = { createdAt: string; actor: string };
 
 function answer(args: string[], fx: Fx): string {
   if (args[0] === "pr") {
@@ -125,6 +133,7 @@ function answer(args: string[], fx: Fx): string {
     const key = `${arg("owner")}/${arg("name")}#${arg("number")}`;
     const v: Editor[] | Error = fx.editors?.[key] ?? [];
     if (v instanceof Error) throw v;
+    const renames = fx.renames?.[key] ?? [];
     const wantsDiff = args.some((a) => a.includes("editedAt diff editor"));
     return JSON.stringify({
       data: {
@@ -149,7 +158,13 @@ function answer(args: string[], fx: Fx): string {
                   editor: { login: e.editor },
                 })),
             },
-            timelineItems: { nodes: [] },
+            timelineItems: {
+              totalCount: fx.renameTotals?.[key] ?? renames.length,
+              nodes: renames.slice(-100).map((r) => ({
+                createdAt: r.createdAt,
+                actor: { login: r.actor },
+              })),
+            },
           },
         },
       },
@@ -1077,6 +1092,104 @@ Deno.test("claim rule: work-on is an approving label too, when top-priority is a
   );
   assertEquals(r.issues.length, 1);
   assertEquals(r.problems, []);
+});
+
+// The claim rule's refusal when an edit window is truncated and unsettled (Issue #4947).
+const INCOMPLETE_HISTORY =
+  `${ISSUE_KEY} has incomplete edit history since its top-priority label was added`;
+const LATER_STILL = "2026-11-03T11:00:00Z";
+
+// The claim fixture, with the issue's rename window and its totalCount.
+const renameClaimFx = (renames: Rename[], total: number): Fx => ({
+  ...claimFx([labelled("top-priority", "nleck", ADDED_AT)]),
+  renames: { [ISSUE_KEY]: renames },
+  renameTotals: { [ISSUE_KEY]: total },
+});
+
+Deno.test("claim rule: a truncated rename window whose visible renames all post-date the label is incomplete history", async () => {
+  // Five renames exist but only the newest three are visible, and the oldest
+  // visible one post-dates the label, so the hidden older renames cannot be ruled out.
+  const r = await resolveGoverningIssues(
+    FLEET,
+    CLAIM,
+    fakeGh(renameClaimFx([
+      { createdAt: AFTER_ADD, actor: "nleck" },
+      { createdAt: LATER, actor: "nleck" },
+      { createdAt: LATER_STILL, actor: "nleck" },
+    ], 5)).runGh,
+  );
+  assertEquals(r.issues, []);
+  assert(
+    r.problems.some((p) => p.includes(INCOMPLETE_HISTORY)),
+    JSON.stringify(r.problems),
+  );
+});
+
+Deno.test("claim rule: a truncated rename window whose oldest visible rename predates the label is settled", async () => {
+  // The same fixture, but the oldest visible rename is before the label: every
+  // rename after the label is visible, so the window is settled and the claim holds.
+  const r = await resolveGoverningIssues(
+    FLEET,
+    CLAIM,
+    fakeGh(renameClaimFx([
+      { createdAt: BEFORE_ADD, actor: "nleck" },
+      { createdAt: AFTER_ADD, actor: "nleck" },
+      { createdAt: LATER, actor: "nleck" },
+    ], 5)).runGh,
+  );
+  assertEquals(r.problems, []);
+  assertEquals(r.issues.length, 1);
+});
+
+Deno.test("claim rule: a rename window truncated with no visible rename is incomplete history", async () => {
+  // GitHub reports five renames but returns none, so their dates are unknown.
+  const r = await resolveGoverningIssues(
+    FLEET,
+    CLAIM,
+    fakeGh(renameClaimFx([], 5)).runGh,
+  );
+  assertEquals(r.issues, []);
+  assert(
+    r.problems.some((p) => p.includes(INCOMPLETE_HISTORY)),
+    JSON.stringify(r.problems),
+  );
+});
+
+Deno.test("claim rule: a truncated body window is incomplete history unless its oldest visible edit predates the label", async () => {
+  const start = Date.parse(ADDED_AT);
+  // The newest 100 of 101 body edits are visible; all the visible ones are trusted.
+  const visible = (count: number): Editor[] =>
+    Array.from({ length: count }, (_, i) => ({
+      editedAt: new Date(start + (i + 1) * 1000).toISOString(),
+      editor: "nleck",
+    }));
+  const run = async (history: Editor[]) => {
+    const g = fakeGh(
+      claimFx([labelled("top-priority", "nleck", ADDED_AT)], history),
+    );
+    return await resolveGoverningIssues(FLEET, CLAIM, g.runGh);
+  };
+
+  // The hidden oldest edit is before the label, but the oldest visible edit is
+  // after it, so the hidden edits cannot be ruled out.
+  const unsettled = await run([
+    { editedAt: "2026-11-02T17:00:00Z", editor: "nleck" },
+    ...visible(100),
+  ]);
+  assertEquals(unsettled.issues, []);
+  assert(
+    unsettled.problems.some((p) => p.includes(INCOMPLETE_HISTORY)),
+    JSON.stringify(unsettled.problems),
+  );
+
+  // The same count, with the oldest visible edit before the label: settled.
+  const settled = await run([
+    { editedAt: "2026-11-02T17:00:00Z", editor: "nleck" },
+    { editedAt: BEFORE_ADD, editor: "nleck" },
+    ...visible(99),
+  ]);
+  assertEquals(settled.problems, []);
+  assertEquals(settled.issues.length, 1);
 });
 
 // ----- assessment ----------------------------------------------------------

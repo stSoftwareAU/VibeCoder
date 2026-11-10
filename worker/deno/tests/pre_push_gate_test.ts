@@ -11,6 +11,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
+import { MAX_REPO_FILE_BYTES } from "../lib/repo_file_read.ts";
 import {
   createRepoFormatterDeps,
   formatBranchChanges,
@@ -18,6 +19,7 @@ import {
 import {
   defaultPrePushGit,
   listPushedFiles,
+  loadDenoScopes,
   loadDenoUnitTestRoots,
   loadReferencedUnitTests,
   parsePrePushRefs,
@@ -1667,6 +1669,112 @@ Deno.test("repoCiRunsCspell: a tracked workflow that cannot be read is skipped",
     await repoCiRunsCspell("/nonexistent", [".github/workflows/x.yml"]),
     false,
   );
+});
+
+const CSPELL_STEP = "jobs:\n  spell:\n    steps:\n      - run: npx cspell .\n";
+
+Deno.test("repoCiRunsCspell: a symlinked workflow outside the checkout does not count", async () => {
+  const outside = await Deno.makeTempDir();
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${outside}/ci.yml`, CSPELL_STEP);
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.symlink(`${outside}/ci.yml`, `${dir}/.github/workflows/ci.yml`);
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/ci.yml"]),
+      false,
+    );
+    // Positive control: the same text as a regular file counts.
+    await Deno.writeTextFile(`${dir}/.github/workflows/real.yml`, CSPELL_STEP);
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/real.yml"]),
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("repoCiRunsCspell: a backslash-named symlink beside a decoy directory does not count", async () => {
+  const outside = await Deno.makeTempDir();
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${outside}/ci.yml`, CSPELL_STEP);
+    // Decoy regular file at the path a backslash-splitting reader would lstat.
+    await Deno.mkdir(`${dir}/.github/workflows/x`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/.github/workflows/x/y.yml`, CSPELL_STEP);
+    // The tracked name is one backslash-containing filename, symlinked out.
+    await Deno.symlink(
+      `${outside}/ci.yml`,
+      `${dir}/.github/workflows/x\\y.yml`,
+    );
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/x\\y.yml"]),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("repoCiRunsCspell: a workflow over the size cap does not count", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    // Comment padding after the cspell step, so only the size cap refuses it.
+    const padding = "#\n".repeat(MAX_REPO_FILE_BYTES / 2 + 1);
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/big.yml`,
+      CSPELL_STEP + padding,
+    );
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/big.yml"]),
+      false,
+    );
+    // Positive control: without the padding the cspell step counts.
+    await Deno.writeTextFile(`${dir}/.github/workflows/small.yml`, CSPELL_STEP);
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/small.yml"]),
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("loadDenoScopes: a symlinked deno.json outside the checkout is ignored", async () => {
+  const outside = await Deno.makeTempDir();
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(`${outside}/deno.json`, '{"exclude":["src/"]}');
+    await Deno.symlink(`${outside}/deno.json`, `${dir}/deno.json`);
+    assertEquals(await loadDenoScopes(dir, ["deno.json"]), {});
+    // Positive control: the same text as a regular file supplies the scope.
+    await Deno.remove(`${dir}/deno.json`);
+    await Deno.writeTextFile(`${dir}/deno.json`, '{"exclude":["src/"]}');
+    assertEquals(await loadDenoScopes(dir, ["deno.json"]), {
+      ".": { exclude: ["src/"], fmt: undefined, lint: undefined },
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("loadDenoScopes: an oversized deno.json is ignored", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const pad = "x".repeat(MAX_REPO_FILE_BYTES);
+    await Deno.writeTextFile(
+      `${dir}/deno.json`,
+      `{"exclude":["src/"],"pad":"${pad}"}`,
+    );
+    assertEquals(await loadDenoScopes(dir, ["deno.json"]), {});
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("workflowRunsCspell: a block-scalar run step that calls cspell counts", () => {
