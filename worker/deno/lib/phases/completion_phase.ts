@@ -1842,7 +1842,7 @@ async function completionBody(
             model: config.claudeModel || undefined,
             cwd: state.repoPath,
             // The PR base, so a CI cargo failure the base already has is no
-            // verdict on the agent's own push (Issue #4630 review).
+            // verdict on the push by the agent itself (Issue #4630 review).
             ciCargoCompareRef: prBaseCompareRef(baseBranch),
             logger,
           },

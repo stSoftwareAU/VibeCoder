@@ -1338,7 +1338,7 @@ async function executeClaudeBody(
             ? { agentProvider: effectiveAgentProvider }
             : {}),
           cwd: state.repoPath,
-          // The issue's PR base (the milestone branch, else the base branch),
+          // The PR base for this issue (the milestone branch, else the base branch),
           // so a CI cargo failure the base already has is no verdict on the
           // agent's own push (Issue #4630 review).
           ciCargoCompareRef: prBaseCompareRef(
