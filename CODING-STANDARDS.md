@@ -1855,15 +1855,14 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   helper's list of callers are where these go stale.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
-- **Adding a member owes a docs change too.** When you add a field, enum
-  variant, kind, flag, column or row element to an existing set, grep for one
-  or two **existing sibling members**, not the new one — the new name is in no
-  doc yet, so a grep for it comes back clean. Every doc comment, module doc,
-  manual page or API description that lists the set names the new member in
-  the same change, or is reworded so it no longer reads as complete. Name the
-  siblings you grepped in the PR summary; fleet PRs that grepped only the new
-  name left a list one short
-  (GRQ-AutoTrader#2460, #2481, #2682, #2792).
+- **Adding a member owes a docs change too.** When the change adds a member to
+  something a comment or doc lists or counts (a field, enum variant, flag,
+  column, case, exit, refusal or output), that list names the new member in the
+  same change, or is reworded so it no longer reads as complete. Against the
+  final code, re-read the doc comment of each item you changed, its file's
+  header, and every list you wrote or edited. For a named set listed in other
+  files, grep for one or two **existing sibling members**, not the new one: the
+  new name is in no doc yet.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
