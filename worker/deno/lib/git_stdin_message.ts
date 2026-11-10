@@ -77,12 +77,17 @@ export interface StdinMessageOptions {
 }
 
 /**
- * Resolve `pending`, or throw when `ms` elapses first.
+ * Resolve `pending`, or throw when `ms` elapses first. The error names the
+ * whole-read deadline `totalMs`, not the time left on this read.
  *
  * The timer is always cleared, so a read that wins the race leaves nothing
  * pending behind it.
  */
-async function withDeadline<T>(pending: Promise<T>, ms: number): Promise<T> {
+async function withDeadline<T>(
+  pending: Promise<T>,
+  ms: number,
+  totalMs: number,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expiry = new Promise<never>((_, reject) => {
     timer = setTimeout(
@@ -90,7 +95,7 @@ async function withDeadline<T>(pending: Promise<T>, ms: number): Promise<T> {
         reject(
           new UnredactableMessageError(
             "-",
-            `a git message on stdin did not arrive within ${ms}ms — the ` +
+            `a git message on stdin did not arrive within ${totalMs}ms — the ` +
               "stream is still open and nothing is writing to it. Pass the " +
               "message with -m <text> or -F <path>",
           ),
@@ -139,7 +144,7 @@ export async function readStdinMessage(
           "pass the message with -m <text> or -F <path>",
       );
     }
-    const chunk = await withDeadline(options.read(), remaining);
+    const chunk = await withDeadline(options.read(), remaining, deadlineMs);
     // `null` is end of stream; an empty chunk is treated the same way rather
     // than spun on, so a quiet stream can never loop forever.
     if (chunk === null || chunk.length === 0) break;
