@@ -32,3 +32,6 @@ The issue states no acceptance-criteria heading; nothing it asks is left undone.
 
 - No test added: documentation-only change.
 - `deno test tests/doc_prose_claims_test.ts` (the test that reads SECURITY.md), run from `worker/deno`: 15 passed, 0 failed.
+- `./quality.sh < /dev/null`: every stage it printed passed (including markdownlint, mermaid, semgrep, completeness checks), but the run did not finish inside two bounded attempts (300s and 1000s, both timed out in the final stage after the release-tag ruleset check) and printed no overall verdict, so the gate is not recorded as passed; the worker re-runs it before the PR is raised.
+
+<!-- vibe-quality-gate-skipped reason="quality.sh did not return a verdict within 1000s on this host; all printed stages passed, final stage hung" -->
