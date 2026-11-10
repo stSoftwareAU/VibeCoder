@@ -29,7 +29,20 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    New behaviour and real bug fixes usually need a test that would fail on
    the externally meaningful regression; existing coverage may suffice.
    Refactors and UI restyles may need no new test. {{NO_TEST_ADDED_NOTE}}
-   A missing safety net that matters is a finding. Flag new assertions on
+   A missing safety net that matters is a finding.
+   Apply the Vibe Coder rule **Dummy tests and "how" tests are refused**
+   (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused), in short: a new or edited test that asserts nothing, asserts
+   only success, presence or non-emptiness, restates the implementation,
+   exists only for coverage, or is skipped without a reason is a dummy
+   test; one that asserts which internal functions or mocks were called,
+   how often or in what order, private state or intermediate steps is a
+   "how" test. Both are blocking findings. The fix is a behaviour test that
+   drives the public entry point and asserts the observable outcome,
+   including the error and its message and the edge branches; a mock stands
+   only at a real external boundary, and the test asserts the outcome, not
+   the mock. Coverage never justifies a weak test. The code adds the
+   deterministic dummy-test scan's findings itself, and lists what it cannot
+   judge alone under step 7. Flag new assertions on
    incidental CSS values, DOM shape, component/private function names or
    version strings unless the linked issue makes these an explicit
    contract. Prefer user-visible browser behaviour and semantic locators

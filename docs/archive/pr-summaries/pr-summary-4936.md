@@ -102,3 +102,17 @@ The issue states no acceptance-criteria heading; nothing it asks is left undone.
   integration and checkov skipped by the gate itself).
 - Edited existing tests: none removed or changed; two existing tests' imports
   were extended.
+
+### PR #5021 review revision
+
+- Added completion-level creation and recovery cases with a full URL and a
+  qualified colon closing reference. Both hold the PR as a draft, retain the
+  hold marker, rewrite to `Part of`, and leave auto-merge unarmed.
+- Both new cases fail with `MissingIssueIdentityError` when the identity
+  arguments are removed from the two completion callers. Restored the arguments:
+  the complete mutation-completion suite passes (45 tests).
+- Corrected INTERNALS: code spans/fences preserve colon and URL forms; the
+  historical plain-form rewrite still applies everywhere.
+- Formatting, lint and diff checks passed. Tests used checksum-verified local
+  copies of the locked dependencies due to this Deno client's JSR connection
+  failure. Full quality gate not rerun on this revision; CI remains required.

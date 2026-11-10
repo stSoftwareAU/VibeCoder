@@ -733,11 +733,16 @@ const npmDependencyUpdates: WorkflowSpec = {
   appliesTo: ["Node", "React/Web"],
   rootProjectMarkers: ["package.json"],
   triggers: ["schedule"],
+  // Bare `dependabot`/`ncu` removed: they match `concurrency:` and fleet-template comments (Issue #4903).
   detectionPatternGroups: [[
-    "dependabot",
+    "package-ecosystem: npm",
+    'package-ecosystem: "npm"',
+    "package-ecosystem: 'npm'",
     "renovate",
     "npm-check-updates",
-    "ncu",
+    "npx ncu",
+    "ncu -u",
+    "ncu --upgrade",
   ]],
   dependabotConfigPatternGroups: [[
     "package-ecosystem: npm",

@@ -188,3 +188,15 @@ checks used to review it. A bundle that cannot be read is retried
 clean review and not a finding charged to an unrelated change. A change that
 breaks the bundle is a blocking finding on that file. See
 [Capability-scoped security guidance](CAPABILITY-SECURITY-GUIDANCE.md).
+
+## Dummy-test scan checks
+
+The deterministic dummy-test scan (`worker/deno/lib/dummy_test_scan.ts`,
+Issue #5016) adds a `dummy-test-scan` checklist through the same
+`{{REVIEW_CHECKLISTS}}` contract, in both consumers, for what it cannot judge
+alone: a mock-interaction assertion in a new or edited test, or a test in an
+edited file that asserts nothing in view but calls a function out of view.
+An item left without a verdict, or reported `missing`, blocks. The scan's
+hard findings (no assertion, success-only assertions, an ignore with no
+reason) are added by the code directly. The rules are in
+[CODING-STANDARDS.md](../CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused).

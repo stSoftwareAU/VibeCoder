@@ -425,8 +425,9 @@ bash `worker/run_core.sh` conductor. It sequences:
    reference to the governing issue that GitHub honours in prose (the plain
    `Closes #N`, the colon `Closes: #N` and the full-URL
    `Fixes https://github.com/owner/repo/issues/N` forms) to `Part of #N`
-   (`Part of owner/repo#N` for the URL form), leaving code spans and fences as
-   written (Issue #4936). The `deno task pr-summary-check` "Part of still
+   (`Part of owner/repo#N` for qualified and URL forms). Colon and full-URL
+   forms inside code spans and fences are left as written; the plain form
+   is rewritten wherever it appears, as before (Issue #4936). The `deno task pr-summary-check` "Part of still
    closes" gate (#4126) names a colon or full-URL closing phrase for the run's
    issue the same way as a plain one.
 

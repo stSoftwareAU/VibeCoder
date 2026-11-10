@@ -81,6 +81,11 @@ static coverage gaps are candidates for review, never a test-count target.
   which private function ran, which mock was invoked in which sequence,
   the source text of the function under test.
 
+The normative rule is **Dummy tests and "how" tests are refused** in
+[CODING-STANDARDS.md](../CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused):
+reviewers refuse dummy tests and HOW-tests as blocking findings on a pull
+request, and this scan finds the ones already on the default branch.
+
 A bubble-sort → quick-sort or TypeScript → Rust rewrite must keep passing
 the same behaviour-based (WHAT) tests. Tests that need to change because
 the implementation changed — even though the behaviour did not — are
