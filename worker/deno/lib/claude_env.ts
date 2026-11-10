@@ -210,7 +210,9 @@ export const CLAUDE_SUBAGENT_CAP_ENV: Readonly<Record<string, string>> = {
 };
 
 /**
- * Foreground command ceiling for every `claude` child (Issue #4913).
+ * Foreground command ceiling for every `claude` child (Issue #4913). It is also
+ * applied to every `deepseek` child by `buildDeepSeekChildEnv` in deepseek_env.ts
+ * (Issue #4926; same Claude Code CLI version).
  *
  * The agent's Bash tool stops a foreground command at 600 000 ms unless
  * `BASH_MAX_TIMEOUT_MS` raises the ceiling (read by Claude Code 2.1.310, the

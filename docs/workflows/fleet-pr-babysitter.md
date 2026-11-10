@@ -521,6 +521,21 @@ permission. A PR that a fleet worker holds a live PR-feedback lease claim on
 that pass, so the babysitter never repairs beside a worker that is about to
 push.
 
+A failed-CI PR whose every failing check run is already red on its base branch
+for the same failure starts no agent and charges no attempt (Issue #4921). The
+runner compares each failing check with the base's run of that check, by check
+identity and failure lines, using the comparison CI-fix uses
+(`worker/deno/lib/ci_base_failure_signature.ts`); the decision is made in
+`worker/deno/lib/babysitter_base_failure.ts`. It logs
+`deferred (every failing check is already red on <base>: …)` and the PR is read
+again on the next pass, when the base's fix has landed through the ordinary base
+merge. A dependency-audit check, a failing commit status, a green, missing,
+stale or unreadable base run, a base log showing a different failure, or any
+unreadable evidence repairs as before. The repair prompt also tells the agent
+not to repair a failure in a check unrelated to the files it changed, whether
+that check passes or fails on the base: it names the failure and leaves it to
+the base's fix.
+
 Retry records live under
 `${XDG_STATE_HOME:-$HOME/.local/state}/vibe-coder/fleet-pr-babysitter` as
 versioned, atomically replaced JSON. Each record binds the repository, PR,

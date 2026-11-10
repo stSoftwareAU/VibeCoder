@@ -62,6 +62,7 @@
 import { parse as parseYaml } from "@std/yaml/parse";
 import { calledWorkflowPath } from "./pr_check_contexts.ts";
 import { WORKFLOWS_DIR } from "./workflow_scope.ts";
+import { MAX_REPO_FILE_BYTES, readRepoFile } from "./repo_file_read.ts";
 
 /** A PR-triggered workflow job that runs the mutation tool and can fail. */
 export interface BlockingMutationJob {
@@ -589,13 +590,7 @@ export async function findBlockingMutationJob(
   for (const name of files) {
     let doc: unknown;
     try {
-      const path = `${repoPath}/${WORKFLOWS_DIR}${name}`;
-      const stat = await Deno.lstat(path);
-      if (!stat.isFile || stat.size > MAX_WORKFLOW_BYTES) {
-        unreadable.push(name);
-        continue;
-      }
-      const text = await readWorkflow(path);
+      const text = await readRepoFile(repoPath, `${WORKFLOWS_DIR}${name}`);
       doc = parseYaml(text);
     } catch {
       unreadable.push(name);
@@ -818,21 +813,5 @@ function requiredFeeder(
   return sources.find((source) => source !== jobName) ?? null;
 }
 
-/** Bound both allocation and reads, including a file growing after lstat. */
-const MAX_WORKFLOW_BYTES = 1024 * 1024;
-
-async function readWorkflow(path: string): Promise<string> {
-  using file = await Deno.open(path, { read: true });
-  const stat = await file.stat();
-  if (!stat.isFile || stat.size > MAX_WORKFLOW_BYTES) {
-    throw new Error("Workflow is not a regular file within the size cap");
-  }
-  const bytes = new Uint8Array(MAX_WORKFLOW_BYTES + 1);
-  let used = 0;
-  while (used < bytes.length) {
-    const read = await file.read(bytes.subarray(used));
-    if (read === null) return new TextDecoder().decode(bytes.subarray(0, used));
-    used += read;
-  }
-  throw new Error("Workflow exceeds the size cap");
-}
+/** Size cap for a workflow file read whole (see `readRepoFile`). */
+const MAX_WORKFLOW_BYTES = MAX_REPO_FILE_BYTES;

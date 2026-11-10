@@ -120,6 +120,150 @@ Deno.test("findUnpinnedInstalls - empty input yields no findings", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Argument tokenisation (Issue #4858) — expressions, quotes, comments
+// ---------------------------------------------------------------------------
+
+/** The spec, package name and version of every finding. */
+function summarise(run: string) {
+  return findUnpinnedInstalls(run).map((f) => ({
+    spec: f.spec,
+    packageName: f.packageName,
+    version: f.version,
+  }));
+}
+
+Deno.test("findUnpinnedInstalls - a GitHub expression is one argument", () => {
+  assertEquals(summarise("npm install -g foo@${{ env.V }}"), [
+    { spec: "foo@${{ env.V }}", packageName: "foo", version: "${{ env.V }}" },
+  ]);
+  assertEquals(summarise("gem install foo -v ${{ env.V }}"), [
+    { spec: "foo", packageName: "foo", version: "${{ env.V }}" },
+  ]);
+  const withQuotes = findUnpinnedInstalls(
+    "npm install -g foo@${{ inputs.v || '1.2.3' }}",
+  );
+  assertEquals(withQuotes.length, 1);
+  assertEquals(withQuotes[0]?.packageName, "foo");
+  assertEquals(withQuotes[0]?.spec, "foo@${{ inputs.v || '1.2.3' }}");
+  assertEquals(withQuotes[0]?.version, "${{ inputs.v || '1.2.3' }}");
+  assertEquals(summarise("gem install foo -v ${{ inputs.v || '1.2.3' }}"), [
+    { spec: "foo", packageName: "foo", version: "${{ inputs.v || '1.2.3' }}" },
+  ]);
+  assertEquals(summarise("npm install -g foo@${{ env.V }} # c"), [
+    { spec: "foo@${{ env.V }}", packageName: "foo", version: "${{ env.V }}" },
+  ]);
+});
+
+Deno.test("findUnpinnedInstalls - a pinned install before a comment or redirection is clean", () => {
+  for (
+    const run of [
+      "npm install -g foo@1.2.3 # comment",
+      "npm install -g foo@1.2.3 2>&1",
+      "npm install -g foo@1.2.3 > /dev/null",
+      "npm install -g foo@1.2.3 >/dev/null 2>&1",
+      "npm install -g foo@1.2.3 2> /dev/null",
+      "npm install -g foo@1.2.3 &> /dev/null",
+      "npm install -g foo@1.2.3 >& out.log",
+      "npm install -g foo@1.2.3 2>& 1",
+      "npm install -g foo@1.2.3 <<< y",
+      "npm install -g foo@1.2.3 <> f",
+      "npm install -g foo@1.2.3 <<- EOF",
+      "npm install -g foo@1.2.3 >&2",
+      "npm install -g foo@1.2.3 <&-",
+      "gem install foo -v 1.2.3 # comment",
+      "gem install foo -v 1.2.3 2>&1",
+      "gem install foo -v 1.2.3 > /dev/null",
+      "gem install foo -v 1.2.3 2>/dev/null",
+      "gem install foo -v 1.2.3 >& install.log",
+      "gem install foo -v 1.2.3 2>& 1",
+      "gem install foo -v 1.2.3 <<< y",
+      "gem install foo -v 1.2.3 <> f",
+    ]
+  ) {
+    assertEquals(findUnpinnedInstalls(run), [], run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - an unpinned package before a comment or redirection is flagged once", () => {
+  for (
+    const run of [
+      "npm install -g foo # comment",
+      "npm install -g foo 2>&1",
+      "npm install -g foo > /dev/null",
+      "npm install -g foo >& out.log",
+      "npm install -g foo 2>& 1",
+      "npm install -g foo <<< y",
+      "npm install -g foo <> f",
+      "npm install -g foo <<- EOF",
+      "gem install foo # comment",
+      "gem install foo > /dev/null",
+      "gem install foo 2>&1",
+      "gem install foo >& install.log",
+      "gem install foo 2>& 1",
+      "gem install foo <<< y",
+      "gem install foo <> f",
+      "gem install foo <<- EOF",
+    ]
+  ) {
+    const found = findUnpinnedInstalls(run);
+    assertEquals(found.map((f) => f.spec), ["foo"], run);
+    assertEquals(found[0]?.packageName, "foo", run);
+  }
+});
+
+Deno.test("findUnpinnedInstalls - quoted values stay within one argument", () => {
+  assertEquals(summarise("npm install -g 'foo bar'"), [
+    { spec: "foo bar", packageName: "foo bar", version: null },
+  ]);
+  assertEquals(summarise("npm install -g foo@1.2.3 '#bar'"), [
+    { spec: "#bar", packageName: "#bar", version: null },
+  ]);
+});
+
+Deno.test("findUnpinnedInstalls - a backslash escape outside quotes keeps one argument", () => {
+  // An escaped quote in a flag value no longer splits the word.
+  assertEquals(
+    findUnpinnedInstalls('npm install -g foo@1.2.3 --loglevel=\\"warn\\"'),
+    [],
+  );
+  // Escaped quotes inside a `sh -c` script resolve to one level of double
+  // quotes before the nested script is re-scanned, so a pinned install stays
+  // clean and no made-up package name is minted from a split version.
+  assertEquals(
+    findUnpinnedInstalls(
+      'sh -c "gem install bundler -v \\"2.5.0\\" && bundle install"',
+    ),
+    [],
+  );
+  assertEquals(
+    findUnpinnedInstalls('sh -c "npm install -g \\"pnpm@9.1.0\\""'),
+    [],
+  );
+  const npm = findUnpinnedInstalls('sh -c "npm install -g \\"pnpm\\""');
+  assertEquals(npm.map((f) => f.packageName), ["pnpm"]);
+  assertEquals(npm[0]?.version, null);
+  // The drop also runs on the mid-line splice path, where the captured script
+  // is followed by more shell on the same line, not only when it ends the line.
+  assertEquals(
+    findUnpinnedInstalls(
+      'sh -c "npm install -g \\"pnpm@9.1.0\\"" && echo done',
+    ),
+    [],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      'ssh host "gem install bundler -v \\"2.5.0\\"" || echo failed',
+    ),
+    [],
+  );
+  const sameLine = findUnpinnedInstalls(
+    'sh -c "npm install -g \\"pnpm\\"" && echo done',
+  );
+  assertEquals(sameLine.map((f) => f.packageName), ["pnpm"]);
+  assertEquals(sameLine[0]?.version, null);
+});
+
+// ---------------------------------------------------------------------------
 // Command normalisation (Issue #3953) — prefixes, flags, continuations
 // ---------------------------------------------------------------------------
 

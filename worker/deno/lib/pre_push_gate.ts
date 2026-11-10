@@ -86,6 +86,7 @@ import type {
 } from "./ci_cargo_checks.ts";
 import { isHostDiskFaultText } from "./host_fault.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { readRepoFile } from "./repo_file_read.ts";
 
 /**
  * The gate could not read the repository state it needs: a `git log`,
@@ -1335,7 +1336,8 @@ export function planFormatterFixes(
 /**
  * Parse each deno root's `deno.json` / `deno.jsonc` scope from the working
  * tree. A root whose config is unreadable or unparseable is left out, so its
- * files are checked unfiltered and deno itself reports the broken config.
+ * files are checked unfiltered and deno itself reports the broken config. A
+ * symlink anywhere in the path, or a file over the size cap, is unreadable.
  */
 export async function loadDenoScopes(
   repoRoot: string,
@@ -1345,11 +1347,13 @@ export async function loadDenoScopes(
   for (
     const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
   ) {
-    const dir = root === "." ? repoRoot : `${repoRoot}/${root}`;
     for (const name of ["deno.json", "deno.jsonc"]) {
       let text: string;
       try {
-        text = await Deno.readTextFile(`${dir}/${name}`);
+        text = await readRepoFile(
+          repoRoot,
+          root === "." ? name : `${root}/${name}`,
+        );
       } catch {
         continue; // This config name is absent; try the other.
       }
@@ -1376,7 +1380,8 @@ export function findMarkdownlintBinary(
  * Whether the repo's own CI runs cspell: a tracked workflow under
  * `.github/workflows/` with a `run:` or `uses:` step that names cspell.
  * Comment lines are ignored. A repo with a cspell config but no such step
- * is not blocked by cspell, since its required CI never runs it.
+ * is not blocked by cspell, since its required CI never runs it. A symlink
+ * anywhere in the path, or a file over the size cap, is unreadable and skipped.
  */
 export async function repoCiRunsCspell(
   repoRoot: string,
@@ -1387,7 +1392,7 @@ export async function repoCiRunsCspell(
     if (!/\.ya?ml$/.test(path)) continue;
     let text: string;
     try {
-      text = await Deno.readTextFile(`${repoRoot}/${path}`);
+      text = await readRepoFile(repoRoot, path);
     } catch {
       continue;
     }

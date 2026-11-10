@@ -4210,8 +4210,11 @@ stripping ANSI, and normalising the wall-clock durations that differ run to run
 over identical content. This includes compact Deno summaries such as `2m14s`,
 spaced compounds
 such as `2m 14s`, hour compounds such as `1h2m3s`, and standalone units such as
-`12.4s`; the elapsed values are ignored while failure counts and diagnostics
-remain part of the comparison.
+`12.4s`. Clock-format elapsed times are normalised too: pytest's trailing
+`(0:01:15)` after a duration, and Maven's `01:15 min` or `02:03 h`. Source
+locations such as `file.ts:12:5` and ordinary timestamps are kept. The elapsed
+values are ignored while failure counts and diagnostics remain part of the
+comparison.
 
 When the answer is yes the run stops as an **expected skip**: no PR, no
 `failed`/`failed-once` label, no failure tracking, no repo failure record and no
