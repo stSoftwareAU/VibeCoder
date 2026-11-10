@@ -46,6 +46,12 @@ Pickup skip: `worker/deno/tests/issue_filter_test.ts` — "issue_filter - filter
 
 Docs updated: `docs/USAGE.md` (read "What is never escalated" and the new exception paragraph), `docs/LESSONS-LEARNT.md`, `docs/AGENT-ACCOUNTABILITY.md`, `docs/workflows/label-flows.md`, `DESIGN-PRINCIPLES.md`, `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`, label description in `worker/deno/setup/content_label_definitions.ts`, doc comment in `worker/deno/lib/worker_label_guard.ts`. Prompts and docs that said an approved issue is "never handed to a human" now name the one worker-side exception.
 
+## Reproduction
+
+- **symptom** — a `negative-result` issue was auto-closed by the worker with a comment citing "(Issue #4298)", which links to an unrelated item in the target repository
+- **status** — `partial` — the new tests assert the hand-off and the no-`#N` comment, and fail when the hand-off closes or a `#N` is added; they were not run against the unfixed base-branch code because the old function no longer exists to call from the new tests — reason: not exercised against base
+- **regression test** — `worker/deno/tests/negative_result_handoff_no_vibecoder_numbers_4911_test.ts::negative-result hand-off - every posted comment names no VibeCoder number (Issue #4911)`
+
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
@@ -56,7 +62,7 @@ Docs updated: `docs/USAGE.md` (read "What is never escalated" and the new except
 - **met** — The posted comment contains no `#<digits>`; the regression test fails if a `(Issue #N)` suffix is reintroduced — evidence: `worker/deno/tests/negative_result_handoff_no_vibecoder_numbers_4911_test.ts` — reviewer: met
 - **met** — Without the label, and with an untrusted image, behaviour matches today's tests — evidence: `worker/deno/tests/negative_result_close_4298_test.ts` unlabelled and untrusted-image tests — reviewer: met
 - **met** — `docs/USAGE.md` and the label description describe the hand-off, not a close — evidence: `docs/USAGE.md`, `worker/deno/setup/content_label_definitions.ts` — reviewer: met
-- **partial** — `./quality.sh` passes, including the `needs-human chokepoint` stage — evidence: the gate run reports `needs-human chokepoint PASSED`, and every other stage passed except `deno tests` — reviewer: missing — reason: eleven tests fail in this sandbox on unrelated network/tooling faults (JSR `@std/yaml` fetch failing, `osascript` absent) in `claude_runner_pre_push_3394_test.ts`, `merge_fast_checks_credentials_4705_test.ts`, `pre_push_hook_test.ts`, `review_fleet_prs_post_claim_4398_test.ts`; none touch this change; CI is the authority
+- **partial** — `./quality.sh` passes, including the `needs-human chokepoint` stage — evidence: the gate run reports `needs-human chokepoint PASSED`, and every other stage passed except `deno tests` — reviewer: missing — reason: CI not yet verified — remaining: merge-verification-only; locally eleven tests fail in this sandbox on unrelated network/tooling faults (JSR `@std/yaml` fetch failing, `osascript` absent) in `claude_runner_pre_push_3394_test.ts`, `merge_fast_checks_credentials_4705_test.ts`, `pre_push_hook_test.ts`, `review_fleet_prs_post_claim_4398_test.ts`; none touch this change; CI is the authority
 - **unrequested** — the sentences about "only deterministic evidence justifies `negative-result`" the Spec reviewer flagged in `prompts/coding_guidelines/prompt.md` and `docs/LESSONS-LEARNT.md` — reviewer: unrequested — reason: removed again in this diff because that rule belongs to #4912
 
 ## Standards Review
