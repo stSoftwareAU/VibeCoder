@@ -128,6 +128,7 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { readyOrphanedDraftPr } from "./draft_pr_self_heal.ts";
 import {
   notifyBranchRefreshRefusal,
   readBranchRefreshRefusals,
@@ -3852,6 +3853,18 @@ export async function createProductionRunCoreDeps(
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
         prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
+        // Issue #4952: an orphaned fleet draft (no live claim, no hold marker)
+        // is marked ready here, and the sweep arms it in the same pass.
+        readyOrphanedDraft: (repo, pr) =>
+          readyOrphanedDraftPr({
+            repo,
+            prNumber: pr.number,
+            ...(pr.headRefName ? { headRefName: pr.headRefName } : {}),
+            gh,
+            fleetAuthors: maintenanceAuthors,
+            log: (m) => logger.warn(m, { repo, prNumber: pr.number }),
+            info: (m) => logger.info(m, { repo, prNumber: pr.number }),
+          }),
         // Issue #4613: strict-base refreshes share required-check readiness
         // and per-base ownership with the other updater lanes.
         updateBranchFn: (repo, prNumber, base) =>
