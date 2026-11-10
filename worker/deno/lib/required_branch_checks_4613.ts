@@ -483,7 +483,7 @@ export async function requestReadyBranchUpdate(
       logBaseRefreshDecision({
         ...facts,
         outcome: "refresh-requested",
-        reason: "required checks, approval and shared base ownership held",
+        reason: "branch update requested from GitHub",
       });
     } else {
       const owner = parseRefreshOwner(result.error.message);

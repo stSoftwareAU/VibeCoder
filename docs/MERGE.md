@@ -364,6 +364,30 @@ the auto-merge sweep; a conflicting PR still is
 [`auto_merge_sweep.ts`](../worker/deno/lib/auto_merge_sweep.ts)). The queue tests
 the PR against its future head, and lands it once the checks pass there.
 
+**Base-refresh churn guard (Issue #4943).** On a strict base with no merge
+queue, a behind-only PR is refreshed only through `requestReadyBranchUpdate`
+([`required_branch_checks_4613.ts`](../worker/deno/lib/required_branch_checks_4613.ts)),
+under the shared per-base owner. Every updater lane passes a `source`:
+branch-update loop, `pr-maintenance`, auto-merge sweep, merge-block repair,
+babysitter (`babysitter-behind`) and `review-fleet-prs`. A CI or review repair
+(babysitter `fix()`, `pr-ci-processor`, `pr-feedback-processor`) merges the base
+only when GitHub reports the PR `CONFLICTING`; for a behind-only, `MERGEABLE`,
+`UNKNOWN` or unreadable PR the base merge is skipped. Previously every babysitter
+repair merged the base, and the CI and feedback processors always synced the
+default branch, so each repair added a merge commit and re-ran CI on PRs not
+selected for final integration. The trade-off: a failure that appears only
+against the newer base is reproduced after the PR is refreshed as the owner, not
+inside the repair. Each decision logs one line,
+`[base-refresh] source=… outcome=… repo=… pr=#N base=… owner=#N/worker|none reason="…" version=… commit=…`,
+with outcomes `refresh-requested`, `refresh-skipped`, `base-merge-allowed` or
+`base-merge-skipped`. Grep the host log for `[base-refresh]` and count by source
+and outcome to attribute churn. The version and commit are the worker's build
+stamp, so a deployed worker older than this change shows no such lines. Still
+necessary: genuine conflicts, the owner's own refresh, the non-strict-base direct
+`update-branch` path, and local `updatePrBranch` for conflict repair. Merge-queue
+bases keep their existing path. The counters are what to watch; no production
+improvement is claimed here.
+
 **A queue removal is a red check, not a re-run.** When the queue removes a PR
 at its current head, the CI-fix lane is handed that removal as a failed check
 named `merge queue`, with the synthetic id `merge-queue-<first 12 characters of

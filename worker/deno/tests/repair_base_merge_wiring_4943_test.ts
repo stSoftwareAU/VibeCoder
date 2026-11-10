@@ -11,7 +11,7 @@ import { assertEquals } from "@std/assert";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
-import type { GitHubDeps, GitDeps } from "../lib/issue_worker_wiring.ts";
+import type { GitDeps, GitHubDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const REPO = "owner/repo";
@@ -111,11 +111,13 @@ async function runWith(
   return { syncCalls, mergeableReads };
 }
 
-const mergeableJson = (mergeable: string) =>
-  () => Promise.resolve(JSON.stringify({ mergeable }));
+const mergeableJson = (mergeable: string) => () =>
+  Promise.resolve(JSON.stringify({ mergeable }));
 
 for (const processor of ["ci", "feedback"] as const) {
-  const label = processor === "ci" ? "pr-ci-processor" : "pr-feedback-processor";
+  const label = processor === "ci"
+    ? "pr-ci-processor"
+    : "pr-feedback-processor";
 
   Deno.test(`${label} does not sync the base for a behind-only (MERGEABLE) PR (Issue #4943)`, async () => {
     const { syncCalls, mergeableReads } = await runWith(

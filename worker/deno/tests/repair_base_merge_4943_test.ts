@@ -104,7 +104,7 @@ Deno.test("formatBaseRefreshDecision strips newlines and quotes from the reason"
       repo: "owner/repo",
       prNumber: 3,
       base: "main",
-      reason: 'line1\nline2 "quoted" \'single\' `tick`',
+      reason: "line1\nline2 \"quoted\" 'single' `tick`",
     },
     "build=abc123",
   );
@@ -195,7 +195,10 @@ Deno.test("readRepairBaseMergeDecision merges for CONFLICTING and logs one line"
     "mergeable",
   ]]);
   assertEquals(lines.length, 1);
-  assertMatch(lines[0]!, /^\[base-refresh\] source=pr-ci-processor outcome=base-merge-allowed repo=owner\/repo pr=#12 base=main /);
+  assertMatch(
+    lines[0]!,
+    /^\[base-refresh\] source=pr-ci-processor outcome=base-merge-allowed repo=owner\/repo pr=#12 base=main /,
+  );
 });
 
 Deno.test("readRepairBaseMergeDecision refuses a MERGEABLE PR and logs the skip", async () => {
