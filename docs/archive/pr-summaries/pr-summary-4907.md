@@ -56,6 +56,10 @@ flows, so no doc edit was needed. Seams are read by production code
   processor deps made both new tests fail (37 passed, 2 failed); restored,
   `deno task test:unit tests/run_core_production_deps_test.ts` passes (39
   passed).
+- Mutation check: both tests now also assert the `claudeTimeout` the processor
+  receives (2400 for spelling, 1200 for CI). Deleting `claudeTimeout:
+  ciFixTimeout` in the CI callback made the CI test fail (38 passed, 1 failed);
+  restored, 39 passed.
 - Callers checked: both scheduler callbacks changed; the standalone commands
   already passed the instructions.
 - `./quality.sh < /dev/null` on the final head: passed (config integration and

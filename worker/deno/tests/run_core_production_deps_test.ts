@@ -301,6 +301,7 @@ for (const commentType of ["review", "issue", "pr_review"] as const) {
 Deno.test("run-core spelling fix callback passes budgeted quality and custom instructions (Issue #4907)", async () => {
   let qualityInstructions = "";
   let customInstructions = "";
+  let claudeTimeout: number | undefined;
   const { deps, cleanup } = await createProductionRunCoreDeps(
     createTestOptions({
       config: buildDefaultWorkerConfig({
@@ -336,6 +337,7 @@ Deno.test("run-core spelling fix callback passes budgeted quality and custom ins
       processSpellingFailure: (_input, processorDeps) => {
         qualityInstructions = processorDeps.qualityInstructions ?? "";
         customInstructions = processorDeps.customInstructions ?? "";
+        claudeTimeout = processorDeps.claudeTimeout;
         return Promise.resolve({ ok: false, error: new Error("captured") });
       },
     }),
@@ -346,6 +348,7 @@ Deno.test("run-core spelling fix callback passes budgeted quality and custom ins
     assertStringIncludes(qualityInstructions, "make verify-distinct");
     // The spelling path budgets against claudeTimeout (2400s), not ciFixTimeout.
     assertStringIncludes(qualityInstructions, "2400s");
+    assertEquals(claudeTimeout, 2400);
     assertEquals(qualityInstructions.includes("1200s"), false);
     assertStringIncludes(
       qualityInstructions,
@@ -367,6 +370,7 @@ Deno.test("run-core spelling fix callback passes budgeted quality and custom ins
 Deno.test("run-core CI fix callback passes the CI budget and ci-fix push guarantee (Issue #4907)", async () => {
   let qualityInstructions = "";
   let customInstructions = "";
+  let claudeTimeout: number | undefined;
   const { deps, cleanup } = await createProductionRunCoreDeps(
     createTestOptions({
       config: buildDefaultWorkerConfig({
@@ -402,6 +406,7 @@ Deno.test("run-core CI fix callback passes the CI budget and ci-fix push guarant
       processCiFailure: (_input, processorDeps) => {
         qualityInstructions = processorDeps.qualityInstructions ?? "";
         customInstructions = processorDeps.customInstructions ?? "";
+        claudeTimeout = processorDeps.claudeTimeout;
         return Promise.resolve({ ok: false, error: new Error("captured") });
       },
     }),
@@ -413,6 +418,7 @@ Deno.test("run-core CI fix callback passes the CI budget and ci-fix push guarant
     // The CI path budgets against ciFixTimeout (1200s), not claudeTimeout.
     assertStringIncludes(qualityInstructions, "1200s");
     assertEquals(qualityInstructions.includes("3600s"), false);
+    assertEquals(claudeTimeout, 1200);
     assertStringIncludes(
       qualityInstructions,
       "The worker attempts the full gate if Claude leaves uncommitted changes",
