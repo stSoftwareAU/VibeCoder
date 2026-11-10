@@ -443,7 +443,9 @@ function claudeProblems(
   }
   if (stated.length === 1 && stated[0] !== pinned.version) {
     problems.push(
-      `${DOC} says this image's Claude Code is ${stated[0]}, but ${TOOLS_PATH} pins the claude provider at ${pinned.version}: update the page's Claude Code version in the same PR as the Claude Code bump`,
+      `${DOC} says this image's Claude Code is ${
+        stated[0]
+      }, but ${TOOLS_PATH} pins the claude provider at ${pinned.version}: update the page's Claude Code version in the same PR as the Claude Code bump`,
     );
   }
   return problems;
@@ -821,6 +823,19 @@ function withPluginCommit(text: string, commit: string): string {
   });
 }
 
+/**
+ * The manifest text with the plugin's entry carrying no commit at all: its
+ * `commit` is malformed and its `notes` no longer name the commit, because a
+ * 40-character token anywhere in the plugin's entry counts as a pin.
+ */
+function withoutPluginCommit(text: string): string {
+  return editManifest(text, (manifest) => {
+    const entry = entryWithId(manifest, "toolchains", PLUGIN_ID);
+    entry.commit = "not-a-commit";
+    entry.notes = "no commit is named here";
+  });
+}
+
 function codeRow(path: string): string {
   return `| Config key | the block and its parser | \`${path}\` | present |`;
 }
@@ -1050,21 +1065,18 @@ Deno.test("SHA drift: no container file pins the commit, so the page's pin is re
 
 Deno.test("SHA drift: a pin file naming the plugin without a commit fails closed", async () => {
   const live = await livePage();
+  const sha = candidateSha(live);
   const corpus = await liveCorpus();
   assertEquals(
     driftProblems(
       live,
-      withFile(corpus, TOOLS_PATH, withPluginCommit(manifestOf(corpus), (candidateSha(live)))),
+      withFile(corpus, TOOLS_PATH, withPluginCommit(manifestOf(corpus), sha)),
     ),
     [],
   );
   const problems = driftProblems(
     live,
-    withFile(
-      corpus,
-      TOOLS_PATH,
-      withPluginCommit(manifestOf(corpus), "not-a-commit"),
-    ),
+    withFile(corpus, TOOLS_PATH, withoutPluginCommit(manifestOf(corpus))),
   );
   assert(
     problems.some((p) =>
@@ -1216,7 +1228,9 @@ Deno.test("Claude Code version: the page must state the image's version and quot
     corpus,
   );
   assert(
-    unstated.some((p) => p.includes("must state the image's Claude Code version")),
+    unstated.some((p) =>
+      p.includes("must state the image's Claude Code version")
+    ),
     `expected the missing version statement to be refused; got:\n${
       unstated.join("\n")
     }`,

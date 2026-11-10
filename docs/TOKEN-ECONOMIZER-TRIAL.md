@@ -1,6 +1,6 @@
 # 🧮 TokenEconomizer trial — learnings that persist across runs
 
-<!-- cspell:ignore microskills loopguard envfacts TOOLPRUNE REPOMAP tokeneconomizer Containerfile -->
+<!-- cspell:ignore microskills loopguard envfacts TOOLPRUNE REPOMAP tokeneconomizer Containerfile noarch pyproject opencode codegraph worktrees -->
 
 | | |
 | - | - |
