@@ -90,8 +90,9 @@ you have answered or unblocked the worker.
 An approved work issue is never handed back with `needs-human`
 (Issue #4298): an issue the worker cannot finish is a Vibe Coder bug, retried and
 fixed rather than returned. `needs-human` remains for the security hard
-stops and the planning/grill-me rounds above — always with a comment
-explaining the next step.
+stops, the planning/grill-me rounds above, and the worker's own hand-off of a
+`negative-result` issue on a run that made no change (Issue #4911) — always
+with a comment explaining the next step.
 
 ---
 
