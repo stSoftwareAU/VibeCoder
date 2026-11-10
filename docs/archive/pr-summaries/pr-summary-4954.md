@@ -117,9 +117,9 @@ flowchart LR
   stop rule in the protocol doc"
 - **unrequested** — the drift test also pins phrases in the candidate, host,
   window, bar, comparison and stop-rule sections, and checks that every tracked
-  text file naming the plugin is on the purge list — reviewer: unrequested — reason:
-  this is how the test reads "the doc's purge list disagrees with the code"; the
-  section pins keep the protocol from being edited away silently
+  text file naming the plugin is on the purge list — reviewer: unrequested —
+  reason: this is how the test reads "the doc's purge list disagrees with the
+  code"; the section pins keep the protocol from being edited away silently
 
 ## Standards Review
 
@@ -158,23 +158,24 @@ flowchart LR
   live page passes every rule; the live corpus reads every tracked repository
   file; the corpus leaves out a gitignored nested copy and an ignored root
   `.config.json` that name the plugin (positive control: the tracked file is
-  read); the corpus fails loud outside a git repository; SHA
-  drift (page against a `container/` pin, interim commit while no pin exists,
-  fail-closed on a pin with no commit, re-wrapped JSON pin); config-key drift;
-  purge-list drift in both directions; section-scoped structure pins; the Status
-  cell; and the links from the README and the two sibling pages.
-- Ran on the final head, one file at a time with
-  `deno task test:unit <file>`: `worker/deno/tests/token_economizer_trial_docs_test.ts`
-  (29 tests at head), `worker/deno/tests/rtk_output_trial_docs_test.ts`
-  (11 tests at head, unchanged by this PR) and
-  `worker/deno/tests/repo_context_trial_docs_test.ts` (10 tests at head,
-  unchanged by this PR). The three files together: 50 passed, 0 failed.
+  read); the corpus fails loud outside a git repository; SHA drift (page against
+  a `container/` pin, interim commit while no pin exists, fail-closed on a pin
+  with no commit, re-wrapped JSON pin); config-key drift; purge-list drift in
+  both directions; section-scoped structure pins; the Status cell; and the links
+  from the README and the two sibling pages.
+- Ran on the final head, one file at a time with `deno task test:unit <file>`:
+  `worker/deno/tests/token_economizer_trial_docs_test.ts` (29 tests at head),
+  `worker/deno/tests/rtk_output_trial_docs_test.ts` (11 tests at head, unchanged
+  by this PR) and `worker/deno/tests/repo_context_trial_docs_test.ts` (10 tests
+  at head, unchanged by this PR). The three files together: 50 passed, 0 failed.
 - Review fix (PR #5032): the corpus was walked from disk and so read gitignored
   local files (agent worktrees under `.claude/worktrees/`, an ignored root
   `.config.json`). Red check: adding `--others` to `git ls-files` turned
   `the corpus leaves out gitignored nested copies and an ignored root config`
-  red (`only tracked files are in the corpus; ignored copies and config are
-  not`), then restored.
+  red
+  (`only tracked files are in the corpus; ignored copies and config are
+  not`),
+  then restored.
 - Red checks on the page, restored and `cmp`-checked after each: SHA changed in
   the candidate section only → red; SHA changed in both places → red
   (`interim commit` problem); the "Not yet: #4955 pins this commit" sentence
