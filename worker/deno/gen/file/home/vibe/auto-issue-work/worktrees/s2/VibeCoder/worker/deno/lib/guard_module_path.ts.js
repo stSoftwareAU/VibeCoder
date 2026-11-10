@@ -1,0 +1,79 @@
+/**
+ * Where the `gh`/`git` guard modules are executed from (Issue #1444).
+ *
+ * The guard wrappers on the agent's PATH spawn a fresh Deno child for every
+ * `gh` and `git` call the agent makes, and that child executes a guard entry
+ * point named by absolute path. Both entry points used to be resolved from
+ * `import.meta.url` — relative to the RUNNING module.
+ *
+ * In the container the worker does not run from the mounted checkout. For
+ * speed, `container/entrypoint.sh` copies `worker/deno` onto local storage
+ * and makes the copy writable so the next launch's `rm -rf` can replace it
+ * (Issue #514), then runs the driver from there. So `import.meta.url` pointed
+ * into that writable copy, and the guard the wrapper executed was a file the
+ * coding agent's own uid could rewrite — and one re-read on every call rather
+ * than loaded once at start-up.
+ *
+ * That inverts the control. The write-repo allowlist check, the reserved-label
+ * denylist, the credential-disclosure guard, the endpoint host check
+ * (Issue #1420) and the run-scoped credential wiring (Issue #1423) all
+ * re-enter through those modules. A control the constrained party can edit,
+ * which is re-read on each use, is advice rather than a boundary.
+ *
+ * The fix is the one already applied to the worker's INSTRUCTIONS. The same
+ * entrypoint block pins `PROMPTS_DIR="${BASE_DIR}/prompts"` so prompt
+ * templates resolve to the read-only mount instead of the staged copy; this
+ * does the same for the modules that ENFORCE, using the `VIBE_BASE_DIR` the
+ * launcher already exports (`container_launch.ts`).
+ *
+ * ## Why it falls back rather than insisting
+ *
+ * `VIBE_BASE_DIR` is absent outside the container — tests, a developer host —
+ * and a layout that does not carry the module at the expected path would
+ * otherwise fail every `gh` call the agent makes. So the checkout copy is
+ * preferred **when it is actually there**, and the module-relative path
+ * remains the fallback. That is not a weakness an agent can exploit: the
+ * checkout is a read-only mount, so the file it would have to remove to force
+ * the fallback is one it cannot remove.
+ *
+ * Nothing here changes the staging block. The staged copy still exists, is
+ * still writable, and is still removable by the next launch — the recovery
+ * path `chmod -R u+w` exists for is untouched. Only the guard's own entry
+ * point moves.
+ *
+ * Australian English spelling throughout (behaviour, colour, organisation).
+ */ /** The checkout path the container launcher exports (`container_launch.ts`). */ export const BASE_DIR_ENV = "VIBE_BASE_DIR";
+/** Where the guard modules sit beneath the checkout root. */ export const GUARD_MODULE_SUBDIR = "worker/deno/lib";
+const processEnv = (name)=>{
+  try {
+    return Deno.env.get(name);
+  } catch  {
+    return undefined;
+  }
+};
+const realFileExists = (path)=>{
+  try {
+    return Deno.statSync(path).isFile;
+  } catch  {
+    return false;
+  }
+};
+/**
+ * Absolute path of a guard entry point, preferring the read-only checkout.
+ *
+ * @param fileName - Guard module file name, e.g. `gh_guard_cli.ts`.
+ * @param moduleUrl - The calling module's `import.meta.url`, used for the
+ *   fallback so the resolved path stays beside the caller.
+ * @param env - Environment lookup (injectable for tests).
+ * @param exists - Existence probe (injectable for tests).
+ * @returns The checkout copy when the launcher named a checkout that actually
+ *   carries the module; otherwise the module-relative path.
+ */ export function resolveGuardModulePath(fileName, moduleUrl, env = processEnv, exists = realFileExists) {
+  const moduleRelative = decodeURIComponent(new URL(`./${fileName}`, moduleUrl).pathname);
+  const baseDir = env(BASE_DIR_ENV)?.trim();
+  if (!baseDir) return moduleRelative;
+  const fromCheckout = `${baseDir.replace(/\/+$/, "")}/${GUARD_MODULE_SUBDIR}/${fileName}`;
+  return exists(fromCheckout) ? fromCheckout : moduleRelative;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9ndWFyZF9tb2R1bGVfcGF0aC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIFdoZXJlIHRoZSBgZ2hgL2BnaXRgIGd1YXJkIG1vZHVsZXMgYXJlIGV4ZWN1dGVkIGZyb20gKElzc3VlICMxNDQ0KS5cbiAqXG4gKiBUaGUgZ3VhcmQgd3JhcHBlcnMgb24gdGhlIGFnZW50J3MgUEFUSCBzcGF3biBhIGZyZXNoIERlbm8gY2hpbGQgZm9yIGV2ZXJ5XG4gKiBgZ2hgIGFuZCBgZ2l0YCBjYWxsIHRoZSBhZ2VudCBtYWtlcywgYW5kIHRoYXQgY2hpbGQgZXhlY3V0ZXMgYSBndWFyZCBlbnRyeVxuICogcG9pbnQgbmFtZWQgYnkgYWJzb2x1dGUgcGF0aC4gQm90aCBlbnRyeSBwb2ludHMgdXNlZCB0byBiZSByZXNvbHZlZCBmcm9tXG4gKiBgaW1wb3J0Lm1ldGEudXJsYCDigJQgcmVsYXRpdmUgdG8gdGhlIFJVTk5JTkcgbW9kdWxlLlxuICpcbiAqIEluIHRoZSBjb250YWluZXIgdGhlIHdvcmtlciBkb2VzIG5vdCBydW4gZnJvbSB0aGUgbW91bnRlZCBjaGVja291dC4gRm9yXG4gKiBzcGVlZCwgYGNvbnRhaW5lci9lbnRyeXBvaW50LnNoYCBjb3BpZXMgYHdvcmtlci9kZW5vYCBvbnRvIGxvY2FsIHN0b3JhZ2VcbiAqIGFuZCBtYWtlcyB0aGUgY29weSB3cml0YWJsZSBzbyB0aGUgbmV4dCBsYXVuY2gncyBgcm0gLXJmYCBjYW4gcmVwbGFjZSBpdFxuICogKElzc3VlICM1MTQpLCB0aGVuIHJ1bnMgdGhlIGRyaXZlciBmcm9tIHRoZXJlLiBTbyBgaW1wb3J0Lm1ldGEudXJsYCBwb2ludGVkXG4gKiBpbnRvIHRoYXQgd3JpdGFibGUgY29weSwgYW5kIHRoZSBndWFyZCB0aGUgd3JhcHBlciBleGVjdXRlZCB3YXMgYSBmaWxlIHRoZVxuICogY29kaW5nIGFnZW50J3Mgb3duIHVpZCBjb3VsZCByZXdyaXRlIOKAlCBhbmQgb25lIHJlLXJlYWQgb24gZXZlcnkgY2FsbCByYXRoZXJcbiAqIHRoYW4gbG9hZGVkIG9uY2UgYXQgc3RhcnQtdXAuXG4gKlxuICogVGhhdCBpbnZlcnRzIHRoZSBjb250cm9sLiBUaGUgd3JpdGUtcmVwbyBhbGxvd2xpc3QgY2hlY2ssIHRoZSByZXNlcnZlZC1sYWJlbFxuICogZGVueWxpc3QsIHRoZSBjcmVkZW50aWFsLWRpc2Nsb3N1cmUgZ3VhcmQsIHRoZSBlbmRwb2ludCBob3N0IGNoZWNrXG4gKiAoSXNzdWUgIzE0MjApIGFuZCB0aGUgcnVuLXNjb3BlZCBjcmVkZW50aWFsIHdpcmluZyAoSXNzdWUgIzE0MjMpIGFsbFxuICogcmUtZW50ZXIgdGhyb3VnaCB0aG9zZSBtb2R1bGVzLiBBIGNvbnRyb2wgdGhlIGNvbnN0cmFpbmVkIHBhcnR5IGNhbiBlZGl0LFxuICogd2hpY2ggaXMgcmUtcmVhZCBvbiBlYWNoIHVzZSwgaXMgYWR2aWNlIHJhdGhlciB0aGFuIGEgYm91bmRhcnkuXG4gKlxuICogVGhlIGZpeCBpcyB0aGUgb25lIGFscmVhZHkgYXBwbGllZCB0byB0aGUgd29ya2VyJ3MgSU5TVFJVQ1RJT05TLiBUaGUgc2FtZVxuICogZW50cnlwb2ludCBibG9jayBwaW5zIGBQUk9NUFRTX0RJUj1cIiR7QkFTRV9ESVJ9L3Byb21wdHNcImAgc28gcHJvbXB0XG4gKiB0ZW1wbGF0ZXMgcmVzb2x2ZSB0byB0aGUgcmVhZC1vbmx5IG1vdW50IGluc3RlYWQgb2YgdGhlIHN0YWdlZCBjb3B5OyB0aGlzXG4gKiBkb2VzIHRoZSBzYW1lIGZvciB0aGUgbW9kdWxlcyB0aGF0IEVORk9SQ0UsIHVzaW5nIHRoZSBgVklCRV9CQVNFX0RJUmAgdGhlXG4gKiBsYXVuY2hlciBhbHJlYWR5IGV4cG9ydHMgKGBjb250YWluZXJfbGF1bmNoLnRzYCkuXG4gKlxuICogIyMgV2h5IGl0IGZhbGxzIGJhY2sgcmF0aGVyIHRoYW4gaW5zaXN0aW5nXG4gKlxuICogYFZJQkVfQkFTRV9ESVJgIGlzIGFic2VudCBvdXRzaWRlIHRoZSBjb250YWluZXIg4oCUIHRlc3RzLCBhIGRldmVsb3BlciBob3N0IOKAlFxuICogYW5kIGEgbGF5b3V0IHRoYXQgZG9lcyBub3QgY2FycnkgdGhlIG1vZHVsZSBhdCB0aGUgZXhwZWN0ZWQgcGF0aCB3b3VsZFxuICogb3RoZXJ3aXNlIGZhaWwgZXZlcnkgYGdoYCBjYWxsIHRoZSBhZ2VudCBtYWtlcy4gU28gdGhlIGNoZWNrb3V0IGNvcHkgaXNcbiAqIHByZWZlcnJlZCAqKndoZW4gaXQgaXMgYWN0dWFsbHkgdGhlcmUqKiwgYW5kIHRoZSBtb2R1bGUtcmVsYXRpdmUgcGF0aFxuICogcmVtYWlucyB0aGUgZmFsbGJhY2suIFRoYXQgaXMgbm90IGEgd2Vha25lc3MgYW4gYWdlbnQgY2FuIGV4cGxvaXQ6IHRoZVxuICogY2hlY2tvdXQgaXMgYSByZWFkLW9ubHkgbW91bnQsIHNvIHRoZSBmaWxlIGl0IHdvdWxkIGhhdmUgdG8gcmVtb3ZlIHRvIGZvcmNlXG4gKiB0aGUgZmFsbGJhY2sgaXMgb25lIGl0IGNhbm5vdCByZW1vdmUuXG4gKlxuICogTm90aGluZyBoZXJlIGNoYW5nZXMgdGhlIHN0YWdpbmcgYmxvY2suIFRoZSBzdGFnZWQgY29weSBzdGlsbCBleGlzdHMsIGlzXG4gKiBzdGlsbCB3cml0YWJsZSwgYW5kIGlzIHN0aWxsIHJlbW92YWJsZSBieSB0aGUgbmV4dCBsYXVuY2gg4oCUIHRoZSByZWNvdmVyeVxuICogcGF0aCBgY2htb2QgLVIgdSt3YCBleGlzdHMgZm9yIGlzIHVudG91Y2hlZC4gT25seSB0aGUgZ3VhcmQncyBvd24gZW50cnlcbiAqIHBvaW50IG1vdmVzLlxuICpcbiAqIEF1c3RyYWxpYW4gRW5nbGlzaCBzcGVsbGluZyB0aHJvdWdob3V0IChiZWhhdmlvdXIsIGNvbG91ciwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG4vKiogVGhlIGNoZWNrb3V0IHBhdGggdGhlIGNvbnRhaW5lciBsYXVuY2hlciBleHBvcnRzIChgY29udGFpbmVyX2xhdW5jaC50c2ApLiAqL1xuZXhwb3J0IGNvbnN0IEJBU0VfRElSX0VOViA9IFwiVklCRV9CQVNFX0RJUlwiO1xuXG4vKiogV2hlcmUgdGhlIGd1YXJkIG1vZHVsZXMgc2l0IGJlbmVhdGggdGhlIGNoZWNrb3V0IHJvb3QuICovXG5leHBvcnQgY29uc3QgR1VBUkRfTU9EVUxFX1NVQkRJUiA9IFwid29ya2VyL2Rlbm8vbGliXCI7XG5cbi8qKiBFbnZpcm9ubWVudCBsb29rdXAgc2VhbS4gKi9cbmV4cG9ydCB0eXBlIEd1YXJkRW52TG9va3VwID0gKG5hbWU6IHN0cmluZykgPT4gc3RyaW5nIHwgdW5kZWZpbmVkO1xuXG4vKiogRXhpc3RlbmNlIHByb2JlIHNlYW0sIHNvIHRoZSByZXNvbHZlciBpcyB0ZXN0YWJsZSB3aXRob3V0IGEgZmlsZXN5c3RlbS4gKi9cbmV4cG9ydCB0eXBlIEd1YXJkRmlsZUV4aXN0cyA9IChwYXRoOiBzdHJpbmcpID0+IGJvb2xlYW47XG5cbmNvbnN0IHByb2Nlc3NFbnY6IEd1YXJkRW52TG9va3VwID0gKG5hbWUpID0+IHtcbiAgdHJ5IHtcbiAgICByZXR1cm4gRGVuby5lbnYuZ2V0KG5hbWUpO1xuICB9IGNhdGNoIHtcbiAgICByZXR1cm4gdW5kZWZpbmVkO1xuICB9XG59O1xuXG5jb25zdCByZWFsRmlsZUV4aXN0czogR3VhcmRGaWxlRXhpc3RzID0gKHBhdGgpID0+IHtcbiAgdHJ5IHtcbiAgICByZXR1cm4gRGVuby5zdGF0U3luYyhwYXRoKS5pc0ZpbGU7XG4gIH0gY2F0Y2gge1xuICAgIHJldHVybiBmYWxzZTtcbiAgfVxufTtcblxuLyoqXG4gKiBBYnNvbHV0ZSBwYXRoIG9mIGEgZ3VhcmQgZW50cnkgcG9pbnQsIHByZWZlcnJpbmcgdGhlIHJlYWQtb25seSBjaGVja291dC5cbiAqXG4gKiBAcGFyYW0gZmlsZU5hbWUgLSBHdWFyZCBtb2R1bGUgZmlsZSBuYW1lLCBlLmcuIGBnaF9ndWFyZF9jbGkudHNgLlxuICogQHBhcmFtIG1vZHVsZVVybCAtIFRoZSBjYWxsaW5nIG1vZHVsZSdzIGBpbXBvcnQubWV0YS51cmxgLCB1c2VkIGZvciB0aGVcbiAqICAgZmFsbGJhY2sgc28gdGhlIHJlc29sdmVkIHBhdGggc3RheXMgYmVzaWRlIHRoZSBjYWxsZXIuXG4gKiBAcGFyYW0gZW52IC0gRW52aXJvbm1lbnQgbG9va3VwIChpbmplY3RhYmxlIGZvciB0ZXN0cykuXG4gKiBAcGFyYW0gZXhpc3RzIC0gRXhpc3RlbmNlIHByb2JlIChpbmplY3RhYmxlIGZvciB0ZXN0cykuXG4gKiBAcmV0dXJucyBUaGUgY2hlY2tvdXQgY29weSB3aGVuIHRoZSBsYXVuY2hlciBuYW1lZCBhIGNoZWNrb3V0IHRoYXQgYWN0dWFsbHlcbiAqICAgY2FycmllcyB0aGUgbW9kdWxlOyBvdGhlcndpc2UgdGhlIG1vZHVsZS1yZWxhdGl2ZSBwYXRoLlxuICovXG5leHBvcnQgZnVuY3Rpb24gcmVzb2x2ZUd1YXJkTW9kdWxlUGF0aChcbiAgZmlsZU5hbWU6IHN0cmluZyxcbiAgbW9kdWxlVXJsOiBzdHJpbmcsXG4gIGVudjogR3VhcmRFbnZMb29rdXAgPSBwcm9jZXNzRW52LFxuICBleGlzdHM6IEd1YXJkRmlsZUV4aXN0cyA9IHJlYWxGaWxlRXhpc3RzLFxuKTogc3RyaW5nIHtcbiAgY29uc3QgbW9kdWxlUmVsYXRpdmUgPSBkZWNvZGVVUklDb21wb25lbnQoXG4gICAgbmV3IFVSTChgLi8ke2ZpbGVOYW1lfWAsIG1vZHVsZVVybCkucGF0aG5hbWUsXG4gICk7XG5cbiAgY29uc3QgYmFzZURpciA9IGVudihCQVNFX0RJUl9FTlYpPy50cmltKCk7XG4gIGlmICghYmFzZURpcikgcmV0dXJuIG1vZHVsZVJlbGF0aXZlO1xuXG4gIGNvbnN0IGZyb21DaGVja291dCA9IGAke1xuICAgIGJhc2VEaXIucmVwbGFjZSgvXFwvKyQvLCBcIlwiKVxuICB9LyR7R1VBUkRfTU9EVUxFX1NVQkRJUn0vJHtmaWxlTmFtZX1gO1xuICByZXR1cm4gZXhpc3RzKGZyb21DaGVja291dCkgPyBmcm9tQ2hlY2tvdXQgOiBtb2R1bGVSZWxhdGl2ZTtcbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0E0Q0MsR0FFRCw4RUFBOEUsR0FDOUUsT0FBTyxNQUFNLGVBQWUsZ0JBQWdCO0FBRTVDLDJEQUEyRCxHQUMzRCxPQUFPLE1BQU0sc0JBQXNCLGtCQUFrQjtBQVFyRCxNQUFNLGFBQTZCLENBQUM7RUFDbEMsSUFBSTtJQUNGLE9BQU8sS0FBSyxHQUFHLENBQUMsR0FBRyxDQUFDO0VBQ3RCLEVBQUUsT0FBTTtJQUNOLE9BQU87RUFDVDtBQUNGO0FBRUEsTUFBTSxpQkFBa0MsQ0FBQztFQUN2QyxJQUFJO0lBQ0YsT0FBTyxLQUFLLFFBQVEsQ0FBQyxNQUFNLE1BQU07RUFDbkMsRUFBRSxPQUFNO0lBQ04sT0FBTztFQUNUO0FBQ0Y7QUFFQTs7Ozs7Ozs7OztDQVVDLEdBQ0QsT0FBTyxTQUFTLHVCQUNkLFFBQWdCLEVBQ2hCLFNBQWlCLEVBQ2pCLE1BQXNCLFVBQVUsRUFDaEMsU0FBMEIsY0FBYztFQUV4QyxNQUFNLGlCQUFpQixtQkFDckIsSUFBSSxJQUFJLENBQUMsRUFBRSxFQUFFLFVBQVUsRUFBRSxXQUFXLFFBQVE7RUFHOUMsTUFBTSxVQUFVLElBQUksZUFBZTtFQUNuQyxJQUFJLENBQUMsU0FBUyxPQUFPO0VBRXJCLE1BQU0sZUFBZSxHQUNuQixRQUFRLE9BQU8sQ0FBQyxRQUFRLElBQ3pCLENBQUMsRUFBRSxvQkFBb0IsQ0FBQyxFQUFFLFVBQVU7RUFDckMsT0FBTyxPQUFPLGdCQUFnQixlQUFlO0FBQy9DIn0=
+// denoCacheMetadata=7367103091044200891,16666323978218388033

@@ -1,0 +1,35 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { assertFalse } from "./false.ts";
+
+/**
+ * Make an assertion that `obj` is not an instance of `type`.
+ * If so, then throw.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertNotInstanceOf } from "@std/assert";
+ *
+ * assertNotInstanceOf(new Date(), Number); // Doesn't throw
+ * assertNotInstanceOf(new Date(), Date); // Throws
+ * ```
+ *
+ * @typeParam A The type of the object to check.
+ * @typeParam T The type of the class to check against.
+ * @param actual The object to check.
+ * @param unexpectedType The class constructor to check against.
+ * @param msg The optional message to display if the assertion fails.
+ */
+export function assertNotInstanceOf<A, T>(
+  actual: A,
+  // deno-lint-ignore no-explicit-any
+  unexpectedType: abstract new (...args: any[]) => T,
+  msg?: string,
+): asserts actual is Exclude<A, T> {
+  const msgSuffix = msg ? `: ${msg}` : ".";
+  msg =
+    `Expected object to not be an instance of "${typeof unexpectedType}"${msgSuffix}`;
+  assertFalse(actual instanceof unexpectedType, msg);
+}
+
+// denoCacheMetadata={"headers":{"content-length":"1118","content-type":"text/typescript","cf-ray":"a583917b2db4561f-SYD","cross-origin-resource-policy":"cross-origin","access-control-allow-origin":"*","date":"Tue, 10 Nov 2026 08:08:15 GMT","etag":"\"37868db99fadcc54363562ead4389ca1\"","vary":"Origin","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=69s5nhmPrR6l1cXvPwBerUzDSMVjfrgX%2BjFpjQXdhgrIgNi%2FKdJsA4SeEFL4SODlqCEbfkHR4CfxUquYQnIS9whjQSnIynL%2BRHn4bljewLFK9Mzsun%2BIPiI%3D\"}]}","cache-control":"public, max-age=31536000, immutable","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","x-robots-tag":"noindex","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","alt-svc":"h3=\":443\"; ma=86400","accept-ranges":"bytes","x-jsr-backend":"modules","server":"cloudflare","cf-cache-status":"HIT","age":"6426681","access-control-expose-headers":"*","set-cookie":"__cf_bm=HjN3JH0rKWAN7uhoThtp6CyMiMFkpzU9kgv3hwB3QXs-1794298095.8719287-1.0.1.1-62XNQXZfo280Sv7mLjd5fLP7smev_hLW3IG5YYFyCeLlj7v0O6zzs8bzY5rKb0aduFBzQEnuEgtEFL6ZhRTPzlOp6J8UPdVZvnmerbdgviS27V8i5TArdQGzC9fnQcgv; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT"},"url":"https://jsr.io/@std/assert/1.0.18/not_instance_of.ts","time":1794298095}

@@ -1,0 +1,84 @@
+/**
+ * DeepSeek authentication classification (Issue #414, parent #396).
+ *
+ * The DeepSeek counterpart of `codex_auth.ts` / `gemini_auth.ts`: decide
+ * whether CLI output is an authentication failure rather than ordinary work
+ * failing, and give the operator a message that names the credential to set.
+ * Both the credential preflight (`credential_preflight.ts`) and the mid-run
+ * failure path (`issue_worker_wiring.ts`) classify through the provider
+ * descriptor, so this module is the single definition of "DeepSeek could not
+ * authenticate".
+ *
+ * `isClaudeAuthError` is deliberately **not** re-exported even though DeepSeek
+ * rides the Anthropic CLI. The binary is Anthropic's but the 401 body is
+ * DeepSeek's, and `claude_auth.ts` narrowed its patterns to phrases the
+ * Anthropic CLI itself prints (Issue #45). Sharing that array would tie
+ * DeepSeek's classification to a list curated for a different vendor's
+ * wording; the overlap between the two lists is fine, the coupling is not.
+ *
+ * Australian English spelling throughout (behaviour, authorised, organisation).
+ */ /**
+ * Environment variables that carry a usable DeepSeek credential.
+ *
+ * One name only: `DEEPSEEK_API_KEY` is what the provisioned
+ * `deepseek/provider.env` holds and what `deepseek_env.ts` maps onto the
+ * `ANTHROPIC_AUTH_TOKEN` the Claude CLI reads. Anthropic's own variables are
+ * not listed — a first-party Anthropic credential is denied to this child, not
+ * accepted as a stand-in for DeepSeek's.
+ */ export const DEEPSEEK_CREDENTIAL_ENV_VARS = [
+  "DEEPSEEK_API_KEY"
+];
+/**
+ * Authentication failure patterns, matched case-insensitively.
+ *
+ * Covers what DeepSeek's Anthropic-compatible endpoint returns for a rejected
+ * or absent key ("Authentication Fails, Your api key: **** is invalid", type
+ * `authentication_error`), what the Anthropic CLI prints when the endpoint
+ * refuses it, and the wording the credential preflight uses for a missing
+ * provider credential.
+ *
+ * Every entry is an adjacent phrase one of those surfaces actually emits, so a
+ * transcript merely *discussing* API keys is not read as an auth failure
+ * (Issue #45).
+ */ const AUTH_PATTERNS = [
+  "authentication fails",
+  "authentication error",
+  "authentication_error",
+  "authentication required",
+  "authentication failed",
+  "invalid api key",
+  "incorrect api key",
+  "missing api key",
+  "no api key",
+  "api key is invalid",
+  "api key not found",
+  "please run /login",
+  "session expired",
+  "unauthorized",
+  "unauthorised",
+  ...DEEPSEEK_CREDENTIAL_ENV_VARS.map((name)=>name.toLowerCase())
+];
+/**
+ * Check whether CLI output indicates a DeepSeek authentication failure.
+ *
+ * @param errorOutput - The stderr/stdout text from a failed DeepSeek command.
+ * @returns true when the output looks like an auth failure.
+ */ export function isDeepSeekAuthError(errorOutput) {
+  if (!errorOutput) return false;
+  const lower = errorOutput.toLowerCase();
+  return AUTH_PATTERNS.some((pattern)=>lower.includes(pattern));
+}
+/**
+ * Return a human-readable message telling the operator how to authenticate
+ * DeepSeek.
+ *
+ * Names the credential variable and the file that carries it — never
+ * `claude login`, which authenticates Anthropic's endpoint and cannot fix a
+ * DeepSeek credential no matter how often it is run.
+ *
+ * @returns The actionable error message.
+ */ export function deepSeekAuthActionableMessage() {
+  return `DeepSeek authentication required — set ${DEEPSEEK_CREDENTIAL_ENV_VARS.join(" or ")} in the credential directory's deepseek/provider.env (the worker never ` + `performs an interactive login, and \`claude login\` authenticates ` + `Anthropic's endpoint rather than DeepSeek's)`;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9kZWVwc2Vla19hdXRoLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogRGVlcFNlZWsgYXV0aGVudGljYXRpb24gY2xhc3NpZmljYXRpb24gKElzc3VlICM0MTQsIHBhcmVudCAjMzk2KS5cbiAqXG4gKiBUaGUgRGVlcFNlZWsgY291bnRlcnBhcnQgb2YgYGNvZGV4X2F1dGgudHNgIC8gYGdlbWluaV9hdXRoLnRzYDogZGVjaWRlXG4gKiB3aGV0aGVyIENMSSBvdXRwdXQgaXMgYW4gYXV0aGVudGljYXRpb24gZmFpbHVyZSByYXRoZXIgdGhhbiBvcmRpbmFyeSB3b3JrXG4gKiBmYWlsaW5nLCBhbmQgZ2l2ZSB0aGUgb3BlcmF0b3IgYSBtZXNzYWdlIHRoYXQgbmFtZXMgdGhlIGNyZWRlbnRpYWwgdG8gc2V0LlxuICogQm90aCB0aGUgY3JlZGVudGlhbCBwcmVmbGlnaHQgKGBjcmVkZW50aWFsX3ByZWZsaWdodC50c2ApIGFuZCB0aGUgbWlkLXJ1blxuICogZmFpbHVyZSBwYXRoIChgaXNzdWVfd29ya2VyX3dpcmluZy50c2ApIGNsYXNzaWZ5IHRocm91Z2ggdGhlIHByb3ZpZGVyXG4gKiBkZXNjcmlwdG9yLCBzbyB0aGlzIG1vZHVsZSBpcyB0aGUgc2luZ2xlIGRlZmluaXRpb24gb2YgXCJEZWVwU2VlayBjb3VsZCBub3RcbiAqIGF1dGhlbnRpY2F0ZVwiLlxuICpcbiAqIGBpc0NsYXVkZUF1dGhFcnJvcmAgaXMgZGVsaWJlcmF0ZWx5ICoqbm90KiogcmUtZXhwb3J0ZWQgZXZlbiB0aG91Z2ggRGVlcFNlZWtcbiAqIHJpZGVzIHRoZSBBbnRocm9waWMgQ0xJLiBUaGUgYmluYXJ5IGlzIEFudGhyb3BpYydzIGJ1dCB0aGUgNDAxIGJvZHkgaXNcbiAqIERlZXBTZWVrJ3MsIGFuZCBgY2xhdWRlX2F1dGgudHNgIG5hcnJvd2VkIGl0cyBwYXR0ZXJucyB0byBwaHJhc2VzIHRoZVxuICogQW50aHJvcGljIENMSSBpdHNlbGYgcHJpbnRzIChJc3N1ZSAjNDUpLiBTaGFyaW5nIHRoYXQgYXJyYXkgd291bGQgdGllXG4gKiBEZWVwU2VlaydzIGNsYXNzaWZpY2F0aW9uIHRvIGEgbGlzdCBjdXJhdGVkIGZvciBhIGRpZmZlcmVudCB2ZW5kb3Inc1xuICogd29yZGluZzsgdGhlIG92ZXJsYXAgYmV0d2VlbiB0aGUgdHdvIGxpc3RzIGlzIGZpbmUsIHRoZSBjb3VwbGluZyBpcyBub3QuXG4gKlxuICogQXVzdHJhbGlhbiBFbmdsaXNoIHNwZWxsaW5nIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgYXV0aG9yaXNlZCwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG4vKipcbiAqIEVudmlyb25tZW50IHZhcmlhYmxlcyB0aGF0IGNhcnJ5IGEgdXNhYmxlIERlZXBTZWVrIGNyZWRlbnRpYWwuXG4gKlxuICogT25lIG5hbWUgb25seTogYERFRVBTRUVLX0FQSV9LRVlgIGlzIHdoYXQgdGhlIHByb3Zpc2lvbmVkXG4gKiBgZGVlcHNlZWsvcHJvdmlkZXIuZW52YCBob2xkcyBhbmQgd2hhdCBgZGVlcHNlZWtfZW52LnRzYCBtYXBzIG9udG8gdGhlXG4gKiBgQU5USFJPUElDX0FVVEhfVE9LRU5gIHRoZSBDbGF1ZGUgQ0xJIHJlYWRzLiBBbnRocm9waWMncyBvd24gdmFyaWFibGVzIGFyZVxuICogbm90IGxpc3RlZCDigJQgYSBmaXJzdC1wYXJ0eSBBbnRocm9waWMgY3JlZGVudGlhbCBpcyBkZW5pZWQgdG8gdGhpcyBjaGlsZCwgbm90XG4gKiBhY2NlcHRlZCBhcyBhIHN0YW5kLWluIGZvciBEZWVwU2VlaydzLlxuICovXG5leHBvcnQgY29uc3QgREVFUFNFRUtfQ1JFREVOVElBTF9FTlZfVkFSUzogcmVhZG9ubHkgc3RyaW5nW10gPSBbXG4gIFwiREVFUFNFRUtfQVBJX0tFWVwiLFxuXTtcblxuLyoqXG4gKiBBdXRoZW50aWNhdGlvbiBmYWlsdXJlIHBhdHRlcm5zLCBtYXRjaGVkIGNhc2UtaW5zZW5zaXRpdmVseS5cbiAqXG4gKiBDb3ZlcnMgd2hhdCBEZWVwU2VlaydzIEFudGhyb3BpYy1jb21wYXRpYmxlIGVuZHBvaW50IHJldHVybnMgZm9yIGEgcmVqZWN0ZWRcbiAqIG9yIGFic2VudCBrZXkgKFwiQXV0aGVudGljYXRpb24gRmFpbHMsIFlvdXIgYXBpIGtleTogKioqKiBpcyBpbnZhbGlkXCIsIHR5cGVcbiAqIGBhdXRoZW50aWNhdGlvbl9lcnJvcmApLCB3aGF0IHRoZSBBbnRocm9waWMgQ0xJIHByaW50cyB3aGVuIHRoZSBlbmRwb2ludFxuICogcmVmdXNlcyBpdCwgYW5kIHRoZSB3b3JkaW5nIHRoZSBjcmVkZW50aWFsIHByZWZsaWdodCB1c2VzIGZvciBhIG1pc3NpbmdcbiAqIHByb3ZpZGVyIGNyZWRlbnRpYWwuXG4gKlxuICogRXZlcnkgZW50cnkgaXMgYW4gYWRqYWNlbnQgcGhyYXNlIG9uZSBvZiB0aG9zZSBzdXJmYWNlcyBhY3R1YWxseSBlbWl0cywgc28gYVxuICogdHJhbnNjcmlwdCBtZXJlbHkgKmRpc2N1c3NpbmcqIEFQSSBrZXlzIGlzIG5vdCByZWFkIGFzIGFuIGF1dGggZmFpbHVyZVxuICogKElzc3VlICM0NSkuXG4gKi9cbmNvbnN0IEFVVEhfUEFUVEVSTlM6IHJlYWRvbmx5IHN0cmluZ1tdID0gW1xuICBcImF1dGhlbnRpY2F0aW9uIGZhaWxzXCIsXG4gIFwiYXV0aGVudGljYXRpb24gZXJyb3JcIixcbiAgXCJhdXRoZW50aWNhdGlvbl9lcnJvclwiLFxuICBcImF1dGhlbnRpY2F0aW9uIHJlcXVpcmVkXCIsXG4gIFwiYXV0aGVudGljYXRpb24gZmFpbGVkXCIsXG4gIFwiaW52YWxpZCBhcGkga2V5XCIsXG4gIFwiaW5jb3JyZWN0IGFwaSBrZXlcIixcbiAgXCJtaXNzaW5nIGFwaSBrZXlcIixcbiAgXCJubyBhcGkga2V5XCIsXG4gIFwiYXBpIGtleSBpcyBpbnZhbGlkXCIsXG4gIFwiYXBpIGtleSBub3QgZm91bmRcIixcbiAgXCJwbGVhc2UgcnVuIC9sb2dpblwiLFxuICBcInNlc3Npb24gZXhwaXJlZFwiLFxuICBcInVuYXV0aG9yaXplZFwiLFxuICBcInVuYXV0aG9yaXNlZFwiLFxuICAuLi5ERUVQU0VFS19DUkVERU5USUFMX0VOVl9WQVJTLm1hcCgobmFtZSkgPT4gbmFtZS50b0xvd2VyQ2FzZSgpKSxcbl07XG5cbi8qKlxuICogQ2hlY2sgd2hldGhlciBDTEkgb3V0cHV0IGluZGljYXRlcyBhIERlZXBTZWVrIGF1dGhlbnRpY2F0aW9uIGZhaWx1cmUuXG4gKlxuICogQHBhcmFtIGVycm9yT3V0cHV0IC0gVGhlIHN0ZGVyci9zdGRvdXQgdGV4dCBmcm9tIGEgZmFpbGVkIERlZXBTZWVrIGNvbW1hbmQuXG4gKiBAcmV0dXJucyB0cnVlIHdoZW4gdGhlIG91dHB1dCBsb29rcyBsaWtlIGFuIGF1dGggZmFpbHVyZS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzRGVlcFNlZWtBdXRoRXJyb3IoZXJyb3JPdXRwdXQ6IHN0cmluZyk6IGJvb2xlYW4ge1xuICBpZiAoIWVycm9yT3V0cHV0KSByZXR1cm4gZmFsc2U7XG5cbiAgY29uc3QgbG93ZXIgPSBlcnJvck91dHB1dC50b0xvd2VyQ2FzZSgpO1xuICByZXR1cm4gQVVUSF9QQVRURVJOUy5zb21lKChwYXR0ZXJuKSA9PiBsb3dlci5pbmNsdWRlcyhwYXR0ZXJuKSk7XG59XG5cbi8qKlxuICogUmV0dXJuIGEgaHVtYW4tcmVhZGFibGUgbWVzc2FnZSB0ZWxsaW5nIHRoZSBvcGVyYXRvciBob3cgdG8gYXV0aGVudGljYXRlXG4gKiBEZWVwU2Vlay5cbiAqXG4gKiBOYW1lcyB0aGUgY3JlZGVudGlhbCB2YXJpYWJsZSBhbmQgdGhlIGZpbGUgdGhhdCBjYXJyaWVzIGl0IOKAlCBuZXZlclxuICogYGNsYXVkZSBsb2dpbmAsIHdoaWNoIGF1dGhlbnRpY2F0ZXMgQW50aHJvcGljJ3MgZW5kcG9pbnQgYW5kIGNhbm5vdCBmaXggYVxuICogRGVlcFNlZWsgY3JlZGVudGlhbCBubyBtYXR0ZXIgaG93IG9mdGVuIGl0IGlzIHJ1bi5cbiAqXG4gKiBAcmV0dXJucyBUaGUgYWN0aW9uYWJsZSBlcnJvciBtZXNzYWdlLlxuICovXG5leHBvcnQgZnVuY3Rpb24gZGVlcFNlZWtBdXRoQWN0aW9uYWJsZU1lc3NhZ2UoKTogc3RyaW5nIHtcbiAgcmV0dXJuIGBEZWVwU2VlayBhdXRoZW50aWNhdGlvbiByZXF1aXJlZCDigJQgc2V0ICR7XG4gICAgREVFUFNFRUtfQ1JFREVOVElBTF9FTlZfVkFSUy5qb2luKFwiIG9yIFwiKVxuICB9IGluIHRoZSBjcmVkZW50aWFsIGRpcmVjdG9yeSdzIGRlZXBzZWVrL3Byb3ZpZGVyLmVudiAodGhlIHdvcmtlciBuZXZlciBgICtcbiAgICBgcGVyZm9ybXMgYW4gaW50ZXJhY3RpdmUgbG9naW4sIGFuZCBcXGBjbGF1ZGUgbG9naW5cXGAgYXV0aGVudGljYXRlcyBgICtcbiAgICBgQW50aHJvcGljJ3MgZW5kcG9pbnQgcmF0aGVyIHRoYW4gRGVlcFNlZWsncylgO1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7O0NBbUJDLEdBRUQ7Ozs7Ozs7O0NBUUMsR0FDRCxPQUFPLE1BQU0sK0JBQWtEO0VBQzdEO0NBQ0QsQ0FBQztBQUVGOzs7Ozs7Ozs7Ozs7Q0FZQyxHQUNELE1BQU0sZ0JBQW1DO0VBQ3ZDO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtLQUNHLDZCQUE2QixHQUFHLENBQUMsQ0FBQyxPQUFTLEtBQUssV0FBVztDQUMvRDtBQUVEOzs7OztDQUtDLEdBQ0QsT0FBTyxTQUFTLG9CQUFvQixXQUFtQjtFQUNyRCxJQUFJLENBQUMsYUFBYSxPQUFPO0VBRXpCLE1BQU0sUUFBUSxZQUFZLFdBQVc7RUFDckMsT0FBTyxjQUFjLElBQUksQ0FBQyxDQUFDLFVBQVksTUFBTSxRQUFRLENBQUM7QUFDeEQ7QUFFQTs7Ozs7Ozs7O0NBU0MsR0FDRCxPQUFPLFNBQVM7RUFDZCxPQUFPLENBQUMsdUNBQXVDLEVBQzdDLDZCQUE2QixJQUFJLENBQUMsUUFDbkMsdUVBQXVFLENBQUMsR0FDdkUsQ0FBQyxrRUFBa0UsQ0FBQyxHQUNwRSxDQUFDLDRDQUE0QyxDQUFDO0FBQ2xEIn0=
+// denoCacheMetadata=3509559956928953609,8606557816458330873

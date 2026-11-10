@@ -1,0 +1,29 @@
+/**
+ * Shared CI log tail truncation (extracted for Issue #3581).
+ *
+ * Both the PR CI-fix flow (`pr_failure_actions.ts`) and the issue-mode
+ * CI-failure flow (`ci_failure_issue.ts`) render a bounded slice of a
+ * build's console log into a Claude prompt. The tail is the useful part
+ * — failures surface at the end — so truncation always preserves it.
+ *
+ * Uses Australian English throughout (behaviour, organisation, colour).
+ */ /**
+ * Truncate `text` so its UTF-8 byte length does not exceed `maxBytes`,
+ * preserving the **tail**. When truncation occurs a single-line marker is
+ * prepended so the reader knows content was dropped.
+ */ export function truncateLogTail(text, maxBytes) {
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(text);
+  if (bytes.length <= maxBytes) return text;
+  const marker = `[...truncated ${bytes.length - maxBytes} bytes — showing tail...]\n`;
+  const markerBytes = encoder.encode(marker);
+  const budget = Math.max(0, maxBytes - markerBytes.length);
+  // Slice at a UTF-8 boundary by decoding with `fatal: false`.
+  const tail = bytes.subarray(bytes.length - budget);
+  const decoded = new TextDecoder("utf-8", {
+    fatal: false
+  }).decode(tail);
+  return marker + decoded;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9sb2dfdGFpbC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIFNoYXJlZCBDSSBsb2cgdGFpbCB0cnVuY2F0aW9uIChleHRyYWN0ZWQgZm9yIElzc3VlICMzNTgxKS5cbiAqXG4gKiBCb3RoIHRoZSBQUiBDSS1maXggZmxvdyAoYHByX2ZhaWx1cmVfYWN0aW9ucy50c2ApIGFuZCB0aGUgaXNzdWUtbW9kZVxuICogQ0ktZmFpbHVyZSBmbG93IChgY2lfZmFpbHVyZV9pc3N1ZS50c2ApIHJlbmRlciBhIGJvdW5kZWQgc2xpY2Ugb2YgYVxuICogYnVpbGQncyBjb25zb2xlIGxvZyBpbnRvIGEgQ2xhdWRlIHByb21wdC4gVGhlIHRhaWwgaXMgdGhlIHVzZWZ1bCBwYXJ0XG4gKiDigJQgZmFpbHVyZXMgc3VyZmFjZSBhdCB0aGUgZW5kIOKAlCBzbyB0cnVuY2F0aW9uIGFsd2F5cyBwcmVzZXJ2ZXMgaXQuXG4gKlxuICogVXNlcyBBdXN0cmFsaWFuIEVuZ2xpc2ggdGhyb3VnaG91dCAoYmVoYXZpb3VyLCBvcmdhbmlzYXRpb24sIGNvbG91cikuXG4gKi9cblxuLyoqXG4gKiBUcnVuY2F0ZSBgdGV4dGAgc28gaXRzIFVURi04IGJ5dGUgbGVuZ3RoIGRvZXMgbm90IGV4Y2VlZCBgbWF4Qnl0ZXNgLFxuICogcHJlc2VydmluZyB0aGUgKip0YWlsKiouIFdoZW4gdHJ1bmNhdGlvbiBvY2N1cnMgYSBzaW5nbGUtbGluZSBtYXJrZXIgaXNcbiAqIHByZXBlbmRlZCBzbyB0aGUgcmVhZGVyIGtub3dzIGNvbnRlbnQgd2FzIGRyb3BwZWQuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiB0cnVuY2F0ZUxvZ1RhaWwodGV4dDogc3RyaW5nLCBtYXhCeXRlczogbnVtYmVyKTogc3RyaW5nIHtcbiAgY29uc3QgZW5jb2RlciA9IG5ldyBUZXh0RW5jb2RlcigpO1xuICBjb25zdCBieXRlcyA9IGVuY29kZXIuZW5jb2RlKHRleHQpO1xuICBpZiAoYnl0ZXMubGVuZ3RoIDw9IG1heEJ5dGVzKSByZXR1cm4gdGV4dDtcblxuICBjb25zdCBtYXJrZXIgPSBgWy4uLnRydW5jYXRlZCAke1xuICAgIGJ5dGVzLmxlbmd0aCAtIG1heEJ5dGVzXG4gIH0gYnl0ZXMg4oCUIHNob3dpbmcgdGFpbC4uLl1cXG5gO1xuICBjb25zdCBtYXJrZXJCeXRlcyA9IGVuY29kZXIuZW5jb2RlKG1hcmtlcik7XG4gIGNvbnN0IGJ1ZGdldCA9IE1hdGgubWF4KDAsIG1heEJ5dGVzIC0gbWFya2VyQnl0ZXMubGVuZ3RoKTtcbiAgLy8gU2xpY2UgYXQgYSBVVEYtOCBib3VuZGFyeSBieSBkZWNvZGluZyB3aXRoIGBmYXRhbDogZmFsc2VgLlxuICBjb25zdCB0YWlsID0gYnl0ZXMuc3ViYXJyYXkoYnl0ZXMubGVuZ3RoIC0gYnVkZ2V0KTtcbiAgY29uc3QgZGVjb2RlZCA9IG5ldyBUZXh0RGVjb2RlcihcInV0Zi04XCIsIHsgZmF0YWw6IGZhbHNlIH0pLmRlY29kZSh0YWlsKTtcbiAgcmV0dXJuIG1hcmtlciArIGRlY29kZWQ7XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7OztDQVNDLEdBRUQ7Ozs7Q0FJQyxHQUNELE9BQU8sU0FBUyxnQkFBZ0IsSUFBWSxFQUFFLFFBQWdCO0VBQzVELE1BQU0sVUFBVSxJQUFJO0VBQ3BCLE1BQU0sUUFBUSxRQUFRLE1BQU0sQ0FBQztFQUM3QixJQUFJLE1BQU0sTUFBTSxJQUFJLFVBQVUsT0FBTztFQUVyQyxNQUFNLFNBQVMsQ0FBQyxjQUFjLEVBQzVCLE1BQU0sTUFBTSxHQUFHLFNBQ2hCLDJCQUEyQixDQUFDO0VBQzdCLE1BQU0sY0FBYyxRQUFRLE1BQU0sQ0FBQztFQUNuQyxNQUFNLFNBQVMsS0FBSyxHQUFHLENBQUMsR0FBRyxXQUFXLFlBQVksTUFBTTtFQUN4RCw2REFBNkQ7RUFDN0QsTUFBTSxPQUFPLE1BQU0sUUFBUSxDQUFDLE1BQU0sTUFBTSxHQUFHO0VBQzNDLE1BQU0sVUFBVSxJQUFJLFlBQVksU0FBUztJQUFFLE9BQU87RUFBTSxHQUFHLE1BQU0sQ0FBQztFQUNsRSxPQUFPLFNBQVM7QUFDbEIifQ==
+// denoCacheMetadata=1254717458178179860,5460448006930360193

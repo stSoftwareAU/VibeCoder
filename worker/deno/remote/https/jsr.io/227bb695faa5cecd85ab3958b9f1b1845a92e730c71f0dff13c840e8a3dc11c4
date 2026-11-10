@@ -1,0 +1,33 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { AssertionError } from "./assertion_error.ts";
+
+/**
+ * Make an assertion that actual is not null or undefined.
+ * If not then throw.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertExists } from "@std/assert";
+ *
+ * assertExists("something"); // Doesn't throw
+ * assertExists(undefined); // Throws
+ * ```
+ *
+ * @typeParam T The type of the actual value.
+ * @param actual The actual value to check.
+ * @param msg The optional message to include in the error if the assertion fails.
+ */
+export function assertExists<T>(
+  actual: T,
+  msg?: string,
+): asserts actual is NonNullable<T> {
+  if (actual === undefined || actual === null) {
+    const msgSuffix = msg ? `: ${msg}` : ".";
+    msg =
+      `Expected actual: "${actual}" to not be null or undefined${msgSuffix}`;
+    throw new AssertionError(msg);
+  }
+}
+
+// denoCacheMetadata={"headers":{"access-control-allow-origin":"*","x-content-type-options":"nosniff","cf-ray":"a583917b2d9c561f-SYD","x-jsr-backend":"modules","etag":"\"4e94be2aed887e83db6977f7021c4a46\"","accept-ranges":"bytes","content-length":"916","x-robots-tag":"noindex","vary":"Origin","set-cookie":"__cf_bm=FuosHV2aZwHQ6Mb0tgo17oXIHn_ktbnfx3_Kb291V_U-1794298095.8692076-1.0.1.1-Paw2dtxW4q2O0GmQV7byzcqN06uyjCWj1gEbp7gcxJ6ROfZd68y1sJuWc2MUCsAwY2FZ7cUIrbO.r5QSe_YgekyQmlLx7M9jqjRM44lnBj7kt8Tf7org1drR_A8GFpiz; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=aTuWHwcyahBQA4vq9hDoOKtA9Ju49KwDUO7ArSO4TuPwQ8huWNjWKFvJ9feKujm2rGC1t5%2FDM2Jtpz4GhjhD1L54Mfs3ACn10bQO0XH%2FDRwIhjfcCLNIq5k%3D\"}]}","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","content-type":"text/typescript","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","access-control-expose-headers":"*","alt-svc":"h3=\":443\"; ma=86400","cross-origin-resource-policy":"cross-origin","server":"cloudflare","date":"Tue, 10 Nov 2026 08:08:15 GMT","cache-control":"public, max-age=31536000, immutable","age":"5924810","cf-cache-status":"HIT"},"url":"https://jsr.io/@std/assert/1.0.18/exists.ts","time":1794298095}

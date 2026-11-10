@@ -1,0 +1,24 @@
+// Ported from js-yaml v3.13.1:
+// https://github.com/nodeca/js-yaml/commit/665aadda42349dcae869f12040d9b10ef18d12da
+// Copyright 2011-2015 by Vitaly Puzrin. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+import type { Type } from "../_type.ts";
+import { isPlainObject } from "../_utils.ts";
+
+function resolveYamlPairs(data: unknown[][]): boolean {
+  if (data === null) return true;
+  return data.every((it) => isPlainObject(it) && Object.keys(it).length === 1);
+}
+
+export const pairs: Type<"sequence"> = {
+  tag: "tag:yaml.org,2002:pairs",
+  construct(data: Record<string, unknown>[] | null): [string, unknown][] {
+    // Converts an array of objects into an array of key-value pairs.
+    return data?.flatMap(Object.entries) ?? [];
+  },
+  kind: "sequence",
+  resolve: resolveYamlPairs,
+};
+
+// denoCacheMetadata={"headers":{"content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","set-cookie":"__cf_bm=90qe092zAMB5sSRDw9H38MrW64Od4lh6gGze213etXU-1794298095.8791966-1.0.1.1-3ce8iJyJ0CTCHDF8c1EvICJ5N8DYlPZv9Wk6b8oTjC1x.lbB5zas2U8F4jfzp8jRGBJdjhWisVIRf7B8X0Kl1USIjpM02qAvUoFOck9xfQkCbYO1fDJgZGBJaWmkN4Mq; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","server":"cloudflare","cf-ray":"a583917b2deb561f-SYD","x-jsr-backend":"modules","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=Sg2d16OAo4KybL6mDHV7ZuwQ1gp6pMqpvlQgqq9ZQZb%2FYPOBAJuD24ALp2DLAJPudhOe0L%2BoSzfhM%2BCDL%2BEURvg%2BnazLlQ%2BZjEgvNQ4%2FIghFF0XUq3p%2BdXs%3D\"}]}","cf-cache-status":"HIT","age":"6426680","vary":"Origin","access-control-allow-origin":"*","alt-svc":"h3=\":443\"; ma=86400","content-length":"833","date":"Tue, 10 Nov 2026 08:08:15 GMT","accept-ranges":"bytes","access-control-expose-headers":"*","cross-origin-resource-policy":"cross-origin","x-content-type-options":"nosniff","x-robots-tag":"noindex","content-type":"text/typescript","etag":"\"02baa5758a8fe29d3fcd2cbfd86ab1e9\"","cache-control":"public, max-age=31536000, immutable","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"},"url":"https://jsr.io/@std/yaml/1.0.12/_type/pairs.ts","time":1794298095}

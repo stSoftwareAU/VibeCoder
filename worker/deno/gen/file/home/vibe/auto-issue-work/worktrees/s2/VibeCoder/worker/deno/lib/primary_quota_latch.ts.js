@@ -1,0 +1,141 @@
+/**
+ * Process-wide primary-GraphQL-quota latch (Issue #42).
+ *
+ * When GitHub's *primary* GraphQL quota is exhausted, every further
+ * GraphQL-backed `gh` call in the window is guaranteed to fail with
+ * `API rate limit already exceeded` — yet the PR-maintenance scans catch
+ * that per-repo/per-author and log-and-continue (correct for an ordinary
+ * failure), so the worker kept spawning hundreds of doomed `gh` processes
+ * for minutes until Stale-Workflow Detection finally threw. Each doomed
+ * call still costs a spawn, a retry decision, a log line, and counts toward
+ * GitHub's secondary/abuse limits.
+ *
+ * This module is the fix: the first time any `gh` invocation reports the
+ * primary-quota message, {@link latchPrimaryQuota} records the reset time,
+ * and {@link isPrimaryQuotaLatched} lets the shared chokepoint
+ * (`gh_spawn.ts` `spawnGh`, since Issue #1485 — every `gh` process in the
+ * worker passes it) short-circuit every subsequent GraphQL-backed call — no
+ * spawn, no retry, no secondary-limit cost — until the quota resets. Since
+ * Issue #1540 the same chokepoint is where the refusal is *recognised*: it
+ * hands the first one to the hook `github.ts` registers, which probes the
+ * reset, latches, and writes the shared rate-limit signal so the existing
+ * Issue #1780 mid-cycle pause engages at the next pass. Before that only
+ * `runGhCommandRaw`'s own catch could latch, and a refusal seen by one of
+ * the thirty-odd modules that spawn `gh` directly latched nothing.
+ *
+ * The latch is a module-global: it lives for the life of the worker process
+ * and auto-expires the instant the recorded reset passes, so a stale latch
+ * can never outlast the quota window.
+ *
+ * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ */ import { classifyGhCall } from "./gh_argv.ts";
+import { formatRateLimitReset } from "./rate_limit_signal.ts";
+/** The epoch (Unix seconds) the primary quota is latched until, or null. */ let latchedUntilEpoch = null;
+/** The kind of the current latch; meaningless while not latched. */ let latchKind = "primary";
+/**
+ * How many secondary (burst) latches this process has taken (Issue #3667).
+ * History, not state: the latch clears itself within a minute, so the poll
+ * cadence compares this count across cycles to learn that a burst happened.
+ */ let secondaryLatches = 0;
+/** The number of secondary (burst) latches taken so far in this process. */ export function secondaryLatchCount() {
+  return secondaryLatches;
+}
+/** Current wall-clock in Unix seconds. */ function nowSeconds() {
+  return Math.floor(Date.now() / 1000);
+}
+/**
+ * The literal prefix every latched `gh` refusal carries (Issue #2457).
+ *
+ * Only {@link primaryQuotaSkipMessage} produces it, so a caller classifying
+ * an arming refusal can tell "the latch skipped this call — do not retry it"
+ * from a genuine GitHub rate-limit error. Exported so that classification
+ * lives in one place instead of a magic string duplicated across modules.
+ */ export const PRIMARY_QUOTA_SKIP_PREFIX = "gh command skipped: ";
+/**
+ * Detect the primary GitHub rate-limit message variants we treat as
+ * self-healing (Issue #1523, #1780, #42). Secondary rate limits and 5xx
+ * errors continue down the fatal path.
+ *
+ * Single source of truth for the signal — `run_core.ts` re-exports this so
+ * the cycle loop pauses on exactly what the chokepoint latches on.
+ */ export function isPrimaryRateLimitMessage(message) {
+  const lower = message.toLowerCase();
+  return lower.includes("api rate limit already exceeded") || lower.includes("api rate limit exceeded") || lower.includes("rate limit has been exceeded");
+}
+/**
+ * Whether a `gh` invocation is exempt from the primary-GraphQL-quota latch.
+ *
+ * The exhausted budget is the *GraphQL* primary quota; the REST (core) quota
+ * is a separate bucket that is typically still healthy. So the only calls
+ * the latch must short-circuit are GraphQL-backed ones — every `gh`
+ * subcommand (`gh pr list`, `gh issue list`, …, which is what drove the
+ * doomed-call storm) and the explicit `gh api graphql` endpoint. A plain
+ * `gh api <rest-path>` call rides the core quota and stays callable, so:
+ *   - `gh api rate_limit` can still read the reset (the latch learns when to
+ *     lift), and
+ *   - a finished run can still release its claim via the REST assignees
+ *     endpoint even while GraphQL is exhausted (Issue #42 Defect 3).
+ */ export function isQuotaExemptGhCall(args) {
+  // Issue #1588: the argv shape is decided once, by the shared classifier
+  // `classifyGhCall`, so this predicate and the `api-graphql` sub-command
+  // bucket in `gh_call_metrics.ts` can never disagree about what an
+  // `api graphql` invocation is. Only a positively-classified REST
+  // `gh api <path>` is exempt; everything else stays GraphQL-billed, which
+  // is the safe direction — a call the classifier cannot place as REST is
+  // short-circuited rather than let through.
+  return classifyGhCall(args) === "api-rest";
+}
+/**
+ * Whether the primary GraphQL quota is currently latched as exhausted.
+ *
+ * Auto-expires: once the recorded reset is reached the latch clears itself,
+ * so a call the instant after reset is allowed straight through.
+ *
+ * @param now - Injectable time source (Unix seconds) for testing.
+ */ export function isPrimaryQuotaLatched(now = nowSeconds()) {
+  if (latchedUntilEpoch === null) return false;
+  if (now >= latchedUntilEpoch) {
+    latchedUntilEpoch = null;
+    return false;
+  }
+  return true;
+}
+/** The epoch the latch holds until, or null when not latched. */ export function primaryQuotaLatchedUntil() {
+  return latchedUntilEpoch;
+}
+/**
+ * Latch the primary GraphQL quota as exhausted until `resetEpoch`.
+ *
+ * Never shortens an existing latch — a later reset always wins, so a second
+ * exhaustion partway through the window cannot lift the latch early.
+ * A reset at or before now is ignored (nothing to latch).
+ *
+ * @param resetEpoch - When the quota resets (Unix seconds).
+ * @param now - Injectable time source (Unix seconds) for testing.
+ * @param kind - Whether this is the hourly quota or a burst cool-down.
+ */ export function latchPrimaryQuota(resetEpoch, now = nowSeconds(), kind = "primary") {
+  if (!Number.isFinite(resetEpoch) || resetEpoch <= now) return;
+  latchedUntilEpoch = latchedUntilEpoch === null ? resetEpoch : Math.max(latchedUntilEpoch, resetEpoch);
+  latchKind = kind;
+  if (kind === "secondary") secondaryLatches++;
+}
+/** Clear the latch (on a confirmed reset, or between tests). */ export function clearPrimaryQuotaLatch() {
+  latchedUntilEpoch = null;
+  latchKind = "primary";
+}
+/**
+ * The one-line reason a latched `gh` call is skipped, naming the reset.
+ *
+ * Carries the primary-quota phrase so callers that classify by message
+ * (the scans' log lines, the Issue #1780 pause) still recognise it. Lives
+ * here, beside the latch, so the spawn chokepoint can produce it without
+ * importing `github.ts` (which imports the chokepoint).
+ *
+ * @param now - Injectable time source (Unix seconds) for testing.
+ */ export function primaryQuotaSkipMessage(now = nowSeconds()) {
+  const until = primaryQuotaLatchedUntil();
+  const eta = until === null ? "reset time unknown" : formatRateLimitReset(until, now);
+  return latchKind === "secondary" ? `${PRIMARY_QUOTA_SKIP_PREFIX}GitHub secondary rate limit cool-down (API rate ` + `limit already exceeded on a burst, hourly quota still available) — ${eta}` : `${PRIMARY_QUOTA_SKIP_PREFIX}GraphQL primary quota exhausted (API rate ` + `limit already exceeded) — ${eta}`;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9wcmltYXJ5X3F1b3RhX2xhdGNoLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogUHJvY2Vzcy13aWRlIHByaW1hcnktR3JhcGhRTC1xdW90YSBsYXRjaCAoSXNzdWUgIzQyKS5cbiAqXG4gKiBXaGVuIEdpdEh1YidzICpwcmltYXJ5KiBHcmFwaFFMIHF1b3RhIGlzIGV4aGF1c3RlZCwgZXZlcnkgZnVydGhlclxuICogR3JhcGhRTC1iYWNrZWQgYGdoYCBjYWxsIGluIHRoZSB3aW5kb3cgaXMgZ3VhcmFudGVlZCB0byBmYWlsIHdpdGhcbiAqIGBBUEkgcmF0ZSBsaW1pdCBhbHJlYWR5IGV4Y2VlZGVkYCDigJQgeWV0IHRoZSBQUi1tYWludGVuYW5jZSBzY2FucyBjYXRjaFxuICogdGhhdCBwZXItcmVwby9wZXItYXV0aG9yIGFuZCBsb2ctYW5kLWNvbnRpbnVlIChjb3JyZWN0IGZvciBhbiBvcmRpbmFyeVxuICogZmFpbHVyZSksIHNvIHRoZSB3b3JrZXIga2VwdCBzcGF3bmluZyBodW5kcmVkcyBvZiBkb29tZWQgYGdoYCBwcm9jZXNzZXNcbiAqIGZvciBtaW51dGVzIHVudGlsIFN0YWxlLVdvcmtmbG93IERldGVjdGlvbiBmaW5hbGx5IHRocmV3LiBFYWNoIGRvb21lZFxuICogY2FsbCBzdGlsbCBjb3N0cyBhIHNwYXduLCBhIHJldHJ5IGRlY2lzaW9uLCBhIGxvZyBsaW5lLCBhbmQgY291bnRzIHRvd2FyZFxuICogR2l0SHViJ3Mgc2Vjb25kYXJ5L2FidXNlIGxpbWl0cy5cbiAqXG4gKiBUaGlzIG1vZHVsZSBpcyB0aGUgZml4OiB0aGUgZmlyc3QgdGltZSBhbnkgYGdoYCBpbnZvY2F0aW9uIHJlcG9ydHMgdGhlXG4gKiBwcmltYXJ5LXF1b3RhIG1lc3NhZ2UsIHtAbGluayBsYXRjaFByaW1hcnlRdW90YX0gcmVjb3JkcyB0aGUgcmVzZXQgdGltZSxcbiAqIGFuZCB7QGxpbmsgaXNQcmltYXJ5UXVvdGFMYXRjaGVkfSBsZXRzIHRoZSBzaGFyZWQgY2hva2Vwb2ludFxuICogKGBnaF9zcGF3bi50c2AgYHNwYXduR2hgLCBzaW5jZSBJc3N1ZSAjMTQ4NSDigJQgZXZlcnkgYGdoYCBwcm9jZXNzIGluIHRoZVxuICogd29ya2VyIHBhc3NlcyBpdCkgc2hvcnQtY2lyY3VpdCBldmVyeSBzdWJzZXF1ZW50IEdyYXBoUUwtYmFja2VkIGNhbGwg4oCUIG5vXG4gKiBzcGF3biwgbm8gcmV0cnksIG5vIHNlY29uZGFyeS1saW1pdCBjb3N0IOKAlCB1bnRpbCB0aGUgcXVvdGEgcmVzZXRzLiBTaW5jZVxuICogSXNzdWUgIzE1NDAgdGhlIHNhbWUgY2hva2Vwb2ludCBpcyB3aGVyZSB0aGUgcmVmdXNhbCBpcyAqcmVjb2duaXNlZCo6IGl0XG4gKiBoYW5kcyB0aGUgZmlyc3Qgb25lIHRvIHRoZSBob29rIGBnaXRodWIudHNgIHJlZ2lzdGVycywgd2hpY2ggcHJvYmVzIHRoZVxuICogcmVzZXQsIGxhdGNoZXMsIGFuZCB3cml0ZXMgdGhlIHNoYXJlZCByYXRlLWxpbWl0IHNpZ25hbCBzbyB0aGUgZXhpc3RpbmdcbiAqIElzc3VlICMxNzgwIG1pZC1jeWNsZSBwYXVzZSBlbmdhZ2VzIGF0IHRoZSBuZXh0IHBhc3MuIEJlZm9yZSB0aGF0IG9ubHlcbiAqIGBydW5HaENvbW1hbmRSYXdgJ3Mgb3duIGNhdGNoIGNvdWxkIGxhdGNoLCBhbmQgYSByZWZ1c2FsIHNlZW4gYnkgb25lIG9mXG4gKiB0aGUgdGhpcnR5LW9kZCBtb2R1bGVzIHRoYXQgc3Bhd24gYGdoYCBkaXJlY3RseSBsYXRjaGVkIG5vdGhpbmcuXG4gKlxuICogVGhlIGxhdGNoIGlzIGEgbW9kdWxlLWdsb2JhbDogaXQgbGl2ZXMgZm9yIHRoZSBsaWZlIG9mIHRoZSB3b3JrZXIgcHJvY2Vzc1xuICogYW5kIGF1dG8tZXhwaXJlcyB0aGUgaW5zdGFudCB0aGUgcmVjb3JkZWQgcmVzZXQgcGFzc2VzLCBzbyBhIHN0YWxlIGxhdGNoXG4gKiBjYW4gbmV2ZXIgb3V0bGFzdCB0aGUgcXVvdGEgd2luZG93LlxuICpcbiAqIFVzZXMgQXVzdHJhbGlhbiBFbmdsaXNoIHNwZWxsaW5nIChiZWhhdmlvdXIsIGNvbG91ciwgb3JnYW5pc2F0aW9uLCBldGMuKVxuICovXG5cbmltcG9ydCB7IGNsYXNzaWZ5R2hDYWxsIH0gZnJvbSBcIi4vZ2hfYXJndi50c1wiO1xuaW1wb3J0IHsgZm9ybWF0UmF0ZUxpbWl0UmVzZXQgfSBmcm9tIFwiLi9yYXRlX2xpbWl0X3NpZ25hbC50c1wiO1xuXG4vKiogVGhlIGVwb2NoIChVbml4IHNlY29uZHMpIHRoZSBwcmltYXJ5IHF1b3RhIGlzIGxhdGNoZWQgdW50aWwsIG9yIG51bGwuICovXG5sZXQgbGF0Y2hlZFVudGlsRXBvY2g6IG51bWJlciB8IG51bGwgPSBudWxsO1xuXG4vKipcbiAqIFdoeSB0aGUgbGF0Y2ggaXMgaGVsZDogdGhlIGhvdXJseSBwcmltYXJ5IHF1b3RhIGJlaW5nIHNwZW50LCBvciBhXG4gKiBzZWNvbmRhcnkgKGJ1cnN0KSBsaW1pdCdzIHNob3J0IGNvb2wtZG93biAoSXNzdWUgIzE0NTYpLiBUaGUgc2tpcCBtZXNzYWdlXG4gKiBuYW1lcyB3aGljaCwgc28gYW4gb3BlcmF0b3IgcmVhZGluZyB0aGUgbG9nIGtub3dzIHdoZXRoZXIgdG8gZXhwZWN0IGFcbiAqIG1pbnV0ZSdzIHBhdXNlIG9yIGFuIGhvdXIncy5cbiAqL1xuZXhwb3J0IHR5cGUgUHJpbWFyeVF1b3RhTGF0Y2hLaW5kID0gXCJwcmltYXJ5XCIgfCBcInNlY29uZGFyeVwiO1xuXG4vKiogVGhlIGtpbmQgb2YgdGhlIGN1cnJlbnQgbGF0Y2g7IG1lYW5pbmdsZXNzIHdoaWxlIG5vdCBsYXRjaGVkLiAqL1xubGV0IGxhdGNoS2luZDogUHJpbWFyeVF1b3RhTGF0Y2hLaW5kID0gXCJwcmltYXJ5XCI7XG5cbi8qKlxuICogSG93IG1hbnkgc2Vjb25kYXJ5IChidXJzdCkgbGF0Y2hlcyB0aGlzIHByb2Nlc3MgaGFzIHRha2VuIChJc3N1ZSAjMzY2NykuXG4gKiBIaXN0b3J5LCBub3Qgc3RhdGU6IHRoZSBsYXRjaCBjbGVhcnMgaXRzZWxmIHdpdGhpbiBhIG1pbnV0ZSwgc28gdGhlIHBvbGxcbiAqIGNhZGVuY2UgY29tcGFyZXMgdGhpcyBjb3VudCBhY3Jvc3MgY3ljbGVzIHRvIGxlYXJuIHRoYXQgYSBidXJzdCBoYXBwZW5lZC5cbiAqL1xubGV0IHNlY29uZGFyeUxhdGNoZXMgPSAwO1xuXG4vKiogVGhlIG51bWJlciBvZiBzZWNvbmRhcnkgKGJ1cnN0KSBsYXRjaGVzIHRha2VuIHNvIGZhciBpbiB0aGlzIHByb2Nlc3MuICovXG5leHBvcnQgZnVuY3Rpb24gc2Vjb25kYXJ5TGF0Y2hDb3VudCgpOiBudW1iZXIge1xuICByZXR1cm4gc2Vjb25kYXJ5TGF0Y2hlcztcbn1cblxuLyoqIEN1cnJlbnQgd2FsbC1jbG9jayBpbiBVbml4IHNlY29uZHMuICovXG5mdW5jdGlvbiBub3dTZWNvbmRzKCk6IG51bWJlciB7XG4gIHJldHVybiBNYXRoLmZsb29yKERhdGUubm93KCkgLyAxMDAwKTtcbn1cblxuLyoqXG4gKiBUaGUgbGl0ZXJhbCBwcmVmaXggZXZlcnkgbGF0Y2hlZCBgZ2hgIHJlZnVzYWwgY2FycmllcyAoSXNzdWUgIzI0NTcpLlxuICpcbiAqIE9ubHkge0BsaW5rIHByaW1hcnlRdW90YVNraXBNZXNzYWdlfSBwcm9kdWNlcyBpdCwgc28gYSBjYWxsZXIgY2xhc3NpZnlpbmdcbiAqIGFuIGFybWluZyByZWZ1c2FsIGNhbiB0ZWxsIFwidGhlIGxhdGNoIHNraXBwZWQgdGhpcyBjYWxsIOKAlCBkbyBub3QgcmV0cnkgaXRcIlxuICogZnJvbSBhIGdlbnVpbmUgR2l0SHViIHJhdGUtbGltaXQgZXJyb3IuIEV4cG9ydGVkIHNvIHRoYXQgY2xhc3NpZmljYXRpb25cbiAqIGxpdmVzIGluIG9uZSBwbGFjZSBpbnN0ZWFkIG9mIGEgbWFnaWMgc3RyaW5nIGR1cGxpY2F0ZWQgYWNyb3NzIG1vZHVsZXMuXG4gKi9cbmV4cG9ydCBjb25zdCBQUklNQVJZX1FVT1RBX1NLSVBfUFJFRklYID0gXCJnaCBjb21tYW5kIHNraXBwZWQ6IFwiO1xuXG4vKipcbiAqIERldGVjdCB0aGUgcHJpbWFyeSBHaXRIdWIgcmF0ZS1saW1pdCBtZXNzYWdlIHZhcmlhbnRzIHdlIHRyZWF0IGFzXG4gKiBzZWxmLWhlYWxpbmcgKElzc3VlICMxNTIzLCAjMTc4MCwgIzQyKS4gU2Vjb25kYXJ5IHJhdGUgbGltaXRzIGFuZCA1eHhcbiAqIGVycm9ycyBjb250aW51ZSBkb3duIHRoZSBmYXRhbCBwYXRoLlxuICpcbiAqIFNpbmdsZSBzb3VyY2Ugb2YgdHJ1dGggZm9yIHRoZSBzaWduYWwg4oCUIGBydW5fY29yZS50c2AgcmUtZXhwb3J0cyB0aGlzIHNvXG4gKiB0aGUgY3ljbGUgbG9vcCBwYXVzZXMgb24gZXhhY3RseSB3aGF0IHRoZSBjaG9rZXBvaW50IGxhdGNoZXMgb24uXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBpc1ByaW1hcnlSYXRlTGltaXRNZXNzYWdlKG1lc3NhZ2U6IHN0cmluZyk6IGJvb2xlYW4ge1xuICBjb25zdCBsb3dlciA9IG1lc3NhZ2UudG9Mb3dlckNhc2UoKTtcbiAgcmV0dXJuIChcbiAgICBsb3dlci5pbmNsdWRlcyhcImFwaSByYXRlIGxpbWl0IGFscmVhZHkgZXhjZWVkZWRcIikgfHxcbiAgICBsb3dlci5pbmNsdWRlcyhcImFwaSByYXRlIGxpbWl0IGV4Y2VlZGVkXCIpIHx8XG4gICAgbG93ZXIuaW5jbHVkZXMoXCJyYXRlIGxpbWl0IGhhcyBiZWVuIGV4Y2VlZGVkXCIpXG4gICk7XG59XG5cbi8qKlxuICogV2hldGhlciBhIGBnaGAgaW52b2NhdGlvbiBpcyBleGVtcHQgZnJvbSB0aGUgcHJpbWFyeS1HcmFwaFFMLXF1b3RhIGxhdGNoLlxuICpcbiAqIFRoZSBleGhhdXN0ZWQgYnVkZ2V0IGlzIHRoZSAqR3JhcGhRTCogcHJpbWFyeSBxdW90YTsgdGhlIFJFU1QgKGNvcmUpIHF1b3RhXG4gKiBpcyBhIHNlcGFyYXRlIGJ1Y2tldCB0aGF0IGlzIHR5cGljYWxseSBzdGlsbCBoZWFsdGh5LiBTbyB0aGUgb25seSBjYWxsc1xuICogdGhlIGxhdGNoIG11c3Qgc2hvcnQtY2lyY3VpdCBhcmUgR3JhcGhRTC1iYWNrZWQgb25lcyDigJQgZXZlcnkgYGdoYFxuICogc3ViY29tbWFuZCAoYGdoIHByIGxpc3RgLCBgZ2ggaXNzdWUgbGlzdGAsIOKApiwgd2hpY2ggaXMgd2hhdCBkcm92ZSB0aGVcbiAqIGRvb21lZC1jYWxsIHN0b3JtKSBhbmQgdGhlIGV4cGxpY2l0IGBnaCBhcGkgZ3JhcGhxbGAgZW5kcG9pbnQuIEEgcGxhaW5cbiAqIGBnaCBhcGkgPHJlc3QtcGF0aD5gIGNhbGwgcmlkZXMgdGhlIGNvcmUgcXVvdGEgYW5kIHN0YXlzIGNhbGxhYmxlLCBzbzpcbiAqICAgLSBgZ2ggYXBpIHJhdGVfbGltaXRgIGNhbiBzdGlsbCByZWFkIHRoZSByZXNldCAodGhlIGxhdGNoIGxlYXJucyB3aGVuIHRvXG4gKiAgICAgbGlmdCksIGFuZFxuICogICAtIGEgZmluaXNoZWQgcnVuIGNhbiBzdGlsbCByZWxlYXNlIGl0cyBjbGFpbSB2aWEgdGhlIFJFU1QgYXNzaWduZWVzXG4gKiAgICAgZW5kcG9pbnQgZXZlbiB3aGlsZSBHcmFwaFFMIGlzIGV4aGF1c3RlZCAoSXNzdWUgIzQyIERlZmVjdCAzKS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzUXVvdGFFeGVtcHRHaENhbGwoYXJnczogcmVhZG9ubHkgc3RyaW5nW10pOiBib29sZWFuIHtcbiAgLy8gSXNzdWUgIzE1ODg6IHRoZSBhcmd2IHNoYXBlIGlzIGRlY2lkZWQgb25jZSwgYnkgdGhlIHNoYXJlZCBjbGFzc2lmaWVyXG4gIC8vIGBjbGFzc2lmeUdoQ2FsbGAsIHNvIHRoaXMgcHJlZGljYXRlIGFuZCB0aGUgYGFwaS1ncmFwaHFsYCBzdWItY29tbWFuZFxuICAvLyBidWNrZXQgaW4gYGdoX2NhbGxfbWV0cmljcy50c2AgY2FuIG5ldmVyIGRpc2FncmVlIGFib3V0IHdoYXQgYW5cbiAgLy8gYGFwaSBncmFwaHFsYCBpbnZvY2F0aW9uIGlzLiBPbmx5IGEgcG9zaXRpdmVseS1jbGFzc2lmaWVkIFJFU1RcbiAgLy8gYGdoIGFwaSA8cGF0aD5gIGlzIGV4ZW1wdDsgZXZlcnl0aGluZyBlbHNlIHN0YXlzIEdyYXBoUUwtYmlsbGVkLCB3aGljaFxuICAvLyBpcyB0aGUgc2FmZSBkaXJlY3Rpb24g4oCUIGEgY2FsbCB0aGUgY2xhc3NpZmllciBjYW5ub3QgcGxhY2UgYXMgUkVTVCBpc1xuICAvLyBzaG9ydC1jaXJjdWl0ZWQgcmF0aGVyIHRoYW4gbGV0IHRocm91Z2guXG4gIHJldHVybiBjbGFzc2lmeUdoQ2FsbChhcmdzKSA9PT0gXCJhcGktcmVzdFwiO1xufVxuXG4vKipcbiAqIFdoZXRoZXIgdGhlIHByaW1hcnkgR3JhcGhRTCBxdW90YSBpcyBjdXJyZW50bHkgbGF0Y2hlZCBhcyBleGhhdXN0ZWQuXG4gKlxuICogQXV0by1leHBpcmVzOiBvbmNlIHRoZSByZWNvcmRlZCByZXNldCBpcyByZWFjaGVkIHRoZSBsYXRjaCBjbGVhcnMgaXRzZWxmLFxuICogc28gYSBjYWxsIHRoZSBpbnN0YW50IGFmdGVyIHJlc2V0IGlzIGFsbG93ZWQgc3RyYWlnaHQgdGhyb3VnaC5cbiAqXG4gKiBAcGFyYW0gbm93IC0gSW5qZWN0YWJsZSB0aW1lIHNvdXJjZSAoVW5peCBzZWNvbmRzKSBmb3IgdGVzdGluZy5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzUHJpbWFyeVF1b3RhTGF0Y2hlZChub3c6IG51bWJlciA9IG5vd1NlY29uZHMoKSk6IGJvb2xlYW4ge1xuICBpZiAobGF0Y2hlZFVudGlsRXBvY2ggPT09IG51bGwpIHJldHVybiBmYWxzZTtcbiAgaWYgKG5vdyA+PSBsYXRjaGVkVW50aWxFcG9jaCkge1xuICAgIGxhdGNoZWRVbnRpbEVwb2NoID0gbnVsbDtcbiAgICByZXR1cm4gZmFsc2U7XG4gIH1cbiAgcmV0dXJuIHRydWU7XG59XG5cbi8qKiBUaGUgZXBvY2ggdGhlIGxhdGNoIGhvbGRzIHVudGlsLCBvciBudWxsIHdoZW4gbm90IGxhdGNoZWQuICovXG5leHBvcnQgZnVuY3Rpb24gcHJpbWFyeVF1b3RhTGF0Y2hlZFVudGlsKCk6IG51bWJlciB8IG51bGwge1xuICByZXR1cm4gbGF0Y2hlZFVudGlsRXBvY2g7XG59XG5cbi8qKlxuICogTGF0Y2ggdGhlIHByaW1hcnkgR3JhcGhRTCBxdW90YSBhcyBleGhhdXN0ZWQgdW50aWwgYHJlc2V0RXBvY2hgLlxuICpcbiAqIE5ldmVyIHNob3J0ZW5zIGFuIGV4aXN0aW5nIGxhdGNoIOKAlCBhIGxhdGVyIHJlc2V0IGFsd2F5cyB3aW5zLCBzbyBhIHNlY29uZFxuICogZXhoYXVzdGlvbiBwYXJ0d2F5IHRocm91Z2ggdGhlIHdpbmRvdyBjYW5ub3QgbGlmdCB0aGUgbGF0Y2ggZWFybHkuXG4gKiBBIHJlc2V0IGF0IG9yIGJlZm9yZSBub3cgaXMgaWdub3JlZCAobm90aGluZyB0byBsYXRjaCkuXG4gKlxuICogQHBhcmFtIHJlc2V0RXBvY2ggLSBXaGVuIHRoZSBxdW90YSByZXNldHMgKFVuaXggc2Vjb25kcykuXG4gKiBAcGFyYW0gbm93IC0gSW5qZWN0YWJsZSB0aW1lIHNvdXJjZSAoVW5peCBzZWNvbmRzKSBmb3IgdGVzdGluZy5cbiAqIEBwYXJhbSBraW5kIC0gV2hldGhlciB0aGlzIGlzIHRoZSBob3VybHkgcXVvdGEgb3IgYSBidXJzdCBjb29sLWRvd24uXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBsYXRjaFByaW1hcnlRdW90YShcbiAgcmVzZXRFcG9jaDogbnVtYmVyLFxuICBub3c6IG51bWJlciA9IG5vd1NlY29uZHMoKSxcbiAga2luZDogUHJpbWFyeVF1b3RhTGF0Y2hLaW5kID0gXCJwcmltYXJ5XCIsXG4pOiB2b2lkIHtcbiAgaWYgKCFOdW1iZXIuaXNGaW5pdGUocmVzZXRFcG9jaCkgfHwgcmVzZXRFcG9jaCA8PSBub3cpIHJldHVybjtcbiAgbGF0Y2hlZFVudGlsRXBvY2ggPSBsYXRjaGVkVW50aWxFcG9jaCA9PT0gbnVsbFxuICAgID8gcmVzZXRFcG9jaFxuICAgIDogTWF0aC5tYXgobGF0Y2hlZFVudGlsRXBvY2gsIHJlc2V0RXBvY2gpO1xuICBsYXRjaEtpbmQgPSBraW5kO1xuICBpZiAoa2luZCA9PT0gXCJzZWNvbmRhcnlcIikgc2Vjb25kYXJ5TGF0Y2hlcysrO1xufVxuXG4vKiogQ2xlYXIgdGhlIGxhdGNoIChvbiBhIGNvbmZpcm1lZCByZXNldCwgb3IgYmV0d2VlbiB0ZXN0cykuICovXG5leHBvcnQgZnVuY3Rpb24gY2xlYXJQcmltYXJ5UXVvdGFMYXRjaCgpOiB2b2lkIHtcbiAgbGF0Y2hlZFVudGlsRXBvY2ggPSBudWxsO1xuICBsYXRjaEtpbmQgPSBcInByaW1hcnlcIjtcbn1cblxuLyoqXG4gKiBUaGUgb25lLWxpbmUgcmVhc29uIGEgbGF0Y2hlZCBgZ2hgIGNhbGwgaXMgc2tpcHBlZCwgbmFtaW5nIHRoZSByZXNldC5cbiAqXG4gKiBDYXJyaWVzIHRoZSBwcmltYXJ5LXF1b3RhIHBocmFzZSBzbyBjYWxsZXJzIHRoYXQgY2xhc3NpZnkgYnkgbWVzc2FnZVxuICogKHRoZSBzY2FucycgbG9nIGxpbmVzLCB0aGUgSXNzdWUgIzE3ODAgcGF1c2UpIHN0aWxsIHJlY29nbmlzZSBpdC4gTGl2ZXNcbiAqIGhlcmUsIGJlc2lkZSB0aGUgbGF0Y2gsIHNvIHRoZSBzcGF3biBjaG9rZXBvaW50IGNhbiBwcm9kdWNlIGl0IHdpdGhvdXRcbiAqIGltcG9ydGluZyBgZ2l0aHViLnRzYCAod2hpY2ggaW1wb3J0cyB0aGUgY2hva2Vwb2ludCkuXG4gKlxuICogQHBhcmFtIG5vdyAtIEluamVjdGFibGUgdGltZSBzb3VyY2UgKFVuaXggc2Vjb25kcykgZm9yIHRlc3RpbmcuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBwcmltYXJ5UXVvdGFTa2lwTWVzc2FnZShub3c6IG51bWJlciA9IG5vd1NlY29uZHMoKSk6IHN0cmluZyB7XG4gIGNvbnN0IHVudGlsID0gcHJpbWFyeVF1b3RhTGF0Y2hlZFVudGlsKCk7XG4gIGNvbnN0IGV0YSA9IHVudGlsID09PSBudWxsXG4gICAgPyBcInJlc2V0IHRpbWUgdW5rbm93blwiXG4gICAgOiBmb3JtYXRSYXRlTGltaXRSZXNldCh1bnRpbCwgbm93KTtcbiAgcmV0dXJuIGxhdGNoS2luZCA9PT0gXCJzZWNvbmRhcnlcIlxuICAgID8gYCR7UFJJTUFSWV9RVU9UQV9TS0lQX1BSRUZJWH1HaXRIdWIgc2Vjb25kYXJ5IHJhdGUgbGltaXQgY29vbC1kb3duIChBUEkgcmF0ZSBgICtcbiAgICAgIGBsaW1pdCBhbHJlYWR5IGV4Y2VlZGVkIG9uIGEgYnVyc3QsIGhvdXJseSBxdW90YSBzdGlsbCBhdmFpbGFibGUpIOKAlCAke2V0YX1gXG4gICAgOiBgJHtQUklNQVJZX1FVT1RBX1NLSVBfUFJFRklYfUdyYXBoUUwgcHJpbWFyeSBxdW90YSBleGhhdXN0ZWQgKEFQSSByYXRlIGAgK1xuICAgICAgYGxpbWl0IGFscmVhZHkgZXhjZWVkZWQpIOKAlCAke2V0YX1gO1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0E4QkMsR0FFRCxTQUFTLGNBQWMsUUFBUSxlQUFlO0FBQzlDLFNBQVMsb0JBQW9CLFFBQVEseUJBQXlCO0FBRTlELDBFQUEwRSxHQUMxRSxJQUFJLG9CQUFtQztBQVV2QyxrRUFBa0UsR0FDbEUsSUFBSSxZQUFtQztBQUV2Qzs7OztDQUlDLEdBQ0QsSUFBSSxtQkFBbUI7QUFFdkIsMEVBQTBFLEdBQzFFLE9BQU8sU0FBUztFQUNkLE9BQU87QUFDVDtBQUVBLHdDQUF3QyxHQUN4QyxTQUFTO0VBQ1AsT0FBTyxLQUFLLEtBQUssQ0FBQyxLQUFLLEdBQUcsS0FBSztBQUNqQztBQUVBOzs7Ozs7O0NBT0MsR0FDRCxPQUFPLE1BQU0sNEJBQTRCLHVCQUF1QjtBQUVoRTs7Ozs7OztDQU9DLEdBQ0QsT0FBTyxTQUFTLDBCQUEwQixPQUFlO0VBQ3ZELE1BQU0sUUFBUSxRQUFRLFdBQVc7RUFDakMsT0FDRSxNQUFNLFFBQVEsQ0FBQyxzQ0FDZixNQUFNLFFBQVEsQ0FBQyw4QkFDZixNQUFNLFFBQVEsQ0FBQztBQUVuQjtBQUVBOzs7Ozs7Ozs7Ozs7O0NBYUMsR0FDRCxPQUFPLFNBQVMsb0JBQW9CLElBQXVCO0VBQ3pELHdFQUF3RTtFQUN4RSx3RUFBd0U7RUFDeEUsa0VBQWtFO0VBQ2xFLGlFQUFpRTtFQUNqRSx5RUFBeUU7RUFDekUsd0VBQXdFO0VBQ3hFLDJDQUEyQztFQUMzQyxPQUFPLGVBQWUsVUFBVTtBQUNsQztBQUVBOzs7Ozs7O0NBT0MsR0FDRCxPQUFPLFNBQVMsc0JBQXNCLE1BQWMsWUFBWTtFQUM5RCxJQUFJLHNCQUFzQixNQUFNLE9BQU87RUFDdkMsSUFBSSxPQUFPLG1CQUFtQjtJQUM1QixvQkFBb0I7SUFDcEIsT0FBTztFQUNUO0VBQ0EsT0FBTztBQUNUO0FBRUEsK0RBQStELEdBQy9ELE9BQU8sU0FBUztFQUNkLE9BQU87QUFDVDtBQUVBOzs7Ozs7Ozs7O0NBVUMsR0FDRCxPQUFPLFNBQVMsa0JBQ2QsVUFBa0IsRUFDbEIsTUFBYyxZQUFZLEVBQzFCLE9BQThCLFNBQVM7RUFFdkMsSUFBSSxDQUFDLE9BQU8sUUFBUSxDQUFDLGVBQWUsY0FBYyxLQUFLO0VBQ3ZELG9CQUFvQixzQkFBc0IsT0FDdEMsYUFDQSxLQUFLLEdBQUcsQ0FBQyxtQkFBbUI7RUFDaEMsWUFBWTtFQUNaLElBQUksU0FBUyxhQUFhO0FBQzVCO0FBRUEsOERBQThELEdBQzlELE9BQU8sU0FBUztFQUNkLG9CQUFvQjtFQUNwQixZQUFZO0FBQ2Q7QUFFQTs7Ozs7Ozs7O0NBU0MsR0FDRCxPQUFPLFNBQVMsd0JBQXdCLE1BQWMsWUFBWTtFQUNoRSxNQUFNLFFBQVE7RUFDZCxNQUFNLE1BQU0sVUFBVSxPQUNsQix1QkFDQSxxQkFBcUIsT0FBTztFQUNoQyxPQUFPLGNBQWMsY0FDakIsR0FBRywwQkFBMEIsZ0RBQWdELENBQUMsR0FDOUUsQ0FBQyxtRUFBbUUsRUFBRSxLQUFLLEdBQzNFLEdBQUcsMEJBQTBCLDBDQUEwQyxDQUFDLEdBQ3hFLENBQUMsMEJBQTBCLEVBQUUsS0FBSztBQUN4QyJ9
+// denoCacheMetadata=4785444217525887034,15110676034481623101

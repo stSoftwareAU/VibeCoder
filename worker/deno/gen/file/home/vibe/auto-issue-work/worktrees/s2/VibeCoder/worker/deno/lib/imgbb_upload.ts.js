@@ -1,0 +1,153 @@
+/**
+ * ImgBB screenshot upload client (Issue #1232).
+ *
+ * Provides the HTTP upload implementation for sending screenshots
+ * to the ImgBB API. Replaces the shell `upload_screenshot_to_imgbb()`
+ * function from the pre-migration `pr_manager.sh`.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */ import { DEFAULT_FETCH_TIMEOUT_MS, describeFetchFailure, discardBody, readTextBounded, withRequestTimeout } from "./bounded_fetch.ts";
+/**
+ * Cap on the ImgBB JSON response (256 KiB — Issue #3710). The document is a
+ * few hundred bytes of metadata; anything larger is a broken or hostile API.
+ */ const MAX_IMGBB_RESPONSE_BYTES = 256 * 1024;
+/**
+ * Timeout for an ImgBB upload (60 seconds — Issue #3710). Longer than the
+ * shared default because the request carries the screenshot payload.
+ */ const IMGBB_TIMEOUT_MS = 2 * DEFAULT_FETCH_TIMEOUT_MS;
+/**
+ * Encode binary data (Uint8Array) as a base64 string.
+ *
+ * Uses the built-in `btoa` function after converting bytes to a
+ * binary string. This avoids external dependencies.
+ */ function encodeBinaryBase64(data) {
+  let binary = "";
+  for (const byte of data){
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+/** ImgBB API endpoint for image uploads. */ const IMGBB_API_URL = "https://api.imgbb.com/1/upload";
+/** Environment variable carrying the ImgBB API key. */ export const IMGBB_API_KEY_ENV = "VIBE_IMGBB_API_KEY";
+/**
+ * Read the ImgBB API key from the environment (Issue #3707).
+ *
+ * The key used to arrive as `--imgbb-api-key <key>` on the `pr-manager` /
+ * `pr-completion-phase` command lines, where any local user could read it out
+ * of `ps`. `load_config` already exports the configured key as
+ * {@link IMGBB_API_KEY_ENV}, so the commands read it from there instead and
+ * the secret never appears in argv.
+ *
+ * @param env - Environment reader (injectable for testing).
+ * @returns The trimmed key, or an empty string when it is unset or blank.
+ */ export function readImgbbApiKeyFromEnv(env = (name)=>Deno.env.get(name)) {
+  return (env(IMGBB_API_KEY_ENV) ?? "").trim();
+}
+/**
+ * Upload a base64-encoded image to ImgBB.
+ *
+ * Sends a multipart form data POST to the ImgBB API and returns
+ * the display URL on success.
+ *
+ * @param options - Upload options including image data and API key
+ * @returns Result with the display URL on success, or an Error on failure
+ */ export async function uploadToImgbb(options) {
+  const { imageBase64, apiKey, filename, fetchFn = globalThis.fetch, timeoutMs = IMGBB_TIMEOUT_MS } = options;
+  const formData = new FormData();
+  formData.append("key", apiKey);
+  formData.append("image", imageBase64);
+  if (filename) {
+    formData.append("name", filename);
+  }
+  let response;
+  try {
+    response = await fetchFn(IMGBB_API_URL, withRequestTimeout({
+      method: "POST",
+      body: formData
+    }, timeoutMs));
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(`ImgBB upload failed: ${describeFetchFailure(error, timeoutMs)}`)
+    };
+  }
+  if (!response.ok) {
+    await discardBody(response);
+    return {
+      ok: false,
+      error: new Error(`ImgBB upload failed with HTTP ${response.status}: ${response.statusText}`)
+    };
+  }
+  const bodyResult = await readTextBounded(response, MAX_IMGBB_RESPONSE_BYTES);
+  if (!bodyResult.ok) {
+    return {
+      ok: false,
+      error: new Error(`Failed to read ImgBB API response: ${bodyResult.error}`)
+    };
+  }
+  let json;
+  try {
+    json = JSON.parse(bodyResult.value);
+  } catch  {
+    return {
+      ok: false,
+      error: new Error("Failed to parse ImgBB API response as JSON")
+    };
+  }
+  if (!json.success) {
+    const apiMessage = json.error?.message ?? "unknown error";
+    return {
+      ok: false,
+      error: new Error(`ImgBB API returned failure: ${apiMessage}`)
+    };
+  }
+  const displayUrl = json.data?.display_url;
+  if (!displayUrl) {
+    return {
+      ok: false,
+      error: new Error("ImgBB API response missing display_url")
+    };
+  }
+  return {
+    ok: true,
+    value: displayUrl
+  };
+}
+/**
+ * Create an upload function compatible with `ProcessEvidenceOptions.uploadFn`.
+ *
+ * Reads a screenshot file from disk, base64-encodes it, and uploads
+ * to ImgBB. Returns the display URL on success. This is the concrete
+ * implementation that bridges the injectable `uploadFn` callback in
+ * `processScreenshotEvidence()` with the ImgBB HTTP client.
+ *
+ * @param apiKey - ImgBB API key
+ * @param fetchFn - Optional injectable fetch function (for testing)
+ * @returns A function that accepts a file path and returns a Result with the upload URL
+ */ export function createImgbbUploadFn(apiKey, fetchFn) {
+  return async (filePath)=>{
+    let fileData;
+    try {
+      fileData = await Deno.readFile(filePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        ok: false,
+        error: new Error(`Failed to read screenshot file: ${message}`)
+      };
+    }
+    const imageBase64 = encodeBinaryBase64(fileData);
+    // Extract filename stem (without extension) for the upload name
+    const fullName = filePath.split("/").pop() ?? "screenshot";
+    const dotIndex = fullName.lastIndexOf(".");
+    const filename = dotIndex > 0 ? fullName.substring(0, dotIndex) : fullName;
+    return uploadToImgbb({
+      imageBase64,
+      apiKey,
+      filename,
+      fetchFn
+    });
+  };
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9pbWdiYl91cGxvYWQudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBJbWdCQiBzY3JlZW5zaG90IHVwbG9hZCBjbGllbnQgKElzc3VlICMxMjMyKS5cbiAqXG4gKiBQcm92aWRlcyB0aGUgSFRUUCB1cGxvYWQgaW1wbGVtZW50YXRpb24gZm9yIHNlbmRpbmcgc2NyZWVuc2hvdHNcbiAqIHRvIHRoZSBJbWdCQiBBUEkuIFJlcGxhY2VzIHRoZSBzaGVsbCBgdXBsb2FkX3NjcmVlbnNob3RfdG9faW1nYmIoKWBcbiAqIGZ1bmN0aW9uIGZyb20gdGhlIHByZS1taWdyYXRpb24gYHByX21hbmFnZXIuc2hgLlxuICpcbiAqIFVzZXMgQXVzdHJhbGlhbiBFbmdsaXNoIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgY29sb3VyLCBvcmdhbmlzYXRpb24sIGV0Yy4pLlxuICovXG5cbmltcG9ydCB0eXBlIHsgUmVzdWx0IH0gZnJvbSBcIi4uL3R5cGVzLnRzXCI7XG5pbXBvcnQge1xuICBERUZBVUxUX0ZFVENIX1RJTUVPVVRfTVMsXG4gIGRlc2NyaWJlRmV0Y2hGYWlsdXJlLFxuICBkaXNjYXJkQm9keSxcbiAgcmVhZFRleHRCb3VuZGVkLFxuICB3aXRoUmVxdWVzdFRpbWVvdXQsXG59IGZyb20gXCIuL2JvdW5kZWRfZmV0Y2gudHNcIjtcblxuLyoqXG4gKiBDYXAgb24gdGhlIEltZ0JCIEpTT04gcmVzcG9uc2UgKDI1NiBLaUIg4oCUIElzc3VlICMzNzEwKS4gVGhlIGRvY3VtZW50IGlzIGFcbiAqIGZldyBodW5kcmVkIGJ5dGVzIG9mIG1ldGFkYXRhOyBhbnl0aGluZyBsYXJnZXIgaXMgYSBicm9rZW4gb3IgaG9zdGlsZSBBUEkuXG4gKi9cbmNvbnN0IE1BWF9JTUdCQl9SRVNQT05TRV9CWVRFUyA9IDI1NiAqIDEwMjQ7XG5cbi8qKlxuICogVGltZW91dCBmb3IgYW4gSW1nQkIgdXBsb2FkICg2MCBzZWNvbmRzIOKAlCBJc3N1ZSAjMzcxMCkuIExvbmdlciB0aGFuIHRoZVxuICogc2hhcmVkIGRlZmF1bHQgYmVjYXVzZSB0aGUgcmVxdWVzdCBjYXJyaWVzIHRoZSBzY3JlZW5zaG90IHBheWxvYWQuXG4gKi9cbmNvbnN0IElNR0JCX1RJTUVPVVRfTVMgPSAyICogREVGQVVMVF9GRVRDSF9USU1FT1VUX01TO1xuXG4vKipcbiAqIEVuY29kZSBiaW5hcnkgZGF0YSAoVWludDhBcnJheSkgYXMgYSBiYXNlNjQgc3RyaW5nLlxuICpcbiAqIFVzZXMgdGhlIGJ1aWx0LWluIGBidG9hYCBmdW5jdGlvbiBhZnRlciBjb252ZXJ0aW5nIGJ5dGVzIHRvIGFcbiAqIGJpbmFyeSBzdHJpbmcuIFRoaXMgYXZvaWRzIGV4dGVybmFsIGRlcGVuZGVuY2llcy5cbiAqL1xuZnVuY3Rpb24gZW5jb2RlQmluYXJ5QmFzZTY0KGRhdGE6IFVpbnQ4QXJyYXkpOiBzdHJpbmcge1xuICBsZXQgYmluYXJ5ID0gXCJcIjtcbiAgZm9yIChjb25zdCBieXRlIG9mIGRhdGEpIHtcbiAgICBiaW5hcnkgKz0gU3RyaW5nLmZyb21DaGFyQ29kZShieXRlKTtcbiAgfVxuICByZXR1cm4gYnRvYShiaW5hcnkpO1xufVxuXG4vKiogSW1nQkIgQVBJIGVuZHBvaW50IGZvciBpbWFnZSB1cGxvYWRzLiAqL1xuY29uc3QgSU1HQkJfQVBJX1VSTCA9IFwiaHR0cHM6Ly9hcGkuaW1nYmIuY29tLzEvdXBsb2FkXCI7XG5cbi8qKiBFbnZpcm9ubWVudCB2YXJpYWJsZSBjYXJyeWluZyB0aGUgSW1nQkIgQVBJIGtleS4gKi9cbmV4cG9ydCBjb25zdCBJTUdCQl9BUElfS0VZX0VOViA9IFwiVklCRV9JTUdCQl9BUElfS0VZXCI7XG5cbi8qKlxuICogUmVhZCB0aGUgSW1nQkIgQVBJIGtleSBmcm9tIHRoZSBlbnZpcm9ubWVudCAoSXNzdWUgIzM3MDcpLlxuICpcbiAqIFRoZSBrZXkgdXNlZCB0byBhcnJpdmUgYXMgYC0taW1nYmItYXBpLWtleSA8a2V5PmAgb24gdGhlIGBwci1tYW5hZ2VyYCAvXG4gKiBgcHItY29tcGxldGlvbi1waGFzZWAgY29tbWFuZCBsaW5lcywgd2hlcmUgYW55IGxvY2FsIHVzZXIgY291bGQgcmVhZCBpdCBvdXRcbiAqIG9mIGBwc2AuIGBsb2FkX2NvbmZpZ2AgYWxyZWFkeSBleHBvcnRzIHRoZSBjb25maWd1cmVkIGtleSBhc1xuICoge0BsaW5rIElNR0JCX0FQSV9LRVlfRU5WfSwgc28gdGhlIGNvbW1hbmRzIHJlYWQgaXQgZnJvbSB0aGVyZSBpbnN0ZWFkIGFuZFxuICogdGhlIHNlY3JldCBuZXZlciBhcHBlYXJzIGluIGFyZ3YuXG4gKlxuICogQHBhcmFtIGVudiAtIEVudmlyb25tZW50IHJlYWRlciAoaW5qZWN0YWJsZSBmb3IgdGVzdGluZykuXG4gKiBAcmV0dXJucyBUaGUgdHJpbW1lZCBrZXksIG9yIGFuIGVtcHR5IHN0cmluZyB3aGVuIGl0IGlzIHVuc2V0IG9yIGJsYW5rLlxuICovXG5leHBvcnQgZnVuY3Rpb24gcmVhZEltZ2JiQXBpS2V5RnJvbUVudihcbiAgZW52OiAobmFtZTogc3RyaW5nKSA9PiBzdHJpbmcgfCB1bmRlZmluZWQgPSAobmFtZSkgPT4gRGVuby5lbnYuZ2V0KG5hbWUpLFxuKTogc3RyaW5nIHtcbiAgcmV0dXJuIChlbnYoSU1HQkJfQVBJX0tFWV9FTlYpID8/IFwiXCIpLnRyaW0oKTtcbn1cblxuLyoqIE9wdGlvbnMgZm9yIHVwbG9hZGluZyBhbiBpbWFnZSB0byBJbWdCQi4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgSW1nYmJVcGxvYWRPcHRpb25zIHtcbiAgLyoqIEJhc2U2NC1lbmNvZGVkIGltYWdlIGRhdGEgKi9cbiAgaW1hZ2VCYXNlNjQ6IHN0cmluZztcbiAgLyoqIEltZ0JCIEFQSSBrZXkgKi9cbiAgYXBpS2V5OiBzdHJpbmc7XG4gIC8qKiBPcHRpb25hbCBmaWxlbmFtZSAod2l0aG91dCBleHRlbnNpb24pIGZvciB0aGUgdXBsb2FkZWQgaW1hZ2UgKi9cbiAgZmlsZW5hbWU/OiBzdHJpbmc7XG4gIC8qKiBJbmplY3RhYmxlIGZldGNoIGZ1bmN0aW9uIChkZWZhdWx0cyB0byBnbG9iYWwgZmV0Y2gpICovXG4gIGZldGNoRm4/OiAoXG4gICAgdXJsOiBzdHJpbmcgfCBVUkwgfCBSZXF1ZXN0LFxuICAgIGluaXQ/OiBSZXF1ZXN0SW5pdCxcbiAgKSA9PiBQcm9taXNlPFJlc3BvbnNlPjtcbiAgLyoqXG4gICAqIEhhcmQgdGltZW91dCBmb3IgdGhlIHVwbG9hZCwgaW4gbWlsbGlzZWNvbmRzIChJc3N1ZSAjMzcxMCkuIERlZmF1bHRzIHRvXG4gICAqIDYwIHNlY29uZHMgc28gYSBodW5nIEltZ0JCIGNhbm5vdCB3ZWRnZSB0aGUgd29ya2VyLlxuICAgKi9cbiAgdGltZW91dE1zPzogbnVtYmVyO1xufVxuXG4vKipcbiAqIEV4cGVjdGVkIHNoYXBlIG9mIHRoZSBJbWdCQiBBUEkgcmVzcG9uc2UuXG4gKlxuICogT25seSB0aGUgZmllbGRzIHdlIHVzZSBhcmUgdHlwZWQgaGVyZTsgdGhlIGFjdHVhbCByZXNwb25zZVxuICogY29udGFpbnMgYWRkaXRpb25hbCBtZXRhZGF0YSB3ZSBkbyBub3QgbmVlZC5cbiAqL1xuaW50ZXJmYWNlIEltZ2JiQXBpUmVzcG9uc2Uge1xuICBkYXRhPzoge1xuICAgIGRpc3BsYXlfdXJsPzogc3RyaW5nO1xuICB9O1xuICBzdWNjZXNzPzogYm9vbGVhbjtcbiAgc3RhdHVzPzogbnVtYmVyO1xuICBlcnJvcj86IHtcbiAgICBtZXNzYWdlPzogc3RyaW5nO1xuICB9O1xufVxuXG4vKipcbiAqIFVwbG9hZCBhIGJhc2U2NC1lbmNvZGVkIGltYWdlIHRvIEltZ0JCLlxuICpcbiAqIFNlbmRzIGEgbXVsdGlwYXJ0IGZvcm0gZGF0YSBQT1NUIHRvIHRoZSBJbWdCQiBBUEkgYW5kIHJldHVybnNcbiAqIHRoZSBkaXNwbGF5IFVSTCBvbiBzdWNjZXNzLlxuICpcbiAqIEBwYXJhbSBvcHRpb25zIC0gVXBsb2FkIG9wdGlvbnMgaW5jbHVkaW5nIGltYWdlIGRhdGEgYW5kIEFQSSBrZXlcbiAqIEByZXR1cm5zIFJlc3VsdCB3aXRoIHRoZSBkaXNwbGF5IFVSTCBvbiBzdWNjZXNzLCBvciBhbiBFcnJvciBvbiBmYWlsdXJlXG4gKi9cbmV4cG9ydCBhc3luYyBmdW5jdGlvbiB1cGxvYWRUb0ltZ2JiKFxuICBvcHRpb25zOiBJbWdiYlVwbG9hZE9wdGlvbnMsXG4pOiBQcm9taXNlPFJlc3VsdDxzdHJpbmcsIEVycm9yPj4ge1xuICBjb25zdCB7XG4gICAgaW1hZ2VCYXNlNjQsXG4gICAgYXBpS2V5LFxuICAgIGZpbGVuYW1lLFxuICAgIGZldGNoRm4gPSBnbG9iYWxUaGlzLmZldGNoLFxuICAgIHRpbWVvdXRNcyA9IElNR0JCX1RJTUVPVVRfTVMsXG4gIH0gPSBvcHRpb25zO1xuXG4gIGNvbnN0IGZvcm1EYXRhID0gbmV3IEZvcm1EYXRhKCk7XG4gIGZvcm1EYXRhLmFwcGVuZChcImtleVwiLCBhcGlLZXkpO1xuICBmb3JtRGF0YS5hcHBlbmQoXCJpbWFnZVwiLCBpbWFnZUJhc2U2NCk7XG4gIGlmIChmaWxlbmFtZSkge1xuICAgIGZvcm1EYXRhLmFwcGVuZChcIm5hbWVcIiwgZmlsZW5hbWUpO1xuICB9XG5cbiAgbGV0IHJlc3BvbnNlOiBSZXNwb25zZTtcbiAgdHJ5IHtcbiAgICByZXNwb25zZSA9IGF3YWl0IGZldGNoRm4oXG4gICAgICBJTUdCQl9BUElfVVJMLFxuICAgICAgd2l0aFJlcXVlc3RUaW1lb3V0KHsgbWV0aG9kOiBcIlBPU1RcIiwgYm9keTogZm9ybURhdGEgfSwgdGltZW91dE1zKSxcbiAgICApO1xuICB9IGNhdGNoIChlcnJvcjogdW5rbm93bikge1xuICAgIHJldHVybiB7XG4gICAgICBvazogZmFsc2UsXG4gICAgICBlcnJvcjogbmV3IEVycm9yKFxuICAgICAgICBgSW1nQkIgdXBsb2FkIGZhaWxlZDogJHtkZXNjcmliZUZldGNoRmFpbHVyZShlcnJvciwgdGltZW91dE1zKX1gLFxuICAgICAgKSxcbiAgICB9O1xuICB9XG5cbiAgaWYgKCFyZXNwb25zZS5vaykge1xuICAgIGF3YWl0IGRpc2NhcmRCb2R5KHJlc3BvbnNlKTtcbiAgICByZXR1cm4ge1xuICAgICAgb2s6IGZhbHNlLFxuICAgICAgZXJyb3I6IG5ldyBFcnJvcihcbiAgICAgICAgYEltZ0JCIHVwbG9hZCBmYWlsZWQgd2l0aCBIVFRQICR7cmVzcG9uc2Uuc3RhdHVzfTogJHtyZXNwb25zZS5zdGF0dXNUZXh0fWAsXG4gICAgICApLFxuICAgIH07XG4gIH1cblxuICBjb25zdCBib2R5UmVzdWx0ID0gYXdhaXQgcmVhZFRleHRCb3VuZGVkKHJlc3BvbnNlLCBNQVhfSU1HQkJfUkVTUE9OU0VfQllURVMpO1xuICBpZiAoIWJvZHlSZXN1bHQub2spIHtcbiAgICByZXR1cm4ge1xuICAgICAgb2s6IGZhbHNlLFxuICAgICAgZXJyb3I6IG5ldyBFcnJvcihcbiAgICAgICAgYEZhaWxlZCB0byByZWFkIEltZ0JCIEFQSSByZXNwb25zZTogJHtib2R5UmVzdWx0LmVycm9yfWAsXG4gICAgICApLFxuICAgIH07XG4gIH1cblxuICBsZXQganNvbjogSW1nYmJBcGlSZXNwb25zZTtcbiAgdHJ5IHtcbiAgICBqc29uID0gSlNPTi5wYXJzZShib2R5UmVzdWx0LnZhbHVlKSBhcyBJbWdiYkFwaVJlc3BvbnNlO1xuICB9IGNhdGNoIHtcbiAgICByZXR1cm4ge1xuICAgICAgb2s6IGZhbHNlLFxuICAgICAgZXJyb3I6IG5ldyBFcnJvcihcIkZhaWxlZCB0byBwYXJzZSBJbWdCQiBBUEkgcmVzcG9uc2UgYXMgSlNPTlwiKSxcbiAgICB9O1xuICB9XG5cbiAgaWYgKCFqc29uLnN1Y2Nlc3MpIHtcbiAgICBjb25zdCBhcGlNZXNzYWdlID0ganNvbi5lcnJvcj8ubWVzc2FnZSA/PyBcInVua25vd24gZXJyb3JcIjtcbiAgICByZXR1cm4ge1xuICAgICAgb2s6IGZhbHNlLFxuICAgICAgZXJyb3I6IG5ldyBFcnJvcihgSW1nQkIgQVBJIHJldHVybmVkIGZhaWx1cmU6ICR7YXBpTWVzc2FnZX1gKSxcbiAgICB9O1xuICB9XG5cbiAgY29uc3QgZGlzcGxheVVybCA9IGpzb24uZGF0YT8uZGlzcGxheV91cmw7XG4gIGlmICghZGlzcGxheVVybCkge1xuICAgIHJldHVybiB7XG4gICAgICBvazogZmFsc2UsXG4gICAgICBlcnJvcjogbmV3IEVycm9yKFwiSW1nQkIgQVBJIHJlc3BvbnNlIG1pc3NpbmcgZGlzcGxheV91cmxcIiksXG4gICAgfTtcbiAgfVxuXG4gIHJldHVybiB7IG9rOiB0cnVlLCB2YWx1ZTogZGlzcGxheVVybCB9O1xufVxuXG4vKipcbiAqIENyZWF0ZSBhbiB1cGxvYWQgZnVuY3Rpb24gY29tcGF0aWJsZSB3aXRoIGBQcm9jZXNzRXZpZGVuY2VPcHRpb25zLnVwbG9hZEZuYC5cbiAqXG4gKiBSZWFkcyBhIHNjcmVlbnNob3QgZmlsZSBmcm9tIGRpc2ssIGJhc2U2NC1lbmNvZGVzIGl0LCBhbmQgdXBsb2Fkc1xuICogdG8gSW1nQkIuIFJldHVybnMgdGhlIGRpc3BsYXkgVVJMIG9uIHN1Y2Nlc3MuIFRoaXMgaXMgdGhlIGNvbmNyZXRlXG4gKiBpbXBsZW1lbnRhdGlvbiB0aGF0IGJyaWRnZXMgdGhlIGluamVjdGFibGUgYHVwbG9hZEZuYCBjYWxsYmFjayBpblxuICogYHByb2Nlc3NTY3JlZW5zaG90RXZpZGVuY2UoKWAgd2l0aCB0aGUgSW1nQkIgSFRUUCBjbGllbnQuXG4gKlxuICogQHBhcmFtIGFwaUtleSAtIEltZ0JCIEFQSSBrZXlcbiAqIEBwYXJhbSBmZXRjaEZuIC0gT3B0aW9uYWwgaW5qZWN0YWJsZSBmZXRjaCBmdW5jdGlvbiAoZm9yIHRlc3RpbmcpXG4gKiBAcmV0dXJucyBBIGZ1bmN0aW9uIHRoYXQgYWNjZXB0cyBhIGZpbGUgcGF0aCBhbmQgcmV0dXJucyBhIFJlc3VsdCB3aXRoIHRoZSB1cGxvYWQgVVJMXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBjcmVhdGVJbWdiYlVwbG9hZEZuKFxuICBhcGlLZXk6IHN0cmluZyxcbiAgZmV0Y2hGbj86IChcbiAgICB1cmw6IHN0cmluZyB8IFVSTCB8IFJlcXVlc3QsXG4gICAgaW5pdD86IFJlcXVlc3RJbml0LFxuICApID0+IFByb21pc2U8UmVzcG9uc2U+LFxuKTogKHBhdGg6IHN0cmluZykgPT4gUHJvbWlzZTxSZXN1bHQ8c3RyaW5nLCBFcnJvcj4+IHtcbiAgcmV0dXJuIGFzeW5jIChmaWxlUGF0aDogc3RyaW5nKTogUHJvbWlzZTxSZXN1bHQ8c3RyaW5nLCBFcnJvcj4+ID0+IHtcbiAgICBsZXQgZmlsZURhdGE6IFVpbnQ4QXJyYXk7XG4gICAgdHJ5IHtcbiAgICAgIGZpbGVEYXRhID0gYXdhaXQgRGVuby5yZWFkRmlsZShmaWxlUGF0aCk7XG4gICAgfSBjYXRjaCAoZXJyb3I6IHVua25vd24pIHtcbiAgICAgIGNvbnN0IG1lc3NhZ2UgPSBlcnJvciBpbnN0YW5jZW9mIEVycm9yID8gZXJyb3IubWVzc2FnZSA6IFN0cmluZyhlcnJvcik7XG4gICAgICByZXR1cm4ge1xuICAgICAgICBvazogZmFsc2UsXG4gICAgICAgIGVycm9yOiBuZXcgRXJyb3IoYEZhaWxlZCB0byByZWFkIHNjcmVlbnNob3QgZmlsZTogJHttZXNzYWdlfWApLFxuICAgICAgfTtcbiAgICB9XG5cbiAgICBjb25zdCBpbWFnZUJhc2U2NCA9IGVuY29kZUJpbmFyeUJhc2U2NChmaWxlRGF0YSk7XG5cbiAgICAvLyBFeHRyYWN0IGZpbGVuYW1lIHN0ZW0gKHdpdGhvdXQgZXh0ZW5zaW9uKSBmb3IgdGhlIHVwbG9hZCBuYW1lXG4gICAgY29uc3QgZnVsbE5hbWUgPSBmaWxlUGF0aC5zcGxpdChcIi9cIikucG9wKCkgPz8gXCJzY3JlZW5zaG90XCI7XG4gICAgY29uc3QgZG90SW5kZXggPSBmdWxsTmFtZS5sYXN0SW5kZXhPZihcIi5cIik7XG4gICAgY29uc3QgZmlsZW5hbWUgPSBkb3RJbmRleCA+IDAgPyBmdWxsTmFtZS5zdWJzdHJpbmcoMCwgZG90SW5kZXgpIDogZnVsbE5hbWU7XG5cbiAgICByZXR1cm4gdXBsb2FkVG9JbWdiYih7XG4gICAgICBpbWFnZUJhc2U2NCxcbiAgICAgIGFwaUtleSxcbiAgICAgIGZpbGVuYW1lLFxuICAgICAgZmV0Y2hGbixcbiAgICB9KTtcbiAgfTtcbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7Ozs7Ozs7Q0FRQyxHQUdELFNBQ0Usd0JBQXdCLEVBQ3hCLG9CQUFvQixFQUNwQixXQUFXLEVBQ1gsZUFBZSxFQUNmLGtCQUFrQixRQUNiLHFCQUFxQjtBQUU1Qjs7O0NBR0MsR0FDRCxNQUFNLDJCQUEyQixNQUFNO0FBRXZDOzs7Q0FHQyxHQUNELE1BQU0sbUJBQW1CLElBQUk7QUFFN0I7Ozs7O0NBS0MsR0FDRCxTQUFTLG1CQUFtQixJQUFnQjtFQUMxQyxJQUFJLFNBQVM7RUFDYixLQUFLLE1BQU0sUUFBUSxLQUFNO0lBQ3ZCLFVBQVUsT0FBTyxZQUFZLENBQUM7RUFDaEM7RUFDQSxPQUFPLEtBQUs7QUFDZDtBQUVBLDBDQUEwQyxHQUMxQyxNQUFNLGdCQUFnQjtBQUV0QixxREFBcUQsR0FDckQsT0FBTyxNQUFNLG9CQUFvQixxQkFBcUI7QUFFdEQ7Ozs7Ozs7Ozs7O0NBV0MsR0FDRCxPQUFPLFNBQVMsdUJBQ2QsTUFBNEMsQ0FBQyxPQUFTLEtBQUssR0FBRyxDQUFDLEdBQUcsQ0FBQyxLQUFLO0VBRXhFLE9BQU8sQ0FBQyxJQUFJLHNCQUFzQixFQUFFLEVBQUUsSUFBSTtBQUM1QztBQXVDQTs7Ozs7Ozs7Q0FRQyxHQUNELE9BQU8sZUFBZSxjQUNwQixPQUEyQjtFQUUzQixNQUFNLEVBQ0osV0FBVyxFQUNYLE1BQU0sRUFDTixRQUFRLEVBQ1IsVUFBVSxXQUFXLEtBQUssRUFDMUIsWUFBWSxnQkFBZ0IsRUFDN0IsR0FBRztFQUVKLE1BQU0sV0FBVyxJQUFJO0VBQ3JCLFNBQVMsTUFBTSxDQUFDLE9BQU87RUFDdkIsU0FBUyxNQUFNLENBQUMsU0FBUztFQUN6QixJQUFJLFVBQVU7SUFDWixTQUFTLE1BQU0sQ0FBQyxRQUFRO0VBQzFCO0VBRUEsSUFBSTtFQUNKLElBQUk7SUFDRixXQUFXLE1BQU0sUUFDZixlQUNBLG1CQUFtQjtNQUFFLFFBQVE7TUFBUSxNQUFNO0lBQVMsR0FBRztFQUUzRCxFQUFFLE9BQU8sT0FBZ0I7SUFDdkIsT0FBTztNQUNMLElBQUk7TUFDSixPQUFPLElBQUksTUFDVCxDQUFDLHFCQUFxQixFQUFFLHFCQUFxQixPQUFPLFlBQVk7SUFFcEU7RUFDRjtFQUVBLElBQUksQ0FBQyxTQUFTLEVBQUUsRUFBRTtJQUNoQixNQUFNLFlBQVk7SUFDbEIsT0FBTztNQUNMLElBQUk7TUFDSixPQUFPLElBQUksTUFDVCxDQUFDLDhCQUE4QixFQUFFLFNBQVMsTUFBTSxDQUFDLEVBQUUsRUFBRSxTQUFTLFVBQVUsRUFBRTtJQUU5RTtFQUNGO0VBRUEsTUFBTSxhQUFhLE1BQU0sZ0JBQWdCLFVBQVU7RUFDbkQsSUFBSSxDQUFDLFdBQVcsRUFBRSxFQUFFO0lBQ2xCLE9BQU87TUFDTCxJQUFJO01BQ0osT0FBTyxJQUFJLE1BQ1QsQ0FBQyxtQ0FBbUMsRUFBRSxXQUFXLEtBQUssRUFBRTtJQUU1RDtFQUNGO0VBRUEsSUFBSTtFQUNKLElBQUk7SUFDRixPQUFPLEtBQUssS0FBSyxDQUFDLFdBQVcsS0FBSztFQUNwQyxFQUFFLE9BQU07SUFDTixPQUFPO01BQ0wsSUFBSTtNQUNKLE9BQU8sSUFBSSxNQUFNO0lBQ25CO0VBQ0Y7RUFFQSxJQUFJLENBQUMsS0FBSyxPQUFPLEVBQUU7SUFDakIsTUFBTSxhQUFhLEtBQUssS0FBSyxFQUFFLFdBQVc7SUFDMUMsT0FBTztNQUNMLElBQUk7TUFDSixPQUFPLElBQUksTUFBTSxDQUFDLDRCQUE0QixFQUFFLFlBQVk7SUFDOUQ7RUFDRjtFQUVBLE1BQU0sYUFBYSxLQUFLLElBQUksRUFBRTtFQUM5QixJQUFJLENBQUMsWUFBWTtJQUNmLE9BQU87TUFDTCxJQUFJO01BQ0osT0FBTyxJQUFJLE1BQU07SUFDbkI7RUFDRjtFQUVBLE9BQU87SUFBRSxJQUFJO0lBQU0sT0FBTztFQUFXO0FBQ3ZDO0FBRUE7Ozs7Ozs7Ozs7O0NBV0MsR0FDRCxPQUFPLFNBQVMsb0JBQ2QsTUFBYyxFQUNkLE9BR3NCO0VBRXRCLE9BQU8sT0FBTztJQUNaLElBQUk7SUFDSixJQUFJO01BQ0YsV0FBVyxNQUFNLEtBQUssUUFBUSxDQUFDO0lBQ2pDLEVBQUUsT0FBTyxPQUFnQjtNQUN2QixNQUFNLFVBQVUsaUJBQWlCLFFBQVEsTUFBTSxPQUFPLEdBQUcsT0FBTztNQUNoRSxPQUFPO1FBQ0wsSUFBSTtRQUNKLE9BQU8sSUFBSSxNQUFNLENBQUMsZ0NBQWdDLEVBQUUsU0FBUztNQUMvRDtJQUNGO0lBRUEsTUFBTSxjQUFjLG1CQUFtQjtJQUV2QyxnRUFBZ0U7SUFDaEUsTUFBTSxXQUFXLFNBQVMsS0FBSyxDQUFDLEtBQUssR0FBRyxNQUFNO0lBQzlDLE1BQU0sV0FBVyxTQUFTLFdBQVcsQ0FBQztJQUN0QyxNQUFNLFdBQVcsV0FBVyxJQUFJLFNBQVMsU0FBUyxDQUFDLEdBQUcsWUFBWTtJQUVsRSxPQUFPLGNBQWM7TUFDbkI7TUFDQTtNQUNBO01BQ0E7SUFDRjtFQUNGO0FBQ0YifQ==
+// denoCacheMetadata=7349070901293526193,16446187208420644237

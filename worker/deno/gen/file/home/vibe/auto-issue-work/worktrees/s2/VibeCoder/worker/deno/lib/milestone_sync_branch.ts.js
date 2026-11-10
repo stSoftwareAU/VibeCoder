@@ -1,0 +1,26 @@
+/**
+ * Milestone sync-branch naming (Issue #589).
+ *
+ * A milestone sync lands the default branch's changes into a milestone branch
+ * through a PR raised from a branch no ruleset covers. This module holds the
+ * pure naming helpers — the branch prefix, the deterministic branch name, and
+ * the "is this a sync branch" test — so callers that only need to recognise a
+ * sync PR can import them without pulling in the sync-landing machinery (and
+ * the dependency cycle that comes with it, Issue #3476).
+ *
+ * Australian English throughout.
+ */ /** Prefix for the branch a sync PR is raised from. No ruleset covers it. */ export const SYNC_BRANCH_PREFIX = "sync/milestone";
+/**
+ * The branch a sync PR is raised from, for a given milestone branch.
+ *
+ * Deterministic, so a second run finds the branch the first one pushed and
+ * updates it rather than opening a second PR for the same sync.
+ */ export function syncBranchFor(milestoneBranch) {
+  const leaf = milestoneBranch.replace(/^milestone\//, "").replace(/[^A-Za-z0-9._-]+/g, "-");
+  return `${SYNC_BRANCH_PREFIX}-${leaf}`;
+}
+/** Whether a PR head branch is one this module raised. */ export function isMilestoneSyncBranch(headRefName) {
+  return typeof headRefName === "string" && headRefName.startsWith(`${SYNC_BRANCH_PREFIX}-`);
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9taWxlc3RvbmVfc3luY19icmFuY2gudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBNaWxlc3RvbmUgc3luYy1icmFuY2ggbmFtaW5nIChJc3N1ZSAjNTg5KS5cbiAqXG4gKiBBIG1pbGVzdG9uZSBzeW5jIGxhbmRzIHRoZSBkZWZhdWx0IGJyYW5jaCdzIGNoYW5nZXMgaW50byBhIG1pbGVzdG9uZSBicmFuY2hcbiAqIHRocm91Z2ggYSBQUiByYWlzZWQgZnJvbSBhIGJyYW5jaCBubyBydWxlc2V0IGNvdmVycy4gVGhpcyBtb2R1bGUgaG9sZHMgdGhlXG4gKiBwdXJlIG5hbWluZyBoZWxwZXJzIOKAlCB0aGUgYnJhbmNoIHByZWZpeCwgdGhlIGRldGVybWluaXN0aWMgYnJhbmNoIG5hbWUsIGFuZFxuICogdGhlIFwiaXMgdGhpcyBhIHN5bmMgYnJhbmNoXCIgdGVzdCDigJQgc28gY2FsbGVycyB0aGF0IG9ubHkgbmVlZCB0byByZWNvZ25pc2UgYVxuICogc3luYyBQUiBjYW4gaW1wb3J0IHRoZW0gd2l0aG91dCBwdWxsaW5nIGluIHRoZSBzeW5jLWxhbmRpbmcgbWFjaGluZXJ5IChhbmRcbiAqIHRoZSBkZXBlbmRlbmN5IGN5Y2xlIHRoYXQgY29tZXMgd2l0aCBpdCwgSXNzdWUgIzM0NzYpLlxuICpcbiAqIEF1c3RyYWxpYW4gRW5nbGlzaCB0aHJvdWdob3V0LlxuICovXG5cbi8qKiBQcmVmaXggZm9yIHRoZSBicmFuY2ggYSBzeW5jIFBSIGlzIHJhaXNlZCBmcm9tLiBObyBydWxlc2V0IGNvdmVycyBpdC4gKi9cbmV4cG9ydCBjb25zdCBTWU5DX0JSQU5DSF9QUkVGSVggPSBcInN5bmMvbWlsZXN0b25lXCI7XG5cbi8qKlxuICogVGhlIGJyYW5jaCBhIHN5bmMgUFIgaXMgcmFpc2VkIGZyb20sIGZvciBhIGdpdmVuIG1pbGVzdG9uZSBicmFuY2guXG4gKlxuICogRGV0ZXJtaW5pc3RpYywgc28gYSBzZWNvbmQgcnVuIGZpbmRzIHRoZSBicmFuY2ggdGhlIGZpcnN0IG9uZSBwdXNoZWQgYW5kXG4gKiB1cGRhdGVzIGl0IHJhdGhlciB0aGFuIG9wZW5pbmcgYSBzZWNvbmQgUFIgZm9yIHRoZSBzYW1lIHN5bmMuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBzeW5jQnJhbmNoRm9yKG1pbGVzdG9uZUJyYW5jaDogc3RyaW5nKTogc3RyaW5nIHtcbiAgY29uc3QgbGVhZiA9IG1pbGVzdG9uZUJyYW5jaC5yZXBsYWNlKC9ebWlsZXN0b25lXFwvLywgXCJcIikucmVwbGFjZShcbiAgICAvW15BLVphLXowLTkuXy1dKy9nLFxuICAgIFwiLVwiLFxuICApO1xuICByZXR1cm4gYCR7U1lOQ19CUkFOQ0hfUFJFRklYfS0ke2xlYWZ9YDtcbn1cblxuLyoqIFdoZXRoZXIgYSBQUiBoZWFkIGJyYW5jaCBpcyBvbmUgdGhpcyBtb2R1bGUgcmFpc2VkLiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzTWlsZXN0b25lU3luY0JyYW5jaChoZWFkUmVmTmFtZT86IHN0cmluZyB8IG51bGwpOiBib29sZWFuIHtcbiAgcmV0dXJuIHR5cGVvZiBoZWFkUmVmTmFtZSA9PT0gXCJzdHJpbmdcIiAmJlxuICAgIGhlYWRSZWZOYW1lLnN0YXJ0c1dpdGgoYCR7U1lOQ19CUkFOQ0hfUFJFRklYfS1gKTtcbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7Ozs7Ozs7Ozs7Q0FXQyxHQUVELDBFQUEwRSxHQUMxRSxPQUFPLE1BQU0scUJBQXFCLGlCQUFpQjtBQUVuRDs7Ozs7Q0FLQyxHQUNELE9BQU8sU0FBUyxjQUFjLGVBQXVCO0VBQ25ELE1BQU0sT0FBTyxnQkFBZ0IsT0FBTyxDQUFDLGdCQUFnQixJQUFJLE9BQU8sQ0FDOUQscUJBQ0E7RUFFRixPQUFPLEdBQUcsbUJBQW1CLENBQUMsRUFBRSxNQUFNO0FBQ3hDO0FBRUEsd0RBQXdELEdBQ3hELE9BQU8sU0FBUyxzQkFBc0IsV0FBMkI7RUFDL0QsT0FBTyxPQUFPLGdCQUFnQixZQUM1QixZQUFZLFVBQVUsQ0FBQyxHQUFHLG1CQUFtQixDQUFDLENBQUM7QUFDbkQifQ==
+// denoCacheMetadata=10970448546738531891,791656608335404324

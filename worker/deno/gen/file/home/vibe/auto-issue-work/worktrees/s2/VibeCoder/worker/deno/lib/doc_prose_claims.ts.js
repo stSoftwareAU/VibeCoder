@@ -1,0 +1,90 @@
+/**
+ * Manual and prompt prose the PR's own diff writes, checked against the head
+ * code (Issue #3347).
+ *
+ * Fleet PRs kept adding operator-manual or prompt sentences about the PR's own
+ * new behaviour that the head code contradicts (GRQ-AutoTrader#2609, #2685,
+ * #2699, VibeCoder#3308), after #3120 and #3232 asked for this in prose only.
+ * The review-fix drift check (`pr_feedback_drift_check.ts`, Issue #3143)
+ * uses this module's scope and question. The first-run claim check that used
+ * to ask the same question was removed (Issue #4234).
+ *
+ * Uses Australian English throughout.
+ */ import { isTestFilePath } from "./security_fix_gate.ts";
+/**
+ * Cap on distinct files the review-fix prose scope asks about.
+ * A file past it is reported as not checked, never passed.
+ */ export const MAX_DOC_PROSE_FILES = 20;
+const MAX_PATH_LENGTH = 500;
+const LEGACY_SUMMARY_PATH = /^docs\/pr-summary-\d+\.md$/;
+function hasUnsafeCharacter(path) {
+  for(let i = 0; i < path.length; i++){
+    const code = path.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+    if (code === 0x5c || code === 0x60) return true; // backslash, backtick
+  }
+  return false;
+}
+/**
+ * Manual or prompt prose: Markdown outside `docs/archive/pr-summaries/`
+ * (manuals, `SECURITY.md`, `CODING-STANDARDS.md`, `prompts/**\/prompt.md`),
+ * never a PR summary or a test fixture. The shape check
+ * matters because the path is interpolated into a model prompt and read from
+ * disk.
+ */ function isSafeProsePath(path) {
+  if (typeof path !== "string" || path === "" || path !== path.trim()) {
+    return false;
+  }
+  if (path.length > MAX_PATH_LENGTH) return false;
+  if (hasUnsafeCharacter(path)) return false;
+  if (path.startsWith("/") || path.startsWith("-")) return false;
+  if (path.split("/").some((s)=>s === "" || s === "." || s === "..")) {
+    return false;
+  }
+  if (path.startsWith("docs/archive/pr-summaries/")) return false;
+  if (LEGACY_SUMMARY_PATH.test(path)) return false;
+  if (isTestFilePath(path)) return false;
+  return true;
+}
+/** Manual or prompt Markdown, excluding summaries and tests. */ export function isManualProsePath(path) {
+  return isSafeProsePath(path) && path.toLowerCase().endsWith(".md");
+}
+/** Source languages whose comments the shared source lexer recognises. */ export function isProseSourcePath(path) {
+  return isSafeProsePath(path) && /\.(?:[cm]?[jt]sx?|rs|sh|bash|zsh|pyi?|rb|c|cc|cpp|h|hpp|java|go|cs|sql)$/i.test(path);
+}
+/**
+ * De-duplicate the changed files (first occurrence order), keep only manual
+ * or prompt prose paths, and split them at `cap`.
+ */ export function selectManualProseFiles(changedFiles, cap) {
+  if (!Number.isInteger(cap) || cap < 0) {
+    throw new Error(`cap must be a non-negative integer, got ${cap}`);
+  }
+  const seen = new Set();
+  const kept = [];
+  for (const file of changedFiles){
+    if (seen.has(file)) continue;
+    seen.add(file);
+    if (isManualProsePath(file)) kept.push(file);
+  }
+  return {
+    files: kept.slice(0, cap),
+    overCap: kept.slice(cap)
+  };
+}
+/**
+ * The parity rule the review-fix prose question includes (Issue #4223).
+ * A ref names the base side the model may open. With no ref, a "before"
+ * claim that cannot be checked is not reported.
+ */ export function docProseParityRule(baseRef) {
+  const shape = "A sentence that compares the change with the code before it, or with another path (as before, exactly as X did, the same as, unchanged, no behaviour change), is a claim about both sides. ";
+  const report = "Report the sentence when the two sides behave differently for any case it covers, and name both `file:line`s in `reason`.";
+  if (baseRef === undefined || baseRef === "") {
+    return shape + "Open the other path at the head. A before claim that cannot be checked is not reported. " + report;
+  }
+  return shape + `Open the base side with \`git show ${baseRef}:<path>\`, or the other path at the head. ` + report;
+}
+/** The prose-against-code question the review-fix drift check asks. */ export function docProseClaimInstruction(change, baseRef) {
+  return "For each listed Markdown manual or prompt (a `.md` file that is " + "not a PR summary), check the lines " + change + " adds or edits and the explicitly listed affected manual sections, including unchanged sentences. " + "For source files check only the listed comments, including unchanged module headers and doc comments attached to changed declarations, and each listed user-visible string; never treat executable code as prose. " + "For each listed user-visible string, ask whether this change sends a case to this text for which the text is now false. " + "Report the literal verbatim as `sentence`, with `file` the literal's file, and name the `file:line` of the changed hunk that sends the new case in `reason`. " + "In unchanged prose ask whether this change makes the sentence false, not whether it was always right: this is not a whole-manual audit. " + "Check only sentences that say when the change's new " + "behaviour happens, what it refuses, rejects, allows or skips, or that " + 'use an absolute word ("only", "never", "always", "any", "every", ' + '"all", "each", "automatically"), a counted or closed list ' + '("X, Y and Z are the …"), or a comparison with earlier code or another path ' + '("as before", "exactly as X did", "the same as", "unchanged", "no behaviour change"). For each such sentence, open the head code ' + "that decides it — the branch condition, its callers, the list or set " + "it names — with Read or Grep, and report the sentence when that code " + "contradicts it: a condition the code never tests, a refusal the code " + "catches and carries on past, an entry the list does not hold, a path " + "the absolute word misses. Quote it verbatim, one per entry, with " + "`file` = that manual, prompt or source file's path, and name the contradicting " + "`file:line` in `reason`. Do not report a sentence the head code agrees " + "with, or one you could not check. When a sentence names a set without a single list in code (signal senders, callers or result readers, or files a command reads), Grep the whole head tree for other members, including files outside the diff. " + docProseParityRule(baseRef);
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9kb2NfcHJvc2VfY2xhaW1zLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogTWFudWFsIGFuZCBwcm9tcHQgcHJvc2UgdGhlIFBSJ3Mgb3duIGRpZmYgd3JpdGVzLCBjaGVja2VkIGFnYWluc3QgdGhlIGhlYWRcbiAqIGNvZGUgKElzc3VlICMzMzQ3KS5cbiAqXG4gKiBGbGVldCBQUnMga2VwdCBhZGRpbmcgb3BlcmF0b3ItbWFudWFsIG9yIHByb21wdCBzZW50ZW5jZXMgYWJvdXQgdGhlIFBSJ3Mgb3duXG4gKiBuZXcgYmVoYXZpb3VyIHRoYXQgdGhlIGhlYWQgY29kZSBjb250cmFkaWN0cyAoR1JRLUF1dG9UcmFkZXIjMjYwOSwgIzI2ODUsXG4gKiAjMjY5OSwgVmliZUNvZGVyIzMzMDgpLCBhZnRlciAjMzEyMCBhbmQgIzMyMzIgYXNrZWQgZm9yIHRoaXMgaW4gcHJvc2Ugb25seS5cbiAqIFRoZSByZXZpZXctZml4IGRyaWZ0IGNoZWNrIChgcHJfZmVlZGJhY2tfZHJpZnRfY2hlY2sudHNgLCBJc3N1ZSAjMzE0MylcbiAqIHVzZXMgdGhpcyBtb2R1bGUncyBzY29wZSBhbmQgcXVlc3Rpb24uIFRoZSBmaXJzdC1ydW4gY2xhaW0gY2hlY2sgdGhhdCB1c2VkXG4gKiB0byBhc2sgdGhlIHNhbWUgcXVlc3Rpb24gd2FzIHJlbW92ZWQgKElzc3VlICM0MjM0KS5cbiAqXG4gKiBVc2VzIEF1c3RyYWxpYW4gRW5nbGlzaCB0aHJvdWdob3V0LlxuICovXG5cbmltcG9ydCB7IGlzVGVzdEZpbGVQYXRoIH0gZnJvbSBcIi4vc2VjdXJpdHlfZml4X2dhdGUudHNcIjtcblxuLyoqXG4gKiBDYXAgb24gZGlzdGluY3QgZmlsZXMgdGhlIHJldmlldy1maXggcHJvc2Ugc2NvcGUgYXNrcyBhYm91dC5cbiAqIEEgZmlsZSBwYXN0IGl0IGlzIHJlcG9ydGVkIGFzIG5vdCBjaGVja2VkLCBuZXZlciBwYXNzZWQuXG4gKi9cbmV4cG9ydCBjb25zdCBNQVhfRE9DX1BST1NFX0ZJTEVTID0gMjA7XG5cbmNvbnN0IE1BWF9QQVRIX0xFTkdUSCA9IDUwMDtcbmNvbnN0IExFR0FDWV9TVU1NQVJZX1BBVEggPSAvXmRvY3NcXC9wci1zdW1tYXJ5LVxcZCtcXC5tZCQvO1xuXG5mdW5jdGlvbiBoYXNVbnNhZmVDaGFyYWN0ZXIocGF0aDogc3RyaW5nKTogYm9vbGVhbiB7XG4gIGZvciAobGV0IGkgPSAwOyBpIDwgcGF0aC5sZW5ndGg7IGkrKykge1xuICAgIGNvbnN0IGNvZGUgPSBwYXRoLmNoYXJDb2RlQXQoaSk7XG4gICAgaWYgKGNvZGUgPD0gMHgxZiB8fCBjb2RlID09PSAweDdmKSByZXR1cm4gdHJ1ZTtcbiAgICBpZiAoY29kZSA9PT0gMHg1YyB8fCBjb2RlID09PSAweDYwKSByZXR1cm4gdHJ1ZTsgLy8gYmFja3NsYXNoLCBiYWNrdGlja1xuICB9XG4gIHJldHVybiBmYWxzZTtcbn1cblxuLyoqXG4gKiBNYW51YWwgb3IgcHJvbXB0IHByb3NlOiBNYXJrZG93biBvdXRzaWRlIGBkb2NzL2FyY2hpdmUvcHItc3VtbWFyaWVzL2BcbiAqIChtYW51YWxzLCBgU0VDVVJJVFkubWRgLCBgQ09ESU5HLVNUQU5EQVJEUy5tZGAsIGBwcm9tcHRzLyoqXFwvcHJvbXB0Lm1kYCksXG4gKiBuZXZlciBhIFBSIHN1bW1hcnkgb3IgYSB0ZXN0IGZpeHR1cmUuIFRoZSBzaGFwZSBjaGVja1xuICogbWF0dGVycyBiZWNhdXNlIHRoZSBwYXRoIGlzIGludGVycG9sYXRlZCBpbnRvIGEgbW9kZWwgcHJvbXB0IGFuZCByZWFkIGZyb21cbiAqIGRpc2suXG4gKi9cbmZ1bmN0aW9uIGlzU2FmZVByb3NlUGF0aChwYXRoOiBzdHJpbmcpOiBib29sZWFuIHtcbiAgaWYgKHR5cGVvZiBwYXRoICE9PSBcInN0cmluZ1wiIHx8IHBhdGggPT09IFwiXCIgfHwgcGF0aCAhPT0gcGF0aC50cmltKCkpIHtcbiAgICByZXR1cm4gZmFsc2U7XG4gIH1cbiAgaWYgKHBhdGgubGVuZ3RoID4gTUFYX1BBVEhfTEVOR1RIKSByZXR1cm4gZmFsc2U7XG4gIGlmIChoYXNVbnNhZmVDaGFyYWN0ZXIocGF0aCkpIHJldHVybiBmYWxzZTtcbiAgaWYgKHBhdGguc3RhcnRzV2l0aChcIi9cIikgfHwgcGF0aC5zdGFydHNXaXRoKFwiLVwiKSkgcmV0dXJuIGZhbHNlO1xuICBpZiAocGF0aC5zcGxpdChcIi9cIikuc29tZSgocykgPT4gcyA9PT0gXCJcIiB8fCBzID09PSBcIi5cIiB8fCBzID09PSBcIi4uXCIpKSB7XG4gICAgcmV0dXJuIGZhbHNlO1xuICB9XG4gIGlmIChwYXRoLnN0YXJ0c1dpdGgoXCJkb2NzL2FyY2hpdmUvcHItc3VtbWFyaWVzL1wiKSkgcmV0dXJuIGZhbHNlO1xuICBpZiAoTEVHQUNZX1NVTU1BUllfUEFUSC50ZXN0KHBhdGgpKSByZXR1cm4gZmFsc2U7XG4gIGlmIChpc1Rlc3RGaWxlUGF0aChwYXRoKSkgcmV0dXJuIGZhbHNlO1xuICByZXR1cm4gdHJ1ZTtcbn1cblxuLyoqIE1hbnVhbCBvciBwcm9tcHQgTWFya2Rvd24sIGV4Y2x1ZGluZyBzdW1tYXJpZXMgYW5kIHRlc3RzLiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzTWFudWFsUHJvc2VQYXRoKHBhdGg6IHN0cmluZyk6IGJvb2xlYW4ge1xuICByZXR1cm4gaXNTYWZlUHJvc2VQYXRoKHBhdGgpICYmIHBhdGgudG9Mb3dlckNhc2UoKS5lbmRzV2l0aChcIi5tZFwiKTtcbn1cblxuLyoqIFNvdXJjZSBsYW5ndWFnZXMgd2hvc2UgY29tbWVudHMgdGhlIHNoYXJlZCBzb3VyY2UgbGV4ZXIgcmVjb2duaXNlcy4gKi9cbmV4cG9ydCBmdW5jdGlvbiBpc1Byb3NlU291cmNlUGF0aChwYXRoOiBzdHJpbmcpOiBib29sZWFuIHtcbiAgcmV0dXJuIGlzU2FmZVByb3NlUGF0aChwYXRoKSAmJlxuICAgIC9cXC4oPzpbY21dP1tqdF1zeD98cnN8c2h8YmFzaHx6c2h8cHlpP3xyYnxjfGNjfGNwcHxofGhwcHxqYXZhfGdvfGNzfHNxbCkkL2lcbiAgICAgIC50ZXN0KHBhdGgpO1xufVxuXG4vKipcbiAqIERlLWR1cGxpY2F0ZSB0aGUgY2hhbmdlZCBmaWxlcyAoZmlyc3Qgb2NjdXJyZW5jZSBvcmRlciksIGtlZXAgb25seSBtYW51YWxcbiAqIG9yIHByb21wdCBwcm9zZSBwYXRocywgYW5kIHNwbGl0IHRoZW0gYXQgYGNhcGAuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBzZWxlY3RNYW51YWxQcm9zZUZpbGVzKFxuICBjaGFuZ2VkRmlsZXM6IHJlYWRvbmx5IHN0cmluZ1tdLFxuICBjYXA6IG51bWJlcixcbik6IHsgZmlsZXM6IHN0cmluZ1tdOyBvdmVyQ2FwOiBzdHJpbmdbXSB9IHtcbiAgaWYgKCFOdW1iZXIuaXNJbnRlZ2VyKGNhcCkgfHwgY2FwIDwgMCkge1xuICAgIHRocm93IG5ldyBFcnJvcihgY2FwIG11c3QgYmUgYSBub24tbmVnYXRpdmUgaW50ZWdlciwgZ290ICR7Y2FwfWApO1xuICB9XG4gIGNvbnN0IHNlZW4gPSBuZXcgU2V0PHN0cmluZz4oKTtcbiAgY29uc3Qga2VwdDogc3RyaW5nW10gPSBbXTtcbiAgZm9yIChjb25zdCBmaWxlIG9mIGNoYW5nZWRGaWxlcykge1xuICAgIGlmIChzZWVuLmhhcyhmaWxlKSkgY29udGludWU7XG4gICAgc2Vlbi5hZGQoZmlsZSk7XG4gICAgaWYgKGlzTWFudWFsUHJvc2VQYXRoKGZpbGUpKSBrZXB0LnB1c2goZmlsZSk7XG4gIH1cbiAgcmV0dXJuIHsgZmlsZXM6IGtlcHQuc2xpY2UoMCwgY2FwKSwgb3ZlckNhcDoga2VwdC5zbGljZShjYXApIH07XG59XG5cbi8qKlxuICogVGhlIHBhcml0eSBydWxlIHRoZSByZXZpZXctZml4IHByb3NlIHF1ZXN0aW9uIGluY2x1ZGVzIChJc3N1ZSAjNDIyMykuXG4gKiBBIHJlZiBuYW1lcyB0aGUgYmFzZSBzaWRlIHRoZSBtb2RlbCBtYXkgb3Blbi4gV2l0aCBubyByZWYsIGEgXCJiZWZvcmVcIlxuICogY2xhaW0gdGhhdCBjYW5ub3QgYmUgY2hlY2tlZCBpcyBub3QgcmVwb3J0ZWQuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBkb2NQcm9zZVBhcml0eVJ1bGUoYmFzZVJlZjogc3RyaW5nIHwgdW5kZWZpbmVkKTogc3RyaW5nIHtcbiAgY29uc3Qgc2hhcGUgPVxuICAgIFwiQSBzZW50ZW5jZSB0aGF0IGNvbXBhcmVzIHRoZSBjaGFuZ2Ugd2l0aCB0aGUgY29kZSBiZWZvcmUgaXQsIG9yIHdpdGggYW5vdGhlciBwYXRoIChhcyBiZWZvcmUsIGV4YWN0bHkgYXMgWCBkaWQsIHRoZSBzYW1lIGFzLCB1bmNoYW5nZWQsIG5vIGJlaGF2aW91ciBjaGFuZ2UpLCBpcyBhIGNsYWltIGFib3V0IGJvdGggc2lkZXMuIFwiO1xuICBjb25zdCByZXBvcnQgPVxuICAgIFwiUmVwb3J0IHRoZSBzZW50ZW5jZSB3aGVuIHRoZSB0d28gc2lkZXMgYmVoYXZlIGRpZmZlcmVudGx5IGZvciBhbnkgY2FzZSBpdCBjb3ZlcnMsIGFuZCBuYW1lIGJvdGggYGZpbGU6bGluZWBzIGluIGByZWFzb25gLlwiO1xuICBpZiAoYmFzZVJlZiA9PT0gdW5kZWZpbmVkIHx8IGJhc2VSZWYgPT09IFwiXCIpIHtcbiAgICByZXR1cm4gc2hhcGUgK1xuICAgICAgXCJPcGVuIHRoZSBvdGhlciBwYXRoIGF0IHRoZSBoZWFkLiBBIGJlZm9yZSBjbGFpbSB0aGF0IGNhbm5vdCBiZSBjaGVja2VkIGlzIG5vdCByZXBvcnRlZC4gXCIgK1xuICAgICAgcmVwb3J0O1xuICB9XG4gIHJldHVybiBzaGFwZSArXG4gICAgYE9wZW4gdGhlIGJhc2Ugc2lkZSB3aXRoIFxcYGdpdCBzaG93ICR7YmFzZVJlZn06PHBhdGg+XFxgLCBvciB0aGUgb3RoZXIgcGF0aCBhdCB0aGUgaGVhZC4gYCArXG4gICAgcmVwb3J0O1xufVxuXG4vKiogVGhlIHByb3NlLWFnYWluc3QtY29kZSBxdWVzdGlvbiB0aGUgcmV2aWV3LWZpeCBkcmlmdCBjaGVjayBhc2tzLiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGRvY1Byb3NlQ2xhaW1JbnN0cnVjdGlvbihcbiAgY2hhbmdlOiBcInRoaXMgYnJhbmNoJ3MgZGlmZlwiIHwgXCJ0aGlzIHB1c2gncyBjaGFuZ2VcIixcbiAgYmFzZVJlZj86IHN0cmluZyxcbik6IHN0cmluZyB7XG4gIHJldHVybiBcIkZvciBlYWNoIGxpc3RlZCBNYXJrZG93biBtYW51YWwgb3IgcHJvbXB0IChhIGAubWRgIGZpbGUgdGhhdCBpcyBcIiArXG4gICAgXCJub3QgYSBQUiBzdW1tYXJ5KSwgY2hlY2sgdGhlIGxpbmVzIFwiICsgY2hhbmdlICtcbiAgICBcIiBhZGRzIG9yIGVkaXRzIGFuZCB0aGUgZXhwbGljaXRseSBsaXN0ZWQgYWZmZWN0ZWQgbWFudWFsIHNlY3Rpb25zLCBpbmNsdWRpbmcgdW5jaGFuZ2VkIHNlbnRlbmNlcy4gXCIgK1xuICAgIFwiRm9yIHNvdXJjZSBmaWxlcyBjaGVjayBvbmx5IHRoZSBsaXN0ZWQgY29tbWVudHMsIGluY2x1ZGluZyB1bmNoYW5nZWQgbW9kdWxlIGhlYWRlcnMgYW5kIGRvYyBjb21tZW50cyBhdHRhY2hlZCB0byBjaGFuZ2VkIGRlY2xhcmF0aW9ucywgYW5kIGVhY2ggbGlzdGVkIHVzZXItdmlzaWJsZSBzdHJpbmc7IG5ldmVyIHRyZWF0IGV4ZWN1dGFibGUgY29kZSBhcyBwcm9zZS4gXCIgK1xuICAgIFwiRm9yIGVhY2ggbGlzdGVkIHVzZXItdmlzaWJsZSBzdHJpbmcsIGFzayB3aGV0aGVyIHRoaXMgY2hhbmdlIHNlbmRzIGEgY2FzZSB0byB0aGlzIHRleHQgZm9yIHdoaWNoIHRoZSB0ZXh0IGlzIG5vdyBmYWxzZS4gXCIgK1xuICAgIFwiUmVwb3J0IHRoZSBsaXRlcmFsIHZlcmJhdGltIGFzIGBzZW50ZW5jZWAsIHdpdGggYGZpbGVgIHRoZSBsaXRlcmFsJ3MgZmlsZSwgYW5kIG5hbWUgdGhlIGBmaWxlOmxpbmVgIG9mIHRoZSBjaGFuZ2VkIGh1bmsgdGhhdCBzZW5kcyB0aGUgbmV3IGNhc2UgaW4gYHJlYXNvbmAuIFwiICtcbiAgICBcIkluIHVuY2hhbmdlZCBwcm9zZSBhc2sgd2hldGhlciB0aGlzIGNoYW5nZSBtYWtlcyB0aGUgc2VudGVuY2UgZmFsc2UsIG5vdCB3aGV0aGVyIGl0IHdhcyBhbHdheXMgcmlnaHQ6IHRoaXMgaXMgbm90IGEgd2hvbGUtbWFudWFsIGF1ZGl0LiBcIiArXG4gICAgXCJDaGVjayBvbmx5IHNlbnRlbmNlcyB0aGF0IHNheSB3aGVuIHRoZSBjaGFuZ2UncyBuZXcgXCIgK1xuICAgIFwiYmVoYXZpb3VyIGhhcHBlbnMsIHdoYXQgaXQgcmVmdXNlcywgcmVqZWN0cywgYWxsb3dzIG9yIHNraXBzLCBvciB0aGF0IFwiICtcbiAgICAndXNlIGFuIGFic29sdXRlIHdvcmQgKFwib25seVwiLCBcIm5ldmVyXCIsIFwiYWx3YXlzXCIsIFwiYW55XCIsIFwiZXZlcnlcIiwgJyArXG4gICAgJ1wiYWxsXCIsIFwiZWFjaFwiLCBcImF1dG9tYXRpY2FsbHlcIiksIGEgY291bnRlZCBvciBjbG9zZWQgbGlzdCAnICtcbiAgICAnKFwiWCwgWSBhbmQgWiBhcmUgdGhlIOKAplwiKSwgb3IgYSBjb21wYXJpc29uIHdpdGggZWFybGllciBjb2RlIG9yIGFub3RoZXIgcGF0aCAnICtcbiAgICAnKFwiYXMgYmVmb3JlXCIsIFwiZXhhY3RseSBhcyBYIGRpZFwiLCBcInRoZSBzYW1lIGFzXCIsIFwidW5jaGFuZ2VkXCIsIFwibm8gYmVoYXZpb3VyIGNoYW5nZVwiKS4gRm9yIGVhY2ggc3VjaCBzZW50ZW5jZSwgb3BlbiB0aGUgaGVhZCBjb2RlICcgK1xuICAgIFwidGhhdCBkZWNpZGVzIGl0IOKAlCB0aGUgYnJhbmNoIGNvbmRpdGlvbiwgaXRzIGNhbGxlcnMsIHRoZSBsaXN0IG9yIHNldCBcIiArXG4gICAgXCJpdCBuYW1lcyDigJQgd2l0aCBSZWFkIG9yIEdyZXAsIGFuZCByZXBvcnQgdGhlIHNlbnRlbmNlIHdoZW4gdGhhdCBjb2RlIFwiICtcbiAgICBcImNvbnRyYWRpY3RzIGl0OiBhIGNvbmRpdGlvbiB0aGUgY29kZSBuZXZlciB0ZXN0cywgYSByZWZ1c2FsIHRoZSBjb2RlIFwiICtcbiAgICBcImNhdGNoZXMgYW5kIGNhcnJpZXMgb24gcGFzdCwgYW4gZW50cnkgdGhlIGxpc3QgZG9lcyBub3QgaG9sZCwgYSBwYXRoIFwiICtcbiAgICBcInRoZSBhYnNvbHV0ZSB3b3JkIG1pc3Nlcy4gUXVvdGUgaXQgdmVyYmF0aW0sIG9uZSBwZXIgZW50cnksIHdpdGggXCIgK1xuICAgIFwiYGZpbGVgID0gdGhhdCBtYW51YWwsIHByb21wdCBvciBzb3VyY2UgZmlsZSdzIHBhdGgsIGFuZCBuYW1lIHRoZSBjb250cmFkaWN0aW5nIFwiICtcbiAgICBcImBmaWxlOmxpbmVgIGluIGByZWFzb25gLiBEbyBub3QgcmVwb3J0IGEgc2VudGVuY2UgdGhlIGhlYWQgY29kZSBhZ3JlZXMgXCIgK1xuICAgIFwid2l0aCwgb3Igb25lIHlvdSBjb3VsZCBub3QgY2hlY2suIFdoZW4gYSBzZW50ZW5jZSBuYW1lcyBhIHNldCB3aXRob3V0IGEgc2luZ2xlIGxpc3QgaW4gY29kZSAoc2lnbmFsIHNlbmRlcnMsIGNhbGxlcnMgb3IgcmVzdWx0IHJlYWRlcnMsIG9yIGZpbGVzIGEgY29tbWFuZCByZWFkcyksIEdyZXAgdGhlIHdob2xlIGhlYWQgdHJlZSBmb3Igb3RoZXIgbWVtYmVycywgaW5jbHVkaW5nIGZpbGVzIG91dHNpZGUgdGhlIGRpZmYuIFwiICtcbiAgICBkb2NQcm9zZVBhcml0eVJ1bGUoYmFzZVJlZik7XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7Ozs7OztDQVlDLEdBRUQsU0FBUyxjQUFjLFFBQVEseUJBQXlCO0FBRXhEOzs7Q0FHQyxHQUNELE9BQU8sTUFBTSxzQkFBc0IsR0FBRztBQUV0QyxNQUFNLGtCQUFrQjtBQUN4QixNQUFNLHNCQUFzQjtBQUU1QixTQUFTLG1CQUFtQixJQUFZO0VBQ3RDLElBQUssSUFBSSxJQUFJLEdBQUcsSUFBSSxLQUFL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
+// denoCacheMetadata=12107940425992253157,15741486526778030136

@@ -1,0 +1,35 @@
+// Ported and adapted from js-yaml-js-types v1.0.0:
+// https://github.com/nodeca/js-yaml-js-types/tree/ac537e7bbdd3c2cbbd9882ca3919c520c2dc022b
+// Copyright 2011-2015 by Vitaly Puzrin. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+import type { Type } from "../_type.ts";
+
+const REGEXP = /^\/(?<regexp>[\s\S]+)\/(?<modifiers>[gismuy]*)$/;
+
+export const regexp: Type<"scalar", RegExp> = {
+  tag: "tag:yaml.org,2002:js/regexp",
+  kind: "scalar",
+  resolve(data: string | null): boolean {
+    if (data === null || !data.length) return false;
+
+    if (data.charAt(0) === "/") {
+      // Ensure regex is properly terminated
+      const groups = data.match(REGEXP)?.groups;
+      if (!groups) return false;
+      // Check no duplicate modifiers
+      const modifiers = groups.modifiers ?? "";
+      if (new Set(modifiers).size < modifiers.length) return false;
+    }
+
+    return true;
+  },
+  construct(data: string): RegExp {
+    const { regexp = data, modifiers = "" } = data.match(REGEXP)?.groups ?? {};
+    return new RegExp(regexp, modifiers);
+  },
+  predicate: (object: unknown): object is RegExp => object instanceof RegExp,
+  represent: (object: RegExp): string => object.toString(),
+};
+
+// denoCacheMetadata={"headers":{"age":"5948349","vary":"Origin","set-cookie":"__cf_bm=EKMExLmA1jT8D65Arkdwc4Z9seRQ8bBFJEUt0wC8e68-1794298095.8789256-1.0.1.1-MKAftZQUieh62._jBf.8r9OyndZ1fHm9FhRIiGproeBI6oXJpgcwYTRXB1x9roscf75z7vgBNyMm5f1V5VWjNmJ0itPZEUxX2qydDN_1pqSimoWBp5GPCo0xzIf7M0lE; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=Ap0YHYKubutmI8t2UBaJzeTPPSt2FH5l2IWmi0Y0yNAQNKVOdK%2FdnV3wOEOjd%2BT%2F5fhNDMwhIa5nbbpYYwLvDSAyHgTH74mbenCO%2F%2F7BzorsMI8A%2FHJiF%2Fo%3D\"}]}","cross-origin-resource-policy":"cross-origin","accept-ranges":"bytes","content-length":"1231","content-type":"text/typescript","etag":"\"cf0182f630869817ede7d2df7a05e25c\"","date":"Tue, 10 Nov 2026 08:08:15 GMT","cache-control":"public, max-age=31536000, immutable","cf-ray":"a583917b2ded561f-SYD","x-content-type-options":"nosniff","alt-svc":"h3=\":443\"; ma=86400","access-control-expose-headers":"*","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","x-jsr-backend":"modules","x-robots-tag":"noindex","cf-cache-status":"HIT","access-control-allow-origin":"*","server":"cloudflare","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}"},"url":"https://jsr.io/@std/yaml/1.0.12/_type/regexp.ts","time":1794298095}

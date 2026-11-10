@@ -1,0 +1,147 @@
+/**
+ * Canonical `owner/repo` slug validation (Issues #2692, #1291).
+ *
+ * The pattern lives in its own module so the setup CLI can apply the same
+ * guard the worker's config loader applies without importing the worker's
+ * whole configuration graph. `lib/config.ts` re-exports
+ * {@link REPO_SLUG_PATTERN}, so every existing importer is unchanged.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation).
+ */ /**
+ * Pattern matching a valid GitHub `owner/repo` slug.
+ *
+ * Each segment must begin with an alphanumeric, underscore, or hyphen —
+ * never a dot. This rejects path-traversal and dot-only segments such as
+ * `owner/..`, `owner/.`, or `../x` (Issue #2692): the slug is derived into
+ * a filesystem path by `setupRepo()` and by the setup CLI's
+ * `syncGitignoreForAllRepos()`, so a `..` segment would otherwise steer
+ * writes above `WORK_DIR`. GitHub slugs never legitimately start with a
+ * dot, so the constraint costs no valid input.
+ */ export const REPO_SLUG_PATTERN = /^[a-zA-Z0-9_-][a-zA-Z0-9._-]*\/[a-zA-Z0-9_-][a-zA-Z0-9._-]*$/;
+/** True when `repo` is a string in valid `owner/repo` form. */ export function isValidRepoSlug(repo) {
+  return typeof repo === "string" && REPO_SLUG_PATTERN.test(repo);
+}
+/**
+ * Render an untrusted slug inert for display in an error message, a log
+ * line, or an issue body.
+ *
+ * A rejected slug still has to be *reported* — dropping it silently is the
+ * failure mode this guard exists to prevent — but it must not carry shell or
+ * Markdown metacharacters into the text that reports it (Issue #1291: the
+ * precheck issue body is pasted into a repo admin's shell). Everything
+ * outside the slug alphabet becomes `?`.
+ */ export function renderInertRepoSlug(repo) {
+  const raw = typeof repo === "string" ? repo : String(repo);
+  const clipped = raw.length > 80 ? `${raw.slice(0, 80)}...` : raw;
+  const inert = clipped.replace(/[^A-Za-z0-9._/-]/g, "?");
+  return inert === "" ? "(empty)" : inert;
+}
+/** Split a slug list into the entries that pass the guard and those that do not. */ export function partitionRepoSlugs(repos) {
+  const valid = [];
+  const invalid = [];
+  for (const repo of repos){
+    if (isValidRepoSlug(repo)) valid.push(repo);
+    else invalid.push(repo);
+  }
+  return {
+    valid,
+    invalid
+  };
+}
+/**
+ * Assert every entry of `repos` is a valid slug, throwing an error that names
+ * each rejected entry (rendered inert) and where it came from.
+ *
+ * @param repos - The candidate slugs.
+ * @param source - Human-readable origin, e.g. `VIBE_REPOS` or the config path.
+ * @returns The validated slugs, so callers can assign the result directly.
+ * @throws When any entry fails {@link REPO_SLUG_PATTERN}.
+ */ export function assertValidRepoSlugs(repos, source) {
+  const { valid, invalid } = partitionRepoSlugs(repos);
+  if (invalid.length > 0) {
+    const rendered = invalid.map((repo)=>`"${renderInertRepoSlug(repo)}"`).join(", ");
+    throw new Error(`Invalid repository slug(s) in ${source}: ${rendered}. ` + "Repositories must be in owner/repo format, and neither segment may " + "start with a dot. Fix the entry rather than removing the guard.");
+  }
+  return valid;
+}
+/**
+ * De-duplicate a `repos` list case-insensitively (Issue #1546).
+ *
+ * GitHub repository names are case-insensitive, so `owner/Repo` and
+ * `owner/repo` are one repository. A `.config.json` listing both ran every
+ * per-repository scan twice and let the two slots of one worker race each
+ * other for the same issue, while anything keyed by the configured spelling
+ * — watermarks, caches, the write-repo allowlist — forked into two states
+ * that could disagree.
+ *
+ * The first spelling wins, because it is the one the operator's file already
+ * established elsewhere. Dropped entries are returned rather than swallowed:
+ * the operator's file has a defect worth naming.
+ *
+ * @param repos - The configured slugs, in file order.
+ */ export function dedupeRepoSlugs(repos) {
+  const kept = [];
+  const duplicates = [];
+  const seen = new Map();
+  for (const repo of repos){
+    const key = repo.trim().toLowerCase();
+    const first = seen.get(key);
+    if (first !== undefined) {
+      duplicates.push({
+        kept: first,
+        dropped: repo
+      });
+      continue;
+    }
+    seen.set(key, repo);
+    kept.push(repo);
+  }
+  return {
+    repos: kept,
+    duplicates
+  };
+}
+/**
+ * The operator-facing sentence for one dropped duplicate.
+ *
+ * Both spellings are rendered inert ({@link renderInertRepoSlug}) because the
+ * warning is written to logs and to setup output, and a `repos` entry is
+ * operator-supplied text.
+ */ export function duplicateRepoSlugWarning(duplicate) {
+  const dropped = renderInertRepoSlug(duplicate.dropped);
+  const kept = renderInertRepoSlug(duplicate.kept);
+  // An identical entry is the same defect with a different cause, and
+  // "duplicates itself" would misdescribe it.
+  if (dropped === kept) {
+    return `repos: "${kept}" is listed twice — ignoring the second`;
+  }
+  return `repos: "${dropped}" duplicates "${kept}" (GitHub repository names ` + "are case-insensitive) — ignoring the second";
+}
+/**
+ * Every sentence a set of dropped duplicates owes the operator.
+ *
+ * One line per duplicate, plus a second line whenever `repo_config` is keyed
+ * to the spelling that was dropped: the orphan prune matches
+ * case-insensitively so that block survives the rewrite, but per-repo
+ * settings are looked up by the exact configured slug, so it is never read
+ * again. Losing per-repo settings without a word is the silent failure this
+ * names (Issue #1546).
+ *
+ * @param duplicates - The dropped entries, from {@link dedupeRepoSlugs}.
+ * @param repoConfigKeys - The `repo_config` keys the same config carries.
+ */ export function duplicateRepoSlugWarnings(duplicates, repoConfigKeys = []) {
+  const warnings = [];
+  for (const duplicate of duplicates){
+    warnings.push(duplicateRepoSlugWarning(duplicate));
+    // An identical entry keys repo_config the same way the kept one does,
+    // so nothing is orphaned by dropping it.
+    if (duplicate.dropped.trim() === duplicate.kept.trim()) continue;
+    const droppedKey = duplicate.dropped.trim().toLowerCase();
+    const orphaned = repoConfigKeys.some((key)=>key.trim().toLowerCase() === droppedKey && key !== duplicate.kept);
+    if (!orphaned) continue;
+    warnings.push(`repo_config is keyed to "${renderInertRepoSlug(duplicate.dropped)}", ` + "the spelling just dropped, so its per-repo settings are no longer " + `read — re-key it to "${renderInertRepoSlug(duplicate.kept)}"`);
+  }
+  return warnings;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9yZXBvX3NsdWcudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBDYW5vbmljYWwgYG93bmVyL3JlcG9gIHNsdWcgdmFsaWRhdGlvbiAoSXNzdWVzICMyNjkyLCAjMTI5MSkuXG4gKlxuICogVGhlIHBhdHRlcm4gbGl2ZXMgaW4gaXRzIG93biBtb2R1bGUgc28gdGhlIHNldHVwIENMSSBjYW4gYXBwbHkgdGhlIHNhbWVcbiAqIGd1YXJkIHRoZSB3b3JrZXIncyBjb25maWcgbG9hZGVyIGFwcGxpZXMgd2l0aG91dCBpbXBvcnRpbmcgdGhlIHdvcmtlcidzXG4gKiB3aG9sZSBjb25maWd1cmF0aW9uIGdyYXBoLiBgbGliL2NvbmZpZy50c2AgcmUtZXhwb3J0c1xuICoge0BsaW5rIFJFUE9fU0xVR19QQVRURVJOfSwgc28gZXZlcnkgZXhpc3RpbmcgaW1wb3J0ZXIgaXMgdW5jaGFuZ2VkLlxuICpcbiAqIFVzZXMgQXVzdHJhbGlhbiBFbmdsaXNoIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgY29sb3VyLCBvcmdhbmlzYXRpb24pLlxuICovXG5cbi8qKlxuICogUGF0dGVybiBtYXRjaGluZyBhIHZhbGlkIEdpdEh1YiBgb3duZXIvcmVwb2Agc2x1Zy5cbiAqXG4gKiBFYWNoIHNlZ21lbnQgbXVzdCBiZWdpbiB3aXRoIGFuIGFscGhhbnVtZXJpYywgdW5kZXJzY29yZSwgb3IgaHlwaGVuIOKAlFxuICogbmV2ZXIgYSBkb3QuIFRoaXMgcmVqZWN0cyBwYXRoLXRyYXZlcnNhbCBhbmQgZG90LW9ubHkgc2VnbWVudHMgc3VjaCBhc1xuICogYG93bmVyLy4uYCwgYG93bmVyLy5gLCBvciBgLi4veGAgKElzc3VlICMyNjkyKTogdGhlIHNsdWcgaXMgZGVyaXZlZCBpbnRvXG4gKiBhIGZpbGVzeXN0ZW0gcGF0aCBieSBgc2V0dXBSZXBvKClgIGFuZCBieSB0aGUgc2V0dXAgQ0xJJ3NcbiAqIGBzeW5jR2l0aWdub3JlRm9yQWxsUmVwb3MoKWAsIHNvIGEgYC4uYCBzZWdtZW50IHdvdWxkIG90aGVyd2lzZSBzdGVlclxuICogd3JpdGVzIGFib3ZlIGBXT1JLX0RJUmAuIEdpdEh1YiBzbHVncyBuZXZlciBsZWdpdGltYXRlbHkgc3RhcnQgd2l0aCBhXG4gKiBkb3QsIHNvIHRoZSBjb25zdHJhaW50IGNvc3RzIG5vIHZhbGlkIGlucHV0LlxuICovXG5leHBvcnQgY29uc3QgUkVQT19TTFVHX1BBVFRFUk4gPVxuICAvXlthLXpBLVowLTlfLV1bYS16QS1aMC05Ll8tXSpcXC9bYS16QS1aMC05Xy1dW2EtekEtWjAtOS5fLV0qJC87XG5cbi8qKiBUcnVlIHdoZW4gYHJlcG9gIGlzIGEgc3RyaW5nIGluIHZhbGlkIGBvd25lci9yZXBvYCBmb3JtLiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzVmFsaWRSZXBvU2x1ZyhyZXBvOiB1bmtub3duKTogcmVwbyBpcyBzdHJpbmcge1xuICByZXR1cm4gdHlwZW9mIHJlcG8gPT09IFwic3RyaW5nXCIgJiYgUkVQT19TTFVHX1BBVFRFUk4udGVzdChyZXBvKTtcbn1cblxuLyoqXG4gKiBSZW5kZXIgYW4gdW50cnVzdGVkIHNsdWcgaW5lcnQgZm9yIGRpc3BsYXkgaW4gYW4gZXJyb3IgbWVzc2FnZSwgYSBsb2dcbiAqIGxpbmUsIG9yIGFuIGlzc3VlIGJvZHkuXG4gKlxuICogQSByZWplY3RlZCBzbHVnIHN0aWxsIGhhcyB0byBiZSAqcmVwb3J0ZWQqIOKAlCBkcm9wcGluZyBpdCBzaWxlbnRseSBpcyB0aGVcbiAqIGZhaWx1cmUgbW9kZSB0aGlzIGd1YXJkIGV4aXN0cyB0byBwcmV2ZW50IOKAlCBidXQgaXQgbXVzdCBub3QgY2Fycnkgc2hlbGwgb3JcbiAqIE1hcmtkb3duIG1ldGFjaGFyYWN0ZXJzIGludG8gdGhlIHRleHQgdGhhdCByZXBvcnRzIGl0IChJc3N1ZSAjMTI5MTogdGhlXG4gKiBwcmVjaGVjayBpc3N1ZSBib2R5IGlzIHBhc3RlZCBpbnRvIGEgcmVwbyBhZG1pbidzIHNoZWxsKS4gRXZlcnl0aGluZ1xuICogb3V0c2lkZSB0aGUgc2x1ZyBhbHBoYWJldCBiZWNvbWVzIGA/YC5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHJlbmRlckluZXJ0UmVwb1NsdWcocmVwbzogdW5rbm93bik6IHN0cmluZyB7XG4gIGNvbnN0IHJhdyA9IHR5cGVvZiByZXBvID09PSBcInN0cmluZ1wiID8gcmVwbyA6IFN0cmluZyhyZXBvKTtcbiAgY29uc3QgY2xpcHBlZCA9IHJhdy5sZW5ndGggPiA4MCA/IGAke3Jhdy5zbGljZSgwLCA4MCl9Li4uYCA6IHJhdztcbiAgY29uc3QgaW5lcnQgPSBjbGlwcGVkLnJlcGxhY2UoL1teQS1aYS16MC05Ll8vLV0vZywgXCI/XCIpO1xuICByZXR1cm4gaW5lcnQgPT09IFwiXCIgPyBcIihlbXB0eSlcIiA6IGluZXJ0O1xufVxuXG4vKiogU3BsaXQgYSBzbHVnIGxpc3QgaW50byB0aGUgZW50cmllcyB0aGF0IHBhc3MgdGhlIGd1YXJkIGFuZCB0aG9zZSB0aGF0IGRvIG5vdC4gKi9cbmV4cG9ydCBmdW5jdGlvbiBwYXJ0aXRpb25SZXBvU2x1Z3MoXG4gIHJlcG9zOiByZWFkb25seSB1bmtub3duW10sXG4pOiB7IHZhbGlkOiBzdHJpbmdbXTsgaW52YWxpZDogdW5rbm93bltdIH0ge1xuICBjb25zdCB2YWxpZDogc3RyaW5nW10gPSBbXTtcbiAgY29uc3QgaW52YWxpZDogdW5rbm93bltdID0gW107XG4gIGZvciAoY29uc3QgcmVwbyBvZiByZXBvcykge1xuICAgIGlmIChpc1ZhbGlkUmVwb1NsdWcocmVwbykpIHZhbGlkLnB1c2gocmVwbyk7XG4gICAgZWxzZSBpbnZhbGlkLnB1c2gocmVwbyk7XG4gIH1cbiAgcmV0dXJuIHsgdmFsaWQsIGludmFsaWQgfTtcbn1cblxuLyoqXG4gKiBBc3NlcnQgZXZlcnkgZW50cnkgb2YgYHJlcG9zYCBpcyBhIHZhbGlkIHNsdWcsIHRocm93aW5nIGFuIGVycm9yIHRoYXQgbmFtZXNcbiAqIGVhY2ggcmVqZWN0ZWQgZW50cnkgKHJlbmRlcmVkIGluZXJ0KSBhbmQgd2hlcmUgaXQgY2FtZSBmcm9tLlxuICpcbiAqIEBwYXJhbSByZXBvcyAtIFRoZSBjYW5kaWRhdGUgc2x1Z3MuXG4gKiBAcGFyYW0gc291cmNlIC0gSHVtYW4tcmVhZGFibGUgb3JpZ2luLCBlLmcuIGBWSUJFX1JFUE9TYCBvciB0aGUgY29uZmlnIHBhdGguXG4gKiBAcmV0dXJucyBUaGUgdmFsaWRhdGVkIHNsdWdzLCBzbyBjYWxsZXJzIGNhbiBhc3NpZ24gdGhlIHJlc3VsdCBkaXJlY3RseS5cbiAqIEB0aHJvd3MgV2hlbiBhbnkgZW50cnkgZmFpbHMge0BsaW5rIFJFUE9fU0xVR19QQVRURVJOfS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGFzc2VydFZhbGlkUmVwb1NsdWdzKFxuICByZXBvczogcmVhZG9ubHkgdW5rbm93bltdLFxuICBzb3VyY2U6IHN0cmluZyxcbik6IHN0cmluZ1tdIHtcbiAgY29uc3QgeyB2YWxpZCwgaW52YWxpZCB9ID0gcGFydGl0aW9uUmVwb1NsdWdzKHJlcG9zKTtcbiAgaWYgKGludmFsaWQubGVuZ3RoID4gMCkge1xuICAgIGNvbnN0IHJlbmRlcmVkID0gaW52YWxpZC5tYXAoKHJlcG8pID0+IGBcIiR7cmVuZGVySW5lcnRSZXBvU2x1ZyhyZXBvKX1cImApXG4gICAgICAuam9pbihcIiwgXCIpO1xuICAgIHRocm93IG5ldyBFcnJvcihcbiAgICAgIGBJbnZhbGlkIHJlcG9zaXRvcnkgc2x1ZyhzKSBpbiAke3NvdXJjZX06ICR7cmVuZGVyZWR9LiBgICtcbiAgICAgICAgXCJSZXBvc2l0b3JpZXMgbXVzdCBiZSBpbiBvd25lci9yZXBvIGZvcm1hdCwgYW5kIG5laXRoZXIgc2VnbWVudCBtYXkgXCIgK1xuICAgICAgICBcInN0YXJ0IHdpdGggYSBkb3QuIEZpeCB0aGUgZW50cnkgcmF0aGVyIHRoYW4gcmVtb3ZpbmcgdGhlIGd1YXJkLlwiLFxuICAgICk7XG4gIH1cbiAgcmV0dXJuIHZhbGlkO1xufVxuXG4vKiogT25lIGByZXBvc2AgZW50cnkgZHJvcHBlZCBhcyBhIGNhc2UtdmFyaWFudCwgYW5kIHRoZSBlbnRyeSBpdCBkdXBsaWNhdGVzLiAqL1xuZXhwb3J0IGludGVyZmFjZSBEdXBsaWNhdGVSZXBvU2x1ZyB7XG4gIC8qKiBUaGUgc3BlbGxpbmcgdGhhdCB3YXMga2VwdCDigJQgdGhlIGZpcnN0IG9jY3VycmVuY2UsIGluIGxpc3Qgb3JkZXIuICovXG4gIGtlcHQ6IHN0cmluZztcbiAgLyoqIFRoZSBsYXRlciBzcGVsbGluZyB0aGF0IHdhcyBpZ25vcmVkLiAqL1xuICBkcm9wcGVkOiBzdHJpbmc7XG59XG5cbi8qKiBPdXRjb21lIG9mIHtAbGluayBkZWR1cGVSZXBvU2x1Z3N9LiAqL1xuZXhwb3J0IGludGVyZmFjZSBSZXBvU2x1Z0RlZHVwUmVzdWx0IHtcbiAgLyoqIFRoZSBkZS1kdXBsaWNhdGVkIGxpc3QsIGluIGlucHV0IG9yZGVyLCBpbiB0aGUgZmlyc3Qtc2VlbiBzcGVsbGluZy4gKi9cbiAgcmVwb3M6IHN0cmluZ1tdO1xuICAvKiogRXZlcnkgZHJvcHBlZCBlbnRyeSwgaW4gaW5wdXQgb3JkZXIuIENhbGxlcnMgbXVzdCByZXBvcnQgdGhlc2UuICovXG4gIGR1cGxpY2F0ZXM6IER1cGxpY2F0ZVJlcG9TbHVnW107XG59XG5cbi8qKlxuICogRGUtZHVwbGljYXRlIGEgYHJlcG9zYCBsaXN0IGNhc2UtaW5zZW5zaXRpdmVseSAoSXNzdWUgIzE1NDYpLlxuICpcbiAqIEdpdEh1YiByZXBvc2l0b3J5IG5hbWVzIGFyZSBjYXNlLWluc2Vuc2l0aXZlLCBzbyBgb3duZXIvUmVwb2AgYW5kXG4gKiBgb3duZXIvcmVwb2AgYXJlIG9uZSByZXBvc2l0b3J5LiBBIGAuY29uZmlnLmpzb25gIGxpc3RpbmcgYm90aCByYW4gZXZlcnlcbiAqIHBlci1yZXBvc2l0b3J5IHNjYW4gdHdpY2UgYW5kIGxldCB0aGUgdHdvIHNsb3RzIG9mIG9uZSB3b3JrZXIgcmFjZSBlYWNoXG4gKiBvdGhlciBmb3IgdGhlIHNhbWUgaXNzdWUsIHdoaWxlIGFueXRoaW5nIGtleWVkIGJ5IHRoZSBjb25maWd1cmVkIHNwZWxsaW5nXG4gKiDigJQgd2F0ZXJtYXJrcywgY2FjaGVzLCB0aGUgd3JpdGUtcmVwbyBhbGxvd2xpc3Qg4oCUIGZvcmtlZCBpbnRvIHR3byBzdGF0ZXNcbiAqIHRoYXQgY291bGQgZGlzYWdyZWUuXG4gKlxuICogVGhlIGZpcnN0IHNwZWxsaW5nIHdpbnMsIGJlY2F1c2UgaXQgaXMgdGhlIG9uZSB0aGUgb3BlcmF0b3IncyBmaWxlIGFscmVhZHlcbiAqIGVzdGFibGlzaGVkIGVsc2V3aGVyZS4gRHJvcHBlZCBlbnRyaWVzIGFyZSByZXR1cm5lZCByYXRoZXIgdGhhbiBzd2FsbG93ZWQ6XG4gKiB0aGUgb3BlcmF0b3IncyBmaWxlIGhhcyBhIGRlZmVjdCB3b3J0aCBuYW1pbmcuXG4gKlxuICogQHBhcmFtIHJlcG9zIC0gVGhlIGNvbmZpZ3VyZWQgc2x1Z3MsIGluIGZpbGUgb3JkZXIuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBkZWR1cGVSZXBvU2x1Z3MoXG4gIHJlcG9zOiByZWFkb25seSBzdHJpbmdbXSxcbik6IFJlcG9TbHVnRGVkdXBSZXN1bHQge1xuICBjb25zdCBrZXB0OiBzdHJpbmdbXSA9IFtdO1xuICBjb25zdCBkdXBsaWNhdGVzOiBEdXBsaWNhdGVSZXBvU2x1Z1tdID0gW107XG4gIGNvbnN0IHNlZW4gPSBuZXcgTWFwPHN0cmluZywgc3RyaW5nPigpO1xuXG4gIGZvciAoY29uc3QgcmVwbyBvZiByZXBvcykge1xuICAgIGNvbnN0IGtleSA9IHJlcG8udHJpbSgpLnRvTG93ZXJDYXNlKCk7XG4gICAgY29uc3QgZmlyc3QgPSBzZWVuLmdldChrZXkpO1xuICAgIGlmIChmaXJzdCAhPT0gdW5kZWZpbmVkKSB7XG4gICAgICBkdXBsaWNhdGVzLnB1c2goeyBrZXB0OiBmaXJzdCwgZHJvcHBlZDogcmVwbyB9KTtcbiAgICAgIGNvbnRpbnVlO1xuICAgIH1cbiAgICBzZWVuLnNldChrZXksIHJlcG8pO1xuICAgIGtlcHQucHVzaChyZXBvKTtcbiAgfVxuXG4gIHJldHVybiB7IHJlcG9zOiBrZXB0LCBkdXBsaWNhdGVzIH07XG59XG5cbi8qKlxuICogVGhlIG9wZXJhdG9yLWZhY2luZyBzZW50ZW5jZSBmb3Igb25lIGRyb3BwZWQgZHVwbGljYXRlLlxuICpcbiAqIEJvdGggc3BlbGxpbmdzIGFyZSByZW5kZXJlZCBpbmVydCAoe0BsaW5rIHJlbmRlckluZXJ0UmVwb1NsdWd9KSBiZWNhdXNlIHRoZVxuICogd2FybmluZyBpcyB3cml0dGVuIHRvIGxvZ3MgYW5kIHRvIHNldHVwIG91dHB1dCwgYW5kIGEgYHJlcG9zYCBlbnRyeSBpc1xuICogb3BlcmF0b3Itc3VwcGxpZWQgdGV4dC5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGR1cGxpY2F0ZVJlcG9TbHVnV2FybmluZyhcbiAgZHVwbGljYXRlOiBEdXBsaWNhdGVSZXBvU2x1Zyxcbik6IHN0cmluZyB7XG4gIGNvbnN0IGRyb3BwZWQgPSByZW5kZXJJbmVydFJlcG9TbHVnKGR1cGxpY2F0ZS5kcm9wcGVkKTtcbiAgY29uc3Qga2VwdCA9IHJlbmRlckluZXJ0UmVwb1NsdWcoZHVwbGljYXRlLmtlcHQpO1xuICAvLyBBbiBpZGVudGljYWwgZW50cnkgaXMgdGhlIHNhbWUgZGVmZWN0IHdpdGggYSBkaWZmZXJlbnQgY2F1c2UsIGFuZFxuICAvLyBcImR1cGxpY2F0ZXMgaXRzZWxmXCIgd291bGQgbWlzZGVzY3JpYmUgaXQuXG4gIGlmIChkcm9wcGVkID09PSBrZXB0KSB7XG4gICAgcmV0dXJuIGByZXBvczogXCIke2tlcHR9XCIgaXMgbGlzdGVkIHR3aWNlIOKAlCBpZ25vcmluZyB0aGUgc2Vjb25kYDtcbiAgfVxuICByZXR1cm4gYHJlcG9zOiBcIiR7ZHJvcHBlZH1cIiBkdXBsaWNhdGVzIFwiJHtrZXB0fVwiIChHaXRIdWIgcmVwb3NpdG9yeSBuYW1lcyBgICtcbiAgICBcImFyZSBjYXNlLWluc2Vuc2l0aXZlKSDigJQgaWdub3JpbmcgdGhlIHNlY29uZFwiO1xufVxuXG4vKipcbiAqIEV2ZXJ5IHNlbnRlbmNlIGEgc2V0IG9mIGRyb3BwZWQgZHVwbGljYXRlcyBvd2VzIHRoZSBvcGVyYXRvci5cbiAqXG4gKiBPbmUgbGluZSBwZXIgZHVwbGljYXRlLCBwbHVzIGEgc2Vjb25kIGxpbmUgd2hlbmV2ZXIgYHJlcG9fY29uZmlnYCBpcyBrZXllZFxuICogdG8gdGhlIHNwZWxsaW5nIHRoYXQgd2FzIGRyb3BwZWQ6IHRoZSBvcnBoYW4gcHJ1bmUgbWF0Y2hlc1xuICogY2FzZS1pbnNlbnNpdGl2ZWx5IHNvIHRoYXQgYmxvY2sgc3Vydml2ZXMgdGhlIHJld3JpdGUsIGJ1dCBwZXItcmVwb1xuICogc2V0dGluZ3MgYXJlIGxvb2tlZCB1cCBieSB0aGUgZXhhY3QgY29uZmlndXJlZCBzbHVnLCBzbyBpdCBpcyBuZXZlciByZWFkXG4gKiBhZ2Fpbi4gTG9zaW5nIHBlci1yZXBvIHNldHRpbmdzIHdpdGhvdXQgYSB3b3JkIGlzIHRoZSBzaWxlbnQgZmFpbHVyZSB0aGlzXG4gKiBuYW1lcyAoSXNzdWUgIzE1NDYpLlxuICpcbiAqIEBwYXJhbSBkdXBsaWNhdGVzIC0gVGhlIGRyb3BwZWQgZW50cmllcywgZnJvbSB7QGxpbmsgZGVkdXBlUmVwb1NsdWdzfS5cbiAqIEBwYXJhbSByZXBvQ29uZmlnS2V5cyAtIFRoZSBgcmVwb19jb25maWdgIGtleXMgdGhlIHNhbWUgY29uZmlnIGNhcnJpZXMuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBkdXBsaWNhdGVSZXBvU2x1Z1dhcm5pbmdzKFxuICBkdXBsaWNhdGVzOiByZWFkb25seSBEdXBsaWNhdGVSZXBvU2x1Z1tdLFxuICByZXBvQ29uZmlnS2V5czogcmVhZG9ubHkgc3RyaW5nW10gPSBbXSxcbik6IHN0cmluZ1tdIHtcbiAgY29uc3Qgd2FybmluZ3M6IHN0cmluZ1tdID0gW107XG4gIGZvciAoY29uc3QgZHVwbGljYXRlIG9mIGR1cGxpY2F0ZXMpIHtcbiAgICB3YXJuaW5ncy5wdXNoKGR1cGxpY2F0ZVJlcG9TbHVnV2FybmluZyhkdXBsaWNhdGUpKTtcblxuICAgIC8vIEFuIGlkZW50aWNhbCBlbnRyeSBrZXlzIHJlcG9fY29uZmlnIHRoZSBzYW1lIHdheSB0aGUga2VwdCBvbmUgZG9lcyxcbiAgICAvLyBzbyBub3RoaW5nIGlzIG9ycGhhbmVkIGJ5IGRyb3BwaW5nIGl0LlxuICAgIGlmIChkdXBsaWNhdGUuZHJvcHBlZC50cmltKCkgPT09IGR1cGxpY2F0ZS5rZXB0LnRyaW0oKSkgY29udGludWU7XG5cbiAgICBjb25zdCBkcm9wcGVkS2V5ID0gZHVwbGljYXRlLmRyb3BwZWQudHJpbSgpLnRvTG93ZXJDYXNlKCk7XG5cbiAgICBjb25zdCBvcnBoYW5lZCA9IHJlcG9Db25maWdLZXlzLnNvbWUoKGtleSkgPT5cbiAgICAgIGtleS50cmltKCkudG9Mb3dlckNhc2UoKSA9PT0gZHJvcHBlZEtleSAmJiBrZXkgIT09IGR1cGxpY2F0ZS5rZXB0XG4gICAgKTtcbiAgICBpZiAoIW9ycGhhbmVkKSBjb250aW51ZTtcblxuICAgIHdhcm5pbmdzLnB1c2goXG4gICAgICBgcmVwb19jb25maWcgaXMga2V5ZWQgdG8gXCIke3JlbmRlckluZXJ0UmVwb1NsdWcoZHVwbGljYXRlLmRyb3BwZWQpfVwiLCBgICtcbiAgICAgICAgXCJ0aGUgc3BlbGxpbmcganVzdCBkcm9wcGVkLCBzbyBpdHMgcGVyLXJlcG8gc2V0dGluZ3MgYXJlIG5vIGxvbmdlciBcIiArXG4gICAgICAgIGByZWFkIOKAlCByZS1rZXkgaXQgdG8gXCIke3JlbmRlckluZXJ0UmVwb1NsdWcoZHVwbGljYXRlLmtlcHQpfVwiYCxcbiAgICApO1xuICB9XG4gIHJldHVybiB3YXJuaW5ncztcbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7Ozs7Ozs7O0NBU0MsR0FFRDs7Ozs7Ozs7OztDQVVDLEdBQ0QsT0FBTyxNQUFNLG9CQUNYLCtEQUErRDtBQUVqRSw2REFBNkQsR0FDN0QsT0FBTyxTQUFTLGdCQUFnQixJQUFhO0VB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
+// denoCacheMetadata=11919823844673895302,3888672906732673731

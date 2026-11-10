@@ -1,0 +1,125 @@
+/**
+ * Per-run registry of issues this worker has already finished with
+ * (Issue #181).
+ *
+ * The scan ranks a cached `issues_all` list whose TTL is 600 s, so an issue
+ * the worker finished — or closed — seconds ago is still in that list on the
+ * next pool entry. Nothing local said "done with this one", so the scan
+ * re-claimed a closed idle-task wrapper three times in a row while thirteen
+ * open wrappers in the same repo went untouched.
+ *
+ * This registry is that local memory. It is in-process and one process is one
+ * run, so an entry lives exactly as long as the run does. It costs no API
+ * call: the scan simply skips what it already handled.
+ *
+ * ```mermaid
+ * flowchart LR
+ *     P["processIssue<br/>terminal outcome"] --> R["ProcessedIssueRegistry"]
+ *     C["gh issue close<br/>(chokepoint)"] --> R
+ *     R --> F["findNextIssue<br/>excludes"]
+ *     R --> K["claimIssue<br/>refuses already_closed"]
+ * ```
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */ /** Why an issue is finished for this run. */ /**
+ * Claim refusals that **defer** an issue — leave it with nobody working it.
+ *
+ * Every other refusal means someone else holds the issue (`already_assigned`,
+ * `stream_busy`, `recent_claim`, a claim lost to a named winner): a healthy
+ * fleet, and a legitimate hold. A deferral is the claim path declining ready
+ * work on its own judgement, so the idle census must go on seeing the issue as
+ * claimable — that is what lets a deferral that never ends raise the
+ * idle-inversion escalation instead of hiding behind the run-local hold, as
+ * stream affinity did for 23 hours (Issue #2403).
+ *
+ * A new deferring check in `claim_issue.ts` belongs on this list.
+ */ export const CLAIM_DEFERRAL_REASONS = [
+  "stream_affinity"
+];
+/** Is this claim refusal a deferral? See {@link CLAIM_DEFERRAL_REASONS}. */ export function isClaimDeferral(claimRefusal) {
+  return claimRefusal !== undefined && CLAIM_DEFERRAL_REASONS.includes(claimRefusal);
+}
+/**
+ * Build the lookup key. GitHub repository names are case-insensitive, and the
+ * spelling reaching this registry comes from two sources (the config's repo
+ * list and a `gh --repo` argument), so the key is normalised.
+ */ function keyOf(repo, issueNumber) {
+  return `${repo.toLowerCase()}|${issueNumber}`;
+}
+/**
+ * Should this run-local hold hide the issue from the idle detectors
+ * (Issue #2405)?
+ *
+ * `idle_detect_diagnostics.ts` takes one yes/no per issue, so the distinction
+ * the census draws with `deferredHolds` is made here for it: a hold the claim
+ * path created by deferring the issue does **not** hide it. Both detectors
+ * model the same gate; they must agree about it.
+ *
+ * @param registry - This run's processed issues.
+ * @param isHeld - The run-local hold (cooldown + registry) for an issue.
+ */ export function withholdsFromIdleDetection(registry, isHeld, repo, issueNumber) {
+  if (!isHeld(repo, issueNumber)) return false;
+  return !isClaimDeferral(registry.claimRefusalFor(repo, issueNumber));
+}
+/** Issues finished during one run. */ export class ProcessedIssueRegistry {
+  entries = new Map();
+  /**
+   * Record a terminal outcome for an issue.
+   *
+   * A `closed` record is never downgraded by a later outcome: once the worker
+   * has closed an issue, no subsequent bookkeeping can make it claimable
+   * again within this run.
+   */ record(repo, issueNumber, reason, detail = {}) {
+    const key = keyOf(repo, issueNumber);
+    const existing = this.entries.get(key);
+    if (existing?.reason === "closed" && reason !== "closed") return;
+    this.entries.set(key, {
+      repo,
+      issueNumber,
+      reason,
+      // Only a skip can be a refused claim; any later outcome replaces it.
+      ...reason === "skip" && detail.claimRefusal ? {
+        claimRefusal: detail.claimRefusal
+      } : {}
+    });
+  }
+  /** The claim refusal behind this issue's hold, when that is what it is. */ claimRefusalFor(repo, issueNumber) {
+    return this.entries.get(keyOf(repo, issueNumber))?.claimRefusal;
+  }
+  /** True when this issue has already been finished during this run. */ has(repo, issueNumber) {
+    return this.entries.has(keyOf(repo, issueNumber));
+  }
+  /** Why the issue is finished, or undefined when it is not recorded. */ reasonFor(repo, issueNumber) {
+    return this.entries.get(keyOf(repo, issueNumber))?.reason;
+  }
+  /** True when the worker itself closed this issue during this run. */ wasClosedByWorker(repo, issueNumber) {
+    return this.reasonFor(repo, issueNumber) === "closed";
+  }
+  /**
+   * Drop an entry — used when the worker reopens an issue it closed, which
+   * makes it legitimately claimable again.
+   */ forget(repo, issueNumber) {
+    this.entries.delete(keyOf(repo, issueNumber));
+  }
+  /** Number of issues recorded. */ size() {
+    return this.entries.size;
+  }
+  /** Every recorded entry. */ list() {
+    return [
+      ...this.entries.values()
+    ];
+  }
+}
+/**
+ * The process-wide registry. One process is one run, so this instance carries
+ * exactly the run's own history — the `gh` chokepoint and the claim path use
+ * it without having to be threaded a reference.
+ */ let shared = new ProcessedIssueRegistry();
+/** The process-wide registry for this run. */ export function sharedProcessedIssues() {
+  return shared;
+}
+/** Replace the process-wide registry with an empty one. Test-only. */ export function resetSharedProcessedIssues() {
+  shared = new ProcessedIssueRegistry();
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9wcm9jZXNzZWRfaXNzdWVfcmVnaXN0cnkudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBQZXItcnVuIHJlZ2lzdHJ5IG9mIGlzc3VlcyB0aGlzIHdvcmtlciBoYXMgYWxyZWFkeSBmaW5pc2hlZCB3aXRoXG4gKiAoSXNzdWUgIzE4MSkuXG4gKlxuICogVGhlIHNjYW4gcmFua3MgYSBjYWNoZWQgYGlzc3Vlc19hbGxgIGxpc3Qgd2hvc2UgVFRMIGlzIDYwMCBzLCBzbyBhbiBpc3N1ZVxuICogdGhlIHdvcmtlciBmaW5pc2hlZCDigJQgb3IgY2xvc2VkIOKAlCBzZWNvbmRzIGFnbyBpcyBzdGlsbCBpbiB0aGF0IGxpc3Qgb24gdGhlXG4gKiBuZXh0IHBvb2wgZW50cnkuIE5vdGhpbmcgbG9jYWwgc2FpZCBcImRvbmUgd2l0aCB0aGlzIG9uZVwiLCBzbyB0aGUgc2NhblxuICogcmUtY2xhaW1lZCBhIGNsb3NlZCBpZGxlLXRhc2sgd3JhcHBlciB0aHJlZSB0aW1lcyBpbiBhIHJvdyB3aGlsZSB0aGlydGVlblxuICogb3BlbiB3cmFwcGVycyBpbiB0aGUgc2FtZSByZXBvIHdlbnQgdW50b3VjaGVkLlxuICpcbiAqIFRoaXMgcmVnaXN0cnkgaXMgdGhhdCBsb2NhbCBtZW1vcnkuIEl0IGlzIGluLXByb2Nlc3MgYW5kIG9uZSBwcm9jZXNzIGlzIG9uZVxuICogcnVuLCBzbyBhbiBlbnRyeSBsaXZlcyBleGFjdGx5IGFzIGxvbmcgYXMgdGhlIHJ1biBkb2VzLiBJdCBjb3N0cyBubyBBUElcbiAqIGNhbGw6IHRoZSBzY2FuIHNpbXBseSBza2lwcyB3aGF0IGl0IGFscmVhZHkgaGFuZGxlZC5cbiAqXG4gKiBgYGBtZXJtYWlkXG4gKiBmbG93Y2hhcnQgTFJcbiAqICAgICBQW1wicHJvY2Vzc0lzc3VlPGJyLz50ZXJtaW5hbCBvdXRjb21lXCJdIC0tPiBSW1wiUHJvY2Vzc2VkSXNzdWVSZWdpc3RyeVwiXVxuICogICAgIENbXCJnaCBpc3N1ZSBjbG9zZTxici8+KGNob2tlcG9pbnQpXCJdIC0tPiBSXG4gKiAgICAgUiAtLT4gRltcImZpbmROZXh0SXNzdWU8YnIvPmV4Y2x1ZGVzXCJdXG4gKiAgICAgUiAtLT4gS1tcImNsYWltSXNzdWU8YnIvPnJlZnVzZXMgYWxyZWFkeV9jbG9zZWRcIl1cbiAqIGBgYFxuICpcbiAqIFVzZXMgQXVzdHJhbGlhbiBFbmdsaXNoIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgY29sb3VyLCBvcmdhbmlzYXRpb24sIGV0Yy4pLlxuICovXG5cbi8qKiBXaHkgYW4gaXNzdWUgaXMgZmluaXNoZWQgZm9yIHRoaXMgcnVuLiAqL1xuZXhwb3J0IHR5cGUgUHJvY2Vzc2VkSXNzdWVSZWFzb24gPVxuICAvKiogVGhlIHJ1biBjb21wbGV0ZWQgc3VjY2Vzc2Z1bGx5IChpbmNsdWRpbmcgXCJubyBQUiBleHBlY3RlZFwiKS4gKi9cbiAgfCBcInN1Y2Nlc3NcIlxuICAvKiogVGhlIHJ1biBib3VuY2VkIOKAlCBjbGFpbSByZWplY3RlZCwgcHJlLWNoZWNrIHJlZnVzZWQsIGV4cGVjdGVkIHNraXAuICovXG4gIHwgXCJza2lwXCJcbiAgLyoqIFRoZSBydW4gZmFpbGVkLiAqL1xuICB8IFwiZmFpbHVyZVwiXG4gIC8qKiBUaGUgd29ya2VyIGl0c2VsZiBjbG9zZWQgdGhlIGlzc3VlIGR1cmluZyB0aGlzIHJ1bi4gKi9cbiAgfCBcImNsb3NlZFwiO1xuXG4vKiogT25lIHJlY29yZGVkIGlzc3VlLiAqL1xuZXhwb3J0IGludGVyZmFjZSBQcm9jZXNzZWRJc3N1ZUVudHJ5IHtcbiAgLyoqIGBvd25lci9yZXBvYCwgYXMgc3VwcGxpZWQgd2hlbiByZWNvcmRlZC4gKi9cbiAgcmVwbzogc3RyaW5nO1xuICAvKiogSXNzdWUgbnVtYmVyLiAqL1xuICBpc3N1ZU51bWJlcjogbnVtYmVyO1xuICAvKiogV2h5IGl0IGlzIGZpbmlzaGVkIGZvciB0aGlzIHJ1bi4gKi9cbiAgcmVhc29uOiBQcm9jZXNzZWRJc3N1ZVJlYXNvbjtcbiAgLyoqXG4gICAqIEZvciBhIGBza2lwYCB0aGF0IHdhcyBhIHJlZnVzZWQgY2xhaW06IHRoZSBjbGFpbSBwYXRoJ3MgcmVhc29uIGtleVxuICAgKiAoSXNzdWUgIzI0MDUpLCBlLmcuIGBzdHJlYW1fYWZmaW5pdHlgLiBBYnNlbnQgb24gZXZlcnkgb3RoZXIgcmVjb3JkLlxuICAgKi9cbiAgY2xhaW1SZWZ1c2FsPzogc3RyaW5nO1xufVxuXG4vKipcbiAqIENsYWltIHJlZnVzYWxzIHRoYXQgKipkZWZlcioqIGFuIGlzc3VlIOKAlCBsZWF2ZSBpdCB3aXRoIG5vYm9keSB3b3JraW5nIGl0LlxuICpcbiAqIEV2ZXJ5IG90aGVyIHJlZnVzYWwgbWVhbnMgc29tZW9uZSBlbHNlIGhvbGRzIHRoZSBpc3N1ZSAoYGFscmVhZHlfYXNzaWduZWRgLFxuICogYHN0cmVhbV9idXN5YCwgYHJlY2VudF9jbGFpbWAsIGEgY2xhaW0gbG9zdCB0byBhIG5hbWVkIHdpbm5lcik6IGEgaGVhbHRoeVxuICogZmxlZXQsIGFuZCBhIGxlZ2l0aW1hdGUgaG9sZC4gQSBkZWZlcnJhbCBpcyB0aGUgY2xhaW0gcGF0aCBkZWNsaW5pbmcgcmVhZHlcbiAqIHdvcmsgb24gaXRzIG93biBqdWRnZW1lbnQsIHNvIHRoZSBpZGxlIGNlbnN1cyBtdXN0IGdvIG9uIHNlZWluZyB0aGUgaXNzdWUgYXNcbiAqIGNsYWltYWJsZSDigJQgdGhhdCBpcyB3aGF0IGxldHMgYSBkZWZlcnJhbCB0aGF0IG5ldmVyIGVuZHMgcmFpc2UgdGhlXG4gKiBpZGxlLWludmVyc2lvbiBlc2NhbGF0aW9uIGluc3RlYWQgb2YgaGlkaW5nIGJlaGluZCB0aGUgcnVuLWxvY2FsIGhvbGQsIGFzXG4gKiBzdHJlYW0gYWZmaW5pdHkgZGlkIGZvciAyMyBob3VycyAoSXNzdWUgIzI0MDMpLlxuICpcbiAqIEEgbmV3IGRlZmVycmluZyBjaGVjayBpbiBgY2xhaW1faXNzdWUudHNgIGJlbG9uZ3Mgb24gdGhpcyBsaXN0LlxuICovXG5leHBvcnQgY29uc3QgQ0xBSU1fREVGRVJSQUxfUkVBU09OUzogcmVhZG9ubHkgc3RyaW5nW10gPSBbXCJzdHJlYW1fYWZmaW5pdHlcIl07XG5cbi8qKiBJcyB0aGlzIGNsYWltIHJlZnVzYWwgYSBkZWZlcnJhbD8gU2VlIHtAbGluayBDTEFJTV9ERUZFUlJBTF9SRUFTT05TfS4gKi9cbmV4cG9ydCBmdW5jdGlvbiBpc0NsYWltRGVmZXJyYWwoY2xhaW1SZWZ1c2FsOiBzdHJpbmcgfCB1bmRlZmluZWQpOiBib29sZWFuIHtcbiAgcmV0dXJuIGNsYWltUmVmdXNhbCAhPT0gdW5kZWZpbmVkICYmXG4gICAgQ0xBSU1fREVGRVJSQUxfUkVBU09OUy5pbmNsdWRlcyhjbGFpbVJlZnVzYWwpO1xufVxuXG4vKipcbiAqIEJ1aWxkIHRoZSBsb29rdXAga2V5LiBHaXRIdWIgcmVwb3NpdG9yeSBuYW1lcyBhcmUgY2FzZS1pbnNlbnNpdGl2ZSwgYW5kIHRoZVxuICogc3BlbGxpbmcgcmVhY2hpbmcgdGhpcyByZWdpc3RyeSBjb21lcyBmcm9tIHR3byBzb3VyY2VzICh0aGUgY29uZmlnJ3MgcmVwb1xuICogbGlzdCBhbmQgYSBgZ2ggLS1yZXBvYCBhcmd1bWVudCksIHNvIHRoZSBrZXkgaXMgbm9ybWFsaXNlZC5cbiAqL1xuZnVuY3Rpb24ga2V5T2YocmVwbzogc3RyaW5nLCBpc3N1ZU51bWJlcjogbnVtYmVyKTogc3RyaW5nIHtcbiAgcmV0dXJuIGAke3JlcG8udG9Mb3dlckNhc2UoKX18JHtpc3N1ZU51bWJlcn1gO1xufVxuXG4vKipcbiAqIFNob3VsZCB0aGlzIHJ1bi1sb2NhbCBob2xkIGhpZGUgdGhlIGlzc3VlIGZyb20gdGhlIGlkbGUgZGV0ZWN0b3JzXG4gKiAoSXNzdWUgIzI0MDUpP1xuICpcbiAqIGBpZGxlX2RldGVjdF9kaWFnbm9zdGljcy50c2AgdGFrZXMgb25lIHllcy9ubyBwZXIgaXNzdWUsIHNvIHRoZSBkaXN0aW5jdGlvblxuICogdGhlIGNlbnN1cyBkcmF3cyB3aXRoIGBkZWZlcnJlZEhvbGRzYCBpcyBtYWRlIGhlcmUgZm9yIGl0OiBhIGhvbGQgdGhlIGNsYWltXG4gKiBwYXRoIGNyZWF0ZWQgYnkgZGVmZXJyaW5nIHRoZSBpc3N1ZSBkb2VzICoqbm90KiogaGlkZSBpdC4gQm90aCBkZXRlY3RvcnNcbiAqIG1vZGVsIHRoZSBzYW1lIGdhdGU7IHRoZXkgbXVzdCBhZ3JlZSBhYm91dCBpdC5cbiAqXG4gKiBAcGFyYW0gcmVnaXN0cnkgLSBUaGlzIHJ1bidzIHByb2Nlc3NlZCBpc3N1ZXMuXG4gKiBAcGFyYW0gaXNIZWxkIC0gVGhlIHJ1bi1sb2NhbCBob2xkIChjb29sZG93biArIHJlZ2lzdHJ5KSBmb3IgYW4gaXNzdWUuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiB3aXRoaG9sZHNGcm9tSWRsZURldGVjdGlvbihcbiAgcmVnaXN0cnk6IFByb2Nlc3NlZElzc3VlUmVnaXN0cnksXG4gIGlzSGVsZDogKHJlcG86IHN0cmluZywgaXNzdWVOdW1iZXI6IG51bWJlcikgPT4gYm9vbGVhbixcbiAgcmVwbzogc3RyaW5nLFxuICBpc3N1ZU51bWJlcjogbnVtYmVyLFxuKTogYm9vbGVhbiB7XG4gIGlmICghaXNIZWxkKHJlcG8sIGlzc3VlTnVtYmVyKSkgcmV0dXJuIGZhbHNlO1xuICByZXR1cm4gIWlzQ2xhaW1EZWZlcnJhbChyZWdpc3RyeS5jbGFpbVJlZnVzYWxGb3IocmVwbywgaXNzdWVOdW1iZXIpKTtcbn1cblxuLyoqIElzc3VlcyBmaW5pc2hlZCBkdXJpbmcgb25lIHJ1bi4gKi9cbmV4cG9ydCBjbGFzcyBQcm9jZXNzZWRJc3N1ZVJlZ2lzdHJ5IHtcbiAgcHJpdmF0ZSByZWFkb25seSBlbnRyaWVzID0gbmV3IE1hcDxzdHJpbmcsIFByb2Nlc3NlZElzc3VlRW50cnk+KCk7XG5cbiAgLyoqXG4gICAqIFJlY29yZCBhIHRlcm1pbmFsIG91dGNvbWUgZm9yIGFuIGlzc3VlLlxuICAgKlxuICAgKiBBIGBjbG9zZWRgIHJlY29yZCBpcyBuZXZlciBkb3duZ3JhZGVkIGJ5IGEgbGF0ZXIgb3V0Y29tZTogb25jZSB0aGUgd29ya2VyXG4gICAqIGhhcyBjbG9zZWQgYW4gaXNzdWUsIG5vIHN1YnNlcXVlbnQgYm9va2tlZXBpbmcgY2FuIG1ha2UgaXQgY2xhaW1hYmxlXG4gICAqIGFnYWluIHdpdGhpbiB0aGlzIHJ1bi5cbiAgICovXG4gIHJlY29yZChcbiAgICByZXBvOiBzdHJpbmcsXG4gICAgaXNzdWVOdW1iZXI6IG51bWJlcixcbiAgICByZWFzb246IFByb2Nlc3NlZElzc3VlUmVhc29uLFxuICAgIGRldGFpbDogeyBjbGFpbVJlZnVzYWw/OiBzdHJpbmcgfSA9IHt9LFxuICApOiB2b2lkIHtcbiAgICBjb25zdCBrZXkgPSBrZXlPZihyZXBvLCBpc3N1ZU51bWJlcik7XG4gICAgY29uc3QgZXhpc3RpbmcgPSB0aGlzLmVudHJpZXMuZ2V0KGtleSk7XG4gICAgaWYgKGV4aXN0aW5nPy5yZWFzb24gPT09IFwiY2xvc2VkXCIgJiYgcmVhc29uICE9PSBcImNsb3NlZFwiKSByZXR1cm47XG4gICAgdGhpcy5lbnRyaWVzLnNldChrZXksIHtcbiAgICAgIHJlcG8sXG4gICAgICBpc3N1ZU51bWJlcixcbiAgICAgIHJlYXNvbixcbiAgICAgIC8vIE9ubHkgYSBza2lwIGNhbiBiZSBhIHJlZnVzZWQgY2xhaW07IGFueSBsYXRlciBvdXRjb21lIHJlcGxhY2VzIGl0LlxuICAgICAgLi4uKHJlYXNvbiA9PT0gXCJza2lwXCIgJiYgZGV0YWlsLmNsYWltUmVmdXNhbFxuICAgICAgICA/IHsgY2xhaW1SZWZ1c2FsOiBkZXRhaWwuY2xhaW1SZWZ1c2FsIH1cbiAgICAgICAgOiB7fSksXG4gICAgfSk7XG4gIH1cblxuICAvKiogVGhlIGNsYWltIHJlZnVzYWwgYmVoaW5kIHRoaXMgaXNzdWUncyBob2xkLCB3aGVuIHRoYXQgaXMgd2hhdCBpdCBpcy4gKi9cbiAgY2xhaW1SZWZ1c2FsRm9yKHJlcG86IHN0cmluZywgaXNzdWVOdW1iZXI6IG51bWJlcik6IHN0cmluZyB8IHVuZGVmaW5lZCB7XG4gICAgcmV0dXJuIHRoaXMuZW50cmllcy5nZXQoa2V5T2YocmVwbywgaXNzdWVOdW1iZXIpKT8uY2xhaW1SZWZ1c2FsO1xuICB9XG5cbiAgLyoqIFRydWUgd2hlbiB0aGlzIGlzc3VlIGhhcyBhbHJlYWR5IGJlZW4gZmluaXNoZWQgZHVyaW5nIHRoaXMgcnVuLiAqL1xuICBoYXMocmVwbzogc3RyaW5nLCBpc3N1ZU51bWJlcjogbnVtYmVyKTogYm9vbGVhbiB7XG4gICAgcmV0dXJuIHRoaXMuZW50cmllcy5oYXMoa2V5T2YocmVwbywgaXNzdWVOdW1iZXIpKTtcbiAgfVxuXG4gIC8qKiBXaHkgdGhlIGlzc3VlIGlzIGZpbmlzaGVkLCBvciB1bmRlZmluZWQgd2hlbiBpdCBpcyBub3QgcmVjb3JkZWQuICovXG4gIHJlYXNvbkZvcihcbiAgICByZXBvOiBzdHJpbmcsXG4gICAgaXNzdWVOdW1iZXI6IG51bWJlcixcbiAgKTogUHJvY2Vzc2VkSXNzdWVSZWFzb24gfCB1bmRlZmluZWQge1xuICAgIHJldHVybiB0aGlzLmVudHJpZXMuZ2V0KGtleU9mKHJlcG8sIGlzc3VlTnVtYmVyKSk/LnJlYXNvbjtcbiAgfVxuXG4gIC8qKiBUcnVlIHdoZW4gdGhlIHdvcmtlciBpdHNlbGYgY2xvc2VkIHRoaXMgaXNzdWUgZHVyaW5nIHRoaXMgcnVuLiAqL1xuICB3YXNDbG9zZWRCeVdvcmtlcihyZXBvOiBzdHJpbmcsIGlzc3VlTnVtYmVyOiBudW1iZXIpOiBib29sZWFuIHtcbiAgICByZXR1cm4gdGhpcy5yZWFzb25Gb3IocmVwbywgaXNzdWVOdW1iZXIpID09PSBcImNsb3NlZFwiO1xuICB9XG5cbiAgLyoqXG4gICAqIERyb3AgYW4gZW50cnkg4oCUIHVzZWQgd2hlbiB0aGUgd29ya2VyIHJlb3BlbnMgYW4gaXNzdWUgaXQgY2xvc2VkLCB3aGljaFxuICAgKiBtYWtlcyBpdCBsZWdpdGltYXRlbHkgY2xhaW1hYmxlIGFnYWluLlxuICAgKi9cbiAgZm9yZ2V0KHJlcG86IHN0cmluZywgaXNzdWVOdW1iZXI6IG51bWJlcik6IHZvaWQge1xuICAgIHRoaXMuZW50cmllcy5kZWxldGUoa2V5T2YocmVwbywgaXNzdWVOdW1iZXIpKTtcbiAgfVxuXG4gIC8qKiBOdW1iZXIgb2YgaXNzdWVzIHJlY29yZGVkLiAqL1xuICBzaXplKCk6IG51bWJlciB7XG4gICAgcmV0dXJuIHRoaXMuZW50cmllcy5zaXplO1xuICB9XG5cbiAgLyoqIEV2ZXJ5IHJlY29yZGVkIGVudHJ5LiAqL1xuICBsaXN0KCk6IFByb2Nlc3NlZElzc3VlRW50cnlbXSB7XG4gICAgcmV0dXJuIFsuLi50aGlzLmVudHJpZXMudmFsdWVzKCldO1xuICB9XG59XG5cbi8qKlxuICogVGhlIHByb2Nlc3Mtd2lkZSByZWdpc3RyeS4gT25lIHByb2Nlc3MgaXMgb25lIHJ1biwgc28gdGhpcyBpbnN0YW5jZSBjYXJyaWVzXG4gKiBleGFjdGx5IHRoZSBydW4ncyBvd24gaGlzdG9yeSDigJQgdGhlIGBnaGAgY2hva2Vwb2ludCBhbmQgdGhlIGNsYWltIHBhdGggdXNlXG4gKiBpdCB3aXRob3V0IGhhdmluZyB0byBiZSB0aHJlYWRlZCBhIHJlZmVyZW5jZS5cbiAqL1xubGV0IHNoYXJlZCA9IG5ldyBQcm9jZXNzZWRJc3N1ZVJlZ2lzdHJ5KCk7XG5cbi8qKiBUaGUgcHJvY2Vzcy13aWRlIHJlZ2lzdHJ5IGZvciB0aGlzIHJ1bi4gKi9cbmV4cG9ydCBmdW5jdGlvbiBzaGFyZWRQcm9jZXNzZWRJc3N1ZXMoKTogUHJvY2Vzc2VkSXNzdWVSZWdpc3RyeSB7XG4gIHJldHVybiBzaGFyZWQ7XG59XG5cbi8qKiBSZXBsYWNlIHRoZSBwcm9jZXNzLXdpZGUgcmVnaXN0cnkgd2l0aCBhbiBlbXB0eSBvbmUuIFRlc3Qtb25seS4gKi9cbmV4cG9ydCBmdW5jdGlvbiByZXNldFNoYXJlZFByb2Nlc3NlZElzc3VlcygpOiB2b2lkIHtcbiAgc2hhcmVkID0gbmV3IFByb2Nlc3NlZElzc3VlUmVnaXN0cnkoKTtcbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBp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
+// denoCacheMetadata=17129014489854808367,12003340426517180052

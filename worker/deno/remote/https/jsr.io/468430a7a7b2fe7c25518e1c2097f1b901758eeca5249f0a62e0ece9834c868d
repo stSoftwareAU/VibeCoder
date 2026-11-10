@@ -1,0 +1,57 @@
+// Ported from js-yaml v3.13.1:
+// https://github.com/nodeca/js-yaml/commit/665aadda42349dcae869f12040d9b10ef18d12da
+// Copyright 2011-2015 by Vitaly Puzrin. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+export const BOM = 0xfeff; /* BOM */
+export const TAB = 0x09; /* Tab */
+export const LINE_FEED = 0x0a; /* LF */
+export const CARRIAGE_RETURN = 0x0d; /* CR */
+export const SPACE = 0x20; /* Space */
+export const EXCLAMATION = 0x21; /* ! */
+export const DOUBLE_QUOTE = 0x22; /* " */
+export const SHARP = 0x23; /* # */
+export const PERCENT = 0x25; /* % */
+export const AMPERSAND = 0x26; /* & */
+export const SINGLE_QUOTE = 0x27; /* ' */
+export const ASTERISK = 0x2a; /* * */
+export const PLUS = 0x2b; /* + */
+export const COMMA = 0x2c; /* , */
+export const MINUS = 0x2d; /* - */
+export const DOT = 0x2e; /* . */
+export const COLON = 0x3a; /* : */
+export const SMALLER_THAN = 0x3c; /* < */
+export const GREATER_THAN = 0x3e; /* > */
+export const QUESTION = 0x3f; /* ? */
+export const COMMERCIAL_AT = 0x40; /* @ */
+export const LEFT_SQUARE_BRACKET = 0x5b; /* [ */
+export const BACKSLASH = 0x5c; /* \ */
+export const RIGHT_SQUARE_BRACKET = 0x5d; /* ] */
+export const GRAVE_ACCENT = 0x60; /* ` */
+export const LEFT_CURLY_BRACKET = 0x7b; /* { */
+export const VERTICAL_LINE = 0x7c; /* | */
+export const RIGHT_CURLY_BRACKET = 0x7d; /* } */
+
+export function isEOL(c: number): boolean {
+  return c === LINE_FEED || c === CARRIAGE_RETURN;
+}
+
+export function isWhiteSpace(c: number): boolean {
+  return c === TAB || c === SPACE;
+}
+
+export function isWhiteSpaceOrEOL(c: number): boolean {
+  return isWhiteSpace(c) || isEOL(c);
+}
+
+export function isFlowIndicator(c: number): boolean {
+  return (
+    c === COMMA ||
+    c === LEFT_SQUARE_BRACKET ||
+    c === RIGHT_SQUARE_BRACKET ||
+    c === LEFT_CURLY_BRACKET ||
+    c === RIGHT_CURLY_BRACKET
+  );
+}
+
+// denoCacheMetadata={"headers":{"content-length":"1880","etag":"\"64cf6b3dc85356b442334e263cad899f\"","date":"Tue, 10 Nov 2026 08:08:15 GMT","access-control-expose-headers":"*","x-content-type-options":"nosniff","x-robots-tag":"noindex","set-cookie":"__cf_bm=j1PRFdBEKDYoopaV0hr.XcEuymHq.4GhgbIPhcWanhU-1794298095.8760166-1.0.1.1-iX6n5N5Xe9t7TR.mSMK5okbx4iQLjroK3xicxILiYTSZd8AKVt5HF68s19tQa.8LWbg_9nCeF9kYTOWfb9_mlOUlxrylRhFuBG2TbsXF.IA5DqR_5rBZw_.c_3K4VZuO; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","x-jsr-backend":"modules","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=MY43bTKrlGulRN6a8TVGG7RjHVxhQxXJ9RKDRxWnDT2fNXFrKIbBNSDrS5a%2BKW48GZQjj5rVvG5%2FpCmD%2Fo2CAPGnMyYAqXRKOcqYJ%2BbXg9Ve8tDGci1zQx8%3D\"}]}","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","alt-svc":"h3=\":443\"; ma=86400","cross-origin-resource-policy":"cross-origin","accept-ranges":"bytes","access-control-allow-origin":"*","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","cf-cache-status":"HIT","server":"cloudflare","cache-control":"public, max-age=31536000, immutable","content-type":"text/typescript","vary":"Origin","age":"6426681","cf-ray":"a583917b2dcb561f-SYD"},"url":"https://jsr.io/@std/yaml/1.0.12/_chars.ts","time":1794298095}

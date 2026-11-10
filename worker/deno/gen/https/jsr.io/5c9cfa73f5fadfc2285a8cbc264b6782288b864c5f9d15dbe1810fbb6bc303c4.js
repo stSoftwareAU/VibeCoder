@@ -1,0 +1,16 @@
+// Ported from js-yaml v3.13.1:
+// https://github.com/nodeca/js-yaml/commit/665aadda42349dcae869f12040d9b10ef18d12da
+// Copyright 2011-2015 by Vitaly Puzrin. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+export const map = {
+  tag: "tag:yaml.org,2002:map",
+  resolve () {
+    return true;
+  },
+  construct (data) {
+    return data !== null ? data : {};
+  },
+  kind: "mapping"
+};
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImh0dHBzOi8vanNyLmlvL0BzdGQveWFtbC8xLjAuMTIvX3R5cGUvbWFwLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8vIFBvcnRlZCBmcm9tIGpzLXlhbWwgdjMuMTMuMTpcbi8vIGh0dHBzOi8vZ2l0aHViLmNvbS9ub2RlY2EvanMteWFtbC9jb21taXQvNjY1YWFkZGE0MjM0OWRjYWU4NjlmMTIwNDBkOWIxMGVmMThkMTJkYVxuLy8gQ29weXJpZ2h0IDIwMTEtMjAxNSBieSBWaXRhbHkgUHV6cmluLiBBbGwgcmlnaHRzIHJlc2VydmVkLiBNSVQgbGljZW5zZS5cbi8vIENvcHlyaWdodCAyMDE4LTIwMjYgdGhlIERlbm8gYXV0aG9ycy4gTUlUIGxpY2Vuc2UuXG5cbmltcG9ydCB0eXBlIHsgVHlwZSB9IGZyb20gXCIuLi9fdHlwZS50c1wiO1xuXG5leHBvcnQgY29uc3QgbWFwOiBUeXBlPFwibWFwcGluZ1wiLCB1bmtub3duPiA9IHtcbiAgdGFnOiBcInRhZzp5YW1sLm9yZywyMDAyOm1hcFwiLFxuICByZXNvbHZlKCkge1xuICAgIHJldHVybiB0cnVlO1xuICB9LFxuICBjb25zdHJ1Y3QoZGF0YSkge1xuICAgIHJldHVybiBkYXRhICE9PSBudWxsID8gZGF0YSA6IHt9O1xuICB9LFxuICBraW5kOiBcIm1hcHBpbmdcIixcbn07XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUEsK0JBQStCO0FBQy9CLG9GQUFvRjtBQUNwRiwwRUFBMEU7QUFDMUUscURBQXFEO0FBSXJELE9BQU8sTUFBTSxNQUFnQztFQUMzQyxLQUFLO0VBQ0w7SUFDRSxPQUFPO0VBQ1Q7RUFDQSxXQUFVLElBQUk7SUFDWixPQUFPLFNBQVMsT0FBTyxPQUFPLENBQUM7RUFDakM7RUFDQSxNQUFNO0FBQ1IsRUFBRSJ9
+// denoCacheMetadata=8461911674433038644,13174648391242811276

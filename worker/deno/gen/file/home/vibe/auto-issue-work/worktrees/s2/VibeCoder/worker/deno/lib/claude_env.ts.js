@@ -1,0 +1,252 @@
+/**
+ * Environment allow-list for the `claude` agent subprocess (Issue #3203).
+ *
+ * `runClaude` spawns the `claude` CLI with `--dangerously-skip-permissions`
+ * (unrestricted bash), so the child can read any environment variable the
+ * worker exports. Inheriting the worker's entire environment needlessly hands
+ * the model the highest-value secret it owns: `GITHUB_APP_PRIVATE_KEY_PATH`,
+ * which points at the GitHub App PEM that mints installation tokens. A prompt
+ * injection could steer the model to `cat` that file and leak it.
+ *
+ * The model never needs the raw PEM — `gh` authenticates with the already-minted
+ * installation token in `GH_TOKEN`. This module names Claude's three lists and
+ * hands the filtering itself to `agent_env.ts`, which every provider shares: the
+ * child inherits the parent's environment minus the named denylist and minus
+ * anything whose name looks like a credential (Issue #3707), so a worker-side
+ * secret added later is withheld by default rather than inherited until
+ * somebody notices. Root-cause fix: the secret is not exposed to the agent at
+ * all, so it cannot be exfiltrated regardless of any downstream redaction.
+ *
+ * ## One token reaches the child, never the pool (Issue #920, parent #902)
+ *
+ * A host may now hold several Anthropic subscription tokens as separate files;
+ * the worker exports exactly ONE of them (`credential_preflight.ts`, chosen by
+ * `claude_token_selection.ts`), under the base variable name. So the child's
+ * environment carries at most one Anthropic credential per accepted name, and
+ * anything *else* Anthropic-shaped in the parent — an operator's second token
+ * parked in `CLAUDE_CODE_OAUTH_TOKEN_2`, a spare `ANTHROPIC_API_KEY_BACKUP` —
+ * is a credential this run did not select. {@link CLAUDE_ENV_SECRET_ALLOWLIST}
+ * exempts the base names and ONLY the base names: `agent_env.ts` denies every
+ * suffixed or indexed variant of a listed name outright, so no allowlist edit
+ * and no narrowing of the shape pattern can hand the child a second token.
+ *
+ * Residual risk (open, R9 in `docs/THREAT-MODEL.md`; see #3698/#3699): the container mounts
+ * the provider's whole credential sub-directory read-only, so a process with
+ * filesystem read access inside the container can read the unselected token
+ * FILES regardless of this environment policy. Several tokens raise the count
+ * of that exposure, not its class — it is equally true of the single token a
+ * one-token host has always mounted. Isolating the credential mount from the
+ * agent subprocess is deliberately out of scope here and belongs in its own
+ * issue.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */ import { resolveAgentStateDir } from "./agent_state_dir.ts";
+import { AGENT_ENV_SECRET_NAME_PATTERN, buildAgentChildEnv, isDeniedAgentEnvVar, WORKER_ONLY_SECRET_ENV_VARS } from "./agent_env.ts";
+import { runningInContainerImage } from "./container_stamp.ts";
+/**
+ * Environment variables the `claude` child must never inherit.
+ *
+ * The worker-only secrets (the GitHub App private-key material and the ImgBB
+ * key — see {@link WORKER_ONLY_SECRET_ENV_VARS}), plus every *other* vendor's agent
+ * credential — OpenAI's (Issue #4106), Google's (Issue #4107) and DeepSeek's
+ * (Issue #412). The cross-vendor names are denied explicitly rather than left
+ * to the secret-shape pattern, so no future allowlist edit can hand the
+ * Anthropic child another vendor's key.
+ *
+ * `GH_TOKEN` is deliberately NOT denied — it is the short-lived installation
+ * token the model legitimately uses via `gh`. What that token may *do* is
+ * constrained by the `gh` PATH shim (`gh_guard_shim.ts`, Issue #3643), not by
+ * this denylist.
+ */ export const CLAUDE_ENV_DENYLIST = [
+  ...WORKER_ONLY_SECRET_ENV_VARS,
+  "OPENAI_API_KEY",
+  "CODEX_API_KEY",
+  "CODEX_HOME",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "DEEPSEEK_API_KEY"
+];
+/**
+ * Names that look like a credential (Issue #3707).
+ *
+ * The provider-independent shape rule, re-exported under Claude's name for the
+ * callers that already import it from here.
+ */ export const CLAUDE_ENV_SECRET_NAME_PATTERN = AGENT_ENV_SECRET_NAME_PATTERN;
+/**
+ * The variable names the `claude` CLI reads its own credential from.
+ *
+ * The same three the provider descriptor accepts in a credential file
+ * (`agent_provider.ts`), stated once here because they are also the only
+ * Anthropic names the child may inherit. Exactly one of them carries the
+ * token this run selected; every variant of them is somebody else's
+ * (Issue #920).
+ */ export const CLAUDE_CREDENTIAL_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN"
+];
+/**
+ * Secret-shaped names the child genuinely needs (Issue #3707).
+ *
+ * `GH_TOKEN` / `GITHUB_TOKEN` authenticate the agent's `gh` calls; the
+ * Anthropic credentials authenticate the `claude` CLI itself. Without these
+ * the child cannot do its job at all, so they are exempt from the
+ * shape-based denial above.
+ *
+ * The exemption is exact-match and nothing more (Issue #920). A pooled host
+ * holds several Anthropic tokens and the run selected one of them, so a name
+ * that merely *starts* with one of these — `CLAUDE_CODE_OAUTH_TOKEN_2`,
+ * `ANTHROPIC_API_KEY_BACKUP` — names a credential the run did not select and
+ * is denied by {@link isDeniedClaudeEnvVar}. That denial is explicit in
+ * `agent_env.ts`, not a side effect of the shape pattern happening to contain
+ * `TOKEN` and `API_KEY`.
+ */ export const CLAUDE_ENV_SECRET_ALLOWLIST = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  ...CLAUDE_CREDENTIAL_ENV_VARS
+];
+/**
+ * Report whether a variable must be withheld from the `claude` child.
+ *
+ * @param name - Environment variable name.
+ * @param denylist - Explicitly denied names (defaults to
+ *   {@link CLAUDE_ENV_DENYLIST}).
+ * @returns true when the variable is denied by name or by secret-ish shape.
+ */ export function isDeniedClaudeEnvVar(name, denylist = CLAUDE_ENV_DENYLIST) {
+  return isDeniedAgentEnvVar(name, {
+    denylist,
+    secretAllowlist: CLAUDE_ENV_SECRET_ALLOWLIST
+  });
+}
+/**
+ * The Anthropic credentials that are not this run's fixed-price subscription
+ * (Issue #1923).
+ *
+ * `ANTHROPIC_API_KEY` is metered by definition. `ANTHROPIC_AUTH_TOKEN` is a
+ * bearer for a proxied endpoint, so what it bills is the proxy's business —
+ * but it is still not the subscription this run selected, and that is the
+ * property this list is about. Named for what is provable rather than for
+ * "metered", which would over-claim on the bearer.
+ */ export const CLAUDE_NON_SUBSCRIPTION_CREDENTIAL_ENV_VARS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN"
+];
+/**
+ * Withhold every non-subscription Anthropic credential from a subscription
+ * run (Issue #1923).
+ *
+ * The fixed-price-only policy: VibeCoder runs unattended for months, so a
+ * subscription that is spent, stale or revoked must **fail authentication**
+ * rather than quietly become per-token API spend. When the run holds a usable
+ * `CLAUDE_CODE_OAUTH_TOKEN`, that token owns authentication and no metered
+ * Anthropic credential reaches the child as a backup. This is the Claude
+ * counterpart of `buildIsolatedCodexChildEnv`'s `CODEX_HOME` guard
+ * (Issue #1924), which Claude had no equivalent of.
+ *
+ * Presence is read **by value, not by key**: a blank token authenticates
+ * nothing, so it engages no guard. Without a subscription token the existing
+ * explicit API-key deployment is untouched.
+ *
+ * @param env - The child environment built so far. Mutated in place and
+ *   returned, because it is already a private copy of the parent.
+ * @returns The same object, with metered credentials removed in
+ *   subscription mode.
+ */ export function withholdNonSubscriptionCredentials(env) {
+  if ((env["CLAUDE_CODE_OAUTH_TOKEN"] ?? "").trim().length === 0) return env;
+  for (const name of CLAUDE_NON_SUBSCRIPTION_CREDENTIAL_ENV_VARS){
+    delete env[name];
+  }
+  return env;
+}
+/**
+ * Deterministic sub-agent spawn caps for every `claude` child (Issue #2575).
+ *
+ * Claude Opus 5 delegates more readily than earlier models, and a sub-agent
+ * may spawn sub-agents of its own, so one prompt can grow into a tree. These
+ * are the two caps Claude Code enforces however the model decides to
+ * delegate (documented at code.claude.com/docs/en/agent-sdk/subagents,
+ * "Cap subagent depth, concurrency, and spend"; honoured from Claude Code
+ * 2.1.217 — the image pins 2.1.293 in `container/tools.json`):
+ *
+ * - `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` — the main session may spawn
+ *   sub-agents, but a sub-agent may not spawn its own. The CLI default is 3.
+ * - `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=4` — at most four running at once
+ *   (the two reviewers, or a handful of split-run executors). The CLI
+ *   default is 20; a spawn past the cap is refused, not queued.
+ *
+ * Spawn environment, not an operator setting: an explicit value already in
+ * the parent environment wins, exactly as `CLAUDE_CONFIG_DIR` does below.
+ */ export const CLAUDE_SUBAGENT_CAP_ENV = {
+  CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: "1",
+  CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS: "4"
+};
+/**
+ * Foreground command ceiling for every `claude` child (Issue #4913). It is also
+ * applied to every `deepseek` child by `buildDeepSeekChildEnv` in deepseek_env.ts
+ * (Issue #4926; same Claude Code CLI version).
+ *
+ * The agent's Bash tool stops a foreground command at 600 000 ms unless
+ * `BASH_MAX_TIMEOUT_MS` raises the ceiling (read by Claude Code 2.1.310, the
+ * version pinned in `container/tools.json`). The prompts require the quality
+ * gate as one bounded foreground command, which a gate running longer than ten
+ * minutes cannot otherwise finish. 1 800 000 ms (30 minutes) matches the 1800 s
+ * default PR-feedback timeout.
+ *
+ * Spawn environment, not an operator setting: an explicit value already in the
+ * parent environment wins, exactly as {@link CLAUDE_SUBAGENT_CAP_ENV} does.
+ */ export const CLAUDE_BASH_TIMEOUT_ENV = {
+  BASH_MAX_TIMEOUT_MS: "1800000"
+};
+/**
+ * Build the environment for the `claude` child subprocess.
+ *
+ * Returns a copy of `parentEnv` with every denied variable removed — the
+ * explicit `denylist` plus anything whose name looks like a credential and is
+ * not on {@link CLAUDE_ENV_SECRET_ALLOWLIST}. Intended for use with
+ * `Deno.Command`'s `clearEnv: true` so the child receives exactly this map.
+ *
+ * A usable `CLAUDE_CODE_OAUTH_TOKEN` also engages the subscription billing
+ * guard (Issue #1923) — see {@link withholdNonSubscriptionCredentials}.
+ *
+ * @param parentEnv - The environment to inherit from (defaults to the current
+ *   process environment).
+ * @param denylist - Variable names to strip (defaults to
+ *   {@link CLAUDE_ENV_DENYLIST}).
+ * @returns A new object safe to pass as the child's `env`.
+ */ export function buildClaudeChildEnv(parentEnv = Deno.env.toObject(), denylist = CLAUDE_ENV_DENYLIST) {
+  const env = withholdNonSubscriptionCredentials(buildAgentChildEnv(parentEnv, {
+    denylist,
+    secretAllowlist: CLAUDE_ENV_SECRET_ALLOWLIST
+  }));
+  // Sub-agent spawn caps (Issue #2575); an explicit parent value wins.
+  for (const [name, value] of Object.entries(CLAUDE_SUBAGENT_CAP_ENV)){
+    if (env[name] === undefined) env[name] = value;
+  }
+  // Foreground command ceiling (Issue #4913); an explicit parent value wins.
+  for (const [name, value] of Object.entries(CLAUDE_BASH_TIMEOUT_ENV)){
+    if (env[name] === undefined) env[name] = value;
+  }
+  // Durable transcripts inside the container (Issue #4170): claude stores
+  // the session transcripts `--resume` replays under CLAUDE_CONFIG_DIR.
+  // Left at the default ~/.claude they die with the ephemeral VM — observed
+  // live as 70 minutes of execute-phase work unrecoverable after a kill.
+  // The work dir is the host-mounted durable surface, so the child's
+  // transcripts land there. Container only: on the host ~/.claude is
+  // already durable and carries the operator's own login state. An explicit
+  // CLAUDE_CONFIG_DIR always wins. The stamp is read by value, not
+  // presence: a blank one is a host run (Issue #1493).
+  if (env["CLAUDE_CONFIG_DIR"] === undefined && runningInContainerImage((name)=>env[name])) {
+    const workDir = env["WORK_DIR"] ?? (env["HOME"] ? `${env["HOME"]}/auto-issue-work` : undefined);
+    if (workDir) {
+      // Issue #1407: the agent's own state rides its own volume, a sibling of
+      // the work dir, so tightening the work volume can never lock the agent
+      // out of its configuration. Falls back to the old in-work-dir location
+      // only when workDir names no directory to sit beside.
+      const agentState = resolveAgentStateDir(workDir);
+      env["CLAUDE_CONFIG_DIR"] = agentState ? `${agentState}/claude-config` : `${workDir}/.claude-config`;
+    }
+  }
+  return env;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9jbGF1ZGVfZW52LnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogRW52aXJvbm1lbnQgYWxsb3ctbGlzdCBmb3IgdGhlIGBjbGF1ZGVgIGFnZW50IHN1YnByb2Nlc3MgKElzc3VlICMzMjAzKS5cbiAqXG4gKiBgcnVuQ2xhdWRlYCBzcGF3bnMgdGhlIGBjbGF1ZGVgIENMSSB3aXRoIGAtLWRhbmdlcm91c2x5LXNraXAtcGVybWlzc2lvbnNgXG4gKiAodW5yZXN0cmljdGVkIGJhc2gpLCBzbyB0aGUgY2hpbGQgY2FuIHJlYWQgYW55IGVudmlyb25tZW50IHZhcmlhYmxlIHRoZVxuICogd29ya2VyIGV4cG9ydHMuIEluaGVyaXRpbmcgdGhlIHdvcmtlcidzIGVudGlyZSBlbnZpcm9ubWVudCBuZWVkbGVzc2x5IGhhbmRzXG4gKiB0aGUgbW9kZWwgdGhlIGhpZ2hlc3QtdmFsdWUgc2VjcmV0IGl0IG93bnM6IGBHSVRIVUJfQVBQX1BSSVZBVEVfS0VZX1BBVEhgLFxuICogd2hpY2ggcG9pbnRzIGF0IHRoZSBHaXRIdWIgQXBwIFBFTSB0aGF0IG1pbnRzIGluc3RhbGxhdGlvbiB0b2tlbnMuIEEgcHJvbXB0XG4gKiBpbmplY3Rpb24gY291bGQgc3RlZXIgdGhlIG1vZGVsIHRvIGBjYXRgIHRoYXQgZmlsZSBhbmQgbGVhayBpdC5cbiAqXG4gKiBUaGUgbW9kZWwgbmV2ZXIgbmVlZHMgdGhlIHJhdyBQRU0g4oCUIGBnaGAgYXV0aGVudGljYXRlcyB3aXRoIHRoZSBhbHJlYWR5LW1pbnRlZFxuICogaW5zdGFsbGF0aW9uIHRva2VuIGluIGBHSF9UT0tFTmAuIFRoaXMgbW9kdWxlIG5hbWVzIENsYXVkZSdzIHRocmVlIGxpc3RzIGFuZFxuICogaGFuZHMgdGhlIGZpbHRlcmluZyBpdHNlbGYgdG8gYGFnZW50X2Vudi50c2AsIHdoaWNoIGV2ZXJ5IHByb3ZpZGVyIHNoYXJlczogdGhlXG4gKiBjaGlsZCBpbmhlcml0cyB0aGUgcGFyZW50J3MgZW52aXJvbm1lbnQgbWludXMgdGhlIG5hbWVkIGRlbnlsaXN0IGFuZCBtaW51c1xuICogYW55dGhpbmcgd2hvc2UgbmFtZSBsb29rcyBsaWtlIGEgY3JlZGVudGlhbCAoSXNzdWUgIzM3MDcpLCBzbyBhIHdvcmtlci1zaWRlXG4gKiBzZWNyZXQgYWRkZWQgbGF0ZXIgaXMgd2l0aGhlbGQgYnkgZGVmYXVsdCByYXRoZXIgdGhhbiBpbmhlcml0ZWQgdW50aWxcbiAqIHNvbWVib2R5IG5vdGljZXMuIFJvb3QtY2F1c2UgZml4OiB0aGUgc2VjcmV0IGlzIG5vdCBleHBvc2VkIHRvIHRoZSBhZ2VudCBhdFxuICogYWxsLCBzbyBpdCBjYW5ub3QgYmUgZXhmaWx0cmF0ZWQgcmVnYXJkbGVzcyBvZiBhbnkgZG93bnN0cmVhbSByZWRhY3Rpb24uXG4gKlxuICogIyMgT25lIHRva2VuIHJlYWNoZXMgdGhlIGNoaWxkLCBuZXZlciB0aGUgcG9vbCAoSXNzdWUgIzkyMCwgcGFyZW50ICM5MDIpXG4gKlxuICogQSBob3N0IG1heSBub3cgaG9sZCBzZXZlcmFsIEFudGhyb3BpYyBzdWJzY3JpcHRpb24gdG9rZW5zIGFzIHNlcGFyYXRlIGZpbGVzO1xuICogdGhlIHdvcmtlciBleHBvcnRzIGV4YWN0bHkgT05FIG9mIHRoZW0gKGBjcmVkZW50aWFsX3ByZWZsaWdodC50c2AsIGNob3NlbiBieVxuICogYGNsYXVkZV90b2tlbl9zZWxlY3Rpb24udHNgKSwgdW5kZXIgdGhlIGJhc2UgdmFyaWFibGUgbmFtZS4gU28gdGhlIGNoaWxkJ3NcbiAqIGVudmlyb25tZW50IGNhcnJpZXMgYXQgbW9zdCBvbmUgQW50aHJvcGljIGNyZWRlbnRpYWwgcGVyIGFjY2VwdGVkIG5hbWUsIGFuZFxuICogYW55dGhpbmcgKmVsc2UqIEFudGhyb3BpYy1zaGFwZWQgaW4gdGhlIHBhcmVudCDigJQgYW4gb3BlcmF0b3IncyBzZWNvbmQgdG9rZW5cbiAqIHBhcmtlZCBpbiBgQ0xBVURFX0NPREVfT0FVVEhfVE9LRU5fMmAsIGEgc3BhcmUgYEFOVEhST1BJQ19BUElfS0VZX0JBQ0tVUGAg4oCUXG4gKiBpcyBhIGNyZWRlbnRpYWwgdGhpcyBydW4gZGlkIG5vdCBzZWxlY3QuIHtAbGluayBDTEFVREVfRU5WX1NFQ1JFVF9BTExPV0xJU1R9XG4gKiBleGVtcHRzIHRoZSBiYXNlIG5hbWVzIGFuZCBPTkxZIHRoZSBiYXNlIG5hbWVzOiBgYWdlbnRfZW52LnRzYCBkZW5pZXMgZXZlcnlcbiAqIHN1ZmZpeGVkIG9yIGluZGV4ZWQgdmFyaWFudCBvZiBhIGxpc3RlZCBuYW1lIG91dHJpZ2h0LCBzbyBubyBhbGxvd2xpc3QgZWRpdFxuICogYW5kIG5vIG5hcnJvd2luZyBvZiB0aGUgc2hhcGUgcGF0dGVybiBjYW4gaGFuZCB0aGUgY2hpbGQgYSBzZWNvbmQgdG9rZW4uXG4gKlxuICogUmVzaWR1YWwgcmlzayAob3BlbiwgUjkgaW4gYGRvY3MvVEhSRUFULU1PREVMLm1kYDsgc2VlICMzNjk4LyMzNjk5KTogdGhlIGNvbnRhaW5lciBtb3VudHNcbiAqIHRoZSBwcm92aWRlcidzIHdob2xlIGNyZWRlbnRpYWwgc3ViLWRpcmVjdG9yeSByZWFkLW9ubHksIHNvIGEgcHJvY2VzcyB3aXRoXG4gKiBmaWxlc3lzdGVtIHJlYWQgYWNjZXNzIGluc2lkZSB0aGUgY29udGFpbmVyIGNhbiByZWFkIHRoZSB1bnNlbGVjdGVkIHRva2VuXG4gKiBGSUxFUyByZWdhcmRsZXNzIG9mIHRoaXMgZW52aXJvbm1lbnQgcG9saWN5LiBTZXZlcmFsIHRva2VucyByYWlzZSB0aGUgY291bnRcbiAqIG9mIHRoYXQgZXhwb3N1cmUsIG5vdCBpdHMgY2xhc3Mg4oCUIGl0IGlzIGVxdWFsbHkgdHJ1ZSBvZiB0aGUgc2luZ2xlIHRva2VuIGFcbiAqIG9uZS10b2tlbiBob3N0IGhhcyBhbHdheXMgbW91bnRlZC4gSXNvbGF0aW5nIHRoZSBjcmVkZW50aWFsIG1vdW50IGZyb20gdGhlXG4gKiBhZ2VudCBzdWJwcm9jZXNzIGlzIGRlbGliZXJhdGVseSBvdXQgb2Ygc2NvcGUgaGVyZSBhbmQgYmVsb25ncyBpbiBpdHMgb3duXG4gKiBpc3N1ZS5cbiAqXG4gKiBVc2VzIEF1c3RyYWxpYW4gRW5nbGlzaCB0aHJvdWdob3V0IChiZWhhdmlvdXIsIGNvbG91ciwgb3JnYW5pc2F0aW9uLCBldGMuKS5cbiAqL1xuXG5pbXBvcnQgeyByZXNvbHZlQWdlbnRTdGF0ZURpciB9IGZyb20gXCIuL2FnZW50X3N0YXRlX2Rpci50c1wiO1xuaW1wb3J0IHtcbiAgQUdFTlRfRU5WX1NFQ1JFVF9OQU1FX1BBVFRFUk4sXG4gIGJ1aWxkQWdlbnRDaGlsZEVudixcbiAgaXNEZW5pZWRBZ2VudEVudlZhcixcbiAgV09SS0VSX09OTFlfU0VDUkVUX0VOVl9WQVJTLFxufSBmcm9tIFwiLi9hZ2VudF9lbnYudHNcIjtcbmltcG9ydCB7IHJ1bm5pbmdJbkNvbnRhaW5lckltYWdlIH0gZnJvbSBcIi4vY29udGFpbmVyX3N0YW1wLnRzXCI7XG5cbi8qKlxuICogRW52aXJvbm1lbnQgdmFyaWFibGVzIHRoZSBgY2xhdWRlYCBjaGlsZCBtdXN0IG5ldmVyIGluaGVyaXQuXG4gKlxuICogVGhlIHdvcmtlci1vbmx5IHNlY3JldHMgKHRoZSBHaXRIdWIgQXBwIHByaXZhdGUta2V5IG1hdGVyaWFsIGFuZCB0aGUgSW1nQkJcbiAqIGtleSDigJQgc2VlIHtAbGluayBXT1JLRVJfT05MWV9TRUNSRVRfRU5WX1ZBUlN9KSwgcGx1cyBldmVyeSAqb3RoZXIqIHZlbmRvcidzIGFnZW50XG4gKiBjcmVkZW50aWFsIOKAlCBPcGVuQUkncyAoSXNzdWUgIzQxMDYpLCBHb29nbGUncyAoSXNzdWUgIzQxMDcpIGFuZCBEZWVwU2VlaydzXG4gKiAoSXNzdWUgIzQxMikuIFRoZSBjcm9zcy12ZW5kb3IgbmFtZXMgYXJlIGRlbmllZCBleHBsaWNpdGx5IHJhdGhlciB0aGFuIGxlZnRcbiAqIHRvIHRoZSBzZWNyZXQtc2hhcGUgcGF0dGVybiwgc28gbm8gZnV0dXJlIGFsbG93bGlzdCBlZGl0IGNhbiBoYW5kIHRoZVxuICogQW50aHJvcGljIGNoaWxkIGFub3RoZXIgdmVuZG9yJ3Mga2V5LlxuICpcbiAqIGBHSF9UT0tFTmAgaXMgZGVsaWJlcmF0ZWx5IE5PVCBkZW5pZWQg4oCUIGl0IGlzIHRoZSBzaG9ydC1saXZlZCBpbnN0YWxsYXRpb25cbiAqIHRva2VuIHRoZSBtb2RlbCBsZWdpdGltYXRlbHkgdXNlcyB2aWEgYGdoYC4gV2hhdCB0aGF0IHRva2VuIG1heSAqZG8qIGlzXG4gKiBjb25zdHJhaW5lZCBieSB0aGUgYGdoYCBQQVRIIHNoaW0gKGBnaF9ndWFyZF9zaGltLnRzYCwgSXNzdWUgIzM2NDMpLCBub3QgYnlcbiAqIHRoaXMgZGVueWxpc3QuXG4gKi9cbmV4cG9ydCBjb25zdCBDTEFVREVfRU5WX0RFTllMSVNUOiByZWFkb25seSBzdHJpbmdbXSA9IFtcbiAgLi4uV09SS0VSX09OTFlfU0VDUkVUX0VOVl9WQVJTLFxuICBcIk9QRU5BSV9BUElfS0VZXCIsXG4gIFwiQ09ERVhfQVBJX0tFWVwiLFxuICBcIkNPREVYX0hPTUVcIixcbiAgXCJHRU1JTklfQVBJX0tFWVwiLFxuICBcIkdPT0dMRV9BUElfS0VZXCIsXG4gIFwiREVFUFNFRUtfQVBJX0tFWVwiLFxuXTtcblxuLyoqXG4gKiBOYW1lcyB0aGF0IGxvb2sgbGlrZSBhIGNyZWRlbnRpYWwgKElzc3VlICMzNzA3KS5cbiAqXG4gKiBUaGUgcHJvdmlkZXItaW5kZXBlbmRlbnQgc2hhcGUgcnVsZSwgcmUtZXhwb3J0ZWQgdW5kZXIgQ2xhdWRlJ3MgbmFtZSBmb3IgdGhlXG4gKiBjYWxsZXJzIHRoYXQgYWxyZWFkeSBpbXBvcnQgaXQgZnJvbSBoZXJlLlxuICovXG5leHBvcnQgY29uc3QgQ0xBVURFX0VOVl9TRUNSRVRfTkFNRV9QQVRURVJOID0gQUdFTlRfRU5WX1NFQ1JFVF9OQU1FX1BBVFRFUk47XG5cbi8qKlxuICogVGhlIHZhcmlhYmxlIG5hbWVzIHRoZSBgY2xhdWRlYCBDTEkgcmVhZHMgaXRzIG93biBjcmVkZW50aWFsIGZyb20uXG4gKlxuICogVGhlIHNhbWUgdGhyZWUgdGhlIHByb3ZpZGVyIGRlc2NyaXB0b3IgYWNjZXB0cyBpbiBhIGNyZWRlbnRpYWwgZmlsZVxuICogKGBhZ2VudF9wcm92aWRlci50c2ApLCBzdGF0ZWQgb25jZSBoZXJlIGJlY2F1c2UgdGhleSBhcmUgYWxzbyB0aGUgb25seVxuICogQW50aHJvcGljIG5hbWVzIHRoZSBjaGlsZCBtYXkgaW5oZXJpdC4gRXhhY3RseSBvbmUgb2YgdGhlbSBjYXJyaWVzIHRoZVxuICogdG9rZW4gdGhpcyBydW4gc2VsZWN0ZWQ7IGV2ZXJ5IHZhcmlhbnQgb2YgdGhlbSBpcyBzb21lYm9keSBlbHNlJ3NcbiAqIChJc3N1ZSAjOTIwKS5cbiAqL1xuZXhwb3J0IGNvbnN0IENMQVVERV9DUkVERU5USUFMX0VOVl9WQVJTOiByZWFkb25seSBzdHJpbmdbXSA9IFtcbiAgXCJBTlRIUk9QSUNfQVBJX0tFWVwiLFxuICBcIkFOVEhST1BJQ19BVVRIX1RPS0VOXCIsXG4gIFwiQ0xBVURFX0NPREVfT0FVVEhfVE9LRU5cIixcbl07XG5cbi8qKlxuICogU2VjcmV0LXNoYXBlZCBuYW1lcyB0aGUgY2hpbGQgZ2VudWluZWx5IG5lZWRzIChJc3N1ZSAjMzcwNykuXG4gKlxuICogYEdIX1RPS0VOYCAvIGBHSVRIVUJfVE9LRU5gIGF1dGhlbnRpY2F0ZSB0aGUgYWdlbnQncyBgZ2hgIGNhbGxzOyB0aGVcbiAqIEFudGhyb3BpYyBjcmVkZW50aWFscyBhdXRoZW50aWNhdGUgdGhlIGBjbGF1ZGVgIENMSSBpdHNlbGYuIFdpdGhvdXQgdGhlc2VcbiAqIHRoZSBjaGlsZCBjYW5ub3QgZG8gaXRzIGpvYiBhdCBhbGwsIHNvIHRoZXkgYXJlIGV4ZW1wdCBmcm9tIHRoZVxuICogc2hhcGUtYmFzZWQgZGVuaWFsIGFib3ZlLlxuICpcbiAqIFRoZSBleGVtcHRpb24gaXMgZXhhY3QtbWF0Y2ggYW5kIG5vdGhpbmcgbW9yZSAoSXNzdWUgIzkyMCkuIEEgcG9vbGVkIGhvc3RcbiAqIGhvbGRzIHNldmVyYWwgQW50aHJvcGljIHRva2VucyBhbmQgdGhlIHJ1biBzZWxlY3RlZCBvbmUgb2YgdGhlbSwgc28gYSBuYW1lXG4gKiB0aGF0IG1lcmVseSAqc3RhcnRzKiB3aXRoIG9uZSBvZiB0aGVzZSDigJQgYENMQVVERV9DT0RFX09BVVRIX1RPS0VOXzJgLFxuICogYEFOVEhST1BJQ19BUElfS0VZX0JBQ0tVUGAg4oCUIG5hbWVzIGEgY3JlZGVudGlhbCB0aGUgcnVuIGRpZCBub3Qgc2VsZWN0IGFuZFxuICogaXMgZGVuaWVkIGJ5IHtAbGluayBpc0RlbmllZENsYXVkZUVudlZhcn0uIFRoYXQgZGVuaWFsIGlzIGV4cGxpY2l0IGluXG4gKiBgYWdlbnRfZW52LnRzYCwgbm90IGEgc2lkZSBlZmZlY3Qgb2YgdGhlIHNoYXBlIHBhdHRlcm4gaGFwcGVuaW5nIHRvIGNvbnRhaW5cbiAqIGBUT0tFTmAgYW5kIGBBUElfS0VZYC5cbiAqL1xuZXhwb3J0IGNvbnN0IENMQVVERV9FTlZfU0VDUkVUX0FMTE9XTElTVDogcmVhZG9ubHkgc3RyaW5nW10gPSBbXG4gIFwiR0hfVE9LRU5cIixcbiAgXCJHSVRIVUJfVE9LRU5cIixcbiAgLi4uQ0xBVURFX0NSRURFTlRJQUxfRU5WX1ZBUlMsXG5dO1xuXG4vKipcbiAqIFJlcG9ydCB3aGV0aGVyIGEgdmFyaWFibGUgbXVzdCBiZSB3aXRoaGVsZCBmcm9tIHRoZSBgY2xhdWRlYCBjaGlsZC5cbiAqXG4gKiBAcGFyYW0gbmFtZSAtIEVudmlyb25tZW50IHZhcmlhYmxlIG5hbWUuXG4gKiBAcGFyYW0gZGVueWxpc3QgLSBFeHBsaWNpdGx5IGRlbmllZCBuYW1lcyAoZGVmYXVsdHMgdG9cbiAqICAge0BsaW5rIENMQVVERV9FTlZfREVOWUxJU1R9KS5cbiAqIEByZXR1cm5zIHRydWUgd2hlbiB0aGUgdmFyaWFibGUgaXMgZGVuaWVkIGJ5IG5hbWUgb3IgYnkgc2VjcmV0LWlzaCBzaGFwZS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzRGVuaWVkQ2xhdWRlRW52VmFyKFxuICBuYW1lOiBzdHJpbmcsXG4gIGRlbnlsaXN0OiByZWFkb25seSBzdHJpbmdbXSA9IENMQVVERV9FTlZfREVOWUxJU1QsXG4pOiBib29sZWFuIHtcbiAgcmV0dXJuIGlzRGVuaWVkQWdlbnRFbnZWYXIobmFtZSwge1xuICAgIGRlbnlsaXN0LFxuICAgIHNlY3JldEFsbG93bGlzdDogQ0xBVURFX0VOVl9TRUNSRVRfQUxMT1dMSVNULFxuICB9KTtcbn1cblxuLyoqXG4gKiBUaGUgQW50aHJvcGljIGNyZWRlbnRpYWxzIHRoYXQgYXJlIG5vdCB0aGlzIHJ1bidzIGZpeGVkLXByaWNlIHN1YnNjcmlwdGlvblxuICogKElzc3VlICMxOTIzKS5cbiAqXG4gKiBgQU5USFJPUElDX0FQSV9LRVlgIGlzIG1ldGVyZWQgYnkgZGVmaW5pdGlvbi4gYEFOVEhST1BJQ19BVVRIX1RPS0VOYCBpcyBhXG4gKiBiZWFyZXIgZm9yIGEgcHJveGllZCBlbmRwb2ludCwgc28gd2hhdCBpdCBiaWxscyBpcyB0aGUgcHJveHkncyBidXNpbmVzcyDigJRcbiAqIGJ1dCBpdCBpcyBzdGlsbCBub3QgdGhlIHN1YnNjcmlwdGlvbiB0aGlzIHJ1biBzZWxlY3RlZCwgYW5kIHRoYXQgaXMgdGhlXG4gKiBwcm9wZXJ0eSB0aGlzIGxpc3QgaXMgYWJvdXQuIE5hbWVkIGZvciB3aGF0IGlzIHByb3ZhYmxlIHJhdGhlciB0aGFuIGZvclxuICogXCJtZXRlcmVkXCIsIHdoaWNoIHdvdWxkIG92ZXItY2xhaW0gb24gdGhlIGJlYXJlci5cbiAqL1xuZXhwb3J0IGNvbnN0IENMQVVERV9OT05fU1VCU0NSSVBUSU9OX0NSRURFTlRJQUxfRU5WX1ZBUlM6IHJlYWRvbmx5IHN0cmluZ1tdID0gW1xuICBcIkFOVEhST1BJQ19BUElfS0VZXCIsXG4gIFwiQU5USFJPUElDX0FVVEhfVE9LRU5cIixcbl07XG5cbi8qKlxuICogV2l0aGhvbGQgZXZlcnkgbm9uLXN1YnNjcmlwdGlvbiBBbnRocm9waWMgY3JlZGVudGlhbCBmcm9tIGEgc3Vic2NyaXB0aW9uXG4gKiBydW4gKElzc3VlICMxOTIzKS5cbiAqXG4gKiBUaGUgZml4ZWQtcHJpY2Utb25seSBwb2xpY3k6IFZpYmVDb2RlciBydW5zIHVuYXR0ZW5kZWQgZm9yIG1vbnRocywgc28gYVxuICogc3Vic2NyaXB0aW9uIHRoYXQgaXMgc3BlbnQsIHN0YWxlIG9yIHJldm9rZWQgbXVzdCAqKmZhaWwgYXV0aGVudGljYXRpb24qKlxuICogcmF0aGVyIHRoYW4gcXVpZXRseSBiZWNvbWUgcGVyLXRva2VuIEFQSSBzcGVuZC4gV2hlbiB0aGUgcnVuIGhvbGRzIGEgdXNhYmxlXG4gKiBgQ0xBVURFX0NPREVfT0FVVEhfVE9LRU5gLCB0aGF0IHRva2VuIG93bnMgYXV0aGVudGljYXRpb24gYW5kIG5vIG1ldGVyZWRcbiAqIEFudGhyb3BpYyBjcmVkZW50aWFsIHJlYWNoZXMgdGhlIGNoaWxkIGFzIGEgYmFja3VwLiBUaGlzIGlzIHRoZSBDbGF1ZGVcbiAqIGNvdW50ZXJwYXJ0IG9mIGBidWlsZElzb2xhdGVkQ29kZXhDaGlsZEVudmAncyBgQ09ERVhfSE9NRWAgZ3VhcmRcbiAqIChJc3N1ZSAjMTkyNCksIHdoaWNoIENsYXVkZSBoYWQgbm8gZXF1aXZhbGVudCBvZi5cbiAqXG4gKiBQcmVzZW5jZSBpcyByZWFkICoqYnkgdmFsdWUsIG5vdCBieSBrZXkqKjogYSBibGFuayB0b2tlbiBhdXRoZW50aWNhdGVzXG4gKiBub3RoaW5nLCBzbyBpdCBlbmdhZ2VzIG5vIGd1YXJkLiBXaXRob3V0IGEgc3Vic2NyaXB0aW9uIHRva2VuIHRoZSBleGlzdGluZ1xuICogZXhwbGljaXQgQVBJLWtleSBkZXBsb3ltZW50IGlzIHVudG91Y2hlZC5cbiAqXG4gKiBAcGFyYW0gZW52IC0gVGhlIGNoaWxkIGVudmlyb25tZW50IGJ1aWx0IHNvIGZhci4gTXV0YXRlZCBpbiBwbGFjZSBhbmRcbiAqICAgcmV0dXJuZWQsIGJlY2F1c2UgaXQgaXMgYWxyZWFkeSBhIHByaXZhdGUgY29weSBvZiB0aGUgcGFyZW50LlxuICogQHJldHVybnMgVGhlIHNhbWUgb2JqZWN0LCB3aXRoIG1ldGVyZWQgY3JlZGVudGlhbHMgcmVtb3ZlZCBpblxuICogICBzdWJzY3JpcHRpb24gbW9kZS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHdpdGhob2xkTm9uU3Vic2NyaXB0aW9uQ3JlZGVudGlhbHMoXG4gIGVudjogUmVjb3JkPHN0cmluZywgc3RyaW5nPixcbik6IFJlY29yZDxzdHJpbmcsIHN0cmluZz4ge1xuICBpZiAoKGVudltcIkNMQVVERV9DT0RFX09BVVRIX1RPS0VOXCJdID8/IFwiXCIpLnRyaW0oKS5sZW5ndGggPT09IDApIHJldHVybiBlbnY7XG4gIGZvciAoY29uc3QgbmFtZSBvZiBDTEFVREVfTk9OX1NVQlNDUklQVElPTl9DUkVERU5USUFMX0VOVl9WQVJTKSB7XG4gICAgZGVsZXRlIGVudltuYW1lXTtcbiAgfVxuICByZXR1cm4gZW52O1xufVxuXG4vKipcbiAqIERldGVybWluaXN0aWMgc3ViLWFnZW50IHNwYXduIGNhcHMgZm9yIGV2ZXJ5IGBjbGF1ZGVgIGNoaWxkIChJc3N1ZSAjMjU3NSkuXG4gKlxuICogQ2xhdWRlIE9wdXMgNSBkZWxlZ2F0ZXMgbW9yZSByZWFkaWx5IHRoYW4gZWFybGllciBtb2RlbHMsIGFuZCBhIHN1Yi1hZ2VudFxuICogbWF5IHNwYXduIHN1Yi1hZ2VudHMgb2YgaXRzIG93biwgc28gb25lIHByb21wdCBjYW4gZ3JvdyBpbnRvIGEgdHJlZS4gVGhlc2VcbiAqIGFyZSB0aGUgdHdvIGNhcHMgQ2xhdWRlIENvZGUgZW5mb3JjZXMgaG93ZXZlciB0aGUgbW9kZWwgZGVjaWRlcyB0b1xuICogZGVsZWdhdGUgKGRvY3VtZW50ZWQgYXQgY29kZS5jbGF1ZGUuY29tL2RvY3MvZW4vYWdlbnQtc2RrL3N1YmFnZW50cyxcbiAqIFwiQ2FwIHN1YmFnZW50IGRlcHRoLCBjb25jdXJyZW5jeSwgYW5kIHNwZW5kXCI7IGhvbm91cmVkIGZyb20gQ2xhdWRlIENvZGVcbiAqIDIuMS4yMTcg4oCUIHRoZSBpbWFnZSBwaW5zIDIuMS4yOTMgaW4gYGNvbnRhaW5lci90b29scy5qc29uYCk6XG4gKlxuICogLSBgQ0xBVURFX0NPREVfTUFYX1NVQkFHRU5UX1NQQVdOX0RFUFRIPTFgIOKAlCB0aGUgbWFpbiBzZXNzaW9uIG1heSBzcGF3blxuICogICBzdWItYWdlbnRzLCBidXQgYSBzdWItYWdlbnQgbWF5IG5vdCBzcGF3biBpdHMgb3duLiBUaGUgQ0xJIGRlZmF1bHQgaXMgMy5cbiAqIC0gYENMQVVERV9DT0RFX01BWF9DT05DVVJSRU5UX1NVQkFHRU5UUz00YCDigJQgYXQgbW9zdCBmb3VyIHJ1bm5pbmcgYXQgb25jZVxuICogICAodGhlIHR3byByZXZpZXdlcnMsIG9yIGEgaGFuZGZ1bCBvZiBzcGxpdC1ydW4gZXhlY3V0b3JzKS4gVGhlIENMSVxuICogICBkZWZhdWx0IGlzIDIwOyBhIHNwYXduIHBhc3QgdGhlIGNhcCBpcyByZWZ1c2VkLCBub3QgcXVldWVkLlxuICpcbiAqIFNwYXduIGVudmlyb25tZW50LCBub3QgYW4gb3BlcmF0b3Igc2V0dGluZzogYW4gZXhwbGljaXQgdmFsdWUgYWxyZWFkeSBpblxuICogdGhlIHBhcmVudCBlbnZpcm9ubWVudCB3aW5zLCBleGFjdGx5IGFzIGBDTEFVREVfQ09ORklHX0RJUmAgZG9lcyBiZWxvdy5cbiAqL1xuZXhwb3J0IGNvbnN0IENMQVVERV9TVUJBR0VOVF9DQVBfRU5WOiBSZWFkb25seTxSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+PiA9IHtcbiAgQ0xBVURFX0NPREVfTUFYX1NVQkFHRU5UX1NQQVdOX0RFUFRIOiBcIjFcIixcbiAgQ0xBVURFX0NPREVfTUFYX0NPTkNVUlJFTlRfU1VCQUdFTlRTOiBcIjRcIixcbn07XG5cbi8qKlxuICogRm9yZWdyb3VuZCBjb21tYW5kIGNlaWxpbmcgZm9yIGV2ZXJ5IGBjbGF1ZGVgIGNoaWxkIChJc3N1ZSAjNDkxMykuIEl0IGlzIGFsc29cbiAqIGFwcGxpZWQgdG8gZXZlcnkgYGRlZXBzZWVrYCBjaGlsZCBieSBgYnVpbGREZWVwU2Vla0NoaWxkRW52YCBpbiBkZWVwc2Vla19lbnYudHNcbiAqIChJc3N1ZSAjNDkyNjsgc2FtZSBDbGF1ZGUgQ29kZSBDTEkgdmVyc2lvbikuXG4gKlxuICogVGhlIGFnZW50J3MgQmFzaCB0b29sIHN0b3BzIGEgZm9yZWdyb3VuZCBjb21tYW5kIGF0IDYwMCAwMDAgbXMgdW5sZXNzXG4gKiBgQkFTSF9NQVhfVElNRU9VVF9NU2AgcmFpc2VzIHRoZSBjZWlsaW5nIChyZWFkIGJ5IENsYXVkZSBDb2RlIDIuMS4zMTAsIHRoZVxuICogdmVyc2lvbiBwaW5uZWQgaW4gYGNvbnRhaW5lci90b29scy5qc29uYCkuIFRoZSBwcm9tcHRzIHJlcXVpcmUgdGhlIHF1YWxpdHlcbiAqIGdhdGUgYXMgb25lIGJvdW5kZWQgZm9yZWdyb3VuZCBjb21tYW5kLCB3aGljaCBhIGdhdGUgcnVubmluZyBsb25nZXIgdGhhbiB0ZW5cbiAqIG1pbnV0ZXMgY2Fubm90IG90aGVyd2lzZSBmaW5pc2guIDEgODAwIDAwMCBtcyAoMzAgbWludXRlcykgbWF0Y2hlcyB0aGUgMTgwMCBzXG4gKiBkZWZhdWx0IFBSLWZlZWRiYWNrIHRpbWVvdXQuXG4gKlxuICogU3Bhd24gZW52aXJvbm1lbnQsIG5vdCBhbiBvcGVyYXRvciBzZXR0aW5nOiBhbiBleHBsaWNpdCB2YWx1ZSBhbHJlYWR5IGluIHRoZVxuICogcGFyZW50IGVudmlyb25tZW50IHdpbnMsIGV4YWN0bHkgYXMge0BsaW5rIENMQVVERV9TVUJBR0VOVF9DQVBfRU5WfSBkb2VzLlxuICovXG5leHBvcnQgY29uc3QgQ0xBVURFX0JBU0hfVElNRU9VVF9FTlY6IFJlYWRvbmx5PFJlY29yZDxzdHJpbmcsIHN0cmluZz4+ID0ge1xuICBCQVNIX01BWF9USU1FT1VUX01TOiBcIjE4MDAwMDBcIixcbn07XG5cbi8qKlxuICogQnVpbGQgdGhlIGVudmlyb25tZW50IGZvciB0aGUgYGNsYXVkZWAgY2hpbGQgc3VicHJvY2Vzcy5cbiAqXG4gKiBSZXR1cm5zIGEgY29weSBvZiBgcGFyZW50RW52YCB3aXRoIGV2ZXJ5IGRlbmllZCB2YXJpYWJsZSByZW1vdmVkIOKAlCB0aGVcbiAqIGV4cGxpY2l0IGBkZW55bGlzdGAgcGx1cyBhbnl0aGluZyB3aG9zZSBuYW1lIGxvb2tzIGxpa2UgYSBjcmVkZW50aWFsIGFuZCBpc1xuICogbm90IG9uIHtAbGluayBDTEFVREVfRU5WX1NFQ1JFVF9BTExPV0xJU1R9LiBJbnRlbmRlZCBmb3IgdXNlIHdpdGhcbiAqIGBEZW5vLkNvbW1hbmRgJ3MgYGNsZWFyRW52OiB0cnVlYCBzbyB0aGUgY2hpbGQgcmVjZWl2ZXMgZXhhY3RseSB0aGlzIG1hcC5cbiAqXG4gKiBBIHVzYWJsZSBgQ0xBVURFX0NPREVfT0FVVEhfVE9LRU5gIGFsc28gZW5nYWdlcyB0aGUgc3Vic2NyaXB0aW9uIGJpbGxpbmdcbiAqIGd1YXJkIChJc3N1ZSAjMTkyMykg4oCUIHNlZSB7QGxpbmsgd2l0aGhvbGROb25TdWJzY3JpcHRpb25DcmVkZW50aWFsc30uXG4gKlxuICogQHBhcmFtIHBhcmVudEVudiAtIFRoZSBlbnZpcm9ubWVudCB0byBpbmhlcml0IGZyb20gKGRlZmF1bHRzIHRvIHRoZSBjdXJyZW50XG4gKiAgIHByb2Nlc3MgZW52aXJvbm1lbnQpLlxuICogQHBhcmFtIGRlbnlsaXN0IC0gVmFyaWFibGUgbmFtZXMgdG8gc3RyaXAgKGRlZmF1bHRzIHRvXG4gKiAgIHtAbGluayBDTEFVREVfRU5WX0RFTllMSVNUfSkuXG4gKiBAcmV0dXJucyBBIG5ldyBvYmplY3Qgc2FmZSB0byBwYXNzIGFzIHRoZSBjaGlsZCdzIGBlbnZgLlxuICovXG5leHBvcnQgZnVuY3Rpb24gYnVpbGRDbGF1ZGVDaGlsZEVudihcbiAgcGFyZW50RW52OiBSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+ID0gRGVuby5lbnYudG9PYmplY3QoKSxcbiAgZGVueWxpc3Q6IHJlYWRvbmx5IHN0cmluZ1tdID0gQ0xBVURFX0VOVl9ERU5ZTElTVCxcbik6IFJlY29yZDxzdHJpbmcsIHN0cmluZz4ge1xuICBjb25zdCBlbnYgPSB3aXRoaG9sZE5vblN1YnNjcmlwdGlvbkNyZWRlbnRpYWxzKFxuICAgIGJ1aWxkQWdlbnRDaGlsZEVudihwYXJlbnRFbnYsIHtcbiAgICAgIGRlbnlsaXN0LFxuICAgICAgc2VjcmV0QWxsb3dsaXN0OiBDTEFVREVfRU5WX1NFQ1JFVF9BTExPV0xJU1QsXG4gICAgfSksXG4gICk7XG5cbiAgLy8gU3ViLWFnZW50IHNwYXduIGNhcHMgKElzc3VlICMyNTc1KTsgYW4gZXhwbGljaXQgcGFyZW50IHZhbHVlIHdpbnMuXG4gIGZvciAoY29uc3QgW25hbWUsIHZhbHVlXSBvZiBPYmplY3QuZW50cmllcyhDTEFVREVfU1VCQUdFTlRfQ0FQX0VOVikpIHtcbiAgICBpZiAoZW52W25hbWVdID09PSB1bmRlZmluZWQpIGVudltuYW1lXSA9IHZhbHVlO1xuICB9XG5cbiAgLy8gRm9yZWdyb3VuZCBjb21tYW5kIGNlaWxpbmcgKElzc3VlICM0OTEzKTsgYW4gZXhwbGljaXQgcGFyZW50IHZhbHVlIHdpbnMuXG4gIGZvciAoY29uc3QgW25hbWUsIHZhbHVlXSBvZiBPYmplY3QuZW50cmllcyhDTEFVREVfQkFTSF9USU1FT1VUX0VOVikpIHtcbiAgICBpZiAoZW52W25hbWVdID09PSB1bmRlZmluZWQpIGVudltuYW1lXSA9IHZhbHVlO1xuICB9XG5cbiAgLy8gRHVyYWJsZSB0cmFuc2NyaXB0cyBpbnNpZGUgdGhlIGNvbnRhaW5lciAoSXNzdWUgIzQxNzApOiBjbGF1ZGUgc3RvcmVzXG4gIC8vIHRoZSBzZXNzaW9uIHRyYW5zY3JpcHRzIGAtLXJlc3VtZWAgcmVwbGF5cyB1bmRlciBDTEFVREVfQ09ORklHX0RJUi5cbiAgLy8gTGVmdCBhdCB0aGUgZGVmYXVsdCB+Ly5jbGF1ZGUgdGhleSBkaWUgd2l0aCB0aGUgZXBoZW1lcmFsIFZNIOKAlCBvYnNlcnZlZFxuICAvLyBsaXZlIGFzIDcwIG1pbnV0ZXMgb2YgZXhlY3V0ZS1waGFzZSB3b3JrIHVucmVjb3ZlcmFibGUgYWZ0ZXIgYSBraWxsLlxuICAvLyBUaGUgd29yayBkaXIgaXMgdGhlIGhvc3QtbW91bnRlZCBkdXJhYmxlIHN1cmZhY2UsIHNvIHRoZSBjaGlsZCdzXG4gIC8vIHRyYW5zY3JpcHRzIGxhbmQgdGhlcmUuIENvbnRhaW5lciBvbmx5OiBvbiB0aGUgaG9zdCB+Ly5jbGF1ZGUgaXNcbiAgLy8gYWxyZWFkeSBkdXJhYmxlIGFuZCBjYXJyaWVzIHRoZSBvcGVyYXRvcidzIG93biBsb2dpbiBzdGF0ZS4gQW4gZXhwbGljaXRcbiAgLy8gQ0xBVURFX0NPTkZJR19ESVIgYWx3YXlzIHdpbnMuIFRoZSBzdGFtcCBpcyByZWFkIGJ5IHZhbHVlLCBub3RcbiAgLy8gcHJlc2VuY2U6IGEgYmxhbmsgb25lIGlzIGEgaG9zdCBydW4gKElzc3VlICMxNDkzKS5cbiAgaWYgKFxuICAgIGVudltcIkNMQVVERV9DT05GSUdfRElSXCJdID09PSB1bmRlZmluZWQgJiZcbiAgICBydW5uaW5nSW5Db250YWluZXJJbWFnZSgobmFtZSkgPT4gZW52W25hbWVdKVxuICApIHtcbiAgICBjb25zdCB3b3JrRGlyID0gZW52W1wiV09SS19ESVJcIl0gPz9cbiAgICAgIChlbnZbXCJIT01FXCJdID8gYCR7ZW52W1wiSE9NRVwiXX0vYXV0by1pc3N1ZS13b3JrYCA6IHVuZGVmaW5lZCk7XG4gICAgaWYgKHdvcmtEaXIpIHtcbiAgICAgIC8vIElzc3VlICMxNDA3OiB0aGUgYWdlbnQncyBvd24gc3RhdGUgcmlkZXMgaXRzIG93biB2b2x1bWUsIGEgc2libGluZyBvZlxuICAgICAgLy8gdGhlIHdvcmsgZGlyLCBzbyB0aWdodGVuaW5nIHRoZSB3b3JrIHZvbHVtZSBjYW4gbmV2ZXIgbG9jayB0aGUgYWdlbnRcbiAgICAgIC8vIG91dCBvZiBpdHMgY29uZmlndXJhdGlvbi4gRmFsbHMgYmFjayB0byB0aGUgb2xkIGluLXdvcmstZGlyIGxvY2F0aW9uXG4gICAgICAvLyBvbmx5IHdoZW4gd29ya0RpciBuYW1lcyBubyBkaXJlY3RvcnkgdG8gc2l0IGJlc2lkZS5cbiAgICAgIGNvbnN0IGFnZW50U3RhdGUgPSByZXNvbHZlQWdlbnRTdGF0ZURpcih3b3JrRGlyKTtcbiAgICAgIGVudltcIkNMQVVERV9DT05GSUdfRElSXCJdID0gYWdlbnRTdGF0ZVxuICAgICAgICA/IGAke2FnZW50U3RhdGV9L2NsYXVkZS1jb25maWdgXG4gICAgICAgIDogYCR7d29ya0Rpcn0vLmNsYXVkZS1jb25maWdgO1xuICAgIH1cbiAgfVxuICByZXR1cm4gZW52O1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0EwQ0MsR0FFRCxTQUFTLG9CQUFvQixRQUFRLHVCQUF1QjtBQUM1RCxTQUNFLDZCQUE2QixFQUM3QixrQkFBa0IsRUFDbEIsbUJBQW1CLEVBQ25CLDJCQUEyQixRQUN0QixpQkFBaUI7QUFDeEIsU0FBUyx1QkFBdUIsUUFBUSx1QkFBdUI7QUFFL0Q7Ozs7Ozs7Ozs7Ozs7O0NBY0MsR0FDRCxPQUFPLE1BQU0sc0JBQXlDO0tBQ2pEO0VBQ0g7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0NBQ0QsQ0FBQztBQUVGOzs7OztDQUtDLEdBQ0QsT0FBTyxNQUFNLGlDQUFpQyw4QkFBOEI7QUFFNUU7Ozs7Ozs7O0NBUUMsR0FDRCxPQUFPLE1BQU0sNkJBQWdEO0VBQzNEO0VBQ0E7RUFDQTtDQUNELENBQUM7QUFFRjs7Ozs7Ozs7Ozs7Ozs7O0NBZUMsR0FDRCxPQUFPLE1BQU0sOEJBQWlEO0VBQzVEO0VBQ0E7S0FDRztDQUNKLENBQUM7QUFFRjs7Ozs7OztDQU9DLEdBQ0QsT0FBTyxTQUFTLHFCQUNkLElBQVksRUFDWixXQUE4QixtQkFBbUI7RUFFakQsT0FBTyxvQkFBb0IsTUFBTTtJQUMvQjtJQUNBLGlCQUFpQjtFQUNuQjtBQUNGO0FBRUE7Ozs7Ozs7OztDQVNDLEdBQ0QsT0FBTyxNQUFNLDhDQUFpRTtFQUM1RTtFQUNBO0NBQ0QsQ0FBQztBQUVGOzs7Ozs7Ozs7Ozs7Ozs7Ozs7OztDQW9CQyxHQUNELE9BQU8sU0FBUyxtQ0FDZCxHQUEyQjtFQUUzQixJQUFJLENBQUMsR0FBRyxDQUFDLDBCQUEwQixJQUFJLEVBQUUsRUFBRSxJQUFJLEdBQUcsTUFBTSxLQUFLLEdBQUcsT0FBTztFQUN2RSxLQUFLLE1BQU0sUUFBUSw0Q0FBNkM7SUFDOUQsT0FBTyxHQUFHLENBQUMsS0FBSztFQUNsQjtFQUNBLE9BQU87QUFDVDtBQUVBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0FrQkMsR0FDRCxPQUFPLE1BQU0sMEJBQTREO0VBQ3ZFLHNDQUFzQztFQUN0QyxzQ0FBc0M7QUFDeEMsRUFBRTtBQUVGOzs7Ozs7Ozs7Ozs7OztDQWNDLEdBQ0QsT0FBTyxNQUFNLDBCQUE0RDtFQUN2RSxxQkFBcUI7QUFDdkIsRUFBRTtBQUVGOzs7Ozs7Ozs7Ozs7Ozs7O0NBZ0JDLEdBQ0QsT0FBTyxTQUFTLG9CQUNkLFlBQW9DLEtBQUssR0FBRyxDQUFDLFFBQVEsRUFBRSxFQUN2RCxXQUE4QixtQkFBbUI7RUFFakQsTUFBTSxNQUFNLG1DQUNWLG1CQUFtQixXQUFXO0lBQzVCO0lBQ0EsaUJBQWlCO0VBQ25CO0VBR0YscUVBQXFFO0VBQ3JFLEtBQUssTUFBTSxDQUFDLE1BQU0sTUFBTSxJQUFJLE9BQU8sT0FBTyxDQUFDLHlCQUEwQjtJQUNuRSxJQUFJLEdBQUcsQ0FBQyxLQUFLLEtBQUssV0FBVyxHQUFHLENBQUMsS0FBSyxHQUFHO0VBQzNDO0VBRUEsMkVBQTJFO0VBQzNFLEtBQUssTUFBTSxDQUFDLE1BQU0sTUFBTSxJQUFJLE9BQU8sT0FBTyxDQUFDLHlCQUEwQjtJQUNuRSxJQUFJLEdBQUcsQ0FBQyxLQUFLLEtBQUssV0FBVyxHQUFHLENBQUMsS0FBSyxHQUFHO0VBQzNDO0VBRUEsd0VBQXdFO0VBQ3hFLHNFQUFzRTtFQUN0RSwwRUFBMEU7RUFDMUUsdUVBQXVFO0VBQ3ZFLG1FQUFtRTtFQUNuRSxtRUFBbUU7RUFDbkUsMEVBQTBFO0VBQzFFLGlFQUFpRTtFQUNqRSxxREFBcUQ7RUFDckQsSUFDRSxHQUFHLENBQUMsb0JBQW9CLEtBQUssYUFDN0Isd0JBQXdCLENBQUMsT0FBUyxHQUFHLENBQUMsS0FBSyxHQUMzQztJQUNBLE1BQU0sVUFBVSxHQUFHLENBQUMsV0FBVyxJQUM3QixDQUFDLEdBQUcsQ0FBQyxPQUFPLEdBQUcsR0FBRyxHQUFHLENBQUMsT0FBTyxDQUFDLGdCQUFnQixDQUFDLEdBQUcsU0FBUztJQUM3RCxJQUFJLFNBQVM7TUFDWCx3RUFBd0U7TUFDeEUsdUVBQXVFO01BQ3ZFLHVFQUF1RTtNQUN2RSxzREFBc0Q7TUFDdEQsTUFBTSxhQUFhLHFCQUFxQjtNQUN4QyxHQUFHLENBQUMsb0JBQW9CLEdBQUcsYUFDdkIsR0FBRyxXQUFXLGNBQWMsQ0FBQyxHQUM3QixHQUFHLFFBQVEsZUFBZSxDQUFDO0lBQ2pDO0VBQ0Y7RUFDQSxPQUFPO0FBQ1QifQ==
+// denoCacheMetadata=4118669270498095425,12391104513586187978

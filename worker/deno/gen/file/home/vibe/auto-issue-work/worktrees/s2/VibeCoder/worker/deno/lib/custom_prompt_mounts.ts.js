@@ -1,0 +1,184 @@
+/**
+ * Custom-prompt mounts for the container launch plan (Issue #850, part of
+ * #843).
+ *
+ * `custom_label_prompts` (Issue #846) names prompt templates that live on the
+ * **host**, outside the public repository. The worker runs containerised by
+ * default, and the container sees the workspace rather than the host
+ * (Issue #4060), so without a mount every custom prompt fails at dispatch
+ * inside the container — the fail-loud error from Issue #848, on every run.
+ *
+ * This module derives the narrowest addition consistent with that containment
+ * posture:
+ *
+ * - **The containing directory, not the file.** Apple `container` cannot bind
+ *   a single file — a file mount silently empties the container's other
+ *   volumes — so one directory per distinct parent, deduplicated, is mounted
+ *   instead. Everything beside the prompt in that directory becomes readable
+ *   inside the container, which is why an operator should keep the prompts in
+ *   a directory of their own.
+ * - **Read-only, always.** The caller marks every mount `readOnly`; nothing
+ *   inside the container has any business editing the operator's templates.
+ * - **Still subject to the existing allowlist.** The sources are returned, not
+ *   mounted: `buildContainerLaunchPlan` routes each through
+ *   `assertMountSourcePermitted`, so a prompt under the host home directory
+ *   (or an ancestor of it), the filesystem root, or a runtime control socket
+ *   fails the launch with the existing containment error rather than being
+ *   dropped from the mount list.
+ *
+ * ## Why a translation map rather than a rewritten config
+ *
+ * The same `.config.json` is used in both modes, so the configured path stays
+ * the host path an operator wrote. The launcher passes the host → in-container
+ * mapping in {@link CUSTOM_PROMPT_PATH_MAP_ENV}, and the config loader applies
+ * it when it validates the mappings. A read outside the container — the
+ * launcher's own, setup, a dev run — sets no variable and resolves the host
+ * path unchanged. (`run_mode: native` was removed by Issue #4; this is about
+ * where the config is read, not a run mode.)
+ *
+ * Australian English spelling throughout (behaviour, organisation).
+ */ /**
+ * Environment variable carrying the host → in-container prompt path map, as
+ * a JSON object. Set by the launch plan only when mappings are configured, so
+ * an unconfigured deployment's plan is byte-identical to what it was before.
+ */ export const CUSTOM_PROMPT_PATH_MAP_ENV = "VIBE_CUSTOM_PROMPT_PATHS";
+/**
+ * In-container directory the mounted prompt directories land under, relative
+ * to the container home — beside the staged configuration's `run-config`.
+ */ export const CUSTOM_PROMPTS_TARGET_SUBDIR = ".vibe-coder/custom-prompts";
+/**
+ * True when a path carries a `.` or `..` segment.
+ *
+ * The mount-source allowlist in `container_launch.ts` compares **strings**:
+ * it has no filesystem to consult and deliberately never had one. A
+ * `..` segment therefore walks straight past it —
+ * `/srv/../home/operator/x.md` yields the source `/srv/../home/operator`,
+ * which is not string-equal to the home directory but is exactly it once the
+ * runtime resolves the mount. Every other mount source is a path the worker
+ * itself derived; a configured prompt path is the first an operator writes
+ * by hand, so the traversal spelling is refused rather than trusted.
+ *
+ * @param path - A host path
+ * @returns Whether any segment is `.` or `..`
+ */ export function hasTraversalSegment(path) {
+  return path.split(/[/\\]/).some((segment)=>segment === "." || segment === "..");
+}
+/**
+ * Refuse a configured prompt path the containment allowlist cannot be
+ * trusted to judge (Issue #850).
+ *
+ * Both faults are the same fault: the string the allowlist checks is not the
+ * path the runtime will mount. A `..` segment says so in the spelling; a
+ * symlink says so only once resolved. Either way the launch fails here, with
+ * the resolved path named so the operator can configure it directly, rather
+ * than a broadened mount reaching the runtime.
+ *
+ * @param promptPath - The configured absolute host path
+ * @param realPath - Resolver for symlinks and relative segments
+ * @throws When the path carries a `.`/`..` segment, cannot be resolved, or
+ *   resolves to somewhere other than itself
+ */ export function assertCustomPromptSourceResolvable(promptPath, realPath) {
+  if (hasTraversalSegment(promptPath)) {
+    throw new Error(`Refusing to launch: the custom prompt path ${promptPath} contains a ` + `"." or ".." segment, so the mount it derives would not be the path ` + `the containment allowlist checked. Configure the resolved path.`);
+  }
+  let resolved;
+  try {
+    resolved = realPath(promptPath);
+  } catch (error) {
+    throw new Error(`Refusing to launch: the custom prompt path ${promptPath} cannot be ` + `resolved (${error.message}).`);
+  }
+  if (resolved !== promptPath) {
+    throw new Error(`Refusing to launch: the custom prompt path ${promptPath} resolves to ` + `${resolved}, so the directory the runtime would mount is not the ` + `one the containment allowlist checked. Configure ${resolved}.`);
+  }
+}
+/** Split a host path into its directory and file name, in the host's spelling. */ function splitPath(path, style) {
+  const lastSlash = path.lastIndexOf("/");
+  const lastBackslash = style === "windows" ? path.lastIndexOf("\\") : -1;
+  const index = Math.max(lastSlash, lastBackslash);
+  // A path whose only separator is its first character keeps that separator
+  // as the directory: `/rogue.md` is in the filesystem root, and the launch
+  // plan's allowlist refuses to mount it.
+  const directory = index <= 0 ? path.slice(0, index + 1) : path.slice(0, index).replace(/[/\\]+$/, "");
+  return {
+    directory,
+    name: path.slice(index + 1)
+  };
+}
+/**
+ * Derive the read-only mount set and the path translation for the configured
+ * prompt files.
+ *
+ * @param promptPaths - Configured absolute host paths, in configuration order
+ * @param targetBase - In-container directory the mounts land under
+ * @param style - How this host spells its paths; POSIX unless stated
+ * @returns The mounts (one per distinct directory) and the host → container
+ *   path translation for every configured prompt
+ */ export function planCustomPromptMounts(promptPaths, targetBase, style = "posix") {
+  const mounts = [];
+  const targetForDirectory = new Map();
+  const translations = {};
+  for (const promptPath of promptPaths){
+    const { directory, name } = splitPath(promptPath, style);
+    let target = targetForDirectory.get(directory);
+    if (target === undefined) {
+      // Numbered rather than named after the host directory: an index cannot
+      // collide, and the translation map records where each one came from.
+      target = `${targetBase}/${mounts.length + 1}`;
+      targetForDirectory.set(directory, target);
+      mounts.push({
+        source: directory,
+        target
+      });
+    }
+    // The in-container side is POSIX on every host, including a Windows one.
+    translations[promptPath] = `${target}/${name}`;
+  }
+  return {
+    mounts,
+    translations
+  };
+}
+/**
+ * Parse the launcher's translation map — fail loud, never partially applied.
+ *
+ * @param raw - The raw {@link CUSTOM_PROMPT_PATH_MAP_ENV} value
+ * @returns The map; empty when the variable is unset or blank — a read
+ *   outside the container, where the host path is the readable one
+ * @throws When the value is not a JSON object of string → string entries: a
+ *   mangled map would resolve a prompt onto the wrong file, or onto none.
+ */ export function parseCustomPromptPathMap(raw) {
+  if (raw === undefined || raw.trim() === "") return {};
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${CUSTOM_PROMPT_PATH_MAP_ENV} is not valid JSON (${error.message}) — the custom prompt paths cannot be resolved inside the container.`);
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`${CUSTOM_PROMPT_PATH_MAP_ENV} must be a JSON object mapping each ` + `configured host prompt path to its in-container path.`);
+  }
+  const map = {};
+  for (const [hostPath, containerPath] of Object.entries(parsed)){
+    if (typeof containerPath !== "string" || containerPath === "") {
+      throw new Error(`${CUSTOM_PROMPT_PATH_MAP_ENV} entry for ${hostPath} must be a ` + `non-empty in-container path.`);
+    }
+    map[hostPath] = containerPath;
+  }
+  return map;
+}
+/**
+ * A resolver for a configured prompt path.
+ *
+ * A path the map does not name is returned unchanged, so the config loader's
+ * own readability check fails loud naming the path the operator configured
+ * rather than one this module invented.
+ *
+ * @param raw - The raw {@link CUSTOM_PROMPT_PATH_MAP_ENV} value
+ * @returns A function resolving a configured host path to where it is readable
+ * @throws When the map is present but malformed
+ */ export function customPromptPathResolver(raw) {
+  const map = parseCustomPromptPathMap(raw);
+  return (promptPath)=>map[promptPath] ?? promptPath;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9jdXN0b21fcHJvbXB0X21vdW50cy50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIEN1c3RvbS1wcm9tcHQgbW91bnRzIGZvciB0aGUgY29udGFpbmVyIGxhdW5jaCBwbGFuIChJc3N1ZSAjODUwLCBwYXJ0IG9mXG4gKiAjODQzKS5cbiAqXG4gKiBgY3VzdG9tX2xhYmVsX3Byb21wdHNgIChJc3N1ZSAjODQ2KSBuYW1lcyBwcm9tcHQgdGVtcGxhdGVzIHRoYXQgbGl2ZSBvbiB0aGVcbiAqICoqaG9zdCoqLCBvdXRzaWRlIHRoZSBwdWJsaWMgcmVwb3NpdG9yeS4gVGhlIHdvcmtlciBydW5zIGNvbnRhaW5lcmlzZWQgYnlcbiAqIGRlZmF1bHQsIGFuZCB0aGUgY29udGFpbmVyIHNlZXMgdGhlIHdvcmtzcGFjZSByYXRoZXIgdGhhbiB0aGUgaG9zdFxuICogKElzc3VlICM0MDYwKSwgc28gd2l0aG91dCBhIG1vdW50IGV2ZXJ5IGN1c3RvbSBwcm9tcHQgZmFpbHMgYXQgZGlzcGF0Y2hcbiAqIGluc2lkZSB0aGUgY29udGFpbmVyIOKAlCB0aGUgZmFpbC1sb3VkIGVycm9yIGZyb20gSXNzdWUgIzg0OCwgb24gZXZlcnkgcnVuLlxuICpcbiAqIFRoaXMgbW9kdWxlIGRlcml2ZXMgdGhlIG5hcnJvd2VzdCBhZGRpdGlvbiBjb25zaXN0ZW50IHdpdGggdGhhdCBjb250YWlubWVudFxuICogcG9zdHVyZTpcbiAqXG4gKiAtICoqVGhlIGNvbnRhaW5pbmcgZGlyZWN0b3J5LCBub3QgdGhlIGZpbGUuKiogQXBwbGUgYGNvbnRhaW5lcmAgY2Fubm90IGJpbmRcbiAqICAgYSBzaW5nbGUgZmlsZSDigJQgYSBmaWxlIG1vdW50IHNpbGVudGx5IGVtcHRpZXMgdGhlIGNvbnRhaW5lcidzIG90aGVyXG4gKiAgIHZvbHVtZXMg4oCUIHNvIG9uZSBkaXJlY3RvcnkgcGVyIGRpc3RpbmN0IHBhcmVudCwgZGVkdXBsaWNhdGVkLCBpcyBtb3VudGVkXG4gKiAgIGluc3RlYWQuIEV2ZXJ5dGhpbmcgYmVzaWRlIHRoZSBwcm9tcHQgaW4gdGhhdCBkaXJlY3RvcnkgYmVjb21lcyByZWFkYWJsZVxuICogICBpbnNpZGUgdGhlIGNvbnRhaW5lciwgd2hpY2ggaXMgd2h5IGFuIG9wZXJhdG9yIHNob3VsZCBrZWVwIHRoZSBwcm9tcHRzIGluXG4gKiAgIGEgZGlyZWN0b3J5IG9mIHRoZWlyIG93bi5cbiAqIC0gKipSZWFkLW9ubHksIGFsd2F5cy4qKiBUaGUgY2FsbGVyIG1hcmtzIGV2ZXJ5IG1vdW50IGByZWFkT25seWA7IG5vdGhpbmdcbiAqICAgaW5zaWRlIHRoZSBjb250YWluZXIgaGFzIGFueSBidXNpbmVzcyBlZGl0aW5nIHRoZSBvcGVyYXRvcidzIHRlbXBsYXRlcy5cbiAqIC0gKipTdGlsbCBzdWJqZWN0IHRvIHRoZSBleGlzdGluZyBhbGxvd2xpc3QuKiogVGhlIHNvdXJjZXMgYXJlIHJldHVybmVkLCBub3RcbiAqICAgbW91bnRlZDogYGJ1aWxkQ29udGFpbmVyTGF1bmNoUGxhbmAgcm91dGVzIGVhY2ggdGhyb3VnaFxuICogICBgYXNzZXJ0TW91bnRTb3VyY2VQZXJtaXR0ZWRgLCBzbyBhIHByb21wdCB1bmRlciB0aGUgaG9zdCBob21lIGRpcmVjdG9yeVxuICogICAob3IgYW4gYW5jZXN0b3Igb2YgaXQpLCB0aGUgZmlsZXN5c3RlbSByb290LCBvciBhIHJ1bnRpbWUgY29udHJvbCBzb2NrZXRcbiAqICAgZmFpbHMgdGhlIGxhdW5jaCB3aXRoIHRoZSBleGlzdGluZyBjb250YWlubWVudCBlcnJvciByYXRoZXIgdGhhbiBiZWluZ1xuICogICBkcm9wcGVkIGZyb20gdGhlIG1vdW50IGxpc3QuXG4gKlxuICogIyMgV2h5IGEgdHJhbnNsYXRpb24gbWFwIHJhdGhlciB0aGFuIGEgcmV3cml0dGVuIGNvbmZpZ1xuICpcbiAqIFRoZSBzYW1lIGAuY29uZmlnLmpzb25gIGlzIHVzZWQgaW4gYm90aCBtb2Rlcywgc28gdGhlIGNvbmZpZ3VyZWQgcGF0aCBzdGF5c1xuICogdGhlIGhvc3QgcGF0aCBhbiBvcGVyYXRvciB3cm90ZS4gVGhlIGxhdW5jaGVyIHBhc3NlcyB0aGUgaG9zdCDihpIgaW4tY29udGFpbmVyXG4gKiBtYXBwaW5nIGluIHtAbGluayBDVVNUT01fUFJPTVBUX1BBVEhfTUFQX0VOVn0sIGFuZCB0aGUgY29uZmlnIGxvYWRlciBhcHBsaWVzXG4gKiBpdCB3aGVuIGl0IHZhbGlkYXRlcyB0aGUgbWFwcGluZ3MuIEEgcmVhZCBvdXRzaWRlIHRoZSBjb250YWluZXIg4oCUIHRoZVxuICogbGF1bmNoZXIncyBvd24sIHNldHVwLCBhIGRldiBydW4g4oCUIHNldHMgbm8gdmFyaWFibGUgYW5kIHJlc29sdmVzIHRoZSBob3N0XG4gKiBwYXRoIHVuY2hhbmdlZC4gKGBydW5fbW9kZTogbmF0aXZlYCB3YXMgcmVtb3ZlZCBieSBJc3N1ZSAjNDsgdGhpcyBpcyBhYm91dFxuICogd2hlcmUgdGhlIGNvbmZpZyBpcyByZWFkLCBub3QgYSBydW4gbW9kZS4pXG4gKlxuICogQXVzdHJhbGlhbiBFbmdsaXNoIHNwZWxsaW5nIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG5pbXBvcnQgdHlwZSB7IExhdW5jaGVyUGF0aFN0eWxlIH0gZnJvbSBcIi4vaG9zdF9wYXRoX3N0eWxlLnRzXCI7XG5cbi8qKlxuICogRW52aXJvbm1lbnQgdmFyaWFibGUgY2FycnlpbmcgdGhlIGhvc3Qg4oaSIGluLWNvbnRhaW5lciBwcm9tcHQgcGF0aCBtYXAsIGFzXG4gKiBhIEpTT04gb2JqZWN0LiBTZXQgYnkgdGhlIGxhdW5jaCBwbGFuIG9ubHkgd2hlbiBtYXBwaW5ncyBhcmUgY29uZmlndXJlZCwgc29cbiAqIGFuIHVuY29uZmlndXJlZCBkZXBsb3ltZW50J3MgcGxhbiBpcyBieXRlLWlkZW50aWNhbCB0byB3aGF0IGl0IHdhcyBiZWZvcmUuXG4gKi9cbmV4cG9ydCBjb25zdCBDVVNUT01fUFJPTVBUX1BBVEhfTUFQX0VOViA9IFwiVklCRV9DVVNUT01fUFJPTVBUX1BBVEhTXCI7XG5cbi8qKlxuICogSW4tY29udGFpbmVyIGRpcmVjdG9yeSB0aGUgbW91bnRlZCBwcm9tcHQgZGlyZWN0b3JpZXMgbGFuZCB1bmRlciwgcmVsYXRpdmVcbiAqIHRvIHRoZSBjb250YWluZXIgaG9tZSDigJQgYmVzaWRlIHRoZSBzdGFnZWQgY29uZmlndXJhdGlvbidzIGBydW4tY29uZmlnYC5cbiAqL1xuZXhwb3J0IGNvbnN0IENVU1RPTV9QUk9NUFRTX1RBUkdFVF9TVUJESVIgPSBcIi52aWJlLWNvZGVyL2N1c3RvbS1wcm9tcHRzXCI7XG5cbi8qKiBPbmUgZGVyaXZlZCByZWFkLW9ubHkgYmluZCBtb3VudC4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgQ3VzdG9tUHJvbXB0TW91bnQge1xuICAvKiogSG9zdCBkaXJlY3RvcnkgaG9sZGluZyBvbmUgb3IgbW9yZSBjb25maWd1cmVkIHByb21wdCBmaWxlcy4gKi9cbiAgc291cmNlOiBzdHJpbmc7XG4gIC8qKiBXaGVyZSB0aGF0IGRpcmVjdG9yeSBpcyBtb3VudGVkIGluc2lkZSB0aGUgY29udGFpbmVyLiAqL1xuICB0YXJnZXQ6IHN0cmluZztcbn1cblxuLyoqIFRoZSBtb3VudHMgYW5kIHRoZSB0cmFuc2xhdGlvbiB0aGV5IGltcGx5LiAqL1xuZXhwb3J0IGludGVyZmFjZSBDdXN0b21Qcm9tcHRNb3VudFBsYW4ge1xuICAvKiogTW91bnRzLCBvbmUgcGVyIGRpc3RpbmN0IGhvc3QgZGlyZWN0b3J5LCBpbiBjb25maWd1cmF0aW9uIG9yZGVyLiAqL1xuICBtb3VudHM6IEN1c3RvbVByb21wdE1vdW50W107XG4gIC8qKiBDb25maWd1cmVkIGhvc3QgcGF0aCDihpIgdGhlIGluLWNvbnRhaW5lciBwYXRoIGl0IGlzIHJlYWRhYmxlIGF0LiAqL1xuICB0cmFuc2xhdGlvbnM6IFJlY29yZDxzdHJpbmcsIHN0cmluZz47XG59XG5cbi8qKlxuICogVHJ1ZSB3aGVuIGEgcGF0aCBjYXJyaWVzIGEgYC5gIG9yIGAuLmAgc2VnbWVudC5cbiAqXG4gKiBUaGUgbW91bnQtc291cmNlIGFsbG93bGlzdCBpbiBgY29udGFpbmVyX2xhdW5jaC50c2AgY29tcGFyZXMgKipzdHJpbmdzKio6XG4gKiBpdCBoYXMgbm8gZmlsZXN5c3RlbSB0byBjb25zdWx0IGFuZCBkZWxpYmVyYXRlbHkgbmV2ZXIgaGFkIG9uZS4gQVxuICogYC4uYCBzZWdtZW50IHRoZXJlZm9yZSB3YWxrcyBzdHJhaWdodCBwYXN0IGl0IOKAlFxuICogYC9zcnYvLi4vaG9tZS9vcGVyYXRvci94Lm1kYCB5aWVsZHMgdGhlIHNvdXJjZSBgL3Nydi8uLi9ob21lL29wZXJhdG9yYCxcbiAqIHdoaWNoIGlzIG5vdCBzdHJpbmctZXF1YWwgdG8gdGhlIGhvbWUgZGlyZWN0b3J5IGJ1dCBpcyBleGFjdGx5IGl0IG9uY2UgdGhlXG4gKiBydW50aW1lIHJlc29sdmVzIHRoZSBtb3VudC4gRXZlcnkgb3RoZXIgbW91bnQgc291cmNlIGlzIGEgcGF0aCB0aGUgd29ya2VyXG4gKiBpdHNlbGYgZGVyaXZlZDsgYSBjb25maWd1cmVkIHByb21wdCBwYXRoIGlzIHRoZSBmaXJzdCBhbiBvcGVyYXRvciB3cml0ZXNcbiAqIGJ5IGhhbmQsIHNvIHRoZSB0cmF2ZXJzYWwgc3BlbGxpbmcgaXMgcmVmdXNlZCByYXRoZXIgdGhhbiB0cnVzdGVkLlxuICpcbiAqIEBwYXJhbSBwYXRoIC0gQSBob3N0IHBhdGhcbiAqIEByZXR1cm5zIFdoZXRoZXIgYW55IHNlZ21lbnQgaXMgYC5gIG9yIGAuLmBcbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGhhc1RyYXZlcnNhbFNlZ21lbnQocGF0aDogc3RyaW5nKTogYm9vbGVhbiB7XG4gIHJldHVybiBwYXRoLnNwbGl0KC9bL1xcXFxdLykuc29tZSgoc2VnbWVudCkgPT5cbiAgICBzZWdtZW50ID09PSBcIi5cIiB8fCBzZWdtZW50ID09PSBcIi4uXCJcbiAgKTtcbn1cblxuLyoqXG4gKiBSZWZ1c2UgYSBjb25maWd1cmVkIHByb21wdCBwYXRoIHRoZSBjb250YWlubWVudCBhbGxvd2xpc3QgY2Fubm90IGJlXG4gKiB0cnVzdGVkIHRvIGp1ZGdlIChJc3N1ZSAjODUwKS5cbiAqXG4gKiBCb3RoIGZhdWx0cyBhcmUgdGhlIHNhbWUgZmF1bHQ6IHRoZSBzdHJpbmcgdGhlIGFsbG93bGlzdCBjaGVja3MgaXMgbm90IHRoZVxuICogcGF0aCB0aGUgcnVudGltZSB3aWxsIG1vdW50LiBBIGAuLmAgc2VnbWVudCBzYXlzIHNvIGluIHRoZSBzcGVsbGluZzsgYVxuICogc3ltbGluayBzYXlzIHNvIG9ubHkgb25jZSByZXNvbHZlZC4gRWl0aGVyIHdheSB0aGUgbGF1bmNoIGZhaWxzIGhlcmUsIHdpdGhcbiAqIHRoZSByZXNvbHZlZCBwYXRoIG5hbWVkIHNvIHRoZSBvcGVyYXRvciBjYW4gY29uZmlndXJlIGl0IGRpcmVjdGx5LCByYXRoZXJcbiAqIHRoYW4gYSBicm9hZGVuZWQgbW91bnQgcmVhY2hpbmcgdGhlIHJ1bnRpbWUuXG4gKlxuICogQHBhcmFtIHByb21wdFBhdGggLSBUaGUgY29uZmlndXJlZCBhYnNvbHV0ZSBob3N0IHBhdGhcbiAqIEBwYXJhbSByZWFsUGF0aCAtIFJlc29sdmVyIGZvciBzeW1saW5rcyBhbmQgcmVsYXRpdmUgc2VnbWVudHNcbiAqIEB0aHJvd3MgV2hlbiB0aGUgcGF0aCBjYXJyaWVzIGEgYC5gL2AuLmAgc2VnbWVudCwgY2Fubm90IGJlIHJlc29sdmVkLCBvclxuICogICByZXNvbHZlcyB0byBzb21ld2hlcmUgb3RoZXIgdGhhbiBpdHNlbGZcbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGFzc2VydEN1c3RvbVByb21wdFNvdXJjZVJlc29sdmFibGUoXG4gIHByb21wdFBhdGg6IHN0cmluZyxcbiAgcmVhbFBhdGg6IChwYXRoOiBzdHJpbmcpID0+IHN0cmluZyxcbik6IHZvaWQge1xuICBpZiAoaGFzVHJhdmVyc2FsU2VnbWVudChwcm9tcHRQYXRoKSkge1xuICAgIHRocm93IG5ldyBFcnJvcihcbiAgICAgIGBSZWZ1c2luZyB0byBsYXVuY2g6IHRoZSBjdXN0b20gcHJvbXB0IHBhdGggJHtwcm9tcHRQYXRofSBjb250YWlucyBhIGAgK1xuICAgICAgICBgXCIuXCIgb3IgXCIuLlwiIHNlZ21lbnQsIHNvIHRoZSBtb3VudCBpdCBkZXJpdmVzIHdvdWxkIG5vdCBiZSB0aGUgcGF0aCBgICtcbiAgICAgICAgYHRoZSBjb250YWlubWVudCBhbGxvd2xpc3QgY2hlY2tlZC4gQ29uZmlndXJlIHRoZSByZXNvbHZlZCBwYXRoLmAsXG4gICAgKTtcbiAgfVxuXG4gIGxldCByZXNvbHZlZDogc3RyaW5nO1xuICB0cnkge1xuICAgIHJlc29sdmVkID0gcmVhbFBhdGgocHJvbXB0UGF0aCk7XG4gIH0gY2F0Y2ggKGVycm9yKSB7XG4gICAgdGhyb3cgbmV3IEVycm9yKFxuICAgICAgYFJlZnVzaW5nIHRvIGxhdW5jaDogdGhlIGN1c3RvbSBwcm9tcHQgcGF0aCAke3Byb21wdFBhdGh9IGNhbm5vdCBiZSBgICtcbiAgICAgICAgYHJlc29sdmVkICgkeyhlcnJvciBhcyBFcnJvcikubWVzc2FnZX0pLmAsXG4gICAgKTtcbiAgfVxuICBpZiAocmVzb2x2ZWQgIT09IHByb21wdFBhdGgpIHtcbiAgICB0aHJvdyBuZXcgRXJyb3IoXG4gICAgICBgUmVmdXNpbmcgdG8gbGF1bmNoOiB0aGUgY3VzdG9tIHByb21wdCBwYXRoICR7cHJvbXB0UGF0aH0gcmVzb2x2ZXMgdG8gYCArXG4gICAgICAgIGAke3Jlc29sdmVkfSwgc28gdGhlIGRpcmVjdG9yeSB0aGUgcnVudGltZSB3b3VsZCBtb3VudCBpcyBub3QgdGhlIGAgK1xuICAgICAgICBgb25lIHRoZSBjb250YWlubWVudCBhbGxvd2xpc3QgY2hlY2tlZC4gQ29uZmlndXJlICR7cmVzb2x2ZWR9LmAsXG4gICAgKTtcbiAgfVxufVxuXG4vKiogU3BsaXQgYSBob3N0IHBhdGggaW50byBpdHMgZGlyZWN0b3J5IGFuZCBmaWxlIG5hbWUsIGluIHRoZSBob3N0J3Mgc3BlbGxpbmcuICovXG5mdW5jdGlvbiBzcGxpdFBhdGgoXG4gIHBhdGg6IHN0cmluZyxcbiAgc3R5bGU6IExhdW5jaGVyUGF0aFN0eWxlLFxuKTogeyBkaXJlY3Rvcnk6IHN0cmluZzsgbmFtZTogc3RyaW5nIH0ge1xuICBjb25zdCBsYXN0U2xhc2ggPSBwYXRoLmxhc3RJbmRleE9mKFwiL1wiKTtcbiAgY29uc3QgbGFzdEJhY2tzbGFzaCA9IHN0eWxlID09PSBcIndpbmRvd3NcIiA/IHBhdGgubGFzdEluZGV4T2YoXCJcXFxcXCIpIDogLTE7XG4gIGNvbnN0IGluZGV4ID0gTWF0aC5tYXgobGFzdFNsYXNoLCBsYXN0QmFja3NsYXNoKTtcbiAgLy8gQSBwYXRoIHdob3NlIG9ubHkgc2VwYXJhdG9yIGlzIGl0cyBmaXJzdCBjaGFyYWN0ZXIga2VlcHMgdGhhdCBzZXBhcmF0b3JcbiAgLy8gYXMgdGhlIGRpcmVjdG9yeTogYC9yb2d1ZS5tZGAgaXMgaW4gdGhlIGZpbGVzeXN0ZW0gcm9vdCwgYW5kIHRoZSBsYXVuY2hcbiAgLy8gcGxhbidzIGFsbG93bGlzdCByZWZ1c2VzIHRvIG1vdW50IGl0LlxuICBjb25zdCBkaXJlY3RvcnkgPSBpbmRleCA8PSAwXG4gICAgPyBwYXRoLnNsaWNlKDAsIGluZGV4ICsgMSlcbiAgICAvLyBUcmFpbGluZyBzZXBhcmF0b3JzIGFyZSBzdHJpcHBlZCBzbyBgL3Nydi9wLy9hLm1kYCBhbmQgYC9zcnYvcC9iLm1kYFxuICAgIC8vIGFyZSByZWNvZ25pc2VkIGFzIG9uZSBkaXJlY3RvcnkgYW5kIHNoYXJlIG9uZSBtb3VudC5cbiAgICA6IHBhdGguc2xpY2UoMCwgaW5kZXgpLnJlcGxhY2UoL1svXFxcXF0rJC8sIFwiXCIpO1xuICByZXR1cm4geyBkaXJlY3RvcnksIG5hbWU6IHBhdGguc2xpY2UoaW5kZXggKyAxKSB9O1xufVxuXG4vKipcbiAqIERlcml2ZSB0aGUgcmVhZC1vbmx5IG1vdW50IHNldCBhbmQgdGhlIHBhdGggdHJhbnNsYXRpb24gZm9yIHRoZSBjb25maWd1cmVkXG4gKiBwcm9tcHQgZmlsZXMuXG4gKlxuICogQHBhcmFtIHByb21wdFBhdGhzIC0gQ29uZmlndXJlZCBhYnNvbHV0ZSBob3N0IHBhdGhzLCBpbiBjb25maWd1cmF0aW9uIG9yZGVyXG4gKiBAcGFyYW0gdGFyZ2V0QmFzZSAtIEluLWNvbnRhaW5lciBkaXJlY3RvcnkgdGhlIG1vdW50cyBsYW5kIHVuZGVyXG4gKiBAcGFyYW0gc3R5bGUgLSBIb3cgdGhpcyBob3N0IHNwZWxscyBpdHMgcGF0aHM7IFBPU0lYIHVubGVzcyBzdGF0ZWRcbiAqIEByZXR1cm5zIFRoZSBtb3VudHMgKG9uZSBwZXIgZGlzdGluY3QgZGlyZWN0b3J5KSBhbmQgdGhlIGhvc3Qg4oaSIGNvbnRhaW5lclxuICogICBwYXRoIHRyYW5zbGF0aW9uIGZvciBldmVyeSBjb25maWd1cmVkIHByb21wdFxuICovXG5leHBvcnQgZnVuY3Rpb24gcGxhbkN1c3RvbVByb21wdE1vdW50cyhcbiAgcHJvbXB0UGF0aHM6IHJlYWRvbmx5IHN0cmluZ1tdLFxuICB0YXJnZXRCYXNlOiBzdHJpbmcsXG4gIHN0eWxlOiBMYXVuY2hlclBhdGhTdHlsZSA9IFwicG9zaXhcIixcbik6IEN1c3RvbVByb21wdE1vdW50UGxhbiB7XG4gIGNvbnN0IG1vdW50czogQ3VzdG9tUHJvbXB0TW91bnRbXSA9IFtdO1xuICBjb25zdCB0YXJnZXRGb3JEaXJlY3RvcnkgPSBuZXcgTWFwPHN0cmluZywgc3RyaW5nPigpO1xuICBjb25zdCB0cmFuc2xhdGlvbnM6IFJlY29yZDxzdHJpbmcsIHN0cmluZz4gPSB7fTtcblxuICBmb3IgKGNvbnN0IHByb21wdFBhdGggb2YgcHJvbXB0UGF0aHMpIHtcbiAgICBjb25zdCB7IGRpcmVjdG9yeSwgbmFtZSB9ID0gc3BsaXRQYXRoKHByb21wdFBhdGgsIHN0eWxlKTtcbiAgICBsZXQgdGFyZ2V0ID0gdGFyZ2V0Rm9yRGlyZWN0b3J5LmdldChkaXJlY3RvcnkpO1xuICAgIGlmICh0YXJnZXQgPT09IHVuZGVmaW5lZCkge1xuICAgICAgLy8gTnVtYmVyZWQgcmF0aGVyIHRoYW4gbmFtZWQgYWZ0ZXIgdGhlIGhvc3QgZGlyZWN0b3J5OiBhbiBpbmRleCBjYW5ub3RcbiAgICAgIC8vIGNvbGxpZGUsIGFuZCB0aGUgdHJhbnNsYXRpb24gbWFwIHJlY29yZHMgd2hlcmUgZWFjaCBvbmUgY2FtZSBmcm9tLlxuICAgICAgdGFyZ2V0ID0gYCR7dGFyZ2V0QmFzZX0vJHttb3VudHMubGVuZ3RoICsgMX1gO1xuICAgICAgdGFyZ2V0Rm9yRGlyZWN0b3J5LnNldChkaXJlY3RvcnksIHRhcmdldCk7XG4gICAgICBtb3VudHMucHVzaCh7IHNvdXJjZTogZGlyZWN0b3J5LCB0YXJnZXQgfSk7XG4gICAgfVxuICAgIC8vIFRoZSBpbi1jb250YWluZXIgc2lkZSBpcyBQT1NJWCBvbiBldmVyeSBob3N0LCBpbmNsdWRpbmcgYSBXaW5kb3dzIG9uZS5cbiAgICB0cmFuc2xhdGlvbnNbcHJvbXB0UGF0aF0gPSBgJHt0YXJnZXR9LyR7bmFtZX1gO1xuICB9XG5cbiAgcmV0dXJuIHsgbW91bnRzLCB0cmFuc2xhdGlvbnMgfTtcbn1cblxuLyoqXG4gKiBQYXJzZSB0aGUgbGF1bmNoZXIncyB0cmFuc2xhdGlvbiBtYXAg4oCUIGZhaWwgbG91ZCwgbmV2ZXIgcGFydGlhbGx5IGFwcGxpZWQuXG4gKlxuICogQHBhcmFtIHJhdyAtIFRoZSByYXcge0BsaW5rIENVU1RPTV9QUk9NUFRfUEFUSF9NQVBfRU5WfSB2YWx1ZVxuICogQHJldHVybnMgVGhlIG1hcDsgZW1wdHkgd2hlbiB0aGUgdmFyaWFibGUgaXMgdW5zZXQgb3IgYmxhbmsg4oCUIGEgcmVhZFxuICogICBvdXRzaWRlIHRoZSBjb250YWluZXIsIHdoZXJlIHRoZSBob3N0IHBhdGggaXMgdGhlIHJlYWRhYmxlIG9uZVxuICogQHRocm93cyBXaGVuIHRoZSB2YWx1ZSBpcyBub3QgYSBKU09OIG9iamVjdCBvZiBzdHJpbmcg4oaSIHN0cmluZyBlbnRyaWVzOiBhXG4gKiAgIG1hbmdsZWQgbWFwIHdvdWxkIHJlc29sdmUgYSBwcm9tcHQgb250byB0aGUgd3JvbmcgZmlsZSwgb3Igb250byBub25lLlxuICovXG5leHBvcnQgZnVuY3Rpb24gcGFyc2VDdXN0b21Qcm9tcHRQYXRoTWFwKFxuICByYXc6IHN0cmluZyB8IHVuZGVmaW5lZCxcbik6IFJlY29yZDxzdHJpbmcsIHN0cmluZz4ge1xuICBpZiAocmF3ID09PSB1bmRlZmluZWQgfHwgcmF3LnRyaW0oKSA9PT0gXCJcIikgcmV0dXJuIHt9O1xuXG4gIGxldCBwYXJzZWQ6IHVua25vd247XG4gIHRyeSB7XG4gICAgcGFyc2VkID0gSlNPTi5wYXJzZShyYXcpO1xuICB9IGNhdGNoIChlcnJvcikge1xuICAgIHRocm93IG5ldyBFcnJvcihcbiAgICAgIGAke0NVU1RPTV9QUk9NUFRfUEFUSF9NQVBfRU5WfSBpcyBub3QgdmFsaWQgSlNPTiAoJHtcbiAgICAgICAgKGVycm9yIGFzIEVycm9yKS5tZXNzYWdlXG4gICAgICB9KSDigJQgdGhlIGN1c3RvbSBwcm9tcHQgcGF0aHMgY2Fubm90IGJlIHJlc29sdmVkIGluc2lkZSB0aGUgY29udGFpbmVyLmAsXG4gICAgKTtcbiAgfVxuICBpZiAocGFyc2VkID09PSBudWxsIHx8IHR5cGVvZiBwYXJzZWQgIT09IFwib2JqZWN0XCIgfHwgQXJyYXkuaXNBcnJheShwYXJzZWQpKSB7XG4gICAgdGhyb3cgbmV3IEVycm9yKFxuICAgICAgYCR7Q1VTVE9NX1BST01QVF9QQVRIX01BUF9FTlZ9IG11c3QgYmUgYSBKU09OIG9iamVjdCBtYXBwaW5nIGVhY2ggYCArXG4gICAgICAgIGBjb25maWd1cmVkIGhvc3QgcHJvbXB0IHBhdGggdG8gaXRzIGluLWNvbnRhaW5lciBwYXRoLmAsXG4gICAgKTtcbiAgfVxuXG4gIGNvbnN0IG1hcDogUmVjb3JkPHN0cmluZywgc3RyaW5nPiA9IHt9O1xuICBmb3IgKGNvbnN0IFtob3N0UGF0aCwgY29udGFpbmVyUGF0aF0gb2YgT2JqZWN0LmVudHJpZXMocGFyc2VkKSkge1xuICAgIGlmICh0eXBlb2YgY29udGFpbmVyUGF0aCAhPT0gXCJzdHJpbmdcIiB8fCBjb250YWluZXJQYXRoID09PSBcIlwiKSB7XG4gICAgICB0aHJvdyBuZXcgRXJyb3IoXG4gICAgICAgIGAke0NVU1RPTV9QUk9NUFRfUEFUSF9NQVBfRU5WfSBlbnRyeSBmb3IgJHtob3N0UGF0aH0gbXVzdCBiZSBhIGAgK1xuICAgICAgICAgIGBub24tZW1wdHkgaW4tY29udGFpbmVyIHBhdGguYCxcbiAgICAgICk7XG4gICAgfVxuICAgIG1hcFtob3N0UGF0aF0gPSBjb250YWluZXJQYXRoO1xuICB9XG4gIHJldHVybiBtYXA7XG59XG5cbi8qKlxuICogQSByZXNvbHZlciBmb3IgYSBjb25maWd1cmVkIHByb21wdCBwYXRoLlxuICpcbiAqIEEgcGF0aCB0aGUgbWFwIGRvZXMgbm90IG5hbWUgaXMgcmV0dXJuZWQgdW5jaGFuZ2VkLCBzbyB0aGUgY29uZmlnIGxvYWRlcidzXG4gKiBvd24gcmVhZGFiaWxpdHkgY2hlY2sgZmFpbHMgbG91ZCBuYW1pbmcgdGhlIHBhdGggdGhlIG9wZXJhdG9yIGNvbmZpZ3VyZWRcbiAqIHJhdGhlciB0aGFuIG9uZSB0aGlzIG1vZHVsZSBpbnZlbnRlZC5cbiAqXG4gKiBAcGFyYW0gcmF3IC0gVGhlIHJhdyB7QGxpbmsgQ1VTVE9NX1BST01QVF9QQVRIX01BUF9FTlZ9IHZhbHVlXG4gKiBAcmV0dXJucyBBIGZ1bmN0aW9uIHJlc29sdmluZyBhIGNvbmZpZ3VyZWQgaG9zdCBwYXRoIHRvIHdoZXJlIGl0IGlzIHJlYWRhYmxlXG4gKiBAdGhyb3dzIFdoZW4gdGhlIG1hcCBpcyBwcmVzZW50IGJ1dCBtYWxmb3JtZWRcbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGN1c3RvbVByb21wdFBhdGhSZXNvbHZlcihcbiAgcmF3OiBzdHJpbmcgfCB1bmRlZmluZWQsXG4pOiAocHJvbXB0UGF0aDogc3RyaW5nKSA9PiBzdHJpbmcge1xuICBjb25zdCBtYXAgPSBwYXJzZUN1c3RvbVByb21wdFBhdGhNYXAocmF3KTtcbiAgcmV0dXJuIChwcm9tcHRQYXRoOiBzdHJpbmcpID0+IG1hcFtwcm9tcHRQYXRoXSA/PyBwcm9tcHRQYXRoO1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0F1Q0MsR0FJRDs7OztDQUlDLEdBQ0QsT0FBTyxNQUFNLDZCQUE2QiwyQkFBMkI7QUFFckU7OztDQUdDLEdBQ0QsT0FBTyxNQUFNLCtCQUErQiw2QkFBNkI7QUFrQnpFOzs7Ozs7Ozs7Ozs7OztDQWNDLEdBQ0QsT0FBTyxTQUFTLG9CQUFvQixJQUFZO0VBQzlDLE9BQU8sS0FBSyxLQUFLLENBQUMsU0FBUyxJQUFJLENBQUMsQ0FBQyxVQUMvQixZQUFZLE9BQU8sWUFBWTtBQUVuQztBQUVBOzs7Ozs7Ozs7Ozs7OztDQWNDLEdBQ0QsT0FBTyxTQUFTLG1DQUNkLFVBQWtCLEVBQ2xCLFFBQWtDO0VBRWxDLElBQUksb0JBQW9CLGFBQWE7SUFDbkMsTUFBTSxJQUFJLE1BQ1IsQ0FBQywyQ0FBMkMsRUFBRSxXQUFXLFlBQVksQ0FBQyxHQUNwRSxDQUFDLG1FQUFtRSxDQUFDLEdBQ3JFLENBQUMsK0RBQStELENBQUM7RUFFdkU7RUFFQSxJQUFJO0VBQ0osSUFBSTtJQUNGLFdBQVcsU0FBUztFQUN0QixFQUFFLE9BQU8sT0FBTztJQUNkLE1BQU0sSUFBSSxNQUNSLENBQUMsMkNBQTJDLEVBQUUsV0FBVyxXQUFXLENBQUMsR0FDbkUsQ0FBQyxVQUFVLEVBQUUsQUFBQyxNQUFnQixPQUFPLENBQUMsRUFBRSxDQUFDO0VBRS9DO0VBQ0EsSUFBSSxhQUFhLFlBQVk7SUFDM0IsTUFBTSxJQUFJLE1BQ1IsQ0FBQywyQ0FBMkMsRUFBRSxXQUFXLGFBQWEsQ0FBQyxHQUNyRSxHQUFHLFNBQVMsc0RBQXNELENBQUMsR0FDbkUsQ0FBQyxpREFBaUQsRUFBRSxTQUFTLENBQUMsQ0FBQztFQUVyRTtBQUNGO0FBRUEsZ0ZBQWdGLEdBQ2hGLFNB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
+// denoCacheMetadata=14342103182044815498,2930901615640585147

@@ -1,0 +1,49 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+
+/** A library of assertion functions.
+ * If the assertion is false an `AssertionError` will be thrown which will
+ * result in pretty-printed diff of the failing assertion.
+ *
+ * This module is browser compatible, but do not rely on good formatting of
+ * values for AssertionError messages in browsers.
+ *
+ * ```ts ignore
+ * import { assert } from "@std/assert";
+ *
+ * assert("I am truthy"); // Doesn't throw
+ * assert(false); // Throws `AssertionError`
+ * ```
+ *
+ * @module
+ */
+
+export * from "./almost_equals.ts";
+export * from "./array_includes.ts";
+export * from "./equals.ts";
+export * from "./exists.ts";
+export * from "./false.ts";
+export * from "./greater_or_equal.ts";
+export * from "./greater.ts";
+export * from "./instance_of.ts";
+export * from "./is_error.ts";
+export * from "./less_or_equal.ts";
+export * from "./less.ts";
+export * from "./match.ts";
+export * from "./not_equals.ts";
+export * from "./not_instance_of.ts";
+export * from "./not_match.ts";
+export * from "./not_strict_equals.ts";
+export * from "./object_match.ts";
+export * from "./rejects.ts";
+export * from "./strict_equals.ts";
+export * from "./string_includes.ts";
+export * from "./throws.ts";
+export * from "./assert.ts";
+export * from "./assertion_error.ts";
+export * from "./equal.ts";
+export * from "./fail.ts";
+export * from "./unimplemented.ts";
+export * from "./unreachable.ts";
+
+// denoCacheMetadata={"headers":{"x-robots-tag":"noindex","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=Itu10aP9USZXWs%2FBTrjRnGCvUwUDZ5w9sot0aKgyOHphpAiaD1ItDS%2Bz%2F%2FN21SttiFyd6eVzQUw196HY4eCHhuLwP432bT9bbOfz56vigEfHyvFI5YTsx6g%3D\"}]}","set-cookie":"__cf_bm=4o_iocUZ7WF9JtwP5mJiOvzTWh7qlr30haFEEZ9HQSo-1794298095.8681118-1.0.1.1-F2kLrBsFwWZnBw6aZhKvBfr9VnNUeXCzCQLwoLC2uQSWnOpI1vAuWbEkoERYq_cbaBtC.rkzGxPrD9u_3da2elzcDotJ3JgPaXYmg81ZkuaTOS8q48bKqAmpqUdU2Hmc; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","vary":"Origin","alt-svc":"h3=\":443\"; ma=86400","accept-ranges":"bytes","etag":"\"a5626b856cd0f1b3ddd32f4550e04007\"","access-control-expose-headers":"*","cf-cache-status":"HIT","x-content-type-options":"nosniff","content-length":"1459","x-jsr-backend":"modules","date":"Tue, 10 Nov 2026 08:08:15 GMT","content-type":"text/typescript","cache-control":"public, max-age=31536000, immutable","age":"6426681","cf-ray":"a583917b2d8e561f-SYD","access-control-allow-origin":"*","server":"cloudflare","cross-origin-resource-policy":"cross-origin","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';"},"url":"https://jsr.io/@std/assert/1.0.18/mod.ts","time":1794298095}

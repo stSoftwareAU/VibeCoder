@@ -1,0 +1,177 @@
+/**
+ * The `workflow` OAuth scope, and what the worker does without it
+ * (Issue #1475).
+ *
+ * GitHub refuses any push from an OAuth token that creates or updates a file
+ * under `.github/workflows/` unless the token carries the `workflow` scope —
+ * "refusing to allow an OAuth App to create or update workflow … without
+ * `workflow` scope". The launcher already detects the scope at start-up
+ * (`run_worker.ts` → `gh_auth.ts`) and exports it as
+ * {@link WORKFLOW_SCOPE_ENV}; before this module only `bump_deps.ts` read it.
+ * On GRQ-25 a token without the scope was seen at preflight, and the worker
+ * then claimed two issues whose whole deliverable was a workflow file and
+ * lost both at the push, after a full agent run each.
+ *
+ * Three uses, all reading the same flag:
+ *
+ *   - the claim scan skips an issue that is workflow work
+ *     ({@link issueLooksLikeWorkflowWork});
+ *   - the completion phase fails a run before pushing when the diff touches
+ *     a workflow ({@link isWorkflowPath}), with the fix in the message;
+ *   - the preflight says so at WARN with the same fix.
+ *
+ * The flag is read fail-open: when detection did not run (unset), nothing is
+ * skipped or failed — the pre-#1475 behaviour.
+ *
+ * Issue #1952 closed the two silences in that. The launcher now records a
+ * verdict for every detection that ran, App auth included
+ * ({@link workflowScopeVerdictFor}), so "unset" means only "nobody looked"
+ * and the completion phase says so out loud. And because a check that fails
+ * open still lets the push happen, GitHub's own refusal is recognised here
+ * ({@link isWorkflowScopePushRefusal}): the run fails once with the fix
+ * named, instead of spending five rebase attempts on a refusal no rebase can
+ * fix and recording it as a generic push failure.
+ *
+ * Issue #2689 made that failure the host's, not the issue's: it releases
+ * the issue with no label and no attempt consumed, so a host whose token has
+ * the scope claims it, and the host logs the gap once at WARN
+ * ({@link warnMissingWorkflowScopeOnce}).
+ *
+ * Australian English throughout (behaviour, organisation).
+ */ import { redactedLineTail } from "./redacted_text.ts";
+/** Stderr lines kept when quoting GitHub's refusal back to the operator. */ const REFUSAL_DETAIL_TAIL_LINES = 5;
+/** Set by the launcher's scope preflight: `"true"` or `"false"`. */ export const WORKFLOW_SCOPE_ENV = "GH_TOKEN_HAS_WORKFLOW_SCOPE";
+/** What to do about it, in one line that fits a log or a comment. */ export const WORKFLOW_SCOPE_REMEDIATION = "grant the worker account the `workflow` OAuth scope " + "(`gh auth refresh -s workflow`), re-provision `gh/hosts.yml`, and " + "restart the worker (Issue #1475)";
+/** Directory GitHub protects behind the `workflow` scope. */ export const WORKFLOWS_DIR = ".github/workflows/";
+/**
+ * The launcher's verdict, as three states.
+ *
+ * @param env - Environment reader, injectable for tests
+ * @returns `"absent"` for a recorded `"false"`, `"granted"` for a recorded
+ *   `"true"`, `"unknown"` when detection never ran or wrote something else
+ */ export function workflowScopeState(env = (name)=>Deno.env.get(name)) {
+  const recorded = (env(WORKFLOW_SCOPE_ENV) ?? "").trim().toLowerCase();
+  if (recorded === "false") return "absent";
+  if (recorded === "true") return "granted";
+  return "unknown";
+}
+/**
+ * Whether the active token can push workflow files.
+ *
+ * @param env - Environment reader, injectable for tests
+ * @returns False only when the preflight recorded `"false"`; unset or any
+ *   other value reads as true, so a missing preflight never blocks work
+ */ export function tokenHasWorkflowScope(env = (name)=>Deno.env.get(name)) {
+  return workflowScopeState(env) !== "absent";
+}
+/**
+ * The verdict to record for a detection result (Issue #1952).
+ *
+ * A GitHub App installation token carries no OAuth scopes to read — its
+ * workflow access comes from the app's `workflows` permission, which
+ * `gh auth status` does not report — so the honest verdict is `"unknown"`:
+ * nothing was established either way. That keeps the pre-#1475 fail-open
+ * behaviour for App auth (nothing is skipped or failed), and if the
+ * permission turns out to be missing the push-time refusal handler stops the
+ * run once with the same diagnosis.
+ *
+ * @param detection - What the launcher's scope preflight found
+ * @returns The state to record for the rest of the run
+ */ export function workflowScopeVerdictFor(detection) {
+  if (!detection.ok) return "unknown";
+  if (detection.isAppAuth) return "unknown";
+  return detection.hasWorkflowScope ? "granted" : "absent";
+}
+/**
+ * The {@link WORKFLOW_SCOPE_ENV} value for a verdict, or nothing to record.
+ *
+ * @param state - The verdict from {@link workflowScopeVerdictFor}
+ * @returns `"true"` / `"false"`, or undefined when detection never answered —
+ *   the environment then stays unset, which reads back as `"unknown"`
+ */ export function recordedWorkflowScopeValue(state) {
+  if (state === "granted") return "true";
+  if (state === "absent") return "false";
+  return undefined;
+}
+/**
+ * GitHub's own refusal, in every wording it ships (Issue #1952).
+ *
+ * The remote names the credential kind it is refusing — "an OAuth App", "a
+ * Personal Access Token", "a GitHub App" — then the gated verb, then the
+ * scope or permission the token wants. Matching the two fixed halves and
+ * bounding what sits between them covers all three without guessing at the
+ * trailing wording, which differs between OAuth scopes and fine-grained
+ * permissions.
+ */ const PUSH_REFUSAL_PATTERN = /refusing to allow .{0,80}?to create or update workflow/i;
+/**
+ * Whether a push failure is GitHub refusing a workflow file for want of the
+ * scope — a refusal no fetch, rebase or retry can fix.
+ *
+ * @param text - Git's stderr, or any message carrying it
+ * @returns True when the text is that refusal
+ */ export function isWorkflowScopePushRefusal(text) {
+  // Git wraps the remote's line, so the refusal reaches us split across
+  // newlines: flatten the whitespace before matching.
+  return PUSH_REFUSAL_PATTERN.test(text.replace(/\s+/g, " "));
+}
+/**
+ * The failure reason for a push GitHub refused for want of the scope.
+ *
+ * Carries the phrase `detectFailureCategory` keys `token_scope` on, so the
+ * run record blames the host's credential rather than a generic push
+ * failure, and says plainly that no recovery was attempted.
+ *
+ * @param detail - Git's own words, quoted so the operator sees the refusal
+ * @returns One reason line, with the fix in it
+ */ export function workflowScopePushRefusalMessage(detail) {
+  // Redacted before the cut, and capped at the same few lines every other
+  // push failure quotes (Issue #1257): the remote URL in git's stderr can
+  // carry the run's token, and this reason reaches the log and the issue.
+  const quoted = redactedLineTail(detail.trim(), REFUSAL_DETAIL_TAIL_LINES).split("\n").join(" | ");
+  return `Push refused by GitHub: the token lacks the 'workflow' scope, and ` + `this branch creates or updates a file under ${WORKFLOWS_DIR}. No ` + `recovery was attempted — no rebase can supply a missing scope. Fix: ` + `${WORKFLOW_SCOPE_REMEDIATION}${quoted ? ` — git said: ${quoted}` : ""}`;
+}
+/** Whether a repo-relative path is one GitHub gates behind the scope. */ export function isWorkflowPath(path) {
+  const normalised = path.trim().replace(/^\.\//, "").replace(/\\/g, "/");
+  return normalised.startsWith(WORKFLOWS_DIR);
+}
+/** The changed paths that need the scope, in the order given. */ export function workflowPathsIn(paths) {
+  return paths.filter(isWorkflowPath);
+}
+/**
+ * A cheap read of an issue's title and body: is the deliverable a workflow?
+ *
+ * Deliberately narrow — a title naming a workflow or GitHub Actions, or a
+ * body naming the `.github/workflows` directory. A false positive costs one
+ * skipped issue on a mis-scoped host until the scope is granted; a false
+ * negative costs a whole agent run, which is what the completion-phase check
+ * is for.
+ *
+ * @param title - Issue title
+ * @param body - Issue body, may be absent
+ * @returns True when the issue reads as workflow work
+ */ export function issueLooksLikeWorkflowWork(title, body) {
+  if (/\b(workflows?|github actions?)\b/i.test(title)) return true;
+  if (/\.github\/workflows\b/i.test(title)) return true;
+  return /\.github\/workflows\b/i.test(body ?? "");
+}
+/**
+ * A warner that says, once, that this host cannot push workflow files
+ * (Issue #2689).
+ *
+ * A missing scope is the host's gap, not the issue's: the run is released
+ * uncounted so a host whose token has the scope can claim it. Every refusal
+ * after the first is the same fact again, so it is not repeated.
+ *
+ * @returns A fresh warner — each one warns at most once
+ */ export function createMissingScopeWarner() {
+  let warned = false;
+  return (warn)=>{
+    if (warned) return false;
+    warned = true;
+    warn(`This host's token lacks the \`workflow\` OAuth scope, so it cannot ` + `push anything under ${WORKFLOWS_DIR}. Such issues are released ` + `without consuming an attempt, for a host that can push them ` + `(Issue #2689). Fix: ${WORKFLOW_SCOPE_REMEDIATION}`);
+    return true;
+  };
+}
+/** This process's warner: one host, one credential, one WARNING. */ export const warnMissingWorkflowScopeOnce = createMissingScopeWarner();
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi93b3JrZmxvd19zY29wZS50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIFRoZSBgd29ya2Zsb3dgIE9BdXRoIHNjb3BlLCBhbmQgd2hhdCB0aGUgd29ya2VyIGRvZXMgd2l0aG91dCBpdFxuICogKElzc3VlICMxNDc1KS5cbiAqXG4gKiBHaXRIdWIgcmVmdXNlcyBhbnkgcHVzaCBmcm9tIGFuIE9BdXRoIHRva2VuIHRoYXQgY3JlYXRlcyBvciB1cGRhdGVzIGEgZmlsZVxuICogdW5kZXIgYC5naXRodWIvd29ya2Zsb3dzL2AgdW5sZXNzIHRoZSB0b2tlbiBjYXJyaWVzIHRoZSBgd29ya2Zsb3dgIHNjb3BlIOKAlFxuICogXCJyZWZ1c2luZyB0byBhbGxvdyBhbiBPQXV0aCBBcHAgdG8gY3JlYXRlIG9yIHVwZGF0ZSB3b3JrZmxvdyDigKYgd2l0aG91dFxuICogYHdvcmtmbG93YCBzY29wZVwiLiBUaGUgbGF1bmNoZXIgYWxyZWFkeSBkZXRlY3RzIHRoZSBzY29wZSBhdCBzdGFydC11cFxuICogKGBydW5fd29ya2VyLnRzYCDihpIgYGdoX2F1dGgudHNgKSBhbmQgZXhwb3J0cyBpdCBhc1xuICoge0BsaW5rIFdPUktGTE9XX1NDT1BFX0VOVn07IGJlZm9yZSB0aGlzIG1vZHVsZSBvbmx5IGBidW1wX2RlcHMudHNgIHJlYWQgaXQuXG4gKiBPbiBHUlEtMjUgYSB0b2tlbiB3aXRob3V0IHRoZSBzY29wZSB3YXMgc2VlbiBhdCBwcmVmbGlnaHQsIGFuZCB0aGUgd29ya2VyXG4gKiB0aGVuIGNsYWltZWQgdHdvIGlzc3VlcyB3aG9zZSB3aG9sZSBkZWxpdmVyYWJsZSB3YXMgYSB3b3JrZmxvdyBmaWxlIGFuZFxuICogbG9zdCBib3RoIGF0IHRoZSBwdXNoLCBhZnRlciBhIGZ1bGwgYWdlbnQgcnVuIGVhY2guXG4gKlxuICogVGhyZWUgdXNlcywgYWxsIHJlYWRpbmcgdGhlIHNhbWUgZmxhZzpcbiAqXG4gKiAgIC0gdGhlIGNsYWltIHNjYW4gc2tpcHMgYW4gaXNzdWUgdGhhdCBpcyB3b3JrZmxvdyB3b3JrXG4gKiAgICAgKHtAbGluayBpc3N1ZUxvb2tzTGlrZVdvcmtmbG93V29ya30pO1xuICogICAtIHRoZSBjb21wbGV0aW9uIHBoYXNlIGZhaWxzIGEgcnVuIGJlZm9yZSBwdXNoaW5nIHdoZW4gdGhlIGRpZmYgdG91Y2hlc1xuICogICAgIGEgd29ya2Zsb3cgKHtAbGluayBpc1dvcmtmbG93UGF0aH0pLCB3aXRoIHRoZSBmaXggaW4gdGhlIG1lc3NhZ2U7XG4gKiAgIC0gdGhlIHByZWZsaWdodCBzYXlzIHNvIGF0IFdBUk4gd2l0aCB0aGUgc2FtZSBmaXguXG4gKlxuICogVGhlIGZsYWcgaXMgcmVhZCBmYWlsLW9wZW46IHdoZW4gZGV0ZWN0aW9uIGRpZCBub3QgcnVuICh1bnNldCksIG5vdGhpbmcgaXNcbiAqIHNraXBwZWQgb3IgZmFpbGVkIOKAlCB0aGUgcHJlLSMxNDc1IGJlaGF2aW91ci5cbiAqXG4gKiBJc3N1ZSAjMTk1MiBjbG9zZWQgdGhlIHR3byBzaWxlbmNlcyBpbiB0aGF0LiBUaGUgbGF1bmNoZXIgbm93IHJlY29yZHMgYVxuICogdmVyZGljdCBmb3IgZXZlcnkgZGV0ZWN0aW9uIHRoYXQgcmFuLCBBcHAgYXV0aCBpbmNsdWRlZFxuICogKHtAbGluayB3b3JrZmxvd1Njb3BlVmVyZGljdEZvcn0pLCBzbyBcInVuc2V0XCIgbWVhbnMgb25seSBcIm5vYm9keSBsb29rZWRcIlxuICogYW5kIHRoZSBjb21wbGV0aW9uIHBoYXNlIHNheXMgc28gb3V0IGxvdWQuIEFuZCBiZWNhdXNlIGEgY2hlY2sgdGhhdCBmYWlsc1xuICogb3BlbiBzdGlsbCBsZXRzIHRoZSBwdXNoIGhhcHBlbiwgR2l0SHViJ3Mgb3duIHJlZnVzYWwgaXMgcmVjb2duaXNlZCBoZXJlXG4gKiAoe0BsaW5rIGlzV29ya2Zsb3dTY29wZVB1c2hSZWZ1c2FsfSk6IHRoZSBydW4gZmFpbHMgb25jZSB3aXRoIHRoZSBmaXhcbiAqIG5hbWVkLCBpbnN0ZWFkIG9mIHNwZW5kaW5nIGZpdmUgcmViYXNlIGF0dGVtcHRzIG9uIGEgcmVmdXNhbCBubyByZWJhc2UgY2FuXG4gKiBmaXggYW5kIHJlY29yZGluZyBpdCBhcyBhIGdlbmVyaWMgcHVzaCBmYWlsdXJlLlxuICpcbiAqIElzc3VlICMyNjg5IG1hZGUgdGhhdCBmYWlsdXJlIHRoZSBob3N0J3MsIG5vdCB0aGUgaXNzdWUnczogaXQgcmVsZWFzZXNcbiAqIHRoZSBpc3N1ZSB3aXRoIG5vIGxhYmVsIGFuZCBubyBhdHRlbXB0IGNvbnN1bWVkLCBzbyBhIGhvc3Qgd2hvc2UgdG9rZW4gaGFzXG4gKiB0aGUgc2NvcGUgY2xhaW1zIGl0LCBhbmQgdGhlIGhvc3QgbG9ncyB0aGUgZ2FwIG9uY2UgYXQgV0FSTlxuICogKHtAbGluayB3YXJuTWlzc2luZ1dvcmtmbG93U2NvcGVPbmNlfSkuXG4gKlxuICogQXVzdHJhbGlhbiBFbmdsaXNoIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG5pbXBvcnQgeyByZWRhY3RlZExpbmVUYWlsIH0gZnJvbSBcIi4vcmVkYWN0ZWRfdGV4dC50c1wiO1xuXG4vKiogU3RkZXJyIGxpbmVzIGtlcHQgd2hlbiBxdW90aW5nIEdpdEh1YidzIHJlZnVzYWwgYmFjayB0byB0aGUgb3BlcmF0b3IuICovXG5jb25zdCBSRUZVU0FMX0RFVEFJTF9UQUlMX0xJTkVTID0gNTtcblxuLyoqIFNldCBieSB0aGUgbGF1bmNoZXIncyBzY29wZSBwcmVmbGlnaHQ6IGBcInRydWVcImAgb3IgYFwiZmFsc2VcImAuICovXG5leHBvcnQgY29uc3QgV09SS0ZMT1dfU0NPUEVfRU5WID0gXCJHSF9UT0tFTl9IQVNfV09SS0ZMT1dfU0NPUEVcIjtcblxuLyoqIFdoYXQgdG8gZG8gYWJvdXQgaXQsIGluIG9uZSBsaW5lIHRoYXQgZml0cyBhIGxvZyBvciBhIGNvbW1lbnQuICovXG5leHBvcnQgY29uc3QgV09SS0ZMT1dfU0NPUEVfUkVNRURJQVRJT04gPVxuICBcImdyYW50IHRoZSB3b3JrZXIgYWNjb3VudCB0aGUgYHdvcmtmbG93YCBPQXV0aCBzY29wZSBcIiArXG4gIFwiKGBnaCBhdXRoIHJlZnJlc2ggLXMgd29ya2Zsb3dgKSwgcmUtcHJvdmlzaW9uIGBnaC9ob3N0cy55bWxgLCBhbmQgXCIgK1xuICBcInJlc3RhcnQgdGhlIHdvcmtlciAoSXNzdWUgIzE0NzUpXCI7XG5cbi8qKiBEaXJlY3RvcnkgR2l0SHViIHByb3RlY3RzIGJlaGluZCB0aGUgYHdvcmtmbG93YCBzY29wZS4gKi9cbmV4cG9ydCBjb25zdCBXT1JLRkxPV1NfRElSID0gXCIuZ2l0aHViL3dvcmtmbG93cy9cIjtcblxuLyoqXG4gKiBXaGF0IHRoZSBsYXVuY2hlcidzIHByZWZsaWdodCBhY3R1YWxseSByZWNvcmRlZCAoSXNzdWUgIzE5NTIpLlxuICpcbiAqIFRoZSBib29sZWFuIGJlbG93IGNhbm5vdCB0ZWxsIFwidGhlIHRva2VuIGhhcyB0aGUgc2NvcGVcIiBmcm9tIFwibm9ib2R5XG4gKiBsb29rZWRcIiwgYW5kIHRoZSBjb21wbGV0aW9uIHBoYXNlIG5lZWRzIHRoYXQgZGlmZmVyZW5jZTogdGhlIGZpcnN0IGlzIGFcbiAqIHBhc3MsIHRoZSBzZWNvbmQgaXMgYSBjaGVjayB0aGF0IGNvdWxkIG5vdCBydW4gYW5kIG11c3Qgc2F5IHNvLlxuICovXG5leHBvcnQgdHlwZSBXb3JrZmxvd1Njb3BlU3RhdGUgPSBcImdyYW50ZWRcIiB8IFwiYWJzZW50XCIgfCBcInVua25vd25cIjtcblxuLyoqXG4gKiBUaGUgbGF1bmNoZXIncyB2ZXJkaWN0LCBhcyB0aHJlZSBzdGF0ZXMuXG4gKlxuICogQHBhcmFtIGVudiAtIEVudmlyb25tZW50IHJlYWRlciwgaW5qZWN0YWJsZSBmb3IgdGVzdHNcbiAqIEByZXR1cm5zIGBcImFic2VudFwiYCBmb3IgYSByZWNvcmRlZCBgXCJmYWxzZVwiYCwgYFwiZ3JhbnRlZFwiYCBmb3IgYSByZWNvcmRlZFxuICogICBgXCJ0cnVlXCJgLCBgXCJ1bmtub3duXCJgIHdoZW4gZGV0ZWN0aW9uIG5ldmVyIHJhbiBvciB3cm90ZSBzb21ldGhpbmcgZWxzZVxuICovXG5leHBvcnQgZnVuY3Rpb24gd29ya2Zsb3dTY29wZVN0YXRlKFxuICBlbnY6IChuYW1lOiBzdHJpbmcpID0+IHN0cmluZyB8IHVuZGVmaW5lZCA9IChuYW1lKSA9PiBEZW5vLmVudi5nZXQobmFtZSksXG4pOiBXb3JrZmxvd1Njb3BlU3RhdGUge1xuICBjb25zdCByZWNvcmRlZCA9IChlbnYoV09SS0ZMT1dfU0NPUEVfRU5WKSA/PyBcIlwiKS50cmltKCkudG9Mb3dlckNhc2UoKTtcbiAgaWYgKHJlY29yZGVkID09PSBcImZhbHNlXCIpIHJldHVybiBcImFic2VudFwiO1xuICBpZiAocmVjb3JkZWQgPT09IFwidHJ1ZVwiKSByZXR1cm4gXCJncmFudGVkXCI7XG4gIHJldHVybiBcInVua25vd25cIjtcbn1cblxuLyoqXG4gKiBXaGV0aGVyIHRoZSBhY3RpdmUgdG9rZW4gY2FuIHB1c2ggd29ya2Zsb3cgZmlsZXMuXG4gKlxuICogQHBhcmFtIGVudiAtIEVudmlyb25tZW50IHJlYWRlciwgaW5qZWN0YWJsZSBmb3IgdGVzdHNcbiAqIEByZXR1cm5zIEZhbHNlIG9ubHkgd2hlbiB0aGUgcHJlZmxpZ2h0IHJlY29yZGVkIGBcImZhbHNlXCJgOyB1bnNldCBvciBhbnlcbiAqICAgb3RoZXIgdmFsdWUgcmVhZHMgYXMgdHJ1ZSwgc28gYSBtaXNzaW5nIHByZWZsaWdodCBuZXZlciBibG9ja3Mgd29ya1xuICovXG5leHBvcnQgZnVuY3Rpb24gdG9rZW5IYXNXb3JrZmxvd1Njb3BlKFxuICBlbnY6IChuYW1lOiBzdHJpbmcpID0+IHN0cmluZyB8IHVuZGVmaW5lZCA9IChuYW1lKSA9PiBEZW5vLmVudi5nZXQobmFtZSksXG4pOiBib29sZWFuIHtcbiAgcmV0dXJuIHdvcmtmbG93U2NvcGVTdGF0ZShlbnYpICE9PSBcImFic2VudFwiO1xufVxuXG4vKipcbiAqIFRoZSBsYXVuY2hlcidzIGRldGVjdGlvbiByZXN1bHQsIGluIHRoZSBzaGFwZSB0aGUgcHJlZmxpZ2h0IGhhcyBpdC5cbiAqXG4gKiBgb2s6IGZhbHNlYCBpcyBhIGRldGVjdGlvbiB0aGF0IGNvdWxkIG5vdCBydW4g4oCUIGBnaCBhdXRoIHN0YXR1c2AgZmFpbGVkIG9yXG4gKiB0aHJldy4gSXQgaXMgZGVsaWJlcmF0ZWx5IG5vdCBhIHN5bm9ueW0gZm9yIFwibm8gc2NvcGVcIjogdGhlIHR3byBoYXZlXG4gKiBkaWZmZXJlbnQgY29uc2VxdWVuY2VzIGFuZCB0aGUgcnVuIG11c3QgYmUgYWJsZSB0byB0ZWxsIHRoZW0gYXBhcnQuXG4gKi9cbmV4cG9ydCB0eXBlIFdvcmtmbG93U2NvcGVEZXRlY3Rpb24gPVxuICB8IHsgb2s6IHRydWU7IGhhc1dvcmtmbG93U2NvcGU6IGJvb2xlYW47IGlzQXBwQXV0aDogYm9vbGVhbiB9XG4gIHwgeyBvazogZmFsc2UgfTtcblxuLyoqXG4gKiBUaGUgdmVyZGljdCB0byByZWNvcmQgZm9yIGEgZGV0ZWN0aW9uIHJlc3VsdCAoSXNzdWUgIzE5NTIpLlxuICpcbiAqIEEgR2l0SHViIEFwcCBpbnN0YWxsYXRpb24gdG9rZW4gY2FycmllcyBubyBPQXV0aCBzY29wZXMgdG8gcmVhZCDigJQgaXRzXG4gKiB3b3JrZmxvdyBhY2Nlc3MgY29tZXMgZnJvbSB0aGUgYXBwJ3MgYHdvcmtmbG93c2AgcGVybWlzc2lvbiwgd2hpY2hcbiAqIGBnaCBhdXRoIHN0YXR1c2AgZG9lcyBub3QgcmVwb3J0IOKAlCBzbyB0aGUgaG9uZXN0IHZlcmRpY3QgaXMgYFwidW5rbm93blwiYDpcbiAqIG5vdGhpbmcgd2FzIGVzdGFibGlzaGVkIGVpdGhlciB3YXkuIFRoYXQga2VlcHMgdGhlIHByZS0jMTQ3NSBmYWlsLW9wZW5cbiAqIGJlaGF2aW91ciBmb3IgQXBwIGF1dGggKG5vdGhpbmcgaXMgc2tpcHBlZCBvciBmYWlsZWQpLCBhbmQgaWYgdGhlXG4gKiBwZXJtaXNzaW9uIHR1cm5zIG91dCB0byBiZSBtaXNzaW5nIHRoZSBwdXNoLXRpbWUgcmVmdXNhbCBoYW5kbGVyIHN0b3BzIHRoZVxuICogcnVuIG9uY2Ugd2l0aCB0aGUgc2FtZSBkaWFnbm9zaXMuXG4gKlxuICogQHBhcmFtIGRldGVjdGlvbiAtIFdoYXQgdGhlIGxhdW5jaGVyJ3Mgc2NvcGUgcHJlZmxpZ2h0IGZvdW5kXG4gKiBAcmV0dXJucyBUaGUgc3RhdGUgdG8gcmVjb3JkIGZvciB0aGUgcmVzdCBvZiB0aGUgcnVuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiB3b3JrZmxvd1Njb3BlVmVyZGljdEZvcihcbiAgZGV0ZWN0aW9uOiBXb3JrZmxvd1Njb3BlRGV0ZWN0aW9uLFxuKTogV29ya2Zsb3dTY29wZVN0YXRlIHtcbiAgaWYgKCFkZXRlY3Rpb24ub2spIHJldHVybiBcInVua25vd25cIjtcbiAgaWYgKGRldGVjdGlvbi5pc0FwcEF1dGgpIHJldHVybiBcInVua25vd25cIjtcbiAgcmV0dXJuIGRldGVjdGlvbi5oYXNXb3JrZmxvd1Njb3BlID8gXCJncmFudGVkXCIgOiBcImFic2VudFwiO1xufVxuXG4vKipcbiAqIFRoZSB7QGxpbmsgV09SS0ZMT1dfU0NPUEVfRU5WfSB2YWx1ZSBmb3IgYSB2ZXJkaWN0LCBvciBub3RoaW5nIHRvIHJlY29yZC5cbiAqXG4gKiBAcGFyYW0gc3RhdGUgLSBUaGUgdmVyZGljdCBmcm9tIHtAbGluayB3b3JrZmxvd1Njb3BlVmVyZGljdEZvcn1cbiAqIEByZXR1cm5zIGBcInRydWVcImAgLyBgXCJmYWxzZVwiYCwgb3IgdW5kZWZpbmVkIHdoZW4gZGV0ZWN0aW9uIG5ldmVyIGFuc3dlcmVkIOKAlFxuICogICB0aGUgZW52aXJvbm1lbnQgdGhlbiBzdGF5cyB1bnNldCwgd2hpY2ggcmVhZHMgYmFjayBhcyBgXCJ1bmtub3duXCJgXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiByZWNvcmRlZFdvcmtmbG93U2NvcGVWYWx1ZShcbiAgc3RhdGU6IFdvcmtmbG93U2NvcGVTdGF0ZSxcbik6IHN0cmluZyB8IHVuZGVmaW5lZCB7XG4gIGlmIChzdGF0ZSA9PT0gXCJncmFudGVkXCIpIHJldHVybiBcInRydWVcIjtcbiAgaWYgKHN0YXRlID09PSBcImFic2VudFwiKSByZXR1cm4gXCJmYWxzZVwiO1xuICByZXR1cm4gdW5kZWZpbmVkO1xufVxuXG4vKipcbiAqIEdpdEh1YidzIG93biByZWZ1c2FsLCBpbiBldmVyeSB3b3JkaW5nIGl0IHNoaXBzIChJc3N1ZSAjMTk1MikuXG4gKlxuICogVGhlIHJlbW90ZSBuYW1lcyB0aGUgY3JlZGVudGlhbCBraW5kIGl0IGlzIHJlZnVzaW5nIOKAlCBcImFuIE9BdXRoIEFwcFwiLCBcImFcbiAqIFBlcnNvbmFsIEFjY2VzcyBUb2tlblwiLCBcImEgR2l0SHViIEFwcFwiIOKAlCB0aGVuIHRoZSBnYXRlZCB2ZXJiLCB0aGVuIHRoZVxuICogc2NvcGUgb3IgcGVybWlzc2lvbiB0aGUgdG9rZW4gd2FudHMuIE1hdGNoaW5nIHRoZSB0d28gZml4ZWQgaGFsdmVzIGFuZFxuICogYm91bmRpbmcgd2hhdCBzaXRzIGJldHdlZW4gdGhlbSBjb3ZlcnMgYWxsIHRocmVlIHdpdGhvdXQgZ3Vlc3NpbmcgYXQgdGhlXG4gKiB0cmFpbGluZyB3b3JkaW5nLCB3aGljaCBkaWZmZXJzIGJldHdlZW4gT0F1dGggc2NvcGVzIGFuZCBmaW5lLWdyYWluZWRcbiAqIHBlcm1pc3Npb25zLlxuICovXG5jb25zdCBQVVNIX1JFRlVTQUxfUEFUVEVSTiA9XG4gIC9yZWZ1c2luZyB0byBhbGxvdyAuezAsODB9P3RvIGNyZWF0ZSBvciB1cGRhdGUgd29ya2Zsb3cvaTtcblxuLyoqXG4gKiBXaGV0aGVyIGEgcHVzaCBmYWlsdXJlIGlzIEdpdEh1YiByZWZ1c2luZyBhIHdvcmtmbG93IGZpbGUgZm9yIHdhbnQgb2YgdGhlXG4gKiBzY29wZSDigJQgYSByZWZ1c2FsIG5vIGZldGNoLCByZWJhc2Ugb3IgcmV0cnkgY2FuIGZpeC5cbiAqXG4gKiBAcGFyYW0gdGV4dCAtIEdpdCdzIHN0ZGVyciwgb3IgYW55IG1lc3NhZ2UgY2FycnlpbmcgaXRcbiAqIEByZXR1cm5zIFRydWUgd2hlbiB0aGUgdGV4dCBpcyB0aGF0IHJlZnVzYWxcbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzV29ya2Zsb3dTY29wZVB1c2hSZWZ1c2FsKHRleHQ6IHN0cmluZyk6IGJvb2xlYW4ge1xuICAvLyBHaXQgd3JhcHMgdGhlIHJlbW90ZSdzIGxpbmUsIHNvIHRoZSByZWZ1c2FsIHJlYWNoZXMgdXMgc3BsaXQgYWNyb3NzXG4gIC8vIG5ld2xpbmVzOiBmbGF0dGVuIHRoZSB3aGl0ZXNwYWNlIGJlZm9yZSBtYXRjaGluZy5cbiAgcmV0dXJuIFBVU0hfUkVGVVNBTF9QQVRURVJOLnRlc3QodGV4dC5yZXBsYWNlKC9cXHMrL2csIFwiIFwiKSk7XG59XG5cbi8qKlxuICogVGhlIGZhaWx1cmUgcmVhc29uIGZvciBhIHB1c2ggR2l0SHViIHJlZnVzZWQgZm9yIHdhbnQgb2YgdGhlIHNjb3BlLlxuICpcbiAqIENhcnJpZXMgdGhlIHBocmFzZSBgZGV0ZWN0RmFpbHVyZUNhdGVnb3J5YCBrZXlzIGB0b2tlbl9zY29wZWAgb24sIHNvIHRoZVxuICogcnVuIHJlY29yZCBibGFtZXMgdGhlIGhvc3QncyBjcmVkZW50aWFsIHJhdGhlciB0aGFuIGEgZ2VuZXJpYyBwdXNoXG4gKiBmYWlsdXJlLCBhbmQgc2F5cyBwbGFpbmx5IHRoYXQgbm8gcmVjb3Zlcnkgd2FzIGF0dGVtcHRlZC5cbiAqXG4gKiBAcGFyYW0gZGV0YWlsIC0gR2l0J3Mgb3duIHdvcmRzLCBxdW90ZWQgc28gdGhlIG9wZXJhdG9yIHNlZXMgdGhlIHJlZnVzYWxcbiAqIEByZXR1cm5zIE9uZSByZWFzb24gbGluZSwgd2l0aCB0aGUgZml4IGluIGl0XG4gKi9cbmV4cG9ydCBmdW5jdGlvbiB3b3JrZmxvd1Njb3BlUHVzaFJlZnVzYWxNZXNzYWdlKGRldGFpbDogc3RyaW5nKTogc3RyaW5nIHtcbiAgLy8gUmVkYWN0ZWQgYmVmb3JlIHRoZSBjdXQsIGFuZCBjYXBwZWQgYXQgdGhlIHNhbWUgZmV3IGxpbmVzIGV2ZXJ5IG90aGVyXG4gIC8vIHB1c2ggZmFpbHVyZSBxdW90ZXMgKElzc3VlICMxMjU3KTogdGhlIHJlbW90ZSBVUkwgaW4gZ2l0J3Mgc3RkZXJyIGNhblxuICAvLyBjYXJyeSB0aGUgcnVuJ3MgdG9rZW4sIGFuZCB0aGlzIHJlYXNvbiByZWFjaGVzIHRoZSBsb2cgYW5kIHRoZSBpc3N1ZS5cbiAgY29uc3QgcXVvdGVkID0gcmVkYWN0ZWRMaW5lVGFpbChkZXRhaWwudHJpbSgpLCBSRUZVU0FMX0RFVEFJTF9UQUlMX0xJTkVTKVxuICAgIC5zcGxpdChcIlxcblwiKS5qb2luKFwiIHwgXCIpO1xuICByZXR1cm4gYFB1c2ggcmVmdXNlZCBieSBHaXRIdWI6IHRoZSB0b2tlbiBsYWNrcyB0aGUgJ3dvcmtmbG93JyBzY29wZSwgYW5kIGAgK1xuICAgIGB0aGlzIGJyYW5jaCBjcmVhdGVzIG9yIHVwZGF0ZXMgYSBmaWxlIHVuZGVyICR7V09SS0ZMT1dTX0RJUn0uIE5vIGAgK1xuICAgIGByZWNvdmVyeSB3YXMgYXR0ZW1wdGVkIOKAlCBubyByZWJhc2UgY2FuIHN1cHBseSBhIG1pc3Npbmcgc2NvcGUuIEZpeDogYCArXG4gICAgYCR7V09SS0ZMT1dfU0NPUEVfUkVNRURJQVRJT059JHtxdW90ZWQgPyBgIOKAlCBnaXQgc2FpZDogJHtxdW90ZWR9YCA6IFwiXCJ9YDtcbn1cblxuLyoqIFdoZXRoZXIgYSByZXBvLXJlbGF0aXZlIHBhdGggaXMgb25lIEdpdEh1YiBnYXRlcyBiZWhpbmQgdGhlIHNjb3BlLiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzV29ya2Zsb3dQYXRoKHBhdGg6IHN0cmluZyk6IGJvb2xlYW4ge1xuICBjb25zdCBub3JtYWxpc2VkID0gcGF0aC50cmltKCkucmVwbGFjZSgvXlxcLlxcLy8sIFwiXCIpLnJlcGxhY2UoL1xcXFwvZywgXCIvXCIpO1xuICByZXR1cm4gbm9ybWFsaXNlZC5zdGFydHNXaXRoKFdPUktGTE9XU19ESVIpO1xufVxuXG4vKiogVGhlIGNoYW5nZWQgcGF0aHMgdGhhdCBuZWVkIHRoZSBzY29wZSwgaW4gdGhlIG9yZGVyIGdpdmVuLiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHdvcmtmbG93UGF0aHNJbihwYXRoczogcmVhZG9ubHkgc3RyaW5nW10pOiBzdHJpbmdbXSB7XG4gIHJldHVybiBwYXRocy5maWx0ZXIoaXNXb3JrZmxvd1BhdGgpO1xufVxuXG4vKipcbiAqIEEgY2hlYXAgcmVhZCBvZiBhbiBpc3N1ZSdzIHRpdGxlIGFuZCBib2R5OiBpcyB0aGUgZGVsaXZlcmFibGUgYSB3b3JrZmxvdz9cbiAqXG4gKiBEZWxpYmVyYXRlbHkgbmFycm93IOKAlCBhIHRpdGxlIG5hbWluZyBhIHdvcmtmbG93IG9yIEdpdEh1YiBBY3Rpb25zLCBvciBhXG4gKiBib2R5IG5hbWluZyB0aGUgYC5naXRodWIvd29ya2Zsb3dzYCBkaXJlY3RvcnkuIEEgZmFsc2UgcG9zaXRpdmUgY29zdHMgb25lXG4gKiBza2lwcGVkIGlzc3VlIG9uIGEgbWlzLXNjb3BlZCBob3N0IHVudGlsIHRoZSBzY29wZSBpcyBncmFudGVkOyBhIGZhbHNlXG4gKiBuZWdhdGl2ZSBjb3N0cyBhIHdob2xlIGFnZW50IHJ1biwgd2hpY2ggaXMgd2hhdCB0aGUgY29tcGxldGlvbi1waGFzZSBjaGVja1xuICogaXMgZm9yLlxuICpcbiAqIEBwYXJhbSB0aXRsZSAtIElzc3VlIHRpdGxlXG4gKiBAcGFyYW0gYm9keSAtIElzc3VlIGJvZHksIG1heSBiZSBhYnNlbnRcbiAqIEByZXR1cm5zIFRydWUgd2hlbiB0aGUgaXNzdWUgcmVhZHMgYXMgd29ya2Zsb3cgd29ya1xuICovXG5leHBvcnQgZnVuY3Rpb24gaXNzdWVMb29rc0xpa2VXb3JrZmxvd1dvcmsoXG4gIHRpdGxlOiBzdHJpbmcsXG4gIGJvZHk6IHN0cmluZyB8IHVuZGVmaW5lZCxcbik6IGJvb2xlYW4ge1xuICBpZiAoL1xcYih3b3JrZmxvd3M/fGdpdGh1YiBhY3Rpb25zPylcXGIvaS50ZXN0KHRpdGxlKSkgcmV0dXJuIHRydWU7XG4gIGlmICgvXFwuZ2l0aHViXFwvd29ya2Zsb3dzXFxiL2kudGVzdCh0aXRsZSkpIHJldHVybiB0cnVlO1xuICByZXR1cm4gL1xcLmdpdGh1YlxcL3dvcmtmbG93c1xcYi9pLnRlc3QoYm9keSA/PyBcIlwiKTtcbn1cblxuLyoqIExvZ3MgdGhlIG1pc3Npbmctc2NvcGUgV0FSTklORzsgdHJ1ZSB3aGVuIHRoaXMgY2FsbCBsb2dnZWQgaXQuICovXG5leHBvcnQgdHlwZSBNaXNzaW5nU2NvcGVXYXJuZXIgPSAod2FybjogKG1lc3NhZ2U6IHN0cmluZykgPT4gdm9pZCkgPT4gYm9vbGVhbjtcblxuLyoqXG4gKiBBIHdhcm5lciB0aGF0IHNheXMsIG9uY2UsIHRoYXQgdGhpcyBob3N0IGNhbm5vdCBwdXNoIHdvcmtmbG93IGZpbGVzXG4gKiAoSXNzdWUgIzI2ODkpLlxuICpcbiAqIEEgbWlzc2luZyBzY29wZSBpcyB0aGUgaG9zdCdzIGdhcCwgbm90IHRoZSBpc3N1ZSdzOiB0aGUgcnVuIGlzIHJlbGVhc2VkXG4gKiB1bmNvdW50ZWQgc28gYSBob3N0IHdob3NlIHRva2VuIGhhcyB0aGUgc2NvcGUgY2FuIGNsYWltIGl0LiBFdmVyeSByZWZ1c2FsXG4gKiBhZnRlciB0aGUgZmlyc3QgaXMgdGhlIHNhbWUgZmFjdCBhZ2Fpbiwgc28gaXQgaXMgbm90IHJlcGVhdGVkLlxuICpcbiAqIEByZXR1cm5zIEEgZnJlc2ggd2FybmVyIOKAlCBlYWNoIG9uZSB3YXJucyBhdCBtb3N0IG9uY2VcbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGNyZWF0ZU1pc3NpbmdTY29wZVdhcm5lcigpOiBNaXNzaW5nU2NvcGVXYXJuZXIge1xuICBsZXQgd2FybmVkID0gZmFsc2U7XG4gIHJldHVybiAod2FybikgPT4ge1xuICAgIGlmICh3YXJuZWQpIHJldHVybiBmYWxzZTtcbiAgICB3YXJuZWQgPSB0cnVlO1xuICAgIHdhcm4oXG4gICAgICBgVGhpcyBob3N0J3MgdG9rZW4gbGFja3MgdGhlIFxcYHdvcmtmbG93XFxgIE9BdXRoIHNjb3BlLCBzbyBpdCBjYW5ub3QgYCArXG4gICAgICAgIGBwdXNoIGFueXRoaW5nIHVuZGVyICR7V09SS0ZMT1dTX0RJUn0uIFN1Y2ggaXNzdWVzIGFyZSByZWxlYXNlZCBgICtcbiAgICAgICAgYHdpdGhvdXQgY29uc3VtaW5nIGFuIGF0dGVtcHQsIGZvciBhIGhvc3QgdGhhdCBjYW4gcHVzaCB0aGVtIGAgK1xuICAgICAgICBgKElzc3VlICMyNjg5KS4gRml4OiAke1dPUktGTE9XX1NDT1BFX1JFTUVESUFUSU9OfWAsXG4gICAgKTtcbiAgICByZXR1cm4gdHJ1ZTtcbiAgfTtcbn1cblxuLyoqIFRoaXMgcHJvY2VzcydzIHdhcm5lcjogb25lIGhvc3QsIG9uZSBjcmVkZW50aWFsLCBvbmUgV0FSTklORy4gKi9cbmV4cG9ydCBjb25zdCB3YXJuTWlzc2luZ1dvcmtmbG93U2NvcGVPbmNlOiBNaXNzaW5nU2NvcGVXYXJuZXIgPVxuICBjcmVhdGVNaXNzaW5nU2NvcGVXYXJuZXIoKTtcbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7OztDQXdDQyxHQUVELFNBQVMsZ0JBQWdCLFFBQVEscUJBQXFCO0FBRXRELDBFQUEwRSxHQUMxRSxNQUFNLDRCQUE0QjtBQUVsQyxrRUFBa0UsR0FDbEUsT0FBTyxNQUFNLHFCQUFxQiw4QkFBOEI7QUFFaEUsbUVBQW1FLEdBQ25FLE9BQU8sTUFBTSw2QkFDWCx5REFDQSx1RUFDQSxtQ0FBbUM7QUFFckMsMkRBQTJELEdBQzNELE9BQU8sTUFBTSxnQkFBZ0IscUJBQXFCO0FBV2xEOzs7Ozs7Q0FNQyxHQUNELE9BQU8sU0FBUyxtQkFDZCxNQUE0QyxDQUFDLE9BQVMsS0FBSyxHQUFHLENBQUMsR0FBRyxDQUFDLEtBQUs7RUFFeEUsTUFBTSxXQUFXLENBQUMsSUFBSSx1QkFBdUIsRUFBRSxFQUFFLElBQUksR0FBRyxXQUFXO0VBQ25FLElBQUksYUFBYSxTQUFTLE9BQU87RUFDakMsSUFBSSxhQUFh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
+// denoCacheMetadata=7920884797369634239,4194716475267555766

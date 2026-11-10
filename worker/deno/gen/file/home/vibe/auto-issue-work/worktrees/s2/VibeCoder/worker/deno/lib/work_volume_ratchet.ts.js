@@ -1,0 +1,150 @@
+/**
+ * The work volume image only grows (Issue #384).
+ *
+ * ## What went wrong
+ *
+ * Host GRQ-23 sat below the host-disk floor for days, claiming nothing,
+ * while its own reclaim reported success at freeing nothing:
+ *
+ * ```text
+ * [HOST_DISK_LOW] reclaimed 0 bytes of disposable work-volume space …
+ * host 6.5 GB free (1.4%) of 460.4 GB, floor 46.0 GB — below the floor
+ * ```
+ *
+ * The named volume is a thin-provisioned disk image on the host
+ * (`volumes/vibe-work/volume.img`). Blocks are allocated to it when the
+ * guest writes and are **never returned** when the guest deletes: the guest
+ * filesystem marks them free, the image keeps them. So 36.5 GB was allocated
+ * on the host for ~13 GB of real content, and every guest-side sweep —
+ * `reclaimWorkVolumeTiers`, the 90 %-disk `nukeWorkDir` — returned exactly
+ * zero bytes to the host. The reclaim was measuring the guest and the floor
+ * was measured on the host; the two numbers are not comparable and the code
+ * treated them as if they were.
+ *
+ * ## What this module does
+ *
+ * One pure classification and the two sentences the operator needs:
+ *
+ * - {@link classifyWorkVolumeRatchet} — the gap between the guest's
+ *   high-water mark (what the host has already lost to the image) and what
+ *   the guest still uses. That gap is dead space the guest cannot give back.
+ * - {@link describeWorkVolumeRatchet} — the short clause the host-disk
+ *   status appends, so the alarm itself says the volume image is the problem.
+ * - {@link describeGuestReclaimToHost} — the full line the disk-low reclaim
+ *   logs: guest bytes freed, host bytes returned (zero), and the remedy.
+ *
+ * The remedy is not an operator incantation any more (Issue #478).
+ * `container/volume-init.sh` runs `fstrim` on the volume at every launch,
+ * which punches the freed blocks out of the image where the runtime allows
+ * the discard. The Apple container runtime does not: it refuses FITRIM as
+ * root on a device that advertises discard, so the init reports
+ * `VOLUME_TRIM_REFUSED` and the launcher recreates the volume itself when
+ * the host is below its claiming floor — before any container runs, so no
+ * work is in flight. These messages therefore name the launcher's own
+ * remedy; a recreate that does not clear the floor is reported by the
+ * launcher as `[WORK_VOLUME_UNRECOVERED]` rather than as a fix.
+ *
+ * Australian English spelling throughout (behaviour, colour, organisation).
+ */ import { formatGb } from "./work_volume_prune.ts";
+/**
+ * The named volume the launcher mounts at the work directory. Kept in step
+ * with `WORK_VOLUME_NAME` (container_launch.ts) by
+ * `work_volume_ratchet_test.ts`: the remedy an operator is told to run must
+ * name the volume that actually exists. Duplicated deliberately rather than
+ * imported — this module is loaded by the in-container disk path, which has
+ * no business pulling the host-side launch planner into its graph.
+ */ export const WORK_VOLUME_RATCHET_NAME = "vibe-work";
+/**
+ * Below this much dead space the gap is filesystem noise (journal, metadata
+ * churn), not the ratchet worth naming in an alarm.
+ */ export const DEFAULT_RATCHET_FLOOR_BYTES = 1_073_741_824;
+/**
+ * Classify the gap between the volume's high-water mark and its current use.
+ *
+ * Either reading unknown yields a non-claim: an unmeasured volume is not
+ * evidence of a ratchet, and an alarm that guesses is worse than one that
+ * says nothing.
+ *
+ * @param usedBytes - Guest filesystem bytes in use now, or null.
+ * @param peakBytes - Highest guest usage observed, or null.
+ * @param floorBytes - Dead space below which the gap is not named.
+ */ export function classifyWorkVolumeRatchet(usedBytes, peakBytes, floorBytes = DEFAULT_RATCHET_FLOOR_BYTES) {
+  if (usedBytes === null || peakBytes === null) {
+    return {
+      ratcheted: false,
+      deadBytes: 0,
+      peakBytes: 0,
+      usedBytes: 0
+    };
+  }
+  const deadBytes = Math.max(0, peakBytes - usedBytes);
+  return {
+    ratcheted: deadBytes >= floorBytes,
+    deadBytes,
+    peakBytes,
+    usedBytes
+  };
+}
+/**
+ * The short clause the host-disk status appends when the volume has
+ * ratcheted, or `""` when it has not.
+ *
+ * An operator meeting the `[HOST_DISK_LOW]` alarm learns from this line that
+ * the volume image — not the work directory's contents — is where the host's
+ * space went.
+ */ export function describeWorkVolumeRatchet(ratchet, volumeName = WORK_VOLUME_RATCHET_NAME) {
+  if (!ratchet.ratcheted) return "";
+  return `${formatGb(ratchet.deadBytes)} of the host's loss is space the guest has freed but the ${volumeName} ` + `volume image still holds (guest ${formatGb(ratchet.usedBytes)}, image ` + `high-water ${formatGb(ratchet.peakBytes)}) — the launcher trims the volume at launch and recreates it when the ` + `runtime refuses the discard (Issues #384, #478)`;
+}
+/**
+ * The line the disk-low reclaim logs: what the guest sweep freed, what the
+ * host got back for it (nothing), and what does return the bytes.
+ *
+ * Always non-empty. Guest reclaim never moves the host figure, ratchet or
+ * not, and saying so is the whole point — the old line read as a failed
+ * cleanup when it was a category error.
+ *
+ * @param guestBytesFreed - Bytes the guest-side sweep deleted.
+ * @param ratchet - Classification from {@link classifyWorkVolumeRatchet}.
+ * @param volumeName - Named volume to name in the remedy.
+ */ export function describeGuestReclaimToHost(guestBytesFreed, ratchet, volumeName = WORK_VOLUME_RATCHET_NAME) {
+  const freed = guestBytesFreed > 0 ? `${formatGb(guestBytesFreed)} freed inside the guest, ` : "";
+  const dead = ratchet.ratcheted ? ` — ${formatGb(ratchet.deadBytes)} of the image is now space the ` + `guest has already freed` : "";
+  return `${freed}0 bytes returned to the host: the ${volumeName} volume ` + `image only grows${dead}. Nothing the guest does returns those blocks: ` + `the launcher trims the volume at the next launch and, where the runtime ` + `refuses the discard, recreates the volume itself while the host is ` + `below its claiming floor — the clones re-clone and the approval ` + `snapshots re-baseline. A recreate that does not clear the floor is ` + `logged as [WORK_VOLUME_UNRECOVERED] (Issues #384, #478)`;
+}
+/**
+ * Should the disk-low pass delete anything inside the work volume?
+ *
+ * On a runtime that refuses the discard, nothing the guest frees returns to
+ * the host — and a deleted build artefact is rebuilt by the next maintenance
+ * pass into fresh blocks of the sparse image. GRQ-23 (Issue #2080) deleted a
+ * 3.3 GB `target/` every eight minutes and rebuilt it in between: 45 GB of
+ * image for 1.2 GB of live data in eleven hours. So when the launcher says
+ * the trim was refused, or the image is already measurably ratcheted, the
+ * pass leaves the guest alone and the host to the launcher's volume reset
+ * (Issue #2077).
+ *
+ * @param trimRefused - The launcher's word that the runtime refused the trim
+ * @param ratchet - What the image holds that the guest has already freed
+ * @param volumeName - For the log line
+ * @returns Whether to skip, and the reason to log
+ */ export function judgeGuestReclaim(trimRefused, ratchet, volumeName = WORK_VOLUME_RATCHET_NAME) {
+  if (trimRefused) {
+    return {
+      futile: true,
+      reason: `the runtime refused to trim the ${volumeName} volume this ` + "launch, so nothing freed inside the guest returns to the host, and " + "a deleted build artefact is only rebuilt into fresh image blocks " + "— the launcher resets the volume instead (Issues #2077, #2080)"
+    };
+  }
+  if (ratchet.ratcheted) {
+    return {
+      futile: true,
+      reason: `${formatGb(ratchet.deadBytes)} of the ${volumeName} image is ` + "already space the guest freed and the host never got back, so " + "freeing more inside the guest returns nothing and a deleted build " + "artefact is only rebuilt into fresh image blocks — the launcher " + "resets the volume instead (Issues #2077, #2080)"
+    };
+  }
+  return {
+    futile: false,
+    reason: ""
+  };
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi93b3JrX3ZvbHVtZV9yYXRjaGV0LnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogVGhlIHdvcmsgdm9sdW1lIGltYWdlIG9ubHkgZ3Jvd3MgKElzc3VlICMzODQpLlxuICpcbiAqICMjIFdoYXQgd2VudCB3cm9uZ1xuICpcbiAqIEhvc3QgR1JRLTIzIHNhdCBiZWxvdyB0aGUgaG9zdC1kaXNrIGZsb29yIGZvciBkYXlzLCBjbGFpbWluZyBub3RoaW5nLFxuICogd2hpbGUgaXRzIG93biByZWNsYWltIHJlcG9ydGVkIHN1Y2Nlc3MgYXQgZnJlZWluZyBub3RoaW5nOlxuICpcbiAqIGBgYHRleHRcbiAqIFtIT1NUX0RJU0tfTE9XXSByZWNsYWltZWQgMCBieXRlcyBvZiBkaXNwb3NhYmxlIHdvcmstdm9sdW1lIHNwYWNlIOKAplxuICogaG9zdCA2LjUgR0IgZnJlZSAoMS40JSkgb2YgNDYwLjQgR0IsIGZsb29yIDQ2LjAgR0Ig4oCUIGJlbG93IHRoZSBmbG9vclxuICogYGBgXG4gKlxuICogVGhlIG5hbWVkIHZvbHVtZSBpcyBhIHRoaW4tcHJvdmlzaW9uZWQgZGlzayBpbWFnZSBvbiB0aGUgaG9zdFxuICogKGB2b2x1bWVzL3ZpYmUtd29yay92b2x1bWUuaW1nYCkuIEJsb2NrcyBhcmUgYWxsb2NhdGVkIHRvIGl0IHdoZW4gdGhlXG4gKiBndWVzdCB3cml0ZXMgYW5kIGFyZSAqKm5ldmVyIHJldHVybmVkKiogd2hlbiB0aGUgZ3Vlc3QgZGVsZXRlczogdGhlIGd1ZXN0XG4gKiBmaWxlc3lzdGVtIG1hcmtzIHRoZW0gZnJlZSwgdGhlIGltYWdlIGtlZXBzIHRoZW0uIFNvIDM2LjUgR0Igd2FzIGFsbG9jYXRlZFxuICogb24gdGhlIGhvc3QgZm9yIH4xMyBHQiBvZiByZWFsIGNvbnRlbnQsIGFuZCBldmVyeSBndWVzdC1zaWRlIHN3ZWVwIOKAlFxuICogYHJlY2xhaW1Xb3JrVm9sdW1lVGllcnNgLCB0aGUgOTAgJS1kaXNrIGBudWtlV29ya0RpcmAg4oCUIHJldHVybmVkIGV4YWN0bHlcbiAqIHplcm8gYnl0ZXMgdG8gdGhlIGhvc3QuIFRoZSByZWNsYWltIHdhcyBtZWFzdXJpbmcgdGhlIGd1ZXN0IGFuZCB0aGUgZmxvb3JcbiAqIHdhcyBtZWFzdXJlZCBvbiB0aGUgaG9zdDsgdGhlIHR3byBudW1iZXJzIGFyZSBub3QgY29tcGFyYWJsZSBhbmQgdGhlIGNvZGVcbiAqIHRyZWF0ZWQgdGhlbSBhcyBpZiB0aGV5IHdlcmUuXG4gKlxuICogIyMgV2hhdCB0aGlzIG1vZHVsZSBkb2VzXG4gKlxuICogT25lIHB1cmUgY2xhc3NpZmljYXRpb24gYW5kIHRoZSB0d28gc2VudGVuY2VzIHRoZSBvcGVyYXRvciBuZWVkczpcbiAqXG4gKiAtIHtAbGluayBjbGFzc2lmeVdvcmtWb2x1bWVSYXRjaGV0fSDigJQgdGhlIGdhcCBiZXR3ZWVuIHRoZSBndWVzdCdzXG4gKiAgIGhpZ2gtd2F0ZXIgbWFyayAod2hhdCB0aGUgaG9zdCBoYXMgYWxyZWFkeSBsb3N0IHRvIHRoZSBpbWFnZSkgYW5kIHdoYXRcbiAqICAgdGhlIGd1ZXN0IHN0aWxsIHVzZXMuIFRoYXQgZ2FwIGlzIGRlYWQgc3BhY2UgdGhlIGd1ZXN0IGNhbm5vdCBnaXZlIGJhY2suXG4gKiAtIHtAbGluayBkZXNjcmliZVdvcmtWb2x1bWVSYXRjaGV0fSDigJQgdGhlIHNob3J0IGNsYXVzZSB0aGUgaG9zdC1kaXNrXG4gKiAgIHN0YXR1cyBhcHBlbmRzLCBzbyB0aGUgYWxhcm0gaXRzZWxmIHNheXMgdGhlIHZvbHVtZSBpbWFnZSBpcyB0aGUgcHJvYmxlbS5cbiAqIC0ge0BsaW5rIGRlc2NyaWJlR3Vlc3RSZWNsYWltVG9Ib3N0fSDigJQgdGhlIGZ1bGwgbGluZSB0aGUgZGlzay1sb3cgcmVjbGFpbVxuICogICBsb2dzOiBndWVzdCBieXRlcyBmcmVlZCwgaG9zdCBieXRlcyByZXR1cm5lZCAoemVybyksIGFuZCB0aGUgcmVtZWR5LlxuICpcbiAqIFRoZSByZW1lZHkgaXMgbm90IGFuIG9wZXJhdG9yIGluY2FudGF0aW9uIGFueSBtb3JlIChJc3N1ZSAjNDc4KS5cbiAqIGBjb250YWluZXIvdm9sdW1lLWluaXQuc2hgIHJ1bnMgYGZzdHJpbWAgb24gdGhlIHZvbHVtZSBhdCBldmVyeSBsYXVuY2gsXG4gKiB3aGljaCBwdW5jaGVzIHRoZSBmcmVlZCBibG9ja3Mgb3V0IG9mIHRoZSBpbWFnZSB3aGVyZSB0aGUgcnVudGltZSBhbGxvd3NcbiAqIHRoZSBkaXNjYXJkLiBUaGUgQXBwbGUgY29udGFpbmVyIHJ1bnRpbWUgZG9lcyBub3Q6IGl0IHJlZnVzZXMgRklUUklNIGFzXG4gKiByb290IG9uIGEgZGV2aWNlIHRoYXQgYWR2ZXJ0aXNlcyBkaXNjYXJkLCBzbyB0aGUgaW5pdCByZXBvcnRzXG4gKiBgVk9MVU1FX1RSSU1fUkVGVVNFRGAgYW5kIHRoZSBsYXVuY2hlciByZWNyZWF0ZXMgdGhlIHZvbHVtZSBpdHNlbGYgd2hlblxuICogdGhlIGhvc3QgaXMgYmVsb3cgaXRzIGNsYWltaW5nIGZsb29yIOKAlCBiZWZvcmUgYW55IGNvbnRhaW5lciBydW5zLCBzbyBub1xuICogd29yayBpcyBpbiBmbGlnaHQuIFRoZXNlIG1lc3NhZ2VzIHRoZXJlZm9yZSBuYW1lIHRoZSBsYXVuY2hlcidzIG93blxuICogcmVtZWR5OyBhIHJlY3JlYXRlIHRoYXQgZG9lcyBub3QgY2xlYXIgdGhlIGZsb29yIGlzIHJlcG9ydGVkIGJ5IHRoZVxuICogbGF1bmNoZXIgYXMgYFtXT1JLX1ZPTFVNRV9VTlJFQ09WRVJFRF1gIHJhdGhlciB0aGFuIGFzIGEgZml4LlxuICpcbiAqIEF1c3RyYWxpYW4gRW5nbGlzaCBzcGVsbGluZyB0aHJvdWdob3V0IChiZWhhdmlvdXIsIGNvbG91ciwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG5pbXBvcnQgeyBmb3JtYXRHYiB9IGZyb20gXCIuL3dvcmtfdm9sdW1lX3BydW5lLnRzXCI7XG5cbi8qKlxuICogVGhlIG5hbWVkIHZvbHVtZSB0aGUgbGF1bmNoZXIgbW91bnRzIGF0IHRoZSB3b3JrIGRpcmVjdG9yeS4gS2VwdCBpbiBzdGVwXG4gKiB3aXRoIGBXT1JLX1ZPTFVNRV9OQU1FYCAoY29udGFpbmVyX2xhdW5jaC50cykgYnlcbiAqIGB3b3JrX3ZvbHVtZV9yYXRjaGV0X3Rlc3QudHNgOiB0aGUgcmVtZWR5IGFuIG9wZXJhdG9yIGlzIHRvbGQgdG8gcnVuIG11c3RcbiAqIG5hbWUgdGhlIHZvbHVtZSB0aGF0IGFjdHVhbGx5IGV4aXN0cy4gRHVwbGljYXRlZCBkZWxpYmVyYXRlbHkgcmF0aGVyIHRoYW5cbiAqIGltcG9ydGVkIOKAlCB0aGlzIG1vZHVsZSBpcyBsb2FkZWQgYnkgdGhlIGluLWNvbnRhaW5lciBkaXNrIHBhdGgsIHdoaWNoIGhhc1xuICogbm8gYnVzaW5lc3MgcHVsbGluZyB0aGUgaG9zdC1zaWRlIGxhdW5jaCBwbGFubmVyIGludG8gaXRzIGdyYXBoLlxuICovXG5leHBvcnQgY29uc3QgV09SS19WT0xVTUVfUkFUQ0hFVF9OQU1FID0gXCJ2aWJlLXdvcmtcIjtcblxuLyoqXG4gKiBCZWxvdyB0aGlzIG11Y2ggZGVhZCBzcGFjZSB0aGUgZ2FwIGlzIGZpbGVzeXN0ZW0gbm9pc2UgKGpvdXJuYWwsIG1ldGFkYXRhXG4gKiBjaHVybiksIG5vdCB0aGUgcmF0Y2hldCB3b3J0aCBuYW1pbmcgaW4gYW4gYWxhcm0uXG4gKi9cbmV4cG9ydCBjb25zdCBERUZBVUxUX1JBVENIRVRfRkxPT1JfQllURVMgPSAxXzA3M183NDFfODI0O1xuXG4vKiogV2hhdCB0aGUgdm9sdW1lIGltYWdlIGhvbGRzIGFnYWluc3Qgd2hhdCB0aGUgZ3Vlc3Qgc3RpbGwgdXNlcy4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgV29ya1ZvbHVtZVJhdGNoZXQge1xuICAvKiogVHJ1ZSB3aGVuIHRoZSBpbWFnZSBob2xkcyBtYXRlcmlhbGx5IG1vcmUgdGhhbiB0aGUgZ3Vlc3Qgc3RpbGwgdXNlcy4gKi9cbiAgcmF0Y2hldGVkOiBib29sZWFuO1xuICAvKiogQnl0ZXMgdGhlIGltYWdlIGhvbGRzIHRoYXQgdGhlIGd1ZXN0IGZpbGVzeXN0ZW0gaGFzIGFscmVhZHkgZnJlZWQuICovXG4gIGRlYWRCeXRlczogbnVtYmVyO1xuICAvKiogSGlnaC13YXRlciBtYXJrIG9mIGd1ZXN0IHVzYWdlIOKAlCB3aGF0IHRoZSBob3N0IGhhcyBsb3N0IHRvIHRoZSBpbWFnZS4gKi9cbiAgcGVha0J5dGVzOiBudW1iZXI7XG4gIC8qKiBXaGF0IHRoZSBndWVzdCBmaWxlc3lzdGVtIHVzZXMgbm93LiAqL1xuICB1c2VkQnl0ZXM6IG51bWJlcjtcbn1cblxuLyoqXG4gKiBDbGFzc2lmeSB0aGUgZ2FwIGJldHdlZW4gdGhlIHZvbHVtZSdzIGhpZ2gtd2F0ZXIgbWFyayBhbmQgaXRzIGN1cnJlbnQgdXNlLlxuICpcbiAqIEVpdGhlciByZWFkaW5nIHVua25vd24geWllbGRzIGEgbm9uLWNsYWltOiBhbiB1bm1lYXN1cmVkIHZvbHVtZSBpcyBub3RcbiAqIGV2aWRlbmNlIG9mIGEgcmF0Y2hldCwgYW5kIGFuIGFsYXJtIHRoYXQgZ3Vlc3NlcyBpcyB3b3JzZSB0aGFuIG9uZSB0aGF0XG4gKiBzYXlzIG5vdGhpbmcuXG4gKlxuICogQHBhcmFtIHVzZWRCeXRlcyAtIEd1ZXN0IGZpbGVzeXN0ZW0gYnl0ZXMgaW4gdXNlIG5vdywgb3IgbnVsbC5cbiAqIEBwYXJhbSBwZWFrQnl0ZXMgLSBIaWdoZXN0IGd1ZXN0IHVzYWdlIG9ic2VydmVkLCBvciBudWxsLlxuICogQHBhcmFtIGZsb29yQnl0ZXMgLSBEZWFkIHNwYWNlIGJlbG93IHdoaWNoIHRoZSBnYXAgaXMgbm90IG5hbWVkLlxuICovXG5leHBvcnQgZnVuY3Rpb24gY2xhc3NpZnlXb3JrVm9sdW1lUmF0Y2hldChcbiAgdXNlZEJ5dGVzOiBudW1iZXIgfCBudWxsLFxuICBwZWFrQnl0ZXM6IG51bWJlciB8IG51bGwsXG4gIGZsb29yQnl0ZXM6IG51bWJlciA9IERFRkFVTFRfUkFUQ0hFVF9GTE9PUl9CWVRFUyxcbik6IFdvcmtWb2x1bWVSYXRjaGV0IHtcbiAgaWYgKHVzZWRCeXRlcyA9PT0gbnVsbCB8fCBwZWFrQnl0ZXMgPT09IG51bGwpIHtcbiAgICByZXR1cm4geyByYXRjaGV0ZWQ6IGZhbHNlLCBkZWFkQnl0ZXM6IDAsIHBlYWtCeXRlczogMCwgdXNlZEJ5dGVzOiAwIH07XG4gIH1cbiAgY29uc3QgZGVhZEJ5dGVzID0gTWF0aC5tYXgoMCwgcGVha0J5dGVzIC0gdXNlZEJ5dGVzKTtcbiAgcmV0dXJuIHtcbiAgICByYXRjaGV0ZWQ6IGRlYWRCeXRlcyA+PSBmbG9vckJ5dGVzLFxuICAgIGRlYWRCeXRlcyxcbiAgICBwZWFrQnl0ZXMsXG4gICAgdXNlZEJ5dGVzLFxuICB9O1xufVxuXG4vKipcbiAqIFRoZSBzaG9ydCBjbGF1c2UgdGhlIGhvc3QtZGlzayBzdGF0dXMgYXBwZW5kcyB3aGVuIHRoZSB2b2x1bWUgaGFzXG4gKiByYXRjaGV0ZWQsIG9yIGBcIlwiYCB3aGVuIGl0IGhhcyBub3QuXG4gKlxuICogQW4gb3BlcmF0b3IgbWVldGluZyB0aGUgYFtIT1NUX0RJU0tfTE9XXWAgYWxhcm0gbGVhcm5zIGZyb20gdGhpcyBsaW5lIHRoYXRcbiAqIHRoZSB2b2x1bWUgaW1hZ2Ug4oCUIG5vdCB0aGUgd29yayBkaXJlY3RvcnkncyBjb250ZW50cyDigJQgaXMgd2hlcmUgdGhlIGhvc3Qnc1xuICogc3BhY2Ugd2VudC5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGRlc2NyaWJlV29ya1ZvbHVtZVJhdGNoZXQoXG4gIHJhdGNoZXQ6IFdvcmtWb2x1bWVSYXRjaGV0LFxuICB2b2x1bWVOYW1lOiBzdHJpbmcgPSBXT1JLX1ZPTFVNRV9SQVRDSEVUX05BTUUsXG4pOiBzdHJpbmcge1xuICBpZiAoIXJhdGNoZXQucmF0Y2hldGVkKSByZXR1cm4gXCJcIjtcbiAgcmV0dXJuIGAke1xuICAgIGZvcm1hdEdiKHJhdGNoZXQuZGVhZEJ5dGVzKVxuICB9IG9mIHRoZSBob3N0J3MgbG9zcyBpcyBzcGFjZSB0aGUgZ3Vlc3QgaGFzIGZyZWVkIGJ1dCB0aGUgJHt2b2x1bWVOYW1lfSBgICtcbiAgICBgdm9sdW1lIGltYWdlIHN0aWxsIGhvbGRzIChndWVzdCAke2Zvcm1hdEdiKHJhdGNoZXQudXNlZEJ5dGVzKX0sIGltYWdlIGAgK1xuICAgIGBoaWdoLXdhdGVyICR7XG4gICAgICBmb3JtYXRHYihyYXRjaGV0LnBlYWtCeXRlcylcbiAgICB9KSDigJQgdGhlIGxhdW5jaGVyIHRyaW1zIHRoZSB2b2x1bWUgYXQgbGF1bmNoIGFuZCByZWNyZWF0ZXMgaXQgd2hlbiB0aGUgYCArXG4gICAgYHJ1bnRpbWUgcmVmdXNlcyB0aGUgZGlzY2FyZCAoSXNzdWVzICMzODQsICM0NzgpYDtcbn1cblxuLyoqXG4gKiBUaGUgbGluZSB0aGUgZGlzay1sb3cgcmVjbGFpbSBsb2dzOiB3aGF0IHRoZSBndWVzdCBzd2VlcCBmcmVlZCwgd2hhdCB0aGVcbiAqIGhvc3QgZ290IGJhY2sgZm9yIGl0IChub3RoaW5nKSwgYW5kIHdoYXQgZG9lcyByZXR1cm4gdGhlIGJ5dGVzLlxuICpcbiAqIEFsd2F5cyBub24tZW1wdHkuIEd1ZXN0IHJlY2xhaW0gbmV2ZXIgbW92ZXMgdGhlIGhvc3QgZmlndXJlLCByYXRjaGV0IG9yXG4gKiBub3QsIGFuZCBzYXlpbmcgc28gaXMgdGhlIHdob2xlIHBvaW50IOKAlCB0aGUgb2xkIGxpbmUgcmVhZCBhcyBhIGZhaWxlZFxuICogY2xlYW51cCB3aGVuIGl0IHdhcyBhIGNhdGVnb3J5IGVycm9yLlxuICpcbiAqIEBwYXJhbSBndWVzdEJ5dGVzRnJlZWQgLSBCeXRlcyB0aGUgZ3Vlc3Qtc2lkZSBzd2VlcCBkZWxldGVkLlxuICogQHBhcmFtIHJhdGNoZXQgLSBDbGFzc2lmaWNhdGlvbiBmcm9tIHtAbGluayBjbGFzc2lmeVdvcmtWb2x1bWVSYXRjaGV0fS5cbiAqIEBwYXJhbSB2b2x1bWVOYW1lIC0gTmFtZWQgdm9sdW1lIHRvIG5hbWUgaW4gdGhlIHJlbWVkeS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGRlc2NyaWJlR3Vlc3RSZWNsYWltVG9Ib3N0KFxuICBndWVzdEJ5dGVzRnJlZWQ6IG51bWJlcixcbiAgcmF0Y2hldDogV29ya1ZvbHVtZVJhdGNoZXQsXG4gIHZvbHVtZU5hbWU6IHN0cmluZyA9IFdPUktfVk9MVU1FX1JBVENIRVRfTkFNRSxcbik6IHN0cmluZyB7XG4gIGNvbnN0IGZyZWVkID0gZ3Vlc3RCeXRlc0ZyZWVkID4gMFxuICAgID8gYCR7Zm9ybWF0R2IoZ3Vlc3RCeXRlc0ZyZWVkKX0gZnJlZWQgaW5zaWRlIHRoZSBndWVzdCwgYFxuICAgIDogXCJcIjtcbiAgY29uc3QgZGVhZCA9IHJhdGNoZXQucmF0Y2hldGVkXG4gICAgPyBgIOKAlCAke2Zvcm1hdEdiKHJhdGNoZXQuZGVhZEJ5dGVzKX0gb2YgdGhlIGltYWdlIGlzIG5vdyBzcGFjZSB0aGUgYCArXG4gICAgICBgZ3Vlc3QgaGFzIGFscmVhZHkgZnJlZWRgXG4gICAgOiBcIlwiO1xuICByZXR1cm4gYCR7ZnJlZWR9MCBieXRlcyByZXR1cm5lZCB0byB0aGUgaG9zdDogdGhlICR7dm9sdW1lTmFtZX0gdm9sdW1lIGAgK1xuICAgIGBpbWFnZSBvbmx5IGdyb3dzJHtkZWFkfS4gTm90aGluZyB0aGUgZ3Vlc3QgZG9lcyByZXR1cm5zIHRob3NlIGJsb2NrczogYCArXG4gICAgYHRoZSBsYXVuY2hlciB0cmltcyB0aGUgdm9sdW1lIGF0IHRoZSBuZXh0IGxhdW5jaCBhbmQsIHdoZXJlIHRoZSBydW50aW1lIGAgK1xuICAgIGByZWZ1c2VzIHRoZSBkaXNjYXJkLCByZWNyZWF0ZXMgdGhlIHZvbHVtZSBpdHNlbGYgd2hpbGUgdGhlIGhvc3QgaXMgYCArXG4gICAgYGJlbG93IGl0cyBjbGFpbWluZyBmbG9vciDigJQgdGhlIGNsb25lcyByZS1jbG9uZSBhbmQgdGhlIGFwcHJvdmFsIGAgK1xuICAgIGBzbmFwc2hvdHMgcmUtYmFzZWxpbmUuIEEgcmVjcmVhdGUgdGhhdCBkb2VzIG5vdCBjbGVhciB0aGUgZmxvb3IgaXMgYCArXG4gICAgYGxvZ2dlZCBhcyBbV09SS19WT0xVTUVfVU5SRUNPVkVSRURdIChJc3N1ZXMgIzM4NCwgIzQ3OClgO1xufVxuXG4vKiogV2hldGhlciBmcmVlaW5nIHNwYWNlIGluc2lkZSB0aGUgZ3Vlc3QgY2FuIGhlbHAgdGhlIGhvc3QgYXQgYWxsLiAqL1xuZXhwb3J0IGludGVyZmFjZSBHdWVzdFJlY2xhaW1WZXJkaWN0IHtcbiAgLyoqIFRydWUgd2hlbiBkZWxldGluZyBpbnNpZGUgdGhlIHZvbHVtZSByZXR1cm5zIG5vdGhpbmcgdG8gdGhlIGhvc3QuICovXG4gIGZ1dGlsZTogYm9vbGVhbjtcbiAgLyoqIFdoeSwgaW4gb25lIGxpbmUgZm9yIHRoZSBkaXNrLWxvdyBsb2cuIEVtcHR5IHdoZW4gbm90IGZ1dGlsZS4gKi9cbiAgcmVhc29uOiBzdHJpbmc7XG59XG5cbi8qKlxuICogU2hvdWxkIHRoZSBkaXNrLWxvdyBwYXNzIGRlbGV0ZSBhbnl0aGluZyBpbnNpZGUgdGhlIHdvcmsgdm9sdW1lP1xuICpcbiAqIE9uIGEgcnVudGltZSB0aGF0IHJlZnVzZXMgdGhlIGRpc2NhcmQsIG5vdGhpbmcgdGhlIGd1ZXN0IGZyZWVzIHJldHVybnMgdG9cbiAqIHRoZSBob3N0IOKAlCBhbmQgYSBkZWxldGVkIGJ1aWxkIGFydGVmYWN0IGlzIHJlYnVpbHQgYnkgdGhlIG5leHQgbWFpbnRlbmFuY2VcbiAqIHBhc3MgaW50byBmcmVzaCBibG9ja3Mgb2YgdGhlIHNwYXJzZSBpbWFnZS4gR1JRLTIzIChJc3N1ZSAjMjA4MCkgZGVsZXRlZCBhXG4gKiAzLjMgR0IgYHRhcmdldC9gIGV2ZXJ5IGVpZ2h0IG1pbnV0ZXMgYW5kIHJlYnVpbHQgaXQgaW4gYmV0d2VlbjogNDUgR0Igb2ZcbiAqIGltYWdlIGZvciAxLjIgR0Igb2YgbGl2ZSBkYXRhIGluIGVsZXZlbiBob3Vycy4gU28gd2hlbiB0aGUgbGF1bmNoZXIgc2F5c1xuICogdGhlIHRyaW0gd2FzIHJlZnVzZWQsIG9yIHRoZSBpbWFnZSBpcyBhbHJlYWR5IG1lYXN1cmFibHkgcmF0Y2hldGVkLCB0aGVcbiAqIHBhc3MgbGVhdmVzIHRoZSBndWVzdCBhbG9uZSBhbmQgdGhlIGhvc3QgdG8gdGhlIGxhdW5jaGVyJ3Mgdm9sdW1lIHJlc2V0XG4gKiAoSXNzdWUgIzIwNzcpLlxuICpcbiAqIEBwYXJhbSB0cmltUmVmdXNlZCAtIFRoZSBsYXVuY2hlcidzIHdvcmQgdGhhdCB0aGUgcnVudGltZSByZWZ1c2VkIHRoZSB0cmltXG4gKiBAcGFyYW0gcmF0Y2hldCAtIFdoYXQgdGhlIGltYWdlIGhvbGRzIHRoYXQgdGhlIGd1ZXN0IGhhcyBhbHJlYWR5IGZyZWVkXG4gKiBAcGFyYW0gdm9sdW1lTmFtZSAtIEZvciB0aGUgbG9nIGxpbmVcbiAqIEByZXR1cm5zIFdoZXRoZXIgdG8gc2tpcCwgYW5kIHRoZSByZWFzb24gdG8gbG9nXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBqdWRnZUd1ZXN0UmVjbGFpbShcbiAgdHJpbVJlZnVzZWQ6IGJvb2xlYW4sXG4gIHJhdGNoZXQ6IFdvcmtWb2x1bWVSYXRjaGV0LFxuICB2b2x1bWVOYW1lOiBzdHJpbmcgPSBXT1JLX1ZPTFVNRV9SQVRDSEVUX05BTUUsXG4pOiBHdWVzdFJlY2xhaW1WZXJkaWN0IHtcbiAgaWYgKHRyaW1SZWZ1c2VkKSB7XG4gICAgcmV0dXJuIHtcbiAgICAgIGZ1dGlsZTogdHJ1ZSxcbiAgICAgIHJlYXNvbjogYHRoZSBydW50aW1lIHJlZnVzZWQgdG8gdHJpbSB0aGUgJHt2b2x1bWVOYW1lfSB2b2x1bWUgdGhpcyBgICtcbiAgICAgICAgXCJsYXVuY2gsIHNvIG5vdGhpbmcgZnJlZWQgaW5zaWRlIHRoZSBndWVzdCByZXR1cm5zIHRvIHRoZSBob3N0LCBhbmQgXCIgK1xuICAgICAgICBcImEgZGVsZXRlZCBidWlsZCBhcnRlZmFjdCBpcyBvbmx5IHJlYnVpbHQgaW50byBmcmVzaCBpbWFnZSBibG9ja3MgXCIgK1xuICAgICAgICBcIuKAlCB0aGUgbGF1bmNoZXIgcmVzZXRzIHRoZSB2b2x1bWUgaW5zdGVhZCAoSXNzdWVzICMyMDc3LCAjMjA4MClcIixcbiAgICB9O1xuICB9XG4gIGlmIChyYXRjaGV0LnJhdGNoZXRlZCkge1xuICAgIHJldHVybiB7XG4gICAgICBmdXRpbGU6IHRydWUsXG4gICAgICByZWFzb246IGAke2Zvcm1hdEdiKHJhdGNoZXQuZGVhZEJ5dGVzKX0gb2YgdGhlICR7dm9sdW1lTmFtZX0gaW1hZ2UgaXMgYCArXG4gICAgICAgIFwiYWxyZWFkeSBzcGFjZSB0aGUgZ3Vlc3QgZnJlZWQgYW5kIHRoZSBob3N0IG5ldmVyIGdvdCBiYWNrLCBzbyBcIiArXG4gICAgICAgIFwiZnJlZWluZyBtb3JlIGluc2lkZSB0aGUgZ3Vlc3QgcmV0dXJucyBub3RoaW5nIGFuZCBhIGRlbGV0ZWQgYnVpbGQgXCIgK1xuICAgICAgICBcImFydGVmYWN0IGlzIG9ubHkgcmVidWlsdCBpbnRvIGZyZXNoIGltYWdlIGJsb2NrcyDigJQgdGhlIGxhdW5jaGVyIFwiICtcbiAgICAgICAgXCJyZXNldHMgdGhlIHZvbHVtZSBpbnN0ZWFkIChJc3N1ZXMgIzIwNzcsICMyMDgwKVwiLFxuICAgIH07XG4gIH1cbiAgcmV0dXJuIHsgZnV0aWxlOiBmYWxzZSwgcmVhc29uOiBcIlwiIH07XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7O0NBK0NDLEdBRUQsU0FBUyxRQUFRLFFBQVEseUJBQXlCO0FBRWxEOzs7Ozs7O0NBT0MsR0FDRCxPQUFPLE1BQU0sMkJBQTJCLFlBQVk7QUFFcEQ7OztDQUdDLEdBQ0QsT0FBTyxNQUFNLDhCQUE4QixjQUFjO0FBY3pEOzs7Ozs7Ozs7O0NBVUMsR0FDRCxPQUFPLFNBQVMsMEJBQ2QsU0FBd0IsRUFDeEIsU0FBd0IsRUFDeEIsYUFBcUIsMkJBQTJCO0VBRWhELElBQUksY0FBYyxRQUFRLGNBQWMsTUFBTTtJQUM1QyxPQUFPO01BQUUsV0FBVztNQUFPLFdBQVc7TUFBRyxXQUFXO01BQUcsV0FBVztJQUFFO0VBQ3RFO0VBQ0EsTUFBTSxZQUFZLEtBQUssR0FBRyxDQUFDLEdBQUcsWUFBWTtFQUMxQyxPQUFPO0lBQ0wsV0FBVyxhQUFhO0lBQ3hCO0lBQ0E7SUFDQTtFQUNGO0FBQ0Y7QUFFQTs7Ozs7OztDQU9DLEdBQ0QsT0FBTyxTQUFTLDBCQUNkLE9BQTBCLEVBQzFCLGFBQXFCLHdCQUF3QjtFQUU3QyxJQUFJLENBQUMsUUFBUSxTQUFTLEVBQUUsT0FBTztFQUMvQixPQUFPLEdBQ0wsU0FBUyxRQUFRLFNBQVMsRUFDM0IseURBQXlELEVBQUUsV0FBVyxDQUFDLENBQUMsR0FDdkUsQ0FBQyxnQ0FBZ0MsRUFBRSxTQUFTLFFBQVEsU0FBUyxFQUFFLFFBQVEsQ0FBQyxHQUN4RSxDQUFDLFdBQVcsRUFDVixTQUFTLFFBQVEsU0FBUyxFQUMzQixzRUFBc0UsQ0FBQyxHQUN4RSxDQUFDLCtDQUErQyxDQUFDO0FBQ3JEO0FBRUE7Ozs7Ozs7Ozs7O0NBV0MsR0FDRCxPQUFPLFNBQVMsMkJBQ2QsZUFBdUIsRUFDdkIsT0FBMEIsRUFDMUIsYUFBcUIsd0JBQXdCO0VBRTdDLE1BQU0sUUFBUSxrQkFBa0IsSUFDNUIsR0FBRyxTQUFTLGlCQUFpQix5QkFBeUIsQ0FBQyxHQUN2RDtFQUNKLE1BQU0sT0FBTyxRQUFRLFNBQVMsR0FDMUIsQ0FBQyxHQUFHLEVBQUUsU0FBUyxRQUFRLFNBQVMsRUFBRSwrQkFBK0IsQ0FBQyxHQUNsRSxDQUFDLHVCQUF1QixDQUFDLEdBQ3pCO0VBQ0osT0FBTyxHQUFHLE1BQU0sa0NBQWtDLEVBQUUsV0FBVyxRQUFRLENBQUMsR0FDdEUsQ0FBQyxnQkFBZ0IsRUFBRSxLQUFLLCtDQUErQyxDQUFDLEdBQ3hFLENBQUMsd0VBQXdFLENBQUMsR0FDMUUsQ0FBQyxtRUFBbUUsQ0FBQyxHQUNyRSxDQUFDLGdFQUFnRSxDQUFDLEdBQ2xFLENBQUMsbUVBQW1FLENBQUMsR0FDckUsQ0FBQyx1REFBdUQsQ0FBQztBQUM3RDtBQVVBOzs7Ozs7Ozs7Ozs7Ozs7O0NBZ0JDLEdBQ0QsT0FBTyxTQUFTLGtCQUNkLFdBQW9CLEVBQ3BCLE9BQTBCLEVBQzFCLGFBQXFCLHdCQUF3QjtFQUU3QyxJQUFJLGFBQWE7SUFDZixPQUFPO01BQ0wsUUFBUTtNQUNSLFFBQVEsQ0FBQyxnQ0FBZ0MsRUFBRSxXQUFXLGFBQWEsQ0FBQyxHQUNsRSx3RUFDQSxzRUFDQTtJQUNKO0VBQ0Y7RUFDQSxJQUFJLFFBQVEsU0FBUyxFQUFFO0lBQ3JCLE9BQU87TUFDTCxRQUFRO01BQ1IsUUFBUSxHQUFHLFNBQVMsUUFBUSxTQUFTLEVBQUUsUUFBUSxFQUFFLFdBQVcsVUFBVSxDQUFDLEdBQ3JFLG1FQUNBLHVFQUNBLHFFQUNBO0lBQ0o7RUFDRjtFQUNBLE9BQU87SUFBRSxRQUFRO0lBQU8sUUFBUTtFQUFHO0FBQ3JDIn0=
+// denoCacheMetadata=5314796889985300523,7338379144824583346

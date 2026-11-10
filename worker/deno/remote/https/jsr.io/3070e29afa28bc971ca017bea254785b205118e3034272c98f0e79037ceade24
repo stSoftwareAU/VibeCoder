@@ -1,0 +1,39 @@
+// Ported from js-yaml v3.13.1:
+// https://github.com/nodeca/js-yaml/commit/665aadda42349dcae869f12040d9b10ef18d12da
+// Copyright 2011-2015 by Vitaly Puzrin. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+import type { Type } from "../_type.ts";
+
+const YAML_TRUE_BOOLEANS = ["true", "True", "TRUE"];
+const YAML_FALSE_BOOLEANS = ["false", "False", "FALSE"];
+const YAML_BOOLEANS = [...YAML_TRUE_BOOLEANS, ...YAML_FALSE_BOOLEANS];
+
+export const bool: Type<"scalar", boolean> = {
+  tag: "tag:yaml.org,2002:bool",
+  kind: "scalar",
+  defaultStyle: "lowercase",
+  predicate: (value: unknown): value is boolean =>
+    typeof value === "boolean" || value instanceof Boolean,
+  construct: (data: string): boolean => YAML_TRUE_BOOLEANS.includes(data),
+  resolve: (data: string): boolean => YAML_BOOLEANS.includes(data),
+  represent: {
+    // deno-lint-ignore ban-types
+    lowercase: (object: boolean | Boolean): string => {
+      const value = object instanceof Boolean ? object.valueOf() : object;
+      return value ? "true" : "false";
+    },
+    // deno-lint-ignore ban-types
+    uppercase: (object: boolean | Boolean): string => {
+      const value = object instanceof Boolean ? object.valueOf() : object;
+      return value ? "TRUE" : "FALSE";
+    },
+    // deno-lint-ignore ban-types
+    camelcase: (object: boolean | Boolean): string => {
+      const value = object instanceof Boolean ? object.valueOf() : object;
+      return value ? "True" : "False";
+    },
+  },
+};
+
+// denoCacheMetadata={"headers":{"nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","cf-ray":"a583917b2dd9561f-SYD","set-cookie":"__cf_bm=Nm14sjDGXtW_U.OMgB8wkowN9K_TMp5Goj9YeEfDjis-1794298095.8771386-1.0.1.1-9eRady7J9f66uAy9uP3SB9QD5wqzFhnWv7fohZGWsn6.Km6pduGf.2WzQp77YL2PjqWSI4Jr1ZjakO.Gy4gBvqDpD13i.EXYT1MyQ82YLD0U8.iKlJ8BWPCVjWW8IRdX; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=QbWWZsJ4b8BHf3u2Y%2FdDImsFi7nqQnp7DjIwYMmRVkKnFRldIDG9JreSHf7ufLBz6maiDma%2FC1oF6JOXkn%2BE4Fe5kzIx2E3D2xRXD%2Fi7XSteTyQW9Qyu5X8%3D\"}]}","vary":"Origin","content-length":"1508","access-control-allow-origin":"*","x-content-type-options":"nosniff","age":"5948349","etag":"\"7187ce2f4da9ab4e0d86a3868f4f51a2\"","server":"cloudflare","content-type":"text/typescript","access-control-expose-headers":"*","cf-cache-status":"HIT","x-jsr-backend":"modules","cache-control":"public, max-age=31536000, immutable","x-robots-tag":"noindex","alt-svc":"h3=\":443\"; ma=86400","accept-ranges":"bytes","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","date":"Tue, 10 Nov 2026 08:08:15 GMT","cross-origin-resource-policy":"cross-origin"},"url":"https://jsr.io/@std/yaml/1.0.12/_type/bool.ts","time":1794298095}

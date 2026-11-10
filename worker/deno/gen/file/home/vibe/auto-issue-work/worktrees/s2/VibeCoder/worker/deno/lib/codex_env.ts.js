@@ -1,0 +1,118 @@
+/**
+ * Environment allow-list for the `codex` agent subprocess (Issue #4106).
+ *
+ * The Codex CLI is spawned with approvals and its own sandbox bypassed — the
+ * container is the sandbox — so the child can read whatever the worker
+ * exports. It therefore gets exactly the same treatment as the Claude child
+ * (Issue #3203, #3707): inherit the parent environment minus the worker-only
+ * secrets, minus every other vendor's agent credential, and minus anything
+ * whose name merely *looks* like a credential unless Codex genuinely needs it.
+ *
+ * The cross-vendor denial is the point of the explicit denylist: the Anthropic
+ * credential must not reach the Codex child by convention or by luck of the
+ * shape pattern, but because it is named here.
+ *
+ * Australian English spelling throughout (behaviour, organisation).
+ */ import { buildAgentChildEnv, isDeniedAgentEnvVar, WORKER_ONLY_SECRET_ENV_VARS } from "./agent_env.ts";
+import { CLAUDE_CREDENTIAL_ENV_VARS } from "./claude_env.ts";
+/**
+ * Environment variables the `codex` child must never inherit.
+ *
+ * The worker-only secrets (see {@link WORKER_ONLY_SECRET_ENV_VARS}) plus every
+ * other vendor's credential — Anthropic's, Google's since Issue #4107 and
+ * DeepSeek's since Issue #412: Codex authenticates with its own key, so
+ * another vendor's credential in its environment is only ever an exfiltration
+ * target.
+ *
+ * The Anthropic names come from {@link CLAUDE_CREDENTIAL_ENV_VARS} rather than
+ * a second copy of them, so a name Anthropic adds later is denied here the day
+ * it is accepted there. A pooled host holds several Anthropic tokens
+ * (Issue #920, parent #902); this child sees none of them, selected or not,
+ * and `agent_env.ts` denies the suffixed and indexed variants too, so the
+ * denial does not rest on the shape pattern happening to match.
+ */ export const CODEX_ENV_DENYLIST = [
+  ...WORKER_ONLY_SECRET_ENV_VARS,
+  ...CLAUDE_CREDENTIAL_ENV_VARS,
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY",
+  "DEEPSEEK_API_KEY"
+];
+/**
+ * Secret-shaped names the Codex child genuinely needs.
+ *
+ * `GH_TOKEN` / `GITHUB_TOKEN` authenticate the agent's `gh` calls;
+ * `OPENAI_API_KEY` / `CODEX_API_KEY` are the two variables the Codex CLI
+ * itself reads (`codex-rs/login`). Everything else secret-shaped is dropped.
+ */ export const CODEX_ENV_SECRET_ALLOWLIST = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "OPENAI_API_KEY",
+  "CODEX_API_KEY"
+];
+/**
+ * Report whether a variable must be withheld from the `codex` child.
+ *
+ * @param name - Environment variable name.
+ * @param denylist - Explicitly denied names (defaults to
+ *   {@link CODEX_ENV_DENYLIST}).
+ * @returns true when the variable is denied by name or by secret-ish shape.
+ */ export function isDeniedCodexEnvVar(name, denylist = CODEX_ENV_DENYLIST) {
+  return isDeniedAgentEnvVar(name, {
+    denylist,
+    secretAllowlist: CODEX_ENV_SECRET_ALLOWLIST
+  });
+}
+/**
+ * Build the environment for the `codex` child subprocess.
+ *
+ * @param parentEnv - The environment to inherit from (defaults to the current
+ *   process environment).
+ * @param denylist - Variable names to strip (defaults to
+ *   {@link CODEX_ENV_DENYLIST}).
+ * @returns A new object safe to pass as the child's `env`.
+ */ export function buildCodexChildEnv(parentEnv = Deno.env.toObject(), denylist = CODEX_ENV_DENYLIST) {
+  return buildAgentChildEnv(parentEnv, {
+    denylist,
+    secretAllowlist: CODEX_ENV_SECRET_ALLOWLIST
+  });
+}
+/**
+ * Per-invocation Codex environment (Issue #1698): only the selected
+ * account's secrets and `CODEX_HOME` reach the child. Other Codex
+ * accounts, Claude credentials and worker-only secrets stay out.
+ *
+ * A selected `CODEX_HOME` means this invocation is deliberately using the
+ * CLI's persisted ChatGPT login. In that mode API-key variables are withheld
+ * even when they are present in the worker environment or the selected
+ * credential context (Issue #1924). This is the billing guard: a stale or
+ * revoked subscription must fail authentication rather than silently turn an
+ * unattended run into metered API spend. The legacy API-key path remains
+ * available only when no `CODEX_HOME` was selected, preserving existing
+ * explicit API-key deployments while subscription-only routing is introduced.
+ *
+ * Does not mutate the parent object or process-global HOME / CODEX_HOME.
+ */ export function buildIsolatedCodexChildEnv(parentEnv, selected) {
+  const stripped = {
+    ...parentEnv
+  };
+  delete stripped.OPENAI_API_KEY;
+  delete stripped.CODEX_API_KEY;
+  delete stripped.CODEX_HOME;
+  const child = buildCodexChildEnv(stripped);
+  const codexHome = selected.codexHome?.trim();
+  if (codexHome) {
+    // Subscription mode is intentionally fail-closed: CODEX_HOME owns
+    // authentication and no metered credential reaches the child as a backup.
+    child.CODEX_HOME = codexHome;
+    return child;
+  }
+  if (selected.openaiApiKey !== undefined) {
+    child.OPENAI_API_KEY = selected.openaiApiKey;
+  }
+  if (selected.codexApiKey !== undefined) {
+    child.CODEX_API_KEY = selected.codexApiKey;
+  }
+  return child;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9jb2RleF9lbnYudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBFbnZpcm9ubWVudCBhbGxvdy1saXN0IGZvciB0aGUgYGNvZGV4YCBhZ2VudCBzdWJwcm9jZXNzIChJc3N1ZSAjNDEwNikuXG4gKlxuICogVGhlIENvZGV4IENMSSBpcyBzcGF3bmVkIHdpdGggYXBwcm92YWxzIGFuZCBpdHMgb3duIHNhbmRib3ggYnlwYXNzZWQg4oCUIHRoZVxuICogY29udGFpbmVyIGlzIHRoZSBzYW5kYm94IOKAlCBzbyB0aGUgY2hpbGQgY2FuIHJlYWQgd2hhdGV2ZXIgdGhlIHdvcmtlclxuICogZXhwb3J0cy4gSXQgdGhlcmVmb3JlIGdldHMgZXhhY3RseSB0aGUgc2FtZSB0cmVhdG1lbnQgYXMgdGhlIENsYXVkZSBjaGlsZFxuICogKElzc3VlICMzMjAzLCAjMzcwNyk6IGluaGVyaXQgdGhlIHBhcmVudCBlbnZpcm9ubWVudCBtaW51cyB0aGUgd29ya2VyLW9ubHlcbiAqIHNlY3JldHMsIG1pbnVzIGV2ZXJ5IG90aGVyIHZlbmRvcidzIGFnZW50IGNyZWRlbnRpYWwsIGFuZCBtaW51cyBhbnl0aGluZ1xuICogd2hvc2UgbmFtZSBtZXJlbHkgKmxvb2tzKiBsaWtlIGEgY3JlZGVudGlhbCB1bmxlc3MgQ29kZXggZ2VudWluZWx5IG5lZWRzIGl0LlxuICpcbiAqIFRoZSBjcm9zcy12ZW5kb3IgZGVuaWFsIGlzIHRoZSBwb2ludCBvZiB0aGUgZXhwbGljaXQgZGVueWxpc3Q6IHRoZSBBbnRocm9waWNcbiAqIGNyZWRlbnRpYWwgbXVzdCBub3QgcmVhY2ggdGhlIENvZGV4IGNoaWxkIGJ5IGNvbnZlbnRpb24gb3IgYnkgbHVjayBvZiB0aGVcbiAqIHNoYXBlIHBhdHRlcm4sIGJ1dCBiZWNhdXNlIGl0IGlzIG5hbWVkIGhlcmUuXG4gKlxuICogQXVzdHJhbGlhbiBFbmdsaXNoIHNwZWxsaW5nIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG5pbXBvcnQge1xuICBidWlsZEFnZW50Q2hpbGRFbnYsXG4gIGlzRGVuaWVkQWdlbnRFbnZWYXIsXG4gIFdPUktFUl9PTkxZX1NFQ1JFVF9FTlZfVkFSUyxcbn0gZnJvbSBcIi4vYWdlbnRfZW52LnRzXCI7XG5pbXBvcnQgeyBDTEFVREVfQ1JFREVOVElBTF9FTlZfVkFSUyB9IGZyb20gXCIuL2NsYXVkZV9lbnYudHNcIjtcblxuLyoqXG4gKiBFbnZpcm9ubWVudCB2YXJpYWJsZXMgdGhlIGBjb2RleGAgY2hpbGQgbXVzdCBuZXZlciBpbmhlcml0LlxuICpcbiAqIFRoZSB3b3JrZXItb25seSBzZWNyZXRzIChzZWUge0BsaW5rIFdPUktFUl9PTkxZX1NFQ1JFVF9FTlZfVkFSU30pIHBsdXMgZXZlcnlcbiAqIG90aGVyIHZlbmRvcidzIGNyZWRlbnRpYWwg4oCUIEFudGhyb3BpYydzLCBHb29nbGUncyBzaW5jZSBJc3N1ZSAjNDEwNyBhbmRcbiAqIERlZXBTZWVrJ3Mgc2luY2UgSXNzdWUgIzQxMjogQ29kZXggYXV0aGVudGljYXRlcyB3aXRoIGl0cyBvd24ga2V5LCBzb1xuICogYW5vdGhlciB2ZW5kb3IncyBjcmVkZW50aWFsIGluIGl0cyBlbnZpcm9ubWVudCBpcyBvbmx5IGV2ZXIgYW4gZXhmaWx0cmF0aW9uXG4gKiB0YXJnZXQuXG4gKlxuICogVGhlIEFudGhyb3BpYyBuYW1lcyBjb21lIGZyb20ge0BsaW5rIENMQVVERV9DUkVERU5USUFMX0VOVl9WQVJTfSByYXRoZXIgdGhhblxuICogYSBzZWNvbmQgY29weSBvZiB0aGVtLCBzbyBhIG5hbWUgQW50aHJvcGljIGFkZHMgbGF0ZXIgaXMgZGVuaWVkIGhlcmUgdGhlIGRheVxuICogaXQgaXMgYWNjZXB0ZWQgdGhlcmUuIEEgcG9vbGVkIGhvc3QgaG9sZHMgc2V2ZXJhbCBBbnRocm9waWMgdG9rZW5zXG4gKiAoSXNzdWUgIzkyMCwgcGFyZW50ICM5MDIpOyB0aGlzIGNoaWxkIHNlZXMgbm9uZSBvZiB0aGVtLCBzZWxlY3RlZCBvciBub3QsXG4gKiBhbmQgYGFnZW50X2Vudi50c2AgZGVuaWVzIHRoZSBzdWZmaXhlZCBhbmQgaW5kZXhlZCB2YXJpYW50cyB0b28sIHNvIHRoZVxuICogZGVuaWFsIGRvZXMgbm90IHJlc3Qgb24gdGhlIHNoYXBlIHBhdHRlcm4gaGFwcGVuaW5nIHRvIG1hdGNoLlxuICovXG5leHBvcnQgY29uc3QgQ09ERVhfRU5WX0RFTllMSVNUOiByZWFkb25seSBzdHJpbmdbXSA9IFtcbiAgLi4uV09SS0VSX09OTFlfU0VDUkVUX0VOVl9WQVJTLFxuICAuLi5DTEFVREVfQ1JFREVOVElBTF9FTlZfVkFSUyxcbiAgXCJHRU1JTklfQVBJX0tFWVwiLFxuICBcIkdPT0dMRV9BUElfS0VZXCIsXG4gIFwiREVFUFNFRUtfQVBJX0tFWVwiLFxuXTtcblxuLyoqXG4gKiBTZWNyZXQtc2hhcGVkIG5hbWVzIHRoZSBDb2RleCBjaGlsZCBnZW51aW5lbHkgbmVlZHMuXG4gKlxuICogYEdIX1RPS0VOYCAvIGBHSVRIVUJfVE9LRU5gIGF1dGhlbnRpY2F0ZSB0aGUgYWdlbnQncyBgZ2hgIGNhbGxzO1xuICogYE9QRU5BSV9BUElfS0VZYCAvIGBDT0RFWF9BUElfS0VZYCBhcmUgdGhlIHR3byB2YXJpYWJsZXMgdGhlIENvZGV4IENMSVxuICogaXRzZWxmIHJlYWRzIChgY29kZXgtcnMvbG9naW5gKS4gRXZlcnl0aGluZyBlbHNlIHNlY3JldC1zaGFwZWQgaXMgZHJvcHBlZC5cbiAqL1xuZXhwb3J0IGNvbnN0IENPREVYX0VOVl9TRUNSRVRfQUxMT1dMSVNUOiByZWFkb25seSBzdHJpbmdbXSA9IFtcbiAgXCJHSF9UT0tFTlwiLFxuICBcIkdJVEhVQl9UT0tFTlwiLFxuICBcIk9QRU5BSV9BUElfS0VZXCIsXG4gIFwiQ09ERVhfQVBJX0tFWVwiLFxuXTtcblxuLyoqXG4gKiBSZXBvcnQgd2hldGhlciBhIHZhcmlhYmxlIG11c3QgYmUgd2l0aGhlbGQgZnJvbSB0aGUgYGNvZGV4YCBjaGlsZC5cbiAqXG4gKiBAcGFyYW0gbmFtZSAtIEVudmlyb25tZW50IHZhcmlhYmxlIG5hbWUuXG4gKiBAcGFyYW0gZGVueWxpc3QgLSBFeHBsaWNpdGx5IGRlbmllZCBuYW1lcyAoZGVmYXVsdHMgdG9cbiAqICAge0BsaW5rIENPREVYX0VOVl9ERU5ZTElTVH0pLlxuICogQHJldHVybnMgdHJ1ZSB3aGVuIHRoZSB2YXJpYWJsZSBpcyBkZW5pZWQgYnkgbmFtZSBvciBieSBzZWNyZXQtaXNoIHNoYXBlLlxuICovXG5leHBvcnQgZnVuY3Rpb24gaXNEZW5pZWRDb2RleEVudlZhcihcbiAgbmFtZTogc3RyaW5nLFxuICBkZW55bGlzdDogcmVhZG9ubHkgc3RyaW5nW10gPSBDT0RFWF9FTlZfREVOWUxJU1QsXG4pOiBib29sZWFuIHtcbiAgcmV0dXJuIGlzRGVuaWVkQWdlbnRFbnZWYXIobmFtZSwge1xuICAgIGRlbnlsaXN0LFxuICAgIHNlY3JldEFsbG93bGlzdDogQ09ERVhfRU5WX1NFQ1JFVF9BTExPV0xJU1QsXG4gIH0pO1xufVxuXG4vKipcbiAqIEJ1aWxkIHRoZSBlbnZpcm9ubWVudCBmb3IgdGhlIGBjb2RleGAgY2hpbGQgc3VicHJvY2Vzcy5cbiAqXG4gKiBAcGFyYW0gcGFyZW50RW52IC0gVGhlIGVudmlyb25tZW50IHRvIGluaGVyaXQgZnJvbSAoZGVmYXVsdHMgdG8gdGhlIGN1cnJlbnRcbiAqICAgcHJvY2VzcyBlbnZpcm9ubWVudCkuXG4gKiBAcGFyYW0gZGVueWxpc3QgLSBWYXJpYWJsZSBuYW1lcyB0byBzdHJpcCAoZGVmYXVsdHMgdG9cbiAqICAge0BsaW5rIENPREVYX0VOVl9ERU5ZTElTVH0pLlxuICogQHJldHVybnMgQSBuZXcgb2JqZWN0IHNhZmUgdG8gcGFzcyBhcyB0aGUgY2hpbGQncyBgZW52YC5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGJ1aWxkQ29kZXhDaGlsZEVudihcbiAgcGFyZW50RW52OiBSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+ID0gRGVuby5lbnYudG9PYmplY3QoKSxcbiAgZGVueWxpc3Q6IHJlYWRvbmx5IHN0cmluZ1tdID0gQ09ERVhfRU5WX0RFTllMSVNULFxuKTogUmVjb3JkPHN0cmluZywgc3RyaW5nPiB7XG4gIHJldHVybiBidWlsZEFnZW50Q2hpbGRFbnYocGFyZW50RW52LCB7XG4gICAgZGVueWxpc3QsXG4gICAgc2VjcmV0QWxsb3dsaXN0OiBDT0RFWF9FTlZfU0VDUkVUX0FMTE9XTElTVCxcbiAgfSk7XG59XG5cbi8qKlxuICogUGVyLWludm9jYXRpb24gQ29kZXggZW52aXJvbm1lbnQgKElzc3VlICMxNjk4KTogb25seSB0aGUgc2VsZWN0ZWRcbiAqIGFjY291bnQncyBzZWNyZXRzIGFuZCBgQ09ERVhfSE9NRWAgcmVhY2ggdGhlIGNoaWxkLiBPdGhlciBDb2RleFxuICogYWNjb3VudHMsIENsYXVkZSBjcmVkZW50aWFscyBhbmQgd29ya2VyLW9ubHkgc2VjcmV0cyBzdGF5IG91dC5cbiAqXG4gKiBBIHNlbGVjdGVkIGBDT0RFWF9IT01FYCBtZWFucyB0aGlzIGludm9jYXRpb24gaXMgZGVsaWJlcmF0ZWx5IHVzaW5nIHRoZVxuICogQ0xJJ3MgcGVyc2lzdGVkIENoYXRHUFQgbG9naW4uIEluIHRoYXQgbW9kZSBBUEkta2V5IHZhcmlhYmxlcyBhcmUgd2l0aGhlbGRcbiAqIGV2ZW4gd2hlbiB0aGV5IGFyZSBwcmVzZW50IGluIHRoZSB3b3JrZXIgZW52aXJvbm1lbnQgb3IgdGhlIHNlbGVjdGVkXG4gKiBjcmVkZW50aWFsIGNvbnRleHQgKElzc3VlICMxOTI0KS4gVGhpcyBpcyB0aGUgYmlsbGluZyBndWFyZDogYSBzdGFsZSBvclxuICogcmV2b2tlZCBzdWJzY3JpcHRpb24gbXVzdCBmYWlsIGF1dGhlbnRpY2F0aW9uIHJhdGhlciB0aGFuIHNpbGVudGx5IHR1cm4gYW5cbiAqIHVuYXR0ZW5kZWQgcnVuIGludG8gbWV0ZXJlZCBBUEkgc3BlbmQuIFRoZSBsZWdhY3kgQVBJLWtleSBwYXRoIHJlbWFpbnNcbiAqIGF2YWlsYWJsZSBvbmx5IHdoZW4gbm8gYENPREVYX0hPTUVgIHdhcyBzZWxlY3RlZCwgcHJlc2VydmluZyBleGlzdGluZ1xuICogZXhwbGljaXQgQVBJLWtleSBkZXBsb3ltZW50cyB3aGlsZSBzdWJzY3JpcHRpb24tb25seSByb3V0aW5nIGlzIGludHJvZHVjZWQuXG4gKlxuICogRG9lcyBub3QgbXV0YXRlIHRoZSBwYXJlbnQgb2JqZWN0IG9yIHByb2Nlc3MtZ2xvYmFsIEhPTUUgLyBDT0RFWF9IT01FLlxuICovXG5leHBvcnQgZnVuY3Rpb24gYnVpbGRJc29sYXRlZENvZGV4Q2hpbGRFbnYoXG4gIHBhcmVudEVudjogUmVjb3JkPHN0cmluZywgc3RyaW5nPixcbiAgc2VsZWN0ZWQ6IHtcbiAgICByZWFkb25seSBvcGVuYWlBcGlLZXk/OiBzdHJpbmc7XG4gICAgcmVhZG9ubHkgY29kZXhBcGlLZXk/OiBzdHJpbmc7XG4gICAgcmVhZG9ubHkgY29kZXhIb21lPzogc3RyaW5nO1xuICB9LFxuKTogUmVjb3JkPHN0cmluZywgc3RyaW5nPiB7XG4gIGNvbnN0IHN0cmlwcGVkID0geyAuLi5wYXJlbnRFbnYgfTtcbiAgZGVsZXRlIHN0cmlwcGVkLk9QRU5BSV9BUElfS0VZO1xuICBkZWxldGUgc3RyaXBwZWQuQ09ERVhfQVBJX0tFWTtcbiAgZGVsZXRlIHN0cmlwcGVkLkNPREVYX0hPTUU7XG4gIGNvbnN0IGNoaWxkID0gYnVpbGRDb2RleENoaWxkRW52KHN0cmlwcGVkKTtcblxuICBjb25zdCBjb2RleEhvbWUgPSBzZWxlY3RlZC5jb2RleEhvbWU/LnRyaW0oKTtcbiAgaWYgKGNvZGV4SG9tZSkge1xuICAgIC8vIFN1YnNjcmlwdGlvbiBtb2RlIGlzIGludGVudGlvbmFsbHkgZmFpbC1jbG9zZWQ6IENPREVYX0hPTUUgb3duc1xuICAgIC8vIGF1dGhlbnRpY2F0aW9uIGFuZCBubyBtZXRlcmVkIGNyZWRlbnRpYWwgcmVhY2hlcyB0aGUgY2hpbGQgYXMgYSBiYWNrdXAuXG4gICAgY2hpbGQuQ09ERVhfSE9NRSA9IGNvZGV4SG9tZTtcbiAgICByZXR1cm4gY2hpbGQ7XG4gIH1cblxuICBpZiAoc2VsZWN0ZWQub3BlbmFpQXBpS2V5ICE9PSB1bmRlZmluZWQpIHtcbiAgICBjaGlsZC5PUEVOQUlfQVBJX0tFWSA9IHNlbGVjdGVkLm9wZW5haUFwaUtleTtcbiAgfVxuICBpZiAoc2VsZWN0ZWQuY29kZXhBcGlLZXkgIT09IHVuZGVmaW5lZCkge1xuICAgIGNoaWxkLkNPREVYX0FQSV9LRVkgPSBzZWxlY3RlZC5jb2RleEFwaUtleTtcbiAgfVxuICByZXR1cm4gY2hpbGQ7XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7Ozs7Ozs7OztDQWVDLEdBRUQsU0FDRSxrQkFBa0IsRUFDbEIsbUJBQW1CLEVBQ25CLDJCQUEyQixRQUN0QixpQkFBaUI7QUFDeEIsU0FBUywwQkFBMEIsUUFBUSxrQkFBa0I7QUFFN0Q7Ozs7Ozs7Ozs7Ozs7OztDQWVDLEdBQ0QsT0FBTyxNQUFNLHFCQUF3QztLQUNoRDtLQUNBO0VBQ0g7RUFDQTtFQUNBO0NBQ0QsQ0FBQztBQUVGOzs7Ozs7Q0FNQyxHQUNELE9BQU8sTUFBTSw2QkFBZ0Q7RUFDM0Q7RUFDQTtFQUNBO0VBQ0E7Q0FDRCxDQUFDO0FBRUY7Ozs7Ozs7Q0FPQyxHQUNELE9BQU8sU0FBUyxvQkFDZCxJQUFZLEVBQ1osV0FBOEIsa0JBQWtCO0VBRWhELE9BQU8sb0JBQW9CLE1BQU07SUFDL0I7SUFDQSxpQkFBaUI7RUFDbkI7QUFDRjtBQUVBOzs7Ozs7OztDQVFDLEdBQ0QsT0FBTyxTQUFTLG1CQUNkLFlBQW9DLEtBQUssR0FBRyxDQUFDLFFBQVEsRUFBRSxFQUN2RCxXQUE4QixrQkFBa0I7RUFFaEQsT0FBTyxtQkFBbUIsV0FBVztJQUNuQztJQUNBLGlCQUFpQjtFQUNuQjtBQUNGO0FBRUE7Ozs7Ozs7Ozs7Ozs7OztDQWVDLEdBQ0QsT0FBTyxTQUFTLDJCQUNkLFNBQWlDLEVBQ2pDLFFBSUM7RUFFRCxNQUFNLFdBQVc7SUFBRSxHQUFHLFNBQVM7RUFBQztFQUNoQyxPQUFPLFNBQVMsY0FBYztFQUM5QixPQUFPLFNBQVMsYUFBYTtFQUM3QixPQUFPLFNBQVMsVUFBVTtFQUMxQixNQUFNLFFBQVEsbUJBQW1CO0VBRWpDLE1BQU0sWUFBWSxTQUFTLFNBQVMsRUFBRTtFQUN0QyxJQUFJLFdBQVc7SUFDYixrRUFBa0U7SUFDbEUsMEVBQTBFO0lBQzFFLE1BQU0sVUFBVSxHQUFHO0lBQ25CLE9BQU87RUFDVDtFQUVBLElBQUksU0FBUyxZQUFZLEtBQUssV0FBVztJQUN2QyxNQUFNLGNBQWMsR0FBRyxTQUFTLFlBQVk7RUFDOUM7RUFDQSxJQUFJLFNBQVMsV0FBVyxLQUFLLFdBQVc7SUFDdEMsTUFBTSxhQUFhLEdBQUcsU0FBUyxXQUFXO0VBQzVDO0VBQ0EsT0FBTztBQUNUIn0=
+// denoCacheMetadata=2346689013843034721,15910013181214518622

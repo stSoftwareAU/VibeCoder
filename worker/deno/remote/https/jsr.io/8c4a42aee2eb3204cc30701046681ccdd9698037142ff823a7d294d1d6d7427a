@@ -1,0 +1,15 @@
+// Ported from js-yaml v3.13.1:
+// https://github.com/nodeca/js-yaml/commit/665aadda42349dcae869f12040d9b10ef18d12da
+// Copyright 2011-2015 by Vitaly Puzrin. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+import type { Type } from "../_type.ts";
+
+export const seq: Type<"sequence", unknown[]> = {
+  tag: "tag:yaml.org,2002:seq",
+  kind: "sequence",
+  resolve: (): boolean => true,
+  construct: (data: unknown[] | null): unknown[] => data !== null ? data : [],
+};
+
+// denoCacheMetadata={"headers":{"x-robots-tag":"noindex","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","etag":"\"6bbf307a6329055f91fae56ad254889d\"","cross-origin-resource-policy":"cross-origin","content-length":"505","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=6XilxSXgWKbj1ULz2d8kuJoWMVWRDNdYdgmrsh%2BaOuEXytWbTQ4Zyjjifvm1BH7Td3lFZ0xycYDfFpdeaPBuOxQwtHNZU3MB17w0sgLavg5oKTJ91hTRA24%3D\"}]}","alt-svc":"h3=\":443\"; ma=86400","age":"6426680","x-jsr-backend":"modules","content-type":"text/typescript","set-cookie":"__cf_bm=LNPjMDLvZ8W7YB_yT2ZSEFXc0aZttiCifqEhLibuzRU-1794298095.8791826-1.0.1.1-P0.ZI.7DZyI1MvaA7Emy8Z2G5Qe6XZBdbNVK1f6OsN1hHXpDcSDhzoGjYEo6tG6Mo2xUnxNQdXRDYXbjUTjivv_JTfcGC2ti2hhSuAtKkY8hxm3Th07cVt9ZULduOsfM; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","cf-cache-status":"HIT","accept-ranges":"bytes","access-control-expose-headers":"*","vary":"Origin","access-control-allow-origin":"*","cf-ray":"a583917b2df2561f-SYD","cache-control":"public, max-age=31536000, immutable","x-content-type-options":"nosniff","server":"cloudflare","date":"Tue, 10 Nov 2026 08:08:15 GMT","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';"},"url":"https://jsr.io/@std/yaml/1.0.12/_type/seq.ts","time":1794298095}

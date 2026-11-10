@@ -1,0 +1,82 @@
+/**
+ * Environment allow-list for the `gemini` agent subprocess (Issue #4107).
+ *
+ * The Gemini CLI is spawned with its approval prompts bypassed — the container
+ * is the sandbox — so the child can read whatever the worker exports. It
+ * therefore gets exactly the same treatment as the Claude and Codex children
+ * (Issues #3203, #3707, #4106): inherit the parent environment minus the
+ * worker-only secrets, minus every other vendor's agent credential, and minus
+ * anything whose name merely *looks* like a credential unless Gemini genuinely
+ * needs it.
+ *
+ * The cross-vendor denial is the point of the explicit denylist: the Anthropic
+ * and OpenAI credentials must not reach the Gemini child by convention or by
+ * luck of the shape pattern, but because they are named here.
+ *
+ * Australian English spelling throughout (behaviour, organisation).
+ */ import { buildAgentChildEnv, isDeniedAgentEnvVar, WORKER_ONLY_SECRET_ENV_VARS } from "./agent_env.ts";
+import { CLAUDE_CREDENTIAL_ENV_VARS } from "./claude_env.ts";
+/**
+ * Environment variables the `gemini` child must never inherit.
+ *
+ * The worker-only secrets (see {@link WORKER_ONLY_SECRET_ENV_VARS}) plus every
+ * Anthropic, OpenAI and DeepSeek credential (the last since Issue #412):
+ * Gemini authenticates with its own key, so another vendor's credential in its
+ * environment is only ever an exfiltration target.
+ *
+ * The Anthropic names come from {@link CLAUDE_CREDENTIAL_ENV_VARS} rather than
+ * a second copy of them, so a name Anthropic adds later is denied here the day
+ * it is accepted there. A pooled host holds several Anthropic tokens
+ * (Issue #920, parent #902); this child sees none of them, selected or not,
+ * and `agent_env.ts` denies the suffixed and indexed variants too, so the
+ * denial does not rest on the shape pattern happening to match.
+ */ export const GEMINI_ENV_DENYLIST = [
+  ...WORKER_ONLY_SECRET_ENV_VARS,
+  ...CLAUDE_CREDENTIAL_ENV_VARS,
+  "OPENAI_API_KEY",
+  "CODEX_API_KEY",
+  "CODEX_HOME",
+  "DEEPSEEK_API_KEY"
+];
+/**
+ * Secret-shaped names the Gemini child genuinely needs.
+ *
+ * `GH_TOKEN` / `GITHUB_TOKEN` authenticate the agent's `gh` calls;
+ * `GEMINI_API_KEY` / `GOOGLE_API_KEY` are the two variables the Gemini CLI
+ * itself reads for an API credential. Everything else secret-shaped is
+ * dropped.
+ */ export const GEMINI_ENV_SECRET_ALLOWLIST = [
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY"
+];
+/**
+ * Report whether a variable must be withheld from the `gemini` child.
+ *
+ * @param name - Environment variable name.
+ * @param denylist - Explicitly denied names (defaults to
+ *   {@link GEMINI_ENV_DENYLIST}).
+ * @returns true when the variable is denied by name or by secret-ish shape.
+ */ export function isDeniedGeminiEnvVar(name, denylist = GEMINI_ENV_DENYLIST) {
+  return isDeniedAgentEnvVar(name, {
+    denylist,
+    secretAllowlist: GEMINI_ENV_SECRET_ALLOWLIST
+  });
+}
+/**
+ * Build the environment for the `gemini` child subprocess.
+ *
+ * @param parentEnv - The environment to inherit from (defaults to the current
+ *   process environment).
+ * @param denylist - Variable names to strip (defaults to
+ *   {@link GEMINI_ENV_DENYLIST}).
+ * @returns A new object safe to pass as the child's `env`.
+ */ export function buildGeminiChildEnv(parentEnv = Deno.env.toObject(), denylist = GEMINI_ENV_DENYLIST) {
+  return buildAgentChildEnv(parentEnv, {
+    denylist,
+    secretAllowlist: GEMINI_ENV_SECRET_ALLOWLIST
+  });
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9nZW1pbmlfZW52LnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogRW52aXJvbm1lbnQgYWxsb3ctbGlzdCBmb3IgdGhlIGBnZW1pbmlgIGFnZW50IHN1YnByb2Nlc3MgKElzc3VlICM0MTA3KS5cbiAqXG4gKiBUaGUgR2VtaW5pIENMSSBpcyBzcGF3bmVkIHdpdGggaXRzIGFwcHJvdmFsIHByb21wdHMgYnlwYXNzZWQg4oCUIHRoZSBjb250YWluZXJcbiAqIGlzIHRoZSBzYW5kYm94IOKAlCBzbyB0aGUgY2hpbGQgY2FuIHJlYWQgd2hhdGV2ZXIgdGhlIHdvcmtlciBleHBvcnRzLiBJdFxuICogdGhlcmVmb3JlIGdldHMgZXhhY3RseSB0aGUgc2FtZSB0cmVhdG1lbnQgYXMgdGhlIENsYXVkZSBhbmQgQ29kZXggY2hpbGRyZW5cbiAqIChJc3N1ZXMgIzMyMDMsICMzNzA3LCAjNDEwNik6IGluaGVyaXQgdGhlIHBhcmVudCBlbnZpcm9ubWVudCBtaW51cyB0aGVcbiAqIHdvcmtlci1vbmx5IHNlY3JldHMsIG1pbnVzIGV2ZXJ5IG90aGVyIHZlbmRvcidzIGFnZW50IGNyZWRlbnRpYWwsIGFuZCBtaW51c1xuICogYW55dGhpbmcgd2hvc2UgbmFtZSBtZXJlbHkgKmxvb2tzKiBsaWtlIGEgY3JlZGVudGlhbCB1bmxlc3MgR2VtaW5pIGdlbnVpbmVseVxuICogbmVlZHMgaXQuXG4gKlxuICogVGhlIGNyb3NzLXZlbmRvciBkZW5pYWwgaXMgdGhlIHBvaW50IG9mIHRoZSBleHBsaWNpdCBkZW55bGlzdDogdGhlIEFudGhyb3BpY1xuICogYW5kIE9wZW5BSSBjcmVkZW50aWFscyBtdXN0IG5vdCByZWFjaCB0aGUgR2VtaW5pIGNoaWxkIGJ5IGNvbnZlbnRpb24gb3IgYnlcbiAqIGx1Y2sgb2YgdGhlIHNoYXBlIHBhdHRlcm4sIGJ1dCBiZWNhdXNlIHRoZXkgYXJlIG5hbWVkIGhlcmUuXG4gKlxuICogQXVzdHJhbGlhbiBFbmdsaXNoIHNwZWxsaW5nIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG5pbXBvcnQge1xuICBidWlsZEFnZW50Q2hpbGRFbnYsXG4gIGlzRGVuaWVkQWdlbnRFbnZWYXIsXG4gIFdPUktFUl9PTkxZX1NFQ1JFVF9FTlZfVkFSUyxcbn0gZnJvbSBcIi4vYWdlbnRfZW52LnRzXCI7XG5pbXBvcnQgeyBDTEFVREVfQ1JFREVOVElBTF9FTlZfVkFSUyB9IGZyb20gXCIuL2NsYXVkZV9lbnYudHNcIjtcblxuLyoqXG4gKiBFbnZpcm9ubWVudCB2YXJpYWJsZXMgdGhlIGBnZW1pbmlgIGNoaWxkIG11c3QgbmV2ZXIgaW5oZXJpdC5cbiAqXG4gKiBUaGUgd29ya2VyLW9ubHkgc2VjcmV0cyAoc2VlIHtAbGluayBXT1JLRVJfT05MWV9TRUNSRVRfRU5WX1ZBUlN9KSBwbHVzIGV2ZXJ5XG4gKiBBbnRocm9waWMsIE9wZW5BSSBhbmQgRGVlcFNlZWsgY3JlZGVudGlhbCAodGhlIGxhc3Qgc2luY2UgSXNzdWUgIzQxMik6XG4gKiBHZW1pbmkgYXV0aGVudGljYXRlcyB3aXRoIGl0cyBvd24ga2V5LCBzbyBhbm90aGVyIHZlbmRvcidzIGNyZWRlbnRpYWwgaW4gaXRzXG4gKiBlbnZpcm9ubWVudCBpcyBvbmx5IGV2ZXIgYW4gZXhmaWx0cmF0aW9uIHRhcmdldC5cbiAqXG4gKiBUaGUgQW50aHJvcGljIG5hbWVzIGNvbWUgZnJvbSB7QGxpbmsgQ0xBVURFX0NSRURFTlRJQUxfRU5WX1ZBUlN9IHJhdGhlciB0aGFuXG4gKiBhIHNlY29uZCBjb3B5IG9mIHRoZW0sIHNvIGEgbmFtZSBBbnRocm9waWMgYWRkcyBsYXRlciBpcyBkZW5pZWQgaGVyZSB0aGUgZGF5XG4gKiBpdCBpcyBhY2NlcHRlZCB0aGVyZS4gQSBwb29sZWQgaG9zdCBob2xkcyBzZXZlcmFsIEFudGhyb3BpYyB0b2tlbnNcbiAqIChJc3N1ZSAjOTIwLCBwYXJlbnQgIzkwMik7IHRoaXMgY2hpbGQgc2VlcyBub25lIG9mIHRoZW0sIHNlbGVjdGVkIG9yIG5vdCxcbiAqIGFuZCBgYWdlbnRfZW52LnRzYCBkZW5pZXMgdGhlIHN1ZmZpeGVkIGFuZCBpbmRleGVkIHZhcmlhbnRzIHRvbywgc28gdGhlXG4gKiBkZW5pYWwgZG9lcyBub3QgcmVzdCBvbiB0aGUgc2hhcGUgcGF0dGVybiBoYXBwZW5pbmcgdG8gbWF0Y2guXG4gKi9cbmV4cG9ydCBjb25zdCBHRU1JTklfRU5WX0RFTllMSVNUOiByZWFkb25seSBzdHJpbmdbXSA9IFtcbiAgLi4uV09SS0VSX09OTFlfU0VDUkVUX0VOVl9WQVJTLFxuICAuLi5DTEFVREVfQ1JFREVOVElBTF9FTlZfVkFSUyxcbiAgXCJPUEVOQUlfQVBJX0tFWVwiLFxuICBcIkNPREVYX0FQSV9LRVlcIixcbiAgXCJDT0RFWF9IT01FXCIsXG4gIFwiREVFUFNFRUtfQVBJX0tFWVwiLFxuXTtcblxuLyoqXG4gKiBTZWNyZXQtc2hhcGVkIG5hbWVzIHRoZSBHZW1pbmkgY2hpbGQgZ2VudWluZWx5IG5lZWRzLlxuICpcbiAqIGBHSF9UT0tFTmAgLyBgR0lUSFVCX1RPS0VOYCBhdXRoZW50aWNhdGUgdGhlIGFnZW50J3MgYGdoYCBjYWxscztcbiAqIGBHRU1JTklfQVBJX0tFWWAgLyBgR09PR0xFX0FQSV9LRVlgIGFyZSB0aGUgdHdvIHZhcmlhYmxlcyB0aGUgR2VtaW5pIENMSVxuICogaXRzZWxmIHJlYWRzIGZvciBhbiBBUEkgY3JlZGVudGlhbC4gRXZlcnl0aGluZyBlbHNlIHNlY3JldC1zaGFwZWQgaXNcbiAqIGRyb3BwZWQuXG4gKi9cbmV4cG9ydCBjb25zdCBHRU1JTklfRU5WX1NFQ1JFVF9BTExPV0xJU1Q6IHJlYWRvbmx5IHN0cmluZ1tdID0gW1xuICBcIkdIX1RPS0VOXCIsXG4gIFwiR0lUSFVCX1RPS0VOXCIsXG4gIFwiR0VNSU5JX0FQSV9LRVlcIixcbiAgXCJHT09HTEVfQVBJX0tFWVwiLFxuXTtcblxuLyoqXG4gKiBSZXBvcnQgd2hldGhlciBhIHZhcmlhYmxlIG11c3QgYmUgd2l0aGhlbGQgZnJvbSB0aGUgYGdlbWluaWAgY2hpbGQuXG4gKlxuICogQHBhcmFtIG5hbWUgLSBFbnZpcm9ubWVudCB2YXJpYWJsZSBuYW1lLlxuICogQHBhcmFtIGRlbnlsaXN0IC0gRXhwbGljaXRseSBkZW5pZWQgbmFtZXMgKGRlZmF1bHRzIHRvXG4gKiAgIHtAbGluayBHRU1JTklfRU5WX0RFTllMSVNUfSkuXG4gKiBAcmV0dXJucyB0cnVlIHdoZW4gdGhlIHZhcmlhYmxlIGlzIGRlbmllZCBieSBuYW1lIG9yIGJ5IHNlY3JldC1pc2ggc2hhcGUuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBpc0RlbmllZEdlbWluaUVudlZhcihcbiAgbmFtZTogc3RyaW5nLFxuICBkZW55bGlzdDogcmVhZG9ubHkgc3RyaW5nW10gPSBHRU1JTklfRU5WX0RFTllMSVNULFxuKTogYm9vbGVhbiB7XG4gIHJldHVybiBpc0RlbmllZEFnZW50RW52VmFyKG5hbWUsIHtcbiAgICBkZW55bGlzdCxcbiAgICBzZWNyZXRBbGxvd2xpc3Q6IEdFTUlOSV9FTlZfU0VDUkVUX0FMTE9XTElTVCxcbiAgfSk7XG59XG5cbi8qKlxuICogQnVpbGQgdGhlIGVudmlyb25tZW50IGZvciB0aGUgYGdlbWluaWAgY2hpbGQgc3VicHJvY2Vzcy5cbiAqXG4gKiBAcGFyYW0gcGFyZW50RW52IC0gVGhlIGVudmlyb25tZW50IHRvIGluaGVyaXQgZnJvbSAoZGVmYXVsdHMgdG8gdGhlIGN1cnJlbnRcbiAqICAgcHJvY2VzcyBlbnZpcm9ubWVudCkuXG4gKiBAcGFyYW0gZGVueWxpc3QgLSBWYXJpYWJsZSBuYW1lcyB0byBzdHJpcCAoZGVmYXVsdHMgdG9cbiAqICAge0BsaW5rIEdFTUlOSV9FTlZfREVOWUxJU1R9KS5cbiAqIEByZXR1cm5zIEEgbmV3IG9iamVjdCBzYWZlIHRvIHBhc3MgYXMgdGhlIGNoaWxkJ3MgYGVudmAuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBidWlsZEdlbWluaUNoaWxkRW52KFxuICBwYXJlbnRFbnY6IFJlY29yZDxzdHJpbmcsIHN0cmluZz4gPSBEZW5vLmVudi50b09iamVjdCgpLFxuICBkZW55bGlzdDogcmVhZG9ubHkgc3RyaW5nW10gPSBHRU1JTklfRU5WX0RFTllMSVNULFxuKTogUmVjb3JkPHN0cmluZywgc3RyaW5nPiB7XG4gIHJldHVybiBidWlsZEFnZW50Q2hpbGRFbnYocGFyZW50RW52LCB7XG4gICAgZGVueWxpc3QsXG4gICAgc2VjcmV0QWxsb3dsaXN0OiBHRU1JTklfRU5WX1NFQ1JFVF9BTExPV0xJU1QsXG4gIH0pO1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7O0NBZ0JDLEdBRUQsU0FDRSxrQkFBa0IsRUFDbEIsbUJBQW1CLEVBQ25CLDJCQUEyQixRQUN0QixpQkFBaUI7QUFDeEIsU0FBUywwQkFBMEIsUUFBUSxrQkFBa0I7QUFFN0Q7Ozs7Ozs7Ozs7Ozs7O0NBY0MsR0FDRCxPQUFPLE1BQU0sc0JBQXlDO0tBQ2pEO0tBQ0E7RUFDSDtFQUNBO0VBQ0E7RUFDQTtDQUNELENBQUM7QUFFRjs7Ozs7OztDQU9DLEdBQ0QsT0FBTyxNQUFNLDhCQUFpRDtFQUM1RDtFQUNBO0VBQ0E7RUFDQTtDQUNELENBQUM7QUFFRjs7Ozs7OztDQU9DLEdBQ0QsT0FBTyxTQUFTLHFCQUNkLElBQVksRUFDWixXQUE4QixtQkFBbUI7RUFFakQsT0FBTyxvQkFBb0IsTUFBTTtJQUMvQjtJQUNBLGlCQUFpQjtFQUNuQjtBQUNGO0FBRUE7Ozs7Ozs7O0NBUUMsR0FDRCxPQUFPLFNBQVMsb0JBQ2QsWUFBb0MsS0FBSyxHQUFHLENBQUMsUUFBUSxFQUFFLEVBQ3ZELFdBQThCLG1CQUFtQjtFQUVqRCxPQUFPLG1CQUFtQixXQUFXO0lBQ25DO0lBQ0EsaUJBQWlCO0VBQ25CO0FBQ0YifQ==
+// denoCacheMetadata=11372714294720661409,13373134057459769027

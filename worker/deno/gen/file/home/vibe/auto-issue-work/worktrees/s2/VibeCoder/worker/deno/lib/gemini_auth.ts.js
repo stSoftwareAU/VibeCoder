@@ -1,0 +1,71 @@
+/**
+ * Gemini CLI authentication classification (Issue #4107).
+ *
+ * The Gemini counterpart of `claude_auth.ts` and `codex_auth.ts`: decide
+ * whether CLI output is an authentication failure rather than ordinary work
+ * failing, and give the operator a message that names the credential to set.
+ * Both the credential preflight (`credential_preflight.ts`) and the mid-run
+ * failure path (`issue_worker_wiring.ts`) classify through the provider
+ * descriptor, so this module is the single definition of "Gemini could not
+ * authenticate".
+ *
+ * Australian English spelling throughout (behaviour, authorised, organisation).
+ */ /** Environment variables the Gemini CLI accepts as an API credential. */ export const GEMINI_CREDENTIAL_ENV_VARS = [
+  "GEMINI_API_KEY",
+  "GOOGLE_API_KEY"
+];
+/**
+ * Authentication failure patterns, matched case-insensitively.
+ *
+ * Covers what the Gemini CLI emits with no usable credential (it names the
+ * variables it looked for and asks the operator to choose an auth method),
+ * what the Generative Language API returns for a rejected key
+ * (`API_KEY_INVALID`, "API key not valid"), and the wording the credential
+ * preflight uses for a missing provider credential.
+ */ const AUTH_PATTERNS = [
+  "not logged in",
+  "please log in",
+  "authentication required",
+  "authentication failed",
+  "session expired",
+  "unauthorized",
+  "unauthorised",
+  "unauthenticated",
+  "invalid api key",
+  "incorrect api key",
+  "missing api key",
+  "api key not valid",
+  "api_key_invalid",
+  "select an auth method",
+  "set an auth method",
+  ...GEMINI_CREDENTIAL_ENV_VARS.map((name)=>name.toLowerCase())
+];
+/**
+ * Check whether CLI output indicates a Gemini authentication failure.
+ *
+ * "invalid token" and "expired token" are matched as two words that need not
+ * be adjacent, matching the Claude and Codex predicates, because the CLI and
+ * the API word a rejected credential differently.
+ *
+ * @param errorOutput - The stderr/stdout text from a failed Gemini command.
+ * @returns true when the output looks like an auth failure.
+ */ export function isGeminiAuthError(errorOutput) {
+  if (!errorOutput) return false;
+  const lower = errorOutput.toLowerCase();
+  if (lower.includes("invalid") && lower.includes("token")) return true;
+  if (lower.includes("expired") && lower.includes("token")) return true;
+  return AUTH_PATTERNS.some((pattern)=>lower.includes(pattern));
+}
+/**
+ * Return a human-readable message telling the operator how to authenticate
+ * the Gemini CLI.
+ *
+ * Names the credential variables rather than an interactive login: the worker
+ * runs unattended, so the CLI's `/auth` flow is not something it can wait for.
+ *
+ * @returns The actionable error message.
+ */ export function geminiAuthActionableMessage() {
+  return `Gemini CLI authentication required — set ${GEMINI_CREDENTIAL_ENV_VARS.join(" or ")} in the credential directory's gemini/provider.env (the worker never ` + `performs an interactive login)`;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9nZW1pbmlfYXV0aC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIEdlbWluaSBDTEkgYXV0aGVudGljYXRpb24gY2xhc3NpZmljYXRpb24gKElzc3VlICM0MTA3KS5cbiAqXG4gKiBUaGUgR2VtaW5pIGNvdW50ZXJwYXJ0IG9mIGBjbGF1ZGVfYXV0aC50c2AgYW5kIGBjb2RleF9hdXRoLnRzYDogZGVjaWRlXG4gKiB3aGV0aGVyIENMSSBvdXRwdXQgaXMgYW4gYXV0aGVudGljYXRpb24gZmFpbHVyZSByYXRoZXIgdGhhbiBvcmRpbmFyeSB3b3JrXG4gKiBmYWlsaW5nLCBhbmQgZ2l2ZSB0aGUgb3BlcmF0b3IgYSBtZXNzYWdlIHRoYXQgbmFtZXMgdGhlIGNyZWRlbnRpYWwgdG8gc2V0LlxuICogQm90aCB0aGUgY3JlZGVudGlhbCBwcmVmbGlnaHQgKGBjcmVkZW50aWFsX3ByZWZsaWdodC50c2ApIGFuZCB0aGUgbWlkLXJ1blxuICogZmFpbHVyZSBwYXRoIChgaXNzdWVfd29ya2VyX3dpcmluZy50c2ApIGNsYXNzaWZ5IHRocm91Z2ggdGhlIHByb3ZpZGVyXG4gKiBkZXNjcmlwdG9yLCBzbyB0aGlzIG1vZHVsZSBpcyB0aGUgc2luZ2xlIGRlZmluaXRpb24gb2YgXCJHZW1pbmkgY291bGQgbm90XG4gKiBhdXRoZW50aWNhdGVcIi5cbiAqXG4gKiBBdXN0cmFsaWFuIEVuZ2xpc2ggc3BlbGxpbmcgdGhyb3VnaG91dCAoYmVoYXZpb3VyLCBhdXRob3Jpc2VkLCBvcmdhbmlzYXRpb24pLlxuICovXG5cbi8qKiBFbnZpcm9ubWVudCB2YXJpYWJsZXMgdGhlIEdlbWluaSBDTEkgYWNjZXB0cyBhcyBhbiBBUEkgY3JlZGVudGlhbC4gKi9cbmV4cG9ydCBjb25zdCBHRU1JTklfQ1JFREVOVElBTF9FTlZfVkFSUzogcmVhZG9ubHkgc3RyaW5nW10gPSBbXG4gIFwiR0VNSU5JX0FQSV9LRVlcIixcbiAgXCJHT09HTEVfQVBJX0tFWVwiLFxuXTtcblxuLyoqXG4gKiBBdXRoZW50aWNhdGlvbiBmYWlsdXJlIHBhdHRlcm5zLCBtYXRjaGVkIGNhc2UtaW5zZW5zaXRpdmVseS5cbiAqXG4gKiBDb3ZlcnMgd2hhdCB0aGUgR2VtaW5pIENMSSBlbWl0cyB3aXRoIG5vIHVzYWJsZSBjcmVkZW50aWFsIChpdCBuYW1lcyB0aGVcbiAqIHZhcmlhYmxlcyBpdCBsb29rZWQgZm9yIGFuZCBhc2tzIHRoZSBvcGVyYXRvciB0byBjaG9vc2UgYW4gYXV0aCBtZXRob2QpLFxuICogd2hhdCB0aGUgR2VuZXJhdGl2ZSBMYW5ndWFnZSBBUEkgcmV0dXJucyBmb3IgYSByZWplY3RlZCBrZXlcbiAqIChgQVBJX0tFWV9JTlZBTElEYCwgXCJBUEkga2V5IG5vdCB2YWxpZFwiKSwgYW5kIHRoZSB3b3JkaW5nIHRoZSBjcmVkZW50aWFsXG4gKiBwcmVmbGlnaHQgdXNlcyBmb3IgYSBtaXNzaW5nIHByb3ZpZGVyIGNyZWRlbnRpYWwuXG4gKi9cbmNvbnN0IEFVVEhfUEFUVEVSTlM6IHJlYWRvbmx5IHN0cmluZ1tdID0gW1xuICBcIm5vdCBsb2dnZWQgaW5cIixcbiAgXCJwbGVhc2UgbG9nIGluXCIsXG4gIFwiYXV0aGVudGljYXRpb24gcmVxdWlyZWRcIixcbiAgXCJhdXRoZW50aWNhdGlvbiBmYWlsZWRcIixcbiAgXCJzZXNzaW9uIGV4cGlyZWRcIixcbiAgXCJ1bmF1dGhvcml6ZWRcIixcbiAgXCJ1bmF1dGhvcmlzZWRcIixcbiAgXCJ1bmF1dGhlbnRpY2F0ZWRcIixcbiAgXCJpbnZhbGlkIGFwaSBrZXlcIixcbiAgXCJpbmNvcnJlY3QgYXBpIGtleVwiLFxuICBcIm1pc3NpbmcgYXBpIGtleVwiLFxuICBcImFwaSBrZXkgbm90IHZhbGlkXCIsXG4gIFwiYXBpX2tleV9pbnZhbGlkXCIsXG4gIFwic2VsZWN0IGFuIGF1dGggbWV0aG9kXCIsXG4gIFwic2V0IGFuIGF1dGggbWV0aG9kXCIsXG4gIC4uLkdFTUlOSV9DUkVERU5USUFMX0VOVl9WQVJTLm1hcCgobmFtZSkgPT4gbmFtZS50b0xvd2VyQ2FzZSgpKSxcbl07XG5cbi8qKlxuICogQ2hlY2sgd2hldGhlciBDTEkgb3V0cHV0IGluZGljYXRlcyBhIEdlbWluaSBhdXRoZW50aWNhdGlvbiBmYWlsdXJlLlxuICpcbiAqIFwiaW52YWxpZCB0b2tlblwiIGFuZCBcImV4cGlyZWQgdG9rZW5cIiBhcmUgbWF0Y2hlZCBhcyB0d28gd29yZHMgdGhhdCBuZWVkIG5vdFxuICogYmUgYWRqYWNlbnQsIG1hdGNoaW5nIHRoZSBDbGF1ZGUgYW5kIENvZGV4IHByZWRpY2F0ZXMsIGJlY2F1c2UgdGhlIENMSSBhbmRcbiAqIHRoZSBBUEkgd29yZCBhIHJlamVjdGVkIGNyZWRlbnRpYWwgZGlmZmVyZW50bHkuXG4gKlxuICogQHBhcmFtIGVycm9yT3V0cHV0IC0gVGhlIHN0ZGVyci9zdGRvdXQgdGV4dCBmcm9tIGEgZmFpbGVkIEdlbWluaSBjb21tYW5kLlxuICogQHJldHVybnMgdHJ1ZSB3aGVuIHRoZSBvdXRwdXQgbG9va3MgbGlrZSBhbiBhdXRoIGZhaWx1cmUuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBpc0dlbWluaUF1dGhFcnJvcihlcnJvck91dHB1dDogc3RyaW5nKTogYm9vbGVhbiB7XG4gIGlmICghZXJyb3JPdXRwdXQpIHJldHVybiBmYWxzZTtcblxuICBjb25zdCBsb3dlciA9IGVycm9yT3V0cHV0LnRvTG93ZXJDYXNlKCk7XG4gIGlmIChsb3dlci5pbmNsdWRlcyhcImludmFsaWRcIikgJiYgbG93ZXIuaW5jbHVkZXMoXCJ0b2tlblwiKSkgcmV0dXJuIHRydWU7XG4gIGlmIChsb3dlci5pbmNsdWRlcyhcImV4cGlyZWRcIikgJiYgbG93ZXIuaW5jbHVkZXMoXCJ0b2tlblwiKSkgcmV0dXJuIHRydWU7XG4gIHJldHVybiBBVVRIX1BBVFRFUk5TLnNvbWUoKHBhdHRlcm4pID0+IGxvd2VyLmluY2x1ZGVzKHBhdHRlcm4pKTtcbn1cblxuLyoqXG4gKiBSZXR1cm4gYSBodW1hbi1yZWFkYWJsZSBtZXNzYWdlIHRlbGxpbmcgdGhlIG9wZXJhdG9yIGhvdyB0byBhdXRoZW50aWNhdGVcbiAqIHRoZSBHZW1pbmkgQ0xJLlxuICpcbiAqIE5hbWVzIHRoZSBjcmVkZW50aWFsIHZhcmlhYmxlcyByYXRoZXIgdGhhbiBhbiBpbnRlcmFjdGl2ZSBsb2dpbjogdGhlIHdvcmtlclxuICogcnVucyB1bmF0dGVuZGVkLCBzbyB0aGUgQ0xJJ3MgYC9hdXRoYCBmbG93IGlzIG5vdCBzb21ldGhpbmcgaXQgY2FuIHdhaXQgZm9yLlxuICpcbiAqIEByZXR1cm5zIFRoZSBhY3Rpb25hYmxlIGVycm9yIG1lc3NhZ2UuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBnZW1pbmlBdXRoQWN0aW9uYWJsZU1lc3NhZ2UoKTogc3RyaW5nIHtcbiAgcmV0dXJuIGBHZW1pbmkgQ0xJIGF1dGhlbnRpY2F0aW9uIHJlcXVpcmVkIOKAlCBzZXQgJHtcbiAgICBHRU1JTklfQ1JFREVOVElBTF9FTlZfVkFSUy5qb2luKFwiIG9yIFwiKVxuICB9IGluIHRoZSBjcmVkZW50aWFsIGRpcmVjdG9yeSdzIGdlbWluaS9wcm92aWRlci5lbnYgKHRoZSB3b3JrZXIgbmV2ZXIgYCArXG4gICAgYHBlcmZvcm1zIGFuIGludGVyYWN0aXZlIGxvZ2luKWA7XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7Ozs7OztDQVlDLEdBRUQsdUVBQXVFLEdBQ3ZFLE9BQU8sTUFBTSw2QkFBZ0Q7RUFDM0Q7RUFDQTtDQUNELENBQUM7QUFFRjs7Ozs7Ozs7Q0FRQyxHQUNELE1BQU0sZ0JBQW1DO0VBQ3ZDO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtLQUNHLDJCQUEyQixHQUFHLENBQUMsQ0FBQyxPQUFTLEtBQUssV0FBVztDQUM3RDtBQUVEOzs7Ozs7Ozs7Q0FTQyxHQUNELE9BQU8sU0FBUyxrQkFBa0IsV0FBbUI7RUFDbkQsSUFBSSxDQUFDLGFBQWEsT0FBTztFQUV6QixNQUFNLFFBQVEsWUFBWSxXQUFXO0VBQ3JDLElBQUksTUFBTSxRQUFRLENBQUMsY0FBYyxNQUFNLFFBQVEsQ0FBQyxVQUFVLE9BQU87RUFDakUsSUFBSSxNQUFNLFFBQVEsQ0FBQyxjQUFjLE1BQU0sUUFBUSxDQUFDLFVBQVUsT0FBTztFQUNqRSxPQUFPLGNBQWMsSUFBSSxDQUFDLENBQUMsVUFBWSxNQUFNLFFBQVEsQ0FBQztBQUN4RDtBQUVBOzs7Ozs7OztDQVFDLEdBQ0QsT0FBTyxTQUFTO0VBQ2QsT0FBTyxDQUFDLHlDQUF5QyxFQUMvQywyQkFBMkIsSUFBSSxDQUFDLFFBQ2pDLHFFQUFxRSxDQUFDLEdBQ3JFLENBQUMsOEJBQThCLENBQUM7QUFDcEMifQ==
+// denoCacheMetadata=15021232044119560899,7477535283360873739

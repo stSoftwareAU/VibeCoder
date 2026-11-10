@@ -1,0 +1,61 @@
+/**
+ * Naming the preserved branch in the claim-release comment (Issue #770).
+ *
+ * A release comment used to say work was preserved but never *where*: the
+ * only way to find the parked work was to `ls-remote` and pattern-match on
+ * `issue-<N>-*`, which is what `git_issue_branch_resume.ts` does internally
+ * and what a human — or a non-Claude worker — had to reinvent. The comment is
+ * the one artefact visible from any host, any provider and to a person, so it
+ * carries the branch name and, once a handover file exists on that branch
+ * (Issue #769), a link to it.
+ *
+ * The branch named here is always the branch the push actually targeted
+ * (`PhaseState.branchName`, which setup rewrites to the resumed branch on a
+ * re-claim) — never a name derived from the current issue title. Retitling an
+ * issue between claims already orphaned work once (#211); a comment naming a
+ * branch that does not exist would repeat that mistake with more confidence.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */ /**
+ * Repo-relative path of the handover file an interrupted run leaves on the
+ * issue branch (Issue #769). Defined here because #770 advertises the file
+ * and #769 writes it — one constant, so the advertisement cannot point at a
+ * path nothing writes.
+ *
+ * NOT the `.vibe/handover/…` the sketch in #769 suggested: `.vibe` is a
+ * hidden path, so the enforced `.gitignore` (`.*`) never stages it and
+ * `classifyStagedPath` rejects it outright — a handover written there could
+ * never reach the branch, and force-adding it would fail the pre-commit gate
+ * and take the WIP commit down with it.
+ *
+ * `docs/archive/` rather than `docs/` because a handover carries free agent
+ * prose, which the markdownlint globs deliberately exclude — a docs gate must
+ * not fail on an interrupted run's own note.
+ * `preserved_wip_branch_test.ts` pins both properties.
+ */ export function handoverFilePath(issueNumber) {
+  return `docs/archive/handover/issue-${issueNumber}.md`;
+}
+/** `https://github.com/<repo>/blob/<branch>/<path>` for a committed file. */ export function handoverFileUrl(repo, branch, path) {
+  return `https://github.com/${repo}/blob/${branch}/${path}`;
+}
+/**
+ * The handover clause, or `""` when no handover file was written.
+ *
+ * Degrading to `""` is the point (Issue #770): every preservation path must
+ * read correctly before #769 lands, and none may emit a broken link.
+ */ export function describeHandoverFile(preserved) {
+  const { handoverPath, handoverUrl } = preserved;
+  if (!handoverPath) return "";
+  const target = handoverUrl ? `[${handoverPath}](${handoverUrl})` : `\`${handoverPath}\``;
+  return ` Handover: ${target}.`;
+}
+/**
+ * One line naming the preserved branch and what a reader should do with it.
+ *
+ * Deliberately says nothing about *why* the run stopped: the caller's reason
+ * already does, and a scheduled release must never acquire timeout wording.
+ */ export function describePreservedBranch(preserved) {
+  return `branch \`${preserved.branch}\` holds the work in progress; the ` + `next claim resumes from it.${describeHandoverFile(preserved)}`;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9wcmVzZXJ2ZWRfd2lwX2JyYW5jaC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIE5hbWluZyB0aGUgcHJlc2VydmVkIGJyYW5jaCBpbiB0aGUgY2xhaW0tcmVsZWFzZSBjb21tZW50IChJc3N1ZSAjNzcwKS5cbiAqXG4gKiBBIHJlbGVhc2UgY29tbWVudCB1c2VkIHRvIHNheSB3b3JrIHdhcyBwcmVzZXJ2ZWQgYnV0IG5ldmVyICp3aGVyZSo6IHRoZVxuICogb25seSB3YXkgdG8gZmluZCB0aGUgcGFya2VkIHdvcmsgd2FzIHRvIGBscy1yZW1vdGVgIGFuZCBwYXR0ZXJuLW1hdGNoIG9uXG4gKiBgaXNzdWUtPE4+LSpgLCB3aGljaCBpcyB3aGF0IGBnaXRfaXNzdWVfYnJhbmNoX3Jlc3VtZS50c2AgZG9lcyBpbnRlcm5hbGx5XG4gKiBhbmQgd2hhdCBhIGh1bWFuIOKAlCBvciBhIG5vbi1DbGF1ZGUgd29ya2VyIOKAlCBoYWQgdG8gcmVpbnZlbnQuIFRoZSBjb21tZW50IGlzXG4gKiB0aGUgb25lIGFydGVmYWN0IHZpc2libGUgZnJvbSBhbnkgaG9zdCwgYW55IHByb3ZpZGVyIGFuZCB0byBhIHBlcnNvbiwgc28gaXRcbiAqIGNhcnJpZXMgdGhlIGJyYW5jaCBuYW1lIGFuZCwgb25jZSBhIGhhbmRvdmVyIGZpbGUgZXhpc3RzIG9uIHRoYXQgYnJhbmNoXG4gKiAoSXNzdWUgIzc2OSksIGEgbGluayB0byBpdC5cbiAqXG4gKiBUaGUgYnJhbmNoIG5hbWVkIGhlcmUgaXMgYWx3YXlzIHRoZSBicmFuY2ggdGhlIHB1c2ggYWN0dWFsbHkgdGFyZ2V0ZWRcbiAqIChgUGhhc2VTdGF0ZS5icmFuY2hOYW1lYCwgd2hpY2ggc2V0dXAgcmV3cml0ZXMgdG8gdGhlIHJlc3VtZWQgYnJhbmNoIG9uIGFcbiAqIHJlLWNsYWltKSDigJQgbmV2ZXIgYSBuYW1lIGRlcml2ZWQgZnJvbSB0aGUgY3VycmVudCBpc3N1ZSB0aXRsZS4gUmV0aXRsaW5nIGFuXG4gKiBpc3N1ZSBiZXR3ZWVuIGNsYWltcyBhbHJlYWR5IG9ycGhhbmVkIHdvcmsgb25jZSAoIzIxMSk7IGEgY29tbWVudCBuYW1pbmcgYVxuICogYnJhbmNoIHRoYXQgZG9lcyBub3QgZXhpc3Qgd291bGQgcmVwZWF0IHRoYXQgbWlzdGFrZSB3aXRoIG1vcmUgY29uZmlkZW5jZS5cbiAqXG4gKiBVc2VzIEF1c3RyYWxpYW4gRW5nbGlzaCB0aHJvdWdob3V0IChiZWhhdmlvdXIsIGNvbG91ciwgb3JnYW5pc2F0aW9uLCBldGMuKS5cbiAqL1xuXG4vKipcbiAqIFJlcG8tcmVsYXRpdmUgcGF0aCBvZiB0aGUgaGFuZG92ZXIgZmlsZSBhbiBpbnRlcnJ1cHRlZCBydW4gbGVhdmVzIG9uIHRoZVxuICogaXNzdWUgYnJhbmNoIChJc3N1ZSAjNzY5KS4gRGVmaW5lZCBoZXJlIGJlY2F1c2UgIzc3MCBhZHZlcnRpc2VzIHRoZSBmaWxlXG4gKiBhbmQgIzc2OSB3cml0ZXMgaXQg4oCUIG9uZSBjb25zdGFudCwgc28gdGhlIGFkdmVydGlzZW1lbnQgY2Fubm90IHBvaW50IGF0IGFcbiAqIHBhdGggbm90aGluZyB3cml0ZXMuXG4gKlxuICogTk9UIHRoZSBgLnZpYmUvaGFuZG92ZXIv4oCmYCB0aGUgc2tldGNoIGluICM3Njkgc3VnZ2VzdGVkOiBgLnZpYmVgIGlzIGFcbiAqIGhpZGRlbiBwYXRoLCBzbyB0aGUgZW5mb3JjZWQgYC5naXRpZ25vcmVgIChgLipgKSBuZXZlciBzdGFnZXMgaXQgYW5kXG4gKiBgY2xhc3NpZnlTdGFnZWRQYXRoYCByZWplY3RzIGl0IG91dHJpZ2h0IOKAlCBhIGhhbmRvdmVyIHdyaXR0ZW4gdGhlcmUgY291bGRcbiAqIG5ldmVyIHJlYWNoIHRoZSBicmFuY2gsIGFuZCBmb3JjZS1hZGRpbmcgaXQgd291bGQgZmFpbCB0aGUgcHJlLWNvbW1pdCBnYXRlXG4gKiBhbmQgdGFrZSB0aGUgV0lQIGNvbW1pdCBkb3duIHdpdGggaXQuXG4gKlxuICogYGRvY3MvYXJjaGl2ZS9gIHJhdGhlciB0aGFuIGBkb2NzL2AgYmVjYXVzZSBhIGhhbmRvdmVyIGNhcnJpZXMgZnJlZSBhZ2VudFxuICogcHJvc2UsIHdoaWNoIHRoZSBtYXJrZG93bmxpbnQgZ2xvYnMgZGVsaWJlcmF0ZWx5IGV4Y2x1ZGUg4oCUIGEgZG9jcyBnYXRlIG11c3RcbiAqIG5vdCBmYWlsIG9uIGFuIGludGVycnVwdGVkIHJ1bidzIG93biBub3RlLlxuICogYHByZXNlcnZlZF93aXBfYnJhbmNoX3Rlc3QudHNgIHBpbnMgYm90aCBwcm9wZXJ0aWVzLlxuICovXG5leHBvcnQgZnVuY3Rpb24gaGFuZG92ZXJGaWxlUGF0aChpc3N1ZU51bWJlcjogbnVtYmVyKTogc3RyaW5nIHtcbiAgcmV0dXJuIGBkb2NzL2FyY2hpdmUvaGFuZG92ZXIvaXNzdWUtJHtpc3N1ZU51bWJlcn0ubWRgO1xufVxuXG4vKiogV2hlcmUgYW4gaW50ZXJydXB0ZWQgcnVuJ3Mgd29yayBhY3R1YWxseSBpcy4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgUHJlc2VydmVkV2lwIHtcbiAgLyoqIEJyYW5jaCB0aGUgcHJlc2VydmF0aW9uIHB1c2ggdGFyZ2V0ZWQuICovXG4gIGJyYW5jaDogc3RyaW5nO1xuICAvKiogSGFuZG92ZXIgZmlsZSBjb21taXR0ZWQgb24gdGhhdCBicmFuY2ggKElzc3VlICM3NjkpLCB3aGVuIG9uZSB3YXMuICovXG4gIGhhbmRvdmVyUGF0aD86IHN0cmluZztcbiAgLyoqIEJyb3dzYWJsZSBsaW5rIHRvIHRoYXQgZmlsZSwgd2hlbiB0aGUgcmVwb3NpdG9yeSBzbHVnIHdhcyBrbm93bi4gKi9cbiAgaGFuZG92ZXJVcmw/OiBzdHJpbmc7XG59XG5cbi8qKiBgaHR0cHM6Ly9naXRodWIuY29tLzxyZXBvPi9ibG9iLzxicmFuY2g+LzxwYXRoPmAgZm9yIGEgY29tbWl0dGVkIGZpbGUuICovXG5leHBvcnQgZnVuY3Rpb24gaGFuZG92ZXJGaWxlVXJsKFxuICByZXBvOiBzdHJpbmcsXG4gIGJyYW5jaDogc3RyaW5nLFxuICBwYXRoOiBzdHJpbmcsXG4pOiBzdHJpbmcge1xuICByZXR1cm4gYGh0dHBzOi8vZ2l0aHViLmNvbS8ke3JlcG99L2Jsb2IvJHticmFuY2h9LyR7cGF0aH1gO1xufVxuXG4vKipcbiAqIFRoZSBoYW5kb3ZlciBjbGF1c2UsIG9yIGBcIlwiYCB3aGVuIG5vIGhhbmRvdmVyIGZpbGUgd2FzIHdyaXR0ZW4uXG4gKlxuICogRGVncmFkaW5nIHRvIGBcIlwiYCBpcyB0aGUgcG9pbnQgKElzc3VlICM3NzApOiBldmVyeSBwcmVzZXJ2YXRpb24gcGF0aCBtdXN0XG4gKiByZWFkIGNvcnJlY3RseSBiZWZvcmUgIzc2OSBsYW5kcywgYW5kIG5vbmUgbWF5IGVtaXQgYSBicm9rZW4gbGluay5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGRlc2NyaWJlSGFuZG92ZXJGaWxlKHByZXNlcnZlZDogUHJlc2VydmVkV2lwKTogc3RyaW5nIHtcbiAgY29uc3QgeyBoYW5kb3ZlclBhdGgsIGhhbmRvdmVyVXJsIH0gPSBwcmVzZXJ2ZWQ7XG4gIGlmICghaGFuZG92ZXJQYXRoKSByZXR1cm4gXCJcIjtcbiAgY29uc3QgdGFyZ2V0ID0gaGFuZG92ZXJVcmxcbiAgICA/IGBbJHtoYW5kb3ZlclBhdGh9XSgke2hhbmRvdmVyVXJsfSlgXG4gICAgOiBgXFxgJHtoYW5kb3ZlclBhdGh9XFxgYDtcbiAgcmV0dXJuIGAgSGFuZG92ZXI6ICR7dGFyZ2V0fS5gO1xufVxuXG4vKipcbiAqIE9uZSBsaW5lIG5hbWluZyB0aGUgcHJlc2VydmVkIGJyYW5jaCBhbmQgd2hhdCBhIHJlYWRlciBzaG91bGQgZG8gd2l0aCBpdC5cbiAqXG4gKiBEZWxpYmVyYXRlbHkgc2F5cyBub3RoaW5nIGFib3V0ICp3aHkqIHRoZSBydW4gc3RvcHBlZDogdGhlIGNhbGxlcidzIHJlYXNvblxuICogYWxyZWFkeSBkb2VzLCBhbmQgYSBzY2hlZHVsZWQgcmVsZWFzZSBtdXN0IG5ldmVyIGFjcXVpcmUgdGltZW91dCB3b3JkaW5nLlxuICovXG5leHBvcnQgZnVuY3Rpb24gZGVzY3JpYmVQcmVzZXJ2ZWRCcmFuY2gocHJlc2VydmVkOiBQcmVzZXJ2ZWRXaXApOiBzdHJpbmcge1xuICByZXR1cm4gYGJyYW5jaCBcXGAke3ByZXNlcnZlZC5icmFuY2h9XFxgIGhvbGRzIHRoZSB3b3JrIGluIHByb2dyZXNzOyB0aGUgYCArXG4gICAgYG5leHQgY2xhaW0gcmVzdW1lcyBmcm9tIGl0LiR7ZGVzY3JpYmVIYW5kb3ZlckZpbGUocHJlc2VydmVkKX1gO1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0FrQkMsR0FFRDs7Ozs7Ozs7Ozs7Ozs7OztDQWdCQyxHQUNELE9BQU8sU0FBUyxpQkFBaUIsV0FBbUI7RUFDbEQsT0FBTyxDQUFDLDRCQUE0QixFQUFFLFlBQVksR0FBRyxDQUFDO0FBQ3hEO0FBWUEsMkVBQTJFLEdBQzNFLE9BQU8sU0FBUyxnQkFDZCxJQUFZLEVBQ1osTUFBYyxFQUNkLElBQVk7RUFFWixPQUFPLENBQUMsbUJBQW1CLEVBQUUsS0FBSyxNQUFNLEVBQUUsT0FBTyxDQUFDLEVBQUUsTUFBTTtBQUM1RDtBQUVBOzs7OztDQUtDLEdBQ0QsT0FBTyxTQUFTLHFCQUFxQixTQUF1QjtFQUMxRCxNQUFNLEVBQUUsWUFBWSxFQUFFLFdBQVcsRUFBRSxHQUFHO0VBQ3RDLElBQUksQ0FBQyxjQUFjLE9BQU87RUFDMUIsTUFBTSxTQUFTLGNBQ1gsQ0FBQyxDQUFDLEVBQUUsYUFBYSxFQUFFLEVBQUUsWUFBWSxDQUFDLENBQUMsR0FDbkMsQ0FBQyxFQUFFLEVBQUUsYUFBYSxFQUFFLENBQUM7RUFDekIsT0FBTyxDQUFDLFdBQVcsRUFBRSxPQUFPLENBQUMsQ0FBQztBQUNoQztBQUVBOzs7OztDQUtDLEdBQ0QsT0FBTyxTQUFTLHdCQUF3QixTQUF1QjtFQUM3RCxPQUFPLENBQUMsU0FBUyxFQUFFLFVBQVUsTUFBTSxDQUFDLG1DQUFtQyxDQUFDLEdBQ3RFLENBQUMsMkJBQTJCLEVBQUUscUJBQXFCLFlBQVk7QUFDbkUifQ==
+// denoCacheMetadata=3371096500222255523,9310491371425576538

@@ -1,0 +1,135 @@
+/**
+ * Repo-level milestone-branch rejections (Issue #853).
+ *
+ * `ensureMilestoneBranch` fails per issue, and the setup phase escalates the
+ * issue it was working on. That is right for a fault belonging to one issue.
+ * It is wrong for a fault belonging to the **repository**: a ruleset that
+ * refuses branch creation refuses it identically for every issue in the
+ * milestone, so the fleet claimed nine sub-issues in turn, failed each in
+ * `setup`, and parked each with `needs-human` — nine human chores for one
+ * configuration fact, none of which clear themselves once it is fixed
+ * (nothing ever removes `needs-human`, see Issue #854).
+ *
+ * Observed on GRQ-23 on 2026-09-03: ruleset "Milestone" applied
+ * `required_status_checks` to `refs/heads/milestone/**`. A branch being
+ * created has no checks, so every push was refused:
+ *
+ * ```text
+ * remote: error: GH013: Repository rule violations found for
+ *   refs/heads/milestone/794-...
+ * ! [remote rejected] ... (push declined due to repository rule violations)
+ * ```
+ *
+ * This module answers the two questions the phase could not: is this failure
+ * repo-level, and has it already been reported this run.
+ *
+ * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ */ /**
+ * Signatures of a rejection belonging to the repository rather than to one
+ * issue — a ruleset, branch protection, or a permission the account lacks.
+ * Each refuses identically for the next issue, so retrying per issue can only
+ * repeat the failure.
+ *
+ * Deliberately narrow: an ambiguous error stays per-issue, because treating a
+ * transient fault as permanent would suppress an escalation that should have
+ * been raised. Under-matching costs a repeated escalation; over-matching
+ * loses one.
+ */ const REPO_LEVEL_SIGNATURES = [
+  /\bGH013\b/i,
+  /repository rule violations/i,
+  /push declined due to repository rule/i,
+  /protected branch/i,
+  /required status check/i,
+  /\bGH006\b/i,
+  /permission to .* denied/i
+];
+/**
+ * True when `message` names a failure the repository will reproduce for every
+ * issue in the milestone.
+ */ export function isRepoLevelBranchRejection(message) {
+  return REPO_LEVEL_SIGNATURES.some((re)=>re.test(message));
+}
+/**
+ * Signatures placing a refusal on a **milestone** branch specifically.
+ *
+ * {@link isRepoLevelBranchRejection} answers "would the repository refuse
+ * this for every issue?", which is true of an ordinary feature-branch
+ * protection failure too. The failure *category* (Issue #2220) must be
+ * narrower than that: a protected-branch push refusal on a feature branch is
+ * still the per-issue push failure it has always been, retried by the
+ * bounded infrastructure ladder. Only the milestone-branch refusal is a
+ * fault the whole milestone shares, so only it skips the ladder.
+ *
+ * The last two patterns match the REFUSED REF itself
+ * (`refs/heads/milestone/<slug>`, `-> milestone/<slug>`), which is what the
+ * raw remote text carries when no worker-written sentence survived into the
+ * message. They are deliberately not a bare `milestone/<slug>` match: a
+ * milestone child's base branch is named in plenty of later-phase failure
+ * messages, and pairing a bare mention with a generic repo-level signature
+ * ("protected branch", "required status check") would reclassify an
+ * ordinary PR-creation or child-push refusal as a repository fault — no
+ * label, no ladder, no attempt consumed.
+ */ const MILESTONE_BRANCH_CONTEXT = [
+  /Failed to (?:ensure|push) milestone branch/i,
+  /Milestone branch unavailable/i,
+  /refs\/heads\/milestone\/[A-Za-z0-9._-]+/,
+  /->\s*milestone\/[A-Za-z0-9._-]+/
+];
+/**
+ * True when `message` is a repository-level refusal of a **milestone**
+ * branch — the fault that belongs to the repository's ruleset or protection
+ * rather than to the issue being worked (Issue #2220).
+ *
+ * Both halves must hold: the refusal must be repo-level, and it must name a
+ * milestone branch. Either alone is a failure the existing categories
+ * already describe correctly.
+ */ export function isRepoLevelMilestoneBranchRefusal(message) {
+  if (!isRepoLevelBranchRejection(message)) return false;
+  return MILESTONE_BRANCH_CONTEXT.some((re)=>re.test(message));
+}
+/**
+ * An operator-facing explanation of a repo-level rejection, appended to the
+ * escalation so the reader need not re-derive it from a raw git error.
+ *
+ * The observed escalation said only "failed at phase 'setup'", which left a
+ * human to work out the ruleset themselves — the opposite of an actionable
+ * handoff.
+ */ export function describeRepoLevelRejection(message, branch) {
+  if (!isRepoLevelBranchRejection(message)) return null;
+  const ruleset = /\bGH013\b/i.test(message) || /repository rule violations/i.test(message);
+  if (ruleset) {
+    return `A repository ruleset refused the creation of \`${branch}\`. ` + "A branch being created carries no status checks yet, so a ruleset " + "applying `required_status_checks` to this ref pattern rejects every " + "push that would create it. Check the repository's rulesets for one " + "matching this ref, then set `do_not_enforce_on_create: true` on its " + "`required_status_checks` rule (the Issue #3912 remedy: the checks " + "still gate every merge), or add the fleet account as a bypass actor. " + "This refusal is identical for every issue in the milestone, so the " + "others are left claimable rather than parked.";
+  }
+  if (/\bGH006\b/i.test(message) || /protected branch/i.test(message)) {
+    return `Branch protection refused \`${branch}\`. The fleet account needs ` + "permission to create this ref, or the protection rule must exempt " + "it. This refusal is identical for every issue in the milestone.";
+  }
+  return `The repository refused \`${branch}\` for a reason that recurs for ` + "every issue in this milestone, so the others are left claimable rather " + "than parked.";
+}
+/**
+ * Milestone branches already reported this run, keyed `repo branch`.
+ *
+ * Process-lifetime only, deliberately: the point is to escalate once per run
+ * rather than once per issue, and a fresh run should report again while the
+ * repository is still misconfigured. Persisting it would hide a condition
+ * nobody had fixed.
+ */ const reported = new Set();
+const key = (repo, branch)=>`${repo} ${branch}`;
+/**
+ * Record a repo-level rejection and report whether this run has seen it
+ * before for that branch.
+ *
+ * @returns `true` on the first sighting — the caller should escalate.
+ */ export function claimRepoLevelRejectionReport(repo, branch) {
+  const k = key(repo, branch);
+  if (reported.has(k)) return false;
+  reported.add(k);
+  return true;
+}
+/** Whether this run has already reported a repo-level rejection. */ export function hasReportedRepoLevelRejection(repo, branch) {
+  return reported.has(key(repo, branch));
+}
+/** Reset the registry. Tests only — production state is per process. */ export function resetRepoLevelRejectionsForTest() {
+  reported.clear();
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9taWxlc3RvbmVfYnJhbmNoX3JlamVjdGlvbi50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIFJlcG8tbGV2ZWwgbWlsZXN0b25lLWJyYW5jaCByZWplY3Rpb25zIChJc3N1ZSAjODUzKS5cbiAqXG4gKiBgZW5zdXJlTWlsZXN0b25lQnJhbmNoYCBmYWlscyBwZXIgaXNzdWUsIGFuZCB0aGUgc2V0dXAgcGhhc2UgZXNjYWxhdGVzIHRoZVxuICogaXNzdWUgaXQgd2FzIHdvcmtpbmcgb24uIFRoYXQgaXMgcmlnaHQgZm9yIGEgZmF1bHQgYmVsb25naW5nIHRvIG9uZSBpc3N1ZS5cbiAqIEl0IGlzIHdyb25nIGZvciBhIGZhdWx0IGJlbG9uZ2luZyB0byB0aGUgKipyZXBvc2l0b3J5Kio6IGEgcnVsZXNldCB0aGF0XG4gKiByZWZ1c2VzIGJyYW5jaCBjcmVhdGlvbiByZWZ1c2VzIGl0IGlkZW50aWNhbGx5IGZvciBldmVyeSBpc3N1ZSBpbiB0aGVcbiAqIG1pbGVzdG9uZSwgc28gdGhlIGZsZWV0IGNsYWltZWQgbmluZSBzdWItaXNzdWVzIGluIHR1cm4sIGZhaWxlZCBlYWNoIGluXG4gKiBgc2V0dXBgLCBhbmQgcGFya2VkIGVhY2ggd2l0aCBgbmVlZHMtaHVtYW5gIOKAlCBuaW5lIGh1bWFuIGNob3JlcyBmb3Igb25lXG4gKiBjb25maWd1cmF0aW9uIGZhY3QsIG5vbmUgb2Ygd2hpY2ggY2xlYXIgdGhlbXNlbHZlcyBvbmNlIGl0IGlzIGZpeGVkXG4gKiAobm90aGluZyBldmVyIHJlbW92ZXMgYG5lZWRzLWh1bWFuYCwgc2VlIElzc3VlICM4NTQpLlxuICpcbiAqIE9ic2VydmVkIG9uIEdSUS0yMyBvbiAyMDI2LTA5LTAzOiBydWxlc2V0IFwiTWlsZXN0b25lXCIgYXBwbGllZFxuICogYHJlcXVpcmVkX3N0YXR1c19jaGVja3NgIHRvIGByZWZzL2hlYWRzL21pbGVzdG9uZS8qKmAuIEEgYnJhbmNoIGJlaW5nXG4gKiBjcmVhdGVkIGhhcyBubyBjaGVja3MsIHNvIGV2ZXJ5IHB1c2ggd2FzIHJlZnVzZWQ6XG4gKlxuICogYGBgdGV4dFxuICogcmVtb3RlOiBlcnJvcjogR0gwMTM6IFJlcG9zaXRvcnkgcnVsZSB2aW9sYXRpb25zIGZvdW5kIGZvclxuICogICByZWZzL2hlYWRzL21pbGVzdG9uZS83OTQtLi4uXG4gKiAhIFtyZW1vdGUgcmVqZWN0ZWRdIC4uLiAocHVzaCBkZWNsaW5lZCBkdWUgdG8gcmVwb3NpdG9yeSBydWxlIHZpb2xhdGlvbnMpXG4gKiBgYGBcbiAqXG4gKiBUaGlzIG1vZHVsZSBhbnN3ZXJzIHRoZSB0d28gcXVlc3Rpb25zIHRoZSBwaGFzZSBjb3VsZCBub3Q6IGlzIHRoaXMgZmFpbHVyZVxuICogcmVwby1sZXZlbCwgYW5kIGhhcyBpdCBhbHJlYWR5IGJlZW4gcmVwb3J0ZWQgdGhpcyBydW4uXG4gKlxuICogVXNlcyBBdXN0cmFsaWFuIEVuZ2xpc2ggc3BlbGxpbmcgKGJlaGF2aW91ciwgY29sb3VyLCBvcmdhbmlzYXRpb24sIGV0Yy4pXG4gKi9cblxuLyoqXG4gKiBTaWduYXR1cmVzIG9mIGEgcmVqZWN0aW9uIGJlbG9uZ2luZyB0byB0aGUgcmVwb3NpdG9yeSByYXRoZXIgdGhhbiB0byBvbmVcbiAqIGlzc3VlIOKAlCBhIHJ1bGVzZXQsIGJyYW5jaCBwcm90ZWN0aW9uLCBvciBhIHBlcm1pc3Npb24gdGhlIGFjY291bnQgbGFja3MuXG4gKiBFYWNoIHJlZnVzZXMgaWRlbnRpY2FsbHkgZm9yIHRoZSBuZXh0IGlzc3VlLCBzbyByZXRyeWluZyBwZXIgaXNzdWUgY2FuIG9ubHlcbiAqIHJlcGVhdCB0aGUgZmFpbHVyZS5cbiAqXG4gKiBEZWxpYmVyYXRlbHkgbmFycm93OiBhbiBhbWJpZ3VvdXMgZXJyb3Igc3RheXMgcGVyLWlzc3VlLCBiZWNhdXNlIHRyZWF0aW5nIGFcbiAqIHRyYW5zaWVudCBmYXVsdCBhcyBwZXJtYW5lbnQgd291bGQgc3VwcHJlc3MgYW4gZXNjYWxhdGlvbiB0aGF0IHNob3VsZCBoYXZlXG4gKiBiZWVuIHJhaXNlZC4gVW5kZXItbWF0Y2hpbmcgY29zdHMgYSByZXBlYXRlZCBlc2NhbGF0aW9uOyBvdmVyLW1hdGNoaW5nXG4gKiBsb3NlcyBvbmUuXG4gKi9cbmNvbnN0IFJFUE9fTEVWRUxfU0lHTkFUVVJFUzogcmVhZG9ubHkgUmVnRXhwW10gPSBbXG4gIC9cXGJHSDAxM1xcYi9pLFxuICAvcmVwb3NpdG9yeSBydWxlIHZpb2xhdGlvbnMvaSxcbiAgL3B1c2ggZGVjbGluZWQgZHVlIHRvIHJlcG9zaXRvcnkgcnVsZS9pLFxuICAvcHJvdGVjdGVkIGJyYW5jaC9pLFxuICAvcmVxdWlyZWQgc3RhdHVzIGNoZWNrL2ksXG4gIC9cXGJHSDAwNlxcYi9pLFxuICAvcGVybWlzc2lvbiB0byAuKiBkZW5pZWQvaSxcbl07XG5cbi8qKlxuICogVHJ1ZSB3aGVuIGBtZXNzYWdlYCBuYW1lcyBhIGZhaWx1cmUgdGhlIHJlcG9zaXRvcnkgd2lsbCByZXByb2R1Y2UgZm9yIGV2ZXJ5XG4gKiBpc3N1ZSBpbiB0aGUgbWlsZXN0b25lLlxuICovXG5leHBvcnQgZnVuY3Rpb24gaXNSZXBvTGV2ZWxCcmFuY2hSZWplY3Rpb24obWVzc2FnZTogc3RyaW5nKTogYm9vbGVhbiB7XG4gIHJldHVybiBSRVBPX0xFVkVMX1NJR05BVFVSRVMuc29tZSgocmUpID0+IHJlLnRlc3QobWVzc2FnZSkpO1xufVxuXG4vKipcbiAqIFNpZ25hdHVyZXMgcGxhY2luZyBhIHJlZnVzYWwgb24gYSAqKm1pbGVzdG9uZSoqIGJyYW5jaCBzcGVjaWZpY2FsbHkuXG4gKlxuICoge0BsaW5rIGlzUmVwb0xldmVsQnJhbmNoUmVqZWN0aW9ufSBhbnN3ZXJzIFwid291bGQgdGhlIHJlcG9zaXRvcnkgcmVmdXNlXG4gKiB0aGlzIGZvciBldmVyeSBpc3N1ZT9cIiwgd2hpY2ggaXMgdHJ1ZSBvZiBhbiBvcmRpbmFyeSBmZWF0dXJlLWJyYW5jaFxuICogcHJvdGVjdGlvbiBmYWlsdXJlIHRvby4gVGhlIGZhaWx1cmUgKmNhdGVnb3J5KiAoSXNzdWUgIzIyMjApIG11c3QgYmVcbiAqIG5hcnJvd2VyIHRoYW4gdGhhdDogYSBwcm90ZWN0ZWQtYnJhbmNoIHB1c2ggcmVmdXNhbCBvbiBhIGZlYXR1cmUgYnJhbmNoIGlzXG4gKiBzdGlsbCB0aGUgcGVyLWlzc3VlIHB1c2ggZmFpbHVyZSBpdCBoYXMgYWx3YXlzIGJlZW4sIHJldHJpZWQgYnkgdGhlXG4gKiBib3VuZGVkIGluZnJhc3RydWN0dXJlIGxhZGRlci4gT25seSB0aGUgbWlsZXN0b25lLWJyYW5jaCByZWZ1c2FsIGlzIGFcbiAqIGZhdWx0IHRoZSB3aG9sZSBtaWxlc3RvbmUgc2hhcmVzLCBzbyBvbmx5IGl0IHNraXBzIHRoZSBsYWRkZXIuXG4gKlxuICogVGhlIGxhc3QgdHdvIHBhdHRlcm5zIG1hdGNoIHRoZSBSRUZVU0VEIFJFRiBpdHNlbGZcbiAqIChgcmVmcy9oZWFkcy9taWxlc3RvbmUvPHNsdWc+YCwgYC0+IG1pbGVzdG9uZS88c2x1Zz5gKSwgd2hpY2ggaXMgd2hhdCB0aGVcbiAqIHJhdyByZW1vdGUgdGV4dCBjYXJyaWVzIHdoZW4gbm8gd29ya2VyLXdyaXR0ZW4gc2VudGVuY2Ugc3Vydml2ZWQgaW50byB0aGVcbiAqIG1lc3NhZ2UuIFRoZXkgYXJlIGRlbGliZXJhdGVseSBub3QgYSBiYXJlIGBtaWxlc3RvbmUvPHNsdWc+YCBtYXRjaDogYVxuICogbWlsZXN0b25lIGNoaWxkJ3MgYmFzZSBicmFuY2ggaXMgbmFtZWQgaW4gcGxlbnR5IG9mIGxhdGVyLXBoYXNlIGZhaWx1cmVcbiAqIG1lc3NhZ2VzLCBhbmQgcGFpcmluZyBhIGJhcmUgbWVudGlvbiB3aXRoIGEgZ2VuZXJpYyByZXBvLWxldmVsIHNpZ25hdHVyZVxuICogKFwicHJvdGVjdGVkIGJyYW5jaFwiLCBcInJlcXVpcmVkIHN0YXR1cyBjaGVja1wiKSB3b3VsZCByZWNsYXNzaWZ5IGFuXG4gKiBvcmRpbmFyeSBQUi1jcmVhdGlvbiBvciBjaGlsZC1wdXNoIHJlZnVzYWwgYXMgYSByZXBvc2l0b3J5IGZhdWx0IOKAlCBub1xuICogbGFiZWwsIG5vIGxhZGRlciwgbm8gYXR0ZW1wdCBjb25zdW1lZC5cbiAqL1xuY29uc3QgTUlMRVNUT05FX0JSQU5DSF9DT05URVhUOiByZWFkb25seSBSZWdFeHBbXSA9IFtcbiAgL0ZhaWxlZCB0byAoPzplbnN1cmV8cHVzaCkgbWlsZXN0b25lIGJyYW5jaC9pLFxuICAvTWlsZXN0b25lIGJyYW5jaCB1bmF2YWlsYWJsZS9pLFxuICAvcmVmc1xcL2hlYWRzXFwvbWlsZXN0b25lXFwvW0EtWmEtejAtOS5fLV0rLyxcbiAgLy0+XFxzKm1pbGVzdG9uZVxcL1tBLVphLXowLTkuXy1dKy8sXG5dO1xuXG4vKipcbiAqIFRydWUgd2hlbiBgbWVzc2FnZWAgaXMgYSByZXBvc2l0b3J5LWxldmVsIHJlZnVzYWwgb2YgYSAqKm1pbGVzdG9uZSoqXG4gKiBicmFuY2gg4oCUIHRoZSBmYXVsdCB0aGF0IGJlbG9uZ3MgdG8gdGhlIHJlcG9zaXRvcnkncyBydWxlc2V0IG9yIHByb3RlY3Rpb25cbiAqIHJhdGhlciB0aGFuIHRvIHRoZSBpc3N1ZSBiZWluZyB3b3JrZWQgKElzc3VlICMyMjIwKS5cbiAqXG4gKiBCb3RoIGhhbHZlcyBtdXN0IGhvbGQ6IHRoZSByZWZ1c2FsIG11c3QgYmUgcmVwby1sZXZlbCwgYW5kIGl0IG11c3QgbmFtZSBhXG4gKiBtaWxlc3RvbmUgYnJhbmNoLiBFaXRoZXIgYWxvbmUgaXMgYSBmYWlsdXJlIHRoZSBleGlzdGluZyBjYXRlZ29yaWVzXG4gKiBhbHJlYWR5IGRlc2NyaWJlIGNvcnJlY3RseS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzUmVwb0xldmVsTWlsZXN0b25lQnJhbmNoUmVmdXNhbChtZXNzYWdlOiBzdHJpbmcpOiBib29sZWFuIHtcbiAgaWYgKCFpc1JlcG9MZXZlbEJyYW5jaFJlamVjdGlvbihtZXNzYWdlKSkgcmV0dXJuIGZhbHNlO1xuICByZXR1cm4gTUlMRVNUT05FX0JSQU5DSF9DT05URVhULnNvbWUoKHJlKSA9PiByZS50ZXN0KG1lc3NhZ2UpKTtcbn1cblxuLyoqXG4gKiBBbiBvcGVyYXRvci1mYWNpbmcgZXhwbGFuYXRpb24gb2YgYSByZXBvLWxldmVsIHJlamVjdGlvbiwgYXBwZW5kZWQgdG8gdGhlXG4gKiBlc2NhbGF0aW9uIHNvIHRoZSByZWFkZXIgbmVlZCBub3QgcmUtZGVyaXZlIGl0IGZyb20gYSByYXcgZ2l0IGVycm9yLlxuICpcbiAqIFRoZSBvYnNlcnZlZCBlc2NhbGF0aW9uIHNhaWQgb25seSBcImZhaWxlZCBhdCBwaGFzZSAnc2V0dXAnXCIsIHdoaWNoIGxlZnQgYVxuICogaHVtYW4gdG8gd29yayBvdXQgdGhlIHJ1bGVzZXQgdGhlbXNlbHZlcyDigJQgdGhlIG9wcG9zaXRlIG9mIGFuIGFjdGlvbmFibGVcbiAqIGhhbmRvZmYuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBkZXNjcmliZVJlcG9MZXZlbFJlamVjdGlvbihcbiAgbWVzc2FnZTogc3RyaW5nLFxuICBicmFuY2g6IHN0cmluZyxcbik6IHN0cmluZyB8IG51bGwge1xuICBpZiAoIWlzUmVwb0xldmVsQnJhbmNoUmVqZWN0aW9uKG1lc3NhZ2UpKSByZXR1cm4gbnVsbDtcbiAgY29uc3QgcnVsZXNldCA9IC9cXGJHSDAxM1xcYi9pLnRlc3QobWVzc2FnZSkgfHxcbiAgICAvcmVwb3NpdG9yeSBydWxlIHZpb2xhdGlvbnMvaS50ZXN0KG1lc3NhZ2UpO1xuICBpZiAocnVsZXNldCkge1xuICAgIHJldHVybiBgQSByZXBvc2l0b3J5IHJ1bGVzZXQgcmVmdXNlZCB0aGUgY3JlYXRpb24gb2YgXFxgJHticmFuY2h9XFxgLiBgICtcbiAgICAgIFwiQSBicmFuY2ggYmVpbmcgY3JlYXRlZCBjYXJyaWVzIG5vIHN0YXR1cyBjaGVja3MgeWV0LCBzbyBhIHJ1bGVzZXQgXCIgK1xuICAgICAgXCJhcHBseWluZyBgcmVxdWlyZWRfc3RhdHVzX2NoZWNrc2AgdG8gdGhpcyByZWYgcGF0dGVybiByZWplY3RzIGV2ZXJ5IFwiICtcbiAgICAgIFwicHVzaCB0aGF0IHdvdWxkIGNyZWF0ZSBpdC4gQ2hlY2sgdGhlIHJlcG9zaXRvcnkncyBydWxlc2V0cyBmb3Igb25lIFwiICtcbiAgICAgIFwibWF0Y2hpbmcgdGhpcyByZWYsIHRoZW4gc2V0IGBkb19ub3RfZW5mb3JjZV9vbl9jcmVhdGU6IHRydWVgIG9uIGl0cyBcIiArXG4gICAgICBcImByZXF1aXJlZF9zdGF0dXNfY2hlY2tzYCBydWxlICh0aGUgSXNzdWUgIzM5MTIgcmVtZWR5OiB0aGUgY2hlY2tzIFwiICtcbiAgICAgIFwic3RpbGwgZ2F0ZSBldmVyeSBtZXJnZSksIG9yIGFkZCB0aGUgZmxlZXQgYWNjb3VudCBhcyBhIGJ5cGFzcyBhY3Rvci4gXCIgK1xuICAgICAgXCJUaGlzIHJlZnVzYWwgaXMgaWRlbnRpY2FsIGZvciBldmVyeSBpc3N1ZSBpbiB0aGUgbWlsZXN0b25lLCBzbyB0aGUgXCIgK1xuICAgICAgXCJvdGhlcnMgYXJlIGxlZnQgY2xhaW1hYmxlIHJhdGhlciB0aGFuIHBhcmtlZC5cIjtcbiAgfVxuICBpZiAoL1xcYkdIMDA2XFxiL2kudGVzdChtZXNzYWdlKSB8fCAvcHJvdGVjdGVkIGJyYW5jaC9pLnRlc3QobWVzc2FnZSkpIHtcbiAgICByZXR1cm4gYEJyYW5jaCBwcm90ZWN0aW9uIHJlZnVzZWQgXFxgJHticmFuY2h9XFxgLiBUaGUgZmxlZXQgYWNjb3VudCBuZWVkcyBgICtcbiAgICAgIFwicGVybWlzc2lvbiB0byBjcmVhdGUgdGhpcyByZWYsIG9yIHRoZSBwcm90ZWN0aW9uIHJ1bGUgbXVzdCBleGVtcHQgXCIgK1xuICAgICAgXCJpdC4gVGhpcyByZWZ1c2FsIGlzIGlkZW50aWNhbCBmb3IgZXZlcnkgaXNzdWUgaW4gdGhlIG1pbGVzdG9uZS5cIjtcbiAgfVxuICByZXR1cm4gYFRoZSByZXBvc2l0b3J5IHJlZnVzZWQgXFxgJHticmFuY2h9XFxgIGZvciBhIHJlYXNvbiB0aGF0IHJlY3VycyBmb3IgYCArXG4gICAgXCJldmVyeSBpc3N1ZSBpbiB0aGlzIG1pbGVzdG9uZSwgc28gdGhlIG90aGVycyBhcmUgbGVmdCBjbGFpbWFibGUgcmF0aGVyIFwiICtcbiAgICBcInRoYW4gcGFya2VkLlwiO1xufVxuXG4vKipcbiAqIE1pbGVzdG9uZSBicmFuY2hlcyBhbHJlYWR5IHJlcG9ydGVkIHRoaXMgcnVuLCBrZXllZCBgcmVwbyBicmFuY2hgLlxuICpcbiAqIFByb2Nlc3MtbGlmZXRpbWUgb25seSwgZGVsaWJlcmF0ZWx5OiB0aGUgcG9pbnQgaXMgdG8gZXNjYWxhdGUgb25jZSBwZXIgcnVuXG4gKiByYXRoZXIgdGhhbiBvbmNlIHBlciBpc3N1ZSwgYW5kIGEgZnJlc2ggcnVuIHNob3VsZCByZXBvcnQgYWdhaW4gd2hpbGUgdGhlXG4gKiByZXBvc2l0b3J5IGlzIHN0aWxsIG1pc2NvbmZpZ3VyZWQuIFBlcnNpc3RpbmcgaXQgd291bGQgaGlkZSBhIGNvbmRpdGlvblxuICogbm9ib2R5IGhhZCBmaXhlZC5cbiAqL1xuY29uc3QgcmVwb3J0ZWQgPSBuZXcgU2V0PHN0cmluZz4oKTtcblxuY29uc3Qga2V5ID0gKHJlcG86IHN0cmluZywgYnJhbmNoOiBzdHJpbmcpOiBzdHJpbmcgPT4gYCR7cmVwb30gJHticmFuY2h9YDtcblxuLyoqXG4gKiBSZWNvcmQgYSByZXBvLWxldmVsIHJlamVjdGlvbiBhbmQgcmVwb3J0IHdoZXRoZXIgdGhpcyBydW4gaGFzIHNlZW4gaXRcbiAqIGJlZm9yZSBmb3IgdGhhdCBicmFuY2guXG4gKlxuICogQHJldHVybnMgYHRydWVgIG9uIHRoZSBmaXJzdCBzaWdodGluZyDigJQgdGhlIGNhbGxlciBzaG91bGQgZXNjYWxhdGUuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBjbGFpbVJlcG9MZXZlbFJlamVjdGlvblJlcG9ydChcbiAgcmVwbzogc3RyaW5nLFxuICBicmFuY2g6IHN0cmluZyxcbik6IGJvb2xlYW4ge1xuICBjb25zdCBrID0ga2V5KHJlcG8sIGJyYW5jaCk7XG4gIGlmIChyZXBvcnRlZC5oYXMoaykpIHJldHVybiBmYWxzZTtcbiAgcmVwb3J0ZWQuYWRkKGspO1xuICByZXR1cm4gdHJ1ZTtcbn1cblxuLyoqIFdoZXRoZXIgdGhpcyBydW4gaGFzIGFscmVhZHkgcmVwb3J0ZWQgYSByZXBvLWxldmVsIHJlamVjdGlvbi4gKi9cbmV4cG9ydCBmdW5jdGlvbiBoYXNSZXBvcnRlZFJlcG9MZXZlbFJlamVjdGlvbihcbiAgcmVwbzogc3RyaW5nLFxuICBicmFuY2g6IHN0cmluZyxcbik6IGJvb2xlYW4ge1xuICByZXR1cm4gcmVwb3J0ZWQuaGFzKGtleShyZXBvLCBicmFuY2gpKTtcbn1cblxuLyoqIFJlc2V0IHRoZSByZWdpc3RyeS4gVGVzdHMgb25seSDigJQgcHJvZHVjdGlvbiBzdGF0ZSBpcyBwZXIgcHJvY2Vzcy4gKi9cbmV4cG9ydCBmdW5jdGlvbiByZXNldFJlcG9MZXZlbFJlamVjdGlvbnNGb3JUZXN0KCk6IHZvaWQge1xuICByZXBvcnRlZC5jbGVhcigpO1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7OztDQTBCQyxHQUVEOzs7Ozs7Ozs7O0NBVUMsR0FDRCxNQUFNLHdCQUEyQztFQUMvQztFQUNBO0VBQ0E7RUFDQTtFQUNBO0VBQ0E7RUFDQTtDQUNEO0FBRUQ7OztDQUdDLEdBQ0QsT0FBTyxTQUFTLDJCQUEyQixPQUFlO0VBQ3hELE9BQU8sc0JBQXNCLElBQUksQ0FBQyxDQUFDLEtBQU8sR0FBRyxJQUFJLENBQUM7QUFDcEQ7QUFFQTs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0FvQkMsR0FDRCxNQUFNLDJCQUE4QztFQUNsRDtFQUNBO0VBQ0E7RUFDQTtDQUNEO0FBRUQ7Ozs7Ozs7O0NBUUMsR0FDRCxPQUFPLFNBQVMsa0NBQWtDLE9BQWU7RUFDL0QsSUFBSSxDQUFDLDJCQUEyQixVQUFVLE9BQU87RUFDakQsT0FBTyx5QkFBeUIsSUFBSSxDQUFDLENBQUMsS0FBTyxHQUFHLElBQUksQ0FBQztBQUN2RDtBQUVBOzs7Ozs7O0NBT0MsR0FDRCxPQUFPLFNBQVMsMkJBQ2QsT0FBZSxFQUNmLE1BQWM7RUFFZCxJQUFJLENBQUMsMkJBQTJCLFVBQVUsT0FBTztFQUNqRCxNQUFNLFVBQVUsYUFBYSxJQUFJLENBQUMsWUFDaEMsOEJBQThCLElBQUksQ0FBQztFQUNyQyxJQUFJLFNBQVM7SUFDWCxPQUFPLENBQUMsK0NBQStDLEVBQUUsT0FBTyxJQUFJLENBQUMsR0FDbkUsdUVBQ0EseUVBQ0Esd0VBQ0EseUVBQ0EsdUVBQ0EsMEVBQ0Esd0VBQ0E7RUFDSjtFQUNBLElBQUksYUFBYSxJQUFJLENBQUMsWUFBWSxvQkFBb0IsSUFBSSxDQUFDLFVBQVU7SUFDbkUsT0FBTyxDQUFDLDRCQUE0QixFQUFFLE9BQU8sNEJBQTRCLENBQUMsR0FDeEUsdUVBQ0E7RUFDSjtFQUNBLE9BQU8sQ0FBQyx5QkFBeUIsRUFBRSxPQUFPLGdDQUFnQyxDQUFDLEdBQ3pFLDRFQUNBO0FBQ0o7QUFFQTs7Ozs7OztDQU9DLEdBQ0QsTUFBTSxXQUFXLElBQUk7QUFFckIsTUFBTSxNQUFNLENBQUMsTUFBYyxTQUEyQixHQUFHLEtBQUssQ0FBQyxFQUFFLFFBQVE7QUFFekU7Ozs7O0NBS0MsR0FDRCxPQUFPLFNBQVMsOEJBQ2QsSUFBWSxFQUNaLE1BQWM7RUFFZCxNQUFNLElBQUksSUFBSSxNQUFNO0VBQ3BCLElBQUksU0FBUyxHQUFHLENBQUMsSUFBSSxPQUFPO0VBQzVCLFNBQVMsR0FBRyxDQUFDO0VBQ2IsT0FBTztBQUNUO0FBRUEsa0VBQWtFLEdBQ2xFLE9BQU8sU0FBUyw4QkFDZCxJQUFZLEVBQ1osTUFBYztFQUVkLE9BQU8sU0FBUyxHQUFHLENBQUMsSUFBSSxNQUFNO0FBQ2hDO0FBRUEsc0VBQXNFLEdBQ3RFLE9BQU8sU0FBUztFQUNkLFNBQVMsS0FBSztBQUNoQiJ9
+// denoCacheMetadata=8931693011506843965,1600644589062282141

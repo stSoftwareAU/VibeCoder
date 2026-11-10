@@ -1,0 +1,38 @@
+/**
+ * In-process keyed mutex for read-modify-write state files (Issue #4180,
+ * part of #4168).
+ *
+ * The host-wide guards — failure tracker, cooldown state, circuit breaker —
+ * each persist a small JSON file with load → mutate → atomicWrite. Under a
+ * single serial loop that was safe; under concurrent slots two mutations
+ * can interleave at the `await` between load and write and one slot's
+ * increment is lost. `atomicWrite` already prevents TORN writes; this
+ * serialises the whole read-modify-write per file so no update is dropped.
+ * Cross-process safety is not the goal (one driver per checkout — the PID
+ * guard); this is the in-process discipline the pool needs.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */ const chains = new Map();
+/**
+ * Run `fn` exclusively for `key`: callers with the same key are queued in
+ * order; different keys run concurrently. A rejection in `fn` propagates
+ * to its caller and does not poison the queue.
+ */ export function withStateLock(key, fn) {
+  const previous = chains.get(key) ?? Promise.resolve();
+  const run = previous.then(fn, fn);
+  // Keep the chain alive regardless of outcome, but never let a settled
+  // failure leak as an unhandled rejection from the stored tail.
+  const tail = run.then(()=>undefined, ()=>undefined);
+  chains.set(key, tail);
+  // Drop the entry once this tail is the last one, so the map cannot grow
+  // without bound across a long-running worker.
+  tail.then(()=>{
+    if (chains.get(key) === tail) chains.delete(key);
+  });
+  return run;
+}
+/** Test seam: number of keys currently held. */ export function _stateLockKeys() {
+  return chains.size;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9zdGF0ZV9tdXRleC50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIEluLXByb2Nlc3Mga2V5ZWQgbXV0ZXggZm9yIHJlYWQtbW9kaWZ5LXdyaXRlIHN0YXRlIGZpbGVzIChJc3N1ZSAjNDE4MCxcbiAqIHBhcnQgb2YgIzQxNjgpLlxuICpcbiAqIFRoZSBob3N0LXdpZGUgZ3VhcmRzIOKAlCBmYWlsdXJlIHRyYWNrZXIsIGNvb2xkb3duIHN0YXRlLCBjaXJjdWl0IGJyZWFrZXIg4oCUXG4gKiBlYWNoIHBlcnNpc3QgYSBzbWFsbCBKU09OIGZpbGUgd2l0aCBsb2FkIOKGkiBtdXRhdGUg4oaSIGF0b21pY1dyaXRlLiBVbmRlciBhXG4gKiBzaW5nbGUgc2VyaWFsIGxvb3AgdGhhdCB3YXMgc2FmZTsgdW5kZXIgY29uY3VycmVudCBzbG90cyB0d28gbXV0YXRpb25zXG4gKiBjYW4gaW50ZXJsZWF2ZSBhdCB0aGUgYGF3YWl0YCBiZXR3ZWVuIGxvYWQgYW5kIHdyaXRlIGFuZCBvbmUgc2xvdCdzXG4gKiBpbmNyZW1lbnQgaXMgbG9zdC4gYGF0b21pY1dyaXRlYCBhbHJlYWR5IHByZXZlbnRzIFRPUk4gd3JpdGVzOyB0aGlzXG4gKiBzZXJpYWxpc2VzIHRoZSB3aG9sZSByZWFkLW1vZGlmeS13cml0ZSBwZXIgZmlsZSBzbyBubyB1cGRhdGUgaXMgZHJvcHBlZC5cbiAqIENyb3NzLXByb2Nlc3Mgc2FmZXR5IGlzIG5vdCB0aGUgZ29hbCAob25lIGRyaXZlciBwZXIgY2hlY2tvdXQg4oCUIHRoZSBQSURcbiAqIGd1YXJkKTsgdGhpcyBpcyB0aGUgaW4tcHJvY2VzcyBkaXNjaXBsaW5lIHRoZSBwb29sIG5lZWRzLlxuICpcbiAqIFVzZXMgQXVzdHJhbGlhbiBFbmdsaXNoIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgY29sb3VyLCBvcmdhbmlzYXRpb24sIGV0Yy4pLlxuICovXG5cbmNvbnN0IGNoYWlucyA9IG5ldyBNYXA8c3RyaW5nLCBQcm9taXNlPHVua25vd24+PigpO1xuXG4vKipcbiAqIFJ1biBgZm5gIGV4Y2x1c2l2ZWx5IGZvciBga2V5YDogY2FsbGVycyB3aXRoIHRoZSBzYW1lIGtleSBhcmUgcXVldWVkIGluXG4gKiBvcmRlcjsgZGlmZmVyZW50IGtleXMgcnVuIGNvbmN1cnJlbnRseS4gQSByZWplY3Rpb24gaW4gYGZuYCBwcm9wYWdhdGVzXG4gKiB0byBpdHMgY2FsbGVyIGFuZCBkb2VzIG5vdCBwb2lzb24gdGhlIHF1ZXVlLlxuICovXG5leHBvcnQgZnVuY3Rpb24gd2l0aFN0YXRlTG9jazxUPihcbiAga2V5OiBzdHJpbmcsXG4gIGZuOiAoKSA9PiBQcm9taXNlPFQ+LFxuKTogUHJvbWlzZTxUPiB7XG4gIGNvbnN0IHByZXZpb3VzID0gY2hhaW5zLmdldChrZXkpID8/IFByb21pc2UucmVzb2x2ZSgpO1xuICBjb25zdCBydW4gPSBwcmV2aW91cy50aGVuKGZuLCBmbik7XG4gIC8vIEtlZXAgdGhlIGNoYWluIGFsaXZlIHJlZ2FyZGxlc3Mgb2Ygb3V0Y29tZSwgYnV0IG5ldmVyIGxldCBhIHNldHRsZWRcbiAgLy8gZmFpbHVyZSBsZWFrIGFzIGFuIHVuaGFuZGxlZCByZWplY3Rpb24gZnJvbSB0aGUgc3RvcmVkIHRhaWwuXG4gIGNvbnN0IHRhaWwgPSBydW4udGhlbigoKSA9PiB1bmRlZmluZWQsICgpID0+IHVuZGVmaW5lZCk7XG4gIGNoYWlucy5zZXQoa2V5LCB0YWlsKTtcbiAgLy8gRHJvcCB0aGUgZW50cnkgb25jZSB0aGlzIHRhaWwgaXMgdGhlIGxhc3Qgb25lLCBzbyB0aGUgbWFwIGNhbm5vdCBncm93XG4gIC8vIHdpdGhvdXQgYm91bmQgYWNyb3NzIGEgbG9uZy1ydW5uaW5nIHdvcmtlci5cbiAgdGFpbC50aGVuKCgpID0+IHtcbiAgICBpZiAoY2hhaW5zLmdldChrZXkpID09PSB0YWlsKSBjaGFpbnMuZGVsZXRlKGtleSk7XG4gIH0pO1xuICByZXR1cm4gcnVuO1xufVxuXG4vKiogVGVzdCBzZWFtOiBudW1iZXIgb2Yga2V5cyBjdXJyZW50bHkgaGVsZC4gKi9cbmV4cG9ydCBmdW5jdGlvbiBfc3RhdGVMb2NrS2V5cygpOiBudW1iZXIge1xuICByZXR1cm4gY2hhaW5zLnNpemU7XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7Ozs7Ozs7O0NBY0MsR0FFRCxNQUFNLFNBQVMsSUFBSTtBQUVuQjs7OztDQUlDLEdBQ0QsT0FBTyxTQUFTLGNBQ2QsR0FBVyxFQUNYLEVBQW9CO0VBRXBCLE1BQU0sV0FBVyxPQUFPLEdBQUcsQ0FBQyxRQUFRLFFBQVEsT0FBTztFQUNuRCxNQUFNLE1BQU0sU0FBUyxJQUFJLENBQUMsSUFBSTtFQUM5QixzRUFBc0U7RUFDdEUsK0RBQStEO0VBQy9ELE1BQU0sT0FBTyxJQUFJLElBQUksQ0FBQyxJQUFNLFdBQVcsSUFBTTtFQUM3QyxPQUFPLEdBQUcsQ0FBQyxLQUFLO0VBQ2hCLHdFQUF3RTtFQUN4RSw4Q0FBOEM7RUFDOUMsS0FBSyxJQUFJLENBQUM7SUFDUixJQUFJLE9BQU8sR0FBRyxDQUFDLFNBQVMsTUFBTSxPQUFPLE1BQU0sQ0FBQztFQUM5QztFQUNBLE9BQU87QUFDVDtBQUVBLDhDQUE4QyxHQUM5QyxPQUFPLFNBQVM7RUFDZCxPQUFPLE9BQU8sSUFBSTtBQUNwQiJ9
+// denoCacheMetadata=11389100757044461819,847321052413825870

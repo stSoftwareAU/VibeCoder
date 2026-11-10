@@ -1,0 +1,103 @@
+// Ported from js-yaml v3.13.1:
+// https://github.com/nodeca/js-yaml/commit/665aadda42349dcae869f12040d9b10ef18d12da
+// Copyright 2011-2015 by Vitaly Puzrin. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+import type { Type } from "../_type.ts";
+
+const YAML_DATE_REGEXP = new RegExp(
+  "^([0-9][0-9][0-9][0-9])" + // [1] year
+    "-([0-9][0-9])" + // [2] month
+    "-([0-9][0-9])$", // [3] day
+);
+
+const YAML_TIMESTAMP_REGEXP = new RegExp(
+  "^([0-9][0-9][0-9][0-9])" + // [1] year
+    "-([0-9][0-9]?)" + // [2] month
+    "-([0-9][0-9]?)" + // [3] day
+    "(?:[Tt]|[ \\t]+)" + // ...
+    "([0-9][0-9]?)" + // [4] hour
+    ":([0-9][0-9])" + // [5] minute
+    ":([0-9][0-9])" + // [6] second
+    "(?:\\.([0-9]*))?" + // [7] fraction
+    "(?:[ \\t]*(Z|([-+])([0-9][0-9]?)" + // [8] tz [9] tz_sign [10] tz_hour
+    "(?::([0-9][0-9]))?))?$", // [11] tz_minute
+);
+
+function resolveYamlTimestamp(data: string): boolean {
+  if (data === null) return false;
+  if (YAML_DATE_REGEXP.exec(data) !== null) return true;
+  if (YAML_TIMESTAMP_REGEXP.exec(data) !== null) return true;
+  return false;
+}
+
+function constructYamlTimestamp(data: string): Date {
+  let match = YAML_DATE_REGEXP.exec(data);
+  if (match === null) match = YAML_TIMESTAMP_REGEXP.exec(data);
+
+  if (match === null) {
+    throw new Error("Cannot construct YAML timestamp: date resolve error");
+  }
+
+  // match: [1] year [2] month [3] day
+
+  const year = +match[1]!;
+  const month = +match[2]! - 1; // JS month starts with 0
+  const day = +match[3]!;
+
+  if (!match[4]) {
+    // no hour
+    return new Date(Date.UTC(year, month, day));
+  }
+
+  // match: [4] hour [5] minute [6] second [7] fraction
+
+  const hour = +match[4];
+  const minute = +match[5]!;
+  const second = +match[6]!;
+
+  let fraction = 0;
+  if (match[7]) {
+    let partFraction = match[7].slice(0, 3);
+    while (partFraction.length < 3) {
+      // milli-seconds
+      partFraction += "0";
+    }
+    fraction = +partFraction;
+  }
+
+  // match: [8] tz [9] tz_sign [10] tz_hour [11] tz_minute
+
+  let delta = null;
+  if (match[9] && match[10]) {
+    const tzHour = +match[10];
+    const tzMinute = +(match[11] || 0);
+    delta = (tzHour * 60 + tzMinute) * 60000; // delta in milli-seconds
+    if (match[9] === "-") delta = -delta;
+  }
+
+  const date = new Date(
+    Date.UTC(year, month, day, hour, minute, second, fraction),
+  );
+
+  if (delta) date.setTime(date.getTime() - delta);
+
+  return date;
+}
+
+function representYamlTimestamp(date: Date): string {
+  return date.toISOString();
+}
+
+export const timestamp: Type<"scalar", Date> = {
+  tag: "tag:yaml.org,2002:timestamp",
+  construct: constructYamlTimestamp,
+  predicate(object): object is Date {
+    return object instanceof Date;
+  },
+  kind: "scalar",
+  represent: representYamlTimestamp,
+  resolve: resolveYamlTimestamp,
+};
+
+// denoCacheMetadata={"headers":{"accept-ranges":"bytes","x-robots-tag":"noindex","cf-cache-status":"HIT","access-control-allow-origin":"*","x-jsr-backend":"modules","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=2OqVbkeE4kDp4ME2qoYHY%2FzCsB2u5qcmZWh%2Fqy%2Bs27UjK7Lf90n4Wfft4TBv3vxxQ6OdddnxspJ%2B%2FwquTpWN%2Bq%2Fi9pPs1wJPDtqB1tIcRcDuf4zcnb8Po7c%3D\"}]}","cache-control":"public, max-age=31536000, immutable","content-type":"text/typescript","alt-svc":"h3=\":443\"; ma=86400","server":"cloudflare","content-length":"2835","cf-ray":"a583917b2df7561f-SYD","access-control-expose-headers":"*","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","etag":"\"abd3e8618c2057b8b1136af2034a0308\"","set-cookie":"__cf_bm=w7Hdc8C0nq2lUhhL3P5eym7QTLRgoQsZjhaTcEIKt.Q-1794298095.8798256-1.0.1.1-jPj1JOfszsySQOp_IisTGOL427GCfCWZw7KqV0lnZeU5ZxS326blrVyqrUrw0_nbBXuZHIQnPfvORcrYpEexnUE2iezvOUgw85zaH5D9w0DDDQV13USvOND7OaMVq67j; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","cross-origin-resource-policy":"cross-origin","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","age":"6011042","vary":"Origin","x-content-type-options":"nosniff","date":"Tue, 10 Nov 2026 08:08:15 GMT"},"url":"https://jsr.io/@std/yaml/1.0.12/_type/timestamp.ts","time":1794298095}

@@ -1,0 +1,186 @@
+/**
+ * Classifying a worker failure as a host/infrastructure fault (Issue #2890).
+ *
+ * A failure whose cause lives on the worker host itself — a corrupt shared
+ * clone, a full disk, a container image that could not be built, a clone
+ * that could not even be created — is not a fault of the issue it happened
+ * to be attempted on. Once such a failure is marked with `failed-once` or
+ * `failed`, the label sticks to the issue for as long as it takes a human to
+ * notice the real cause lives elsewhere, even after the host is repaired.
+ *
+ * This module classifies a raw failure message into a small, narrow set of
+ * host-fault kinds and, when one is found, appends a machine-readable marker
+ * comment so a later sweep can find and release these labels once the host
+ * is healthy again. Detection is deliberately conservative: an ambiguous
+ * failure is left unclassified (`null`) rather than guessed at, because a
+ * host fault silently swallows a label a human genuinely needed to see.
+ */ import { workerGateCategoryOf } from "./failure_diagnosis.ts";
+import { brokenRefsIn } from "./broken_ref_repair.ts";
+import { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
+import { isObjectStoreCorruption } from "./object_store_repair.ts";
+export { isHostDiskProtectiveStopText } from "./host_disk_protective_stop.ts";
+/** The narrow set of host/infrastructure fault kinds this module detects. */ export const HOST_FAULT_KINDS = [
+  "clone-corrupt",
+  "clone-failed",
+  "disk-full",
+  "container-build-failed"
+];
+/** True when `value` is one of {@link HOST_FAULT_KINDS}. */ export function isHostFaultKind(value) {
+  return HOST_FAULT_KINDS.includes(value);
+}
+/**
+ * Disk exhaustion, however the caller happened to word it.
+ *
+ * `os error 30` is Rust's `EROFS`: after the host filled, the guest remounted
+ * read-only and later failures quoted that instead of `ENOSPC` (Issue #4360).
+ * The park note is the worker's own words when it stops a build at the floor.
+ * The floor sentence itself (`host disk below its floor`) is the same stop
+ * when a caller quotes `judgeHostDiskForBuild` without the park note
+ * (Issue #4388). These two protective-stop wordings share a narrow matcher
+ * with the run-failure classifier. A worker-gate marker is still excluded by
+ * {@link detectHostFault} before either disk matcher runs, so a gate that
+ * quotes the same text stays an issue failure.
+ */ const DISK_FULL_PATTERN = /No space left on device|\bENOSPC\b|Read-only file system|\bos error 30\b/i;
+/** Whether `message` is the host running out of disk, including the read-only fallout. */ export function isHostDiskFaultText(message) {
+  return DISK_FULL_PATTERN.test(message) || isHostDiskProtectiveStopText(message);
+}
+/**
+ * A phase failure for a host-disk fault, or null when `reason` is not one.
+ *
+ * The category stays `internal_error` so {@link detectHostFault} still reads
+ * the message. Any other declared category, and any worker-gate marker, would
+ * charge the issue (Issue #4360).
+ */ export function hostDiskInfrastructureFailure(reason) {
+  if (!isHostDiskFaultText(reason)) return null;
+  return {
+    category: "internal_error",
+    status: "failure",
+    reason
+  };
+}
+/**
+ * `Failed to clone <repo>: <stderr>` from `setupRepo()` in
+ * `commands/git_operations.ts` — a clone that never got off the ground.
+ */ const CLONE_FAILED_PATTERN = /Failed to clone \S+: /;
+/**
+ * Wording that means the clone failure above is an authentication/permission
+ * problem, or the repository does not exist — a fault of the repository's
+ * configuration or the fleet's credentials, not of the host. These must
+ * never classify as a host fault.
+ */ const CLONE_AUTH_OR_MISSING_PATTERN = /Repository not found|Authentication failed|could not read Username|could not read Password|Permission denied|HTTP (?:401|403)|access denied|not have permission/i;
+/**
+ * `container image build failed` — the wording `describeFailurePhase()` in
+ * `lib/container_restart_backoff.ts` produces for the `image_build` phase,
+ * carried verbatim into the restart-backoff self-heal log line
+ * (`` `${describeFailurePhase(decision.phase)} failed ` ``) and into the
+ * escalation report's `Failure phase: image_build (container image build)`
+ * line. A failed image build means the known-good environment could not be
+ * reconstructed on this host at all — never a fault of the issue.
+ */ const CONTAINER_BUILD_FAILED_PATTERN = /container image build failed/i;
+/**
+ * Further wordings git itself uses for a damaged clone on the worker host
+ * (Issue #2953) — none of these are a fault of the issue being worked:
+ *  - a bad line in the clone's own `.git/config` (never a user's
+ *    `~/.gitconfig` or any other config file git happens to mention);
+ *  - the clone's git directory has gone missing or been corrupted beyond
+ *    recognition, so git no longer believes it is inside one;
+ *  - a ref git is skipping over because it is unreadable.
+ */ const CLONE_CORRUPT_PATTERNS = [
+  /bad config line \d+ in file (?:\S*\/)?\.git\/config\b/i,
+  /\bnot in a git directory\b/i,
+  /\bignoring broken ref\b/i
+];
+/**
+ * Classify a raw failure message; `null` when it is not a host fault.
+ *
+ * Checked in order, each narrow enough that an ambiguous git failure (an
+ * invalid branch name, an unknown ref) returns `null` rather than being
+ * guessed at.
+ */ export function detectHostFault(message, category) {
+  if (category === "clone_corrupt") return "clone-corrupt";
+  if (category !== undefined && category !== "internal_error") return null;
+  // A worker gate refusal (every WORKER_GATE_MARKERS category) is the worker's
+  // own words plus a quotation of text it did not write: the agent's summary
+  // or tests, or the branch's raw check output (Issues #3431, #3454; PR #3716
+  // review). A quoted `ENOSPC` or `Failed to clone` there is not host output,
+  // so it is never a host fault.
+  if (workerGateCategoryOf(message) !== null) return null;
+  if (brokenRefsIn(message).length > 0 || isObjectStoreCorruption(message) || CLONE_CORRUPT_PATTERNS.some((re)=>re.test(message))) {
+    return "clone-corrupt";
+  }
+  if (DISK_FULL_PATTERN.test(message) || isHostDiskProtectiveStopText(message)) {
+    return "disk-full";
+  }
+  if (CONTAINER_BUILD_FAILED_PATTERN.test(message)) {
+    return "container-build-failed";
+  }
+  if (CLONE_FAILED_PATTERN.test(message) && !CLONE_AUTH_OR_MISSING_PATTERN.test(message)) {
+    return "clone-failed";
+  }
+  return null;
+}
+/** Build the marker comment appended when a host fault is detected. */ export function buildHostFaultMarker(kind) {
+  return `<!-- vibe-host-fault kind="${kind}" -->`;
+}
+/** Anchors the marker to the whole of the trimmed final line, and no other. */ const HOST_FAULT_MARKER_PATTERN = /^<!-- vibe-host-fault kind="([a-z-]+)" -->$/;
+/**
+ * Parse the host-fault kind from a comment body's marker, or `null`.
+ *
+ * Considers **only** the trimmed final non-empty line of `body` — the raw
+ * failure message (agent output) is embedded verbatim earlier in the same
+ * comment, so a marker-shaped string appearing there must never count. Only
+ * the marker the worker itself appends as the very last line is honoured.
+ */ export function parseHostFaultMarker(body) {
+  const lines = body.split("\n");
+  let lastNonEmpty;
+  for(let i = lines.length - 1; i >= 0; i--){
+    const trimmed = lines[i].trim();
+    if (trimmed.length > 0) {
+      lastNonEmpty = trimmed;
+      break;
+    }
+  }
+  if (lastNonEmpty === undefined) return null;
+  const match = HOST_FAULT_MARKER_PATTERN.exec(lastNonEmpty);
+  if (!match) return null;
+  const kind = match[1];
+  return isHostFaultKind(kind) ? kind : null;
+}
+/** Short human phrase describing a host-fault kind, for the comment body. */ export function describeHostFault(kind) {
+  switch(kind){
+    case "clone-corrupt":
+      return "a corrupt git clone on the worker host (broken ref, unreadable object, corrupt .git/config or lost git directory)";
+    case "clone-failed":
+      return "the worker host could not clone the repository";
+    case "disk-full":
+      return "the worker host ran out of disk space";
+    case "container-build-failed":
+      return "the worker host could not build the container image";
+  }
+}
+/**
+ * Build the `**Host fault:** ...` note line appended to a failure comment's
+ * `**Category:**` line, written by `markIssueAsFailedOnce` in
+ * `lib/label_failure.ts` (Issue #2890).
+ *
+ * Returned without any leading newlines — callers that need the blank-line
+ * separator prepend it themselves (e.g. `` `\n\n${buildHostFaultNote(kind)}` ``).
+ */ export function buildHostFaultNote(kind) {
+  return `**Host fault:** \`${kind}\` — ${describeHostFault(kind)}. This failure came from the worker host, not from this issue; the label is released automatically once the host is healthy again.`;
+}
+/**
+ * Source line a quality-gate failure record carries (Issue #3445). The
+ * gate's output is the repository's own test output, so the record is never a
+ * host fault; the release sweep keys on this line to leave it alone.
+ */ export const QUALITY_GATE_SOURCE_NOTE = "**Source:** quality gate — this failure is the repository's own check output, so it is not classified as a host fault.";
+const QUALITY_GATE_RECORD_RE = /^##[^\n]*\n\s*\*\*Category:\*\*[^\n]*\n\s*\*\*Source:\*\* quality gate\b/;
+/**
+ * Whether a posted failure-record body is a quality-gate failure (Issue
+ * #3445). Anchored to the worker-written head of the comment (heading,
+ * Category line, Source line) so a quoted line deeper in the output cannot
+ * forge it; mirrors `isWorkerGateFailureRecord` in failure_diagnosis.ts.
+ */ export function isQualityGateFailureRecord(body) {
+  return QUALITY_GATE_RECORD_RE.test(body.trimStart());
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9ob3N0X2ZhdWx0LnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogQ2xhc3NpZnlpbmcgYSB3b3JrZXIgZmFpbHVyZSBhcyBhIGhvc3QvaW5mcmFzdHJ1Y3R1cmUgZmF1bHQgKElzc3VlICMyODkwKS5cbiAqXG4gKiBBIGZhaWx1cmUgd2hvc2UgY2F1c2UgbGl2ZXMgb24gdGhlIHdvcmtlciBob3N0IGl0c2VsZiDigJQgYSBjb3JydXB0IHNoYXJlZFxuICogY2xvbmUsIGEgZnVsbCBkaXNrLCBhIGNvbnRhaW5lciBpbWFnZSB0aGF0IGNvdWxkIG5vdCBiZSBidWlsdCwgYSBjbG9uZVxuICogdGhhdCBjb3VsZCBub3QgZXZlbiBiZSBjcmVhdGVkIOKAlCBpcyBub3QgYSBmYXVsdCBvZiB0aGUgaXNzdWUgaXQgaGFwcGVuZWRcbiAqIHRvIGJlIGF0dGVtcHRlZCBvbi4gT25jZSBzdWNoIGEgZmFpbHVyZSBpcyBtYXJrZWQgd2l0aCBgZmFpbGVkLW9uY2VgIG9yXG4gKiBgZmFpbGVkYCwgdGhlIGxhYmVsIHN0aWNrcyB0byB0aGUgaXNzdWUgZm9yIGFzIGxvbmcgYXMgaXQgdGFrZXMgYSBodW1hbiB0b1xuICogbm90aWNlIHRoZSByZWFsIGNhdXNlIGxpdmVzIGVsc2V3aGVyZSwgZXZlbiBhZnRlciB0aGUgaG9zdCBpcyByZXBhaXJlZC5cbiAqXG4gKiBUaGlzIG1vZHVsZSBjbGFzc2lmaWVzIGEgcmF3IGZhaWx1cmUgbWVzc2FnZSBpbnRvIGEgc21hbGwsIG5hcnJvdyBzZXQgb2ZcbiAqIGhvc3QtZmF1bHQga2luZHMgYW5kLCB3aGVuIG9uZSBpcyBmb3VuZCwgYXBwZW5kcyBhIG1hY2hpbmUtcmVhZGFibGUgbWFya2VyXG4gKiBjb21tZW50IHNvIGEgbGF0ZXIgc3dlZXAgY2FuIGZpbmQgYW5kIHJlbGVhc2UgdGhlc2UgbGFiZWxzIG9uY2UgdGhlIGhvc3RcbiAqIGlzIGhlYWx0aHkgYWdhaW4uIERldGVjdGlvbiBpcyBkZWxpYmVyYXRlbHkgY29uc2VydmF0aXZlOiBhbiBhbWJpZ3VvdXNcbiAqIGZhaWx1cmUgaXMgbGVmdCB1bmNsYXNzaWZpZWQgKGBudWxsYCkgcmF0aGVyIHRoYW4gZ3Vlc3NlZCBhdCwgYmVjYXVzZSBhXG4gKiBob3N0IGZhdWx0IHNpbGVudGx5IHN3YWxsb3dzIGEgbGFiZWwgYSBodW1hbiBnZW51aW5lbHkgbmVlZGVkIHRvIHNlZS5cbiAqL1xuXG5pbXBvcnQge1xuICB0eXBlIEZhaWx1cmVDYXRlZ29yeSxcbiAgd29ya2VyR2F0ZUNhdGVnb3J5T2YsXG59IGZyb20gXCIuL2ZhaWx1cmVfZGlhZ25vc2lzLnRzXCI7XG5pbXBvcnQgeyBicm9rZW5SZWZzSW4gfSBmcm9tIFwiLi9icm9rZW5fcmVmX3JlcGFpci50c1wiO1xuaW1wb3J0IHsgaXNIb3N0RGlza1Byb3RlY3RpdmVTdG9wVGV4dCB9IGZyb20gXCIuL2hvc3RfZGlza19wcm90ZWN0aXZlX3N0b3AudHNcIjtcbmltcG9ydCB7IGlzT2JqZWN0U3RvcmVDb3JydXB0aW9uIH0gZnJvbSBcIi4vb2JqZWN0X3N0b3JlX3JlcGFpci50c1wiO1xuXG5leHBvcnQgeyBpc0hvc3REaXNrUHJvdGVjdGl2ZVN0b3BUZXh0IH0gZnJvbSBcIi4vaG9zdF9kaXNrX3Byb3RlY3RpdmVfc3RvcC50c1wiO1xuXG4vKiogVGhlIG5hcnJvdyBzZXQgb2YgaG9zdC9pbmZyYXN0cnVjdHVyZSBmYXVsdCBraW5kcyB0aGlzIG1vZHVsZSBkZXRlY3RzLiAqL1xuZXhwb3J0IGNvbnN0IEhPU1RfRkFVTFRfS0lORFMgPSBbXG4gIFwiY2xvbmUtY29ycnVwdFwiLFxuICBcImNsb25lLWZhaWxlZFwiLFxuICBcImRpc2stZnVsbFwiLFxuICBcImNvbnRhaW5lci1idWlsZC1mYWlsZWRcIixcbl0gYXMgY29uc3Q7XG5cbi8qKiBPbmUgb2Yge0BsaW5rIEhPU1RfRkFVTFRfS0lORFN9LiAqL1xuZXhwb3J0IHR5cGUgSG9zdEZhdWx0S2luZCA9IHR5cGVvZiBIT1NUX0ZBVUxUX0tJTkRTW251bWJlcl07XG5cbi8qKiBUcnVlIHdoZW4gYHZhbHVlYCBpcyBvbmUgb2Yge0BsaW5rIEhPU1RfRkFVTFRfS0lORFN9LiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzSG9zdEZhdWx0S2luZCh2YWx1ZTogc3RyaW5nKTogdmFsdWUgaXMgSG9zdEZhdWx0S2luZCB7XG4gIHJldHVybiAoSE9TVF9GQVVMVF9LSU5EUyBhcyByZWFkb25seSBzdHJpbmdbXSkuaW5jbHVkZXModmFsdWUpO1xufVxuXG4vKipcbiAqIERpc2sgZXhoYXVzdGlvbiwgaG93ZXZlciB0aGUgY2FsbGVyIGhhcHBlbmVkIHRvIHdvcmQgaXQuXG4gKlxuICogYG9zIGVycm9yIDMwYCBpcyBSdXN0J3MgYEVST0ZTYDogYWZ0ZXIgdGhlIGhvc3QgZmlsbGVkLCB0aGUgZ3Vlc3QgcmVtb3VudGVkXG4gKiByZWFkLW9ubHkgYW5kIGxhdGVyIGZhaWx1cmVzIHF1b3RlZCB0aGF0IGluc3RlYWQgb2YgYEVOT1NQQ2AgKElzc3VlICM0MzYwKS5cbiAqIFRoZSBwYXJrIG5vdGUgaXMgdGhlIHdvcmtlcidzIG93biB3b3JkcyB3aGVuIGl0IHN0b3BzIGEgYnVpbGQgYXQgdGhlIGZsb29yLlxuICogVGhlIGZsb29yIHNlbnRlbmNlIGl0c2VsZiAoYGhvc3QgZGlzayBiZWxvdyBpdHMgZmxvb3JgKSBpcyB0aGUgc2FtZSBzdG9wXG4gKiB3aGVuIGEgY2FsbGVyIHF1b3RlcyBganVkZ2VIb3N0RGlza0ZvckJ1aWxkYCB3aXRob3V0IHRoZSBwYXJrIG5vdGVcbiAqIChJc3N1ZSAjNDM4OCkuIFRoZXNlIHR3byBwcm90ZWN0aXZlLXN0b3Agd29yZGluZ3Mgc2hhcmUgYSBuYXJyb3cgbWF0Y2hlclxuICogd2l0aCB0aGUgcnVuLWZhaWx1cmUgY2xhc3NpZmllci4gQSB3b3JrZXItZ2F0ZSBtYXJrZXIgaXMgc3RpbGwgZXhjbHVkZWQgYnlcbiAqIHtAbGluayBkZXRlY3RIb3N0RmF1bHR9IGJlZm9yZSBlaXRoZXIgZGlzayBtYXRjaGVyIHJ1bnMsIHNvIGEgZ2F0ZSB0aGF0XG4gKiBxdW90ZXMgdGhlIHNhbWUgdGV4dCBzdGF5cyBhbiBpc3N1ZSBmYWlsdXJlLlxuICovXG5jb25zdCBESVNLX0ZVTExfUEFUVEVSTiA9XG4gIC9ObyBzcGFjZSBsZWZ0IG9uIGRldmljZXxcXGJFTk9TUENcXGJ8UmVhZC1vbmx5IGZpbGUgc3lzdGVtfFxcYm9zIGVycm9yIDMwXFxiL2k7XG5cbi8qKiBXaGV0aGVyIGBtZXNzYWdlYCBpcyB0aGUgaG9zdCBydW5uaW5nIG91dCBvZiBkaXNrLCBpbmNsdWRpbmcgdGhlIHJlYWQtb25seSBmYWxsb3V0LiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGlzSG9zdERpc2tGYXVsdFRleHQobWVzc2FnZTogc3RyaW5nKTogYm9vbGVhbiB7XG4gIHJldHVybiBESVNLX0ZVTExfUEFUVEVSTi50ZXN0KG1lc3NhZ2UpIHx8XG4gICAgaXNIb3N0RGlza1Byb3RlY3RpdmVTdG9wVGV4dChtZXNzYWdlKTtcbn1cblxuLyoqXG4gKiBBIHBoYXNlIGZhaWx1cmUgZm9yIGEgaG9zdC1kaXNrIGZhdWx0LCBvciBudWxsIHdoZW4gYHJlYXNvbmAgaXMgbm90IG9uZS5cbiAqXG4gKiBUaGUgY2F0ZWdvcnkgc3RheXMgYGludGVybmFsX2Vycm9yYCBzbyB7QGxpbmsgZGV0ZWN0SG9zdEZhdWx0fSBzdGlsbCByZWFkc1xuICogdGhlIG1lc3NhZ2UuIEFueSBvdGhlciBkZWNsYXJlZCBjYXRlZ29yeSwgYW5kIGFueSB3b3JrZXItZ2F0ZSBtYXJrZXIsIHdvdWxkXG4gKiBjaGFyZ2UgdGhlIGlzc3VlIChJc3N1ZSAjNDM2MCkuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBob3N0RGlza0luZnJhc3RydWN0dXJlRmFpbHVyZShcbiAgcmVhc29uOiBzdHJpbmcsXG4pOiB7IGNhdGVnb3J5OiBcImludGVybmFsX2Vycm9yXCI7IHN0YXR1czogXCJmYWlsdXJlXCI7IHJlYXNvbjogc3RyaW5nIH0gfCBudWxsIHtcbiAgaWYgKCFpc0hvc3REaXNrRmF1bHRUZXh0KHJlYXNvbikpIHJldHVybiBudWxsO1xuICByZXR1cm4geyBjYXRlZ29yeTogXCJpbnRlcm5hbF9lcnJvclwiLCBzdGF0dXM6IFwiZmFpbHVyZVwiLCByZWFzb24gfTtcbn1cblxuLyoqXG4gKiBgRmFpbGVkIHRvIGNsb25lIDxyZXBvPjogPHN0ZGVycj5gIGZyb20gYHNldHVwUmVwbygpYCBpblxuICogYGNvbW1hbmRzL2dpdF9vcGVyYXRpb25zLnRzYCDigJQgYSBjbG9uZSB0aGF0IG5ldmVyIGdvdCBvZmYgdGhlIGdyb3VuZC5cbiAqL1xuY29uc3QgQ0xPTkVfRkFJTEVEX1BBVFRFUk4gPSAvRmFpbGVkIHRvIGNsb25lIFxcUys6IC87XG5cbi8qKlxuICogV29yZGluZyB0aGF0IG1lYW5zIHRoZSBjbG9uZSBmYWlsdXJlIGFib3ZlIGlzIGFuIGF1dGhlbnRpY2F0aW9uL3Blcm1pc3Npb25cbiAqIHByb2JsZW0sIG9yIHRoZSByZXBvc2l0b3J5IGRvZXMgbm90IGV4aXN0IOKAlCBhIGZhdWx0IG9mIHRoZSByZXBvc2l0b3J5J3NcbiAqIGNvbmZpZ3VyYXRpb24gb3IgdGhlIGZsZWV0J3MgY3JlZGVudGlhbHMsIG5vdCBvZiB0aGUgaG9zdC4gVGhlc2UgbXVzdFxuICogbmV2ZXIgY2xhc3NpZnkgYXMgYSBob3N0IGZhdWx0LlxuICovXG5jb25zdCBDTE9ORV9BVVRIX09SX01JU1NJTkdfUEFUVEVSTiA9XG4gIC9SZXBvc2l0b3J5IG5vdCBmb3VuZHxBdXRoZW50aWNhdGlvbiBmYWlsZWR8Y291bGQgbm90IHJlYWQgVXNlcm5hbWV8Y291bGQgbm90IHJlYWQgUGFzc3dvcmR8UGVybWlzc2lvbiBkZW5pZWR8SFRUUCAoPzo0MDF8NDAzKXxhY2Nlc3MgZGVuaWVkfG5vdCBoYXZlIHBlcm1pc3Npb24vaTtcblxuLyoqXG4gKiBgY29udGFpbmVyIGltYWdlIGJ1aWxkIGZhaWxlZGAg4oCUIHRoZSB3b3JkaW5nIGBkZXNjcmliZUZhaWx1cmVQaGFzZSgpYCBpblxuICogYGxpYi9jb250YWluZXJfcmVzdGFydF9iYWNrb2ZmLnRzYCBwcm9kdWNlcyBmb3IgdGhlIGBpbWFnZV9idWlsZGAgcGhhc2UsXG4gKiBjYXJyaWVkIHZlcmJhdGltIGludG8gdGhlIHJlc3RhcnQtYmFja29mZiBzZWxmLWhlYWwgbG9nIGxpbmVcbiAqIChgYCBgJHtkZXNjcmliZUZhaWx1cmVQaGFzZShkZWNpc2lvbi5waGFzZSl9IGZhaWxlZCBgIGBgKSBhbmQgaW50byB0aGVcbiAqIGVzY2FsYXRpb24gcmVwb3J0J3MgYEZhaWx1cmUgcGhhc2U6IGltYWdlX2J1aWxkIChjb250YWluZXIgaW1hZ2UgYnVpbGQpYFxuICogbGluZS4gQSBmYWlsZWQgaW1hZ2UgYnVpbGQgbWVhbnMgdGhlIGtub3duLWdvb2QgZW52aXJvbm1lbnQgY291bGQgbm90IGJlXG4gKiByZWNvbnN0cnVjdGVkIG9uIHRoaXMgaG9zdCBhdCBhbGwg4oCUIG5ldmVyIGEgZmF1bHQgb2YgdGhlIGlzc3VlLlxuICovXG5jb25zdCBDT05UQUlORVJfQlVJTERfRkFJTEVEX1BBVFRFUk4gPSAvY29udGFpbmVyIGltYWdlIGJ1aWxkIGZhaWxlZC9pO1xuXG4vKipcbiAqIEZ1cnRoZXIgd29yZGluZ3MgZ2l0IGl0c2VsZiB1c2VzIGZvciBhIGRhbWFnZWQgY2xvbmUgb24gdGhlIHdvcmtlciBob3N0XG4gKiAoSXNzdWUgIzI5NTMpIOKAlCBub25lIG9mIHRoZXNlIGFyZSBhIGZhdWx0IG9mIHRoZSBpc3N1ZSBiZWluZyB3b3JrZWQ6XG4gKiAgLSBhIGJhZCBsaW5lIGluIHRoZSBjbG9uZSdzIG93biBgLmdpdC9jb25maWdgIChuZXZlciBhIHVzZXInc1xuICogICAgYH4vLmdpdGNvbmZpZ2Agb3IgYW55IG90aGVyIGNvbmZpZyBmaWxlIGdpdCBoYXBwZW5zIHRvIG1lbnRpb24pO1xuICogIC0gdGhlIGNsb25lJ3MgZ2l0IGRpcmVjdG9yeSBoYXMgZ29uZSBtaXNzaW5nIG9yIGJlZW4gY29ycnVwdGVkIGJleW9uZFxuICogICAgcmVjb2duaXRpb24sIHNvIGdpdCBubyBsb25nZXIgYmVsaWV2ZXMgaXQgaXMgaW5zaWRlIG9uZTtcbiAqICAtIGEgcmVmIGdpdCBpcyBza2lwcGluZyBvdmVyIGJlY2F1c2UgaXQgaXMgdW5yZWFkYWJsZS5cbiAqL1xuY29uc3QgQ0xPTkVfQ09SUlVQVF9QQVRURVJOUzogcmVhZG9ubHkgUmVnRXhwW10gPSBbXG4gIC9iYWQgY29uZmlnIGxpbmUgXFxkKyBpbiBmaWxlICg/OlxcUypcXC8pP1xcLmdpdFxcL2NvbmZpZ1xcYi9pLFxuICAvXFxibm90IGluIGEgZ2l0IGRpcmVjdG9yeVxcYi9pLFxuICAvXFxiaWdub3JpbmcgYnJva2VuIHJlZlxcYi9pLFxuXTtcblxuLyoqXG4gKiBDbGFzc2lmeSBhIHJhdyBmYWlsdXJlIG1lc3NhZ2U7IGBudWxsYCB3aGVuIGl0IGlzIG5vdCBhIGhvc3QgZmF1bHQuXG4gKlxuICogQ2hlY2tlZCBpbiBvcmRlciwgZWFjaCBuYXJyb3cgZW5vdWdoIHRoYXQgYW4gYW1iaWd1b3VzIGdpdCBmYWlsdXJlIChhblxuICogaW52YWxpZCBicmFuY2ggbmFtZSwgYW4gdW5rbm93biByZWYpIHJldHVybnMgYG51bGxgIHJhdGhlciB0aGFuIGJlaW5nXG4gKiBndWVzc2VkIGF0LlxuICovXG5leHBvcnQgZnVuY3Rpb24gZGV0ZWN0SG9zdEZhdWx0KFxuICBtZXNzYWdlOiBzdHJpbmcsXG4gIGNhdGVnb3J5PzogRmFpbHVyZUNhdGVnb3J5LFxuKTogSG9zdEZhdWx0S2luZCB8IG51bGwge1xuICBpZiAoY2F0ZWdvcnkgPT09IFwiY2xvbmVfY29ycnVwdFwiKSByZXR1cm4gXCJjbG9uZS1jb3JydXB0XCI7XG4gIGlmIChjYXRlZ29yeSAhPT0gdW5kZWZpbmVkICYmIGNhdGVnb3J5ICE9PSBcImludGVybmFsX2Vycm9yXCIpIHJldHVybiBudWxsO1xuICAvLyBBIHdvcmtlciBnYXRlIHJlZnVzYWwgKGV2ZXJ5IFdPUktFUl9HQVRFX01BUktFUlMgY2F0ZWdvcnkpIGlzIHRoZSB3b3JrZXInc1xuICAvLyBvd24gd29yZHMgcGx1cyBhIHF1b3RhdGlvbiBvZiB0ZXh0IGl0IGRpZCBub3Qgd3JpdGU6IHRoZSBhZ2VudCdzIHN1bW1hcnlcbiAgLy8gb3IgdGVzdHMsIG9yIHRoZSBicmFuY2gncyByYXcgY2hlY2sgb3V0cHV0IChJc3N1ZXMgIzM0MzEsICMzNDU0OyBQUiAjMzcxNlxuICAvLyByZXZpZXcpLiBBIHF1b3RlZCBgRU5PU1BDYCBvciBgRmFpbGVkIHRvIGNsb25lYCB0aGVyZSBpcyBub3QgaG9zdCBvdXRwdXQsXG4gIC8vIHNvIGl0IGlzIG5ldmVyIGEgaG9zdCBmYXVsdC5cbiAgaWYgKHdvcmtlckdhdGVDYXRlZ29yeU9mKG1lc3NhZ2UpICE9PSBudWxsKSByZXR1cm4gbnVsbDtcbiAgaWYgKFxuICAgIGJyb2tlblJlZnNJbihtZXNzYWdlKS5sZW5ndGggPiAwIHx8IGlzT2JqZWN0U3RvcmVDb3JydXB0aW9uKG1lc3NhZ2UpIHx8XG4gICAgQ0xPTkVfQ09SUlVQVF9QQVRURVJOUy5zb21lKChyZSkgPT4gcmUudGVzdChtZXNzYWdlKSlcbiAgKSB7XG4gICAgcmV0dXJuIFwiY2xvbmUtY29ycnVwdFwiO1xuICB9XG4gIGlmIChcbiAgICBESVNLX0ZVTExfUEFUVEVSTi50ZXN0KG1lc3NhZ2UpIHx8IGlzSG9zdERpc2tQcm90ZWN0aXZlU3RvcFRleHQobWVzc2FnZSlcbiAgKSB7XG4gICAgcmV0dXJuIFwiZGlzay1mdWxsXCI7XG4gIH1cbiAgaWYgKENPTlRBSU5FUl9CVUlMRF9GQUlMRURfUEFUVEVSTi50ZXN0KG1lc3NhZ2UpKSB7XG4gICAgcmV0dXJuIFwiY29udGFpbmVyLWJ1aWxkLWZhaWxlZFwiO1xuICB9XG4gIGlmIChcbiAgICBDTE9ORV9GQUlMRURfUEFUVEVSTi50ZXN0KG1lc3NhZ2UpICYmXG4gICAgIUNMT05FX0FVVEhfT1JfTUlTU0lOR19QQVRURVJOLnRlc3QobWVzc2FnZSlcbiAgKSB7XG4gICAgcmV0dXJuIFwiY2xvbmUtZmFpbGVkXCI7XG4gIH1cbiAgcmV0dXJuIG51bGw7XG59XG5cbi8qKiBCdWlsZCB0aGUgbWFya2VyIGNvbW1lbnQgYXBwZW5kZWQgd2hlbiBhIGhvc3QgZmF1bHQgaXMgZGV0ZWN0ZWQuICovXG5leHBvcnQgZnVuY3Rpb24gYnVpbGRIb3N0RmF1bHRNYXJrZXIoa2luZDogSG9zdEZhdWx0S2luZCk6IHN0cmluZyB7XG4gIHJldHVybiBgPCEtLSB2aWJlLWhvc3QtZmF1bHQga2luZD1cIiR7a2luZH1cIiAtLT5gO1xufVxuXG4vKiogQW5jaG9ycyB0aGUgbWFya2VyIHRvIHRoZSB3aG9sZSBvZiB0aGUgdHJpbW1lZCBmaW5hbCBsaW5lLCBhbmQgbm8gb3RoZXIuICovXG5jb25zdCBIT1NUX0ZBVUxUX01BUktFUl9QQVRURVJOID0gL148IS0tIHZpYmUtaG9zdC1mYXVsdCBraW5kPVwiKFthLXotXSspXCIgLS0+JC87XG5cbi8qKlxuICogUGFyc2UgdGhlIGhvc3QtZmF1bHQga2luZCBmcm9tIGEgY29tbWVudCBib2R5J3MgbWFya2VyLCBvciBgbnVsbGAuXG4gKlxuICogQ29uc2lkZXJzICoqb25seSoqIHRoZSB0cmltbWVkIGZpbmFsIG5vbi1lbXB0eSBsaW5lIG9mIGBib2R5YCDigJQgdGhlIHJhd1xuICogZmFpbHVyZSBtZXNzYWdlIChhZ2VudCBvdXRwdXQpIGlzIGVtYmVkZGVkIHZlcmJhdGltIGVhcmxpZXIgaW4gdGhlIHNhbWVcbiAqIGNvbW1lbnQsIHNvIGEgbWFya2VyLXNoYXBlZCBzdHJpbmcgYXBwZWFyaW5nIHRoZXJlIG11c3QgbmV2ZXIgY291bnQuIE9ubHlcbiAqIHRoZSBtYXJrZXIgdGhlIHdvcmtlciBpdHNlbGYgYXBwZW5kcyBhcyB0aGUgdmVyeSBsYXN0IGxpbmUgaXMgaG9ub3VyZWQuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBwYXJzZUhvc3RGYXVsdE1hcmtlcihib2R5OiBzdHJpbmcpOiBIb3N0RmF1bHRLaW5kIHwgbnVsbCB7XG4gIGNvbnN0IGxpbmVzID0gYm9keS5zcGxpdChcIlxcblwiKTtcbiAgbGV0IGxhc3ROb25FbXB0eTogc3RyaW5nIHwgdW5kZWZpbmVkO1xuICBmb3IgKGxldCBpID0gbGluZXMubGVuZ3RoIC0gMTsgaSA+PSAwOyBpLS0pIHtcbiAgICBjb25zdCB0cmltbWVkID0gbGluZXNbaV0hLnRyaW0oKTtcbiAgICBpZiAodHJpbW1lZC5sZW5ndGggPiAwKSB7XG4gICAgICBsYXN0Tm9uRW1wdHkgPSB0cmltbWVkO1xuICAgICAgYnJlYWs7XG4gICAgfVxuICB9XG4gIGlmIChsYXN0Tm9uRW1wdHkgPT09IHVuZGVmaW5lZCkgcmV0dXJuIG51bGw7XG4gIGNvbnN0IG1hdGNoID0gSE9TVF9GQVVMVF9NQVJLRVJfUEFUVEVSTi5leGVjKGxhc3ROb25FbXB0eSk7XG4gIGlmICghbWF0Y2gpIHJldHVybiBudWxsO1xuICBjb25zdCBraW5kID0gbWF0Y2hbMV0hO1xuICByZXR1cm4gaXNIb3N0RmF1bHRLaW5kKGtpbmQpID8ga2luZCA6IG51bGw7XG59XG5cbi8qKiBTaG9ydCBodW1hbiBwaHJhc2UgZGVzY3JpYmluZyBhIGhvc3QtZmF1bHQga2luZCwgZm9yIHRoZSBjb21tZW50IGJvZHkuICovXG5leHBvcnQgZnVuY3Rpb24gZGVzY3JpYmVIb3N0RmF1bHQoa2luZDogSG9zdEZhdWx0S2luZCk6IHN0cmluZyB7XG4gIHN3aXRjaCAoa2luZCkge1xuICAgIGNhc2UgXCJjbG9uZS1jb3JydXB0XCI6XG4gICAgICByZXR1cm4gXCJhIGNvcnJ1cHQgZ2l0IGNsb25lIG9uIHRoZSB3b3JrZXIgaG9zdCAoYnJva2VuIHJlZiwgdW5yZWFkYWJsZSBvYmplY3QsIGNvcnJ1cHQgLmdpdC9jb25maWcgb3IgbG9zdCBnaXQgZGlyZWN0b3J5KVwiO1xuICAgIGNhc2UgXCJjbG9uZS1mYWlsZWRcIjpcbiAgICAgIHJldHVybiBcInRoZSB3b3JrZXIgaG9zdCBjb3VsZCBub3QgY2xvbmUgdGhlIHJlcG9zaXRvcnlcIjtcbiAgICBjYXNlIFwiZGlzay1mdWxsXCI6XG4gICAgICByZXR1cm4gXCJ0aGUgd29ya2VyIGhvc3QgcmFuIG91dCBvZiBkaXNrIHNwYWNlXCI7XG4gICAgY2FzZSBcImNvbnRhaW5lci1idWlsZC1mYWlsZWRcIjpcbiAgICAgIHJldHVybiBcInRoZSB3b3JrZXIgaG9zdCBjb3VsZCBub3QgYnVpbGQgdGhlIGNvbnRhaW5lciBpbWFnZVwiO1xuICB9XG59XG5cbi8qKlxuICogQnVpbGQgdGhlIGAqKkhvc3QgZmF1bHQ6KiogLi4uYCBub3RlIGxpbmUgYXBwZW5kZWQgdG8gYSBmYWlsdXJlIGNvbW1lbnQnc1xuICogYCoqQ2F0ZWdvcnk6KipgIGxpbmUsIHdyaXR0ZW4gYnkgYG1hcmtJc3N1ZUFzRmFpbGVkT25jZWAgaW5cbiAqIGBsaWIvbGFiZWxfZmFpbHVyZS50c2AgKElzc3VlICMyODkwKS5cbiAqXG4gKiBSZXR1cm5lZCB3aXRob3V0IGFueSBsZWFkaW5nIG5ld2xpbmVzIOKAlCBjYWxsZXJzIHRoYXQgbmVlZCB0aGUgYmxhbmstbGluZVxuICogc2VwYXJhdG9yIHByZXBlbmQgaXQgdGhlbXNlbHZlcyAoZS5nLiBgYCBgXFxuXFxuJHtidWlsZEhvc3RGYXVsdE5vdGUoa2luZCl9YCBgYCkuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBidWlsZEhvc3RGYXVsdE5vdGUoa2luZDogSG9zdEZhdWx0S2luZCk6IHN0cmluZyB7XG4gIHJldHVybiBgKipIb3N0IGZhdWx0OioqIFxcYCR7a2luZH1cXGAg4oCUICR7XG4gICAgZGVzY3JpYmVIb3N0RmF1bHQoa2luZClcbiAgfS4gVGhpcyBmYWlsdXJlIGNhbWUgZnJvbSB0aGUgd29ya2VyIGhvc3QsIG5vdCBmcm9tIHRoaXMgaXNzdWU7IHRoZSBsYWJlbCBpcyByZWxlYXNlZCBhdXRvbWF0aWNhbGx5IG9uY2UgdGhlIGhvc3QgaXMgaGVhbHRoeSBhZ2Fpbi5gO1xufVxuXG4vKipcbiAqIFNvdXJjZSBsaW5lIGEgcXVhbGl0eS1nYXRlIGZhaWx1cmUgcmVjb3JkIGNhcnJpZXMgKElzc3VlICMzNDQ1KS4gVGhlXG4gKiBnYXRlJ3Mgb3V0cHV0IGlzIHRoZSByZXBvc2l0b3J5J3Mgb3duIHRlc3Qgb3V0cHV0LCBzbyB0aGUgcmVjb3JkIGlzIG5ldmVyIGFcbiAqIGhvc3QgZmF1bHQ7IHRoZSByZWxlYXNlIHN3ZWVwIGtleXMgb24gdGhpcyBsaW5lIHRvIGxlYXZlIGl0IGFsb25lLlxuICovXG5leHBvcnQgY29uc3QgUVVBTElUWV9HQVRFX1NPVVJDRV9OT1RFID1cbiAgXCIqKlNvdXJjZToqKiBxdWFsaXR5IGdhdGUg4oCUIHRoaXMgZmFpbHVyZSBpcyB0aGUgcmVwb3NpdG9yeSdzIG93biBjaGVjayBvdXRwdXQsIHNvIGl0IGlzIG5vdCBjbGFzc2lmaWVkIGFzIGEgaG9zdCBmYXVsdC5cIjtcblxuY29uc3QgUVVBTElUWV9HQVRFX1JFQ09SRF9SRSA9XG4gIC9eIyNbXlxcbl0qXFxuXFxzKlxcKlxcKkNhdGVnb3J5OlxcKlxcKlteXFxuXSpcXG5cXHMqXFwqXFwqU291cmNlOlxcKlxcKiBxdWFsaXR5IGdhdGVcXGIvO1xuXG4vKipcbiAqIFdoZXRoZXIgYSBwb3N0ZWQgZmFpbHVyZS1yZWNvcmQgYm9keSBpcyBhIHF1YWxpdHktZ2F0ZSBmYWlsdXJlIChJc3N1ZVxuICogIzM0NDUpLiBBbmNob3JlZCB0byB0aGUgd29ya2VyLXdyaXR0ZW4gaGVhZCBvZiB0aGUgY29tbWVudCAoaGVhZGluZyxcbiAqIENhdGVnb3J5IGxpbmUsIFNvdXJjZSBsaW5lKSBzbyBhIHF1b3RlZCBsaW5lIGRlZXBlciBpbiB0aGUgb3V0cHV0IGNhbm5vdFxuICogZm9yZ2UgaXQ7IG1pcnJvcnMgYGlzV29ya2VyR2F0ZUZhaWx1cmVSZWNvcmRgIGluIGZhaWx1cmVfZGlhZ25vc2lzLnRzLlxuICovXG5leHBvcnQgZnVuY3Rpb24gaXNRdWFsaXR5R2F0ZUZhaWx1cmVSZWNvcmQoYm9keTogc3RyaW5nKTogYm9vbGVhbiB7XG4gIHJldHVybiBRVUFMSVRZX0dBVEVfUkVDT1JEX1JFLnRlc3QoYm9keS50cmltU3RhcnQoKSk7XG59XG4iXSwibmFt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
+// denoCacheMetadata=1394435606978554410,3432831700633858459

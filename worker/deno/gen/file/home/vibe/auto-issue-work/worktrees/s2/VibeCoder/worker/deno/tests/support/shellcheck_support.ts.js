@@ -1,0 +1,42 @@
+/**
+ * Shared ShellCheck test seams (Issue #4631): a stub binary for hermetic unit
+ * tests, and the host's real binary for the few tests that need a genuine
+ * diagnostic. Integration tests require the real tool and read its version from the binary.
+ */ import { findShellcheckBinary } from "../../lib/pre_push_gate.ts";
+/** The version a stub-driven fixture workflow declares and the stub reports. */ export const STUB_SHELLCHECK_VERSION = "1.2.3";
+/** `findShellcheck` and `readShellcheckVersion` seams for a stub binary. */ export function stubShellcheck(version = STUB_SHELLCHECK_VERSION) {
+  return {
+    findShellcheck: ()=>Promise.resolve("/stub/shellcheck"),
+    readShellcheckVersion: ()=>Promise.resolve({
+        code: 0,
+        stdout: `ShellCheck - shell script analysis tool\nversion: ${version}\nlicense: GPL\n`
+      })
+  };
+}
+/** The host's ShellCheck and its version, or null when it has none. */ export async function probeRealShellcheck() {
+  const binary = await findShellcheckBinary(Deno.env.get("PATH") ?? "");
+  if (!binary) return null;
+  try {
+    const out = await new Deno.Command(binary, {
+      args: [
+        "--version"
+      ],
+      stdout: "piped",
+      stderr: "null"
+    }).output();
+    const version = /^version:\s*(\d+\.\d+\.\d+)\s*$/m.exec(new TextDecoder().decode(out.stdout))?.[1];
+    return out.success && version ? {
+      binary,
+      version
+    } : null;
+  } catch  {
+    return null;
+  }
+}
+/** Integration suites fail loudly when their required tool is unavailable. */ export async function requireRealShellcheck() {
+  const result = await probeRealShellcheck();
+  if (!result) throw new Error("ShellCheck is required for integration tests");
+  return result;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL3Rlc3RzL3N1cHBvcnQvc2hlbGxjaGVja19zdXBwb3J0LnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogU2hhcmVkIFNoZWxsQ2hlY2sgdGVzdCBzZWFtcyAoSXNzdWUgIzQ2MzEpOiBhIHN0dWIgYmluYXJ5IGZvciBoZXJtZXRpYyB1bml0XG4gKiB0ZXN0cywgYW5kIHRoZSBob3N0J3MgcmVhbCBiaW5hcnkgZm9yIHRoZSBmZXcgdGVzdHMgdGhhdCBuZWVkIGEgZ2VudWluZVxuICogZGlhZ25vc3RpYy4gSW50ZWdyYXRpb24gdGVzdHMgcmVxdWlyZSB0aGUgcmVhbCB0b29sIGFuZCByZWFkIGl0cyB2ZXJzaW9uIGZyb20gdGhlIGJpbmFyeS5cbiAqL1xuaW1wb3J0IHtcbiAgZmluZFNoZWxsY2hlY2tCaW5hcnksXG4gIHR5cGUgU2hlbGxjaGVja1ZlcnNpb25Qcm9iZSxcbn0gZnJvbSBcIi4uLy4uL2xpYi9wcmVfcHVzaF9nYXRlLnRzXCI7XG5cbi8qKiBUaGUgdmVyc2lvbiBhIHN0dWItZHJpdmVuIGZpeHR1cmUgd29ya2Zsb3cgZGVjbGFyZXMgYW5kIHRoZSBzdHViIHJlcG9ydHMuICovXG5leHBvcnQgY29uc3QgU1RVQl9TSEVMTENIRUNLX1ZFUlNJT04gPSBcIjEuMi4zXCI7XG5cbi8qKiBgZmluZFNoZWxsY2hlY2tgIGFuZCBgcmVhZFNoZWxsY2hlY2tWZXJzaW9uYCBzZWFtcyBmb3IgYSBzdHViIGJpbmFyeS4gKi9cbmV4cG9ydCBmdW5jdGlvbiBzdHViU2hlbGxjaGVjayh2ZXJzaW9uOiBzdHJpbmcgPSBTVFVCX1NIRUxMQ0hFQ0tfVkVSU0lPTik6IHtcbiAgZmluZFNoZWxsY2hlY2s6ICgpID0+IFByb21pc2U8c3RyaW5nIHwgbnVsbD47XG4gIHJlYWRTaGVsbGNoZWNrVmVyc2lvbjogU2hlbGxjaGVja1ZlcnNpb25Qcm9iZTtcbn0ge1xuICByZXR1cm4ge1xuICAgIGZpbmRTaGVsbGNoZWNrOiAoKSA9PiBQcm9taXNlLnJlc29sdmUoXCIvc3R1Yi9zaGVsbGNoZWNrXCIpLFxuICAgIHJlYWRTaGVsbGNoZWNrVmVyc2lvbjogKCkgPT5cbiAgICAgIFByb21pc2UucmVzb2x2ZSh7XG4gICAgICAgIGNvZGU6IDAsXG4gICAgICAgIHN0ZG91dDpcbiAgICAgICAgICBgU2hlbGxDaGVjayAtIHNoZWxsIHNjcmlwdCBhbmFseXNpcyB0b29sXFxudmVyc2lvbjogJHt2ZXJzaW9ufVxcbmxpY2Vuc2U6IEdQTFxcbmAsXG4gICAgICB9KSxcbiAgfTtcbn1cblxuLyoqIFRoZSBob3N0J3MgU2hlbGxDaGVjayBhbmQgaXRzIHZlcnNpb24sIG9yIG51bGwgd2hlbiBpdCBoYXMgbm9uZS4gKi9cbmV4cG9ydCBhc3luYyBmdW5jdGlvbiBwcm9iZVJlYWxTaGVsbGNoZWNrKCk6IFByb21pc2U8XG4gIHsgYmluYXJ5OiBzdHJpbmc7IHZlcnNpb246IHN0cmluZyB9IHwgbnVsbFxuPiB7XG4gIGNvbnN0IGJpbmFyeSA9IGF3YWl0IGZpbmRTaGVsbGNoZWNrQmluYXJ5KERlbm8uZW52LmdldChcIlBBVEhcIikgPz8gXCJcIik7XG4gIGlmICghYmluYXJ5KSByZXR1cm4gbnVsbDtcbiAgdHJ5IHtcbiAgICBjb25zdCBvdXQgPSBhd2FpdCBuZXcgRGVuby5Db21tYW5kKGJpbmFyeSwge1xuICAgICAgYXJnczogW1wiLS12ZXJzaW9uXCJdLFxuICAgICAgc3Rkb3V0OiBcInBpcGVkXCIsXG4gICAgICBzdGRlcnI6IFwibnVsbFwiLFxuICAgIH0pLm91dHB1dCgpO1xuICAgIGNvbnN0IHZlcnNpb24gPSAvXnZlcnNpb246XFxzKihcXGQrXFwuXFxkK1xcLlxcZCspXFxzKiQvbS5leGVjKFxuICAgICAgbmV3IFRleHREZWNvZGVyKCkuZGVjb2RlKG91dC5zdGRvdXQpLFxuICAgICk/LlsxXTtcbiAgICByZXR1cm4gb3V0LnN1Y2Nlc3MgJiYgdmVyc2lvbiA/IHsgYmluYXJ5LCB2ZXJzaW9uIH0gOiBudWxsO1xuICB9IGNhdGNoIHtcbiAgICByZXR1cm4gbnVsbDtcbiAgfVxufVxuXG4vKiogSW50ZWdyYXRpb24gc3VpdGVzIGZhaWwgbG91ZGx5IHdoZW4gdGhlaXIgcmVxdWlyZWQgdG9vbCBpcyB1bmF2YWlsYWJsZS4gKi9cbmV4cG9ydCBhc3luYyBmdW5jdGlvbiByZXF1aXJlUmVhbFNoZWxsY2hlY2soKTogUHJvbWlzZTxcbiAgeyBiaW5hcnk6IHN0cmluZzsgdmVyc2lvbjogc3RyaW5nIH1cbj4ge1xuICBjb25zdCByZXN1bHQgPSBhd2FpdCBwcm9iZVJlYWxTaGVsbGNoZWNrKCk7XG4gIGlmICghcmVzdWx0KSB0aHJvdyBuZXcgRXJyb3IoXCJTaGVsbENoZWNrIGlzIHJlcXVpcmVkIGZvciBpbnRlZ3JhdGlvbiB0ZXN0c1wiKTtcbiAgcmV0dXJuIHJlc3VsdDtcbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7OztDQUlDLEdBQ0QsU0FDRSxvQkFBb0IsUUFFZiw2QkFBNkI7QUFFcEMsOEVBQThFLEdBQzlFLE9BQU8sTUFBTSwwQkFBMEIsUUFBUTtBQUUvQywwRUFBMEUsR0FDMUUsT0FBTyxTQUFTLGVBQWUsVUFBa0IsdUJBQXVCO0VBSXRFLE9BQU87SUFDTCxnQkFBZ0IsSUFBTSxRQUFRLE9BQU8sQ0FBQztJQUN0Qyx1QkFBdUIsSUFDckIsUUFBUSxPQUFPLENBQUM7UUFDZCxNQUFNO1FBQ04sUUFDRSxDQUFDLGtEQUFrRCxFQUFFLFFBQVEsZ0JBQWdCLENBQUM7TUFDbEY7RUFDSjtBQUNGO0FBRUEscUVBQXFFLEdBQ3JFLE9BQU8sZUFBZTtFQUdwQixNQUFNLFNBQVMsTUFBTSxxQkFBcUIsS0FBSyxHQUFHLENBQUMsR0FBRyxDQUFDLFdBQVc7RUFDbEUsSUFBSSxDQUFDLFFBQVEsT0FBTztFQUNwQixJQUFJO0lBQ0YsTUFBTSxNQUFNLE1BQU0sSUFBSSxLQUFLLE9BQU8sQ0FBQyxRQUFRO01BQ3pDLE1BQU07UUFBQztPQUFZO01BQ25CLFFBQVE7TUFDUixRQUFRO0lBQ1YsR0FBRyxNQUFNO0lBQ1QsTUFBTSxVQUFVLG1DQUFtQyxJQUFJLENBQ3JELElBQUksY0FBYyxNQUFNLENBQUMsSUFBSSxNQUFNLElBQ2xDLENBQUMsRUFBRTtJQUNOLE9BQU8sSUFBSSxPQUFPLElBQUksVUFBVTtNQUFFO01BQVE7SUFBUSxJQUFJO0VBQ3hELEVBQUUsT0FBTTtJQUNOLE9BQU87RUFDVDtBQUNGO0FBRUEsNEVBQTRFLEdBQzVFLE9BQU8sZUFBZTtFQUdwQixNQUFNLFNBQVMsTUFBTTtFQUNyQixJQUFJLENBQUMsUUFBUSxNQUFNLElBQUksTUFBTTtFQUM3QixPQUFPO0FBQ1QifQ==
+// denoCacheMetadata=16488674359883543525,16905382726849564611

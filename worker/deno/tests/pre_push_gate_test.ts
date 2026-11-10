@@ -18,6 +18,7 @@ import {
 import {
   defaultPrePushGit,
   listPushedFiles,
+  loadDenoUnitTestRoots,
   parsePrePushRefs,
   planChangedFileChecks,
   PrePushGateInfrastructureError,
@@ -2519,6 +2520,218 @@ Deno.test("runPrePushGate: an unsupported ShellCheck workflow still refuses a sc
     assert(!result.ok);
     assertInstanceOf(result.error, PrePushGateInfrastructureError);
     assert(result.error.message.includes("unsupported ShellCheck action"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+// ---- deno test: targeted unit tests of changed files (Issue #4930) ---------
+
+const UNIT_TRACKED = [
+  "worker/deno/deno.json",
+  "worker/deno/lib/foo.ts",
+  "worker/deno/tests/foo_test.ts",
+];
+
+/** The `deno test` commands planned for a change, with no other checks. */
+function denoTestCommands(
+  changed: string[],
+  tracked: string[],
+  denoUnitTestRoots?: string[],
+): string[] {
+  const result = planChangedFileChecks(changed, tracked, {
+    repoRoot: "/r",
+    markdownlintBinary: null,
+    denoUnitTestRoots,
+  });
+  assert(result.ok);
+  return result.value
+    .filter((c) => c.label.startsWith("deno test"))
+    .map((c) => c.command);
+}
+
+Deno.test("planChangedFileChecks: a changed source runs its same-named tracked test via test:unit (#4930)", () => {
+  const result = planChangedFileChecks(
+    ["worker/deno/lib/foo.ts"],
+    UNIT_TRACKED,
+    {
+      repoRoot: "/r",
+      markdownlintBinary: null,
+      denoUnitTestRoots: ["worker/deno"],
+    },
+  );
+  assert(result.ok);
+  assertEquals(result.value.map((c) => c.label), [
+    "deno fmt (worker/deno)",
+    "deno lint (worker/deno)",
+    "deno test (worker/deno)",
+  ]);
+  assertEquals(result.value[2], {
+    label: "deno test (worker/deno)",
+    cwd: "/r/worker/deno",
+    command: "deno task test:unit 'tests/foo_test.ts'",
+  });
+});
+
+Deno.test("planChangedFileChecks: changed tests and sources map to one sorted, deduplicated test:unit list (#4930)", () => {
+  const tracked = [...UNIT_TRACKED, "worker/deno/tests/bar_test.ts"];
+  assertEquals(
+    denoTestCommands(
+      [
+        "worker/deno/lib/foo.ts",
+        "worker/deno/tests/foo_test.ts",
+        "worker/deno/tests/bar_test.ts",
+      ],
+      tracked,
+      ["worker/deno"],
+    ),
+    ["deno task test:unit 'tests/bar_test.ts' 'tests/foo_test.ts'"],
+  );
+  assertEquals(
+    denoTestCommands(["worker/deno/tests/foo_test.ts"], UNIT_TRACKED, [
+      "worker/deno",
+    ]),
+    ["deno task test:unit 'tests/foo_test.ts'"],
+  );
+});
+
+Deno.test("planChangedFileChecks: no deno test check for an unlisted root, an untested source, a deleted test or docs (#4930)", () => {
+  // Root not in denoUnitTestRoots (and none passed at all).
+  assertEquals(denoTestCommands(["worker/deno/lib/foo.ts"], UNIT_TRACKED), []);
+  assertEquals(
+    denoTestCommands(["worker/deno/lib/foo.ts"], UNIT_TRACKED, ["other"]),
+    [],
+  );
+  // Changed source with no tracked same-named test.
+  assertEquals(
+    denoTestCommands(["worker/deno/lib/bar.ts"], UNIT_TRACKED, ["worker/deno"]),
+    [],
+  );
+  // Changed test that is no longer tracked (deleted).
+  assertEquals(
+    denoTestCommands(
+      ["worker/deno/tests/foo_test.ts"],
+      ["worker/deno/deno.json", "worker/deno/lib/foo.ts"],
+      ["worker/deno"],
+    ),
+    [],
+  );
+  // Markdown-only change.
+  assertEquals(
+    denoTestCommands(["worker/deno/README.md"], UNIT_TRACKED, ["worker/deno"]),
+    [],
+  );
+});
+
+Deno.test("loadDenoUnitTestRoots: a root counts only when its config defines test:unit (#4930)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-unit-roots-" });
+  try {
+    const write = async (dir: string, name: string, text: string) => {
+      await Deno.mkdir(`${root}/${dir}`, { recursive: true });
+      await Deno.writeTextFile(`${root}/${dir}/${name}`, text);
+    };
+    await write(
+      "runs",
+      "deno.json",
+      JSON.stringify({ tasks: { "test:unit": "x" } }),
+    );
+    await write(
+      "no-task",
+      "deno.json",
+      JSON.stringify({ tasks: { test: "x" } }),
+    );
+    await write("broken", "deno.json", "{ not json");
+    await write(
+      "jsonc",
+      "deno.jsonc",
+      '{\n  // JSONC comment\n  "tasks": { "test:unit": "x" }\n}\n',
+    );
+    // deno.json is preferred, so a test:unit only in deno.jsonc does not count.
+    await write("prefers-json", "deno.json", JSON.stringify({ tasks: {} }));
+    await write(
+      "prefers-json",
+      "deno.jsonc",
+      '{ "tasks": { "test:unit": "x" } }\n',
+    );
+    const tracked = [
+      "runs/deno.json",
+      "no-task/deno.json",
+      "broken/deno.json",
+      "jsonc/deno.jsonc",
+      "prefers-json/deno.json",
+      "prefers-json/deno.jsonc",
+      "unreadable/deno.json",
+    ];
+    assertEquals(await loadDenoUnitTestRoots(root, tracked), ["jsonc", "runs"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a changed test runs the repo's test:unit task, and its failure blocks the push (#4930)", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    // Drop the root deno.json so the nested worker/deno root is the outermost.
+    await git(clone, "rm", "-q", "deno.json");
+    await Deno.mkdir(`${clone}/worker/deno/lib`, { recursive: true });
+    await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/deno.json`,
+      JSON.stringify({
+        tasks: { "test:unit": "deno run unit_test_runner.ts" },
+      }) +
+        "\n",
+    );
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/lib/foo.ts`,
+      "export const x = 1;\n",
+    );
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/tests/foo_test.ts`,
+      "export {};\n",
+    );
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-qm", "source, test and test:unit task");
+    const stdin = prePushInput(await git(clone, "rev-parse", "HEAD"));
+    const command = "deno task test:unit 'tests/foo_test.ts'";
+    const ran: Array<{ command: string; cwd: string | undefined }> = [];
+    const runnerFor =
+      (failUnit: boolean): PreFlightRunner => (cmd, options) => {
+        ran.push({ command: cmd, cwd: options.cwd });
+        const failed = failUnit && cmd === command;
+        return Promise.resolve({
+          started: true,
+          code: failed ? 1 : 0,
+          stdout: "",
+          stderr: failed ? "boom" : "",
+        });
+      };
+
+    const passed = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: runnerFor(false),
+    });
+    assert(passed.ok, passed.ok ? "" : passed.error.message);
+    assert(passed.value.checksRun.includes(command));
+    assertEquals(
+      ran.find((r) => r.command === command)?.cwd,
+      `${clone}/worker/deno`,
+    );
+
+    const blocked = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: runnerFor(true),
+    });
+    assert(!blocked.ok);
+    assertInstanceOf(blocked.error, PreFlightGateError);
+    assertEquals(blocked.error.command, command);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

@@ -1,0 +1,15 @@
+// Ported from js-yaml v3.13.1:
+// https://github.com/nodeca/js-yaml/commit/665aadda42349dcae869f12040d9b10ef18d12da
+// Copyright 2011-2015 by Vitaly Puzrin. All rights reserved. MIT license.
+// Copyright 2018-2026 the Deno authors. MIT license.
+
+import type { Type } from "../_type.ts";
+
+export const merge: Type<"scalar", unknown> = {
+  tag: "tag:yaml.org,2002:merge",
+  kind: "scalar",
+  resolve: (data: unknown): boolean => data === "<<" || data === null,
+  construct: (data: unknown): unknown => data,
+};
+
+// denoCacheMetadata={"headers":{"x-jsr-backend":"modules","set-cookie":"__cf_bm=XNxKpbEuy1OEa82rlHFGAHyKyQ1U4DWK9E84HB67NDs-1794298095.8784668-1.0.1.1-JBvawxgzJk3unmCT9UeA6IxU90ldkSOM0s9zTRbo1vUwu7e002ZkZ0trq1NRFeEhbJlO4JhTnM1PGHfvQFjSQbses.Ys71aZZg9a61JZJ.BnczAmB0eo0rhzIVED0T.W; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=HuA7sfyqyOFsRHdoG8cPXW%2FtL6Im1MbDe0i2YaKGRmLxzC9SVMo3N7YK0oQn4tJ7IHruXUQ%2BHoTr4IEo2AcgbUDNj4Xctl78UtWRLdbWeG%2FZ25gRN4qpt7I%3D\"}]}","cf-ray":"a583917b2de4561f-SYD","cache-control":"public, max-age=31536000, immutable","content-type":"text/typescript","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","content-length":"510","accept-ranges":"bytes","access-control-allow-origin":"*","cross-origin-resource-policy":"cross-origin","etag":"\"e2a1f082d47043fa58056d8fd2067c4a\"","date":"Tue, 10 Nov 2026 08:08:15 GMT","x-content-type-options":"nosniff","x-robots-tag":"noindex","server":"cloudflare","access-control-expose-headers":"*","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","cf-cache-status":"HIT","age":"6426681","alt-svc":"h3=\":443\"; ma=86400","vary":"Origin"},"url":"https://jsr.io/@std/yaml/1.0.12/_type/merge.ts","time":1794298095}

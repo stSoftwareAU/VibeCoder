@@ -1,0 +1,137 @@
+/**
+ * Bring a feature branch up to date with its base BEFORE the PR is raised.
+ *
+ * A branch that is behind its base costs a full CI run twice: once on the
+ * stale head, then again after something updates the branch. With the four
+ * `validate (tests N/4)` shards required on `milestone/**` as well as on the
+ * default branch, that is the most expensive avoidable thing the fleet does —
+ * every behind branch doubles its own gate.
+ *
+ * The waste is silent because both runs pass. Nothing reports "this PR was
+ * tested twice"; the cycle simply takes longer, and the second run's result is
+ * the only one that ever mattered.
+ *
+ * This module answers one question — is the branch behind its base, and can it
+ * be brought forward safely — and leaves the update itself to the injected
+ * seam. Production passes `mergeOntoBase` (`pr_raise_sync.ts`, Issue #2809),
+ * which refuses on a dirty tree and aborts a conflicting merge, so the branch
+ * only ever gains commits and the push that follows is never forced.
+ *
+ * It is deliberately NOT a merge-conflict resolver. A branch whose content has
+ * diverged is left exactly as it is, for the conflict ladder to handle: a
+ * silent merge that picks a side is the one outcome worse than an extra CI
+ * run.
+ *
+ * Australian English spelling throughout (behaviour, colour, organisation).
+ */ /**
+ * Count how far `branch` is behind and ahead of `baseRef`.
+ *
+ * `--left-right --count` gives both in one call, so the ordinary
+ * already-current case costs a single `rev-list`.
+ *
+ * @param branch - The feature branch.
+ * @param baseRef - The ref it would merge into, remote-qualified.
+ * @param runGit - Git runner.
+ * @param cwd - Working directory for the git calls.
+ * @returns The drift, or an error when the refs cannot be compared.
+ */ export async function measureBranchDrift(branch, baseRef, runGit, cwd) {
+  const counted = await runGit([
+    "rev-list",
+    "--left-right",
+    "--count",
+    `${baseRef}...${branch}`
+  ], cwd === undefined ? undefined : {
+    cwd
+  });
+  if (!counted.ok) return {
+    ok: false,
+    error: counted.error
+  };
+  const [left, right] = counted.value.stdout.trim().split(/\s+/);
+  const behind = Number(left);
+  const ahead = Number(right);
+  if (!Number.isFinite(behind) || !Number.isFinite(ahead)) {
+    return {
+      ok: false,
+      error: new Error(`could not parse rev-list output: ${JSON.stringify(counted.value.stdout)}`)
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      behind,
+      ahead
+    }
+  };
+}
+/**
+ * Bring `branch` up to date with `baseBranch` when it is behind, so the PR's
+ * first CI run is also its last.
+ *
+ * Fetches the base first: a stale remote-tracking ref would report the branch
+ * as current and defeat the whole point.
+ *
+ * Never fails the caller. Every unhappy path — an unreadable comparison, a
+ * dirty tree, a real content conflict — returns a verdict the caller proceeds
+ * past, because an extra CI run is a cost and a wrongly-merged branch is a
+ * defect.
+ *
+ * @param options - Branch, base, git runner and the update seam.
+ * @returns What happened; `updated` means the caller must push before opening
+ *   the PR.
+ */ export async function ensureBranchCurrent(options) {
+  const { branch, baseBranch, runGit, cwd } = options;
+  const log = options.log ?? (()=>{});
+  const gitOptions = cwd === undefined ? undefined : {
+    cwd
+  };
+  // Without this the comparison is against whatever the last fetch saw, which
+  // is exactly the stale answer this exists to avoid.
+  const fetched = await runGit([
+    "fetch",
+    "origin",
+    baseBranch
+  ], gitOptions);
+  if (!fetched.ok) {
+    return {
+      kind: "unknown",
+      detail: `could not fetch '${baseBranch}': ${fetched.error.message}`
+    };
+  }
+  const baseRef = `origin/${baseBranch}`;
+  const drift = await measureBranchDrift(branch, baseRef, runGit, cwd);
+  if (!drift.ok) {
+    return {
+      kind: "unknown",
+      detail: `could not compare '${branch}' with '${baseRef}': ` + drift.error.message
+    };
+  }
+  if (drift.value.behind === 0) {
+    return {
+      kind: "already-current",
+      detail: `'${branch}' is current with '${baseRef}'`
+    };
+  }
+  const rebased = await options.rebase({
+    branch,
+    baseRef,
+    runGit,
+    cwd
+  });
+  if (!rebased.ok) {
+    // A conflict here is content that genuinely diverged. Picking a side is
+    // the conflict ladder's job, under its own rungs and its own audit trail.
+    return {
+      kind: "declined",
+      detail: `'${branch}' is ${drift.value.behind} commit(s) behind ` + `'${baseRef}' and could not be brought forward safely: ` + rebased.error.message
+    };
+  }
+  log(`'${branch}' was ${drift.value.behind} commit(s) behind '${baseRef}' and ` + `has been brought forward before the PR — so its CI runs once, on the ` + `state that will merge`);
+  return {
+    kind: "updated",
+    detail: `'${branch}' brought forward onto '${baseRef}'`,
+    behind: drift.value.behind
+  };
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9icmFuY2hfY3VycmVuY3kudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBCcmluZyBhIGZlYXR1cmUgYnJhbmNoIHVwIHRvIGRhdGUgd2l0aCBpdHMgYmFzZSBCRUZPUkUgdGhlIFBSIGlzIHJhaXNlZC5cbiAqXG4gKiBBIGJyYW5jaCB0aGF0IGlzIGJlaGluZCBpdHMgYmFzZSBjb3N0cyBhIGZ1bGwgQ0kgcnVuIHR3aWNlOiBvbmNlIG9uIHRoZVxuICogc3RhbGUgaGVhZCwgdGhlbiBhZ2FpbiBhZnRlciBzb21ldGhpbmcgdXBkYXRlcyB0aGUgYnJhbmNoLiBXaXRoIHRoZSBmb3VyXG4gKiBgdmFsaWRhdGUgKHRlc3RzIE4vNClgIHNoYXJkcyByZXF1aXJlZCBvbiBgbWlsZXN0b25lLyoqYCBhcyB3ZWxsIGFzIG9uIHRoZVxuICogZGVmYXVsdCBicmFuY2gsIHRoYXQgaXMgdGhlIG1vc3QgZXhwZW5zaXZlIGF2b2lkYWJsZSB0aGluZyB0aGUgZmxlZXQgZG9lcyDigJRcbiAqIGV2ZXJ5IGJlaGluZCBicmFuY2ggZG91YmxlcyBpdHMgb3duIGdhdGUuXG4gKlxuICogVGhlIHdhc3RlIGlzIHNpbGVudCBiZWNhdXNlIGJvdGggcnVucyBwYXNzLiBOb3RoaW5nIHJlcG9ydHMgXCJ0aGlzIFBSIHdhc1xuICogdGVzdGVkIHR3aWNlXCI7IHRoZSBjeWNsZSBzaW1wbHkgdGFrZXMgbG9uZ2VyLCBhbmQgdGhlIHNlY29uZCBydW4ncyByZXN1bHQgaXNcbiAqIHRoZSBvbmx5IG9uZSB0aGF0IGV2ZXIgbWF0dGVyZWQuXG4gKlxuICogVGhpcyBtb2R1bGUgYW5zd2VycyBvbmUgcXVlc3Rpb24g4oCUIGlzIHRoZSBicmFuY2ggYmVoaW5kIGl0cyBiYXNlLCBhbmQgY2FuIGl0XG4gKiBiZSBicm91Z2h0IGZvcndhcmQgc2FmZWx5IOKAlCBhbmQgbGVhdmVzIHRoZSB1cGRhdGUgaXRzZWxmIHRvIHRoZSBpbmplY3RlZFxuICogc2VhbS4gUHJvZHVjdGlvbiBwYXNzZXMgYG1lcmdlT250b0Jhc2VgIChgcHJfcmFpc2Vfc3luYy50c2AsIElzc3VlICMyODA5KSxcbiAqIHdoaWNoIHJlZnVzZXMgb24gYSBkaXJ0eSB0cmVlIGFuZCBhYm9ydHMgYSBjb25mbGljdGluZyBtZXJnZSwgc28gdGhlIGJyYW5jaFxuICogb25seSBldmVyIGdhaW5zIGNvbW1pdHMgYW5kIHRoZSBwdXNoIHRoYXQgZm9sbG93cyBpcyBuZXZlciBmb3JjZWQuXG4gKlxuICogSXQgaXMgZGVsaWJlcmF0ZWx5IE5PVCBhIG1lcmdlLWNvbmZsaWN0IHJlc29sdmVyLiBBIGJyYW5jaCB3aG9zZSBjb250ZW50IGhhc1xuICogZGl2ZXJnZWQgaXMgbGVmdCBleGFjdGx5IGFzIGl0IGlzLCBmb3IgdGhlIGNvbmZsaWN0IGxhZGRlciB0byBoYW5kbGU6IGFcbiAqIHNpbGVudCBtZXJnZSB0aGF0IHBpY2tzIGEgc2lkZSBpcyB0aGUgb25lIG91dGNvbWUgd29yc2UgdGhhbiBhbiBleHRyYSBDSVxuICogcnVuLlxuICpcbiAqIEF1c3RyYWxpYW4gRW5nbGlzaCBzcGVsbGluZyB0aHJvdWdob3V0IChiZWhhdmlvdXIsIGNvbG91ciwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG5pbXBvcnQgdHlwZSB7IFJlc3VsdCB9IGZyb20gXCIuLi90eXBlcy50c1wiO1xuLy8gVGhlIGhvdXNlIGdpdCBzZWFtLCBub3QgYSBzZWNvbmQgb25lOiBgc3RhbGVfYnJhbmNoX2xpbmVhZ2UudHNgIGFuZCB0aGVcbi8vIHJlYmFzZSB0aGlzIGRlbGVnYXRlcyB0byBhbHJlYWR5IHNwZWFrIGl0LCBzbyBhIGNhbGxlciBoYW5kcyBvbmUgcnVubmVyIHRvXG4vLyBib3RoLlxuaW1wb3J0IHR5cGUgeyBHaXRSdW5uZXIgfSBmcm9tIFwiLi9naXRfYmFzZV9yZWYudHNcIjtcblxuZXhwb3J0IHR5cGUgeyBHaXRSdW5uZXIgfTtcblxuLyoqIEhvdyBmYXIgYSBicmFuY2ggaGFzIGRyaWZ0ZWQgZnJvbSBpdHMgYmFzZS4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgQnJhbmNoRHJpZnQge1xuICAvKiogQ29tbWl0cyBvbiB0aGUgYmFzZSB0aGF0IHRoZSBicmFuY2ggZG9lcyBub3QgaGF2ZS4gKi9cbiAgYmVoaW5kOiBudW1iZXI7XG4gIC8qKiBDb21taXRzIG9uIHRoZSBicmFuY2ggdGhhdCB0aGUgYmFzZSBkb2VzIG5vdCBoYXZlLiAqL1xuICBhaGVhZDogbnVtYmVyO1xufVxuXG4vKiogV2hhdCB7QGxpbmsgZW5zdXJlQnJhbmNoQ3VycmVudH0gZGlkLCBvciBkZWNsaW5lZCB0byBkby4gKi9cbmV4cG9ydCB0eXBlIEJyYW5jaEN1cnJlbmN5T3V0Y29tZSA9XG4gIC8qKiBBbHJlYWR5IGN1cnJlbnQ6IG5vdGhpbmcgd2FzIHJ1biwgbm90aGluZyBjaGFuZ2VkLiAqL1xuICB8IHsga2luZDogXCJhbHJlYWR5LWN1cnJlbnRcIjsgZGV0YWlsOiBzdHJpbmcgfVxuICAvKiogQnJvdWdodCBmb3J3YXJkIG9udG8gdGhlIGJhc2U7IHRoZSBjYWxsZXIgbXVzdCBwdXNoLiAqL1xuICB8IHsga2luZDogXCJ1cGRhdGVkXCI7IGRldGFpbDogc3RyaW5nOyBiZWhpbmQ6IG51bWJlciB9XG4gIC8qKlxuICAgKiBCZWhpbmQsIGJ1dCBub3Qgc2FmZWx5IHVwZGF0YWJsZSDigJQgYSBkaXJ0eSB0cmVlIG9yIGEgY29udGVudCBjb25mbGljdC5cbiAgICogVGhlIGJyYW5jaCBpcyB1bnRvdWNoZWQgYW5kIHRoZSBQUiBwcm9jZWVkcyBhcyBiZWZvcmU7IHRoZSBjb25mbGljdFxuICAgKiBsYWRkZXIgb3ducyBpdCBmcm9tIGhlcmUuXG4gICAqL1xuICB8IHsga2luZDogXCJkZWNsaW5lZFwiOyBkZXRhaWw6IHN0cmluZyB9XG4gIC8qKiBUaGUgY29tcGFyaXNvbiBpdHNlbGYgY291bGQgbm90IGJlIHJlYWQ7IHRoZSBjYWxsZXIgcHJvY2VlZHMgdW5jaGFuZ2VkLiAqL1xuICB8IHsga2luZDogXCJ1bmtub3duXCI7IGRldGFpbDogc3RyaW5nIH07XG5cbi8qKlxuICogQ291bnQgaG93IGZhciBgYnJhbmNoYCBpcyBiZWhpbmQgYW5kIGFoZWFkIG9mIGBiYXNlUmVmYC5cbiAqXG4gKiBgLS1sZWZ0LXJpZ2h0IC0tY291bnRgIGdpdmVzIGJvdGggaW4gb25lIGNhbGwsIHNvIHRoZSBvcmRpbmFyeVxuICogYWxyZWFkeS1jdXJyZW50IGNhc2UgY29zdHMgYSBzaW5nbGUgYHJldi1saXN0YC5cbiAqXG4gKiBAcGFyYW0gYnJhbmNoIC0gVGhlIGZlYXR1cmUgYnJhbmNoLlxuICogQHBhcmFtIGJhc2VSZWYgLSBUaGUgcmVmIGl0IHdvdWxkIG1lcmdlIGludG8sIHJlbW90ZS1xdWFsaWZpZWQuXG4gKiBAcGFyYW0gcnVuR2l0IC0gR2l0IHJ1bm5lci5cbiAqIEBwYXJhbSBjd2QgLSBXb3JraW5nIGRpcmVjdG9yeSBmb3IgdGhlIGdpdCBjYWxscy5cbiAqIEByZXR1cm5zIFRoZSBkcmlmdCwgb3IgYW4gZXJyb3Igd2hlbiB0aGUgcmVmcyBjYW5ub3QgYmUgY29tcGFyZWQuXG4gKi9cbmV4cG9ydCBhc3luYyBmdW5jdGlvbiBtZWFzdXJlQnJhbmNoRHJpZnQoXG4gIGJyYW5jaDogc3RyaW5nLFxuICBiYXNlUmVmOiBzdHJpbmcsXG4gIHJ1bkdpdDogR2l0UnVubmVyLFxuICBjd2Q/OiBzdHJpbmcsXG4pOiBQcm9taXNlPFJlc3VsdDxCcmFuY2hEcmlmdD4+IHtcbiAgY29uc3QgY291bnRlZCA9IGF3YWl0IHJ1bkdpdChcbiAgICBbXCJyZXYtbGlzdFwiLCBcIi0tbGVmdC1yaWdodFwiLCBcIi0tY291bnRcIiwgYCR7YmFzZVJlZn0uLi4ke2JyYW5jaH1gXSxcbiAgICBjd2QgPT09IHVuZGVmaW5lZCA/IHVuZGVmaW5lZCA6IHsgY3dkIH0sXG4gICk7XG4gIGlmICghY291bnRlZC5vaykgcmV0dXJuIHsgb2s6IGZhbHNlLCBlcnJvcjogY291bnRlZC5lcnJvciB9O1xuXG4gIGNvbnN0IFtsZWZ0LCByaWdodF0gPSBjb3VudGVkLnZhbHVlLnN0ZG91dC50cmltKCkuc3BsaXQoL1xccysvKTtcbiAgY29uc3QgYmVoaW5kID0gTnVtYmVyKGxlZnQpO1xuICBjb25zdCBhaGVhZCA9IE51bWJlcihyaWdodCk7XG4gIGlmICghTnVtYmVyLmlzRmluaXRlKGJlaGluZCkgfHwgIU51bWJlci5pc0Zpbml0ZShhaGVhZCkpIHtcbiAgICByZXR1cm4ge1xuICAgICAgb2s6IGZhbHNlLFxuICAgICAgZXJyb3I6IG5ldyBFcnJvcihcbiAgICAgICAgYGNvdWxkIG5vdCBwYXJzZSByZXYtbGlzdCBvdXRwdXQ6ICR7XG4gICAgICAgICAgSlNPTi5zdHJpbmdpZnkoY291bnRlZC52YWx1ZS5zdGRvdXQpXG4gICAgICAgIH1gLFxuICAgICAgKSxcbiAgICB9O1xuICB9XG4gIHJldHVybiB7IG9rOiB0cnVlLCB2YWx1ZTogeyBiZWhpbmQsIGFoZWFkIH0gfTtcbn1cblxuLyoqIEluamVjdGlvbiBwb2ludHMgZm9yIHtAbGluayBlbnN1cmVCcmFuY2hDdXJyZW50fS4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgRW5zdXJlQnJhbmNoQ3VycmVudE9wdGlvbnMge1xuICBicmFuY2g6IHN0cmluZztcbiAgLyoqIFRoZSBiYXNlIHRoZSBQUiB3aWxsIHRhcmdldCwgZS5nLiBgbWFpbmAgb3IgYG1pbGVzdG9uZS9mb29gLiAqL1xuICBiYXNlQnJhbmNoOiBzdHJpbmc7XG4gIHJ1bkdpdDogR2l0UnVubmVyO1xuICBjd2Q/OiBzdHJpbmc7XG4gIC8qKlxuICAgKiBVcGRhdGUgc2VhbSAobmFtZWQgYHJlYmFzZWAgZm9yIGhpc3RvcnkpIOKAlCBwcm9kdWN0aW9uIHBhc3Nlc1xuICAgKiBgbWVyZ2VPbnRvQmFzZWAgZnJvbSBgcHJfcmFpc2Vfc3luYy50c2AsIHdoaWNoIHJlZnVzZXMgb24gYSBkaXJ0eSB0cmVlIGFuZFxuICAgKiBhYm9ydHMgYSBjb25mbGljdGluZyBtZXJnZSwgbGVhdmluZyB0aGUgYnJhbmNoIHRpcCBhcyBpdCB3YXMgKCMyODA5KS5cbiAgICovXG4gIHJlYmFzZTogKFxuICAgIG9wdGlvbnM6IHtcbiAgICAgIGJyYW5jaDogc3RyaW5nO1xuICAgICAgYmFzZVJlZjogc3RyaW5nO1xuICAgICAgcnVuR2l0OiBHaXRSdW5uZXI7XG4gICAgICBjd2Q/OiBzdHJpbmc7XG4gICAgfSxcbiAgKSA9PiBQcm9taXNlPFJlc3VsdDx1bmtub3duPj47XG4gIC8qKiBTaW5rIGZvciB0aGUgb25lIGxpbmUgdGhpcyBlbWl0cyB3aGVuIGl0IGFjdHMuICovXG4gIGxvZz86IChtZXNzYWdlOiBzdHJpbmcpID0+IHZvaWQ7XG59XG5cbi8qKlxuICogQnJpbmcgYGJyYW5jaGAgdXAgdG8gZGF0ZSB3aXRoIGBiYXNlQnJhbmNoYCB3aGVuIGl0IGlzIGJlaGluZCwgc28gdGhlIFBSJ3NcbiAqIGZpcnN0IENJIHJ1biBpcyBhbHNvIGl0cyBsYXN0LlxuICpcbiAqIEZldGNoZXMgdGhlIGJhc2UgZmlyc3Q6IGEgc3RhbGUgcmVtb3RlLXRyYWNraW5nIHJlZiB3b3VsZCByZXBvcnQgdGhlIGJyYW5jaFxuICogYXMgY3VycmVudCBhbmQgZGVmZWF0IHRoZSB3aG9sZSBwb2ludC5cbiAqXG4gKiBOZXZlciBmYWlscyB0aGUgY2FsbGVyLiBFdmVyeSB1bmhhcHB5IHBhdGgg4oCUIGFuIHVucmVhZGFibGUgY29tcGFyaXNvbiwgYVxuICogZGlydHkgdHJlZSwgYSByZWFsIGNvbnRlbnQgY29uZmxpY3Qg4oCUIHJldHVybnMgYSB2ZXJkaWN0IHRoZSBjYWxsZXIgcHJvY2VlZHNcbiAqIHBhc3QsIGJlY2F1c2UgYW4gZXh0cmEgQ0kgcnVuIGlzIGEgY29zdCBhbmQgYSB3cm9uZ2x5LW1lcmdlZCBicmFuY2ggaXMgYVxuICogZGVmZWN0LlxuICpcbiAqIEBwYXJhbSBvcHRpb25zIC0gQnJhbmNoLCBiYXNlLCBnaXQgcnVubmVyIGFuZCB0aGUgdXBkYXRlIHNlYW0uXG4gKiBAcmV0dXJucyBXaGF0IGhhcHBlbmVkOyBgdXBkYXRlZGAgbWVhbnMgdGhlIGNhbGxlciBtdXN0IHB1c2ggYmVmb3JlIG9wZW5pbmdcbiAqICAgdGhlIFBSLlxuICovXG5leHBvcnQgYXN5bmMgZnVuY3Rpb24gZW5zdXJlQnJhbmNoQ3VycmVudChcbiAgb3B0aW9uczogRW5zdXJlQnJhbmNoQ3VycmVudE9wdGlvbnMsXG4pOiBQcm9taXNlPEJyYW5jaEN1cnJlbmN5T3V0Y29tZT4ge1xuICBjb25zdCB7IGJyYW5jaCwgYmFzZUJyYW5jaCwgcnVuR2l0LCBjd2QgfSA9IG9wdGlvbnM7XG4gIGNvbnN0IGxvZyA9IG9wdGlvbnMubG9nID8/ICgoKSA9PiB7fSk7XG4gIGNvbnN0IGdpdE9wdGlvbnMgPSBjd2QgPT09IHVuZGVmaW5lZCA/IHVuZGVmaW5lZCA6IHsgY3dkIH07XG5cbiAgLy8gV2l0aG91dCB0aGlzIHRoZSBjb21wYXJpc29uIGlzIGFnYWluc3Qgd2hhdGV2ZXIgdGhlIGxhc3QgZmV0Y2ggc2F3LCB3aGljaFxuICAvLyBpcyBleGFjdGx5IHRoZSBzdGFsZSBhbnN3ZXIgdGhpcyBleGlzdHMgdG8gYXZvaWQuXG4gIGNvbnN0IGZldGNoZWQgPSBhd2FpdCBydW5HaXQoW1wiZmV0Y2hcIiwgXCJvcmlnaW5cIiwgYmFzZUJyYW5jaF0sIGdpdE9wdGlvbnMpO1xuICBpZiAoIWZldGNoZWQub2spIHtcbiAgICByZXR1cm4ge1xuICAgICAga2luZDogXCJ1bmtub3duXCIsXG4gICAgICBkZXRhaWw6IGBjb3VsZCBub3QgZmV0Y2ggJyR7YmFzZUJyYW5jaH0nOiAke2ZldGNoZWQuZXJyb3IubWVzc2FnZX1gLFxuICAgIH07XG4gIH1cblxuICBjb25zdCBiYXNlUmVmID0gYG9yaWdpbi8ke2Jhc2VCcmFuY2h9YDtcbiAgY29uc3QgZHJpZnQgPSBhd2FpdCBtZWFzdXJlQnJhbmNoRHJpZnQoYnJhbmNoLCBiYXNlUmVmLCBydW5HaXQsIGN3ZCk7XG4gIGlmICghZHJpZnQub2spIHtcbiAgICByZXR1cm4ge1xuICAgICAga2luZDogXCJ1bmtub3duXCIsXG4gICAgICBkZXRhaWw6IGBjb3VsZCBub3QgY29tcGFyZSAnJHticmFuY2h9JyB3aXRoICcke2Jhc2VSZWZ9JzogYCArXG4gICAgICAgIGRyaWZ0LmVycm9yLm1lc3NhZ2UsXG4gICAgfTtcbiAgfVxuXG4gIGlmIChkcmlmdC52YWx1ZS5iZWhpbmQgPT09IDApIHtcbiAgICByZXR1cm4ge1xuICAgICAga2luZDogXCJhbHJlYWR5LWN1cnJlbnRcIixcbiAgICAgIGRldGFpbDogYCcke2JyYW5jaH0nIGlzIGN1cnJlbnQgd2l0aCAnJHtiYXNlUmVmfSdgLFxuICAgIH07XG4gIH1cblxuICBjb25zdCByZWJhc2VkID0gYXdhaXQgb3B0aW9ucy5yZWJhc2Uoe1xuICAgIGJyYW5jaCxcbiAgICBiYXNlUmVmLFxuICAgIHJ1bkdpdCxcbiAgICBjd2QsXG4gIH0pO1xuICBpZiAoIXJlYmFzZWQub2spIHtcbiAgICAvLyBBIGNvbmZsaWN0IGhlcmUgaXMgY29udGVudCB0aGF0IGdlbnVpbmVseSBkaXZlcmdlZC4gUGlja2luZyBhIHNpZGUgaXNcbiAgICAvLyB0aGUgY29uZmxpY3QgbGFkZGVyJ3Mgam9iLCB1bmRlciBpdHMgb3duIHJ1bmdzIGFuZCBpdHMgb3duIGF1ZGl0IHRyYWlsLlxuICAgIHJldHVybiB7XG4gICAgICBraW5kOiBcImRlY2xpbmVkXCIsXG4gICAgICBkZXRhaWw6IGAnJHticmFuY2h9JyBpcyAke2RyaWZ0LnZhbHVlLmJlaGluZH0gY29tbWl0KHMpIGJlaGluZCBgICtcbiAgICAgICAgYCcke2Jhc2VSZWZ9JyBhbmQgY291bGQgbm90IGJlIGJyb3VnaHQgZm9yd2FyZCBzYWZlbHk6IGAgK1xuICAgICAgICByZWJhc2VkLmVycm9yLm1lc3NhZ2UsXG4gICAgfTtcbiAgfVxuXG4gIGxvZyhcbiAgICBgJyR7YnJhbmNofScgd2FzICR7ZHJpZnQudmFsdWUuYmVoaW5kfSBjb21taXQocykgYmVoaW5kICcke2Jhc2VSZWZ9JyBhbmQgYCArXG4gICAgICBgaGFzIGJlZW4gYnJvdWdodCBmb3J3YXJkIGJlZm9yZSB0aGUgUFIg4oCUIHNvIGl0cyBDSSBydW5zIG9uY2UsIG9uIHRoZSBgICtcbiAgICAgIGBzdGF0ZSB0aGF0IHdpbGwgbWVyZ2VgLFxuICApO1xuICByZXR1cm4ge1xuICAgIGtpbmQ6IFwidXBkYXRlZFwiLFxuICAgIGRldGFpbDogYCcke2JyYW5jaH0nIGJyb3VnaHQgZm9yd2FyZCBvbnRvICcke2Jhc2VSZWZ9J2AsXG4gICAgYmVoaW5kOiBkcmlmdC52YWx1ZS5iZWhpbmQsXG4gIH07XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0F5QkMsR0FpQ0Q7Ozs7Ozs7Ozs7O0NBV0MsR0FDRCxPQUFPLGVBQWUsbUJBQ3BCLE1BQWMsRUFDZCxPQUFlLEVBQ2YsTUFBaUIsRUFDakIsR0FBWTtFQUVaLE1BQU0sVUFBVSxNQUFNLE9BQ3BCO0lBQUM7SUFBWTtJQUFnQjtJQUFXLEdBQUcsUUFBUSxHQUFHLEVBQUUsUUFBUTtHQUFDLEVBQ2pFLFFBQVEsWUFBWSxZQUFZO0lBQUU7RUFBSTtFQUV4QyxJQUFJLENBQUMsUUFBUSxFQUFFLEVBQUUsT0FBTztJQUFFLElBQUk7SUFBTyxPQUFPLFFBQVEsS0FBSztFQUFDO0VBRTFELE1BQU0sQ0FBQyxNQUFNLE1BQU0sR0FBRyxRQUFRLEtBQUssQ0FBQyxNQUFNLENBQUMsSUFBSSxHQUFHLEtBQUssQ0FBQztFQUN4RCxNQUFNLFNBQVMsT0FBTztFQUN0QixNQUFNLFFBQVEsT0FBTztFQUNyQixJQUFJLENBQUMsT0FBTyxRQUFRLENBQUMsV0FBVyxDQUFDLE9BQU8sUUFBUSxDQUFDLFFBQVE7SUFDdkQsT0FBTztNQUNMLElBQUk7TUFDSixPQUFPLElBQUksTUFDVCxDQUFDLGlDQUFpQyxFQUNoQyxLQUFLLFNBQVMsQ0FBQyxRQUFRLEtBQUssQ0FBQyxNQUFNLEdBQ25DO0lBRU47RUFDRjtFQUNBLE9BQU87SUFBRSxJQUFJO0lBQU0sT0FBTztNQUFFO01BQVE7SUFBTTtFQUFFO0FBQzlDO0FBMEJBOzs7Ozs7Ozs7Ozs7Ozs7Q0FlQyxHQUNELE9BQU8sZUFBZSxvQkFDcEIsT0FBbUM7RUFFbkMsTUFBTSxFQUFFLE1BQU0sRUFBRSxVQUFVLEVBQUUsTUFBTSxFQUFFLEdBQUcsRUFBRSxHQUFHO0VBQzVDLE1BQU0sTUFBTSxRQUFRLEdBQUcsSUFBSSxDQUFDLEtBQU8sQ0FBQztFQUNwQyxNQUFNLGFBQWEsUUFBUSxZQUFZLFlBQVk7SUFBRTtFQUFJO0VBRXpELDRFQUE0RTtFQUM1RSxvREFBb0Q7RUFDcEQsTUFBTSxVQUFVLE1BQU0sT0FBTztJQUFDO0lBQVM7SUFBVTtHQUFXLEVBQUU7RUFDOUQsSUFBSSxDQUFDLFFBQVEsRUFBRSxFQUFFO0lBQ2YsT0FBTztNQUNMLE1BQU07TUFDTixRQUFRLENBQUMsaUJBQWlCLEVBQUUsV0FBVyxHQUFHLEVBQUUsUUFBUSxLQUFLLENBQUMsT0FBTyxFQUFFO0lBQ3JFO0VBQ0Y7RUFFQSxNQUFNLFVBQVUsQ0FBQyxPQUFPLEVBQUUsWUFBWTtFQUN0QyxNQUFNLFFBQVEsTUFBTSxtQkFBbUIsUUFBUSxTQUFTLFFBQVE7RUFDaEUsSUFBSSxDQUFDLE1BQU0sRUFBRSxFQUFFO0lBQ2IsT0FBTztNQUNMLE1BQU07TUFDTixRQUFRLENBQUMsbUJBQW1CLEVBQUUsT0FBTyxRQUFRLEVBQUUsUUFBUSxHQUFHLENBQUMsR0FDekQsTUFBTSxLQUFLLENBQUMsT0FBTztJQUN2QjtFQUNGO0VBRUEsSUFBSSxNQUFNLEtBQUssQ0FBQyxNQUFNLEtBQUssR0FBRztJQUM1QixPQUFPO01BQ0wsTUFBTTtNQUNOLFFBQVEsQ0FBQyxDQUFDLEVBQUUsT0FBTyxtQkFBbUIsRUFBRSxRQUFRLENBQUMsQ0FBQztJQUNwRDtFQUNGO0VBRUEsTUFBTSxVQUFVLE1BQU0sUUFBUSxNQUFNLENBQUM7SUFDbkM7SUFDQTtJQUNBO0lBQ0E7RUFDRjtFQUNBLElBQUksQ0FBQyxRQUFRLEVBQUUsRUFBRTtJQUNmLHdFQUF3RTtJQUN4RSwwRUFBMEU7SUFDMUUsT0FBTztNQUNMLE1BQU07TUFDTixRQUFRLENBQUMsQ0FBQyxFQUFFLE9BQU8sS0FBSyxFQUFFLE1BQU0sS0FBSyxDQUFDLE1BQU0sQ0FBQyxrQkFBa0IsQ0FBQyxHQUM5RCxDQUFDLENBQUMsRUFBRSxRQUFRLDJDQUEyQyxDQUFDLEdBQ3hELFFBQVEsS0FBSyxDQUFDLE9BQU87SUFDekI7RUFDRjtFQUVBLElBQ0UsQ0FBQyxDQUFDLEVBQUUsT0FBTyxNQUFNLEVBQUUsTUFBTSxLQUFLLENBQUMsTUFBTSxDQUFDLG1CQUFtQixFQUFFLFFBQVEsTUFBTSxDQUFDLEdBQ3hFLENBQUMscUVBQXFFLENBQUMsR0FDdkUsQ0FBQyxxQkFBcUIsQ0FBQztFQUUzQixPQUFPO0lBQ0wsTUFBTTtJQUNOLFFBQVEsQ0FBQyxDQUFDLEVBQUUsT0FBTyx3QkFBd0IsRUFBRSxRQUFRLENBQUMsQ0FBQztJQUN2RCxRQUFRLE1BQU0sS0FBSyxDQUFDLE1BQU07RUFDNUI7QUFDRiJ9
+// denoCacheMetadata=14263274358991450394,12461382607075792361

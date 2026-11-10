@@ -1,0 +1,38 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { format } from "jsr:@std/internal@^1.0.12/format";
+import { AssertionError } from "./assertion_error.ts";
+
+/**
+ * Make an assertion that `actual` is greater than or equal to `expected`.
+ * If not then throw.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertGreaterOrEqual } from "@std/assert";
+ *
+ * assertGreaterOrEqual(2, 1); // Doesn't throw
+ * assertGreaterOrEqual(1, 1); // Doesn't throw
+ * assertGreaterOrEqual(0, 1); // Throws
+ * ```
+ *
+ * @typeParam T The type of the values to compare.
+ * @param actual The actual value to compare.
+ * @param expected The expected value to compare.
+ * @param msg The optional message to display if the assertion fails.
+ */
+export function assertGreaterOrEqual<T>(
+  actual: T,
+  expected: T,
+  msg?: string,
+) {
+  if (actual >= expected) return;
+
+  const actualString = format(actual);
+  const expectedString = format(expected);
+  throw new AssertionError(
+    msg ?? `Expect ${actualString} >= ${expectedString}`,
+  );
+}
+
+// denoCacheMetadata={"headers":{"accept-ranges":"bytes","content-type":"text/typescript","age":"6426681","access-control-expose-headers":"*","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","vary":"Origin","cf-ray":"a583917b2da2561f-SYD","x-content-type-options":"nosniff","cross-origin-resource-policy":"cross-origin","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","date":"Tue, 10 Nov 2026 08:08:15 GMT","x-robots-tag":"noindex","server":"cloudflare","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=CfzihNtz8jL11IrjhdgtRXvVO3cIYDrynNAj1rWRJc5NKSdFTn8m4AByq3e3R83H66hIjSmmWIq5Vir2zibBbUSwwjYrDF%2Fi1CTYbKINKQ%2FM4%2Fm%2BS402%2BHo%3D\"}]}","alt-svc":"h3=\":443\"; ma=86400","content-length":"1070","x-jsr-backend":"modules","cf-cache-status":"HIT","access-control-allow-origin":"*","cache-control":"public, max-age=31536000, immutable","etag":"\"b2248d4ab0c438b790baed0e6db03b4e\"","set-cookie":"__cf_bm=c2MDRSaMojmAIjVydTF8uOhVkJxKNqDS8TqnfN7P6x0-1794298095.8698199-1.0.1.1-3vcTQHDLwW4M6Nnbe5k_jkhyd2D7m_m3HzJWt.eyC_wWGG.a5KbDnq4Joxoz2WsPDnF7VzDMg542GxU81on3ZSfC13gwrjYV1dDAGH4JjgozOq254DEpxGCFSDjQtMYW; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT"},"url":"https://jsr.io/@std/assert/1.0.18/greater_or_equal.ts","time":1794298095}

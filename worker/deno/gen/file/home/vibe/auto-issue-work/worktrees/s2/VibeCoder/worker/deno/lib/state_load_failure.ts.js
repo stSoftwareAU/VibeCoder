@@ -1,0 +1,33 @@
+/**
+ * Loud reporting for state-file load failures (Issue #3649, SEC-6b03e9d5127f).
+ *
+ * The circuit breaker and the per-issue cooldown both fall back to empty
+ * state when their JSON file cannot be read, parsed, or validated. That
+ * fallback is the right recovery, but it was silent: one junk byte in a file
+ * sitting in the parent of the agent's clone reset all backoff and cleared
+ * every cooldown with nothing in the log to say so, which is
+ * indistinguishable from a clean first run.
+ *
+ * A *missing* file is the ordinary first-run case and stays quiet. Anything
+ * else is a fault and must be visible — see the "Never Fail Silently — Fail
+ * Loud" rule in CODING-STANDARDS.md.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */ /**
+ * Report that a state file could not be loaded and its contents were
+ * discarded.
+ *
+ * @param stateName - Human name of the state, e.g. `"cooldown state"`
+ * @param path - Path that was read
+ * @param cause - The thrown value, or a synthetic `Error` for a failed
+ *   structural validation
+ * @param warn - Sink for the notice (defaults to `console.error`)
+ * @returns `true` when a notice was emitted, `false` for a missing file
+ */ export function reportStateLoadFailure(stateName, path, cause, warn = (message)=>console.error(message)) {
+  if (cause instanceof Deno.errors.NotFound) return false;
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  warn(`[STATE_LOAD_FAILURE] ${stateName} at ${path} could not be loaded ` + `(${detail}) — falling back to empty state, so every recorded entry ` + `has been discarded.`);
+  return true;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9zdGF0ZV9sb2FkX2ZhaWx1cmUudHMiXSwic291cmNlc0NvbnRlbnQiOlsiLyoqXG4gKiBMb3VkIHJlcG9ydGluZyBmb3Igc3RhdGUtZmlsZSBsb2FkIGZhaWx1cmVzIChJc3N1ZSAjMzY0OSwgU0VDLTZiMDNlOWQ1MTI3ZikuXG4gKlxuICogVGhlIGNpcmN1aXQgYnJlYWtlciBhbmQgdGhlIHBlci1pc3N1ZSBjb29sZG93biBib3RoIGZhbGwgYmFjayB0byBlbXB0eVxuICogc3RhdGUgd2hlbiB0aGVpciBKU09OIGZpbGUgY2Fubm90IGJlIHJlYWQsIHBhcnNlZCwgb3IgdmFsaWRhdGVkLiBUaGF0XG4gKiBmYWxsYmFjayBpcyB0aGUgcmlnaHQgcmVjb3ZlcnksIGJ1dCBpdCB3YXMgc2lsZW50OiBvbmUganVuayBieXRlIGluIGEgZmlsZVxuICogc2l0dGluZyBpbiB0aGUgcGFyZW50IG9mIHRoZSBhZ2VudCdzIGNsb25lIHJlc2V0IGFsbCBiYWNrb2ZmIGFuZCBjbGVhcmVkXG4gKiBldmVyeSBjb29sZG93biB3aXRoIG5vdGhpbmcgaW4gdGhlIGxvZyB0byBzYXkgc28sIHdoaWNoIGlzXG4gKiBpbmRpc3Rpbmd1aXNoYWJsZSBmcm9tIGEgY2xlYW4gZmlyc3QgcnVuLlxuICpcbiAqIEEgKm1pc3NpbmcqIGZpbGUgaXMgdGhlIG9yZGluYXJ5IGZpcnN0LXJ1biBjYXNlIGFuZCBzdGF5cyBxdWlldC4gQW55dGhpbmdcbiAqIGVsc2UgaXMgYSBmYXVsdCBhbmQgbXVzdCBiZSB2aXNpYmxlIOKAlCBzZWUgdGhlIFwiTmV2ZXIgRmFpbCBTaWxlbnRseSDigJQgRmFpbFxuICogTG91ZFwiIHJ1bGUgaW4gQ09ESU5HLVNUQU5EQVJEUy5tZC5cbiAqXG4gKiBVc2VzIEF1c3RyYWxpYW4gRW5nbGlzaCB0aHJvdWdob3V0IChiZWhhdmlvdXIsIGNvbG91ciwgb3JnYW5pc2F0aW9uLCBldGMuKS5cbiAqL1xuXG4vKipcbiAqIFJlcG9ydCB0aGF0IGEgc3RhdGUgZmlsZSBjb3VsZCBub3QgYmUgbG9hZGVkIGFuZCBpdHMgY29udGVudHMgd2VyZVxuICogZGlzY2FyZGVkLlxuICpcbiAqIEBwYXJhbSBzdGF0ZU5hbWUgLSBIdW1hbiBuYW1lIG9mIHRoZSBzdGF0ZSwgZS5nLiBgXCJjb29sZG93biBzdGF0ZVwiYFxuICogQHBhcmFtIHBhdGggLSBQYXRoIHRoYXQgd2FzIHJlYWRcbiAqIEBwYXJhbSBjYXVzZSAtIFRoZSB0aHJvd24gdmFsdWUsIG9yIGEgc3ludGhldGljIGBFcnJvcmAgZm9yIGEgZmFpbGVkXG4gKiAgIHN0cnVjdHVyYWwgdmFsaWRhdGlvblxuICogQHBhcmFtIHdhcm4gLSBTaW5rIGZvciB0aGUgbm90aWNlIChkZWZhdWx0cyB0byBgY29uc29sZS5lcnJvcmApXG4gKiBAcmV0dXJucyBgdHJ1ZWAgd2hlbiBhIG5vdGljZSB3YXMgZW1pdHRlZCwgYGZhbHNlYCBmb3IgYSBtaXNzaW5nIGZpbGVcbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHJlcG9ydFN0YXRlTG9hZEZhaWx1cmUoXG4gIHN0YXRlTmFtZTogc3RyaW5nLFxuICBwYXRoOiBzdHJpbmcsXG4gIGNhdXNlOiB1bmtub3duLFxuICB3YXJuOiAobWVzc2FnZTogc3RyaW5nKSA9PiB2b2lkID0gKG1lc3NhZ2UpID0+IGNvbnNvbGUuZXJyb3IobWVzc2FnZSksXG4pOiBib29sZWFuIHtcbiAgaWYgKGNhdXNlIGluc3RhbmNlb2YgRGVuby5lcnJvcnMuTm90Rm91bmQpIHJldHVybiBmYWxzZTtcblxuICBjb25zdCBkZXRhaWwgPSBjYXVzZSBpbnN0YW5jZW9mIEVycm9yID8gY2F1c2UubWVzc2FnZSA6IFN0cmluZyhjYXVzZSk7XG4gIHdhcm4oXG4gICAgYFtTVEFURV9MT0FEX0ZBSUxVUkVdICR7c3RhdGVOYW1lfSBhdCAke3BhdGh9IGNvdWxkIG5vdCBiZSBsb2FkZWQgYCArXG4gICAgICBgKCR7ZGV0YWlsfSkg4oCUIGZhbGxpbmcgYmFjayB0byBlbXB0eSBzdGF0ZSwgc28gZXZlcnkgcmVjb3JkZWQgZW50cnkgYCArXG4gICAgICBgaGFzIGJlZW4gZGlzY2FyZGVkLmAsXG4gICk7XG4gIHJldHVybiB0cnVlO1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7Q0FlQyxHQUVEOzs7Ozs7Ozs7O0NBVUMsR0FDRCxPQUFPLFNBQVMsdUJBQ2QsU0FBaUIsRUFDakIsSUFBWSxFQUNaLEtBQWMsRUFDZCxPQUFrQyxDQUFDLFVBQVksUUFBUSxLQUFLLENBQUMsUUFBUTtFQUVyRSxJQUFJLGlCQUFpQixLQUFLLE1BQU0sQ0FBQyxRQUFRLEVBQUUsT0FBTztFQUVsRCxNQUFNLFNBQVMsaUJBQWlCLFFBQVEsTUFBTSxPQUFPLEdBQUcsT0FBTztFQUMvRCxLQUNFLENBQUMscUJBQXFCLEVBQUUsVUFBVSxJQUFJLEVBQUUsS0FBSyxxQkFBcUIsQ0FBQyxHQUNqRSxDQUFDLENBQUMsRUFBRSxPQUFPLHlEQUF5RCxDQUFDLEdBQ3JFLENBQUMsbUJBQW1CLENBQUM7RUFFekIsT0FBTztBQUNUIn0=
+// denoCacheMetadata=4631872870200597291,3908590347511205778

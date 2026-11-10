@@ -1,0 +1,279 @@
+/**
+ * DeepSeek per-phase model / effort routing (Issue #413, parent #396).
+ *
+ * DeepSeek does not ship a CLI of its own: it is carried on the **Claude** CLI
+ * pointed at DeepSeek's Anthropic-compatible endpoint, so the argv shape is
+ * Claude's and there is no `deepseek_executor` argv builder to match
+ * `gemini_executor.ts`. What DeepSeek does need is its own *routing*, and that
+ * is what this module owns.
+ *
+ * Two provider facts drive it:
+ *
+ * - **Claude's routing resolves to tier aliases, not model ids.** `fable`,
+ *   `opus`, `sonnet` and `haiku` mean nothing to DeepSeek's endpoint, and a
+ *   provider that supplies no routing of its own resolves to `undefined` and
+ *   lets the CLI fall back to an Anthropic model name the endpoint cannot
+ *   resolve. Every phase is therefore pinned to a real DeepSeek model id in
+ *   {@link DEEPSEEK_PHASE_MODEL_DEFAULTS}.
+ * - **The endpoint does not implement Anthropic's effort control.** Following
+ *   the Gemini precedent (Issue #364), the effort a phase was *asked* to run
+ *   at is reported rather than turned into an argument: there is deliberately
+ *   no DeepSeek effort table and no `deepseek_effort` config key, because
+ *   either would be configuration that can never be applied (Issue #3234).
+ *
+ * There is deliberately **no** `cheaperModel` export either. DeepSeek publishes
+ * no cheaper rung — `deepseek-flash` is a different model, not a cheaper tier of
+ * `deepseek-v4-pro` — so the descriptor omits the optional method entirely
+ * and `model_fallback.ts` reports `no-ladder-for-provider` rather than
+ * performing a silent no-op (Issue #365).
+ *
+ * Australian English spelling throughout (behaviour, organisation).
+ */ import { DEEPSEEK_PHASE_MODEL_DEFAULTS, DEFAULT_DEEPSEEK_MODEL_TOP_TIER, PHASE_EFFORT_DEFAULTS } from "./config_defaults.ts";
+import { processEnvLookup } from "./env_lookup.ts";
+import { resolvePhaseRoutedValue } from "./phase_routing.ts";
+/** Global `.config.json` `deepseek_phase_model_overrides` (Issue #413). */ let _deepseekPhaseModelConfigOverrides = {};
+/** The active repo's DeepSeek routing overrides (Issue #413). */ let _repoDeepSeekModel = "";
+let _repoDeepSeekPhaseModelOverrides = {};
+/** Models the vendor currently cannot serve, for this run (Issue #2059). */ let _unavailableDeepSeekModels = new Set();
+/**
+ * Record the global per-phase DeepSeek model overrides (Issue #413).
+ *
+ * Called during config loading with the `deepseek_phase_model_overrides` key.
+ * These override {@link DEEPSEEK_PHASE_MODEL_DEFAULTS} and are themselves
+ * overridden by the per-repo overrides and the `DEEPSEEK_MODEL_<PHASE>` env
+ * var.
+ *
+ * @param overrides - Phase-to-model mapping from `.config.json`.
+ */ export function setDeepSeekPhaseModelConfigOverrides(overrides) {
+  _deepseekPhaseModelConfigOverrides = {
+    ...overrides
+  };
+}
+/**
+ * Set the active repo's DeepSeek model routing overrides (Issue #413).
+ *
+ * Mirrors `setActiveRepoGeminiModelOverrides` in `gemini_executor.ts`: call it
+ * once when the worker starts work on a repo, passing that repo's merged
+ * RepoConfig (or `undefined` to clear). It **replaces** — never merges — the
+ * previously-active overrides, so a high-value repo's premium routing can never
+ * leak into a filler repo when one worker process serves several repos.
+ *
+ * @param repoConfig - The active repo's RepoConfig, or undefined to clear.
+ */ export function setActiveRepoDeepSeekModelOverrides(repoConfig) {
+  _repoDeepSeekModel = repoConfig?.deepseekModel ?? "";
+  _repoDeepSeekPhaseModelOverrides = {
+    ...repoConfig?.deepseekPhaseModelOverrides ?? {}
+  };
+}
+/**
+ * Resolve the model DeepSeek runs a phase on — the value behind `--model`.
+ *
+ * The six-step chain itself lives in `phase_routing.ts`; this supplies
+ * DeepSeek's names, tables and override state, so the precedence is Claude's
+ * precedence with DeepSeek-named keys (Issue #413):
+ *   1. `DEEPSEEK_MODEL_<PHASE>` env var — operator escape hatch
+ *   2. Per-repo `deepseek_phase_model_overrides`
+ *   3. Per-repo `deepseek_model` base tier — applies to all phases
+ *   4. Global config `deepseek_phase_model_overrides`
+ *   5. {@link DEEPSEEK_PHASE_MODEL_DEFAULTS} — the designed routing
+ *   6. Base `DEEPSEEK_MODEL` env var — global fallback
+ *
+ * @param phase - Optional phase name (e.g. `"planning"`).
+ * @param env - Environment lookup for steps 1 and 6 (Issue #957); defaults to
+ *   the process environment.
+ * @returns The resolved model, or `undefined` when no step supplies one — the
+ *   CLI's configured default then stands, and a non-empty phase warns.
+ */ export function resolveDeepSeekModel(phase, env) {
+  const model = resolvePhaseRoutedValue({
+    logPrefix: "deepseek-executor",
+    what: "model",
+    flag: "--model",
+    envVar: "DEEPSEEK_MODEL",
+    env,
+    repoPhaseOverrides: _repoDeepSeekPhaseModelOverrides,
+    repoPhaseOverridesKey: "deepseek_phase_model_overrides",
+    repoBase: _repoDeepSeekModel,
+    repoBaseKey: "deepseek_model",
+    globalPhaseOverrides: _deepseekPhaseModelConfigOverrides,
+    globalPhaseOverridesKey: "deepseek_phase_model_overrides",
+    phaseDefaults: DEEPSEEK_PHASE_MODEL_DEFAULTS,
+    phaseDefaultsName: "DEEPSEEK_PHASE_MODEL_DEFAULTS"
+  }, phase);
+  // (Issue #2059) A tier the vendor cannot serve: when the phase's value came
+  // from the designed default — every operator/repo/env layer absent — route
+  // it to the top tier for this run instead. An explicit pin always wins,
+  // and a phase already on the top tier is untouched.
+  if (model && phase && _unavailableDeepSeekModels.has(model.trim().toLowerCase())) {
+    const defaultsValue = DEEPSEEK_PHASE_MODEL_DEFAULTS[phase];
+    const defaultSupplied = defaultsValue === model && !_repoDeepSeekPhaseModelOverrides[phase] && !_repoDeepSeekModel && !_deepseekPhaseModelConfigOverrides[phase] && !(env ?? processEnvLookup)(`DEEPSEEK_MODEL_${phase.toUpperCase()}`);
+    if (defaultSupplied && defaultsValue !== DEFAULT_DEEPSEEK_MODEL_TOP_TIER) {
+      warnAdaptedDeepSeekModelOnce(phase, model);
+      return DEFAULT_DEEPSEEK_MODEL_TOP_TIER;
+    }
+  }
+  return model;
+}
+/**
+ * Phases already warned about a tier adaptation, once per worker process.
+ */ const _adaptationWarnedPhases = new Set();
+/**
+ * Report a tier adaptation loudly, once per phase per process (Issue #2059).
+ */ function warnAdaptedDeepSeekModelOnce(phase, unavailable) {
+  if (_adaptationWarnedPhases.has(phase)) return;
+  _adaptationWarnedPhases.add(phase);
+  console.warn(`[deepseek] Model ${JSON.stringify(unavailable)} probed unavailable — ` + `adapting phase "${phase}" to ${DEFAULT_DEEPSEEK_MODEL_TOP_TIER} for ` + `this run (Issue #2059). Explicit pins still win.`);
+}
+/**
+ * Resolve the reasoning effort a phase is *asked* to run at (Issue #413).
+ *
+ * The Claude CLI has `--effort`, but DeepSeek's Anthropic-compatible endpoint
+ * does not implement Anthropic's effort control, so this value never becomes an
+ * argument — there is deliberately no DeepSeek effort table and no DeepSeek
+ * effort config key, because either would be configuration that can never be
+ * applied. What it does supply is the signal the fail-loud standard requires
+ * (Issue #3234): the worker's own phase effort design
+ * ({@link PHASE_EFFORT_DEFAULTS}) is what an operator relying on defaults
+ * expects to be honoured, so the request is reported through
+ * {@link warnDeepSeekEffortUnsupported} instead of being discarded silently.
+ *
+ * @param phase - Optional phase name (e.g. `"planning"`).
+ * @returns The effort the phase design asks for, or `undefined` when the phase
+ *   is absent or has no designed effort — nothing to report in either case.
+ */ export function resolveDeepSeekEffort(phase) {
+  return phase ? PHASE_EFFORT_DEFAULTS[phase] : undefined;
+}
+/**
+ * Phases already warned about an unhonourable effort, once per worker process.
+ *
+ * One warning per phase per process: a multi-phase run states the gap for each
+ * distinct phase it routes, and a phase that is invoked repeatedly (a retry, a
+ * quality-fix loop) states it once. The key of a phase-less invocation is the
+ * empty string, so it too warns once.
+ */ const _effortWarnedPhases = new Set();
+/**
+ * Clear the per-process effort-warning state (Issue #413).
+ *
+ * Exposed so a test — or any caller that deliberately re-runs a phase as a
+ * fresh scenario — can observe the first warning again.
+ */ export function clearDeepSeekEffortWarnings() {
+  _effortWarnedPhases.clear();
+}
+/**
+ * Report an effort DeepSeek's endpoint cannot honour, once per phase.
+ *
+ * Fail loud, do not fail the run (Issue #364's precedent): the invocation is
+ * valid, it simply cannot carry the lever, so the warning *is* the fix. Passing
+ * the flag through to an endpoint that does not implement it would either be
+ * rejected or silently ignored, and the silent case is the one that hides.
+ *
+ * @param effort - The requested reasoning effort.
+ * @param phase - The phase it was requested for, when there is one.
+ */ export function warnDeepSeekEffortUnsupported(effort, phase) {
+  const key = phase ?? "";
+  if (_effortWarnedPhases.has(key)) return;
+  _effortWarnedPhases.add(key);
+  const where = phase ? `phase "${phase}"` : "a phase-less invocation";
+  console.warn(`[deepseek] Reasoning effort ${JSON.stringify(effort)} requested for ` + `${where} but DeepSeek's Anthropic-compatible endpoint has no effort ` + `control; the request is ignored. Run this phase under a provider that ` + `has the lever (claude, codex), or clear the effort configuration for ` + `it.`);
+}
+/**
+ * Report sub-agent definitions DeepSeek's endpoint cannot carry (Issue #2342).
+ *
+ * The sub-agent definitions name Anthropic tier aliases the endpoint cannot
+ * resolve, so the descriptor strips them from the argv. An issue run that wants
+ * them is rerouted to Claude or started without them before spawn (Issue #4109),
+ * with the runner's refusal of a native run that lost `--agents` as a backstop
+ * (Issue #4010). Stated every time rather than
+ * once per phase — each invocation that asked for the split must say why it
+ * cannot have it.
+ *
+ * @param phase - The phase the definitions were requested for, when there is one.
+ */ export function warnDeepSeekAgentsUnsupported(phase) {
+  const where = phase ? `phase "${phase}"` : "a phase-less invocation";
+  console.warn(`[deepseek] Sub-agent definitions (--agents) were requested for ${where} ` + `but DeepSeek's Anthropic-compatible endpoint cannot resolve the ` + `Anthropic model tiers they name, so they are stripped from the argv. ` + `An issue run that wants them is rerouted to Claude or started without ` + `them before spawn (Issue #4109), with the #4010 refusal as a backstop. ` + `Run this phase under the claude provider for tiered sub-agents, or ` + `turn the definitions off (issue_executor_split: false, ` + `issue_reviewer_agents: false, issue_sub_agent_tier: "sonnet").`);
+}
+/**
+ * Whether a run served `served` satisfies the expectation `expected`
+ * (Issue #2053).
+ *
+ * The vendor's endpoint does not always serve the id it was asked for:
+ *
+ * - It serves `deepseek-v4-pro` (the top tier) when `deepseek-flash` (the
+ *   base tier) is asked — observed live on the first production run, where
+ *   the worker flagged an upgrade as degraded. An upgrade is not
+ *   degradation: the detector exists to catch runs served a *worse* model
+ *   than designed.
+ * - It serves the documented legacy alias `deepseek-v4-flash*` for
+ *   Flash-tier requests ("still accepted, served by the Flash model").
+ *   The same tier under a legacy name is not degradation either.
+ *
+ * A downgrade — top tier asked, Flash-tier served — still fails the check,
+ * exactly like an id from a different vendor. Matching is case-insensitive
+ * and prefix-aware on both sides, mirroring {@link planning_run_stats}
+ * `modelsMatch`.
+ *
+ * @param served - The model id the API declared it served.
+ * @param expected - The model id the invocation was expected to run on.
+ * @returns True when the served model satisfies the expectation.
+ */ export function deepSeekServedModelSatisfies(served, expected) {
+  const s = served.trim().toLowerCase();
+  const e = expected.trim().toLowerCase();
+  if (s === e || s.startsWith(e) || e.startsWith(s)) return true;
+  const expectedFlashTier = e.startsWith("deepseek-flash") || e.startsWith("deepseek-v4-flash");
+  if (!expectedFlashTier) return false;
+  // The vendor's upgrade remap: base tier asked, top tier served.
+  if (s.startsWith("deepseek-v4-pro")) return true;
+  // The vendor's documented legacy alias of the Flash model.
+  if (s.startsWith("deepseek-v4-flash")) return true;
+  return false;
+}
+/**
+ * Record the models the vendor currently cannot serve, for this run
+ * (Issue #2059). Replaces — never merges — the previous set, on the same
+ * rule as the per-repo override state.
+ *
+ * @param models - Model ids that probed unavailable.
+ */ export function setUnavailableDeepSeekModels(models) {
+  _unavailableDeepSeekModels = new Set(models.map((m)=>m.trim().toLowerCase()).filter((m)=>m !== ""));
+}
+/**
+ * Clear the unavailable-model set (Issue #2059).
+ *
+ * Exposed so a test — or a caller deliberately re-running as a fresh
+ * scenario — can observe the designed routing again.
+ */ export function clearUnavailableDeepSeekModels() {
+  _unavailableDeepSeekModels = new Set();
+}
+/**
+ * The same-provider tiers to try when `model` is unavailable (Issue #2059).
+ *
+ * The base (Flash) tier has one alternative: the top tier. The top tier has
+ * none — nothing cheaper can stand in for it, and the health gate owns the
+ * provider-level verdict from there.
+ *
+ * @param model - The model id that probed unavailable.
+ * @returns Ordered alternative model ids, or [] when none exist.
+ */ export function deepSeekAlternativeModels(model) {
+  const wanted = model.trim().toLowerCase();
+  return wanted.startsWith("deepseek-flash") || wanted.startsWith("deepseek-v4-flash") ? [
+    DEFAULT_DEEPSEEK_MODEL_TOP_TIER
+  ] : [];
+}
+/**
+ * Apply the tier adaptation for this run (Issue #2059).
+ *
+ * Records `unavailable` in the per-run set; the resolver then moves phases
+ * whose designed default is that model onto the top tier. `alternative` is
+ * the id the health gate probed healthy and is logged so the run's record
+ * names what the vendor will actually serve.
+ *
+ * @param unavailable - The model id that probed unavailable.
+ * @param alternative - The healthy alternative the probe confirmed.
+ */ export function applyDeepSeekModelAdaptation(unavailable, alternative) {
+  setUnavailableDeepSeekModels([
+    ..._unavailableDeepSeekModels,
+    unavailable
+  ]);
+  console.warn(`[deepseek] Model ${JSON.stringify(unavailable)} probed unavailable — ` + `adapting this run's routing to ${alternative} (Issue #2059). ` + `Explicit pins still win.`);
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9kZWVwc2Vla19leGVjdXRvci50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIERlZXBTZWVrIHBlci1waGFzZSBtb2RlbCAvIGVmZm9ydCByb3V0aW5nIChJc3N1ZSAjNDEzLCBwYXJlbnQgIzM5NikuXG4gKlxuICogRGVlcFNlZWsgZG9lcyBub3Qgc2hpcCBhIENMSSBvZiBpdHMgb3duOiBpdCBpcyBjYXJyaWVkIG9uIHRoZSAqKkNsYXVkZSoqIENMSVxuICogcG9pbnRlZCBhdCBEZWVwU2VlaydzIEFudGhyb3BpYy1jb21wYXRpYmxlIGVuZHBvaW50LCBzbyB0aGUgYXJndiBzaGFwZSBpc1xuICogQ2xhdWRlJ3MgYW5kIHRoZXJlIGlzIG5vIGBkZWVwc2Vla19leGVjdXRvcmAgYXJndiBidWlsZGVyIHRvIG1hdGNoXG4gKiBgZ2VtaW5pX2V4ZWN1dG9yLnRzYC4gV2hhdCBEZWVwU2VlayBkb2VzIG5lZWQgaXMgaXRzIG93biAqcm91dGluZyosIGFuZCB0aGF0XG4gKiBpcyB3aGF0IHRoaXMgbW9kdWxlIG93bnMuXG4gKlxuICogVHdvIHByb3ZpZGVyIGZhY3RzIGRyaXZlIGl0OlxuICpcbiAqIC0gKipDbGF1ZGUncyByb3V0aW5nIHJlc29sdmVzIHRvIHRpZXIgYWxpYXNlcywgbm90IG1vZGVsIGlkcy4qKiBgZmFibGVgLFxuICogICBgb3B1c2AsIGBzb25uZXRgIGFuZCBgaGFpa3VgIG1lYW4gbm90aGluZyB0byBEZWVwU2VlaydzIGVuZHBvaW50LCBhbmQgYVxuICogICBwcm92aWRlciB0aGF0IHN1cHBsaWVzIG5vIHJvdXRpbmcgb2YgaXRzIG93biByZXNvbHZlcyB0byBgdW5kZWZpbmVkYCBhbmRcbiAqICAgbGV0cyB0aGUgQ0xJIGZhbGwgYmFjayB0byBhbiBBbnRocm9waWMgbW9kZWwgbmFtZSB0aGUgZW5kcG9pbnQgY2Fubm90XG4gKiAgIHJlc29sdmUuIEV2ZXJ5IHBoYXNlIGlzIHRoZXJlZm9yZSBwaW5uZWQgdG8gYSByZWFsIERlZXBTZWVrIG1vZGVsIGlkIGluXG4gKiAgIHtAbGluayBERUVQU0VFS19QSEFTRV9NT0RFTF9ERUZBVUxUU30uXG4gKiAtICoqVGhlIGVuZHBvaW50IGRvZXMgbm90IGltcGxlbWVudCBBbnRocm9waWMncyBlZmZvcnQgY29udHJvbC4qKiBGb2xsb3dpbmdcbiAqICAgdGhlIEdlbWluaSBwcmVjZWRlbnQgKElzc3VlICMzNjQpLCB0aGUgZWZmb3J0IGEgcGhhc2Ugd2FzICphc2tlZCogdG8gcnVuXG4gKiAgIGF0IGlzIHJlcG9ydGVkIHJhdGhlciB0aGFuIHR1cm5lZCBpbnRvIGFuIGFyZ3VtZW50OiB0aGVyZSBpcyBkZWxpYmVyYXRlbHlcbiAqICAgbm8gRGVlcFNlZWsgZWZmb3J0IHRhYmxlIGFuZCBubyBgZGVlcHNlZWtfZWZmb3J0YCBjb25maWcga2V5LCBiZWNhdXNlXG4gKiAgIGVpdGhlciB3b3VsZCBiZSBjb25maWd1cmF0aW9uIHRoYXQgY2FuIG5ldmVyIGJlIGFwcGxpZWQgKElzc3VlICMzMjM0KS5cbiAqXG4gKiBUaGVyZSBpcyBkZWxpYmVyYXRlbHkgKipubyoqIGBjaGVhcGVyTW9kZWxgIGV4cG9ydCBlaXRoZXIuIERlZXBTZWVrIHB1Ymxpc2hlc1xuICogbm8gY2hlYXBlciBydW5nIOKAlCBgZGVlcHNlZWstZmxhc2hgIGlzIGEgZGlmZmVyZW50IG1vZGVsLCBub3QgYSBjaGVhcGVyIHRpZXIgb2ZcbiAqIGBkZWVwc2Vlay12NC1wcm9gIOKAlCBzbyB0aGUgZGVzY3JpcHRvciBvbWl0cyB0aGUgb3B0aW9uYWwgbWV0aG9kIGVudGlyZWx5XG4gKiBhbmQgYG1vZGVsX2ZhbGxiYWNrLnRzYCByZXBvcnRzIGBuby1sYWRkZXItZm9yLXByb3ZpZGVyYCByYXRoZXIgdGhhblxuICogcGVyZm9ybWluZyBhIHNpbGVudCBuby1vcCAoSXNzdWUgIzM2NSkuXG4gKlxuICogQXVzdHJhbGlhbiBFbmdsaXNoIHNwZWxsaW5nIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgb3JnYW5pc2F0aW9uKS5cbiAqL1xuXG5pbXBvcnQge1xuICBERUVQU0VFS19QSEFTRV9NT0RFTF9ERUZBVUxUUyxcbiAgREVGQVVMVF9ERUVQU0VFS19NT0RFTF9UT1BfVElFUixcbiAgUEhBU0VfRUZGT1JUX0RFRkFVTFRTLFxufSBmcm9tIFwiLi9jb25maWdfZGVmYXVsdHMudHNcIjtcbmltcG9ydCB7IHR5cGUgRW52TG9va3VwLCBwcm9jZXNzRW52TG9va3VwIH0gZnJvbSBcIi4vZW52X2xvb2t1cC50c1wiO1xuaW1wb3J0IHsgcmVzb2x2ZVBoYXNlUm91dGVkVmFsdWUgfSBmcm9tIFwiLi9waGFzZV9yb3V0aW5nLnRzXCI7XG5pbXBvcnQgdHlwZSB7IFJlcG9Db25maWcgfSBmcm9tIFwiLi4vdHlwZXMudHNcIjtcblxuLyoqIEdsb2JhbCBgLmNvbmZpZy5qc29uYCBgZGVlcHNlZWtfcGhhc2VfbW9kZWxfb3ZlcnJpZGVzYCAoSXNzdWUgIzQxMykuICovXG5sZXQgX2RlZXBzZWVrUGhhc2VNb2RlbENvbmZpZ092ZXJyaWRlczogUmVhZG9ubHk8UmVjb3JkPHN0cmluZywgc3RyaW5nPj4gPSB7fTtcblxuLyoqIFRoZSBhY3RpdmUgcmVwbydzIERlZXBTZWVrIHJvdXRpbmcgb3ZlcnJpZGVzIChJc3N1ZSAjNDEzKS4gKi9cbmxldCBfcmVwb0RlZXBTZWVrTW9kZWwgPSBcIlwiO1xubGV0IF9yZXBvRGVlcFNlZWtQaGFzZU1vZGVsT3ZlcnJpZGVzOiBSZWFkb25seTxSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+PiA9IHt9O1xuXG4vKiogTW9kZWxzIHRoZSB2ZW5kb3IgY3VycmVudGx5IGNhbm5vdCBzZXJ2ZSwgZm9yIHRoaXMgcnVuIChJc3N1ZSAjMjA1OSkuICovXG5sZXQgX3VuYXZhaWxhYmxlRGVlcFNlZWtNb2RlbHMgPSBuZXcgU2V0PHN0cmluZz4oKTtcblxuLyoqXG4gKiBSZWNvcmQgdGhlIGdsb2JhbCBwZXItcGhhc2UgRGVlcFNlZWsgbW9kZWwgb3ZlcnJpZGVzIChJc3N1ZSAjNDEzKS5cbiAqXG4gKiBDYWxsZWQgZHVyaW5nIGNvbmZpZyBsb2FkaW5nIHdpdGggdGhlIGBkZWVwc2Vla19waGFzZV9tb2RlbF9vdmVycmlkZXNgIGtleS5cbiAqIFRoZXNlIG92ZXJyaWRlIHtAbGluayBERUVQU0VFS19QSEFTRV9NT0RFTF9ERUZBVUxUU30gYW5kIGFyZSB0aGVtc2VsdmVzXG4gKiBvdmVycmlkZGVuIGJ5IHRoZSBwZXItcmVwbyBvdmVycmlkZXMgYW5kIHRoZSBgREVFUFNFRUtfTU9ERUxfPFBIQVNFPmAgZW52XG4gKiB2YXIuXG4gKlxuICogQHBhcmFtIG92ZXJyaWRlcyAtIFBoYXNlLXRvLW1vZGVsIG1hcHBpbmcgZnJvbSBgLmNvbmZpZy5qc29uYC5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHNldERlZXBTZWVrUGhhc2VNb2RlbENvbmZpZ092ZXJyaWRlcyhcbiAgb3ZlcnJpZGVzOiBSZWNvcmQ8c3RyaW5nLCBzdHJpbmc+LFxuKTogdm9pZCB7XG4gIF9kZWVwc2Vla1BoYXNlTW9kZWxDb25maWdPdmVycmlkZXMgPSB7IC4uLm92ZXJyaWRlcyB9O1xufVxuXG4vKipcbiAqIFNldCB0aGUgYWN0aXZlIHJlcG8ncyBEZWVwU2VlayBtb2RlbCByb3V0aW5nIG92ZXJyaWRlcyAoSXNzdWUgIzQxMykuXG4gKlxuICogTWlycm9ycyBgc2V0QWN0aXZlUmVwb0dlbWluaU1vZGVsT3ZlcnJpZGVzYCBpbiBgZ2VtaW5pX2V4ZWN1dG9yLnRzYDogY2FsbCBpdFxuICogb25jZSB3aGVuIHRoZSB3b3JrZXIgc3RhcnRzIHdvcmsgb24gYSByZXBvLCBwYXNzaW5nIHRoYXQgcmVwbydzIG1lcmdlZFxuICogUmVwb0NvbmZpZyAob3IgYHVuZGVmaW5lZGAgdG8gY2xlYXIpLiBJdCAqKnJlcGxhY2VzKiog4oCUIG5ldmVyIG1lcmdlcyDigJQgdGhlXG4gKiBwcmV2aW91c2x5LWFjdGl2ZSBvdmVycmlkZXMsIHNvIGEgaGlnaC12YWx1ZSByZXBvJ3MgcHJlbWl1bSByb3V0aW5nIGNhbiBuZXZlclxuICogbGVhayBpbnRvIGEgZmlsbGVyIHJlcG8gd2hlbiBvbmUgd29ya2VyIHByb2Nlc3Mgc2VydmVzIHNldmVyYWwgcmVwb3MuXG4gKlxuICogQHBhcmFtIHJlcG9Db25maWcgLSBUaGUgYWN0aXZlIHJlcG8ncyBSZXBvQ29uZmlnLCBvciB1bmRlZmluZWQgdG8gY2xlYXIuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBzZXRBY3RpdmVSZXBvRGVlcFNlZWtNb2RlbE92ZXJyaWRlcyhcbiAgcmVwb0NvbmZpZzogUmVwb0NvbmZpZyB8IHVuZGVmaW5lZCxcbik6IHZvaWQge1xuICBfcmVwb0RlZXBTZWVrTW9kZWwgPSByZXBvQ29uZmlnPy5kZWVwc2Vla01vZGVsID8/IFwiXCI7XG4gIF9yZXBvRGVlcFNlZWtQaGFzZU1vZGVsT3ZlcnJpZGVzID0ge1xuICAgIC4uLihyZXBvQ29uZmlnPy5kZWVwc2Vla1BoYXNlTW9kZWxPdmVycmlkZXMgPz8ge30pLFxuICB9O1xufVxuXG4vKipcbiAqIFJlc29sdmUgdGhlIG1vZGVsIERlZXBTZWVrIHJ1bnMgYSBwaGFzZSBvbiDigJQgdGhlIHZhbHVlIGJlaGluZCBgLS1tb2RlbGAuXG4gKlxuICogVGhlIHNpeC1zdGVwIGNoYWluIGl0c2VsZiBsaXZlcyBpbiBgcGhhc2Vfcm91dGluZy50c2A7IHRoaXMgc3VwcGxpZXNcbiAqIERlZXBTZWVrJ3MgbmFtZXMsIHRhYmxlcyBhbmQgb3ZlcnJpZGUgc3RhdGUsIHNvIHRoZSBwcmVjZWRlbmNlIGlzIENsYXVkZSdzXG4gKiBwcmVjZWRlbmNlIHdpdGggRGVlcFNlZWstbmFtZWQga2V5cyAoSXNzdWUgIzQxMyk6XG4gKiAgIDEuIGBERUVQU0VFS19NT0RFTF88UEhBU0U+YCBlbnYgdmFyIOKAlCBvcGVyYXRvciBlc2NhcGUgaGF0Y2hcbiAqICAgMi4gUGVyLXJlcG8gYGRlZXBzZWVrX3BoYXNlX21vZGVsX292ZXJyaWRlc2BcbiAqICAgMy4gUGVyLXJlcG8gYGRlZXBzZWVrX21vZGVsYCBiYXNlIHRpZXIg4oCUIGFwcGxpZXMgdG8gYWxsIHBoYXNlc1xuICogICA0LiBHbG9iYWwgY29uZmlnIGBkZWVwc2Vla19waGFzZV9tb2RlbF9vdmVycmlkZXNgXG4gKiAgIDUuIHtAbGluayBERUVQU0VFS19QSEFTRV9NT0RFTF9ERUZBVUxUU30g4oCUIHRoZSBkZXNpZ25lZCByb3V0aW5nXG4gKiAgIDYuIEJhc2UgYERFRVBTRUVLX01PREVMYCBlbnYgdmFyIOKAlCBnbG9iYWwgZmFsbGJhY2tcbiAqXG4gKiBAcGFyYW0gcGhhc2UgLSBPcHRpb25hbCBwaGFzZSBuYW1lIChlLmcuIGBcInBsYW5uaW5nXCJgKS5cbiAqIEBwYXJhbSBlbnYgLSBFbnZpcm9ubWVudCBsb29rdXAgZm9yIHN0ZXBzIDEgYW5kIDYgKElzc3VlICM5NTcpOyBkZWZhdWx0cyB0b1xuICogICB0aGUgcHJvY2VzcyBlbnZpcm9ubWVudC5cbiAqIEByZXR1cm5zIFRoZSByZXNvbHZlZCBtb2RlbCwgb3IgYHVuZGVmaW5lZGAgd2hlbiBubyBzdGVwIHN1cHBsaWVzIG9uZSDigJQgdGhlXG4gKiAgIENMSSdzIGNvbmZpZ3VyZWQgZGVmYXVsdCB0aGVuIHN0YW5kcywgYW5kIGEgbm9uLWVtcHR5IHBoYXNlIHdhcm5zLlxuICovXG5leHBvcnQgZnVuY3Rpb24gcmVzb2x2ZURlZXBTZWVrTW9kZWwoXG4gIHBoYXNlPzogc3RyaW5nLFxuICBlbnY/OiBFbnZMb29rdXAsXG4pOiBzdHJpbmcgfCB1bmRlZmluZWQge1xuICBjb25zdCBtb2RlbCA9IHJlc29sdmVQaGFzZVJvdXRlZFZhbHVlKHtcbiAgICBsb2dQcmVmaXg6IFwiZGVlcHNlZWstZXhlY3V0b3JcIixcbiAgICB3aGF0OiBcIm1vZGVsXCIsXG4gICAgZmxhZzogXCItLW1vZGVsXCIsXG4gICAgZW52VmFyOiBcIkRFRVBTRUVLX01PREVMXCIsXG4gICAgZW52LFxuICAgIHJlcG9QaGFzZU92ZXJyaWRlczogX3JlcG9EZWVwU2Vla1BoYXNlTW9kZWxPdmVycmlkZXMsXG4gICAgcmVwb1BoYXNlT3ZlcnJpZGVzS2V5OiBcImRlZXBzZWVrX3BoYXNlX21vZGVsX292ZXJyaWRlc1wiLFxuICAgIHJlcG9CYXNlOiBfcmVwb0RlZXBTZWVrTW9kZWwsXG4gICAgcmVwb0Jhc2VLZXk6IFwiZGVlcHNlZWtfbW9kZWxcIixcbiAgICBnbG9iYWxQaGFzZU92ZXJyaWRlczogX2RlZXBzZWVrUGhhc2VNb2RlbENvbmZpZ092ZXJyaWRlcyxcbiAgICBnbG9iYWxQaGFzZU92ZXJyaWRlc0tleTogXCJkZWVwc2Vla19waGFzZV9tb2RlbF9vdmVycmlkZXNcIixcbiAgICBwaGFzZURlZmF1bHRzOiBERUVQU0VFS19QSEFTRV9NT0RFTF9ERUZBVUxUUyxcbiAgICBwaGFzZURlZmF1bHRzTmFtZTogXCJERUVQU0VFS19QSEFTRV9NT0RFTF9ERUZBVUxUU1wiLFxuICB9LCBwaGFzZSk7XG5cbiAgLy8gKElzc3VlICMyMDU5KSBBIHRpZXIgdGhlIHZlbmRvciBjYW5ub3Qgc2VydmU6IHdoZW4gdGhlIHBoYXNlJ3MgdmFsdWUgY2FtZVxuICAvLyBmcm9tIHRoZSBkZXNpZ25lZCBkZWZhdWx0IOKAlCBldmVyeSBvcGVyYXRvci9yZXBvL2VudiBsYXllciBhYnNlbnQg4oCUIHJvdXRlXG4gIC8vIGl0IHRvIHRoZSB0b3AgdGllciBmb3IgdGhpcyBydW4gaW5zdGVhZC4gQW4gZXhwbGljaXQgcGluIGFsd2F5cyB3aW5zLFxuICAvLyBhbmQgYSBwaGFzZSBhbHJlYWR5IG9uIHRoZSB0b3AgdGllciBpcyB1bnRvdWNoZWQuXG4gIGlmIChcbiAgICBtb2RlbCAmJiBwaGFzZSAmJlxuICAgIF91bmF2YWlsYWJsZURlZXBTZWVrTW9kZWxzLmhhcyhtb2RlbC50cmltKCkudG9Mb3dlckNhc2UoKSlcbiAgKSB7XG4gICAgY29uc3QgZGVmYXVsdHNWYWx1ZSA9IERFRVBTRUVLX1BIQVNFX01PREVMX0RFRkFVTFRTW1xuICAgICAgcGhhc2UgYXMga2V5b2YgdHlwZW9mIERFRVBTRUVLX1BIQVNFX01PREVMX0RFRkFVTFRTXG4gICAgXTtcbiAgICBjb25zdCBkZWZhdWx0U3VwcGxpZWQgPSBkZWZhdWx0c1ZhbHVlID09PSBtb2RlbCAmJlxuICAgICAgIV9yZXBvRGVlcFNlZWtQaGFzZU1vZGVsT3ZlcnJpZGVzW3BoYXNlXSAmJlxuICAgICAgIV9yZXBvRGVlcFNlZWtNb2RlbCAmJlxuICAgICAgIV9kZWVwc2Vla1BoYXNlTW9kZWxDb25maWdPdmVycmlkZXNbcGhhc2VdICYmXG4gICAgICAhKGVudiA/PyBwcm9jZXNzRW52TG9va3VwKShgREVFUFNFRUtfTU9ERUxfJHtwaGFzZS50b1VwcGVyQ2FzZSgpfWApO1xuICAgIGlmIChkZWZhdWx0U3VwcGxpZWQgJiYgZGVmYXVsdHNWYWx1ZSAhPT0gREVGQVVMVF9ERUVQU0VFS19NT0RFTF9UT1BfVElFUikge1xuICAgICAgd2FybkFkYXB0ZWREZWVwU2Vla01vZGVsT25jZShwaGFzZSwgbW9kZWwpO1xuICAgICAgcmV0dXJuIERFRkFVTFRfREVFUFNFRUtfTU9ERUxfVE9QX1RJRVI7XG4gICAgfVxuICB9XG4gIHJldHVybiBtb2RlbDtcbn1cblxuLyoqXG4gKiBQaGFzZXMgYWxyZWFkeSB3YXJuZWQgYWJvdXQgYSB0aWVyIGFkYXB0YXRpb24sIG9uY2UgcGVyIHdvcmtlciBwcm9jZXNzLlxuICovXG5jb25zdCBfYWRhcHRhdGlvbldhcm5lZFBoYXNlcyA9IG5ldyBTZXQ8c3RyaW5nPigpO1xuXG4vKipcbiAqIFJlcG9ydCBhIHRpZXIgYWRhcHRhdGlvbiBsb3VkbHksIG9uY2UgcGVyIHBoYXNlIHBlciBwcm9jZXNzIChJc3N1ZSAjMjA1OSkuXG4gKi9cbmZ1bmN0aW9uIHdhcm5BZGFwdGVkRGVlcFNlZWtNb2RlbE9uY2UoXG4gIHBoYXNlOiBzdHJpbmcsXG4gIHVuYXZhaWxhYmxlOiBzdHJpbmcsXG4pOiB2b2lkIHtcbiAgaWYgKF9hZGFwdGF0aW9uV2FybmVkUGhhc2VzLmhhcyhwaGFzZSkpIHJldHVybjtcbiAgX2FkYXB0YXRpb25XYXJuZWRQaGFzZXMuYWRkKHBoYXNlKTtcbiAgY29uc29sZS53YXJuKFxuICAgIGBbZGVlcHNlZWtdIE1vZGVsICR7SlNPTi5zdHJpbmdpZnkodW5hdmFpbGFibGUpfSBwcm9iZWQgdW5hdmFpbGFibGUg4oCUIGAgK1xuICAgICAgYGFkYXB0aW5nIHBoYXNlIFwiJHtwaGFzZX1cIiB0byAke0RFRkFVTFRfREVFUFNFRUtfTU9ERUxfVE9QX1RJRVJ9IGZvciBgICtcbiAgICAgIGB0aGlzIHJ1biAoSXNzdWUgIzIwNTkpLiBFeHBsaWNpdCBwaW5zIHN0aWxsIHdpbi5gLFxuICApO1xufVxuXG4vKipcbiAqIFJlc29sdmUgdGhlIHJlYXNvbmluZyBlZmZvcnQgYSBwaGFzZSBpcyAqYXNrZWQqIHRvIHJ1biBhdCAoSXNzdWUgIzQxMykuXG4gKlxuICogVGhlIENsYXVkZSBDTEkgaGFzIGAtLWVmZm9ydGAsIGJ1dCBEZWVwU2VlaydzIEFudGhyb3BpYy1jb21wYXRpYmxlIGVuZHBvaW50XG4gKiBkb2VzIG5vdCBpbXBsZW1lbnQgQW50aHJvcGljJ3MgZWZmb3J0IGNvbnRyb2wsIHNvIHRoaXMgdmFsdWUgbmV2ZXIgYmVjb21lcyBhblxuICogYXJndW1lbnQg4oCUIHRoZXJlIGlzIGRlbGliZXJhdGVseSBubyBEZWVwU2VlayBlZmZvcnQgdGFibGUgYW5kIG5vIERlZXBTZWVrXG4gKiBlZmZvcnQgY29uZmlnIGtleSwgYmVjYXVzZSBlaXRoZXIgd291bGQgYmUgY29uZmlndXJhdGlvbiB0aGF0IGNhbiBuZXZlciBiZVxuICogYXBwbGllZC4gV2hhdCBpdCBkb2VzIHN1cHBseSBpcyB0aGUgc2lnbmFsIHRoZSBmYWlsLWxvdWQgc3RhbmRhcmQgcmVxdWlyZXNcbiAqIChJc3N1ZSAjMzIzNCk6IHRoZSB3b3JrZXIncyBvd24gcGhhc2UgZWZmb3J0IGRlc2lnblxuICogKHtAbGluayBQSEFTRV9FRkZPUlRfREVGQVVMVFN9KSBpcyB3aGF0IGFuIG9wZXJhdG9yIHJlbHlpbmcgb24gZGVmYXVsdHNcbiAqIGV4cGVjdHMgdG8gYmUgaG9ub3VyZWQsIHNvIHRoZSByZXF1ZXN0IGlzIHJlcG9ydGVkIHRocm91Z2hcbiAqIHtAbGluayB3YXJuRGVlcFNlZWtFZmZvcnRVbnN1cHBvcnRlZH0gaW5zdGVhZCBvZiBiZWluZyBkaXNjYXJkZWQgc2lsZW50bHkuXG4gKlxuICogQHBhcmFtIHBoYXNlIC0gT3B0aW9uYWwgcGhhc2UgbmFtZSAoZS5nLiBgXCJwbGFubmluZ1wiYCkuXG4gKiBAcmV0dXJucyBUaGUgZWZmb3J0IHRoZSBwaGFzZSBkZXNpZ24gYXNrcyBmb3IsIG9yIGB1bmRlZmluZWRgIHdoZW4gdGhlIHBoYXNlXG4gKiAgIGlzIGFic2VudCBvciBoYXMgbm8gZGVzaWduZWQgZWZmb3J0IOKAlCBub3RoaW5nIHRvIHJlcG9ydCBpbiBlaXRoZXIgY2FzZS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHJlc29sdmVEZWVwU2Vla0VmZm9ydChwaGFzZT86IHN0cmluZyk6IHN0cmluZyB8IHVuZGVmaW5lZCB7XG4gIHJldHVybiBwaGFzZSA/IFBIQVNFX0VGRk9SVF9ERUZBVUxUU1twaGFzZV0gOiB1bmRlZmluZWQ7XG59XG5cbi8qKlxuICogUGhhc2VzIGFscmVhZHkgd2FybmVkIGFib3V0IGFuIHVuaG9ub3VyYWJsZSBlZmZvcnQsIG9uY2UgcGVyIHdvcmtlciBwcm9jZXNzLlxuICpcbiAqIE9uZSB3YXJuaW5nIHBlciBwaGFzZSBwZXIgcHJvY2VzczogYSBtdWx0aS1waGFzZSBydW4gc3RhdGVzIHRoZSBnYXAgZm9yIGVhY2hcbiAqIGRpc3RpbmN0IHBoYXNlIGl0IHJvdXRlcywgYW5kIGEgcGhhc2UgdGhhdCBpcyBpbnZva2VkIHJlcGVhdGVkbHkgKGEgcmV0cnksIGFcbiAqIHF1YWxpdHktZml4IGxvb3ApIHN0YXRlcyBpdCBvbmNlLiBUaGUga2V5IG9mIGEgcGhhc2UtbGVzcyBpbnZvY2F0aW9uIGlzIHRoZVxuICogZW1wdHkgc3RyaW5nLCBzbyBpdCB0b28gd2FybnMgb25jZS5cbiAqL1xuY29uc3QgX2VmZm9ydFdhcm5lZFBoYXNlcyA9IG5ldyBTZXQ8c3RyaW5nPigpO1xuXG4vKipcbiAqIENsZWFyIHRoZSBwZXItcHJvY2VzcyBlZmZvcnQtd2FybmluZyBzdGF0ZSAoSXNzdWUgIzQxMykuXG4gKlxuICogRXhwb3NlZCBzbyBhIHRlc3Qg4oCUIG9yIGFueSBjYWxsZXIgdGhhdCBkZWxpYmVyYXRlbHkgcmUtcnVucyBhIHBoYXNlIGFzIGFcbiAqIGZyZXNoIHNjZW5hcmlvIOKAlCBjYW4gb2JzZXJ2ZSB0aGUgZmlyc3Qgd2FybmluZyBhZ2Fpbi5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGNsZWFyRGVlcFNlZWtFZmZvcnRXYXJuaW5ncygpOiB2b2lkIHtcbiAgX2VmZm9ydFdhcm5lZFBoYXNlcy5jbGVhcigpO1xufVxuXG4vKipcbiAqIFJlcG9ydCBhbiBlZmZvcnQgRGVlcFNlZWsncyBlbmRwb2ludCBjYW5ub3QgaG9ub3VyLCBvbmNlIHBlciBwaGFzZS5cbiAqXG4gKiBGYWlsIGxvdWQsIGRvIG5vdCBmYWlsIHRoZSBydW4gKElzc3VlICMzNjQncyBwcmVjZWRlbnQpOiB0aGUgaW52b2NhdGlvbiBpc1xuICogdmFsaWQsIGl0IHNpbXBseSBjYW5ub3QgY2FycnkgdGhlIGxldmVyLCBzbyB0aGUgd2FybmluZyAqaXMqIHRoZSBmaXguIFBhc3NpbmdcbiAqIHRoZSBmbGFnIHRocm91Z2ggdG8gYW4gZW5kcG9pbnQgdGhhdCBkb2VzIG5vdCBpbXBsZW1lbnQgaXQgd291bGQgZWl0aGVyIGJlXG4gKiByZWplY3RlZCBvciBzaWxlbnRseSBpZ25vcmVkLCBhbmQgdGhlIHNpbGVudCBjYXNlIGlzIHRoZSBvbmUgdGhhdCBoaWRlcy5cbiAqXG4gKiBAcGFyYW0gZWZmb3J0IC0gVGhlIHJlcXVlc3RlZCByZWFzb25pbmcgZWZmb3J0LlxuICogQHBhcmFtIHBoYXNlIC0gVGhlIHBoYXNlIGl0IHdhcyByZXF1ZXN0ZWQgZm9yLCB3aGVuIHRoZXJlIGlzIG9uZS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHdhcm5EZWVwU2Vla0VmZm9ydFVuc3VwcG9ydGVkKFxuICBlZmZvcnQ6IHN0cmluZyxcbiAgcGhhc2U/OiBzdHJpbmcsXG4pOiB2b2lkIHtcbiAgY29uc3Qga2V5ID0gcGhhc2UgPz8gXCJcIjtcbiAgaWYgKF9lZmZvcnRXYXJuZWRQaGFzZXMuaGFzKGtleSkpIHJldHVybjtcbiAgX2VmZm9ydFdhcm5lZFBoYXNlcy5hZGQoa2V5KTtcblxuICBjb25zdCB3aGVyZSA9IHBoYXNlID8gYHBoYXNlIFwiJHtwaGFzZX1cImAgOiBcImEgcGhhc2UtbGVzcyBpbnZvY2F0aW9uXCI7XG4gIGNvbnNvbGUud2FybihcbiAgICBgW2RlZXBzZWVrXSBSZWFzb25pbmcgZWZmb3J0ICR7SlNPTi5zdHJpbmdpZnkoZWZmb3J0KX0gcmVxdWVzdGVkIGZvciBgICtcbiAgICAgIGAke3doZXJlfSBidXQgRGVlcFNlZWsncyBBbnRocm9waWMtY29tcGF0aWJsZSBlbmRwb2ludCBoYXMgbm8gZWZmb3J0IGAgK1xuICAgICAgYGNvbnRyb2w7IHRoZSByZXF1ZXN0IGlzIGlnbm9yZWQuIFJ1biB0aGlzIHBoYXNlIHVuZGVyIGEgcHJvdmlkZXIgdGhhdCBgICtcbiAgICAgIGBoYXMgdGhlIGxldmVyIChjbGF1ZGUsIGNvZGV4KSwgb3IgY2xlYXIgdGhlIGVmZm9ydCBjb25maWd1cmF0aW9uIGZvciBgICtcbiAgICAgIGBpdC5gLFxuICApO1xufVxuXG4vKipcbiAqIFJlcG9ydCBzdWItYWdlbnQgZGVmaW5pdGlvbnMgRGVlcFNlZWsncyBlbmRwb2ludCBjYW5ub3QgY2FycnkgKElzc3VlICMyMzQyKS5cbiAqXG4gKiBUaGUgc3ViLWFnZW50IGRlZmluaXRpb25zIG5hbWUgQW50aHJvcGljIHRpZXIgYWxpYXNlcyB0aGUgZW5kcG9pbnQgY2Fubm90XG4gKiByZXNvbHZlLCBzbyB0aGUgZGVzY3JpcHRvciBzdHJpcHMgdGhlbSBmcm9tIHRoZSBhcmd2LiBBbiBpc3N1ZSBydW4gdGhhdCB3YW50c1xuICogdGhlbSBpcyByZXJvdXRlZCB0byBDbGF1ZGUgb3Igc3RhcnRlZCB3aXRob3V0IHRoZW0gYmVmb3JlIHNwYXduIChJc3N1ZSAjNDEwOSksXG4gKiB3aXRoIHRoZSBydW5uZXIncyByZWZ1c2FsIG9mIGEgbmF0aXZlIHJ1biB0aGF0IGxvc3QgYC0tYWdlbnRzYCBhcyBhIGJhY2tzdG9wXG4gKiAoSXNzdWUgIzQwMTApLiBTdGF0ZWQgZXZlcnkgdGltZSByYXRoZXIgdGhhblxuICogb25jZSBwZXIgcGhhc2Ug4oCUIGVhY2ggaW52b2NhdGlvbiB0aGF0IGFza2VkIGZvciB0aGUgc3BsaXQgbXVzdCBzYXkgd2h5IGl0XG4gKiBjYW5ub3QgaGF2ZSBpdC5cbiAqXG4gKiBAcGFyYW0gcGhhc2UgLSBUaGUgcGhhc2UgdGhlIGRlZmluaXRpb25zIHdlcmUgcmVxdWVzdGVkIGZvciwgd2hlbiB0aGVyZSBpcyBvbmUuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiB3YXJuRGVlcFNlZWtBZ2VudHNVbnN1cHBvcnRlZChwaGFzZT86IHN0cmluZyk6IHZvaWQge1xuICBjb25zdCB3aGVyZSA9IHBoYXNlID8gYHBoYXNlIFwiJHtwaGFzZX1cImAgOiBcImEgcGhhc2UtbGVzcyBpbnZvY2F0aW9uXCI7XG4gIGNvbnNvbGUud2FybihcbiAgICBgW2RlZXBzZWVrXSBTdWItYWdlbnQgZGVmaW5pdGlvbnMgKC0tYWdlbnRzKSB3ZXJlIHJlcXVlc3RlZCBmb3IgJHt3aGVyZX0gYCArXG4gICAgICBgYnV0IERlZXBTZWVrJ3MgQW50aHJvcGljLWNvbXBhdGlibGUgZW5kcG9pbnQgY2Fubm90IHJlc29sdmUgdGhlIGAgK1xuICAgICAgYEFudGhyb3BpYyBtb2RlbCB0aWVycyB0aGV5IG5hbWUsIHNvIHRoZXkgYXJlIHN0cmlwcGVkIGZyb20gdGhlIGFyZ3YuIGAgK1xuICAgICAgYEFuIGlzc3VlIHJ1biB0aGF0IHdhbnRzIHRoZW0gaXMgcmVyb3V0ZWQgdG8gQ2xhdWRlIG9yIHN0YXJ0ZWQgd2l0aG91dCBgICtcbiAgICAgIGB0aGVtIGJlZm9yZSBzcGF3biAoSXNzdWUgIzQxMDkpLCB3aXRoIHRoZSAjNDAxMCByZWZ1c2FsIGFzIGEgYmFja3N0b3AuIGAgK1xuICAgICAgYFJ1biB0aGlzIHBoYXNlIHVuZGVyIHRoZSBjbGF1ZGUgcHJvdmlkZXIgZm9yIHRpZXJlZCBzdWItYWdlbnRzLCBvciBgICtcbiAgICAgIGB0dXJuIHRoZSBkZWZpbml0aW9ucyBvZmYgKGlzc3VlX2V4ZWN1dG9yX3NwbGl0OiBmYWxzZSwgYCArXG4gICAgICBgaXNzdWVfcmV2aWV3ZXJfYWdlbnRzOiBmYWxzZSwgaXNzdWVfc3ViX2FnZW50X3RpZXI6IFwic29ubmV0XCIpLmAsXG4gICk7XG59XG5cbi8qKlxuICogV2hldGhlciBhIHJ1biBzZXJ2ZWQgYHNlcnZlZGAgc2F0aXNmaWVzIHRoZSBleHBlY3RhdGlvbiBgZXhwZWN0ZWRgXG4gKiAoSXNzdWUgIzIwNTMpLlxuICpcbiAqIFRoZSB2ZW5kb3IncyBlbmRwb2ludCBkb2VzIG5vdCBhbHdheXMgc2VydmUgdGhlIGlkIGl0IHdhcyBhc2tlZCBmb3I6XG4gKlxuICogLSBJdCBzZXJ2ZXMgYGRlZXBzZWVrLXY0LXByb2AgKHRoZSB0b3AgdGllcikgd2hlbiBgZGVlcHNlZWstZmxhc2hgICh0aGVcbiAqICAgYmFzZSB0aWVyKSBpcyBhc2tlZCDigJQgb2JzZXJ2ZWQgbGl2ZSBvbiB0aGUgZmlyc3QgcHJvZHVjdGlvbiBydW4sIHdoZXJlXG4gKiAgIHRoZSB3b3JrZXIgZmxhZ2dlZCBhbiB1cGdyYWRlIGFzIGRlZ3JhZGVkLiBBbiB1cGdyYWRlIGlzIG5vdFxuICogICBkZWdyYWRhdGlvbjogdGhlIGRldGVjdG9yIGV4aXN0cyB0byBjYXRjaCBydW5zIHNlcnZlZCBhICp3b3JzZSogbW9kZWxcbiAqICAgdGhhbiBkZXNpZ25lZC5cbiAqIC0gSXQgc2VydmVzIHRoZSBkb2N1bWVudGVkIGxlZ2FjeSBhbGlhcyBgZGVlcHNlZWstdjQtZmxhc2gqYCBmb3JcbiAqICAgRmxhc2gtdGllciByZXF1ZXN0cyAoXCJzdGlsbCBhY2NlcHRlZCwgc2VydmVkIGJ5IHRoZSBGbGFzaCBtb2RlbFwiKS5cbiAqICAgVGhlIHNhbWUgdGllciB1bmRlciBhIGxlZ2FjeSBuYW1lIGlzIG5vdCBkZWdyYWRhdGlvbiBlaXRoZXIuXG4gKlxuICogQSBkb3duZ3JhZGUg4oCUIHRvcCB0aWVyIGFza2VkLCBGbGFzaC10aWVyIHNlcnZlZCDigJQgc3RpbGwgZmFpbHMgdGhlIGNoZWNrLFxuICogZXhhY3RseSBsaWtlIGFuIGlkIGZyb20gYSBkaWZmZXJlbnQgdmVuZG9yLiBNYXRjaGluZyBpcyBjYXNlLWluc2Vuc2l0aXZlXG4gKiBhbmQgcHJlZml4LWF3YXJlIG9uIGJvdGggc2lkZXMsIG1pcnJvcmluZyB7QGxpbmsgcGxhbm5pbmdfcnVuX3N0YXRzfVxuICogYG1vZGVsc01hdGNoYC5cbiAqXG4gKiBAcGFyYW0gc2VydmVkIC0gVGhlIG1vZGVsIGlkIHRoZSBBUEkgZGVjbGFyZWQgaXQgc2VydmVkLlxuICogQHBhcmFtIGV4cGVjdGVkIC0gVGhlIG1vZGVsIGlkIHRoZSBpbnZvY2F0aW9uIHdhcyBleHBlY3RlZCB0byBydW4gb24uXG4gKiBAcmV0dXJucyBUcnVlIHdoZW4gdGhlIHNlcnZlZCBtb2RlbCBzYXRpc2ZpZXMgdGhlIGV4cGVjdGF0aW9uLlxuICovXG5leHBvcnQgZnVuY3Rpb24gZGVlcFNlZWtTZXJ2ZWRNb2RlbFNhdGlzZmllcyhcbiAgc2VydmVkOiBzdHJpbmcsXG4gIGV4cGVjdGVkOiBzdHJpbmcsXG4pOiBib29sZWFuIHtcbiAgY29uc3QgcyA9IHNlcnZlZC50cmltKCkudG9Mb3dlckNhc2UoKTtcbiAgY29uc3QgZSA9IGV4cGVjdGVkLnRyaW0oKS50b0xvd2VyQ2FzZSgpO1xuICBpZiAocyA9PT0gZSB8fCBzLnN0YXJ0c1dpdGgoZSkgfHwgZS5zdGFydHNXaXRoKHMpKSByZXR1cm4gdHJ1ZTtcblxuICBjb25zdCBleHBlY3RlZEZsYXNoVGllciA9IGUuc3RhcnRzV2l0aChcImRlZXBzZWVrLWZsYXNoXCIpIHx8XG4gICAgZS5zdGFydHNXaXRoKFwiZGVlcHNlZWstdjQtZmxhc2hcIik7XG4gIGlmICghZXhwZWN0ZWRGbGFzaFRpZXIpIHJldHVybiBmYWxzZTtcblxuICAvLyBUaGUgdmVuZG9yJ3MgdXBncmFkZSByZW1hcDogYmFzZSB0aWVyIGFza2VkLCB0b3AgdGllciBzZXJ2ZWQuXG4gIGlmIChzLnN0YXJ0c1dpdGgoXCJkZWVwc2Vlay12NC1wcm9cIikpIHJldHVybiB0cnVlO1xuICAvLyBUaGUgdmVuZG9yJ3MgZG9jdW1lbnRlZCBsZWdhY3kgYWxpYXMgb2YgdGhlIEZsYXNoIG1vZGVsLlxuICBpZiAocy5zdGFydHNXaXRoKFwiZGVlcHNlZWstdjQtZmxhc2hcIikpIHJldHVybiB0cnVlO1xuXG4gIHJldHVybiBmYWxzZTtcbn1cblxuLyoqXG4gKiBSZWNvcmQgdGhlIG1vZGVscyB0aGUgdmVuZG9yIGN1cnJlbnRseSBjYW5ub3Qgc2VydmUsIGZvciB0aGlzIHJ1blxuICogKElzc3VlICMyMDU5KS4gUmVwbGFjZXMg4oCUIG5ldmVyIG1lcmdlcyDigJQgdGhlIHByZXZpb3VzIHNldCwgb24gdGhlIHNhbWVcbiAqIHJ1bGUgYXMgdGhlIHBlci1yZXBvIG92ZXJyaWRlIHN0YXRlLlxuICpcbiAqIEBwYXJhbSBtb2RlbHMgLSBNb2RlbCBpZHMgdGhhdCBwcm9iZWQgdW5hdmFpbGFibGUuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBzZXRVbmF2YWlsYWJsZURlZXBTZWVrTW9kZWxzKG1vZGVsczogcmVhZG9ubHkgc3RyaW5nW10pOiB2b2lkIHtcbiAgX3VuYXZhaWxhYmxlRGVlcFNlZWtNb2RlbHMgPSBuZXcgU2V0KFxuICAgIG1vZGVscy5tYXAoKG0pID0+IG0udHJpbSgpLnRvTG93ZXJDYXNlKCkpLmZpbHRlcigobSkgPT4gbSAhPT0gXCJcIiksXG4gICk7XG59XG5cbi8qKlxuICogQ2xlYXIgdGhlIHVuYXZhaWxhYmxlLW1vZGVsIHNldCAoSXNzdWUgIzIwNTkpLlxuICpcbiAqIEV4cG9zZWQgc28gYSB0ZXN0IOKAlCBvciBhIGNhbGxlciBkZWxpYmVyYXRlbHkgcmUtcnVubmluZyBhcyBhIGZyZXNoXG4gKiBzY2VuYXJpbyDigJQgY2FuIG9ic2VydmUgdGhlIGRlc2lnbmVkIHJvdXRpbmcgYWdhaW4uXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBjbGVhclVuYXZhaWxhYmxlRGVlcFNlZWtNb2RlbHMoKTogdm9pZCB7XG4gIF91bmF2YWlsYWJsZURlZXBTZWVrTW9kZWxzID0gbmV3IFNldCgpO1xufVxuXG4vKipcbiAqIFRoZSBzYW1lLXByb3ZpZGVyIHRpZXJzIHRvIHRyeSB3aGVuIGBtb2RlbGAgaXMgdW5hdmFpbGFibGUgKElzc3VlICMyMDU5KS5cbiAqXG4gKiBUaGUgYmFzZSAoRmxhc2gpIHRpZXIgaGFzIG9uZSBhbHRlcm5hdGl2ZTogdGhlIHRvcCB0aWVyLiBUaGUgdG9wIHRpZXIgaGFzXG4gKiBub25lIOKAlCBub3RoaW5nIGNoZWFwZXIgY2FuIHN0YW5kIGluIGZvciBpdCwgYW5kIHRoZSBoZWFsdGggZ2F0ZSBvd25zIHRoZVxuICogcHJvdmlkZXItbGV2ZWwgdmVyZGljdCBmcm9tIHRoZXJlLlxuICpcbiAqIEBwYXJhbSBtb2RlbCAtIFRoZSBtb2RlbCBpZCB0aGF0IHByb2JlZCB1bmF2YWlsYWJsZS5cbiAqIEByZXR1cm5zIE9yZGVyZWQgYWx0ZXJuYXRpdmUgbW9kZWwgaWRzLCBvciBbXSB3aGVuIG5vbmUgZXhpc3QuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBkZWVwU2Vla0FsdGVybmF0aXZlTW9kZWxzKG1vZGVsOiBzdHJpbmcpOiBzdHJpbmdbXSB7XG4gIGNvbnN0IHdhbnRlZCA9IG1vZGVsLnRyaW0oKS50b0xvd2VyQ2FzZSgpO1xuICByZXR1cm4gd2FudGVkLnN0YXJ0c1dpdGgoXCJkZWVwc2Vlay1mbGFzaFwiKSB8fFxuICAgICAgd2FudGVkLnN0YXJ0c1dpdGgoXCJkZWVwc2Vlay12NC1mbGFzaFwiKVxuICAgID8gW0RFRkFVTFRfREVFUFNFRUtfTU9ERUxfVE9QX1RJRVJdXG4gICAgOiBbXTtcbn1cblxuLyoqXG4gKiBBcHBseSB0aGUgdGllciBhZGFwdGF0aW9uIGZvciB0aGlzIHJ1biAoSXNzdWUgIzIwNTkpLlxuICpcbiAqIFJlY29yZHMgYHVuYXZhaWxhYmxlYCBpbiB0aGUgcGVyLXJ1biBzZXQ7IHRoZSByZXNvbHZlciB0aGVuIG1vdmVzIHBoYXNlc1xuICogd2hvc2UgZGVzaWduZWQgZGVmYXVsdCBpcyB0aGF0IG1vZGVsIG9udG8gdGhlIHRvcCB0aWVyLiBgYWx0ZXJuYXRpdmVgIGlzXG4gKiB0aGUgaWQgdGhlIGhlYWx0aCBnYXRlIHByb2JlZCBoZWFsdGh5IGFuZCBpcyBsb2dnZWQgc28gdGhlIHJ1bidzIHJlY29yZFxuICogbmFtZXMgd2hhdCB0aGUgdmVuZG9yIHdpbGwgYWN0dWFsbHkgc2VydmUuXG4gKlxuICogQHBhcmFtIHVuYXZhaWxhYmxlIC0gVGhlIG1vZGVsIGlkIHRoYXQgcHJvYmVkIHVuYXZhaWxhYmxlLlxuICogQHBhcmFtIGFsdGVybmF0aXZlIC0gVGhlIGhlYWx0aHkgYWx0ZXJuYXRpdmUgdGhlIHByb2JlIGNvbmZpcm1lZC5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGFwcGx5RGVlcFNlZWtNb2RlbEFkYXB0YXRpb24oXG4gIHVuYXZhaWxhYmxlOiBzdHJpbmcsXG4gIGFsdGVybmF0aXZlOiBzdHJpbmcsXG4pOiB2b2lkIHtcbiAgc2V0VW5hdmFpbGFibGVEZWVwU2Vla01vZGVscyhbLi4uX3VuYXZhaWxhYmxlRGVlcFNlZWtNb2RlbHMsIHVuYXZhaWxhYmxlXSk7XG4gIGNvbnNvbGUud2FybihcbiAgICBgW2RlZXBzZWVrXSBNb2RlbCAke0pTT04uc3RyaW5naWZ5KHVuYXZhaWxhYmxlKX0gcHJvYmVkIHVuYXZhaWxhYmxlIOKAlCBgICtcbiAgICAgIGBhZGFwdGluZyB0aGlzIHJ1bidzIHJvdXRpbmcgdG8gJHthbHRlcm5hdGl2ZX0gKElzc3VlICMyMDU5KS4gYCArXG4gICAgICBgRXhwbGljaXQgcGlucyBzdGlsbCB3aW4uYCxcbiAgKTtcbn1cbiJdLCJuYW1lcyI6W10sIm1hcHBpbmdzIjoiQUFBQTs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7O0NBOEJDLEdBRUQsU0FDRSw2QkFBNkIsRUFDN0IsK0JBQStCLEVBQy9CLHFCQUFxQixRQUNoQix1QkFBdUI7QUFDOUIsU0FBeUIsZ0JBQWdCLFFBQVEsa0JBQWtCO0FBQ25FLFNBQVMsdUJBQXVCLFFBQVEscUJBQXFCO0FBRzdELHlFQUF5RSxHQUN6RSxJQUFJLHFDQUF1RSxDQUFDO0FBRTVFLCtEQUErRCxHQUMvRCxJQUFJLHFCQUFxQjtBQUN6QixJQUFJLG1DQUFxRSxDQUFDO0FBRTFFLDBFQUEwRSxHQUMxRSxJQUFJLDZCQUE2QixJQUFJO0FBRXJDOzs7Ozs7Ozs7Q0FTQyxHQUNELE9BQU8sU0FBUyxxQ0FDZCxTQUFpQztFQUVqQyxxQ0FBcUM7SUFBRSxHQUFHLFNBQVM7RUFBQztBQUN0RDtBQUVBOzs7Ozs7Ozs7O0NBVUMsR0FDRCxPQUFPLFNBQVMsb0NBQ2QsVUFBa0M7RUFFbEMscUJBQXFCLFlBQVksaUJBQWlCO0VBQ2xELG1DQUFtQztJQUNqQyxHQUFJLFlBQVksK0JBQStCLENBQUMsQ0FBQztFQUNuRDtBQUNGO0FBRUE7Ozs7Ozs7Ozs7Ozs7Ozs7OztDQWtCQyxHQUNELE9BQU8sU0FBUyxxQkFDZCxLQUFjLEVBQ2QsR0FBZTtFQUVmLE1BQU0sUUFBUSx3QkFBd0I7SUFDcEMsV0FBVztJQUNYLE1BQU07SUFDTixNQUFNO0lBQ04sUUFBUTtJQUNSO0lBQ0Esb0JBQW9CO0lBQ3BCLHVCQUF1QjtJQUN2QixVQUFVO0lBQ1YsYUFBYTtJQUNiLHNCQUFzQjtJQUN0Qix5QkFBeUI7SUFDekIsZUFBZTtJQUNmLG1CQUFtQjtFQUNyQixHQUFHO0VBRUgsNEVBQTRFO0VBQzVFLDJFQUEyRTtFQUMzRSx3RUFBd0U7RUFDeEUsb0RBQW9EO0VBQ3BELElBQ0UsU0FBUyxTQUNULDJCQUEyQixHQUFHLENBQUMsTUFBTSxJQUFJLEdBQUcsV0FBVyxLQUN2RDtJQUNBLE1BQU0sZ0JBQWdCLDZCQUE2QixDQUNqRCxNQUNEO0lBQ0QsTUFBTSxrQkFBa0Isa0JBQWtCLFNBQ3hDLENBQUMsZ0NBQWdDLENBQUMsTUFBTSxJQUN4QyxDQUFDLHNCQUNELENBQUMsa0NBQWtDLENBQUMsTUFBTSxJQUMxQyxDQUFDLENBQUMsT0FBTyxnQkFBZ0IsRUFBRSxDQUFDLGVBQWUsRUFBRSxNQUFNLFdBQVcsSUFBSTtJQUNwRSxJQUFJLG1CQUFtQixrQkFBa0IsaUNBQWlDO01BQ3hFLDZCQUE2QixPQUFPO01BQ3BDLE9BQU87SUFDVDtFQUNGO0VBQ0EsT0FBTztBQUNUO0FBRUE7O0NBRUMsR0FDRCxNQUFNLDBCQUEwQixJQUFJO0FBRXBDOztDQUVDLEdBQ0QsU0FBUyw2QkFDUCxLQUFhLEVBQ2IsV0FBbUI7RUFFbkIsSUFBSSx3QkFBd0IsR0FBRyxDQUFDLFFBQVE7RUFDeEMsd0JBQXdCLEdBQUcsQ0FBQztFQUM1QixRQUFRLElBQUksQ0FDVixDQUFDLGlCQUFpQixFQUFFLEtBQUssU0FBUyxDQUFDLGFBQWEsc0JBQXNCLENBQUMsR0FDckUsQ0FBQyxnQkFBZ0IsRUFBRSxNQUFNLEtBQUssRUFBRSxnQ0FBZ0MsS0FBSyxDQUFDLEdBQ3RFLENBQUMsZ0RBQWdELENBQUM7QUFFeEQ7QUFFQTs7Ozs7Ozs7Ozs7Ozs7OztDQWdCQyxHQUNELE9BQU8sU0FBUyxzQkFBc0IsS0FBYztFQUNsRCxPQUFPLFFBQVEscUJBQXFCLENBQUMsTUFBTSxHQUFHO0FBQ2hEO0FBRUE7Ozs7Ozs7Q0FPQyxHQUNELE1BQU0sc0JBQXNCLElBQUk7QUFFaEM7Ozs7O0NBS0MsR0FDRCxPQUFPLFNBQVM7RUFDZCxvQkFBb0IsS0FBSztBQUMzQjtBQUVBOzs7Ozs7Ozs7O0NBVUMsR0FDRCxPQUFPLFNBQVMsOEJBQ2QsTUFBYyxFQUNkLEtBQWM7RUFFZCxNQUFNLE1BQU0sU0FBUztFQUNyQixJQUFJLG9CQUFvQixHQUFHLENBQUMsTUFBTTtFQUNsQyxvQkFBb0IsR0FBRyxDQUFDO0VBRXhCLE1BQU0sUUFBUSxRQUFRLENBQUMsT0FBTyxFQUFFLE1BQU0sQ0FBQyxDQUFDLEdBQUc7RUFDM0MsUUFBUSxJQUFJLENBQ1YsQ0FBQyw0QkFBNEIsRUFBRSxLQUFLLFNBQVMsQ0FBQyxRQUFRLGVBQWUsQ0FBQyxHQUNwRSxHQUFHLE1BQU0sNERBQTRELENBQUMsR0FDdEUsQ0FBQyxzRUFBc0UsQ0FBQyxHQUN4RSxDQUFDLHFFQUFxRSxDQUFDLEdBQ3ZFLENBQUMsR0FBRyxDQUFDO0FBRVg7QUFFQTs7Ozs7Ozs7Ozs7O0NBWUMsR0FDRCxPQUFPLFNBQVMsOEJBQThCLEtBQWM7RUFDMUQsTUFBTSxRQUFRLFFBQVEsQ0FBQyxPQUFPLEVBQUUsTUFBTSxDQUFDLENBQUMsR0FBRztFQUMzQyxRQUFRLElBQUksQ0FDVixDQUFDLCtEQUErRCxFQUFFLE1BQU0sQ0FBQyxDQUFDLEdBQ3hFLENBQUMsZ0VBQWdFLENBQUMsR0FDbEUsQ0FBQyxxRUFBcUUsQ0FBQyxHQUN2RSxDQUFDLHNFQUFzRSxDQUFDLEdBQ3hFLENBQUMsdUVBQXVFLENBQUMsR0FDekUsQ0FBQyxtRUFBbUUsQ0FBQyxHQUNyRSxDQUFDLHVEQUF1RCxDQUFDLEdBQ3pELENBQUMsOERBQThELENBQUM7QUFFdEU7QUFFQTs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0F1QkMsR0FDRCxPQUFPLFNBQVMsNkJBQ2QsTUFBYyxFQUNkLFFBQWdCO0VBRWhCLE1BQU0sSUFBSSxPQUFPLElBQUksR0FBRyxXQUFXO0VBQ25DLE1BQU0sSUFBSSxTQUFTLElBQUksR0FBRyxXQUFXO0VBQ3JDLElBQUksTUFBTSxLQUFLLEVBQUUsVUFBVSxDQUFDLE1BQU0sRUFBRSxVQUFVLENBQUMsSUFBSSxPQUFPO0VBRTFELE1BQU0sb0JBQW9CLEVBQUUsVUFBVSxDQUFDLHFCQUNyQyxFQUFFLFVBQVUsQ0FBQztFQUNmLElBQUksQ0FBQyxtQkFBbUIsT0FBTztFQUUvQixnRUFBZ0U7RUFDaEUsSUFBSSxFQUFFLFVBQVUsQ0FBQyxvQkFBb0IsT0FBTztFQUM1QywyREFBMkQ7RUFDM0QsSUFBSSxFQUFFLFVBQVUsQ0FBQyxzQkFBc0IsT0FBTztFQUU5QyxPQUFPO0FBQ1Q7QUFFQTs7Ozs7O0NBTUMsR0FDRCxPQUFPLFNBQVMsNkJBQTZCLE1BQXlCO0VBQ3BFLDZCQUE2QixJQUFJLElBQy9CLE9BQU8sR0FBRyxDQUFDLENBQUMsSUFBTSxFQUFFLElBQUksR0FBRyxXQUFXLElBQUksTUFBTSxDQUFDLENBQUMsSUFBTSxNQUFNO0FBRWxFO0FBRUE7Ozs7O0NBS0MsR0FDRCxPQUFPLFNBQVM7RUFDZCw2QkFBNkIsSUFBSTtBQUNuQztBQUVBOzs7Ozs7Ozs7Q0FTQyxHQUNELE9BQU8sU0FBUywwQkFBMEIsS0FBYTtFQUNyRCxNQUFNLFNBQVMsTUFBTSxJQUFJLEdBQUcsV0FBVztFQUN2QyxPQUFPLE9BQU8sVUFBVSxDQUFDLHFCQUNyQixPQUFPLFVBQVUsQ0FBQyx1QkFDbEI7SUFBQztHQUFnQyxHQUNqQyxFQUFFO0FBQ1I7QUFFQTs7Ozs7Ozs7OztDQVVDLEdBQ0QsT0FBTyxTQUFTLDZCQUNkLFdBQW1CLEVBQ25CLFdBQW1CO0VBRW5CLDZCQUE2QjtPQUFJO0lBQTRCO0dBQVk7RUFDekUsUUFBUSxJQUFJLENBQ1YsQ0FBQyxpQkFBaUIsRUFBRSxLQUFLLFNBQVMsQ0FBQyxhQUFhLHNCQUFzQixDQUFDLEdBQ3JFLENBQUMsK0JBQStCLEVBQUUsWUFBWSxnQkFBZ0IsQ0FBQyxHQUMvRCxDQUFDLHdCQUF3QixDQUFDO0FBRWhDIn0=
+// denoCacheMetadata=3935418136063683057,13358788736904112717

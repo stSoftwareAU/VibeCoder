@@ -1,0 +1,29 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { AssertionError } from "./assertion_error.ts";
+
+/** Assertion condition for {@linkcode assertFalse}. */
+export type Falsy = false | 0 | 0n | "" | null | undefined;
+
+/**
+ * Make an assertion, an error will be thrown if `expr` has a truthy value.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertFalse } from "@std/assert";
+ *
+ * assertFalse(false); // Doesn't throw
+ * assertFalse(true); // Throws
+ * ```
+ *
+ * @param expr The expression to test.
+ * @param msg The optional message to display if the assertion fails.
+ * @throws {AssertionError} If `expr` is truthy.
+ */
+export function assertFalse(expr: unknown, msg = ""): asserts expr is Falsy {
+  if (expr) {
+    throw new AssertionError(msg);
+  }
+}
+
+// denoCacheMetadata={"headers":{"content-type":"text/typescript","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=Aqj3q4ygLTVnIH3CmRkH4YW6saywkKsPe7VxIHF%2B%2F7Yo4cMkKHi1JxhZA2weGyPTTJtbOXf3J6hxP872cTLbVqccsgpkzmgx%2F%2B4HQk1fUq1uW3fqXkuydzk%3D\"}]}","set-cookie":"__cf_bm=kT5qeakRlib7.FyE2w_M0vpdxn7rEfvnKnWdP0km5Ww-1794298095.869728-1.0.1.1-E55hunqYlXc9cigLzo7kBvyvqR522xrQhPOSjkHgtcf9cpP5wsX8b4yACwVqn0m9AeX7sA73Py9f7PuLzSSn9SwWaZhceGNVkWkg81wmo2dOi02bGniEplPIC.QsLjDR; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","accept-ranges":"bytes","date":"Tue, 10 Nov 2026 08:08:15 GMT","age":"6426681","cf-ray":"a583917b2da0561f-SYD","etag":"\"59cf1281ee5833024e71f2906ed9f26f\"","content-length":"808","vary":"Origin","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","x-content-type-options":"nosniff","cf-cache-status":"HIT","x-jsr-backend":"modules","server":"cloudflare","x-robots-tag":"noindex","access-control-allow-origin":"*","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","alt-svc":"h3=\":443\"; ma=86400","access-control-expose-headers":"*","cache-control":"public, max-age=31536000, immutable","cross-origin-resource-policy":"cross-origin"},"url":"https://jsr.io/@std/assert/1.0.18/false.ts","time":1794298095}

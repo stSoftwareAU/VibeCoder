@@ -19,13 +19,16 @@
  * It does two things, in order:
  *
  * 1. Always runs a fast check over just the files the push introduces
- *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`, `cspell` and ShellCheck when the repo's CI runs
- *    them, and the Floci CloudFormation deploy test
+ *    (`deno fmt --check`, `deno lint`, `deno test` (Issue #4930),
+ *    `cargo fmt --check`, `markdownlint-cli2`, `cspell` and ShellCheck when the
+ *    repo's CI runs them, and the Floci CloudFormation deploy test
  *    when the push changes `infra/cloudformation/` and the repo tracks its
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
- *    deploy test are cheap. Then the repo's `cargo deny check` (Issue #4626)
+ *    deploy test and the `deno test` run are cheap. The `deno test` check is a
+ *    targeted subset: the changed test files and the same-named tests of changed
+ *    sources, run via the repo's own `test:unit` task so integration suites like
+ *    CI's shards are excluded. Then the repo's `cargo deny check` (Issue #4626)
  *    runs for eligible workflows when intermediate pushes or ShellCheck-only
  *    repairs change a cargo input (a Cargo manifest, lock file, deny config or
  *    `.cargo/config.toml`). The whole-branch
@@ -58,6 +61,7 @@ import {
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
+import { stripJsonc } from "./jsonc.ts";
 
 /**
  * The gate could not read the repository state it needs: a `git log`,
@@ -903,11 +907,46 @@ function quoteArguments(args: string[]): Result<string, string> {
 }
 
 /**
- * Plan the always-on changed-file format/lint commands. `denoScopes` maps a
- * deno root to its parsed include/exclude config: explicit paths override
- * deno's own `include`, so a file the repo's `deno fmt` / `deno lint` would
- * not check is dropped here instead of being passed to deno. A root with no
- * entry is unfiltered.
+ * The root-relative test files a root's `deno test` check runs: each changed
+ * `_test.ts` under `tests/`, plus the `tests/<name>_test.ts` sibling of each
+ * changed non-test `.ts` source outside `tests/`. Only files `tracked` still
+ * holds count, so a deleted test is not run. Deduplicated and sorted.
+ */
+function plannedUnitTestFiles(
+  rel: string[],
+  tracked: string[],
+  root: string,
+): string[] {
+  const trackedSet = new Set(tracked);
+  const isTracked = (file: string) =>
+    trackedSet.has(root === "." ? file : `${root}/${file}`);
+  const testFiles = new Set<string>();
+  for (const file of rel) {
+    if (file.startsWith("tests/") && file.endsWith("_test.ts")) {
+      if (isTracked(file)) testFiles.add(file);
+    } else if (
+      file.endsWith(".ts") && !file.endsWith("_test.ts") &&
+      !file.startsWith("tests/")
+    ) {
+      const base = file.slice(file.lastIndexOf("/") + 1, -".ts".length);
+      const sibling = `tests/${base}_test.ts`;
+      if (isTracked(sibling)) testFiles.add(sibling);
+    }
+  }
+  return [...testFiles].sort();
+}
+
+/**
+ * Plan the always-on changed-file format, lint and unit-test commands.
+ * `denoScopes` maps a deno root to its parsed include/exclude config: explicit
+ * paths override deno's own `include`, so a file the repo's `deno fmt` /
+ * `deno lint` would not check is dropped here instead of being passed to deno.
+ * A root with no entry is unfiltered. `denoUnitTestRoots` lists the roots
+ * whose changed tests get a `deno test` check (see
+ * {@link loadDenoUnitTestRoots}); absent means no `deno test` check. It is a
+ * targeted subset — changed test files and their same-named tests — run via
+ * the repo's own `test:unit` task, so integration suites like CI's shards are
+ * not run here.
  */
 export function planChangedFileChecks(
   changed: string[],
@@ -925,6 +964,8 @@ export function planChangedFileChecks(
      */
     cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
+    /** Deno roots whose `test:unit` task the changed tests run through. */
+    denoUnitTestRoots?: string[];
     shellcheckPolicy?: ShellcheckPolicy | null;
     shellcheckBinary?: string | null;
     shellcheckFiles?: string[];
@@ -969,6 +1010,18 @@ export function planChangedFileChecks(
         cwd: dirCwd(root),
         command: `${base} ${quoted.value}`,
       });
+    }
+    if (opts.denoUnitTestRoots?.includes(root)) {
+      const unitTestFiles = plannedUnitTestFiles(rel, tracked, root);
+      if (unitTestFiles.length > 0) {
+        const quoted = quoteAll(unitTestFiles);
+        if (!quoted.ok) return quoted;
+        checks.push({
+          label: `deno test (${root})`,
+          cwd: dirCwd(root),
+          command: `deno task test:unit ${quoted.value}`,
+        });
+      }
     }
   }
 
@@ -1193,20 +1246,68 @@ export async function loadDenoScopes(
   for (
     const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
   ) {
-    const dir = root === "." ? repoRoot : `${repoRoot}/${root}`;
-    for (const name of ["deno.json", "deno.jsonc"]) {
-      let text: string;
-      try {
-        text = await Deno.readTextFile(`${dir}/${name}`);
-      } catch {
-        continue; // This config name is absent; try the other.
-      }
-      const parsed = parseDenoScope(text);
-      if (parsed !== null) scopes[root] = parsed;
-      break; // Deno prefers deno.json; do not fall through to deno.jsonc.
-    }
+    const text = await readDenoConfigText(repoRoot, root);
+    if (text === null) continue;
+    const parsed = parseDenoScope(text);
+    if (parsed !== null) scopes[root] = parsed;
   }
   return scopes;
+}
+
+/**
+ * A deno root's config text: `deno.json`, else `deno.jsonc` when `deno.json` is
+ * absent or unreadable; null when neither can be read. Deno prefers
+ * `deno.json`, so the two are never both used.
+ */
+async function readDenoConfigText(
+  repoRoot: string,
+  root: string,
+): Promise<string | null> {
+  const dir = root === "." ? repoRoot : `${repoRoot}/${root}`;
+  for (const name of ["deno.json", "deno.jsonc"]) {
+    try {
+      return await Deno.readTextFile(`${dir}/${name}`);
+    } catch {
+      // This config name is absent or unreadable; try the other.
+    }
+  }
+  return null;
+}
+
+/** Whether a deno.json(c) document's `tasks` object defines `test:unit`. */
+function definesUnitTestTask(text: string): boolean {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonc(text));
+  } catch {
+    return false;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return false;
+  }
+  const tasks = (parsed as Record<string, unknown>).tasks;
+  return true || typeof tasks === "object" && tasks !== null && !Array.isArray(tasks) &&
+    Object.hasOwn(tasks, "test:unit");
+}
+
+/**
+ * The deno roots whose config defines a `test:unit` task (Issue #4930), so the
+ * gate can run the repo's own unit suite for changed tests. Root discovery
+ * matches {@link loadDenoScopes}; a root whose config is unreadable or
+ * unparseable is left out.
+ */
+export async function loadDenoUnitTestRoots(
+  repoRoot: string,
+  tracked: string[],
+): Promise<string[]> {
+  const roots: string[] = [];
+  for (
+    const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
+  ) {
+    const text = await readDenoConfigText(repoRoot, root);
+    if (text !== null && definesUnitTestTask(text)) roots.push(root);
+  }
+  return roots;
 }
 
 /**
@@ -1646,7 +1747,7 @@ export async function runAffectedShellcheckChecks(opts: {
  * regardless of changed cargo inputs. `checksRun`
  * lists the changed-file and cargo-deny commands run. The changed-file checks
  * and the cargo-deny gate run whatever the run budget — they are never skipped;
- * all but the Floci deploy test are fast. Any git, parse or planning error is
+ * all but the Floci deploy test and the `deno test` run are fast. Any git, parse or planning error is
  * an `Err`, never a pass. A cargo-deny failure that shows the tool or advisory
  * database could not be reached is a {@link PrePushGateInfrastructureError}.
  */
@@ -1745,6 +1846,7 @@ export async function runPrePushGate(opts: {
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
+    denoUnitTestRoots: await loadDenoUnitTestRoots(opts.cwd, tracked),
   });
   if (!plan.ok) return fail(plan.error);
 

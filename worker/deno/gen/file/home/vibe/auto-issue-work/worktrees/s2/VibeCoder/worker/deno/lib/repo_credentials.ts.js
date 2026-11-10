@@ -1,0 +1,157 @@
+/**
+ * Credentials a repository's own checks need, scoped to that repository and
+ * minted per run where possible (Issues #573, #574).
+ *
+ * Two problems meet here.
+ *
+ * **Scope.** The fleet had no per-repo credential concept, so whatever was in
+ * the host's environment was in scope for every repository it built — a key
+ * that exists because one repo's quality gate needs it was also present while
+ * the fleet built an unrelated public repository and ran its dependencies'
+ * install hooks. Issue #572 closed that by building the child environment from
+ * an allowlist instead of inheriting it, which means a repository that
+ * genuinely needs a credential must now say so. This module is where it says
+ * it.
+ *
+ * **Lifetime.** The incident that prompted all of this was a long-lived AWS
+ * access key: disabled after AWS noticed, then a day of tracing where it had
+ * escaped. That day is the cost of a credential that stays valid until someone
+ * revokes it. A credential minted per run and expiring within the hour is
+ * worthless by the time it reaches a log archive or a scraper — the leak is an
+ * incident with a clock on it rather than an open door.
+ *
+ * So a repository declares either:
+ *
+ *   - `mint` — a command run once per use whose stdout is `KEY=value` lines.
+ *     Provider-agnostic by design: `aws sts assume-role`, `gcloud auth
+ *     print-access-token`, `vault read`, or a script of the operator's own.
+ *     This is the preferred form and the one Issue #574 asks for.
+ *   - `passthrough` — names taken from the worker's own environment. Static
+ *     and long-lived by construction, so it is reported as such: it exists for
+ *     what cannot yet be minted, not as an equal choice.
+ *
+ * Values never reach a log. Only names are ever reported, which is the same
+ * rule the credential preflight follows.
+ *
+ * Australian English spelling throughout (behaviour, organisation).
+ */ import { commandOutputWithTimeout } from "./subprocess_timeout.ts";
+/** An operator mint command. Minutes. A timeout throws; it is not exit 0. */ const CREDENTIAL_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
+export async function runCredentialCommand(command, timeoutMs = CREDENTIAL_COMMAND_TIMEOUT_MS) {
+  const result = await commandOutputWithTimeout("/bin/sh", {
+    args: [
+      "-c",
+      command
+    ],
+    stdout: "piped",
+    stderr: "piped",
+    timeoutMs
+  });
+  return {
+    code: result.code,
+    stdout: new TextDecoder().decode(result.stdout),
+    stderr: new TextDecoder().decode(result.stderr)
+  };
+}
+/**
+ * Parse `KEY=value` lines from a mint command's stdout.
+ *
+ * Blank lines and `#` comments are ignored so a script can explain itself.
+ * A line without `=`, or with an empty name, is skipped rather than guessed
+ * at — a malformed line must not become a variable with a surprising name.
+ *
+ * `export FOO=bar` is accepted because a shell script that can be `eval`ed is
+ * the natural thing for an operator to write.
+ */ export function parseMintedCredentials(stdout) {
+  const env = {};
+  for (const raw of stdout.split("\n")){
+    const line = raw.trim().replace(/^export\s+/, "");
+    if (line.length === 0 || line.startsWith("#")) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0) continue;
+    const name = line.slice(0, separator).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+    let value = line.slice(separator + 1).trim();
+    // A shell script's own quoting, removed once — the value is data.
+    if (value.length >= 2 && (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    env[name] = value;
+  }
+  return env;
+}
+/**
+ * Production dependencies: the mint command is run through the operator's
+ * shell, because what an operator writes in configuration is a command line
+ * (`aws sts assume-role … --output env`), not an argv array.
+ *
+ * The command is trusted configuration, not repository content — it comes
+ * from the fleet's own `repo_config`, which only the operator can write. It
+ * is deliberately NOT reachable from anything a pull request can influence.
+ *
+ * stdout is captured rather than inherited, so a minted secret goes into the
+ * child environment and never into the run's log.
+ */ export function createDefaultCredentialDeps() {
+  return {
+    run: (command)=>runCredentialCommand(command),
+    readEnv: (name)=>Deno.env.get(name),
+    warn: (message)=>console.warn(message)
+  };
+}
+/**
+ * Resolve the credentials one repository's checks may see.
+ *
+ * @returns The variables, or an error when a declared mint command failed —
+ *   loudly, because a check that silently runs without its credential fails
+ *   later and further from the cause.
+ */ export async function resolveRepoCredentials(repo, spec, deps = createDefaultCredentialDeps()) {
+  const empty = {
+    env: {},
+    names: [],
+    usedLongLived: false
+  };
+  if (!spec || !spec.mint && !(spec.passthrough ?? []).length) {
+    return {
+      ok: true,
+      value: empty
+    };
+  }
+  const env = {};
+  let usedLongLived = false;
+  if (spec.mint) {
+    const outcome = await deps.run(spec.mint);
+    if (outcome.code !== 0) {
+      return {
+        ok: false,
+        error: new Error(`Minting credentials for ${repo} failed (exit ${outcome.code}): ` + `${outcome.stderr.trim().split("\n").slice(0, 3).join(" | ")}`)
+      };
+    }
+    const minted = parseMintedCredentials(outcome.stdout);
+    if (Object.keys(minted).length === 0) {
+      return {
+        ok: false,
+        error: new Error(`The credential command for ${repo} produced no KEY=value lines — ` + `its checks would run without the credential they declared`)
+      };
+    }
+    Object.assign(env, minted);
+  }
+  const readEnv = deps.readEnv ?? ((name)=>Deno.env.get(name));
+  for (const name of spec.passthrough ?? []){
+    const value = readEnv(name);
+    if (value === undefined) continue;
+    env[name] = value;
+    usedLongLived = true;
+  }
+  if (usedLongLived) {
+    deps.warn?.(`[SECURITY] ${repo} passes long-lived credentials to its checks ` + `(${(spec.passthrough ?? []).join(", ")}). A credential minted per run expires before a leak can be ` + `spent — prefer a \`mint\` command where the provider offers one ` + `(Issue #574).`);
+  }
+  return {
+    ok: true,
+    value: {
+      env,
+      names: Object.keys(env).sort(),
+      usedLongLived
+    }
+  };
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9yZXBvX2NyZWRlbnRpYWxzLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogQ3JlZGVudGlhbHMgYSByZXBvc2l0b3J5J3Mgb3duIGNoZWNrcyBuZWVkLCBzY29wZWQgdG8gdGhhdCByZXBvc2l0b3J5IGFuZFxuICogbWludGVkIHBlciBydW4gd2hlcmUgcG9zc2libGUgKElzc3VlcyAjNTczLCAjNTc0KS5cbiAqXG4gKiBUd28gcHJvYmxlbXMgbWVldCBoZXJlLlxuICpcbiAqICoqU2NvcGUuKiogVGhlIGZsZWV0IGhhZCBubyBwZXItcmVwbyBjcmVkZW50aWFsIGNvbmNlcHQsIHNvIHdoYXRldmVyIHdhcyBpblxuICogdGhlIGhvc3QncyBlbnZpcm9ubWVudCB3YXMgaW4gc2NvcGUgZm9yIGV2ZXJ5IHJlcG9zaXRvcnkgaXQgYnVpbHQg4oCUIGEga2V5XG4gKiB0aGF0IGV4aXN0cyBiZWNhdXNlIG9uZSByZXBvJ3MgcXVhbGl0eSBnYXRlIG5lZWRzIGl0IHdhcyBhbHNvIHByZXNlbnQgd2hpbGVcbiAqIHRoZSBmbGVldCBidWlsdCBhbiB1bnJlbGF0ZWQgcHVibGljIHJlcG9zaXRvcnkgYW5kIHJhbiBpdHMgZGVwZW5kZW5jaWVzJ1xuICogaW5zdGFsbCBob29rcy4gSXNzdWUgIzU3MiBjbG9zZWQgdGhhdCBieSBidWlsZGluZyB0aGUgY2hpbGQgZW52aXJvbm1lbnQgZnJvbVxuICogYW4gYWxsb3dsaXN0IGluc3RlYWQgb2YgaW5oZXJpdGluZyBpdCwgd2hpY2ggbWVhbnMgYSByZXBvc2l0b3J5IHRoYXRcbiAqIGdlbnVpbmVseSBuZWVkcyBhIGNyZWRlbnRpYWwgbXVzdCBub3cgc2F5IHNvLiBUaGlzIG1vZHVsZSBpcyB3aGVyZSBpdCBzYXlzXG4gKiBpdC5cbiAqXG4gKiAqKkxpZmV0aW1lLioqIFRoZSBpbmNpZGVudCB0aGF0IHByb21wdGVkIGFsbCBvZiB0aGlzIHdhcyBhIGxvbmctbGl2ZWQgQVdTXG4gKiBhY2Nlc3Mga2V5OiBkaXNhYmxlZCBhZnRlciBBV1Mgbm90aWNlZCwgdGhlbiBhIGRheSBvZiB0cmFjaW5nIHdoZXJlIGl0IGhhZFxuICogZXNjYXBlZC4gVGhhdCBkYXkgaXMgdGhlIGNvc3Qgb2YgYSBjcmVkZW50aWFsIHRoYXQgc3RheXMgdmFsaWQgdW50aWwgc29tZW9uZVxuICogcmV2b2tlcyBpdC4gQSBjcmVkZW50aWFsIG1pbnRlZCBwZXIgcnVuIGFuZCBleHBpcmluZyB3aXRoaW4gdGhlIGhvdXIgaXNcbiAqIHdvcnRobGVzcyBieSB0aGUgdGltZSBpdCByZWFjaGVzIGEgbG9nIGFyY2hpdmUgb3IgYSBzY3JhcGVyIOKAlCB0aGUgbGVhayBpcyBhblxuICogaW5jaWRlbnQgd2l0aCBhIGNsb2NrIG9uIGl0IHJhdGhlciB0aGFuIGFuIG9wZW4gZG9vci5cbiAqXG4gKiBTbyBhIHJlcG9zaXRvcnkgZGVjbGFyZXMgZWl0aGVyOlxuICpcbiAqICAgLSBgbWludGAg4oCUIGEgY29tbWFuZCBydW4gb25jZSBwZXIgdXNlIHdob3NlIHN0ZG91dCBpcyBgS0VZPXZhbHVlYCBsaW5lcy5cbiAqICAgICBQcm92aWRlci1hZ25vc3RpYyBieSBkZXNpZ246IGBhd3Mgc3RzIGFzc3VtZS1yb2xlYCwgYGdjbG91ZCBhdXRoXG4gKiAgICAgcHJpbnQtYWNjZXNzLXRva2VuYCwgYHZhdWx0IHJlYWRgLCBvciBhIHNjcmlwdCBvZiB0aGUgb3BlcmF0b3IncyBvd24uXG4gKiAgICAgVGhpcyBpcyB0aGUgcHJlZmVycmVkIGZvcm0gYW5kIHRoZSBvbmUgSXNzdWUgIzU3NCBhc2tzIGZvci5cbiAqICAgLSBgcGFzc3Rocm91Z2hgIOKAlCBuYW1lcyB0YWtlbiBmcm9tIHRoZSB3b3JrZXIncyBvd24gZW52aXJvbm1lbnQuIFN0YXRpY1xuICogICAgIGFuZCBsb25nLWxpdmVkIGJ5IGNvbnN0cnVjdGlvbiwgc28gaXQgaXMgcmVwb3J0ZWQgYXMgc3VjaDogaXQgZXhpc3RzIGZvclxuICogICAgIHdoYXQgY2Fubm90IHlldCBiZSBtaW50ZWQsIG5vdCBhcyBhbiBlcXVhbCBjaG9pY2UuXG4gKlxuICogVmFsdWVzIG5ldmVyIHJlYWNoIGEgbG9nLiBPbmx5IG5hbWVzIGFyZSBldmVyIHJlcG9ydGVkLCB3aGljaCBpcyB0aGUgc2FtZVxuICogcnVsZSB0aGUgY3JlZGVudGlhbCBwcmVmbGlnaHQgZm9sbG93cy5cbiAqXG4gKiBBdXN0cmFsaWFuIEVuZ2xpc2ggc3BlbGxpbmcgdGhyb3VnaG91dCAoYmVoYXZpb3VyLCBvcmdhbmlzYXRpb24pLlxuICovXG5cbmltcG9ydCB0eXBlIHsgUmVzdWx0IH0gZnJvbSBcIi4uL3R5cGVzLnRzXCI7XG5pbXBvcnQgeyBjb21tYW5kT3V0cHV0V2l0aFRpbWVvdXQgfSBmcm9tIFwiLi9zdWJwcm9jZXNzX3RpbWVvdXQudHNcIjtcblxuLyoqIEFuIG9wZXJhdG9yIG1pbnQgY29tbWFuZC4gTWludXRlcy4gQSB0aW1lb3V0IHRocm93czsgaXQgaXMgbm90IGV4aXQgMC4gKi9cbmNvbnN0IENSRURFTlRJQUxfQ09NTUFORF9USU1FT1VUX01TID0gMiAqIDYwICogMTAwMDtcblxuZXhwb3J0IGFzeW5jIGZ1bmN0aW9uIHJ1bkNyZWRlbnRpYWxDb21tYW5kKFxuICBjb21tYW5kOiBzdHJpbmcsXG4gIHRpbWVvdXRNczogbnVtYmVyID0gQ1JFREVOVElBTF9DT01NQU5EX1RJTUVPVVRfTVMsXG4pOiBQcm9taXNlPHsgY29kZTogbnVtYmVyOyBzdGRvdXQ6IHN0cmluZzsgc3RkZXJyOiBzdHJpbmcgfT4ge1xuICBjb25zdCByZXN1bHQgPSBhd2FpdCBjb21tYW5kT3V0cHV0V2l0aFRpbWVvdXQoXCIvYmluL3NoXCIsIHtcbiAgICBhcmdzOiBbXCItY1wiLCBjb21tYW5kXSxcbiAgICBzdGRvdXQ6IFwicGlwZWRcIixcbiAgICBzdGRlcnI6IFwicGlwZWRcIixcbiAgICB0aW1lb3V0TXMsXG4gIH0pO1xuICByZXR1cm4ge1xuICAgIGNvZGU6IHJlc3VsdC5jb2RlLFxuICAgIHN0ZG91dDogbmV3IFRleHREZWNvZGVyKCkuZGVjb2RlKHJlc3VsdC5zdGRvdXQpLFxuICAgIHN0ZGVycjogbmV3IFRleHREZWNvZGVyKCkuZGVjb2RlKHJlc3VsdC5zdGRlcnIpLFxuICB9O1xufVxuXG4vKiogV2hhdCBvbmUgcmVwb3NpdG9yeSdzIGNoZWNrcyBuZWVkLiAqL1xuZXhwb3J0IGludGVyZmFjZSBSZXBvQ3JlZGVudGlhbFNwZWMge1xuICAvKipcbiAgICogQ29tbWFuZCB3aG9zZSBzdGRvdXQgaXMgYEtFWT12YWx1ZWAgbGluZXMsIHJ1biBvbmNlIHBlciB1c2UuXG4gICAqXG4gICAqIFByZWZlcnJlZDogYSBjcmVkZW50aWFsIHRoYXQgZXhwaXJlcyBpcyBvbmUgYSBsZWFrIGNhbm5vdCBzcGVuZC5cbiAgICovXG4gIG1pbnQ/OiBzdHJpbmc7XG4gIC8qKlxuICAgKiBWYXJpYWJsZSBuYW1lcyBwYXNzZWQgdGhyb3VnaCBmcm9tIHRoZSB3b3JrZXIncyBvd24gZW52aXJvbm1lbnQuXG4gICAqXG4gICAqIExvbmctbGl2ZWQgYnkgY29uc3RydWN0aW9uLiBEZWNsYXJlZCBzbyBpdCBpcyBkZWxpYmVyYXRlIGFuZCB2aXNpYmxlLFxuICAgKiBuZXZlciBhbWJpZW50LlxuICAgKi9cbiAgcGFzc3Rocm91Z2g/OiBzdHJpbmdbXTtcbn1cblxuLyoqIFRoZSByZXNvbHZlZCBjcmVkZW50aWFscywgcGx1cyB3aGF0IHRoZSBvcGVyYXRvciBzaG91bGQga25vdyBhYm91dCB0aGVtLiAqL1xuZXhwb3J0IGludGVyZmFjZSBSZXNvbHZlZFJlcG9DcmVkZW50aWFscyB7XG4gIC8qKiBWYXJpYWJsZXMgdG8gcGxhY2UgaW4gdGhlIGNoaWxkIGVudmlyb25tZW50LiAqL1xuICBlbnY6IFJlY29yZDxzdHJpbmcsIHN0cmluZz47XG4gIC8qKiBOYW1lcyBvbmx5IOKAlCBhIHZhbHVlIG5ldmVyIGxlYXZlcyB0aGlzIG1vZHVsZS4gKi9cbiAgbmFtZXM6IHN0cmluZ1tdO1xuICAvKiogVHJ1ZSB3aGVuIGFueSBuYW1lIGNhbWUgZnJvbSBgcGFzc3Rocm91Z2hgIHJhdGhlciB0aGFuIGBtaW50YC4gKi9cbiAgdXNlZExvbmdMaXZlZDogYm9vbGVhbjtcbn1cblxuLyoqIEluamVjdGVkIHNlYW1zIHNvIG5vIHRlc3QgZXZlciBydW5zIGEgcmVhbCBjcmVkZW50aWFsIGNvbW1hbmQuICovXG5leHBvcnQgaW50ZXJmYWNlIFJlcG9DcmVkZW50aWFsRGVwcyB7XG4gIC8qKiBSdW5zIHRoZSBtaW50IGNvbW1hbmQ7IHJlc29sdmVzIHdpdGggaXRzIGV4aXQgY29kZSBhbmQgc3RyZWFtcy4gKi9cbiAgcnVuOiAoXG4gICAgY29tbWFuZDogc3RyaW5nLFxuICApID0+IFByb21pc2U8eyBjb2RlOiBudW1iZXI7IHN0ZG91dDogc3RyaW5nOyBzdGRlcnI6IHN0cmluZyB9PjtcbiAgLyoqIFJlYWRzIGEgdmFyaWFibGUgZnJvbSB0aGUgd29ya2VyJ3Mgb3duIGVudmlyb25tZW50LiAqL1xuICByZWFkRW52PzogKG5hbWU6IHN0cmluZykgPT4gc3RyaW5nIHwgdW5kZWZpbmVkO1xuICAvKiogV2FybmluZ3Mg4oCUIG5hbWVzIG9ubHksIG5ldmVyIHZhbHVlcy4gKi9cbiAgd2Fybj86IChtZXNzYWdlOiBzdHJpbmcpID0+IHZvaWQ7XG59XG5cbi8qKlxuICogUGFyc2UgYEtFWT12YWx1ZWAgbGluZXMgZnJvbSBhIG1pbnQgY29tbWFuZCdzIHN0ZG91dC5cbiAqXG4gKiBCbGFuayBsaW5lcyBhbmQgYCNgIGNvbW1lbnRzIGFyZSBpZ25vcmVkIHNvIGEgc2NyaXB0IGNhbiBleHBsYWluIGl0c2VsZi5cbiAqIEEgbGluZSB3aXRob3V0IGA9YCwgb3Igd2l0aCBhbiBlbXB0eSBuYW1lLCBpcyBza2lwcGVkIHJhdGhlciB0aGFuIGd1ZXNzZWRcbiAqIGF0IOKAlCBhIG1hbGZvcm1lZCBsaW5lIG11c3Qgbm90IGJlY29tZSBhIHZhcmlhYmxlIHdpdGggYSBzdXJwcmlzaW5nIG5hbWUuXG4gKlxuICogYGV4cG9ydCBGT089YmFyYCBpcyBhY2NlcHRlZCBiZWNhdXNlIGEgc2hlbGwgc2NyaXB0IHRoYXQgY2FuIGJlIGBldmFsYGVkIGlzXG4gKiB0aGUgbmF0dXJhbCB0aGluZyBmb3IgYW4gb3BlcmF0b3IgdG8gd3JpdGUuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBwYXJzZU1pbnRlZENyZWRlbnRpYWxzKHN0ZG91dDogc3RyaW5nKTogUmVjb3JkPHN0cmluZywgc3RyaW5nPiB7XG4gIGNvbnN0IGVudjogUmVjb3JkPHN0cmluZywgc3RyaW5nPiA9IHt9O1xuICBmb3IgKGNvbnN0IHJhdyBvZiBzdGRvdXQuc3BsaXQoXCJcXG5cIikpIHtcbiAgICBjb25zdCBsaW5lID0gcmF3LnRyaW0oKS5yZXBsYWNlKC9eZXhwb3J0XFxzKy8sIFwiXCIpO1xuICAgIGlmIChsaW5lLmxlbmd0aCA9PT0gMCB8fCBsaW5lLnN0YXJ0c1dpdGgoXCIjXCIpKSBjb250aW51ZTtcbiAgICBjb25zdCBzZXBhcmF0b3IgPSBsaW5lLmluZGV4T2YoXCI9XCIpO1xuICAgIGlmIChzZXBhcmF0b3IgPD0gMCkgY29udGludWU7XG4gICAgY29uc3QgbmFtZSA9IGxpbmUuc2xpY2UoMCwgc2VwYXJhdG9yKS50cmltKCk7XG4gICAgaWYgKCEvXltBLVphLXpfXVtBLVphLXowLTlfXSokLy50ZXN0KG5hbWUpKSBjb250aW51ZTtcbiAgICBsZXQgdmFsdWUgPSBsaW5lLnNsaWNlKHNlcGFyYXRvciArIDEpLnRyaW0oKTtcbiAgICAvLyBBIHNoZWxsIHNjcmlwdCdzIG93biBxdW90aW5nLCByZW1vdmVkIG9uY2Ug4oCUIHRoZSB2YWx1ZSBpcyBkYXRhLlxuICAgIGlmIChcbiAgICAgIHZhbHVlLmxlbmd0aCA+PSAyICYmXG4gICAgICAoKHZhbHVlLnN0YXJ0c1dpdGgoJ1wiJykgJiYgdmFsdWUuZW5kc1dpdGgoJ1wiJykpIHx8XG4gICAgICAgICh2YWx1ZS5zdGFydHNXaXRoKFwiJ1wiKSAmJiB2YWx1ZS5lbmRzV2l0aChcIidcIikpKVxuICAgICkge1xuICAgICAgdmFsdWUgPSB2YWx1ZS5zbGljZSgxLCAtMSk7XG4gICAgfVxuICAgIGVudltuYW1lXSA9IHZhbHVlO1xuICB9XG4gIHJldHVybiBlbnY7XG59XG5cbi8qKlxuICogUHJvZHVjdGlvbiBkZXBlbmRlbmNpZXM6IHRoZSBtaW50IGNvbW1hbmQgaXMgcnVuIHRocm91Z2ggdGhlIG9wZXJhdG9yJ3NcbiAqIHNoZWxsLCBiZWNhdXNlIHdoYXQgYW4gb3BlcmF0b3Igd3JpdGVzIGluIGNvbmZpZ3VyYXRpb24gaXMgYSBjb21tYW5kIGxpbmVcbiAqIChgYXdzIHN0cyBhc3N1bWUtcm9sZSDigKYgLS1vdXRwdXQgZW52YCksIG5vdCBhbiBhcmd2IGFycmF5LlxuICpcbiAqIFRoZSBjb21tYW5kIGlzIHRydXN0ZWQgY29uZmlndXJhdGlvbiwgbm90IHJlcG9zaXRvcnkgY29udGVudCDigJQgaXQgY29tZXNcbiAqIGZyb20gdGhlIGZsZWV0J3Mgb3duIGByZXBvX2NvbmZpZ2AsIHdoaWNoIG9ubHkgdGhlIG9wZXJhdG9yIGNhbiB3cml0ZS4gSXRcbiAqIGlzIGRlbGliZXJhdGVseSBOT1QgcmVhY2hhYmxlIGZyb20gYW55dGhpbmcgYSBwdWxsIHJlcXVlc3QgY2FuIGluZmx1ZW5jZS5cbiAqXG4gKiBzdGRvdXQgaXMgY2FwdHVyZWQgcmF0aGVyIHRoYW4gaW5oZXJpdGVkLCBzbyBhIG1pbnRlZCBzZWNyZXQgZ29lcyBpbnRvIHRoZVxuICogY2hpbGQgZW52aXJvbm1lbnQgYW5kIG5ldmVyIGludG8gdGhlIHJ1bidzIGxvZy5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIGNyZWF0ZURlZmF1bHRDcmVkZW50aWFsRGVwcygpOiBSZXBvQ3JlZGVudGlhbERlcHMge1xuICByZXR1cm4ge1xuICAgIHJ1bjogKGNvbW1hbmQ6IHN0cmluZykgPT4gcnVuQ3JlZGVudGlhbENvbW1hbmQoY29tbWFuZCksXG4gICAgcmVhZEVudjogKG5hbWU6IHN0cmluZykgPT4gRGVuby5lbnYuZ2V0KG5hbWUpLFxuICAgIHdhcm46IChtZXNzYWdlOiBzdHJpbmcpID0+IGNvbnNvbGUud2FybihtZXNzYWdlKSxcbiAgfTtcbn1cblxuLyoqXG4gKiBSZXNvbHZlIHRoZSBjcmVkZW50aWFscyBvbmUgcmVwb3NpdG9yeSdzIGNoZWNrcyBtYXkgc2VlLlxuICpcbiAqIEByZXR1cm5zIFRoZSB2YXJpYWJsZXMsIG9yIGFuIGVycm9yIHdoZW4gYSBkZWNsYXJlZCBtaW50IGNvbW1hbmQgZmFpbGVkIOKAlFxuICogICBsb3VkbHksIGJlY2F1c2UgYSBjaGVjayB0aGF0IHNpbGVudGx5IHJ1bnMgd2l0aG91dCBpdHMgY3JlZGVudGlhbCBmYWlsc1xuICogICBsYXRlciBhbmQgZnVydGhlciBmcm9tIHRoZSBjYXVzZS5cbiAqL1xuZXhwb3J0IGFzeW5jIGZ1bmN0aW9uIHJlc29sdmVSZXBvQ3JlZGVudGlhbHMoXG4gIHJlcG86IHN0cmluZyxcbiAgc3BlYzogUmVwb0NyZWRlbnRpYWxTcGVjIHwgdW5kZWZpbmVkLFxuICBkZXBzOiBSZXBvQ3JlZGVudGlhbERlcHMgPSBjcmVhdGVEZWZhdWx0Q3JlZGVudGlhbERlcHMoKSxcbik6IFByb21pc2U8UmVzdWx0PFJlc29sdmVkUmVwb0NyZWRlbnRpYWxzPj4ge1xuICBjb25zdCBlbXB0eTogUmVzb2x2ZWRSZXBvQ3JlZGVudGlhbHMgPSB7XG4gICAgZW52OiB7fSxcbiAgICBuYW1lczogW10sXG4gICAgdXNlZExvbmdMaXZlZDogZmFsc2UsXG4gIH07XG4gIGlmICghc3BlYyB8fCAoIXNwZWMubWludCAmJiAhKHNwZWMucGFzc3Rocm91Z2ggPz8gW10pLmxlbmd0aCkpIHtcbiAgICByZXR1cm4geyBvazogdHJ1ZSwgdmFsdWU6IGVtcHR5IH07XG4gIH1cblxuICBjb25zdCBlbnY6IFJlY29yZDxzdHJpbmcsIHN0cmluZz4gPSB7fTtcbiAgbGV0IHVzZWRMb25nTGl2ZWQgPSBmYWxzZTtcblxuICBpZiAoc3BlYy5taW50KSB7XG4gICAgY29uc3Qgb3V0Y29tZSA9IGF3YWl0IGRlcHMucnVuKHNwZWMubWludCk7XG4gICAgaWYgKG91dGNvbWUuY29kZSAhPT0gMCkge1xuICAgICAgcmV0dXJuIHtcbiAgICAgICAgb2s6IGZhbHNlLFxuICAgICAgICBlcnJvcjogbmV3IEVycm9yKFxuICAgICAgICAgIGBNaW50aW5nIGNyZWRlbnRpYWxzIGZvciAke3JlcG99IGZhaWxlZCAoZXhpdCAke291dGNvbWUuY29kZX0pOiBgICtcbiAgICAgICAgICAgIGAke291dGNvbWUuc3RkZXJyLnRyaW0oKS5zcGxpdChcIlxcblwiKS5zbGljZSgwLCAzKS5qb2luKFwiIHwgXCIpfWAsXG4gICAgICAgICksXG4gICAgICB9O1xuICAgIH1cbiAgICBjb25zdCBtaW50ZWQgPSBwYXJzZU1pbnRlZENyZWRlbnRpYWxzKG91dGNvbWUuc3Rkb3V0KTtcbiAgICBpZiAoT2JqZWN0LmtleXMobWludGVkKS5sZW5ndGggPT09IDApIHtcbiAgICAgIHJldHVybiB7XG4gICAgICAgIG9rOiBmYWxzZSxcbiAgICAgICAgZXJyb3I6IG5ldyBFcnJvcihcbiAgICAgICAgICBgVGhlIGNyZWRlbnRpYWwgY29tbWFuZCBmb3IgJHtyZXBvfSBwcm9kdWNlZCBubyBLRVk9dmFsdWUgbGluZXMg4oCUIGAgK1xuICAgICAgICAgICAgYGl0cyBjaGVja3Mgd291bGQgcnVuIHdpdGhvdXQgdGhlIGNyZWRlbnRpYWwgdGhleSBkZWNsYXJlZGAsXG4gICAgICAgICksXG4gICAgICB9O1xuICAgIH1cbiAgICBPYmplY3QuYXNzaWduKGVudiwgbWludGVkKTtcbiAgfVxuXG4gIGNvbnN0IHJlYWRFbnYgPSBkZXBzLnJlYWRFbnYgPz8gKChuYW1lOiBzdHJpbmcpID0+IERlbm8uZW52LmdldChuYW1lKSk7XG4gIGZvciAoY29uc3QgbmFtZSBvZiBzcGVjLnBhc3N0aHJvdWdoID8/IFtdKSB7XG4gICAgY29uc3QgdmFsdWUgPSByZWFkRW52KG5hbWUpO1xuICAgIGlmICh2YWx1ZSA9PT0gdW5kZWZpbmVkKSBjb250aW51ZTtcbiAgICBlbnZbbmFtZV0gPSB2YWx1ZTtcbiAgICB1c2VkTG9uZ0xpdmVkID0gdHJ1ZTtcbiAgfVxuXG4gIGlmICh1c2VkTG9uZ0xpdmVkKSB7XG4gICAgZGVwcy53YXJuPy4oXG4gICAgICBgW1NFQ1VSSVRZXSAke3JlcG99IHBhc3NlcyBsb25nLWxpdmVkIGNyZWRlbnRpYWxzIHRvIGl0cyBjaGVja3MgYCArXG4gICAgICAgIGAoJHtcbiAgICAgICAgICAoc3BlYy5wYXNzdGhyb3VnaCA/PyBbXSkuam9pbihcIiwgXCIpXG4gICAgICAgIH0pLiBBIGNyZWRlbnRpYWwgbWludGVkIHBlciBydW4gZXhwaXJlcyBiZWZvcmUgYSBsZWFrIGNhbiBiZSBgICtcbiAgICAgICAgYHNwZW50IOKAlCBwcmVmZXIgYSBcXGBtaW50XFxgIGNvbW1hbmQgd2hlcmUgdGhlIHByb3ZpZGVyIG9mZmVycyBvbmUgYCArXG4gICAgICAgIGAoSXNzdWUgIzU3NCkuYCxcbiAgICApO1xuICB9XG5cbiAgcmV0dXJuIHtcbiAgICBvazogdHJ1ZSxcbiAgICB2YWx1ZTogeyBlbnYsIG5hbWVzOiBPYmplY3Qua2V5cyhlbnYpLnNvcnQoKSwgdXNlZExvbmdMaXZlZCB9LFxuICB9O1xufVxuIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiJBQUFBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0FvQ0MsR0FHRCxTQUFTLHdCQUF3QixRQUFRLDBCQUEwQjtBQUVuRSwyRUFBMkUsR0FDM0UsTUFBTSxnQ0FBZ0MsSUFBSSxLQUFLO0FBRS9DLE9BQU8sZUFBZSxxQkFDcEIsT0FBZSxFQUNmLFlBQW9CLDZCQUE2QjtFQUVqRCxNQUFNLFNBQVMsTUFBTSx5QkFBeUIsV0FBVztJQUN2RCxNQUFNO01BQUM7TUFBTTtLQUFRO0lBQ3JCLFFBQVE7SUFDUixRQUFRO0lBQ1I7RUFDRjtFQUNBLE9BQU87SUFDTCxNQUFNLE9BQU8sSUFBSTtJQUNqQixRQUFRLElBQUksY0FBYyxNQUFNLENBQUMsT0FBTyxNQUFN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
+// denoCacheMetadata=2771220131170873020,4714209523439964439

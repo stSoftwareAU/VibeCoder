@@ -1,0 +1,228 @@
+/**
+ * Author verification for the worker's marker-driven dedup searches.
+ *
+ * Every self-diagnostic escalation the worker files is deduped by searching
+ * the target repository for a machine-readable marker in an issue body:
+ * `gh issue list --search '"<MARKER>" in:body'`. An issue body is text
+ * anyone who can open an issue may write, so a marker match on its own
+ * proves nothing — only the issue **author** is authenticated. Without an
+ * author check a match written by anybody at all reads as "the alert is
+ * already filed", and the escalation stays silent. That is suppression of
+ * the fleet's own self-diagnostics: launcher failures, idle inversion,
+ * bump-script failures, branch-update failures and idle starvation.
+ *
+ * `claim_issue.ts` already closes the same gap for `CLAIM_LOCK` comment
+ * markers by filtering comment authors through
+ * {@link isFleetAuthor} (Issue #3664); this module is that control applied
+ * to the body-marker dedup searches, in one place so the five escalation
+ * modules cannot drift apart.
+ *
+ * **The comparison set is the fleet identity** — `service_accounts` ∪
+ * `fleet_pr_authors` ∪ this host's own login, i.e.
+ * {@link resolveFleetMaintenanceAuthorSet}. Deliberately **not**
+ * `--author @me`: cross-host convergence depends on one host finding the
+ * issue another host filed, and fleet hosts authenticate as different
+ * accounts, so a self-only filter would raise one duplicate alert per host.
+ *
+ * **The fail direction is always "discard the unverifiable match".** When
+ * the fleet author set cannot be resolved — no configuration, an unreadable
+ * config — a marker match cannot be attributed, and this module treats it as
+ * *no match*. What that means for the caller differs by site, and every
+ * caller states its own consequence in the log through `unverifiedOutcome`:
+ *
+ * - A marker that **suppresses** an action (an alert already filed, a
+ *   cooldown, a proposal already raised, a scan already covered) is
+ *   discarded, so the action goes ahead. A duplicate alert is noise a human
+ *   closes in a moment; a suppressed one is an incident nobody hears about.
+ * - A marker that **drives** an action (an issue to close, a label to
+ *   write) is discarded, so the write does not happen. An unwanted
+ *   destructive write is the one outcome that cannot be undone.
+ *
+ * The single rule underneath both: *fail towards the action that cannot
+ * cause harm*. Discarding the row is that action in both shapes, which is
+ * why one helper serves every site. The condition is logged loudly every
+ * time so it is visible rather than inferred.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation).
+ */ import { loadConfig } from "./config.ts";
+import { processEnvLookup } from "./env_lookup.ts";
+import { isFleetAuthor, resolveFleetMaintenanceAuthorSet } from "./fleet_authors.ts";
+/**
+ * The `--json` field list every escalation dedup search must request.
+ *
+ * `author` is what makes the match verifiable; a search that omits it can
+ * only trust the body, which is exactly the defect this module closes.
+ */ export const ALERT_DEDUP_JSON_FIELDS = "number,body,author";
+/**
+ * The `--json` field list a **title**-keyed dedup search must request.
+ *
+ * A title is as writable as a body — anyone who can open an issue chooses
+ * it — so a title-match dedup needs exactly the same author evidence.
+ */ export const ALERT_DEDUP_TITLE_JSON_FIELDS = "number,title,author";
+/**
+ * Resolve the fleet logins whose escalation markers this worker trusts.
+ *
+ * Reads the configured fleet identity — `service_accounts` and
+ * `fleet_pr_authors` (which `loadConfig` has already unioned) plus this
+ * host's `GITHUB_USER` — through {@link resolveFleetMaintenanceAuthorSet},
+ * so there is no sixth definition of "the fleet" in the worker.
+ *
+ * Never throws: a config that cannot be read yields an empty set, which
+ * callers treat as "cannot verify" and therefore "no match".
+ *
+ * @param opts - Injected fleet list, env and config loader.
+ * @param log - Sink for the loud failure.
+ * @returns The trusted logins, or `[]` when they could not be resolved.
+ */ export async function resolveAlertDedupAuthors(opts, log) {
+  if (opts.fleetAuthors !== undefined) {
+    return resolveFleetMaintenanceAuthorSet({
+      githubUser: "",
+      fleetPrAuthors: [
+        ...opts.fleetAuthors
+      ]
+    });
+  }
+  const env = opts.env ?? processEnvLookup;
+  const load = opts.loadConfigFn ?? loadConfig;
+  try {
+    const config = await load(env("CONFIG_PATH") ?? ".config.json");
+    return resolveFleetMaintenanceAuthorSet({
+      githubUser: env("GITHUB_USER") ?? "",
+      fleetPrAuthors: config.fleetPrAuthors ?? [],
+      serviceAccounts: config.serviceAccounts ?? []
+    });
+  } catch (err) {
+    log(`[alert-dedup] could not load the fleet author set: ` + `${err instanceof Error ? err.message : String(err)}`);
+    return [];
+  }
+}
+/**
+ * Default consequence sentence — the alerting shape #1095 established.
+ *
+ * A caller whose marker *drives* an action rather than suppressing one
+ * passes its own sentence, because "the escalation is raised" would be a
+ * lie in the log of a module that closes issues.
+ */ const DEFAULT_UNVERIFIED_OUTCOME = "none is treated as an existing alert and the escalation is raised. A " + "duplicate alert is recoverable; a suppressed one is not";
+/** Shared body of the two selectors — one author check, two row shapes. */ async function selectVerified(rows, loginOf, context, opts, log, unverifiedOutcome) {
+  if (rows.length === 0) return [];
+  const fleet = await resolveAlertDedupAuthors(opts, log);
+  if (fleet.length === 0) {
+    log(`[alert-dedup] ${context}: fleet author set unresolved — cannot ` + `verify who wrote ${rows.length} marker match(es), so ` + `${unverifiedOutcome}. Configure service_accounts / ` + `fleet_pr_authors to restore dedup.`);
+    return [];
+  }
+  const kept = rows.filter((row)=>isFleetAuthor(loginOf(row), fleet));
+  const discarded = rows.length - kept.length;
+  if (discarded > 0) {
+    log(`[alert-dedup] ${context}: ignored ${discarded} marker match(es) ` + `authored outside the fleet — a marker in an issue body is not ` + `evidence the fleet filed it.`);
+  }
+  return kept;
+}
+/**
+ * Keep only the marker matches a fleet account actually authored.
+ *
+ * Call it with the rows a module's own marker predicate already accepted,
+ * so the discard log names genuine marker matches from outside the fleet
+ * rather than unrelated search noise.
+ *
+ * Fail direction: an unresolved fleet author set discards **every** row.
+ * See the module comment for why that is the harmless direction whether
+ * the marker suppresses an action or drives one.
+ *
+ * @param rows - Marker-matching rows from the dedup search.
+ * @param context - Identifies the dedup site in the log line.
+ * @param opts - Author-verification inputs.
+ * @param log - Sink for the discard and unresolved-set warnings.
+ * @param unverifiedOutcome - What the caller does with an unverifiable
+ *   match, in its own words, completing "so …". Defaults to the
+ *   alerting shape ("the escalation is raised").
+ * @returns The rows authored by a fleet account.
+ */ export function selectFleetAuthoredMatches(rows, context, opts, log, unverifiedOutcome = DEFAULT_UNVERIFIED_OUTCOME) {
+  return selectVerified(rows, (row)=>row.author?.login, context, opts, log, unverifiedOutcome);
+}
+/**
+ * Keep only the marker **comments** a fleet account actually authored.
+ *
+ * The comment shape of {@link selectFleetAuthoredMatches}: a cooldown
+ * signal or a retry-attempt tally lives in a comment thread anyone can
+ * post to, and the author is the only authenticated part of it.
+ *
+ * @param rows - Marker-carrying comments.
+ * @param context - Identifies the dedup site in the log line.
+ * @param opts - Author-verification inputs.
+ * @param log - Sink for the discard and unresolved-set warnings.
+ * @param unverifiedOutcome - What the caller does with an unverifiable
+ *   comment, completing "so …".
+ * @returns The comments authored by a fleet account.
+ */ export function selectFleetAuthoredComments(rows, context, opts, log, unverifiedOutcome = DEFAULT_UNVERIFIED_OUTCOME) {
+  return selectVerified(rows, (row)=>row.author, context, opts, log, unverifiedOutcome);
+}
+/**
+ * Project the `comments` array of `gh issue view --json …,comments` onto
+ * author-carrying rows (Issue #2231).
+ *
+ * `gh` renders a comment's author as a `{ login }` object; the worker's own
+ * `GitHubComment` renders it as a bare login. Both are accepted, so the shape
+ * a caller's runner returns cannot silently drop every author — and with it
+ * every comment. A comment with no readable author keeps `author: null`,
+ * which no fleet login matches, so the author gate discards it rather than
+ * trusting it.
+ *
+ * The sibling of {@link parseAuthoredCommentRows} for the `issue view` shape:
+ * that one parses a raw `gh api` payload, this one takes the already-parsed
+ * `comments` field, because its callers read other fields off the same
+ * payload.
+ *
+ * @param value - The parsed `comments` field, of any shape.
+ * @returns One row per comment carrying a string body.
+ */ export function parseIssueViewCommentRows(value) {
+  if (!Array.isArray(value)) return [];
+  const rows = [];
+  for (const entry of value){
+    if (entry === null || typeof entry !== "object") continue;
+    const record = entry;
+    if (typeof record.body !== "string") continue;
+    const author = record.author;
+    const login = typeof author === "string" ? author : author !== null && typeof author === "object" && typeof author.login === "string" ? author.login : null;
+    rows.push({
+      author: login,
+      body: record.body
+    });
+  }
+  return rows;
+}
+/**
+ * Parse a `gh api …/comments --jq` payload into author-carrying rows
+ * (Issue #1249).
+ *
+ * Three sites now project `{author, …}` off a comment listing so the match can
+ * be attributed, and each was writing the same defensive parse: JSON, array
+ * check, per-row object check, per-field type check. One helper keeps that
+ * shape in a single place, next to the selector the rows are handed to.
+ *
+ * A payload that is not a JSON array yields `[]` — no rows to attribute, which
+ * every caller already treats as "nothing verified".
+ *
+ * @param raw - The `gh` stdout to parse
+ * @param field - The second field each row carries beside `author`
+ * @returns One row per parsed comment, with a `null` author when absent
+ */ export function parseAuthoredCommentRows(raw, field) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch  {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const rows = [];
+  for (const entry of parsed){
+    if (entry === null || typeof entry !== "object") continue;
+    const row = entry;
+    rows.push({
+      author: typeof row.author === "string" ? row.author : null,
+      value: typeof row[field] === "string" ? row[field] : ""
+    });
+  }
+  return rows;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9hbGVydF9kZWR1cF9hdXRob3JzLnRzIl0sInNvdXJjZXNDb250ZW50IjpbIi8qKlxuICogQXV0aG9yIHZlcmlmaWNhdGlvbiBmb3IgdGhlIHdvcmtlcidzIG1hcmtlci1kcml2ZW4gZGVkdXAgc2VhcmNoZXMuXG4gKlxuICogRXZlcnkgc2VsZi1kaWFnbm9zdGljIGVzY2FsYXRpb24gdGhlIHdvcmtlciBmaWxlcyBpcyBkZWR1cGVkIGJ5IHNlYXJjaGluZ1xuICogdGhlIHRhcmdldCByZXBvc2l0b3J5IGZvciBhIG1hY2hpbmUtcmVhZGFibGUgbWFya2VyIGluIGFuIGlzc3VlIGJvZHk6XG4gKiBgZ2ggaXNzdWUgbGlzdCAtLXNlYXJjaCAnXCI8TUFSS0VSPlwiIGluOmJvZHknYC4gQW4gaXNzdWUgYm9keSBpcyB0ZXh0XG4gKiBhbnlvbmUgd2hvIGNhbiBvcGVuIGFuIGlzc3VlIG1heSB3cml0ZSwgc28gYSBtYXJrZXIgbWF0Y2ggb24gaXRzIG93blxuICogcHJvdmVzIG5vdGhpbmcg4oCUIG9ubHkgdGhlIGlzc3VlICoqYXV0aG9yKiogaXMgYXV0aGVudGljYXRlZC4gV2l0aG91dCBhblxuICogYXV0aG9yIGNoZWNrIGEgbWF0Y2ggd3JpdHRlbiBieSBhbnlib2R5IGF0IGFsbCByZWFkcyBhcyBcInRoZSBhbGVydCBpc1xuICogYWxyZWFkeSBmaWxlZFwiLCBhbmQgdGhlIGVzY2FsYXRpb24gc3RheXMgc2lsZW50LiBUaGF0IGlzIHN1cHByZXNzaW9uIG9mXG4gKiB0aGUgZmxlZXQncyBvd24gc2VsZi1kaWFnbm9zdGljczogbGF1bmNoZXIgZmFpbHVyZXMsIGlkbGUgaW52ZXJzaW9uLFxuICogYnVtcC1zY3JpcHQgZmFpbHVyZXMsIGJyYW5jaC11cGRhdGUgZmFpbHVyZXMgYW5kIGlkbGUgc3RhcnZhdGlvbi5cbiAqXG4gKiBgY2xhaW1faXNzdWUudHNgIGFscmVhZHkgY2xvc2VzIHRoZSBzYW1lIGdhcCBmb3IgYENMQUlNX0xPQ0tgIGNvbW1lbnRcbiAqIG1hcmtlcnMgYnkgZmlsdGVyaW5nIGNvbW1lbnQgYXV0aG9ycyB0aHJvdWdoXG4gKiB7QGxpbmsgaXNGbGVldEF1dGhvcn0gKElzc3VlICMzNjY0KTsgdGhpcyBtb2R1bGUgaXMgdGhhdCBjb250cm9sIGFwcGxpZWRcbiAqIHRvIHRoZSBib2R5LW1hcmtlciBkZWR1cCBzZWFyY2hlcywgaW4gb25lIHBsYWNlIHNvIHRoZSBmaXZlIGVzY2FsYXRpb25cbiAqIG1vZHVsZXMgY2Fubm90IGRyaWZ0IGFwYXJ0LlxuICpcbiAqICoqVGhlIGNvbXBhcmlzb24gc2V0IGlzIHRoZSBmbGVldCBpZGVudGl0eSoqIOKAlCBgc2VydmljZV9hY2NvdW50c2Ag4oiqXG4gKiBgZmxlZXRfcHJfYXV0aG9yc2Ag4oiqIHRoaXMgaG9zdCdzIG93biBsb2dpbiwgaS5lLlxuICoge0BsaW5rIHJlc29sdmVGbGVldE1haW50ZW5hbmNlQXV0aG9yU2V0fS4gRGVsaWJlcmF0ZWx5ICoqbm90KipcbiAqIGAtLWF1dGhvciBAbWVgOiBjcm9zcy1ob3N0IGNvbnZlcmdlbmNlIGRlcGVuZHMgb24gb25lIGhvc3QgZmluZGluZyB0aGVcbiAqIGlzc3VlIGFub3RoZXIgaG9zdCBmaWxlZCwgYW5kIGZsZWV0IGhvc3RzIGF1dGhlbnRpY2F0ZSBhcyBkaWZmZXJlbnRcbiAqIGFjY291bnRzLCBzbyBhIHNlbGYtb25seSBmaWx0ZXIgd291bGQgcmFpc2Ugb25lIGR1cGxpY2F0ZSBhbGVydCBwZXIgaG9zdC5cbiAqXG4gKiAqKlRoZSBmYWlsIGRpcmVjdGlvbiBpcyBhbHdheXMgXCJkaXNjYXJkIHRoZSB1bnZlcmlmaWFibGUgbWF0Y2hcIi4qKiBXaGVuXG4gKiB0aGUgZmxlZXQgYXV0aG9yIHNldCBjYW5ub3QgYmUgcmVzb2x2ZWQg4oCUIG5vIGNvbmZpZ3VyYXRpb24sIGFuIHVucmVhZGFibGVcbiAqIGNvbmZpZyDigJQgYSBtYXJrZXIgbWF0Y2ggY2Fubm90IGJlIGF0dHJpYnV0ZWQsIGFuZCB0aGlzIG1vZHVsZSB0cmVhdHMgaXQgYXNcbiAqICpubyBtYXRjaCouIFdoYXQgdGhhdCBtZWFucyBmb3IgdGhlIGNhbGxlciBkaWZmZXJzIGJ5IHNpdGUsIGFuZCBldmVyeVxuICogY2FsbGVyIHN0YXRlcyBpdHMgb3duIGNvbnNlcXVlbmNlIGluIHRoZSBsb2cgdGhyb3VnaCBgdW52ZXJpZmllZE91dGNvbWVgOlxuICpcbiAqIC0gQSBtYXJrZXIgdGhhdCAqKnN1cHByZXNzZXMqKiBhbiBhY3Rpb24gKGFuIGFsZXJ0IGFscmVhZHkgZmlsZWQsIGFcbiAqICAgY29vbGRvd24sIGEgcHJvcG9zYWwgYWxyZWFkeSByYWlzZWQsIGEgc2NhbiBhbHJlYWR5IGNvdmVyZWQpIGlzXG4gKiAgIGRpc2NhcmRlZCwgc28gdGhlIGFjdGlvbiBnb2VzIGFoZWFkLiBBIGR1cGxpY2F0ZSBhbGVydCBpcyBub2lzZSBhIGh1bWFuXG4gKiAgIGNsb3NlcyBpbiBhIG1vbWVudDsgYSBzdXBwcmVzc2VkIG9uZSBpcyBhbiBpbmNpZGVudCBub2JvZHkgaGVhcnMgYWJvdXQuXG4gKiAtIEEgbWFya2VyIHRoYXQgKipkcml2ZXMqKiBhbiBhY3Rpb24gKGFuIGlzc3VlIHRvIGNsb3NlLCBhIGxhYmVsIHRvXG4gKiAgIHdyaXRlKSBpcyBkaXNjYXJkZWQsIHNvIHRoZSB3cml0ZSBkb2VzIG5vdCBoYXBwZW4uIEFuIHVud2FudGVkXG4gKiAgIGRlc3RydWN0aXZlIHdyaXRlIGlzIHRoZSBvbmUgb3V0Y29tZSB0aGF0IGNhbm5vdCBiZSB1bmRvbmUuXG4gKlxuICogVGhlIHNpbmdsZSBydWxlIHVuZGVybmVhdGggYm90aDogKmZhaWwgdG93YXJkcyB0aGUgYWN0aW9uIHRoYXQgY2Fubm90XG4gKiBjYXVzZSBoYXJtKi4gRGlzY2FyZGluZyB0aGUgcm93IGlzIHRoYXQgYWN0aW9uIGluIGJvdGggc2hhcGVzLCB3aGljaCBpc1xuICogd2h5IG9uZSBoZWxwZXIgc2VydmVzIGV2ZXJ5IHNpdGUuIFRoZSBjb25kaXRpb24gaXMgbG9nZ2VkIGxvdWRseSBldmVyeVxuICogdGltZSBzbyBpdCBpcyB2aXNpYmxlIHJhdGhlciB0aGFuIGluZmVycmVkLlxuICpcbiAqIFVzZXMgQXVzdHJhbGlhbiBFbmdsaXNoIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgY29sb3VyLCBvcmdhbmlzYXRpb24pLlxuICovXG5cbmltcG9ydCB7IGxvYWRDb25maWcgfSBmcm9tIFwiLi9jb25maWcudHNcIjtcbmltcG9ydCB7IHR5cGUgRW52TG9va3VwLCBwcm9jZXNzRW52TG9va3VwIH0gZnJvbSBcIi4vZW52X2xvb2t1cC50c1wiO1xuaW1wb3J0IHtcbiAgaXNGbGVldEF1dGhvcixcbiAgcmVzb2x2ZUZsZWV0TWFpbnRlbmFuY2VBdXRob3JTZXQsXG59IGZyb20gXCIuL2ZsZWV0X2F1dGhvcnMudHNcIjtcbmltcG9ydCB0eXBlIHsgV29ya2VyQ29uZmlnIH0gZnJvbSBcIi4uL3R5cGVzLnRzXCI7XG5cbi8qKlxuICogVGhlIGAtLWpzb25gIGZpZWxkIGxpc3QgZXZlcnkgZXNjYWxhdGlvbiBkZWR1cCBzZWFyY2ggbXVzdCByZXF1ZXN0LlxuICpcbiAqIGBhdXRob3JgIGlzIHdoYXQgbWFrZXMgdGhlIG1hdGNoIHZlcmlmaWFibGU7IGEgc2VhcmNoIHRoYXQgb21pdHMgaXQgY2FuXG4gKiBvbmx5IHRydXN0IHRoZSBib2R5LCB3aGljaCBpcyBleGFjdGx5IHRoZSBkZWZlY3QgdGhpcyBtb2R1bGUgY2xvc2VzLlxuICovXG5leHBvcnQgY29uc3QgQUxFUlRfREVEVVBfSlNPTl9GSUVMRFMgPSBcIm51bWJlcixib2R5LGF1dGhvclwiO1xuXG4vKipcbiAqIFRoZSBgLS1qc29uYCBmaWVsZCBsaXN0IGEgKip0aXRsZSoqLWtleWVkIGRlZHVwIHNlYXJjaCBtdXN0IHJlcXVlc3QuXG4gKlxuICogQSB0aXRsZSBpcyBhcyB3cml0YWJsZSBhcyBhIGJvZHkg4oCUIGFueW9uZSB3aG8gY2FuIG9wZW4gYW4gaXNzdWUgY2hvb3Nlc1xuICogaXQg4oCUIHNvIGEgdGl0bGUtbWF0Y2ggZGVkdXAgbmVlZHMgZXhhY3RseSB0aGUgc2FtZSBhdXRob3IgZXZpZGVuY2UuXG4gKi9cbmV4cG9ydCBjb25zdCBBTEVSVF9ERURVUF9USVRMRV9KU09OX0ZJRUxEUyA9IFwibnVtYmVyLHRpdGxlLGF1dGhvclwiO1xuXG4vKiogVGhlIGBhdXRob3JgIG9iamVjdCBgZ2ggaXNzdWUgbGlzdCAtLWpzb24gYXV0aG9yYCByZXR1cm5zLiAqL1xuZXhwb3J0IGludGVyZmFjZSBBbGVydElzc3VlQXV0aG9yIHtcbiAgbG9naW4/OiBzdHJpbmcgfCBudWxsO1xufVxuXG4vKiogT25lIHJvdyBvZiBhbiBlc2NhbGF0aW9uIGRlZHVwIHNlYXJjaC4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgQWxlcnREZWR1cFJvdyB7XG4gIG51bWJlcjogbnVtYmVyO1xuICBib2R5Pzogc3RyaW5nO1xuICBhdXRob3I/OiBBbGVydElzc3VlQXV0aG9yIHwgbnVsbDtcbn1cblxuLyoqXG4gKiBPbmUgY29tbWVudCBjYXJyeWluZyBhIG1hcmtlci5cbiAqXG4gKiBgZ2ggaXNzdWUgdmlldyAtLWpzb24gY29tbWVudHNgIGFuZCB0aGUgd29ya2VyJ3Mgb3duIGBHaXRIdWJDb21tZW50YFxuICogYm90aCByZW5kZXIgdGhlIGF1dGhvciBhcyBhIGJhcmUgbG9naW4gcmF0aGVyIHRoYW4gdGhlIGB7IGxvZ2luIH1gXG4gKiBvYmplY3QgYGdoIGlzc3VlIGxpc3QgLS1qc29uIGF1dGhvcmAgcmV0dXJucywgc28gY29tbWVudC1tYXJrZXIgc2l0ZXNcbiAqIGdldCB0aGVpciBvd24gcm93IHNoYXBlIGluc3RlYWQgb2YgcmVzaGFwaW5nIHRoZSBkYXRhIHRvIGZpdC5cbiAqL1xuZXhwb3J0IGludGVyZmFjZSBBbGVydERlZHVwQ29tbWVudFJvdyB7XG4gIGF1dGhvcj86IHN0cmluZyB8IG51bGw7XG59XG5cbi8qKiBBdXRob3ItdmVyaWZpY2F0aW9uIGlucHV0cyBhbiBlc2NhbGF0aW9uIG1vZHVsZSB0aHJlYWRzIHRocm91Z2guICovXG5leHBvcnQgaW50ZXJmYWNlIEFsZXJ0RGVkdXBBdXRob3JPcHRpb25zIHtcbiAgLyoqXG4gICAqIEZsZWV0IGxvZ2lucyB3aG9zZSBtYXJrZXJzIGFyZSB0cnVzdGVkLiBPbWl0dGVkIG1lYW5zIFwicmVhZCB0aGVcbiAgICogY29uZmlndXJlZCBmbGVldCBpZGVudGl0eVwiLCB3aGljaCBpcyB3aGF0IGV2ZXJ5IHByb2R1Y3Rpb24gY2FsbGVyXG4gICAqIGRvZXM7IGEgdGVzdCBzdGF0ZXMgdGhlIGZsZWV0IGluc3RlYWQgb2Ygd3JpdGluZyBhIGNvbmZpZyBmaWxlLlxuICAgKlxuICAgKiBBbiBleHBsaWNpdGx5IGVtcHR5IGxpc3QgaXMgYW4gKnVucmVzb2x2ZWQqIGZsZWV0LCBhbmQgaXMgaGFuZGxlZCB0aGVcbiAgICogc2FtZSB3YXkgYW4gdW5yZWFkYWJsZSBjb25maWcgaXMg4oCUIG5vIG1hdGNoLCBhbGVydCByYWlzZWQsIGxvZ2dlZC5cbiAgICovXG4gIGZsZWV0QXV0aG9ycz86IHJlYWRvbmx5IHN0cmluZ1tdO1xuICAvKiogV2hlcmUgYENPTkZJR19QQVRIYCBhbmQgYEdJVEhVQl9VU0VSYCBhcmUgcmVhZCBmcm9tICh0ZXN0cykuICovXG4gIGVudj86IEVudkxvb2t1cDtcbiAgLyoqIENvbmZpZyBsb2FkZXIgb3ZlcnJpZGUgKHRlc3RzKS4gUHJvZHVjdGlvbjogYGxvYWRDb25maWdgLiAqL1xuICBsb2FkQ29uZmlnRm4/OiAoY29uZmlnUGF0aDogc3RyaW5nKSA9PiBQcm9taXNlPFdvcmtlckNvbmZpZz47XG59XG5cbi8qKlxuICogUmVzb2x2ZSB0aGUgZmxlZXQgbG9naW5zIHdob3NlIGVzY2FsYXRpb24gbWFya2VycyB0aGlzIHdvcmtlciB0cnVzdHMuXG4gKlxuICogUmVhZHMgdGhlIGNvbmZpZ3VyZWQgZmxlZXQgaWRlbnRpdHkg4oCUIGBzZXJ2aWNlX2FjY291bnRzYCBhbmRcbiAqIGBmbGVldF9wcl9hdXRob3JzYCAod2hpY2ggYGxvYWRDb25maWdgIGhhcyBhbHJlYWR5IHVuaW9uZWQpIHBsdXMgdGhpc1xuICogaG9zdCdzIGBHSVRIVUJfVVNFUmAg4oCUIHRocm91Z2gge0BsaW5rIHJlc29sdmVGbGVldE1haW50ZW5hbmNlQXV0aG9yU2V0fSxcbiAqIHNvIHRoZXJlIGlzIG5vIHNpeHRoIGRlZmluaXRpb24gb2YgXCJ0aGUgZmxlZXRcIiBpbiB0aGUgd29ya2VyLlxuICpcbiAqIE5ldmVyIHRocm93czogYSBjb25maWcgdGhhdCBjYW5ub3QgYmUgcmVhZCB5aWVsZHMgYW4gZW1wdHkgc2V0LCB3aGljaFxuICogY2FsbGVycyB0cmVhdCBhcyBcImNhbm5vdCB2ZXJpZnlcIiBhbmQgdGhlcmVmb3JlIFwibm8gbWF0Y2hcIi5cbiAqXG4gKiBAcGFyYW0gb3B0cyAtIEluamVjdGVkIGZsZWV0IGxpc3QsIGVudiBhbmQgY29uZmlnIGxvYWRlci5cbiAqIEBwYXJhbSBsb2cgLSBTaW5rIGZvciB0aGUgbG91ZCBmYWlsdXJlLlxuICogQHJldHVybnMgVGhlIHRydXN0ZWQgbG9naW5zLCBvciBgW11gIHdoZW4gdGhleSBjb3VsZCBub3QgYmUgcmVzb2x2ZWQuXG4gKi9cbmV4cG9ydCBhc3luYyBmdW5jdGlvbiByZXNvbHZlQWxlcnREZWR1cEF1dGhvcnMoXG4gIG9wdHM6IEFsZXJ0RGVkdXBBdXRob3JPcHRpb25zLFxuICBsb2c6IChtZXNzYWdlOiBzdHJpbmcpID0+IHZvaWQsXG4pOiBQcm9taXNlPHN0cmluZ1tdPiB7XG4gIGlmIChvcHRzLmZsZWV0QXV0aG9ycyAhPT0gdW5kZWZpbmVkKSB7XG4gICAgcmV0dXJuIHJlc29sdmVGbGVldE1haW50ZW5hbmNlQXV0aG9yU2V0KHtcbiAgICAgIGdpdGh1YlVzZXI6IFwiXCIsXG4gICAgICBmbGVldFByQXV0aG9yczogWy4uLm9wdHMuZmxlZXRBdXRob3JzXSxcbiAgICB9KTtcbiAgfVxuICBjb25zdCBlbnYgPSBvcHRzLmVudiA/PyBwcm9jZXNzRW52TG9va3VwO1xuICBjb25zdCBsb2FkID0gb3B0cy5sb2FkQ29uZmlnRm4gPz8gbG9hZENvbmZpZztcbiAgdHJ5IHtcbiAgICBjb25zdCBjb25maWcgPSBhd2FpdCBsb2FkKGVudihcIkNPTkZJR19QQVRIXCIpID8/IFwiLmNvbmZpZy5qc29uXCIpO1xuICAgIHJldHVybiByZXNvbHZlRmxlZXRNYWludGVuYW5jZUF1dGhvclNldCh7XG4gICAgICBnaXRodWJVc2VyOiBlbnYoXCJHSVRIVUJfVVNFUlwiKSA/PyBcIlwiLFxuICAgICAgZmxlZXRQckF1dGhvcnM6IGNvbmZpZy5mbGVldFByQXV0aG9ycyA/PyBbXSxcbiAgICAgIHNlcnZpY2VBY2NvdW50czogY29uZmlnLnNlcnZpY2VBY2NvdW50cyA/PyBbXSxcbiAgICB9KTtcbiAgfSBjYXRjaCAoZXJyKSB7XG4gICAgbG9nKFxuICAgICAgYFthbGVydC1kZWR1cF0gY291bGQgbm90IGxvYWQgdGhlIGZsZWV0IGF1dGhvciBzZXQ6IGAgK1xuICAgICAgICBgJHtlcnIgaW5zdGFuY2VvZiBFcnJvciA/IGVyci5tZXNzYWdlIDogU3RyaW5nKGVycil9YCxcbiAgICApO1xuICAgIHJldHVybiBbXTtcbiAgfVxufVxuXG4vKipcbiAqIERlZmF1bHQgY29uc2VxdWVuY2Ugc2VudGVuY2Ug4oCUIHRoZSBhbGVydGluZyBzaGFwZSAjMTA5NSBlc3RhYmxpc2hlZC5cbiAqXG4gKiBBIGNhbGxlciB3aG9zZSBtYXJrZXIgKmRyaXZlcyogYW4gYWN0aW9uIHJhdGhlciB0aGFuIHN1cHByZXNzaW5nIG9uZVxuICogcGFzc2VzIGl0cyBvd24gc2VudGVuY2UsIGJlY2F1c2UgXCJ0aGUgZXNjYWxhdGlvbiBpcyByYWlzZWRcIiB3b3VsZCBiZSBhXG4gKiBsaWUgaW4gdGhlIGxvZyBvZiBhIG1vZHVsZSB0aGF0IGNsb3NlcyBpc3N1ZXMuXG4gKi9cbmNvbnN0IERFRkFVTFRfVU5WRVJJRklFRF9PVVRDT01FID1cbiAgXCJub25lIGlzIHRyZWF0ZWQgYXMgYW4gZXhpc3RpbmcgYWxlcnQgYW5kIHRoZSBlc2NhbGF0aW9uIGlzIHJhaXNlZC4gQSBcIiArXG4gIFwiZHVwbGljYXRlIGFsZXJ0IGlzIHJlY292ZXJhYmxlOyBhIHN1cHByZXNzZWQgb25lIGlzIG5vdFwiO1xuXG4vKiogU2hhcmVkIGJvZHkgb2YgdGhlIHR3byBzZWxlY3RvcnMg4oCUIG9uZSBhdXRob3IgY2hlY2ssIHR3byByb3cgc2hhcGVzLiAqL1xuYXN5bmMgZnVuY3Rpb24gc2VsZWN0VmVyaWZpZWQ8VD4oXG4gIHJvd3M6IHJlYWRvbmx5IFRbXSxcbiAgbG9naW5PZjogKHJvdzogVCkgPT4gc3RyaW5nIHwgbnVsbCB8IHVuZGVmaW5lZCxcbiAgY29udGV4dDogc3RyaW5nLFxuICBvcHRzOiBBbGVydERlZHVwQXV0aG9yT3B0aW9ucyxcbiAgbG9nOiAobWVzc2FnZTogc3RyaW5nKSA9PiB2b2lkLFxuICB1bnZlcmlmaWVkT3V0Y29tZTogc3RyaW5nLFxuKTogUHJvbWlzZTxUW10+IHtcbiAgaWYgKHJvd3MubGVuZ3RoID09PSAwKSByZXR1cm4gW107XG4gIGNvbnN0IGZsZWV0ID0gYXdhaXQgcmVzb2x2ZUFsZXJ0RGVkdXBBdXRob3JzKG9wdHMsIGxvZyk7XG4gIGlmIChmbGVldC5sZW5ndGggPT09IDApIHtcbiAgICBsb2coXG4gICAgICBgW2FsZXJ0LWRlZHVwXSAke2NvbnRleHR9OiBmbGVldCBhdXRob3Igc2V0IHVucmVzb2x2ZWQg4oCUIGNhbm5vdCBgICtcbiAgICAgICAgYHZlcmlmeSB3aG8gd3JvdGUgJHtyb3dzLmxlbmd0aH0gbWFya2VyIG1hdGNoKGVzKSwgc28gYCArXG4gICAgICAgIGAke3VudmVyaWZpZWRPdXRjb21lfS4gQ29uZmlndXJlIHNlcnZpY2VfYWNjb3VudHMgLyBgICtcbiAgICAgICAgYGZsZWV0X3ByX2F1dGhvcnMgdG8gcmVzdG9yZSBkZWR1cC5gLFxuICAgICk7XG4gICAgcmV0dXJuIFtdO1xuICB9XG4gIGNvbnN0IGtlcHQgPSByb3dzLmZpbHRlcigocm93KSA9PiBpc0ZsZWV0QXV0aG9yKGxvZ2luT2Yocm93KSwgZmxlZXQpKTtcbiAgY29uc3QgZGlzY2FyZGVkID0gcm93cy5sZW5ndGggLSBrZXB0Lmxlbmd0aDtcbiAgaWYgKGRpc2NhcmRlZCA+IDApIHtcbiAgICBsb2coXG4gICAgICBgW2FsZXJ0LWRlZHVwXSAke2NvbnRleHR9OiBpZ25vcmVkICR7ZGlzY2FyZGVkfSBtYXJrZXIgbWF0Y2goZXMpIGAgK1xuICAgICAgICBgYXV0aG9yZWQgb3V0c2lkZSB0aGUgZmxlZXQg4oCUIGEgbWFya2VyIGluIGFuIGlzc3VlIGJvZHkgaXMgbm90IGAgK1xuICAgICAgICBgZXZpZGVuY2UgdGhlIGZsZWV0IGZpbGVkIGl0LmAsXG4gICAgKTtcbiAgfVxuICByZXR1cm4ga2VwdDtcbn1cblxuLyoqXG4gKiBLZWVwIG9ubHkgdGhlIG1hcmtlciBtYXRjaGVzIGEgZmxlZXQgYWNjb3VudCBhY3R1YWxseSBhdXRob3JlZC5cbiAqXG4gKiBDYWxsIGl0IHdpdGggdGhlIHJvd3MgYSBtb2R1bGUncyBvd24gbWFya2VyIHByZWRpY2F0ZSBhbHJlYWR5IGFjY2VwdGVkLFxuICogc28gdGhlIGRpc2NhcmQgbG9nIG5hbWVzIGdlbnVpbmUgbWFya2VyIG1hdGNoZXMgZnJvbSBvdXRzaWRlIHRoZSBmbGVldFxuICogcmF0aGVyIHRoYW4gdW5yZWxhdGVkIHNlYXJjaCBub2lzZS5cbiAqXG4gKiBGYWlsIGRpcmVjdGlvbjogYW4gdW5yZXNvbHZlZCBmbGVldCBhdXRob3Igc2V0IGRpc2NhcmRzICoqZXZlcnkqKiByb3cuXG4gKiBTZWUgdGhlIG1vZHVsZSBjb21tZW50IGZvciB3aHkgdGhhdCBpcyB0aGUgaGFybWxlc3MgZGlyZWN0aW9uIHdoZXRoZXJcbiAqIHRoZSBtYXJrZXIgc3VwcHJlc3NlcyBhbiBhY3Rpb24gb3IgZHJpdmVzIG9uZS5cbiAqXG4gKiBAcGFyYW0gcm93cyAtIE1hcmtlci1tYXRjaGluZyByb3dzIGZyb20gdGhlIGRlZHVwIHNlYXJjaC5cbiAqIEBwYXJhbSBjb250ZXh0IC0gSWRlbnRpZmllcyB0aGUgZGVkdXAgc2l0ZSBpbiB0aGUgbG9nIGxpbmUuXG4gKiBAcGFyYW0gb3B0cyAtIEF1dGhvci12ZXJpZmljYXRpb24gaW5wdXRzLlxuICogQHBhcmFtIGxvZyAtIFNpbmsgZm9yIHRoZSBkaXNjYXJkIGFuZCB1bnJlc29sdmVkLXNldCB3YXJuaW5ncy5cbiAqIEBwYXJhbSB1bnZlcmlmaWVkT3V0Y29tZSAtIFdoYXQgdGhlIGNhbGxlciBkb2VzIHdpdGggYW4gdW52ZXJpZmlhYmxlXG4gKiAgIG1hdGNoLCBpbiBpdHMgb3duIHdvcmRzLCBjb21wbGV0aW5nIFwic28g4oCmXCIuIERlZmF1bHRzIHRvIHRoZVxuICogICBhbGVydGluZyBzaGFwZSAoXCJ0aGUgZXNjYWxhdGlvbiBpcyByYWlzZWRcIikuXG4gKiBAcmV0dXJucyBUaGUgcm93cyBhdXRob3JlZCBieSBhIGZsZWV0IGFjY291bnQuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBzZWxlY3RGbGVldEF1dGhvcmVkTWF0Y2hlczxUIGV4dGVuZHMgQWxlcnREZWR1cFJvdz4oXG4gIHJvd3M6IHJlYWRvbmx5IFRbXSxcbiAgY29udGV4dDogc3RyaW5nLFxuICBvcHRzOiBBbGVydERlZHVwQXV0aG9yT3B0aW9ucyxcbiAgbG9nOiAobWVzc2FnZTogc3RyaW5nKSA9PiB2b2lkLFxuICB1bnZlcmlmaWVkT3V0Y29tZTogc3RyaW5nID0gREVGQVVMVF9VTlZFUklGSUVEX09VVENPTUUsXG4pOiBQcm9taXNlPFRbXT4ge1xuICByZXR1cm4gc2VsZWN0VmVyaWZpZWQoXG4gICAgcm93cyxcbiAgICAocm93KSA9PiByb3cuYXV0aG9yPy5sb2dpbixcbiAgICBjb250ZXh0LFxuICAgIG9wdHMsXG4gICAgbG9nLFxuICAgIHVudmVyaWZpZWRPdXRjb21lLFxuICApO1xufVxuXG4vKipcbiAqIEtlZXAgb25seSB0aGUgbWFya2VyICoqY29tbWVudHMqKiBhIGZsZWV0IGFjY291bnQgYWN0dWFsbHkgYXV0aG9yZWQuXG4gKlxuICogVGhlIGNvbW1lbnQgc2hhcGUgb2Yge0BsaW5rIHNlbGVjdEZsZWV0QXV0aG9yZWRNYXRjaGVzfTogYSBjb29sZG93blxuICogc2lnbmFsIG9yIGEgcmV0cnktYXR0ZW1wdCB0YWxseSBsaXZlcyBpbiBhIGNvbW1lbnQgdGhyZWFkIGFueW9uZSBjYW5cbiAqIHBvc3QgdG8sIGFuZCB0aGUgYXV0aG9yIGlzIHRoZSBvbmx5IGF1dGhlbnRpY2F0ZWQgcGFydCBvZiBpdC5cbiAqXG4gKiBAcGFyYW0gcm93cyAtIE1hcmtlci1jYXJyeWluZyBjb21tZW50cy5cbiAqIEBwYXJhbSBjb250ZXh0IC0gSWRlbnRpZmllcyB0aGUgZGVkdXAgc2l0ZSBpbiB0aGUgbG9nIGxpbmUuXG4gKiBAcGFyYW0gb3B0cyAtIEF1dGhvci12ZXJpZmljYXRpb24gaW5wdXRzLlxuICogQHBhcmFtIGxvZyAtIFNpbmsgZm9yIHRoZSBkaXNjYXJkIGFuZCB1bnJlc29sdmVkLXNldCB3YXJuaW5ncy5cbiAqIEBwYXJhbSB1bnZlcmlmaWVkT3V0Y29tZSAtIFdoYXQgdGhlIGNhbGxlciBkb2VzIHdpdGggYW4gdW52ZXJpZmlhYmxlXG4gKiAgIGNvbW1lbnQsIGNvbXBsZXRpbmcgXCJzbyDigKZcIi5cbiAqIEByZXR1cm5zIFRoZSBjb21tZW50cyBhdXRob3JlZCBieSBhIGZsZWV0IGFjY291bnQuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBzZWxlY3RGbGVldEF1dGhvcmVkQ29tbWVudHM8VCBleHRlbmRzIEFsZXJ0RGVkdXBDb21tZW50Um93PihcbiAgcm93czogcmVhZG9ubHkgVFtdLFxuICBjb250ZXh0OiBzdHJpbmcsXG4gIG9wdHM6IEFsZXJ0RGVkdXBBdXRob3JPcHRpb25zLFxuICBsb2c6IChtZXNzYWdlOiBzdHJpbmcpID0+IHZvaWQsXG4gIHVudmVyaWZpZWRPdXRjb21lOiBzdHJpbmcgPSBERUZBVUxUX1VOVkVSSUZJRURfT1VUQ09NRSxcbik6IFByb21pc2U8VFtdPiB7XG4gIHJldHVybiBzZWxlY3RWZXJpZmllZChcbiAgICByb3dzLFxuICAgIChyb3cpID0+IHJvdy5hdXRob3IsXG4gICAgY29udGV4dCxcbiAgICBvcHRzLFxuICAgIGxvZyxcbiAgICB1bnZlcmlmaWVkT3V0Y29tZSxcbiAgKTtcbn1cblxuLyoqXG4gKiBQcm9qZWN0IHRoZSBgY29tbWVudHNgIGFycmF5IG9mIGBnaCBpc3N1ZSB2aWV3IC0tanNvbiDigKYsY29tbWVudHNgIG9udG9cbiAqIGF1dGhvci1jYXJyeWluZyByb3dzIChJc3N1ZSAjMjIzMSkuXG4gKlxuICogYGdoYCByZW5kZXJzIGEgY29tbWVudCdzIGF1dGhvciBhcyBhIGB7IGxvZ2luIH1gIG9iamVjdDsgdGhlIHdvcmtlcidzIG93blxuICogYEdpdEh1YkNvbW1lbnRgIHJlbmRlcnMgaXQgYXMgYSBiYXJlIGxvZ2luLiBCb3RoIGFyZSBhY2NlcHRlZCwgc28gdGhlIHNoYXBlXG4gKiBhIGNhbGxlcidzIHJ1bm5lciByZXR1cm5zIGNhbm5vdCBzaWxlbnRseSBkcm9wIGV2ZXJ5IGF1dGhvciDigJQgYW5kIHdpdGggaXRcbiAqIGV2ZXJ5IGNvbW1lbnQuIEEgY29tbWVudCB3aXRoIG5vIHJlYWRhYmxlIGF1dGhvciBrZWVwcyBgYXV0aG9yOiBudWxsYCxcbiAqIHdoaWNoIG5vIGZsZWV0IGxvZ2luIG1hdGNoZXMsIHNvIHRoZSBhdXRob3IgZ2F0ZSBkaXNjYXJkcyBpdCByYXRoZXIgdGhhblxuICogdHJ1c3RpbmcgaXQuXG4gKlxuICogVGhlIHNpYmxpbmcgb2Yge0BsaW5rIHBhcnNlQXV0aG9yZWRDb21tZW50Um93c30gZm9yIHRoZSBgaXNzdWUgdmlld2Agc2hhcGU6XG4gKiB0aGF0IG9uZSBwYXJzZXMgYSByYXcgYGdoIGFwaWAgcGF5bG9hZCwgdGhpcyBvbmUgdGFrZXMgdGhlIGFscmVhZHktcGFyc2VkXG4gKiBgY29tbWVudHNgIGZpZWxkLCBiZWNhdXNlIGl0cyBjYWxsZXJzIHJlYWQgb3RoZXIgZmllbGRzIG9mZiB0aGUgc2FtZVxuICogcGF5bG9hZC5cbiAqXG4gKiBAcGFyYW0gdmFsdWUgLSBUaGUgcGFyc2VkIGBjb21tZW50c2AgZmllbGQsIG9mIGFueSBzaGFwZS5cbiAqIEByZXR1cm5zIE9uZSByb3cgcGVyIGNvbW1lbnQgY2FycnlpbmcgYSBzdHJpbmcgYm9keS5cbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHBhcnNlSXNzdWVWaWV3Q29tbWVudFJvd3MoXG4gIHZhbHVlOiB1bmtub3duLFxuKTogQXJyYXk8eyBhdXRob3I6IHN0cmluZyB8IG51bGw7IGJvZHk6IHN0cmluZyB9PiB7XG4gIGlmICghQXJyYXkuaXNBcnJheSh2YWx1ZSkpIHJldHVybiBbXTtcbiAgY29uc3Qgcm93czogQXJyYXk8eyBhdXRob3I6IHN0cmluZyB8IG51bGw7IGJvZHk6IHN0cmluZyB9PiA9IFtdO1xuICBmb3IgKGNvbnN0IGVudHJ5IG9mIHZhbHVlKSB7XG4gICAgaWYgKGVudHJ5ID09PSBudWxsIHx8IHR5cGVvZiBlbnRyeSAhPT0gXCJvYmplY3RcIikgY29udGludWU7XG4gICAgY29uc3QgcmVjb3JkID0gZW50cnkgYXMgUmVjb3JkPHN0cmluZywgdW5rbm93bj47XG4gICAgaWYgKHR5cGVvZiByZWNvcmQuYm9keSAhPT0gXCJzdHJpbmdcIikgY29udGludWU7XG4gICAgY29uc3QgYXV0aG9yID0gcmVjb3JkLmF1dGhvcjtcbiAgICBjb25zdCBsb2dpbiA9IHR5cGVvZiBhdXRob3IgPT09IFwic3RyaW5nXCJcbiAgICAgID8gYXV0aG9yXG4gICAgICA6IGF1dGhvciAhPT0gbnVsbCAmJiB0eXBlb2YgYXV0aG9yID09PSBcIm9iamVjdFwiICYmXG4gICAgICAgICAgdHlwZW9mIChhdXRob3IgYXMgUmVjb3JkPHN0cmluZywgdW5rbm93bj4pLmxvZ2luID09PSBcInN0cmluZ1wiXG4gICAgICA/IChhdXRob3IgYXMgUmVjb3JkPHN0cmluZywgdW5rbm93bj4pLmxvZ2luIGFzIHN0cmluZ1xuICAgICAgOiBudWxsO1xuICAgIHJvd3MucHVzaCh7IGF1dGhvcjogbG9naW4sIGJvZHk6IHJlY29yZC5ib2R5IH0pO1xuICB9XG4gIHJldHVybiByb3dzO1xufVxuXG4vKipcbiAqIFBhcnNlIGEgYGdoIGFwaSDigKYvY29tbWVudHMgLS1qcWAgcGF5bG9hZCBpbnRvIGF1dGhvci1jYXJyeWluZyByb3dzXG4gKiAoSXNzdWUgIzEyNDkpLlxuICpcbiAqIFRocmVlIHNpdGVzIG5vdyBwcm9qZWN0IGB7YXV0aG9yLCDigKZ9YCBvZmYgYSBjb21tZW50IGxpc3Rpbmcgc28gdGhlIG1hdGNoIGNhblxuICogYmUgYXR0cmlidXRlZCwgYW5kIGVhY2ggd2FzIHdyaXRpbmcgdGhlIHNhbWUgZGVmZW5zaXZlIHBhcnNlOiBKU09OLCBhcnJheVxuICogY2hlY2ssIHBlci1yb3cgb2JqZWN0IGNoZWNrLCBwZXItZmllbGQgdHlwZSBjaGVjay4gT25lIGhlbHBlciBrZWVwcyB0aGF0XG4gKiBzaGFwZSBpbiBhIHNpbmdsZSBwbGFjZSwgbmV4dCB0byB0aGUgc2VsZWN0b3IgdGhlIHJvd3MgYXJlIGhhbmRlZCB0by5cbiAqXG4gKiBBIHBheWxvYWQgdGhhdCBpcyBub3QgYSBKU09OIGFycmF5IHlpZWxkcyBgW11gIOKAlCBubyByb3dzIHRvIGF0dHJpYnV0ZSwgd2hpY2hcbiAqIGV2ZXJ5IGNhbGxlciBhbHJlYWR5IHRyZWF0cyBhcyBcIm5vdGhpbmcgdmVyaWZpZWRcIi5cbiAqXG4gKiBAcGFyYW0gcmF3IC0gVGhlIGBnaGAgc3Rkb3V0IHRvIHBhcnNlXG4gKiBAcGFyYW0gZmllbGQgLSBUaGUgc2Vjb25kIGZpZWxkIGVhY2ggcm93IGNhcnJpZXMgYmVzaWRlIGBhdXRob3JgXG4gKiBAcmV0dXJucyBPbmUgcm93IHBlciBwYXJzZWQgY29tbWVudCwgd2l0aCBhIGBudWxsYCBhdXRob3Igd2hlbiBhYnNlbnRcbiAqL1xuZXhwb3J0IGZ1bmN0aW9uIHBhcnNlQXV0aG9yZWRDb21tZW50Um93cyhcbiAgcmF3OiBzdHJpbmcsXG4gIGZpZWxkOiBzdHJpbmcsXG4pOiBBcnJheTx7IGF1dGhvcjogc3RyaW5nIHwgbnVsbDsgdmFsdWU6IHN0cmluZyB9PiB7XG4gIGxldCBwYXJzZWQ6IHVua25vd247XG4gIHRyeSB7XG4gICAgcGFyc2VkID0gSlNPTi5wYXJzZShyYXcpO1xuICB9IGNhdGNoIHtcbiAgICByZXR1cm4gW107XG4gIH1cbiAgaWYgKCFBcnJheS5pc0FycmF5KHBhcnNlZCkpIHJldHVybiBbXTtcblxuICBjb25zdCByb3dzOiBBcnJheTx7IGF1dGhvcjogc3RyaW5nIHwgbnVsbDsgdmFsdWU6IHN0cmluZyB9PiA9IFtdO1xuICBmb3IgKGNvbnN0IGVudHJ5IG9mIHBhcnNlZCkge1xuICAgIGlmIChlbnRyeSA9PT0gbnVsbCB8fCB0eXBlb2YgZW50cnkgIT09IFwib2JqZWN0XCIpIGNvbnRpbnVlO1xuICAgIGNvbnN0IHJvdyA9IGVudHJ5IGFzIFJlY29yZDxzdHJpbmcsIHVua25vd24+O1xuICAgIHJvd3MucHVzaCh7XG4gICAgICBhdXRob3I6IHR5cGVvZiByb3cuYXV0aG9yID09PSBcInN0cmluZ1wiID8gcm93LmF1dGhvciA6IG51bGwsXG4gICAgICB2YWx1ZTogdHlwZW9mIHJvd1tmaWVsZF0gPT09IFwic3RyaW5nXCIgPyByb3dbZmllbGRdIGFzIHN0cmluZyA6IFwiXCIsXG4gICAgfSk7XG4gIH1cbiAgcmV0dXJuIHJvd3M7XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0E4Q0MsR0FFRCxTQUFTLFVBQVUsUUFBUSxjQUFjO0FBQ3pDLFNBQXlCLGdCQUFnQixRQUFRLGtCQUFrQjtBQUNuRSxTQUNFLGFBQWEsRUFDYixnQ0FBZ0MsUUFDM0IscUJBQXFCO0FBRzVCOzs7OztDQUtDLEdBQ0QsT0FBTyxNQUFNLDBCQUEwQixxQkFBcUI7QUFFNUQ7Ozs7O0NBS0MsR0FDRCxPQUFPLE1BQU0sZ0NBQWdDLHNCQUFzQjtBQTJDbkU7Ozs7Ozs7Ozs7Ozs7O0NBY0MsR0FDRCxPQUFPLGVBQWUseUJBQ3BCLElBQTZCLEVBQzdCLEdBQThCO0VBRTlCLElBQUksS0FBSyxZQUFZLEtBQUssV0FBVztJQUNuQyxPQUFPLGlDQUFpQztNQUN0QyxZQUFZO01BQ1osZ0JBQWdCO1dBQUksS0FBSyxZQUFZO09BQUM7SUFDeEM7RUFDRjtFQUNBLE1BQU0sTUFBTSxLQUFLLEdBQUcsSUFBSTtFQUN4QixNQUFNLE9BQU8sS0FBSyxZQUFZLElBQUk7RUFDbEMsSUFBSTtJQUNGLE1BQU0sU0FBUyxNQUFNLEtBQUssSUFBSSxrQkFBa0I7SUFDaEQsT0FBTyxpQ0FBaUM7TUFDdEMsWUFBWSxJQUFJLGtCQUFrQjtNQUNsQyxnQkFBZ0IsT0FBTyxjQUFjLElBQUksRUFBRTtNQUMzQyxpQkFBaUIsT0FBTyxlQUFlLElBQUksRUFBRTtJQUMvQztFQUNGLEVBQUUsT0FBTyxLQUFLO0lBQ1osSUFDRSxDQUFDLG1EQUFtRCxDQUFDLEdBQ25ELEdBQUcsZUFBZSxRQUFRLElBQUksT0FBTyxHQUFHLE9BQU8sTUFBTTtJQUV6RCxPQUFPLEVBQUU7RUFDWDtBQUNGO0FBRUE7Ozs7OztDQU1DLEdBQ0QsTUFBTSw2QkFDSiwwRUFDQTtBQUVGLHlFQUF5RSxHQUN6RSxlQUFlLGVBQ2IsSUFBa0IsRUFDbEIsT0FBOEMsRUFDOUMsT0FBZSxFQUNmLElBQTZCLEVBQzdCLEdBQThCLEVBQzlCLGlCQUF5QjtFQUV6QixJQUFJLEtBQUssTUFBTSxLQUFLLEdBQUcsT0FBTyxFQUFFO0VBQ2hDLE1BQU0sUUFBUSxNQUFNLHlCQUF5QixNQUFNO0VBQ25ELElBQUksTUFBTSxNQUFNLEtBQUssR0FBRztJQUN0QixJQUNFLENBQUMsY0FBYyxFQUFFLFFBQVEsdUNBQXVDLENBQUMsR0FDL0QsQ0FBQyxpQkFBaUIsRUFBRSxLQUFLLE1BQU0sQ0FBQyxzQkFBc0IsQ0FBQyxHQUN2RCxHQUFHLGtCQUFrQiwrQkFBK0IsQ0FBQyxHQUNyRCxDQUFDLGtDQUFrQyxDQUFDO0lBRXhDLE9BQU8sRUFBRTtFQUNYO0VBQ0EsTUFBTSxPQUFPLEtBQUssTUFBTSxDQUFDLENBQUMsTUFBUSxjQUFjLFFBQVEsTUFBTTtFQUM5RCxNQUFNLFlBQVksS0FBSyxNQUFNLEdBQUcsS0FBSyxNQUFNO0VBQzNDLElBQUksWUFBWSxHQUFHO0lBQ2pCLElBQ0UsQ0FBQyxjQUFjLEVBQUUsUUFBUSxVQUFVLEVBQUUsVUFBVSxrQkFBa0IsQ0FBQyxHQUNoRSxDQUFDLDhEQUE4RCxDQUFDLEdBQ2hFLENBQUMsNEJBQTRCLENBQUM7RUFFcEM7RUFDQSxPQUFPO0FBQ1Q7QUFFQTs7Ozs7Ozs7Ozs7Ozs7Ozs7OztDQW1CQyxHQUNELE9BQU8sU0FBUywyQkFDZCxJQUFrQixFQUNsQixPQUFlLEVBQ2YsSUFBNkIsRUFDN0IsR0FBOEIsRUFDOUIsb0JBQTRCLDBCQUEwQjtFQUV0RCxPQUFPLGVBQ0wsTUFDQSxDQUFDLE1BQVEsSUFBSSxNQUFNLEVBQUUsT0FDckIsU0FDQSxNQUNBLEtBQ0E7QUFFSjtBQUVBOzs7Ozs7Ozs7Ozs7OztDQWNDLEdBQ0QsT0FBTyxTQUFTLDRCQUNkLElBQWtCLEVBQ2xCLE9BQWUsRUFDZixJQUE2QixFQUM3QixHQUE4QixFQUM5QixvQkFBNEIsMEJBQTBCO0VBRXRELE9BQU8sZUFDTCxNQUNBLENBQUMsTUFBUSxJQUFJLE1BQU0sRUFDbkIsU0FDQSxNQUNBLEtBQ0E7QUFFSjtBQUVBOzs7Ozs7Ozs7Ozs7Ozs7Ozs7Q0FrQkMsR0FDRCxPQUFPLFNBQVMsMEJBQ2QsS0FBYztFQUVkLElBQUksQ0FBQyxNQUFNLE9BQU8sQ0FBQyxRQUFRLE9BQU8sRUFBRTtFQUNwQyxNQUFNLE9BQXVELEVBQUU7RUFDL0QsS0FBSyxNQUFNLFNBQVMsTUFBTztJQUN6QixJQUFJLFVBQVUsUUFBUSxPQUFPLFVBQVUsVUFBVTtJQUNqRCxNQUFNLFNBQVM7SUFDZixJQUFJLE9BQU8sT0FBTyxJQUFJLEtBQUssVUFBVTtJQUNyQyxNQUFNLFNBQVMsT0FBTyxNQUFNO0lBQzVCLE1BQU0sUUFBUSxPQUFPLFdBQVcsV0FDNUIsU0FDQSxXQUFXLFFBQVEsT0FBTyxXQUFXLFlBQ25DLE9BQU8sQUFBQyxPQUFtQyxLQUFLLEtBQUssV0FDdkQsQUFBQyxPQUFtQyxLQUFLLEdBQ3pDO0lBQ0osS0FBSyxJQUFJLENBQUM7TUFBRSxRQUFRO01BQU8sTUFBTSxPQUFPLElBQUk7SUFBQztFQUMvQztFQUNBLE9BQU87QUFDVDtBQUVBOzs7Ozs7Ozs7Ozs7Ozs7Q0FlQyxHQUNELE9BQU8sU0FBUyx5QkFDZCxHQUFXLEVBQ1gsS0FBYTtFQUViLElBQUk7RUFDSixJQUFJO0lBQ0YsU0FBUyxLQUFLLEtBQUssQ0FBQztFQUN0QixFQUFFLE9BQU07SUFDTixPQUFPLEVBQUU7RUFDWDtFQUNBLElBQUksQ0FBQyxNQUFNLE9BQU8sQ0FBQyxTQUFTLE9BQU8sRUFBRTtFQUVyQyxNQUFNLE9BQXdELEVBQUU7RUFDaEUsS0FBSyxNQUFNLFNBQVMsT0FBUTtJQUMxQixJQUFJLFVBQVUsUUFBUSxPQUFPLFVBQVUsVUFBVTtJQUNqRCxNQUFNLE1BQU07SUFDWixLQUFLLElBQUksQ0FBQztNQUNSLFFBQVEsT0FBTyxJQUFJLE1BQU0sS0FBSyxXQUFXLElBQUksTUFBTSxHQUFHO01BQ3RELE9BQU8sT0FBTyxHQUFHLENBQUMsTUFBTSxLQUFLLFdBQVcsR0FBRyxDQUFDLE1BQU0sR0FBYTtJQUNqRTtFQUNGO0VBQ0EsT0FBTztBQUNUIn0=
+// denoCacheMetadata=18228050895813340180,3745770679346991901

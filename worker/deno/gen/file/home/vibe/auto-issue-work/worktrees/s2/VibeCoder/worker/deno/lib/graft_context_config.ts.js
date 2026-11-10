@@ -1,0 +1,109 @@
+/**
+ * The `.config.json` `graft_context` block — the host switch for Graft
+ * repo-context injection (Issue #2098, part of #2060).
+ *
+ * ```json
+ * {
+ *   "graft_context": {
+ *     "enabled": true
+ *   }
+ * }
+ * ```
+ *
+ * The block is optional and the switch is **off**: a host that never writes
+ * it behaves exactly as it does today. The operator turns it on per host, so
+ * the cost of building and injecting a Graft code graph is opted into
+ * deliberately rather than arriving with an update.
+ *
+ * ## Validation posture — fail loud on the switch, warn on a stray key
+ *
+ * A malformed block **stops the worker** at config load, the way
+ * `assertCallbacksConfig` does for `callbacks`: an operator who wrote
+ * `"enabled": "yes"` believes the feature is on, and silently reading that as
+ * off is the class of failure this repo refuses to ship. The error names the
+ * key so the fix is obvious.
+ *
+ * An *unrecognised* key inside the block is a different case — it changes no
+ * behaviour — so it warns and is ignored, exactly the way an unknown
+ * top-level key does (`detectUnknownConfigKeys`).
+ *
+ * Australian English spelling used throughout (behaviour, recognised).
+ */ import { detectUnknownNestedKeys, formatUnknownKeyWarnings } from "./config_unknown_keys.ts";
+/** The `.config.json` key this block lives under. */ export const GRAFT_CONTEXT_CONFIG_KEY = "graft_context";
+/** Keys recognised inside the `graft_context` block. */ const KNOWN_KEYS = new Set([
+  "enabled"
+]);
+/**
+ * The default block — Graft off.
+ *
+ * A fresh object each call, so a caller mutating a built config can never
+ * corrupt a shared default.
+ */ export function graftContextOff() {
+  return {
+    enabled: false
+  };
+}
+/**
+ * Whether this host has Graft repo-context injection switched on.
+ *
+ * The one read point for the switch, so a caller never reaches into the block
+ * itself and the default — off — is stated in exactly one place.
+ */ export function isGraftContextEnabled(config) {
+  return config.graftContext.enabled;
+}
+/** Short description of a value for an error message. */ function show(value) {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return "an array";
+  if (value === null) return "null";
+  if (typeof value === "object") return "an object";
+  return String(value);
+}
+/**
+ * Validate the raw `graft_context` block from `.config.json`.
+ *
+ * Absent or null yields {@link graftContextOff}; a block that is not an
+ * object, or an `enabled` that is not a boolean, is reported rather than
+ * repaired. Unrecognised nested keys are warned about and ignored.
+ */ export function parseGraftContextConfig(raw, options = {}) {
+  const warn = options.warn ?? ((message)=>console.error(message));
+  if (raw === undefined || raw === null) {
+    return {
+      ok: true,
+      value: graftContextOff()
+    };
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: `${GRAFT_CONTEXT_CONFIG_KEY} must be an object with an "enabled" boolean, got ${show(raw)}`
+    };
+  }
+  const block = raw;
+  const warnings = detectUnknownNestedKeys(block, GRAFT_CONTEXT_CONFIG_KEY, KNOWN_KEYS);
+  if (warnings.length > 0) warn(formatUnknownKeyWarnings(warnings));
+  const config = graftContextOff();
+  if (block.enabled !== undefined) {
+    if (typeof block.enabled !== "boolean") {
+      return {
+        ok: false,
+        error: `${GRAFT_CONTEXT_CONFIG_KEY}.enabled must be a boolean, got ${show(block.enabled)}`
+      };
+    }
+    config.enabled = block.enabled;
+  }
+  return {
+    ok: true,
+    value: config
+  };
+}
+/**
+ * {@link parseGraftContextConfig}, but throwing — the fail-loud entry point
+ * used at config load, so a malformed block stops the worker rather than
+ * reading as off on a host the operator believes has Graft on.
+ */ export function assertGraftContextConfig(raw, options = {}) {
+  const parsed = parseGraftContextConfig(raw, options);
+  if (!parsed.ok) throw new Error(parsed.error);
+  return parsed.value;
+}
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJzb3VyY2VzIjpbImZpbGU6Ly8vaG9tZS92aWJlL2F1dG8taXNzdWUtd29yay93b3JrdHJlZXMvczIvVmliZUNvZGVyL3dvcmtlci9kZW5vL2xpYi9ncmFmdF9jb250ZXh0X2NvbmZpZy50cyJdLCJzb3VyY2VzQ29udGVudCI6WyIvKipcbiAqIFRoZSBgLmNvbmZpZy5qc29uYCBgZ3JhZnRfY29udGV4dGAgYmxvY2sg4oCUIHRoZSBob3N0IHN3aXRjaCBmb3IgR3JhZnRcbiAqIHJlcG8tY29udGV4dCBpbmplY3Rpb24gKElzc3VlICMyMDk4LCBwYXJ0IG9mICMyMDYwKS5cbiAqXG4gKiBgYGBqc29uXG4gKiB7XG4gKiAgIFwiZ3JhZnRfY29udGV4dFwiOiB7XG4gKiAgICAgXCJlbmFibGVkXCI6IHRydWVcbiAqICAgfVxuICogfVxuICogYGBgXG4gKlxuICogVGhlIGJsb2NrIGlzIG9wdGlvbmFsIGFuZCB0aGUgc3dpdGNoIGlzICoqb2ZmKio6IGEgaG9zdCB0aGF0IG5ldmVyIHdyaXRlc1xuICogaXQgYmVoYXZlcyBleGFjdGx5IGFzIGl0IGRvZXMgdG9kYXkuIFRoZSBvcGVyYXRvciB0dXJucyBpdCBvbiBwZXIgaG9zdCwgc29cbiAqIHRoZSBjb3N0IG9mIGJ1aWxkaW5nIGFuZCBpbmplY3RpbmcgYSBHcmFmdCBjb2RlIGdyYXBoIGlzIG9wdGVkIGludG9cbiAqIGRlbGliZXJhdGVseSByYXRoZXIgdGhhbiBhcnJpdmluZyB3aXRoIGFuIHVwZGF0ZS5cbiAqXG4gKiAjIyBWYWxpZGF0aW9uIHBvc3R1cmUg4oCUIGZhaWwgbG91ZCBvbiB0aGUgc3dpdGNoLCB3YXJuIG9uIGEgc3RyYXkga2V5XG4gKlxuICogQSBtYWxmb3JtZWQgYmxvY2sgKipzdG9wcyB0aGUgd29ya2VyKiogYXQgY29uZmlnIGxvYWQsIHRoZSB3YXlcbiAqIGBhc3NlcnRDYWxsYmFja3NDb25maWdgIGRvZXMgZm9yIGBjYWxsYmFja3NgOiBhbiBvcGVyYXRvciB3aG8gd3JvdGVcbiAqIGBcImVuYWJsZWRcIjogXCJ5ZXNcImAgYmVsaWV2ZXMgdGhlIGZlYXR1cmUgaXMgb24sIGFuZCBzaWxlbnRseSByZWFkaW5nIHRoYXQgYXNcbiAqIG9mZiBpcyB0aGUgY2xhc3Mgb2YgZmFpbHVyZSB0aGlzIHJlcG8gcmVmdXNlcyB0byBzaGlwLiBUaGUgZXJyb3IgbmFtZXMgdGhlXG4gKiBrZXkgc28gdGhlIGZpeCBpcyBvYnZpb3VzLlxuICpcbiAqIEFuICp1bnJlY29nbmlzZWQqIGtleSBpbnNpZGUgdGhlIGJsb2NrIGlzIGEgZGlmZmVyZW50IGNhc2Ug4oCUIGl0IGNoYW5nZXMgbm9cbiAqIGJlaGF2aW91ciDigJQgc28gaXQgd2FybnMgYW5kIGlzIGlnbm9yZWQsIGV4YWN0bHkgdGhlIHdheSBhbiB1bmtub3duXG4gKiB0b3AtbGV2ZWwga2V5IGRvZXMgKGBkZXRlY3RVbmtub3duQ29uZmlnS2V5c2ApLlxuICpcbiAqIEF1c3RyYWxpYW4gRW5nbGlzaCBzcGVsbGluZyB1c2VkIHRocm91Z2hvdXQgKGJlaGF2aW91ciwgcmVjb2duaXNlZCkuXG4gKi9cblxuaW1wb3J0IHR5cGUgeyBSZXN1bHQsIFdvcmtlckNvbmZpZyB9IGZyb20gXCIuLi90eXBlcy50c1wiO1xuaW1wb3J0IHtcbiAgZGV0ZWN0VW5rbm93bk5lc3RlZEtleXMsXG4gIGZvcm1hdFVua25vd25LZXlXYXJuaW5ncyxcbn0gZnJvbSBcIi4vY29uZmlnX3Vua25vd25fa2V5cy50c1wiO1xuXG4vKiogVGhlIGAuY29uZmlnLmpzb25gIGtleSB0aGlzIGJsb2NrIGxpdmVzIHVuZGVyLiAqL1xuZXhwb3J0IGNvbnN0IEdSQUZUX0NPTlRFWFRfQ09ORklHX0tFWSA9IFwiZ3JhZnRfY29udGV4dFwiO1xuXG4vKiogS2V5cyByZWNvZ25pc2VkIGluc2lkZSB0aGUgYGdyYWZ0X2NvbnRleHRgIGJsb2NrLiAqL1xuY29uc3QgS05PV05fS0VZUzogUmVhZG9ubHlTZXQ8c3RyaW5nPiA9IG5ldyBTZXQoW1wiZW5hYmxlZFwiXSk7XG5cbi8qKiBUaGUgdmFsaWRhdGVkIGBncmFmdF9jb250ZXh0YCBibG9jay4gKi9cbmV4cG9ydCBpbnRlcmZhY2UgR3JhZnRDb250ZXh0Q29uZmlnIHtcbiAgLyoqIFdoZXRoZXIgR3JhZnQgcmVwby1jb250ZXh0IGluamVjdGlvbiBydW5zIG9uIHRoaXMgaG9zdC4gKi9cbiAgZW5hYmxlZDogYm9vbGVhbjtcbn1cblxuLyoqXG4gKiBUaGUgZGVmYXVsdCBibG9jayDigJQgR3JhZnQgb2ZmLlxuICpcbiAqIEEgZnJlc2ggb2JqZWN0IGVhY2ggY2FsbCwgc28gYSBjYWxsZXIgbXV0YXRpbmcgYSBidWlsdCBjb25maWcgY2FuIG5ldmVyXG4gKiBjb3JydXB0IGEgc2hhcmVkIGRlZmF1bHQuXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBncmFmdENvbnRleHRPZmYoKTogR3JhZnRDb250ZXh0Q29uZmlnIHtcbiAgcmV0dXJuIHsgZW5hYmxlZDogZmFsc2UgfTtcbn1cblxuLyoqXG4gKiBXaGV0aGVyIHRoaXMgaG9zdCBoYXMgR3JhZnQgcmVwby1jb250ZXh0IGluamVjdGlvbiBzd2l0Y2hlZCBvbi5cbiAqXG4gKiBUaGUgb25lIHJlYWQgcG9pbnQgZm9yIHRoZSBzd2l0Y2gsIHNvIGEgY2FsbGVyIG5ldmVyIHJlYWNoZXMgaW50byB0aGUgYmxvY2tcbiAqIGl0c2VsZiBhbmQgdGhlIGRlZmF1bHQg4oCUIG9mZiDigJQgaXMgc3RhdGVkIGluIGV4YWN0bHkgb25lIHBsYWNlLlxuICovXG5leHBvcnQgZnVuY3Rpb24gaXNHcmFmdENvbnRleHRFbmFibGVkKGNvbmZpZzogV29ya2VyQ29uZmlnKTogYm9vbGVhbiB7XG4gIHJldHVybiBjb25maWcuZ3JhZnRDb250ZXh0LmVuYWJsZWQ7XG59XG5cbi8qKiBPcHRpb25zIGZvciB7QGxpbmsgcGFyc2VHcmFmdENvbnRleHRDb25maWd9LiAqL1xuZXhwb3J0IGludGVyZmFjZSBQYXJzZUdyYWZ0Q29udGV4dE9wdGlvbnMge1xuICAvKiogV2FybmluZyBzaW5rIGZvciB1bnJlY29nbmlzZWQgbmVzdGVkIGtleXMuIERlZmF1bHRzIHRvIGBjb25zb2xlLmVycm9yYC4gKi9cbiAgd2Fybj86IChtZXNzYWdlOiBzdHJpbmcpID0+IHZvaWQ7XG59XG5cbi8qKiBTaG9ydCBkZXNjcmlwdGlvbiBvZiBhIHZhbHVlIGZvciBhbiBlcnJvciBtZXNzYWdlLiAqL1xuZnVuY3Rpb24gc2hvdyh2YWx1ZTogdW5rbm93bik6IHN0cmluZyB7XG4gIGlmICh0eXBlb2YgdmFsdWUgPT09IFwic3RyaW5nXCIpIHJldHVybiBKU09OLnN0cmluZ2lmeSh2YWx1ZSk7XG4gIGlmIChBcnJheS5pc0FycmF5KHZhbHVlKSkgcmV0dXJuIFwiYW4gYXJyYXlcIjtcbiAgaWYgKHZhbHVlID09PSBudWxsKSByZXR1cm4gXCJudWxsXCI7XG4gIGlmICh0eXBlb2YgdmFsdWUgPT09IFwib2JqZWN0XCIpIHJldHVybiBcImFuIG9iamVjdFwiO1xuICByZXR1cm4gU3RyaW5nKHZhbHVlKTtcbn1cblxuLyoqXG4gKiBWYWxpZGF0ZSB0aGUgcmF3IGBncmFmdF9jb250ZXh0YCBibG9jayBmcm9tIGAuY29uZmlnLmpzb25gLlxuICpcbiAqIEFic2VudCBvciBudWxsIHlpZWxkcyB7QGxpbmsgZ3JhZnRDb250ZXh0T2ZmfTsgYSBibG9jayB0aGF0IGlzIG5vdCBhblxuICogb2JqZWN0LCBvciBhbiBgZW5hYmxlZGAgdGhhdCBpcyBub3QgYSBib29sZWFuLCBpcyByZXBvcnRlZCByYXRoZXIgdGhhblxuICogcmVwYWlyZWQuIFVucmVjb2duaXNlZCBuZXN0ZWQga2V5cyBhcmUgd2FybmVkIGFib3V0IGFuZCBpZ25vcmVkLlxuICovXG5leHBvcnQgZnVuY3Rpb24gcGFyc2VHcmFmdENvbnRleHRDb25maWcoXG4gIHJhdzogdW5rbm93bixcbiAgb3B0aW9uczogUGFyc2VHcmFmdENvbnRleHRPcHRpb25zID0ge30sXG4pOiBSZXN1bHQ8R3JhZnRDb250ZXh0Q29uZmlnLCBzdHJpbmc+IHtcbiAgY29uc3Qgd2FybiA9IG9wdGlvbnMud2FybiA/PyAoKG1lc3NhZ2U6IHN0cmluZykgPT4gY29uc29sZS5lcnJvcihtZXNzYWdlKSk7XG5cbiAgaWYgKHJhdyA9PT0gdW5kZWZpbmVkIHx8IHJhdyA9PT0gbnVsbCkge1xuICAgIHJldHVybiB7IG9rOiB0cnVlLCB2YWx1ZTogZ3JhZnRDb250ZXh0T2ZmKCkgfTtcbiAgfVxuICBpZiAodHlwZW9mIHJhdyAhPT0gXCJvYmplY3RcIiB8fCBBcnJheS5pc0FycmF5KHJhdykpIHtcbiAgICByZXR1cm4ge1xuICAgICAgb2s6IGZhbHNlLFxuICAgICAgZXJyb3I6XG4gICAgICAgIGAke0dSQUZUX0NPTlRFWFRfQ09ORklHX0tFWX0gbXVzdCBiZSBhbiBvYmplY3Qgd2l0aCBhbiBcImVuYWJsZWRcIiBib29sZWFuLCBnb3QgJHtcbiAgICAgICAgICBzaG93KHJhdylcbiAgICAgICAgfWAsXG4gICAgfTtcbiAgfVxuXG4gIGNvbnN0IGJsb2NrID0gcmF3IGFzIFJlY29yZDxzdHJpbmcsIHVua25vd24+O1xuICBjb25zdCB3YXJuaW5ncyA9IGRldGVjdFVua25vd25OZXN0ZWRLZXlzKFxuICAgIGJsb2NrLFxuICAgIEdSQUZUX0NPTlRFWFRfQ09ORklHX0tFWSxcbiAgICBLTk9XTl9LRVlTLFxuICApO1xuICBpZiAod2FybmluZ3MubGVuZ3RoID4gMCkgd2Fybihmb3JtYXRVbmtub3duS2V5V2FybmluZ3Mod2FybmluZ3MpKTtcblxuICBjb25zdCBjb25maWcgPSBncmFmdENvbnRleHRPZmYoKTtcbiAgaWYgKGJsb2NrLmVuYWJsZWQgIT09IHVuZGVmaW5lZCkge1xuICAgIGlmICh0eXBlb2YgYmxvY2suZW5hYmxlZCAhPT0gXCJib29sZWFuXCIpIHtcbiAgICAgIHJldHVybiB7XG4gICAgICAgIG9rOiBmYWxzZSxcbiAgICAgICAgZXJyb3I6IGAke0dSQUZUX0NPTlRFWFRfQ09ORklHX0tFWX0uZW5hYmxlZCBtdXN0IGJlIGEgYm9vbGVhbiwgZ290ICR7XG4gICAgICAgICAgc2hvdyhibG9jay5lbmFibGVkKVxuICAgICAgICB9YCxcbiAgICAgIH07XG4gICAgfVxuICAgIGNvbmZpZy5lbmFibGVkID0gYmxvY2suZW5hYmxlZDtcbiAgfVxuICByZXR1cm4geyBvazogdHJ1ZSwgdmFsdWU6IGNvbmZpZyB9O1xufVxuXG4vKipcbiAqIHtAbGluayBwYXJzZUdyYWZ0Q29udGV4dENvbmZpZ30sIGJ1dCB0aHJvd2luZyDigJQgdGhlIGZhaWwtbG91ZCBlbnRyeSBwb2ludFxuICogdXNlZCBhdCBjb25maWcgbG9hZCwgc28gYSBtYWxmb3JtZWQgYmxvY2sgc3RvcHMgdGhlIHdvcmtlciByYXRoZXIgdGhhblxuICogcmVhZGluZyBhcyBvZmYgb24gYSBob3N0IHRoZSBvcGVyYXRvciBiZWxpZXZlcyBoYXMgR3JhZnQgb24uXG4gKi9cbmV4cG9ydCBmdW5jdGlvbiBhc3NlcnRHcmFmdENvbnRleHRDb25maWcoXG4gIHJhdzogdW5rbm93bixcbiAgb3B0aW9uczogUGFyc2VHcmFmdENvbnRleHRPcHRpb25zID0ge30sXG4pOiBHcmFmdENvbnRleHRDb25maWcge1xuICBjb25zdCBwYXJzZWQgPSBwYXJzZUdyYWZ0Q29udGV4dENvbmZpZyhyYXcsIG9wdGlvbnMpO1xuICBpZiAoIXBhcnNlZC5vaykgdGhyb3cgbmV3IEVycm9yKHBhcnNlZC5lcnJvcik7XG4gIHJldHVybiBwYXJzZWQudmFsdWU7XG59XG4iXSwibmFtZXMiOltdLCJtYXBwaW5ncyI6IkFBQUE7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7OztDQThCQyxHQUdELFNBQ0UsdUJBQXVCLEVBQ3ZCLHdCQUF3QixRQUNuQiwyQkFBMkI7QUFFbEMsbURBQW1ELEdBQ25ELE9BQU8sTUFBTSwyQkFBMkIsZ0JBQWdCO0FBRXhELHNEQUFzRCxHQUN0RCxNQUFNLGFBQWtDLElBQUksSUFBSTtFQUFDO0NBQVU7QUFRM0Q7Ozs7O0NBS0MsR0FDRCxPQUFPLFNBQVM7RUFDZCxPQUFPO0lBQUUsU0FBUztFQUFNO0FBQzFCO0FBRUE7Ozs7O0NBS0MsR0FDRCxPQUFPLFNBQVMsc0JBQXNCLE1BQW9CO0VBQ3hELE9BQU8sT0FBTyxZQUFZLENBQUMsT0FBTztBQUNwQztBQVFBLHVEQUF1RCxHQUN2RCxTQUFTLEtBQUssS0FBYztFQUMxQixJQUFJLE9BQU8sVUFBVSxVQUFVLE9BQU8sS0FBSyxTQUFTLENBQUM7RUFDckQsSUFBSSxNQUFNLE9BQU8sQ0FBQyxRQUFRLE9BQU87RUFDakMsSUFBSSxVQUFVLE1BQU0sT0FBTztFQUMzQixJQUFJLE9BQU8sVUFBVSxVQUFVLE9BQU87RUFDdEMsT0FBTyxPQUFPO0FBQ2hCO0FBRUE7Ozs7OztDQU1DLEdBQ0QsT0FBTyxTQUFTLHdCQUNkLEdBQVksRUFDWixVQUFvQyxDQUFDLENBQUM7RUFFdEMsTUFBTSxPQUFPLFFBQVEsSUFBSSxJQUFJLENBQUMsQ0FBQyxVQUFvQixRQUFRLEtBQUssQ0FBQyxRQUFRO0VBRXpFLElBQUksUUFBUSxhQUFhLFFBQVEsTUFBTTtJQUNyQyxPQUFPO01BQUUsSUFBSTtNQUFNLE9BQU87SUFBa0I7RUFDOUM7RUFDQSxJQUFJLE9BQU8sUUFBUSxZQUFZLE1BQU0sT0FBTyxDQUFDLE1BQU07SUFDakQsT0FBTztNQUNMLElBQUk7TUFDSixPQUNFLEdBQUcseUJBQXlCLGtEQUFrRCxFQUM1RSxLQUFLLE1BQ0w7SUFDTjtFQUNGO0VBRUEsTUFBTSxRQUFRO0VBQ2QsTUFBTSxXQUFXLHdCQUNmLE9BQ0EsMEJBQ0E7RUFFRixJQUFJLFNBQVMsTUFBTSxHQUFHLEdBQUcsS0FBSyx5QkFBeUI7RUFFdkQsTUFBTSxTQUFTO0VBQ2YsSUFBSSxNQUFNLE9BQU8sS0FBSyxXQUFXO0lBQy9CLElBQUksT0FBTyxNQUFNLE9BQU8sS0FBSyxXQUFXO01BQ3RDLE9BQU87UUFDTCxJQUFJO1FBQ0osT0FBTyxHQUFHLHlCQUF5QixnQ0FBZ0MsRUFDakUsS0FBSyxNQUFNLE9BQU8sR0FDbEI7TUFDSjtJQUNGO0lBQ0EsT0FBTyxPQUFPLEdBQUcsTUFBTSxPQUFPO0VBQ2hDO0VBQ0EsT0FBTztJQUFFLElBQUk7SUFBTSxPQUFPO0VBQU87QUFDbkM7QUFFQTs7OztDQUlDLEdBQ0QsT0FBTyxTQUFTLHlCQUNkLEdBQVksRUFDWixVQUFvQyxDQUFDLENBQUM7RUFFdEMsTUFBTSxTQUFTLHdCQUF3QixLQUFLO0VBQzVDLElBQUksQ0FBQyxPQUFPLEVBQUUsRUFBRSxNQUFNLElBQUksTUFBTSxPQUFPLEtBQUs7RUFDNUMsT0FBTyxPQUFPLEtBQUs7QUFDckIifQ==
+// denoCacheMetadata=17198090570592858285,8882069642516139175

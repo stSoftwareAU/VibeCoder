@@ -1,0 +1,31 @@
+// Copyright 2018-2026 the Deno authors. MIT license.
+// This module is browser compatible.
+import { format } from "jsr:@std/internal@^1.0.12/format";
+import { AssertionError } from "./assertion_error.ts";
+
+/**
+ * Make an assertion that `actual` is less than `expected`.
+ * If not then throw.
+ *
+ * @example Usage
+ * ```ts ignore
+ * import { assertLess } from "@std/assert";
+ *
+ * assertLess(1, 2); // Doesn't throw
+ * assertLess(2, 1); // Throws
+ * ```
+ *
+ * @typeParam T The type of the values to compare.
+ * @param actual The actual value to compare.
+ * @param expected The expected value to compare.
+ * @param msg The optional message to display if the assertion fails.
+ */
+export function assertLess<T>(actual: T, expected: T, msg?: string) {
+  if (actual < expected) return;
+
+  const actualString = format(actual);
+  const expectedString = format(expected);
+  throw new AssertionError(msg ?? `Expect ${actualString} < ${expectedString}`);
+}
+
+// denoCacheMetadata={"headers":{"access-control-expose-headers":"*","content-length":"947","x-robots-tag":"noindex","accept-ranges":"bytes","age":"5924810","x-content-type-options":"nosniff","content-security-policy":"default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; frame-ancestors 'none'; sandbox; form-action 'none';","alt-svc":"h3=\":443\"; ma=86400","x-jsr-backend":"modules","content-type":"text/typescript","cf-cache-status":"HIT","cross-origin-resource-policy":"cross-origin","date":"Tue, 10 Nov 2026 08:08:15 GMT","cache-control":"public, max-age=31536000, immutable","vary":"Origin","report-to":"{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=sdWKk86yy%2BLBVr7y73rMYhJ2iXdELQx8yvualZeMfYO%2BXtYHr8GZ9fLFvCgjSyEwYlHIG9MQrsYl5Ubh4zSlf%2BMYmfcQsvUzzb2Psb6MC%2BeT4XzFiqiHc5c%3D\"}]}","nel":"{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}","server":"cloudflare","access-control-allow-origin":"*","set-cookie":"__cf_bm=0sD_6WllKc4SrdayVZqIIV5QtZFHdH3nzVjIw6CV.9o-1794298095.8712323-1.0.1.1-ZHj1VKXi_41.53xivU9AJMZLDvG1sXTo63VRPMtDjVXpmJdu6vrKYfSpqwHuP85lym_dKs5r6fJXd5Cnjq4kSAuqiQN6C4GbP6_w6of.yqc4Z.K5pTfq80u8842J.cVE; HttpOnly; SameSite=None; Partitioned; Secure; Path=/; Domain=jsr.io; Expires=Tue, 10 Nov 2026 08:38:15 GMT","cf-ray":"a583917b2dad561f-SYD","etag":"\"c7c8d34abcd63cf3184641606e188013\""},"url":"https://jsr.io/@std/assert/1.0.18/less.ts","time":1794298095}
