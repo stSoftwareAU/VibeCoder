@@ -580,7 +580,9 @@ export async function presyncMilestoneBranch(
       "warn",
       `Milestone branch '${milestoneBranch}' in ${repo}: conflict ` +
         `attempt ${attempts} of ${MILESTONE_CONFLICT_ATTEMPT_BUDGET} failed ` +
-        // A merge-gate refusal is charged with no rung (Issue #4304).
+        // A merge-gate refusal the check made on the tree is charged with no
+        // rung (Issue #4304). A tree the gate could not verify is not charged
+        // at all (Issue #4847).
         (verdict.rung ? `at rung ${verdict.rung}` : `(${verdict.reason})`) +
         (isConflictBudgetExhausted(entry)
           ? " — the budget is now spent and the branch belongs to the roll-back"

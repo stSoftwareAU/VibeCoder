@@ -1233,9 +1233,10 @@ raised. A CI fix attempts that gate only when Claude leaves uncommitted changes,
 then runs configured pre-flight commands, and may run nothing. PR feedback and
 spelling fixes run no full gate (changed-file checks only where pre-flight
 commands are configured, plus the PR-review fix verifier for review feedback),
-and a custom PR prompt relies on the agent's pre-push hook. The note names the
-checks that path runs; see
-[docs/CONFIGURATION.md → The full gate is conditional on the budget left](CONFIGURATION.md#the-full-gate-is-conditional-on-the-budget-left-issue-1138)).
+and a custom PR prompt relies on the agent's pre-push hook. The agent's prompt
+names that path's checks and asks the agent to name, in the note, the
+checks it ran; see
+[docs/CONFIGURATION.md → The full gate is conditional on the budget left](CONFIGURATION.md#the-full-gate-is-conditional-on-the-budget-left-issue-1138).
 CI covers only the jobs the target repository actually runs, so some of the
 skipped checks may have no other copy; treat any coverage you cannot find as
 unverified. Because the file now means two things, "was this run warned?" is
