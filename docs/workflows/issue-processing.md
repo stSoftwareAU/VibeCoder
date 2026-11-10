@@ -1169,7 +1169,11 @@ reads that signal at both ends
   to start; if that cannot be confirmed, the sweep arms it (Issue #4160). The
   same ready step runs on a PR the REST fallback returns when `gh pr create`
   hits the primary GraphQL quota, since that PR can be an open draft
-  continuation on the branch. The body says `Closes #N` unless an entry is
+  continuation on the branch. The latch skips `gh pr view` and `gh pr ready`
+  there, so the draft flag is read over the quota-exempt REST endpoint
+  (`readPrDraftViaRest`): a REST-confirmed draft that cannot be readied fails
+  the run as `interrupted` (retried), a REST-confirmed ready PR is left alone,
+  and a flag that cannot be read keeps the fail-open rule above. The body says `Closes #N` unless an entry is
   `partial` or `missing`, which keeps `Part of #N`. An orphaned draft left
   anyway is readied by the sweep self-heal (Issue #4952).
 

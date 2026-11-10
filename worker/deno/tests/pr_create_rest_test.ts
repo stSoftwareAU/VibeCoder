@@ -16,6 +16,7 @@ import {
   findMergedPrUrlViaRest,
   findOpenPrUrlViaRest,
   isPrAlreadyExistsError,
+  readPrDraftViaRest,
 } from "../lib/pr_create_rest.ts";
 
 /** Record every gh invocation so we can assert on the calls made. */
@@ -443,4 +444,43 @@ Deno.test("createPullRequestViaRest - no draft field unless asked (Issue #4617)"
     draft: false,
   }, { ghCommandFn: rec.fn });
   assertEquals(rec.calls[0]!.some((a) => a.startsWith("draft=")), false);
+});
+
+Deno.test("readPrDraftViaRest - reads .draft over the quota-exempt REST path (Issue #4952)", async () => {
+  const rec = recorder(() => "true\n");
+  assertEquals(await readPrDraftViaRest("acme/widgets", 9, rec.fn), true);
+  assertEquals(rec.calls.length, 1);
+  assertEquals(rec.calls[0]![0], "api");
+  assert(rec.calls[0]!.includes("repos/acme/widgets/pulls/9"));
+  assert(rec.calls[0]!.includes(".draft"));
+  assertEquals(
+    await readPrDraftViaRest("acme/widgets", 9, () => Promise.resolve("false")),
+    false,
+  );
+});
+
+Deno.test("readPrDraftViaRest - an unreadable flag is null, never a guess (Issue #4952)", async () => {
+  const answer = (raw: string) => () => Promise.resolve(raw);
+  assertEquals(await readPrDraftViaRest("acme/widgets", 9, answer("")), null);
+  assertEquals(
+    await readPrDraftViaRest("acme/widgets", 9, answer("null")),
+    null,
+  );
+  assertEquals(
+    await readPrDraftViaRest("acme/widgets", 9, answer("maybe")),
+    null,
+  );
+  assertEquals(
+    await readPrDraftViaRest(
+      "acme/widgets",
+      9,
+      () => Promise.reject(new Error("HTTP 502")),
+    ),
+    null,
+  );
+  // Invalid inputs never reach gh.
+  const rec = recorder(() => "true");
+  assertEquals(await readPrDraftViaRest("bad repo", 9, rec.fn), null);
+  assertEquals(await readPrDraftViaRest("acme/widgets", 0, rec.fn), null);
+  assertEquals(rec.calls.length, 0);
 });

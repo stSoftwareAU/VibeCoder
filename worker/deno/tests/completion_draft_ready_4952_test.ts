@@ -545,12 +545,29 @@ Deno.test(
 const QUOTA_ERROR =
   "gh command failed (exit 1): GraphQL: API rate limit already exceeded for user ID 23146043.";
 
+/** What the latch's spawnGh answers for a skipped non-`gh api` call. */
+const LATCH_SKIP =
+  "gh command skipped: GraphQL primary quota exhausted (API rate limit already exceeded) — resets in 40m";
+
 /**
  * Run the creation path with `gh pr create` past its primary quota, so the
- * REST fallback returns PR #27: an open draft continuation on this branch.
- * `readyFails` makes `gh pr ready` throw.
+ * REST fallback returns PR #27: an open continuation PR on this branch.
+ * Like spawnGh while the quota is latched, every call that is not `gh api` is
+ * rejected with the skip message, so `gh pr view` and `gh pr ready` never
+ * answer; only the REST reads do.
+ * - `draft`: what `GET repos/<repo>/pulls/27` says for `.draft`: true, false,
+ *   or "unreadable" (the read fails).
+ * - `latched`: false models a quota that recovered, so `gh pr view` and
+ *   `gh pr ready` answer; `readyFails` then makes `gh pr ready` throw.
  */
-async function runRestFallback(readyFails: boolean) {
+async function runRestFallback(
+  options: {
+    draft: boolean | "unreadable";
+    latched: boolean;
+    readyFails?: boolean;
+  },
+) {
+  const { draft, latched, readyFails = false } = options;
   const repoPath = await Deno.makeTempDir();
   await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
     recursive: true,
@@ -582,10 +599,18 @@ async function runRestFallback(readyFails: boolean) {
     if (args[0] === "pr" && args[1] === "create") {
       return Promise.reject(new Error(QUOTA_ERROR));
     }
+    if (args[0] === "api" && args.includes(`repos/${REPO}/pulls/${PR}`)) {
+      return draft === "unreadable"
+        ? Promise.reject(new Error("HTTP 502"))
+        : Promise.resolve(`${draft}\n`);
+    }
     if (
       args[0] === "api" && args.some((a) => a.includes(`repos/${REPO}/pulls`))
     ) {
       return Promise.resolve(`${PR_URL}\n`);
+    }
+    if (latched && args[0] !== "api") {
+      return Promise.reject(new Error(LATCH_SKIP));
     }
     if (args[0] === "pr" && args[1] === "view") {
       return Promise.resolve(
@@ -668,9 +693,52 @@ async function runRestFallback(readyFails: boolean) {
 }
 
 Deno.test(
-  "Issue #4952 - the REST fallback's draft continuation is marked ready and armed",
+  "Issue #4952 - latched quota + REST-confirmed draft: the run fails interrupted, is not released as raised, and is not armed",
   async () => {
-    const run = await runRestFallback(false);
+    const run = await runRestFallback({ draft: true, latched: true });
+
+    assert(run.result.status === "failure", "the run fails, not continues");
+    assertEquals(run.result.category, "interrupted");
+    assertStringIncludes(run.result.reason, `PR #${PR}`);
+    // Positive control: the draft flag was read over REST, and the ready
+    // step ran (the latch skipped it), so the failure is the ready step's.
+    assert(
+      run.calls.some((c) =>
+        c[0] === "api" && c.includes(`repos/${REPO}/pulls/${PR}`) &&
+        c.includes(".draft")
+      ),
+      "the draft flag is read over the REST pulls endpoint",
+    );
+    assert(readyCalls(run.calls).length >= 1, "ready was attempted");
+    assertEquals(run.armed, [], "auto-merge is not armed on a draft");
+  },
+);
+
+Deno.test(
+  "Issue #4952 - latched quota + REST-confirmed ready PR: left alone and armed",
+  async () => {
+    const run = await runRestFallback({ draft: false, latched: true });
+
+    assertEquals(run.result, { status: "continue" });
+    assertEquals(readyCalls(run.calls).length, 0, "gh pr ready is not called");
+    assertEquals(run.armed, [PR]);
+  },
+);
+
+Deno.test(
+  "Issue #4952 - latched quota + unreadable draft flag: fail-open, armed as before",
+  async () => {
+    const run = await runRestFallback({ draft: "unreadable", latched: true });
+
+    assertEquals(run.result, { status: "continue" });
+    assertEquals(run.armed, [PR]);
+  },
+);
+
+Deno.test(
+  "Issue #4952 - recovered quota + REST-confirmed draft: marked ready and armed",
+  async () => {
+    const run = await runRestFallback({ draft: true, latched: false });
 
     assertEquals(run.result, { status: "continue" });
     assertEquals(readyCalls(run.calls).length, 1, "gh pr ready is called once");
@@ -680,9 +748,13 @@ Deno.test(
 );
 
 Deno.test(
-  "Issue #4952 - the REST fallback's draft that cannot be marked ready fails the run and is not armed",
+  "Issue #4952 - recovered quota + REST-confirmed draft that cannot be marked ready fails the run and is not armed",
   async () => {
-    const run = await runRestFallback(true);
+    const run = await runRestFallback({
+      draft: true,
+      latched: false,
+      readyFails: true,
+    });
 
     assert(run.result.status === "failure", "the run fails, not continues");
     assertEquals(run.result.category, "interrupted");

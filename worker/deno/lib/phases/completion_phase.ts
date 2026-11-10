@@ -109,7 +109,10 @@ import {
   unassignAfterPrCreated,
 } from "../issue_lifecycle.ts";
 import { shouldRetryInfrastructureFailure } from "../infra_retry.ts";
-import { createPullRequestViaRest } from "../pr_create_rest.ts";
+import {
+  createPullRequestViaRest,
+  readPrDraftViaRest,
+} from "../pr_create_rest.ts";
 import {
   buildRebasePassPrompt,
   postBranchConflictComment,
@@ -4029,13 +4032,30 @@ async function completionBody(
       });
     }
     // Issue #4952: the REST fallback can return a PR already open on this
-    // branch, which may be a draft continuation (lib/pr_create_rest.ts). It is
-    // readied under the same rules as the recovery path. A PR that
-    // `gh pr create` opened is not a draft, so it is not checked.
+    // branch, which may be a draft continuation (lib/pr_create_rest.ts). The
+    // fallback runs only once the GraphQL quota is latched, so `gh pr view`
+    // and `gh pr ready` are skipped there: the draft flag is read over the
+    // quota-exempt REST endpoint. A REST-confirmed draft is a known draft, so
+    // a ready that cannot run fails the run (the next run retries it) rather
+    // than releasing the claim as raised. A REST-confirmed ready PR is left
+    // alone; a flag that cannot be read keeps the fail-open unknown-state rule.
+    // A PR that `gh pr create` opened is not a draft, so it is not checked.
     if (prNumber > 0 && clearedDuringCreate && !state.mutationHold) {
-      const ready = await readyDraftBeforeArming(repo, prNumber, true, deps);
-      ciStarted = ready.ciStarted;
-      readyFailure = ready.readyFailure;
+      const draft = await readPrDraftViaRest(
+        repo,
+        prNumber,
+        deps.github.runGhCommand,
+      );
+      if (draft !== false) {
+        const ready = await readyDraftBeforeArming(
+          repo,
+          prNumber,
+          draft === null,
+          deps,
+        );
+        ciStarted = ready.ciStarted;
+        readyFailure = ready.readyFailure;
+      }
     }
     // Issue #4617: a held pull request is a draft and is not armed.
     if (prNumber > 0 && state.mutationHold) {

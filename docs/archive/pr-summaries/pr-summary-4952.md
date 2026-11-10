@@ -5,10 +5,13 @@ reached was still a draft and unarmed (PR #4896 sat so for about 28 hours).
 Completion now retries an unreadable draft state once, marks a draft ready, and
 fails the run (`interrupted`, retried, never filed) when `gh pr ready` fails on
 a known draft instead of continuing. The REST-fallback creation path, which can
-return an already-open draft, runs the same ready step. The auto-merge sweep
+return an already-open draft, runs the same ready step; the fallback runs only
+while the GraphQL quota is latched (`gh pr view` and `gh pr ready` are skipped),
+so it reads the draft flag over REST and treats a REST-confirmed draft as known. The auto-merge sweep
 also readies an orphaned fleet draft (no continuation or mutation-hold marker,
-open issue with no fleet assignee) and arms it in the same pass. One criterion
-is `partial` (every `gh` read unreadable), so this is `Part of #4952`.
+open issue with no fleet assignee) and arms it in the same pass. Two criteria
+are `partial` (the documented fail-open paths where the draft state cannot be
+read), so this is `Part of #4952`.
 
 ## Spec
 
@@ -46,6 +49,14 @@ is `partial` (every `gh` read unreadable), so this is `Part of #4952`.
   (`draft_continuation_pr.ts`) so they cannot disagree on what a hold is. Both
   rewrite paths use that builder: the merge-conflict repair sync and the
   completion-exit `adoptAgentRaisedPrBody`.
+- The REST-fallback path reads `GET repos/<repo>/pulls/<n>` `.draft`
+  (`readPrDraftViaRest`, `pr_create_rest.ts`; PR #5033 review) because that path
+  runs only once the quota is latched, and `spawnGh` (`gh_spawn.ts`) skips every
+  non-`gh api` call then. `true` → `readyDraftBeforeArming` with a known draft,
+  so a ready the latch skips fails the run `interrupted` instead of releasing
+  the claim as raised; `false` → left alone and armed; unreadable → the
+  unknown-state fail-open rule. GitHub has no REST ready-for-review endpoint, so
+  a latched draft is retried by the next run, not readied here.
 - `markDraftReadyAndAwaitCi` replaces the boolean `markReadyAndAwaitCi`
   (removed; its only remaining caller was a test) and returns
   `{ready, ciStarted, draft}`.
@@ -91,14 +102,17 @@ flowchart TD
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — A test drives completion with an existing draft PR on every path
+- **partial** — A test drives completion with an existing draft PR on every path
   that ends with the claim released ("raised #N"), and asserts `gh pr ready` and
   the auto-merge arming — evidence:
   `worker/deno/tests/completion_draft_ready_4952_test.ts` (recover path,
-  creation-error path, REST fallback via `workOnIssueCompletion`) — reviewer:
-  partial — reason: the reviewer saw the first diff, where REST fallback was
-  unfixed and the tests called `recoverAndFinaliseExistingPr` directly; both
-  were fixed in this diff
+  creation-error path, REST fallback via `workOnIssueCompletion` with the
+  latch's skip behaviour modelled) — reviewer: partial — reason: two paths still
+  release the claim as raised with the draft neither readied nor armed, both the
+  documented fail-open: the unknown-state path (lookup, head read and
+  `gh pr ready` all fail), and the REST-fallback path when its REST draft-flag
+  read also fails; a REST-confirmed draft on the fallback path now fails the run
+  `interrupted` instead
 - **met** — A self-healing pass marks ready (and arms) an open fleet draft PR
   that has no draft-continuation or mutation-hold marker in its body and whose
   issue is unclaimed. Covered by a test. — evidence:
@@ -167,8 +181,10 @@ flowchart TD
 - Red-checks (one break each, restored byte-for-byte): null-lookup branch
   disabled → unknown-state tests red; no retry → retry test red; failed ready
   still continues → failed-ready test red; unknown-state failure rule and
-  `ciStarted` overwrite → three tests red; REST ready step removed → both REST
-  tests red; whole ready branch disabled → the three `workOnIssueCompletion`
+  `ciStarted` overwrite → three tests red; REST draft read removed
+  (the old `readyDraftBeforeArming(..., true, ...)` call) → the latched
+  REST-draft and REST-ready tests red; the `draft === null` operand forced to
+  `false` → the unreadable-flag test red; whole ready branch disabled → the three `workOnIssueCompletion`
   path tests red; self-heal: marker check dropped → red, fleet-assignee check
   dropped → red, OPEN check dropped → red, branch guard dropped → red, omitted
   `assignees` treated as `[]` → red, unanchored `includes` → look-alike tests
@@ -177,11 +193,19 @@ flowchart TD
   `run_core_production_deps.ts` → wiring test red.
 - Callers checked for the changed `markDraftReadyAndAwaitCi`: completion
   recovery and creation paths, the sweep self-heal;
-  `worker/deno/tests/completion_draft_ready_4952_test.ts` (18 tests at head) and
+  `worker/deno/tests/completion_draft_ready_4952_test.ts` (21 tests at head) and
   `worker/deno/tests/draft_ready_ci_4160_test.ts` (5 tests at head) exercise the
-  unknown-state default.
-- Ran on the final head: `./quality.sh < /dev/null` PASSED (with skipped
-  checks).
+  unknown-state default. Also for the REST draft read:
+  `worker/deno/tests/pr_create_rest_test.ts` (22 tests at head; two new ones pin
+  `readPrDraftViaRest`) and five REST-fallback tests in the completion file
+  (latched + REST draft, latched + REST ready, latched + unreadable flag,
+  recovered quota + draft, recovered quota + draft + failed ready); the latched
+  fakes reject every non-`gh api` call with the latch's skip message.
+- On the final head: `deno task test:unit` over the completion and
+  `pr_create_rest` test files, 43 passed, 0 failed; formatter and linter run on
+  the changed files. Against the earlier head's production code, the latched
+  REST-draft and REST-ready tests fail ("the run fails, not continues", "gh pr
+  ready is not called").
 
 ## Not done
 
