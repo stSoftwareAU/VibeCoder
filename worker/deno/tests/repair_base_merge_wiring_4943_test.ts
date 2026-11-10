@@ -7,7 +7,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertMatch } from "@std/assert";
+import { readBranchRefreshRefusals } from "../lib/branch_refresh_refusal_streak.ts";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { prSpellingProcessorCommand } from "../commands/pr_spelling_processor.ts";
@@ -43,12 +44,18 @@ function mergeableOnlyGh(
 async function runWith(
   processor: "ci" | "feedback" | "spelling",
   read: () => Promise<string>,
-): Promise<{ syncCalls: string[][]; mergeableReads: string[][] }> {
+  sharedWorkDir?: string,
+): Promise<
+  { syncCalls: string[][]; mergeableReads: string[][]; lines: string[] }
+> {
   const syncCalls: string[][] = [];
   const mergeableReads: string[][] = [];
-  const workDir = await Deno.makeTempDir();
+  const lines: string[] = [];
+  const workDir = sharedWorkDir ?? await Deno.makeTempDir();
   const originalWarn = console.warn;
-  console.warn = () => {};
+  console.warn = (...parts: unknown[]) => {
+    lines.push(parts.map(String).join(" "));
+  };
   try {
     const deps = createMockDeps({
       github: { runGhCommand: mergeableOnlyGh(read, mergeableReads) },
@@ -121,9 +128,22 @@ async function runWith(
     }
   } finally {
     console.warn = originalWarn;
-    await Deno.remove(workDir, { recursive: true });
+    if (sharedWorkDir === undefined) {
+      await Deno.remove(workDir, { recursive: true });
+    }
   }
-  return { syncCalls, mergeableReads };
+  return { syncCalls, mergeableReads, lines };
+}
+
+/** The one decision line a processor logs, with every field named. */
+function decisionLine(
+  source: string,
+  outcome: string,
+  reason: RegExp,
+): RegExp {
+  return new RegExp(
+    `^\\[base-refresh\\] source=${source} outcome=${outcome} repo=owner/repo pr=#${PR_NUMBER} base=${DEFAULT_BRANCH} owner=none reason="${reason.source}`,
+  );
 }
 
 const mergeableJson = (mergeable: string) => () =>
@@ -135,11 +155,19 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     : processor === "feedback"
     ? "pr-feedback-processor"
     : "pr-spelling-processor";
+  const baseRefreshLines = (lines: string[]) =>
+    lines.filter((line) => line.startsWith("[base-refresh]"));
 
   Deno.test(`${label} does not sync the base for a behind-only (MERGEABLE) PR (Issue #4943)`, async () => {
-    const { syncCalls, mergeableReads } = await runWith(
+    const { syncCalls, mergeableReads, lines } = await runWith(
       processor,
       mergeableJson("MERGEABLE"),
+    );
+    const decisions = baseRefreshLines(lines);
+    assertEquals(decisions.length, 1, lines.join("\n"));
+    assertMatch(
+      decisions[0]!,
+      decisionLine(label, "base-merge-skipped", /GitHub reports mergeable/),
     );
     // Positive control: the gate was reached, so the absent sync is the gate.
     assertEquals(mergeableReads.length, 1, "mergeable read reached the gate");
@@ -147,20 +175,62 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
   });
 
   Deno.test(`${label} syncs the base once for a CONFLICTING PR (Issue #4943)`, async () => {
-    const { syncCalls, mergeableReads } = await runWith(
+    const { syncCalls, mergeableReads, lines } = await runWith(
       processor,
       mergeableJson("CONFLICTING"),
+    );
+    const decisions = baseRefreshLines(lines);
+    assertEquals(decisions.length, 1, lines.join("\n"));
+    assertMatch(
+      decisions[0]!,
+      decisionLine(label, "base-merge-allowed", /genuine conflict/),
     );
     assertEquals(mergeableReads.length, 1, "mergeable read reached the gate");
     assertEquals(syncCalls, [[BRANCH, DEFAULT_BRANCH]]);
   });
 
   Deno.test(`${label} does not sync the base when the mergeable read throws (Issue #4943)`, async () => {
-    const { syncCalls, mergeableReads } = await runWith(
+    const { syncCalls, mergeableReads, lines } = await runWith(
       processor,
       () => Promise.reject(new Error("gh pr view: HTTP 503")),
     );
     assertEquals(mergeableReads.length, 1, "mergeable read reached the gate");
     assertEquals(syncCalls, []);
+    const decisions = baseRefreshLines(lines);
+    assertEquals(decisions.length, 1, lines.join("\n"));
+    assertMatch(
+      decisions[0]!,
+      decisionLine(
+        label,
+        "base-merge-skipped",
+        /mergeability unreadable: gh pr view: HTTP 503/,
+      ),
+    );
+  });
+
+  Deno.test(`${label} counts consecutive UNKNOWN reads in the #4831 refusal state and clears them on a known read (Issue #4943)`, async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      for (const expected of [1, 2]) {
+        const { syncCalls } = await runWith(
+          processor,
+          mergeableJson("UNKNOWN"),
+          workDir,
+        );
+        assertEquals(syncCalls, [], "an UNKNOWN read never merges the base");
+        const state = await readBranchRefreshRefusals(workDir);
+        assertEquals(
+          state.get(`${REPO}#${PR_NUMBER}`)?.streak,
+          expected,
+        );
+      }
+      await runWith(processor, mergeableJson("MERGEABLE"), workDir);
+      assertEquals(
+        (await readBranchRefreshRefusals(workDir)).has(`${REPO}#${PR_NUMBER}`),
+        false,
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
   });
 }

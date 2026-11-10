@@ -15,8 +15,22 @@ attribution for every base-refresh decision. Part of #4943.
   (new `worker/deno/lib/repair_base_merge_4943.ts`). Each updater lane passes a
   `source`; the line carries the worker build stamp so a stale deployed worker
   is visible (no lines at all from a worker older than this change).
-- `docs/MERGE.md` documents the guard, the trade-off and which update classes
-  are prevented or remain.
+- A repair's `UNKNOWN` mergeability read follows the existing #4831 recovery
+  (`branch_refresh_refusal_streak.ts`): the base merge is skipped, the read is
+  counted in the persisted refusal state, one trusted PR comment is posted at
+  the second consecutive `UNKNOWN`, and a known read clears the streak and
+  updates the comment. No polling loop is added.
+- Each decision increments a named counter `baseRefresh.<outcome>.<source>`
+  (plus `baseRefresh.repeatedMergeabilityUnknown`). The existing per-cycle
+  `fault_tolerance_summary.json` carries them for the lanes inside the worker
+  process; the standalone CI, feedback, spelling and babysitter commands do not
+  write that summary, so their signal is the log lines and the #4831 refusal
+  state and comment.
+- The startup banner is extended with
+  `[base-refresh] startup repair-base-merge=conflicting-only … version=… commit=…`
+  beside `[worker-build]`.
+- `docs/MERGE.md` documents the guard, the trade-off, the recovery, the counters
+  and which update classes are prevented or remain.
 
 Version bump: `VERSION` is not changed by this PR.
 
@@ -36,7 +50,12 @@ Version bump: `VERSION` is not changed by this PR.
 
 - Unreadable or `UNKNOWN` mergeability skips the base merge (fail closed against
   churn); a genuine conflict is picked up on a later cycle once GitHub reports
-  it. The existing #4831 refusal-streak recovery is not wired into this read.
+  it. A repeated `UNKNOWN` is counted by the #4831 refusal streak; an unreadable
+  or garbled read is inconclusive and leaves the streak as it was.
+- The streak state file `.branch_refresh_refusals_v1` is shared with the
+  auto-merge sweep, which loads and saves the whole file per pass; a concurrent
+  sweep save can drop a repair-lane increment, which only delays the one comment
+  by a read.
 - Trade-off accepted: a CI failure that appears only against the newer base is
   not reproduced inside the repair; it surfaces once the PR is refreshed as the
   owner.
@@ -81,25 +100,50 @@ Related existing behaviour checked:
 
 ## Acceptance Criteria
 
-- **missing** — "Handle transient GitHub test-merge/mergeability reads using the
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — "Handle transient GitHub test-merge/mergeability reads using the
   existing #4831 recovery rather than indefinite polling." for the new
-  repair-lane mergeability read — reason: the read is a single `gh pr view`; an
-  `UNKNOWN` or failed read skips the base merge for that cycle and is retried
-  next cycle, but is not routed through `branch_refresh_refusal_streak.ts`.
-  #4613's own refresh path is unchanged.
-- **missing** — "runtime counters permit automatic follow-up" — reason: only
-  grep-able `[base-refresh]` log lines are emitted; no in-process counter or
-  follow-up automation.
-- **missing** — "Use current code and available redacted runtime evidence ...
-  Extend existing startup/version diagnostics" — reason: no runtime evidence was
-  available; the build stamp is added to each decision line instead of a startup
-  change.
+  repair-lane mergeability read — evidence:
+  `worker/deno/tests/repair_base_merge_4943_test.ts::trackRepairMergeability posts one waiting notice at the second consecutive UNKNOWN read and one recovered notice after (Issue #4831)`,
+  `worker/deno/tests/repair_base_merge_wiring_4943_test.ts::counts consecutive UNKNOWN reads in the #4831 refusal state and clears them on a known read`
+  — reviewer: met
+- **partial** — "runtime counters permit automatic follow-up" — evidence:
+  `worker/deno/tests/repair_base_merge_4943_test.ts::logBaseRefreshDecision counts each decision by outcome and source`
+  — reviewer: partial — reason: the named counters reach
+  `fault_tolerance_summary.json` only for lanes inside the worker process; the
+  standalone CI, feedback, spelling and babysitter commands do not write that
+  summary, so those lanes rely on log lines and the #4831 refusal state.
+- **partial** — "Use current code and available redacted runtime evidence ...
+  Extend existing startup/version diagnostics" — evidence:
+  `worker/deno/tests/repair_base_merge_4943_test.ts::formatBaseRefreshStartup states the policy and the build stamp`
+  — reviewer: partial — reason: the startup banner is extended and every
+  decision line carries the build stamp, but redacted runtime evidence for the
+  inspected repositories was not available to this run, so the cause is
+  established from code paths; the startup line's call in `commands/run_core.ts`
+  is not unit-tested (it starts the whole worker).
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — dummy test asserting only a local gh fake — evidence:
+  `worker/deno/tests/repair_base_merge_4943_test.ts` — reason: fixed in this
+  diff (test deleted; the public-entry-point tests already cover the outcome)
+- **clean** — new code reads like its surroundings, Australian English, tests
+  drive the production entry points and assert outcomes
 
 ## Test Plan
 
 - `worker/deno/tests/repair_base_merge_4943_test.ts` — decision, formatting
   (bounded, redacted), owner parsing, gh read failure and garbled JSON name
   their cause.
+- Mutation survivors closed: the wiring tests now capture the logged
+  `[base-refresh]` line for all three processors and match `source`, `outcome`,
+  `repo`, `pr=#N` and `base`; the babysitter test matches the full allowed and
+  skipped lines (`repo`, `pr`, `base`, outcome). New tests cover the tracker
+  (threshold, one notice, recovery, inconclusive reads, failing tracker),
+  counters and the startup line.
 - `worker/deno/tests/repair_base_merge_wiring_4943_test.ts` — real
   `prCiProcessorCommand`, `prFeedbackProcessorCommand` and spelling processor:
   MERGEABLE and read-failure → no sync; CONFLICTING → sync.
@@ -121,8 +165,7 @@ Related existing behaviour checked:
 - Red checks run: unconditional babysitter `mergeBase` → failed-CI and review
   tests red; unconditional CI/spelling sync → MERGEABLE and read-failure tests
   red; owner guard disabled → two-owner and crash-owner churn tests red;
-  dropping the cause from the unreadable reason → two reason tests red. The
-  feedback processor wiring tests were not separately red-checked.
+  dropping the cause from the unreadable reason → two reason tests red.
 - Standards reviewer findings left standing: wiring and babysitter tests assert
   the stubbed git/merge call counts because the processors expose no
   state-recording git port; `source` on `requestReadyBranchUpdate` is optional.

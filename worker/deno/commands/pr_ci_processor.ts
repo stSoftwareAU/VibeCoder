@@ -43,7 +43,10 @@ import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
 import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
-import { readRepairBaseMergeDecision } from "../lib/repair_base_merge_4943.ts";
+import {
+  createRepairMergeabilityTracker,
+  readRepairBaseMergeDecision,
+} from "../lib/repair_base_merge_4943.ts";
 
 // Re-export library functions for external use
 export { formatCiAnnotations };
@@ -152,6 +155,14 @@ export const prCiProcessorCommand = {
           gh: deps.github.runGhCommand,
           source: "pr-ci-processor",
           base: defaultBranch,
+          tracker: createRepairMergeabilityTracker({
+            workDir: config.workDir,
+            gh: deps.github.runGhCommand,
+            fleetAuthors: resolveFleetMaintenanceAuthorSet({
+              githubUser: resolveActingGithubUser(args),
+              fleetPrAuthors: config.fleetPrAuthors ?? [],
+            }),
+          }),
         });
         if (baseMerge.merge) {
           await deps.git.syncFeatureBranchWithDefault(

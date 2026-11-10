@@ -11,7 +11,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertMatch,
+  assertStringIncludes,
+} from "@std/assert";
 import { basePr, harness } from "./support/babysitter_harness.ts";
 /**
  * Silence the babysitter's console output, and hand back every stderr line
@@ -41,6 +46,12 @@ async function withConsole<T>(
   }
 }
 
+/** The exact decision line: source, outcome, repo, PR and base all named. */
+const SKIPPED_LINE =
+  /^\[base-refresh\] source=babysitter-repair outcome=base-merge-skipped repo=owner\/repo pr=#1 base=main owner=none reason="GitHub reports mergeable MERGEABLE, not CONFLICTING/;
+const ALLOWED_LINE =
+  /^\[base-refresh\] source=babysitter-repair outcome=base-merge-allowed repo=owner\/repo pr=#1 base=main owner=none reason="genuine conflict: GitHub reports CONFLICTING"/;
+
 const baseRefreshLines = (lines: string[]) =>
   lines.filter((line) => line.includes("[base-refresh]"));
 
@@ -58,10 +69,10 @@ Deno.test("a failed-CI repair on a behind-only (MERGEABLE) PR does not merge the
       "the prompt must not claim a merged base",
     );
     const skipped = baseRefreshLines(lines).filter((line) =>
-      line.includes("source=babysitter-repair") &&
-      line.includes("outcome=base-merge-skipped")
+      line.includes("source=babysitter-repair")
     );
     assertEquals(skipped.length, 1, lines.join("\n"));
+    assertMatch(skipped[0]!, SKIPPED_LINE);
   });
 });
 
@@ -104,9 +115,9 @@ Deno.test("a conflicting PR merges the base once, and a conflicted merge still r
       "has already merged the latest main",
     );
     const allowed = baseRefreshLines(lines).filter((line) =>
-      line.includes("source=babysitter-repair") &&
-      line.includes("outcome=base-merge-allowed")
+      line.includes("source=babysitter-repair")
     );
     assertEquals(allowed.length, 1, lines.join("\n"));
+    assertMatch(allowed[0]!, ALLOWED_LINE);
   });
 });

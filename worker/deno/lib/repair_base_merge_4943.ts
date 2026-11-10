@@ -12,7 +12,23 @@
  * operator can see which lane asked for a refresh, which was skipped, and why.
  */
 import { redactSecrets } from "./secret_redaction.ts";
-import { formatBuildStamp, workerBuildInfoOnce } from "./worker_build_info.ts";
+import {
+  formatBuildStamp,
+  type WorkerBuildInfo,
+  workerBuildInfoOnce,
+} from "./worker_build_info.ts";
+import { incrementCounter } from "./fault_tolerance_counters.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
+import {
+  BRANCH_REFRESH_REFUSAL_THRESHOLD,
+  type BranchRefreshRefusalEntry,
+  type BranchRefreshRefusalState,
+  clearBranchRefreshRefusal,
+  notifyBranchRefreshRefusal,
+  readBranchRefreshRefusals,
+  recordBranchRefreshRefusal,
+  writeBranchRefreshRefusals,
+} from "./branch_refresh_refusal_streak.ts";
 
 export type BaseRefreshOutcome =
   | "refresh-requested"
@@ -133,10 +149,27 @@ export function logBaseRefreshDecision(
   stamp?: string,
 ): void {
   try {
+    // The named counters land in the per-cycle fault-tolerance summary, so an
+    // automatic follow-up can read `baseRefresh.<outcome>.<source>` totals
+    // without parsing logs.
+    incrementCounter(
+      `baseRefresh.${facts.outcome}.${cleanField(facts.source, FIELD_CAP)}`,
+    );
     log(formatBaseRefreshDecision(facts, stamp ?? defaultStamp()));
   } catch {
     // Diagnostics are best effort; swallow so the caller's result stands.
   }
+}
+
+/**
+ * The startup line that states the base-refresh policy this worker applies,
+ * beside the `[worker-build]` banner. A worker that predates Issue #4943 does
+ * not print it, so a stale deployed worker is visible from the log alone.
+ */
+export function formatBaseRefreshStartup(info: WorkerBuildInfo): string {
+  return `[base-refresh] startup repair-base-merge=conflicting-only refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> ${
+    formatBuildStamp(info)
+  }`;
 }
 
 const OWNER_MESSAGE =
@@ -157,6 +190,122 @@ export function parseRefreshOwner(
   return { ownerPr, ownerWorker: match[2]! };
 }
 
+/** Durable streak and one-comment escalation, as the sweep wires them (#4831). */
+export interface RepairMergeabilityTracker {
+  load: () => Promise<BranchRefreshRefusalState>;
+  save: (state: BranchRefreshRefusalState) => Promise<void>;
+  notify: (event: {
+    repo: string;
+    prNumber: number;
+    entry: BranchRefreshRefusalEntry;
+    active: boolean;
+  }) => Promise<void>;
+}
+
+/**
+ * The production tracker: the persisted #4831 refusal state under `workDir`
+ * and its single trusted diagnostic PR comment. Undefined without a work
+ * directory, so nothing is persisted blind.
+ */
+export function createRepairMergeabilityTracker(input: {
+  workDir: string | undefined;
+  gh: (args: string[]) => Promise<string>;
+  fleetAuthors: string[];
+}): RepairMergeabilityTracker | undefined {
+  const { workDir, gh, fleetAuthors } = input;
+  if (!workDir) return undefined;
+  return {
+    load: () => readBranchRefreshRefusals(workDir),
+    save: (state) => writeBranchRefreshRefusals(workDir, state),
+    notify: ({ repo, prNumber, entry, active }) =>
+      notifyBranchRefreshRefusal(
+        { repo, prNumber, entry, active },
+        gh,
+        (login) => isFleetAuthor(login, fleetAuthors),
+      ),
+  };
+}
+
+/**
+ * Apply the existing #4831 transient-refusal recovery to a repair's
+ * mergeability read, instead of polling for GitHub to finish calculating.
+ * An `UNKNOWN` read counts a consecutive refusal; at the threshold one trusted
+ * comment says the refresh is waiting. A `MERGEABLE` or `CONFLICTING` read
+ * clears the streak and, if the comment was posted, updates it to recovered.
+ * Any other value is an inconclusive read and leaves the streak alone. Never
+ * throws: tracking must not change the repair's outcome.
+ */
+export async function trackRepairMergeability(
+  tracker: RepairMergeabilityTracker | undefined,
+  repo: string,
+  prNumber: number,
+  mergeable: unknown,
+  log: (line: string) => void = console.warn,
+): Promise<void> {
+  if (!tracker) return;
+  try {
+    if (mergeable === "UNKNOWN") {
+      const state = await tracker.load();
+      const entry = recordBranchRefreshRefusal(
+        state,
+        repo,
+        prNumber,
+        "mergeability-unknown",
+      );
+      if (
+        entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD && !entry.notified
+      ) {
+        try {
+          await tracker.notify({ repo, prNumber, entry, active: true });
+          entry.notified = true;
+        } catch (error) {
+          log(
+            `[base-refresh] could not post the refresh-waiting comment on ${repo}#${prNumber}: ${
+              redactSecrets(
+                error instanceof Error ? error.message : String(error),
+              )
+            }`,
+          );
+        }
+        incrementCounter("baseRefresh.repeatedMergeabilityUnknown");
+        log(
+          `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
+        );
+      }
+      await tracker.save(state);
+    } else if (mergeable === "MERGEABLE" || mergeable === "CONFLICTING") {
+      const state = await tracker.load();
+      const previous = clearBranchRefreshRefusal(state, repo, prNumber);
+      if (!previous) return;
+      if (previous.notified) {
+        try {
+          await tracker.notify({
+            repo,
+            prNumber,
+            entry: previous,
+            active: false,
+          });
+        } catch (error) {
+          log(
+            `[base-refresh] could not update the refresh-waiting comment on ${repo}#${prNumber}: ${
+              redactSecrets(
+                error instanceof Error ? error.message : String(error),
+              )
+            }`,
+          );
+        }
+      }
+      await tracker.save(state);
+    }
+  } catch (error) {
+    log(
+      `[base-refresh] could not track mergeability of ${repo}#${prNumber}: ${
+        redactSecrets(error instanceof Error ? error.message : String(error))
+      }`,
+    );
+  }
+}
+
 /**
  * Read the PR's mergeability through gh, decide whether a repair may merge
  * the base, and log the decision. Never throws: an unreadable or garbled read
@@ -169,6 +318,8 @@ export async function readRepairBaseMergeDecision(input: {
   source: string;
   base?: string;
   log?: (line: string) => void;
+  /** Applies the #4831 transient-refusal recovery to an `UNKNOWN` read. */
+  tracker?: RepairMergeabilityTracker;
 }): Promise<RepairBaseMergeDecision> {
   let decision: RepairBaseMergeDecision;
   try {
@@ -187,8 +338,14 @@ export async function readRepairBaseMergeDecision(input: {
     ) {
       throw new Error("gh pr view returned no JSON object");
     }
-    decision = decideRepairBaseMerge(
-      (parsed as Record<string, unknown>).mergeable,
+    const mergeable = (parsed as Record<string, unknown>).mergeable;
+    decision = decideRepairBaseMerge(mergeable);
+    await trackRepairMergeability(
+      input.tracker,
+      input.repo,
+      input.prNumber,
+      mergeable,
+      input.log,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

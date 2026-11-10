@@ -9,8 +9,10 @@ import {
 } from "../lib/babysitter_base_failure.ts";
 import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
 import {
+  createRepairMergeabilityTracker,
   decideRepairBaseMerge,
   logBaseRefreshDecision,
+  trackRepairMergeability,
 } from "../lib/repair_base_merge_4943.ts";
 import { fileURLToPath } from "node:url";
 /** A small fleet PR babysitter with bounded parallel repairs. */
@@ -3092,7 +3094,18 @@ export async function fix(
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
       return;
     }
-    // Issue #4943: a repair merges the base only for a genuine conflict.
+    // Issue #4943: a repair merges the base only for a genuine conflict. A
+    // repeated UNKNOWN read follows the #4831 transient-refusal recovery.
+    await trackRepairMergeability(
+      createRepairMergeabilityTracker({
+        workDir: stateDir,
+        gh,
+        fleetAuthors: authors,
+      }),
+      repo,
+      pr.number,
+      pr.mergeable,
+    );
     const baseMerge = decideRepairBaseMerge(pr.mergeable);
     logBaseRefreshDecision({
       source: "babysitter-repair",

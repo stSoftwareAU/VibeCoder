@@ -5,14 +5,22 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertMatch, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertMatch } from "@std/assert";
 import {
   decideRepairBaseMerge,
   formatBaseRefreshDecision,
+  formatBaseRefreshStartup,
   logBaseRefreshDecision,
   parseRefreshOwner,
   readRepairBaseMergeDecision,
+  type RepairMergeabilityTracker,
+  trackRepairMergeability,
 } from "../lib/repair_base_merge_4943.ts";
+import {
+  type BranchRefreshRefusalEntry,
+  type BranchRefreshRefusalState,
+} from "../lib/branch_refresh_refusal_streak.ts";
+import { getCounters, resetCounters } from "../lib/fault_tolerance_counters.ts";
 
 const FAKE_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 
@@ -241,19 +249,6 @@ Deno.test("readRepairBaseMergeDecision refuses when gh throws, naming the cause"
   assertMatch(lines[0]!, /outcome=base-merge-skipped /);
 });
 
-Deno.test("the mergeable fake answers only a mergeable request, with an error otherwise", async () => {
-  const gh = mergeableGh('{"mergeable":"MERGEABLE"}', []);
-  assertEquals(
-    await gh(["pr", "view", "12", "--json", "mergeable"]),
-    '{"mergeable":"MERGEABLE"}',
-  );
-  await assertRejects(
-    () => gh(["pr", "view", "12", "--json", "title"]),
-    Error,
-    "unexpected gh call",
-  );
-});
-
 Deno.test("readRepairBaseMergeDecision refuses garbled JSON and names the parse cause", async () => {
   const lines: string[] = [];
   const decision = await readRepairBaseMergeDecision({
@@ -295,4 +290,178 @@ Deno.test("logBaseRefreshDecision never throws, even when the sink throws", () =
   assertEquals(lines, [
     '[base-refresh] source=pr-ci-processor outcome=base-merge-skipped repo=owner/repo pr=#1 base=none owner=none reason="x" build=abc123',
   ]);
+});
+
+/** An in-memory tracker recording every comment notification it is asked for. */
+function memoryTracker(): {
+  tracker: RepairMergeabilityTracker;
+  state: BranchRefreshRefusalState;
+  notices: Array<{ active: boolean; entry: BranchRefreshRefusalEntry }>;
+  saves: () => number;
+} {
+  const state: BranchRefreshRefusalState = new Map();
+  const notices: Array<
+    { active: boolean; entry: BranchRefreshRefusalEntry }
+  > = [];
+  let saves = 0;
+  return {
+    state,
+    notices,
+    saves: () => saves,
+    tracker: {
+      load: () => Promise.resolve(state),
+      save: () => {
+        saves++;
+        return Promise.resolve();
+      },
+      notify: ({ active, entry }) => {
+        notices.push({ active, entry: { ...entry } });
+        return Promise.resolve();
+      },
+    },
+  };
+}
+
+Deno.test("trackRepairMergeability posts one waiting notice at the second consecutive UNKNOWN read and one recovered notice after (Issue #4831)", async () => {
+  const { tracker, state, notices } = memoryTracker();
+  const lines: string[] = [];
+  const log = (line: string) => lines.push(line);
+  resetCounters();
+
+  await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN", log);
+  assertEquals(state.get("owner/repo#12")?.streak, 1);
+  assertEquals(notices, [], "no notice below the threshold");
+
+  await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN", log);
+  assertEquals(notices.length, 1);
+  assertEquals(notices[0]!.active, true);
+  assertEquals(notices[0]!.entry.streak, 2);
+  assertEquals(notices[0]!.entry.reason, "mergeability-unknown");
+  assertEquals(state.get("owner/repo#12")?.notified, true);
+  assertEquals(lines.length, 1);
+  assertMatch(
+    lines[0]!,
+    /^\[base-refresh\] fleet health: repair mergeability of owner\/repo#12 still UNKNOWN after 2 consecutive reads$/,
+  );
+  assertEquals(getCounters()["baseRefresh.repeatedMergeabilityUnknown"], 1);
+
+  await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN", log);
+  assertEquals(notices.length, 1, "the waiting notice is posted once");
+  assertEquals(state.get("owner/repo#12")?.streak, 3);
+
+  await trackRepairMergeability(tracker, "owner/repo", 12, "MERGEABLE", log);
+  assertEquals(state.has("owner/repo#12"), false, "a known read clears it");
+  assertEquals(notices.length, 2);
+  assertEquals(notices[1]!.active, false);
+});
+
+Deno.test("trackRepairMergeability clears a streak silently when no notice was posted, and leaves it for an inconclusive read", async () => {
+  const { tracker, state, notices, saves } = memoryTracker();
+  await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN");
+  assertEquals(saves(), 1);
+
+  await trackRepairMergeability(tracker, "owner/repo", 12, null);
+  await trackRepairMergeability(tracker, "owner/repo", 12, undefined);
+  assertEquals(state.get("owner/repo#12")?.streak, 1, "inconclusive: kept");
+  assertEquals(saves(), 1, "inconclusive: nothing persisted");
+
+  await trackRepairMergeability(tracker, "owner/repo", 12, "CONFLICTING");
+  assertEquals(state.has("owner/repo#12"), false);
+  assertEquals(notices, [], "nothing to recover from");
+  assertEquals(saves(), 2);
+
+  await trackRepairMergeability(tracker, "owner/repo", 12, "MERGEABLE");
+  assertEquals(saves(), 2, "no streak, nothing to persist");
+});
+
+Deno.test("trackRepairMergeability is a no-op without a tracker and never throws when the tracker fails", async () => {
+  await trackRepairMergeability(undefined, "owner/repo", 12, "UNKNOWN");
+
+  const lines: string[] = [];
+  const failing: RepairMergeabilityTracker = {
+    load: () => Promise.reject(new Error("disk full " + FAKE_TOKEN)),
+    save: () => Promise.resolve(),
+    notify: () => Promise.resolve(),
+  };
+  await trackRepairMergeability(
+    failing,
+    "owner/repo",
+    12,
+    "UNKNOWN",
+    (line) => lines.push(line),
+  );
+  assertEquals(lines.length, 1);
+  assertMatch(
+    lines[0]!,
+    /^\[base-refresh\] could not track mergeability of owner\/repo#12: disk full /,
+  );
+  assert(!lines[0]!.includes(FAKE_TOKEN), "the token is redacted");
+
+  const { tracker, state } = memoryTracker();
+  const noticeFails: RepairMergeabilityTracker = {
+    ...tracker,
+    notify: () => Promise.reject(new Error("comment API down")),
+  };
+  const noticeLines: string[] = [];
+  const log = (line: string) => noticeLines.push(line);
+  await trackRepairMergeability(noticeFails, "owner/repo", 12, "UNKNOWN", log);
+  await trackRepairMergeability(noticeFails, "owner/repo", 12, "UNKNOWN", log);
+  assertEquals(
+    state.get("owner/repo#12")?.notified,
+    false,
+    "a failed post is retried on the next read",
+  );
+  assert(
+    noticeLines.some((line) =>
+      line.includes("could not post the refresh-waiting comment") &&
+      line.includes("comment API down")
+    ),
+    noticeLines.join("\n"),
+  );
+});
+
+Deno.test("readRepairBaseMergeDecision feeds an UNKNOWN read to the #4831 tracker and still refuses the merge", async () => {
+  const { tracker, state } = memoryTracker();
+  const lines: string[] = [];
+  const decision = await readRepairBaseMergeDecision({
+    repo: "owner/repo",
+    prNumber: 12,
+    gh: () => Promise.resolve('{"mergeable":"UNKNOWN"}'),
+    source: "pr-ci-processor",
+    base: "main",
+    log: (line) => lines.push(line),
+    tracker,
+  });
+  assertEquals(decision.merge, false);
+  assertEquals(state.get("owner/repo#12")?.streak, 1);
+  assertEquals(lines.length, 1);
+});
+
+Deno.test("logBaseRefreshDecision counts each decision by outcome and source", () => {
+  resetCounters();
+  const facts = {
+    source: "pr-ci-processor",
+    outcome: "base-merge-skipped" as const,
+    repo: "owner/repo",
+    prNumber: 1,
+    reason: "x",
+  };
+  logBaseRefreshDecision(facts, () => {}, "build=abc123");
+  logBaseRefreshDecision(facts, () => {}, "build=abc123");
+  logBaseRefreshDecision(
+    { ...facts, outcome: "refresh-requested", source: "branch-update-loop" },
+    () => {},
+    "build=abc123",
+  );
+  assertEquals(getCounters(), {
+    "baseRefresh.base-merge-skipped.pr-ci-processor": 2,
+    "baseRefresh.refresh-requested.branch-update-loop": 1,
+  });
+});
+
+Deno.test("formatBaseRefreshStartup states the policy and the build stamp", () => {
+  assertEquals(
+    formatBaseRefreshStartup({ version: "1.2.3", commit: "abc123" }),
+    "[base-refresh] startup repair-base-merge=conflicting-only refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> version=1.2.3 commit=abc123",
+  );
 });
