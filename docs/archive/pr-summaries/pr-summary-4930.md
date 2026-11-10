@@ -11,7 +11,6 @@ templated directory), or that imports it directly or through other files
 that removes a file a test still reads is caught. A fix pushed by a
 PR-feedback, CI-fix or babysitter round therefore no longer reaches CI with a
 test it broke, including a doc-drift test reading a changed `.md` or prompt.
-Part of #4930.
 
 Version bump: `VERSION` is not touched by this change.
 
