@@ -13,8 +13,11 @@ import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   buildDraftContinuationBody,
   buildMutationHoldDraftBody,
+  buildUnmetDraftBody,
   DRAFT_CONTINUATION_MARKER,
 } from "../lib/draft_continuation_pr.ts";
+import { syncPrBodyFromSummary } from "../lib/pr_body_sync.ts";
+import type { Logger } from "../types.ts";
 import { readyOrphanedDraftPr } from "../lib/draft_pr_self_heal.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
@@ -387,4 +390,130 @@ Deno.test("#4952 - ready but no ready-for-review CI reports false, so the sweep 
     run.warnings.some((m) => m.includes("PR #7")),
     "the CI-not-started outcome is named with the PR number",
   );
+});
+
+// --- A body sync keeps the hold (PR #5033 review) ---------------------------
+
+const SYNC_BRANCH = "issue-7-fix-thing";
+const SYNC_LOGGER: Logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {},
+  security: () => {},
+  skipReason: () => {},
+  timing: () => {},
+  scanSummary: () => {},
+  workerSummary: () => {},
+};
+
+/**
+ * Run the real PR-body sync against a draft whose live body is `liveBody` and
+ * return the body it published, as a merge-conflict repair or a completion
+ * exit would leave it.
+ */
+async function syncedBody(liveBody: string): Promise<string> {
+  const repoPath = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${repoPath}/docs/archive/pr-summaries/pr-summary-7.md`,
+      "## Summary\n\nRewritten summary. Closes #7.\n",
+    );
+    let published = "";
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR,
+        repoPath,
+        beforeSha: "before",
+        workerName: "worker-a",
+        githubUser: "ghuser",
+        branchName: SYNC_BRANCH,
+      },
+      {
+        logger: SYNC_LOGGER,
+        runGhCommand: async (args) => {
+          if (args[0] === "pr" && args[1] === "view") {
+            return JSON.stringify({
+              body: liveBody,
+              files: [],
+              headRefOid: SHA,
+              headRefName: SYNC_BRANCH,
+            });
+          }
+          if (args[0] === "pr" && args[1] === "edit") {
+            published = await Deno.readTextFile(
+              args[args.indexOf("--body-file") + 1]!,
+            );
+            return "";
+          }
+          throw new Error(`unexpected gh ${args.join(" ")}`);
+        },
+        runGitCommand: (args) =>
+          Promise.resolve({
+            ok: true as const,
+            value: {
+              code: 0,
+              // `git diff --name-only` names the summary, so it changed.
+              stdout: args[0] === "rev-parse" ? `${SHA}\n` : "summary\n",
+              stderr: "",
+            },
+          }),
+      },
+    );
+    assert(result.ok, `sync failed: ${JSON.stringify(result)}`);
+    assertEquals(
+      result.value.status,
+      "updated",
+      "the sync must rebuild the body for this test to reach the marker",
+    );
+    return published;
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+}
+
+Deno.test("#4952 - a continuation draft stays held after the body sync adopts its marker-less body", async () => {
+  const body = await syncedBody(buildDraftContinuationBody(7));
+  assertEquals(
+    body.startsWith(`${DRAFT_CONTINUATION_MARKER}\n\n`),
+    true,
+    "the rebuilt body must still open with the marker",
+  );
+  assertEquals(
+    body.split(DRAFT_CONTINUATION_MARKER).length - 1,
+    1,
+    "the marker is kept once, not duplicated",
+  );
+  const run = await heal({
+    pr: healthyDraft({ body }),
+    issue: OPEN_UNCLAIMED,
+  });
+  assertFalse(run.healed, "a synced hold is still a hold");
+  assertEquals(run.readyCalls, []);
+});
+
+Deno.test("#4952 - a worker-marked hold draft stays held after the body sync refreshes it", async () => {
+  const workerBody = "## Summary\n\nOld.\n\n<!-- vibe-worker-issue-7 -->";
+  const body = await syncedBody(buildUnmetDraftBody(7, workerBody));
+  assertEquals(body.startsWith(`${DRAFT_CONTINUATION_MARKER}\n\n`), true);
+  const run = await heal({
+    pr: healthyDraft({ body }),
+    issue: OPEN_UNCLAIMED,
+  });
+  assertFalse(run.healed);
+  assertEquals(run.readyCalls, []);
+});
+
+Deno.test("#4952 - control: the body sync adds no marker to a draft that never had one, so it is still healed", async () => {
+  const body = await syncedBody("Work in progress, no marker.");
+  assertFalse(body.includes(DRAFT_CONTINUATION_MARKER));
+  const run = await heal({
+    pr: healthyDraft({ body }),
+    issue: OPEN_UNCLAIMED,
+  });
+  assert(run.healed);
 });

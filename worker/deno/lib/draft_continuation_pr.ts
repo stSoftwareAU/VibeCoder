@@ -30,6 +30,18 @@ import { buildPrTitle } from "./pr_title_build.ts";
 /** Marks a PR body as a draft continuation (timed out, or criteria unmet). */
 export const DRAFT_CONTINUATION_MARKER = "<!-- vibe-draft-continuation -->";
 
+/**
+ * True when `body` opens with {@link DRAFT_CONTINUATION_MARKER} after any
+ * leading whitespace. Every hold body the worker writes puts the marker on its
+ * first line; a body that only quotes it mid-body is not a hold. Shared by the
+ * orphaned-draft self-heal (`draft_pr_self_heal.ts`) and the PR-body sync
+ * (`pr_body_sync.ts`), so the two cannot disagree about what a hold is
+ * (Issue #4952).
+ */
+export function opensWithDraftContinuationMarker(body: string): boolean {
+  return body.trimStart().startsWith(DRAFT_CONTINUATION_MARKER);
+}
+
 /** What {@link ensureDraftContinuationPr} did. */
 export type DraftContinuationResult =
   | { kind: "created"; prNumber: number }

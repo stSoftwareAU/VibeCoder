@@ -13,15 +13,18 @@
  *
  * A PR is healed only when every rule below holds; any doubt leaves it a draft:
  * - it is a draft, and its head branch names an issue (`issue-<N>-…`);
- * - its body does not open with {@link DRAFT_CONTINUATION_MARKER}. The check is
+ * - its body does not open with `DRAFT_CONTINUATION_MARKER`. The check is
  *   anchored, not a substring match: every hold body the worker writes puts the
  *   marker on its first line (`buildDraftContinuationBody`,
  *   `buildUnmetDraftBody` and `buildMutationHoldDraftBody` in
- *   `draft_continuation_pr.ts`). A body that merely quotes the marker
- *   mid-body, in a code span or in prose, is not a hold and may be healed. A
- *   body that opens with it, after any leading whitespace, is held. A false
- *   hold leaves a draft for a human or the next run, which is the safe
- *   direction, whereas a false heal would publish a deliberate hold;
+ *   `draft_continuation_pr.ts`), and the PR-body sync keeps a leading marker
+ *   when it rebuilds a body (`buildSyncedPrBodyCandidate`), so a held draft
+ *   stays held after a merge-conflict repair or a completion exit. A body that
+ *   merely quotes the marker mid-body, in a code span or in prose, is not a
+ *   hold and may be healed. A body that opens with it, after any leading
+ *   whitespace, is held. A false hold leaves a draft for a human or the next
+ *   run, which is the safe direction, whereas a false heal would publish a
+ *   deliberate hold;
  * - the issue is OPEN and no assignee is a fleet author (case-insensitive).
  *   A fleet-author assignee is a live claim (see `claim_issue.ts`). An issue
  *   read without an `assignees` array is a malformed response, so it is
@@ -33,9 +36,9 @@
  */
 
 import {
-  DRAFT_CONTINUATION_MARKER,
   errText,
   markDraftReadyAndAwaitCi,
+  opensWithDraftContinuationMarker,
 } from "./draft_continuation_pr.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
@@ -108,7 +111,7 @@ export async function readyOrphanedDraftPr(
     // Fail closed on a hold: the worker writes the marker as the first line,
     // so a body that opens with it (after leading whitespace) is held. A body
     // that only quotes the marker mid-body is not a hold (see module doc).
-    if (view.body.trimStart().startsWith(DRAFT_CONTINUATION_MARKER)) {
+    if (opensWithDraftContinuationMarker(view.body)) {
       return false;
     }
 

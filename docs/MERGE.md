@@ -792,7 +792,10 @@ Two changes close that window:
   ([`draft_pr_self_heal.ts`](../worker/deno/lib/draft_pr_self_heal.ts)) readies
   it only when the head branch names an open issue (`issue-<N>-…`) with no
   assignee among the fleet authors, and the body does not open with a marker. A
-  marker quoted mid-body, in a code span or in prose, does not count. The sweep
+  marker quoted mid-body, in a code span or in prose, does not count. The
+  PR-body sync keeps a leading marker when it rebuilds a held draft's body
+  (after a merge-conflict repair or at a completion exit), so that rebuild does not
+  turn a hold into an orphan. The sweep
   only lists PRs by fleet authors, so the author rule holds by construction.
   The hook marks the PR ready and waits for its ready-for-review CI to start
   (Issue #4160). When the CI starts, the sweep arms the PR in the same pass. When it does not, the PR is left ready but unarmed,
