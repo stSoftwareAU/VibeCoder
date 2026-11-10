@@ -44,7 +44,7 @@ Backend/CLI only: no UI file touched. Real code is exercised with a `gh` stub th
 - Fixture `worker/deno/tests/fixtures/fleet_babysitter_container_preload.ts` answers the new check-runs read with no runs; `fleet_babysitter_app_test.ts` passes again.
 - `docs/audits/lib-sweep-coverage/top-up-4921.json` claims the new module for the sweep ledger.
 - Callers of the shared prompt sentence checked: `buildRepairPrompt` is used once, in `fix()`; the reworded sentence applies to all three reasons, as before.
-- `./quality.sh`: the only failures are 5 `pr_maintenance_command_test.ts` tests, which fail identically on base `d17e53a7` (run in a detached worktree), plus a host-disk assertion in the parallel run's report; all other gates pass after the fixture and ledger fixes.
+- `./quality.sh` on the final head: every gate passes except `deno tests`, whose parallel pass reports only the 5 `worker/deno/tests/pr_maintenance_command_test.ts` failures; those 5 fail identically on base `d17e53a7` (run in a detached worktree).
 
 ## Docs
 
@@ -52,5 +52,5 @@ Updated `docs/workflows/fleet-pr-babysitter.md` ("Scans, retries and failure cla
 
 ## Not checked
 
-- The full `./quality.sh` was not re-run to green after the last fixes because of the 5 pre-existing `pr_maintenance_command_test.ts` failures; the targeted files named above pass.
+- The serial `deno tests` pass did not run, because the parallel pass failed on the 5 pre-existing `pr_maintenance_command_test.ts` failures; the targeted files named above pass.
 - No live GitHub run; behaviour against real check-run payloads rests on the stub mirroring `ci_base_branch_check.ts`'s requests.
