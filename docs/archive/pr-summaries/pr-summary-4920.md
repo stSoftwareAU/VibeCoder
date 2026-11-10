@@ -72,3 +72,13 @@ Backend-only change; no UI. Tests:
   `gh command skipped: GraphQL primary quota exhausted` on this host, so they
   depend on live GitHub quota, not on this change; the gate was not re-run in
   full after the slice was added.
+- Mutation check: the `relPath === ""` operand was dead (`"".split` gives `[""]`,
+  which the empty-segment check already refuses), so it was removed. The oversize
+  test now asserts the `within the size cap` message, which kills the
+  `stat.size > maxBytes` mutant. The `""` path was already in the unsafe-path
+  test.
+- `worker/deno/lib/repo_file_read.ts:37` exempt (untestable): the `!stat.isFile`
+  operand after `Deno.open` guards only a file swapped for a non-regular one
+  between the `lstat` and the `open`; that race cannot be triggered
+  deterministically in a test, and the earlier `lstat` check at line 31 already
+  refuses every non-regular file present at check time.

@@ -62,7 +62,11 @@ Deno.test("readRepoFile: refuses a file over the cap and accepts one at the cap"
   const dir = await Deno.makeTempDir();
   try {
     await Deno.writeTextFile(`${dir}/big.txt`, "12345");
-    await assertRejects(() => readRepoFile(dir, "big.txt", 4));
+    await assertRejects(
+      () => readRepoFile(dir, "big.txt", 4),
+      Error,
+      "within the size cap",
+    );
     await Deno.writeTextFile(`${dir}/edge.txt`, "1234");
     assertEquals(await readRepoFile(dir, "edge.txt", 4), "1234");
   } finally {

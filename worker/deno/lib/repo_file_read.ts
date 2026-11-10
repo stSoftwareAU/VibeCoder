@@ -13,8 +13,9 @@ export async function readRepoFile(
   maxBytes = MAX_REPO_FILE_BYTES,
 ): Promise<string> {
   const segments = relPath.split(/[\\/]/);
+  // An empty path splits to [""], so the empty-segment check refuses it too.
   if (
-    relPath === "" || /^([\\/]|[A-Za-z]:)/.test(relPath) ||
+    /^([\\/]|[A-Za-z]:)/.test(relPath) ||
     segments.some((s) => s === "" || s === "." || s === "..")
   ) {
     throw new Error(`Refusing unsafe repo path: ${relPath}`);
