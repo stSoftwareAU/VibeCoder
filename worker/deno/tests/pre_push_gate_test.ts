@@ -3627,7 +3627,23 @@ Deno.test("runPrePushGate: an unreachable registry is infrastructure", async () 
   }
 });
 
-/** Gate `clone` with the base-comparison ref set to its first commit. */
+/** A real existing crate on the base, followed by a Rust repair commit. */
+async function makeRepoWithCargoBase() {
+  const repo = await makeRepoWithFiles(RUST_FILES);
+  await git(repo.clone, "push", "-q", "origin", "HEAD:main");
+  await Deno.writeTextFile(
+    `${repo.clone}/rust/src/lib.rs`,
+    "// unrelated repair\n",
+  );
+  await git(repo.clone, "commit", "-qam", "repair");
+  const sha = await git(repo.clone, "rev-parse", "HEAD");
+  return {
+    ...repo,
+    stdin: `refs/heads/repair ${sha} refs/heads/repair ${"0".repeat(40)}\n`,
+  };
+}
+
+/** Gate `clone` with the base-comparison ref set to its parent commit. */
 async function gateAgainstBase(
   clone: string,
   stdin: string,
@@ -3658,7 +3674,7 @@ async function gateAgainstBase(
 }
 
 Deno.test("runPrePushGate: a clippy failure the PR base already has is no verdict on the push", async () => {
-  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
   try {
     const calls: RanCall[] = [];
     const result = await gateAgainstBase(
@@ -3698,7 +3714,7 @@ Deno.test("runPrePushGate: a warning the push adds does not turn a base-only fai
     ],
   ];
   for (const [name, warning] of cases) {
-    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    const { root, clone, stdin } = await makeRepoWithCargoBase();
     try {
       const result = await gateAgainstBase(
         clone,
@@ -3736,7 +3752,7 @@ Deno.test("runPrePushGate: a clippy failure that is new on the push blocks, what
     ],
   ];
   for (const [name, answer] of cases) {
-    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    const { root, clone, stdin } = await makeRepoWithCargoBase();
     try {
       const result = await gateAgainstBase(clone, stdin, answer, []);
       assert(!result.ok, name);
@@ -3750,7 +3766,7 @@ Deno.test("runPrePushGate: a clippy failure that is new on the push blocks, what
 });
 
 Deno.test("runPrePushGate: an unavailable base comparison is infrastructure", async () => {
-  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
   try {
     for (const ref of ["origin/no-such-branch", "--upload-pack=x", "a..b"]) {
       const calls: RanCall[] = [];
@@ -3782,7 +3798,7 @@ Deno.test("runPrePushGate: an unavailable base comparison is infrastructure", as
 });
 
 Deno.test("runPrePushGate: a base host fault is infrastructure", async () => {
-  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
   try {
     for (
       const failure of [
@@ -3803,6 +3819,101 @@ Deno.test("runPrePushGate: a base host fault is infrastructure", async () => {
       assert(!result.ok);
       assertInstanceOf(result.error, PrePushGateInfrastructureError);
     }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("review 4896: a new crate's failure is a verdict with its diagnostic", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateAgainstBase(
+      clone,
+      stdin,
+      () => ({ code: 101, stderr: LINT_A }),
+      calls,
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PreFlightGateError);
+    assert(!(result.error instanceof PrePushGateInfrastructureError));
+    assertStringIncludes(result.error.output, LINT_A.trim());
+    assert(
+      !calls.some((c) => c.cwd?.includes("vibe-base-check-")),
+      "the absent crate cannot be run on the base",
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("review 4896: compare against fresh remote main when its local ref is stale or absent", async () => {
+  for (const absent of [false, true]) {
+    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    try {
+      const green = await git(clone, "rev-parse", "HEAD");
+      await git(clone, "push", "-q", "origin", "HEAD:main");
+      await Deno.writeTextFile(`${clone}/rust/src/lib.rs`, "// base failure\n");
+      await git(clone, "commit", "-qam", "base failure");
+      const red = await git(clone, "rev-parse", "HEAD");
+      await git(clone, "push", "-q", "origin", "HEAD:main");
+      if (absent) {
+        await git(clone, "update-ref", "-d", "refs/remotes/origin/main");
+      } else await git(clone, "update-ref", "refs/remotes/origin/main", green);
+      await Deno.writeTextFile(
+        `${clone}/rust/src/lib.rs`,
+        "// base failure\n// unrelated repair\n",
+      );
+      await git(clone, "commit", "-qam", "unrelated repair");
+      const head = await git(clone, "rev-parse", "HEAD");
+      let runs = 0;
+      const runner: PreFlightRunner = async (command, options) => {
+        if (command === CLIPPY_CMD) runs++;
+        const source = command === CLIPPY_CMD
+          ? await Deno.readTextFile(`${options.cwd}/src/lib.rs`)
+          : "";
+        return {
+          started: true,
+          code: source.includes("base failure") ? 101 : 0,
+          stdout: "",
+          stderr: source.includes("base failure") ? LINT_A : "",
+        };
+      };
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin: stdin.replaceAll(green, head),
+        preFlightCommands: [],
+        runner,
+        findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
+        compareRef: absent ? "refs/remotes/origin/main" : "origin/main",
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assert(!result.value.checksRun.includes(CLIPPY_CMD));
+      assertEquals(runs, 2, "both the failing head and current base must run");
+      assertEquals(await git(clone, "rev-parse", "origin/main"), red);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("review 4896: a failed base fetch retains capped redacted head diagnostics as infrastructure", async () => {
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
+  try {
+    await git(clone, "remote", "set-url", "origin", `${root}/missing.git`);
+    const secret = "ghp_" + "x".repeat(36);
+    const result = await gateAgainstBase(
+      clone,
+      stdin,
+      () => ({ code: 101, stderr: LINT_A + secret + "\n" + "x".repeat(10000) }),
+      [],
+      "origin/main",
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assertStringIncludes(result.error.message, LINT_A.trim());
+    assert(!result.error.message.includes(secret));
+    assert(result.error.message.length < 2200);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

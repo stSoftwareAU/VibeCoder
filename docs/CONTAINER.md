@@ -1734,6 +1734,25 @@ build artefacts.
   can read, so the values are kept out of both and out of the wrapper text and
   the logs. The channel needs no `SETENV` or `env_keep` grant, so the sudo rule
   is unchanged.
+- **The milestone gates' repository commands trust the checkout they run
+  in for git (Issue #4927).** The `agent` account has no `~/.gitconfig`, so
+  git refuses a clone the worker owns with `detected dubious ownership`, and
+  a repository build script that runs `git rev-parse HEAD` (a Rust
+  `build.rs`, say) made `cargo check` exit 101, so the milestone merge gate
+  refused every resolution. The repository command the milestone merge and
+  resolution gates and the merge fast checks run (`runRepositoryCommand`,
+  `worker/deno/lib/untrusted_gate_spawn.ts`) therefore carries
+  `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=safe.directory` and
+  `GIT_CONFIG_VALUE_0=<the checkout>` in argv, like the cargo target and
+  the proxy (`gitSafeDirectoryEnv` in `worker/deno/lib/quality_gate_phase.ts`).
+  The entry names the worktree root (the nearest ancestor of the command's
+  directory holding a `.git`), because git compares `safe.directory` with
+  the top-level worktree and the gates run projects up to two levels below
+  it. Only that one checkout is trusted, never `*`, and a path git would
+  need quoted (a space, say) gets no entry. A command that runs as the
+  worker is untouched, and the quality gate's dropped `./quality.sh`
+  (`spawnRepositoryCommand`) still carries only the cargo target and the
+  proxy, so git inside it is not covered (Issue #5011).
 - **The untrusted account reaches the checkout through HOME (Issue #4733).**
   The `agent` account could not traverse the `0700` HOME to any clone under
   `~/auto-issue-work`. The **image** now sets HOME to group `vibework`, mode

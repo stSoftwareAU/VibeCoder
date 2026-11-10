@@ -1040,3 +1040,36 @@ Deno.test("a nextest --cargo-profile with no value after it keeps no profile", (
     ["cargo", "test", "--no-run", "--workspace"],
   ]);
 });
+
+Deno.test("review 4896: optional jobs are skipped and expression policy is unverifiable", () => {
+  for (
+    const flag of ["true", '"true"', "false", "${{ matrix.experimental }}"]
+  ) {
+    const result = scan(`
+      on: pull_request
+      jobs:
+        lint:
+          continue-on-error: ${flag}
+          steps:
+            - uses: dtolnay/rust-toolchain@beta
+            - run: cargo clippy --all-targets -- -D warnings
+    `);
+    assertEquals(result.checks.length, flag === "false" ? 1 : 0, flag);
+    assertEquals(
+      result.unverifiable.length,
+      flag.includes("matrix") ? 1 : 0,
+      flag,
+    );
+  }
+  assertEquals(
+    scan(`
+    on: pull_request
+    jobs:
+      unrelated:
+        continue-on-error: \${{ matrix.experimental }}
+        steps:
+          - run: echo hello
+  `),
+    { checks: [], unverifiable: [] },
+  );
+});

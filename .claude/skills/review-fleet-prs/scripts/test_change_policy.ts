@@ -27,7 +27,10 @@ import {
   wasLabelAddedByAllowedAuthor,
 } from "../../../../worker/deno/lib/issue_query.ts";
 import { stripWorkerRecordBlocks } from "../../../../worker/deno/lib/worker_record_block.ts";
-import { resolveLastIssueEditor } from "../../../../worker/deno/lib/issue_edit_actor.ts";
+import {
+  resolveLastIssueEditor,
+  unsettledHistoryWindows,
+} from "../../../../worker/deno/lib/issue_edit_actor.ts";
 import type { RunGh } from "./needs_human.ts";
 
 const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
@@ -359,12 +362,7 @@ async function workerClaimProblem(
         firstLine(lookup.error)
       }`;
     }
-    const oldestBody = lookup.actors.filter((a) => a.source === "content-edit")
-      .at(-1);
-    if (
-      lookup.bodyHistoryTruncated &&
-      (!oldestBody || oldestBody.editedAt >= added.addedAt)
-    ) {
+    if (unsettledHistoryWindows(lookup, added.addedAt).length > 0) {
       return `${ref} has incomplete edit history since its ${label} label was added; it is ignored`;
     }
     const untrustedEdits = lookup.actors.filter((a) => {

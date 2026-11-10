@@ -85,6 +85,7 @@ import type {
   CiCargoScan,
 } from "./ci_cargo_checks.ts";
 import { isHostDiskFaultText } from "./host_fault.ts";
+import { redactedHeadTail } from "./redacted_text.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import { readRepoFile } from "./repo_file_read.ts";
 
@@ -1997,10 +1998,12 @@ function diagnosticSignatures(output: string): Map<string, number> {
  *
  * Returns `"same"` when the base fails with every diagnostic the push shows
  * (matched by message, file and count; not line), `"different"` when the base
- * passes or lacks a diagnostic the push shows, and `"unknown"` when neither can
+ * passes, lacks the check directory or lacks a diagnostic the push shows, and
+ * `"unknown"` when neither can
  * be established: an unsafe or unresolvable ref, a push output with no readable
  * diagnostic, a working directory outside the repo, a worktree that cannot be
- * made, or a base run that times out, cannot start or fails for the host.
+ * made, a remote base fetch that fails, or a base run that times out, cannot
+ * start or fails for the host. Remote base refs are refreshed before resolution.
  * Callers turn `"unknown"` into an infrastructure fault, never a verdict.
  *
  * SIMPLE-ON-PURPOSE: a diagnostic is matched by message, file and count, not line — upgrade when a moved instance of a repeated diagnostic must be told from a new one
@@ -2028,6 +2031,25 @@ async function failsOnBaseToo(args: {
     ? args.check.cwd.slice(prefix.length)
     : null;
   if (relative === null) return "unknown";
+  // Repair checkouts may have fetched only the PR head. Refresh the base
+  // before comparing; a stale tracking ref is not evidence about today's base.
+  const remoteBranch = args.ref.startsWith("refs/remotes/origin/")
+    ? args.ref.slice("refs/remotes/origin/".length)
+    : args.ref.startsWith("origin/")
+    ? args.ref.slice("origin/".length)
+    : undefined;
+  if (remoteBranch !== undefined) {
+    const fetched = await args.git(
+      [
+        "fetch",
+        "--no-tags",
+        "origin",
+        `+refs/heads/${remoteBranch}:refs/remotes/origin/${remoteBranch}`,
+      ],
+      args.repoRoot,
+    );
+    if (fetched.code !== 0) return "unknown";
+  }
   const resolved = await args.git(
     ["rev-parse", "--verify", "--quiet", `${args.ref}^{commit}`],
     args.repoRoot,
@@ -2045,8 +2067,15 @@ async function failsOnBaseToo(args: {
     );
     if (add.code !== 0) return "unknown";
     added = true;
+    const baseCwd = relative === "" ? tree : `${tree}/${relative}`;
+    try {
+      if (!(await Deno.stat(baseCwd)).isDirectory) return "different";
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) return "different";
+      return "unknown";
+    }
     const base = await runPreFlightGate([args.check.command], {
-      cwd: relative === "" ? tree : `${tree}/${relative}`,
+      cwd: baseCwd,
       env: args.check.env,
       runner: args.runner,
       timeoutSeconds: args.timeoutSeconds,
@@ -2347,7 +2376,9 @@ export async function runPrePushGate(opts: {
         });
         if (comparison === "unknown") {
           return infrastructureFail(
-            "Could not compare the failed CI cargo check against the PR base",
+            "Could not compare the failed CI cargo check against the PR base. " +
+              "Head diagnostics (comparison unavailable):\n" +
+              redactedHeadTail(result.error.output, 1200, 600),
           );
         }
         if (comparison === "same") {

@@ -46,6 +46,7 @@ function recordingLogger(lines: string[]): Logger {
 interface FakePr {
   number: number;
   headRefName: string;
+  baseRefName?: string;
   title: string;
   url: string;
   isDraft: boolean;
@@ -113,7 +114,11 @@ function fakeGh(options: FakeGhOptions = {}) {
 
 Deno.test("pr finder - a trusted collaborator's label on an open PR is a candidate", async () => {
   const gh = fakeGh({
-    prs: { "acme/widgets::secret-squirrel": [fakePr(42)] },
+    prs: {
+      "acme/widgets::secret-squirrel": [
+        fakePr(42, { baseRefName: "release/2" }),
+      ],
+    },
     timelines: { 42: [labelled("secret-squirrel", "trusted-human")] },
   });
   const lines: string[] = [];
@@ -131,6 +136,9 @@ Deno.test("pr finder - a trusted collaborator's label on an open PR is a candida
   assertEquals(candidates[0]?.prNumber, 42);
   assertEquals(candidates[0]?.repo, "acme/widgets");
   assertEquals(candidates[0]?.headRefName, "feature/42");
+  assertEquals(candidates[0]?.baseRefName, "release/2");
+  const list = gh.calls.find((args) => args[0] === "pr" && args[1] === "list")!;
+  assert(list[list.indexOf("--json") + 1]!.split(",").includes("baseRefName"));
   assertEquals(candidates[0]?.mapping.label, "secret-squirrel");
 });
 

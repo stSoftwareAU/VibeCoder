@@ -8,7 +8,9 @@ compile error is therefore caught before the push, not by a CI run. Closes
 
 - `worker/deno/lib/ci_cargo_checks.ts` (new) reads the repo's tracked
   `.github/workflows/*.yml|yaml` as data. Only workflows triggered on
-  `pull_request` count. It derives each `cargo clippy` command verbatim
+  `pull_request` count. Explicitly optional jobs and steps are excluded;
+  job-level `continue-on-error` expressions are unverifiable. It derives each
+  `cargo clippy` command verbatim
   (toolchain, flags such as `--all-targets --locked -- -D warnings`,
   workspace/package/feature selection, working directory, cargo-relevant env).
   Output-directory overrides (`CARGO_TARGET_DIR` and `CARGO_BUILD_TARGET_DIR`)
@@ -35,7 +37,10 @@ compile error is therefore caught before the push, not by a CI run. Closes
 - Base-failure comparison: the repair processors pass the PR base independently
   of whether they merge it into the repair branch; the completion gate uses its
   `baseRef`. A failing CI cargo check is re-run, as CI wrote it, in a detached
-  worktree of that base. If every diagnostic the push shows (message, file and
+  worktree of that base. Remote base refs are refreshed before resolution;
+  failed fetches remain infrastructure faults with redacted, capped head
+  diagnostics. A check directory absent from the base is a new failure on the
+  head, not infrastructure. If every diagnostic the push shows (message, file and
   how many times; not line) is also on the base, the failure is a
   `[PRE_PUSH_WARNING]`, not a verdict. Only error-level diagnostics are
   compared: a warning never fails a CI cargo command, so a warning the push
@@ -91,10 +96,11 @@ compile error is therefore caught before the push, not by a CI run. Closes
     PR base; and the in-run recovery agents of the pre-push gate, screenshot,
     summary-rule, PR-body-length, security-fix and quality-gate retries, through
     `issueRunCompareRef`) and spelling repairs (the PR base, read once before
-    the agent runs and reused for the base merge) carry it too. Merge-conflict
-    repairs pass none, and neither do the other agent runs with a checkout (the
-    custom PR prompt agent, the closure-verdict agent, and the planning,
-    refinement, question, revision and quorum runs), so a failing CI cargo check
+    the agent runs and reused for the base merge) carry it too. Custom PR
+    prompt runs use the discovered PR base, and standalone issue execution uses
+    its milestone or base. Merge-conflict repairs pass none, and neither do the
+    closure-verdict agent or the planning, refinement, question, revision and
+    quorum runs, so a failing CI cargo check
     on their own push stays a verdict.
   - The hook runs with `--allow-write=${TMPDIR:-/tmp}` added to main's
     `--config <worker>/deno.json --frozen --lock <worker>/deno.lock` invocation
@@ -359,7 +365,7 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   Spelling and merge-conflict repairs retain the base branch's ShellCheck-only
   policy. No twinned copy of the changed environment or base-comparison rules
   was found.
-- `./quality.sh` on the pre-merge head (407958d8): every gate passed except
+- Historical validation: `./quality.sh` on the pre-merge head (407958d8): every gate passed except
   `deno tests`, which reported 16 failed of 33,624 (33,608 passed). Seven of the
   16 are the hook tests above that spawn `git push` through the hook (the five
   new integration tests and two existing ones) and fail only because the
@@ -382,3 +388,35 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.
+
+
+### PR #4896 review revision
+
+- Refreshed the PR base before comparison, with real Git fixtures for stale and
+  absent tracking refs and a failed fetch. Comparison faults retain redacted,
+  capped head diagnostics. A new crate absent from the base returns the head's
+  failure as a verdict. Existing base-comparison fixtures now actually contain
+  the crate on the base rather than relying on runners that ignore the cwd.
+- Excluded optional jobs and marked expression-based job policies unverifiable.
+  Tests cover boolean/string true, false, an expression and an unrelated job.
+- Carried the custom PR candidate's base through the real production callback,
+  and wired standalone issue execution to its milestone/base. Missing PR bases
+  use the unavailable sentinel. Added the completion rebase agent assertion.
+- All four core regressions and both missing agent-path regressions failed
+  before the fixes. Validation results below concern this revision; earlier
+  gate results above describe earlier commits.
+- Sibling sweep: the hook reads the same comparison option; spelling, feedback,
+  CI-fix, main-loop execute and recovery agents retain their existing wiring.
+  CONFIGURATION.md now describes fetching, optional jobs, missing base crates,
+  diagnostic preservation and both added agent paths.
+- Validation: 214 tests across the scanner, pre-push gate, custom-label finder
+  and dispatcher, and completion conflict suites pass; both production agent
+  wiring regressions pass; 69 push/CLI/recovery sibling tests pass (285 total).
+  Removing the completion agent's comparison option also makes its assertion
+  fail. Deno formatting, repository-rule lint and diff checks pass.
+- Tests used integrity-verified local copies of locked dependencies because
+  this Deno client cannot connect to JSR. The local overlay uses standard Deno
+  type-checking; applying the repository's extra `noImplicitReturns` rule to
+  these local third-party sources fails inside the published std packages.
+  Repository CI remains the full compiler/quality check; it was not replaced
+  or disabled, and the full local quality gate was not rerun here.

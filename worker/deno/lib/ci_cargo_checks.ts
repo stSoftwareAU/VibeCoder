@@ -746,15 +746,15 @@ export function scanWorkflowForCargoChecks(
   const workflowEnv = isMapping(doc.env) ? doc.env : {};
   const jobs = isMapping(doc.jobs) ? doc.jobs : {};
   for (const job of Object.values(jobs)) {
-    if (!isMapping(job)) continue;
+    if (!isMapping(job) || isTrueFlag(job["continue-on-error"])) continue;
     const steps = job.steps;
     if (!Array.isArray(steps)) continue;
     const ctx: JobContext = {
       fileName,
       envs: [workflowEnv, isMapping(job.env) ? job.env : {}],
       toolchain: jobToolchain(job),
-      checks,
-      unverifiable,
+      checks: [],
+      unverifiable: [],
     };
     const jobDir = runDirectory(job) ?? workflowDir ?? ".";
     for (const step of steps) {
@@ -782,6 +782,17 @@ export function scanWorkflowForCargoChecks(
         }
         current = scanLine(ctx, line, current, stepEnv);
       }
+    }
+    const optional = job["continue-on-error"];
+    if (typeof optional === "string" && optional.includes("${{")) {
+      if (ctx.checks.length > 0 || ctx.unverifiable.length > 0) {
+        unverifiable.push(
+          `${fileName}: job continue-on-error is an expression`,
+        );
+      }
+    } else {
+      checks.push(...ctx.checks);
+      unverifiable.push(...ctx.unverifiable);
     }
   }
   return {

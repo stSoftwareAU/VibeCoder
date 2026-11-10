@@ -5223,8 +5223,10 @@ gates do (see that bullet):
      scan with no checks and one unverifiable reason, so a Rust-relevant push
      through the hook is refused as an infrastructure fault, not waved through
      with no CI cargo check. The commands are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
-     from workflows triggered on `pull_request`. Each `cargo clippy` run in a
-     step is run exactly as written: its `working-directory` (step, job or
+     from workflows triggered on `pull_request`. Jobs and steps explicitly
+     allowed to fail (`continue-on-error: true` or `"true"`) are excluded.
+     A job-level expression for that policy makes its cargo checks unverifiable.
+     Each enforced `cargo clippy` run in a step is run exactly as written: its `working-directory` (step, job or
      workflow; a plain relative path inside the repo), its `+toolchain` (or the
      toolchain of the job's `dtolnay/rust-toolchain`,
      `actions-rust-lang/setup-rust-toolchain` or `actions-rs/toolchain` step),
@@ -5259,12 +5261,15 @@ gates do (see that bullet):
      output, unless the PR base already fails the same way: when the push knows
      the PR base (the repair processors' base branch, or the completion gate's
      base ref), a failing check is re-run, as CI wrote it, in a detached
-     worktree of that base, and when every diagnostic the push shows (matched by
+     worktree of that base. Remote `origin/<base>` refs are fetched before
+     resolution; a failed fetch is infrastructure, even if an older local ref
+     exists. Pinned commit refs are used directly. When every diagnostic the push shows (matched by
      message and file, each no more often than on the base; not line) is also on the base, the failure is no verdict
      on this push and is reported as a `[PRE_PUSH_WARNING]`. The agent's own
      hook compares too, but only for a run that is handed the PR base: the
      CI-fix, PR-feedback and spelling processors read the PR's base branch
-     before the agent runs, and issue runs pass theirs (the milestone branch,
+     before the agent runs, and custom PR prompts carry the base from PR
+     discovery. Both main-loop and standalone issue runs pass theirs (the milestone branch,
      else the base branch, else the default branch, skipping blank names) on the execute run, the completion rebase pass and
      the in-run recovery agents (pre-push gate, screenshot, summary-rule,
      PR-body-length, security-fix and quality-gate remediation), and each is written into the hook spec as
@@ -5278,10 +5283,11 @@ gates do (see that bullet):
      hook's Deno process is allowed to write only to the temp directory, for
      the base worktree; the git and cargo commands it runs are not limited to
      it. A base that passes,
-     or lacks a diagnostic the push shows, leaves the failure a verdict. An
-     unresolvable or unreadable base, a worktree that cannot be made, a base run
+     lacks the check's directory, or lacks a diagnostic the push shows, leaves
+     the failure a verdict. An unresolvable or unreadable base, a worktree that cannot be made, a base run
      that times out, cannot start or fails for the host, and a push output with
-     no readable diagnostic are infrastructure faults. A CI-fix or review-feedback repair
+     no readable diagnostic are infrastructure faults. These comparison faults
+     retain a redacted, size-limited excerpt of the head's diagnostics. A CI-fix or review-feedback repair
      released uncharged because its gate failed as infrastructure leaves a PR
      comment carrying a `vibe-gate-infra-release` marker, and after two such
      releases (counted from fleet-authored markers) the next one is charged like

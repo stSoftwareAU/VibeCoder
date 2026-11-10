@@ -319,13 +319,13 @@ that it is dropped, and the next scheduled run re-detects it.
 ### 1. Implementation-coupled assertions
 
 Assertions on incidental implementation details rather than observable
-behaviour. Interaction testing and mock verification are **not**
-inherently wrong — a test that asserts a required payment-gateway call
-or an audit event is verifying legitimate, contractual observable
-behaviour. Flag an interaction assertion only when the asserted
-interaction is **not** part of the public contract and unnecessarily
-couples the test to incidental implementation details. Specifically
-flag:
+behaviour. This check applies the Vibe Coder rule **Dummy tests and "how"
+tests are refused** (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused); cite it in the finding rather than restating
+it. A fake is legitimate only at a real external boundary (a network
+service, a broker, the clock), and even there the test must assert the
+outcome the caller sees, not the interaction: a test whose only evidence
+is that a mock was called, how often or in what order is a HOW-test.
+Specifically flag:
 
 - **Call-order assertions** — `expect(mock).toHaveBeenNthCalledWith(2, …)`,
   `assert_eq!(call_log, vec!["a", "b", "c"])`, anything that breaks
