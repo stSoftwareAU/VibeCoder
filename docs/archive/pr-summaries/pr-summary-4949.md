@@ -117,3 +117,16 @@ flowchart LR
   that already has an open PR is not looked up here.
 - An issue that hits the cap on every run is not laddered (unchanged:
   `worker-crash` was also transient).
+
+### PR #5025 review revision
+
+- The capped invocation's own output takes precedence over earlier phase-state
+  output. The state remains a fallback when the error carries no output.
+- Added a regression with different current and stale output. It failed before
+  the precedence fix and passes afterwards; all six turn-limit tests pass.
+  The reason's visible snippet is asserted. The shared failure formatter only
+  displays the output-size field for timeouts, so no new count is claimed here.
+- Deno formatting and lint passed for the changed source and test; diff check
+  passed. Tests used checksum-verified local copies of the locked dependencies
+  because this environment's Deno client cannot connect to JSR.
+- Full quality gate not rerun on this revision; CI remains required.

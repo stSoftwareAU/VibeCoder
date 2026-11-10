@@ -109,6 +109,11 @@ import {
   REVIEW_CHECKLISTS_FILE,
 } from "../../../../worker/deno/lib/review_checklists.ts";
 import {
+  dummyTestNotesReview,
+  type DummyTestScan,
+  scanDummyTests,
+} from "../../../../worker/deno/lib/dummy_test_scan.ts";
+import {
   CAPABILITY_BUNDLE_PATH,
   capabilityContextFromChange,
   type CapabilityFixtureJudgement,
@@ -200,6 +205,12 @@ export interface ReadyPr {
    * (Issue #4366). A pre-existing flaw is not a blocking finding.
    */
   capabilityJudgement?: CapabilityFixtureJudgement;
+  /**
+   * Deterministic dummy-test scan of the tests this diff adds or edits
+   * (Issue #5016). `post.ts` adds its findings; its notes are checklist items
+   * already merged into `reviewChecklists` and `checklistState`.
+   */
+  dummyTestScan?: DummyTestScan;
 }
 
 // A PR whose dependency audit is still red after CI-fix replied at its head
@@ -1442,6 +1453,7 @@ export async function pass(
       }),
     );
     const capabilityJudgement = judgeCapabilityFixtures(diffLoad.diff);
+    const dummyTestScan = scanDummyTests(diffLoad.diff);
     if (capabilityReview.retry) {
       skipped["capability-unreadable"] =
         (skipped["capability-unreadable"] ?? 0) + 1;
@@ -1455,10 +1467,15 @@ export async function pass(
     }
     const repoChecklistMarkdown = renderChecklistSection(checklists, changed);
     const repoChecklistState = checklistState(checklists, changed);
-    const mergedChecks = mergeCapabilityReview(
+    const capabilityChecks = mergeCapabilityReview(
       repoChecklistMarkdown,
       repoChecklistState,
       capabilityReview,
+    );
+    const mergedChecks = mergeCapabilityReview(
+      capabilityChecks.markdown,
+      capabilityChecks.state,
+      dummyTestNotesReview(dummyTestScan),
     );
     ready.push({
       repo,
@@ -1478,6 +1495,7 @@ export async function pass(
       ),
       checklistState: mergedChecks.state,
       capabilityJudgement,
+      dummyTestScan,
     });
   }
   // A single --repo run sees only part of the fleet, so it leaves the

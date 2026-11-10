@@ -58,7 +58,7 @@ function makeState(repoPath: string, claudeOutput = ""): PhaseState {
     repoPath,
     clarityStatus: "assessed_clear",
     // The turn-capped invocation never reached the success path that fills
-    // this, so the realistic state is empty here.
+    // this. State can still hold output from an earlier invocation.
     claudeOutput,
     executeStartTime: Date.now() - 1_800_000,
     executeStartHeadSha: "abc123",
@@ -263,4 +263,23 @@ Deno.test("buildInterruptedWipCommitMessage #4949 - a turn-limit stop has its ow
     }),
     "wip: execute hit the agent turn limit after 3600s — preserving 4 uncommitted file(s)",
   );
+});
+
+Deno.test("execute_phase - a turn cap reports the current invocation instead of stale state (PR #5025 review)", async () => {
+  const current =
+    "current invocation: editing the parser after a credential switch";
+  const stale = "earlier invocation: credentials exhausted";
+  const run = await runWithError({
+    error: new AgentTurnLimitError(
+      TURN_LIMIT_MESSAGE,
+      { output: current } as never,
+    ),
+    stateOutput: stale,
+  });
+  assertEquals(categoryOf(run.result), "interrupted");
+  assertEquals(run.invocations, 1);
+  assertEquals(run.commits.length, 1);
+  const reason = "reason" in run.result ? run.result.reason ?? "" : "";
+  assertStringIncludes(reason, current);
+  assertEquals(reason.includes(stale), false);
 });

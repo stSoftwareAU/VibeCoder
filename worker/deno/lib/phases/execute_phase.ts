@@ -1532,8 +1532,8 @@ async function executeClaudeBody(
       );
       // This invocation's output is on the error, not on state: the failed
       // invocation never reached the success path that fills state.claudeOutput.
-      const turnLimitOutput = state.claudeOutput ||
-        claudeResult.error.executionResult?.output || "";
+      const turnLimitOutput = claudeResult.error.executionResult?.output ||
+        state.claudeOutput || "";
       const wip = await preserveRunWip({
         state,
         deps,
