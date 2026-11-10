@@ -1,0 +1,12 @@
+{
+  "issue": 4952,
+  "chunk": "top-up-4952",
+  "title": "top-up: orphaned fleet draft self-heal",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4952",
+  "definition": "Review gh reads and writes for an unattended draft PR: fail closed on unreadable PR or issue state, read the hold marker anchored to its exact form, check the fleet-assignee claim before acting, and never un-draft a held or claimed draft.",
+  "status": "claimed",
+  "sweptAt": "bff292d71237e31f5603ba9839dc5fef9067e14f",
+  "paths": [
+    "worker/deno/lib/draft_pr_self_heal.ts"
+  ]
+}

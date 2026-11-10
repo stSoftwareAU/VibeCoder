@@ -693,3 +693,196 @@ Deno.test(
     assertEquals(run.armed, [], "auto-merge is not armed on a draft");
   },
 );
+
+// ---------------------------------------------------------------------------
+// An existing draft continuation found on the completion path (Issue #4952)
+// ---------------------------------------------------------------------------
+
+const CREATE_EXISTS_ERROR =
+  'a pull request for branch "issue-11-draft-continuation" into branch "main" already exists';
+
+/**
+ * Run the completion path with an open draft continuation already on the run
+ * branch, reached one of two ways:
+ * - `branch`: `findExistingPrForBranch` finds it, so decideCompletionPr
+ *   recovers it before any creation.
+ * - `create-error`: the lookups miss until `gh pr create` runs, which fails
+ *   with "already exists", so the creation catch finds it through
+ *   `findExistingPrForIssue` and recovers it.
+ * `readyFails` makes `gh pr ready` throw.
+ */
+async function runExistingDraftCompletion(
+  route: "branch" | "create-error",
+  readyFails: boolean,
+) {
+  const repoPath = await Deno.makeTempDir();
+  await Deno.mkdir(`${repoPath}/docs/archive/pr-summaries`, {
+    recursive: true,
+  });
+  await Deno.writeTextFile(
+    `${repoPath}/docs/archive/pr-summaries/pr-summary-11.md`,
+    "## Summary\n\nPart of #11.\n",
+  );
+  const config = buildDefaultWorkerConfig();
+  // Keep the bounded infra retry's backoff out of this test.
+  config.infraRetryBackoffMs = 1;
+  const ctx: IssueContext = {
+    repo: REPO,
+    issueNumber: 11,
+    issueTitle: "Draft continuation",
+    issueBody: "",
+    issueLabels: ["work-on"],
+    issueComments: "",
+    githubUser: "testworker",
+    config,
+  };
+  const state: PhaseState = { ...makeState(), repoPath };
+
+  const calls: string[][] = [];
+  const armed: number[] = [];
+  let created = false;
+  let ready = false;
+  const runGhCommand = (args: string[]): Promise<string> => {
+    calls.push([...args]);
+    if (args[0] === "pr" && args[1] === "create") {
+      created = true;
+      return Promise.reject(new Error(CREATE_EXISTS_ERROR));
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      if (args.includes(LOOKUP_FIELDS)) {
+        return Promise.resolve(
+          JSON.stringify({ state: "OPEN", headRefName: BRANCH, isDraft: true }),
+        );
+      }
+      if (args.includes(READY_FIELDS)) {
+        return Promise.resolve(
+          JSON.stringify({ headRefOid: SHA, isDraft: true }),
+        );
+      }
+      return Promise.resolve("{}");
+    }
+    if (args[0] === "pr" && args[1] === "ready") {
+      if (readyFails) return Promise.reject(new Error("HTTP 502"));
+      ready = true;
+      return Promise.resolve("");
+    }
+    if (args[0] === "api") {
+      return Promise.resolve(
+        JSON.stringify(ready ? [{ id: 2, conclusion: null }] : []),
+      );
+    }
+    return Promise.resolve("");
+  };
+
+  const deps = createMockDeps({
+    logger: {
+      info: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+      debug: () => undefined,
+    } as never,
+    github: {
+      createClient: () =>
+        ({ postComment: () => Promise.resolve(undefined) }) as never,
+      runGhCommand,
+    },
+    git: {
+      reconcileHeadToBranch: () =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            action: "already-on-branch" as const,
+            fromRef: BRANCH,
+          },
+        }),
+      pushUnpushedCommits: () =>
+        Promise.resolve({ ok: true as const, value: 2 }),
+      runGitCommand: (args: string[]) =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            code: 0,
+            stdout: args[0] === "rev-list" ? "2\n" : "",
+            stderr: "",
+          },
+        }),
+    },
+    pr: {
+      findExistingPrForBranch: () =>
+        Promise.resolve(
+          route === "branch"
+            ? { ok: true as const, value: PR_URL }
+            : { ok: false as const, error: new Error("no PR on the branch") },
+        ),
+      // Before `gh pr create` runs there is no PR; after its error, the
+      // issue-number lookup finds the existing one.
+      findExistingPrForIssue: () =>
+        Promise.resolve(
+          route === "create-error" && created
+            ? { ok: true as const, value: PR_URL }
+            : { ok: false as const, error: new Error("no PR for the issue") },
+        ),
+      finalisePr: (options: { prNumber: number }) => {
+        armed.push(options.prNumber);
+        return Promise.resolve({
+          ok: true,
+          value: { result: AutoMergeResult.Enabled, message: "armed" },
+        });
+      },
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+  await Deno.remove(repoPath, { recursive: true });
+  return { result, calls, armed };
+}
+
+Deno.test(
+  "Issue #4952 - an open draft found on the branch is marked ready and armed on the recover path",
+  async () => {
+    const run = await runExistingDraftCompletion("branch", false);
+
+    assertEquals(run.result, { status: "continue" });
+    const ready = readyCalls(run.calls);
+    assertEquals(ready.length, 1, "gh pr ready is called once");
+    assertEquals(ready[0]![2], String(PR));
+    assertEquals(run.armed, [PR]);
+    assertEquals(
+      run.calls.filter((c) => c[0] === "pr" && c[1] === "create").length,
+      0,
+      "creation is skipped",
+    );
+  },
+);
+
+Deno.test(
+  "Issue #4952 - an open draft on the branch that cannot be marked ready fails the run as interrupted naming the PR, and is not armed",
+  async () => {
+    const run = await runExistingDraftCompletion("branch", true);
+
+    assert(run.result.status === "failure", "the run fails, not continues");
+    assertEquals(run.result.category, "interrupted");
+    assertStringIncludes(run.result.reason, `PR #${PR}`);
+    // "interrupted" may get one bounded in-process retry, so ready may be
+    // attempted more than once.
+    assert(readyCalls(run.calls).length >= 1, "ready was attempted");
+    assertEquals(run.armed, [], "auto-merge is not armed on a draft");
+  },
+);
+
+Deno.test(
+  "Issue #4952 - an open draft found after a failed gh pr create is marked ready and armed on the creation catch path",
+  async () => {
+    const run = await runExistingDraftCompletion("create-error", false);
+
+    assertEquals(run.result, { status: "continue" });
+    assert(
+      run.calls.some((c) => c[0] === "pr" && c[1] === "create"),
+      "gh pr create was attempted",
+    );
+    const ready = readyCalls(run.calls);
+    assertEquals(ready.length, 1, "gh pr ready is called once");
+    assertEquals(ready[0]![2], String(PR));
+    assertEquals(run.armed, [PR]);
+  },
+);
