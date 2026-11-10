@@ -57,11 +57,12 @@ own code-aware colon/URL pass first, then this one; the babysitter suites pass),
 (`draft_continuation_pr.ts`; they take an optional `IssueIdentity`, and
 `convertToDraftContinuation` forwards one. `completion_phase.ts` passes
 `{ prRepo: repo, issueRepo: repo }` at both mutation-hold body builds and both
-`convertToDraftContinuation` calls, so a qualified colon or URL reference to
-the governing issue is rewritten there instead of throwing
+`convertToDraftContinuation` calls, so a qualified colon or URL reference to the
+governing issue is rewritten there instead of throwing
 `MissingIssueIdentityError`; the body they receive is not always one that has
-been through `assemblePrBody`, e.g. a met-criteria body), `alignIssueCloseWithClosure`. Issues
-cited: #4637, #4126 and #3177 (titles checked with `gh issue view`).
+been through `assemblePrBody`, e.g. a met-criteria body),
+`alignIssueCloseWithClosure`. Issues cited: #4637, #4126 and #3177 (titles
+checked with `gh issue view`).
 
 Docs: `docs/INTERNALS.md` (the closure-block paragraph under the merged-PR
 closers) updated; grep of `README.md`, `docs/` (not archive),
