@@ -36,15 +36,16 @@ is `partial` (every `gh` read unreadable), so this is `Part of #4952`.
   "Unclaimed" means no assignee among the fleet logins (claim = assignee,
   `claim_issue.ts`); an omitted `assignees` key is a malformed response and
   refuses.
-- The hold survives a body rewrite (PR #5033 review). `buildSyncedPrBodyCandidate`
-  (`pr_body_sync.ts`) adopts a marker-less continuation draft on its own
-  `issue-N` branch and rebuilds the body with `assemblePrBody`, which carries
-  over the milestone section, bump notes, sub-agent tier marker and assignment
-  id but not a leading hold marker; it now also keeps a leading
-  `DRAFT_CONTINUATION_MARKER` when the live body opens with it. Self-heal and
-  sync share `opensWithDraftContinuationMarker` (`draft_continuation_pr.ts`) so
-  they cannot disagree on what a hold is. Both rewrite paths use that builder:
-  the merge-conflict repair sync and the completion-exit `adoptAgentRaisedPrBody`.
+- The hold survives a body rewrite (PR #5033 review).
+  `buildSyncedPrBodyCandidate` (`pr_body_sync.ts`) adopts a marker-less
+  continuation draft on its own `issue-N` branch and rebuilds the body with
+  `assemblePrBody`, which carries over the milestone section, bump notes,
+  sub-agent tier marker and assignment id but not a leading hold marker; it now
+  also keeps a leading `DRAFT_CONTINUATION_MARKER` when the live body opens with
+  it. Self-heal and sync share `opensWithDraftContinuationMarker`
+  (`draft_continuation_pr.ts`) so they cannot disagree on what a hold is. Both
+  rewrite paths use that builder: the merge-conflict repair sync and the
+  completion-exit `adoptAgentRaisedPrBody`.
 - `markDraftReadyAndAwaitCi` replaces the boolean `markReadyAndAwaitCi`
   (removed; its only remaining caller was a test) and returns
   `{ready, ciStarted, draft}`.
@@ -156,10 +157,10 @@ flowchart TD
   `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts`.
 - Body-sync hold (PR #5033 review), in
   `worker/deno/tests/draft_pr_self_heal_4952_test.ts`: a continuation draft
-  (marker-less adoption path) and a worker-marked hold draft are run through
-  the real `syncPrBodyFromSummary`, then `readyOrphanedDraftPr` still declines
-  both; a control shows a draft that never had the marker gets none and is
-  healed. Sync marker keep disabled → the two hold tests red, control green.
+  (marker-less adoption path) and a worker-marked hold draft are run through the
+  real `syncPrBodyFromSummary`, then `readyOrphanedDraftPr` still declines both;
+  a control shows a draft that never had the marker gets none and is healed.
+  Sync marker keep disabled → the two hold tests red, control green.
 - Edited: `worker/deno/tests/draft_ready_ci_4160_test.ts` calls
   `markDraftReadyAndAwaitCi` and asserts `.ciStarted`; every assertion is kept,
   none removed.
@@ -175,9 +176,10 @@ flowchart TD
   hook throw uncaught → red; wiring line removed from
   `run_core_production_deps.ts` → wiring test red.
 - Callers checked for the changed `markDraftReadyAndAwaitCi`: completion
-  recovery and creation paths, the sweep self-heal; `worker/deno/tests/completion_draft_ready_4952_test.ts` (18 tests at head)
-  and `worker/deno/tests/draft_ready_ci_4160_test.ts` (5 tests at head)
-  exercise the unknown-state default.
+  recovery and creation paths, the sweep self-heal;
+  `worker/deno/tests/completion_draft_ready_4952_test.ts` (18 tests at head) and
+  `worker/deno/tests/draft_ready_ci_4160_test.ts` (5 tests at head) exercise the
+  unknown-state default.
 - Ran on the final head: `./quality.sh < /dev/null` PASSED (with skipped
   checks).
 
