@@ -73,8 +73,9 @@ export const SKIP_REASONS = [
   /** Issue #3715: the actor behind the edit could not be resolved */
   "content-editor-unresolved",
   /**
-   * PR #4944 review: more body edits than GitHub's newest-100 window, and the
-   * window cannot place the snapshot — escalated, not a transient fault
+   * PR #4944 review, Issues #4804 and #4947: more body edits or title renames
+   * than GitHub's newest-100 window, and the window cannot place the snapshot —
+   * escalated, not a transient fault
    */
   "content-edit-history-truncated",
   /** Issue #3874: workDir names no store, so no baseline exists to verify */

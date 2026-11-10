@@ -5,7 +5,12 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { resolveLastIssueEditor } from "../lib/issue_edit_actor.ts";
+import {
+  type IssueEditActor,
+  type IssueEditActorLookup,
+  resolveLastIssueEditor,
+  unsettledHistoryWindows,
+} from "../lib/issue_edit_actor.ts";
 
 interface GraphPayload {
   contentEdits?: Array<
@@ -18,6 +23,8 @@ interface GraphPayload {
   renames?: Array<
     { createdAt?: string | null; actor?: { login?: string } | null }
   >;
+  /** Overrides the reported timeline `totalCount` (defaults to `renames.length`). */
+  totalRenames?: number;
 }
 
 function graphMock(
@@ -34,7 +41,10 @@ function graphMock(
               totalCount: payload.contentEdits?.length ?? 0,
               nodes: payload.contentEdits ?? [],
             },
-            timelineItems: { nodes: payload.renames ?? [] },
+            timelineItems: {
+              totalCount: payload.totalRenames ?? payload.renames?.length ?? 0,
+              nodes: payload.renames ?? [],
+            },
           },
         },
       },
@@ -365,7 +375,7 @@ function windowedGraphMock(
         repository: {
           issue: {
             userContentEdits: { totalCount: count, nodes },
-            timelineItems: { nodes: [] },
+            timelineItems: { totalCount: 0, nodes: [] },
           },
         },
       },
@@ -446,7 +456,7 @@ Deno.test("issue_edit_actor - rejects a body connection without totalCount (Issu
                 editor: { login: "alice" },
               }],
             },
-            timelineItems: { nodes: [] },
+            timelineItems: { totalCount: 0, nodes: [] },
           },
         },
       },
@@ -478,7 +488,7 @@ Deno.test("issue_edit_actor - rejects a totalCount smaller than the returned nod
                 },
               ],
             },
-            timelineItems: { nodes: [] },
+            timelineItems: { totalCount: 0, nodes: [] },
           },
         },
       },
@@ -512,7 +522,7 @@ Deno.test("issue_edit_actor - fails closed when a truncated history has an unpar
                 },
               ],
             },
-            timelineItems: { nodes: [] },
+            timelineItems: { totalCount: 0, nodes: [] },
           },
         },
       },
@@ -535,7 +545,7 @@ Deno.test("issue_edit_actor - reports truncation even when the window yields no 
           repository: {
             issue: {
               userContentEdits: { totalCount: 5, nodes: [] },
-              timelineItems: { nodes: [] },
+              timelineItems: { totalCount: 0, nodes: [] },
             },
           },
         },
@@ -560,4 +570,360 @@ Deno.test("issue_edit_actor - reports no truncation for an empty history (Issue 
   if (!result.ok) return;
   assertEquals(result.actor, null);
   assertEquals(result.bodyHistoryTruncated, false);
+});
+
+/**
+ * A GraphQL fake for an issue with `count` title renames, stored oldest first
+ * (rename `i` is by `user${i}`, one minute after rename `i - 1`). It serves the
+ * window GitHub gives `last: N` on the chronological timeline: the newest N,
+ * still oldest first, with `totalCount` covering the whole connection (Issue #4947).
+ */
+function windowedRenameGraphMock(
+  count: number,
+): (args: string[]) => Promise<string> {
+  const oldestFirst = Array.from({ length: count }, (_, i) => ({
+    createdAt: new Date(Date.UTC(2026, 4, 1) + i * 60_000).toISOString(),
+    actor: { login: `user${i}` },
+  }));
+  return (args: string[]) => {
+    const last = /timelineItems\(last:(\d+)/.exec(args.join(" "));
+    const nodes = last
+      ? oldestFirst.slice(Math.max(0, count - Number(last[1])))
+      : [];
+    return Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: { totalCount: 0, nodes: [] },
+            timelineItems: { totalCount: count, nodes },
+          },
+        },
+      },
+    }));
+  };
+}
+
+Deno.test("issue_edit_actor - asks for the newest 100 title renames by default (Issue #4947)", async () => {
+  const captured: string[][] = [];
+
+  await resolveLastIssueEditor("owner/repo", 42, graphMock({}, captured));
+
+  assertStringIncludes(
+    captured[0]!.join(" "),
+    "timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){totalCount",
+  );
+});
+
+Deno.test("issue_edit_actor - keeps the newest 100 of 150 title renames and reports truncation (Issue #4947)", async () => {
+  const result = await resolveLastIssueEditor(
+    "owner/repo",
+    42,
+    windowedRenameGraphMock(150),
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.renameHistoryTruncated, true);
+  assertEquals(result.bodyHistoryTruncated, false);
+  assertEquals(result.actors.length, 100);
+  assertEquals(
+    result.actors.every((a) => a.source === "rename"),
+    true,
+  );
+  assertEquals(result.actor?.login, "user149");
+  assertEquals(
+    result.actor?.editedAt,
+    Math.floor(Date.parse("2026-05-01T02:29:00Z") / 1000),
+  );
+  assertEquals(result.actors.at(-1)?.login, "user50");
+  assertEquals(result.actors.some((a) => a.login === "user49"), false);
+});
+
+Deno.test("issue_edit_actor - reports no rename truncation for a 3-rename history (Issue #4947)", async () => {
+  const result = await resolveLastIssueEditor(
+    "owner/repo",
+    42,
+    windowedRenameGraphMock(3),
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.renameHistoryTruncated, false);
+  assertEquals(result.actors.map((a) => a.login), [
+    "user2",
+    "user1",
+    "user0",
+  ]);
+});
+
+Deno.test("issue_edit_actor - rejects a rename connection without totalCount (Issue #4947)", async () => {
+  const gh = () =>
+    Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: { totalCount: 0, nodes: [] },
+            timelineItems: {
+              nodes: [{
+                createdAt: "2026-05-01T10:00:00Z",
+                actor: { login: "alice" },
+              }],
+            },
+          },
+        },
+      },
+    }));
+
+  const result = await resolveLastIssueEditor("owner/repo", 42, gh);
+
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "timelineItems totalCount");
+});
+
+Deno.test("issue_edit_actor - rejects a rename totalCount smaller than the returned nodes (Issue #4947)", async () => {
+  const gh = () =>
+    Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: { totalCount: 0, nodes: [] },
+            timelineItems: {
+              totalCount: 1,
+              nodes: [
+                {
+                  createdAt: "2026-05-01T10:00:00Z",
+                  actor: { login: "alice" },
+                },
+                {
+                  createdAt: "2026-05-01T11:00:00Z",
+                  actor: { login: "bob" },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+  const result = await resolveLastIssueEditor("owner/repo", 42, gh);
+
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "timelineItems totalCount");
+});
+
+Deno.test("issue_edit_actor - fails closed when a truncated rename history has an unparseable createdAt (Issue #4947)", async () => {
+  // 101 renames exist but only 2 are returned, one with a garbage timestamp:
+  // the older renames cannot be placed against the snapshot, so reject.
+  const gh = () =>
+    Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: { totalCount: 0, nodes: [] },
+            timelineItems: {
+              totalCount: 101,
+              nodes: [
+                {
+                  createdAt: "2026-05-01T11:00:00Z",
+                  actor: { login: "alice" },
+                },
+                {
+                  createdAt: "not-a-date",
+                  actor: { login: "mallory" },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+  const result = await resolveLastIssueEditor("owner/repo", 42, gh);
+
+  assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertStringIncludes(result.error.message, "unparseable createdAt");
+});
+
+Deno.test("issue_edit_actor - skips a rename with an unparseable createdAt when the window is complete (Issue #4947)", async () => {
+  const gh = () =>
+    Promise.resolve(JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: { totalCount: 0, nodes: [] },
+            timelineItems: {
+              totalCount: 2,
+              nodes: [
+                {
+                  createdAt: "not-a-date",
+                  actor: { login: "mallory" },
+                },
+                {
+                  createdAt: "2026-05-01T10:00:00Z",
+                  actor: { login: "alice" },
+                },
+              ],
+            },
+          },
+        },
+      },
+    }));
+
+  const result = await resolveLastIssueEditor("owner/repo", 42, gh);
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.renameHistoryTruncated, false);
+  assertEquals(result.actors.map((a) => a.login), ["alice"]);
+});
+
+type OkLookup = Extract<IssueEditActorLookup, { ok: true }>;
+
+/** Unix seconds of an ISO instant, as the lookup reports `editedAt`. */
+function unixAt(iso: string): number {
+  return Math.floor(Date.parse(iso) / 1000);
+}
+
+/** The snapshot instant every `unsettledHistoryWindows` case is judged against. */
+const SNAPSHOT_AT = unixAt("2026-05-01T11:00:00Z");
+
+/** A successful lookup holding only the edits and truncation flags the helper reads. */
+function lookupOf(
+  edits: Array<{ source: IssueEditActor["source"]; at: string }>,
+  truncated: { body?: boolean; rename?: boolean },
+): OkLookup {
+  const actors = edits.map((e) => ({
+    login: "alice",
+    editedAt: unixAt(e.at),
+    source: e.source,
+  }));
+  return {
+    ok: true,
+    actor: actors[0] ?? null,
+    actors,
+    bodyHistoryTruncated: truncated.body ?? false,
+    renameHistoryTruncated: truncated.rename ?? false,
+  };
+}
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows settles a truncated body window whose oldest edit predates the snapshot (Issue #4947)", () => {
+  const lookup = lookupOf([
+    { source: "content-edit", at: "2026-05-01T11:30:00Z" },
+    { source: "content-edit", at: "2026-05-01T10:30:00Z" },
+  ], { body: true });
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), []);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows reports a body window whose oldest edit post-dates the snapshot (Issue #4947)", () => {
+  const lookup = lookupOf([
+    { source: "content-edit", at: "2026-05-01T11:30:00Z" },
+    { source: "content-edit", at: "2026-05-01T11:10:00Z" },
+  ], { body: true });
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), [
+    { source: "content-edit", oldestAt: unixAt("2026-05-01T11:10:00Z") },
+  ]);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows judges a rename window on its own renames, not the body edits (Issue #4947)", () => {
+  // The body edit predates the snapshot but is not truncated: it must not
+  // settle the rename window, whose oldest rename post-dates the snapshot.
+  const lookup = lookupOf([
+    { source: "rename", at: "2026-05-01T12:00:00Z" },
+    { source: "rename", at: "2026-05-01T11:20:00Z" },
+    { source: "content-edit", at: "2026-05-01T10:30:00Z" },
+  ], { rename: true });
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), [
+    { source: "rename", oldestAt: unixAt("2026-05-01T11:20:00Z") },
+  ]);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows reports both windows, body first, each with its own oldest time (Issue #4947)", () => {
+  const lookup = lookupOf([
+    { source: "content-edit", at: "2026-05-01T11:30:00Z" },
+    { source: "content-edit", at: "2026-05-01T11:10:00Z" },
+    { source: "rename", at: "2026-05-01T12:00:00Z" },
+    { source: "rename", at: "2026-05-01T11:20:00Z" },
+  ], { body: true, rename: true });
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), [
+    { source: "content-edit", oldestAt: unixAt("2026-05-01T11:10:00Z") },
+    { source: "rename", oldestAt: unixAt("2026-05-01T11:20:00Z") },
+  ]);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows keeps an unsettled rename window when the body window is settled (Issue #4947)", () => {
+  // The body's oldest edit (10:30) predates the snapshot; the rename window's
+  // own oldest (11:20) does not. Pooling the sources would wrongly settle it.
+  const lookup = lookupOf([
+    { source: "content-edit", at: "2026-05-01T10:30:00Z" },
+    { source: "rename", at: "2026-05-01T12:00:00Z" },
+    { source: "rename", at: "2026-05-01T11:20:00Z" },
+  ], { body: true, rename: true });
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), [
+    { source: "rename", oldestAt: unixAt("2026-05-01T11:20:00Z") },
+  ]);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows keeps an unsettled body window when the rename window is settled (Issue #4947)", () => {
+  const lookup = lookupOf([
+    { source: "content-edit", at: "2026-05-01T11:30:00Z" },
+    { source: "content-edit", at: "2026-05-01T11:10:00Z" },
+    { source: "rename", at: "2026-05-01T10:45:00Z" },
+  ], { body: true, rename: true });
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), [
+    { source: "content-edit", oldestAt: unixAt("2026-05-01T11:10:00Z") },
+  ]);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows settles both windows when each oldest edit predates the snapshot (Issue #4947)", () => {
+  const lookup = lookupOf([
+    { source: "content-edit", at: "2026-05-01T10:30:00Z" },
+    { source: "rename", at: "2026-05-01T10:45:00Z" },
+  ], { body: true, rename: true });
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), []);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows leaves an empty truncated window unsettled (Issue #4947)", () => {
+  // The other source's edits cannot place this window's oldest edit.
+  const renameWindow = lookupOf([
+    { source: "content-edit", at: "2026-05-01T10:30:00Z" },
+  ], { rename: true });
+  assertEquals(unsettledHistoryWindows(renameWindow, SNAPSHOT_AT), [
+    { source: "rename", oldestAt: null },
+  ]);
+
+  const bodyWindow = lookupOf([
+    { source: "rename", at: "2026-05-01T12:00:00Z" },
+  ], { body: true });
+  assertEquals(unsettledHistoryWindows(bodyWindow, SNAPSHOT_AT), [
+    { source: "content-edit", oldestAt: null },
+  ]);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows treats an oldest edit exactly at the snapshot as unsettled (Issue #4947)", () => {
+  const lookup = lookupOf([
+    { source: "content-edit", at: "2026-05-01T11:00:00Z" },
+  ], { body: true });
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), [
+    { source: "content-edit", oldestAt: SNAPSHOT_AT },
+  ]);
+});
+
+Deno.test("issue_edit_actor - unsettledHistoryWindows reports nothing for complete histories (Issue #4947)", () => {
+  const lookup = lookupOf([
+    { source: "content-edit", at: "2026-05-01T10:00:00Z" },
+    { source: "rename", at: "2026-05-01T12:00:00Z" },
+  ], {});
+
+  assertEquals(unsettledHistoryWindows(lookup, SNAPSHOT_AT), []);
 });
