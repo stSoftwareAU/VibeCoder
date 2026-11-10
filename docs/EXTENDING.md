@@ -269,8 +269,10 @@ reports their language. On each run, a request with a fleet-authored
 missing-root closure comment is recognised as reopened, left open and logged.
 A failed comment read leaves that request open and fails the repository's sync
 before filing issues; other candidates may already have been closed. A request
-the fleet closed for a missing root marker no longer suppresses filing when the
-marker returns. `setup workflow-sync` has no dry run. Use
+the fleet closed for a missing root marker, or as not applicable (a public-only
+spec such as `dependency-review` on a private repo), no longer suppresses filing
+when the marker returns or the repository goes public. `setup workflow-sync` has
+no dry run. Use
 `purge-stale-workflow-issues --dry-run` to report the same eligible root-marker
 closures as not applicable.
 
@@ -491,8 +493,10 @@ inapplicable even if its language no longer appears in GitHub's language
 counts. A fleet-authored missing-root closure comment identifies a reopened
 request, which is left open and logged. If its comments cannot be read, the
 command leaves that request open and reports the failure. Other candidates may
-still be closed. A request closed for a missing root marker no longer suppresses
-workflow-sync filing when the marker returns. During sync, a failed reconciliation
+still be closed. A request closed for a missing root marker, or as not
+applicable on a private repo (a public-only spec), no longer suppresses
+workflow-sync filing when the marker returns or the repository goes public.
+During sync, a failed reconciliation
 comment read fails that repository's sync before filing issues. The command never
 changes workflow files.
 
