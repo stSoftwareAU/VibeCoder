@@ -441,10 +441,11 @@ export async function runRepositoryCommand(
     // The placement and the egress proxy past sudo's env_reset (Issues
     // #2247, #4877): without the proxy every registry fetch fails to resolve.
     // A dropped command also trusts its own checkout for git (Issue #4927).
-    const dropped = untrustedAccountOf(spawnable) !== undefined;
+    // carryEnvThroughSudo leaves a worker-run command's argv alone, so only a
+    // dropped command carries it.
     const final = carryEnvThroughSudo(spawnable, {
       ...sudoCarriedEnv(env),
-      ...(dropped ? gitSafeDirectoryEnv(options.cwd) : {}),
+      ...gitSafeDirectoryEnv(options.cwd),
     });
     let channelled: ChannelledCommand;
     try {
