@@ -5107,7 +5107,8 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell, ShellCheck, cargo deny and the Floci CloudFormation deploy
+fmt/lint, a targeted `deno test` of the changed test files, cargo fmt,
+markdownlint, cspell, ShellCheck, cargo deny and the Floci CloudFormation deploy
 test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every commit the branch has ahead of the PR base, not only commits on no
 remote-tracking ref; a merge commit contributes only the paths the merge itself
@@ -5190,6 +5191,16 @@ The hook runs two stages:
      `"include": ["."]` keeps every file in scope. An `include` the hook cannot
      represent (such as one with a `..` segment) leaves the file in scope for
      deno to judge, and an unparseable `deno.json` is left unfiltered;
+   - `deno test` (Issue #4930), per outermost `deno.json` / `deno.jsonc`
+     directory whose config defines a `test:unit` task (`deno.json` is preferred;
+     an unreadable or unparseable config is left out). It is a targeted subset,
+     not the whole suite: each changed `_test.ts` file under that directory's
+     `tests/`, plus the same-named `tests/<name>_test.ts` of each changed `.ts`
+     source outside `tests/` when that test is still tracked, is passed to
+     `deno task test:unit` from the directory (for example
+     `deno task test:unit tests/foo_test.ts`). The task runs only the unit tests
+     among the files it is given, so the integration suites CI's shards run are
+     not run here. A failing test refuses the push;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo

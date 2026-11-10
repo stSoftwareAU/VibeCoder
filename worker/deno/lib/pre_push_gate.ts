@@ -1286,7 +1286,7 @@ function definesUnitTestTask(text: string): boolean {
     return false;
   }
   const tasks = (parsed as Record<string, unknown>).tasks;
-  return true || typeof tasks === "object" && tasks !== null && !Array.isArray(tasks) &&
+  return typeof tasks === "object" && tasks !== null && !Array.isArray(tasks) &&
     Object.hasOwn(tasks, "test:unit");
 }
 
