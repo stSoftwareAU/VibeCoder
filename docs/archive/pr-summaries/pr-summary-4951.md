@@ -132,15 +132,24 @@ flowchart LR
   now receive `isDraft` on invited and bot entries; only `findFailedCiChecks`
   and `auto_merge_sweep` read it, and the latter already skips drafts.
   `fetchAllOpenPRs` gains `isDraft` on `OpenPRWithBody`, which `OpenPR` already
-  declared.
+  declared. `getBlockingPRForIssue` also reads `pr.isDraft` (Issue #4146: the
+  fleet's own draft for an issue does not hold it), and its open-PR input
+  includes the `fetchAllOpenPRs` listing that feeds the idle-decision census,
+  so that reader now sees `isDraft` on those rows too: a fleet draft for the
+  issue stops counting as a blocking PR there, which is the #4146 rule it was
+  already meant to apply. Pinned for the listing by
+  `worker/deno/tests/issue_query_test.ts`.
 
 ## Test Plan
 
 - Tests at head:
   `worker/deno/tests/fleet_pr_prefetch_draft_ci_scan_4951_test.ts` (6 tests at
-  head), `worker/deno/tests/pr_maintenance_draft_ci_4951_test.ts` (3 tests at
+  head), `worker/deno/tests/pr_maintenance_draft_ci_4951_test.ts` (4 tests at
   head), `worker/deno/tests/draft_ci_by_design_4951_test.ts` (6 tests at head),
-  and one added to `worker/deno/tests/pr_bot_lookup_test.ts`.
+  one added to `worker/deno/tests/pr_bot_lookup_test.ts`, and one added to
+  `worker/deno/tests/issue_query_test.ts` (`fetchAllOpenPRs` carries `isDraft`
+  only when `gh` reported a boolean; red when the `typeof` condition at
+  `issue_query.ts:1289` is negated).
 - Red checks (each flip run on the head tests, then restored):
   - `pr.isDraft === true` forced false in `findFailedCiChecks`: 3 tests red.
   - skipped read changed to `["failure"]`: 1 test red.
