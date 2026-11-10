@@ -6,7 +6,8 @@ refused the worker-owned checkout with `detected dubious ownership`. A build
 script that runs `git rev-parse HEAD` then failed, `cargo check` exited 101, and
 the gate refused every resolution. The commands the gates run as `agent` now
 carry `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=safe.directory` and
-`GIT_CONFIG_VALUE_0=<the checkout>` in argv, so git trusts that one checkout.
+`GIT_CONFIG_VALUE_0=<the checkout's worktree root>` in argv, so git trusts that
+one checkout, including when the command runs in a project directory below it.
 
 Closes #4927.
 
@@ -29,8 +30,13 @@ Closes #4927.
 ### Essential Design Decisions
 
 - Only the checkout the command runs in is trusted, never `safe.directory=*`.
-  The entry travels in argv with the cargo target and the proxy, because
-  `env_reset` strips the child environment and the value is not secret.
+  The entry names the worktree root, found by walking up from `cwd` to the
+  nearest `.git` (a directory, or the file a linked worktree has), not `cwd`
+  itself: git compares `safe.directory` with the top-level worktree, and the
+  gates run Cargo and Deno projects up to `MERGE_GATE_MAX_DEPTH` = 2 levels
+  below the root. With no `.git` found it falls back to `cwd`. The entry travels
+  in argv with the cargo target and the proxy, because `env_reset` strips the
+  child environment and the value is not secret.
 - A path `CARRIED_ENV_VALUE` rejects (a space, say) gets no entry rather than a
   thrown error, so a gate does not gain a new fault; its build script fails as
   before.
@@ -58,7 +64,8 @@ Closes #4927.
   `fatal: detected dubious ownership in repository at '/tmp/issue-4927-…'`
   (exit 128) and passes with the change.
 - Documentation: `docs/CONTAINER.md` (new bullet beside the sudo argv-carrying
-  bullet), doc comments in `worker/deno/lib/quality_gate_phase.ts` and
+  bullet, naming the worktree root), doc comments in
+  `worker/deno/lib/quality_gate_phase.ts` and
   `worker/deno/lib/untrusted_gate_spawn.ts`.
 
 ```mermaid
@@ -89,6 +96,21 @@ flowchart LR
   pins current behaviour: it stays green when the merge is removed from a
   non-sudo run, because `carryEnvThroughSudo` ignores a non-sudo argv, which is
   why the redundant `dropped` condition was deleted.
+- Added for the nested-project case (pre-PR verifier finding, a project
+  directory below the root named instead of the worktree root), each red when
+  `gitSafeDirectoryEnv` uses `cwd` instead of the root:
+  `real sudo: an agent git command runs from a subdirectory of a worker-owned
+  checkout (Issue #4927)`
+  (runs `git rev-parse --show-toplevel` from `<root>/crates/app` as `agent`),
+  `a dropped command in a nested project dir
+  trusts the worktree root (Issue #4927)`
+  and
+  `gitSafeDirectoryEnv - a nested project dir trusts the worktree root
+  (Issue #4927)`
+  (which also covers `gitWorktreeRoot` at the root itself);
+  `gitWorktreeRoot - a linked worktree's .git file marks the root, and no .git
+  falls back to cwd (Issue #4927)`
+  pins the `.git` file and fallback cases.
 - Added in `worker/deno/tests/quality_gate_phase_test.ts`:
   `gitSafeDirectoryEnv - a relative path gets no entry (Issue #4927)` (red when
   the `startsWith("/")` operand is dropped, because `CARRIED_ENV_VALUE` accepts

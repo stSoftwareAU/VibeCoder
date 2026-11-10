@@ -29,6 +29,7 @@ import {
   carryEnvThroughSudo,
   createDefaultDeps,
   gitSafeDirectoryEnv,
+  gitWorktreeRoot,
   isDockerInfraFailure,
   isMissingCommandFailure,
   qualityCommandFile,
@@ -1522,6 +1523,38 @@ Deno.test("gitSafeDirectoryEnv - a plain absolute path trusts only that checkout
     GIT_CONFIG_KEY_0: "safe.directory",
     GIT_CONFIG_VALUE_0: "/var/tmp/checkout",
   });
+});
+
+Deno.test("gitSafeDirectoryEnv - a nested project dir trusts the worktree root (Issue #4927)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-4927-root-" });
+  try {
+    await Deno.mkdir(`${root}/.git`);
+    await Deno.mkdir(`${root}/crates/app`, { recursive: true });
+    assertEquals(gitWorktreeRoot(`${root}/crates/app`), root);
+    assertEquals(gitWorktreeRoot(root), root);
+    assertEquals(gitSafeDirectoryEnv(`${root}/crates/app`), {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "safe.directory",
+      GIT_CONFIG_VALUE_0: root,
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("gitWorktreeRoot - a linked worktree's .git file marks the root, and no .git falls back to cwd (Issue #4927)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-4927-link-" });
+  try {
+    await Deno.writeTextFile(`${root}/.git`, "gitdir: /elsewhere\n");
+    await Deno.mkdir(`${root}/a/b`, { recursive: true });
+    assertEquals(gitWorktreeRoot(`${root}/a/b`), root);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+  assertEquals(
+    gitWorktreeRoot("/nonexistent-4927/a/b"),
+    "/nonexistent-4927/a/b",
+  );
 });
 
 Deno.test("carryEnvThroughSudo - a proxy URL and a lower-case name pass (Issue #4877)", () => {

@@ -333,6 +333,54 @@ Deno.test("real sudo: an agent git command runs in a worker-owned checkout (Issu
   }
 });
 
+Deno.test("real sudo: an agent git command runs from a subdirectory of a worker-owned checkout (Issue #4927)", async () => {
+  if (!await canRunAsUntrustedUser()) return;
+  const root = await makeAgentReachableTempDir("issue-4927-sub-");
+  try {
+    const init = await new Deno.Command("git", {
+      args: ["init", "-q"],
+      cwd: root,
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    assertEquals(init.code, 0);
+    const cwd = `${root}/crates/app`;
+    await Deno.mkdir(cwd, { recursive: true });
+    await Deno.chmod(`${root}/crates`, 0o777);
+    await Deno.chmod(cwd, 0o777);
+    const result = await runRepositoryCommand(
+      "git",
+      ["rev-parse", "--show-toplevel"],
+      { cwd, timeoutMs: 20_000 },
+    );
+    assert(
+      result.ok,
+      `the command was refused: ${result.ok ? "" : result.error.message}`,
+    );
+    assertEquals(result.value.code, 0, result.value.stderr);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("a dropped command in a nested project dir trusts the worktree root (Issue #4927)", async () => {
+  await withCheckout(async (root) => {
+    await Deno.mkdir(`${root}/.git`);
+    const cwd = `${root}/crates/app`;
+    await Deno.mkdir(cwd, { recursive: true });
+    const { calls, spawn } = recordingSpawn();
+    await runRepositoryCommand(
+      "cargo",
+      ["check"],
+      { cwd, timeoutMs: 1000, manifests: ["Cargo.toml"] },
+      { spawn, drop: agentDrop, source: SOURCE, trimRefused: false },
+    );
+    const final = callAt(calls, calls.length - 1);
+    assert(final.args.includes(`GIT_CONFIG_VALUE_0=${root}`), `${final.args}`);
+    assert(!final.args.includes(`GIT_CONFIG_VALUE_0=${cwd}`));
+  });
+});
+
 Deno.test("a usable untrusted account runs the command dropped, with the cargo target carried (Issue #4659)", async () => {
   await withCheckout(async (cwd) => {
     await withCheckout(async (root) => {
@@ -994,7 +1042,7 @@ Deno.test("real probe permission verdicts", async () => {
         assertEquals(await code(executable), 3);
       }
     } finally {
-      await Deno.chmod(cwd, 0o755);
+      await Deno.chmod(cwd, 0o777);
     }
     await Deno.mkdir(`${cwd}/target`);
     await Deno.writeTextFile(`${cwd}/target/readonly`, "x");
@@ -1264,7 +1312,7 @@ Deno.test("real probe for a read-only checkout passes a 0555 deno project only w
       assertEquals(await code({ readOnlyCheckout: true }), 0);
       assertEquals(await code(), 3);
     } finally {
-      await Deno.chmod(cwd, 0o755);
+      await Deno.chmod(cwd, 0o777);
     }
   });
 });
