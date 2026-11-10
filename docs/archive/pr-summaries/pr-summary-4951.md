@@ -134,10 +134,10 @@ flowchart LR
   `fetchAllOpenPRs` gains `isDraft` on `OpenPRWithBody`, which `OpenPR` already
   declared. `getBlockingPRForIssue` also reads `pr.isDraft` (Issue #4146: the
   fleet's own draft for an issue does not hold it), and its open-PR input
-  includes the `fetchAllOpenPRs` listing that feeds the idle-decision census,
-  so that reader now sees `isDraft` on those rows too: a fleet draft for the
-  issue stops counting as a blocking PR there, which is the #4146 rule it was
-  already meant to apply. Pinned for the listing by
+  includes the `fetchAllOpenPRs` listing that feeds the idle-decision census, so
+  that reader now sees `isDraft` on those rows too: a fleet draft for the issue
+  stops counting as a blocking PR there, which is the #4146 rule it was already
+  meant to apply. Pinned for the listing by
   `worker/deno/tests/issue_query_test.ts`.
 
 ## Test Plan
