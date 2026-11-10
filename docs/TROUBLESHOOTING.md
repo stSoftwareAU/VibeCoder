@@ -150,8 +150,8 @@ itself the thing to look at.
 A run **you** stopped is not reported at all. `run.sh` exits with the runtime
 client's own status — 255 on macOS when the container is stopped under it —
 which reads as a crash, so a `kill`, a launchd stop or a host shutdown used to
-count towards the streak and escalate a host that was working (Issues #879,
-#1072). The signal trap declares the stop in
+count towards the streak and escalate a host that was working
+(Issues #879, #1072). The signal trap declares the stop in
 `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-termination` and the recorder
 consumes it: `self-heal-summary` shows a `terminated` event, the failure count
 is unchanged, and nothing is filed. If you see a `worker_run` escalation for a
@@ -998,8 +998,8 @@ and are retried as before, and the host-state ones are filed against the worker
 rather than the issue. A coding run that dies in the `setup` phase, or on a
 recognised host fault (`clone-corrupt`, `clone-failed`, `disk-full`,
 `container-build-failed`), is also exempt: it is released unlabelled, with no
-`failed-once`/`failed`, no escalating cooldown, and no attempt consumed (Issue
-#2954).
+`failed-once`/`failed`, no escalating cooldown, and no attempt consumed
+(Issue #2954).
 
 **An issue labelled `failed-once` or `failed` for a host fault releases itself**
 once the host recovers — no action needed. Since Issue #2954 a coding run is no
@@ -1101,8 +1101,8 @@ you can tell whether an operation hung or genuinely failed.
 ## ⏳ Why did this run take three hours?
 
 Nothing is wrong. The cycle deadline stops _new_ claims; it does not kill work
-already in flight, and `progress_extension_enabled` is **on by default** (Issue
-#422), so a claim that keeps progressing keeps running. The whole model — soft
+already in flight, and `progress_extension_enabled` is **on by default**
+(Issue #422), so a claim that keeps progressing keeps running. The whole model — soft
 claim gate, untruncated budget, extensions, hard-cap kill with the work in
 progress preserved — is on one page:
 [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model).
@@ -1214,8 +1214,8 @@ The notice itself is `.vibe-run-budget.md` in the agent's checkout, refreshed on
 every later check and cleared at the start of the next run. It is hidden, so the
 enforced `.gitignore` keeps it out of every commit.
 
-It is written over a **wider** band than the ten-minute wind-down window (Issue
-#1138): the full quality gate needs closer to twenty minutes, so the notice
+It is written over a **wider** band than the ten-minute wind-down window
+(Issue #1138): the full quality gate needs closer to twenty minutes, so the notice
 starts refusing the gate while there is still more than ten minutes of runway.
 Above the window it says only that — the run continues, and the log line is
 `run-budget notice written` rather than `wind-down notice written`:
@@ -1239,8 +1239,7 @@ checks that path runs; see
 CI covers only the jobs the target repository actually runs, so some of the
 skipped checks may have no other copy; treat any coverage you cannot find as
 unverified. Because the file now means two things, "was this run warned?" is
-answered by its contents: the handover note reports
-`Wind-down notice:
+answered by its contents: the handover note reports `Wind-down notice:
 delivered` only for a notice that actually ordered one.
 
 If the `Run hard cap:` line instead says the cap is not set, the run was
@@ -1275,8 +1274,8 @@ work in progress; the next claim resumes from it. Handover:
 The branch named is always the branch the push targeted — the resumed branch
 when a re-claim adopted one, never a name derived from the current title, so
 retitling an issue mid-flight cannot send you to a ref that does not exist. The
-handover link appears only when that file is committed on the branch (Issue
-#769); without it the line still names the branch. A run that preserved nothing
+handover link appears only when that file is committed on the branch
+(Issue #769); without it the line still names the branch. A run that preserved nothing
 names no branch at all.
 
 The **next** claim reads that same file out of the resumed working tree and
