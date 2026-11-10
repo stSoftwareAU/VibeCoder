@@ -369,14 +369,16 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `post.ts main posting safety` cases and one `spawnFastCheck` case) are in code
   this PR does not touch; the `post.ts` and `spawnFastCheck` ones were not
   re-run on the base commit.
-- The head commit (`c84ebe77`) fixes the stdin-deadline error in
-  `worker/deno/lib/git_stdin_message.ts`: `withDeadline` now takes the
-  whole-read deadline (`totalMs`) alongside the per-read remainder (`ms`), and
-  the stall error names `totalMs` rather than the remainder, so a message that
-  stalls mid-read reports the configured deadline (`deadlineMs`) instead of the
-  time left on that read. No behaviour change beyond the message text.
+- Commit `c84ebe77` (on the branch, carried into the head) fixes the
+  stdin-deadline error in `worker/deno/lib/git_stdin_message.ts`: `withDeadline`
+  now takes the whole-read deadline (`totalMs`) alongside the per-read remainder
+  (`ms`), and the stall error names `totalMs` rather than the remainder, so a
+  message that stalls mid-read reports the configured deadline (`deadlineMs`)
+  instead of the time left on that read. It changes the error text only; the
+  diff against the base touches no test file for it, and the existing
   `worker/deno/tests/git_stdin_message_test.ts` (13 tests) passes on the head
-  with `deno test -A`.
+  with `deno test -A`. This file's freshness claims were re-derived against that
+  commit and the head that carries it.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.
