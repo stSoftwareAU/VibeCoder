@@ -1157,14 +1157,21 @@ reads that signal at both ends
 - **Degraded runs follow the same rule.** A fallback model changes nothing
   here.
 - **Completion marks a draft ready.** Completion rewrites a draft's body, runs
-  `gh pr ready` on a draft (or on an unreadable draft state) and arms squash
-  auto-merge, even when a criterion is still unmet. A failed ready on a known
-  draft releases the run as `interrupted` (a failure naming the PR as blocked):
-  the PR stays an unarmed draft and the next run retries. An unreadable state
-  only warns, naming the PR number, and arming proceeds. The body says
-  `Closes #N` unless an entry is `partial` or `missing`, which keeps
-  `Part of #N`. An orphaned draft left anyway is readied by the sweep self-heal
-  (Issue #4952).
+  `gh pr ready` on a draft and arms squash auto-merge, even when a criterion is
+  still unmet. A failed ready on a known draft releases the run as
+  `interrupted`: the run outcome names the PR with the failure attached, the
+  claim comment does not report it as raised ready, the PR stays an unarmed
+  draft, and the next run retries. When the state lookup cannot read the draft
+  state (after one retry), the ready step's own head read decides: `isDraft`
+  true is handled exactly like a known draft, while `isDraft` false or an
+  unreadable head read only warns on a failed ready, and arming proceeds as
+  before (Issue #4952). Auto-merge on a draft waits for its ready-for-review CI
+  to start; if that cannot be confirmed, the sweep arms it (Issue #4160). The
+  same ready step runs on a PR the REST fallback returns when `gh pr create`
+  hits the primary GraphQL quota, since that PR can be an open draft
+  continuation on the branch. The body says `Closes #N` unless an entry is
+  `partial` or `missing`, which keeps `Part of #N`. An orphaned draft left
+  anyway is readied by the sweep self-heal (Issue #4952).
 
 - **A timed-out run keeps a draft.** A run that times out (or is released on
   schedule) with its work preserved on the branch opens a DRAFT PR saying
@@ -1177,7 +1184,8 @@ reads that signal at both ends
 - **Ready, and merging as soon as possible.** When the resumed run completes,
   completion rewrites the draft's body (`Closes #N`, or `Part of #N` while an
   entry is `partial` or `missing`), runs `gh pr ready` and arms squash auto-merge in the
-  same step unless a known draft's ready fails, rather than waiting for the sweep.
+  same step unless marking it ready fails, rather than waiting for the sweep (a
+  failed ready is handled as in the bullet above).
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
 only the pure scope assessment both this gate and `claim_freshness.ts` read.

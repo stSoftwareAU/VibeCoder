@@ -33,7 +33,7 @@
  *    exception is a draft, which GitHub will not arm: it is armed only once
  *    item 5 has marked it ready.
  * 5. **An orphaned fleet draft is readied, then armed** (Issue #4952) — a
- *    draft whose issue has no live claim and whose body carries no
+ *    draft whose issue has no live claim and whose body does not open with a
  *    draft-continuation or mutation-hold marker is marked ready by the
  *    `readyOrphanedDraft` hook, and armed in the same pass once its
  *    ready-for-review CI has started. Every other draft is skipped (Issue
@@ -387,8 +387,9 @@ export async function sweepAutoMerge(
             if (!announcedDrafts.has(key)) {
               announcedDrafts.add(key);
               logger.info(
-                "Auto-merge sweep: skipping draft PR — auto-merge cannot be " +
-                  "armed until it is marked ready for review (Issue #1800)",
+                "Auto-merge sweep: skipping draft PR — auto-merge is not " +
+                  "armed while it is a draft, or until its ready-for-review " +
+                  "CI has started (Issue #1800)",
                 { repo, prNumber: pr.number },
               );
             }

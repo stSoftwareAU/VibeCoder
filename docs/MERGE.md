@@ -787,17 +787,18 @@ Two changes close that window:
   author asking for eyes — marking it ready is what puts it back in the sweep.
 - **Orphaned fleet drafts are readied and armed** (Issue #4952). A fleet draft
   that nothing else will ever mark ready — its issue has no live claim and its
-  body carries neither the draft-continuation nor the mutation-hold marker — is
-  the one draft the sweep does not skip. Its `readyOrphanedDraft` hook
+  body does not open with the draft-continuation or the mutation-hold marker —
+  is the one draft the sweep does not skip. Its `readyOrphanedDraft` hook
   ([`draft_pr_self_heal.ts`](../worker/deno/lib/draft_pr_self_heal.ts)) readies
   it only when the head branch names an open issue (`issue-<N>-…`) with no
-  assignee among the fleet authors, and the body has no marker. The sweep only
-  lists PRs by fleet authors, so the author rule holds by construction. The
-  hook marks the PR ready and waits for its ready-for-review CI to start (Issue
-  #4160). When the CI starts, the sweep arms the PR in the same pass. When it
-  does not, the PR is left ready but unarmed, and a later pass arms it once CI
-  has run. A failed `gh` call is logged with the PR number and the PR is not
-  armed in that pass. Any other draft is skipped as above.
+  assignee among the fleet authors, and the body does not open with a marker. A
+  marker quoted mid-body, in a code span or in prose, does not count. The sweep
+  only lists PRs by fleet authors, so the author rule holds by construction.
+  The hook marks the PR ready and waits for its ready-for-review CI to start
+  (Issue #4160). When the CI starts, the sweep arms the PR in the same pass. When it does not, the PR is left ready but unarmed,
+  and a later pass arms it once CI has run. A failed `gh` call is logged with
+  the PR number and the PR is not armed in that pass. Any other draft is
+  skipped as above.
 
 ```mermaid
 sequenceDiagram

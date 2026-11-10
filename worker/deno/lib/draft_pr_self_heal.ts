@@ -34,6 +34,7 @@
 
 import {
   DRAFT_CONTINUATION_MARKER,
+  errText,
   markDraftReadyAndAwaitCi,
 } from "./draft_continuation_pr.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
@@ -180,8 +181,4 @@ export async function readyOrphanedDraftPr(
 
 function realSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

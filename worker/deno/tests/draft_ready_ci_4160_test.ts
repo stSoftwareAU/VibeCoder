@@ -5,15 +5,15 @@
  * Draft PRs skip CI (Issue #4152), and GitHub counts a skipped required check
  * as passing. Arming auto-merge straight after `gh pr ready` could therefore
  * merge on the draft's skipped checks before the ready-for-review run
- * registers. `markReadyAndAwaitCi` marks the PR ready and reports `true` only
- * once a check run that was not on the head commit before, and was not
- * skipped, appears.
+ * registers. `markDraftReadyAndAwaitCi` marks the PR ready and reports
+ * `ciStarted` as `true` only once a check run that was not on the head commit
+ * before, and was not skipped, appears.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertFalse } from "@std/assert";
-import { markReadyAndAwaitCi } from "../lib/draft_continuation_pr.ts";
+import { markDraftReadyAndAwaitCi } from "../lib/draft_continuation_pr.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const SHA = "abc123";
@@ -55,7 +55,7 @@ Deno.test("#4160 - waits for a new, non-skipped check run before reporting CI st
     skipped,
     [...skipped, { id: 2, conclusion: null }],
   ]);
-  const started = await markReadyAndAwaitCi({
+  const { ciStarted: started } = await markDraftReadyAndAwaitCi({
     repo: REPO,
     prNumber: 7,
     gh,
@@ -80,7 +80,7 @@ Deno.test("#4160 - the draft's own skipped or earlier check runs never count as 
     id: 3,
     conclusion: "skipped",
   }]]);
-  const started = await markReadyAndAwaitCi({
+  const { ciStarted: started } = await markDraftReadyAndAwaitCi({
     repo: REPO,
     prNumber: 7,
     gh,
@@ -95,7 +95,7 @@ Deno.test("#4160 - the draft's own skipped or earlier check runs never count as 
 Deno.test("#4160 - no CI within the bound reports false, so auto-merge is left for the sweep", async () => {
   const logs: string[] = [];
   const { gh, calls } = ghStub([], [[]]);
-  const started = await markReadyAndAwaitCi({
+  const { ciStarted: started } = await markDraftReadyAndAwaitCi({
     repo: REPO,
     prNumber: 7,
     gh,
@@ -123,7 +123,7 @@ Deno.test("#4160 - a failed gh pr ready reports false and never polls", async ()
     if (args[1] === "ready") return Promise.reject(new Error("HTTP 502"));
     return Promise.resolve("[]");
   };
-  const started = await markReadyAndAwaitCi({
+  const { ciStarted: started } = await markDraftReadyAndAwaitCi({
     repo: REPO,
     prNumber: 7,
     gh,
@@ -141,7 +141,7 @@ Deno.test("#4160 - an unreadable check-run list still marks the PR ready, but ne
     if (args[1] === "view") return Promise.reject(new Error("HTTP 502"));
     return Promise.resolve("");
   };
-  const started = await markReadyAndAwaitCi({
+  const { ciStarted: started } = await markDraftReadyAndAwaitCi({
     repo: REPO,
     prNumber: 7,
     gh,

@@ -1,9 +1,10 @@
 /**
  * Tests for the orphaned fleet draft self-heal (Issue #4952).
  *
- * A fleet draft whose issue has no live claim and whose body carries no
- * draft-continuation or mutation-hold marker is marked ready, and its CI is
- * awaited, so the auto-merge sweep can arm it. Every other draft stays a draft.
+ * A fleet draft whose issue has no live claim and whose body does not open
+ * with a draft-continuation or mutation-hold marker is marked ready, and its CI
+ * is awaited, so the auto-merge sweep can arm it. Every other draft stays a
+ * draft.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -24,7 +25,8 @@ const PR = 7;
 interface PrFixture {
   body: string;
   isDraft: boolean;
-  headRefName: string;
+  /** Omitted from the live view when undefined. */
+  headRefName?: string;
 }
 
 interface Fixture {
@@ -32,7 +34,7 @@ interface Fixture {
   pr: PrFixture | "unreadable";
   /** `"unreadable"` makes `gh issue view` fail. */
   issue:
-    | { state: string; assignees: { login: string }[] }
+    | { state: string; assignees?: { login: string }[] }
     | "unreadable";
   /** Makes `gh pr ready` fail. */
   readyFails?: boolean;
@@ -58,8 +60,11 @@ function ghStub(f: Fixture) {
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
     if (args[0] === "pr" && args[1] === "view") {
-      if (args.includes("headRefOid")) {
-        return Promise.resolve(JSON.stringify({ headRefOid: SHA }));
+      // The check-run wait's head read: `--json headRefOid,isDraft`.
+      if (args.some((arg) => arg === "headRefOid,isDraft")) {
+        return Promise.resolve(
+          JSON.stringify({ headRefOid: SHA, isDraft: !ready }),
+        );
       }
       if (f.pr === "unreadable") {
         return Promise.reject(new Error("HTTP 502"));
@@ -90,8 +95,11 @@ function ghStub(f: Fixture) {
 
 const noSleep = () => Promise.resolve();
 
-/** Run the self-heal against a stub and capture its logs. */
-async function heal(f: Fixture) {
+/**
+ * Run the self-heal against a stub and capture its logs. `listingHeadRefName`
+ * is the head branch the sweep's listing supplied, if any.
+ */
+async function heal(f: Fixture, listingHeadRefName?: string) {
   const { gh, calls } = ghStub(f);
   const warnings: string[] = [];
   const infos: string[] = [];
@@ -103,6 +111,9 @@ async function heal(f: Fixture) {
     log: (m) => warnings.push(m),
     info: (m) => infos.push(m),
     sleep: noSleep,
+    ...(listingHeadRefName !== undefined
+      ? { headRefName: listingHeadRefName }
+      : {}),
   });
   const readyCalls = calls.filter((c) => c[0] === "pr" && c[1] === "ready");
   return { healed, calls, readyCalls, warnings, infos };
@@ -120,6 +131,15 @@ Deno.test("#4952 - an unclaimed draft with no marker is marked ready and reports
     "Marked orphaned fleet draft PR #7 ready (Issue #4952)",
   ]);
   assertEquals(run.warnings, []);
+  assert(
+    run.calls.some((c) =>
+      c[0] === "api" &&
+      c[1] === `repos/${REPO}/commits/${SHA}/check-runs?per_page=100`
+    ),
+    `the CI wait must read the check runs of the head commit ${SHA}: ${
+      JSON.stringify(run.calls)
+    }`,
+  );
 });
 
 Deno.test("#4952 - a draft carrying the draft-continuation marker is held and never readied", async () => {
@@ -164,6 +184,47 @@ Deno.test("#4952 - control: the same draft without the marker is healed, so the 
   assertEquals(withoutMarker.readyCalls.length, 1);
 });
 
+Deno.test("#4952 - a body that quotes the marker in a code span, mid-body, is not a hold and is healed", async () => {
+  const run = await heal({
+    pr: healthyDraft({
+      body: "Adds a check.\n\nThe template used to emit " +
+        `\`${DRAFT_CONTINUATION_MARKER}\` on its first line, so this is the ` +
+        "fix for the stale comment.",
+    }),
+    issue: OPEN_UNCLAIMED,
+  });
+  assert(run.healed, "a mid-body quotation does not open a hold");
+  assertEquals(run.readyCalls.length, 1);
+});
+
+Deno.test("#4952 - a body that quotes the marker in prose, mid-body, is not a hold and is healed", async () => {
+  const run = await heal({
+    pr: healthyDraft({
+      body: "Work in progress.\n\nWe discussed whether " +
+        `${DRAFT_CONTINUATION_MARKER} should be written by hand. It should not.`,
+    }),
+    issue: OPEN_UNCLAIMED,
+  });
+  assert(run.healed, "a mid-body mention in prose does not open a hold");
+  assertEquals(run.readyCalls.length, 1);
+});
+
+Deno.test("#4952 - a body that opens with the marker after leading whitespace is held", async () => {
+  for (
+    const body of [
+      `\n${DRAFT_CONTINUATION_MARKER}\n\nPart of #7`,
+      `   \n\t${DRAFT_CONTINUATION_MARKER}\n\nPart of #7`,
+    ]
+  ) {
+    const run = await heal({
+      pr: healthyDraft({ body }),
+      issue: OPEN_UNCLAIMED,
+    });
+    assertFalse(run.healed, `held for body ${JSON.stringify(body)}`);
+    assertEquals(run.readyCalls, []);
+  }
+});
+
 Deno.test("#4952 - an issue assigned to a fleet author is a live claim and never readied", async () => {
   const run = await heal({
     pr: healthyDraft(),
@@ -180,6 +241,32 @@ Deno.test("#4952 - control: an issue assigned to a non-fleet login is not a clai
   });
   assert(run.healed);
   assertEquals(run.readyCalls.length, 1);
+});
+
+Deno.test("#4952 - control: an open issue with an empty assignees list is unclaimed and healed", async () => {
+  const run = await heal({
+    pr: healthyDraft(),
+    issue: { state: "OPEN", assignees: [] },
+  });
+  assert(run.healed);
+  assertEquals(run.readyCalls.length, 1);
+  assertEquals(run.warnings, []);
+});
+
+Deno.test("#4952 - an issue read with no assignees key is malformed: not readied, warns naming the PR and issue", async () => {
+  const run = await heal({
+    pr: healthyDraft(),
+    issue: { state: "OPEN" },
+  });
+  assertFalse(run.healed);
+  assertEquals(run.readyCalls, []);
+  assertEquals(run.warnings.length, 1);
+  assert(
+    run.warnings[0]!.includes("PR #7") && run.warnings[0]!.includes("issue #7"),
+    `expected a warning naming PR #7 and issue #7, got ${
+      JSON.stringify(run.warnings)
+    }`,
+  );
 });
 
 Deno.test("#4952 - a closed issue is never readied", async () => {
@@ -209,6 +296,59 @@ Deno.test("#4952 - an unreadable PR view stays a draft and warns naming the PR n
     run.warnings.some((m) => m.includes("PR #7")),
     `expected a warning naming PR #7, got ${JSON.stringify(run.warnings)}`,
   );
+});
+
+Deno.test("#4952 - an unreadable issue view stays a draft, is not readied, and warns naming the PR number", async () => {
+  const run = await heal({ pr: healthyDraft(), issue: "unreadable" });
+  assertFalse(run.healed);
+  assertEquals(run.readyCalls, []);
+  assertEquals(run.infos, []);
+  assert(
+    run.warnings.some((m) => m.includes("PR #7")),
+    `expected a warning naming PR #7, got ${JSON.stringify(run.warnings)}`,
+  );
+});
+
+Deno.test("#4952 - a non-string PR body stays a draft and warns naming the PR number", async () => {
+  const run = await heal({
+    pr: healthyDraft({ body: 42 as unknown as string }),
+    issue: OPEN_UNCLAIMED,
+  });
+  assertFalse(run.healed);
+  assertEquals(run.readyCalls, []);
+  assertEquals(run.calls.filter((c) => c[0] === "issue"), []);
+  assert(
+    run.warnings.some((m) => m.includes("PR #7") && m.includes("body")),
+    `expected a body warning naming PR #7, got ${JSON.stringify(run.warnings)}`,
+  );
+});
+
+Deno.test("#4952 - the listing's head branch is used when the live view omits headRefName", async () => {
+  const run = await heal(
+    {
+      pr: healthyDraft({ headRefName: undefined }),
+      issue: OPEN_UNCLAIMED,
+    },
+    "issue-7-x",
+  );
+  assert(run.healed);
+  const issueCalls = run.calls.filter((c) => c[0] === "issue");
+  assertEquals(issueCalls.length, 1);
+  assertEquals(issueCalls[0]![2], "7");
+});
+
+Deno.test("#4952 - the live head branch is preferred over the listing's when both exist", async () => {
+  const run = await heal(
+    {
+      pr: healthyDraft({ headRefName: "issue-2-y" }),
+      issue: OPEN_UNCLAIMED,
+    },
+    "issue-1-x",
+  );
+  assert(run.healed);
+  const issueCalls = run.calls.filter((c) => c[0] === "issue");
+  assertEquals(issueCalls.length, 1);
+  assertEquals(issueCalls[0]![2], "2");
 });
 
 Deno.test("#4952 - a PR that is not a draft is not touched", async () => {
