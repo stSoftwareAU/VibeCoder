@@ -12,7 +12,8 @@
  * "ciCargo"?: CiCargoScan, "compareRef"?: string }`. The `ciCargo` entry is
  * the repo's CI cargo checks, precomputed by the worker before the agent runs
  * (Issue #4630 review): the hook passes them back as `findCiCargo` so the CI cargo checks
- * run on the agent's own push without this module loading the YAML parser.
+ * run on the agent's own push without this module importing the workflow
+ * scanner (`ci_cargo_checks.ts` and its bare `@std/yaml/parse` specifier).
  * `compareRef` is the PR base (`origin/<branch>`, or `""` when a comparison is
  * required but the base is unknown): a CI cargo failure the base already has is
  * no verdict on the push, and an unavailable comparison is infrastructure.

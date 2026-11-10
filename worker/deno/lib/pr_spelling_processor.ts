@@ -14,7 +14,11 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { prBaseForSync, resolveRepairPreFlightSpec } from "./git_push.ts";
+import {
+  prBaseCompareRef,
+  prBaseForSync,
+  resolveRepairPreFlightSpec,
+} from "./git_push.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   buildSpellingFixPrompt,
@@ -381,6 +385,19 @@ async function _processSpellingWithHeartbeat(
   // Destructure PromptParts for prompt caching (Issue #1262)
   const { systemPrompt, prompt: userPrompt } = promptResult.value;
 
+  // The PR base, read once before the agent runs: the agent's own pre-push
+  // hook compares a failing CI cargo check against it, so a failure the base
+  // already has is no verdict on the spelling fix (Issue #4630 review), and
+  // the final push below merges it in. `""` when the base cannot be read,
+  // so such a failure is refused as infrastructure rather than as a verdict.
+  const prBase = await prBaseForSync(
+    undefined,
+    repo,
+    prNumber,
+    (args) => deps.github.runGhCommand(args),
+    (message) => logger.warn(message),
+  );
+
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
@@ -391,6 +408,7 @@ async function _processSpellingWithHeartbeat(
       phase: "spelling_fix",
       repo,
       cwd: processorDeps.workDir,
+      ciCargoCompareRef: prBaseCompareRef(prBase),
       logger,
     },
     {
@@ -434,14 +452,9 @@ async function _processSpellingWithHeartbeat(
   );
   // Owner rule 2026-11-03: merge the PR's base in just before the fix is
   // pushed, so the fix and the branch update reach GitHub in one push and CI
-  // runs once. A gated head was refused above, so this is the PR head.
-  const syncBaseBranch = await prBaseForSync(
-    undefined,
-    repo,
-    prNumber,
-    (args) => deps.github.runGhCommand(args),
-    (message) => logger.warn(message),
-  );
+  // runs once. A gated head was refused above, so this is the PR head. The
+  // base was read before the agent ran.
+  const syncBaseBranch = prBase;
   const pushOptions = {
     cwd: processorDeps.workDir,
     expectedAncestor: beforeSha,

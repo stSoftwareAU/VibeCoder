@@ -1210,8 +1210,9 @@ export function killCompletionCapMs(killAfterSeconds: number): number {
 
 /**
  * The repo CI's cargo checks, precomputed before the agent starts so its own
- * pre-push hook can run them from the hook spec without loading the YAML
- * parser (Issue #4630 review). Without a checkout there is nothing to
+ * pre-push hook can run them from the hook spec without importing the
+ * workflow scanner (`ci_cargo_checks.ts` and its bare `@std/yaml/parse`
+ * specifier) (Issue #4630 review). Without a checkout there is nothing to
  * scan and no scan is written. When the scan cannot be produced (the
  * tracked-file list is unreadable, or the scanner fails to load or throws), the returned
  * scan has no checks and one `unverifiable` reason naming the fault, and a
@@ -1541,8 +1542,8 @@ async function runClaudeWithTimeoutBody(
     // #3394): install a per-run git pre-push hook, active only for the agent's
     // env. Fail closed, like the shim. The repo CI's cargo checks are scanned
     // here, before the agent runs, and written into the hook spec, so the hook
-    // runs them on the agent's own push (Issue #4630 review) without loading
-    // the YAML parser itself.
+    // runs them on the agent's own push (Issue #4630 review) without importing
+    // the workflow scanner itself.
     const agentCiCargo = await scanAgentCiCargoChecks(
       cwd,
       (m) => (logger?.warn(m) ?? console.warn(m)),

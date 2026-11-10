@@ -37,8 +37,11 @@ compile error is therefore caught before the push, not by a CI run. Closes
   `baseRef`. A failing CI cargo check is re-run, as CI wrote it, in a detached
   worktree of that base. If every diagnostic the push shows (message, file and
   how many times; not line) is also on the base, the failure is a
-  `[PRE_PUSH_WARNING]`, not a verdict. A base that passes or lacks a diagnostic
-  leaves it a verdict. An unavailable repair base or a host failure during
+  `[PRE_PUSH_WARNING]`, not a verdict. Only error-level diagnostics are
+  compared: a warning never fails a CI cargo command, so a warning the push
+  adds, or cargo's `warning: build failed, waiting for other jobs to
+  finish...`, does not make a base-only failure a verdict. A base that passes
+  or lacks an error the push shows leaves it a verdict. An unavailable repair base or a host failure during
   comparison is infrastructure, not a branch verdict.
 - Scanner fixes: a `cd <dir>` on its own line now holds for the rest of that
   step's run block (any `cd` form it cannot follow, including `pushd`, `popd`, a
@@ -58,7 +61,8 @@ compile error is therefore caught before the push, not by a CI run. Closes
   `repoCiCargoChecks` (loaded with a dynamic `import()` inside
   `scanAgentCiCargoChecks`, not a top-level import, so scripts that reach
   `claude_runner.ts` without the worker's import map, such as the
-  review-fleet-prs helpers, never load the YAML parser) and writes the derived
+  review-fleet-prs helpers, never reach its bare `@std/yaml/parse` specifier)
+  and writes the derived
   checks (and any unverifiable reasons) into the hook's `pre-push-spec.json`.
   `pre_push_gate_cli.ts` reads that entry and passes it back as `findCiCargo`,
   so the hook runs the CI cargo checks without loading the YAML
@@ -79,8 +83,11 @@ compile error is therefore caught before the push, not by a CI run. Closes
     to `runPrePushGate`, so a failure the base already has is a
     `[PRE_PUSH_WARNING]` on the agent's own push too. In the CI processor both
     agent runs (the fix and the quality retry) carry it; in the feedback
-    processor every agent run does, through `runAgentTracked`. Other agent runs
-    (issue runs, merge-conflict and spelling repairs) pass none, so a failing CI
+    processor every agent run does, through `runAgentTracked`. Issue runs
+    (the execute run, with the milestone branch or else the base branch, and
+    the completion rebase pass, with its PR base) and spelling repairs (the
+    PR base, read once before the agent runs and reused for the base merge)
+    carry it too. Only merge-conflict repairs pass none, so a failing CI
     cargo check on their own push stays a verdict.
   - The hook runs with `--allow-write=${TMPDIR:-/tmp}` added to main's
     `--config <worker>/deno.json --frozen --lock <worker>/deno.lock` invocation
@@ -113,8 +120,10 @@ compile error is therefore caught before the push, not by a CI run. Closes
   main's invocation and adds this PR's `--allow-write=${TMPDIR:-/tmp}` to it,
   so the scratch worktree for the base comparison is still writable. The
   `--no-config` rationale in the hook docs and `docs/CONFIGURATION.md` is
-  updated to say the hook receives the scan precomputed into its spec and never
-  loads the YAML parser itself.
+  updated to say the hook receives the scan precomputed into its spec and
+  never imports the workflow scanner (`ci_cargo_checks.ts` and its bare
+  `@std/yaml/parse` specifier); the hook still reaches a YAML parser through
+  `cargo_deny_gate.ts`.
 - Docs: `docs/CONFIGURATION.md` (pre-flight / pre-push gate section) and
   `docs/INTERNALS.md`; the head also rewrites the agent-hook passages in
   `docs/CONFIGURATION.md` and the `pre_push_gate.ts` module header and
@@ -162,7 +171,7 @@ flowchart LR
 
 - The scanner is opt-in (`findCiCargo`) and loaded by dynamic import in
   `gateUnpushedCommits`. The agent's pre-push hook never scans the workflows
-  itself (and never loads the YAML parser): the worker scans them before the
+  itself (and never imports the workflow scanner): the worker scans them before the
   agent runs and writes the derived scan into the hook's spec, which the hook
   passes back as `findCiCargo`.
 - Anything the scanner cannot reproduce faithfully fails loud as infrastructure
@@ -315,9 +324,12 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `tests/git_push_preflight_test.ts::prBaseCompareRef - origin/<base>, or "" when the base is unknown (Issue #4630 review)`;
   `scanAgentCiCargoChecks` has the no-checkout, success, `git ls-files` failure
   (`!ok` and non-zero exit share one `failed` helper) and scanner-load-failure
-  outcomes tested. The agent runs that carry no `compareRef` (issue runs,
-  merge-conflict and spelling repairs) are not changed: their push stays a
-  verdict, as documented. The unreadable-base
+  outcomes tested. `tests/pr_push_base_sync_test.ts::a spelling fix asks for its PR's base to be merged in before the push`
+  asserts the spelling agent gets `origin/<base>` as its compare ref, and
+  `tests/pre_push_gate_test.ts::runPrePushGate: a warning the push adds does not turn a base-only failure into a verdict (Issue #4630 review)`
+  covers a plain rustc warning and cargo's build-failed notice. Merge-conflict
+  repairs still carry no `compareRef`: their push stays a verdict, as
+  documented. The unreadable-base
   path is
   `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)`,
   and the feedback fix-branch wiring is

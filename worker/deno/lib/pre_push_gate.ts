@@ -75,9 +75,10 @@ import {
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
-// Types only: a value import would load the YAML parser into the hook's
-// runtime graph; the hook receives the scan precomputed into its spec instead
-// (see the module header).
+// Types only: a value import would put the workflow scanner, and its bare
+// `@std/yaml/parse` specifier, into the hook's runtime graph; the hook
+// receives the scan precomputed into its spec instead (see the module
+// header). The hook still reaches a YAML parser through cargo_deny_gate.ts.
 import type {
   CiCargoCheck,
   CiCargoCheckKind,
@@ -1948,17 +1949,24 @@ async function probeCargoToolchains(
 const SAFE_COMPARE_REF = /^[A-Za-z0-9_][A-Za-z0-9._/-]{0,199}$/;
 
 /**
- * The diagnostics of a failed cargo run, each as `message @ file` (the line
- * number is dropped, since a push moves lines), or the message alone when no
- * `-->` location follows, with how many times it appears. Summary lines that
- * count other diagnostics are left out so the counts do not depend on them.
+ * The error-level diagnostics of a failed cargo run, each as `message @ file`
+ * (the line number is dropped, since a push moves lines), or the message alone
+ * when no `-->` location follows, with how many times it appears. Summary
+ * lines that count other diagnostics are left out so the counts do not depend
+ * on them.
+ *
+ * Warning lines are left out (Issue #4630 review): a warning never fails a CI
+ * cargo command (under `-D warnings` the lint is already printed as `error:`),
+ * so a warning the push adds, or cargo's own `warning: build failed, waiting
+ * for other jobs to finish...`, must not turn a failure the base already has
+ * into a verdict on the push.
  */
 function diagnosticSignatures(output: string): Map<string, number> {
   const found = new Map<string, number>();
   const lines = output.split("\n").map((line) => line.trim());
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
-    const head = /^(?:error|warning)(?:\[[A-Za-z0-9]{1,20}\])?: /.exec(line);
+    const head = /^error(?:\[[A-Za-z0-9]{1,20}\])?: /.exec(line);
     if (head === null) continue;
     const message = line.slice(head[0].length);
     if (
@@ -2079,8 +2087,9 @@ async function failsOnBaseToo(args: {
  * `findCiCargo`, which is opt-in with no default: a caller that does not pass it
  * gets no CI cargo check, planned or run. The agent's own pre-push hook passes
  * it too, from a scan the worker precomputes into the hook spec before the agent
- * runs, so the hook never loads the YAML parser itself; the
- * worker's gates in `git_push.ts` pass it directly. When the scan holds a
+ * runs, so the hook never imports the workflow scanner (`ci_cargo_checks.ts`
+ * and its bare `@std/yaml/parse` specifier) itself — it still reaches a YAML
+ * parser through `cargo_deny_gate.ts`; the worker's gates in `git_push.ts` pass it directly. When the scan holds a
  * command that cannot be reproduced here (including a scan the worker could not
  * produce before the agent ran), the push fails with a
  * {@link PrePushGateInfrastructureError}. Before the first CI cargo command

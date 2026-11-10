@@ -3576,6 +3576,39 @@ Deno.test("runPrePushGate: a clippy failure the PR base already has is no verdic
   }
 });
 
+Deno.test("runPrePushGate: a warning the push adds does not turn a base-only failure into a verdict (Issue #4630 review)", async () => {
+  // A warning never fails a CI cargo command, so it is no evidence that the
+  // push caused the failure: only error-level diagnostics are compared.
+  const cases: [string, string][] = [
+    [
+      "a plain rustc warning",
+      "warning: unused import: `std::fmt`\n  --> src/lib.rs:1:5\n",
+    ],
+    [
+      "cargo's build-failed notice",
+      "warning: build failed, waiting for other jobs to finish...\n",
+    ],
+  ];
+  for (const [name, warning] of cases) {
+    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    try {
+      const result = await gateAgainstBase(
+        clone,
+        stdin,
+        (onBase) => ({
+          code: 101,
+          stderr: onBase ? LINT_A : LINT_A + warning,
+        }),
+        [],
+      );
+      assert(result.ok, `${name}: ${result.ok ? "" : result.error.message}`);
+      assert(!result.value.checksRun.includes(CLIPPY_CMD), name);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
 Deno.test("runPrePushGate: a clippy failure that is new on the push blocks, whatever the base shows", async () => {
   const cases: [
     string,

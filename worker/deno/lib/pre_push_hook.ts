@@ -98,7 +98,8 @@ export async function installPrePushHook(opts: {
   /**
    * The repo's CI cargo checks, precomputed by the worker before the agent
    * runs (Issue #4630 review). Written into the hook spec so the hook can run
-   * them without loading the YAML parser itself. Omit to keep the hook
+   * them without importing the workflow scanner (`ci_cargo_checks.ts`)
+   * itself. Omit to keep the hook
    * scanning no CI cargo check.
    */
   ciCargo?: CiCargoScan;

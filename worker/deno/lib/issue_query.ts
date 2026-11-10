@@ -159,10 +159,10 @@ export interface MergedPR {
    */
   closingRefs?: number[];
   /**
-   * The `missing` entries of the PR body's `## Acceptance Criteria` block
-   * (Issue #3177): a merged PR whose own summary marks a criterion missing
-   * does not close its issue. Absent on a cache entry written before this
-   * field was collected — treat as none.
+   * The `partial` and `missing` entries of the PR body's `## Acceptance
+   * Criteria` block (Issues #3177, #4644): a merged PR whose own summary marks
+   * a criterion partial or missing does not close its issue. Absent on a cache
+   * entry written before this field was collected — treat as none.
    */
   missingCriteria?: string[];
   /**

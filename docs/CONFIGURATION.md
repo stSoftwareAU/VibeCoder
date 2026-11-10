@@ -1945,6 +1945,15 @@ precedence over built-in defaults.
 
 ### ⚙️ Operational Defaults
 
+Claude Code also has a separate per-command foreground ceiling. VibeCoder
+sets `BASH_MAX_TIMEOUT_MS=1800000` (30 minutes) in the Claude child environment
+so a gate longer than Claude's default 10-minute ceiling can finish (#4913).
+An explicit parent environment value wins. `BASH_DEFAULT_TIMEOUT_MS` is left
+unchanged: the agent must request a tool timeout sized to the gate and the
+remaining run budget. The phase deadline and stall watchdogs still apply;
+this setting does not extend them. See
+[Claude Code environment variables](https://code.claude.com/docs/en/env-vars).
+
 These values have built-in defaults and can be overridden in `.config.json`
 . Only values that differ from the defaults need to be stored — if a
 default changes in the codebase, the new default flows to all installations
@@ -5206,7 +5215,8 @@ gates do (see that bullet):
      processors' cargo-only spec) and in the agent's own pre-push hook: before
      the agent runs, the worker scans the workflows and writes the derived
      checks (and any unverifiable reasons) into the hook's spec file, so the
-     hook runs them without loading the YAML parser itself. If
+     hook runs them without importing the workflow scanner
+     (`ci_cargo_checks.ts` and its bare `@std/yaml/parse` specifier). If
      that scan cannot be produced (the tracked-file list is unreadable, or the
      scanner fails to load or throws), the worker logs a warning and writes a
      scan with no checks and one unverifiable reason, so a Rust-relevant push
@@ -5252,12 +5262,15 @@ gates do (see that bullet):
      message and file, each no more often than on the base; not line) is also on the base, the failure is no verdict
      on this push and is reported as a `[PRE_PUSH_WARNING]`. The agent's own
      hook compares too, but only for a run that is handed the PR base: the
-     CI-fix and PR-feedback processors read the PR's base branch before the
-     agent runs and write it into the hook spec as `compareRef`
-     (`origin/<base>`; `""` when the base cannot be read, which makes a failing
-     CI cargo check an infrastructure fault, never a verdict). Another agent
-     run, such as an issue run, merge-conflict or spelling repair, has no
-     `compareRef`, so a failing CI cargo check on its push is a verdict. The
+     CI-fix, PR-feedback and spelling processors read the PR's base branch
+     before the agent runs, and issue runs pass theirs (the milestone branch,
+     else the base branch), and each is written into the hook spec as
+     `compareRef` (`origin/<base>`; `""` when the base cannot be read, which
+     makes a failing CI cargo check an infrastructure fault, never a verdict).
+     A merge-conflict repair has no `compareRef`, so a failing CI cargo check
+     on its push is a verdict. Only error-level diagnostics are compared; a
+     warning never fails a CI cargo command, so a warning the push adds does
+     not make a base-only failure a verdict. The
      hook's Deno process is allowed to write only to the temp directory, for
      the base worktree; the git and cargo commands it runs are not limited to
      it. A base that passes,

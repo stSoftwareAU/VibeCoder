@@ -353,15 +353,20 @@ bash `worker/run_core.sh` conductor. It sequences:
    scopes are logged with a `[SECURITY]` tag.
 4. **Startup housekeeping** — the one-time disk-space reclaim, log rotation,
    worker-log retention, stale temp-file / work-dir / worktree / Claude-session
-   sweeps, orphaned local + stale remote branch cleanup, and finally the
-   merged-PR issue sweep run as a single in-order Deno sequence
+   sweeps and orphaned local branch cleanup run as an in-order Deno sequence
+   before the first claim. The two GitHub-touching sweeps, stale remote branch
+   cleanup and the merged-PR issue sweep, run in the background alongside the
+   main loop, so they never delay the first claim (Issue #4822)
    ([run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts),); each step
-   is best-effort — a failure is logged loud but never blocks start.
+   is best-effort — a failure is logged loud but never blocks start. Any
+   background sweep still running when the loop ends gets a bounded grace
+   before the exit cleanup; one that outlives it is abandoned and resumes on
+   the next run.
 
-   The last step,
+   The merged-PR issue sweep,
    `merged-pr-issue-sweep`
    ([merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts),
-   Issue #504), is the only one that touches GitHub rather than local disk. It
+   Issue #504), runs last of the background sweeps and touches GitHub. It
    closes every open issue whose fix has already **merged and landed**,
    whoever authored the PR — the set the claim scan refuses for ever as
    `merged-pr-permanent` and which therefore cannot heal itself. It invents no

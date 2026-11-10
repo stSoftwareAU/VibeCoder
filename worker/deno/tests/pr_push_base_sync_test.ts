@@ -196,16 +196,19 @@ function silentLogger(): Logger {
 
 Deno.test("a spelling fix asks for its PR's base to be merged in before the push", async () => {
   const pushOptions: PushLineageOptions[] = [];
+  const agentCompareRefs: (string | undefined)[] = [];
   const annotations: CheckAnnotation[] = [
     { path: "src/main.ts", start_line: 10, message: "Unknown word: colour" },
   ];
   const deps = createMockDeps({
     claude: {
-      runClaudeWithRetry: (() =>
-        Promise.resolve({
+      runClaudeWithRetry: ((options: { ciCargoCompareRef?: string }) => {
+        agentCompareRefs.push(options.ciCargoCompareRef);
+        return Promise.resolve({
           ok: true,
           value: { output: "Fixed spelling", exitCode: 0, timedOut: false },
-        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+        });
+      }) as unknown as ClaudeDeps["runClaudeWithRetry"],
     },
     github: {
       runGhCommand: (args: string[]) =>
@@ -254,4 +257,8 @@ Deno.test("a spelling fix asks for its PR's base to be merged in before the push
   assert(result.ok);
   assert(pushOptions.length >= 1);
   assertEquals(pushOptions[0]!.syncBaseBranch, "Develop");
+  // The agent's own pre-push hook compares a failing CI cargo check against
+  // the same base, so a base-only clippy failure is no verdict on the
+  // spelling fix's self-push (Issue #4630 review).
+  assertEquals(agentCompareRefs, ["origin/Develop"]);
 });
