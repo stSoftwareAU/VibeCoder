@@ -254,11 +254,19 @@ function notApplicableMarker(specId: string): string {
   return `<!-- vibe-coder:purge-not-applicable:${specId} -->`;
 }
 
-/** Verify whether a fleet closure retired this request for a missing root marker. */
-export async function hasMissingRootClosure(
+/** Phrase unique to the private-repo not-applicable closing comment. */
+const PRIVATE_REPO_CLOSURE_PHRASE = "is not applicable to this repository";
+
+/** Phrase unique to the missing-root-project closing comment. */
+const MISSING_ROOT_CLOSURE_PHRASE =
+  "requires a root project marker that is absent";
+
+/** Whether a fleet-authored comment on the issue carries the marker and phrase. */
+async function hasFleetClosureComment(
   repo: string,
   number: number,
   specId: string,
+  phrases: string[],
   runner: (cmd: string[]) => Promise<CommandOutput>,
   options: AlertDedupAuthorOptions,
   log: (message: string) => void,
@@ -288,7 +296,7 @@ export async function hasMissingRootClosure(
   )
     .filter((comment) =>
       comment.body.includes(notApplicableMarker(specId)) &&
-      comment.body.includes("requires a root project marker that is absent")
+      phrases.some((phrase) => comment.body.includes(phrase))
     );
   return (await selectFleetAuthoredComments(
     comments,
@@ -296,6 +304,51 @@ export async function hasMissingRootClosure(
     options,
     log,
   )).length > 0;
+}
+
+/** Verify whether a fleet closure retired this request for a missing root marker. */
+export function hasMissingRootClosure(
+  repo: string,
+  number: number,
+  specId: string,
+  runner: (cmd: string[]) => Promise<CommandOutput>,
+  options: AlertDedupAuthorOptions,
+  log: (message: string) => void,
+): Promise<boolean> {
+  return hasFleetClosureComment(
+    repo,
+    number,
+    specId,
+    [MISSING_ROOT_CLOSURE_PHRASE],
+    runner,
+    options,
+    log,
+  );
+}
+
+/**
+ * Verify whether a fleet closure retired this request for any applicability
+ * reason: a missing root marker, or a public-only spec on a private repo
+ * (Issue #4887). Workflow-sync stops counting such a closed request as a
+ * filing dedup hit, so it can be re-filed once the spec applies again.
+ */
+export function hasApplicabilityClosure(
+  repo: string,
+  number: number,
+  specId: string,
+  runner: (cmd: string[]) => Promise<CommandOutput>,
+  options: AlertDedupAuthorOptions,
+  log: (message: string) => void,
+): Promise<boolean> {
+  return hasFleetClosureComment(
+    repo,
+    number,
+    specId,
+    [MISSING_ROOT_CLOSURE_PHRASE, PRIVATE_REPO_CLOSURE_PHRASE],
+    runner,
+    options,
+    log,
+  );
 }
 
 /** Build the closing comment posted on a stale workflow-sync issue. */
