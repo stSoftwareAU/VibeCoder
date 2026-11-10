@@ -108,7 +108,7 @@ function createGhMock(state: {
                   editor: { login: "mallory" },
                 }],
               },
-              timelineItems: { nodes: [] },
+              timelineItems: { totalCount: 0, nodes: [] },
             },
           },
         },
