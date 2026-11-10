@@ -56,7 +56,7 @@ default and override, `docs/MODEL-AND-CACHING.md` paragraph updated.
 - Docs updated: `docs/MODEL-AND-CACHING.md` (Foreground command ceiling),
   `docs/CONFIGURATION.md`, `docs/MANAGER-WORKER-CONTRACT.md` (three
   `deepseek_env.ts` line references, re-pointed after the 13-line insertion:
-  `:164`, `:180-181`, `:186-187`), doc comment in
+  `:165`, `:180-181`, `:186-187`), doc comment in
   `worker/deno/lib/claude_env.ts`.
 - `./quality.sh`: all stages passed except `deno tests`, which failed only in
   `tests/pr_maintenance_command_test.ts` (5 failures: merge-queue and #4613
