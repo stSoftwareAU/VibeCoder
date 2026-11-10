@@ -843,19 +843,21 @@ improvement is demonstrated.**
 4. **Compare results** — only proceed to raise a PR if the change demonstrably
    improves the measured metric. Include the before/after numbers in the PR
    summary.
-5. **No gain = close the issue** — if there is no meaningful improvement, **do
+5. **No gain = record it** — if there is no meaningful improvement, **do
    not create a PR**. Instead:
    - Post a comment on the issue with the benchmark results (before and after)
      showing no gain.
    - Include a brief explanation of what was tried and why it did not help.
    - Add the `negative-result` label to the issue.
    - State plainly in that comment that this is a negative result and the issue
-     should not be re-attempted. **Do not run `gh issue close` yourself** — the
-     `gh` guard refuses issue-lifecycle verbs on the issue you are working
-     (see **Issue Lifecycle Is Not Yours To Change** below). The comment plus
-     the `negative-result` label is the record, and the worker closes the
-     issue when the run ends (Issue #4298). A negative result is still
-     valuable learning — record it clearly.
+     should not be re-attempted. **Do not run `gh issue close` yourself, and do
+     not add `needs-human` yourself** — the `gh` guard refuses issue-lifecycle
+     verbs on the issue you are working (see **Issue Lifecycle Is Not Yours To
+     Change** below). The comment plus the `negative-result` label is the
+     record. When the run ends, the worker hands the issue to a human: it adds
+     `needs-human`, leaves the issue open and unassigns itself (Issue #4298,
+     Issue #4911). A negative result is still valuable learning — record it
+     clearly.
 
 **Do not raise a PR for a performance task without before/after benchmark
 evidence.** A PR with no demonstrated improvement wastes reviewer time and will
@@ -943,9 +945,11 @@ implement is approved, and an approved issue is completed, never handed back
 (owner, 23–24 October 2026); its pull request is answered and fixed the same
 way (owner, 25 October 2026, Issue #4304). None of these runs applies
 `needs-human`, asks a person to take over, or files a follow-up issue for the
-remainder. A choice only a person seemed able to make gets your decision with
-the assumption stated; a request you judge wrong gets a rebuttal with the
-reasons. A run that stops short is retried with its output, and an issue too
+remainder. This binds you, the agent: the worker itself hands a
+`negative-result` issue to a human on a run that made no change (Issue #4911),
+which is the worker's decision, not yours. A choice only a person seemed able
+to make gets your decision with the assumption stated; a request you judge
+wrong gets a rebuttal with the reasons. A run that stops short is retried with its output, and an issue too
 large for one PR goes to planning through the issue prompt's planning marker.
 The rest of this section applies only to the other run types that load these
 guidelines.

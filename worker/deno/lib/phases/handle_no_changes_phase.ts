@@ -41,7 +41,7 @@ import {
   gatePlanningHandoff,
 } from "../image_conclusion_gate.ts";
 import { hasPlanningRequestMarker } from "../planning_handoff.ts";
-import { closeNegativeResultIssue } from "../negative_result_close.ts";
+import { handOffNegativeResultIssue } from "../negative_result_close.ts";
 import { redactSecrets } from "../secret_redaction.ts";
 import { redactedTail } from "../redacted_text.ts";
 import {
@@ -305,24 +305,29 @@ export async function workOnIssueHandleNoChanges(
   if (declaredOutcome.result) return declaredOutcome.result;
   const { blocked, selfFiledDependency } = declaredOutcome;
 
-  // Issue #4298: a benchmark run with no gain records the results and the
-  // `negative-result` label; the worker closes the issue on that record. The
-  // label is the agent's own word, so the image gate withholds this close as
-  // it does the already-resolved one (Issue #1385).
+  // Issue #4298, revised by Issue #4911: a benchmark run with no gain records
+  // the results and the `negative-result` label, and the worker hands the issue
+  // to a human rather than closing it on the agent's word. This is the worker's
+  // decision, not the agent's. The issue stays open, but needs-human is a
+  // blocking label, so it leaves the queue until a human closes it or removes
+  // the labels. The label is the agent's own word, so the image gate withholds
+  // this hand-off as it does the already-resolved close (Issue #1385).
   if (
     !blocked && !gateAlreadyResolvedClose(ctx.untrustedImages).withheld &&
-    await closeNegativeResultIssue({
+    await handOffNegativeResultIssue({
       ghClient: deps.github.createClient(logger),
       repo,
       issueNumber,
       githubUser,
+      needsHumanLabel: ctx.config.needsHumanLabel,
       logger,
+      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
     })
   ) {
     return {
       category: "unknown",
       status: "early_exit",
-      reason: "negative_result_closed",
+      reason: "negative_result_handed_off",
     };
   }
 

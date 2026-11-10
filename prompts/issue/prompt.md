@@ -515,7 +515,8 @@ adds only what is specific to issue #{{ISSUE_NUMBER}}:
   the job (see **No hand-back, no follow-up** below). Do not add
   `needs-human`, do not ask a person to take over, and do not file an issue for
   the remainder. A run that stops short is retried, and that costs more than
-  finishing now. The reserved workflow labels (`top-priority`, `work-on`,
+  finishing now. The one exception is the worker's own `negative-result`
+  hand-off on a no-change run (Issue #4911), which is the worker's decision. The reserved workflow labels (`top-priority`, `work-on`,
   `low-priority`, `failed`, `failed-once`, `refine-issue`, `planning`,
   `question`, `best-model`) are the worker's and a trusted human's to manage;
   never add one yourself.
@@ -541,7 +542,10 @@ a plan that left it too large for one PR is a planning defect. Neither is a
 reason to hand it back. A run that ends without a PR is retried with its output
 carried to the next attempt. It is never handed to a human, and a follow-up
 issue for the rest is never filed: a new issue needs a person to read and
-approve it, and this one is already approved.
+approve it, and this one is already approved. The one exception is a
+`negative-result` issue: when you have recorded `negative-result` on a run that
+made no change, the worker itself hands it to a human with `needs-human`
+(Issue #4911). You still never apply `needs-human` yourself.
 
 The only ways this run ends without completing the issue are the markers this
 prompt defines:
