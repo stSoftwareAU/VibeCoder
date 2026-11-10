@@ -11,8 +11,7 @@ from the related-documentation lists of the RTK and Repo-context trial pages.
 
 Closes #4954.
 
-Version bump: `VERSION` updated for this change; the merged commit records the
-final version.
+Version bump: no `VERSION` change; this repository has no VERSION file.
 
 ## Spec
 
@@ -62,12 +61,12 @@ flowchart LR
     P["docs/TOKEN-ECONOMIZER-TRIAL.md"] --> T["drift test"]
     C["container/ pin"] -->|"commit must equal the page's"| T
     K["worker/deno/lib config"] -->|"keys must match the page's"| T
-    F["every text file naming the plugin"] -->|"must be on the purge list"| T
+    F["every tracked text file naming the plugin"] -->|"must be on the purge list"| T
 ```
 
 - Commands run on the final head:
   `deno task test:unit
-  tests/token_economizer_trial_docs_test.ts` (27 passed,
+  tests/token_economizer_trial_docs_test.ts` (29 passed,
   0 failed), `markdownlint-cli2 docs/TOKEN-ECONOMIZER-TRIAL.md README.md` (0
   issues), `cspell --no-progress docs/TOKEN-ECONOMIZER-TRIAL.md` (0 issues).
 - Facts the page states about other components were read in the repository: RTK
@@ -135,8 +134,8 @@ flowchart LR
 - **violation** — page claimed the drift test covers every file naming the
   plugin, but the corpus was a fixed list of roots — evidence:
   `docs/TOKEN-ECONOMIZER-TRIAL.md:194` — reason: fixed in this diff (the corpus
-  is the whole repository outside `docs/archive` and `docs/audits`, and the page
-  states that scope)
+  is every file git tracks outside `docs/archive` and `docs/audits`, read from
+  `git ls-files`, and the page states that scope)
 - **violation** — page said `git grep` finds only the page after a purge —
   evidence: `docs/TOKEN-ECONOMIZER-TRIAL.md:220` — reason: fixed in this diff
   (the page names the historical records a purge leaves alone)
@@ -155,19 +154,27 @@ flowchart LR
 
 ## Test Plan
 
-- Added `worker/deno/tests/token_economizer_trial_docs_test.ts` (27 tests): the
-  live page passes every rule; the corpus walk reads the whole repository; SHA
+- Added `worker/deno/tests/token_economizer_trial_docs_test.ts` (29 tests): the
+  live page passes every rule; the live corpus reads every tracked repository
+  file; the corpus leaves out a gitignored nested copy and an ignored root
+  `.config.json` that name the plugin (positive control: the tracked file is
+  read); the corpus fails loud outside a git repository; SHA
   drift (page against a `container/` pin, interim commit while no pin exists,
   fail-closed on a pin with no commit, re-wrapped JSON pin); config-key drift;
   purge-list drift in both directions; section-scoped structure pins; the Status
   cell; and the links from the README and the two sibling pages.
 - Ran on the final head:
   `deno task test:unit
-  tests/token_economizer_trial_docs_test.ts` passed (27
+  tests/token_economizer_trial_docs_test.ts` passed (29
   passed, 0 failed); with `tests/rtk_output_trial_docs_test.ts` and
-  `tests/repo_context_trial_docs_test.ts` the three files passed (48 passed, 0
-  failed, run before the final RegExp-free rewrite of two helpers; the file
-  alone was re-run after it).
+  `tests/repo_context_trial_docs_test.ts` the three files passed (50 passed, 0
+  failed).
+- Review fix (PR #5032): the corpus was walked from disk and so read gitignored
+  local files (agent worktrees under `.claude/worktrees/`, an ignored root
+  `.config.json`). Red check: adding `--others` to `git ls-files` turned
+  `the corpus leaves out gitignored nested copies and an ignored root config`
+  red (`only tracked files are in the corpus; ignored copies and config are
+  not`), then restored.
 - Red checks on the page, restored and `cmp`-checked after each: SHA changed in
   the candidate section only → red; SHA changed in both places → red
   (`interim commit` problem); the "Not yet: #4955 pins this commit" sentence

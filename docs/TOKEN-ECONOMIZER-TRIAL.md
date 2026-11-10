@@ -196,9 +196,10 @@ This is every file, image layer, config key, doc section, callback field and
 learnings directory the trial adds. Not yet:
 [#4959](https://github.com/stSoftwareAU/VibeCoder/issues/4959), the verdict
 issue, will remove exactly this list when the bar is missed or a stop rule
-fired. The drift test fails when a text file anywhere in the repository, other
-than the historical records under `docs/archive/` and `docs/audits/`, names the
-plugin and is missing from the list.
+fired. The drift test fails when a text file tracked by git, other than the
+historical records under `docs/archive/` and `docs/audits/`, names the plugin
+and is missing from the list. Gitignored local files, such as agent worktrees
+and an operator's `.config.json`, are not repository files and are not read.
 
 State is `present` when the path exists and names the plugin today, and
 `planned #N` when issue #N is to add it.

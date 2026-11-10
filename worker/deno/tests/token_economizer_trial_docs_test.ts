@@ -21,10 +21,12 @@
  *
  * The checks are one pure function over a map of repo-relative paths to text,
  * so a fixture can break one rule and the test can see that rule refuse it.
- * The live corpus is every text file under the repository root, except the
- * dependency and version-control trees, the worker state under `graft/` and
- * `.codegraph/`, and the historical records under `docs/archive/` and
- * `docs/audits/`. It is read once and must pass. There are no wall-clock
+ * The live corpus is every text file git tracks at the repository root
+ * (`git ls-files`). Gitignored local files, such as agent worktrees and an
+ * operator's `.config.json`, are not in it. Also left out are the dependency
+ * and version-control trees, the worker state under `graft/` and `.codegraph/`,
+ * and the historical records under `docs/archive/` and `docs/audits/`. It is
+ * read once and must pass. There are no wall-clock
  * thresholds and no network calls.
  *
  * Australian English spelling used throughout.
@@ -515,41 +517,72 @@ function driftProblems(page: string, files: Map<string, string>): string[] {
   return problems;
 }
 
-/** Repo-relative path of an entry in `dir`; `dir` is "" at the root. */
-function childPath(dir: string, name: string): string {
-  return dir === "" ? name : `${dir}/${name}`;
-}
-
-/** Walk one directory of the repository, skipping the excluded trees. */
-async function walk(files: Map<string, string>, dir: string): Promise<void> {
-  const listing = dir === "" ? "" : `${dir}/`;
-  for await (const entry of Deno.readDir(`${REPO_ROOT_PATH}${listing}`)) {
-    if (WALK_SKIP_NAMES.includes(entry.name)) continue;
-    const path = childPath(dir, entry.name);
-    if (entry.isDirectory) {
-      if (!WALK_SKIP_PATHS.includes(path)) await walk(files, path);
-    } else if (entry.isFile) {
-      await addFile(files, path);
-    }
+/** True when `path` sits under an excluded tree or has an excluded name. */
+function isSkipped(path: string): boolean {
+  if (path.split("/").some((part) => WALK_SKIP_NAMES.includes(part))) {
+    return true;
   }
+  return WALK_SKIP_PATHS.some((dir) =>
+    path === dir || path.startsWith(`${dir}/`)
+  );
 }
 
-/** Add one repository file to the corpus, unless it is large or binary. */
+/** Tracked paths at `root`, from `git ls-files -z`: ignored files never appear. */
+async function trackedPaths(root: string): Promise<string[]> {
+  const result = await new Deno.Command("git", {
+    args: ["ls-files", "-z"],
+    cwd: root,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  if (!result.success) {
+    const stderr = new TextDecoder().decode(result.stderr).trim();
+    throw new Error(`git ls-files failed at ${root}: ${stderr}`);
+  }
+  return new TextDecoder().decode(result.stdout).split("\0").filter((p) =>
+    p !== ""
+  );
+}
+
+/**
+ * Add one tracked file to the corpus, unless it is excluded, a symlink, absent
+ * from the working tree, large or binary.
+ */
 async function addFile(
   files: Map<string, string>,
+  root: string,
   path: string,
 ): Promise<void> {
-  const file = `${REPO_ROOT_PATH}${path}`;
-  if ((await Deno.stat(file)).size > MAX_CORPUS_BYTES) return;
+  if (isSkipped(path)) return;
+  const file = `${root}${path}`;
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(file);
+  } catch (error) {
+    // A tracked file deleted in the working tree is not in the corpus.
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+  if (!info.isFile || info.size > MAX_CORPUS_BYTES) return;
   const bytes = await Deno.readFile(file);
   if (bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) return;
   files.set(path, new TextDecoder().decode(bytes));
 }
 
-/** Every text file in the repository, keyed by repo-relative path. */
-async function readCorpus(): Promise<Map<string, string>> {
+/**
+ * Every tracked text file of the git repository at `root` (a path with a
+ * trailing slash), keyed by repo-relative path. Gitignored local files, such
+ * as agent worktrees and an operator's `.config.json`, are not repository
+ * files and are left out.
+ */
+async function readCorpus(
+  root: string = REPO_ROOT_PATH,
+): Promise<Map<string, string>> {
   const files = new Map<string, string>();
-  await walk(files, "");
+  for (const path of await trackedPaths(root)) {
+    await addFile(files, root, path);
+  }
   return files;
 }
 
@@ -687,7 +720,7 @@ Deno.test("the live trial page passes every drift rule against the live reposito
   );
 });
 
-Deno.test("the live corpus walk reads the whole repository", async () => {
+Deno.test("the live corpus reads every tracked repository file", async () => {
   const corpus = await liveCorpus();
   for (
     const path of [
@@ -711,6 +744,74 @@ Deno.test("the live corpus walk reads the whole repository", async () => {
       `the live corpus must skip version-control and dependency trees: ${path}`,
     );
     assert(!path.includes("\\"), `corpus keys use forward slashes: ${path}`);
+  }
+});
+
+/** A throwaway git repository holding one tracked and several ignored files. */
+async function withIgnoredFixture(
+  body: (root: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "te-corpus-" });
+  try {
+    const root = `${dir}/`;
+    const write = async (path: string, text: string) => {
+      const full = `${root}${path}`;
+      await Deno.mkdir(full.slice(0, full.lastIndexOf("/")), {
+        recursive: true,
+      });
+      await Deno.writeTextFile(full, text);
+    };
+    await write(".gitignore", ".claude/worktrees/\n.config.json*\n");
+    await write("README.md", "tracked: names TokenEconomizer\n");
+    await write(".claude/worktrees/x/README.md", "ignored: TokenEconomizer\n");
+    await write(".config.json", '{"token_economizer":{}}\n');
+    await write(".config.json.grq-backup-1", '{"token_economizer":{}}\n');
+    const git = await new Deno.Command("git", {
+      args: ["init", "-q"],
+      cwd: root,
+      stdin: "null",
+    }).output();
+    assert(git.success, "git init must succeed in the fixture");
+    const add = await new Deno.Command("git", {
+      args: ["add", ".gitignore", "README.md"],
+      cwd: root,
+      stdin: "null",
+    }).output();
+    assert(add.success, "git add must succeed in the fixture");
+    await body(root);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("the corpus leaves out gitignored nested copies and an ignored root config", async () => {
+  await withIgnoredFixture(async (root) => {
+    const corpus = await readCorpus(root);
+    // Positive control: the tracked file naming the plugin is read.
+    assert(corpus.has("README.md"), "a tracked file must be in the corpus");
+    assertEquals(
+      [...corpus.keys()].sort(),
+      [".gitignore", "README.md"],
+      "only tracked files are in the corpus; ignored copies and config are not",
+    );
+  });
+});
+
+Deno.test("the corpus refuses a directory that is not a git repository", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "te-corpus-nogit-" });
+  try {
+    let message = "";
+    try {
+      await readCorpus(`${dir}/`);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    assert(
+      message.includes("git ls-files failed"),
+      `a missing repository must fail loud, got: ${message}`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });
 
