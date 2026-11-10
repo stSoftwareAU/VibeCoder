@@ -14,6 +14,8 @@ including a doc-drift test reading a changed `.md` or prompt.
 
 Version bump: `VERSION` is not touched by this change.
 
+Closes #4930.
+
 ## Spec
 
 ### Intent and Rationale
