@@ -19,7 +19,13 @@ export interface AgentPromptParts {
   prompt: string;
   /** Static system prompt, when the caller supplies one. */
   systemPrompt?: string;
-  /** Tools the agent must not use. */
+  /**
+   * Tool names included in the prompt as a request. Claude's adapter enforces
+   * them through `--disallowed-tools`; Codex and Gemini only receive this
+   * prompt wording. A caller relying on enforcement must check the adapter
+   * and every permitted fallback; this is not process, filesystem or network
+   * isolation.
+   */
   disallowedTools?: readonly string[];
 }
 
