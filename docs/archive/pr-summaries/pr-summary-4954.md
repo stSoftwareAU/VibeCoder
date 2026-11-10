@@ -116,8 +116,8 @@ flowchart LR
   commit — reviewer: unrequested — reason: #4957's scope says a finding "is a
   stop rule in the protocol doc"
 - **unrequested** — the drift test also pins phrases in the candidate, host,
-  window, bar, comparison and stop-rule sections, and checks that every text
-  file naming the plugin is on the purge list — reviewer: unrequested — reason:
+  window, bar, comparison and stop-rule sections, and checks that every tracked
+  text file naming the plugin is on the purge list — reviewer: unrequested — reason:
   this is how the test reads "the doc's purge list disagrees with the code"; the
   section pins keep the protocol from being edited away silently
 
@@ -163,12 +163,12 @@ flowchart LR
   fail-closed on a pin with no commit, re-wrapped JSON pin); config-key drift;
   purge-list drift in both directions; section-scoped structure pins; the Status
   cell; and the links from the README and the two sibling pages.
-- Ran on the final head:
-  `deno task test:unit
-  tests/token_economizer_trial_docs_test.ts` passed (29
-  passed, 0 failed); with `tests/rtk_output_trial_docs_test.ts` and
-  `tests/repo_context_trial_docs_test.ts` the three files passed (50 passed, 0
-  failed).
+- Ran on the final head, one file at a time with
+  `deno task test:unit <file>`: `worker/deno/tests/token_economizer_trial_docs_test.ts`
+  (29 tests at head), `worker/deno/tests/rtk_output_trial_docs_test.ts`
+  (11 tests at head, unchanged by this PR) and
+  `worker/deno/tests/repo_context_trial_docs_test.ts` (10 tests at head,
+  unchanged by this PR). The three files together: 50 passed, 0 failed.
 - Review fix (PR #5032): the corpus was walked from disk and so read gitignored
   local files (agent worktrees under `.claude/worktrees/`, an ignored root
   `.config.json`). Red check: adding `--others` to `git ls-files` turned
