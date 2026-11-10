@@ -6,6 +6,7 @@ verified as already red on the base branch with the same failure, no agent
 starts and no attempt is charged; the PR is re-read on the next pass, after the
 base's fix has landed through the ordinary base merge. The repair prompt's
 host-difference sentence now also covers a failure that is red on the base too.
+
 Closes #4921.
 
 Version bump: `VERSION` is not changed by this PR.
