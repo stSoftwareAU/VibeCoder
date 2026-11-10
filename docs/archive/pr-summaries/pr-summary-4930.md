@@ -1,12 +1,17 @@
 ## Summary
 
 The pre-push gate (agent `pre-push` hook, `commitAndPushPending` final-mile
-push, completion-phase whole-branch check) now also runs a targeted `deno test`
-over the changed tests before a push. It runs the changed `tests/*_test.ts`
-files and the same-named `tests/<name>_test.ts` of each changed `.ts` source,
-through the repository's own `deno task test:unit`, so a fix pushed by a
-PR-feedback, CI-fix or babysitter round no longer reaches CI with a test it
-broke. The whole CI suite is not run on those pushes. Part of #4930.
+push, completion-phase whole-branch check) now also runs `deno test` before a
+push, through the repository's own `deno task test:unit`. It runs the changed
+`tests/*_test.ts` files, the same-named `tests/<name>_test.ts` of each changed
+`.ts` source, and every `tests/` test that depends on a changed file: a test or
+test helper whose text names it (path, unique base name, directory, or a
+templated directory), or that imports it directly or through other files
+(relative `.ts` specifiers). Deleted and renamed-away paths count, so a push
+that removes a file a test still reads is caught. A fix pushed by a
+PR-feedback, CI-fix or babysitter round therefore no longer reaches CI with a
+test it broke, including a doc-drift test reading a changed `.md` or prompt.
+Part of #4930.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -25,9 +30,19 @@ Version bump: `VERSION` is not touched by this change.
 - A root gets the check only when its `deno.json(c)` defines a `test:unit` task:
   that task runs only unit tests, so the integration suites CI's shards exclude
   are not run, and other Deno repositories are unaffected.
-- A targeted subset, not the suite: the full suite takes minutes per shard and
-  the pre-push gate runs on every push. Tests that pin a changed source from an
-  issue-numbered file name are not mapped.
+- Dependency-selected, not the whole suite: a doc or prompt change selects
+  roughly 20 to 300 tests, while a change to a widely imported `lib/` module
+  selects most of the unit suite (about 1,870 of 2,300 test files for
+  `lib/jsonc.ts`), the same tests CI would run for it. The selection
+  over-approximates on purpose: running an unrelated test costs time, missing a
+  reader lets a break reach CI.
+- Only files under `tests/` are read for names. A source that merely quotes a
+  doc path in a message depends on nothing; one that reads it has a test that
+  names it. Changed integration suites are not passed to the runner: CI's unit
+  shards exclude them, and the runner exits 1 on a list with no unit suite.
+- Not followed: import-map, `jsr:` / `npm:` specifiers and computed dynamic
+  imports; a path built piecewise with `join()` for a non-unique base name; a
+  `_test.ts` outside `tests/`.
 - The check shares the existing runner, so a failure, timeout or missing `deno`
   blocks the push (fail closed).
 
@@ -44,39 +59,62 @@ Version bump: `VERSION` is not touched by this change.
 Backend-only; no UI files. Tests are in
 `worker/deno/tests/pre_push_gate_test.ts`. Docs: `docs/CONFIGURATION.md`
 (summary sentence of the changed-file checks and the hook's first-stage list).
-New non-test members have production readers: `denoUnitTestRoots` is set in
-`runPrePushGate` and read in `planChangedFileChecks`; `loadDenoUnitTestRoots` is
-called by `runPrePushGate`.
+New non-test members have production readers: `denoUnitTestRoots` and
+`denoReferencedTests` are set in `runPrePushGate` and read in
+`planChangedFileChecks`; `loadDenoUnitTestRoots` and
+`loadReferencedUnitTests` are called by `runPrePushGate`.
 
 ## Acceptance Criteria
 
-- **partial** — Make the fleet run `deno test, markdownlint` the way CI does,
-  and require it to pass, before a PR is raised or a fix is pushed — evidence:
-  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed test runs the repo's test:unit task, and its failure blocks the push (#4930)`
-  — reason: `deno test` runs only for the changed test files and their
-  same-named tests, not the whole CI suite; markdownlint was already in the
-  pre-push gate
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Make the fleet run `deno test, markdownlint` the way CI does, and
+  require it to pass, before a PR is raised or a fix is pushed — evidence:
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed test runs the repo's test:unit task, and its failure blocks the push (#4930)`,
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed doc runs the differently named test that reads it (#4930)`,
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a deleted source runs the differently named test that imports it (#4930)`
+  — reviewer: met (markdownlint was already in the pre-push gate; `deno test`
+  now runs the unit tests a push can affect, found by name and by import, and
+  its failure blocks the push). Known residual gaps, judged unrealistic or rare
+  by the reviewer: a path built piecewise with `join()` for a non-unique base
+  name, import-map / `jsr:` / `npm:` specifiers, and a `_test.ts` outside
+  `tests/`.
 
 ## Test Plan
 
-- Added five tests in `worker/deno/tests/pre_push_gate_test.ts`: sibling
-  mapping; sorted and deduplicated list; negatives (unlisted root, untested
-  source, deleted test, docs only); `loadDenoUnitTestRoots` (config with and
-  without `test:unit`, unparseable config); `runPrePushGate` running the task,
-  blocking on a non-zero exit and listing it in `checksRun`.
-- Red checks, each with only that behaviour broken: skip the sibling mapping →
-  the sibling test red; ignore the `tracked` filter → the negatives test red;
-  ignore `denoUnitTestRoots` → the negatives test red; ignore the `test:unit`
-  key → the `loadDenoUnitTestRoots` test red; `runPrePushGate` not passing the
-  roots → the `runPrePushGate` test red; remove deduplication → three tests red.
+- Tests in `worker/deno/tests/pre_push_gate_test.ts`: sibling mapping; sorted
+  and deduplicated list; negatives (unlisted root, untested source, deleted
+  test, docs only); what counts as a test and as a source (`_test.ts` outside
+  `tests/`, a `tests/` helper, a non-`.ts` file); `denoReferencedTests` merged,
+  filtered by `tracked`; changed integration suites left out;
+  `loadDenoUnitTestRoots` (config with and without `test:unit`, unparseable
+  config, a `null` or array document, and a missing, `null`, array or string
+  `tasks`);
+  `loadReferencedUnitTests` (import, transitive import through a wrapper and a
+  cycle, doc read through a helper, templated prompt path, ambiguous base name,
+  directory listing, a source that only quotes a doc, a deleted source,
+  changed tests excluded); `runPrePushGate` running the task and blocking on a
+  non-zero exit, running a differently named test for a changed doc, and for a
+  deleted source.
+- Mutation survivors from the first completion check, each now killed:
+  `plannedUnitTestFiles` operands (a `lib/x_test.ts`, a `tests/helper.ts`, a
+  `.md` / `.js` source, a source named `x_test.ts`) and the `test:unit` task
+  probe (`null`, array, `{}`, `{"tasks": null}`, an unreadable config: the
+  probe no longer swallows a `null` text, so a dropped `null` check throws).
+  Red checks run by hand: `startsWith("tests/")` dropped, `endsWith(".ts")`
+  dropped, `tasks !== null` dropped, ancestor tokens on `.ts` files, `..`
+  resolution, the `.` skip, the visited check, the seed set, the changed-test
+  exclusion, the tests-only text scan and the integration filter: each turns a
+  test red.
 - `deno task test:unit tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_cargo_deny_test.ts tests/pre_push_gate_retry_test.ts`:
-  144 passed, 0 failed.
-- `./quality.sh`: every check passed except `deno tests`: 33637 passed, 6 failed
-  (`merge_fallback_issue_test.ts`, `pr_maintenance_command_test.ts`). Those two
-  files give the same 6 failures at base `aa964319`, so they are not caused by
-  this change.
+  all passed (148 before the last additions; the 106-test
+  `pre_push_gate_test.ts` passes after them).
+- `./quality.sh` on the first version: every check passed except `deno tests`:
+  6 failures in `merge_fallback_issue_test.ts` and
+  `pr_maintenance_command_test.ts`, identical at base `aa964319`.
 - Related rules checked: the module doc and `docs/CONFIGURATION.md` lists of
   changed-file checks (siblings grepped: `cspell`, `ShellCheck`, `cargo deny`)
   were updated; no other doc lists them as complete.
-- Callers of `planChangedFileChecks`: `runPrePushGate` passes the roots; the
-  ShellCheck-only call passes no changed files, so it needs none.
+- Callers of `planChangedFileChecks`: `runPrePushGate` passes the roots and the
+  referenced tests; the ShellCheck-only call passes no changed files, so it
+  needs none.

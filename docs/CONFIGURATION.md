@@ -5107,7 +5107,7 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, a targeted `deno test` of the changed test files, cargo fmt,
+fmt/lint, `deno test` of the changed and referencing tests, cargo fmt,
 markdownlint, cspell, ShellCheck, cargo deny and the Floci CloudFormation deploy
 test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every commit the branch has ahead of the PR base, not only commits on no
@@ -5193,14 +5193,29 @@ The hook runs two stages:
      deno to judge, and an unparseable `deno.json` is left unfiltered;
    - `deno test` (Issue #4930), per outermost `deno.json` / `deno.jsonc`
      directory whose config defines a `test:unit` task (`deno.json` is preferred;
-     an unreadable or unparseable config is left out). It is a targeted subset,
-     not the whole suite: each changed `_test.ts` file under that directory's
-     `tests/`, plus the same-named `tests/<name>_test.ts` of each changed `.ts`
-     source outside `tests/` when that test is still tracked, is passed to
-     `deno task test:unit` from the directory (for example
+     an unreadable or unparseable config is left out). It runs the tests the
+     push can affect, not the whole suite: each changed `_test.ts` file under
+     that directory's `tests/`; the same-named `tests/<name>_test.ts` of each
+     changed `.ts` source outside `tests/`; and every tracked `tests/` file that
+     depends on a changed file, whatever its own name. A `.ts` file under the
+     directory is a seed when it is changed, or when it sits under `tests/` and
+     its text names a changed file: it contains the file's repo-relative path,
+     its base name (when no other tracked file shares it, else its last two path
+     segments), or, for a doc, prompt or other non-`.ts` file, its directory
+     followed by `/` (a test that lists the directory) or one of its ancestor
+     directories followed by `/${` (a path built in a template literal). A test
+     is selected when it is a seed or imports one, directly or
+     through other files (relative `.ts` specifiers).
+     This reaches a doc-drift test that reads a changed `.md` or prompt, directly
+     or through a helper, and a test that imports a changed source through
+     another module; it over-selects rather than misses, and a change to a
+     widely imported module can select most of the unit suite. The files are
+     passed to `deno task test:unit` from the directory (for example
      `deno task test:unit tests/foo_test.ts`). The task runs only the unit tests
-     among the files it is given, so the integration suites CI's shards run are
-     not run here. A failing test refuses the push;
+     among the files it is given, so the integration suites (the ones CI's unit
+     shards exclude, including a changed one) are not run here. A deleted or
+     renamed-away file still selects the tests that name or import it. A failing
+     test refuses the push;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo

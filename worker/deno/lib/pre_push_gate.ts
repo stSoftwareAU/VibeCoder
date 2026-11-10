@@ -25,9 +25,10 @@
  *    when the push changes `infra/cloudformation/` and the repo tracks its
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
- *    deploy test and the `deno test` run are cheap. The `deno test` check is a
- *    targeted subset: the changed test files and the same-named tests of changed
- *    sources, run via the repo's own `test:unit` task so integration suites like
+ *    deploy test and the `deno test` run are cheap. The `deno test` check runs the
+ *    changed test files, the same-named tests of changed sources and every test
+ *    that depends on a changed file (a doc, prompt or differently named or
+ *    indirectly imported source), via the repo's own `test:unit` task so integration suites like
  *    CI's shards are excluded. Then the repo's `cargo deny check` (Issue #4626)
  *    runs for eligible workflows when intermediate pushes or ShellCheck-only
  *    repairs change a cargo input (a Cargo manifest, lock file, deny config or
@@ -61,6 +62,7 @@ import {
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
+import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
 import { stripJsonc } from "./jsonc.ts";
 
 /**
@@ -908,19 +910,25 @@ function quoteArguments(args: string[]): Result<string, string> {
 
 /**
  * The root-relative test files a root's `deno test` check runs: each changed
- * `_test.ts` under `tests/`, plus the `tests/<name>_test.ts` sibling of each
- * changed non-test `.ts` source outside `tests/`. Only files `tracked` still
- * holds count, so a deleted test is not run. Deduplicated and sorted.
+ * `_test.ts` under `tests/`, the `tests/<name>_test.ts` sibling of each
+ * changed non-test `.ts` source outside `tests/`, and the `referenced` tests
+ * ({@link loadReferencedUnitTests}) whose text names a changed file. Only files
+ * `tracked` still holds count, so a deleted test is not run. Deduplicated and
+ * sorted.
  */
 function plannedUnitTestFiles(
   rel: string[],
   tracked: string[],
   root: string,
+  referenced: readonly string[],
 ): string[] {
   const trackedSet = new Set(tracked);
   const isTracked = (file: string) =>
     trackedSet.has(root === "." ? file : `${root}/${file}`);
   const testFiles = new Set<string>();
+  for (const file of referenced) {
+    if (isTracked(file)) testFiles.add(file);
+  }
   for (const file of rel) {
     if (file.startsWith("tests/") && file.endsWith("_test.ts")) {
       if (isTracked(file)) testFiles.add(file);
@@ -933,7 +941,10 @@ function plannedUnitTestFiles(
       if (isTracked(sibling)) testFiles.add(sibling);
     }
   }
-  return [...testFiles].sort();
+  // The unit runner refuses a list with no unit suite in it, and CI's unit
+  // shards do not run the integration suites, so a changed one is left out.
+  return [...testFiles].filter((f) => !INTEGRATION_TEST_FILES.includes(f))
+    .sort();
 }
 
 /**
@@ -944,9 +955,9 @@ function plannedUnitTestFiles(
  * A root with no entry is unfiltered. `denoUnitTestRoots` lists the roots
  * whose changed tests get a `deno test` check (see
  * {@link loadDenoUnitTestRoots}); absent means no `deno test` check. It is a
- * targeted subset — changed test files and their same-named tests — run via
- * the repo's own `test:unit` task, so integration suites like CI's shards are
- * not run here.
+ * the changed test files, the same-named tests of changed sources and the
+ * `denoReferencedTests` — run via the repo's own `test:unit` task, so
+ * integration suites like CI's shards are not run here.
  */
 export function planChangedFileChecks(
   changed: string[],
@@ -966,6 +977,11 @@ export function planChangedFileChecks(
     denoScopes?: Record<string, DenoScopeConfig>;
     /** Deno roots whose `test:unit` task the changed tests run through. */
     denoUnitTestRoots?: string[];
+    /**
+     * Per deno root, the root-relative tests whose text names a changed file
+     * (see {@link loadReferencedUnitTests}); they run beside the changed tests.
+     */
+    denoReferencedTests?: Record<string, string[]>;
     shellcheckPolicy?: ShellcheckPolicy | null;
     shellcheckBinary?: string | null;
     shellcheckFiles?: string[];
@@ -1012,7 +1028,12 @@ export function planChangedFileChecks(
       });
     }
     if (opts.denoUnitTestRoots?.includes(root)) {
-      const unitTestFiles = plannedUnitTestFiles(rel, tracked, root);
+      const unitTestFiles = plannedUnitTestFiles(
+        rel,
+        tracked,
+        root,
+        opts.denoReferencedTests?.[root] ?? [],
+      );
       if (unitTestFiles.length > 0) {
         const quoted = quoteAll(unitTestFiles);
         if (!quoted.ok) return quoted;
@@ -1276,17 +1297,15 @@ async function readDenoConfigText(
 
 /** Whether a deno.json(c) document's `tasks` object defines `test:unit`. */
 function definesUnitTestTask(text: string): boolean {
-  let parsed: unknown;
+  const stripped = stripJsonc(text);
+  let parsed: { tasks?: unknown } | null;
   try {
-    parsed = JSON.parse(stripJsonc(text));
+    parsed = JSON.parse(stripped);
   } catch {
     return false;
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return false;
-  }
-  const tasks = (parsed as Record<string, unknown>).tasks;
-  return typeof tasks === "object" && tasks !== null && !Array.isArray(tasks) &&
+  const tasks = parsed?.tasks;
+  return typeof tasks === "object" && tasks !== null &&
     Object.hasOwn(tasks, "test:unit");
 }
 
@@ -1305,9 +1324,128 @@ export async function loadDenoUnitTestRoots(
     const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
   ) {
     const text = await readDenoConfigText(repoRoot, root);
-    if (text !== null && definesUnitTestTask(text)) roots.push(root);
+    if (text === null) continue;
+    if (definesUnitTestTask(text)) roots.push(root);
   }
   return roots;
+}
+
+/**
+ * Strings whose presence in a test's source marks it as reading `file` (a
+ * repo-relative path): the path itself, its base name when no other tracked
+ * file shares it (else its last two segments), and, for a non-`.ts` file such
+ * as a doc or prompt, its directory followed by `/` (a test that lists it) and
+ * each ancestor directory followed by `/${` so a path built in a template
+ * literal is caught. A deliberate over-approximation: running an
+ * unrelated test costs time, missing a reader lets a break reach CI.
+ */
+function referenceTokens(
+  file: string,
+  basenameCounts: ReadonlyMap<string, number>,
+): string[] {
+  const parts = file.split("/");
+  const base = parts[parts.length - 1] as string;
+  const tokens = [
+    file,
+    basenameCounts.get(base) === 1 ? base : parts.slice(-2).join("/"),
+  ];
+  if (!file.endsWith(".ts")) {
+    // A test that lists the directory names neither the file nor a template.
+    if (parts.length > 1) tokens.push(`${parts.slice(0, -1).join("/")}/`);
+    for (let i = 1; i < parts.length; i++) {
+      tokens.push(`${parts.slice(0, i).join("/")}/\${`);
+    }
+  }
+  return tokens;
+}
+
+/** The `./x.ts` / `../x.ts` module specifiers quoted in a TypeScript source. */
+function relativeTsSpecifiers(text: string): string[] {
+  return [...text.matchAll(/["'`](\.{1,2}\/[^"'`\s]+\.ts)["'`]/g)].map((m) =>
+    m[1] as string
+  );
+}
+
+/** `specifier` resolved against the directory of `from`, both tracked paths. */
+function resolveSpecifier(from: string, specifier: string): string {
+  const parts = from.split("/").slice(0, -1);
+  for (const part of specifier.split("/")) {
+    if (part === "..") parts.pop();
+    else if (part !== ".") parts.push(part);
+  }
+  return parts.join("/");
+}
+
+/**
+ * Per deno root, the root-relative `_test.ts` files under `tests/` a change can
+ * break (Issue #4930), so a change to a source, doc or prompt runs the tests
+ * that depend on it, not only a same-named one. A TypeScript file under the
+ * root is a seed when it is changed, or when it sits under `tests/` and its text
+ * names a changed file (see {@link referenceTokens}); a test is selected when it
+ * is a seed or imports one,
+ * directly or through other files (relative `.ts` specifiers). Changed tests
+ * themselves are left out (they run anyway). A tracked file that cannot be read
+ * is skipped.
+ */
+export async function loadReferencedUnitTests(
+  repoRoot: string,
+  tracked: string[],
+  changed: string[],
+  roots: string[],
+): Promise<Record<string, string[]>> {
+  const basenameCounts = new Map<string, number>();
+  for (const path of tracked) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+  }
+  const tokens = [
+    ...new Set(
+      changed.filter((p) => !p.endsWith("_test.ts")).flatMap((p) =>
+        referenceTokens(p, basenameCounts)
+      ),
+    ),
+  ];
+  const referenced: Record<string, string[]> = {};
+  if (tokens.length === 0) return referenced;
+  for (const root of roots) {
+    const prefix = root === "." ? "" : `${root}/`;
+    const importers = new Map<string, string[]>();
+    const seeds = new Set(changed);
+    const testPaths: string[] = [];
+    for (const path of tracked) {
+      if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
+      let text: string;
+      try {
+        text = await Deno.readTextFile(`${repoRoot}/${path}`);
+      } catch {
+        continue; // Deleted or unreadable: nothing to run.
+      }
+      for (const specifier of relativeTsSpecifiers(text)) {
+        const target = resolveSpecifier(path, specifier);
+        importers.set(target, [...(importers.get(target) ?? []), path]);
+      }
+      if (!path.startsWith(`${prefix}tests/`)) continue;
+      // Only the test tree is read for names: a source that merely quotes a
+      // doc path in a message depends on nothing, and one that does read it
+      // has a test that names it.
+      if (tokens.some((t) => text.includes(t))) seeds.add(path);
+      if (path.endsWith("_test.ts")) testPaths.push(path);
+    }
+    const reached = new Set(seeds);
+    const queue = [...seeds];
+    for (const file of queue) {
+      for (const importer of importers.get(file) ?? []) {
+        if (!reached.has(importer)) {
+          reached.add(importer);
+          queue.push(importer);
+        }
+      }
+    }
+    referenced[root] = testPaths
+      .filter((t) => reached.has(t) && !changed.includes(t))
+      .map((t) => t.slice(prefix.length));
+  }
+  return referenced;
 }
 
 /**
@@ -1840,13 +1978,21 @@ export async function runPrePushGate(opts: {
   });
   if (!shellcheck.ok) return shellcheck;
 
+  const denoUnitTestRoots = await loadDenoUnitTestRoots(opts.cwd, tracked);
   const plan = planChangedFileChecks(changed.value, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
-    denoUnitTestRoots: await loadDenoUnitTestRoots(opts.cwd, tracked),
+    denoUnitTestRoots,
+    denoReferencedTests: await loadReferencedUnitTests(
+      opts.cwd,
+      tracked,
+      // Deleted and renamed-away paths too: a test can still name them.
+      opts.shellcheckOnly ? [] : touched.value,
+      denoUnitTestRoots,
+    ),
   });
   if (!plan.ok) return fail(plan.error);
 
