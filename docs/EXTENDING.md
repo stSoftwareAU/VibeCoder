@@ -263,7 +263,9 @@ Maven and Gradle dependency-update specs) is filed with `.github/dependabot.yml`
 as its path rather than under `.github/workflows/`. Its body tells the
 implementer to merge the `updates` entry into any existing `updates:` list, and
 it carries no workflow-file checks. The auditor also reads `.github/dependabot.yml`
-(then `.yaml`) when it evaluates such a spec.
+(then `.yaml`) when it evaluates such a spec, matching it only on its
+`package-ecosystem` entry (`dependabotConfigPatternGroups`) so a "Dependabot"
+comment cannot satisfy another ecosystem's spec.
 The auditor uses the complete root file inventory, so Deno taking precedence
 over Node during language selection cannot hide an existing `package.json`.
 Older language results without that inventory trigger a root-contents fetch;

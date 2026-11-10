@@ -175,6 +175,18 @@ export interface WorkflowSpec {
    * Issue #4904.
    */
   dependabotConfig?: boolean;
+  /**
+   * Detection-pattern groups evaluated against `.github/dependabot.yml`
+   * for a `dependabotConfig` spec, in place of `detectionPatternGroups`
+   * (which still apply to workflow files). Tool-name patterns such as
+   * `dependabot` or `renovate` appear in almost any Dependabot config
+   * (header comments, docs URLs), so the config is matched only on its
+   * `package-ecosystem` entry. Falls back to `detectionPatternGroups`
+   * when omitted.
+   *
+   * Issue #4904.
+   */
+  dependabotConfigPatternGroups?: string[][];
 }
 
 /** The repo-relative path Dependabot reads its configuration from (Issue #4904). */
@@ -719,12 +731,15 @@ const npmDependencyUpdates: WorkflowSpec = {
   rootProjectMarkers: ["package.json"],
   triggers: ["schedule"],
   detectionPatternGroups: [[
-    "package-ecosystem: npm",
-    'package-ecosystem: "npm"',
     "dependabot",
     "renovate",
     "npm-check-updates",
     "ncu",
+  ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: npm",
+    'package-ecosystem: "npm"',
+    "package-ecosystem: 'npm'",
   ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "dependabot.yml",
@@ -850,6 +865,11 @@ const javaDependencyUpdates: WorkflowSpec = {
     "renovate",
     "versions-maven-plugin",
   ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: maven",
+    'package-ecosystem: "maven"',
+    "package-ecosystem: 'maven'",
+  ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-dependabot.yml",
   dependabotConfig: true,
@@ -879,6 +899,11 @@ const javaGradleDependencyUpdates: WorkflowSpec = {
     'package-ecosystem: "gradle"',
     "renovate",
     "gradle-versions-plugin",
+  ]],
+  dependabotConfigPatternGroups: [[
+    "package-ecosystem: gradle",
+    'package-ecosystem: "gradle"',
+    "package-ecosystem: 'gradle'",
   ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-gradle-dependabot.yml",

@@ -480,22 +480,27 @@ export async function auditRepoWorkflows(
     // A `dependabotConfig` spec reports full repo-relative paths and is also
     // evaluated against the Dependabot configuration (Issue #4904). Every
     // other spec keeps the bare workflow filename.
-    const sources: [foundIn: string, content: string][] = [];
+    // The config is matched on its `package-ecosystem` entry only, so a
+    // "dependabot" header comment cannot satisfy another ecosystem's spec.
+    const sources: [foundIn: string, content: string, groups: string[][]][] =
+      [];
     for (const [filename, content] of fileContents) {
       sources.push([
         spec.dependabotConfig ? `.github/workflows/${filename}` : filename,
         content,
+        spec.detectionPatternGroups,
       ]);
     }
     if (spec.dependabotConfig && dependabotConfig !== undefined) {
-      sources.push([dependabotConfig.path, dependabotConfig.content]);
+      sources.push([
+        dependabotConfig.path,
+        dependabotConfig.content,
+        spec.dependabotConfigPatternGroups ?? spec.detectionPatternGroups,
+      ]);
     }
 
-    for (const [foundIn, content] of sources) {
-      const missingGroups = findMissingGroups(
-        content,
-        spec.detectionPatternGroups,
-      );
+    for (const [foundIn, content, groups] of sources) {
+      const missingGroups = findMissingGroups(content, groups);
       const satisfiedCount = totalGroups - missingGroups.length;
       if (satisfiedCount > bestSatisfiedCount) {
         bestSatisfiedCount = satisfiedCount;
