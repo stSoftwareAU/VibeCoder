@@ -4,6 +4,7 @@ Workflow-sync issues for the Dependabot-config specs (`npm-dependency-updates`,
 `java-dependency-updates`, `java-gradle-dependency-updates`) now name
 `.github/dependabot.yml` instead of `.github/workflows/<file>`. The auditor also
 reads that file, so a correctly configured repository is detected as present.
+
 Closes #4904.
 
 ## Spec
