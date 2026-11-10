@@ -3660,16 +3660,20 @@ Deno.test("applyPrBody edits from the exchange, not from the agent's scratch dir
 });
 
 // Issue #4677: GRQ-AutoTrader#5056 was held twice by a macOS-only failure in
-// a test the repair never touched; CI on the base is the arbiter.
-Deno.test("a host-only failure in an unrelated check is named, not a blocker", () => {
+// a test the repair never touched; CI on the base is the arbiter. Issue #4921:
+// a failure the base also has is the base's own to fix, so it is not repaired
+// here either.
+Deno.test("a host-only or base-red failure in an unrelated check is named, not repaired or a blocker", () => {
   for (
     const why of ["failed CI", "requested review changes", "merge conflict"]
   ) {
     const prompt = buildRepairPrompt(why, 1, "owner/repo", null, "");
     assertStringIncludes(
       prompt,
-      "unrelated to the files you changed and passes in CI on the base branch",
+      "unrelated to the files you changed, whether it passes in CI on the base branch",
     );
+    assertStringIncludes(prompt, "or fails there too");
+    assertStringIncludes(prompt, "do not repair it in this PR");
   }
 });
 
