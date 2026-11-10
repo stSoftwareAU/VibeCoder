@@ -18,9 +18,6 @@ listing sources. Closes #4951.
   check has `needs:`). A job that ran and failed on a draft goes to the CI fixer
   as before. The scan logs `draft-by-design-ci` for each drop.
 
-Version bump: `VERSION` updated for this change; the merged commit records the
-final version.
-
 ## Spec
 
 ### Intent and Rationale
