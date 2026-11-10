@@ -23,9 +23,12 @@
  *   - any `run:` text invoking `git push`/`fetch`/`pull`/`submodule`/
  *     `clone`/`remote` (the persisted credential's purpose),
  *   - any `uses:` referencing a known git-writing / push action (including
- *     `ad-m/github-push-action` with `ssh: true`),
+ *     `ad-m/github-push-action` with `ssh: true` and
+ *     `jamesives/github-pages-deploy-action` with `ssh-key: true`),
  *   - the checkout step itself requesting `submodules:` (truthy), which
- *     needs the credential to fetch private submodules.
+ *     needs the credential to fetch private submodules,
+ *   - the checkout step itself setting `ssh-key` (non-empty), which keeps
+ *     the key in the git config for later SSH pushes/fetches.
  *
  * The nuanced "a push cannot quite be ruled out" cases are left to the LLM
  * prompt, which can hedge in prose. The native scanner files only the
@@ -102,19 +105,29 @@ const GIT_CREDENTIAL_RUN =
  * its own token and never reads the persisted one, so a job using them is
  * flagged when its checkout persists credentials:
  * `peaceiris/actions-gh-pages` (clones and pushes through
- * a separate work tree using `github_token`/`personal_token`/`deploy_key`),
- * `jamesives/github-pages-deploy-action` (unsets the checkout's
- * `http.…extraheader` and adds an origin carrying its own `token`/`ssh_key`),
- * `crazy-max/ghaction-github-pages` (clones and pushes to a URL built from
- * `GITHUB_TOKEN`/`GH_PAT`) and `cycjimmy/semantic-release-action`
- * (semantic-release builds its push URL from `GITHUB_TOKEN`/`GH_TOKEN`).
+ * a separate work tree using `github_token`/`personal_token`/`deploy_key`)
+ * and `crazy-max/ghaction-github-pages` (clones and pushes to a URL built
+ * from `GITHUB_TOKEN`/`GH_PAT`).
  *
- * `ad-m/github-push-action` is a conditional signal, handled by
- * {@link stepUsesSshPush}, not listed here: in its default HTTPS mode it pushes
- * to a URL built from its required `token` input and ignores the persisted
- * credential, but with `ssh: true` it pushes to `git@<host>:<repo>.git` and has
- * no SSH key input of its own, so it relies on the key `actions/checkout`
- * persisted from its `ssh-key` input.
+ * Two actions are **conditional** signals, handled by
+ * {@link SSH_PUSH_ACTION_INPUTS} rather than listed here. Each has an SSH mode
+ * that pushes with the key `actions/checkout` persisted from its `ssh-key`
+ * input, so that mode is a signal; its other modes authenticate with their own
+ * token or key and are flagged:
+ * `ad-m/github-push-action` (`with.ssh: true` pushes to
+ * `git@<host>:<repo>.git` and has no SSH key input of its own; its HTTPS mode
+ * requires its `token` input and ignores the persisted credential), and
+ * `jamesives/github-pages-deploy-action` (`with.ssh-key: true` reuses the SSH
+ * key a previous checkout step configured; its `token`/`ssh-key` modes carry
+ * their own credential).
+ *
+ * `cycjimmy/semantic-release-action` is instead covered by the checkout-level
+ * `ssh-key` signal ({@link checkoutSetsSshKey}): semantic-release first tries
+ * `git push` against the origin URL — which checkout sets to
+ * `git@<host>:<repo>.git` and persists `core.sshCommand` for when given
+ * `ssh-key` — and only falls back to its `GITHUB_TOKEN`/`GH_TOKEN` URL if that
+ * dry run fails. A job whose checkout sets `ssh-key` is therefore skipped at
+ * the checkout step; a token-only semantic-release job is flagged.
  */
 export const CREDENTIAL_USING_ACTIONS: readonly string[] = Object.freeze([
   "stefanzweifel/git-auto-commit-action",
@@ -125,8 +138,23 @@ const CREDENTIAL_USING_SET: ReadonlySet<string> = new Set(
   CREDENTIAL_USING_ACTIONS,
 );
 
-/** Coordinate of the push action whose `ssh: true` mode uses the checkout key. */
-const SSH_PUSH_ACTION = "ad-m/github-push-action";
+/**
+ * Actions whose SSH mode relies on the SSH key `actions/checkout` persisted
+ * from its `ssh-key` input rather than on an own credential. Each maps the
+ * action coordinate to the `with:` input whose boolean `true` (or the string
+ * `"true"`) turns that mode on. In any other mode the action authenticates
+ * with its own token or key and is not a signal.
+ */
+const SSH_PUSH_ACTION_INPUTS: ReadonlyMap<string, string> = new Map([
+  ["ad-m/github-push-action", "ssh"],
+  ["jamesives/github-pages-deploy-action", "ssh-key"],
+]);
+
+/** The `uses:` value without its `@ref`, lower-cased — the action coordinate. */
+function actionCoordinate(uses: string): string {
+  const at = uses.indexOf("@");
+  return (at >= 0 ? uses.slice(0, at) : uses).trim().toLowerCase();
+}
 
 /** One offending `actions/checkout` step inside a workflow file. */
 export interface CheckoutPersistCredentialsStep {
@@ -234,24 +262,45 @@ function checkoutWantsSubmodules(step: Record<string, unknown>): boolean {
 }
 
 /**
- * Is this step `ad-m/github-push-action` in SSH mode (`with.ssh` boolean
- * `true` or the string `"true"`)? That mode pushes over SSH with the key
- * `actions/checkout` persisted, so it needs the credential; HTTPS mode (no
- * `ssh`, or `ssh: false`) does not.
+ * Is this step one of the SSH-push actions with its SSH-mode input truthy
+ * (boolean `true` or the string `"true"`)? That mode pushes with the key
+ * `actions/checkout` persisted, so it needs the credential; the action's
+ * other modes authenticate with their own token or key and do not.
  */
 function stepUsesSshPush(step: Record<string, unknown>): boolean {
+  const uses = step["uses"];
+  if (typeof uses !== "string") return false;
+  const input = SSH_PUSH_ACTION_INPUTS.get(actionCoordinate(uses));
+  if (input === undefined) return false;
   const withBlock = step["with"];
   if (!isRecord(withBlock)) return false;
-  const value = withBlock["ssh"];
+  const value = withBlock[input];
   if (value === true) return true;
   return typeof value === "string" && value.trim().toLowerCase() === "true";
 }
 
 /**
+ * Does the checkout step set an SSH key (`with.ssh-key` non-empty)? When it
+ * does and the checkout persists credentials, the key stays in the git config
+ * for later steps, so an SSH push/fetch in the same job relies on it — the
+ * job needs the persisted credential and is skipped (Issue #4869 review:
+ * semantic-release and the SSH modes of the SSH-push actions all push with
+ * this key).
+ */
+function checkoutSetsSshKey(step: Record<string, unknown>): boolean {
+  const withBlock = step["with"];
+  if (!isRecord(withBlock)) return false;
+  const value = withBlock["ssh-key"];
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
  * Does any step in the job give a static signal that it needs the
- * persisted checkout credential? A `run:` git write/fetch invocation or a
- * known credential-using action means the job legitimately keeps the
- * credential, so its checkout steps are not flagged.
+ * persisted checkout credential? A `run:` git write/fetch invocation, a known
+ * credential-using action, or an SSH-mode push action
+ * (`ad-m/github-push-action` with `ssh: true`,
+ * `jamesives/github-pages-deploy-action` with `ssh-key: true`) means the job
+ * legitimately keeps the credential, so its checkout steps are not flagged.
  *
  * Pure — no I/O. Exported for direct unit testing.
  */
@@ -266,11 +315,11 @@ export function jobNeedsCheckoutCredentials(
 
     const uses = step["uses"];
     if (typeof uses === "string") {
-      const at = uses.indexOf("@");
-      const coordinate = (at >= 0 ? uses.slice(0, at) : uses).trim()
-        .toLowerCase();
+      const coordinate = actionCoordinate(uses);
       if (CREDENTIAL_USING_SET.has(coordinate)) return true;
-      if (coordinate === SSH_PUSH_ACTION && stepUsesSshPush(step)) return true;
+      if (SSH_PUSH_ACTION_INPUTS.has(coordinate) && stepUsesSshPush(step)) {
+        return true;
+      }
     }
   }
   return false;
@@ -342,8 +391,8 @@ function persistCredentialsId(workflowPath: string): string {
  *   - Unparseable workflows (parsed `null`) and non-record roots yield no
  *     finding.
  *   - A job giving a static signal it needs the credential (a `run:` git
- *     write/fetch, a known push action, or a `submodules:`-requesting
- *     checkout) is skipped entirely.
+ *     write/fetch, a known push action, a `submodules:`-requesting checkout,
+ *     or an `ssh-key`-setting checkout) is skipped entirely.
  *   - A checkout step that already sets `persist-credentials: false` is
  *     safe and never flagged.
  *   - A step suppressed by an in-source `best-practice-ignore:
@@ -398,7 +447,12 @@ export function scanCheckoutPersistCredentials(
 
         // Safe already, or the job needs the credential → skip.
         if (checkoutSetsPersistCredentialsFalse(step)) continue;
-        if (jobNeedsCreds || checkoutWantsSubmodules(step)) continue;
+        if (
+          jobNeedsCreds || checkoutWantsSubmodules(step) ||
+          checkoutSetsSshKey(step)
+        ) {
+          continue;
+        }
 
         offending.push({ job: jobName, stepIndex, line });
       }

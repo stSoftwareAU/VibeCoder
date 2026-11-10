@@ -313,6 +313,109 @@ Deno.test("jobNeedsCheckoutCredentials - ad-m/github-push-action is a signal onl
   );
 });
 
+Deno.test("jobNeedsCheckoutCredentials - JamesIves/github-pages-deploy-action is a signal only with ssh-key: true", () => {
+  const uses = "JamesIves/github-pages-deploy-action@v4";
+  assert(jobNeedsCheckoutCredentials([{ uses, with: { "ssh-key": true } }]));
+  assert(
+    jobNeedsCheckoutCredentials([{ uses, with: { "ssh-key": "true" } }]),
+  );
+  assert(
+    jobNeedsCheckoutCredentials([{ uses, with: { "ssh-key": " TRUE " } }]),
+  );
+  // The lower-cased coordinate is the same action.
+  assert(
+    jobNeedsCheckoutCredentials([{
+      uses: "jamesives/github-pages-deploy-action@v4",
+      with: { "ssh-key": true },
+    }]),
+  );
+  assertEquals(jobNeedsCheckoutCredentials([{ uses }]), false);
+  assertEquals(
+    jobNeedsCheckoutCredentials([{ uses, with: { "ssh-key": false } }]),
+    false,
+  );
+  // A secret-key value (rather than boolean `true`) is the action's own key,
+  // not a signal.
+  assertEquals(
+    jobNeedsCheckoutCredentials([{
+      uses,
+      with: { "ssh-key": "${{ secrets.DEPLOY_KEY }}" },
+    }]),
+    false,
+  );
+  // `ssh-key: true` on an unrelated action is not a signal.
+  assertEquals(
+    jobNeedsCheckoutCredentials([{
+      uses: "peaceiris/actions-gh-pages@v4",
+      with: { "ssh-key": true },
+    }]),
+    false,
+  );
+});
+
+Deno.test("scan - JamesIves/github-pages-deploy-action with ssh-key: true relies on the checkout ssh-key and skips the job", () => {
+  for (const sshKey of ["true", '"true"']) {
+    const files = [
+      wf(
+        ".github/workflows/pages.yml",
+        `name: Pages
+jobs:
+  deploy:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: \${{ secrets.DEPLOY_KEY }}
+          persist-credentials: true
+      - uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          ssh-key: ${sshKey}
+`,
+      ),
+    ];
+    assertEquals(scanCheckoutPersistCredentials(files), [], sshKey);
+  }
+});
+
+Deno.test("scan - cycjimmy/semantic-release-action with a checkout that sets ssh-key is skipped", () => {
+  const files = [
+    wf(
+      ".github/workflows/release.yml",
+      `name: Release
+on: push
+jobs:
+  release:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: \${{ secrets.DEPLOY_KEY }}
+          persist-credentials: true
+      - uses: cycjimmy/semantic-release-action@v4
+        with:
+          semantic_version: 21
+`,
+    ),
+  ];
+  assertEquals(scanCheckoutPersistCredentials(files), []);
+});
+
+Deno.test("scan - a checkout that sets ssh-key is skipped", () => {
+  const files = [
+    wf(
+      ".github/workflows/deploy.yml",
+      `name: Deploy
+jobs:
+  deploy:
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ssh-key: \${{ secrets.DEPLOY_KEY }}
+      - run: ./deploy.sh
+`,
+    ),
+  ];
+  assertEquals(scanCheckoutPersistCredentials(files), []);
+});
+
 Deno.test("scan - a job using create-pull-request with a persisting checkout is flagged", () => {
   const files = [
     wf(
