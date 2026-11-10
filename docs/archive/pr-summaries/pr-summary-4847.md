@@ -1,0 +1,149 @@
+## Summary
+
+The merge gate now records why it failed a merged tree, and a tree it could not
+verify is no longer charged to the branch as a bad tree. A genuine check failure
+is still charged. Version bump: not part of this change.
+
+Closes #4847.
+
+```mermaid
+flowchart TD
+    A[Clean merge, gate fails the tree] --> B{MergeGateCause}
+    B -->|tree-check-failed| C[failed: one attempt charged<br/>reason: refused the merged tree + cause]
+    B -->|timed-out / could-not-run /<br/>tree-unreadable / rust-toolchain-too-old| D[not-charged refusal<br/>reason: could not verify the merged tree + cause]
+    D --> E[re-checked next cycle]
+    E -->|refused MILESTONE_REFUSAL_CEILING cycles| F[failed + exhaust: hand-off ladder]
+    C --> F2[roll-back / merge-fallback flag with the cause named]
+    F --> F2
+```
+
+## Spec
+
+### Intent and Rationale
+
+- The `merge-fallback` record read only "the merge gate refused the merged tree"
+  because the ledger reason was one constant, so a failing tree, a timed-out
+  check and an unrunnable check were indistinguishable, and all three were
+  charged and walked the milestone to the fallback rung.
+- The cause is a fixed vocabulary carried on the gate outcome and the gate
+  error, then into the ledger reason. This reuses the existing path (ledger
+  reason, `mergeFallbackCause`) the public record is built from.
+- Unverifiable causes reuse the existing bounded-refusal machinery
+  (`refusal: true`, `escalateRepeatedRefusal`, `MILESTONE_REFUSAL_CEILING`)
+  instead of a new retry counter.
+
+### Essential Design Decisions
+
+- Causes map to fixed phrases (`describeMergeGateCause`) with no path or tool
+  output, so the public issue stays free of private detail.
+  `mergeGateFailureCause` rejects any unknown value, so nothing forged reaches a
+  ledger reason.
+- A failure with no recorded cause keeps the bare
+  `the merge gate refused the merged tree` reason and stays charged;
+  `isMergeGateRefusedReason` matches both the bare reason (ledger entries
+  written by older workers) and the cause-carrying one.
+- A repeated unverified refusal goes to the hand-off rather than the roll-back
+  rung (the escalated text is `refused N cycles in a row (…)`), the same path a
+  repeated resolution refusal takes today.
+- The unverified-tree log line is chosen after `escalateRepeatedRefusal`, so
+  the ceiling cycle reports the charged hand-off (`…could not verify the merged
+  tree for N cycles in a row…`) rather than the below-ceiling "not charged,
+  re-checked next cycle" wording.
+- A non-cargo timeout is classed unverified. Cargo timeouts, registry gaps and
+  remote-module gaps stay left to CI as before.
+
+### Undiscoverable Facts
+
+- The source repository is private and the run logs of the reporting hosts are
+  not reachable from this run, so the real cause behind the filed incidents is
+  not observed; the issue says the cause must not be assumed to match #4798.
+
+## Evidence
+
+Backend only; no UI file touched. Tests:
+`worker/deno/tests/milestone_merge_gate_cause_test.ts` and
+`worker/deno/tests/milestone_merge_gate_verdict_test.ts`. `deno fmt`,
+`deno lint` and `deno check` pass on the changed files, and every test file
+importing the merge-gate or branch-sync code was run together with the two new
+files: 627 passed, 0 failed.
+
+## Reproduction
+
+- **symptom** — merge-fallback issues titled "the merge gate refused the merged
+  tree" with no cause, filed after milestone syncs failed the merged tree three
+  times in a row
+- **status** — `partial` — the classification and the charging decision are
+  tested through the real `checkMergedTree`, `spawnTypeCheck` and
+  `judgeSyncFailure`, but the actual host failure behind the reports was not
+  observed
+- **regression test** —
+  `worker/deno/tests/milestone_merge_gate_verdict_test.ts::syncMilestoneBranches - an unverified merge check is not charged to the ledger and is re-checked (Issue #4847)`
+- **reason** — the private repository's run logs are not available, so which
+  cause occurred in the field is undiagnosed. Production behaviour changed only
+  for the causes the code itself shows to be unavailable verification; the
+  genuine-failure path is unchanged.
+
+## Test Plan
+
+- Added `worker/deno/tests/milestone_merge_gate_cause_test.ts` (14 tests): each
+  cause from `checkMergedTree`, `spawnTypeCheck` unrunnable versus account
+  refusal, `mergeGateFailureCause` round trip and forged-value rejection.
+- Added `worker/deno/tests/milestone_merge_gate_verdict_test.ts` (17 tests):
+  `judgeSyncFailure` for the charged, uncharged and no-cause shapes,
+  `escalateRepeatedRefusal` at and below the ceiling,
+  `isMergeGateRefusedReason`, `mergeFallbackCause` for an unverified tree (no
+  path in the body), and six `syncMilestoneBranches` ledger tests — an
+  unverified tree is not charged and is re-checked; a rejected tree is charged;
+  a charged cause-carrying refusal counts a resolver decline; a cause-carrying
+  refusal closes the milestone after three budgets; a cause-carrying refusal
+  that fills the budget hands off this cycle; an unverified tree at the refusal
+  ceiling is charged and handed off.
+- The unverified-tree log is now chosen after `escalateRepeatedRefusal`
+  (`milestone_branch_sync.ts`), so the ceiling cycle logs the charged hand-off
+  instead of the below-ceiling "not charged, re-checked next cycle" wording.
+- Red checks run by breaking the code on purpose, then restoring it:
+  `judgeSyncFailure` ignoring the cause (8 tests red); `spawnTypeCheck` dropping
+  `unrunnable` (spawn test red); the timeout mapping dropped (timed-out test
+  red); the `checkMergedTree` `unrunnable` branch disabled (unrunnable-runner
+  test red).
+- Review-fix red checks: `climbsRecoveryLadder` reverted to
+  `reason === MERGE_GATE_REFUSED_TREE` (the resolver-decline and
+  three-budgets-close tests red); the exhausted-branch guard reverted to
+  `verdict.reason !== MERGE_GATE_REFUSED_TREE` (the fill-budget hand-off test
+  red); the ceiling-cycle log moved back before escalation (the ceiling test
+  red). Each mutation was observed red, then the code restored.
+- Mutation-check follow-up: added
+  `checkMergedTree - a tree path that is a file
+  is tree-unreadable` (kills the
+  dropped `cause` at `milestone_merge_gate.ts:883`) and
+  `isMergeGateCause - a non-string that
+  coerces to a known cause is rejected`
+  (kills the dropped `typeof` operand at `milestone_merge_gate.ts:164`); both
+  went red with the mutation applied.
+- `worker/deno/lib/milestone_merge_gate.ts:277` exempt (untestable):
+  `unrunnable?: true` is a type-only annotation, erased at runtime; the runtime
+  behaviour it types is pinned by the unrunnable-runner and `spawnTypeCheck`
+  tests.
+- `worker/deno/lib/milestone_merge_gate.ts:928` exempt (untestable): the same
+  `unrunnable?: true` type annotation on a local variable, erased at runtime.
+- No existing test was edited or removed. Every test file importing the
+  merge-gate or branch-sync code was run together with the two new files: 627
+  passed, 0 failed.
+- `deno fmt`, `deno lint` and `deno check` pass on the changed files. The full
+  `./quality.sh` gate was not re-run in this container; its config-integration,
+  semgrep, checkov and release-tag ruleset stages are skipped by the gate
+  itself, and CI runs the gate on the pushed head.
+- Twinned rules: `judgeSyncFailure` is shared by the sweep
+  (`milestone_branch_sync.ts`) and the pre-cut sync (`milestone_presync.ts`);
+  the latter already handles a `not-charged` verdict, so only its comment
+  changed. The resolution gate (`milestone_resolution_gate.ts`) and merge-only
+  gate (`milestone_merge_only.ts`) call `checkMergedTree` but do not build the
+  ledger reason; they are unchanged.
+- Docs updated: `docs/INTERNALS.md` (ledger-outcome table, "Only a charged
+  failure spends the budget") and `docs/MERGE.md` (charged and not-charged
+  rows).
+
+Not done or not checked: the field cause was not observed (above); no fleet-wide
+data was read; Spec and Standards reviewers were not dispatched because the
+issue states no acceptance-criteria heading; the full `./quality.sh` gate was
+not re-run in this container (CI runs it on the pushed head).
