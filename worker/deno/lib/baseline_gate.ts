@@ -348,6 +348,16 @@ const ANSI_ESCAPE_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
 const DURATION_RE =
   /\b(?:\d+(?:[.,]\d+)?\s*h\s*)?(?:\d+(?:[.,]\d+)?\s*m\s*)?\d+(?:[.,]\d+)?\s*(?:ns|µs|us|ms|s|m)\b/g;
 
+/**
+ * Maven-style clock elapsed time: `01:15 min`, `02:03 h` (Issue #4918). The
+ * lookbehind keeps `file.ts:12:05 min`-style source locations out; the digit
+ * counts are bounded so the pattern stays linear.
+ */
+const CLOCK_UNIT_RE = /(?<![\w.:])\d{1,3}:\d{2}(?::\d{2})?\s*(?:min|h)\b/g;
+
+/** pytest-style `(0:01:15)` clock that trails an already-masked duration (Issue #4918). */
+const TRAILING_CLOCK_RE = /(<duration>\s*\()\d{1,3}:\d{2}(?::\d{2})?(\))/g;
+
 /** The per-check duration line the gate appends (Issue #86). */
 const TIMING_LINE_RE = /⏱/;
 
@@ -363,7 +373,13 @@ export function normaliseGateOutputLines(output: string): string[] {
   return redactSecrets(output)
     .replace(ANSI_ESCAPE_RE, "")
     .split("\n")
-    .map((line) => line.replace(DURATION_RE, "<duration>").trim())
+    .map((line) =>
+      line
+        .replace(CLOCK_UNIT_RE, "<duration>")
+        .replace(DURATION_RE, "<duration>")
+        .replace(TRAILING_CLOCK_RE, "$1<clock>$2")
+        .trim()
+    )
     .map((line) => line.replace(/\s+/g, " "))
     .filter((line) => line !== "" && !TIMING_LINE_RE.test(line));
 }
