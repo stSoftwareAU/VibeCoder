@@ -20,12 +20,18 @@
  * layouts or permissions. Declared credentials reach an agent command through
  * the stdin channel of credential_channel.ts (Issue #4705).
  * Unwritable cargo targets use the configured, persistent per-account cache.
+ * A command that runs as the dropped account also carries a git
+ * `safe.directory` entry for its checkout, because that account has no
+ * `~/.gitconfig` and git would otherwise refuse the worker-owned tree with
+ * "detected dubious ownership" (Issue #4927). A command run as the worker has
+ * its own git config and does not get the entry.
  *
  * Australian English spelling used throughout.
  */
 
 import {
   carryEnvThroughSudo,
+  gitSafeDirectoryEnv,
   sudoCarriedEnv,
   untrustedAccountOf,
   untrustedQualityCommandEnv,
@@ -434,7 +440,12 @@ export async function runRepositoryCommand(
     };
     // The placement and the egress proxy past sudo's env_reset (Issues
     // #2247, #4877): without the proxy every registry fetch fails to resolve.
-    const final = carryEnvThroughSudo(spawnable, sudoCarriedEnv(env));
+    // A dropped command also trusts its own checkout for git (Issue #4927).
+    const dropped = untrustedAccountOf(spawnable) !== undefined;
+    const final = carryEnvThroughSudo(spawnable, {
+      ...sudoCarriedEnv(env),
+      ...(dropped ? gitSafeDirectoryEnv(options.cwd) : {}),
+    });
     let channelled: ChannelledCommand;
     try {
       channelled = carryCredentialsThroughSudo(final, declared);

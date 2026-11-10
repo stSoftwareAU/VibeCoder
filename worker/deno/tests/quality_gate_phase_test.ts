@@ -28,6 +28,7 @@ import {
   buildRetryPrompt,
   carryEnvThroughSudo,
   createDefaultDeps,
+  gitSafeDirectoryEnv,
   isDockerInfraFailure,
   isMissingCommandFailure,
   qualityCommandFile,
@@ -1509,6 +1510,18 @@ Deno.test("sudoCarriedEnv - a proxy URL with credentials stays out of argv (Issu
     sudoCarriedEnv({ HTTPS_PROXY: "http://user:pw@proxy:3128" }),
     {},
   );
+});
+
+Deno.test("gitSafeDirectoryEnv - a relative path gets no entry (Issue #4927)", () => {
+  assertEquals(gitSafeDirectoryEnv("relative/checkout"), {});
+});
+
+Deno.test("gitSafeDirectoryEnv - a plain absolute path trusts only that checkout (Issue #4927)", () => {
+  assertEquals(gitSafeDirectoryEnv("/var/tmp/checkout"), {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: "/var/tmp/checkout",
+  });
 });
 
 Deno.test("carryEnvThroughSudo - a proxy URL and a lower-case name pass (Issue #4877)", () => {

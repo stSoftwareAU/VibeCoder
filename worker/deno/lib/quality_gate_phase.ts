@@ -137,7 +137,7 @@ const CARRIED_ENV_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
  * A value that may be carried through `sudo` in argv — a plain path, or a
  * proxy URL or host list (`:` and `,`). No `@`, so no URL with credentials.
  */
-const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/:,\[\]]+$/;
+export const CARRIED_ENV_VALUE = /^[A-Za-z0-9._\-\/:,\[\]]+$/;
 
 /**
  * The egress variables a dropped command needs to reach a registry at all
@@ -176,6 +176,33 @@ export function sudoCarriedEnv(
 }
 
 /**
+ * The git config that lets the dropped account use the checkout it is about
+ * to run in (Issue #4927). The `agent` account has no `~/.gitconfig`, so git
+ * refuses a checkout the worker owns with "detected dubious ownership", and a
+ * repository build script that runs `git rev-parse HEAD` fails. This trusts
+ * only `cwd`, the checkout the gate is about to run in, through the git config
+ * environment (`GIT_CONFIG_COUNT` and its `_KEY_0` and `_VALUE_0` entries).
+ * Like the cargo target and the proxy it is carried in argv, as it is
+ * non-secret.
+ *
+ * Returns `{}` when `cwd` is not an absolute path that
+ * {@link CARRIED_ENV_VALUE} accepts, so {@link carryEnvThroughSudo} never
+ * throws on an odd path. A checkout whose path holds a space gets no entry,
+ * and its build script then fails as it did before this change.
+ *
+ * @param cwd - The checkout the command runs in.
+ * @returns The three git config entries, or `{}`.
+ */
+export function gitSafeDirectoryEnv(cwd: string): Record<string, string> {
+  if (!cwd.startsWith("/") || !CARRIED_ENV_VALUE.test(cwd)) return {};
+  return {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: cwd,
+  };
+}
+
+/**
  * Carry an environment entry through `sudo`'s `env_reset` (Issue #2247).
  *
  * The image grants `vibe ALL=(agent) NOPASSWD: ALL` with no `SETENV` tag, and
@@ -185,7 +212,8 @@ export function sudoCarriedEnv(
  * grant. The value therefore travels in **argv** instead:
  * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
  * Only non-secret values travel this way: the placement and the egress proxy
- * ({@link sudoCarriedEnv}, Issue #4877).
+ * ({@link sudoCarriedEnv}, Issue #4877), and the git safe.directory entry
+ * ({@link gitSafeDirectoryEnv}, Issue #4927).
  *
  * Declared credentials are never carried here. They ride the stdin channel of
  * `credential_channel.ts` (Issue #4705), because a value in argv is visible to
