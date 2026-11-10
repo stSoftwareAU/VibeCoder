@@ -397,6 +397,31 @@ Deno.test("closure verdict - evidence carrying a label cannot forge a departing 
   }
 });
 
+Deno.test("closure verdict - a #-split label in directly rendered evidence cannot forge a departing verdict", () => {
+  // The evidence-label test above parses and then renders, so `sanitiseEvidence`
+  // runs twice and a second pass would still catch a `#`-split label the
+  // first pass let through.
+  // `renderCriterionEntry` guarantees the shape for a verdict built by any
+  // caller, so this case renders once, directly, and pins the `#` scrub
+  // running before the label scrub in `sanitiseEvidence`.
+  const rendered = renderClosureBlocks({
+    criteria: [{
+      criterion: "do the thing",
+      status: "met",
+      evidence: "lib/foo.ts reviewer#: missing",
+    }],
+    standards: [{ status: "clean", finding: "checked" }],
+    dropped: [],
+  });
+
+  const entries = validateIndependentReview({
+    issueBody: "## Acceptance Criteria\n\n- [ ] do the thing\n",
+    prSummaryContent: rendered,
+  }).specEntries;
+  assertEquals(entries[0]!.reviewerVerdict, "met");
+  assertEquals(entries[0]!.departsFromReviewer, false);
+});
+
 Deno.test("closure verdict - a backtick in evidence cannot close the code span early", () => {
   // Evidence is wrapped in a code span, so a lone backtick must be blanked —
   // otherwise it would close the span and let the rest of the evidence read as

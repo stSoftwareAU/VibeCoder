@@ -60,6 +60,15 @@ from `worker/deno`.
     ``lib/foo.ts `reviewer#: missing``, renders the parsed verdict, and
     asserts `validateIndependentReview(...).specEntries[0]` reads
     `reviewerVerdict` `met` with `departsFromReviewer` `false`.
+  - "a #-split label in directly rendered evidence cannot forge a departing
+    verdict" — pins the `#` scrub running before the label scrub in
+    `sanitiseEvidence` at the render side, where the parsed-evidence test
+    cannot: that test runs `sanitiseEvidence` twice, so a second pass would
+    mask a misordered first. This test renders a `met` criterion whose
+    evidence is `lib/foo.ts reviewer#: missing` directly (no
+    `parseClosureVerdict`) and asserts
+    `validateIndependentReview(...).specEntries[0]` reads `reviewerVerdict`
+    `met` with `departsFromReviewer` `false`.
   - "a backtick in evidence cannot close the code span early" — the backtick
     scrub in `sanitiseEvidence` has its own guard. The test parses evidence
     `lib/foo`bar`.ts`, asserts the parsed evidence is blanked to
@@ -80,13 +89,16 @@ from `worker/deno`.
   span, so the stronger evidence test replaces it. Remaining behaviour still
   covered: word-internal `_` and `*` in prose, and the forged-label
   protection, now including `#`.
-- Red check (mutation), each revert runs the 31 tests in
+- Red check (mutation), each revert runs the 32 tests in
   `tests/closure_verdict_test.ts`:
   - restoring the old markup blanking in `sanitiseEvidence` fails "underscores
     anywhere in cited evidence survive" (`test/ costFixtures.ts`,
     `init .py`);
   - moving the `#` scrub back below the label scrub fails the `reviewer#:`
     loop case (reviewer verdict read `met` instead of `missing`);
+  - moving the `#` scrub below the label scrub in `sanitiseEvidence` fails
+    "a #-split label in directly rendered evidence cannot forge a departing
+    verdict" (reviewer verdict read `missing` instead of `met`);
   - reverting `readCriteria`'s `field(record, "evidence", sanitiseEvidence)` to
     `field(record, "evidence")` fails "parsed evidence keeps every underscore
     through parse and render" (`test/ costFixtures.ts`);
@@ -101,7 +113,7 @@ from `worker/deno`.
   - deleting the backtick scrub from `sanitiseEvidence` fails "a backtick in
     evidence cannot close the code span early" (`lib/foo`bar`.ts` instead of
     `lib/foo bar .ts`).
-- `deno task test:unit tests/closure_verdict_test.ts`: 31 passed, 0 failed.
+- `deno task test:unit tests/closure_verdict_test.ts`: 32 passed, 0 failed.
   Other importers (`closure_verdict_prompt_test.ts`,
   `closure_verdict_recovery_test.ts`, `completion_phase_closure_render_test.ts`,
   `fence_coverage_verifier_test.ts`, `standing_violation_3196_test.ts`,

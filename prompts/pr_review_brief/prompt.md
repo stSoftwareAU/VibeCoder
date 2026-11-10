@@ -132,7 +132,9 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
      coverage role.
    - `verification`: a short reproducible check (the command or mutation and
      the observed result, at least three words). It is required under the
-     same conditions as `failsWithoutChange`.
+     same conditions as `failsWithoutChange`, and also when every `coverage`
+     entry is `gone`: there it is the search or build that showed the removed
+     code and its callers are gone.
    The code verifies the cited coverage and the governing issue at the head;
    a claim you make alone never approves a change. The worker's pre-PR
    verifier applies this same policy, because it uses this brief.
