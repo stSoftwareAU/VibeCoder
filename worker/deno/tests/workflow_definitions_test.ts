@@ -1110,6 +1110,23 @@ Deno.test(
 );
 
 Deno.test(
+  "workflow_definitions - deno-quality template type-checks without naming an entry-point file (Issue #4894)",
+  () => {
+    const spec = WORKFLOW_SPECS.find((s) => s.id === "deno-quality");
+    assertNotEquals(spec, undefined, "deno-quality spec missing");
+    const checkSteps = spec!.template.split("\n").filter((l) =>
+      /^\s*- run: deno check\b/.test(l)
+    );
+    assertEquals(checkSteps.length, 1, "expected exactly one deno check step");
+    assertEquals(
+      /\.[cm]?[jt]sx?\b/.test(checkSteps[0]!),
+      false,
+      `deno check must not depend on an entry-point file: ${checkSteps[0]}`,
+    );
+  },
+);
+
+Deno.test(
   "workflow_definitions - cargo-quality template uploads coverage with CODECOV_TOKEN",
   () => {
     const spec = WORKFLOW_SPECS.find((s) => s.id === "cargo-quality");

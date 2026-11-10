@@ -19,11 +19,13 @@
  * The boundary, stated honestly:
  * - The checkout is a `git clone --shared` of the issue checkout with its
  *   `origin` removed, so it has no push destination.
- * - The model's `gh`, `git push`, `curl`, `wget`, web and sub-agent tools are
- *   denied through `disallowedTools`.
- * - `disallowedTools` is a denylist, not a network sandbox: another program
- *   run through `Bash` could still reach the network. The gh guard below is
- *   the backstop for `gh`.
+ * - Claude's CLI enforces `disallowedTools`; Codex and Gemini receive the list
+ *   as prompt text. Read-only mode explicitly selects Claude and requests
+ *   Claude config isolation; a non-Claude provider fallback is refused by the
+ *   runner before spawn.
+ * - Tool denials are not a network sandbox: another program run through
+ *   `Bash` could still reach the network. The gh guard below is the backstop
+ *   for `gh`.
  * - The agent-side gh guard the runner installs still applies.
  * - The issue checkout is compared before and after, so a change that
  *   `git status` (untracked files included, ignored files not) or HEAD shows

@@ -369,13 +369,14 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `post.ts main posting safety` cases and one `spawnFastCheck` case) are in code
   this PR does not touch; the `post.ts` and `spawnFastCheck` ones were not
   re-run on the base commit.
-- The head commit (`952b2a34`) only rewords two code comments, one in
-  `worker/deno/lib/phases/completion_phase.ts` and one in
-  `worker/deno/lib/phases/execute_phase.ts`, at the `ciCargoCompareRef` call
-  sites; the comment in `execute_phase.ts` no longer contains an apostrophe,
-  which the executor-phase tests' brace scan tripped over. No behaviour changed.
-  the executor-phase suites that scan those files pass on the head with
-  `deno test -A`.
+- The head commit (`c84ebe77`) fixes the stdin-deadline error in
+  `worker/deno/lib/git_stdin_message.ts`: `withDeadline` now takes the
+  whole-read deadline (`totalMs`) alongside the per-read remainder (`ms`), and
+  the stall error names `totalMs` rather than the remainder, so a message that
+  stalls mid-read reports the configured deadline (`deadlineMs`) instead of the
+  time left on that read. No behaviour change beyond the message text.
+  `worker/deno/tests/git_stdin_message_test.ts` (13 tests) passes on the head
+  with `deno test -A`.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.

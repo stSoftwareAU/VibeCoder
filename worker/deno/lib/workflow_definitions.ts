@@ -634,7 +634,7 @@ ${CHECKOUT_NO_CREDENTIALS}
           deno-version: v2.x
       - run: deno lint
       - run: deno fmt --check
-      - run: deno check mod.ts
+      - run: deno check .
       # Run tests with coverage and upload to Codecov (Issue #1636).
       # The codecov-action is a no-op when no test files are found.
       - run: deno test --allow-read --allow-env --coverage=cov_profile

@@ -1226,11 +1226,22 @@ grep 'run-budget notice written' ~/logs/worker-*.log
 
 The agent is then told to run the targeted checks and record the skip with a
 `<!-- vibe-quality-gate-skipped … -->` note in the PR summary. If you see a PR
-carrying that note, the gate was not run **on this run** — CI's copy on the PR,
-and the worker's own gate, are what covered it. Because the file now means two
-things, "was this run warned?" is answered by its contents: the handover note
-reports `Wind-down notice: delivered` only for a notice that actually ordered
-one.
+carrying that note, the full gate was not run in **that agent session**, and the
+note does not by itself prove that any other check ran. What covered the PR
+depends on its path: issue completion runs the full worker gate before the PR is
+raised. A CI fix attempts that gate only when Claude leaves uncommitted changes,
+then runs configured pre-flight commands, and may run nothing. PR feedback and
+spelling fixes run no full gate (changed-file checks only where pre-flight
+commands are configured, plus the PR-review fix verifier for review feedback),
+and a custom PR prompt relies on the agent's pre-push hook. The agent's prompt
+names that path's checks and asks the agent to name, in the note, the
+checks it ran; see
+[docs/CONFIGURATION.md → The full gate is conditional on the budget left](CONFIGURATION.md#the-full-gate-is-conditional-on-the-budget-left-issue-1138).
+CI covers only the jobs the target repository actually runs, so some of the
+skipped checks may have no other copy; treat any coverage you cannot find as
+unverified. Because the file now means two things, "was this run warned?" is
+answered by its contents: the handover note reports `Wind-down notice:
+delivered` only for a notice that actually ordered one.
 
 If the `Run hard cap:` line instead says the cap is not set, the run was
 uncapped and no ceiling applied: `VIBE_RUN_MAX_SECONDS` is `0`, or the worker

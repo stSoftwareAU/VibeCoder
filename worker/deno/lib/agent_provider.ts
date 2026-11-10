@@ -374,7 +374,13 @@ export interface AgentInvocationRequest {
   env?: EnvLookup;
   /** Explicit reasoning effort; when absent the phase routing decides. */
   effort?: string;
-  /** Tools the agent must not use. */
+  /**
+   * Tool names requested as unavailable. Claude's CLI enforces these through
+   * `--disallowed-tools`; Codex and Gemini receive them as prompt text only.
+   * A caller relying on enforcement must check this adapter and every
+   * permitted fallback. This list does not provide process, filesystem or
+   * network isolation.
+   */
   disallowedTools?: readonly string[];
   /**
    * Start the Claude CLI without project or user settings (hooks) and without
