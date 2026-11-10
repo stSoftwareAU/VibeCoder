@@ -3166,3 +3166,110 @@ Deno.test("runPrePushGate: a deleted source runs the differently named test that
     await Deno.remove(root, { recursive: true });
   }
 });
+
+Deno.test("loadReferencedUnitTests: literal prompt loaders select their tests (PR #5034 review)", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${root}/worker/deno/tests`, { recursive: true });
+    const tracked = [
+      "worker/deno/deno.json",
+      "prompts/issue/prompt.md",
+      "prompts/quorum_judge/prompt.md",
+    ];
+    for (
+      const [name, source] of Object.entries({
+        issue:
+          'await loadPrompt("issue", new URL("../../../prompts", import.meta.url).pathname);',
+        judge: "await loadPrompt(\n  'quorum_judge', PROMPTS_DIR);",
+        other: 'await loadPrompt("coding_guidelines", PROMPTS_DIR);',
+      })
+    ) {
+      const path = `worker/deno/tests/${name}_test.ts`;
+      tracked.push(path);
+      await Deno.writeTextFile(`${root}/${path}`, source);
+    }
+    for (
+      const [type, name] of [["issue", "issue"], ["quorum_judge", "judge"]]
+    ) {
+      assertEquals(
+        await loadReferencedUnitTests(root, tracked, [
+          `prompts/${type}/prompt.md`,
+        ], ["worker/deno"]),
+        { "worker/deno": [`tests/${name}_test.ts`] },
+      );
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: repair pushes enforce unit tests and markdownlint (PR #5034 review)", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await git(clone, "rm", "-q", "deno.json");
+    await Deno.mkdir(`${clone}/worker/deno/lib`, { recursive: true });
+    await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/deno.json`,
+      JSON.stringify({ tasks: { "test:unit": "x" } }),
+    );
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/lib/foo.ts`,
+      "export const foo = 1;\n",
+    );
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/tests/foo_test.ts`,
+      "export {};\n",
+    );
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-qm", "test baseline");
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/lib/foo.ts`,
+      "export const foo = 2;\n",
+    );
+    await Deno.writeTextFile(`${clone}/README.md`, "# Changed\n");
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-qm", "repair source and docs");
+    const stdin = prePushInput(await git(clone, "rev-parse", "HEAD"));
+    const unit = "deno task test:unit 'tests/foo_test.ts'";
+    for (const failure of ["unit", "markdown", "none"]) {
+      const ran: string[] = [];
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin,
+        preFlightCommands: [],
+        shellcheckOnly: true,
+        ...stubShellcheck(),
+        findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+        runner: (command) => {
+          ran.push(command);
+          const fails = failure === "unit"
+            ? command === unit
+            : failure === "markdown" && command.includes("/fake/mdl");
+          return Promise.resolve({
+            started: true,
+            code: fails ? 1 : 0,
+            stdout: "",
+            stderr: fails ? "regression" : "",
+          });
+        },
+      });
+      assertEquals(result.ok, failure === "none", ran.join("\n"));
+      assert(ran.includes(unit), "repair must run affected unit tests");
+      if (failure !== "unit") {
+        assert(
+          ran.some((c) => c.includes("/fake/mdl")),
+          "repair must run markdownlint",
+        );
+      }
+      assertEquals(
+        ran.some((c) => c.startsWith("deno fmt") || c.startsWith("deno lint")),
+        false,
+        "retain the repair formatter policy",
+      );
+    }
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

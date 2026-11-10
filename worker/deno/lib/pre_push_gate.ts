@@ -976,6 +976,8 @@ export function planChangedFileChecks(
      */
     cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
+    /** Pushed paths for unit tests and markdownlint when formatting is skipped. */
+    validationChanged?: string[];
     /** Deno roots whose `test:unit` task the changed tests run through. */
     denoUnitTestRoots?: string[];
     /**
@@ -1030,7 +1032,9 @@ export function planChangedFileChecks(
     }
     if (opts.denoUnitTestRoots?.includes(root)) {
       const unitTestFiles = plannedUnitTestFiles(
-        rel,
+        (opts.validationChanged ?? changed)
+          .filter((p) => root === "." || p.startsWith(`${root}/`))
+          .map((p) => root === "." ? p : p.slice(root.length + 1)),
         tracked,
         root,
         opts.denoReferencedTests?.[root] ?? [],
@@ -1059,7 +1063,9 @@ export function planChangedFileChecks(
     });
   }
 
-  const markdown = changed.filter((p) => hasExtension(p, MARKDOWN_EXTENSIONS));
+  const markdown = (opts.validationChanged ?? changed).filter((p) =>
+    hasExtension(p, MARKDOWN_EXTENSIONS)
+  );
   const configured = MARKDOWNLINT_CONFIGS.some((name) =>
     tracked.includes(name)
   );
@@ -1387,7 +1393,8 @@ function resolveSpecifier(from: string, specifier: string): string {
  * break (Issue #4930), so a change to a source, doc or prompt runs the tests
  * that depend on it, not only a same-named one. A TypeScript file under the
  * root is a seed when it is changed, or when it sits under `tests/` and its text
- * names a changed file (see {@link referenceTokens}); a test is selected when it
+ * names a changed file (see {@link referenceTokens}) or calls `loadPrompt` with
+ * the changed prompt's literal type; a test is selected when it
  * is a seed or imports one,
  * directly or through other files (relative `.ts` specifiers). Changed tests
  * themselves are left out (they run anyway). A tracked file that cannot be read
@@ -1411,6 +1418,10 @@ export async function loadReferencedUnitTests(
       ),
     ),
   ];
+  const promptTypes = new Set(changed.flatMap((path) => {
+    const match = /(?:^|\/)prompts\/([^/]+)\/prompt\.md$/.exec(path);
+    return match ? [match[1]!] : [];
+  }));
   const referenced: Record<string, string[]> = {};
   if (tokens.length === 0) return referenced;
   for (const root of roots) {
@@ -1434,7 +1445,14 @@ export async function loadReferencedUnitTests(
       // Only the test tree is read for names: a source that merely quotes a
       // doc path in a message depends on nothing, and one that does read it
       // has a test that names it.
-      if (tokens.some((t) => text.includes(t))) seeds.add(path);
+      // Prompt readers pass a type to loadPrompt rather than spelling its path.
+      // This is a conservative dependency scan: a quoted example may select an
+      // extra test, but never exempts a real loader call.
+      const loadsPrompt = [
+        ...text.matchAll(/\bloadPrompt\s*\(\s*["'`]([^"'`]+)["'`]/g),
+      ]
+        .some((match) => promptTypes.has(match[1]!));
+      if (tokens.some((t) => text.includes(t)) || loadsPrompt) seeds.add(path);
       if (path.endsWith("_test.ts")) testPaths.push(path);
     }
     const reached = new Set(seeds);
@@ -1954,7 +1972,7 @@ export async function runPrePushGate(opts: {
   }
   const tracked = lsFiles.stdout.split("\0").filter((p) => p !== "");
 
-  const needsMarkdownlint = changed.value.some((p) =>
+  const needsMarkdownlint = contained.value.some((p) =>
     hasExtension(p, MARKDOWN_EXTENSIONS)
   );
   let markdownlintBinary: string | null = null;
@@ -1993,11 +2011,12 @@ export async function runPrePushGate(opts: {
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
     denoUnitTestRoots,
+    validationChanged: contained.value,
     denoReferencedTests: await loadReferencedUnitTests(
       opts.cwd,
       tracked,
       // Deleted and renamed-away paths too: a test can still name them.
-      opts.shellcheckOnly ? [] : touched.value,
+      touched.value,
       denoUnitTestRoots,
     ),
   });

@@ -4,13 +4,14 @@ The pre-push gate (agent `pre-push` hook, `commitAndPushPending` final-mile
 push, completion-phase whole-branch check) now also runs `deno test` before a
 push, through the repository's own `deno task test:unit`. It runs the changed
 `tests/*_test.ts` files, the same-named `tests/<name>_test.ts` of each changed
-`.ts` source, and every `tests/` test that depends on a changed file: a test or
+`.ts` source, and the `tests/` tests selected by a dependency scan: a test or
 test helper whose text names it (path, unique base name, directory, or a
 templated directory), or that imports it directly or through other files
 (relative `.ts` specifiers). Deleted and renamed-away paths count, so a push
-that removes a file a test still reads is caught. A fix pushed by a PR-feedback,
-CI-fix or babysitter round therefore no longer reaches CI with a test it broke,
-including a doc-drift test reading a changed `.md` or prompt.
+that removes a file still named by a test is checked. Literal `loadPrompt` calls
+also select the tests for that prompt type. PR-feedback and CI-fix final pushes
+with `shellcheckOnly` specs now run these tests and configured markdownlint;
+formatting policy is retained. Dynamic dependencies can still be missed.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -23,8 +24,8 @@ Closes #4930.
 - Before, those push paths ran only `deno fmt`, `deno lint`, markdownlint and
   similar changed-file checks; `deno test` ran only in the issue completion
   phase's full gate. `markdownlint` was already in the changed-file checks
-  (`planChangedFileChecks`, `worker/deno/lib/pre_push_gate.ts`), so it needed no
-  change.
+  (`planChangedFileChecks`, `worker/deno/lib/pre_push_gate.ts`); repair specs now
+  pass their pushed Markdown paths to it too.
 
 ### Essential Design Decisions
 
@@ -129,6 +130,18 @@ are called by `runPrePushGate`.
 - Related rules checked: the module doc and `docs/CONFIGURATION.md` lists of
   changed-file checks (siblings grepped: `cspell`, `ShellCheck`, `cargo deny`)
   were updated; no other doc lists them as complete.
-- Callers of `planChangedFileChecks`: `runPrePushGate` passes the roots and the
-  referenced tests; the ShellCheck-only call passes no changed files, so it
-  needs none.
+- `runPrePushGate` passes the Deno roots and referenced tests to the planner.
+  Repair specs retain their formatter policy while passing changed paths for
+  unit-test selection and configured Markdown validation.
+
+### PR #5034 review revision
+
+- Recognise literal `loadPrompt` types, including the repository's separate
+  `PROMPTS_DIR` / `new URL("../../../prompts", import.meta.url)` pattern.
+- Repair pushes run affected unit tests and markdownlint without enabling their
+  skipped formatters. Each failing check blocks; the successful control passes.
+- Both regressions fail before these fixes. All 113 pre-push gate tests pass.
+- Corrected the docs and summary to state the scan's heuristics and remaining
+  dynamic-dependency limits rather than promising every broken test is selected.
+- Formatting, lint and diff checks pass. Tests use integrity-verified local
+  copies of locked dependencies. Full quality gate not rerun here.

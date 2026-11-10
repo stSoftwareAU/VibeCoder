@@ -5194,28 +5194,30 @@ The hook runs two stages:
    - `deno test` (Issue #4930), per outermost `deno.json` / `deno.jsonc`
      directory whose config defines a `test:unit` task (`deno.json` is preferred;
      an unreadable or unparseable config is left out). It runs the tests the
-     push can affect, not the whole suite: each changed `_test.ts` file under
+     dependency scan selects, not the whole suite: each changed `_test.ts` file under
      that directory's `tests/`; the same-named `tests/<name>_test.ts` of each
-     changed `.ts` source outside `tests/`; and every tracked `tests/` file that
-     depends on a changed file, whatever its own name. A `.ts` file under the
+     changed `.ts` source outside `tests/`; and tracked `tests/` files reached
+     by the reference and import rules below, whatever their own names. A `.ts` file under the
      directory is a seed when it is changed, or when it sits under `tests/` and
      its text names a changed file: it contains the file's repo-relative path,
      its base name (when no other tracked file shares it, else its last two path
      segments), or, for a doc, prompt or other non-`.ts` file, its directory
      followed by `/` (a test that lists the directory) or one of its ancestor
      directories followed by `/${` (a path built in a template literal). A test
-     is selected when it is a seed or imports one, directly or
-     through other files (relative `.ts` specifiers).
-     This reaches a doc-drift test that reads a changed `.md` or prompt, directly
-     or through a helper, and a test that imports a changed source through
-     another module; it over-selects rather than misses, and a change to a
-     widely imported module can select most of the unit suite. The files are
+     is also a seed when it calls `loadPrompt` with the changed prompt's literal
+     type, including a wrapped call using a separate prompts-directory value.
+     Tests importing a seed directly or transitively via relative `.ts`
+     specifiers are selected too. Dynamic loader types, computed paths and
+     import-map aliases can still be missed; this is a dependency heuristic,
+     and a widely imported module can select most of the unit suite. The files are
      passed to `deno task test:unit` from the directory (for example
      `deno task test:unit tests/foo_test.ts`). The task runs only the unit tests
      among the files it is given, so the integration suites (the ones CI's unit
      shards exclude, including a changed one) are not run here. A deleted or
      renamed-away file still selects the tests that name or import it. A failing
-     test refuses the push;
+     test refuses the push. Repair specs called `shellcheckOnly` also run these
+     unit tests and configured markdownlint from the pushed paths, while retaining
+     their existing formatter policy;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
