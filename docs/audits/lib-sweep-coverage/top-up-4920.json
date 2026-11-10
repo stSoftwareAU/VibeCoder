@@ -1,0 +1,12 @@
+{
+  "issue": 4920,
+  "chunk": "top-up-4920",
+  "title": "top-up: bounded tracked repo file reader",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4920",
+  "definition": "modules added for reading tracked repository files without following symlinks or exceeding a size cap: repo_file_read.ts (#4920)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/repo_file_read.ts"
+  ],
+  "sweptAt": "092f1681ba9561fa467eb82c7d0dd67bc099d09a"
+}
