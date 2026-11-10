@@ -258,7 +258,15 @@ variant (`java-dependency-updates`) requires a root `pom.xml`, and the Gradle
 variant (`java-gradle-dependency-updates`) requires a root `build.gradle` or
 `build.gradle.kts`. Each variant files only its own Dependabot ecosystem entry,
 so a repository with both build files needs both `updates` entries in one
-`.github/dependabot.yml`.
+`.github/dependabot.yml`. A spec marked `dependabotConfig: true` (the npm,
+Maven and Gradle dependency-update specs) is filed with `.github/dependabot.yml`
+as its path rather than under `.github/workflows/`. Its body tells the
+implementer to merge the `updates` entry into any existing `updates:` list, and
+it carries neither the pins rule nor the workflow-file checks. The auditor also
+reads `.github/dependabot.yml` (then `.yaml`) when it evaluates such a spec,
+matching it only on its
+`package-ecosystem` entry (`dependabotConfigPatternGroups`) so a "Dependabot"
+comment cannot satisfy another ecosystem's spec.
 The auditor uses the complete root file inventory, so Deno taking precedence
 over Node during language selection cannot hide an existing `package.json`.
 Older language results without that inventory trigger a root-contents fetch;
@@ -300,8 +308,8 @@ caller-supplied map — is a different class: `applyResolvedPins` throws, and
 the sync reports that repository as **failed** rather than filing a stale
 template or quietly filing nothing.
 
-Because the YAML the body carries is final, both body variants tell the
-implementer what to do with it:
+Because the YAML the body carries is final, the workflow bodies (missing and
+partial) tell the implementer what to do with it:
 
 - **copy it verbatim** — no value in a template is repository-specific, and
   the body says so rather than leaving the implementer to guess which strings
@@ -311,7 +319,11 @@ implementer what to do with it:
   every `WORKFLOW_FILE_CHECKS` entry in
   `worker/deno/lib/workflow_file_checks.ts` — the same file-scoped checks the
   Actions audit and `quality.sh` run, so a check added there reaches every
-  body the next sync files.
+  workflow body the next sync files.
+
+A Dependabot-config body carries only the verbatim rule and the merge
+instruction: a Dependabot configuration has no `uses:` pins and no workflow-file
+checks.
 
 The same table is the pre-PR gate a worker run is held to: before `gh pr create`
 [`changed_workflow_gate.ts`](../worker/deno/lib/changed_workflow_gate.ts) runs
@@ -333,7 +345,7 @@ sequenceDiagram
     R->>G: commits/<tag> → sha
     R-->>S: pins + failures (one log line each)
     S->>S: applyResolvedPins(template)
-    S->>T: body: resolved YAML + How to apply (checks, pin rule)
+    S->>T: body: resolved YAML + How to apply (workflow: verbatim, pins, checks — Dependabot config: verbatim, merge)
 ```
 
 ### Security specs tell the human how to make the check block merges
