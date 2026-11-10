@@ -37,12 +37,12 @@ Version bump: `VERSION` is untouched by this change.
   guard.
 - Follow-up (verifier finding): the colon and full-URL forms had the same
   defect, because `COLON_CLOSE_RE` and `URL_CLOSE_RE` use `\s` and match across
-  a newline (`Closes:\n#N`, `Closes\n: #N`, `Closes\nhttps://github.com/o/r/issues/N`).
-  The append decision now calls a new `hasGithubColonOrUrlClosingReference` in
-  `worker/deno/lib/pr_body.ts` (same-line `[ \t]`, code masked by the same
-  placeholder, same repository only) instead of the loose patterns. The withhold
-  rewrite and `assertWithheld` keep the loose `governingColonAndUrlCloses`, the
-  conservative side.
+  a newline (`Closes:\n#N`, `Closes\n: #N`,
+  `Closes\nhttps://github.com/o/r/issues/N`). The append decision now calls a
+  new `hasGithubColonOrUrlClosingReference` in `worker/deno/lib/pr_body.ts`
+  (same-line `[ \t]`, code masked by the same placeholder, same repository only)
+  instead of the loose patterns. The withhold rewrite and `assertWithheld` keep
+  the loose `governingColonAndUrlCloses`, the conservative side.
 - Only the governing issue's append decision changed. The kept/restored
   closing-reference logic for other issues still uses `closingRefs` (not asked
   for).
@@ -74,8 +74,9 @@ The issue states no Acceptance Criteria or Definition of done heading, and
 nothing it asks is left undone, so no block is required. Its asks and where they
 land:
 
-- Same check as `ensurePrReferencesIssue` (plus a same-line colon and URL variant), exported from `pr_body.ts`:
-  `hasGithubClosingReference` in `worker/deno/lib/pr_body.ts`.
+- Same check as `ensurePrReferencesIssue` (plus a same-line colon and URL
+  variant), exported from `pr_body.ts`: `hasGithubClosingReference` in
+  `worker/deno/lib/pr_body.ts`.
 - Guard tests for line-wrapped and code-split proposals, plain same-line close
   unchanged: `worker/deno/tests/babysitter_pr_body_guard_test.ts`.
 - Both states end to end, including colon and full-URL forms, with a quoted or
@@ -92,9 +93,9 @@ contain "Issue #4964"):
 - same-repository qualified close honoured with no duplicate, another
   repository's not;
 - tab-joined and `Fixes` same-line closes left unchanged;
-- line-wrapped colon (`Closes:\n#N`, `Closes\n: #N`), line-wrapped full-URL
-  and code-split colon closes get `Closes #N` appended; same-line colon and
-  full-URL closes are left unchanged;
+- line-wrapped colon (`Closes:\n#N`, `Closes\n: #N`), line-wrapped full-URL and
+  code-split colon closes get `Closes #N` appended; same-line colon and full-URL
+  closes are left unchanged;
 - withheld state: line-wrapped, code-split, colon and full-URL forms leave no
   effective close;
 - `assertWithheld` still throws for real closes and not for code-formatted ones.
@@ -126,8 +127,8 @@ Twinned-rule search: the loose `CLOSING_KEYWORD_RE` copy in
 `missing_criterion_close_guard.ts` is intentionally kept for the withhold
 rewrite (conservative).
 
-Docs: `docs/workflows/fleet-pr-babysitter.md` item 4 updated (the plain,
-colon and full-URL closing forms count only when same-line and outside code).
+Docs: `docs/workflows/fleet-pr-babysitter.md` item 4 updated (the plain, colon
+and full-URL closing forms count only when same-line and outside code).
 
 Not done: the kept/restored closing-reference comparison for issues other than
 the governing one still reads the loose pattern; not asked for here. Shell
