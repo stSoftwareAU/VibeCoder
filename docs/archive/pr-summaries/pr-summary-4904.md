@@ -112,8 +112,10 @@ Backend only; no UI. Tests: `worker/deno/tests/setup_workflow_sync_test.ts`,
   Dependabot-config body carries neither the pins rule nor the workflow-file
   checks, the verbatim/pins/checks bullets now name workflow bodies only, and
   the `How to apply` diagram label matches) and the `workflow-sync` row in
-  `docs/SETUP.md`. The `workflowCheckSection` doc comment in `workflow_sync.ts`
-  now says a check reaches every *workflow* issue body.
+  `docs/SETUP.md` (the Dependabot-config sentence now says these specs carry
+  neither the pins rule nor the workflow-file checks). The
+  `workflowCheckSection` doc comment in `workflow_sync.ts` now says a check
+  reaches every *workflow* issue body.
 - `./quality.sh`: lint, type check, fmt, markdownlint and semgrep passed. The
   deno unit step failed on one test, `merge_fallback_issue_test.ts` ("routes the
   label creation through the caller's gh"), which fails identically on a clean

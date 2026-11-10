@@ -131,6 +131,17 @@ function bodyHistory(
   }));
 }
 
+/**
+ * Title renames in GitHub's chronological (oldest first) timeline order, built
+ * from the same spacing as `bodyHistory`: index 0 (newest) is 12:00.
+ */
+function renameHistory(
+  count: number,
+  loginFor: (index: number) => string,
+): BodyEdit[] {
+  return bodyHistory(count, loginFor).reverse();
+}
+
 /** Force the stored snapshot's `capturedAt` to a deterministic instant. */
 async function setCapturedAt(
   config: WorkerConfig,
@@ -183,7 +194,10 @@ interface HistoryMockOptions {
   bodyEdits: BodyEdit[];
   /** Overrides the reported `totalCount` (defaults to `bodyEdits.length`). */
   totalBodyEdits?: number;
+  /** Title renames, oldest first; the fake serves only the newest 100 (`last: 100`). */
   renames?: BodyEdit[];
+  /** Overrides the reported timeline `totalCount` (defaults to `renames.length`). */
+  totalRenames?: number;
   actions: string[];
   addedLabels: string[];
   commentBodies: string[];
@@ -233,7 +247,8 @@ function createGhMock(
                 opts.totalBodyEdits ?? opts.bodyEdits.length,
               ),
               timelineItems: {
-                nodes: (opts.renames ?? []).map((e) => ({
+                totalCount: opts.totalRenames ?? (opts.renames ?? []).length,
+                nodes: (opts.renames ?? []).slice(-100).map((e) => ({
                   createdAt: e.at,
                   actor: { login: e.login },
                 })),
@@ -1010,5 +1025,420 @@ Deno.test(
     } finally {
       Deno.removeSync(dir, { recursive: true });
     }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Truncated title-rename windows (Issue #4947)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "work_on_content_integrity - blocks a truncated rename history when every visible rename post-dates the snapshot (Issue #4947)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    // 150 trusted renames, all after the snapshot. The 50 oldest are hidden by
+    // the newest-100 window, so an untrusted rename could sit among them.
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: [],
+      renames: renameHistory(150, () => "alice"),
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(
+      outcome,
+      { verdict: "blocked", reason: "content-edit-history-truncated" },
+      "A truncated rename history cannot be judged complete, so it must block",
+    );
+    assert(
+      errors.some((line) =>
+        line.includes("[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]") &&
+        line.includes("has title renames beyond GitHub's newest-100 window")
+      ),
+      `Expected the rename truncation marker, got: ${errors.join(" | ")}`,
+    );
+    assertEquals(
+      errors.some((line) => line.includes("[SNAPSHOT_SELF_MISMATCH]")),
+      false,
+      "A truncated rename history must not be re-baselined as a self-inflicted mismatch",
+    );
+    assertEscalated(actions, addedLabels, commentBodies, config);
+    assertEquals(
+      await capturedAt(config, deps),
+      LONG_AGO_UNIX,
+      "Blocked content must leave the approval baseline untouched",
+    );
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - proceeds on a truncated rename history whose oldest visible rename predates the snapshot and is trusted (Issue #4947)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, WINDOW_SNAPSHOT_ISO);
+
+    // The newest-100 window reaches back to 10:21, before the snapshot, so
+    // every rename since the snapshot is inside it and all are trusted.
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: [],
+      renames: renameHistory(150, () => "alice"),
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors, warnings } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, { verdict: "proceed" });
+    assertEquals(
+      warnings.some((line) =>
+        line.includes("[ISSUE_MODIFIED_AFTER_APPROVAL] Trusted editors")
+      ),
+      true,
+      `Expected the trusted-editor path, got: ${warnings.join(" | ")}`,
+    );
+    const everything = [...errors, ...warnings];
+    assertEquals(
+      everything.some((line) =>
+        line.includes("[CONTENT_EDIT_HISTORY_TRUNCATED]")
+      ),
+      false,
+      "The oldest visible rename predates the snapshot, so no truncation marker",
+    );
+    assertEquals(actions, [], "A trusted rename window mutates nothing on gh");
+    assertEquals(addedLabels, []);
+    assert(
+      (await capturedAt(config, deps) ?? 0) > WINDOW_SNAPSHOT_UNIX,
+      "An all-trusted rename window refreshes the baseline",
+    );
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - judges an untrusted rename inside the newest-100 window of a truncated rename history (Issue #4947)",
+  async () => {
+    // Mirrors the body case: mallory's rename sits inside the visible window,
+    // after the snapshot, so it must be judged rather than hidden by truncation.
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, WINDOW_SNAPSHOT_ISO);
+
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: [],
+      renames: renameHistory(
+        150,
+        (index) => index === 1 ? "mallory" : "alice",
+      ),
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(
+      outcome,
+      { verdict: "blocked", reason: "content-modified-after-approval" },
+      "An untrusted rename since the snapshot must block via the untrusted-editor path",
+    );
+    assert(
+      errors.some((line) =>
+        line.includes(
+          "[ISSUE_MODIFIED_AFTER_APPROVAL] Untrusted editors [mallory@",
+        )
+      ),
+      `Expected the untrusted-editor marker naming mallory, got: ${
+        errors.join(" | ")
+      }`,
+    );
+    assertEquals(
+      errors.some((line) => line.includes("[SNAPSHOT_SELF_MISMATCH]")),
+      false,
+      "The untrusted rename must not be laundered into a self-mismatch re-baseline",
+    );
+    assertEquals(
+      errors.some((line) => line.includes("[CONTENT_EDIT_HISTORY_TRUNCATED]")),
+      false,
+      "The oldest visible rename predates the snapshot, so the rename window is settled",
+    );
+    assertEquals(
+      actions.includes("remove-label"),
+      false,
+      "Blocking must not remove work-on (Issue #3964)",
+    );
+    assertEquals(addedLabels.includes(config.needsHumanLabel), true);
+    assertStringIncludes(commentBodies[0] ?? "", "mallory");
+    assertEquals(
+      await capturedAt(config, deps),
+      WINDOW_SNAPSHOT_UNIX,
+      "Blocked content must leave the approval baseline untouched",
+    );
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - blocks when the body window is settled but the rename window is not (Issue #4947)",
+  async () => {
+    // The body window reaches back past the snapshot (settled), but the three
+    // visible renames all post-date it while 147 older ones are hidden.
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, WINDOW_SNAPSHOT_ISO);
+
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: bodyHistory(150, () => "alice"),
+      renames: renameHistory(3, () => "alice"),
+      totalRenames: 150,
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-edit-history-truncated",
+    });
+    assert(
+      errors.some((line) =>
+        line.includes("[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]") &&
+        line.includes("has title renames beyond GitHub's newest-100 window")
+      ),
+      `Expected the rename truncation marker, got: ${errors.join(" | ")}`,
+    );
+    assertEscalated(actions, addedLabels, commentBodies, config);
+    assertEquals(await capturedAt(config, deps), WINDOW_SNAPSHOT_UNIX);
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - blocks when the rename window is settled but the body window is not (Issue #4947)",
+  async () => {
+    // Mirror of the case above: the rename window reaches back past the
+    // snapshot, but the three visible body edits all post-date it.
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, WINDOW_SNAPSHOT_ISO);
+
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: bodyHistory(3, () => "alice"),
+      totalBodyEdits: 150,
+      renames: renameHistory(150, () => "alice"),
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-edit-history-truncated",
+    });
+    assert(
+      errors.some((line) =>
+        line.includes("[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]") &&
+        line.includes("body edits")
+      ),
+      `Expected the body truncation marker, got: ${errors.join(" | ")}`,
+    );
+    assertEscalated(actions, addedLabels, commentBodies, config);
+    assertEquals(await capturedAt(config, deps), WINDOW_SNAPSHOT_UNIX);
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - a trusted work-on re-add after the newest rename clears a truncated rename history (Issue #4947)",
+  async () => {
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    // 150 trusted renames, newest at 12:00. alice re-approves at 12:05.
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: [],
+      renames: renameHistory(150, () => "alice"),
+      actions,
+      addedLabels,
+      commentBodies,
+      timeline: [workOnAdded("alice", "2026-05-01T12:05:00Z")],
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors, warnings } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, { verdict: "proceed" });
+    assert(
+      warnings.some((line) =>
+        line.includes("[ISSUE_REAPPROVED_AFTER_MODIFICATION]")
+      ),
+      `Expected the re-approval marker, got: ${warnings.join(" | ")}`,
+    );
+    assertEquals(
+      errors.some((line) => line.includes("[CONTENT_EDIT_HISTORY_TRUNCATED]")),
+      false,
+      "A re-approved truncated rename history must not log the block",
+    );
+    assertEquals(actions, [], "A re-approval mutates nothing on gh");
+    assert(
+      (await capturedAt(config, deps) ?? 0) > LONG_AGO_UNIX,
+      "A re-approval refreshes the baseline",
+    );
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - a re-approval cannot clear a truncated rename history whose window is empty (Issue #4947)",
+  async () => {
+    // No rename in the window means the newest rename is unknown, so no
+    // re-approval can be shown to post-date it.
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: [],
+      renames: [],
+      totalRenames: 5,
+      actions,
+      addedLabels,
+      commentBodies,
+      timeline: [workOnAdded("alice", "2026-05-01T12:05:00Z")],
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors, warnings } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, {
+      verdict: "blocked",
+      reason: "content-edit-history-truncated",
+    });
+    assert(
+      errors.some((line) =>
+        line.includes("[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]") &&
+        line.includes("title renames")
+      ),
+      `Expected the rename truncation marker for an empty window, got: ${
+        errors.join(" | ")
+      }`,
+    );
+    assertEquals(
+      warnings.some((line) =>
+        line.includes("[ISSUE_REAPPROVED_AFTER_MODIFICATION]")
+      ),
+      false,
+      "An empty truncated rename window must not honour a re-approval",
+    );
+    assertEscalated(actions, addedLabels, commentBodies, config);
+    assertEquals(
+      await capturedAt(config, deps),
+      LONG_AGO_UNIX,
+      "Blocked content must leave the approval baseline untouched",
+    );
+  },
+);
+
+Deno.test(
+  "work_on_content_integrity - proceeds on a complete three-rename history with no truncation (Issue #4947 control)",
+  async () => {
+    // Control for the rename cases: the same all-trusted, post-snapshot shape,
+    // but the history is complete (totalRenames equals the renames served).
+    const deps = createMemoryFs();
+    const config = makeConfig();
+    await seedSnapshot(config, deps, LONG_AGO_ISO);
+
+    const renames = renameHistory(3, () => "alice");
+    const actions: string[] = [];
+    const addedLabels: string[] = [];
+    const commentBodies: string[] = [];
+    const gh = createGhMock({
+      title: "Fix the bug",
+      body: "Approved specification, reworded",
+      bodyEdits: [],
+      renames,
+      totalRenames: renames.length,
+      actions,
+      addedLabels,
+      commentBodies,
+    });
+
+    let outcome: WorkOnContentIntegrityOutcome | undefined;
+    const { errors, warnings } = await captureConsole(async () => {
+      outcome = await runGate(config, deps, gh);
+    });
+
+    assertEquals(outcome, { verdict: "proceed" });
+    const everything = [...errors, ...warnings];
+    assertEquals(
+      everything.some((line) =>
+        line.includes("[CONTENT_EDIT_HISTORY_TRUNCATED]")
+      ),
+      false,
+      "A complete rename history must not carry the truncation marker",
+    );
+    assertEquals(actions, [], "A trusted rename window mutates nothing on gh");
+    assertEquals(addedLabels, []);
   },
 );
