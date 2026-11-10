@@ -2,8 +2,6 @@
 
 `normaliseGateOutputLines` in `worker/deno/lib/baseline_gate.ts` now masks clock-format elapsed times, so a pre-existing red pytest or Maven check that runs over a minute is still recognised as pre-existing. Closes #4918.
 
-Version bump: `VERSION` updated for this change; the merged commit records the final version.
-
 ## Spec
 
 ### Intent and Rationale
