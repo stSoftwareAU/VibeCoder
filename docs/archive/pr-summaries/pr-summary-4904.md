@@ -29,12 +29,12 @@ Closes #4904.
 - A `dependabotConfig` spec carries `dependabotConfigPatternGroups`, used in
   place of `detectionPatternGroups` when matching `.github/dependabot.yml`
   (workflow files keep the tool-name patterns). The config is matched only on
-  its `package-ecosystem: <name>` entry (plain, double- and single-quoted), so
-  a header comment, docs URL or default-template text saying "Dependabot"
-  cannot satisfy the npm spec for a config that covers only `github-actions`,
-  `pip` or `docker`. The npm spec's old tool-name group is unchanged. This
-  also keeps `purge_stale_workflow_issues.ts`, which closes a request when its
-  spec id is in `audit.present`, from closing a genuinely missing npm request.
+  its `package-ecosystem: <name>` entry (plain, double- and single-quoted), so a
+  header comment, docs URL or default-template text saying "Dependabot" cannot
+  satisfy the npm spec for a config that covers only `github-actions`, `pip` or
+  `docker`. The npm spec's old tool-name group is unchanged. This also keeps
+  `purge_stale_workflow_issues.ts`, which closes a request when its spec id is
+  in `audit.present`, from closing a genuinely missing npm request.
 
 ### Undiscoverable Facts
 
@@ -64,11 +64,11 @@ Backend only; no UI. Tests: `worker/deno/tests/setup_workflow_sync_test.ts`,
   error text; a thrown `Error` and a thrown string; `dependabot.yaml` fallback;
   the config not satisfying a non-Dependabot spec (`gitleaks` in the file); a
   `github-actions`-only config that says "Dependabot" leaves
-  `npm-dependency-updates` missing; quoted `"npm"` / `'npm'` entries; a
-  workflow naming `renovate` still satisfies npm with `foundIn`
-  `.github/workflows/deps.yml`; and `foundIn` pinned on a partial match.
-  Red checks: config applied to every spec, 1 failed; `-H` dropped, 1 failed;
-  config patterns falling back to the tool-name group, 4 failed.
+  `npm-dependency-updates` missing; quoted `"npm"` / `'npm'` entries; a workflow
+  naming `renovate` still satisfies npm with `foundIn`
+  `.github/workflows/deps.yml`; and `foundIn` pinned on a partial match. Red
+  checks: config applied to every spec, 1 failed; `-H` dropped, 1 failed; config
+  patterns falling back to the tool-name group, 4 failed.
 - Red checks: `issueBody` ignoring the flag, 3 failed; auditor skipping the
   config fetch, 4 failed; flag dropped from the Gradle spec, 3 failed; npm
   patterns removed, the hand-written-config test failed. Each was restored.
