@@ -810,19 +810,22 @@ the worker's own environment wins, but no `.config.json` key sets them. The
 concurrency cap also bounds a split run's executors, which the split prompt
 itself does not cap.
 
-#### Foreground command ceiling (Issue #4913)
+#### Foreground command ceiling (Issues #4913, #4926)
 
-[`claude_env.ts`](../worker/deno/lib/claude_env.ts) also sets
-`BASH_MAX_TIMEOUT_MS=1800000` in the spawn environment of every `claude` child,
-via `CLAUDE_BASH_TIMEOUT_ENV`. Claude Code stops a foreground Bash command at
-600000 ms unless that variable raises the ceiling, so the bounded foreground
-gate run the prompts require can run up to 30 minutes, matching the 1800 s
-default PR-feedback timeout. A value already in the worker's own environment
-wins, and no `.config.json` key sets it. Only the `claude` provider's child is
-built by `buildClaudeChildEnv`. The `deepseek` provider builds its child through `buildDeepSeekChildEnv`
-([`deepseek_env.ts`](../worker/deno/lib/deepseek_env.ts)), which does not set
-it, so a DeepSeek child keeps the CLI default. The `codex` and `gemini`
-providers are not affected.
+Every `claude` child and every `deepseek` child gets
+`BASH_MAX_TIMEOUT_MS=1800000` in its spawn environment, from the shared
+`CLAUDE_BASH_TIMEOUT_ENV` in [`claude_env.ts`](../worker/deno/lib/claude_env.ts).
+The `claude` child is built by `buildClaudeChildEnv`
+([`claude_env.ts`](../worker/deno/lib/claude_env.ts), Issue #4913). The `deepseek`
+child is built by `buildDeepSeekChildEnv`
+([`deepseek_env.ts`](../worker/deno/lib/deepseek_env.ts), Issue #4926). The
+`deepseek` binary is the same Claude Code CLI (2.1.310, pinned in
+`container/tools.json`), so it reads the same variable. Claude Code stops a
+foreground Bash command at 600000 ms unless that variable raises the ceiling,
+so the bounded foreground gate run the prompts require can run up to 30
+minutes, matching the 1800 s default PR-feedback timeout. A value already in
+the worker's own environment wins, and no `.config.json` key sets it. The
+`codex` and `gemini` providers are not affected.
 
 ### Pre-PR verifier (issue phase)
 

@@ -1042,7 +1042,7 @@ Deno.test("real probe permission verdicts", async () => {
         assertEquals(await code(executable), 3);
       }
     } finally {
-      await Deno.chmod(cwd, 0o777);
+      await Deno.chmod(cwd, 0o755);
     }
     await Deno.mkdir(`${cwd}/target`);
     await Deno.writeTextFile(`${cwd}/target/readonly`, "x");
@@ -1312,7 +1312,7 @@ Deno.test("real probe for a read-only checkout passes a 0555 deno project only w
       assertEquals(await code({ readOnlyCheckout: true }), 0);
       assertEquals(await code(), 3);
     } finally {
-      await Deno.chmod(cwd, 0o777);
+      await Deno.chmod(cwd, 0o755);
     }
   });
 });
