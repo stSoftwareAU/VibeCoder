@@ -78,17 +78,20 @@ flowchart LR
 ```
 
 External dispatch is sequential. `max_concurrency` above one is refused. Claude
-roles use CLI tool denials. Codex roles run with the container as their
-sandbox, approval prompts disabled and multi-agent delegation disabled; the
-worker holds a Codex manager or reviewer to read-only by recording the checkout
-before the call and putting back anything the call changed (Issue #4356).
-Codex's own `--sandbox` is not used: it needs bubblewrap and a fresh procfs
-mount, which the agent container cannot provide. Gemini cannot enforce the required
-tool restrictions; DeepSeek has no proved fixed-price subscription. Those
-combinations fail closed. A host without the requested CLI or subscription
-fails before paid work. Observed exhausted or unavailable quota also refuses;
-unknown quota remains unknown and the runner handles a provider's actual quota
-response.
+roles use CLI tool denials through `--disallowed-tools`. Codex roles run in the
+worker container with approval prompts and multi-agent delegation disabled.
+Codex does not enforce named tool denials: the worker holds a manager or
+reviewer to read-only by recording the checkout before the call and restoring
+checkout changes afterwards (Issue #4356). This does not deny Bash or prevent
+commands and builds outside the checkout. Codex's own `--sandbox` is not used:
+it needs bubblewrap and a fresh procfs mount, which the agent container cannot
+provide. Gemini receives tool restrictions as prompt text, not an enforced
+CLI denial; DeepSeek has no proved fixed-price subscription. Those combinations
+fail closed. Explicit provider selection does not disable model-refusal
+fallbacks or provide filesystem/network isolation. A host without the requested
+CLI or subscription fails before paid work. Observed exhausted or unavailable
+quota also refuses; unknown quota remains unknown and the runner handles a
+provider's actual quota response.
 
 Each role invokes the existing provider adapter and its credential-isolation
 path. No session transcript is resumed across roles, model fallback is disabled,

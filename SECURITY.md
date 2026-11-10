@@ -47,6 +47,13 @@ actual-worker startup checks. Host/LAN access remains a gap; unavailable
 IPv6/DNS probes remain unknown. It is never labelled fully enforced. C12 and C13 are gh-write controls only; they do
 not control general egress.
 
+Provider tool restrictions are separate from execution containment. Claude's
+CLI enforces `--disallowed-tools`; Codex and Gemini receive the list as prompt
+text. Selecting a provider does not disable model-refusal fallback or create
+filesystem/network isolation. Codex's read-only role guard restores changes to
+the selected checkout, but does not deny Bash or undo commands and builds run
+elsewhere. The container and network controls above are the isolation boundary.
+
 The GhostCommit image-injection surface has its own pair of reports: the
 [image prompt-injection assessment](docs/security/ghostcommit-image-injection-assessment.md)
 and the [canary regression tests](docs/security/ghostcommit-canary-tests.md)

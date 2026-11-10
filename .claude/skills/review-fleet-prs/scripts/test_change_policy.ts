@@ -705,7 +705,8 @@ function neverExisted(where: string, fix?: string): Problem {
   };
 }
 
-// Coverage: each entry is checked at the head; at least one must pass.
+// Coverage: every `replacement` and `existing` entry must resolve at the head
+// (the `name` is matched as literal text in the file's source).
 // A gone entry naming a test file shows nothing was removed, so it never
 // counts as proof. It is reported only when no other entry in the note passes
 // (an extra renamed-test entry beside verified coverage does not fail the note).
