@@ -139,6 +139,7 @@ function createGhMock(
                 })),
               },
               timelineItems: {
+                totalCount: (opts.renames ?? []).length,
                 nodes: (opts.renames ?? []).map((r) => ({
                   createdAt: r.at,
                   actor: { login: r.login },

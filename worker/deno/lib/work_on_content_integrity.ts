@@ -35,6 +35,7 @@ import {
 import {
   type IssueEditActor,
   resolveLastIssueEditor,
+  unsettledHistoryWindows,
 } from "./issue_edit_actor.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import { escalateToHuman } from "./needs_human_escalation.ts";
@@ -512,11 +513,12 @@ export interface ContentIntegrityDecisionInput {
  *   verified-unchanged live content, and proceeds without mutating the issue.
  * - Changed, but the editor cannot be resolved: blocks without mutating the
  *   issue, so a transient lookup failure cannot mutate labels.
- * - Changed, and the body history is truncated beyond GitHub's newest-100
- *   window with no returned body edit predating the snapshot (Issue #4804):
- *   if a body edit is visible, re-baselines on a trusted re-approval that
- *   post-dates the newest edit. An empty body window cannot be re-approved
- *   until a new body edit enters it. Otherwise logs
+ * - Changed, and a truncated edit window (body edits, Issue #4804, or title
+ *   renames, Issue #4947, beyond GitHub's newest-100 window) is not settled by
+ *   its oldest returned edit predating the snapshot: if every unsettled window
+ *   holds a returned edit, re-baselines on a trusted re-approval that
+ *   post-dates the newest edit. An empty window cannot be re-approved until a
+ *   new edit of its kind enters it. Otherwise logs
  *   `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED]`, adds `needs-human` with one
  *   deduplicated comment, and blocks with the `content-edit-history-truncated`
  *   reason.
@@ -740,108 +742,119 @@ export async function resolveContentIntegrity(
         });
       };
 
-      // Issue #4804: GitHub lists body edits newest first, so a truncated
-      // window holds the newest 100 and hides older edits. A hidden edit could
-      // post-date the snapshot, so an empty or post-snapshot-only window proves
-      // nothing. The oldest returned body edit settles it only when it predates
-      // the snapshot: then every edit at or after the snapshot is in the window.
-      // Otherwise fail closed, but not as a transient fault: nothing on the
-      // next scan changes the history, so a trusted re-approval made after the
-      // newest edit clears it when a body edit is visible; otherwise the issue
-      // is escalated to a human (PR #4944 review).
-      if (editorLookup.bodyHistoryTruncated) {
-        const bodyEditTimes = editorLookup.actors
-          .filter((e) => e.source === "content-edit")
-          .map((e) => e.editedAt);
-        const oldestBodyEditAt = bodyEditTimes.length === 0
-          ? null
-          : Math.min(...bodyEditTimes);
-        if (
-          oldestBodyEditAt === null ||
-          oldestBodyEditAt >= verification.capturedAt
-        ) {
-          const why = oldestBodyEditAt === null
-            ? "no body edit in the window places the snapshot"
-            : "the oldest body edit in the window post-dates the snapshot, so an older unseen edit could too";
+      // Issues #4804 and #4947: GitHub lists body edits and title renames newest
+      // first, so a truncated window holds the newest 100 of its kind and hides
+      // older edits. A hidden edit could post-date the snapshot, so an empty or
+      // post-snapshot-only window proves nothing. A window settles only when its
+      // oldest returned edit predates the snapshot: then every edit at or after
+      // the snapshot is in the window. Otherwise fail closed, but not as a
+      // transient fault: nothing on the next scan changes the history, so a
+      // trusted re-approval made after the newest edit clears it when every
+      // unsettled window holds a returned edit; otherwise the issue is escalated
+      // to a human (PR #4944 review).
+      const unsettled = unsettledHistoryWindows(
+        editorLookup,
+        verification.capturedAt,
+      );
+      if (unsettled.length > 0) {
+        const what = unsettled
+          .map((w) =>
+            w.source === "content-edit" ? "body edits" : "title renames"
+          )
+          .join(" and ");
+        const emptyKinds = unsettled
+          .filter((w) => w.oldestAt === null)
+          .map((w) => w.source === "content-edit" ? "body" : "title")
+          .join(" and ");
+        const why = unsettled
+          .map((w) => {
+            const noun = w.source === "content-edit"
+              ? "body edit"
+              : "title rename";
+            return w.oldestAt === null
+              ? `no ${noun} in the window places the snapshot`
+              : `the oldest ${noun} in the window post-dates the snapshot, so an older unseen edit could too`;
+          })
+          .join("; ");
+        const canReapprove = unsettled.every((w) => w.oldestAt !== null);
 
-          // An empty window leaves the newest edit unknown, so no re-approval
-          // can be shown to post-date it: only a fresh edit (which enters the
-          // newest-first window) lets the check run.
-          if (oldestBodyEditAt !== null) {
-            const reapproval = await findTrustedReapproval({
+        // An empty window leaves the newest edit unknown, so no re-approval
+        // can be shown to post-date it: only a fresh edit (which enters the
+        // newest-first window) lets the check run.
+        if (canReapprove) {
+          const reapproval = await findTrustedReapproval({
+            ...reapprovalArgs,
+            warnOnStale: true,
+          });
+          if (reapproval) {
+            return await reBaselineOnReapproval(
+              reapproval,
+              " (truncated history)",
+            );
+          }
+          if (timelineCache) {
+            await timelineCache.invalidate(repo, issueNumber);
+            const fresh = await findTrustedReapproval({
               ...reapprovalArgs,
-              warnOnStale: true,
+              warnOnStale: false,
             });
-            if (reapproval) {
+            if (fresh) {
               return await reBaselineOnReapproval(
-                reapproval,
-                " (truncated history)",
+                fresh,
+                " (truncated history, uncached re-read)",
               );
             }
-            if (timelineCache) {
-              await timelineCache.invalidate(repo, issueNumber);
-              const fresh = await findTrustedReapproval({
-                ...reapprovalArgs,
-                warnOnStale: false,
-              });
-              if (fresh) {
-                return await reBaselineOnReapproval(
-                  fresh,
-                  " (truncated history, uncached re-read)",
-                );
-              }
-            }
           }
-
-          console.error(
-            `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED] ${repo}#${issueNumber} ` +
-              `has body edits beyond GitHub's newest-100 window, and ${why} — ` +
-              `BLOCKED`,
-          );
-          await escalateToHuman({
-            ghClient: createGhEscalationClient(ghFn),
-            repo,
-            target: { kind: "issue", number: issueNumber },
-            needsHumanLabel: config.needsHumanLabel,
-            heading: "Issue Edit History Too Long To Verify",
-            reason:
-              `The issue's title or body was modified after a trusted author ` +
-              `applied \`${approvalLabel}\`, but it has more body edits than ` +
-              `GitHub lists (the newest 100), so the worker cannot show that ` +
-              `none of the hidden older edits came from an untrusted editor. ` +
-              `For security, \`${config.needsHumanLabel}\` has been added and ` +
-              `automated processing is blocked until a human reviews the issue.`,
-            nextStep: oldestBodyEditAt === null
-              ? `A trusted author should review the current title and body, ` +
-                `make a new body edit, then remove \`${config.needsHumanLabel}\` ` +
-                `(or re-add \`${approvalLabel}\`) after that edit to re-approve ` +
-                `the content. Revert any unacceptable changes first.`
-              : `A trusted author should review the current title and body. If ` +
-                `they are acceptable, remove \`${config.needsHumanLabel}\` (or ` +
-                `re-add \`${approvalLabel}\`) after the most recent edit to ` +
-                `re-approve the content. If they are not, revert the change ` +
-                `first.`,
-            // Scoped to the newest edit, so a later edit raises its own
-            // comment while a still-blocked issue is not re-commented on
-            // every scan (Issue #1562).
-            dedupKey: `content-history-truncated-${issueNumber}-${
-              newestEditAt ?? "unknown"
-            }`,
-            deps: {
-              github: {
-                ensureLabelExists: ensureLabelExistsViaGhFn(ghFn),
-              },
-              dedupAuthors: { fleetAuthors },
-            },
-            logger: defaultLogger,
-          });
-          diag?.logIssueSkipped(
-            repo,
-            issueNumber,
-            "content-edit-history-truncated",
-          );
-          return blockedBy("content-edit-history-truncated");
         }
+
+        console.error(
+          `[SECURITY] [CONTENT_EDIT_HISTORY_TRUNCATED] ${repo}#${issueNumber} ` +
+            `has ${what} beyond GitHub's newest-100 window, and ${why} — ` +
+            `BLOCKED`,
+        );
+        await escalateToHuman({
+          ghClient: createGhEscalationClient(ghFn),
+          repo,
+          target: { kind: "issue", number: issueNumber },
+          needsHumanLabel: config.needsHumanLabel,
+          heading: "Issue Edit History Too Long To Verify",
+          reason:
+            `The issue's title or body was modified after a trusted author ` +
+            `applied \`${approvalLabel}\`, but it has more ${what} than ` +
+            `GitHub lists (the newest 100), so the worker cannot show that ` +
+            `none of the hidden older edits came from an untrusted editor. ` +
+            `For security, \`${config.needsHumanLabel}\` has been added and ` +
+            `automated processing is blocked until a human reviews the issue.`,
+          nextStep: !canReapprove
+            ? `A trusted author should review the current title and body, ` +
+              `make a new ${emptyKinds} edit, then remove \`${config.needsHumanLabel}\` ` +
+              `(or re-add \`${approvalLabel}\`) after that edit to re-approve ` +
+              `the content. Revert any unacceptable changes first.`
+            : `A trusted author should review the current title and body. If ` +
+              `they are acceptable, remove \`${config.needsHumanLabel}\` (or ` +
+              `re-add \`${approvalLabel}\`) after the most recent edit to ` +
+              `re-approve the content. If they are not, revert the change ` +
+              `first.`,
+          // Scoped to the newest edit, so a later edit raises its own
+          // comment while a still-blocked issue is not re-commented on
+          // every scan (Issue #1562).
+          dedupKey: `content-history-truncated-${issueNumber}-${
+            newestEditAt ?? "unknown"
+          }`,
+          deps: {
+            github: {
+              ensureLabelExists: ensureLabelExistsViaGhFn(ghFn),
+            },
+            dedupAuthors: { fleetAuthors },
+          },
+          logger: defaultLogger,
+        });
+        diag?.logIssueSkipped(
+          repo,
+          issueNumber,
+          "content-edit-history-truncated",
+        );
+        return blockedBy("content-edit-history-truncated");
       }
 
       // Edits that post-date the baseline are the ones that could have produced

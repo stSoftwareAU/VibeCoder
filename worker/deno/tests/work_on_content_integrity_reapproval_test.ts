@@ -137,7 +137,7 @@ function createGhMock(
           repository: {
             issue: {
               userContentEdits: { totalCount: nodes.length, nodes },
-              timelineItems: { nodes: [] },
+              timelineItems: { totalCount: 0, nodes: [] },
             },
           },
         },
@@ -541,7 +541,7 @@ Deno.test(
                     editor: { login: "attacker" },
                   }],
                 },
-                timelineItems: { nodes: [] },
+                timelineItems: { totalCount: 0, nodes: [] },
               },
             },
           },
