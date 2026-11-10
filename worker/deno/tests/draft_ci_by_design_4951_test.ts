@@ -6,6 +6,7 @@
  */
 
 import { assertEquals } from "@std/assert";
+import { fetchFailedCheckRuns } from "../lib/pr_maintenance.ts";
 import { dropDraftByDesignFailures } from "../lib/draft_ci_by_design.ts";
 import type { JobNeedsMap } from "../lib/workflow_job_needs.ts";
 
@@ -90,4 +91,41 @@ Deno.test("dropDraftByDesignFailures - the skipped list is read once for several
   );
   assertEquals(names(kept), ["test"]);
   assertEquals(reads.count, 1);
+});
+
+Deno.test("draft CI - skipped needs beyond the first page still suppress the aggregator (PR #5030 review)", async () => {
+  const first = Array.from({ length: 100 }, (_, id) => ({
+    id,
+    name: id === 0 ? "lint" : `unrelated-${id}`,
+    status: "completed",
+    conclusion: "skipped",
+  }));
+  const second = [{
+    id: 101,
+    name: "test",
+    status: "completed",
+    conclusion: "skipped",
+  }];
+  const gh = (args: string[]) =>
+    Promise.resolve(
+      args.includes("--paginate") &&
+        args.some((a) => a.endsWith("?per_page=100"))
+        ? `${JSON.stringify(first)}\n${JSON.stringify(second)}`
+        : JSON.stringify(first.slice(0, 30)),
+    );
+  const kept = await dropDraftByDesignFailures(
+    [{ name: "CI Required Checks" }, { name: "test" }],
+    NEEDS,
+    async () =>
+      new Set(
+        (await fetchFailedCheckRuns("org/repo", "head", gh, ["skipped"])).map((
+          c,
+        ) => c.name),
+      ),
+  );
+  assertEquals(
+    names(kept),
+    ["test"],
+    "the real failure remains, the draft-only aggregator does not",
+  );
 });

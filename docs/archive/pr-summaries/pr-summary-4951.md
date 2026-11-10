@@ -174,3 +174,16 @@ flowchart LR
 Not done / not checked: `labels`/`body`/`reviewDecision` missing from the
 prefetched maintenance entry left as is; "needs all skipped" is judged one level
 deep, not transitively.
+
+### PR #5030 review revision
+
+- Restored CONTRIBUTING's hand wrapping and kept only the draft-policy bullet.
+- Added the per-check draft rule, its fail-open boundaries and the
+  `draft-by-design-ci` reason to both canonical CI-scan manuals.
+- Check-run reads now request 100 entries and paginate. The existing shared
+  JSON-array-page parser combines the per-page jq output. A regression puts
+  the second skipped dependency on page two: the draft-only aggregator is
+  dropped and the real failing job remains. It fails before the fix.
+- 100 tests pass across draft rules, PR maintenance and prefetch/invitation
+  integration. Formatting, lint and diff checks pass. Tests use integrity-checked
+  local copies of locked packages; full quality gate not rerun here.

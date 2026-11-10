@@ -105,6 +105,7 @@ import {
   isDownstreamOfRedJob,
   type JobNeedsMap,
 } from "./workflow_job_needs.ts";
+import { parseJsonArrayPages } from "./json_array_pages.ts";
 import { dropDraftByDesignFailures } from "./draft_ci_by_design.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { fetchAllIssues } from "./issue_query.ts";
@@ -833,13 +834,12 @@ export async function fetchFailedCheckRuns(
   try {
     const output = await ghCommandFn([
       "api",
-      `repos/${repo}/commits/${branchName}/check-runs`,
+      `repos/${repo}/commits/${branchName}/check-runs?per_page=100`,
+      "--paginate",
       "--jq",
       `.check_runs | [.[] | select(${select}) | {id: .id, name: .name, status: .status, conclusion: .conclusion}]`,
     ]);
-    const parsed: unknown = JSON.parse(output);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as CheckRunEntry[];
+    return parseJsonArrayPages(output) as CheckRunEntry[];
   } catch {
     return [];
   }
