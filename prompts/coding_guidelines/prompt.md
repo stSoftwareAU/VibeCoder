@@ -825,43 +825,40 @@ separate.
   Capping one pattern and leaving its sibling in the same file with the same
   defect is the usual miss.
 - **Keep iteration counts honest** — do not shrink them to make a "performance
-  test" fit inside a unit test. Write a proper benchmark and include the results
-  in the PR summary.
+  test" fit inside a unit test. Write a proper benchmark and report the results
+  in the PR summary as indicative evidence (see **Performance Task Workflow**).
 
 ## Performance Task Workflow
 
 When an issue involves performance improvement, optimisation, or speed-up,
-follow this workflow strictly. **Do not raise a PR unless a measurable
-improvement is demonstrated.**
+follow this workflow. Benchmark timings taken in the container are indicative
+evidence only: they never gate a build, a check or a PR. The container is a
+shared host that runs other tasks in parallel, so a timing taken there is as
+unreliable as the wall-clock thresholds **Unit Tests vs Benchmarks** bans.
 
-1. **Create benchmarks first** — write or identify benchmark scripts that
-   measure the relevant metric. Run them and record the baseline numbers before
-   changing any code.
-2. **Implement the change**.
-3. **Run benchmarks again** — use the same benchmark scripts from step 1. Record
-   the after numbers.
-4. **Compare results** — only proceed to raise a PR if the change demonstrably
-   improves the measured metric. Include the before/after numbers in the PR
-   summary.
-5. **No gain = record it** — if there is no meaningful improvement, **do
-   not create a PR**. Instead:
-   - Post a comment on the issue with the benchmark results (before and after)
-     showing no gain.
-   - Include a brief explanation of what was tried and why it did not help.
-   - Add the `negative-result` label to the issue.
-   - State plainly in that comment that this is a negative result and the issue
-     should not be re-attempted. **Do not run `gh issue close` yourself, and do
-     not add `needs-human` yourself** — the `gh` guard refuses issue-lifecycle
-     verbs on the issue you are working (see **Issue Lifecycle Is Not Yours To
-     Change** below). The comment plus the `negative-result` label is the
-     record. When the run ends, the worker hands the issue to a human: it adds
-     `needs-human`, leaves the issue open and unassigns itself (Issue #4298,
-     Issue #4911). A negative result is still valuable learning — record it
-     clearly.
-
-**Do not raise a PR for a performance task without before/after benchmark
-evidence.** A PR with no demonstrated improvement wastes reviewer time and will
-be closed.
+1. **Prefer deterministic evidence** that holds on a loaded host — operation,
+   allocation, query or work counts, or algorithmic complexity — asserted in
+   tests through an injected counter, as **Unit Tests vs Benchmarks** says.
+2. **Treat timings as indicative.** If you take before/after timings in the
+   container, report them in the PR summary marked as taken on a shared,
+   parallel host. Never assert on them, and never let them fail a build, a
+   check or a PR.
+3. **Raise the PR when the change is correct and tested.** A missing measured
+   timing gain alone does not stop it.
+4. **A timing comparison that needs a quiet machine** is recorded in the PR
+   summary as an `Owner step:` (or run in the repository's dedicated benchmark
+   environment, if it has one), never decided in the container.
+5. **Record a negative result only on deterministic evidence.** When
+   deterministic evidence shows the change does not help, raise no PR. Post a
+   comment on the issue with that evidence and a brief explanation of what was
+   tried, and add the `negative-result` label. Do not say the issue "should
+   not be re-attempted". **Do not run `gh issue close` yourself, and do not add
+   `needs-human` yourself** — the `gh` guard refuses issue-lifecycle verbs on
+   the issue you are working (see **Issue Lifecycle Is Not Yours To Change**
+   below). The comment plus the `negative-result` label is the record. When the
+   run ends with no change, the worker hands the labelled issue to a human: it
+   adds `needs-human`, leaves the issue open and unassigns itself (Issue #4298,
+   Issue #4911). Noisy or missing timings alone are not a negative result.
 
 <!-- /guidelines-layer -->
 

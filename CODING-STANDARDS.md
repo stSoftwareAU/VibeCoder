@@ -1940,8 +1940,10 @@ PR summary — containing:
    behaviour seen only at run time, constraints from outside the repo) — at
    most four bullets each, `None.` when empty.
 3. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
-   before/after benchmark results for performance changes, or test references
-   for bug fixes. If visual evidence cannot be provided, state why.
+   deterministic evidence (operation or work counts) for performance changes,
+   with any container timings marked indicative (taken on a shared, parallel
+   host) and never a gate, or test references for bug fixes. If visual
+   evidence cannot be provided, state why.
    Name the manual section you read and the doc files you updated (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)).
    The docs-sweep line and the gate that refused a pull request for it were
