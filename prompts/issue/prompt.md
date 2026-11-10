@@ -1151,9 +1151,13 @@ When creating the PR, include evidence based on the type of change:
   words alone is not sufficient — capture an actual screenshot. On a resumed
   attempt, update the existing PR summary so it references the screenshots you
   captured this time.
-- **Performance Changes**: Include before/after benchmark results. If no
-  measurable improvement can be demonstrated, do not raise a PR — record the
-  negative result as the guidelines' Performance Task Workflow describes.
+- **Performance Changes**: Prefer deterministic evidence (operation, allocation,
+  query or work counts, complexity) asserted in tests. Any before/after timings
+  are indicative only — report them marked as taken on a shared, parallel
+  host. A missing timing gain alone does not block the PR; a timing comparison
+  that needs a quiet machine is an `Owner step:` in the PR summary. Record a
+  negative result as the guidelines' Performance Task Workflow describes, only
+  when deterministic evidence shows the change does not help.
 - **Bugs/Enhancements**: Follow TDD and ensure tests verify the result/outcome,
   not the implementation method. Tests should continue to work when the
   implementation is improved or refactored. When the change shells out to
@@ -1383,8 +1387,8 @@ The file MUST contain:
    - For UI changes: Include a screenshot (as Markdown image) captured via
      Playwright MCP — required whenever the diff touches a file listed under
      **UI Changes** in PR Raising Requirements
-   - For performance changes: Include benchmark results or document why they
-     cannot be provided
+   - For performance changes: Include deterministic evidence first; report any
+     benchmark timings as indicative (shared, parallel host), never as a gate
    - For bug fixes/CLI changes: Reference the tests that verify the fix
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)

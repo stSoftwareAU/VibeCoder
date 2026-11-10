@@ -69,8 +69,9 @@ of change:
 - **UI (User Interface) Changes**: Include a screenshot (see
   [Screenshot Support](DEPLOYMENT.md#-screenshot-support-setup)). If a screenshot
   cannot be generated, you must explicitly state why in the PR summary.
-- **Performance Changes**: Include benchmark results (before/after). If no
-  measurable improvement, document this finding.
+- **Performance Changes**: Prefer deterministic evidence (operation or work
+  counts). Any before/after timings are indicative only (taken on a shared,
+  parallel host); a missing timing gain alone does not block the PR.
 - **Bugs/Enhancements**: Follow TDD (Test-Driven Development); test the
   result/outcome, not the implementation method.
 
