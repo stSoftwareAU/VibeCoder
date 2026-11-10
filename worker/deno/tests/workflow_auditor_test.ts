@@ -14,6 +14,7 @@ import {
 import type { RepoLanguages } from "../lib/language_detector.ts";
 import {
   getWorkflowsForLanguagesAndVisibility,
+  WORKFLOW_SPECS,
   type WorkflowSpec,
 } from "../lib/workflow_definitions.ts";
 import type { RepoVisibility } from "../lib/repo_visibility.ts";
@@ -1790,6 +1791,166 @@ Deno.test("workflow_auditor - a workflow file naming renovate still satisfies np
     m.spec.id === "npm-dependency-updates"
   );
   assertEquals(match?.foundIn, ".github/workflows/deps.yml");
+});
+
+/** The rendered template of the workflow spec with `id`. */
+function templateOf(id: string): string {
+  const spec = WORKFLOW_SPECS.find((s) => s.id === id);
+  if (spec === undefined) throw new Error(`no workflow spec ${id}`);
+  return spec.template;
+}
+
+/**
+ * Serve `workflows` (file name -> YAML) under .github/workflows/, and `extra`
+ * (API path -> response), with every other path answered by
+ * dependabotAwareRunner.
+ */
+function workflowFilesRunner(
+  workflows: Record<string, string>,
+  extra: Record<string, CommandOutput> = {},
+): (cmd: string[]) => Promise<CommandOutput> {
+  const { runner } = dependabotAwareRunner(extra);
+  const prefix = `${WORKFLOWS_API_PATH}/`;
+  return (cmd: string[]): Promise<CommandOutput> => {
+    const apiPath = cmd[cmd.indexOf("api") + 1] ?? "";
+    if (apiPath === WORKFLOWS_API_PATH) {
+      return Promise.resolve(workflowDirResponse(Object.keys(workflows)));
+    }
+    if (apiPath.startsWith(prefix)) {
+      const body = workflows[apiPath.slice(prefix.length)];
+      if (body !== undefined) return Promise.resolve(ok(body));
+    }
+    return runner(cmd);
+  };
+}
+
+/** Audit a Node repo and report where npm-dependency-updates landed. */
+async function auditNpmUpdates(
+  runCommand: (cmd: string[]) => Promise<CommandOutput>,
+): Promise<
+  { foundIn: string | undefined; missing: boolean; partial: boolean } | null
+> {
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    makeLanguages(["Node"]),
+    { runCommand },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return null;
+  const id = "npm-dependency-updates";
+  return {
+    foundIn: result.value.present.find((m) => m.spec.id === id)?.foundIn,
+    missing: result.value.missing.some((s) => s.id === id),
+    partial: result.value.partial.some((p) => p.spec.id === id),
+  };
+}
+
+Deno.test("workflow_auditor - the rendered gitleaks template alone leaves npm-dependency-updates missing (Issue #4903)", async () => {
+  const template = templateOf("gitleaks");
+  // Positive control: the fixture really carries the old false-positive text.
+  assertEquals(/concurrency/i.test(template), true);
+  assertEquals(/dependabot/i.test(template), true);
+
+  const status = await auditNpmUpdates(
+    workflowFilesRunner({ "gitleaks.yml": template }),
+  );
+  assertEquals(status?.foundIn, undefined);
+  assertEquals(status?.missing, true);
+  assertEquals(status?.partial, false);
+});
+
+Deno.test("workflow_auditor - a workflow carrying only a concurrency block leaves npm-dependency-updates missing (Issue #4903)", async () => {
+  const concurrencyOnly = templateOf("eslint-quality");
+  // Positive control: the fixture carries the `concurrency:` block.
+  assertEquals(concurrencyOnly.includes("concurrency"), true);
+
+  const status = await auditNpmUpdates(
+    workflowFilesRunner({ "eslint.yml": concurrencyOnly }),
+  );
+  assertEquals(status?.foundIn, undefined);
+  assertEquals(status?.missing, true);
+  assertEquals(status?.partial, false);
+});
+
+Deno.test("workflow_auditor - a real npm Dependabot entry with the gitleaks workflow makes npm-dependency-updates present, foundIn the config (Issue #4903)", async () => {
+  const status = await auditNpmUpdates(
+    workflowFilesRunner(
+      { "gitleaks.yml": templateOf("gitleaks") },
+      { [DEPENDABOT_YML_API_PATH]: ok(DEPENDABOT_NPM_YAML) },
+    ),
+  );
+  assertEquals(status?.foundIn, ".github/dependabot.yml");
+  assertEquals(status?.missing, false);
+});
+
+Deno.test("workflow_auditor - a workflow running npm-check-updates makes npm-dependency-updates present, foundIn the workflow (Issue #4903)", async () => {
+  const status = await auditNpmUpdates(
+    workflowFilesRunner({
+      "deps.yml": `name: deps
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - run: npx npm-check-updates -u
+`,
+    }),
+  );
+  assertEquals(status?.foundIn, ".github/workflows/deps.yml");
+  assertEquals(status?.missing, false);
+});
+
+for (const invocation of ["npx ncu", "ncu -u", "ncu --upgrade"]) {
+  Deno.test(`workflow_auditor - a workflow running "${invocation}" makes npm-dependency-updates present (Issue #4903)`, async () => {
+    const status = await auditNpmUpdates(
+      workflowFilesRunner({
+        "deps.yml": `name: deps
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ${invocation}
+`,
+      }),
+    );
+    assertEquals(status?.foundIn, ".github/workflows/deps.yml");
+    assertEquals(status?.missing, false);
+  });
+}
+
+for (const ecosystem of ["npm", `"npm"`, `'npm'`]) {
+  Deno.test(`workflow_auditor - a workflow file carrying package-ecosystem: ${ecosystem} makes npm-dependency-updates present, foundIn the workflow (Issue #4903)`, async () => {
+    const status = await auditNpmUpdates(
+      workflowFilesRunner({
+        "deps.yml": `name: deps
+# package-ecosystem: ${ecosystem}
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello
+`,
+      }),
+    );
+    assertEquals(status?.foundIn, ".github/workflows/deps.yml");
+    assertEquals(status?.missing, false);
+  });
+}
+
+Deno.test("workflow_auditor - a workflow that only names dependabot beside a concurrency block leaves npm-dependency-updates missing (Issue #4903)", async () => {
+  const notes = `name: Notes
+# managed by dependabot
+on:
+  pull_request:
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+`;
+  const status = await auditNpmUpdates(
+    workflowFilesRunner({ "notes.yml": notes }),
+  );
+  assertEquals(status?.foundIn, undefined);
+  assertEquals(status?.missing, true);
+  assertEquals(status?.partial, false);
 });
 
 Deno.test("workflow_auditor - a maven-only dependabot.yml makes java-dependency-updates present and leaves npm-dependency-updates missing", async () => {
