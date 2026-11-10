@@ -3,10 +3,11 @@
 The milestone merge and resolution gates run a repository's own commands as the
 `agent` account through `sudo`. That account has no `~/.gitconfig`, so git
 refused the worker-owned checkout with `detected dubious ownership`. A build
-script that runs `git rev-parse HEAD` then failed, `cargo check` exited 101,
-and the gate refused every resolution. The commands the gates run as `agent` now
+script that runs `git rev-parse HEAD` then failed, `cargo check` exited 101, and
+the gate refused every resolution. The commands the gates run as `agent` now
 carry `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=safe.directory` and
 `GIT_CONFIG_VALUE_0=<the checkout>` in argv, so git trusts that one checkout.
+
 Closes #4927.
 
 ## Spec
@@ -14,12 +15,14 @@ Closes #4927.
 ### Intent and Rationale
 
 - The issue is a private-repository merge-fallback report with no cause text.
-  The host run log held it: `Refused to push the merge of 'Develop' into
+  The host run log held it:
+  `Refused to push the merge of 'Develop' into
   'milestone/…': the merged tree does not pass the repository's own check —
-  cargo check --workspace --all-targets --locked … failed (exit 101)`, with
+  cargo check --workspace --all-targets --locked … failed (exit 101)`,
+  with
   `error: git rev-parse HEAD failed: fatal: detected dubious ownership in
-  repository at '/home/vibe/auto-issue-work/GRQ-AutoTrader'` from a
-  `build.rs`.
+  repository at '/home/vibe/auto-issue-work/GRQ-AutoTrader'`
+  from a `build.rs`.
 - The fix sits where the commands are built (`runRepositoryCommand`), so the
   merge gate, the resolution gate and the pre-push merge checks all get it.
 
@@ -48,13 +51,15 @@ Closes #4927.
 
 - Host log (`/home/vibe/logs/launchagent-stderr.log`, 2026-11-10 05:42): the
   refusal text quoted above.
-- Real-sudo test `real sudo: an agent git command runs in a worker-owned
-  checkout (Issue #4927)` failed against the unfixed production code with
+- Real-sudo test
+  `real sudo: an agent git command runs in a worker-owned
+  checkout (Issue #4927)`
+  failed against the unfixed production code with
   `fatal: detected dubious ownership in repository at '/tmp/issue-4927-…'`
   (exit 128) and passes with the change.
-- Documentation: `docs/CONTAINER.md` (new bullet beside the sudo
-  argv-carrying bullet), doc comments in `worker/deno/lib/quality_gate_phase.ts`
-  and `worker/deno/lib/untrusted_gate_spawn.ts`.
+- Documentation: `docs/CONTAINER.md` (new bullet beside the sudo argv-carrying
+  bullet), doc comments in `worker/deno/lib/quality_gate_phase.ts` and
+  `worker/deno/lib/untrusted_gate_spawn.ts`.
 
 ```mermaid
 flowchart LR
@@ -77,14 +82,13 @@ flowchart LR
 ## Test Plan
 
 - Added in `worker/deno/tests/untrusted_gate_spawn_test.ts`: the dropped cargo
-  command carries the three entries (red with the merge removed); the
-  real-sudo test above (red with the merge removed); a checkout path with a
-  space gets no entry and does not throw (red when the
-  `CARRIED_ENV_VALUE` operand is removed); a worker-run command carries no
-  `GIT_CONFIG` entry. The last one pins current behaviour: it stays green when
-  the merge is removed from a non-sudo run, because `carryEnvThroughSudo`
-  ignores a non-sudo argv, which is why the redundant `dropped` condition was
-  deleted.
+  command carries the three entries (red with the merge removed); the real-sudo
+  test above (red with the merge removed); a checkout path with a space gets no
+  entry and does not throw (red when the `CARRIED_ENV_VALUE` operand is
+  removed); a worker-run command carries no `GIT_CONFIG` entry. The last one
+  pins current behaviour: it stays green when the merge is removed from a
+  non-sudo run, because `carryEnvThroughSudo` ignores a non-sudo argv, which is
+  why the redundant `dropped` condition was deleted.
 - Added in `worker/deno/tests/quality_gate_phase_test.ts`:
   `gitSafeDirectoryEnv - a relative path gets no entry (Issue #4927)` (red when
   the `startsWith("/")` operand is dropped, because `CARRIED_ENV_VALUE` accepts
@@ -101,10 +105,12 @@ flowchart LR
   merge fast checks (`spawnFastCheck`); all pass `cwd` and run through the one
   function, and their test files pass.
 - Ran: `deno task test:unit` over the touched files and the neighbouring
-  sudo-argv tests: passed. `./quality.sh`: every stage passed except `deno
-  tests`, which fails only in `worker/deno/tests/pr_maintenance_command_test.ts`
-  (three tests at lines 346, 477 and 496). That file is untouched here and
-  fails the same way on `origin/main`.
+  sudo-argv tests: passed. `./quality.sh`: every stage passed except
+  `deno
+  tests`, which fails only in
+  `worker/deno/tests/pr_maintenance_command_test.ts` (three tests at lines 346,
+  477 and 496). That file is untouched here and fails the same way on
+  `origin/main`.
 
 ## Not done
 
