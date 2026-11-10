@@ -6,7 +6,7 @@
 | - | - |
 | **Candidate** | [microsoft/TokenEconomizer](https://github.com/microsoft/TokenEconomizer) at commit `264e7a7f32f0112a06aa83a97b9c2c4681563968` (§1) |
 | **Trial host** | **GRQ-25** — one host, Claude Code only (§2) |
-| **Switch** | `token_economizer.enabled` in a host's `.config.json`, default `false` — not yet: [#4955](https://github.com/stSoftwareAU/VibeCoder/issues/4955) adds it |
+| **Switch** | `token_economizer.enabled` in a host's `.config.json`, default `false` — accepted and validated, but not read yet: [#4956](https://github.com/stSoftwareAU/VibeCoder/issues/4956) will wire it into runs |
 | **Bar** | ≥ 10% lower mean cost per completed implementation run, success rate and PR merge rate no worse (§4) |
 | **First judged** | after **7 days** or **60** completed switched-on implementation runs, whichever is later (§3) |
 | **Status** | ⚪ **not started** — this page is written before the window opens, and no run has used the plugin |
@@ -46,8 +46,8 @@ drift test fails when they differ.
 `.config.json`, off by default, with four keys: `token_economizer.enabled`,
 `token_economizer.learnings_repo` (an `owner/name` private repository, required
 when enabled), `token_economizer.microskills` and `token_economizer.loopguard`.
-Not yet: #4955 adds the block and #4956 wires it into runs; until then no code
-reads any of these keys.
+The block is accepted and validated, but not read yet: #4956 will wire it into
+runs; today a run is the same whatever it is set to.
 
 **The mechanisms.** Two are switched on and three are off:
 
@@ -211,8 +211,13 @@ State is `present` when the path exists and names the plugin today, and
 | Doc link | the link in the RTK trial's related documentation | `docs/RTK-OUTPUT-TRIAL.md` | present |
 | Doc link | the link in the Repo-context trial's related documentation | `docs/REPO-CONTEXT-TRIAL.md` | present |
 | Image layer | the pinned commit, its recorded sha256, the Python 3.10+ check, and the `plugin/` and `tokeneconomizer/` install | `container/Containerfile` | planned #4955 |
-| Config key | the `token_economizer` block and its parser | — | planned #4955 |
-| Doc section | the config row and the learnings store layout | `docs/CONFIGURATION.md` | planned #4955 |
+| Config key | the `token_economizer` block and its parser | `worker/deno/lib/token_economizer_config.ts` | present |
+| Config key | the block's type, its config field and its raw file key | `worker/deno/types.ts` | present |
+| Config key | the block's load-time parse and the config error | `worker/deno/lib/config.ts` | present |
+| Config key | the block's defaults | `worker/deno/lib/config_defaults.ts` | present |
+| Config key | the block's known keys and its nested-key warnings | `worker/deno/lib/config_unknown_keys.ts` | present |
+| Config key | the block's parser and loader tests | `worker/deno/tests/token_economizer_config_test.ts` | present |
+| Doc section | the config row | `docs/CONFIGURATION.md` | present |
 | Source | the `--plugin-dir` and environment wiring in the Claude spawn | `worker/deno/lib/agent_provider.ts` | planned #4956 |
 | Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | planned #4956 |
 | Source | the learnings pull and push, with the gitleaks check | — | planned #4957 |

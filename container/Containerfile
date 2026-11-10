@@ -217,7 +217,7 @@ ENV RTK_TELEMETRY_DISABLED="1" \
 
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer
 
 # markdownlint-cli2 backs the check-markdownlint gate stage; cspell (Issue
 # #3689) backs the pre-push gate's spelling stage for a repository that tracks

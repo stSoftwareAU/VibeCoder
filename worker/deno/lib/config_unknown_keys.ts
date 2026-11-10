@@ -10,6 +10,7 @@
 
 import { CODEGRAPH_CONTEXT_KEYS } from "./codegraph_context_config.ts";
 import { RTK_OUTPUT_KEYS } from "./rtk_output_config.ts";
+import { TOKEN_ECONOMIZER_KEYS } from "./token_economizer_config.ts";
 
 /**
  * Warning about an unknown configuration key.
@@ -247,6 +248,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // RTK output (Issue #2380, part of #2328)
   "rtk_output",
 
+  // TokenEconomizer (Issue #4955, part of #4953)
+  "token_economizer",
+
   // Verbosity settings (Issue #1330)
   "verbosity",
 
@@ -331,6 +335,7 @@ export function knownNestedConfigKeys(): ReadonlyMap<
   return new Map([
     ["codegraph_context", CODEGRAPH_CONTEXT_KEYS],
     ["rtk_output", RTK_OUTPUT_KEYS],
+    ["token_economizer", TOKEN_ECONOMIZER_KEYS],
   ]);
 }
 

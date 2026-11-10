@@ -60,6 +60,9 @@ const HEX40 = /\b[0-9a-f]{40}\b/g;
 const INTERIM_PINNED_COMMIT = "264e7a7f32f0112a06aa83a97b9c2c4681563968";
 const PIN_NOT_YET = "Not yet: #4955 pins this commit";
 const BLOCK_NOT_YET = "Not yet: #4955 adds the block";
+/** The sentence the page says once #4955 has landed the block. */
+const BLOCK_LANDED =
+  "The block is accepted and validated, but not read yet: #4956 will wire it into runs; today a run is the same whatever it is set to.";
 const BLOCK_KEYS = ["enabled", "learnings_repo", "microskills", "loopguard"];
 const PURGE_KINDS = [
   "Drift test",
@@ -703,12 +706,24 @@ function codeRow(path: string): string {
   return `| Config key | the block and its parser | \`${path}\` | present |`;
 }
 
-/** The page with the block's Not-yet sentence replaced, and its row added. */
+/**
+ * The page as it reads once the block has landed: the live page already says
+ * so, so only the block's purge row is added for `path`.
+ */
 function blockLanded(page: string, path: string): string {
-  return withPurgeRow(
-    replacePhrase(page, BLOCK_NOT_YET, "Added by #4955"),
-    codeRow(path),
-  );
+  return withPurgeRow(page, codeRow(path));
+}
+
+/** The page as it read before #4955 landed: the Not-yet sentence back in place of the landed one. */
+function blockNotYet(page: string): string {
+  return replacePhrase(page, BLOCK_LANDED, BLOCK_NOT_YET);
+}
+
+/** The page with every purge-list row for `path` removed, so no row covers it. */
+function withoutPurgeRow(page: string, path: string): string {
+  return page.split("\n").filter((line) =>
+    !(line.startsWith("| ") && line.includes(`\`${path}\``))
+  ).join("\n");
 }
 
 Deno.test("the live trial page passes every drift rule against the live repository", async () => {
@@ -1037,7 +1052,7 @@ Deno.test("config drift: code that names the block while the page says Not yet i
   const live = await livePage();
   const corpus = await liveCorpus();
   const problems = driftProblems(
-    withPurgeRow(live, codeRow(CONFIG_PATH)),
+    withPurgeRow(blockNotYet(live), codeRow(CONFIG_PATH)),
     withFile(corpus, CONFIG_PATH, CONFIG_TEXT),
   );
   assert(
@@ -1121,7 +1136,8 @@ Deno.test("purge drift: a file outside the old corpus roots that names the plugi
     TYPES_PATH,
     "// token_economizer: the plugin's types\n",
   );
-  const problems = driftProblems(live, corpus);
+  const bare = withoutPurgeRow(live, TYPES_PATH);
+  const problems = driftProblems(bare, corpus);
   assert(
     problems.some((p) => p.includes(TYPES_PATH) && p.includes("purge list")),
     `expected the uncovered types file to be refused; got:\n${
@@ -1131,7 +1147,7 @@ Deno.test("purge drift: a file outside the old corpus roots that names the plugi
   assertEquals(
     driftProblems(
       withPurgeRow(
-        live,
+        bare,
         `| Source | the plugin's types | \`${TYPES_PATH}\` | present |`,
       ),
       corpus,
