@@ -133,8 +133,10 @@ flowchart TD
    logged once at warning and does not fail the run (Issues #3089, #3315). A
    description written outside the worker (no `vibe-worker-issue-N` marker, on a
    branch other than the run's own `issue-<N>-…` branch) is never rebuilt; the
-   prompt tells the agent to update it with `gh pr edit <n> --body-file <file>`
-   and name that in `.pr_response_message` (Issue #4515).
+   prompt tells the agent to update the title and description with
+   `gh pr edit <n> --title <title> --body-file <file>` (a bot PR's title states
+   the change, e.g. a reverted bump) and name that in `.pr_response_message`
+   (Issue #4515).
 10. **Reply** — The worker posts a comment on the PR with the fix summary from
     `.pr_response_message`, or a generic message if none was provided.
 
