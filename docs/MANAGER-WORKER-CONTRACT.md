@@ -96,7 +96,7 @@ Per-provider behaviour, from the same file:
   triggers `warnDeepSeekAgentsUnsupported` (`:1167`,
   `worker/deno/lib/deepseek_executor.ts:255`). `settingsJson` is dropped
   silently, with `settingsJson: undefined` at `:1178`. `buildChildEnv` (`:1184`)
-  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:158`).
+  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:165`).
 
 Prompt templates. The advisor and executor instructions are built in code, and
 the template carries only a placeholder.
