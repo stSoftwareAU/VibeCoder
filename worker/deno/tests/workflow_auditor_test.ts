@@ -1917,6 +1917,25 @@ jobs:
   });
 }
 
+for (const ecosystem of ["npm", `"npm"`, `'npm'`]) {
+  Deno.test(`workflow_auditor - a workflow file carrying package-ecosystem: ${ecosystem} makes npm-dependency-updates present, foundIn the workflow (Issue #4903)`, async () => {
+    const status = await auditNpmUpdates(
+      workflowFilesRunner({
+        "deps.yml": `name: deps
+# package-ecosystem: ${ecosystem}
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hello
+`,
+      }),
+    );
+    assertEquals(status?.foundIn, ".github/workflows/deps.yml");
+    assertEquals(status?.missing, false);
+  });
+}
+
 Deno.test("workflow_auditor - a workflow that only names dependabot beside a concurrency block leaves npm-dependency-updates missing (Issue #4903)", async () => {
   const notes = `name: Notes
 # managed by dependabot

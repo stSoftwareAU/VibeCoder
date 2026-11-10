@@ -35,7 +35,7 @@ Dependency Updates. Version bump: `VERSION` is not changed by this PR. Closes
 ## Evidence
 
 Backend-only change; no UI files touched. Tests are in
-`worker/deno/tests/workflow_auditor_test.ts` (eight tests tagged `#4903`).
+`worker/deno/tests/workflow_auditor_test.ts` (eleven tests tagged `#4903`).
 
 ## Test Plan
 
@@ -46,6 +46,12 @@ Backend-only change; no UI files touched. Tests are in
   `.github/dependabot.yml`; `npx npm-check-updates -u` in a workflow is present;
   `npx ncu`, `ncu -u`, `ncu --upgrade` are each present; a
   `# managed by dependabot` comment with a concurrency block stays missing.
+- Mutation follow-up: three tests (one per quoting form) put a
+  `# package-ecosystem: npm` / `"npm"` / `'npm'` line in a workflow file and
+  assert npm is present, `foundIn` the workflow. Deleting each of the three
+  `package-ecosystem` entries from `detectionPatternGroups`
+  (`workflow_definitions.ts:738-740`) turns exactly that test red; the config
+  tests alone could not, because `dependabotConfigPatternGroups` repeats them.
 - Red check: restoring the old group turned the gitleaks, eslint,
   combined-config and `# managed by dependabot` tests red (4 failed, 61 passed).
   The `ncu` invocation tests stay green under the old group (bare `ncu` matched
