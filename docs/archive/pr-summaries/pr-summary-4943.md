@@ -74,3 +74,4 @@ Related existing behaviour checked: `readRequiredCheckNames`/`requiredChecksPass
 - Standards reviewer findings left standing: wiring and babysitter tests assert the stubbed git/merge call counts because the processors expose no state-recording git port; `source` on `requestReadyBranchUpdate` is optional.
 - `deno task check:manifests` and `tests/lib_sweep_coverage_test.ts` pass (new top-up slice `docs/audits/lib-sweep-coverage/top-up-4943.json`).
 - `tests/pr_maintenance_command_test.ts` failed 5 cases on the base commit and passes in the changed tree (observed in an executor run; not investigated).
+- `./quality.sh` on the final head: Result PASSED (with skipped checks: config integration, checkov).
