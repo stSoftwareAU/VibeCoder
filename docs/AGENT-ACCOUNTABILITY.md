@@ -925,7 +925,7 @@ The positive allowlist (literal labels + prefixes) is:
 | Failure tracking | `failed`, `failed-once` | — |
 | Worker → human handoff | `needs-human`, `needs-screenshot` | — |
 | Idle framework | `idle-task` | — |
-| Performance close-out | `negative-result` | — |
+| Negative-result record handed to a human for review | `negative-result` | — |
 | Scan content tags | `best-practices`, `security`, `test-audit`, `github-actions-audit` | `severity:`, `lang:`, `supply-chain:` |
 
 Every other label — `top-priority`, `work-on`, `low-priority`,

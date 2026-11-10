@@ -7,9 +7,9 @@
  * Both directions: labelled, it is handed off; unlabelled, the ordinary
  * no-change retry is untouched.
  *
- * Phase-level cases cover only the routes that never reach the label
- * escalation's `ensureLabelExists`, which the phase cannot inject and which
- * would otherwise run a real `gh`. The labelled path is driven through
+ * The phase passes its own `deps.github.ensureLabelExists` into the hand-off,
+ * so the phase-level cases run the labelled path through injected deps too:
+ * no case reaches a real `gh`. The direct cases drive
  * `handOffNegativeResultIssue` with injected deps.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
@@ -51,6 +51,8 @@ interface ClientOptions {
   existingComments?: GitHubComment[];
   /** Make `postComment` reject, as a failed GitHub write would. */
   postRejects?: boolean;
+  /** Make `addLabel` reject, as a failed label write would. */
+  addLabelRejects?: boolean;
 }
 
 function makeClient(
@@ -62,6 +64,9 @@ function makeClient(
     getIssue: () => Promise.resolve({ labels } as unknown as GitHubIssue),
     getIssueComments: () => Promise.resolve(opts.existingComments ?? []),
     addLabel: (_r, _n, label) => {
+      if (opts.addLabelRejects) {
+        return Promise.reject(new Error("GitHub returned 422"));
+      }
       rec.events.push(`label:${label}`);
       rec.labelsAdded.push(label);
       return Promise.resolve();
@@ -215,6 +220,118 @@ Deno.test("#4911 - a second hand-off finds its own earlier comment and posts not
     "the label is re-applied idempotently",
   );
   assertEquals(second.closed, [], "the issue is still never closed");
+});
+
+Deno.test("#4911 - a rejected label add leaves the hand-off unconfirmed and never closes", async () => {
+  // The comment lands first, then the label add rejects. escalateToHuman warns
+  // and returns ok with labelAdded false, so the hand-off is not confirmed: the
+  // worker does not unassign, returns false for the ordinary retry, and never
+  // closes the issue.
+  const rec = makeRecorder();
+  const handedOff = await handOffNegativeResultIssue({
+    ghClient: makeClient(rec, ["work-on", "performance", "negative-result"], {
+      addLabelRejects: true,
+    }),
+    repo: "org/repo",
+    issueNumber: 77,
+    githubUser: "testbot",
+    needsHumanLabel: "needs-human",
+    logger: createMockDeps().logger,
+    deps: directDeps(rec),
+  });
+
+  assertEquals(
+    handedOff,
+    false,
+    "an unconfirmed hand-off is not reported as handed off",
+  );
+  assertEquals(rec.comments.length, 1, "the explanation comment is posted");
+  assertStringIncludes(rec.comments[0]!, "## Negative result needs review");
+  assertEquals(rec.labelsAdded, [], "no label is recorded");
+  assert(
+    !rec.events.includes("unassign:testbot"),
+    "the worker does not unassign",
+  );
+  assertEquals(rec.closed, [], "closeIssue is never called");
+});
+
+Deno.test("#4911 - a labelled run through the phase is handed to needs-human, comment first, never closed", async () => {
+  // The phase injects its own ensureLabelExists into the hand-off, so the
+  // recorded ensure call proves the wiring and no real `gh` runs.
+  const rec = makeRecorder();
+  const ensured: string[] = [];
+  const deps = createMockDeps({
+    github: {
+      createClient: () =>
+        makeClient(rec, ["work-on", "performance", "negative-result"]),
+      ensureLabelExists: (_r, label) => {
+        ensured.push(label);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    },
+  });
+
+  const result = await workOnIssueHandleNoChanges(
+    makeContext(),
+    makeState(),
+    deps,
+  );
+
+  assertEquals(result.status, "early_exit");
+  assertEquals(
+    result.status === "early_exit" && result.reason,
+    "negative_result_handed_off",
+  );
+  assertEquals(
+    handOffComments(rec).length,
+    1,
+    "one hand-off comment is posted",
+  );
+  assertEquals(
+    ensured,
+    ["needs-human"],
+    "the label is ensured through the phase's deps",
+  );
+  assertEquals(
+    rec.labelsAdded,
+    ["needs-human"],
+    "the default needs-human label is added",
+  );
+  assertEquals(rec.closed, [], "closeIssue is never called");
+});
+
+Deno.test("#4911 - the phase hands off to the configured needsHumanLabel, not a literal", async () => {
+  // "escalated" is an allowlisted, non-default label, so the worker may apply
+  // it. A literal "needs-human" in the phase would add the wrong label here.
+  const rec = makeRecorder();
+  const ensured: string[] = [];
+  const deps = createMockDeps({
+    github: {
+      createClient: () =>
+        makeClient(rec, ["work-on", "performance", "negative-result"]),
+      ensureLabelExists: (_r, label) => {
+        ensured.push(label);
+        return Promise.resolve({ ok: true, value: undefined });
+      },
+    },
+  });
+
+  const result = await workOnIssueHandleNoChanges(
+    makeContext({
+      config: buildDefaultWorkerConfig({ needsHumanLabel: "escalated" }),
+    }),
+    makeState(),
+    deps,
+  );
+
+  assertEquals(result.status, "early_exit");
+  assertEquals(
+    result.status === "early_exit" && result.reason,
+    "negative_result_handed_off",
+  );
+  assertEquals(ensured, ["escalated"], "the configured label is ensured");
+  assertEquals(rec.labelsAdded, ["escalated"], "the configured label is added");
+  assertEquals(rec.closed, [], "closeIssue is never called");
 });
 
 Deno.test("#4911 - without the label the no-change run is not handed off", async () => {

@@ -24,7 +24,10 @@ to complete that issue; nothing more from a person is needed or wanted.
   is the only good outcome. Handing an issue back to a human (`needs-human`,
   "analysis-only" on an implementation issue, a request for a decision) or
   delivering only the easy parts is a **failure of the Vibe Coder**. It is
-  counted and fixed as a defect, never treated as a resolution.
+  counted and fixed as a defect, never treated as a resolution. The one narrow
+  exception is the worker's `negative-result` hand-off (Issue #4911): a no-change
+  run that recorded a negative result is a recorded result needing human review,
+  not a failure to complete.
 - **Finish in the PR, no follow-up tickets.** A run whose summary leaves a
   criterion unmet is told so once, in the session, and goes back to finish
   it. A criterion still unmet after that does not stop the PR: it is raised

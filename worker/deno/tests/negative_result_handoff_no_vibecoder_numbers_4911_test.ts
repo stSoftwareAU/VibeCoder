@@ -9,7 +9,7 @@
  * the hand-off text on its own. A positive control asserts a comment was
  * posted, so the no-numbers check cannot pass vacuously.
  *
- * Same approach as tests/reasons_no_vibecoder_numbers_4641_test.ts.
+ * Same approach as worker/deno/tests/reasons_no_vibecoder_numbers_4641_test.ts.
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 

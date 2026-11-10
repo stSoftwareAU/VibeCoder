@@ -321,6 +321,7 @@ export async function workOnIssueHandleNoChanges(
       githubUser,
       needsHumanLabel: ctx.config.needsHumanLabel,
       logger,
+      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
     })
   ) {
     return {

@@ -482,10 +482,10 @@ the agent — hands the issue to a human. It posts a hand-off comment (which cit
 no issue number), adds `needs-human` through the escalation path, unassigns
 itself and leaves the issue open. A human closes the issue if the result
 stands; removing both `needs-human` and `negative-result` returns it to the
-queue. Routine unattended completion is unchanged: a correct, tested performance
-PR proceeds even when its timing shows no gain, because shared-host timings are
-noisy. The agent must not label an ordinary timing-only uncertainty
-`negative-result`.
+queue. This path adds no new gate: it only applies once the agent has recorded
+`negative-result` on a run that made no change, so it never holds back a
+correct, tested performance PR, and the worker never applies the label itself.
+The agent must not label an ordinary timing-only uncertainty `negative-result`.
 
 **To resume work:**
 
