@@ -72,7 +72,10 @@ and `2.5.0\`; `npm install -g \"pnpm@9.1.0\"` gave `\` and `pnpm` at version
 `9.1.0"`, and the gem form flagged the pinned `bundler` with version `"2.5.0"`.
 After the fix the flag case is clean, the gem `sh -c` script is clean, the
 pinned npm `sh -c` script is clean, and an unpinned
-`sh -c "npm install -g \"pnpm\""` yields exactly one `pnpm` finding.
+`sh -c "npm install -g \"pnpm\""` yields exactly one `pnpm` finding; the same
+`sh -c`/ssh scripts followed by more shell on the same line (`&& echo done`,
+`|| echo failed`) are clean, and the unpinned same-line npm form yields
+exactly one `pnpm` finding.
 
 ## Test Plan
 
@@ -89,7 +92,9 @@ pinned npm `sh -c` script is clean, and an unpinned
   a backslash escape outside quotes keeps one argument (`--loglevel=\"warn\"`
   is clean; pinned npm and gem `sh -c` scripts with escaped quotes are clean;
   an unpinned `sh -c "npm install -g \"pnpm\""` yields exactly one `pnpm`
-  finding).
+  finding; the same `sh -c`/ssh scripts followed by more shell on the same
+  line — `&& echo done`, `|| echo failed` — are clean, and the unpinned
+  same-line npm form still yields exactly one `pnpm`).
 - Red check: with the old `split(/\s+/)…map(unquote)` tokenisation restored, the
   first four new tests fail (and six existing cargo tests); with only the
   verbatim-expression quote handling reverted, the expression test fails at the
@@ -102,10 +107,16 @@ pinned npm `sh -c` script is clean, and an unpinned
   package is reported); with `dropDoubleQuoteEscapes` removed from the two
   re-scan points in `joinContinuations`, the backslash test fails at the
   `sh -c` assertions (a junk `"pnpm` package is reported for the pinned npm
-  script).
+  script); with the drop removed from the mid-line re-scan point alone (the
+  splice at `ci_install_pin_scanner.ts:439`), the backslash test fails at the
+  new same-line `sh -c` assertion (the pinned npm `&& echo done` form reports
+  a junk `"pnpm`), so both re-scan points are guarded.
 - The backslash test's `sh -c` assertions were replaced in this round (the
   junk `'"pnpm'` / `'9.1.0"'` expectations are gone); no other existing
   assertion was removed or edited.
+- The backslash test gained the same-line `sh -c`/ssh assertions this round
+  (they exercise the mid-line splice path at `ci_install_pin_scanner.ts:439`);
+  no existing assertion was removed or edited.
 - Ran `deno test` on `ci_install_pin_scanner_test.ts` (62 passed), on
   `ci_install_pin_scanner_test.ts`, `issue_3642_ci_install_pin_test.ts`,
   `issue_4683_cargo_install_pins_test.ts` (79 passed), and on

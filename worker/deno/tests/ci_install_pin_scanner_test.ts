@@ -242,6 +242,25 @@ Deno.test("findUnpinnedInstalls - a backslash escape outside quotes keeps one ar
   const npm = findUnpinnedInstalls('sh -c "npm install -g \\"pnpm\\""');
   assertEquals(npm.map((f) => f.packageName), ["pnpm"]);
   assertEquals(npm[0]?.version, null);
+  // The drop also runs on the mid-line splice path, where the captured script
+  // is followed by more shell on the same line, not only when it ends the line.
+  assertEquals(
+    findUnpinnedInstalls(
+      'sh -c "npm install -g \\"pnpm@9.1.0\\"" && echo done',
+    ),
+    [],
+  );
+  assertEquals(
+    findUnpinnedInstalls(
+      'ssh host "gem install bundler -v \\"2.5.0\\"" || echo failed',
+    ),
+    [],
+  );
+  const sameLine = findUnpinnedInstalls(
+    'sh -c "npm install -g \\"pnpm\\"" && echo done',
+  );
+  assertEquals(sameLine.map((f) => f.packageName), ["pnpm"]);
+  assertEquals(sameLine[0]?.version, null);
 });
 
 // ---------------------------------------------------------------------------
