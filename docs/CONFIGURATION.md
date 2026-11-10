@@ -1947,7 +1947,8 @@ precedence over built-in defaults.
 
 Claude Code also has a separate per-command foreground ceiling. VibeCoder
 sets `BASH_MAX_TIMEOUT_MS=1800000` (30 minutes) in the Claude child environment
-so a gate longer than Claude's default 10-minute ceiling can finish (#4913).
+and in the DeepSeek child environment (`deepseek` runs the same CLI) so a gate
+longer than Claude's default 10-minute ceiling can finish (#4913, #4926).
 An explicit parent environment value wins. `BASH_DEFAULT_TIMEOUT_MS` is left
 unchanged: the agent must request a tool timeout sized to the gate and the
 remaining run budget. The phase deadline and stall watchdogs still apply;

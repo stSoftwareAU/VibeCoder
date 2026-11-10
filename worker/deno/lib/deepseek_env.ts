@@ -30,7 +30,10 @@ import {
   isDeniedAgentEnvVar,
   WORKER_ONLY_SECRET_ENV_VARS,
 } from "./agent_env.ts";
-import { CLAUDE_CREDENTIAL_ENV_VARS } from "./claude_env.ts";
+import {
+  CLAUDE_BASH_TIMEOUT_ENV,
+  CLAUDE_CREDENTIAL_ENV_VARS,
+} from "./claude_env.ts";
 
 /**
  * DeepSeek's Anthropic-compatible endpoint.
@@ -127,9 +130,9 @@ export function isDeniedDeepSeekEnvVar(
  * Build the environment for the DeepSeek child subprocess.
  *
  * Filters `parentEnv` as every provider does, then pins the three values that
- * make an Anthropic CLI a DeepSeek client. Each pin follows the same "an
- * explicit operator value always wins" shape as the `CLAUDE_CONFIG_DIR` pin in
- * `claude_env.ts`:
+ * make an Anthropic CLI a DeepSeek client, and sets one default on top of them.
+ * Each pin follows the same "an explicit operator value always wins" shape as
+ * the `CLAUDE_CONFIG_DIR` pin in `claude_env.ts`:
  *
  * - `ANTHROPIC_BASE_URL` → {@link DEEPSEEK_ANTHROPIC_BASE_URL}. An empty value
  *   is treated as unset, not as a choice: honouring it would point the CLI at
@@ -145,6 +148,10 @@ export function isDeniedDeepSeekEnvVar(
  *   cannot cross providers. Unlike Claude's pin this is not container-only: on
  *   the host the Claude child stays on the operator's `~/.claude`, which is
  *   precisely the directory a DeepSeek child must not share.
+ * - `BASH_MAX_TIMEOUT_MS` → {@link CLAUDE_BASH_TIMEOUT_ENV} (Issue #4926): the
+ *   foreground command ceiling, defaulted rather than pinned, so an explicit
+ *   parent value wins. The `deepseek` binary is the same Claude Code CLI, so it
+ *   reads the same variable.
  *
  * Intended for use with `Deno.Command`'s `clearEnv: true` so the child receives
  * exactly this map.
@@ -163,6 +170,12 @@ export function buildDeepSeekChildEnv(
     denylist,
     secretAllowlist: DEEPSEEK_ENV_SECRET_ALLOWLIST,
   });
+
+  // Foreground command ceiling (Issue #4926, as #4913 for `claude`): the same
+  // CLI version reads it; an explicit parent value wins.
+  for (const [name, value] of Object.entries(CLAUDE_BASH_TIMEOUT_ENV)) {
+    if (env[name] === undefined) env[name] = value;
+  }
 
   if (!env["ANTHROPIC_BASE_URL"]) {
     env["ANTHROPIC_BASE_URL"] = DEEPSEEK_ANTHROPIC_BASE_URL;

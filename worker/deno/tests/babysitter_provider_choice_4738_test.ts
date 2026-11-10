@@ -464,6 +464,7 @@ Deno.test("default DeepSeek export reads only its provider credential and isolat
           DEEPSEEK_API_KEY: "deepseek-fixture",
           ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
           ANTHROPIC_AUTH_TOKEN: "deepseek-fixture",
+          BASH_MAX_TIMEOUT_MS: "1800000",
         },
       },
       leaked: null,

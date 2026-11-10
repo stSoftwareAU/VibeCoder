@@ -34,7 +34,7 @@ phases, except where they share the provider seam; the billing policy itself
   are registered in `AGENT_PROVIDERS`
   (`worker/deno/lib/agent_provider.ts:1200`). A provider CLI is not a vendor.
   The `deepseek` child environment points `ANTHROPIC_BASE_URL` at DeepSeek's
-  endpoint (`worker/deno/lib/deepseek_env.ts:166-167`), so the vendor and the
+  endpoint (`worker/deno/lib/deepseek_env.ts:180-181`), so the vendor and the
   CLI are different axes.
 - **Model:** the identifier passed to a provider CLI for one phase, such as
   `sonnet`, `haiku` or `opus` for Claude. The `issue` default is
@@ -96,7 +96,7 @@ Per-provider behaviour, from the same file:
   triggers `warnDeepSeekAgentsUnsupported` (`:1167`,
   `worker/deno/lib/deepseek_executor.ts:255`). `settingsJson` is dropped
   silently, with `settingsJson: undefined` at `:1178`. `buildChildEnv` (`:1184`)
-  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:158`).
+  uses `buildDeepSeekChildEnv` (`worker/deno/lib/deepseek_env.ts:165`).
 
 Prompt templates. The advisor and executor instructions are built in code, and
 the template carries only a placeholder.
@@ -365,7 +365,7 @@ stateDiagram-v2
     deletes `OPENAI_API_KEY`, `CODEX_API_KEY` and `CODEX_HOME`, and fails closed
     when a Codex home is selected.
   - DeepSeek: `ANTHROPIC_AUTH_TOKEN` is set only from `DEEPSEEK_API_KEY`
-    (`worker/deno/lib/deepseek_env.ts:172-173`).
+    (`worker/deno/lib/deepseek_env.ts:186-187`).
   - Gemini: `buildGeminiChildEnv` (`worker/deno/lib/gemini_env.ts:91`) delegates
     to `buildAgentChildEnv` with a Gemini denylist and secret allowlist.
 - **The gap today.** The edit guard exists only for Claude. Gemini drops
