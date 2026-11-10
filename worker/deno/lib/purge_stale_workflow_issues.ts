@@ -247,7 +247,10 @@ async function listWorkflowSyncIssues(
 }
 
 /** Reason used when building a closing comment. */
-type CloseReason = "now-present" | "not-applicable" | "missing-root-project";
+export type CloseReason =
+  | "now-present"
+  | "not-applicable"
+  | "missing-root-project";
 
 /** Idempotency marker embedded in the not-applicable closing comment. */
 function notApplicableMarker(specId: string): string {
@@ -255,10 +258,11 @@ function notApplicableMarker(specId: string): string {
 }
 
 /** Phrase unique to the private-repo not-applicable closing comment. */
-const PRIVATE_REPO_CLOSURE_PHRASE = "is not applicable to this repository";
+export const PRIVATE_REPO_CLOSURE_PHRASE =
+  "is not applicable to this repository";
 
 /** Phrase unique to the missing-root-project closing comment. */
-const MISSING_ROOT_CLOSURE_PHRASE =
+export const MISSING_ROOT_CLOSURE_PHRASE =
   "requires a root project marker that is absent";
 
 /** Whether a fleet-authored comment on the issue carries the marker and phrase. */
@@ -352,7 +356,7 @@ export function hasApplicabilityClosure(
 }
 
 /** Build the closing comment posted on a stale workflow-sync issue. */
-function buildClosingComment(
+export function buildClosingComment(
   candidate: CandidateIssue,
   reason: CloseReason,
   closedBy = "purge-stale-workflow-issues",

@@ -22,6 +22,7 @@ import {
 } from "../setup/workflow_sync.ts";
 import { resolveActionPins } from "../lib/action_pin_resolver.ts";
 import { PINNED_ACTIONS, SEMGREP_IMAGE } from "../lib/pinned_actions.ts";
+import { buildClosingComment } from "../lib/purge_stale_workflow_issues.ts";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
 
 /** The fleet login every fixture issue is authored by. */
@@ -504,9 +505,14 @@ Deno.test("syncWorkflowsForRepo - files Cargo again after a missing root marker 
 });
 
 // Issue #4887: a public-only request closed as not applicable on a private
-// repo must not suppress the request once the repo is public.
-const PRIVATE_REPO_CLOSURE =
-  "Closing automatically: the `dependency-review` workflow is not applicable to this repository — it requires features that are unavailable on private repos.\n\n<!-- vibe-coder:purge-not-applicable:dependency-review -->";
+// repo must not suppress the request once the repo is public. The fixture is
+// the exact comment buildClosingComment posts on a not-applicable close, so
+// the wording workflow-sync reads back cannot drift from what the purge
+// actually writes.
+const PRIVATE_REPO_CLOSURE = buildClosingComment(
+  { number: 4800, specId: "dependency-review", kind: "missing" },
+  "not-applicable",
+);
 
 for (
   const scenario of [
