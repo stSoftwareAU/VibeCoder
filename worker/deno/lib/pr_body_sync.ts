@@ -75,6 +75,10 @@ import {
   WORKER_PR_MARKER_PREFIX,
 } from "./pr_body.ts";
 import { buildWorkerFooter } from "./worker_identity.ts";
+import {
+  DRAFT_CONTINUATION_MARKER,
+  opensWithDraftContinuationMarker,
+} from "./draft_continuation_pr.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { loadCommittedPrSummary, loadPrSummary } from "./pr_summary_loader.ts";
 import {
@@ -459,6 +463,7 @@ export type SyncedPrBodyCandidate =
  * Build the description for the checkout without publishing or uploading images.
  * Verification always rebuilds; publication retains its existing staleness checks.
  * Both paths share ownership, adoption, facts rendering and body assembly (#3982).
+ * A body that opens with the draft-continuation marker keeps it (Issue #4952).
  */
 export async function buildSyncedPrBodyCandidate(
   input: SyncPrBodyInput,
@@ -611,7 +616,7 @@ export async function buildSyncedPrBodyCandidate(
   // Issue #3403: carry over the tier marker the PR was created with, so a
   // review-fix refresh never drops the attribution a later outcome needs.
   // A legacy body with no marker (never carried a tier) gets none added.
-  const body = assemblePrBody({
+  const assembled = assemblePrBody({
     summaryContent,
     issueNumber,
     issueIdentity: { prRepo: input.repo, issueRepo: input.repo },
@@ -621,6 +626,13 @@ export async function buildSyncedPrBodyCandidate(
     subAgentTier: subAgentTierFromBody(view.body ?? ""),
     assignmentId: assignmentIdFromBody(view.body ?? ""),
   });
+  // Issue #4952: a draft held by its leading marker stays held. The orphaned
+  // draft self-heal reads that marker, so a rebuild that dropped it (a
+  // merge-conflict repair, a completion exit) would let the sweep publish and
+  // arm unfinished work.
+  const body = opensWithDraftContinuationMarker(view.body ?? "")
+    ? `${DRAFT_CONTINUATION_MARKER}\n\n${assembled}`
+    : assembled;
 
   return {
     ok: true,

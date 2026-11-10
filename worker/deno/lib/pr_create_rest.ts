@@ -346,3 +346,39 @@ export async function createPullRequestViaRest(
 
   return { ok: true, value: url };
 }
+
+/**
+ * Read a pull request's draft flag over REST (Issue #4952).
+ *
+ * `gh pr view` is GraphQL-backed, so it is skipped while the primary quota is
+ * latched; `gh api repos/<repo>/pulls/<n>` is quota-exempt and still answers.
+ * `true`/`false` only when the response is exactly that; `null` when the read
+ * failed or said anything else, so the caller treats the state as unknown.
+ */
+export async function readPrDraftViaRest(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+): Promise<boolean | null> {
+  if (
+    !REPO_PATTERN.test(repo) || !Number.isInteger(prNumber) || prNumber <= 0
+  ) {
+    return null;
+  }
+  try {
+    const raw = await ghCommandFn([
+      "api",
+      "-X",
+      "GET",
+      `repos/${repo}/pulls/${prNumber}`,
+      "--jq",
+      ".draft",
+    ]);
+    const value = raw.trim();
+    if (value === "true") return true;
+    if (value === "false") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
