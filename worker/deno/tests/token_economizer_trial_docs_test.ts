@@ -719,6 +719,24 @@ function blockNotYet(page: string): string {
   return replacePhrase(page, BLOCK_LANDED, BLOCK_NOT_YET);
 }
 
+/**
+ * The corpus with the exact block text removed from every code file under
+ * `worker/deno/lib` and `worker/deno/commands`, so no code file but a fixture
+ * carries it. The plugin is still named there, just not as `token_economizer`.
+ */
+function withoutBlockText(files: Map<string, string>): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [path, text] of files) {
+    const isCode = path.startsWith("worker/deno/lib/") ||
+      path.startsWith("worker/deno/commands/");
+    out.set(
+      path,
+      isCode ? text.replaceAll("token_economizer", "token-economizer") : text,
+    );
+  }
+  return out;
+}
+
 /** The page with every purge-list row for `path` removed, so no row covers it. */
 function withoutPurgeRow(page: string, path: string): string {
   return page.split("\n").filter((line) =>
@@ -1031,7 +1049,8 @@ Deno.test("config drift: a key the page names but the code drops is refused", as
 Deno.test("config drift: a block the code names differently is refused", async () => {
   const live = await livePage();
   const corpus = await liveCorpus();
-  const named = withFile(corpus, NAMED_PATH, "// tokenEconomizer block\n");
+  const unnamed = withoutBlockText(corpus);
+  const named = withFile(unnamed, NAMED_PATH, "// tokenEconomizer block\n");
   const problems = driftProblems(blockLanded(live, NAMED_PATH), named);
   assert(
     problems.some((p) => p.includes("names the block differently")),
@@ -1042,7 +1061,7 @@ Deno.test("config drift: a block the code names differently is refused", async (
   assertEquals(
     driftProblems(
       blockLanded(live, NAMED_PATH),
-      withFile(corpus, NAMED_PATH, CONFIG_TEXT),
+      withFile(unnamed, NAMED_PATH, CONFIG_TEXT),
     ),
     [],
   );

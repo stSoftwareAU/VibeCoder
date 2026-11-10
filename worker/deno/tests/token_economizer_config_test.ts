@@ -73,7 +73,7 @@ function hostWith(block: unknown): ConfigFile {
     allowed_authors: ["testuser"],
     repos: ["org/repo1"],
     token_economizer: block,
-  } as ConfigFile;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +353,20 @@ Deno.test("token_economizer - enabled true with an undefined learnings_repo is r
 // ---------------------------------------------------------------------------
 
 Deno.test("token_economizer - a microskills value outside the allowed set is refused, naming the key and the values", () => {
-  for (const bad of ["on", "stop", "Off", "envfacts+distiller ", "", 1, true, null, [], {}]) {
+  for (
+    const bad of [
+      "on",
+      "stop",
+      "Off",
+      "envfacts+distiller ",
+      "",
+      1,
+      true,
+      null,
+      [],
+      {},
+    ]
+  ) {
     const error = errorOf({ microskills: bad });
     assertStringIncludes(error, "token_economizer.microskills");
     for (const allowed of TOKEN_ECONOMIZER_MICROSKILLS) {
@@ -404,11 +417,17 @@ Deno.test("token_economizer - an explicit null inner value is refused, naming th
     errorOf({ microskills: null }),
     "token_economizer.microskills",
   );
-  assertStringIncludes(errorOf({ loopguard: null }), "token_economizer.loopguard");
+  assertStringIncludes(
+    errorOf({ loopguard: null }),
+    "token_economizer.loopguard",
+  );
 });
 
 Deno.test("token_economizer - only an absent or undefined inner key takes its default", () => {
-  assertEquals(valueOf({ microskills: undefined }).microskills, "envfacts+distiller");
+  assertEquals(
+    valueOf({ microskills: undefined }).microskills,
+    "envfacts+distiller",
+  );
   assertEquals(valueOf({ loopguard: undefined }).loopguard, "nudge");
   assertEquals(valueOf({ enabled: undefined }).enabled, false);
 });

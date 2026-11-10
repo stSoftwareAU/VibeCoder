@@ -48,8 +48,13 @@ export const TOKEN_ECONOMIZER_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /** The values the `microskills` key accepts. */
-export const TOKEN_ECONOMIZER_MICROSKILLS: readonly TokenEconomizerMicroskills[] =
-  ["off", "envfacts", "distiller", "envfacts+distiller"];
+export const TOKEN_ECONOMIZER_MICROSKILLS:
+  readonly TokenEconomizerMicroskills[] = [
+    "off",
+    "envfacts",
+    "distiller",
+    "envfacts+distiller",
+  ];
 
 /** The values the `loopguard` key accepts. */
 export const TOKEN_ECONOMIZER_LOOPGUARD: readonly TokenEconomizerLoopguard[] = [

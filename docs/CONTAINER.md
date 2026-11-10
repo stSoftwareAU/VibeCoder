@@ -99,13 +99,14 @@ calls it. Its row says so, and it is deliberately absent from
 | `codegraph` 1.6.2 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
 | `rtk` 1.0.1 (bare binary  in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
 | `floci` 2.3.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime** and the pre-push gate's Floci CloudFormation check (Issue #3727): the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint; that check runs `infra/cloudformation/test-floci.sh`, which starts it on demand. The same tag and digest also run as the service of the `.github/workflows/floci.yml` CI job (Issue #3369), which deploys `infra/cloudformation/` through `infra/cloudformation/test-floci.sh`; `worker/deno/tests/issue_3369_floci_workflow_test.ts` keeps the two tags and digests in agreement |
+| `tokeneconomizer` 0.1.0 (commit `264e7a7f…`, `plugin/` and `tokeneconomizer/` under `/opt/tokeneconomizer`) | `tokeneconomizer` | The TokenEconomizer trial (Issue #4955, parent #4953) — the worker's own runs, not a monitored repository's gate; off by default, nothing reads it until #4956 |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `cspell` 10.4.0 (npm tarball, checksum-verified)    | `cspell`                                  | The pre-push gate's spelling stage for a repository that tracks a cspell config and whose CI runs cspell, e.g. GRQ's `docs/cspell.json` (Issue #3689) |
 | `semgrep` 1.182.1 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 | `graft` 0.25.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
 `rust`, `cargo-deny`, `cargo-mutants`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
-`bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci`, `tokeneconomizer` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
 SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
@@ -400,7 +401,7 @@ restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
 `cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml`,
-`codegraph`, `rtk`, `floci` and `rust` are fragments (Issues #1594, #1595, #1596, #1628, #2153, #2381 and #3367) —
+`codegraph`, `rtk`, `floci`, `tokeneconomizer` and `rust` are fragments (Issues #1594, #1595, #1596, #1628, #2153, #2381, #3367 and #4955) —
 they are the fetch-verify-extract toolchains, whose `ARG` blocks
 and `RUN` bodies were the bulk of the Containerfile's size. `node`, `npm`,
 `markdownlint-cli2`, `graft` and `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
