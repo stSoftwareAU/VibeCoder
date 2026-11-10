@@ -14,7 +14,8 @@ through the `content-edit-history-truncated` path. Closes #4947.
 
 - An approved issue with more than 100 renames after the snapshot, the oldest
   from an untrusted account, showed the gate only trusted renames, so it took
-  the trusted-editor path and re-baselined. This is the title-side twin of #4804.
+  the trusted-editor path and re-baselined. This is the title-side twin of
+  #4804.
 - The settle rule lives once, in `unsettledHistoryWindows`
   (`worker/deno/lib/issue_edit_actor.ts`), and both callers use it: the gate
   (`worker/deno/lib/work_on_content_integrity.ts`) and the review-fleet claim
@@ -68,11 +69,11 @@ flowchart LR
   renames keep the newest 100 and report `renameHistoryTruncated`; a complete
   history does not; a missing or too-small `totalCount` is rejected; a truncated
   window with an unparseable `createdAt` fails while a complete one skips the
-  node; ten `unsettledHistoryWindows` cases (body, rename, both, settled,
-  empty, oldest exactly at the snapshot, complete).
+  node; ten `unsettledHistoryWindows` cases (body, rename, both, settled, empty,
+  oldest exactly at the snapshot, complete).
 - `worker/deno/tests/work_on_content_integrity_truncated_history_4804_test.ts`:
-  eight gate tests, each with its own fake (it serves the newest 100 renames and a
-  `totalRenames` override): blocked when every visible rename post-dates the
+  eight gate tests, each with its own fake (it serves the newest 100 renames and
+  a `totalRenames` override): blocked when every visible rename post-dates the
   snapshot; proceeds when the oldest predates it; an untrusted rename inside a
   settled window is judged as untrusted; body-settled and rename-unsettled
   blocks, and the reverse; a trusted `work-on` re-add clears it; an empty window
@@ -85,9 +86,9 @@ flowchart LR
 - Red checks (each break made on purpose in the lib, the named tests went red,
   then restored): rename flag forced false (7 red); rename window dropped from
   `unsettledHistoryWindows` (9 red); rename `totalCount` validation removed (2
-  red); truncated-window `createdAt` check removed (1 red); rename window reading
-  the body edits' times (10 red); the claim check ignoring the rename window (2
-  red); gate `canReapprove` forced true (4 red).
+  red); truncated-window `createdAt` check removed (1 red); rename window
+  reading the body edits' times (10 red); the claim check ignoring the rename
+  window (2 red); gate `canReapprove` forced true (4 red).
 - Ran: `deno task test:unit` over the three touched test files passed;
   `./quality.sh < /dev/null` passed.
 - Twinned rule found and changed: the review-fleet claim check
@@ -100,4 +101,5 @@ flowchart LR
 - One existing test, "claim rule: newest body edits are checked beyond the
   100-edit window", uses a window the body-only rule already treated as
   unsettled (visible oldest edit after the label), so it reaches the
-  incomplete-history message first. This predates this change and was left as is.
+  incomplete-history message first. This predates this change and was left as
+  is.
