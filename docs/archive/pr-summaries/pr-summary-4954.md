@@ -8,6 +8,7 @@ switched-on implementation runs, whichever comes later), the bar, the comparison
 rule, the stop rules, where every figure is read from, and the purge list. Its
 Status says _not started_. It is linked from the README Documentation table and
 from the related-documentation lists of the RTK and Repo-context trial pages.
+
 Closes #4954.
 
 Version bump: `VERSION` updated for this change; the merged commit records the
