@@ -54,9 +54,10 @@ default and override, `docs/MODEL-AND-CACHING.md` paragraph updated.
   `babysitter_provider_choice.ts` (tests `review_round_test.ts`,
   `babysitter_provider_choice_4738_test.ts` pass).
 - Docs updated: `docs/MODEL-AND-CACHING.md` (Foreground command ceiling),
-  `docs/CONFIGURATION.md`, `docs/MANAGER-WORKER-CONTRACT.md` (three `deepseek_env.ts` line references,
-  re-pointed after the 13-line insertion: `:164`, `:180-181`, `:186-187`),
-  doc comment in `worker/deno/lib/claude_env.ts`.
+  `docs/CONFIGURATION.md`, `docs/MANAGER-WORKER-CONTRACT.md` (three
+  `deepseek_env.ts` line references, re-pointed after the 13-line insertion:
+  `:164`, `:180-181`, `:186-187`), doc comment in
+  `worker/deno/lib/claude_env.ts`.
 - `./quality.sh`: all stages passed except `deno tests`, which failed only in
   `tests/pr_maintenance_command_test.ts` (5 failures: merge-queue and #4613
   strict-base cases). They fail identically without this change (HEAD checkout
