@@ -28,6 +28,7 @@ import {
   flat,
   readRepoDoc,
   section,
+  splitSection,
   withoutSection,
 } from "./support/markdown_docs.ts";
 
@@ -51,12 +52,23 @@ for (const [type, heading] of TYPES_AND_SECTIONS) {
         : scoped,
     );
 
+    const editCommand = type === "ci_fix"
+      ? "gh pr edit <n> --title <title> --body-file <file>"
+      : "gh pr edit <n> --body-file <file>";
+    const ciFixOnly = type === "ci_fix"
+      ? [
+        "gh pr view <n> --json title,body,headRefName",
+        "every bot pull request",
+      ]
+      : [];
+
     for (
       const required of [
         `${WORKER_PR_MARKER_PREFIX}N -->`,
         "was written outside the worker",
-        "gh pr edit <n> --body-file <file>",
+        editCommand,
         `and name that in \`${PR_RESPONSE_MESSAGE_FILE}\``,
+        ...ciFixOnly,
       ]
     ) {
       assertStringIncludes(
@@ -96,5 +108,41 @@ Deno.test("Issue #4515 - dependency audit tracking reaches a marker-less body", 
     ]
   ) {
     assertStringIncludes(body, required);
+  }
+});
+
+Deno.test("Issue #4515 - ci_fix summary paragraph carries no marker-less wording", async () => {
+  const scoped = withoutSection(
+    section(
+      await readRepoDoc("prompts/ci_fix/prompt.md"),
+      "Fixing the Failure",
+    ),
+    "Dependency audit failures",
+  );
+  const bold = "A description the worker does not rebuild stays true too.";
+  assertStringIncludes(
+    flat(scoped),
+    bold,
+    `prompts/ci_fix/prompt.md: missing the paragraph "${bold}"`,
+  );
+
+  const summary = splitSection(scoped, "\n\n").find((paragraph) =>
+    paragraph.includes("**Keep the PR summary true to the head.**")
+  );
+  assert(
+    summary !== undefined,
+    `prompts/ci_fix/prompt.md: no "Keep the PR summary true to the head." paragraph`,
+  );
+  const summaryText = flat(summary);
+  for (
+    const absent of [
+      "was written outside the worker",
+      "usually has no summary file",
+    ]
+  ) {
+    assert(
+      !summaryText.includes(absent),
+      `prompts/ci_fix/prompt.md: "Keep the PR summary true to the head." still carries "${absent}"`,
+    );
   }
 });
