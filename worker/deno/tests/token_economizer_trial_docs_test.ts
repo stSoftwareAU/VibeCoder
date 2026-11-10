@@ -31,7 +31,6 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { escapeRegExp } from "../lib/regexp_escape.ts";
 import {
   type DocSection,
   flat,
@@ -345,8 +344,9 @@ function blockProblems(
     );
   }
   for (const key of docKeys) {
-    const pattern = new RegExp(`\\b${key}\\b`);
-    if (!blockFiles.some(([, text]) => pattern.test(text))) {
+    if (
+      !blockFiles.some(([, text]) => text.split(/[^A-Za-z0-9_]+/).includes(key))
+    ) {
       problems.push(
         `no code file that contains token_economizer contains the key ${key}: the page documents token_economizer.${key}, so the code must read it, or the page must drop it`,
       );
@@ -612,16 +612,36 @@ function replaceOnce(text: string, from: string, to: string): string {
 
 /** Replace a phrase that may wrap across lines, as `flat()` reads it. */
 function replacePhrase(page: string, phrase: string, to: string): string {
-  const pattern = new RegExp(
-    phrase.split(" ").map(escapeRegExp).join("\\s+"),
-    "g",
-  );
-  assertEquals(
-    (page.match(pattern) ?? []).length,
-    1,
-    `fixture: "${phrase}" must occur exactly once`,
-  );
-  return page.replace(pattern, () => to);
+  // Flatten the page as flat() does, each whitespace run becoming one space,
+  // and record where each flattened character sits in the page.
+  let flattened = "";
+  const origin: number[] = [];
+  let i = 0;
+  while (i < page.length) {
+    if (/\s/.test(page.charAt(i))) {
+      const runStart = i;
+      while (i < page.length && /\s/.test(page.charAt(i))) i++;
+      flattened += " ";
+      origin.push(runStart);
+    } else {
+      flattened += page.charAt(i);
+      origin.push(i);
+      i++;
+    }
+  }
+  const at = flattened.indexOf(phrase);
+  let count = 0;
+  for (
+    let found = at;
+    found !== -1;
+    found = flattened.indexOf(phrase, found + phrase.length)
+  ) {
+    count++;
+  }
+  assertEquals(count, 1, `fixture: "${phrase}" must occur exactly once`);
+  const start = origin[at] ?? 0;
+  const end = (origin[at + phrase.length - 1] ?? 0) + 1;
+  return page.slice(0, start) + to + page.slice(end);
 }
 
 /** Replace text inside one section only. */
