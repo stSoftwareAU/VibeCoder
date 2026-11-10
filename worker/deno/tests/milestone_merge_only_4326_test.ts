@@ -578,8 +578,9 @@ Deno.test("merge-only e2e - control: the same clean merge is refused by a failin
 
 Deno.test("merge-only e2e - a conflict the agent would have to resolve is not pushed, and the withhold is never charged (Issue #4326)", async () => {
   // Both sides change the same line, so no rule decides it: the ladder reaches
-  // the agent rung, which a cargo tree withholds. The first cycle is a
-  // refusal that waits, uncharged, for the host.
+  // the agent rung, which a cargo tree withholds. The withhold is not a
+  // refusal: it waits, uncharged, for the host, adds nothing to `refusedCycles`
+  // and never climbs the recovery ladder (Issue #4588).
   const f = await fixture({
     milestone: ["shared.txt", "a\nMILESTONE\nc\n"],
     main: ["shared.txt", "a\nMAIN\nc\n"],

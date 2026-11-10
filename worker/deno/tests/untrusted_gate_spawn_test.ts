@@ -15,6 +15,7 @@ import { runWithTimeout } from "../lib/subprocess_timeout.ts";
 import type { SubprocessResult } from "../lib/subprocess_timeout.ts";
 import { checkMergedTree } from "../lib/milestone_merge_gate.ts";
 import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
+import { makeAgentReachableTempDir } from "./support/gate_child_env.ts";
 import {
   ALLOWED_ENV_NAMES,
   asUntrustedUser,
@@ -826,9 +827,8 @@ Deno.test("no declared credentials means no wrapper and no stdin (Issue #4705)",
 
 /** Run {@link CHANNEL_SCRIPT} for real as `agent` through the host's sudo. */
 async function runAsAgentForReal(credentials: Record<string, string>) {
-  const cwd = await Deno.makeTempDir({ prefix: "vibe_4705_real_" });
+  const cwd = await makeAgentReachableTempDir("vibe_4705_real_");
   try {
-    await Deno.chmod(cwd, 0o777);
     return await runRepositoryCommand(
       "/bin/sh",
       ["-c", CHANNEL_SCRIPT],

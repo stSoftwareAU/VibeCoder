@@ -37,7 +37,7 @@ const passingTypeCheck: MergeGateFn = () =>
     output: "",
   });
 
-async function tree(tasks: Record<string, string>): Promise<string> {
+async function tree(tasks: Record<string, unknown>): Promise<string> {
   // A checkout the dropped `agent` account can use (Issue #4733).
   const dir = await makeAgentReachableTempDir("issue-1559-gate-");
   await Deno.writeTextFile(
@@ -49,7 +49,7 @@ async function tree(tasks: Record<string, string>): Promise<string> {
 
 /** Run the gate over a temporary tree and clean it up afterwards. */
 async function gate(
-  tasks: Record<string, string>,
+  tasks: Record<string, unknown>,
   runner: (task: ResolutionTask) => Promise<{ code: number; output: string }>,
   options: {
     typeCheck?: MergeGateFn;
@@ -118,6 +118,42 @@ Deno.test("verifyResolvedTree - falls back to the 'test' task when there is no u
 
   assertEquals(outcome.status, "passed");
   assertEquals(ran, ["test"]);
+});
+
+Deno.test("verifyResolvedTree - object-form unit tasks run without quality.sh (Issue #4811)", async () => {
+  for (const code of [0, 1]) {
+    const ran: string[] = [];
+    const { outcome } = await gate(
+      {
+        test: { command: "deno test", description: "unit suite" },
+      },
+      (task) => {
+        ran.push(task.task);
+        return Promise.resolve({
+          code,
+          output: code === 0 ? "unit suite passed" : "unit suite failed",
+        });
+      },
+    );
+    assertEquals(ran, ["test"]);
+    assertEquals(outcome.status, code === 0 ? "passed" : "failed");
+  }
+});
+
+Deno.test("verifyResolvedTree - object-form test:unit keeps precedence over object-form test (Issue #4811)", async () => {
+  const ran: string[] = [];
+  const { outcome } = await gate(
+    {
+      "test:unit": { command: "deno test unit", description: "unit" },
+      test: { command: "deno test all", description: "all" },
+    },
+    (task) => {
+      ran.push(task.task);
+      return Promise.resolve({ code: 0, output: "" });
+    },
+  );
+  assertEquals(outcome.status, "passed");
+  assertEquals(ran, ["test:unit"]);
 });
 
 Deno.test("verifyResolvedTree - a failing task fails the gate and carries its output", async () => {
