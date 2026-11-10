@@ -37,6 +37,19 @@ const CLOSING_KEYWORD_PATTERN =
 const GITHUB_CLOSING_KEYWORD_PATTERN =
   /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
 
+/**
+ * The colon and full-URL closing forms GitHub honours (`Closes: #N`,
+ * `Fixes https://github.com/o/r/issues/N`), with the keyword, separator and
+ * reference required on one line (`[ \t]`, not `\s`): a line-wrapped form such
+ * as `Closes:\n#42` closes nothing (Issue #4964). Groups: the optional
+ * repository qualifier and the issue number (colon form); the owner, the
+ * repository and the issue number (URL form).
+ */
+const SAME_LINE_COLON_CLOSE_PATTERN =
+  /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]*:[ \t]*(?:([a-z0-9_.-]+\/[a-z0-9_.-]+))?#(\d+)\b/gi;
+const SAME_LINE_URL_CLOSE_PATTERN =
+  /(?:^|[^\w/])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+https:\/\/github\.com\/([a-z0-9_.-]+)\/([a-z0-9_.-]+)\/issues\/(\d+)\b/gi;
+
 /** Every `#N` a closing keyword names, as written — duplicates included. */
 function closingIssueReferences(prBody: string): number[] {
   const numbers: number[] = [];
@@ -157,6 +170,37 @@ export function hasGithubClosingReference(
     if (Number(match[2]) !== issueNumber) continue;
     const qualifier = match[1]?.toLowerCase();
     if (qualifier === undefined || qualifier === repoKey) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the PR body carries a same-line colon or full-URL closing phrase for
+ * `issueNumber` in `repo`, in prose GitHub would act on (Issue #4964): code is
+ * masked out first, and a phrase split across lines does not count. A
+ * cross-repository reference counts only when it names `repo`,
+ * case-insensitively.
+ *
+ * @param prBody - The PR body, or the text to check
+ * @param issueNumber - The issue number to look for
+ * @param repo - The pull request's repository, `owner/name`
+ * @returns true if a same-line, non-code colon or URL close for the issue counts
+ */
+export function hasGithubColonOrUrlClosingReference(
+  prBody: string,
+  issueNumber: number,
+  repo: string,
+): boolean {
+  const masked = maskCodeWithPlaceholder(prBody);
+  const repoKey = repo.toLowerCase();
+  for (const match of masked.matchAll(SAME_LINE_COLON_CLOSE_PATTERN)) {
+    if (Number(match[2]) !== issueNumber) continue;
+    const qualifier = match[1]?.toLowerCase();
+    if (qualifier === undefined || qualifier === repoKey) return true;
+  }
+  for (const match of masked.matchAll(SAME_LINE_URL_CLOSE_PATTERN)) {
+    if (Number(match[3]) !== issueNumber) continue;
+    if (`${match[1]}/${match[2]}`.toLowerCase() === repoKey) return true;
   }
   return false;
 }

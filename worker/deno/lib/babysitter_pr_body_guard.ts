@@ -45,6 +45,7 @@ import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import {
   closingKeywordLine,
   hasGithubClosingReference,
+  hasGithubColonOrUrlClosingReference,
   maskCodeWithPlaceholder,
 } from "./pr_body.ts";
 import { issueNumberFromMarker } from "./pr_body_sync.ts";
@@ -380,7 +381,8 @@ function closingRefs(masked: string, repo: string): ClosingRef[] {
  * reference (`Refs #N`, `Related to #N`). The plain keyword counts only when it
  * is on one line with its `#N` and outside code, as GitHub reads it (Issue
  * #4964), so `Closes\n#N` or ``Closes `x` #N`` does not settle the close. The
- * colon and full-URL forms count when they are prose. The references count only
+ * colon and full-URL forms count on the same terms (one line, outside code),
+ * so `Closes:\n#N` does not settle it either. The references count only
  * when they name this repository (or no repository). A bare `#N`, or another
  * repository's `owner/repo#N`, settles nothing.
  */
@@ -392,7 +394,7 @@ function namesClosingOrPartOf(
   const masked = maskMarkdownCode(text);
   const repoKey = repo.toLowerCase();
   return hasGithubClosingReference(text, issueNumber, repo) ||
-    governingColonAndUrlCloses(text, issueNumber, repo).length > 0 ||
+    hasGithubColonOrUrlClosingReference(text, issueNumber, repo) ||
     [...masked.matchAll(PART_OF_RE), ...masked.matchAll(NON_CLOSING_REF_RE)]
       .some((match) => {
         const qualifier = match[2]?.toLowerCase();

@@ -286,6 +286,47 @@ Deno.test("a same-line close joined by a tab or written as Fixes is left unchang
   }
 });
 
+Deno.test("a line-wrapped colon or full-URL close does not settle the close, and a same-line one does (Issue #4964)", () => {
+  const url = "https://github.com/owner/repo/issues/4637";
+  for (
+    const close of [
+      "Closes:\n#4637",
+      "Closes\n: #4637",
+      `Closes\n${url}`,
+      "Closes: `x` #4637",
+    ]
+  ) {
+    const proposal = `Done.\n\n${close}`;
+    const output = guardPrBodyProposal({
+      proposal,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "issue-4637-thing",
+    });
+    assertEquals(
+      output,
+      `${proposal}\n\nCloses #4637\n\n${buildIdempotencyMarker(4637)}`,
+      close,
+    );
+  }
+  for (const close of ["Closes: #4637", `Closes ${url}`]) {
+    const proposal = `Done.\n\n${close}`;
+    const output = guardPrBodyProposal({
+      proposal,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "issue-4637-thing",
+    });
+    assertEquals(
+      output,
+      `${proposal}\n\n${buildIdempotencyMarker(4637)}`,
+      close,
+    );
+  }
+});
+
 Deno.test("a withheld issue's close split by a line break, by code, or in colon or URL form leaves no effective close (Issue #4964)", () => {
   const closeLeft =
     /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:\s*#4674|(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+https:\/\/github\.com\/\S+\/issues\/4674/i;
