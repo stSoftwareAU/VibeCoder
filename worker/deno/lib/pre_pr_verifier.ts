@@ -88,6 +88,11 @@ import {
 } from "./review_checklists.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import {
+  applyDummyTestScan,
+  dummyTestNotesReview,
+  scanDummyTests,
+} from "./dummy_test_scan.ts";
+import {
   earlierFindingGaps,
   type EarlierVerdict,
   parseEarlierVerdicts,
@@ -1061,6 +1066,7 @@ async function verifyInCheckout(
     );
   }
   const capabilityJudgement = judgeCapabilityFixtures(diffResult.stdout);
+  const dummyTestScan = scanDummyTests(diffResult.stdout);
   const capabilityReview = renderCapabilityReview(
     capabilityLoad,
     capabilityContextFromChange({
@@ -1076,10 +1082,17 @@ async function verifyInCheckout(
         "capability security guidance was not checked",
     );
   }
-  const mergedChecks = mergeCapabilityReview(
+  const capabilityChecks = mergeCapabilityReview(
     reviewChecklists,
     checklistExpected,
     capabilityReview,
+  );
+  // The dummy-test scan's notes are checklist items the verifier must judge
+  // (Issue #5016); its findings are added after the reply, below.
+  const mergedChecks = mergeCapabilityReview(
+    capabilityChecks.markdown,
+    capabilityChecks.state,
+    dummyTestNotesReview(dummyTestScan),
   );
   const metItems = metClosureItems(input.summaryContent);
   // Every existing caller of a changed function owes a verdict (Issue #3779).
@@ -1194,7 +1207,10 @@ async function verifyInCheckout(
       : { ...parsed, findings: [...parsed.findings, ...gaps] };
     return {
       status: "checked",
-      review: applyCapabilityJudgement(withGaps, capabilityJudgement),
+      review: applyDummyTestScan(
+        applyCapabilityJudgement(withGaps, capabilityJudgement),
+        dummyTestScan,
+      ),
       run,
     };
   } catch (error) {

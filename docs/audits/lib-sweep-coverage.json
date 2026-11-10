@@ -573,6 +573,7 @@
         "worker/deno/lib/diagnose_repo.ts",
         "worker/deno/lib/disk_telemetry.ts",
         "worker/deno/lib/docker_image_ref.ts",
+        "worker/deno/lib/dummy_test_scan.ts",
         "worker/deno/lib/duplicate_block_scanner.ts",
         "worker/deno/lib/ensure_repo_clone.ts",
         "worker/deno/lib/escape_hatch.ts",
