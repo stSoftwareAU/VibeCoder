@@ -1,17 +1,20 @@
 /**
- * Drift test for Issue #4954 — the TokenEconomizer trial protocol page.
+ * Drift test for Issues #4954 and #4955 — the TokenEconomizer trial protocol
+ * page.
  *
  * `docs/TOKEN-ECONOMIZER-TRIAL.md` records the protocol the TokenEconomizer
- * trial is judged by. Parts of what it names do not exist yet: the image pin,
- * the `token_economizer` config block and the purge targets land in sibling
- * issues #4955 to #4958. This is a drift test. It pins the page to the
- * repository as it stands, and it says what must change on the page when each
- * sibling lands.
+ * trial is judged by. The image pin and the `token_economizer` config block
+ * landed with #4955. The wiring, the learnings store, the stats and the verdict
+ * are sibling issues #4956 to #4959, still open. This is a drift test. It pins
+ * the page to the repository as it stands, and it says what must change on the
+ * page when each sibling lands.
  *
- * It pins four things:
+ * It pins five things:
  *
- * - the commit the page names is the commit the image pins, and the page says
- *   "Not yet" exactly while no file under `container/` pins one;
+ * - the commit the page names is the commit the image pins, and a file under
+ *   `container/` pins it;
+ * - the Claude Code version the page states for the image is the version
+ *   `container/tools.json` pins for the `claude` provider;
  * - the config keys the page names are the keys the code names, and the page
  *   says "Not yet" exactly while no code names the block;
  * - the purge list names every text file in the repository that names the
@@ -26,8 +29,8 @@
  * operator's `.config.json`, are not in it. Also left out are the dependency
  * and version-control trees, the worker state under `graft/` and `.codegraph/`,
  * and the historical records under `docs/archive/` and `docs/audits/`. It is
- * read once and must pass. There are no wall-clock
- * thresholds and no network calls.
+ * read once and must pass. There are no wall-clock thresholds and no network
+ * calls.
  *
  * Australian English spelling used throughout.
  */
@@ -51,14 +54,12 @@ const REPO_ROOT_PATH = decodeURIComponent(REPO_ROOT.pathname);
 /** The plugin's name in any spelling the repo uses. */
 const MENTION = /token[-_ ]?economizer/i;
 const HEX40 = /\b[0-9a-f]{40}\b/g;
-/**
- * The commit the page must name ONLY while no image pin exists. Once a file
- * under `container/` pins the plugin, this constant is ignored and the pin
- * decides. Delete this constant when #4955 lands its pin, and delete the page's
- * `Not yet: #4955 pins this commit` sentence at the same time.
- */
-const INTERIM_PINNED_COMMIT = "264e7a7f32f0112a06aa83a97b9c2c4681563968";
-const PIN_NOT_YET = "Not yet: #4955 pins this commit";
+/** The manifest that pins the plugin's commit and every provider's version. */
+const TOOLS_PATH = "container/tools.json";
+/** The toolchain id the manifest pins the plugin under. */
+const PLUGIN_ID = "tokeneconomizer";
+/** The provider id whose version the page states for the image. */
+const CLAUDE_ID = "claude";
 const BLOCK_NOT_YET = "Not yet: #4955 adds the block";
 /** The sentence the page says once #4955 has landed the block. */
 const BLOCK_LANDED =
@@ -72,6 +73,10 @@ const PURGE_KINDS = [
   "Callback field",
   "Learnings directory",
 ];
+/** The image's Claude Code version, as the candidate section states it. */
+const CLAUDE_STATEMENT = /This image's Claude Code: \*\*([^*\s]+)\*\*/g;
+/** Upstream's Claude Code row, quoted verbatim from its supported-version table. */
+const CLAUDE_ROW = "| Claude Code | 2.1.300 to 2.1.310 | not supported |";
 
 /** A `Status` row in the header table, read as one table cell. */
 const STATUS_ROW = /^\| \*\*Status\*\* \| (.*) \|$/m;
@@ -105,6 +110,7 @@ const STRUCTURE: ReadonlyArray<
       "Apache-2.0",
       "never cloned at run time",
       "recorded sha256",
+      "container/tools.json",
     ],
   ],
   [
@@ -148,8 +154,15 @@ const STRUCTURE: ReadonlyArray<
   ],
 ];
 
+type Json = Record<string, unknown>;
+
 function distinct(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+/** True for a plain (non-array, non-null) JSON object. */
+function isRecord(value: unknown): value is Json {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** The section with `title`, or `undefined` — never a throw. */
@@ -161,36 +174,41 @@ function sectionOf(page: string, title: string): DocSection | undefined {
   }
 }
 
-/** Every 40-hex token under a key that names the plugin, however deep. */
-function commitsUnderPluginKeys(node: unknown): string[] {
-  if (Array.isArray(node)) return node.flatMap(commitsUnderPluginKeys);
-  if (typeof node !== "object" || node === null) return [];
-  return Object.entries(node).flatMap(([key, value]) =>
-    MENTION.test(key) ? commitsIn(value) : commitsUnderPluginKeys(value)
+/**
+ * Every 40-hex token inside a JSON object that names the plugin, by one of its
+ * keys or one of its own string values. The search goes to any depth, so the
+ * plugin's entry is found wherever it sits in the file.
+ */
+function commitsUnderPluginObjects(node: unknown): string[] {
+  if (Array.isArray(node)) return node.flatMap(commitsUnderPluginObjects);
+  if (!isRecord(node)) return [];
+  const entries = Object.entries(node);
+  const namesPlugin = entries.some(([key, value]) =>
+    MENTION.test(key) || (typeof value === "string" && MENTION.test(value))
   );
+  if (namesPlugin) return commitsIn(node);
+  return entries.flatMap(([, value]) => commitsUnderPluginObjects(value));
 }
 
 /** Every 40-hex token anywhere inside a parsed JSON value. */
 function commitsIn(node: unknown): string[] {
   if (typeof node === "string") return node.match(HEX40) ?? [];
   if (Array.isArray(node)) return node.flatMap(commitsIn);
-  if (typeof node === "object" && node !== null) {
-    return Object.values(node).flatMap(commitsIn);
-  }
+  if (isRecord(node)) return Object.values(node).flatMap(commitsIn);
   return [];
 }
 
 /**
  * The commit a `container/` file pins for the plugin. A `.json` file is read
- * under its plugin-named keys; any other file is read from its plugin-naming
- * lines. A file that names the plugin but yields no commit is a problem, so
- * the check fails closed.
+ * under the objects that name the plugin, and it is a problem when none of
+ * them yields a commit, so the check fails closed. Any other file is read from
+ * its plugin-naming lines, and naming the plugin without a commit is no problem
+ * by itself.
  */
 function readPins(
   path: string,
   text: string,
 ): { tokens: string[]; problem?: string } {
-  let tokens: string[];
   if (path.endsWith(".json")) {
     let parsed: unknown;
     try {
@@ -202,20 +220,20 @@ function readPins(
           `${path} is not valid JSON, so the commit it pins cannot be read: fix the JSON`,
       };
     }
-    tokens = commitsUnderPluginKeys(parsed);
-  } else {
-    tokens = text
-      .split("\n")
-      .filter((line) => MENTION.test(line))
-      .flatMap((line) => line.match(HEX40) ?? []);
+    const tokens = commitsUnderPluginObjects(parsed);
+    if (tokens.length === 0) {
+      return {
+        tokens,
+        problem:
+          `${path} names the plugin but no 40-character commit can be read from the object that names it: put the pinned commit (40 lowercase hex characters) on the plugin's object, under its id or key`,
+      };
+    }
+    return { tokens };
   }
-  if (tokens.length === 0) {
-    return {
-      tokens,
-      problem:
-        `${path} names the plugin but no 40-character commit can be read from it: put the pinned commit (40 lowercase hex characters) on the plugin's line, or under its key`,
-    };
-  }
+  const tokens = text
+    .split("\n")
+    .filter((line) => MENTION.test(line))
+    .flatMap((line) => line.match(HEX40) ?? []);
   return { tokens };
 }
 
@@ -245,6 +263,7 @@ function pinProblems(
   }
 
   const pinnedBy: string[] = [];
+  const naming: string[] = [];
   for (const [path, text] of files) {
     if (
       !path.startsWith("container/") ||
@@ -252,11 +271,13 @@ function pinProblems(
     ) {
       continue;
     }
+    naming.push(path);
     const { tokens, problem } = readPins(path, text);
     if (problem !== undefined) {
       problems.push(problem);
       continue;
     }
+    if (tokens.length === 0) continue;
     pinnedBy.push(path);
     for (const token of tokens) {
       if (token !== sha) {
@@ -267,22 +288,12 @@ function pinProblems(
     }
   }
 
-  const says = flat(candidate).includes(PIN_NOT_YET);
-  if (pinnedBy.length > 0 && says) {
+  if (pinnedBy.length === 0) {
+    const named = naming.length === 0
+      ? "no file under container/ names the plugin"
+      : `${naming.join(", ")} name the plugin, but none yields a commit`;
     problems.push(
-      `${DOC}: the candidate section still says "${PIN_NOT_YET}", but ${
-        pinnedBy.join(", ")
-      } pins the commit: delete that sentence now the pin has landed`,
-    );
-  }
-  if (pinnedBy.length === 0 && !says) {
-    problems.push(
-      `${DOC}: no file under container/ pins a commit for the plugin, so the candidate section must say "${PIN_NOT_YET}": restore that sentence until #4955 lands the pin`,
-    );
-  }
-  if (pinnedBy.length === 0 && sha !== INTERIM_PINNED_COMMIT) {
-    problems.push(
-      `${DOC} names commit ${sha} while no image pin exists, so it must name the interim commit ${INTERIM_PINNED_COMMIT}: restore that commit, or land the pin in #4955 and then delete INTERIM_PINNED_COMMIT`,
+      `${DOC} says the image pins commit ${sha}, but ${named}: restore the pin: the page says the image pins it`,
     );
   }
   return problems;
@@ -356,6 +367,84 @@ function blockProblems(
         `no code file that contains token_economizer contains the key ${key}: the page documents token_economizer.${key}, so the code must read it, or the page must drop it`,
       );
     }
+  }
+  return problems;
+}
+
+/**
+ * The `version` the manifest pins for the `claude` provider, read from the
+ * manifest's JSON. A missing or unreadable manifest is a problem, not a pass.
+ */
+function claudeVersionPinned(
+  files: Map<string, string>,
+): { version?: string; problem?: string } {
+  const text = files.get(TOOLS_PATH);
+  if (text === undefined) {
+    return {
+      problem:
+        `${TOOLS_PATH} is missing, so the Claude Code version the image pins cannot be read: restore the manifest`,
+    };
+  }
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(text);
+  } catch {
+    return {
+      problem:
+        `${TOOLS_PATH} is not valid JSON, so the Claude Code version the image pins cannot be read: fix the JSON`,
+    };
+  }
+  const providers: unknown[] = isRecord(manifest) &&
+      Array.isArray(manifest.providers)
+    ? manifest.providers
+    : [];
+  const claude = providers.find((p): p is Json =>
+    isRecord(p) && p.id === CLAUDE_ID
+  );
+  if (claude === undefined || typeof claude.version !== "string") {
+    return {
+      problem:
+        `${TOOLS_PATH} has no providers entry with id "${CLAUDE_ID}" and a version, so the Claude Code version the image pins cannot be read: restore that entry`,
+    };
+  }
+  return { version: claude.version };
+}
+
+/**
+ * Rule R5: the image's Claude Code version the candidate section states, and
+ * the upstream row beside it, against the `claude` provider in the manifest.
+ */
+function claudeProblems(
+  candidate: DocSection,
+  files: Map<string, string>,
+): string[] {
+  const problems: string[] = [];
+  const stated = Array.from(
+    candidate.matchAll(CLAUDE_STATEMENT),
+    (m) => m[1] ?? "",
+  );
+  if (stated.length !== 1) {
+    problems.push(
+      `${DOC}: the candidate section must state the image's Claude Code version once, as "This image's Claude Code: **<version>**" beside the upstream table; it states ${stated.length}: write that line once`,
+    );
+  }
+  const quoted = candidate.split("\n").some((line) =>
+    line.trim() === CLAUDE_ROW
+  );
+  if (!quoted) {
+    problems.push(
+      `${DOC}: the candidate section does not quote upstream's Claude Code row "${CLAUDE_ROW}": quote the supported-version table verbatim`,
+    );
+  }
+  const pinned = claudeVersionPinned(files);
+  if (pinned.problem !== undefined) {
+    problems.push(pinned.problem);
+    return problems;
+  }
+  if (stated.length === 1 && stated[0] !== pinned.version) {
+    problems.push(
+      `${DOC} says this image's Claude Code is ${stated[0]}, but ${TOOLS_PATH} pins the claude provider at ${pinned.version}: update the page's Claude Code version in the same PR as the Claude Code bump`,
+    );
   }
   return problems;
 }
@@ -507,6 +596,7 @@ function driftProblems(page: string, files: Map<string, string>): string[] {
     problems.push(
       ...pinProblems(page, candidate, files),
       ...blockProblems(candidate, files),
+      ...claudeProblems(candidate, files),
     );
   }
   const purge = sectionOf(page, "The purge list");
@@ -616,16 +706,15 @@ function candidateSha(page: string): string {
 }
 
 const A40 = "a".repeat(40);
-const PIN_LANDED = "Pinned in the image by #4955";
-const TOOLS_PATH = "container/tools.json";
-const TOOLS_ROW =
-  "| Image layer | the pinned commit in the image | `container/tools.json` | present |";
+const B40 = "b".repeat(40);
 const CONFIG_PATH = "worker/deno/lib/token_economizer_config.ts";
 const NAMED_PATH = "worker/deno/lib/tokenEconomizerConfig.ts";
 const CONFIG_TEXT =
   "// The token_economizer block: enabled, learnings_repo, microskills, loopguard.\n";
 const SH_PATH = "container/toolchains/token_economizer.sh";
 const TYPES_PATH = "worker/deno/types.ts";
+const EXTRA_PATH = "container/extra.json";
+const NOTES_PATH = "container/notes.txt";
 const PURGE_SEPARATOR = "| ---- | ---- | ---- | ----- |";
 
 function withFile(
@@ -698,8 +787,38 @@ function withPurgeRow(page: string, row: string): string {
   return replaceOnce(page, PURGE_SEPARATOR, `${PURGE_SEPARATOR}\n${row}`);
 }
 
-function toolsJson(commit: string): string {
-  return JSON.stringify({ token_economizer: { commit } }, null, 2) + "\n";
+/** The manifest text in a corpus; the live corpus always carries it. */
+function manifestOf(files: Map<string, string>): string {
+  const text = files.get(TOOLS_PATH);
+  assert(text !== undefined, `fixture: ${TOOLS_PATH} must be in the corpus`);
+  return text;
+}
+
+/** Edit a manifest's parsed JSON and write it back, two-space indented. */
+function editManifest(text: string, edit: (manifest: Json) => void): string {
+  const manifest = JSON.parse(text) as Json;
+  edit(manifest);
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+/** The entry of `list` (`toolchains` or `providers`) whose `id` is `id`. */
+function entryWithId(manifest: Json, list: string, id: string): Json {
+  const entries = manifest[list];
+  const entry = Array.isArray(entries)
+    ? (entries as Json[]).find((e) => e.id === id)
+    : undefined;
+  assert(
+    entry !== undefined,
+    `fixture: ${TOOLS_PATH} has no ${list} entry with id ${id}`,
+  );
+  return entry;
+}
+
+/** The manifest text with the plugin's pinned commit replaced. */
+function withPluginCommit(text: string, commit: string): string {
+  return editManifest(text, (manifest) => {
+    entryWithId(manifest, "toolchains", PLUGIN_ID).commit = commit;
+  });
 }
 
 function codeRow(path: string): string {
@@ -707,8 +826,8 @@ function codeRow(path: string): string {
 }
 
 /**
- * The page as it reads once the block has landed: the live page already says
- * so, so only the block's purge row is added for `path`.
+ * The page with the purge row for a code file the fixture adds. The live page
+ * already says the block has landed.
  */
 function blockLanded(page: string, path: string): string {
   return withPurgeRow(page, codeRow(path));
@@ -848,26 +967,24 @@ Deno.test("the corpus refuses a directory that is not a git repository", async (
   }
 });
 
-Deno.test("SHA drift: a landed pin that matches the page passes (positive control)", async () => {
+Deno.test("SHA drift: a pin that matches the page passes (positive control)", async () => {
   const live = await livePage();
   const sha = candidateSha(live);
-  const pinned = withFile(await liveCorpus(), TOOLS_PATH, toolsJson(sha));
-  const landed = withPurgeRow(
-    replacePhrase(live, PIN_NOT_YET, PIN_LANDED),
-    TOOLS_ROW,
+  const corpus = await liveCorpus();
+  assertEquals(driftProblems(live, corpus), []);
+  assertEquals(
+    driftProblems(
+      live,
+      withFile(corpus, TOOLS_PATH, withPluginCommit(manifestOf(corpus), sha)),
+    ),
+    [],
   );
-  assertEquals(driftProblems(landed, pinned), []);
 });
 
 Deno.test("SHA drift: a commit changed everywhere on the page is refused by the pin file", async () => {
   const live = await livePage();
   const sha = candidateSha(live);
-  const pinned = withFile(await liveCorpus(), TOOLS_PATH, toolsJson(sha));
-  const landed = withPurgeRow(
-    replacePhrase(live, PIN_NOT_YET, PIN_LANDED),
-    TOOLS_ROW,
-  );
-  const problems = driftProblems(landed.replaceAll(sha, A40), pinned);
+  const problems = driftProblems(live.replaceAll(sha, A40), await liveCorpus());
   assert(
     problems.some((p) =>
       p.includes(TOOLS_PATH) && p.includes(sha) && p.includes(A40)
@@ -881,14 +998,9 @@ Deno.test("SHA drift: a commit changed everywhere on the page is refused by the 
 Deno.test("SHA drift: a commit changed in the candidate section only is refused by the page", async () => {
   const live = await livePage();
   const sha = candidateSha(live);
-  const pinned = withFile(await liveCorpus(), TOOLS_PATH, toolsJson(sha));
-  const landed = withPurgeRow(
-    replacePhrase(live, PIN_NOT_YET, PIN_LANDED),
-    TOOLS_ROW,
-  );
   const problems = driftProblems(
-    replaceInSection(landed, "The candidate", sha, A40),
-    pinned,
+    replaceInSection(live, "The candidate", sha, A40),
+    await liveCorpus(),
   );
   assert(
     problems.some((p) =>
@@ -898,91 +1010,60 @@ Deno.test("SHA drift: a commit changed in the candidate section only is refused 
   );
 });
 
-Deno.test("SHA drift: a landed pin with the Not-yet sentence still in place is refused", async () => {
+Deno.test("SHA drift: a pin that differs from the page's commit is refused", async () => {
   const live = await livePage();
   const sha = candidateSha(live);
-  const pinned = withFile(await liveCorpus(), TOOLS_PATH, toolsJson(sha));
-  const stillSays = withPurgeRow(live, TOOLS_ROW);
-  const problems = driftProblems(stillSays, pinned);
-  assert(
-    problems.some((p) => p.includes(PIN_NOT_YET) && p.includes(TOOLS_PATH)),
-    `expected the Not-yet sentence to be refused; got:\n${problems.join("\n")}`,
-  );
-});
-
-Deno.test("SHA drift: no pin with the Not-yet sentence deleted is refused", async () => {
-  const live = await livePage();
   const corpus = await liveCorpus();
-  assertEquals(driftProblems(live, corpus), []);
-  const problems = driftProblems(replacePhrase(live, PIN_NOT_YET, ""), corpus);
-  assert(
-    problems.some((p) => p.includes(PIN_NOT_YET)),
-    `expected the deleted sentence to be refused; got:\n${problems.join("\n")}`,
-  );
-});
-
-Deno.test("SHA drift: with no image pin, a doc commit other than the interim commit is refused", async () => {
-  const live = await livePage();
-  const corpus = await liveCorpus();
-  // positive control: the unchanged page names the interim commit
-  assertEquals(driftProblems(live, corpus), []);
-  const changed = live.replaceAll(INTERIM_PINNED_COMMIT, A40);
-  const problems = driftProblems(changed, corpus);
-  assert(
-    problems.some((p) => p.includes(INTERIM_PINNED_COMMIT) && p.includes(A40)),
-    `expected the interim commit to be enforced while no pin exists; got:\n${
-      problems.join("\n")
-    }`,
-  );
-});
-
-Deno.test("SHA drift: once a pin exists the interim commit is ignored, and a differing pin is refused", async () => {
-  const live = await livePage();
-  const corpus = await liveCorpus();
-  const page = withPurgeRow(
-    replacePhrase(
-      live.replaceAll(INTERIM_PINNED_COMMIT, A40),
-      PIN_NOT_YET,
-      PIN_LANDED,
-    ),
-    TOOLS_ROW,
-  );
-  // the pin differs from the interim commit but equals the doc's commit
   assertEquals(
-    driftProblems(page, withFile(corpus, TOOLS_PATH, toolsJson(A40))),
+    driftProblems(
+      live,
+      withFile(corpus, TOOLS_PATH, withPluginCommit(manifestOf(corpus), sha)),
+    ),
     [],
   );
   const problems = driftProblems(
-    page,
-    withFile(corpus, TOOLS_PATH, toolsJson(INTERIM_PINNED_COMMIT)),
+    live,
+    withFile(corpus, TOOLS_PATH, withPluginCommit(manifestOf(corpus), B40)),
   );
   assert(
     problems.some((p) =>
-      p.includes(TOOLS_PATH) && p.includes(INTERIM_PINNED_COMMIT) &&
-      p.includes(A40)
+      p.includes(TOOLS_PATH) && p.includes(B40) && p.includes(sha)
     ),
     `expected the differing pin to be refused; got:\n${problems.join("\n")}`,
   );
 });
 
+Deno.test("SHA drift: no container file pins the commit, so the page's pin is refused", async () => {
+  const live = await livePage();
+  const corpus = await liveCorpus();
+  assertEquals(driftProblems(live, corpus), []);
+  const unpinned = new Map(corpus);
+  unpinned.delete(TOOLS_PATH);
+  const problems = driftProblems(live, unpinned);
+  assert(
+    problems.some((p) => p.includes("restore the pin")),
+    `expected the missing pin to be refused by the restore rule; got:\n${
+      problems.join("\n")
+    }`,
+  );
+});
+
 Deno.test("SHA drift: a pin file naming the plugin without a commit fails closed", async () => {
   const live = await livePage();
-  const sha = candidateSha(live);
   const corpus = await liveCorpus();
-  const landed = withPurgeRow(
-    replacePhrase(live, PIN_NOT_YET, PIN_LANDED),
-    TOOLS_ROW,
-  );
   assertEquals(
-    driftProblems(landed, withFile(corpus, TOOLS_PATH, toolsJson(sha))),
+    driftProblems(
+      live,
+      withFile(corpus, TOOLS_PATH, withPluginCommit(manifestOf(corpus), (candidateSha(live)))),
+    ),
     [],
   );
   const problems = driftProblems(
-    landed,
+    live,
     withFile(
       corpus,
       TOOLS_PATH,
-      JSON.stringify({ token_economizer: { commit: "not-a-commit" } }),
+      withPluginCommit(manifestOf(corpus), "not-a-commit"),
     ),
   );
   assert(
@@ -997,18 +1078,18 @@ Deno.test("SHA drift: a commit in a re-wrapped multi-line JSON pin is still read
   const live = await livePage();
   const sha = candidateSha(live);
   const corpus = await liveCorpus();
-  const landed = withPurgeRow(
-    replacePhrase(live, PIN_NOT_YET, PIN_LANDED),
-    TOOLS_ROW,
-  );
   const rewrapped = (commit: string) =>
-    `{\n  "token_economizer":\n    {\n      "commit":\n        "${commit}"\n    }\n}\n`;
+    replaceOnce(
+      manifestOf(corpus),
+      `"commit": "${sha}"`,
+      `"commit":\n        "${commit}"`,
+    );
   assertEquals(
-    driftProblems(landed, withFile(corpus, TOOLS_PATH, rewrapped(sha))),
+    driftProblems(live, withFile(corpus, TOOLS_PATH, rewrapped(sha))),
     [],
   );
   const problems = driftProblems(
-    landed,
+    live,
     withFile(corpus, TOOLS_PATH, rewrapped(A40)),
   );
   assert(
@@ -1021,11 +1102,132 @@ Deno.test("SHA drift: a commit in a re-wrapped multi-line JSON pin is still read
   );
 });
 
+Deno.test("SHA drift: a commit under the plugin's own id, in any JSON file, is read", async () => {
+  const live = await livePage();
+  const sha = candidateSha(live);
+  const corpus = await liveCorpus();
+  const entry = (commit: string) =>
+    `${JSON.stringify({ id: PLUGIN_ID, commit })}\n`;
+  const page = withPurgeRow(
+    live,
+    `| Image layer | a fixture pin | \`${EXTRA_PATH}\` | present |`,
+  );
+  assertEquals(
+    driftProblems(page, withFile(corpus, EXTRA_PATH, entry(sha))),
+    [],
+  );
+  const problems = driftProblems(
+    page,
+    withFile(corpus, EXTRA_PATH, entry(A40)),
+  );
+  assert(
+    problems.some((p) =>
+      p.includes(EXTRA_PATH) && p.includes(A40) && p.includes(sha)
+    ),
+    `expected the id-keyed commit to be read and refused; got:\n${
+      problems.join("\n")
+    }`,
+  );
+});
+
+Deno.test("SHA drift: a non-JSON container file is read line by line, and naming the plugin without a commit is no problem", async () => {
+  const live = await livePage();
+  const sha = candidateSha(live);
+  const corpus = await liveCorpus();
+  const page = withPurgeRow(
+    live,
+    `| Image layer | a fixture note | \`${NOTES_PATH}\` | present |`,
+  );
+  assertEquals(
+    driftProblems(
+      page,
+      withFile(corpus, NOTES_PATH, "tokeneconomizer notes, no commit here\n"),
+    ),
+    [],
+  );
+  const problems = driftProblems(
+    page,
+    withFile(corpus, NOTES_PATH, `tokeneconomizer pin ${A40}\n`),
+  );
+  assert(
+    problems.some((p) =>
+      p.includes(NOTES_PATH) && p.includes(A40) && p.includes(sha)
+    ),
+    `expected the line's commit to be read and refused; got:\n${
+      problems.join("\n")
+    }`,
+  );
+});
+
+Deno.test("Claude Code version: a manifest bump the page does not follow is refused, and the page updated with it passes", async () => {
+  const live = await livePage();
+  const corpus = await liveCorpus();
+  const bumped = withFile(
+    corpus,
+    TOOLS_PATH,
+    editManifest(manifestOf(corpus), (manifest) => {
+      entryWithId(manifest, "providers", CLAUDE_ID).version = "2.1.311";
+    }),
+  );
+  const problems = driftProblems(live, bumped);
+  assert(
+    problems.some((p) =>
+      p.includes("2.1.310") && p.includes("2.1.311") && p.includes(TOOLS_PATH)
+    ),
+    `expected the bumped Claude Code version to be refused, naming both values; got:\n${
+      problems.join("\n")
+    }`,
+  );
+  // Positive control: the same manifest, with the page's version updated too.
+  assertEquals(
+    driftProblems(
+      replaceOnce(
+        live,
+        "This image's Claude Code: **2.1.310**",
+        "This image's Claude Code: **2.1.311**",
+      ),
+      bumped,
+    ),
+    [],
+  );
+  assertEquals(driftProblems(live, corpus), []);
+});
+
+Deno.test("Claude Code version: the page must state the image's version and quote upstream's Claude Code row", async () => {
+  const live = await livePage();
+  const corpus = await liveCorpus();
+  assertEquals(driftProblems(live, corpus), []);
+  const unquoted = driftProblems(
+    replaceOnce(live, `${CLAUDE_ROW}\n`, ""),
+    corpus,
+  );
+  assert(
+    unquoted.some((p) => p.includes(CLAUDE_ROW)),
+    `expected the missing Claude Code row to be refused; got:\n${
+      unquoted.join("\n")
+    }`,
+  );
+  const unstated = driftProblems(
+    replaceOnce(
+      live,
+      "This image's Claude Code: **2.1.310**",
+      "This image's Claude Code is pending",
+    ),
+    corpus,
+  );
+  assert(
+    unstated.some((p) => p.includes("must state the image's Claude Code version")),
+    `expected the missing version statement to be refused; got:\n${
+      unstated.join("\n")
+    }`,
+  );
+});
+
 Deno.test("config drift: the keys the page names match the keys the code names (positive control)", async () => {
   const live = await livePage();
   assertEquals(
     driftProblems(
-      blockLanded(live, CONFIG_PATH),
+      live,
       withFile(await liveCorpus(), CONFIG_PATH, CONFIG_TEXT),
     ),
     [],
@@ -1034,15 +1236,19 @@ Deno.test("config drift: the keys the page names match the keys the code names (
 
 Deno.test("config drift: a key the page names but the code drops is refused", async () => {
   const live = await livePage();
-  const corpus = await liveCorpus();
+  const unnamed = withoutBlockText(await liveCorpus());
   const dropped = replaceOnce(CONFIG_TEXT, "learnings_repo, ", "");
   const problems = driftProblems(
-    blockLanded(live, CONFIG_PATH),
-    withFile(corpus, CONFIG_PATH, dropped),
+    live,
+    withFile(unnamed, CONFIG_PATH, dropped),
   );
   assert(
     problems.some((p) => p.includes("token_economizer.learnings_repo")),
     `expected learnings_repo to be refused; got:\n${problems.join("\n")}`,
+  );
+  assertEquals(
+    driftProblems(live, withFile(unnamed, CONFIG_PATH, CONFIG_TEXT)),
+    [],
   );
 });
 
@@ -1071,7 +1277,7 @@ Deno.test("config drift: code that names the block while the page says Not yet i
   const live = await livePage();
   const corpus = await liveCorpus();
   const problems = driftProblems(
-    withPurgeRow(blockNotYet(live), codeRow(CONFIG_PATH)),
+    blockNotYet(live),
     withFile(corpus, CONFIG_PATH, CONFIG_TEXT),
   );
   assert(
@@ -1079,10 +1285,7 @@ Deno.test("config drift: code that names the block while the page says Not yet i
     `expected the Not-yet sentence to be refused; got:\n${problems.join("\n")}`,
   );
   assertEquals(
-    driftProblems(
-      blockLanded(live, CONFIG_PATH),
-      withFile(corpus, CONFIG_PATH, CONFIG_TEXT),
-    ),
+    driftProblems(live, withFile(corpus, CONFIG_PATH, CONFIG_TEXT)),
     [],
   );
 });
@@ -1091,7 +1294,7 @@ Deno.test("config drift: a key renamed on the page is refused", async () => {
   const live = await livePage();
   const corpus = await liveCorpus();
   const renamed = replaceOnce(
-    blockLanded(live, CONFIG_PATH),
+    live,
     "token_economizer.microskills",
     "token_economizer.skills",
   );
@@ -1104,10 +1307,7 @@ Deno.test("config drift: a key renamed on the page is refused", async () => {
     `expected the renamed key to be refused; got:\n${problems.join("\n")}`,
   );
   assertEquals(
-    driftProblems(
-      blockLanded(live, CONFIG_PATH),
-      withFile(corpus, CONFIG_PATH, CONFIG_TEXT),
-    ),
+    driftProblems(live, withFile(corpus, CONFIG_PATH, CONFIG_TEXT)),
     [],
   );
 });
@@ -1120,8 +1320,7 @@ Deno.test("purge drift: a file naming the plugin must be on the purge list, a fi
     SH_PATH,
     `TOKEN_ECONOMIZER_COMMIT=${sha}\n`,
   );
-  const landed = replacePhrase(live, PIN_NOT_YET, PIN_LANDED);
-  const problems = driftProblems(landed, corpus);
+  const problems = driftProblems(live, corpus);
   assert(
     problems.some((p) => p.includes(SH_PATH) && p.includes("purge list")),
     `expected the uncovered file to be refused; got:\n${problems.join("\n")}`,
@@ -1129,7 +1328,7 @@ Deno.test("purge drift: a file naming the plugin must be on the purge list, a fi
   assertEquals(
     driftProblems(
       withPurgeRow(
-        landed,
+        live,
         `| Image layer | toolchain | \`${SH_PATH}\` | present |`,
       ),
       corpus,
@@ -1139,7 +1338,7 @@ Deno.test("purge drift: a file naming the plugin must be on the purge list, a fi
   assertEquals(
     driftProblems(
       withPurgeRow(
-        landed,
+        live,
         "| Image layer | toolchains | `container/toolchains/` | present |",
       ),
       corpus,
