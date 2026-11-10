@@ -44,4 +44,5 @@ were read and are consistent.
   asks for no new gate.
 - `deno task test:unit tests/cross_file_anchors_test.ts tests/deno_path_docs_test.ts tests/deadline_model_docs_check_test.ts`
   passed (the new relative link and its anchor resolve).
+- `./quality.sh`: lint, type check and fmt passed; the unit suite reports 5 failures, all in `worker/deno/tests/pr_maintenance_command_test.ts` (merge-queue and #4613 base-owner cases). The same file fails the same 5 tests on a clean `origin/main` checkout, so they are pre-existing and unrelated to this docs-only change; I did not touch them.
 - Docs sweep — grep: `CI's copy`, `covered it`, `vibe-quality-gate-skipped`; section: TROUBLESHOOTING.md run-budget notice passage and CONFIGURATION.md "The full gate is conditional on the budget left" read; siblings: none — no set gained a member.
