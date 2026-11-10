@@ -421,7 +421,14 @@ bash `worker/run_core.sh` conductor. It sequences:
    than the governing one into a code span (`` `close` #M ``, and likewise the
    colon and full-URL forms), so a negated phrase copied from an acceptance
    criterion cannot close that issue on merge (Issue #4783); code the summary
-   already holds is left as written.
+   already holds is left as written. The withhold also rewrites every closing
+   reference to the governing issue that GitHub honours in prose (the plain
+   `Closes #N`, the colon `Closes: #N` and the full-URL
+   `Fixes https://github.com/owner/repo/issues/N` forms) to `Part of #N`
+   (`Part of owner/repo#N` for the URL form), leaving code spans and fences as
+   written (Issue #4936). The `deno task pr-summary-check` "Part of still
+   closes" gate (#4126) names a colon or full-URL closing phrase for the run's
+   issue the same way as a plain one.
 
    It spends quota the way the rest of the worker does (Issue #1477): one
    rate-limit pre-flight per sweep, a stop at the first primary-quota
