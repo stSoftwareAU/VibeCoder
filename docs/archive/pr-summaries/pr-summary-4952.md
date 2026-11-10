@@ -39,7 +39,8 @@ is `partial` (every `gh` read unreadable), so this is `Part of #4952`.
 - The hold survives a body rewrite (PR #5033 review). `buildSyncedPrBodyCandidate`
   (`pr_body_sync.ts`) adopts a marker-less continuation draft on its own
   `issue-N` branch and rebuilds the body with `assemblePrBody`, which carries
-  only the milestone section and bump notes; it now also keeps a leading
+  over the milestone section, bump notes, sub-agent tier marker and assignment
+  id but not a leading hold marker; it now also keeps a leading
   `DRAFT_CONTINUATION_MARKER` when the live body opens with it. Self-heal and
   sync share `opensWithDraftContinuationMarker` (`draft_continuation_pr.ts`) so
   they cannot disagree on what a hold is. Both rewrite paths use that builder:
@@ -174,8 +175,9 @@ flowchart TD
   hook throw uncaught → red; wiring line removed from
   `run_core_production_deps.ts` → wiring test red.
 - Callers checked for the changed `markDraftReadyAndAwaitCi`: completion
-  recovery and creation paths, the sweep self-heal; `issue_worker_test.ts` (128
-  passed) exercises the unknown-state default.
+  recovery and creation paths, the sweep self-heal; `worker/deno/tests/completion_draft_ready_4952_test.ts` (18 tests at head)
+  and `worker/deno/tests/draft_ready_ci_4160_test.ts` (5 tests at head)
+  exercise the unknown-state default.
 - Ran on the final head: `./quality.sh < /dev/null` PASSED (with skipped
   checks).
 
