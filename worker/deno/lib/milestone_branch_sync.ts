@@ -3309,6 +3309,16 @@ export async function syncMilestoneBranches(
               ? syncResult.error
               : undefined;
 
+            // A refusal that has repeated to the ceiling climbs to the
+            // roll-back (Issue #4328). It is decided before anything reads
+            // the verdict — including the log below, which on the ceiling
+            // cycle must describe the escalated outcome, not the refusal it
+            // started from (Issue #4847).
+            const verdict = escalateRepeatedRefusal(
+              judged,
+              entry?.refusedCycles ?? 0,
+            );
+
             // Issue #2309: the refusal is said out loud where it actually cost
             // something — a branch that conflicted with no rung left to climb.
             // A branch that merged cleanly was refused nothing worth reporting,
@@ -3321,6 +3331,21 @@ export async function syncMilestoneBranches(
                   `(Issue #2309). The deferral is not counted toward the ` +
                   `roll-back; the branch waits for a cycle with the runway ` +
                   `(Issue #4517)`,
+              );
+            } else if (
+              judged.reason.startsWith(MERGE_GATE_UNVERIFIED_TREE) &&
+              verdict.exhaust === true
+            ) {
+              // Issue #4847: an unverified tree that has repeated to the
+              // ceiling is charged and handed off this cycle. The host run log
+              // the merge-fallback issue points operators at must say that,
+              // not "not charged, re-checked next cycle".
+              log(
+                `Milestone branch '${milestone.milestoneBranch}' in ${repo}: ` +
+                  `the merge gate could not verify the merged tree for ` +
+                  `${entry?.refusedCycles ?? 0} cycles in a row; the refusal ` +
+                  `ceiling was reached, so this cycle is charged and goes to ` +
+                  `the hand-off (Issue #4847)`,
               );
             } else if (judged.reason.startsWith(MERGE_GATE_UNVERIFIED_TREE)) {
               // Issue #4847: the check could not verify the tree, which says
@@ -3342,12 +3367,6 @@ export async function syncMilestoneBranches(
             // ledger (Issue #2998): a milestone branch with an open PR against
             // it must record the failure there, whether or not a streak file
             // is wired at all.
-            // A refusal that has repeated to the ceiling climbs to the
-            // roll-back (Issue #4328), before anything reads the verdict.
-            const verdict = escalateRepeatedRefusal(
-              judged,
-              entry?.refusedCycles ?? 0,
-            );
             if (headPr && conflictError && verdict.outcome === "failed") {
               await recordSyncAttemptOnPr(
                 repo,

@@ -45,6 +45,10 @@ flowchart TD
 - A repeated unverified refusal goes to the hand-off rather than the roll-back
   rung (the escalated text is `refused N cycles in a row (…)`), the same path a
   repeated resolution refusal takes today.
+- The unverified-tree log line is chosen after `escalateRepeatedRefusal`, so
+  the ceiling cycle reports the charged hand-off (`…could not verify the merged
+  tree for N cycles in a row…`) rather than the below-ceiling "not charged,
+  re-checked next cycle" wording.
 - A non-cargo timeout is classed unverified. Cargo timeouts, registry gaps and
   remote-module gaps stay left to CI as before.
 
@@ -58,9 +62,10 @@ flowchart TD
 
 Backend only; no UI file touched. Tests:
 `worker/deno/tests/milestone_merge_gate_cause_test.ts` and
-`worker/deno/tests/milestone_merge_gate_verdict_test.ts`. `./quality.sh` passed
-on the code head (config integration, semgrep, checkov and the release-tag
-ruleset were skipped by the gate itself).
+`worker/deno/tests/milestone_merge_gate_verdict_test.ts`. `deno fmt`,
+`deno lint` and `deno check` pass on the changed files, and every test file
+importing the merge-gate or branch-sync code was run together with the two new
+files: 627 passed, 0 failed.
 
 ## Reproduction
 
@@ -80,20 +85,33 @@ ruleset were skipped by the gate itself).
 
 ## Test Plan
 
-- Added `worker/deno/tests/milestone_merge_gate_cause_test.ts` (12 tests): each
+- Added `worker/deno/tests/milestone_merge_gate_cause_test.ts` (14 tests): each
   cause from `checkMergedTree`, `spawnTypeCheck` unrunnable versus account
   refusal, `mergeGateFailureCause` round trip and forged-value rejection.
-- Added `worker/deno/tests/milestone_merge_gate_verdict_test.ts`:
+- Added `worker/deno/tests/milestone_merge_gate_verdict_test.ts` (17 tests):
   `judgeSyncFailure` for the charged, uncharged and no-cause shapes,
   `escalateRepeatedRefusal` at and below the ceiling,
   `isMergeGateRefusedReason`, `mergeFallbackCause` for an unverified tree (no
-  path in the body), and two `syncMilestoneBranches` ledger tests (unverified
-  not charged and re-checked; rejected tree charged).
+  path in the body), and six `syncMilestoneBranches` ledger tests — an
+  unverified tree is not charged and is re-checked; a rejected tree is charged;
+  a charged cause-carrying refusal counts a resolver decline; a cause-carrying
+  refusal closes the milestone after three budgets; a cause-carrying refusal
+  that fills the budget hands off this cycle; an unverified tree at the refusal
+  ceiling is charged and handed off.
+- The unverified-tree log is now chosen after `escalateRepeatedRefusal`
+  (`milestone_branch_sync.ts`), so the ceiling cycle logs the charged hand-off
+  instead of the below-ceiling "not charged, re-checked next cycle" wording.
 - Red checks run by breaking the code on purpose, then restoring it:
   `judgeSyncFailure` ignoring the cause (8 tests red); `spawnTypeCheck` dropping
   `unrunnable` (spawn test red); the timeout mapping dropped (timed-out test
   red); the `checkMergedTree` `unrunnable` branch disabled (unrunnable-runner
   test red).
+- Review-fix red checks: `climbsRecoveryLadder` reverted to
+  `reason === MERGE_GATE_REFUSED_TREE` (the resolver-decline and
+  three-budgets-close tests red); the exhausted-branch guard reverted to
+  `verdict.reason !== MERGE_GATE_REFUSED_TREE` (the fill-budget hand-off test
+  red); the ceiling-cycle log moved back before escalation (the ceiling test
+  red). Each mutation was observed red, then the code restored.
 - Mutation-check follow-up: added
   `checkMergedTree - a tree path that is a file
   is tree-unreadable` (kills the
@@ -108,10 +126,13 @@ ruleset were skipped by the gate itself).
   tests.
 - `worker/deno/lib/milestone_merge_gate.ts:928` exempt (untestable): the same
   `unrunnable?: true` type annotation on a local variable, erased at runtime.
-- No existing test was edited or removed. Existing importers of the merge-gate,
-  branch-sync and spawn code were run together with the new files: 421 passed, 0
-  failed.
-- `./quality.sh < /dev/null`: passed (with the skipped checks named above).
+- No existing test was edited or removed. Every test file importing the
+  merge-gate or branch-sync code was run together with the two new files: 627
+  passed, 0 failed.
+- `deno fmt`, `deno lint` and `deno check` pass on the changed files. The full
+  `./quality.sh` gate was not re-run in this container; its config-integration,
+  semgrep, checkov and release-tag ruleset stages are skipped by the gate
+  itself, and CI runs the gate on the pushed head.
 - Twinned rules: `judgeSyncFailure` is shared by the sweep
   (`milestone_branch_sync.ts`) and the pre-cut sync (`milestone_presync.ts`);
   the latter already handles a `not-charged` verdict, so only its comment
@@ -124,4 +145,5 @@ ruleset were skipped by the gate itself).
 
 Not done or not checked: the field cause was not observed (above); no fleet-wide
 data was read; Spec and Standards reviewers were not dispatched because the
-issue states no acceptance-criteria heading.
+issue states no acceptance-criteria heading; the full `./quality.sh` gate was
+not re-run in this container (CI runs it on the pushed head).

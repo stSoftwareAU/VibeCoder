@@ -29,7 +29,10 @@ import {
 } from "../lib/milestone_merge_gate.ts";
 import {
   loadSyncStreaks,
+  MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+  MILESTONE_REFUSAL_CEILING,
   milestoneSyncStreakPath,
+  saveSyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import {
@@ -176,15 +179,23 @@ const LEDGER_TITLE = "#4847 Gate";
 const LEDGER_BRANCH = createMilestoneBranchName(LEDGER_TITLE);
 const LEDGER_KEY = `owner/repo|${LEDGER_BRANCH}`;
 
+/** Options for {@link gateDeps}. */
+interface GateDepsOptions {
+  streakPath: string;
+  error: Error;
+  logs: string[];
+  /** Every gh argv the sweep ran, in order. */
+  calls?: string[][];
+  /** Wires the injected roll-back and records each request's key. */
+  rollbacks?: string[];
+}
+
 /** Sync deps that fail the one milestone with `error`, recording the log. */
-function gateCycleDeps(
-  streakPath: string,
-  error: Error,
-  logs: string[],
-): MilestoneBranchSyncDeps {
-  return {
+function gateDeps(options: GateDepsOptions): MilestoneBranchSyncDeps {
+  const deps: MilestoneBranchSyncDeps = {
     repos: ["owner/repo"],
     ghCommandFn: (args: string[]): Promise<string> => {
+      options.calls?.push([...args]);
       const key = args.join(" ");
       if (key.includes("repos/owner/repo/milestones")) {
         return Promise.resolve(
@@ -197,15 +208,26 @@ function gateCycleDeps(
       }
       return Promise.resolve("[]");
     },
-    syncBranchFn: () => Promise.resolve({ ok: false as const, error }),
+    syncBranchFn: () =>
+      Promise.resolve({ ok: false as const, error: options.error }),
     defaultTipShaFn: () =>
       Promise.resolve({ ok: true as const, value: "a".repeat(40) }),
     log: (message: string) => {
-      logs.push(message);
+      options.logs.push(message);
     },
-    streakPath,
+    streakPath: options.streakPath,
     now: () => 10_000,
   };
+  if (options.rollbacks) {
+    const seen = options.rollbacks;
+    deps.rollbackFn = (request) => {
+      seen.push(
+        `${request.repo}|${request.milestoneBranch}|${request.attempts}`,
+      );
+      return Promise.resolve(undefined);
+    };
+  }
+  return deps;
 }
 
 Deno.test("syncMilestoneBranches - an unverified merge check is not charged to the ledger and is re-checked (Issue #4847)", async () => {
@@ -214,7 +236,7 @@ Deno.test("syncMilestoneBranches - an unverified merge check is not charged to t
     const streakPath = milestoneSyncStreakPath(dir);
     const logs: string[] = [];
     await syncMilestoneBranches(
-      gateCycleDeps(streakPath, gateError("check-timed-out"), logs),
+      gateDeps({ streakPath, error: gateError("check-timed-out"), logs }),
     );
     const entry = (await loadSyncStreaks(streakPath))[LEDGER_KEY];
     assertEquals(entry?.conflictAttempts ?? 0, 0);
@@ -239,7 +261,7 @@ Deno.test("syncMilestoneBranches - a check that rejected the merged tree is char
     const streakPath = milestoneSyncStreakPath(dir);
     const logs: string[] = [];
     await syncMilestoneBranches(
-      gateCycleDeps(streakPath, gateError("tree-check-failed"), logs),
+      gateDeps({ streakPath, error: gateError("tree-check-failed"), logs }),
     );
     const entry = (await loadSyncStreaks(streakPath))[LEDGER_KEY];
     assertEquals(entry?.conflictAttempts, 1);
@@ -247,6 +269,152 @@ Deno.test("syncMilestoneBranches - a check that rejected the merged tree is char
     assertEquals(
       entry?.lastAttempt?.reason,
       `${MERGE_GATE_REFUSED_TREE} (the repository's check failed)`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a charged merge-gate refusal counts a resolver decline (Issue #4847)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4847-decline-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    const logs: string[] = [];
+    await syncMilestoneBranches(
+      gateDeps({ streakPath, error: gateError("tree-check-failed"), logs }),
+    );
+    const entry = (await loadSyncStreaks(streakPath))[LEDGER_KEY];
+    assertEquals(entry?.conflictAttempts, 1);
+    assertEquals(entry?.resolverDeclines, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a merge-gate refusal with a cause closes after three budgets (Issue #4847)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4847-gate-close-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [LEDGER_KEY]: {
+        count: 0,
+        resolverDeclines: MILESTONE_CONFLICT_ATTEMPT_BUDGET * 3,
+        escalated: false,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: `${MERGE_GATE_REFUSED_TREE} (the repository's check failed)`,
+        },
+      },
+    });
+    const calls: string[][] = [];
+    const logs: string[] = [];
+    let syncs = 0;
+    const deps = gateDeps({
+      streakPath,
+      error: gateError("tree-check-failed"),
+      calls,
+      logs,
+    });
+    const inner = deps.syncBranchFn;
+    deps.syncBranchFn = (repo, branch, base, opts) => {
+      syncs++;
+      return inner(repo, branch, base, opts);
+    };
+    await syncMilestoneBranches(deps);
+    assertEquals(syncs, 0, "a long-refused check failure is not merged again");
+    const closed = calls.filter((args) =>
+      args.includes("--method") && args.includes("PATCH") &&
+      args.some((arg) => arg.includes("/milestones/")) &&
+      args.includes("state=closed")
+    );
+    assertEquals(closed.length, 1, JSON.stringify(calls));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - a merge-gate refusal with a cause that fills the budget hands off this cycle (Issue #4847)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4847-gate-handoff-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [LEDGER_KEY]: {
+        count: 0,
+        conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET - 1,
+        escalated: false,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "failed",
+          reason: `${MERGE_GATE_REFUSED_TREE} (the repository's check failed)`,
+        },
+      },
+    });
+    const rollbacks: string[] = [];
+    const logs: string[] = [];
+    await syncMilestoneBranches(gateDeps({
+      streakPath,
+      error: gateError("tree-check-failed"),
+      rollbacks,
+      logs,
+    }));
+    assertEquals(rollbacks, [
+      `owner/repo|${LEDGER_BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
+    ]);
+    const entry = (await loadSyncStreaks(streakPath))[LEDGER_KEY];
+    assertEquals(entry?.conflictAttempts, MILESTONE_CONFLICT_ATTEMPT_BUDGET);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("syncMilestoneBranches - an unverified tree at the refusal ceiling is charged and handed off (Issue #4847)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-4847-ceiling-" });
+  try {
+    const streakPath = milestoneSyncStreakPath(dir);
+    await saveSyncStreaks(streakPath, {
+      [LEDGER_KEY]: {
+        count: 0,
+        refusedCycles: MILESTONE_REFUSAL_CEILING,
+        escalated: false,
+        lastAttempt: {
+          at: new Date(1_000).toISOString(),
+          outcome: "not-charged",
+          reason: `${MERGE_GATE_UNVERIFIED_TREE} (the check timed out)`,
+        },
+      },
+    });
+    const rollbacks: string[] = [];
+    const logs: string[] = [];
+    await syncMilestoneBranches(gateDeps({
+      streakPath,
+      error: gateError("check-timed-out"),
+      rollbacks,
+      logs,
+    }));
+    const entry = (await loadSyncStreaks(streakPath))[LEDGER_KEY];
+    assertEquals(entry?.conflictAttempts, MILESTONE_CONFLICT_ATTEMPT_BUDGET);
+    assertEquals(entry?.lastAttempt?.outcome, "failed");
+    assertStringIncludes(
+      entry?.lastAttempt?.reason ?? "",
+      "refused 3 cycles in a row",
+    );
+    assertEquals(rollbacks, [
+      `owner/repo|${LEDGER_BRANCH}|${MILESTONE_CONFLICT_ATTEMPT_BUDGET}`,
+    ]);
+    assert(
+      logs.some((line) =>
+        line.includes(
+          "the merge gate could not verify the merged tree for 3 cycles in a row",
+        )
+      ),
+      `logs: ${JSON.stringify(logs)}`,
+    );
+    assert(
+      !logs.some((line) => line.includes("not charged, re-checked next cycle")),
+      `the ceiling cycle must not log the below-ceiling wording: ${
+        JSON.stringify(logs)
+      }`,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
