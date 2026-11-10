@@ -70,6 +70,9 @@ function recordingSpawn(first: Spawned = { ok: true, value: OK }) {
 async function withCheckout(fn: (cwd: string) => Promise<void>): Promise<void> {
   const cwd = await Deno.makeTempDir({ prefix: "vibe_4659_" });
   try {
+    // The `.git` marker stops the worktree-root walk (Issue #4927) here, so a
+    // test never reads the shared temp directory above the checkout.
+    await Deno.mkdir(`${cwd}/.git`);
     await fn(cwd);
   } finally {
     await Deno.remove(cwd, { recursive: true });
@@ -293,6 +296,9 @@ Deno.test("a command run as the worker gets no git safe.directory entry (Issue #
 Deno.test("a checkout whose path holds a space gets no git entry and does not throw (Issue #4927)", async () => {
   const cwd = await Deno.makeTempDir({ prefix: "vibe 4927 " });
   try {
+    // The `.git` marker stops the worktree-root walk here; the space in `cwd`
+    // is what CARRIED_ENV_VALUE then rejects.
+    await Deno.mkdir(`${cwd}/.git`);
     const { calls, spawn } = recordingSpawn();
     const result = await runRepositoryCommand(
       "cargo",
@@ -365,7 +371,6 @@ Deno.test("real sudo: an agent git command runs from a subdirectory of a worker-
 
 Deno.test("a dropped command in a nested project dir trusts the worktree root (Issue #4927)", async () => {
   await withCheckout(async (root) => {
-    await Deno.mkdir(`${root}/.git`);
     const cwd = `${root}/crates/app`;
     await Deno.mkdir(cwd, { recursive: true });
     const { calls, spawn } = recordingSpawn();

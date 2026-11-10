@@ -1517,12 +1517,20 @@ Deno.test("gitSafeDirectoryEnv - a relative path gets no entry (Issue #4927)", (
   assertEquals(gitSafeDirectoryEnv("relative/checkout"), {});
 });
 
-Deno.test("gitSafeDirectoryEnv - a plain absolute path trusts only that checkout (Issue #4927)", () => {
-  assertEquals(gitSafeDirectoryEnv("/var/tmp/checkout"), {
-    GIT_CONFIG_COUNT: "1",
-    GIT_CONFIG_KEY_0: "safe.directory",
-    GIT_CONFIG_VALUE_0: "/var/tmp/checkout",
-  });
+Deno.test("gitSafeDirectoryEnv - a plain absolute path trusts only that checkout (Issue #4927)", async () => {
+  const checkout = await Deno.makeTempDir({ prefix: "vibe-4927-abs-" });
+  try {
+    // The `.git` marker stops the worktree-root walk here, so the test never
+    // reads the shared temp directory above the checkout.
+    await Deno.mkdir(`${checkout}/.git`);
+    assertEquals(gitSafeDirectoryEnv(checkout), {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "safe.directory",
+      GIT_CONFIG_VALUE_0: checkout,
+    });
+  } finally {
+    await Deno.remove(checkout, { recursive: true });
+  }
 });
 
 Deno.test("gitSafeDirectoryEnv - a nested project dir trusts the worktree root (Issue #4927)", async () => {

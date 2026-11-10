@@ -122,20 +122,45 @@ flowchart LR
   test) and `worker/deno/tests/support/gate_child_env.ts` (the three names are
   permitted only when the child ran through the sudo drop). No assertion was
   removed; the credential, proxy and cargo-target assertions are unchanged.
+- Review-driven hermeticity fix (TDD rule 3). Obsolete: the plain-absolute-path
+  test read the shared `/var/tmp/checkout` path, and the fallback-dependent
+  fixtures relied on the shared temp directory above the checkout having no
+  `.git`, so `gitWorktreeRoot` walked out of the test's own directory and read
+  `$TMPDIR/.git`. Remaining: the assertions keep their meaning — a plain
+  absolute checkout still trusts only that checkout, the space path still gets
+  no entry and does not throw, the dropped command still carries
+  `GIT_CONFIG_VALUE_0=<cwd>`, and the worker-run command still carries none.
+  Covering tests, now hermetic because each fixture stops the walk with its own
+  `.git` marker: `gitSafeDirectoryEnv - a plain absolute path trusts only that
+  checkout (Issue #4927)` (a `Deno.makeTempDir` checkout with a `.git` marker
+  replaces `/var/tmp/checkout`), `withCheckout` now creates one in every
+  checkout it makes (covering the dropped-command and both exact-argv
+  expectations), and the space-path test creates one before asserting no entry.
+  The `gitWorktreeRoot` fallback is still pinned by the `/nonexistent-4927/a/b`
+  case.
 - Callers of `runRepositoryCommand` checked: `milestone_merge_gate.ts`
   (`spawnTypeCheck`), `milestone_resolution_gate.ts` (`spawnTask`), and the
   merge fast checks (`spawnFastCheck`); all pass `cwd` and run through the one
   function, and their test files pass.
 - Ran: `deno task test:unit` over the touched files and the neighbouring
-  sudo-argv tests: passed. `./quality.sh`: every stage passed except
-  `deno
-  tests`, which fails only in
-  `worker/deno/tests/pr_maintenance_command_test.ts` (three tests at lines 346,
-  477 and 496). That file is untouched here and fails the same way on
-  `origin/main`.
+  sudo-argv tests
+  (`worker/deno/tests/quality_gate_phase_test.ts`,
+  `worker/deno/tests/untrusted_gate_spawn_test.ts`,
+  `worker/deno/tests/merge_fast_checks_credentials_4705_test.ts`): 152 passed,
+  0 failed, and the same three files still pass with a planted `/tmp/.git`
+  (the review's failure scenario), which was then removed.
+  `deno fmt --check`, `deno lint` and `deno check` over the two edited test
+  files: clean. `pr-summary-check` on this summary: 0 gates blocked.
+  `./quality.sh`: every stage passed except `deno tests`, whose parallel pass
+  failed only `run.sh and run.ps1 - hand the runtime the same invocation` in
+  `worker/deno/tests/launcher_parity_test.ts` (line 554) with
+  `VIBE_HARD_KILL_AT_EPOCH … not within 60 s of now + 11400` — a real-clock
+  assertion that drifts when the container's parallel pass runs slowly
+  (29m47s; 33670 passed, 1 failed, 5 ignored). That file is untouched here.
 
 ## Not done
 
-- The `pr_maintenance_command_test.ts` failures on `main` are not addressed.
+- The `launcher_parity_test.ts` real-clock failure above is not addressed: it
+  is slow-container drift and passes in CI's sharded validate jobs.
 - Other repositories' build scripts that need a different git config (a
   `safe.directory` for a path with a space) are not covered.

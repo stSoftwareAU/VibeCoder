@@ -1000,32 +1000,43 @@ and composite actions (`runs.steps[].run`) are both scanned. No network.
 | `cargo` | `cargo install <crate>` with no exact `--version` / `crate@x.y.z`, or with no `--locked` / `--frozen` (`--locked` is accepted anywhere in the command, including before `install`) | `cargo install --locked <crate> --version 1.2.3`                                                        |
 
 Local paths, `file:`, `git+`, `http(s):` specs, shell-variable package specs
-(`$TOOL`, `"$TOOL"`), and comment lines are exempt. A shell-variable version is
-exempt for cargo only; npm and gem still flag variable versions. Cargo `--git` /
-`--path` installs are exempt from version pinning but still require `--locked`
-or `--frozen`. An unlocked external-source finding asks only for locking. Cargo
-quoted values and GitHub expression versions are kept together; expression
-versions, like shell-variable versions, are not statically decidable.
+(`$TOOL`, `"$TOOL"`), and comment lines are exempt. A shell-variable version
+is exempt for cargo only; npm and gem still flag variable versions. Cargo
+`--git` / `--path` installs are exempt from version pinning but still require
+`--locked` or `--frozen`. An unlocked external-source finding asks only for
+locking. For npm, npx, gem and cargo alike, quoted values and GitHub
+`${{ … }}` expressions are kept as one token, a backslash outside quotes
+escapes the next character, and unquoted shell comments and
+redirections (`# …`, `2>&1`, `> /dev/null`) are never read as package
+arguments. An expression version, like a shell-variable version, is not
+statically decidable: it is exempt for cargo only, while npm and gem flag the
+real package once, with the whole expression as its version, and never the
+expression's fragments.
 
-**Commands are normalised before matching**. The tool used to have to be token 0
-and the subcommand token 1, so two everyday spellings —
-`sudo npm install -g <pkg>` and `npm --global install <pkg>` — read as clean,
-and a backslash-continued install produced a garbage finding id. Normalisation
-now: joins backslash continuations and quoted strings or GitHub expressions
-spanning lines into one command (anchoring the call-site to the line the command
-starts on). Heredoc bodies and quoted scripts are independently normalised,
-including opening lines, continuations and nested quotes, without changing the
-outer quote state. Single-line quoted text is examined when it contains a
-command separator or is a shell `-c` or SSH argument. Heredoc delimiters undergo
-shell quote removal; only closed arithmetic spans suppress heredoc recognition.
-It splits at `;`, `|`, `&&`, `||`, background `&` and subshell parentheses
-outside quotes and expressions, and strips shell keywords (`then`, `do`, `else`,
-`elif`, `!`, `time`, `{`) and wrapper prefixes (`sudo`, `env`, `command`,
-`exec`, their flags and flag values, and leading `VAR=value` assignments),
-strips cargo toolchain selectors (`cargo +stable install` is read as
-`cargo install`), recognises a global `--locked` wherever it appears in the
-command (including before `install`), and locates the subcommand as the first
-non-flag argument rather than at a fixed index.
+**Commands are normalised before matching**. The tool used to
+have to be token 0 and the subcommand token 1, so two everyday spellings —
+`sudo npm install -g <pkg>` and `npm --global install <pkg>` — read as
+clean, and a backslash-continued install produced a garbage finding id.
+Normalisation now: joins backslash continuations and quoted strings or GitHub
+expressions spanning lines into one command (anchoring the call-site to the
+line the command starts on). Heredoc bodies and quoted scripts are
+independently normalised, including opening lines, continuations and nested
+quotes, without changing the outer quote state. Single-line quoted text is
+examined when it contains a command separator or is a shell `-c` or SSH
+argument. A double-quoted `-c`/SSH script has one level of double-quote
+escaping (`\"`, `\\`, `\$`, `` \` ``) dropped before it is re-scanned, so an
+escaped quote inside it does not split into a made-up package name. Heredoc
+delimiters undergo shell quote removal; only closed
+arithmetic spans suppress heredoc recognition. It splits at
+`;`, `|`, `&&`, `||`, background `&` and subshell parentheses outside quotes
+and expressions, and strips shell keywords (`then`, `do`, `else`, `elif`, `!`,
+`time`, `{`) and wrapper
+prefixes (`sudo`, `env`, `command`, `exec`, their flags and flag values,
+and leading `VAR=value` assignments), strips cargo toolchain selectors
+(`cargo +stable install` is read as `cargo install`), recognises a global
+`--locked` wherever it appears in the command (including before `install`),
+and locates the subcommand as the first non-flag argument rather than at a
+fixed index.
 
 Findings **consolidate one per package coordinate** (`<tool>` + package name),
 listing every call-site `file:line`, so a package installed by three workflows
