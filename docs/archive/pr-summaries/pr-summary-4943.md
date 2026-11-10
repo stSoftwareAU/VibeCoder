@@ -175,7 +175,7 @@ Related existing behaviour checked:
   failed) on a clean `origin/main` worktree and on this branch, so they are
   pre-existing and not touched by this change.
 - `./quality.sh` on the final head: every stage passed except `deno tests`,
-  whose only failures are those 5 `pr_maintenance_command_test.ts` cases
-  (33923 passed, 5 failed); config integration and checkov were skipped.
+  whose only failures are those 5 `pr_maintenance_command_test.ts` cases (33923
+  passed, 5 failed); config integration and checkov were skipped.
 - `docs/MERGE.md` is hand-wrapped like the base file (the root docs are outside
   the gate's `deno fmt` run); `markdownlint-cli2` reports 0 issues.
