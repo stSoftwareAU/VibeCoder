@@ -301,6 +301,9 @@ starts from a list rather than a search.
   bar shape, different candidates and host.
 - **[brief trial](BRIEF-TRIAL.md)** — the sibling protocol for brief, removed
   on analysis before its window opened (Issue #2699).
+- **[TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md)** — the sibling protocol
+  for the TokenEconomizer plugin: same shape of bar, a different candidate and
+  host.
 - **[Configuration Reference](CONFIGURATION.md)** — the `rtk_output` switch row,
   and every other `.config.json` key.
 - **[Container Image](CONTAINER.md)** — the pinned RTK toolchain fragment and
