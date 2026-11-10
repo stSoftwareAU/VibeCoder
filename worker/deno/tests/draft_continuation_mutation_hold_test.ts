@@ -5,9 +5,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertMatch, assertStringIncludes } from "@std/assert";
 import {
   buildMutationHoldDraftBody,
+  buildUnmetDraftBody,
   convertToDraftContinuation,
   DRAFT_CONTINUATION_MARKER,
 } from "../lib/draft_continuation_pr.ts";
@@ -93,3 +94,40 @@ Deno.test("convertToDraftContinuation - without a draftBody the unmet-criteria b
     "not every acceptance criterion is met yet",
   );
 });
+
+// Issue #4936: the withhold also rewrites colon and full-URL references, and a
+// qualified one needs the run's identity, so both draft builders take it.
+const IDENTITY = { prRepo: "o/r", issueRepo: "o/r" };
+const HOLD = { job: "mutants", workflow: "mutants.yml", comment: "C" };
+const GOVERNING_REFERENCES = [
+  "Closes: #5",
+  "Closes: o/r#5",
+  "Fixes https://github.com/o/r/issues/5",
+];
+
+for (const reference of GOVERNING_REFERENCES) {
+  Deno.test(`buildMutationHoldDraftBody - "${reference}" is withheld and does not throw given the identity (Issue #4936)`, () => {
+    const body = buildMutationHoldDraftBody(
+      5,
+      `Done.\n\n${reference}\n`,
+      HOLD,
+      IDENTITY,
+    );
+
+    assertEquals(
+      /(close[sd]?|fix(e[sd])?|resolve[sd]?):?\s+(https:|o\/r#|#)/i.test(body),
+      false,
+      body,
+    );
+    assertStringIncludes(body, "Part of ");
+  });
+
+  Deno.test(`buildUnmetDraftBody - "${reference}" is withheld and does not throw given the identity (Issue #4936)`, () => {
+    const body = buildUnmetDraftBody(5, `Done.\n\n${reference}\n`, IDENTITY);
+
+    assertMatch(
+      body.split("Done.")[1] ?? "",
+      /^\n\nPart of (o\/r)?#5\n$/,
+    );
+  });
+}
