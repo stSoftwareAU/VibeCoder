@@ -677,6 +677,11 @@ export interface ProductionDepsOptions {
    * comment authors the production wiring hands it as authorised.
    */
   findPrCommentsToFix?: typeof findPrCommentsToFix;
+  /** Test seams for the spelling-fix and CI-fix production callbacks. */
+  findFailedPrChecks?: typeof findFailedPrChecks;
+  findFailedCiChecks?: typeof findFailedCiChecks;
+  processSpellingFailure?: typeof processSpellingFailure;
+  processCiFailure?: typeof processCiFailure;
   /**
    * Environment lookup for this factory's own reads (Issue #964) —
    * `CONFIG_PATH`, `HOME`, `DEBUG`, `TMPDIR` and the spend-ceiling pair.
@@ -2723,7 +2728,9 @@ export async function createProductionRunCoreDeps(
 
     // -- Priority 1.5: Spelling checks (Issue #1297 — repo setup + cwd fix) --
     async findAndProcessSpellingFailure() {
-      const result = await findFailedPrChecks({
+      const scanSpellingChecks = options.findFailedPrChecks ??
+        findFailedPrChecks;
+      const result = await scanSpellingChecks({
         githubUser,
         repos: pollRepos,
         ...stallLaneScope(),
@@ -2760,7 +2767,7 @@ export async function createProductionRunCoreDeps(
       }
       try {
         // Set up repo and checkout PR branch (Issue #1297)
-        const repoSetupResult = await setupRepo(check.repo, workDir);
+        const repoSetupResult = await setupRepoFn(check.repo, workDir);
         if (!repoSetupResult.success) {
           logger.error("Failed to set up repo for spelling fix", {
             repo: check.repo,
@@ -2771,15 +2778,15 @@ export async function createProductionRunCoreDeps(
         const repoWorkDir = repoSetupResult.message;
 
         try {
-          await runGitCommand(
+          await runGitCommandFn(
             buildFetchArgs("origin", check.branchName),
             { cwd: repoWorkDir },
           );
-          await runGitCommand(
+          await runGitCommandFn(
             buildCheckoutArgs(check.branchName),
             { cwd: repoWorkDir },
           );
-          await runGitCommand(
+          await runGitCommandFn(
             buildPullArgs("origin", check.branchName),
             { cwd: repoWorkDir },
           );
@@ -2792,7 +2799,25 @@ export async function createProductionRunCoreDeps(
           return { ok: true, value: { processed: false } };
         }
 
-        const fixResult = await processSpellingFailure(
+        // Issue #4907: the same instructions the standalone
+        // `pr-spelling-processor` command builds, so the prompt's
+        // `<quality_instructions>` block is not empty on the scheduler path.
+        const qualityInstructions = buildQualityInstructions(
+          config.repoConfig,
+          check.repo,
+          {
+            runBudgetSeconds: config.claudeTimeout,
+            pushGuarantee: "pre-flight-only",
+          },
+        );
+        const customInstructions = getCustomInstructions(
+          config.repoConfig,
+          check.repo,
+        );
+
+        const runSpellingFix = options.processSpellingFailure ??
+          processSpellingFailure;
+        const fixResult = await runSpellingFix(
           {
             repo: check.repo,
             prNumber: check.prNumber,
@@ -2808,6 +2833,8 @@ export async function createProductionRunCoreDeps(
             // Issue #1662: heartbeat and marker state belong in the work
             // root, not the clone `setupRepo` returned above.
             workRoot: workDir,
+            qualityInstructions,
+            customInstructions,
             claudeTimeout: config.claudeTimeout,
             claudeNoOutputTimeout: config.claudeNoOutputTimeout,
             maxRateLimitRetries: config.maxRateLimitRetries,
@@ -2823,7 +2850,8 @@ export async function createProductionRunCoreDeps(
 
     // -- Priority 1.55: CI checks (Issue #1297 — repo setup + cwd fix) --
     async findAndProcessCiFailure() {
-      const result = await findFailedCiChecks({
+      const scanCiChecks = options.findFailedCiChecks ?? findFailedCiChecks;
+      const result = await scanCiChecks({
         githubUser,
         repos: pollRepos,
         ...stallLaneScope(),
@@ -2872,7 +2900,7 @@ export async function createProductionRunCoreDeps(
       }
       try {
         // Set up repo and checkout PR branch (Issue #1297)
-        const repoSetupResult = await setupRepo(check.repo, workDir);
+        const repoSetupResult = await setupRepoFn(check.repo, workDir);
         if (!repoSetupResult.success) {
           logger.error("Failed to set up repo for CI fix", {
             repo: check.repo,
@@ -2883,15 +2911,15 @@ export async function createProductionRunCoreDeps(
         const repoWorkDir = repoSetupResult.message;
 
         try {
-          await runGitCommand(
+          await runGitCommandFn(
             buildFetchArgs("origin", check.branchName),
             { cwd: repoWorkDir },
           );
-          await runGitCommand(
+          await runGitCommandFn(
             buildCheckoutArgs(check.branchName),
             { cwd: repoWorkDir },
           );
-          await runGitCommand(
+          await runGitCommandFn(
             buildPullArgs("origin", check.branchName),
             { cwd: repoWorkDir },
           );
@@ -2904,7 +2932,21 @@ export async function createProductionRunCoreDeps(
           return { ok: true, value: { processed: false } };
         }
 
-        const fixResult = await processCiFailure(
+        // Issue #4907: the same instructions the standalone `pr-ci-processor`
+        // command builds; the run budget is the CI-fix budget this run uses.
+        const ciFixTimeout = reactivePhaseTimeout(config, "ci-fix");
+        const qualityInstructions = buildQualityInstructions(
+          config.repoConfig,
+          check.repo,
+          { runBudgetSeconds: ciFixTimeout, pushGuarantee: "ci-fix" },
+        );
+        const customInstructions = getCustomInstructions(
+          config.repoConfig,
+          check.repo,
+        );
+
+        const runCiFix = options.processCiFailure ?? processCiFailure;
+        const fixResult = await runCiFix(
           {
             repo: check.repo,
             prNumber: check.prNumber,
@@ -2932,7 +2974,9 @@ export async function createProductionRunCoreDeps(
             // `claude_timeout` — this dispatch path passing `claudeTimeout` is
             // why a host with `claude_timeout: 3600` logged "Running Claude
             // Code with 3600s timeout" for a CI fix the docs cap at 1800.
-            claudeTimeout: reactivePhaseTimeout(config, "ci-fix"),
+            claudeTimeout: ciFixTimeout,
+            qualityInstructions,
+            customInstructions,
             claudeNoOutputTimeout: config.claudeNoOutputTimeout,
             maxRateLimitRetries: config.maxRateLimitRetries,
             // Issue #2160: the trial switch, so a CI fix on an enabled host

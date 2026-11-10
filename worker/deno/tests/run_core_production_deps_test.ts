@@ -298,6 +298,140 @@ for (const commentType of ["review", "issue", "pr_review"] as const) {
   });
 }
 
+Deno.test("run-core spelling fix callback passes budgeted quality and custom instructions (Issue #4907)", async () => {
+  let qualityInstructions = "";
+  let customInstructions = "";
+  const { deps, cleanup } = await createProductionRunCoreDeps(
+    createTestOptions({
+      config: buildDefaultWorkerConfig({
+        repos: ["org/repo"],
+        claudeTimeout: 2400,
+        ciFixTimeout: 1200,
+        repoConfig: {
+          "org/repo": {
+            qualityCommand: "make verify-distinct",
+            customInstructions: "Distinctive spelling instruction text",
+          },
+        },
+      }),
+      findFailedPrChecks: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            repo: "org/repo",
+            prNumber: 42,
+            branchName: "issue-42-fix",
+            checkId: "check-1",
+            checkName: "spelling",
+            encodedAnnotations: btoa("[]"),
+          },
+        }),
+      setupRepoFn: () =>
+        Promise.resolve({ success: true, message: "/tmp/test-repo" }),
+      runGitCommandFn: () =>
+        Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        }),
+      processSpellingFailure: (_input, processorDeps) => {
+        qualityInstructions = processorDeps.qualityInstructions ?? "";
+        customInstructions = processorDeps.customInstructions ?? "";
+        return Promise.resolve({ ok: false, error: new Error("captured") });
+      },
+    }),
+  );
+  try {
+    await deps.findAndProcessSpellingFailure();
+    assert(qualityInstructions.length > 0);
+    assertStringIncludes(qualityInstructions, "make verify-distinct");
+    // The spelling path budgets against claudeTimeout (2400s), not ciFixTimeout.
+    assertStringIncludes(qualityInstructions, "2400s");
+    assertEquals(qualityInstructions.includes("1200s"), false);
+    assertStringIncludes(
+      qualityInstructions,
+      "does not run the full gate before this push",
+    );
+    assertEquals(
+      qualityInstructions.includes("attempts the full gate"),
+      false,
+    );
+    assertStringIncludes(
+      customInstructions,
+      "Distinctive spelling instruction text",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
+Deno.test("run-core CI fix callback passes the CI budget and ci-fix push guarantee (Issue #4907)", async () => {
+  let qualityInstructions = "";
+  let customInstructions = "";
+  const { deps, cleanup } = await createProductionRunCoreDeps(
+    createTestOptions({
+      config: buildDefaultWorkerConfig({
+        repos: ["org/repo"],
+        claudeTimeout: 3600,
+        ciFixTimeout: 1200,
+        repoConfig: {
+          "org/repo": {
+            qualityCommand: "make verify-distinct",
+            customInstructions: "Distinctive CI instruction text",
+          },
+        },
+      }),
+      findFailedCiChecks: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            repo: "org/repo",
+            prNumber: 42,
+            branchName: "issue-42-fix",
+            checkId: "check-1",
+            checkName: "build",
+            encodedAnnotations: btoa("[]"),
+          },
+        }),
+      setupRepoFn: () =>
+        Promise.resolve({ success: true, message: "/tmp/test-repo" }),
+      runGitCommandFn: () =>
+        Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        }),
+      processCiFailure: (_input, processorDeps) => {
+        qualityInstructions = processorDeps.qualityInstructions ?? "";
+        customInstructions = processorDeps.customInstructions ?? "";
+        return Promise.resolve({ ok: false, error: new Error("captured") });
+      },
+    }),
+  );
+  try {
+    await deps.findAndProcessCiFailure();
+    assert(qualityInstructions.length > 0);
+    assertStringIncludes(qualityInstructions, "make verify-distinct");
+    // The CI path budgets against ciFixTimeout (1200s), not claudeTimeout.
+    assertStringIncludes(qualityInstructions, "1200s");
+    assertEquals(qualityInstructions.includes("3600s"), false);
+    assertStringIncludes(
+      qualityInstructions,
+      "The worker attempts the full gate if Claude leaves uncommitted changes",
+    );
+    assertEquals(
+      qualityInstructions.includes(
+        "does not run the full gate before this push",
+      ),
+      false,
+    );
+    assertStringIncludes(
+      customInstructions,
+      "Distinctive CI instruction text",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 Deno.test("run-core custom PR prompt callback records the agent pre-push guarantee (Issue #4876)", async () => {
   const mapping = {
     label: "custom-pr",
