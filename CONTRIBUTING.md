@@ -1,56 +1,53 @@
 # Contributing to VibeCoder
 
-Thanks for your interest in contributing! VibeCoder is an Apache-2.0
-licensed automated GitHub issue worker. This page is a one-stop landing
-for human contributors — it points into the existing docs rather than
-duplicating them.
+Thanks for your interest in contributing! VibeCoder is an Apache-2.0 licensed
+automated GitHub issue worker. This page is a one-stop landing for human
+contributors — it points into the existing docs rather than duplicating them.
 
 For AI agents (Claude Code, Copilot, etc.) working in this repo, the
-authoritative coding-standards document is [AGENTS.md](AGENTS.md). The
-guidance below summarises what humans need to know to land a change.
+authoritative coding-standards document is [AGENTS.md](AGENTS.md). The guidance
+below summarises what humans need to know to land a change.
 
 ## Where to start
 
 - **Project overview** — [README.md](README.md) and
-  [docs/OVERVIEW.md](docs/OVERVIEW.md) describe what the worker does
-  and how it fits together end-to-end.
-- **Internals and architecture** — [docs/INTERNALS.md](docs/INTERNALS.md)
-  covers the run loop, claim flow, and the major subsystems.
-- **Extending the worker** — [docs/EXTENDING.md](docs/EXTENDING.md) is
-  the entry point for adding new commands, templates, or idle-task
-  templates.
-- **Configuration** — [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
-  lists every supported environment variable and config knob.
+  [docs/OVERVIEW.md](docs/OVERVIEW.md) describe what the worker does and how it
+  fits together end-to-end.
+- **Internals and architecture** — [docs/INTERNALS.md](docs/INTERNALS.md) covers
+  the run loop, claim flow, and the major subsystems.
+- **Extending the worker** — [docs/EXTENDING.md](docs/EXTENDING.md) is the entry
+  point for adding new commands, templates, or idle-task templates.
+- **Configuration** — [docs/CONFIGURATION.md](docs/CONFIGURATION.md) lists every
+  supported environment variable and config knob.
 
 ## Branching
 
 - **`Develop` is the default branch** — open all pull requests against
   `Develop`. `main` is reserved for releases.
-- **Milestone branches** — work tagged with a GitHub milestone lands on
-  the milestone branch first; the milestone is merged into `Develop` as
-  a unit when the milestone closes. See
+- **Milestone branches** — work tagged with a GitHub milestone lands on the
+  milestone branch first; the milestone is merged into `Develop` as a unit when
+  the milestone closes. See
   [docs/workflows/milestones.md](docs/workflows/milestones.md) for the full
   workflow.
-- **Branch names** — descriptive kebab-case, ideally referencing the
-  issue number (for example, `issue-2170-add-contributing-md`).
+- **Branch names** — descriptive kebab-case, ideally referencing the issue
+  number (for example, `issue-2170-add-contributing-md`).
 
 ## Commit signing
 
-**Required signed commits are not currently enforced on `Develop`, and
-this is a deliberate, auditable decision — not an oversight.**
+**Required signed commits are not currently enforced on `Develop`, and this is a
+deliberate, auditable decision — not an oversight.**
 
 Every commit on `Develop` is produced by an automation identity
 (`service @ ST <maintainer@example.invalid>` and
-`Vibe Coder <maintainer@example.invalid>`) committing through
-local `git`. Turning on **Require signed commits** in the branch-
-protection rule before each of those identities has a registered signing
-key would make the requirement **fail closed**: every autonomous merge
-would be rejected and the worker fleet would stall. Enabling it safely is
-therefore gated on human credential work that cannot be performed from an
-unattended worker run:
+`Vibe Coder <maintainer@example.invalid>`) committing through local `git`.
+Turning on **Require signed commits** in the branch- protection rule before each
+of those identities has a registered signing key would make the requirement
+**fail closed**: every autonomous merge would be rejected and the worker fleet
+would stall. Enabling it safely is therefore gated on human credential work that
+cannot be performed from an unattended worker run:
 
-1. Generate a signing key for each automation account. SSH-signing is
-   simplest for a bot:
+1. Generate a signing key for each automation account. SSH-signing is simplest
+   for a bot:
 
    ```bash
    git config gpg.format ssh
@@ -58,48 +55,46 @@ unattended worker run:
    git config commit.gpgsign true
    ```
 
-2. Register the **public** key as a *signing key* (not an authentication
-   key) on the matching bot's GitHub account. This needs access to that
-   account's settings, so it is a human-only step — never commit private
-   key material (it matches the forbidden-hidden-files allowlist in
+2. Register the **public** key as a _signing key_ (not an authentication key) on
+   the matching bot's GitHub account. This needs access to that account's
+   settings, so it is a human-only step — never commit private key material (it
+   matches the forbidden-hidden-files allowlist in
    [CODING-STANDARDS.md](CODING-STANDARDS.md#commit-safety--never-commit-hidden-files)).
 3. Once **every** automation identity that pushes to `Develop` signs its
    commits, enable **Require signed commits** in the `Develop` branch-
-   protection rule / ruleset — the same setup step that already
-   configures required status checks (see [docs/MERGE.md](docs/MERGE.md)).
+   protection rule / ruleset — the same setup step that already configures
+   required status checks (see [docs/MERGE.md](docs/MERGE.md)).
 
 Until those steps are complete, the requirement stays off by design. The
 surrounding controls already close most of the workflow-tampering chain:
-`.github/CODEOWNERS` names the human repository admins as owners of
-`/.github/` (workflows, actions and CI scripts) and `/infra/rulesets/`, so
-they are asked to review those paths. Code-owner review is deliberately
-**not required**: the fleet reviewer App approves (it cannot be a code
-owner), and the reviewer decides whether a PR that removes or loosens tests
-still keeps meaningful regression protection: an unjustified removal is sent
-back with a request for changes, and only an unclear product contract (or an
-explicit per-repo override) is held for the owner — the trade is recorded as
-residual risk R14 in
-[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). The default
-branch carries required status checks plus the direct-merge wall
-documented in [docs/MERGE.md](docs/MERGE.md). Signed commits would add
-provenance verification on top; this note records why that final link is
-deferred so the gap is a deliberate choice rather than an implicit one.
+`.github/CODEOWNERS` names the human repository admins as owners of `/.github/`
+(workflows, actions and CI scripts) and `/infra/rulesets/`, so they are asked to
+review those paths. Code-owner review is deliberately **not required**: the
+fleet reviewer App approves (it cannot be a code owner), and the reviewer
+decides whether a PR that removes or loosens tests still keeps meaningful
+regression protection: an unjustified removal is sent back with a request for
+changes, and only an unclear product contract (or an explicit per-repo override)
+is held for the owner — the trade is recorded as residual risk R14 in
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md). The default branch carries
+required status checks plus the direct-merge wall documented in
+[docs/MERGE.md](docs/MERGE.md). Signed commits would add provenance verification
+on top; this note records why that final link is deferred so the gap is a
+deliberate choice rather than an implicit one.
 
 ## Local quality gate
 
-The repository ships a single quality entry point that mirrors what CI
-runs:
+The repository ships a single quality entry point that mirrors what CI runs:
 
 ```bash
 ./quality.sh < /dev/null
 ```
 
-This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
-Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, semgrep,
-and Checkov (registered only where `.github/workflows/checkov.yml` exists).
-CI additionally runs shellcheck over the repo's shell scripts — the gate
-itself does not. Always redirect stdin from `/dev/null` so
-unattended runs cannot hang waiting for input.
+This delegates to `worker/deno/quality.ts` and runs Deno type-check, the Deno
+test suite, `deno lint`, `deno fmt --check`, markdownlint, semgrep, and Checkov
+(registered only where `.github/workflows/checkov.yml` exists). CI additionally
+runs shellcheck over the repo's shell scripts — the gate itself does not. Always
+redirect stdin from `/dev/null` so unattended runs cannot hang waiting for
+input.
 
 Run it in the **foreground** and let it finish — each check reports as it
 settles, so you can watch progress. Never background it and poll with a
@@ -110,30 +105,28 @@ settles, so you can watch progress. Never background it and poll with a
 correct change goes red in CI (Issue #1483); the full gate is the last step
 before the PR. `deno fmt` governs `worker/deno/**` only; Markdown outside it is
 hand-wrapped and checked by markdownlint's structural rules. The formatter
-rewraps every paragraph to its own width, so a small edit can become a huge
-diff that buries the change (Issue #1503). Match the surrounding wrapping by
-hand.
+rewraps every paragraph to its own width, so a small edit can become a huge diff
+that buries the change (Issue #1503). Match the surrounding wrapping by hand.
 
 **The gate needs PowerShell 7** (Issue #1598). It runs the `run.ps1` launcher
-suites, so a host without `pwsh` fails the gate with a
-message naming the remedy rather than skipping them quietly — a skipped test
-is not a passed one. The container image ships PowerShell 7.6.8 at
-`/usr/local/bin/pwsh` (Issue #1596); on a host, install PowerShell 7 or set
-`VIBE_PWSH` to the interpreter's absolute path. The `setup.ps1` suites remain
-integration tests and are still CI's, not the gate's.
+suites, so a host without `pwsh` fails the gate with a message naming the remedy
+rather than skipping them quietly — a skipped test is not a passed one. The
+container image ships PowerShell 7.6.8 at `/usr/local/bin/pwsh` (Issue #1596);
+on a host, install PowerShell 7 or set `VIBE_PWSH` to the interpreter's absolute
+path. The `setup.ps1` suites remain integration tests and are still CI's, not
+the gate's.
 
 CI-enforced workflows live under `.github/workflows/`, including
-`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, `semgrep.yml`,
-and `checkov.yml`. A green local `./quality.sh` is the best predictor of a
-green PR.
+`validate-scripts.yml`, `markdown-lint.yml`, `gitleaks.yml`, `semgrep.yml`, and
+`checkov.yml`. A green local `./quality.sh` is the best predictor of a green PR.
 
 ### Semgrep (SAST) before the push
 
-`semgrep.yml` is a blocking PR check, so a finding it reports costs a
-branch, a push and a review cycle before anyone sees it. The gate runs
-the same `p/default` ruleset locally, over the branch's changed files
-only — the diff against the merge-base with the remote's default branch,
-plus anything uncommitted or untracked.
+`semgrep.yml` is a blocking PR check, so a finding it reports costs a branch, a
+push and a review cycle before anyone sees it. The gate runs the same
+`p/default` ruleset locally, over the branch's changed files only — the diff
+against the merge-base with the remote's default branch, plus anything
+uncommitted or untracked.
 
 ```mermaid
 flowchart LR
@@ -143,23 +136,21 @@ flowchart LR
     style Q fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 
-- **Install it or it skips, loudly.** `pipx install semgrep` puts the
-  binary on PATH; alternatively, a container runtime already holding the
-  CI-pinned image (`semgrep/semgrep:<tag>@<digest>` from
-  `worker/deno/lib/pinned_actions.ts`) is used instead. The image is
-  never pulled by the gate — a mid-run download is exactly the
-  critical-path cost this stage must not add. With neither available the
-  stage reports `SKIPPED` and names both remedies; `--strict` turns that
-  into a failure. Inside the fleet container image, where semgrep is baked
-  in, a missing binary is `FAILED` (an image fault, Issue #3726); an
-  unreachable rule registry or an over-deadline scan stays `SKIPPED`.
-- **A docs-only change costs nothing.** No scannable changed file means
-  no scan.
-- **`detect-non-literal-regexp` has one standard remedy.** Build the
-  regular expression from a literal, or escape the interpolated value
-  before it reaches the constructor. A dynamic regex over constants the
-  code itself authored is still flagged — change the pattern rather than
-  arguing with the rule (Issue #559).
+- **Install it or it skips, loudly.** `pipx install semgrep` puts the binary on
+  PATH; alternatively, a container runtime already holding the CI-pinned image
+  (`semgrep/semgrep:<tag>@<digest>` from `worker/deno/lib/pinned_actions.ts`) is
+  used instead. The image is never pulled by the gate — a mid-run download is
+  exactly the critical-path cost this stage must not add. With neither available
+  the stage reports `SKIPPED` and names both remedies; `--strict` turns that
+  into a failure. Inside the fleet container image, where semgrep is baked in, a
+  missing binary is `FAILED` (an image fault, Issue #3726); an unreachable rule
+  registry or an over-deadline scan stays `SKIPPED`.
+- **A docs-only change costs nothing.** No scannable changed file means no scan.
+- **`detect-non-literal-regexp` has one standard remedy.** Build the regular
+  expression from a literal, or escape the interpolated value before it reaches
+  the constructor. A dynamic regex over constants the code itself authored is
+  still flagged — change the pattern rather than arguing with the rule (Issue
+  #559).
 
 ### Checkov (CloudFormation) before the push and in CI
 
@@ -168,12 +159,13 @@ flowchart LR
 with no SARIF upload, no path filter and no `--skip-path`.
 `worker/deno/lib/checkov_report.ts` decides the verdict: a failed check, a parse
 error, a skip without an inline `# checkov:skip=<ID>:<reason>`, or a
-`.checkov.yaml` / `.checkov.yml` in the scanned root fails. It is a mandatory part of the CI `gate`,
-so a red scan blocks merge. `worker/deno/tests/checkov_workflow_test.ts` keeps
-the workflow in lock-step with the pin and the scan arguments.
+`.checkov.yaml` / `.checkov.yml` in the scanned root fails. It is a mandatory
+part of the CI `gate`, so a red scan blocks merge.
+`worker/deno/tests/checkov_workflow_test.ts` keeps the workflow in lock-step
+with the pin and the scan arguments.
 
-The `checkov` stage of `./quality.sh` runs the same judge over a local scan.
-It is registered only where `.github/workflows/checkov.yml` exists. It installs
+The `checkov` stage of `./quality.sh` runs the same judge over a local scan. It
+is registered only where `.github/workflows/checkov.yml` exists. It installs
 nothing, pulls nothing and adds no suppression, and the CI `checkov` job stays
 authoritative. It tries two routes, in order:
 
@@ -191,40 +183,39 @@ authoritative. It tries two routes, in order:
 - **Have a pinned route or it skips, loudly.** With neither route usable the
   stage reports `SKIPPED` and names what is missing; `--strict` turns that into
   a failure. A `.checkov.yaml` or `.checkov.yml` in the scanned directory is
-  `FAILED` before any route is tried, so it never reads as `SKIPPED`. A scan over its deadline is `FAILED`. The fleet worker image has no
-  pip and no container runtime, so fleet runs show `checkov` as `SKIPPED`; that
-  is expected, unlike semgrep.
+  `FAILED` before any route is tried, so it never reads as `SKIPPED`. A scan
+  over its deadline is `FAILED`. The fleet worker image has no pip and no
+  container runtime, so fleet runs show `checkov` as `SKIPPED`; that is
+  expected, unlike semgrep.
 
 ### Workflow hygiene
 
-The gate also enforces two static invariants over the workflows
-themselves:
+The gate also enforces two static invariants over the workflows themselves:
 
-- **Every multi-line `run:` block opens with `set -euo pipefail`.** GitHub
-  runs steps as `bash -e` only, so without the preamble an unset variable
-  or a failure mid-pipeline is silently ignored and the step still reports
-  green. A block carrying a single command is exempt — nothing can be
-  skipped after it.
+- **Every multi-line `run:` block opens with `set -euo pipefail`.** GitHub runs
+  steps as `bash -e` only, so without the preamble an unset variable or a
+  failure mid-pipeline is silently ignored and the step still reports green. A
+  block carrying a single command is exempt — nothing can be skipped after it.
 - **One pinned SHA carries one version comment.** Actions are pinned to
-  40-character commit SHAs with the tag recorded in a
-  leading `# owner/action@vX.Y.Z` comment. Annotating the same SHA
-  `v6.0.0` in one workflow and `v6.0.2` in another destroys the only
-  human-readable signal that makes SHA pinning auditable.
+  40-character commit SHAs with the tag recorded in a leading
+  `# owner/action@vX.Y.Z` comment. Annotating the same SHA `v6.0.0` in one
+  workflow and `v6.0.2` in another destroys the only human-readable signal that
+  makes SHA pinning auditable.
 
 ## Test layout
 
 - **Deno unit tests** — `worker/deno/tests/`. Run the full suite with
   `cd worker/deno && deno task test`, or target a single file with
-  `deno test worker/deno/tests/<file>_test.ts`. The previous top-level
-  `tests/` Bats integration suite has been fully migrated to Deno
- ; files carrying a `Migrated from tests/*.bats` header
-  in `worker/deno/tests/` cover the original cases.
-- **No-grep tests** — every test must call real code and assert on its
-  result. Tests that grep source files for patterns or function names
-  are rejected; see [CODING-STANDARDS.md](CODING-STANDARDS.md#test-driven-development-tdd)
-  for the rationale.
-- **Documentation-drift pins are checked one phrase at a time** — before
-  raising a PR that adds or changes a drift test, run
+  `deno test worker/deno/tests/<file>_test.ts`. The previous top-level `tests/`
+  Bats integration suite has been fully migrated to Deno ; files carrying a
+  `Migrated from tests/*.bats` header in `worker/deno/tests/` cover the original
+  cases.
+- **No-grep tests** — every test must call real code and assert on its result.
+  Tests that grep source files for patterns or function names are rejected; see
+  [CODING-STANDARDS.md](CODING-STANDARDS.md#test-driven-development-tdd) for the
+  rationale.
+- **Documentation-drift pins are checked one phrase at a time** — before raising
+  a PR that adds or changes a drift test, run
   `cd worker/deno && deno task drift-pins-on-base origin/main <doc> <section> <phrase>...`
   for each section it reads, with `<doc>` relative to the repo root. It lists
   every pinned phrase the base section already held and exits 1 when there is
@@ -232,61 +223,59 @@ themselves:
   path, and a doc the base never had prints one `doc not on base` line (see
   [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests),
   condition 4). A pin that names a value a module or checked-in config file
-  already holds (a flag, function name, key, version or tag) is built from
-  that source, never typed in, and is red-checked by changing the value at
-  its source and seeing the test fail (condition 3). A pin moved by
-  converting an existing whole-file drift test to `section()` is meant to be
-  on base; red-check it in its own section
-  instead (see **Re-scoping an existing drift test** in
+  already holds (a flag, function name, key, version or tag) is built from that
+  source, never typed in, and is red-checked by changing the value at its source
+  and seeing the test fail (condition 3). A pin moved by converting an existing
+  whole-file drift test to `section()` is meant to be on base; red-check it in
+  its own section instead (see **Re-scoping an existing drift test** in
   [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests)).
-- **Speed budget** — a unit test finishes within 10 seconds. It is a
-  target, not a kill: nothing times a unit test at run time, so it is
-  enforced by shape (see
-  [CODING-STANDARDS.md](CODING-STANDARDS.md#unit-tests)). Slow tests are
-  likely benchmarks in disguise — move them to a dedicated benchmark
-  file.
+- **Speed budget** — a unit test finishes within 10 seconds. It is a target, not
+  a kill: nothing times a unit test at run time, so it is enforced by shape (see
+  [CODING-STANDARDS.md](CODING-STANDARDS.md#unit-tests)). Slow tests are likely
+  benchmarks in disguise — move them to a dedicated benchmark file.
 
 ## Commit and PR conventions
 
 - Reference the issue number in commit messages (for example,
   `Add CONTRIBUTING.md`).
-- Lead with the *what* and the *why*; keep individual commits focused
-  and reviewable.
-- PR summaries follow the pattern in
-  `docs/archive/pr-summaries/` — a short
-  `## Summary` (with a `Closes #N` line so GitHub auto-closes the
-  issue), an `## Evidence` section (screenshot, benchmark numbers, or
-  test results as appropriate), and a `## Test Plan` enumerating the
-  tests added or modified.
+- Lead with the _what_ and the _why_; keep individual commits focused and
+  reviewable.
+- PR summaries follow the pattern in `docs/archive/pr-summaries/` — a short
+  `## Summary` (with a `Closes #N` line so GitHub auto-closes the issue), an
+  `## Evidence` section (screenshot, benchmark numbers, or test results as
+  appropriate), and a `## Test Plan` enumerating the tests added or modified.
 - **Arm auto-merge the moment a PR is opened** (owner, 2026-10-25). Run
-  `gh pr merge <n> --auto --squash` straight after `gh pr create`, whoever
-  opens the PR: the worker, an interactive session, Cursor or any other
-  agent. A PR merges once it has an approving review and CI is green.
-  Nothing else holds it, and a PR left unarmed merges late and collects
-  conflicts. When a review requests changes, fix them and dismiss that
-  review with a message naming the fix.
+  `gh pr merge <n> --auto --squash` straight after `gh pr create`, whoever opens
+  the PR: the worker, an interactive session, Cursor or any other agent. A PR
+  merges once it has an approving review and CI is green. Nothing else holds it,
+  and a PR left unarmed merges late and collects conflicts. When a review
+  requests changes, fix them and dismiss that review with a message naming the
+  fix.
 - **An incomplete PR is a draft** (owner, 2026-10-23). A draft is work in
-  progress: the Quality and dependency checks skip it, the required `gate`
-  fails on purpose (so auto-merge can never act on a stale pass), the PR
-  reviewer and the auto-merge sweep skip it, and the worker's CI fixer
-  ignores it. Marking it ready (`gh pr ready`) runs CI once, and auto-merge
-  is armed at the same time so it merges as soon as CI and review pass.
-- Use **Australian English** spelling throughout — `colour`,
-  `behaviour`, `organisation`, `favour`, `centre`. CI does not block
-  on this but reviewers will ask for changes.
-- Never stage hidden files (anything matching `.*`) outside the small
-  allowlist documented in [CODING-STANDARDS.md](CODING-STANDARDS.md#commit-safety--never-commit-hidden-files) — the
-  pre-commit gate blocks accidental secret leaks and `git add -f` is
+  progress: the Quality and dependency checks skip it, the required `gate` fails
+  on purpose (so auto-merge can never act on a stale pass), the PR reviewer and
+  the auto-merge sweep skip it, and the worker's CI fixer ignores its by-design
+  failures (`gate`, or a check whose needs were all skipped); a job that ran and
+  failed on a draft still goes to the fixer. Marking it ready (`gh pr ready`)
+  runs CI once, and auto-merge is armed at the same time so it merges as soon as
+  CI and review pass.
+- Use **Australian English** spelling throughout — `colour`, `behaviour`,
+  `organisation`, `favour`, `centre`. CI does not block on this but reviewers
+  will ask for changes.
+- Never stage hidden files (anything matching `.*`) outside the small allowlist
+  documented in
+  [CODING-STANDARDS.md](CODING-STANDARDS.md#commit-safety--never-commit-hidden-files)
+  — the pre-commit gate blocks accidental secret leaks and `git add -f` is
   forbidden.
 
 ## Reporting security issues
 
-Please do **not** open a public GitHub issue for a security
-vulnerability. See [SECURITY.md](SECURITY.md) for the hardening checklist and
-the private reporting channel, and [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md)
-for the design-level threat model.
+Please do **not** open a public GitHub issue for a security vulnerability. See
+[SECURITY.md](SECURITY.md) for the hardening checklist and the private reporting
+channel, and [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md) for the design-level
+threat model.
 
 ## Getting help
 
-If something in this guide is unclear or out of date, open an issue
-(or a PR fixing it) — we will gladly take both.
+If something in this guide is unclear or out of date, open an issue (or a PR
+fixing it) — we will gladly take both.

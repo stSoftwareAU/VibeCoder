@@ -105,6 +105,7 @@ import {
   isDownstreamOfRedJob,
   type JobNeedsMap,
 } from "./workflow_job_needs.ts";
+import { dropDraftByDesignFailures } from "./draft_ci_by_design.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { fetchAllIssues } from "./issue_query.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
@@ -125,8 +126,10 @@ export interface PrEntry {
   number: number;
   headRefName: string;
   /**
-   * Whether the PR is a draft — work in progress (owner, 2026-10-23). The CI
-   * scan skips drafts: their checks are deliberately not run.
+   * Whether the PR is a draft — work in progress (owner, 2026-10-23). A
+   * draft's CI jobs are deliberately skipped, so the CI scan drops its
+   * by-design red checks (`gate`, or a check whose needs were all skipped);
+   * a job that ran and failed on a draft still reaches the fixer (#4951).
    */
   isDraft?: boolean;
   headRefOid?: string;
@@ -1722,15 +1725,16 @@ export async function findFailedCiChecks(
     }
 
     // A draft is work in progress (owner, 2026-10-23): its checks are not
-    // run, and its required `gate` fails on purpose, so it is never handed to
-    // the CI fixer. Marking it ready runs CI, and this scan sees it then.
-    const prs = (await listActionablePrs(
+    // run, and its required `gate` fails on purpose. Those by-design failures
+    // are dropped per PR below (Issues #4152, #4951); a job that ran and
+    // failed on a draft is still a real failure.
+    const prs = await listActionablePrs(
       repo,
       scanAuthors,
       // headRefOid pins a human-gate park to the head it was confirmed on.
       "number,headRefName,headRefOid,baseRefName,body,createdAt,reviewDecision,isDraft",
       options,
-    )).filter((pr) => pr.isDraft !== true);
+    );
 
     // Batch all check-run lookups for this repo into a single GraphQL
     // call (Issue #1806), with REST fallback handled internally. Reads
@@ -1789,7 +1793,31 @@ export async function findFailedCiChecks(
         baseRefName: baseRef,
       } = pr;
 
-      const redChecks = await getRedChecks(pr);
+      const lookedUpRedChecks = await getRedChecks(pr);
+      const redChecks = pr.isDraft === true
+        ? await dropDraftByDesignFailures(
+          lookedUpRedChecks,
+          jobNeeds,
+          async () =>
+            new Set(
+              (await fetchFailedCheckRuns(
+                repo,
+                pr.headRefOid ?? branchName,
+                ghCommandFn,
+                ["skipped"],
+              )).map((check) => check.name),
+            ),
+        )
+        : lookedUpRedChecks;
+      if (redChecks.length < lookedUpRedChecks.length) {
+        logger.skipReason(
+          "draft-by-design-ci",
+          `${repo}#${prNumber}: a draft's failing ${
+            lookedUpRedChecks.filter((c) => !redChecks.includes(c))
+              .map((c) => c.name).join(", ")
+          } cannot pass while its jobs are skipped; no CI-fix agent (Issue #4951)`,
+        );
+      }
 
       // Issue #2914: a cancelled check, or a failure whose Actions job
       // never started (zero steps), is infrastructure, not code — it is

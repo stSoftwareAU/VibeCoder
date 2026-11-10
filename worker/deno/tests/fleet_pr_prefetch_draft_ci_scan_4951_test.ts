@@ -110,11 +110,13 @@ async function prefetchInto(
 /**
  * A `gh` stub for the CI-fix scan. It records every call, answers a per-repo
  * `gh pr list` faithfully (so a fallback would still see `isDraft`), and
- * serves one failing `gate` check for every check-run read.
+ * serves one failing check (`gate` unless told otherwise) for every
+ * check-run read.
  */
 function ciGh(
   calls: string[][],
   prs: FakeSearchPr[],
+  failingCheck = "gate",
 ): (args: string[]) => Promise<string> {
   return (args: string[]) => {
     calls.push(args);
@@ -133,7 +135,7 @@ function ciGh(
     if (key.includes("check-runs")) {
       return Promise.resolve(JSON.stringify([{
         id: 4951,
-        name: "gate",
+        name: failingCheck,
         status: "completed",
         conclusion: "failure",
       }]));
@@ -209,6 +211,107 @@ Deno.test("findFailedCiChecks - the same PR, not a draft, is returned with its f
       [],
       "the listing was served from the prefetch, not a per-repo gh pr list",
     );
+  });
+});
+
+Deno.test("findFailedCiChecks - a draft fleet PR whose job ran and failed is still returned (Issue #4951 criterion 2)", async () => {
+  await withTempRoot(async (root) => {
+    const cache = new IssueCache(`${root}/cache`, 600);
+    const prs = [fleetPr(7, "VibeCoderST", true)];
+    await prefetchInto(cache, prs);
+
+    const calls: string[][] = [];
+    const result = await findFailedCiChecks(
+      scanOptions(ciGh(calls, prs, "test"), cache, `${root}/ci-state`),
+    );
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assert(
+        result.value !== null,
+        "a draft's real job failure must reach the CI fixer",
+      );
+      assertEquals(result.value.checkName, "test");
+      assertEquals(result.value.prNumber, 7);
+    }
+  });
+});
+
+const HUMAN = "courtyen";
+
+/**
+ * A `gh` stub for a trusted human's PR served by the per-repo invitation
+ * listing: `gh pr list --author <human>` answers only the `--json` fields it
+ * was asked for (as `gh` does), the PR is invited by an `@VibeCoderST`
+ * mention, and every check-run read serves one failing `gate`.
+ */
+function invitedGh(isDraft: boolean): (args: string[]) => Promise<string> {
+  const record: Record<string, unknown> = {
+    number: 7,
+    headRefName: "courtyen/hand-written-fix",
+    headRefOid: "oid-7",
+    baseRefName: "main",
+    author: { login: HUMAN },
+    labels: [],
+    comments: [{
+      author: { login: HUMAN },
+      body: "@VibeCoderST please fix CI",
+    }],
+    reviews: [],
+    isDraft,
+  };
+  return (args: string[]) => {
+    const key = args.join(" ");
+    if (args[0] === "pr" && args[1] === "list") {
+      if (!key.includes(`--author ${HUMAN}`)) return Promise.resolve("[]");
+      const fields = args[args.indexOf("--json") + 1]!.split(",");
+      return Promise.resolve(JSON.stringify([Object.fromEntries(
+        fields.filter((f) => f in record).map((f) => [f, record[f]]),
+      )]));
+    }
+    if (key.includes("annotations")) return Promise.resolve("[]");
+    if (key.includes("check-runs")) {
+      return Promise.resolve(JSON.stringify([{
+        id: 4951,
+        name: "gate",
+        status: "completed",
+        conclusion: "failure",
+      }]));
+    }
+    return Promise.resolve("[]");
+  };
+}
+
+async function scanInvitedHuman(isDraft: boolean, root: string) {
+  const cache = new IssueCache(`${root}/cache`, 600);
+  // No prefetched entry, and no `prs_open_all` to prove the human has no PR:
+  // the PR can only come from the per-repo invitation listing.
+  return await findFailedCiChecks({
+    ...scanOptions(invitedGh(isDraft), cache, `${root}/ci-state`),
+    allowedAuthors: [HUMAN],
+  });
+}
+
+Deno.test("findFailedCiChecks - an invited human's draft served from the invitation listing has its failing gate skipped (Issue #4951)", async () => {
+  await withTempRoot(async (root) => {
+    const result = await scanInvitedHuman(true, root);
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value, null);
+  });
+});
+
+Deno.test("findFailedCiChecks - the same invited human's PR, not a draft, is returned with its failing gate (Issue #4951 positive control)", async () => {
+  await withTempRoot(async (root) => {
+    const result = await scanInvitedHuman(false, root);
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assert(
+        result.value !== null,
+        "the invitation listing must reach the scan",
+      );
+      assertEquals(result.value.prNumber, 7);
+      assertEquals(result.value.checkName, "gate");
+    }
   });
 });
 

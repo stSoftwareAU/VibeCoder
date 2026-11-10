@@ -1197,7 +1197,7 @@ export async function fetchOpenPRsForFleet(
  */
 const OPEN_PR_LIST_FIELDS =
   "number,title,baseRefName,headRefName,body,url,author," +
-  "isCrossRepository,headRefOid,autoMergeRequest,mergeable";
+  "isCrossRepository,headRefOid,autoMergeRequest,mergeable,isDraft";
 
 /**
  * {@link OPEN_PR_LIST_FIELDS} plus `labels`, for the one all-authors listing
@@ -1285,6 +1285,8 @@ export async function fetchAllOpenPRs(
     }
     if (typeof item.headRefOid === "string") pr.headRefOid = item.headRefOid;
     if (typeof item.mergeable === "string") pr.mergeable = item.mergeable;
+    // Issue #4951: the CI-fix scan's draft rule reads it off the bot door too.
+    if (typeof item.isDraft === "boolean") pr.isDraft = item.isDraft;
     if (item.autoMergeRequest === null) {
       pr.autoMergeRequest = null;
     } else if (isRecord(item.autoMergeRequest)) {
