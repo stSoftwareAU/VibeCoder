@@ -559,6 +559,31 @@ Deno.test("issue_edit_actor - reports truncation even when the window yields no 
   assertEquals(result.bodyHistoryTruncated, true);
 });
 
+Deno.test("issue_edit_actor - reports a truncated rename window that returns no nodes (Issue #4947)", async () => {
+  const result = await resolveLastIssueEditor(
+    "owner/repo",
+    42,
+    () =>
+      Promise.resolve(JSON.stringify({
+        data: {
+          repository: {
+            issue: {
+              userContentEdits: { totalCount: 0, nodes: [] },
+              timelineItems: { totalCount: 5, nodes: [] },
+            },
+          },
+        },
+      })),
+  );
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.actor, null);
+  assertEquals(result.actors, []);
+  assertEquals(result.bodyHistoryTruncated, false);
+  assertEquals(result.renameHistoryTruncated, true);
+});
+
 Deno.test("issue_edit_actor - reports no truncation for an empty history (Issue #4804)", async () => {
   const result = await resolveLastIssueEditor(
     "owner/repo",

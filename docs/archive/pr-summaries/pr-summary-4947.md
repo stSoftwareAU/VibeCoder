@@ -68,6 +68,8 @@ flowchart LR
   `timelineItems(last:100,itemTypes:[RENAMED_TITLE_EVENT]){totalCount`; 150
   renames keep the newest 100 and report `renameHistoryTruncated`; a complete
   history does not; a missing or too-small `totalCount` is rejected; a truncated
+  rename window that returns no nodes still reports `renameHistoryTruncated`
+  (the empty-history return); a truncated
   window with an unparseable `createdAt` fails while a complete one skips the
   node; ten `unsettledHistoryWindows` cases (body, rename, both, settled, empty,
   oldest exactly at the snapshot, complete).
@@ -88,7 +90,13 @@ flowchart LR
   `unsettledHistoryWindows` (9 red); rename `totalCount` validation removed (2
   red); truncated-window `createdAt` check removed (1 red); rename window
   reading the body edits' times (10 red); the claim check ignoring the rename
-  window (2 red); gate `canReapprove` forced true (4 red).
+  window (2 red); gate `canReapprove` forced true (4 red); `renameHistoryTruncated` dropped from the
+  empty-history return (1 red, the new empty-rename-window test).
+- Mutation check: `worker/deno/lib/issue_edit_actor.ts:410` is now pinned by that
+  test. `worker/deno/lib/issue_edit_actor.ts:114` exempt (untestable): it is the
+  `true` in the type annotation `Extract<IssueEditActorLookup, { ok: true }>`,
+  erased at runtime; swapping it to `false` is caught only by type-checking,
+  which the mutation runner does not do.
 - Ran: `deno task test:unit` over the three touched test files passed;
   `./quality.sh < /dev/null` passed.
 - Twinned rule found and changed: the review-fleet claim check
