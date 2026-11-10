@@ -347,6 +347,14 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `post.ts main posting safety` cases and one `spawnFastCheck` case) are in code
   this PR does not touch; the `post.ts` and `spawnFastCheck` ones were not
   re-run on the base commit.
+- The head commit (`952b2a34`) only rewords two code comments, one in
+  `worker/deno/lib/phases/completion_phase.ts` and one in
+  `worker/deno/lib/phases/execute_phase.ts`, at the `ciCargoCompareRef` call
+  sites; the comment in `execute_phase.ts` no longer contains an apostrophe,
+  which the executor-phase tests' brace scan tripped over. No behaviour
+  changed. `tests/phase_executor_tiers_4174_test.ts` and
+  `tests/execute_phase_issue_executor_split_2342_test.ts` (15 tests) pass on
+  the head with `deno test -A`.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.
