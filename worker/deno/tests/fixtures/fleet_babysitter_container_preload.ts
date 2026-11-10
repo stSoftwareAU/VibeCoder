@@ -118,6 +118,15 @@ function commandOutput(
     ) {
       return "[]";
     }
+    // No failing check run, so the repair proceeds as before.
+    if (
+      args[0] === "api" &&
+      args[1]?.startsWith(
+        `repos/owner/repo/commits/${"a".repeat(40)}/check-runs?per_page=100`,
+      )
+    ) {
+      return JSON.stringify({ total: 0, runs: [] });
+    }
   }
   // Liveness probe for interrupted babysitter clones; success means "owner alive", so nothing is removed.
   if (executable === "/bin/kill" && args[0] === "-0") return "";
