@@ -8,9 +8,9 @@ push, through the repository's own `deno task test:unit`. It runs the changed
 test helper whose text names it (path, unique base name, directory, or a
 templated directory), or that imports it directly or through other files
 (relative `.ts` specifiers). Deleted and renamed-away paths count, so a push
-that removes a file a test still reads is caught. A fix pushed by a
-PR-feedback, CI-fix or babysitter round therefore no longer reaches CI with a
-test it broke, including a doc-drift test reading a changed `.md` or prompt.
+that removes a file a test still reads is caught. A fix pushed by a PR-feedback,
+CI-fix or babysitter round therefore no longer reaches CI with a test it broke,
+including a doc-drift test reading a changed `.md` or prompt.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -60,8 +60,8 @@ Backend-only; no UI files. Tests are in
 (summary sentence of the changed-file checks and the hook's first-stage list).
 New non-test members have production readers: `denoUnitTestRoots` and
 `denoReferencedTests` are set in `runPrePushGate` and read in
-`planChangedFileChecks`; `loadDenoUnitTestRoots` and
-`loadReferencedUnitTests` are called by `runPrePushGate`.
+`planChangedFileChecks`; `loadDenoUnitTestRoots` and `loadReferencedUnitTests`
+are called by `runPrePushGate`.
 
 ## Acceptance Criteria
 
@@ -88,28 +88,26 @@ New non-test members have production readers: `denoUnitTestRoots` and
   filtered by `tracked`; changed integration suites left out;
   `loadDenoUnitTestRoots` (config with and without `test:unit`, unparseable
   config, a `null` or array document, and a missing, `null`, array or string
-  `tasks`);
-  `loadReferencedUnitTests` (import, transitive import through a wrapper and a
-  cycle, doc read through a helper, templated prompt path, ambiguous base name,
-  directory listing, a source that only quotes a doc, a deleted source,
-  changed tests excluded); `runPrePushGate` running the task and blocking on a
-  non-zero exit, running a differently named test for a changed doc, and for a
-  deleted source.
+  `tasks`); `loadReferencedUnitTests` (import, transitive import through a
+  wrapper and a cycle, doc read through a helper, templated prompt path,
+  ambiguous base name, directory listing, a source that only quotes a doc, a
+  deleted source, changed tests excluded); `runPrePushGate` running the task and
+  blocking on a non-zero exit, running a differently named test for a changed
+  doc, and for a deleted source.
 - Mutation survivors from the first completion check, each now killed:
   `plannedUnitTestFiles` operands (a `lib/x_test.ts`, a `tests/helper.ts`, a
   `.md` / `.js` source, a source named `x_test.ts`) and the `test:unit` task
-  probe (`null`, array, `{}`, `{"tasks": null}`, an unreadable config: the
-  probe no longer swallows a `null` text, so a dropped `null` check throws).
-  Red checks run by hand: `startsWith("tests/")` dropped, `endsWith(".ts")`
-  dropped, `tasks !== null` dropped, ancestor tokens on `.ts` files, `..`
-  resolution, the `.` skip, the visited check, the seed set, the changed-test
-  exclusion, the tests-only text scan and the integration filter: each turns a
-  test red.
+  probe (`null`, array, `{}`, `{"tasks": null}`, an unreadable config: the probe
+  no longer swallows a `null` text, so a dropped `null` check throws). Red
+  checks run by hand: `startsWith("tests/")` dropped, `endsWith(".ts")` dropped,
+  `tasks !== null` dropped, ancestor tokens on `.ts` files, `..` resolution, the
+  `.` skip, the visited check, the seed set, the changed-test exclusion, the
+  tests-only text scan and the integration filter: each turns a test red.
 - `deno task test:unit tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_cargo_deny_test.ts tests/pre_push_gate_retry_test.ts`:
   all passed (148 before the last additions; the 106-test
   `pre_push_gate_test.ts` passes after them).
-- `./quality.sh` on the first version: every check passed except `deno tests`:
-  6 failures in `merge_fallback_issue_test.ts` and
+- `./quality.sh` on the first version: every check passed except `deno tests`: 6
+  failures in `merge_fallback_issue_test.ts` and
   `pr_maintenance_command_test.ts`, identical at base `aa964319`.
 - Related rules checked: the module doc and `docs/CONFIGURATION.md` lists of
   changed-file checks (siblings grepped: `cspell`, `ShellCheck`, `cargo deny`)
