@@ -52,6 +52,11 @@ function mockRunner(
       }
     }
 
+    // Dependabot configuration (Issue #4904): absent unless a test supplies it.
+    if (apiPath.includes("/contents/.github/dependabot.")) {
+      return Promise.resolve(fail("Not Found (HTTP 404)"));
+    }
+
     // Default: empty success
     return Promise.resolve({ success: true, stdout: "[]", stderr: "" });
   };
@@ -1414,4 +1419,174 @@ Deno.test("workflow_auditor - known root prerequisites remain inapplicable after
     "java-dependency-updates",
     "java-gradle-dependency-updates",
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Dependabot configuration (Issue #4904)
+// ---------------------------------------------------------------------------
+
+const WORKFLOWS_API_PATH = "repos/owner/repo/contents/.github/workflows";
+const DEPENDABOT_YML_API_PATH =
+  "repos/owner/repo/contents/.github/dependabot.yml";
+const DEPENDABOT_YAML_API_PATH =
+  "repos/owner/repo/contents/.github/dependabot.yaml";
+
+/**
+ * A Dependabot config for npm. The header comment is the one the template
+ * ships: the npm detection group matches on the word "dependabot", so a
+ * config without it would not be recognised.
+ */
+const DEPENDABOT_NPM_YAML =
+  `# Dependabot configuration (place in .github/dependabot.yml)
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+`;
+
+/**
+ * Build a runner that answers the visibility lookup as private, an empty
+ * workflow directory, and `respond` for every other API path. Records each
+ * API path it is asked for.
+ */
+function dependabotAwareRunner(
+  files: Record<string, CommandOutput>,
+): { runner: (cmd: string[]) => Promise<CommandOutput>; apiPaths: string[] } {
+  const apiPaths: string[] = [];
+  const runner = (cmd: string[]): Promise<CommandOutput> => {
+    const apiIdx = cmd.indexOf("api");
+    const apiPath = apiIdx >= 0 ? cmd[apiIdx + 1] ?? "" : "";
+    apiPaths.push(apiPath);
+    if (apiPath === "repos/owner/repo") {
+      return Promise.resolve(ok(JSON.stringify({ visibility: "private" })));
+    }
+    if (apiPath === WORKFLOWS_API_PATH) {
+      return Promise.resolve(ok("[]"));
+    }
+    return Promise.resolve(files[apiPath] ?? fail("Not Found (HTTP 404)"));
+  };
+  return { runner, apiPaths };
+}
+
+Deno.test("workflow_auditor - a Dependabot config alone makes npm-dependency-updates present, foundIn its path", async () => {
+  const { runner } = dependabotAwareRunner({
+    [DEPENDABOT_YML_API_PATH]: ok(DEPENDABOT_NPM_YAML),
+  });
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    makeLanguages(["Node"]),
+    { runCommand: runner },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const match = result.value.present.find((m) =>
+    m.spec.id === "npm-dependency-updates"
+  );
+  assertEquals(match?.foundIn, ".github/dependabot.yml");
+  assertEquals(
+    result.value.missing.some((s) => s.id === "npm-dependency-updates"),
+    false,
+  );
+});
+
+Deno.test("workflow_auditor - a hand-written npm dependabot.yml with no tool-name mention still makes npm-dependency-updates present", async () => {
+  // Deliberately free of "dependabot", "renovate", "ncu" and
+  // "npm-check-updates": only the package-ecosystem line identifies it.
+  const handWritten = `version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+`;
+  const { runner } = dependabotAwareRunner({
+    [DEPENDABOT_YML_API_PATH]: ok(handWritten),
+  });
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    makeLanguages(["Node"]),
+    { runCommand: runner },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  const match = result.value.present.find((m) =>
+    m.spec.id === "npm-dependency-updates"
+  );
+  assertEquals(match?.foundIn, ".github/dependabot.yml");
+  assertEquals(
+    result.value.missing.some((s) => s.id === "npm-dependency-updates"),
+    false,
+  );
+});
+
+Deno.test("workflow_auditor - no Dependabot config (404 on both names) leaves npm-dependency-updates missing", async () => {
+  const { runner, apiPaths } = dependabotAwareRunner({});
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    makeLanguages(["Node"]),
+    { runCommand: runner },
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+
+  assertEquals(
+    result.value.missing.some((s) => s.id === "npm-dependency-updates"),
+    true,
+  );
+  assertEquals(apiPaths.includes(DEPENDABOT_YML_API_PATH), true);
+  assertEquals(apiPaths.includes(DEPENDABOT_YAML_API_PATH), true);
+});
+
+Deno.test("workflow_auditor - a non-404 failure reading the Dependabot config fails the audit", async () => {
+  const { runner } = dependabotAwareRunner({
+    [DEPENDABOT_YML_API_PATH]: fail("API rate limit exceeded"),
+  });
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    makeLanguages(["Node"]),
+    { runCommand: runner },
+  );
+  assertEquals(result.ok, false);
+});
+
+Deno.test("workflow_auditor - localRepoPath reads .github/dependabot.yml from disk, not the API", async () => {
+  const tmpDir = await Deno.makeTempDir({
+    prefix: "workflow_auditor_dependabot_",
+  });
+  try {
+    await Deno.mkdir(`${tmpDir}/.github`, { recursive: true });
+    await Deno.writeTextFile(
+      `${tmpDir}/.github/dependabot.yml`,
+      DEPENDABOT_NPM_YAML,
+    );
+    const { runner, apiPaths } = dependabotAwareRunner({});
+    const result = await auditRepoWorkflows(
+      "owner/repo",
+      makeLanguages(["Node"]),
+      { runCommand: runner, localRepoPath: tmpDir },
+    );
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+
+    const match = result.value.present.find((m) =>
+      m.spec.id === "npm-dependency-updates"
+    );
+    assertEquals(match?.foundIn, ".github/dependabot.yml");
+    assertEquals(apiPaths.includes(DEPENDABOT_YML_API_PATH), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("workflow_auditor - no Dependabot config is fetched when no required spec needs one", async () => {
+  const { runner, apiPaths } = dependabotAwareRunner({});
+  const result = await auditRepoWorkflows(
+    "owner/repo",
+    makeLanguages(["Rust"]),
+    { runCommand: runner },
+  );
+  assertEquals(result.ok, true);
+  assertEquals(apiPaths.some((p) => p.includes("dependabot")), false);
 });

@@ -168,6 +168,29 @@ export interface WorkflowSpec {
    * Issue #1753.
    */
   visibilityScope?: "any" | "public-only";
+  /**
+   * The template is a Dependabot configuration (`.github/dependabot.yml`),
+   * not a GitHub Actions workflow. Dependabot reads it only from that path.
+   *
+   * Issue #4904.
+   */
+  dependabotConfig?: boolean;
+}
+
+/** The repo-relative path Dependabot reads its configuration from (Issue #4904). */
+export const DEPENDABOT_CONFIG_PATH = ".github/dependabot.yml";
+
+/**
+ * The repo-relative path a spec's template belongs at: the Dependabot
+ * configuration path for a `dependabotConfig` spec, otherwise the
+ * workflow file under `.github/workflows/`.
+ *
+ * Issue #4904.
+ */
+export function specRepoPath(spec: WorkflowSpec): string {
+  return spec.dependabotConfig
+    ? DEPENDABOT_CONFIG_PATH
+    : `.github/workflows/${spec.suggestedFilename}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +719,8 @@ const npmDependencyUpdates: WorkflowSpec = {
   rootProjectMarkers: ["package.json"],
   triggers: ["schedule"],
   detectionPatternGroups: [[
+    "package-ecosystem: npm",
+    'package-ecosystem: "npm"',
     "dependabot",
     "renovate",
     "npm-check-updates",
@@ -703,6 +728,7 @@ const npmDependencyUpdates: WorkflowSpec = {
   ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template: `# Dependabot configuration (place in .github/dependabot.yml)
 version: 2
@@ -826,6 +852,7 @@ const javaDependencyUpdates: WorkflowSpec = {
   ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template:
     `# Dependabot configuration for Maven (place in .github/dependabot.yml)
@@ -855,6 +882,7 @@ const javaGradleDependencyUpdates: WorkflowSpec = {
   ]],
   capabilities: ["Automated dependency updates"],
   suggestedFilename: "java-gradle-dependabot.yml",
+  dependabotConfig: true,
   category: "dependency-update",
   template:
     `# Dependabot configuration for Gradle (place in .github/dependabot.yml)

@@ -258,7 +258,12 @@ variant (`java-dependency-updates`) requires a root `pom.xml`, and the Gradle
 variant (`java-gradle-dependency-updates`) requires a root `build.gradle` or
 `build.gradle.kts`. Each variant files only its own Dependabot ecosystem entry,
 so a repository with both build files needs both `updates` entries in one
-`.github/dependabot.yml`.
+`.github/dependabot.yml`. A spec marked `dependabotConfig: true` (the npm,
+Maven and Gradle dependency-update specs) is filed with `.github/dependabot.yml`
+as its path rather than under `.github/workflows/`. Its body tells the
+implementer to merge the `updates` entry into any existing `updates:` list, and
+it carries no workflow-file checks. The auditor also reads `.github/dependabot.yml`
+(then `.yaml`) when it evaluates such a spec.
 The auditor uses the complete root file inventory, so Deno taking precedence
 over Node during language selection cannot hide an existing `package.json`.
 Older language results without that inventory trigger a root-contents fetch;
