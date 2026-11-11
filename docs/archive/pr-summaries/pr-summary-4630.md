@@ -398,11 +398,13 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   now takes the whole-read deadline (`totalMs`) alongside the per-read remainder
   (`ms`), and the stall error names `totalMs` rather than the remainder, so a
   message that stalls mid-read reports the configured deadline (`deadlineMs`)
-  instead of the time left on that read. It changes the error text only; the
-  diff against the base touches no test file for it; the existing stdin-message
-  suite, which this PR does not change, passes on the head with `deno test -A`.
-  This file's freshness claims were re-derived against that commit and the head
-  that carries it.
+  instead of the time left on that read. It changes the error text only. The
+  test `worker/deno/tests/git_stdin_message_test.ts` ("a stall after a partial
+  chunk names the whole-read deadline, not the time left", 14 tests at head)
+  stalls the second read and asserts `did not arrive within 150ms`; with
+  `${totalMs}` reverted to `${ms}` it failed (`within 107ms`), and it passes on
+  the restored head. This file's freshness claims were re-derived against that
+  commit and the head that carries it.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,
   reusable workflows and the llvm-cov nextest build profile are not reproduced.
