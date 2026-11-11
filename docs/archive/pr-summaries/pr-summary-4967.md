@@ -49,6 +49,6 @@ The issue states no acceptance-criteria heading and nothing it asks is left undo
 - Edited expectation: the cap test's expectation 5 → 12 goes red at cap 5 and at cap 13.
 - Callers/siblings: the only production caller of `buildMilestoneSummaryBody` is `milestone_completion.ts` (passes the title and `closedIssues`); `security_untrusted_ingestion_1249_test.ts` still passes.
 - Docs read and updated: `docs/INTERNALS.md` (summary PR body paragraph), `docs/workflows/milestones.md` (Final PR step and fingerprint bullet). `CONFIGURATION.md`'s test-change section concerns the reviewer only and names no count.
-- `./quality.sh < /dev/null` last run: all stages passed except `deno fmt`, which was fixed in `worker/deno/tests/milestone_completion_test.ts`; config integration and checkov skipped (no config, no checkov). Re-run result is recorded in the final message.
+- `./quality.sh < /dev/null` on the final head: PASSED (config integration and checkov skipped: no config, no checkov). `deno task pr-summary-check`: 0 blocked, 0 not checked.
 
 Not done or not checked: the real review path against a private fleet PR; the 10-child cap means a larger milestone links only its 10 lowest-numbered children. #4763: Reviewer's test-change policy refuses an owner-approved, fleet-filed issue as the governing issue.
