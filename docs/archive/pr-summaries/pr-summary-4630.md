@@ -37,14 +37,18 @@ compile error is therefore caught before the push, not by a CI run. Closes
 - Base-failure comparison: the repair processors pass the PR base independently
   of whether they merge it into the repair branch; the completion gate uses its
   `baseRef`. A failing CI cargo check is re-run, as CI wrote it, in a detached
-  worktree of that base. Remote base refs are refreshed before resolution;
-  failed fetches remain infrastructure faults with redacted, capped head
-  diagnostics. A check directory absent from the base is a new failure on the
-  head, not infrastructure. If every diagnostic the push shows (message, file
-  and how many times; not line) is also on the base, the failure is a
-  `[PRE_PUSH_WARNING]`, not a verdict. Only error-level diagnostics are
-  compared: a warning never fails a CI cargo command, so a warning the push
-  adds, or cargo's
+  worktree of that base: the refreshed tip of the base ref and, when the
+  checked-out head forked from an older commit (`git merge-base HEAD <tip>`,
+  deepening a shallow checkout first), that fork point too, because the base is
+  merged into the repair only after this gate. A diagnostic either shows counts
+  as the base's; a fork point that cannot be found is infrastructure, not a
+  pass. Remote base refs are refreshed before resolution; failed fetches remain
+  infrastructure faults with redacted, capped head diagnostics. A check
+  directory absent from the base is a new failure on the head, not
+  infrastructure. If every diagnostic the push shows (message, file and how many
+  times; not line) is also on the base, the failure is a `[PRE_PUSH_WARNING]`,
+  not a verdict. Only error-level diagnostics are compared: a warning never
+  fails a CI cargo command, so a warning the push adds, or cargo's
   `warning: build failed, waiting for other jobs to
   finish...`, does not make
   a base-only failure a verdict. A base that passes or lacks an error the push
@@ -193,7 +197,8 @@ flowchart LR
 - A failure the PR base already has is compared by diagnostic message, file and
   count, not line number, on a detached worktree of the base: cheap, and it
   never excuses a diagnostic the base lacks. Re-running on the base costs one
-  extra cargo build, only when a check has already failed.
+  extra cargo build (two when the head forked from an older base than the tip),
+  only when a check has already failed.
 - Repair processors use a cargo-only spec for repos without pre-flight, so the
   full changed-file gate does not newly apply to repair pushes. The ShellCheck
   policy (#4631) and the cargo-deny gate (#4626, for changed cargo inputs) run
@@ -320,6 +325,23 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: an unavailable base comparison is infrastructure`,
   `::runPrePushGate: a base host fault is infrastructure` and
   `::runPrePushGate: a clippy failure that is new on the push blocks, whatever the base shows`.
+- A lint the head inherited from an older base, which the refreshed tip has
+  since fixed, is no verdict on an unrelated repair (PR #4896 review). Branch
+  outcomes: tip shows the diagnostics: `same`
+  (`worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a clippy failure the PR base already has is no verdict on the push`);
+  tip passes but the fork point shows them: `same`, and a diagnostic neither
+  shows still blocks
+  (`worker/deno/tests/pre_push_gate_test.ts::review 4896: a lint the head inherited from an older base that the tip has since fixed is no verdict`,
+  real git, both cases); fork point unresolvable after the tip says `different`:
+  `unknown` (infrastructure,
+  `worker/deno/tests/pre_push_gate_test.ts::review 4896: a head with no fork point on the base cannot be told from its base, so it is infrastructure`);
+  an `unknown` at either commit with no `same`: exempt (untestable): the same
+  `unknown` mapping is driven for the tip by
+  `::runPrePushGate: a base host fault is infrastructure`, and the fork-point
+  run shares `runOnCommit` with it; no test file stages a host fault on only the
+  second base run (searched `git grep -n vibe-base-check- worker/deno/tests`).
+  Red check: with the fork-point comparison skipped, the test fails with
+  `Pre-flight gate BLOCK ... cargo clippy ... failed`.
   `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - a fix branch compares the PR base without merging it`
   and the gated-head case in `pr_ci_processor_test.ts` cover the independent
   comparison ref. Registry refusal on the head is covered by

@@ -3892,6 +3892,89 @@ Deno.test("review 4896: compare against fresh remote main when its local ref is 
   }
 });
 
+Deno.test("review 4896: a lint the head inherited from an older base that the tip has since fixed is no verdict", async () => {
+  // M0 has the lint in lib.rs; M1 (the refreshed tip) fixes it; the head is M0
+  // plus an edit to b.rs. Only the fork point (M0) shows the head's diagnostic.
+  for (const newLint of [false, true]) {
+    const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+    try {
+      const green = await git(clone, "rev-parse", "HEAD");
+      await Deno.writeTextFile(`${clone}/rust/src/lib.rs`, "// base failure\n");
+      await git(clone, "commit", "-qam", "M0: the lint");
+      const m0 = await git(clone, "rev-parse", "HEAD");
+      await git(clone, "push", "-q", "origin", "HEAD:main");
+      await Deno.writeTextFile(`${clone}/rust/src/lib.rs`, "// fixed\n");
+      await git(clone, "commit", "-qam", "M1: the fix");
+      await git(clone, "push", "-q", "origin", "HEAD:main");
+      const m1 = await git(clone, "rev-parse", "HEAD");
+      await git(clone, "reset", "-q", "--hard", m0);
+      await git(clone, "update-ref", "refs/remotes/origin/main", green);
+      await Deno.writeTextFile(
+        `${clone}/rust/src/b.rs`,
+        newLint ? "// new lint\n" : "// unrelated repair\n",
+      );
+      await git(clone, "add", ".");
+      await git(clone, "commit", "-qm", "repair b.rs");
+      const head = await git(clone, "rev-parse", "HEAD");
+      const runner: PreFlightRunner = async (command, options) => {
+        const read = async (file: string) =>
+          await Deno.readTextFile(`${options.cwd}/src/${file}`).catch(() => "");
+        const lib = command === CLIPPY_CMD ? await read("lib.rs") : "";
+        const b = command === CLIPPY_CMD ? await read("b.rs") : "";
+        const stderr = (lib.includes("base failure") ? LINT_A : "") +
+          (b.includes("new lint") ? LINT_B : "");
+        return {
+          started: true,
+          code: stderr === "" ? 0 : 101,
+          stdout: "",
+          stderr,
+        };
+      };
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin: stdin.replaceAll(green, head),
+        preFlightCommands: [],
+        runner,
+        findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
+        compareRef: "origin/main",
+      });
+      assertEquals(await git(clone, "rev-parse", "origin/main"), m1);
+      if (newLint) {
+        assert(!result.ok, "a diagnostic neither base shows still blocks");
+        assertInstanceOf(result.error, PreFlightGateError);
+        assert(!(result.error instanceof PrePushGateInfrastructureError));
+      } else {
+        assert(result.ok, result.ok ? "" : result.error.message);
+        assert(!result.value.checksRun.includes(CLIPPY_CMD));
+      }
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  }
+});
+
+Deno.test("review 4896: a head with no fork point on the base cannot be told from its base, so it is infrastructure", async () => {
+  const { root, clone } = await makeRepoWithCargoBase();
+  try {
+    await git(clone, "checkout", "-q", "--orphan", "alt");
+    await Deno.writeTextFile(`${clone}/rust/src/lib.rs`, "// orphan\n");
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "orphan");
+    const head = await git(clone, "rev-parse", "HEAD");
+    const result = await gateAgainstBase(
+      clone,
+      `refs/heads/alt ${head} refs/heads/alt ${"0".repeat(40)}\n`,
+      (onBase) => onBase ? {} : { code: 101, stderr: LINT_A },
+      [],
+      "origin/main",
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("review 4896: a failed base fetch retains capped redacted head diagnostics as infrastructure", async () => {
   const { root, clone, stdin } = await makeRepoWithCargoBase();
   try {

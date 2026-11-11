@@ -87,6 +87,7 @@ import type {
 import { isHostDiskFaultText } from "./host_fault.ts";
 import { redactedHeadTail } from "./redacted_text.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { ensureHistoryDepth } from "./git_history.ts";
 import { readRepoFile } from "./repo_file_read.ts";
 
 /**
@@ -1991,14 +1992,36 @@ function diagnosticSignatures(output: string): Map<string, number> {
 }
 
 /**
+ * The commit the checked-out head forked from `tip`: `git merge-base HEAD tip`,
+ * after deepening a shallow checkout until the two share an ancestor. `null`
+ * when it cannot be established (no common ancestor, or history that cannot be
+ * fetched), which the caller treats as unknown, never as a pass.
+ */
+async function baseCommitOfHead(
+  git: PrePushGit,
+  repoRoot: string,
+  tip: string,
+): Promise<string | null> {
+  const deepened = await ensureHistoryDepth(["HEAD", tip], { cwd: repoRoot });
+  if (!deepened.ok) return null;
+  const mergeBase = await git(["merge-base", "HEAD", tip], repoRoot);
+  const sha = mergeBase.stdout.trim();
+  return mergeBase.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+}
+
+/**
  * Whether a CI cargo check that failed on this push fails on the PR base too,
  * with every diagnostic the push shows, no more often than the base (Issue
  * #4630 review: a failure the base already has is not this repair's defect).
  * The check runs again, as CI wrote it, in a detached worktree of `ref`.
  *
- * Returns `"same"` when the base fails with every diagnostic the push shows
- * (matched by message, file and count; not line), `"different"` when the base
- * passes, lacks the check directory or lacks a diagnostic the push shows, and
+ * The push is compared with the refreshed tip of `ref` and, when the checked-out
+ * head forked from an older commit, with that fork point too (the base merge
+ * comes after this gate, so a failure the head inherited and the tip has since
+ * fixed is the base's). Returns `"same"` when either fails with every
+ * diagnostic the push shows (matched by message, file and count; not line),
+ * `"different"` when neither does (the base passes, lacks the check directory
+ * or lacks a diagnostic the push shows), and
  * `"unknown"` when neither can
  * be established: an unsafe or unresolvable ref, a push output with no readable
  * diagnostic, a working directory outside the repo, a worktree that cannot be
@@ -2057,54 +2080,72 @@ async function failsOnBaseToo(args: {
   const sha = resolved.stdout.trim();
   if (resolved.code !== 0 || !/^[0-9a-f]{40,64}$/.test(sha)) return "unknown";
 
-  const scratch = await Deno.makeTempDir({ prefix: "vibe-base-check-" });
-  const tree = `${scratch}/tree`;
-  let added = false;
-  try {
-    const add = await args.git(
-      ["worktree", "add", "--detach", tree, sha],
-      args.repoRoot,
-    );
-    if (add.code !== 0) return "unknown";
-    added = true;
-    const baseCwd = relative === "" ? tree : `${tree}/${relative}`;
+  const runOnCommit = async (
+    sha: string,
+  ): Promise<"same" | "different" | "unknown"> => {
+    const scratch = await Deno.makeTempDir({ prefix: "vibe-base-check-" });
+    const tree = `${scratch}/tree`;
+    let added = false;
     try {
-      if (!(await Deno.stat(baseCwd)).isDirectory) return "different";
-    } catch (error) {
-      if (error instanceof Deno.errors.NotFound) return "different";
-      return "unknown";
-    }
-    const base = await runPreFlightGate([args.check.command], {
-      cwd: baseCwd,
-      env: args.check.env,
-      runner: args.runner,
-      timeoutSeconds: args.timeoutSeconds,
-    });
-    if (base.ok) return "different";
-    if (base.error.reason !== "non-zero-exit") return "unknown";
-    if (isHostFaultOfCheck(base.error)) return "unknown";
-    const baseSignatures = diagnosticSignatures(base.error.output);
-    return [...headSignatures].every(([sig, count]) =>
-        count <= (baseSignatures.get(sig) ?? 0)
-      )
-      ? "same"
-      : "different";
-  } finally {
-    if (added) {
-      const removed = await args.git(
-        ["worktree", "remove", "--force", tree],
+      const add = await args.git(
+        ["worktree", "add", "--detach", tree, sha],
         args.repoRoot,
       );
-      if (removed.code !== 0) {
-        console.warn(
-          `[PRE_PUSH_WARNING] could not remove the base worktree ${tree}: ${
-            firstOutputLine(removed.stderr)
-          }`,
-        );
+      if (add.code !== 0) return "unknown";
+      added = true;
+      const baseCwd = relative === "" ? tree : `${tree}/${relative}`;
+      try {
+        if (!(await Deno.stat(baseCwd)).isDirectory) return "different";
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) return "different";
+        return "unknown";
       }
+      const base = await runPreFlightGate([args.check.command], {
+        cwd: baseCwd,
+        env: args.check.env,
+        runner: args.runner,
+        timeoutSeconds: args.timeoutSeconds,
+      });
+      if (base.ok) return "different";
+      if (base.error.reason !== "non-zero-exit") return "unknown";
+      if (isHostFaultOfCheck(base.error)) return "unknown";
+      const baseSignatures = diagnosticSignatures(base.error.output);
+      return [...headSignatures].every(([sig, count]) =>
+          count <= (baseSignatures.get(sig) ?? 0)
+        )
+        ? "same"
+        : "different";
+    } finally {
+      if (added) {
+        const removed = await args.git(
+          ["worktree", "remove", "--force", tree],
+          args.repoRoot,
+        );
+        if (removed.code !== 0) {
+          console.warn(
+            `[PRE_PUSH_WARNING] could not remove the base worktree ${tree}: ${
+              firstOutputLine(removed.stderr)
+            }`,
+          );
+        }
+      }
+      await Deno.remove(scratch, { recursive: true });
     }
-    await Deno.remove(scratch, { recursive: true });
-  }
+  };
+
+  const atTip = await runOnCommit(sha);
+  if (atTip === "same") return "same";
+  // The pushed head may have been built on an older base than the refreshed
+  // tip (the base merge comes after this gate), so a failure it inherited and
+  // the base has since fixed is the base's, not this repair's.
+  const forkPoint = await baseCommitOfHead(args.git, args.repoRoot, sha);
+  if (forkPoint === null) return atTip === "different" ? "unknown" : atTip;
+  if (forkPoint === sha) return atTip;
+  const atForkPoint = await runOnCommit(forkPoint);
+  if (atForkPoint === "same") return "same";
+  return atTip === "unknown" || atForkPoint === "unknown"
+    ? "unknown"
+    : "different";
 }
 
 /**
