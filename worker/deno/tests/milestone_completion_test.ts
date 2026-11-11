@@ -574,7 +574,9 @@ Deno.test("buildMilestoneSummaryBody - flags rather than claims issues with a cl
 /** The numbers a body's closing keywords (close/fix/resolve, GitHub's list) name. */
 function closingRefsIn(body: string): number[] {
   return [
-    ...body.matchAll(/\b(?:close[sd]?|fix(?:e[sd]?)?|resolve[sd]?)\s+#(\d+)\b/gi),
+    ...body.matchAll(
+      /\b(?:close[sd]?|fix(?:e[sd]?)?|resolve[sd]?)\s+#(\d+)\b/gi,
+    ),
   ].map((m) => Number(m[1]));
 }
 
@@ -627,7 +629,12 @@ Deno.test("buildMilestoneSummaryBody - at most MILESTONE_PROVENANCE_MAX_CHILDREN
     { length: 12 },
     (_, i) => ({ number: 100 - i, title: `Child ${100 - i}` }),
   );
-  const body = buildMilestoneSummaryBody("#42 Retry policy", "main", children, 99);
+  const body = buildMilestoneSummaryBody(
+    "#42 Retry policy",
+    "main",
+    children,
+    99,
+  );
   const lines = body.split("\n");
   assertEquals(
     lines.filter((l) => /^Part of #\d+$/.test(l) && l !== "Part of #42"),
