@@ -104,20 +104,24 @@ Added to `worker/deno/tests/ci_failure_classifier_test.ts`:
   `code-fix-required` (negative control for the bare-500 scope).
 
 Results on the final head:
-`deno task test:unit tests/ci_failure_classifier_test.ts` passed (66 at head, 0
+`deno task test:unit tests/ci_failure_classifier_test.ts` passed (68 at head, 0
 failed); the full `./quality.sh` gate was not re-run after the review fix.
 
 Red check: against the pre-fix classifier the setup-node and recovered-curl
-tests went red (2 failures). Restoring the previous whole-block `exit22` read
-(base-branch of this round) turned the new later-silent-exit-22 test red (65
-passed, 1 failed). Reverting only the later-curl-error-line operand of `retried`
-turned the silent 504/404 test red (64 passed, 1 failed); reverting only the
-retry-notice operand turned the retry-notice-only test red (64 passed, 1
-failed). Per-branch flips on the head: dropping the `!retried` operand turned
-the retry-then-404 test red; dropping the next-line exit-22 operand of
-`terminal` turned the terminal-curl test red; dropping the `last line` operand
-turned the download-client tests red; dropping the `errored` gate turned the
-recovered tool-cache and bare-line tests red.
+tests went red (2 failures). The later-silent-exit-22 test was red against the
+previous whole-block `exit22` read (counts quoted from the earlier round, not
+re-run at this head). Single-operand reverts re-run on the 68-test head:
+dropping only the retry-notice operand of `retried` turned the new
+exit-22-then-retry-notice-only test red (67 passed, 1 failed); dropping only the
+later-curl-error-line operand turned the new exit-22-then-later-curl-line test
+red (67 passed, 1 failed); dropping the `!retried` operand of the `if` turned
+both of those tests red (66 passed, 2 failed). The earlier retry-notice-only
+test (`error: unrelated build failure` after the notice) is not terminal by
+position, so it does not pin the `retried` operands. Other flips from the
+earlier round (not re-run): dropping the next-line exit-22 operand of `terminal`
+turned the terminal-curl test red; dropping the `last line` operand turned the
+download-client tests red; dropping the `errored` gate turned the recovered
+tool-cache and bare-line tests red.
 
 Docs: the file header's "5xx" example was narrowed to "502/503/504" so it
 matches what the table holds. No other doc names these patterns.

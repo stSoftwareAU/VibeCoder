@@ -845,6 +845,39 @@ Deno.test("ci_failure_classifier - a silent recovered curl 504 followed by a lat
   }
 });
 
+Deno.test("ci_failure_classifier - a curl 504 followed by exit code 22 and then a later curl error line is not terminal (Issue #4965, PR #5042)", () => {
+  // The 504 line passes the `terminal` check (next line is exit 22), so only
+  // the later `curl: (N)` line, from a following step, marks it as retried.
+  const log = [
+    "curl: (22) The requested URL returned error: 504",
+    "##[error]Process completed with exit code 22.",
+    "##[group]Run curl -fsSL https://example.com/cleanup",
+    "curl: (22) The requested URL returned error: 404",
+  ].join("\n");
+  const result = classifyCiFailure("build", [], log);
+  assertEquals(result.category, "code-fix-required");
+  assertEquals(
+    result.signals.some((s) => s.startsWith("text:the requested url")),
+    false,
+  );
+});
+
+Deno.test("ci_failure_classifier - a curl 504 followed by exit code 22 and then only a retry notice is not terminal (Issue #4965, PR #5042)", () => {
+  // Terminal by position (next line is exit 22); only the later retry notice,
+  // with no later `curl: (N)` line, marks it as retried.
+  const log = [
+    "curl: (22) The requested URL returned error: 504",
+    "##[error]Process completed with exit code 22.",
+    "Warning: Problem : HTTP error. Will retry in 1 seconds. 3 retries left.",
+  ].join("\n");
+  const result = classifyCiFailure("build", [], log);
+  assertEquals(result.category, "code-fix-required");
+  assertEquals(
+    result.signals.some((s) => s.startsWith("text:the requested url")),
+    false,
+  );
+});
+
 Deno.test("ci_failure_classifier - the terminal curl 504 with exit code 22 routes to infrastructure (Issue #4965)", () => {
   const log = [
     "Warning: Problem : HTTP error. Will retry in 1 seconds. 1 retries left.",
