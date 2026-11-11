@@ -191,6 +191,8 @@ function toMaintenanceEntry(pr: FleetSearchPr) {
     updatedAt: pr.updatedAt,
     author: { login: pr.author },
     mergeable: pr.mergeable,
+    // Issue #4951: the CI-fix scan's draft filter reads this; without it a draft looked ready.
+    isDraft: pr.isDraft,
   };
 }
 
