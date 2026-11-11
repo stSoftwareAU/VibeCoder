@@ -31,7 +31,8 @@ the repository or posted to GitHub.
 
 - `timeout 12 ssh -o BatchMode=yes -o ConnectTimeout=8 GRQ-25 '…'` failed with
   `ssh: Could not resolve hostname grq-25: Temporary failure in name
-  resolution` (exit 255), before authentication or archive access.
+  resolution`
+  (exit 255), before authentication or archive access.
 - `/home/vibe/logs` contained no path matching the run id, container id, or
   `hard-kill-archive`; `/home/vibe/logs/hard-kill-archive/` does not exist.
 - No Tailscale executable or `/etc/codex/network-policy.json` was present in
@@ -52,8 +53,8 @@ the repository or posted to GitHub.
 
 - **missing** — Hard kill: container wedged in execute (watchdog) — determine
   the cause of the wedge and implement its correction — reason: the run archive
-  was inaccessible from this executor, leaving guest scheduling, subprocess
-  hang and shutdown failure indistinguishable
+  was inaccessible from this executor, leaving guest scheduling, subprocess hang
+  and shutdown failure indistinguishable
 
 ## Test Plan
 
@@ -62,8 +63,8 @@ the repository or posted to GitHub.
   requirement.
 - `deno task pr-summary-check --base main --issue-body-file
   /tmp/issue-5062-body.md --labels bug,top-priority
-  ../../docs/archive/pr-summaries/pr-summary-5062.md` passed: 0 gates blocked,
-  0 not checked.
+  ../../docs/archive/pr-summaries/pr-summary-5062.md`
+  passed: 0 gates blocked, 0 not checked.
 - `timeout 900 ./quality.sh < /dev/null` failed only at the Deno test unit-time
   budget: 88 tests exceeded 1.00s; the gate reported
   `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` at 1.20s.
