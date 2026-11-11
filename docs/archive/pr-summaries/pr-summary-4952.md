@@ -51,7 +51,12 @@ flowchart TD
   `worker/deno/lib/draft_continuation_pr.ts`.
 - Callers of `readyDraftBeforeArming` checked: `recoverAndFinaliseExistingPr`
   and the REST-fallback path in `completionBody`; both use `stillDraftFailure`
-  and `postCompletionAdvisory` with `draftStateKnown`.
+  and `postCompletionAdvisory` with a `StillDraft` record (`draftStateKnown`),
+  set only when `gh pr ready` failed. The mutation check flagged the old
+  `readyDraftStateKnown = true` initialiser (`completion_phase.ts:1009`, `:4021`)
+  as dead: it was always overwritten before use. The separate boolean is gone, so
+  the line no longer exists and the known/unknown wording stays pinned by the
+  existing "is still a draft" / "may still be a draft" tests.
 - Twin check: no second copy of a changed rule found.
 
 ## Acceptance Criteria
