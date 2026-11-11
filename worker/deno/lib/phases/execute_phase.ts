@@ -9,6 +9,7 @@ import {
   resolveOrchestrationSettings,
 } from "../orchestration/role_config.ts";
 import { classifyRunFailure } from "../run_outcome_classifier.ts";
+import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 /**
  * Phase 3 — Execute Claude.
  *
@@ -192,6 +193,26 @@ export const USAGE_LIMIT_HEADING =
   "Claude usage limit reached (subscription window)";
 
 /**
+ * Heading of the run the Claude CLI stopped at its per-run turn cap
+ * (error_max_turns, Issue #3701; released as `interrupted`, Issue #4949).
+ *
+ * Exported because it is also the marker `workOnIssueExecuteClaude` reads to
+ * skip the in-process infrastructure retry: the cap is a policy stop, so a
+ * retry would only bill the same capped run again. The work is already on
+ * the issue branch and the next claim resumes it.
+ */
+export const TURN_LIMIT_HEADING = "Claude stopped at its per-run turn limit";
+
+/**
+ * The worker-written start of a turn-capped run's failure reason (Issue #4949).
+ * The no-retry check matches this prefix only, never the heading anywhere in
+ * the reason: other failure reasons quote the agent's own output, which may
+ * contain the heading (PR #5025 review).
+ */
+export const TURN_LIMIT_REASON_PREFIX =
+  `Run interrupted before completing — ${TURN_LIMIT_HEADING}`;
+
+/**
  * Credential switches one exhausted execute phase may make (Issue #1670).
  *
  * A switch costs one billed invocation, so the loop is bounded rather than
@@ -359,6 +380,22 @@ export async function workOnIssueExecuteClaude(
     deps.logger.warn(
       "Not retrying the run in-process: the subscription window is spent " +
         "and the work is parked on the issue branch (Issue #1670)",
+      { phase: "execute" },
+    );
+    return result;
+  }
+
+  // Issue #4949: the Claude turn cap is a policy stop, not a fault. The phase
+  // has already preserved the work on the issue branch with a handover note;
+  // a retry would only bill the same capped run again, so the next claim
+  // resumes from the branch instead.
+  if (
+    result.category === "interrupted" &&
+    result.reason?.startsWith(TURN_LIMIT_REASON_PREFIX)
+  ) {
+    deps.logger.warn(
+      "Not retrying the run in-process: the Claude turn cap is a policy stop " +
+        "and the work is on the issue branch; the next claim resumes it (Issue #4949)",
       { phase: "execute" },
     );
     return result;
@@ -1498,6 +1535,54 @@ async function executeClaudeBody(
   await rtk.record();
 
   if (!claudeResult.ok) {
+    // Issue #4949: the Claude CLI stopped the invocation at its per-run turn
+    // cap (error_max_turns). A policy stop, not a failure of the issue: the
+    // work is preserved on the issue branch and the run is released as
+    // interrupted — never a worker crash, and not retried in-process.
+    if (claudeResult.error instanceof AgentTurnLimitError) {
+      logger.warn(
+        "Claude stopped at its per-run turn limit; preserving the work (Issue #4949)",
+        { issueNumber: ctx.issueNumber, error: claudeResult.error.message },
+      );
+      const elapsedSeconds = Math.round(
+        (Date.now() - state.executeStartTime) / 1000,
+      );
+      // This invocation's output is on the error, not on state: the failed
+      // invocation never reached the success path that fills state.claudeOutput.
+      const turnLimitOutput = claudeResult.error.executionResult?.output ||
+        state.claudeOutput || "";
+      const wip = await preserveRunWip({
+        state,
+        deps,
+        issueNumber: ctx.issueNumber,
+        repo: ctx.repo,
+        inspectWorkingTree: turnLimitOutput.length > 0,
+        buildMessage: (dirtyFiles) =>
+          buildInterruptedWipCommitMessage({
+            cause: "turn-limit",
+            elapsedSeconds,
+            dirtyFiles,
+          }),
+        handover: { cause: "turn-limit", elapsedSeconds },
+        onPreserved: () => saveCheckpointState(),
+      });
+      const reason = formatDetailedFailureMessage(
+        `${TURN_LIMIT_REASON_PREFIX} (error_max_turns) while the agent was still working` +
+          (wip.wipNote ? ` — ${wip.wipNote}` : ""),
+        {
+          elapsedSeconds,
+          outputSize: turnLimitOutput.length,
+          clarityStatus: state.clarityStatus,
+          lastOutputSnippet: redactedTail(turnLimitOutput, 500) || undefined,
+        },
+      );
+      return {
+        category: "interrupted",
+        status: "failure",
+        reason,
+        classification: classifyRunFailure("interrupted", reason, true),
+      };
+    }
     return {
       category: "internal_error",
       status: "failure",

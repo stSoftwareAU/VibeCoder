@@ -148,7 +148,9 @@ function makeGh(
       return Promise.reject(new Error("fixture: GraphQL unavailable"));
     }
 
-    const checkRuns = /\/commits\/(.+)\/check-runs$/.exec(path);
+    const checkRuns = /\/commits\/(.+)\/check-runs(?:\?per_page=100)?$/.exec(
+      path,
+    );
     if (checkRuns) {
       const pr = byBranch(decodeURIComponent(checkRuns[1] ?? ""));
       return json((pr?.failedChecks ?? []).map((check) => ({

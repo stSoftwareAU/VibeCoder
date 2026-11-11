@@ -457,3 +457,25 @@ Deno.test("listBotPrs - admits a row cached in the previous app/<slug> shape (Is
     ]);
   });
 });
+
+Deno.test("listBotPrs - asks for isDraft and carries it onto the entry (Issue #4951)", async () => {
+  const calls: string[][] = [];
+  const admitted = await listBotPrs({
+    repo: REPO,
+    ghCommandFn: buildGh([
+      prJson({ number: 1, isDraft: true }),
+      prJson({ number: 2, isDraft: false }),
+      prJson({ number: 3 }),
+    ], calls),
+    log: DISCARD,
+  });
+
+  const json = calls[0]![calls[0]!.indexOf("--json") + 1]!;
+  assert(json.split(",").includes("isDraft"), `--json ${json} lacks isDraft`);
+  assertEquals(admitted.map((pr) => [pr.number, pr.isDraft]), [
+    [1, true],
+    [2, false],
+    // A listing that did not report it leaves it unknown, not false.
+    [3, undefined],
+  ]);
+});
