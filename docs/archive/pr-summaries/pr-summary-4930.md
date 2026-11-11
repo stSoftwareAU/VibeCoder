@@ -153,7 +153,10 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   of `PreFlightGateSpec`, `shellcheckOnly` and `resolveRepairPreFlightSpec`, the
   `commitAndPushPending` parameter doc, and the `docs/CONFIGURATION.md` push
   guarantee paragraph said a repair ran no more than ShellCheck and cargo deny;
-  all now name the unit tests and markdownlint.
+  all now name the unit tests and markdownlint. The agent-facing push-guarantee
+  strings in `worker/deno/lib/quality_gate_budget.ts` (`pre-flight-only` and
+  `ci-fix`, which said a repair "runs no checks") were reworded the same way,
+  with their pins in `quality_gate_budget_test.ts` and `repo_config_test.ts`.
 - `runPrePushGate` passes the Deno roots and referenced tests to the planner.
   Repair specs retain their formatter policy while passing changed paths for
   unit-test selection and configured Markdown validation.
