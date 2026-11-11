@@ -5,18 +5,25 @@
  *
  *   - **status** — criterion — evidence: `x` — reviewer: status — reason: text
  *
- * A field label is `evidence`, `reason` or `reviewer` followed by `:`. It
- * counts as a field only at the start of the entry text or straight after the
- * separator ` — ` (whitespace, em dash U+2014, whitespace). A keyword anywhere
- * else is plain data: `src/evidence-store.ts`, `reviewer-guide.md` and
- * `Xreviewer:` carry no field. A hyphen or an em dash is not accepted as the
- * label's own separator.
+ * A field label is `evidence`, `reason` or `reviewer` followed by `:`. It counts
+ * as a field when it is at the start of the entry text or directly preceded by
+ * whitespace (`(?:^|\s)`). A keyword glued to a word or a path is plain data:
+ * `src/evidence-store.ts`, `reviewer-guide.md`, `Xreviewer:` and
+ * `a/reason-codes.ts` carry no field. A hyphen or an em dash is not accepted as
+ * the label's own separator, so `reason - x` and `reason—x` are not labels.
  *
- * The renderer (`closure_verdict.ts`) scrubs model text with this grammar, and
- * the validators (`independent_review_gate.ts`, `acceptance_criteria_gate.ts`)
- * and the routing code (`closure_criterion_match.ts`,
- * `standing_violation_routing.ts`) read fields with it, so none of them can
- * disagree about what a field is.
+ * The boundary is deliberately the superset of the renderer's ` — ` separator,
+ * not the separator alone. `collectListItems` joins a nested continuation line
+ * to its entry with a single space, so a nested `  - evidence: x` bullet reads
+ * as `… evidence: x`, and the tests pin that shape. The renderer's own ` — ` is
+ * whitespace-led too, so it is covered without a special case. An en dash, a
+ * hyphen or a bare colon before a label is covered for the same reason, and so
+ * is a label after a leading em dash.
+ *
+ * The sanitiser (`closure_verdict.ts`) consumes every whitespace-led label in
+ * model text, to a fixed point, so no model text can carry a field that the
+ * validators would read. The renderer and the validators therefore agree on
+ * every entry, and the boundary never needs a dash-specific rule.
  *
  * The patterns are hardcoded literals rather than built from a label argument:
  * a `new RegExp(label…)` is a ReDoS surface Semgrep blocks on, and only these
@@ -26,14 +33,14 @@
  */
 
 /**
- * The capture of each labelled field. The value is `([^\n]*)` with no `$`, so
- * it runs to the end of the entry text; the reviewer's verdict is a bounded
- * token, since only a status word follows it.
+ * The capture of each labelled field, after the `(?:^|\s)` boundary. The value
+ * is `([^\n]*)` with no `$`, so it runs to the end of the entry text; the
+ * reviewer's verdict is a bounded token, since only a status word follows it.
  */
 export const ENTRY_FIELD_PATTERNS = {
-  evidence: /(?:^|\s—\s)evidence\s*:\s*([^\n]*)/i,
-  reason: /(?:^|\s—\s)reason\s*:\s*([^\n]*)/i,
-  reviewer: /(?:^|\s—\s)reviewer\s*:\s*[`*_]*([a-z-]{1,16})/i,
+  evidence: /(?:^|\s)evidence\s*:\s*([^\n]*)/i,
+  reason: /(?:^|\s)reason\s*:\s*([^\n]*)/i,
+  reviewer: /(?:^|\s)reviewer\s*:\s*[`*_]*([a-z-]{1,16})/i,
 } as const;
 
 /**
@@ -41,25 +48,32 @@ export const ENTRY_FIELD_PATTERNS = {
  * with `matchAll`, which works on a copy and never shares `lastIndex` state.
  */
 export const ENTRY_REVIEWER_ALL_RE =
-  /(?:^|\s—\s)reviewer\s*:\s*[`*_]*([a-z-]{1,16})/gi;
+  /(?:^|\s)reviewer\s*:\s*[`*_]*([a-z-]{1,16})/gi;
 
-/** The first labelled field of an entry, used with `.search`. */
-export const ENTRY_FIELD_LABEL_RE =
-  /(?:^|\s—\s)(?:evidence|reason|reviewer)\s*:/i;
+/**
+ * The first labelled field of an entry, used with `.search`. The match starts
+ * at the whitespace before the label, so a subject cut there keeps any dash that
+ * stood before the label, and the matcher ignores that dash as punctuation.
+ */
+export const ENTRY_FIELD_LABEL_RE = /(?:^|\s)(?:evidence|reason|reviewer)\s*:/i;
 
-/** Every field label at a boundary, with the separator and trailing space. */
-const FIELD_LABEL_SCRUB_RE = /(?:^|\s—\s)(?:evidence|reason|reviewer)\s*:\s*/gi;
+/**
+ * Every field label at a boundary, with its colon and trailing space. Each match
+ * is replaced by one space.
+ */
+const FIELD_LABEL_SCRUB_RE = /(?:^|\s)(?:evidence|reason|reviewer)\s*:\s*/gi;
 
 /**
  * Remove every field label at a field boundary, to a fixed point.
  *
- * One pass is not enough. A removed label becomes a single space, so
- * `a — reviewer: — reviewer: missing` loses its first label and leaves
- * `a — reviewer: missing`: a new ` — reviewer:` now sits beside its neighbour,
- * and only a second pass removes it. Trimming can likewise expose a label at
- * the start of the text. The loop therefore repeats replace-and-trim until the
- * text stops changing. Each change strictly shortens the text (a label and its
- * colon are at least seven characters, replaced by one space), so it ends.
+ * One pass is not enough. A match consumes the whitespace after its colon, so
+ * the label that follows it has no whitespace left in front of it for the same
+ * pass: `a reviewer: reviewer: missing` loses its first label and leaves
+ * `a reviewer: missing`, which only a second pass removes. Trimming can likewise
+ * expose a label at the start of the text. The loop therefore repeats
+ * replace-and-trim until the text stops changing. Each change strictly shortens
+ * the text (a label and its colon are at least seven characters, replaced by
+ * one space), so it ends.
  *
  * The result is stable under replace-and-trim, so no sanitiser step that runs
  * after this one can create a field. Callers truncate to their cap BEFORE

@@ -45,7 +45,9 @@ const LEADING_STATUS_RE =
   /^\s*(?:\*\*\s*)?(met|partial|missing|unrequested)(?:\s*\*\*)?\s*[—\-:]*\s*/i;
 
 /** The entry's subject: the text between its leading status and its first
- * labelled field (`ENTRY_FIELD_LABEL_RE`, Issue #4977). Also used by
+ * labelled field (`ENTRY_FIELD_LABEL_RE`, Issue #4977). The cut lands on the
+ * whitespace before the label, so a dash that stood before it stays in the
+ * subject; the matcher ignores it as punctuation. Also used by
  * closure_met_check.ts. */
 export function subjectOf(entry: ClosureEntry): string {
   const afterStatus = entry.text.replace(LEADING_STATUS_RE, "");

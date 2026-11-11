@@ -111,7 +111,8 @@ const SPACED_PATH_PREFIX_RE = /^[\w.\/ -]+$/;
 export function citedLocations(evidence: string): CitedLocation[] {
   let text = evidence.slice(0, MAX_EVIDENCE_CHARS);
   // The evidence value runs on into the `reason:` field, so it is cut there. Only
-  // a label at a field boundary counts, so `src/reason-codes.ts:12` survives.
+  // a label at the start or directly after whitespace counts, so
+  // `src/reason-codes.ts:12` survives (Issue #4977).
   const cut = text.search(ENTRY_FIELD_PATTERNS.reason);
   if (cut >= 0) text = text.slice(0, cut);
   const ticks: number[] = [];

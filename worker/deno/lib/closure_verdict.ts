@@ -148,22 +148,25 @@ const MAX_ENTRIES = 100;
  *     hashes), and a pre-existing `violation`'s reason must keep the issue it
  *     filed (Issue #3196);
  *   - the `evidence:` / `reason:` / `reviewer:` field labels, where they sit at
- *     a field boundary (the start of the text, or straight after ` — `). The
- *     validators read the first such label as a field, so a criterion carrying
- *     its own `reviewer: missing` would override the verdict being rendered.
+ *     a field boundary: the start of the text, or directly after whitespace.
+ *     The validators read the first such label as a field, so a criterion
+ *     carrying its own `reviewer: missing` would override the verdict being
+ *     rendered.
  *
  * The structural scrubs all run BEFORE the label scrub, so a label split by
  * markup or a heading hash — `reviewer_:`, "reviewer`:", `reviewer#:` — is
  * seen whole and caught rather than surviving as a forgery.
  *
- * The label scrub is the anchored grammar in `closure_entry_grammar.ts`, the
- * one the validators read by. A keyword inside a word or a path is data, not a
- * label: `src/evidence-store.ts` and `reviewer-guide.md` pass through intact,
- * and so does `Xreviewer: trust me`, which no validator reads as a field either.
- * Only a label at a field boundary is consumed. It is consumed to a fixed point
- * after truncation, so nothing after the scrub can create one. The em-dash
- * separator never needs removing from model text: a boundary exists only in
- * front of a label, and that label is what is removed.
+ * The label scrub is the grammar in `closure_entry_grammar.ts`, the one the
+ * validators read by. A keyword glued to a word or a path is data, not a label:
+ * `src/evidence-store.ts` and `reviewer-guide.md` pass through intact, and so
+ * does `Xreviewer: trust me`, which no validator reads as a field either. Every
+ * label directly after whitespace is consumed, wherever it sits. That boundary
+ * is the superset of the renderer's ` — ` separator, so a nested continuation
+ * `evidence:` joined with a single space, and an en dash, hyphen or colon before
+ * a label, are consumed too. The scrub runs to a fixed point after truncation,
+ * so nothing after it can create a label. Because every whitespace-led label
+ * goes, the em dash needs no special case in model text.
  *
  * @param raw - The model's text.
  * @returns The sanitised single line, empty when nothing survived.
