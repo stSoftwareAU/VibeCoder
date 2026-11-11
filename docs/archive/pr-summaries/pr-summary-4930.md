@@ -250,7 +250,7 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   head, two of them inside loops),
   `worker/deno/tests/git_push_preflight_test.ts` (22 tests at head),
   `worker/deno/tests/pre_push_gate_cli_test.ts` (10 tests at head) and
-  `worker/deno/tests/local_default_branch_test.ts` (3 tests at head), including
+  `worker/deno/tests/local_default_branch_test.ts` (4 tests at head), including
   `runPrePushGate` cases for a test red at the fork (warning, worktree removed),
   a base that passes, a different test red at the base, a push-added test file,
   a fetch outage, a 404, a mixed output, a builder-based reader reached by the
@@ -346,12 +346,16 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 
 - `worker/deno/lib/local_default_branch.ts` had no test importing it (the
   existing `resolveLocalDefaultBranch` test imports the `git_push.ts`
-  re-export). New `worker/deno/tests/local_default_branch_test.ts` (3 tests at
+  re-export). New `worker/deno/tests/local_default_branch_test.ts` (4 tests at
   head) drives it on a real clone: `origin/HEAD` on a `trunk` branch gives
   `trunk` (not `refs/remotes/origin/trunk`);
   `git remote set-head origin
   --delete` gives null (control: it resolves
-  before the delete); a directory that is not a git repository gives null. The
+  before the delete); a directory that is not a git repository gives null; a
+  non-existent directory (git cannot run, `runGitCommand` returns `ok: false`)
+  gives null rather than a throw (red with `result.ok` forced true:
+  `TypeError:
+  Cannot read properties of undefined (reading 'code')`). The
   unreachable `branch || null` (exit 0 always prints a ref) is removed.
 - `pushForkCommit` passed `cwd` to `ensureHistoryDepth` as well as pinning every
   git call to `cwd` in its `gitRunner`, so dropping the option changed nothing.

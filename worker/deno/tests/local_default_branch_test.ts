@@ -68,3 +68,13 @@ Deno.test("resolveLocalDefaultBranch: null outside a git repository", async () =
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("resolveLocalDefaultBranch: null, not a throw, when git cannot run in the directory", async () => {
+  const root = await Deno.makeTempDir({ prefix: "local_default_missing_" });
+  const missing = `${root}/does-not-exist`;
+  try {
+    assertEquals(await resolveLocalDefaultBranch({ cwd: missing }), null);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
