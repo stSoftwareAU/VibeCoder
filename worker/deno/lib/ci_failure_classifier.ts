@@ -298,8 +298,10 @@ function peelLogLine(line: string): { content: string; errored: boolean } {
  *   failed attempt, before it decides to retry, and `-s` hides the retry
  *   notice. The line counts only when it is the block's last curl error line
  *   (a later `curl: (N)` line means it was a recovered attempt), no
- *   `will retry in` notice follows it, and either the block reports
- *   `exit code 22` or the line ends the block.
+ *   `will retry in` notice follows it, and it is the step's own verdict: the
+ *   next line is the `exit code 22` line or the line ends the block. A later,
+ *   unrelated step that fails silently with exit 22 therefore does not turn an
+ *   earlier recovered attempt into the failure.
  */
 function findDownloadOutageSignals(
   annotations: ReadonlyArray<CiAnnotation>,
@@ -319,7 +321,6 @@ function findDownloadOutageSignals(
     const lines = block.split("\n").map(peelLogLine).filter((l) =>
       l.content.length > 0
     );
-    const exit22 = lines.some((l) => CURL_EXIT_22_REGEX.test(l.content));
     lines.forEach((l, i) => {
       const bare = l.errored ? TOOL_CACHE_BARE_REGEX.exec(l.content) : null;
       if (bare) signals.add(`unexpected http response: ${bare[1]}`);
@@ -329,7 +330,9 @@ function findDownloadOutageSignals(
         n.content.includes(RETRY_NOTICE) ||
         CURL_ERROR_LINE_REGEX.test(n.content)
       );
-      if (!retried && (exit22 || i === lines.length - 1)) {
+      const terminal = i === lines.length - 1 ||
+        CURL_EXIT_22_REGEX.test(lines[i + 1].content);
+      if (!retried && terminal) {
         signals.add(`the requested url returned error: ${curl[1]}`);
       }
     });

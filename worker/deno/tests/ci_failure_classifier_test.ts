@@ -821,6 +821,30 @@ Deno.test("ci_failure_classifier - a silent recovered curl 504 followed by a cur
   }
 });
 
+Deno.test("ci_failure_classifier - a silent recovered curl 504 followed by a later silent exit-22 step stays code-fix-required (Issue #4965, PR #5042)", () => {
+  // Step 1 recovered (-sS hides the notice); step 2 `curl -sf` fails silently.
+  const lines = [
+    "##[group]Run curl -fsSL --retry 3 https://deno.land/install.sh | sh",
+    "curl: (22) The requested URL returned error: 504",
+    "Deno was installed successfully to /home/runner/.deno/bin/deno",
+    "##[group]Run curl -sf http://localhost:8000/health",
+    "##[error]Process completed with exit code 22.",
+  ];
+  for (
+    const log of [
+      lines.join("\n"),
+      lines.map((l) => `2026-11-11T01:02:03.4567890Z ${l}`).join("\n"),
+    ]
+  ) {
+    const result = classifyCiFailure("build", [], log);
+    assertEquals(result.category, "code-fix-required");
+    assertEquals(
+      result.signals.some((s) => s.startsWith("text:the requested url")),
+      false,
+    );
+  }
+});
+
 Deno.test("ci_failure_classifier - the terminal curl 504 with exit code 22 routes to infrastructure (Issue #4965)", () => {
   const log = [
     "Warning: Problem : HTTP error. Will retry in 1 seconds. 1 retries left.",
