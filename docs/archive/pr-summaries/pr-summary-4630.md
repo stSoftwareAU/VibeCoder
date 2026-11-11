@@ -281,7 +281,7 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `deno task check:manifests` cover the Deno tree and pass on the head. The
   changed suites were run with `deno test -A` on the head, each passing in full:
   `tests/claude_runner_test.ts` (60 tests at head),
-  `tests/git_push_preflight_test.ts` (31 tests at head),
+  `tests/git_push_preflight_test.ts` (32 tests at head),
   `tests/pre_push_gate_cli_test.ts` (12 tests at head),
   `tests/pre_push_hook_test.ts` (13 tests at head),
   `tests/pr_ci_processor_test.ts` (61 tests at head) and
@@ -398,9 +398,9 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   (`ms`), and the stall error names `totalMs` rather than the remainder, so a
   message that stalls mid-read reports the configured deadline (`deadlineMs`)
   instead of the time left on that read. It changes the error text only; the
-  diff against the base touches no test file for it, and the existing
-  `worker/deno/tests/git_stdin_message_test.ts` (13 tests) passes on the head
-  with `deno test -A`. This file's freshness claims were re-derived against that
+  diff against the base touches no test file for it; the existing
+  stdin-message suite, which this PR does not change, passes on the head with
+  `deno test -A`. This file's freshness claims were re-derived against that
   commit and the head that carries it.
 - Not checked: a real cargo clippy run against a Rust repository (the tests use
   injected runners and real workflow scans). Workflow conditions, matrices,

@@ -5267,9 +5267,9 @@ gates do (see that bullet):
      message and file, each no more often than on the base; not line) is also on the base, the failure is no verdict
      on this push and is reported as a `[PRE_PUSH_WARNING]`. The agent's own
      hook compares too, but only for a run that is handed the PR base: the
-     CI-fix, PR-feedback and spelling processors read the PR's base branch
-     before the agent runs, and custom PR prompts carry the base from PR
-     discovery. Both main-loop and standalone issue runs pass theirs (the milestone branch,
+     CI-fix, PR-feedback, spelling and merge-conflict processors read the PR's
+     base branch before the agent runs, and custom PR prompts carry the base
+     from PR discovery. Both main-loop and standalone issue runs pass theirs (the milestone branch,
      else the base branch, else the default branch, skipping blank names) on the execute run, the completion rebase pass and
      the in-run recovery agents (pre-push gate, screenshot, summary-rule,
      PR-body-length, security-fix and quality-gate remediation), and each is written into the hook spec as
@@ -5442,8 +5442,8 @@ or the `aws` CLI is missing for a deployable template, refuses the push; a CI
 cargo check that fails refuses the push with its output, unless the PR base
 fails with every diagnostic the push shows, when it is a `[PRE_PUSH_WARNING]`
 (in the worker's own gates, and in the agent's hook when its spec carries a
-`compareRef`, the PR base the CI-fix, PR-feedback and spelling processors and
-the issue-run agents hand it),
+`compareRef`, the PR base the CI-fix, PR-feedback, spelling and merge-conflict
+processors and the issue-run agents hand it),
 while a CI cargo check that cannot
 start or time out, hits a cargo registry or git-dependency network refusal or
 host disk full, or whose toolchain, component,
