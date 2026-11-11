@@ -59,10 +59,10 @@ flowchart LR
 
 Callers of the changed readers: `independent_review_gate.ts`,
 `acceptance_criteria_gate.ts`, `closure_criterion_match.ts` (`subjectOf`,
-`gapSubject`) and `standing_violation_routing.ts` (`citedLocations`) now import
-the shared patterns. `degraded_delivery.ts` and `reproduction_status_gate.ts`
-keep their own label regexes and are unchanged (not part of the reported
-defect).
+`gapSubject`), `standing_violation_routing.ts` (`citedLocations`) and
+`degraded_delivery.ts` (`isPendingMergeCheck`, PR #5060 review) now import the
+shared patterns. `reproduction_status_gate.ts` keeps its own `REASON_RE`: it
+reads the agent-written reproduction block, not a worker-rendered closure entry.
 
 ## Test Plan
 
@@ -75,6 +75,12 @@ defect).
   `reviewer#:` and `Xreviewer:`, tab, NBSP, newline and 300-character-cap
   boundaries, the nested continuation form, duplicate reviewer fields, and
   100k-character hostile fields.
+- `worker/deno/tests/degraded_delivery_test.ts`: 2 new tests through
+  `renderClosureBlocks` and `assessScopeShortfalls`: a pending-CI `partial`
+  entry whose evidence cites `lib/reason-codes.ts` (and two similar paths) stays
+  a pending merge check with no shortfall; the same entry with failed-CI evidence
+  stays a shortfall. Red check: `degraded_delivery.ts` restored to the earlier
+  commit → the first test fails (`evidence lib/reason-codes.ts`).
 - `worker/deno/tests/closure_entry_grammar_4977_test.ts`: 10 new tests of the
   grammar itself, plus `subjectOf` keeping `reason-codes.ts` whole and
   `citedLocations` reading `src/reason-codes.ts:12` intact.
@@ -90,7 +96,11 @@ defect).
   `closure_entry_grammar_4977_test.ts`: 10 passed. The existing tests of the
   changed readers (gates, `closure_criterion_match`, `degraded_delivery`,
   `closure_met_check_3766`, `label_tail_redos_3186`,
-  `standing_violation_routing`) pass unchanged.
+  `standing_violation_routing`) pass unchanged; `degraded_delivery_test.ts`
+  passes with the 2 new tests.
+- Comments that described the removed unanchored grammar were reworded in
+  `closure_verdict_test.ts` (the `Xevidence:` test) and
+  `label_tail_redos_3186_test.ts` (header).
 - Completeness: the new module is claimed in
   `docs/audits/lib-sweep-coverage/top-up-4977.json`.
 - Docs: `docs/workflows/issue-processing.md` (closure-verdict rendering item)
@@ -103,5 +113,5 @@ defect).
 
 Not done or not checked: the Spec and Standards reviewer sub-agents were not
 dispatched (the issue has no `Acceptance Criteria` heading); the
-`degraded_delivery.ts` label regexes are unchanged; the 2242 audit record is not
-rewritten.
+2242 audit record is not rewritten. `./quality.sh < /dev/null` was re-run after
+the PR #5060 review fix: PASSED (config integration and checkov skipped).

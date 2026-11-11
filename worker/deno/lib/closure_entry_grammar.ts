@@ -44,6 +44,15 @@ export const ENTRY_FIELD_PATTERNS = {
 } as const;
 
 /**
+ * The span of the `evidence:` field alone: from its label to the next field
+ * label (`reviewer`, `reason` or `remaining`) at a boundary, or the end of the
+ * entry. The lookahead only tests a fixed token at each position and the lazy
+ * body never backtracks into the label, so the cost is linear in the text.
+ */
+export const ENTRY_EVIDENCE_SPAN_RE =
+  /(?:^|\s)evidence\s*:\s*([\s\S]*?)(?=\s(?:reviewer|reason|remaining)\s*:|$)/i;
+
+/**
  * Every `reviewer:` field in an entry, for counting them. Global, so it is used
  * with `matchAll`, which works on a copy and never shares `lastIndex` state.
  */
