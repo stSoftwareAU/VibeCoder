@@ -1,13 +1,13 @@
 ## Summary
 
-PR #5033 landed the main fix for #4952 (completion marks a reachable draft ready,
-the REST-fallback path does the same, and the auto-merge sweep readies an
-orphaned fleet draft). This branch closes the one fail-open path #5033 left: when
-the draft state could not be read, a failed `gh pr ready` only logged a warning,
-armed auto-merge and released the claim as "raised #N" while the PR might still
-be a draft. Now any failed `gh pr ready` on a possible draft fails the run
-(`interrupted`, retried, never filed), names the PR, and never arms. Every
-stated criterion is met. Closes #4952.
+PR #5033 landed the main fix for #4952 (completion marks a reachable draft
+ready, the REST-fallback path does the same, and the auto-merge sweep readies an
+orphaned fleet draft). This branch closes the one fail-open path #5033 left:
+when the draft state could not be read, a failed `gh pr ready` only logged a
+warning, armed auto-merge and released the claim as "raised #N" while the PR
+might still be a draft. Now any failed `gh pr ready` on a possible draft fails
+the run (`interrupted`, retried, never filed), names the PR, and never arms.
+Every stated criterion is met. Closes #4952.
 
 ## Spec
 
@@ -81,10 +81,10 @@ flowchart TD
 - **violation** — unknown-state failed ready was fail-open, and its comments and
   wording still said "is still a draft" — evidence:
   `worker/deno/lib/phases/completion_phase.ts` — reason: fixed in this diff
-- **violation** — known-draft test matched "may still be a draft" as well as
-  "is still a draft" — evidence:
-  `worker/deno/tests/completion_draft_ready_4952_test.ts` — reason: fixed in this
-  diff
+- **violation** — known-draft test matched "may still be a draft" as well as "is
+  still a draft" — evidence:
+  `worker/deno/tests/completion_draft_ready_4952_test.ts` — reason: fixed in
+  this diff
 - **clean** — Australian English, fail-loud logging with PR numbers, no secrets
   staged, no persisted-shape change. The fixes after this review were not
   re-reviewed by a second reviewer run.
@@ -98,11 +98,11 @@ flowchart TD
   unknown-state comment. The old `continue` + armed assertions are replaced
   (required by "If marking it ready fails, the claim is not released with
   'raised #N'").
-- Edited fixture only in `worker/deno/tests/issue_worker_test.ts`
-  ("completion - self-heals when PR creation fails but PR exists"): its mock
-  threw for every `gh` call, so the new failed-ready rule failed it; it now
-  throws only for `gh pr create` and answers `gh pr view` with a ready PR. All
-  assertions are kept.
+- Edited fixture only in `worker/deno/tests/issue_worker_test.ts` ("completion -
+  self-heals when PR creation fails but PR exists"): its mock threw for every
+  `gh` call, so the new failed-ready rule failed it; it now throws only for
+  `gh pr create` and answers `gh pr view` with a ready PR. All assertions are
+  kept.
 - Red-checks: old warn-only branch restored → both unknown-state tests red;
   unknown-state wording forced to the known wording → the reason tests red.
 - On the head: `deno task test:unit` over
