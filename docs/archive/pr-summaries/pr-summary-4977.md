@@ -78,16 +78,16 @@ reads the agent-written reproduction block, not a worker-rendered closure entry.
 - `worker/deno/tests/degraded_delivery_test.ts`: 2 new tests through
   `renderClosureBlocks` and `assessScopeShortfalls`: a pending-CI `partial`
   entry whose evidence cites `lib/reason-codes.ts` (and two similar paths) stays
-  a pending merge check with no shortfall; the same entry with failed-CI evidence
-  stays a shortfall. Red check: `degraded_delivery.ts` restored to the earlier
-  commit → the first test fails (`evidence lib/reason-codes.ts`).
+  a pending merge check with no shortfall; the same entry with failed-CI
+  evidence stays a shortfall. Red check: `degraded_delivery.ts` restored to the
+  earlier commit → the first test fails (`evidence lib/reason-codes.ts`).
 - `worker/deno/tests/closure_entry_grammar_4977_test.ts`: 10 new tests of the
   grammar itself, plus `subjectOf` keeping `reason-codes.ts` whole and
   `citedLocations` reading `src/reason-codes.ts:12` intact.
-- Existing tests edited: none; no assertion removed. Only comments were
-  reworded (see the comments bullet below), so `git diff origin/main` shows
-  deleted comment lines in `closure_verdict_test.ts` and
-  `label_tail_redos_3186_test.ts` but no deleted assertion.
+- Existing tests edited: none; no assertion removed. Only comments were reworded
+  (see the comments bullet below), so `git diff origin/main` shows deleted
+  comment lines in `closure_verdict_test.ts` and `label_tail_redos_3186_test.ts`
+  but no deleted assertion.
 - Red checks (a mutation applied, tests run, lib restored): old scrub restored →
   path, `subjectOf` and `citedLocations` tests red; patterns made unanchored
   with `[:\-—]` → 9 tests red; `neutraliseFieldLabels` skipped in
@@ -95,8 +95,8 @@ reads the agent-written reproduction block, not a worker-rendered closure entry.
   grammar idempotence test and the adjacent-label render tests red;
   reviewer-ambiguity rule removed → read-back test red.
 - `deno task test:unit` at head: `closure_verdict_test.ts` (46 tests at head),
-  `closure_entry_grammar_4977_test.ts` (10 tests at head). The existing tests of the
-  changed readers (gates, `closure_criterion_match`, `degraded_delivery`,
+  `closure_entry_grammar_4977_test.ts` (10 tests at head). The existing tests of
+  the changed readers (gates, `closure_criterion_match`, `degraded_delivery`,
   `closure_met_check_3766`, `label_tail_redos_3186`,
   `standing_violation_routing`) pass unchanged; `degraded_delivery_test.ts`
   passes with the 2 new tests (`degraded_delivery_test.ts`, 14 tests at head).
@@ -109,12 +109,12 @@ reads the agent-written reproduction block, not a worker-rendered closure entry.
   read and updated. `docs/audits/security-sweep-2242-closure-verdict.md` line 27
   is a point-in-time audit record and still describes the old scrub.
 - `./quality.sh < /dev/null` on the code head before the PR #5060 review fix:
-  PASSED (config integration and checkov skipped: no config, no checkov); it
-  was re-run after that fix (see the last paragraph). An earlier run failed only the
+  PASSED (config integration and checkov skipped: no config, no checkov); it was
+  re-run after that fix (see the last paragraph). An earlier run failed only the
   lib sweep ledger test, fixed by the ledger file above.
   `deno task pr-summary-check`: 0 blocked, 0 not checked.
 
 Not done or not checked: the Spec and Standards reviewer sub-agents were not
-dispatched (the issue has no `Acceptance Criteria` heading); the
-2242 audit record is not rewritten. `./quality.sh < /dev/null` was re-run after
-the PR #5060 review fix: PASSED (config integration and checkov skipped).
+dispatched (the issue has no `Acceptance Criteria` heading); the 2242 audit
+record is not rewritten. `./quality.sh < /dev/null` was re-run after the PR
+#5060 review fix: PASSED (config integration and checkov skipped).
