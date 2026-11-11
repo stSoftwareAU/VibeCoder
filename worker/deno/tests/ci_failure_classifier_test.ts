@@ -783,6 +783,22 @@ Deno.test("ci_failure_classifier - a curl 504 followed by a retry notice is not 
   );
 });
 
+Deno.test("ci_failure_classifier - a curl 504 whose retry notice is the only later curl sign is not terminal despite exit code 22 (Issue #4965, PR #5042)", () => {
+  // No later `curl: (N)` line, so only the retry notice marks the 504 recovered.
+  const log = [
+    "curl: (22) The requested URL returned error: 504",
+    "Warning: Problem : HTTP error. Will retry in 1 seconds. 3 retries left.",
+    "error: unrelated build failure",
+    "##[error]Process completed with exit code 22.",
+  ].join("\n");
+  const result = classifyCiFailure("build", [], log);
+  assertEquals(result.category, "code-fix-required");
+  assertEquals(
+    result.signals.some((s) => s.startsWith("text:the requested url")),
+    false,
+  );
+});
+
 Deno.test("ci_failure_classifier - a silent recovered curl 504 followed by a curl 404 and exit code 22 stays code-fix-required (Issue #4965)", () => {
   // curl -fsSL --retry 3 -o a.tgz URL_A && curl -fsSL -o b.tgz URL_B
   const lines = [
