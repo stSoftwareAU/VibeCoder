@@ -26,6 +26,10 @@ import {
   parseClosureEntries,
 } from "./acceptance_criteria_gate.ts";
 import {
+  ENTRY_EVIDENCE_SPAN_RE,
+  ENTRY_FIELD_PATTERNS,
+} from "./closure_entry_grammar.ts";
+import {
   gapSubject,
   matchClosureEntries,
   subjectOf,
@@ -97,19 +101,19 @@ function hasFailedMergeCheck(evidence: string): boolean {
 /** Pending merge checks are visible in the summary, not unfinished work. */
 export function isPendingMergeCheck(entry: ClosureEntry): boolean {
   if (entry.status !== "partial" && entry.status !== "missing") return false;
-  const evidence = entry.text.match(
-    /\bevidence\s*[:—-]\s*([\s\S]*?)(?:\s+[—-]\s+(?:reviewer|reason|remaining)\s*[:—-]|$)/i,
-  )?.[1] ?? "";
+  // Labels are read with the shared entry grammar (Issue #4977), so a path such
+  // as `lib/reason-codes.ts` in the evidence is data, not a `reason` field.
+  const evidence = entry.text.match(ENTRY_EVIDENCE_SPAN_RE)?.[1] ?? "";
   if (hasFailedMergeCheck(evidence)) return false;
   // A mixed criterion can have completed product work and only verification
   // left. The generator states that explicitly while retaining its partial
   // closure status; CI/review/acceptance gates still judge the original entry.
   if (
-    /\breason:\s*(?:CI not yet verified|awaiting code review|quality gate not yet run)\s*[—-]\s*remaining:\s*merge-verification-only\s*$/i
+    /(?:^|\s)reason:\s*(?:CI not yet verified|awaiting code review|quality gate not yet run)\s*[—-]\s*remaining:\s*merge-verification-only\s*$/i
       .test(entry.text)
   ) return true;
   const subject = subjectOf(entry);
-  const reason = entry.text.match(/\breason\s*[:\-—]\s*([\s\S]+)$/i)?.[1] ?? "";
+  const reason = entry.text.match(ENTRY_FIELD_PATTERNS.reason)?.[1] ?? "";
   return isMergeCheckOnly(subject) &&
     /^(?:(?:required )?CI (?:(?:is |still )?pending|not yet verified)|awaiting (?:independent |clean )?code review|(?:required )?quality (?:gate )?(?:not yet (?:run|executed|complete|completed)|pending)|(?:clean )?code review pending)[.!]?$/i
       .test(reason.trim());

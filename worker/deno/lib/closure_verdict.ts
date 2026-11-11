@@ -22,8 +22,8 @@
  * both gates exactly as `review_block_template_test.ts` does for the template.
  *
  * The verdict text is model-authored and steered by an untrusted issue body, so
- * every free-text field is sanitised before it is rendered: one line, no label
- * keywords, no markdown heading or comment syntax. A criterion that could open
+ * every free-text field is sanitised before it is rendered: one line, no field
+ * label at a field boundary, no markdown heading or comment syntax. A criterion that could open
  * its own `## Standards Review` section, or carry its own `reviewer:` field,
  * would let the text decide the verdict the worker is rendering.
  *
@@ -31,6 +31,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { neutraliseFieldLabels } from "./closure_entry_grammar.ts";
 import {
   VIOLATION_REASON_LINES,
   violationReasonSettles,
@@ -146,33 +147,41 @@ const MAX_ENTRIES = 100;
  *     issue reference, not a heading (a heading needs a space after its
  *     hashes), and a pre-existing `violation`'s reason must keep the issue it
  *     filed (Issue #3196);
- *   - the `evidence:` / `reason:` / `reviewer:` label keywords, which the
- *     validators match on — the first match wins, so a criterion carrying its
- *     own `reviewer: missing` would override the verdict being rendered.
+ *   - the `evidence:` / `reason:` / `reviewer:` field labels, where they sit at
+ *     a field boundary: the start of the text, or directly after whitespace.
+ *     The validators read the first such label as a field, so a criterion
+ *     carrying its own `reviewer: missing` would override the verdict being
+ *     rendered.
  *
  * The structural scrubs all run BEFORE the label scrub, so a label split by
  * markup or a heading hash — `reviewer_:`, "reviewer`:", `reviewer#:` — is
  * seen whole and caught rather than surviving as a forgery.
  *
- * The keyword scrub deliberately consumes any letters **before** the keyword as
- * well. The validators' own patterns are unanchored (`/evidence\s*[:\-—]/i`),
- * so `Xevidence: trust me` reads to them as a filled `evidence:` field: a
- * `\b`-anchored scrub would leave exactly the forgery it exists to remove.
+ * The label scrub is the grammar in `closure_entry_grammar.ts`, the one the
+ * validators read by. A keyword glued to a word or a path is data, not a label:
+ * `src/evidence-store.ts` and `reviewer-guide.md` pass through intact, and so
+ * does `Xreviewer: trust me`, which no validator reads as a field either. Every
+ * label directly after whitespace is consumed, wherever it sits. That boundary
+ * is the superset of the renderer's ` — ` separator, so a nested continuation
+ * `evidence:` joined with a single space, and an en dash, hyphen or colon before
+ * a label, are consumed too. The scrub runs to a fixed point after truncation,
+ * so nothing after it can create a label. Because every whitespace-led label
+ * goes, the em dash needs no special case in model text.
  *
  * @param raw - The model's text.
  * @returns The sanitised single line, empty when nothing survived.
  */
 function sanitiseField(raw: string): string {
-  return raw
-    .replace(/[`|]|(?<![A-Za-z0-9])[*_]|[*_](?![A-Za-z0-9])/g, " ")
-    .replace(/[\r\n]+/g, " ")
-    .replace(/<!--|--!?>/g, " ")
-    .replace(/#(?!\d)/g, " ")
-    .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_FIELD_CHARS)
-    .trim();
+  return neutraliseFieldLabels(
+    raw
+      .replace(/[`|]|(?<![A-Za-z0-9])[*_]|[*_](?![A-Za-z0-9])/g, " ")
+      .replace(/[\r\n]+/g, " ")
+      .replace(/<!--|--!?>/g, " ")
+      .replace(/#(?!\d)/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, MAX_FIELD_CHARS),
+  );
 }
 
 /**
@@ -189,16 +198,16 @@ function sanitiseField(raw: string): string {
  * @returns The sanitised single line, empty when nothing survived.
  */
 function sanitiseEvidence(raw: string): string {
-  return raw
-    .replace(/`/g, " ")
-    .replace(/[\r\n]+/g, " ")
-    .replace(/<!--|--!?>/g, " ")
-    .replace(/#(?!\d)/g, " ")
-    .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_FIELD_CHARS)
-    .trim();
+  return neutraliseFieldLabels(
+    raw
+      .replace(/`/g, " ")
+      .replace(/[\r\n]+/g, " ")
+      .replace(/<!--|--!?>/g, " ")
+      .replace(/#(?!\d)/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, MAX_FIELD_CHARS),
+  );
 }
 
 /** Read a string field, sanitised; `null` when absent or empty after the scrub. */
