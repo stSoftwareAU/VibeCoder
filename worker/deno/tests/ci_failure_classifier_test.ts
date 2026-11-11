@@ -783,6 +783,28 @@ Deno.test("ci_failure_classifier - a curl 504 followed by a retry notice is not 
   );
 });
 
+Deno.test("ci_failure_classifier - a silent recovered curl 504 followed by a curl 404 and exit code 22 stays code-fix-required (Issue #4965)", () => {
+  // curl -fsSL --retry 3 -o a.tgz URL_A && curl -fsSL -o b.tgz URL_B
+  const lines = [
+    "curl: (22) The requested URL returned error: 504",
+    "curl: (22) The requested URL returned error: 404",
+    "##[error]Process completed with exit code 22.",
+  ];
+  for (
+    const log of [
+      lines.join("\n"),
+      lines.map((l) => `2026-11-11T01:02:03.4567890Z ${l}`).join("\n"),
+    ]
+  ) {
+    const result = classifyCiFailure("build", [], log);
+    assertEquals(result.category, "code-fix-required");
+    assertEquals(
+      result.signals.some((s) => s.startsWith("text:the requested url")),
+      false,
+    );
+  }
+});
+
 Deno.test("ci_failure_classifier - the terminal curl 504 with exit code 22 routes to infrastructure (Issue #4965)", () => {
   const log = [
     "Warning: Problem : HTTP error. Will retry in 1 seconds. 1 retries left.",

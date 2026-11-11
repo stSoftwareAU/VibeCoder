@@ -269,6 +269,8 @@ const CURL_HTTP_ERROR_REGEX = new RegExp(
 );
 const CURL_EXIT_22_REGEX =
   /\bexit(?:ed)?\s*(?:with\s*)?(?:code|status)\s*[:=]?\s*22\b/;
+const CURL_ERROR_LINE_REGEX =
+  /^(?:curl: \(\d+\) |the requested url returned error: )/;
 const RETRY_NOTICE = "will retry in";
 
 /** A lower-cased log line without timestamp; `errored` when `##[error]`-prefixed. */
@@ -293,9 +295,11 @@ function peelLogLine(line: string): { content: string; errored: boolean } {
  *   `Error: ` prefix. The same text as a plain log line is the library's retry
  *   info line, so it only counts as an annotation message or `##[error]` line.
  * - curl prints `curl: (22) The requested URL returned error: 504` for every
- *   failed attempt, before it decides to retry. The line counts only when no
- *   `will retry in` notice follows it in its block and the step's own verdict
- *   is curl's HTTP-error exit (`exit code 22`) or the line ends the block.
+ *   failed attempt, before it decides to retry, and `-s` hides the retry
+ *   notice. The line counts only when it is the block's last curl error line
+ *   (a later `curl: (N)` line means it was a recovered attempt), no
+ *   `will retry in` notice follows it, and either the block reports
+ *   `exit code 22` or the line ends the block.
  */
 function findDownloadOutageSignals(
   annotations: ReadonlyArray<CiAnnotation>,
@@ -322,7 +326,8 @@ function findDownloadOutageSignals(
       const curl = CURL_HTTP_ERROR_REGEX.exec(l.content);
       if (!curl) return;
       const retried = lines.slice(i + 1).some((n) =>
-        n.content.includes(RETRY_NOTICE)
+        n.content.includes(RETRY_NOTICE) ||
+        CURL_ERROR_LINE_REGEX.test(n.content)
       );
       if (!retried && (exit22 || i === lines.length - 1)) {
         signals.add(`the requested url returned error: ${curl[1]}`);
