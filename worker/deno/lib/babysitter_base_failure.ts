@@ -16,9 +16,9 @@
  * dependency-audit check (fixed in each pull request, Issue #3141), a green or
  * missing or stale base run, an unreadable or different base log.
  *
- * A failing check whose base run is green is a repair too, but it carries the
- * name in `baseGreen`, so the repair may merge the base and bring the base's
- * fix in (Issue #4943). No other repair reading carries it.
+ * A repair whose stopping check is green on the base is a repair too, but it
+ * carries that check's name in `baseGreen`, so the repair may merge the base and
+ * bring the base's fix in (Issue #4943). No other repair reading carries it.
  *
  * Uses Australian English throughout.
  */
@@ -45,8 +45,13 @@ export type BaseFailureDecision =
   /**
    * Repair as usual; `reason` says which reading stopped the deferral.
    * `baseGreen` is set only when that reading is a failing check whose
-   * base-branch run is `green`: the names of such checks (Issue #4943). It is
-   * undefined for every other reading.
+   * base-branch run is `green` (Issue #4943). It then holds that one check's
+   * name, as a one-element list. The walk visits the failing checks in the order
+   * GitHub lists them and passes over each check that is red on the base with
+   * the same failure; it stops at the first check that is not, and only a green
+   * stop sets `baseGreen`. So a green check after a different failure, a
+   * dependency audit, an unreadable log or a base run that is missing, stale or
+   * unavailable is never named. `baseGreen` is undefined for every other reading.
    */
   | { kind: "repair"; reason: string; baseGreen?: string[] };
 

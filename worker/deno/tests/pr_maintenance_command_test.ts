@@ -451,6 +451,7 @@ async function strictRefreshPutCount(
         refresh.head,
         async () => {},
         { fleetAuthors: [author] },
+        "test-ready-updater",
       );
       assertEquals(seeded.ok, true, "the seeding refresh must succeed");
       assertEquals(countPuts(), 1, "the seed pushed once");

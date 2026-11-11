@@ -377,21 +377,37 @@ non-strict base it skips the owner and asks GitHub to update the branch directly
 `branch_update.ts`). A caller that omits `source` logs `source=unspecified`.
 
 A CI or review repair merges the base when GitHub reports the PR `CONFLICTING`.
-A failed-CI repair also merges it when a failing check's run on the base branch
-is green, so the base merge brings the base's fix in (Issue #4943). This is the
+A repair also merges the base when a failing check already passes on the base
+branch, so the base merge brings the base's fix in (Issue #4943). This is the
 route Issue #4921 deferred with "wait for the base fix to land". Only the
 babysitter (`babysitter-repair`, babysitter `fix()`) and the CI processor
-(`pr-ci-processor`) have a failing check to compare with the base, so only they
-take this route. The feedback and spelling processors (`pr-feedback-processor`,
-`pr-spelling-processor`) merge only on `CONFLICTING`. For a behind-only,
-`MERGEABLE`, `UNKNOWN` or unreadable PR with no such passing check, the base
-merge is skipped. Previously every babysitter repair merged the base, and the
-CI, feedback and spelling processors always synced the default branch, so each
-repair added a merge commit and re-ran CI on PRs not selected for final
-integration. The trade-off: a failure that appears only against the newer base
-is reproduced after the PR is refreshed as the owner, not inside the repair.
-Each repair-policy decision and each `requestReadyBranchUpdate` decision logs
-one line to stderr, so a command that prints JSON on stdout stays parseable:
+(`pr-ci-processor`) have a failing check to compare with the base, and they
+differ in which check decides:
+
+- The babysitter walks the head's failing checks in the order GitHub lists them.
+  It passes over each check that is red on the base with the same failure, and
+  stops at the first check that is not. The base merge goes ahead only when that
+  stopping check is green on the base, and it is then the one check named. A
+  different failure, a dependency audit, an unreadable log, or a base run that is
+  missing, stale or unavailable stops the walk without a merge. A green check
+  listed after the stop is never read.
+- The CI processor probes only its own failing check, against the default
+  branch. The base merge goes ahead when that check is green there, whatever the
+  other failing checks show, because they are not read.
+
+The feedback and spelling processors (`pr-feedback-processor`,
+`pr-spelling-processor`) have no failing check to compare, so they merge only on
+`CONFLICTING`. Otherwise the base merge is skipped: a behind-only, `MERGEABLE`,
+`UNKNOWN` or unreadable PR with no such passing check. Previously every
+babysitter repair merged the base, and the CI, feedback and spelling processors
+always synced the default branch, so each repair added a merge commit and re-ran
+CI on PRs not selected for final integration. The trade-off: a failure that
+appears only against the newer base is reproduced after the PR is refreshed as
+the owner, not inside the repair.
+
+Each repair-policy decision (the CI, feedback, spelling and babysitter repairs)
+and each `requestReadyBranchUpdate` decision (the refresh lanes) logs one line to
+stderr, so a command that prints JSON on stdout stays parseable:
 `[base-refresh] source=… outcome=… repo=… pr=#N base=… owner=#N/worker|none reason="…" version=… commit=…`,
 with outcomes `refresh-requested`, `refresh-skipped`, `base-merge-allowed` or
 `base-merge-skipped`. Grep the host's stderr log for `[base-refresh]` and count
@@ -410,16 +426,19 @@ Merge-queue bases keep their existing path. The counters are what to watch; no
 production improvement is claimed here.
 
 Transient mergeability reads use the existing #4831 recovery, not polling. When
-a repair's read reports `UNKNOWN`, the base merge is skipped for that cycle and
-the read is counted in the persisted refusal state the auto-merge sweep uses
-(`.branch_refresh_refusals_v1` under the worker's work directory; the babysitter
-keeps its own copy under its state directory). On the second consecutive
-`UNKNOWN` read one trusted PR comment says the refresh is waiting, and a
-`MERGEABLE` or `CONFLICTING` read later clears the streak and updates that
-comment to recovered. An unreadable or garbled read is inconclusive and leaves
-the streak alone.
+a repair's read reports `UNKNOWN`, the base merge is skipped for that cycle,
+except when a failing check already passes on the base: then the base-fixed
+route above merges it. Either way the read is counted in the persisted refusal
+state the auto-merge sweep uses (`.branch_refresh_refusals_v1` under the worker's
+work directory; the babysitter keeps its own copy under its state directory). On
+the second consecutive `UNKNOWN` read one trusted PR comment says the lane is
+waiting: a repair says it could not decide whether to merge its base, and the
+sweep's refresh says the refresh is refused. A `MERGEABLE` or `CONFLICTING` read
+later clears the streak and updates that comment to recovered. A PR has one such
+comment shared by both lanes, so the latest wording is the one shown. An
+unreadable or garbled read is inconclusive and leaves the streak alone.
 
-Each decision also increments a named counter `baseRefresh.<outcome>.<source>`,
+Each logged decision also increments a named counter `baseRefresh.<outcome>.<source>`,
 and `baseRefresh.repeatedMergeabilityUnknown` increments when the repeated
 `UNKNOWN` threshold fires. Where those counts land depends on the lane:
 

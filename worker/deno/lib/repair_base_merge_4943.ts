@@ -9,9 +9,15 @@
  * such check is not repaired by a base merge: the refresh that brings it up to
  * date is owned by the shared final-refresh owner from Issue #4613
  * (`requestReadyBranchUpdate`), which also serialises
- * the per-base refresh across the updater lanes. Every base-refresh lane logs
- * one bounded line per decision through {@link logBaseRefreshDecision} so an
- * operator can see which lane asked for a refresh, which was skipped, and why.
+ * the per-base refresh across the updater lanes. The lanes that decide through
+ * `requestReadyBranchUpdate`, and the repair lanes (CI, feedback, spelling and
+ * the babysitter), log one bounded line per decision through
+ * {@link logBaseRefreshDecision}, so an operator can see which lane asked for a
+ * refresh, which was skipped, and why. The local `updatePrBranch` conflict merge
+ * (`performBranchUpdate` in the branch-update loop and pr-maintenance, and the
+ * `update-pr-branch` command) logs no such line and writes no counter. The
+ * review-fleet-prs script logs from its own process and writes no counter file.
+ * docs/MERGE.md lists the lanes and where their counts land.
  */
 import { redactSecrets } from "./secret_redaction.ts";
 import {
@@ -180,7 +186,10 @@ export async function persistBaseRefreshCounter(
 
 /**
  * Add one to the counter called `name` in `{dir}/base_refresh_counters.json`,
- * the shared store behind {@link persistBaseRefreshCounter}. Never throws.
+ * the shared store behind {@link persistBaseRefreshCounter}. Never throws. A
+ * missing file starts the tally silently; a garbled or unreadable one logs one
+ * warning that the tally restarts; a failed write logs one warning naming the
+ * counter and the directory.
  */
 async function persistNamedCounter(
   dir: string | undefined,
@@ -194,14 +203,23 @@ async function persistNamedCounter(
       const parsed: unknown = JSON.parse(await Deno.readTextFile(path));
       const stored = (parsed as { counters?: unknown } | null)?.counters;
       if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-        for (const [name, count] of Object.entries(stored)) {
+        for (const [key, count] of Object.entries(stored)) {
           if (typeof count === "number" && Number.isFinite(count)) {
-            counters[name] = count;
+            counters[key] = count;
           }
         }
       }
-    } catch {
-      counters = {}; // missing or garbled: start the tally again
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        console.warn(
+          `[base-refresh] could not read the counters in ${path}; the tally restarts: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
+        );
+      }
+      counters = {};
     }
     counters[name] = (counters[name] ?? 0) + 1;
     await Deno.mkdir(dir, { recursive: true });
@@ -215,8 +233,12 @@ async function persistNamedCounter(
       ),
     );
     await Deno.rename(temp, path);
-  } catch {
-    // Diagnostics are best effort.
+  } catch (error) {
+    console.warn(
+      `[base-refresh] could not persist the counter ${name} under ${dir}: ${
+        redactSecrets(error instanceof Error ? error.message : String(error))
+      }`,
+    );
   }
 }
 
@@ -289,6 +311,7 @@ export interface RepairMergeabilityTracker {
     prNumber: number;
     entry: BranchRefreshRefusalEntry;
     active: boolean;
+    lane: "repair";
   }) => Promise<void>;
 }
 
@@ -307,9 +330,9 @@ export function createRepairMergeabilityTracker(input: {
   return {
     load: () => readBranchRefreshRefusals(workDir),
     save: (state) => writeBranchRefreshRefusals(workDir, state),
-    notify: ({ repo, prNumber, entry, active }) =>
+    notify: ({ repo, prNumber, entry, active, lane }) =>
       notifyBranchRefreshRefusal(
-        { repo, prNumber, entry, active },
+        { repo, prNumber, entry, active, lane },
         gh,
         (login) => isFleetAuthor(login, fleetAuthors),
       ),
@@ -349,7 +372,13 @@ export async function trackRepairMergeability(
         entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD && !entry.notified
       ) {
         try {
-          await tracker.notify({ repo, prNumber, entry, active: true });
+          await tracker.notify({
+            repo,
+            prNumber,
+            entry,
+            active: true,
+            lane: "repair",
+          });
           entry.notified = true;
         } catch (error) {
           log(
@@ -381,6 +410,7 @@ export async function trackRepairMergeability(
             prNumber,
             entry: previous,
             active: false,
+            lane: "repair",
           });
         } catch (error) {
           log(

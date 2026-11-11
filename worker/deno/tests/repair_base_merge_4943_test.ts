@@ -499,7 +499,6 @@ Deno.test("readRepairBaseMergeDecision feeds an UNKNOWN read to the #4831 tracke
 
 Deno.test("readRepairBaseMergeDecision merges a MERGEABLE PR when the probe names a check passing on the base, and logs the reason (Issue #4943)", async () => {
   const lines: string[] = [];
-  let probes = 0;
   const decision = await readRepairBaseMergeDecision({
     repo: "owner/repo",
     prNumber: 12,
@@ -507,12 +506,8 @@ Deno.test("readRepairBaseMergeDecision merges a MERGEABLE PR when the probe name
     source: "pr-ci-processor",
     base: "main",
     log: (line) => lines.push(line),
-    fixedOnBase: () => {
-      probes++;
-      return Promise.resolve(["test"]);
-    },
+    fixedOnBase: () => Promise.resolve(["test"]),
   });
-  assertEquals(probes, 1);
   assertEquals(decision.merge, true);
   assertEquals(lines.length, 1);
   assertMatch(
@@ -521,9 +516,8 @@ Deno.test("readRepairBaseMergeDecision merges a MERGEABLE PR when the probe name
   );
 });
 
-Deno.test("readRepairBaseMergeDecision never asks the probe about a CONFLICTING PR (Issue #4943)", async () => {
+Deno.test("readRepairBaseMergeDecision merges a CONFLICTING PR on the conflict reason, even when the probe names a passing check (Issue #4943)", async () => {
   const lines: string[] = [];
-  let probes = 0;
   const decision = await readRepairBaseMergeDecision({
     repo: "owner/repo",
     prNumber: 12,
@@ -531,12 +525,8 @@ Deno.test("readRepairBaseMergeDecision never asks the probe about a CONFLICTING 
     source: "pr-ci-processor",
     base: "main",
     log: (line) => lines.push(line),
-    fixedOnBase: () => {
-      probes++;
-      return Promise.resolve(["test"]);
-    },
+    fixedOnBase: () => Promise.resolve(["test"]),
   });
-  assertEquals(probes, 0);
   assertEquals(decision.merge, true);
   assertEquals(
     decision.reason,
@@ -659,19 +649,37 @@ Deno.test("formatStartupBuildLines prints the build banner then the base-refresh
   ]);
 });
 
-Deno.test("persistBaseRefreshCounter accumulates named decision counters across calls and restarts the tally on a garbled file (Issue #4943)", async () => {
+/** Run `fn` with console.warn captured; resolves to the lines it printed. */
+async function captureWarns(fn: () => Promise<unknown>): Promise<string[]> {
+  const original = console.warn;
+  const lines: string[] = [];
+  console.warn = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  try {
+    await fn();
+  } finally {
+    console.warn = original;
+  }
+  return lines;
+}
+
+Deno.test("persistBaseRefreshCounter accumulates named decision counters across calls, and restarts the tally with one warning on a garbled file (Issue #4943)", async () => {
   const dir = await Deno.makeTempDir();
+  const counters = `${dir}/${BASE_REFRESH_COUNTERS_FILE}`;
   const read = async () =>
-    JSON.parse(await Deno.readTextFile(`${dir}/${BASE_REFRESH_COUNTERS_FILE}`))
-      .counters;
+    JSON.parse(await Deno.readTextFile(counters)).counters;
   try {
     const skipped = { outcome: "base-merge-skipped", source: "pr-ci" } as const;
-    await persistBaseRefreshCounter(dir, skipped);
-    await persistBaseRefreshCounter(dir, skipped);
-    await persistBaseRefreshCounter(dir, {
-      outcome: "base-merge-allowed",
-      source: "pr-ci",
+    const firstWrites = await captureWarns(async () => {
+      await persistBaseRefreshCounter(dir, skipped);
+      await persistBaseRefreshCounter(dir, skipped);
+      await persistBaseRefreshCounter(dir, {
+        outcome: "base-merge-allowed",
+        source: "pr-ci",
+      });
     });
+    assertEquals(firstWrites, [], "a missing file starts the tally silently");
     assertEquals(await read(), {
       "baseRefresh.base-merge-skipped.pr-ci": 2,
       "baseRefresh.base-merge-allowed.pr-ci": 1,
@@ -681,37 +689,54 @@ Deno.test("persistBaseRefreshCounter accumulates named decision counters across 
       "baseRefresh.base-merge-skipped.pr-ci",
     );
 
-    await Deno.writeTextFile(`${dir}/${BASE_REFRESH_COUNTERS_FILE}`, "{oops");
-    await persistBaseRefreshCounter(dir, skipped);
+    await Deno.writeTextFile(counters, "{oops");
+    const garbled = await captureWarns(() =>
+      persistBaseRefreshCounter(dir, skipped)
+    );
+    assertEquals(garbled.length, 1, garbled.join("\n"));
+    assert(
+      garbled[0]!.startsWith(
+        `[base-refresh] could not read the counters in ${counters}; the tally restarts: `,
+      ),
+      garbled[0],
+    );
+    assertMatch(garbled[0]!, /JSON/, "the parse error is named");
     assertEquals(await read(), { "baseRefresh.base-merge-skipped.pr-ci": 1 });
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("persistBaseRefreshCounter writes nothing without a directory and never throws on an unwritable one (Issue #4943)", async () => {
+Deno.test("persistBaseRefreshCounter logs nothing without a directory, and warns with the cause but never throws on an unwritable one (Issue #4943)", async () => {
   const facts = { outcome: "base-merge-skipped", source: "pr-ci" } as const;
-  const readOrNull = (path: string) =>
-    Deno.readTextFile(path).catch(() => null);
 
-  // No directory: the call resolves and nothing appears in the working directory.
-  const cwdFile = BASE_REFRESH_COUNTERS_FILE;
-  const cwdBefore = await readOrNull(cwdFile);
-  assertEquals(await persistBaseRefreshCounter(undefined, facts), undefined);
-  assertEquals(await readOrNull(cwdFile), cwdBefore, "no counters written");
+  // No directory: the call resolves and there is nothing to report.
+  const absent = await captureWarns(async () => {
+    assertEquals(await persistBaseRefreshCounter(undefined, facts), undefined);
+  });
+  assertEquals(absent, [], "no directory, no line");
 
   const root = await Deno.makeTempDir();
   try {
     // A regular file cannot be a directory: persistence fails quietly.
     const file = `${root}/not-a-dir`;
     await Deno.writeTextFile(file, "sentinel");
-    assertEquals(await persistBaseRefreshCounter(file, facts), undefined);
+    const warns = await captureWarns(async () => {
+      assertEquals(await persistBaseRefreshCounter(file, facts), undefined);
+    });
     assertEquals(await Deno.readTextFile(file), "sentinel", "file unchanged");
     assertEquals(
       [...Deno.readDirSync(root)].map((entry) => entry.name),
       ["not-a-dir"],
       "no sibling counters or temp file left behind",
     );
+    const persistLine = warns.find((line) =>
+      line.startsWith(
+        `[base-refresh] could not persist the counter baseRefresh.base-merge-skipped.pr-ci under ${file}: `,
+      )
+    );
+    assert(persistLine !== undefined, warns.join("\n"));
+    assertMatch(persistLine, /File exists|AlreadyExists|already exists/i);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

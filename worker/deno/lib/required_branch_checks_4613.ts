@@ -461,11 +461,11 @@ export async function requestReadyBranchUpdate(
   repo: string,
   prNumber: number,
   gh: (args: string[]) => Promise<string>,
-  expectedBase?: string,
-  expectedHead?: string,
-  ownershipSleepFn?: (ms: number) => Promise<void>,
-  ownershipAuthorOptions?: AlertDedupAuthorOptions,
-  source?: string,
+  expectedBase: string | undefined,
+  expectedHead: string | undefined,
+  ownershipSleepFn: ((ms: number) => Promise<void>) | undefined,
+  ownershipAuthorOptions: AlertDedupAuthorOptions | undefined,
+  source: string,
   counterDir?: string,
 ): Promise<Result<void>> {
   const result = await requestReadyBranchUpdateInner(
@@ -479,7 +479,7 @@ export async function requestReadyBranchUpdate(
   );
   try {
     const facts = {
-      source: source ?? "unspecified",
+      source,
       repo,
       prNumber,
       base: expectedBase,
@@ -491,7 +491,7 @@ export async function requestReadyBranchUpdate(
         reason: "branch update requested from GitHub",
       });
       await persistBaseRefreshCounter(counterDir, {
-        source: source ?? "unspecified",
+        source,
         outcome: "refresh-requested",
       });
     } else {
@@ -504,12 +504,17 @@ export async function requestReadyBranchUpdate(
         ownerWorker: owner?.ownerWorker,
       });
       await persistBaseRefreshCounter(counterDir, {
-        source: source ?? "unspecified",
+        source,
         outcome: "refresh-skipped",
       });
     }
-  } catch {
-    // Diagnostics are best effort; the refresh result stands.
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[base-refresh] could not record the decision for ${repo}#${prNumber}: ${
+        redactSecrets(message)
+      }`,
+    );
   }
   return result;
 }

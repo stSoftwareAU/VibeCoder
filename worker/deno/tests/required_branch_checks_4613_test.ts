@@ -278,6 +278,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
         retryWaits.push(ms);
       },
       { fleetAuthors: ["VibeCoderST"] },
+      "test-ready-updater",
     );
   const firstRequest = await request();
   if (!firstRequest.ok) throw firstRequest.error;
@@ -296,6 +297,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     undefined,
     async () => {},
     { fleetAuthors: ["VibeCoderST"] },
+    "test-ready-updater",
   );
   assertEquals(nextReadyPr.ok, false);
   if (!nextReadyPr.ok) {
@@ -325,6 +327,7 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     undefined,
     async () => {},
     { fleetAuthors: ["VibeCoderST"] },
+    "test-ready-updater",
   );
   assertEquals(afterFailedOwner.ok, true);
   assertEquals(writes.length, 3);
@@ -478,10 +481,19 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
 
 Deno.test("ready updater rejects an invalid PR number before invoking gh", async () => {
   let called = false;
-  const result = await requestReadyBranchUpdate("owner/repo", -1, () => {
-    called = true;
-    return Promise.resolve("");
-  });
+  const result = await requestReadyBranchUpdate(
+    "owner/repo",
+    -1,
+    () => {
+      called = true;
+      return Promise.resolve("");
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "test-ready-updater",
+  );
   assertEquals(result.ok, false);
   assertEquals(called, false);
 });
@@ -492,6 +504,11 @@ Deno.test("ready updater redacts secrets from failed gh diagnostics", async () =
     "owner/repo",
     12,
     () => Promise.reject(new Error(`failed ${secret}`)),
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    "test-ready-updater",
   );
   assertEquals(result.ok, false);
   if (!result.ok) assertEquals(result.error.message.includes(secret), false);
@@ -736,6 +753,7 @@ for (const order of [[false, true], [true, false]]) {
       f.head,
       noSleep,
       authors,
+      "test-ready-updater",
     );
     assertEquals(result.ok, false);
     if (!result.ok) {
@@ -765,6 +783,7 @@ for (
       f.head,
       noSleep,
       authors,
+      "test-ready-updater",
     );
     if (!result.ok) throw result.error;
     assertEquals(f.calls.some((args) => args.includes("PUT")), true);
@@ -795,6 +814,7 @@ Deno.test("enabled protection with no required checks uses ruleset without class
     f.head,
     noSleep,
     authors,
+    "test-ready-updater",
   );
   if (!result.ok) throw result.error;
   assertEquals(f.calls.some((args) => args.includes("PUT")), true);
@@ -828,6 +848,7 @@ for (
       f.head,
       noSleep,
       authors,
+      "test-ready-updater",
     );
     assertEquals(result.ok, succeeds);
     assertEquals(f.calls.some((args) => args.includes("PUT")), succeeds);
@@ -859,6 +880,7 @@ for (
       f.head,
       noSleep,
       authors,
+      "test-ready-updater",
     );
     assertEquals(result.ok, false);
     if (!result.ok) {
@@ -888,6 +910,7 @@ for (const mergeRead of [2, 3]) {
       f.head,
       noSleep,
       authors,
+      "test-ready-updater",
     );
     assertEquals(result.ok, false);
     if (!result.ok) {
