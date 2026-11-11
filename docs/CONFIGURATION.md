@@ -5261,7 +5261,10 @@ gates do (see that bullet):
      output, unless the PR base already fails the same way: when the push knows
      the PR base (the repair processors' base branch, or the completion gate's
      base ref), a failing check is re-run, as CI wrote it, in a detached
-     worktree of that base. Remote `origin/<base>` refs are fetched before
+     worktree of that base's refreshed tip and, when the head forked from an
+     older commit, in a second one at that fork point (the base merge comes
+     after this gate, so a failure the head inherited and the tip has since fixed
+     is the base's). Remote `origin/<base>` refs are fetched before
      resolution; a failed fetch is infrastructure, even if an older local ref
      exists. Pinned commit refs are used directly. When every diagnostic the push shows (matched by
      message and file, each no more often than on the base; not line) is also on the base, the failure is no verdict
@@ -5284,11 +5287,14 @@ gates do (see that bullet):
      not make a base-only failure a verdict. The
      hook's Deno process is allowed to write only to the temp directory, for
      the base worktree; the git and cargo commands it runs are not limited to
-     it. A base that passes,
-     lacks the check's directory, or lacks a diagnostic the push shows, leaves
-     the failure a verdict. An unresolvable or unreadable base, a worktree that cannot be made, a base run
-     that times out, cannot start or fails for the host, and a push output with
-     no readable diagnostic are infrastructure faults. These comparison faults
+     it. When neither the
+     tip nor the fork point fails with every diagnostic the push shows (each
+     passes, lacks the check's directory, or lacks a diagnostic), the failure
+     stays a verdict. An unresolvable or unreadable base, a head whose fork
+     point on the base cannot be found, a worktree that cannot be made, a base
+     directory that cannot be read, a base run that times out, cannot start or
+     fails for the host, and a push output with no readable diagnostic are
+     infrastructure faults. These comparison faults
      retain a redacted, size-limited excerpt of the head's diagnostics. A CI-fix or review-feedback repair
      released uncharged because its gate failed as infrastructure leaves a PR
      comment carrying a `vibe-gate-infra-release` marker, and after two such

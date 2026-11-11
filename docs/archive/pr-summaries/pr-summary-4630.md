@@ -51,8 +51,8 @@ compile error is therefore caught before the push, not by a CI run. Closes
   fails a CI cargo command, so a warning the push adds, or cargo's
   `warning: build failed, waiting for other jobs to
   finish...`, does not make
-  a base-only failure a verdict. A base that passes or lacks an error the push
-  shows leaves it a verdict. An unavailable repair base or a host failure during
+  a base-only failure a verdict. If neither the base tip nor the head's fork point on it fails with every error
+  the push shows, it stays a verdict. An unavailable repair base or a host failure during
   comparison is infrastructure, not a branch verdict.
 - Scanner fixes: a `cd <dir>` on its own line now holds for the rest of that
   step's run block (any `cd` form it cannot follow, including `pushd`, `popd`, a
@@ -195,8 +195,9 @@ flowchart LR
 - Anything the scanner cannot reproduce faithfully fails loud as infrastructure
   instead of dropping to a smaller check set (the issue requires this).
 - A failure the PR base already has is compared by diagnostic message, file and
-  count, not line number, on a detached worktree of the base: cheap, and it
-  never excuses a diagnostic the base lacks. Re-running on the base costs one
+  count, not line number, on a detached worktree of the base tip and, when the
+  head forked from an older commit, of that fork point: cheap, and it never
+  excuses a diagnostic that neither shows. Re-running on the base costs one
   extra cargo build (two when the head forked from an older base than the tip),
   only when a check has already failed.
 - Repair processors use a cargo-only spec for repos without pre-flight, so the
@@ -296,10 +297,11 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   (`--config <worker>/deno.json --frozen --lock
   <worker>/deno.lock`, from main
   PR #4962), so the previous `--no-config` environment workaround no longer
-  applies. `tests/pre_push_gate_test.ts` and
-  `tests/pr_feedback_processor_test.ts` together show 26 failed tests on the
-  head and the identical 26 on the base commit (fixtures that commit `README.md`
-  with `#Bad` meet the container's real `markdownlint-cli2`); they are not
+  applies. `tests/pre_push_gate_test.ts` (150 tests at head, 124 pass) shows 26 failed
+  tests on the head (fixtures that commit `README.md` with `#Bad` meet the
+  container's real `markdownlint-cli2`), the same 26 that failed on the base
+  commit; `tests/pr_feedback_processor_test.ts` was not re-run on this head. They
+  are not
   caused by this change. The real ShellCheck publication suite was not re-run on
   this head.
 - The obsolete environment contract copied the CI output directory into local
@@ -340,6 +342,19 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `::runPrePushGate: a base host fault is infrastructure`, and the fork-point
   run shares `runOnCommit` with it; no test file stages a host fault on only the
   second base run (searched `git grep -n vibe-base-check- worker/deno/tests`).
+  Base-worktree lifecycle and fork-point mutations (PR #4896 mutation check),
+  each killed by a test in `worker/deno/tests/pre_push_gate_test.ts` (each
+  mutation applied to `worker/deno/lib/pre_push_gate.ts`, the test went red,
+  then restored): `baseCommitOfHead` dropping the `merge-base` exit-code operand
+  → `review 4896: a merge-base that fails is no fork point, whatever it printed`;
+  `added = true` initially → `...a worktree that cannot be added is infrastructure and is not removed`;
+  the non-`NotFound` stat fault returning `""` → `...a base directory that cannot be read as a directory is infrastructure, not a verdict`
+  (real ENOTDIR: the tip turns `rust/` into a file);
+  `timeoutSeconds` dropped from the base run → `...the PR timeout reaches the base run`;
+  negated `removed.code` check → `...a base worktree and its scratch directory are removed without a warning`
+  and `...a worktree remove that fails warns and still deletes the non-empty scratch directory`;
+  `recursive: true` → `false` and the scratch `Deno.remove` deleted → the second
+  of those two (the failed remove leaves the scratch directory non-empty) and the first.
   Red check: with the fork-point comparison skipped, the test fails with
   `Pre-flight gate BLOCK ... cargo clippy ... failed`.
   `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - a fix branch compares the PR base without merging it`

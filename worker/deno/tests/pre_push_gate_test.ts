@@ -8,6 +8,7 @@ import {
   assert,
   assertEquals,
   assertInstanceOf,
+  assertRejects,
   assertStringIncludes,
 } from "@std/assert";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
@@ -3992,6 +3993,228 @@ Deno.test("review 4896: a failed base fetch retains capped redacted head diagnos
     assertStringIncludes(result.error.message, LINT_A.trim());
     assert(!result.error.message.includes(secret));
     assert(result.error.message.length < 2200);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+/** A runner failing clippy with LINT_A on the head, and `onBase` answering the base worktrees. */
+function lintRunner(
+  base: { code: number; stderr: string },
+  seen: { baseCwds: string[]; baseTimeouts: number[] },
+): PreFlightRunner {
+  return (command, options) => {
+    const onBase = (options.cwd ?? "").includes("vibe-base-check-");
+    if (onBase && command === CLIPPY_CMD) {
+      seen.baseCwds.push(options.cwd ?? "");
+      seen.baseTimeouts.push(options.timeoutSeconds);
+    }
+    const answer = command !== CLIPPY_CMD
+      ? { code: 0, stderr: "" }
+      : onBase
+      ? base
+      : { code: 101, stderr: LINT_A };
+    return Promise.resolve({ started: true, stdout: "", ...answer });
+  };
+}
+
+/** The scratch directory a base worktree path (`<scratch>/tree[/...]`) lives in. */
+function scratchOf(baseCwd: string): string {
+  return baseCwd.slice(0, baseCwd.indexOf("/tree"));
+}
+
+/** Run the gate with the real git, except for the commands `override` answers. */
+async function gateWithGit(
+  clone: string,
+  stdin: string,
+  runner: PreFlightRunner,
+  override: (args: string[]) => Awaited<ReturnType<PrePushGit>> | undefined,
+  timeoutSeconds?: number,
+) {
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  // Only the cleanup warning: the "fails the same way on the base" one is expected.
+  console.warn = (...parts: unknown[]) => {
+    const line = parts.join(" ");
+    if (line.includes("could not remove the base worktree")) {
+      warnings.push(line);
+    }
+  };
+  try {
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner,
+      findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
+      compareRef: "origin/main",
+      timeoutSeconds,
+      git: (args, cwd) => {
+        const answer = override(args);
+        return answer === undefined
+          ? defaultPrePushGit(args, cwd)
+          : Promise.resolve(answer);
+      },
+    });
+    return { result, warnings };
+  } finally {
+    console.warn = realWarn;
+  }
+}
+
+/** `override` that answers nothing, so the real git runs. */
+const realGit = () => undefined;
+
+Deno.test("review 4896: the PR timeout reaches the base run", async () => {
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
+  try {
+    const seen = { baseCwds: [] as string[], baseTimeouts: [] as number[] };
+    const { result } = await gateWithGit(
+      clone,
+      stdin,
+      lintRunner({ code: 101, stderr: LINT_A }, seen),
+      realGit,
+      77,
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(seen.baseTimeouts, [77]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("review 4896: a base worktree and its scratch directory are removed without a warning", async () => {
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
+  try {
+    const seen = { baseCwds: [] as string[], baseTimeouts: [] as number[] };
+    const { result, warnings } = await gateWithGit(
+      clone,
+      stdin,
+      lintRunner({ code: 101, stderr: LINT_A }, seen),
+      realGit,
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(seen.baseCwds.length, 1);
+    const scratch = scratchOf(seen.baseCwds[0]!);
+    await assertRejects(() => Deno.stat(scratch), Deno.errors.NotFound);
+    assertEquals(warnings, []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("review 4896: a worktree remove that fails warns and still deletes the non-empty scratch directory", async () => {
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
+  try {
+    const seen = { baseCwds: [] as string[], baseTimeouts: [] as number[] };
+    const { result, warnings } = await gateWithGit(
+      clone,
+      stdin,
+      lintRunner({ code: 101, stderr: LINT_A }, seen),
+      (args) =>
+        args[0] === "worktree" && args[1] === "remove"
+          ? { code: 1, stdout: "", stderr: "remove refused" }
+          : undefined,
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0]!, "[PRE_PUSH_WARNING]");
+    assertStringIncludes(warnings[0]!, "remove refused");
+    await assertRejects(
+      () => Deno.stat(scratchOf(seen.baseCwds[0]!)),
+      Deno.errors.NotFound,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("review 4896: a worktree that cannot be added is infrastructure and is not removed", async () => {
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
+  try {
+    const seen = { baseCwds: [] as string[], baseTimeouts: [] as number[] };
+    const gitCalls: string[][] = [];
+    const { result, warnings } = await gateWithGit(
+      clone,
+      stdin,
+      lintRunner({ code: 101, stderr: LINT_A }, seen),
+      (args) => {
+        gitCalls.push(args);
+        return args[0] === "worktree" && args[1] === "add"
+          ? { code: 1, stdout: "", stderr: "add refused" }
+          : undefined;
+      },
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assertEquals(seen.baseCwds, []);
+    assert(!gitCalls.some((a) => a[0] === "worktree" && a[1] === "remove"));
+    assertEquals(warnings, []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("review 4896: a merge-base that fails is no fork point, whatever it printed", async () => {
+  const { root, clone, stdin } = await makeRepoWithCargoBase();
+  try {
+    const head = await git(clone, "rev-parse", "HEAD");
+    const seen = { baseCwds: [] as string[], baseTimeouts: [] as number[] };
+    // The base passes, so only the fork point could excuse the failure.
+    const { result } = await gateWithGit(
+      clone,
+      stdin,
+      lintRunner({ code: 0, stderr: "" }, seen),
+      (args) =>
+        args[0] === "merge-base"
+          ? { code: 1, stdout: `${head}\n`, stderr: "no merge base" }
+          : undefined,
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("review 4896: a base directory that cannot be read as a directory is infrastructure, not a verdict", async () => {
+  // The check runs in rust/crate. The tip replaces rust/ with a file, so
+  // stat(<tree>/rust/crate) fails with ENOTDIR, not NotFound; the head's fork
+  // point (M0) has the directory and passes.
+  const nested: CiCargoCheck = {
+    ...CLIPPY_CHECK,
+    workingDirectory: "rust/crate",
+  };
+  const { root, clone, stdin } = await makeRepoWithFiles({
+    "rust/crate/Cargo.toml": '[package]\nname = "demo"\n',
+    "rust/crate/src/lib.rs": "pub fn f() {}\n",
+  });
+  try {
+    const green = await git(clone, "rev-parse", "HEAD");
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await git(clone, "rm", "-rq", "rust");
+    await Deno.writeTextFile(`${clone}/rust`, "now a file\n");
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "M1: rust is a file");
+    await git(clone, "push", "-q", "origin", "HEAD:main");
+    await git(clone, "reset", "-q", "--hard", green);
+    await Deno.writeTextFile(`${clone}/rust/crate/src/b.rs`, "// repair\n");
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "repair");
+    const head = await git(clone, "rev-parse", "HEAD");
+    await git(clone, "update-ref", "refs/remotes/origin/main", green);
+    const seen = { baseCwds: [] as string[], baseTimeouts: [] as number[] };
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: stdin.replaceAll(green, head),
+      preFlightCommands: [],
+      runner: lintRunner({ code: 0, stderr: "" }, seen),
+      findCiCargo: () => Promise.resolve(scanOf(nested)),
+      compareRef: "origin/main",
+    });
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assertEquals(seen.baseCwds.length, 1, "only the fork point reaches a run");
   } finally {
     await Deno.remove(root, { recursive: true });
   }
