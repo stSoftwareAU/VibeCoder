@@ -1,0 +1,12 @@
+{
+  "issue": 5062,
+  "chunk": "top-up-5062",
+  "title": "top-up: derived guest facts in the hard-kill issue",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5062",
+  "definition": "Review how the hard-kill issue derives silence, guest-probe, memory and pressure figures from the evidence record without posting free text.",
+  "status": "claimed",
+  "sweptAt": "4462521e06aabd5d0a314a8e5a18a78ee15d3322",
+  "paths": [
+    "worker/deno/lib/hard_kill_guest_facts.ts"
+  ]
+}
