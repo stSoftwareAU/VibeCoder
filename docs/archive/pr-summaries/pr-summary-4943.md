@@ -29,8 +29,8 @@ Version bump: none; the merged commit records the final version.
 
 - Publication rechecks the policy independently of the command's initial sync.
   The CI publication path rechecks historical failure evidence.
-- Repair and sweep transactions read and update the same refusal file under
-  the existing file lock. The persisted v1 record shape is unchanged.
+- Repair and sweep transactions read and update the same refusal file under the
+  existing file lock. The persisted v1 record shape is unchanged.
 - Stale-parent recovery requires successful parent validation; known
   mergeability and an unready PR do not establish recovery.
 - Stateful GitHub boundaries model published heads and ancestry. Repair tests
@@ -51,8 +51,8 @@ coverage record to describe historical proof and publication accurately.
 
 The traced writers are the reviewer, babysitter, branch-update loop,
 PR-maintenance, auto-merge sweep and CI/feedback/spelling processors. Prevented
-classes are behind-only updates of unselected or unready PRs, and unrelated
-base merges introduced during substantive repair publication. Necessary classes
+classes are behind-only updates of unselected or unready PRs, and unrelated base
+merges introduced during substantive repair publication. Necessary classes
 remain selected-owner refreshes, genuine conflict repairs, proven base-fix
 integration, eligible non-strict updates and native merge-queue operation.
 
@@ -83,13 +83,12 @@ work directory is supplied; paths without one retain no durable tally.
   otherwise unready behind-only PR does not.” — evidence:
   `worker/deno/tests/base_refresh_production_paths_4943_test.ts::production reviewer and babysitter hosts compete: one ready PR receives the strict-base merge; an unreviewed PR never does`
   runs separate Deno hosts against one GitHub boundary and inspects published
-  heads, parents and pending CI; the no-owner case also refuses unreviewed PRs
-  — reviewer: met
+  heads, parents and pending CI; the no-owner case also refuses unreviewed PRs —
+  reviewer: met
 - **met** — “Cover substantive repairs, genuine conflicts, a newer push during
   validation, owner crash/expiry, failed CI and completion advancing to the next
-  PR.” — evidence:
-  `worker/deno/tests/repair_base_merge_wiring_4943_test.ts` publishes substantive
-  repairs through commands and direct libraries;
+  PR.” — evidence: `worker/deno/tests/repair_base_merge_wiring_4943_test.ts`
+  publishes substantive repairs through commands and direct libraries;
   `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts::babysitter publishes a resolved genuine conflict with both parents`
   checks resolved contents and two parents; production-path tests cover a human
   push during refreshed-head validation, failure, expiry, merge and closure
@@ -102,18 +101,19 @@ work directory is supplied; paths without one retain no durable tally.
   fail without their guards — reviewer: met
 - **met** — “Required checks and approvals still decide merging, native
   merge-queue bases remain on their existing path, and no admin bypass is
-  introduced.” — evidence:
-  `worker/deno/tests/base_refresh_churn_4943_test.ts` refuses missing and failed
-  checks, drafts, unarmed and unreviewed PRs and preserves the merge-queue
-  exemption; the production human-push case requires fresh CI and approval;
-  existing readiness/ownership remains authoritative — reviewer: met
+  introduced.” — evidence: `worker/deno/tests/base_refresh_churn_4943_test.ts`
+  refuses missing and failed checks, drafts, unarmed and unreviewed PRs and
+  preserves the merge-queue exemption; the production human-push case requires
+  fresh CI and approval; existing readiness/ownership remains authoritative —
+  reviewer: met
 - **met** — “Identify which observed update classes are prevented and which
   remain necessary. Do not assert a production improvement from synthetic tests
   alone; runtime counters permit automatic follow-up.” — evidence:
   `docs/MERGE.md` and Evidence above identify those classes;
   `worker/deno/tests/base_refresh_counter_persist_4943_test.ts` and
   `worker/deno/tests/repair_base_merge_4943_test.ts` cover cumulative counters
-  and concurrent persistence; no measured production improvement is claimed — reviewer: met
+  and concurrent persistence; no measured production improvement is claimed —
+  reviewer: met
 
 ## Standards Review
 
@@ -132,7 +132,8 @@ its authorised production scope; this is not a full-branch clean verdict.
 
 - **violation** — Structurally malformed counter JSON silently resets totals —
   evidence: `worker/deno/lib/repair_base_merge_4943.ts::persistNamedCounter` —
-  reason: unchanged in this recovery; structural validation and a warning remain outstanding.
+  reason: unchanged in this recovery; structural validation and a warning remain
+  outstanding.
 - **violation** — A throwing diagnostic sink is caught and ignored — evidence:
   `worker/deno/lib/repair_base_merge_4943.ts::logBaseRefreshDecision` — reason:
   unchanged in this recovery; a visible fallback remains outstanding.
@@ -141,26 +142,27 @@ its authorised production scope; this is not a full-branch clean verdict.
   `worker/deno/lib/repair_base_merge_4943.ts::persistNamedCounter` — reason:
   unchanged in this recovery; reuse of `atomicWrite` remains outstanding.
 - **violation** — Redaction covers reason text rather than complete diagnostic
-  messages — evidence: `worker/deno/lib/repair_base_merge_4943.ts::formatBaseRefreshDecision`
-  and persistence warnings — reason: unchanged in this recovery; complete
+  messages — evidence:
+  `worker/deno/lib/repair_base_merge_4943.ts::formatBaseRefreshDecision` and
+  persistence warnings — reason: unchanged in this recovery; complete
   outbound-message redaction remains outstanding.
 
 ## Test Plan
 
 - All 17 changed test suites passed: 384 tests, with stdin from `/dev/null`.
-  This includes 43 real-Git publication/policy tests and 58 churn, production-host
-  and production tracker tests. Another 207 existing processor and babysitter
-  orchestration tests passed. The strengthened stale-head case also passed its
-  final focused rerun after the negative control.
-- Type-check, lint and format checks passed for all 41 changed TypeScript
-  files. `deno task check:manifests` passed.
+  This includes 43 real-Git publication/policy tests and 58 churn,
+  production-host and production tracker tests. Another 207 existing processor
+  and babysitter orchestration tests passed. The strengthened stale-head case
+  also passed its final focused rerun after the negative control.
+- Type-check, lint and format checks passed for all 41 changed TypeScript files.
+  `deno task check:manifests` passed.
 - `pr-summary-check` reports the four disclosed Standards violations; no other
   applicable gate failed. Markdown lint passed.
 - The stale mutation scratch directory was removed successfully. The final
   disposable `runMutationCheck` rerun with `mutantCap: 1` and
-  `budgetSeconds: 180` returned `budget_exhausted` with `limit: mutant_cap`,
-  one mutant killed, no survivors and 701 candidates. Cleanup completed without
-  the reported error; the remaining candidates are unvalidated. No mutation
+  `budgetSeconds: 180` returned `budget_exhausted` with `limit: mutant_cap`, one
+  mutant killed, no survivors and 701 candidates. Cleanup completed without the
+  reported error; the remaining candidates are unvalidated. No mutation
   exemptions or repository skip were added.
 
 ## Merge verification
