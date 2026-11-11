@@ -98,9 +98,10 @@ defect).
 - Docs: `docs/workflows/issue-processing.md` (closure-verdict rendering item)
   read and updated. `docs/audits/security-sweep-2242-closure-verdict.md` line 27
   is a point-in-time audit record and still describes the old scrub.
-- `./quality.sh` on the pre-ledger head: everything passed except the lib sweep
-  ledger test, now fixed by the ledger file above. The full gate is re-run on the
-  final head; its result is in the PR checks.
+- `./quality.sh < /dev/null` on the final code head: PASSED (config integration
+  and checkov skipped: no config, no checkov). An earlier run failed only the lib
+  sweep ledger test, fixed by the ledger file above.
+  `deno task pr-summary-check`: 0 blocked, 0 not checked.
 
 Not done or not checked: the Spec and Standards reviewer sub-agents were not
 dispatched (the issue has no `Acceptance Criteria` heading); the
