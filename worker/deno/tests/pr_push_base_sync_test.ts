@@ -194,7 +194,7 @@ function silentLogger(): Logger {
   };
 }
 
-Deno.test("a spelling fix asks for its PR's base to be merged in before the push", async () => {
+Deno.test("a spelling fix on a conflicting PR asks for its base to be merged in before the push", async () => {
   const pushOptions: PushLineageOptions[] = [];
   const annotations: CheckAnnotation[] = [
     { path: "src/main.ts", start_line: 10, message: "Unknown word: colour" },
@@ -209,7 +209,13 @@ Deno.test("a spelling fix asks for its PR's base to be merged in before the push
     },
     github: {
       runGhCommand: (args: string[]) =>
-        Promise.resolve(args.includes("baseRefName") ? "Develop" : ""),
+        Promise.resolve(
+          args.includes("baseRefName")
+            ? "Develop"
+            : args.includes("mergeable")
+            ? JSON.stringify({ mergeable: "CONFLICTING" })
+            : "",
+        ),
     },
     git: {
       commitAndPushPending: ((
