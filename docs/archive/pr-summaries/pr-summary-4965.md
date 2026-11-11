@@ -14,17 +14,19 @@ Version bump: `VERSION` is untouched by this change.
 - `INFRA_TEXT_PATTERNS` only held the reason-phrase forms
   (`504 gateway timeout`). The bare-code forms fell through to the generic
   `error:` regex and were routed `code-fix-required`, which charges an attempt
-  and pushes the agent to edit the repository's CI workflow. Adding the two
-  download-client phrasings to the existing table keeps the fix to the table,
-  with no new gate, rule or prompt text.
+  and pushes the agent to edit the repository's CI workflow. The fix adds the
+  setup-deno phrasing to the existing table and a per-line reader,
+  `findDownloadOutageSignals`, for the other download-client phrasings, with no
+  new gate, rule or prompt text.
 
 ### Essential Design Decisions
 
 - Only 502, 503 and 504 are added, matching the table's existing scope; a bare
   `500` or a 4xx stays `code-fix-required` because a repo's own server under
   test can return those.
-- The bare-code forms are read per line by `findDownloadOutageSignals`, so a
-  recovered retry cannot masquerade as the failure (PR #5042 reviews):
+- Two of the three bare-code forms are read per line by
+  `findDownloadOutageSignals`, so a recovered retry cannot masquerade as the
+  failure (PR #5042 reviews):
   - `error: unexpected http response: 50x` (denoland/setup-deno, which reports
     the HTTPError object itself) stays a literal in `INFRA_TEXT_PATTERNS`.
     `@actions/tool-cache` logs the bare `Unexpected HTTP response: 504` as an
