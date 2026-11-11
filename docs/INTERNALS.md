@@ -2851,6 +2851,12 @@ route is never taken on a guess.
 1. Lists open PRs authored by the worker (with `baseRefName` for priority
    sorting).
 2. Queries check runs for each PR (`repos/{repo}/commits/{branch}/check-runs`).
+   On a draft, the scan drops `gate` by name and drops a check whose immediate
+   `needs:` (one level, read from the host clone) were all skipped on that head.
+   The skipped-check lookup reads all pages, 100 check runs per page. A check
+   with no needs, no topology, or an unreadable skipped list is kept; a job that
+   ran and failed on a draft still goes to the fixer. The skip reason is
+   `draft-by-design-ci`.
 3. Filters for failed checks, **excluding** the ones the spelling route
    claims — a check is excluded only when its failing *step* is a spelling
    tool (see [Routing by failed step](#routing-by-failed-step-issue-1579)),
