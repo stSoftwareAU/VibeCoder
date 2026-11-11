@@ -1,9 +1,9 @@
 ## Summary
 
 The cause of the execute-phase wedge on `GRQ-25` remains undiagnosed. This
-summary records the investigation and independent reviews; no production code
-or tests changed. A retained agent session was found locally, but the host's
-worker log, boot logs and guest probes remain inaccessible. Part of #5062.
+summary records the investigation and independent reviews; no production code or
+tests changed. A retained agent session was found locally, but the host's worker
+log, boot logs and guest probes remain inaccessible. Part of #5062.
 
 ## Spec
 
@@ -41,9 +41,9 @@ copied to the repository or posted to GitHub.
   this executor, and no environment-status or VPN-access tool was exposed.
 - The retained session's last tool result was at `15:03:29Z`: a bounded quality
   command returned exit 143 (`Terminated`). This predates the issue's last
-  worker-log timestamp, `16:53:16Z`, by almost two hours, so it does not identify
-  the operation blocking at the watchdog reap. The local logs checkout contains
-  no corresponding worker log, boot log or guest probes.
+  worker-log timestamp, `16:53:16Z`, by almost two hours, so it does not
+  identify the operation blocking at the watchdog reap. The local logs checkout
+  contains no corresponding worker log, boot log or guest probes.
 - The executor inspected `execute_phase.ts`, `claude_runner.ts`,
   `container_watchdog.ts` and `hard_kill_evidence.ts`. Existing execution
   deadlines, a wall-clock backstop, bounded post-kill handling and outer reaping
@@ -79,30 +79,28 @@ copied to the repository or posted to GitHub.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — Australian English, constrained documentation-only scope,
-  removal of stale implementation claims, and no speculative production or
-  test changes
+- **clean** — Australian English, constrained documentation-only scope, removal
+  of stale implementation claims, and no speculative production or test changes
 
 ## Test Plan
 
 - No source or test files changed because the root cause could not be verified
   and a speculative production change would violate the reproduction
   requirement.
-- The Spec reviewer read the branch diff and issue body and returned
-  `missing`: the branch contains no cause attribution, correction or regression
-  test. The Standards reviewer checked the summary against
-  `CODING-STANDARDS.md`; its requested manual-section citation is included
-  above.
+- The Spec reviewer read the branch diff and issue body and returned `missing`:
+  the branch contains no cause attribution, correction or regression test. The
+  Standards reviewer checked the summary against `CODING-STANDARDS.md`; its
+  requested manual-section citation is included above.
 - `deno task pr-summary-check --base main --issue-body-file
   /tmp/issue-5062-body.md --labels bug,top-priority
-  ../../docs/archive/pr-summaries/pr-summary-5062.md < /dev/null` passed:
-  0 gates blocked, 0 not checked. Acceptance-criteria closure was
+  ../../docs/archive/pr-summaries/pr-summary-5062.md < /dev/null`
+  passed: 0 gates blocked, 0 not checked. Acceptance-criteria closure was
   `NOT_APPLICABLE` because the auto-filed issue has no explicit criteria block;
   this is not evidence that the incident criterion is met.
 - Markdown lint passed on a temporary copy of this summary using the
   repository's rule selection and stdin from `/dev/null`. The repository's
-  normal lint command excludes `docs/archive/**`, so the targeted check used
-  a temporary configuration without that exclusion.
+  normal lint command excludes `docs/archive/**`, so the targeted check used a
+  temporary configuration without that exclusion.
 - `git diff --check` passed.
 - The full quality gate is left to the worker's re-run after this turn.
 
