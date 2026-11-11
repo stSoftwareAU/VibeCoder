@@ -96,6 +96,8 @@ function toPrEntry(pr: OpenPRWithBody, login: string): PrEntry {
     entry.autoMergeRequest = pr.autoMergeRequest;
   }
   if (pr.mergeable !== undefined) entry.mergeable = pr.mergeable;
+  // Issue #4951: the CI-fix scan decides a draft's by-design failures on it.
+  if (pr.isDraft !== undefined) entry.isDraft = pr.isDraft;
   // The needs-human hold reads labels off every admitted entry.
   if (pr.labels !== undefined) {
     entry.labels = pr.labels.map((name) => ({ name }));
