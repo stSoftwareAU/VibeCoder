@@ -240,7 +240,7 @@ Deno.test("loadPrSummary - skips whitespace-only files", async () => {
   }
 });
 
-Deno.test("loadPrSummary - project bump statements stay valid across later workflow bumps (Issue #3954)", async () => {
+Deno.test("loadPrSummary - project bump statements are omitted across later workflow bumps, author wording kept (Issue #3954, Issue #4972)", async () => {
   const dir = await createTempDir();
   const path = "docs/archive/pr-summaries/pr-summary-42.md";
   try {
@@ -254,7 +254,7 @@ Deno.test("loadPrSummary - project bump statements stay valid across later workf
       );
       const result = await loadPrSummary(dir, 42);
       assertEquals(result.ok, true);
-      if (result.ok) assertEquals(result.value.content, durable);
+      if (result.ok) assertEquals(result.value.content, "## Summary\n\n");
     }
     await writeFile(dir, path, durable);
     const repeat = await loadPrSummary(dir, 42);
@@ -306,75 +306,189 @@ Deno.test("loadPrSummary - meaningful exact versions and non-bump prose survive 
   }
 });
 
-Deno.test("version normalisation preserves scope and layout across manifest and policy shapes (Issue #3954)", () => {
+Deno.test("version normalisation preserves scope and layout across manifest and policy shapes (Issue #3954, Issue #4972)", () => {
+  // Each bump line is omitted; the blank line after it is also omitted when it
+  // sat between two blank lines, so every expected value is the header as written.
   for (
     const [header, line, expected] of [
-      [
-        "",
-        "Version bump: `Cargo.toml` 1.2.3 → 1.3.0",
-        "Version bump: `Cargo.toml`",
-      ],
+      ["", "Version bump: `Cargo.toml` 1.2.3 → 1.3.0", ""],
       [
         "## Test Plan\n\n",
         "- **Version bump:** `package.json` `1.2.3` -> `2.0.0`.",
-        "- **Version bump:** `package.json`",
+        "## Test Plan\n\n",
       ],
       [
         "## Summary\r\n\r\n",
         "Version bump: `deno.jsonc` v1.2.3 → v1.2.4",
-        "Version bump: `deno.jsonc`",
+        "## Summary\r\n\r\n",
       ],
       [
         "    literal example\n---\n\n",
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
-        "Version bump: `VERSION`",
+        "    literal example\n---\n\n",
       ],
       [
         "> ## Evidence\n\n",
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
-        "Version bump: `VERSION`",
+        "> ## Evidence\n\n",
       ],
       [
         "## Summary\n\nPreface\n\n---\n\n",
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
-        "Version bump: `VERSION`",
+        "## Summary\n\nPreface\n\n---\n\n",
       ],
       [
         "## Summary\n\nPreface\n***\n\n",
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
-        "Version bump: `VERSION`",
+        "## Summary\n\nPreface\n***\n\n",
       ],
       [
         "Summary\n=======\n\n",
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
-        "Version bump: `VERSION`",
+        "Summary\n=======\n\n",
       ],
       [
         "## Summary ##\n\n",
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
-        "Version bump: `VERSION`",
+        "## Summary ##\n\n",
       ],
       [
         "# PR Summary\n## Summary\n\n",
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
-        "Version bump: `VERSION`",
+        "# PR Summary\n## Summary\n\n",
       ],
       [
         "## Evidence\n\nRelease evidence: abc123.\n\n## Summary\n\n",
         "Version bump: `VERSION` 1.2.3 → 1.2.4",
-        "Version bump: `VERSION`",
+        "## Evidence\n\nRelease evidence: abc123.\n\n## Summary\n\n",
       ],
     ] as const
   ) {
     const content = header + line + "\r\n";
     const result = normaliseSummaryVersionBumps(content);
-    assertEquals(
-      result,
-      header + expected +
-        " updated for this change; the merged commit records the final version.\r\n",
-    );
+    assertEquals(result, expected);
     assertEquals(normaliseSummaryVersionBumps(result), result);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Tests — stale literal bump lines are omitted, never replaced (Issue #4972)
+// ---------------------------------------------------------------------------
+
+Deno.test("version normalisation omits a stale literal bump for every manifest name and keeps surrounding prose (Issue #4972)", async () => {
+  // Deploy owns versioning in this repository, so the PR changes no version file.
+  const dir = await createTempDir();
+  const path = "docs/archive/pr-summaries/pr-summary-42.md";
+  const expected = [
+    "## Summary",
+    "",
+    "Deploy owns versioning; this PR changes no version file.",
+    "",
+    "Dependency pin: `zod` 3.0.0 → 4.0.0",
+    "",
+    "## Evidence",
+    "",
+    "Release evidence: version 1.2.4 at commit abc123.",
+    "",
+  ].join("\n");
+  try {
+    for (
+      const name of [
+        "VERSION",
+        "Cargo.toml",
+        "package.json",
+        "deno.json",
+        "deno.jsonc",
+      ]
+    ) {
+      await writeFile(
+        dir,
+        path,
+        [
+          "## Summary",
+          "",
+          "Deploy owns versioning; this PR changes no version file.",
+          "",
+          `Version bump: \`${name}\` 1.2.3 → 1.2.4`,
+          "",
+          "Dependency pin: `zod` 3.0.0 → 4.0.0",
+          "",
+          "## Evidence",
+          "",
+          "Release evidence: version 1.2.4 at commit abc123.",
+          "",
+        ].join("\n"),
+      );
+      const result = await loadPrSummary(dir, 42);
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertEquals(
+          result.value.content.includes("updated for this change"),
+          false,
+        );
+        assertEquals(result.value.content.includes("Version bump:"), false);
+        assertEquals(result.value.content, expected);
+      }
+    }
+  } finally {
+    await cleanupDir(dir);
+  }
+});
+
+Deno.test("version normalisation removes a middle-of-document bump line leaving one blank line (Issue #4972)", () => {
+  assertEquals(
+    normaliseSummaryVersionBumps(
+      "## Summary\n\nPara one.\n\nVersion bump: `VERSION` 1.2.3 → 1.2.4\n\nPara two.\n",
+    ),
+    "## Summary\n\nPara one.\n\nPara two.\n",
+  );
+  assertEquals(
+    normaliseSummaryVersionBumps(
+      "## Summary\r\n\r\nPara one.\r\n\r\nVersion bump: `VERSION` 1.2.3 → 1.2.4\r\n\r\nPara two.\r\n",
+    ),
+    "## Summary\r\n\r\nPara one.\r\n\r\nPara two.\r\n",
+  );
+});
+
+Deno.test("version normalisation removes a list-item bump line between two items (Issue #4972)", () => {
+  assertEquals(
+    normaliseSummaryVersionBumps(
+      "## Summary\n\n- one\n- **Version bump:** `package.json` `1.2.3` -> `2.0.0`.\n- two\n",
+    ),
+    "## Summary\n\n- one\n- two\n",
+  );
+});
+
+Deno.test("version normalisation keeps the blank line after a bump list item that follows another item (Issue #4972)", () => {
+  assertEquals(
+    normaliseSummaryVersionBumps(
+      "## Summary\n\n- one\n- **Version bump:** `package.json` `1.2.3` -> `2.0.0`.\n\nAfter.\n",
+    ),
+    "## Summary\n\n- one\n\nAfter.\n",
+  );
+});
+
+Deno.test("version normalisation keeps the next line after a bump list item that follows a blank line (Issue #4972)", () => {
+  assertEquals(
+    normaliseSummaryVersionBumps(
+      "## Summary\n\n- **Version bump:** `package.json` `1.2.3` -> `2.0.0`.\n- two\n",
+    ),
+    "## Summary\n\n- two\n",
+  );
+});
+
+Deno.test("version normalisation removes a final bump line with no trailing newline (Issue #4972)", () => {
+  assertEquals(
+    normaliseSummaryVersionBumps(
+      "## Summary\n\nVersion bump: `VERSION` 1.2.3 → 1.2.4",
+    ),
+    "## Summary\n\n",
+  );
+});
+
+Deno.test("version normalisation returns a hostile over-long bump line unchanged (Issue #4972)", () => {
+  const hostile = `## Summary\n\nVersion bump: ${" ".repeat(50_000)}x\n`;
+  assertEquals(normaliseSummaryVersionBumps(hostile), hostile);
 });
 
 Deno.test("version normalisation preserves ambiguous ownership and release continuations (Issue #3954)", async () => {
@@ -588,10 +702,7 @@ Deno.test("loadCommittedPrSummary - applies version-bump normalisation (Issue #4
 
     const result = await loadCommittedPrSummary(dir, 42, sha, runGitCommand);
 
-    assertEquals(
-      result.ok && result.value.content,
-      "## Summary\n\nVersion bump: `VERSION` updated for this change; the merged commit records the final version.\n",
-    );
+    assertEquals(result.ok && result.value.content, "## Summary\n\n");
   } finally {
     await cleanupDir(dir);
   }
