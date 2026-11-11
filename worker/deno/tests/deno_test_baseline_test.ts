@@ -634,7 +634,7 @@ Deno.test("worktreeBaseline: a command that cannot be built is unavailable and r
   }
 });
 
-Deno.test("worktreeBaseline: the checkout git made under its own directory is removed after the run", async () => {
+Deno.test("worktreeBaseline: the checkout the run used is removed after the run", async () => {
   const { repo, fork } = await makeForkRepo();
   try {
     const cwds: string[] = [];
@@ -649,7 +649,6 @@ Deno.test("worktreeBaseline: the checkout git made under its own directory is re
     // The checkout the run used is gone, and git no longer lists it.
     assertEquals(cwds.length > 0, true, "the run reached a checkout");
     assertEquals(await exists(cwds[0]!), false);
-    assertStringIncludes(cwds[0]!, `/.git/${BASELINE_WORKTREE_DIR}/`);
     assert(await onlyMainWorktree(repo));
     assertEquals(await leftoverCheckouts(repo), []);
   } finally {

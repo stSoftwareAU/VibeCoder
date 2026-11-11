@@ -92,9 +92,12 @@ Part of #4930.
   timeout stays a block.
 - Not covered: the runner's time budget over a failed parallel pass (it runs
   only after every pass succeeded, and is not re-run); a repo whose `test:unit`
-  runner prints no `=== <label> pass:` lines is judged as one pass; the agent's
-  own `git push` compares at the default branch, so a PR that targets another
-  branch is compared at an older commit.
+  runner prints no `=== <label> pass:` lines is judged as one pass. (The
+  agent's own `git push` compares at the merge-base with the spec's
+  `compareRef`, the milestone or PR base, and uses `origin/HEAD` only when the
+  worker handed no base; a repair with an unknown PR base compares at
+  `origin/HEAD`, and at the parent of its oldest unpushed commit only when there
+  is no `origin/HEAD` either.)
 
 ### Undiscoverable Facts
 
@@ -147,11 +150,13 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   or lock change the check runs the dependency-selected subset, not the whole
   suite CI runs (dynamic loader types, computed paths, import-map aliases,
   `jsr:` / `npm:` specifiers and a `_test.ts` outside `tests/` can be missed);
-  the runner's time budget over a failed parallel pass is not re-run; a repair
-  whose PR base is unknown, or whose checkout has no `origin/HEAD`, compares at
-  the parent of its oldest unpushed commit, and the agent's own `git push` for a
-  PR that targets a non-default branch is compared at the merge-base with the
-  default branch, which can be older than the PR's base. — reason: the cases
+  the runner's time budget over a failed parallel pass is not re-run. The
+  baseline placement is not an open case: the agent's own `git push` compares
+  at the merge-base with the spec's `compareRef` (the milestone or PR base),
+  using `origin/HEAD` only when the worker handed no base, and a repair with an
+  unknown PR base compares at `origin/HEAD`, falling back to the parent of its
+  oldest unpushed commit only when there is no `origin/HEAD` either. — reason:
+  the cases
   above still reach CI and the dependency-selected subset is not the whole suite
   CI runs.
 
@@ -432,3 +437,16 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   runs them as committed. `sync_points_test.ts` and `pr_push_base_sync_test.ts`
   fail identically on a clean `origin/main` checkout on this host (its git
   2.43), so they are not caused by this change. `./quality.sh` was not run.
+
+### PR #5034 review, seventh round
+
+- `deno_test_baseline_test.ts`: the assertion on where the throwaway checkout
+  is placed (under `.git/vibe-deno-test-base/`) is removed; the test keeps the
+  outcome checks (the checkout the run used is gone, `git worktree list` shows
+  only the main worktree, nothing is left behind). That the hook push works is
+  proved by the `pre_push_hook_test.ts` integration tests.
+- This summary's "Not covered" bullet and the partial criterion's reason no
+  longer list the baseline placement for the agent's push and for an
+  unknown-base repair as open: both are fixed and tested (sixth round). The
+  open cases are the dependency-selected subset and the time budget over a
+  failed parallel pass.
