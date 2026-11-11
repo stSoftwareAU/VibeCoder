@@ -22,7 +22,6 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { handoverFilePath } from "../lib/preserved_wip_branch.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { buildInterruptedWipCommitMessage } from "../lib/wip_checkpoint.ts";
-import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { WorkerConfig } from "../types.ts";
 
@@ -191,11 +190,14 @@ Deno.test("execute_phase #4949 - a turn-capped run with a clean tree is released
   assertStringIncludes(reason, TURN_LIMIT_HEADING);
   assertStringIncludes(reason, "interrupted before completing");
 
-  // The category was asserted to be `interrupted` above; the literal keeps
-  // the classifier's parameter type narrow.
-  const classification = classifyRunFailure("interrupted", reason, true);
-  assertEquals(classification.fixability, "not_code_fixable");
-  assertEquals(classification.failureClass, "interrupted");
+  // The classification the phase returns is the one run-failure filing and
+  // deriveRunOutcome use, so assert it on the result, not on a recomputation.
+  const classification = "classification" in run.result
+    ? run.result.classification
+    : undefined;
+  assert(classification !== undefined, "the phase returns its classification");
+  assertEquals(classification?.failureClass, "interrupted");
+  assertEquals(classification?.fixability, "not_code_fixable");
 });
 
 Deno.test("execute_phase #4949 - a turn-capped run with uncommitted work preserves it and writes the handover note", async () => {

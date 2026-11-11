@@ -203,6 +203,15 @@ export const USAGE_LIMIT_HEADING =
 export const TURN_LIMIT_HEADING = "Claude stopped at its per-run turn limit";
 
 /**
+ * The worker-written start of a turn-capped run's failure reason (Issue #4949).
+ * The no-retry check matches this prefix only, never the heading anywhere in
+ * the reason: other failure reasons quote the agent's own output, which may
+ * contain the heading (PR #5025 review).
+ */
+export const TURN_LIMIT_REASON_PREFIX =
+  `Run interrupted before completing — ${TURN_LIMIT_HEADING}`;
+
+/**
  * Credential switches one exhausted execute phase may make (Issue #1670).
  *
  * A switch costs one billed invocation, so the loop is bounded rather than
@@ -379,7 +388,10 @@ export async function workOnIssueExecuteClaude(
   // has already preserved the work on the issue branch with a handover note;
   // a retry would only bill the same capped run again, so the next claim
   // resumes from the branch instead.
-  if (result.reason?.includes(TURN_LIMIT_HEADING)) {
+  if (
+    result.category === "interrupted" &&
+    result.reason?.startsWith(TURN_LIMIT_REASON_PREFIX)
+  ) {
     deps.logger.warn(
       "Not retrying the run in-process: the Claude turn cap is a policy stop " +
         "and the work is on the issue branch; the next claim resumes it (Issue #4949)",
@@ -1550,7 +1562,7 @@ async function executeClaudeBody(
         onPreserved: () => saveCheckpointState(),
       });
       const reason = formatDetailedFailureMessage(
-        `Run interrupted before completing — ${TURN_LIMIT_HEADING} (error_max_turns) while the agent was still working` +
+        `${TURN_LIMIT_REASON_PREFIX} (error_max_turns) while the agent was still working` +
           (wip.wipNote ? ` — ${wip.wipNote}` : ""),
         {
           elapsedSeconds,

@@ -31,9 +31,11 @@ to `internal_error` exactly as before. Closes #4949.
   `coding_failure_ladder.ts`, as `worker-crash` already was, so the issue's
   `failed-once` ladder behaves as before: an issue that exhausts the cap on
   every run still takes no `failed-once` mark.
-- The no-retry rule keys on a worker-written heading (`TURN_LIMIT_HEADING`) in
-  the reason, the way `USAGE_LIMIT_HEADING` does, so quoted agent text cannot
-  trigger it.
+- The no-retry rule matches only the worker-written start of the reason
+  (`TURN_LIMIT_REASON_PREFIX`) on an `interrupted` result, not the heading
+  anywhere in the reason: a killed or interrupted reason quotes the agent's own
+  output, which may contain the heading, and such a run keeps its bounded retry
+  (`execute_phase_killed_test.ts`, PR #5025 review).
 - WIP is preserved before the result is returned, with a new `turn-limit` cause
   on the commit subject and handover note
   (`wip: execute hit the agent turn limit …`). The tree is inspected using the
