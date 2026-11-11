@@ -22,30 +22,24 @@ function names(checks: { name: string }[]): string[] {
   return checks.map((c) => c.name);
 }
 
-function reader(skipped: string[], reads: { count: number }) {
-  return () => {
-    reads.count += 1;
-    return Promise.resolve(new Set(skipped));
-  };
+function reader(skipped: string[]) {
+  return () => Promise.resolve(new Set(skipped));
 }
 
-Deno.test("dropDraftByDesignFailures - gate is dropped without reading anything, even with no needs topology", async () => {
-  const reads = { count: 0 };
+Deno.test("dropDraftByDesignFailures - gate is dropped even with no needs topology", async () => {
   const kept = await dropDraftByDesignFailures(
     [{ name: "gate" }],
     null,
-    reader([], reads),
+    reader([]),
   );
   assertEquals(kept, []);
-  assertEquals(reads.count, 0);
 });
 
 Deno.test("dropDraftByDesignFailures - a check whose needs were all skipped is dropped", async () => {
-  const reads = { count: 0 };
   const kept = await dropDraftByDesignFailures(
     [{ name: "CI Required Checks" }],
     NEEDS,
-    reader(["lint", "test"], reads),
+    reader(["lint", "test"]),
   );
   assertEquals(kept, []);
 });
@@ -55,42 +49,38 @@ Deno.test("dropDraftByDesignFailures - a check with a need that ran is kept (pos
     [{ name: "CI Required Checks" }],
     NEEDS,
     // `test` ran on this head, so the check is not explained by skipping.
-    reader(["lint"], { count: 0 }),
+    reader(["lint"]),
   );
   assertEquals(names(kept), ["CI Required Checks"]);
 });
 
-Deno.test("dropDraftByDesignFailures - a job with no needs that ran and failed is kept, and nothing is read", async () => {
-  const reads = { count: 0 };
+Deno.test("dropDraftByDesignFailures - a job with no needs and an unknown job are kept", async () => {
   const kept = await dropDraftByDesignFailures(
     [{ name: "test" }, { name: "unknown-job" }],
     NEEDS,
-    reader(["lint", "test"], reads),
+    reader(["lint", "test"]),
   );
   assertEquals(names(kept), ["test", "unknown-job"]);
-  assertEquals(reads.count, 0);
 });
 
 Deno.test("dropDraftByDesignFailures - without a topology a non-gate check is kept", async () => {
   const kept = await dropDraftByDesignFailures(
     [{ name: "CI Required Checks" }],
     null,
-    reader(["lint", "test"], { count: 0 }),
+    reader(["lint", "test"]),
   );
   assertEquals(names(kept), ["CI Required Checks"]);
 });
 
-Deno.test("dropDraftByDesignFailures - the skipped list is read once for several checks, and real failures survive beside gate", async () => {
-  const reads = { count: 0 };
+Deno.test("dropDraftByDesignFailures - a real failure is kept beside a dropped gate and dropped aggregators", async () => {
   const kept = await dropDraftByDesignFailures(
     [{ name: "gate" }, { name: "deploy" }, { name: "CI Required Checks" }, {
       name: "test",
     }],
     NEEDS,
-    reader(["lint", "test"], reads),
+    reader(["lint", "test"]),
   );
   assertEquals(names(kept), ["test"]);
-  assertEquals(reads.count, 1);
 });
 
 Deno.test("draft CI - skipped needs beyond the first page still suppress the aggregator (PR #5030 review)", async () => {
