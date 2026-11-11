@@ -268,6 +268,43 @@ Deno.test("a same-repository qualified close is honoured, and another repository
   );
 });
 
+Deno.test("a colon or full-URL close is honoured for this repository in any case, and another repository's is not (PR #5038 review)", () => {
+  const guard = (proposal: string) =>
+    guardPrBodyProposal({
+      proposal,
+      liveBody: liveBodyFor(4637, "Closes #4637"),
+      summary: FULLY_MET_SUMMARY,
+      repo: REPO,
+      headRefName: "issue-4637-thing",
+    });
+  for (
+    const close of [
+      "Closes: Owner/Repo#4637",
+      "Closes https://github.com/Owner/Repo/issues/4637",
+    ]
+  ) {
+    const proposal = `Rewritten.\n\n${close}`;
+    assertEquals(
+      guard(proposal),
+      `${proposal}\n\n${buildIdempotencyMarker(4637)}`,
+      `${close} closes this repository's issue, so nothing is appended`,
+    );
+  }
+  for (
+    const close of [
+      "Closes: other/repo#4637",
+      "Closes https://github.com/other/repo/issues/4637",
+    ]
+  ) {
+    const proposal = `Rewritten.\n\n${close}`;
+    assertEquals(
+      guard(proposal),
+      `${proposal}\n\nCloses #4637\n\n${buildIdempotencyMarker(4637)}`,
+      `${close} closes another repository's issue, so Closes #4637 is appended`,
+    );
+  }
+});
+
 Deno.test("a same-line close joined by a tab or written as Fixes is left unchanged (Issue #4964)", () => {
   for (const close of ["Closes\t#4637", "Fixes #4637"]) {
     const proposal = `Rewritten.\n\n${close}`;
