@@ -66,7 +66,7 @@ defect).
 
 ## Test Plan
 
-- `worker/deno/tests/closure_verdict_test.ts`: 13 new tests through the real
+- `worker/deno/tests/closure_verdict_test.ts`: 14 new tests through the real
   `parseClosureVerdict`, `renderClosureBlocks` and both validators. They cover
   the three cited paths and underscore paths unchanged, forged `reviewer:`,
   `evidence:` and `reason:` labels in criterion, finding, reason and evidence
