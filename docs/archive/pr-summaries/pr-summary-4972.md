@@ -52,9 +52,10 @@ Docs read: the three copies of the paragraph (`CODING-STANDARDS.md`,
 `prompts/issue/prompt.md`, `prompts/pr_feedback/prompt.md`) are byte-identical.
 `grep -rn "updated for this change"` over `CODING-STANDARDS.md`, `prompts/`,
 `README.md` and `docs/` (excluding `docs/archive/`) finds nothing at the head.
-Related existing rules checked: the "Keep the PR summary true to the head" and
-"Describe the final state of the branch" rules in the same files; none asks for
-a version line.
+Related existing rules checked: "Keep the PR summary true to the head" in
+`prompts/pr_feedback/prompt.md`, `prompts/ci_fix/prompt.md` and
+`prompts/merge_conflict/prompt.md`, and "Describe the final state of the branch"
+in `prompts/issue/prompt.md`; none asks for a version line.
 
 ## Test Plan
 
