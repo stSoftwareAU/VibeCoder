@@ -82,6 +82,7 @@ import {
 } from "./milestone_not_planned_refs.ts";
 import { fetchOpenMilestonePages } from "./open_milestone_pages.ts";
 import { logAt } from "./log_sink.ts";
+import { MILESTONE_PROVENANCE_MAX_CHILDREN } from "./governing_issue_limits.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -910,13 +911,9 @@ const CLAIM_PROBLEM_REASONS: Record<ClaimProblem, string> = {
     "merged PR search could not be read, so delivery is unconfirmed",
 };
 
-/**
- * Issue #4967: the most `Part of #N` child lines a rollup body carries. The
- * reviewer's MAX_GOVERNING_ISSUES (12) counts the tracking issue, the parent
- * and up to this many children (1 + 1 + 10), so the lines never name more
- * governing issues than the reviewer reads.
- */
-export const MILESTONE_PROVENANCE_MAX_CHILDREN = 10;
+// Issue #4967: the most `Part of #N` child lines a rollup body carries lives in
+// governing_issue_limits.ts beside the reviewer's cap, so the two cannot drift.
+export { MILESTONE_PROVENANCE_MAX_CHILDREN };
 
 /**
  * Build the PR body for a milestone summary PR.

@@ -3716,9 +3716,11 @@ summary PR body includes a `Closes #N` reference so the tracking issue is
 automatically closed when the PR merges. Directly under it the body also carries
 anchored `Part of #N` lines (Issue #4967), never a closing keyword: one for the
 parent issue (the leading `#N` of the milestone title, when there is one) and one
-for each claimed delivered issue, ascending and capped at 10
-(`MILESTONE_PROVENANCE_MAX_CHILDREN`), so the fleet reviewer can read the issues
-the rollup serves. Flagged issues get no line. The fingerprint version bump
+for each claimed delivered issue, ascending and capped at 62
+(`MILESTONE_PROVENANCE_MAX_CHILDREN`: the reviewer's `MAX_GOVERNING_ISSUES` of 64
+less the tracking issue and the parent, both held in
+`worker/deno/lib/governing_issue_limits.ts` so they cannot drift), so the fleet
+reviewer can read the issues the rollup serves. Flagged issues get no line. The fingerprint version bump
 refreshes each open rollup once so it gains these lines.
 
 **Closed-issue rollup classification** — each closed milestone issue is claimed

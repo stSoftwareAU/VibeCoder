@@ -32,6 +32,7 @@ import {
   unsettledHistoryWindows,
 } from "../../../../worker/deno/lib/issue_edit_actor.ts";
 import type { RunGh } from "./needs_human.ts";
+import { MAX_GOVERNING_ISSUES } from "../../../../worker/deno/lib/governing_issue_limits.ts";
 
 const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -64,9 +65,6 @@ export function isTestPath(path: string): boolean {
   return TEST_PATH_PATTERNS.some((re) => re.test(path));
 }
 
-// Covers a milestone roll-up's closing tracking issue, its `Part of` parent and
-// up to 10 delivered children (Issue #4967); it still bounds the per-PR gh reads.
-const MAX_GOVERNING_ISSUES = 12;
 const PART_OF_SCAN_LINES = 200;
 const MAX_PATH_LENGTH = 300;
 const FETCH_FAILED = "fetch failed:";

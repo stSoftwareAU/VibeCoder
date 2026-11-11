@@ -31,6 +31,7 @@ import {
   selectDuplicateTrackersToClose,
 } from "../lib/milestone_completion.ts";
 import { createMilestoneBranchName } from "../lib/git_branch.ts";
+import { MAX_GOVERNING_ISSUES } from "../lib/governing_issue_limits.ts";
 import { redactGhBodyText } from "../lib/gh_body_redaction.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
@@ -657,28 +658,41 @@ Deno.test("buildMilestoneSummaryBody - zero and negative issue numbers never get
   );
 });
 
-Deno.test("buildMilestoneSummaryBody - at most MILESTONE_PROVENANCE_MAX_CHILDREN child Part of lines, lowest numbers first (Issue #4967)", () => {
+Deno.test("buildMilestoneSummaryBody - a milestone with more than ten claimed children links every one up to the reviewer's cap, lowest numbers first (Issue #4967)", () => {
+  const count = MILESTONE_PROVENANCE_MAX_CHILDREN + 3;
   const children = Array.from(
-    { length: 12 },
-    (_, i) => ({ number: 100 - i, title: `Child ${100 - i}` }),
+    { length: count },
+    (_, i) => ({ number: 1000 - i, title: `Child ${1000 - i}` }),
   );
   const body = buildMilestoneSummaryBody(
     "#42 Retry policy",
     "main",
     children,
-    99,
+    999,
   );
   const lines = body.split("\n");
   assertEquals(
     lines.filter((l) => /^Part of #\d+$/.test(l) && l !== "Part of #42"),
     Array.from(
       { length: MILESTONE_PROVENANCE_MAX_CHILDREN },
-      (_, i) => `Part of #${89 + i}`,
+      (_, i) => `Part of #${1000 - count + 1 + i}`,
     ),
   );
-  // The Issue addressed list still names every claimed child.
-  assertEquals(lines.filter((l) => l.startsWith("- #")).length, 12);
-  assertEquals(MILESTONE_PROVENANCE_MAX_CHILDREN, 10);
+  // The Issues addressed list still names every claimed child.
+  assertEquals(lines.filter((l) => l.startsWith("- #")).length, count);
+  // The roll-up's lines plus the tracking issue never exceed the reviewer's cap.
+  assertEquals(MILESTONE_PROVENANCE_MAX_CHILDREN + 2, MAX_GOVERNING_ISSUES);
+  // Every claimed child of an ordinary large milestone (the repo's largest has
+  // 40 issues) is linked.
+  const forty = Array.from(
+    { length: 40 },
+    (_, i) => ({ number: 2000 + i, title: `Child ${i}` }),
+  );
+  assertEquals(
+    buildMilestoneSummaryBody("v1.0", "main", forty, 999).split("\n")
+      .filter((l) => l.startsWith("Part of #")).length,
+    40,
+  );
 });
 
 // The reviewer's governing-issue read (test_change_policy.ts) of a rollup body.
@@ -728,6 +742,23 @@ const RV_ISSUES: Record<number, RvIssue> = {
     labelledBy: "nleck",
   },
   55: { title: "Unrelated tidy-up", body: "Tidy the fixtures." },
+};
+
+// Issue #4967 (PR #5054 review): a large milestone's later children. 201..214
+// carry no quote; 215, the fifteenth claimed child, holds the requirement.
+for (let n = 201; n <= 214; n++) {
+  RV_ISSUES[n] = {
+    title: `Filler ${n}`,
+    body: "Nothing about retries here.",
+    label: "work-on",
+    labelledBy: "nleck",
+  };
+}
+RV_ISSUES[215] = {
+  title: "Last-filed follow-up",
+  body: `Acceptance:\n- ${RV_REQUIRED}.`,
+  label: "work-on",
+  labelledBy: "nleck",
 };
 
 function rvReply(args: string[], body: string): string {
@@ -864,6 +895,28 @@ Deno.test("rollup provenance: the reviewer links the parent and the claimed chil
   assertEquals(result.findings, [], JSON.stringify(result.findings));
   // Part of never closes: the tracker is the only closing reference.
   assertEquals(closingRefsIn(body), [99]);
+});
+
+Deno.test("rollup provenance: a quote held only in the fifteenth claimed child is found, so a large milestone is not sent back (Issue #4967)", async () => {
+  const children = Array.from(
+    { length: 15 },
+    (_, i) => ({ number: 201 + i, title: `Child ${201 + i}` }),
+  );
+  const body = buildMilestoneSummaryBody(
+    "#42 Retry policy",
+    "main",
+    children,
+    99,
+  );
+  const { result, governing } = await assessRollupBody(body);
+  assertEquals(
+    governing.issues.map((i) => i.number),
+    [42, ...children.map((c) => c.number)],
+  );
+  assert(governing.issues.some((i) => i.number === 215));
+  assertEquals(result.checked, true);
+  assertFalse(quoteNotInLinkedIssue(result), JSON.stringify(result.findings));
+  assertEquals(result.findings, [], JSON.stringify(result.findings));
 });
 
 Deno.test("rollup provenance (control): without a child Part of line the child-only quote is not found, so the parent link alone does not fix it (Issue #4967)", async () => {

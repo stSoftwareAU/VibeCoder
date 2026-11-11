@@ -1,0 +1,12 @@
+{
+  "issue": 4967,
+  "chunk": "top-up-4967",
+  "title": "top-up: governing-issue limits shared by the roll-up body and the reviewer",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4967",
+  "definition": "Review the constants that bound how many governing issues the fleet reviewer reads and how many Part of lines a milestone roll-up carries: one source for both, so the roll-up never links more issues than the reviewer reads.",
+  "status": "claimed",
+  "sweptAt": "6a9235f088b911554c03ad7cf315212dd17f4ce0",
+  "paths": [
+    "worker/deno/lib/governing_issue_limits.ts"
+  ]
+}

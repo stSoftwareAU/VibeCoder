@@ -18,6 +18,10 @@
 
 import { parseTestChangeNotes } from "../lib/pre_pr_verifier.ts";
 import {
+  MAX_GOVERNING_ISSUES,
+  MILESTONE_PROVENANCE_MAX_CHILDREN,
+} from "../lib/governing_issue_limits.ts";
+import {
   assert,
   assertEquals,
   assertFalse,
@@ -683,16 +687,20 @@ Deno.test("governing issues: a hostile body of repeated Part of text returns qui
   assertEquals(g.calls.length, 1);
 });
 
-Deno.test("governing issues: at most twelve are read, and invalid input is refused without gh", async () => {
-  const refs = Array.from({ length: 14 }, (_, i) => i + 1).map((n) => ({
-    number: n,
-    repository: { name: "widgets", owner: { login: "acme" } },
-  }));
+Deno.test("governing issues: at most MAX_GOVERNING_ISSUES are read, and invalid input is refused without gh", async () => {
+  const refs = Array.from({ length: MAX_GOVERNING_ISSUES + 2 }, (_, i) => i + 1)
+    .map((n) => ({
+      number: n,
+      repository: { name: "widgets", owner: { login: "acme" } },
+    }));
   const g = fakeGh({
     pr: { closingIssuesReferences: refs, headRefName: "x", body: "" },
   });
   await resolveGoverningIssues(FLEET, TRUST, g.runGh);
-  assertEquals(g.calls.filter((c) => c[0] === "api").length, 12);
+  assertEquals(
+    g.calls.filter((c) => c[0] === "api").length,
+    MAX_GOVERNING_ISSUES,
+  );
 
   const bad = fakeGh();
   const r = await resolveGoverningIssues(
@@ -704,11 +712,15 @@ Deno.test("governing issues: at most twelve are read, and invalid input is refus
   assertEquals(bad.calls, []);
 });
 
-Deno.test("governing issues: a roll-up body reads its tracking issue, parent and ten children, not an eleventh child", async () => {
+Deno.test("governing issues: a roll-up body reads its tracking issue, parent and every child up to the cap, not one more (Issue #4967)", async () => {
   // Issue #4967: `Closes #99` (tracking), `Part of #42` (parent), then one
-  // `Part of` line per delivered child. The eleventh child is the 13th
-  // candidate and must not be read.
-  const children = Array.from({ length: 11 }, (_, i) => 101 + i);
+  // `Part of` line per delivered child. The child past the cap is the
+  // (MAX_GOVERNING_ISSUES + 1)th candidate and must not be read.
+  const children = Array.from(
+    { length: MILESTONE_PROVENANCE_MAX_CHILDREN + 1 },
+    (_, i) => 101 + i,
+  );
+  const lastChild = children[children.length - 1];
   const body = [
     "Milestone roll-up.",
     "Closes #99",
@@ -731,15 +743,24 @@ Deno.test("governing issues: a roll-up body reads its tracking issue, parent and
     issues,
   });
   const r = await resolveGoverningIssues(FLEET, TRUST, g.runGh);
-  assertEquals(g.calls.filter((c) => c[0] === "api").length, 12);
-  assertFalse(g.calls.some((c) => (c[1] ?? "").endsWith("issues/111")));
+  assertEquals(
+    g.calls.filter((c) => c[0] === "api").length,
+    MAX_GOVERNING_ISSUES,
+  );
+  assertFalse(
+    g.calls.some((c) => (c[1] ?? "").endsWith(`issues/${lastChild}`)),
+  );
   assertEquals(r.problems, []);
   assertEquals(r.issues.map((i) => i.number), [
     99,
     42,
-    ...children.slice(0, 10),
+    ...children.slice(0, MILESTONE_PROVENANCE_MAX_CHILDREN),
   ]);
-  assert(r.issues.some((i) => i.number === 110));
+  assert(
+    r.issues.some((i) =>
+      i.number === children[MILESTONE_PROVENANCE_MAX_CHILDREN - 1]
+    ),
+  );
 });
 
 // ----- the worker's claim rule (Issue #4763) --------------------------------
