@@ -304,8 +304,8 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `worker/deno/tests/pre_push_gate_cargo_deny_test.ts::cargo deny: ciCargoOnly mode checks Cargo.lock`.
   The changed spec expectations in `pr_feedback_review_dismissal_3383_test.ts`
   and `pr_round_repo_formatters_test.ts` still verify processor wiring.
-- The former two-log Git call sequence in the ls-files failure test became three
-  logs because the cargo check collects its own changed-file list. Failure to
+- The ls-files failure test no longer asserts the Git call sequence (a "how"
+  assertion; PR #4896 review); its outcome assertions are kept. Failure to
   list tracked files still blocks:
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: git ls-files failure is an error`.
 - A failed or unavailable base comparison formerly produced a branch verdict; it

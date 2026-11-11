@@ -789,8 +789,11 @@ export type PrePushGateOutcome =
  * of that ref, pushed or not (Issue #3689): the execute phase's WIP
  * checkpoints push the agent's commits ungated, so the completion phase
  * checks the whole branch before it raises the PR. It is a no-op only when
- * the branch has no commit of its own ahead of `baseRef`. That mode never
- * reads the remote head: the range is local, so no `ls-remote` or `fetch` runs.
+ * the branch has no commit of its own ahead of `baseRef`. The range is computed
+ * locally, so no `ls-remote` runs for it. But when a CI cargo check fails and
+ * `compareRef` (by default `baseRef`) is an `origin/<branch>` ref, the gate
+ * fetches that base before comparing, and a failed fetch is an infrastructure
+ * fault rather than a verdict.
  *
  * `compareRef` (the PR base, for a repair push) lets the CI cargo checks tell a
  * failure the base already has from a new one; with a `baseRef` it defaults to
