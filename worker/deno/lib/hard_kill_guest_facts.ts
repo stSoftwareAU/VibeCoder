@@ -153,8 +153,8 @@ function pressureSegments(label: string, field: string): string[] {
     const figures: string[] = [];
     for (const key of PRESSURE_KEYS) {
       const token = tokens.find((entry) => entry.startsWith(`${key}=`));
-      const value = token?.slice(key.length + 1);
-      if (value !== undefined && PRESSURE_NUMBER_RE.test(value)) {
+      const value = token?.slice(key.length + 1) ?? "";
+      if (PRESSURE_NUMBER_RE.test(value)) {
         figures.push(`${key}=${value}`);
       }
     }

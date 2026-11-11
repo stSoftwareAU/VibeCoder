@@ -271,6 +271,16 @@ Deno.test("hardKillSilentFor is unknown for a timestamp that does not parse", ()
   );
 });
 
+Deno.test("hardKillSilentFor is unknown when the capture time does not parse (Issue #5062)", () => {
+  for (const capturedAt of ["not a time", "", "2026-13-45T99:99:99.000Z"]) {
+    assertEquals(
+      hardKillSilentFor(recordWith({ capturedAt })),
+      "unknown",
+      `capturedAt ${JSON.stringify(capturedAt)}`,
+    );
+  }
+});
+
 // ---------------------------------------------------------------------------
 // hardKillGuestProbe, from records the real capture wrote
 // ---------------------------------------------------------------------------

@@ -80,15 +80,15 @@ doc text the change edits.
 ## Acceptance Criteria
 
 - **missing** — Hard kill: container wedged in execute (watchdog) — the cause of
-  the wedge in run `vibe-mwc7uss5-1071e3` — reason: its evidence is on `GRQ-25`;
+  the wedge in run `vibe-mwc7uss5-1071e3` — reviewer: missing — reason: its evidence is on `GRQ-25`;
   this change adds the figures that classify the next recurrence, and a later
   run acts on the first recurrence that carries them
 
 ## Test Plan
 
-- `worker/deno/tests/hard_kill_guest_facts_test.ts` (new, 27 tests): silent time
+- `worker/deno/tests/hard_kill_guest_facts_test.ts` (new, 28 tests): silent time
   (the incident's `48m 51s`, hours, mtime note, no `Z`, `unknown`,
-  after-capture, unparseable), the four probe states driven by the real
+  after-capture, unparseable, unparseable capture time), the four probe states driven by the real
   `captureHardKillEvidence`, memory, pressure (partial, `some`/`full`,
   malformed), privacy (a private title and a token in `ps`/meminfo never
   appear), and 64 KiB hostile fields.
@@ -105,6 +105,14 @@ doc text the change edits.
   privacy, 64 KiB ps, and the body and follow-up tests); `Z` requirement dropped
   → the no-`Z` test red; the four lines removed from `formatHardKillBody` → 3
   red; the follow-up suffix removed → the follow-up test red.
+- Mutation check (2 survivors, both addressed): `hard_kill_guest_facts.ts:88`
+  dropped `Number.isNaN(captured)`: new test `hardKillSilentFor is unknown when
+  the capture time does not parse` goes red under that mutation (checked; it
+  would otherwise print `NaNs`). `hard_kill_guest_facts.ts:157` dropped
+  `value !== undefined`: the operand was dead, since `RegExp.test(undefined)`
+  tests the string `"undefined"` and never matches, so no test could tell. The
+  production line now reads `token?.slice(...) ?? ""` and tests the regex
+  alone; behaviour is unchanged.
 - Other callers of the changed function: `hardKillTerminalRun` and
   `reportPendingHardKills` do not read the new figures; the only other builder
   of a truncated evidence object was the `run_failure_issue_test.ts` fixture
