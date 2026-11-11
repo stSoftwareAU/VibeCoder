@@ -18,8 +18,8 @@ guard, and its refusal of completion and PR creation, are unchanged. Closes
 ### Intent and Rationale
 
 - The failure is not a recurrence of #4949. #4949 (PR #5025, merged
-  2026-11-11T05:41:23Z) fixed `AgentTurnLimitError` only; this run
-  (host `vibe-coder-37935`, released 05:47 UTC on #4952, phase `execute`, 1535 s)
+  2026-11-11T05:41:23Z) fixed `AgentTurnLimitError` only; this run (host
+  `vibe-coder-37935`, released 05:47 UTC on #4952, phase `execute`, 1535 s)
   failed on the executor refusal, which `execute_phase.ts` did not handle at
   all. Both share the `worker-crash` bucket because both fell through to
   `internal_error`.
@@ -35,8 +35,8 @@ guard, and its refusal of completion and PR creation, are unchanged. Closes
 - The new reason prefix is deliberately not added to the no-retry check beside
   `TURN_LIMIT_REASON_PREFIX`. An `interrupted` result keeps the one bounded
   infrastructure retry, which re-enters the phase on the branch holding the
-  preserved work. That is the "resume automatically" contract; a second
-  failure is released as `interrupted` with the work preserved.
+  preserved work. That is the "resume automatically" contract; a second failure
+  is released as `interrupted` with the work preserved.
 - The posted reason carries no issue number (it lands in the target repo's
   comments, Issue #3499 rule), unlike the log line.
 
@@ -64,31 +64,33 @@ flowchart LR
   `config integration`, `checkov`); deno tests, lint, type check and fmt all
   passed.
 - Issue numbers cited as provenance: #4599: executor split foreground pinning
-  and unfinished-executor refusal; #4949: turn-cap run recorded as worker
-  crash (PR #5025); #4952: source issue of this failure.
+  and unfinished-executor refusal; #4949: turn-cap run recorded as worker crash
+  (PR #5025); #4952: source issue of this failure.
 
 ## Reproduction
 
 - **symptom** — a split run whose advisor ended with an executor unfinished was
-  recorded `Claude execution failed: Split issue run has unfinished executor
-  work; refusing completion and PR creation (Issue #4599).`, classified
-  `worker-crash` and auto-filed, with the work not preserved.
+  recorded
+  `Claude execution failed: Split issue run has unfinished executor
+  work; refusing completion and PR creation (Issue #4599).`,
+  classified `worker-crash` and auto-filed, with the work not preserved.
 - **status** — `verified` — the new phase tests go red when the new branch is
   disabled (the unfixed behaviour: the typed error falls through to
   `internal_error`): 3 failed, 2 passed (the two that assert unchanged
   behaviour). They also cannot compile against the base branch, which has no
   `UnfinishedIssueExecutorError`. They pass with the fix.
-- **regression test** — `worker/deno/tests/execute_phase_unfinished_executor_5048_test.ts::execute_phase #5048 - an unfinished executor with a dirty tree is preserved and released as interrupted`
+- **regression test** —
+  `worker/deno/tests/execute_phase_unfinished_executor_5048_test.ts::execute_phase #5048 - an unfinished executor with a dirty tree is preserved and released as interrupted`
 
 ## Test Plan
 
-- New `worker/deno/tests/execute_phase_unfinished_executor_5048_test.ts`
-  (5 tests): preserved-and-interrupted with handover note and `not_code_fixable`
+- New `worker/deno/tests/execute_phase_unfinished_executor_5048_test.ts` (5
+  tests): preserved-and-interrupted with handover note and `not_code_fixable`
   classification; the bounded retry runs the invocation twice; a plain `Error`
   with the same message stays `internal_error`; the reason quotes the refused
-  invocation's own output, not stale state; the commit subject. Not covered:
-  a first attempt failing and a second succeeding (the harness has no full
-  success path).
+  invocation's own output, not stale state; the commit subject. Not covered: a
+  first attempt failing and a second succeeding (the harness has no full success
+  path).
 - `worker/deno/tests/issue_executor_enforcement_test.ts` (production runner with
   a fake CLI): additionally asserts the refusal is an
   `UnfinishedIssueExecutorError` whose `executionResult.output` is `done`. No
@@ -97,15 +99,15 @@ flowchart LR
   `worker/deno/tests/wip_checkpoint_test.ts`,
   `worker/deno/tests/handover_note_test.ts`,
   `worker/deno/tests/wip_commit_marker_test.ts`. No assertion removed.
-- Red checks: disabling the `instanceof UnfinishedIssueExecutorError` branch →
-  3 of the new tests red. Not red-checked: the runner-side typing, covered by
-  the added `instanceof` assertion in `issue_executor_enforcement_test.ts`.
+- Red checks: disabling the `instanceof UnfinishedIssueExecutorError` branch → 3
+  of the new tests red. Not red-checked: the runner-side typing, covered by the
+  added `instanceof` assertion in `issue_executor_enforcement_test.ts`.
 - Twinned rules: the `WipPreservationCause` list is mirrored by the three test
   lists above; `TURN_LIMIT_REASON_PREFIX` has no twin for the new prefix by
   design (see decisions).
 - Docs: `docs/MANAGER-WORKER-CONTRACT.md` ("The existing failure path retains
-  the work for retry" was false) now describes the typed error, preservation
-  and release as `interrupted`.
+  the work for retry" was false) now describes the typed error, preservation and
+  release as `interrupted`.
 - Targeted run on the final head: `deno task test:unit` of the new test, the
   4949 test, the enforcement test and the three cause-list tests plus
   `execute_phase_killed_test.ts`: 88 passed, 0 failed.
