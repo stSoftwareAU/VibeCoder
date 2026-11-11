@@ -101,6 +101,23 @@ flowchart LR
   generated `docs/audits/dependency-inventory.md`; the README and
   `docs/INTERNALS.md` carry no tool list.
 
+### Existing callers of changed functions
+
+- `manifest_field` is a new function private to
+  `container/toolchains/tokeneconomizer.sh`. `floci.sh` (lines 58, 72) and
+  `rtk.sh` (lines 52, 66) call their own `manifest_field`, defined in their own
+  files (`floci.sh:47`, `rtk.sh:41`) and not touched by this diff; each fragment
+  runs in its own shell, so none of those callers can reach the new one:
+  **unchanged**.
+- `loadConfig` (`worker/deno/lib/config.ts`) gains one step: it parses
+  `token_economizer` and throws only when that key is present and malformed. No
+  existing caller or test config sets the key (a search of `*.ts` finds it only
+  in the new block's own files and tests), so every existing caller gets the
+  off-by-default value and the same behaviour as before: **unchanged**. The new
+  field `WorkerConfig.tokenEconomizer` is added, not altered; the new throw is
+  **changed and tested** in `worker/deno/tests/token_economizer_config_test.ts`
+  (`loadConfig` throws on a malformed block).
+
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
