@@ -22,12 +22,19 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   alignIssueCloseWithClosure,
+  COLON_CLOSE_RE,
   findMissingCriteria,
   MissingIssueIdentityError,
   restoreIssueClose,
+  URL_CLOSE_RE,
   withholdIssueClose,
 } from "../lib/missing_criterion_close_guard.ts";
 import { assemblePrBody } from "../lib/pr_body_sync.ts";
@@ -738,4 +745,180 @@ Deno.test("same-repo qualified and bare references are withheld (Issue #4644)", 
     ),
     "Part of owner/repo#42, Part of #42, resolves other/repo#42",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Colon and full-URL closing forms (Issue #4936)
+// ---------------------------------------------------------------------------
+
+const SAME_REPO = { prRepo: "o/r", issueRepo: "o/r" };
+
+/** A summary whose own reference to the issue is written `reference`. */
+function missingSummaryWith(reference: string): string {
+  return MISSING_SUMMARY.replace(`Closes #${ISSUE}.`, reference);
+}
+
+/** Every colon or full-URL closing reference in `text` that names `issueNumber`. */
+function colonOrUrlClosingRefs(text: string, issueNumber: number): string[] {
+  const refs: string[] = [];
+  for (const m of text.matchAll(COLON_CLOSE_RE)) {
+    if (Number(m[4]) === issueNumber) refs.push(m[0]);
+  }
+  for (const m of text.matchAll(URL_CLOSE_RE)) {
+    if (Number(m[5]) === issueNumber) refs.push(m[0]);
+  }
+  return refs;
+}
+
+Deno.test("withholdIssueClose rewrites the colon form of this issue's closing keyword (Issue #4936)", () => {
+  assertEquals(withholdIssueClose("Closes: #2301", 2301), "Part of #2301");
+  assertEquals(withholdIssueClose("resolved : #2301", 2301), "Part of #2301");
+  assertEquals(
+    withholdIssueClose("**FIXES:#2301**", 2301),
+    "**Part of #2301**",
+  );
+});
+
+Deno.test("withholdIssueClose rewrites a qualified colon reference to this issue in its own repository (Issue #4936)", () => {
+  assertEquals(
+    withholdIssueClose("Closes: o/r#2301", 2301, SAME_REPO),
+    "Part of o/r#2301",
+  );
+  assertEquals(
+    withholdIssueClose("Closes: x/y#2301", 2301, SAME_REPO),
+    "Closes: x/y#2301",
+  );
+});
+
+Deno.test("withholdIssueClose rewrites a full-URL reference to this issue as a qualified Part of (Issue #4936)", () => {
+  assertEquals(
+    withholdIssueClose(
+      "Fixes https://github.com/o/r/issues/2301",
+      2301,
+      SAME_REPO,
+    ),
+    "Part of o/r#2301",
+  );
+  assertEquals(
+    withholdIssueClose(
+      "(resolves https://github.com/o/r/issues/2301).",
+      2301,
+      SAME_REPO,
+    ),
+    "(Part of o/r#2301).",
+  );
+});
+
+Deno.test("withholdIssueClose leaves other-issue colon and URL references untouched (Issue #4936)", () => {
+  const body = "Closes: #99. Fixes https://github.com/o/r/issues/99. " +
+    "Closes: other/r#2301. Fixes https://github.com/o/other/issues/2301.";
+  assertEquals(withholdIssueClose(body, 2301, SAME_REPO), body);
+});
+
+Deno.test("withholdIssueClose matches the colon and URL forms case-insensitively (Issue #4936)", () => {
+  assertEquals(withholdIssueClose("CLOSES: #2301", 2301), "Part of #2301");
+  assertEquals(
+    withholdIssueClose(
+      "FIXES HTTPS://GITHUB.COM/o/r/issues/2301",
+      2301,
+      SAME_REPO,
+    ),
+    "Part of o/r#2301",
+  );
+});
+
+Deno.test("withholdIssueClose throws for a URL or qualified colon reference with no identity, but not an unqualified colon (Issue #4936)", () => {
+  assertThrows(
+    () => withholdIssueClose("Fixes https://github.com/o/r/issues/2301", 2301),
+    MissingIssueIdentityError,
+  );
+  assertThrows(
+    () => withholdIssueClose("Closes: o/r#2301", 2301),
+    MissingIssueIdentityError,
+  );
+  assertEquals(withholdIssueClose("Closes: #2301", 2301), "Part of #2301");
+});
+
+Deno.test("withholdIssueClose stays linear on hostile colon and URL input (Issue #4936)", () => {
+  const hostile = [
+    "close" + " ".repeat(50_000) + "!",
+    "Closes" + " ".repeat(50_000) + "x",
+    "Fixes" + " ".repeat(50_000) + "!",
+    "close ".repeat(20_000) + "!",
+    "close".repeat(20_000) + "!",
+    "close: ".repeat(20_000) + "!",
+    "Fixes https://github.com/" + "a/".repeat(20_000) + "!",
+  ];
+  for (const input of hostile) {
+    assertEquals(withholdIssueClose(input, 2301, SAME_REPO), input);
+  }
+});
+
+Deno.test("restoreIssueClose turns a withheld colon reference back into the plain Closes form (Issue #4936)", () => {
+  assertEquals(
+    restoreIssueClose(withholdIssueClose("Closes: #2301", ISSUE), ISSUE),
+    "Closes #2301",
+  );
+});
+
+Deno.test("withholdIssueClose leaves a colon or URL reference in code as written and rewrites the prose ones (Issue #4936, #4637)", () => {
+  const body = [
+    "Use `Closes: #2301` and `Fixes https://github.com/o/r/issues/2301` here.",
+    "",
+    "```",
+    "Resolves: #2301",
+    "Closes: o/r#2301",
+    "```",
+    "",
+    "Closes: #2301 and Fixes https://github.com/o/r/issues/2301.",
+  ].join("\n");
+  assertEquals(
+    withholdIssueClose(body, 2301, SAME_REPO),
+    [
+      "Use `Closes: #2301` and `Fixes https://github.com/o/r/issues/2301` here.",
+      "",
+      "```",
+      "Resolves: #2301",
+      "Closes: o/r#2301",
+      "```",
+      "",
+      "Part of #2301 and Part of o/r#2301.",
+    ].join("\n"),
+  );
+  // Code is inert, so a URL in a code span does not need an identity to pass.
+  const inCode = "Use `Fixes https://github.com/o/r/issues/2301` here.";
+  assertEquals(withholdIssueClose(inCode, 2301), inCode);
+});
+
+Deno.test("assemblePrBody - a missing criterion withholds a colon closing reference (Issue #4936)", () => {
+  const body = assemblePrBody({
+    summaryContent: missingSummaryWith(`Closes: #${ISSUE}.`),
+    issueNumber: ISSUE,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(extractClosingIssueNumbers(body).includes(ISSUE), false);
+  assertEquals(hasClosingKeyword(body, ISSUE), false);
+  assertEquals(colonOrUrlClosingRefs(body, ISSUE), []);
+  assertStringIncludes(body, "## Not closing");
+});
+
+Deno.test("assemblePrBody - a missing criterion withholds a full-URL closing reference (Issue #4936)", () => {
+  const body = assemblePrBody({
+    summaryContent: missingSummaryWith(
+      `Fixes https://github.com/o/r/issues/${ISSUE}.`,
+    ),
+    issueNumber: ISSUE,
+    issueIdentity: SAME_REPO,
+    extraSections: "",
+    footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(extractClosingIssueNumbers(body).includes(ISSUE), false);
+  assertEquals(hasClosingKeyword(body, ISSUE), false);
+  assertEquals(colonOrUrlClosingRefs(body, ISSUE), []);
+  assertStringIncludes(body, "## Not closing");
 });

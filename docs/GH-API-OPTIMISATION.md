@@ -209,7 +209,10 @@ Concurrent slots share one pass. The post-scan pass itself lists live only
 the repos the cycle claimed from (`EnsureAutoMergeOptions.refreshRepos`) —
 the only repos it can have raised a PR in — instead of every repo per fleet
 author. And the prefetched `prs_<login>` entry now carries `isDraft`, which
-the auto-merge sweep reads to leave a draft alone (Issue #1800).
+the auto-merge sweep reads to leave a draft alone (Issue #1800), except an
+orphaned fleet draft its self-heal readies (Issue #4952). The self-heal reads
+the PR and its issue live on each pass that meets a draft, and does not use
+this cache.
 
 The closed-PR listing (`fetchClosedPRsByUser`, `--state=closed …
 mergedAt,closedAt,body`) needed no new cache: it is already a *settled

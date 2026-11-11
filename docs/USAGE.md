@@ -69,8 +69,9 @@ of change:
 - **UI (User Interface) Changes**: Include a screenshot (see
   [Screenshot Support](DEPLOYMENT.md#-screenshot-support-setup)). If a screenshot
   cannot be generated, you must explicitly state why in the PR summary.
-- **Performance Changes**: Include benchmark results (before/after). If no
-  measurable improvement, document this finding.
+- **Performance Changes**: Prefer deterministic evidence (operation or work
+  counts). Any before/after timings are indicative only (taken on a shared,
+  parallel host); a missing timing gain alone does not block the PR.
 - **Bugs/Enhancements**: Follow TDD (Test-Driven Development); test the
   result/outcome, not the implementation method.
 
@@ -475,6 +476,17 @@ repository-admin finding is applied with the worker's token (or retried on the
 issue-number order; a dead `work-on` label on a milestone tracker is stripped;
 a re-approved issue a merged PR already satisfies, and a worker diagnostic a
 merged PR fixed, are closed as completed.
+
+**The one exception: a no-change negative result (Issue #4911).** When a run
+ends with no change and the issue carries `negative-result`, the worker — not
+the agent — hands the issue to a human. It posts a hand-off comment (which cites
+no issue number), adds `needs-human` through the escalation path, unassigns
+itself and leaves the issue open. A human closes the issue if the result
+stands; to return it to the queue, remove both `needs-human` and
+`negative-result`, then re-add `work-on` (discovery cleanup removes it). This path adds no new gate: it only applies once the agent has recorded
+`negative-result` on a run that made no change, so it never holds back a
+correct, tested performance PR, and the worker never applies the label itself.
+The agent must not label an ordinary timing-only uncertainty `negative-result`.
 
 **To resume work:**
 
