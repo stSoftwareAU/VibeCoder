@@ -3144,6 +3144,7 @@ export async function createProductionRunCoreDeps(
         const workerId = getWorkerUniqueId(config.workerName);
         const execResult = await executePrBranchUpdates(actions, {
           workDir,
+          baseRefreshSource: "branch-update-loop",
           logger,
           workerId,
           // Issue #335: count consecutive failures per (repo, branch) so a

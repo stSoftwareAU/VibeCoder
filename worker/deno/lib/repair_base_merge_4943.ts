@@ -43,7 +43,8 @@ export type BaseRefreshOutcome =
   | "refresh-requested"
   | "refresh-skipped"
   | "base-merge-allowed"
-  | "base-merge-skipped";
+  | "base-merge-skipped"
+  | "base-merge-failed";
 
 export interface BaseRefreshDecisionFacts {
   source: string;

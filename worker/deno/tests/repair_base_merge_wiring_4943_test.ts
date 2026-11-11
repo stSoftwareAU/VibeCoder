@@ -164,6 +164,8 @@ type BaseRunState = "green" | "red" | "no-run" | "unavailable" | "probe-throws";
 const CI_CHECK_RUN_ID = "123";
 const BASE_RUN_ID = 901;
 const BASE_SHA = "b".repeat(40);
+const HEAD_SHA = "a".repeat(40);
+const MERGE_BASE_SHA = "c".repeat(40);
 
 /**
  * A gh runner for the CI-fix processor's base-fix probe (Issue #4943). It
@@ -178,6 +180,9 @@ function baseFixGh(
   return (args: string[]) => {
     const endpoint = args[1];
     if (args[0] === "pr" && endpoint === "view") {
+      if (args[args.indexOf("--json") + 1] === "headRefOid") {
+        return Promise.resolve(JSON.stringify({ headRefOid: HEAD_SHA }));
+      }
       return Promise.resolve(JSON.stringify({ mergeable }));
     }
     if (args[0] === "api") {
@@ -185,11 +190,15 @@ function baseFixGh(
         if (base === "probe-throws") {
           return Promise.reject(new Error("HTTP 502 from check-runs"));
         }
-        return Promise.resolve(JSON.stringify({
-          name: "test",
-          app_slug: "github-actions",
-          details_url: `https://github.com/${REPO}/actions/runs/900/job/1`,
-        }));
+        return Promise.resolve(
+          args[args.indexOf("--jq") + 1] === ".head_sha"
+            ? `${HEAD_SHA}\n`
+            : JSON.stringify({
+              name: "test",
+              app_slug: "github-actions",
+              details_url: `https://github.com/${REPO}/actions/runs/900/job/1`,
+            }),
+        );
       }
       if (
         endpoint === `repos/${REPO}/actions/runs/900` ||
@@ -199,6 +208,28 @@ function baseFixGh(
       }
       if (endpoint === `repos/${REPO}/commits/${DEFAULT_BRANCH}`) {
         return Promise.resolve(`${BASE_SHA}\n`);
+      }
+      if (endpoint === `repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}`) {
+        return Promise.resolve(`${MERGE_BASE_SHA}\n`);
+      }
+      if (endpoint === `repos/${REPO}/commits/${MERGE_BASE_SHA}`) {
+        return Promise.resolve(
+          args[args.indexOf("--jq") + 1] === ".sha"
+            ? `${MERGE_BASE_SHA}\n`
+            : `${"f".repeat(40)}\n`,
+        );
+      }
+      if (
+        endpoint ===
+          `repos/${REPO}/commits/${MERGE_BASE_SHA}/check-runs?per_page=100`
+      ) {
+        return Promise.resolve(JSON.stringify({ check_runs: [] }));
+      }
+      if (
+        endpoint ===
+          `repos/${REPO}/commits/${MERGE_BASE_SHA}/pulls?per_page=5`
+      ) {
+        return Promise.resolve("[]");
       }
       if (
         endpoint ===
@@ -224,7 +255,7 @@ function baseFixGh(
   };
 }
 
-Deno.test("pr-ci-processor syncs the base once for a MERGEABLE PR whose failing check passes on the base (Issue #4943)", async () => {
+Deno.test("pr-ci-processor does not sync a MERGEABLE PR when its failing check is green only on the current base (Issue #4943)", async () => {
   const { syncCalls, lines } = await runWith(
     "ci",
     mergeableJson("MERGEABLE"),
@@ -236,10 +267,10 @@ Deno.test("pr-ci-processor syncs the base once for a MERGEABLE PR whose failing 
   assertDecisionLine(
     decisions[0]!,
     "pr-ci-processor",
-    "base-merge-allowed",
-    /^failing check test passes on the base, so the base merge brings the base fix in"/,
+    "base-merge-skipped",
+    /^GitHub reports mergeable MERGEABLE, not CONFLICTING;.*base-fix check unreadable: merge-base check is no-run, not red"/,
   );
-  assertEquals(syncCalls, [[BRANCH, DEFAULT_BRANCH]]);
+  assertEquals(syncCalls, []);
 });
 
 for (const base of ["red", "no-run", "unavailable", "probe-throws"] as const) {

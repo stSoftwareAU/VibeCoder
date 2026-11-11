@@ -3143,7 +3143,9 @@ export async function fix(
       repo,
       prNumber: pr.number,
       base: pr.baseRefName,
-      reason: baseMerge.reason,
+      reason: fixedOnBase.length > 0 || baseDecision?.kind !== "repair"
+        ? baseMerge.reason
+        : `${baseMerge.reason}; ${baseDecision.reason}`,
     });
     await persistBaseRefreshCounter(stateDir, {
       source: "babysitter-repair",

@@ -209,7 +209,7 @@ Deno.test("a conflicting repair is tallied as base-merge-allowed in the babysitt
   });
 });
 
-Deno.test("a failed-CI repair on a MERGEABLE PR whose failing check passes on the base merges the base, and the merge reaches the agent (Issue #4943)", async () => {
+Deno.test("a failed-CI repair on a MERGEABLE PR with only a green current-base check does not merge the base (Issue #4943)", async () => {
   await withConsole(async (stateDir, lines) => {
     const h = harness(stateDir);
     h.state.pr = basePr({ mergeable: "MERGEABLE" });
@@ -218,19 +218,18 @@ Deno.test("a failed-CI repair on a MERGEABLE PR whose failing check passes on th
       Promise.resolve<BaseFailureDecision>({
         kind: "repair",
         reason: `the base's run of "Unit tests" is green, not red`,
-        baseGreen: ["Unit tests"],
+        repairCheck: { name: "Unit tests", headRunId: 123 },
       });
     await h.attempt();
     assertEquals(h.state.sessions, 1);
-    assertStringIncludes(
-      h.state.prompts[0]!,
-      "has already merged the latest main",
-    );
+    assert(!h.state.prompts[0]!.includes("has already merged the latest main"));
     const allowed = baseRefreshLines(lines).filter((line) =>
       line.includes("source=babysitter-repair")
     );
     assertEquals(allowed.length, 1, lines.join("\n"));
-    assertMatch(allowed[0]!, FIXED_ON_BASE_LINE);
+    assertMatch(allowed[0]!, /outcome=base-merge-skipped/);
+    assertStringIncludes(allowed[0]!, "base fix not proven");
+    assertEquals(h.state.mergeBaseCalls, []);
   });
 });
 

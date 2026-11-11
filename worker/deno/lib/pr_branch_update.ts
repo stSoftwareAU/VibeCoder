@@ -37,6 +37,10 @@ import {
   clearPrBranchUpdateFailure,
   recordPrBranchUpdateFailure,
 } from "./pr_branch_update_failure_streak.ts";
+import {
+  logBaseRefreshDecision,
+  persistBaseRefreshCounter,
+} from "./repair_base_merge_4943.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -301,6 +305,8 @@ export interface PrBranchUpdateExecutionResult {
 export interface PrBranchExecutionDeps {
   /** Working directory where repos are cloned. */
   workDir: string;
+  /** Lane name used to attribute local conflict-repair merges. */
+  baseRefreshSource?: string;
   /** Logger for diagnostic output. */
   logger: Logger;
   /** Set up a repository (clone/update). Returns repo path on success. */
@@ -1338,6 +1344,30 @@ export async function executePrBranchUpdates(
     const postState = updateResult.ok
       ? "UNKNOWN"
       : await resolvePrLiveState(deps, action);
+
+    if (action.reason === "conflicting") {
+      const source = deps.baseRefreshSource ?? "branch-update-loop";
+      const finished = !updateResult.ok && isFinishedPrState(postState);
+      const outcome = updateResult.ok
+        ? "base-merge-allowed"
+        : finished
+        ? "refresh-skipped"
+        : "base-merge-failed";
+      const reason = updateResult.ok
+        ? "genuine conflict repaired through local base merge"
+        : finished
+        ? `PR ${postState.toLowerCase()} during conflict repair`
+        : `genuine conflict repair failed: ${updateResult.error.message}`;
+      logBaseRefreshDecision({
+        source,
+        outcome,
+        repo: action.repo,
+        prNumber: action.prNumber,
+        base: action.baseBranch,
+        reason,
+      });
+      await persistBaseRefreshCounter(deps.workDir, { source, outcome });
+    }
 
     if (updateResult.ok) {
       updatedCount++;

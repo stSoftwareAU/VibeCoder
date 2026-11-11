@@ -274,22 +274,6 @@ export async function confirmBaseFailureFixed(options: {
       reason: "PR check belongs to a different head revision",
     };
   }
-  const headFailure = await (options.actionsLogFn ??
-    fetchGithubActionsLogExcerpt)({
-    repo,
-    checkRunId,
-    checkName,
-    ghFn,
-  });
-  if (headFailure.kind !== "excerpt") {
-    return {
-      confirmed: false,
-      reason: `PR failure log is not comparable: ${
-        headFailure.kind === "error" ? headFailure.error : headFailure.reason
-      }`,
-    };
-  }
-
   const current = await readBaseBranchCheck({
     repo,
     branch: baseRef,
@@ -340,6 +324,21 @@ export async function confirmBaseFailureFixed(options: {
     return {
       confirmed: false,
       reason: `merge-base check is ${historical.state}, not red`,
+    };
+  }
+  const headFailure = await (options.actionsLogFn ??
+    fetchGithubActionsLogExcerpt)({
+    repo,
+    checkRunId,
+    checkName,
+    ghFn,
+  });
+  if (headFailure.kind !== "excerpt") {
+    return {
+      confirmed: false,
+      reason: `PR failure log is not comparable: ${
+        headFailure.kind === "error" ? headFailure.error : headFailure.reason
+      }`,
     };
   }
   const comparison = await compareBaseFailure({

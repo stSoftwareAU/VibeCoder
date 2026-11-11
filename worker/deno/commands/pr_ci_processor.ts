@@ -30,9 +30,8 @@ import {
 } from "../lib/pr_ci_processor.ts";
 import { decodeAnnotations } from "../lib/pr_spelling_processor.ts";
 import {
-  readBaseBranchCheck,
-  readCheckIdentity,
-} from "../lib/ci_base_branch_check.ts";
+  confirmBaseFailureFixed,
+} from "../lib/babysitter_base_failure.ts";
 import {
   createDefaultDeps,
   type WorkerDeps,
@@ -169,24 +168,32 @@ export const prCiProcessorCommand = {
               fleetPrAuthors: config.fleetPrAuthors ?? [],
             }),
           }),
-          // Issue #4943: the processor's own failing check, read against the
-          // default branch. Only a green base run names it; an unreadable
-          // identity throws, so its cause reaches the skip reason.
+          // A green base run alone is ordinary when the PR broke the check.
+          // Require this exact failure on the merge-base and green on a newer
+          // base commit before merging the base into a repair.
           fixedOnBase: async () => {
-            const identity = await readCheckIdentity({
+            const prView = JSON.parse(await deps.github.runGhCommand([
+              "pr",
+              "view",
+              String(prNumber),
+              "--repo",
               repo,
+              "--json",
+              "headRefOid",
+            ])) as { headRefOid?: unknown };
+            if (typeof prView.headRefOid !== "string") {
+              throw new Error("PR head SHA is missing from gh pr view");
+            }
+            const result = await confirmBaseFailureFixed({
+              repo,
+              baseRef: defaultBranch,
+              headSha: prView.headRefOid,
               checkRunId,
               checkName,
-              ghCommandFn: deps.github.runGhCommand,
+              ghFn: deps.github.runGhCommand,
             });
-            if (!identity.ok) throw identity.error;
-            const evidence = await readBaseBranchCheck({
-              repo,
-              branch: defaultBranch,
-              failing: identity.value,
-              ghCommandFn: deps.github.runGhCommand,
-            });
-            return evidence.state === "green" ? [checkName] : [];
+            if (!result.confirmed) throw new Error(result.reason);
+            return [checkName];
           },
         });
         if (baseMerge.merge) {
