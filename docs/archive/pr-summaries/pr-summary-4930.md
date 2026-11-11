@@ -116,15 +116,15 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 `runPrePushGate` loop; `judgeDenoTestCheck`, `unitTestCommand` and
 `worktreeBaseline` (`lib/deno_test_baseline.ts`) are called by `runPrePushGate`;
 `baselineBranch` is set by `gateUnpushedCommits` (from `commitAndPushPending`'s
-`syncBaseBranch`) and read by `runPrePushGate`.
+`syncBaseBranch` or `gateBaseBranch`) and by `pre_push_gate_cli.ts` (from
+`resolveLocalDefaultBranch`), and read by `runPrePushGate`.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **partial** — Make the fleet run `deno test, markdownlint` the way CI
-  does, and require it to pass, before a PR is raised or a fix is pushed —
-  evidence:
+- **partial** — Make the fleet run `deno test, markdownlint` the way CI does,
+  and require it to pass, before a PR is raised or a fix is pushed — evidence:
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed test runs the repo's test:unit task, and its failure blocks the push (#4930)`,
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed doc runs the differently named test that reads it (#4930)`,
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a deleted source runs the differently named test that imports it (#4930)`
@@ -144,8 +144,8 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   the parent of its oldest unpushed commit, and the agent's own `git push` for a
   PR that targets a non-default branch is compared at the merge-base with the
   default branch, which can be older than the PR's base. — reason: the cases
-  above still reach CI and the dependency-selected subset is not the whole
-  suite CI runs.
+  above still reach CI and the dependency-selected subset is not the whole suite
+  CI runs.
 
 ## Test Plan
 
@@ -233,21 +233,24 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 - Whole suite for unresolvable readers: `needsFullUnitSuite` (prompts, and a
   root's `deno.json` / `deno.jsonc` / `deno.lock`), passed to the planner as
   `denoFullUnitRoots`.
-- Third round (this head): `hasUncaughtError` makes an `(uncaught error)` run a
-  verdict; `judgeDenoTestCheck` runs `--serial-only` after a base-only run whose
-  serial pass never ran (`serialPassSkipped`) and judges it; the fork is the
-  merge-base with the PR's base (`baselineBranch`, threaded from
-  `commitAndPushPending`'s `syncBaseBranch` through `gateUnpushedCommits`). The
-  `worktreeBaseline` tests now run against a real temporary git repository (fork
-  commit holding some of the files, a runner that reads a marker file from its
-  cwd) and assert the outcome: `ranFiles`, the error, the fork checkout and that
-  `git worktree list` shows only the main worktree afterwards. The judge tests
-  assert only the returned outcome. The two pins that the second round replaced
+- Third round: `hasUncaughtError` makes an `(uncaught error)` run a verdict;
+  `judgeDenoTestCheck` runs `--serial-only` after a base-only run whose serial
+  pass never ran (`serialPassSkipped`) and judges it; the fork is the merge-base
+  with the PR's base (`baselineBranch`, threaded from `commitAndPushPending`'s
+  `syncBaseBranch` through `gateUnpushedCommits`). The `worktreeBaseline` tests
+  now run against a real temporary git repository (fork commit holding some of
+  the files, a runner that reads a marker file from its cwd) and assert the
+  outcome: `ranFiles`, the error, the fork checkout and that `git worktree list`
+  shows only the main worktree afterwards. The judge tests assert only the
+  returned outcome. The two pins that the second round replaced
   (`Configured pre-flight commands enable changed-file checks`) are restored in
   `quality_gate_budget_test.ts` and `repo_config_test.ts` beside the new clause.
 - Tests at the head: `worker/deno/tests/deno_test_baseline_test.ts` (17 tests at
-  head), `worker/deno/tests/pre_push_gate_test.ts` (124 tests at head) and
-  `worker/deno/tests/git_push_preflight_test.ts` (22 tests at head), including
+  head), `worker/deno/tests/pre_push_gate_test.ts` (121 `Deno.test` calls at
+  head, two of them inside loops),
+  `worker/deno/tests/git_push_preflight_test.ts` (22 tests at head),
+  `worker/deno/tests/pre_push_gate_cli_test.ts` (10 tests at head) and
+  `worker/deno/tests/local_default_branch_test.ts` (3 tests at head), including
   `runPrePushGate` cases for a test red at the fork (warning, worktree removed),
   a base that passes, a different test red at the base, a push-added test file,
   a fetch outage, a 404, a mixed output, a builder-based reader reached by the
@@ -274,47 +277,53 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   test at the PR's base" and `git_push_preflight_test.ts` "a repair push
   compares a failing unit test at the PR's base" red (2 failed).
 - Earlier red checks (second round): fetch classification off; `fresh`
-  comparison dropped; `ranFiles` guard dropped; safe-path guard dropped;
-  `needsFullUnitSuite` call replaced by `false`; the `prompts/` operand replaced
-  by `false`; a timeout is neither an outage nor base-only.
+  comparison dropped; `ranFiles` guard dropped; `needsFullUnitSuite` call
+  replaced by `false`; the `prompts/` operand replaced by `false`; a timeout is
+  neither an outage nor base-only.
 - `pre_push_gate_test.ts` injects `findMarkdownlint` for its Markdown prompt
   case so it does not depend on the host's install.
 - `docs/audits/lib-sweep-coverage/top-up-4930.json` claims
-  `worker/deno/lib/deno_test_baseline.ts` for the sweep-coverage audit.
+  `worker/deno/lib/deno_test_baseline.ts` and
+  `worker/deno/lib/local_default_branch.ts` for the sweep-coverage audit.
 - Docs: `docs/CONFIGURATION.md` (the `deno test` bullet: fork choice,
   `(uncaught error)`, the skipped serial pass), the module doc of
   `pre_push_gate.ts`, `runPrePushGate` and `gateUnpushedCommits` doc comments.
 - Run on this head:
   `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_retry_test.ts tests/git_push_preflight_test.ts tests/git_push_test.ts tests/issue_worker_test.ts tests/pr_merge_conflict_processor_test.ts tests/quality_gate_budget_test.ts tests/repo_config_test.ts`
-  (528 passed, 0 failed at that revision). Formatter, lint and `deno check` of the changed files
-  pass.
+  (528 passed, 0 failed at that earlier revision). Formatter, lint and
+  `deno check` of the changed files pass.
 
 ### PR #5034 review, fourth round
 
 - Shallow clones: `pushForkCommit` (`lib/pre_push_gate.ts`) calls
-  `ensureHistoryDepth([compareRef, ...heads])` before `git merge-base`
-  (a no-op on a full clone); a failed deepen leaves the baseline unavailable, so
-  the failure blocks. Test: `runPrePushGate: a repair push on a --depth=1 clone
-  is deepened to find the PR's base, so a base-red test is a warning` in
-  `worker/deno/tests/pre_push_gate_test.ts`, on a real `--depth=1
-  --no-single-branch` clone whose base moved on after the PR branch left it
-  (control: `merge-base` fails there before the gate runs); the same clone with a
-  base that passes still blocks. Red check: the deepen replaced by a no-op → that
-  test red (`deno task test:unit` blocked on `tests/foo_test.ts`).
+  `ensureHistoryDepth([compareRef, ...heads])` before `git merge-base` (a no-op
+  on a full clone); a failed deepen leaves the baseline unavailable, so the
+  failure blocks. Test:
+  `runPrePushGate: a repair push on a --depth=1 clone
+  is deepened to find the PR's base, so a base-red test is a warning`
+  in `worker/deno/tests/pre_push_gate_test.ts`, on a real
+  `--depth=1
+  --no-single-branch` clone whose base moved on after the PR branch
+  left it (control: `merge-base` fails there before the gate runs); the same
+  clone with a base that passes still blocks. Red check: the deepen replaced by
+  a no-op → that test red (`deno task test:unit` blocked on
+  `tests/foo_test.ts`).
 - The agent's own `git push`: `pre_push_gate_cli.ts` now passes the checkout's
   default branch (`resolveLocalDefaultBranch`, moved unchanged to
   `lib/local_default_branch.ts` so the standalone hook needs no `git_push.ts`
   imports; `git_push.ts` re-exports it for its callers) as `baselineBranch`.
-  Test: `pre-push cli: the checkout's default branch is the gate's baseline;
-  unknown leaves it unset` in `worker/deno/tests/pre_push_gate_cli_test.ts`.
+  Test:
+  `pre-push cli: the checkout's default branch is the gate's baseline;
+  unknown leaves it unset`
+  in `worker/deno/tests/pre_push_gate_cli_test.ts`.
 - Tests that asserted how fakes were called: the `runPrePushGate` runners in
   `pre_push_gate_test.ts` now answer by the checkout's `lib/foo.ts` (`atHead`),
   and the call count and worktree path pins were dropped. In
   `deno_test_baseline_test.ts` the `worktreeBaseline` runner answers by a marker
   file (`fork`, `fork-nested`), so a run at the wrong commit or in the wrong
-  root changes the returned outcome; the zero-call assertions, the `/tree`
-  path pins and the `vibe_deno_test_base_` prefix pin are gone (a stray run
-  would show as an error in the result, and the default temp checkout is shown
+  root changes the returned outcome; the zero-call assertions, the `/tree` path
+  pins and the `vibe_deno_test_base_` prefix pin are gone (a stray run would
+  show as an error in the result, and the default temp checkout is shown
   removed). The `judgeDenoTestCheck` fakes answer by command, and the throwing
   "must not be run" fakes are gone.
 - The safe-path case in `deno_test_baseline_test.ts` is no longer vacuous: its
@@ -329,6 +338,29 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 - Docs: `docs/CONFIGURATION.md` (fork choice for the agent's own push, the
   deepen), this summary; `docs/audits/lib-sweep-coverage/top-up-4930.json` also
   claims the new `lib/local_default_branch.ts`.
-- Run on this head:
+- Run at the fourth-round revision:
   `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_retry_test.ts tests/git_push_preflight_test.ts tests/git_push_test.ts tests/issue_worker_test.ts tests/pr_merge_conflict_processor_test.ts tests/quality_gate_budget_test.ts tests/repo_config_test.ts tests/run_bootstrap_test.ts`
   (551 passed, 0 failed). `./quality.sh` was not rerun on this head.
+
+### PR #5034 review, fifth round
+
+- `worker/deno/lib/local_default_branch.ts` had no test importing it (the
+  existing `resolveLocalDefaultBranch` test imports the `git_push.ts`
+  re-export). New `worker/deno/tests/local_default_branch_test.ts` (3 tests at
+  head) drives it on a real clone: `origin/HEAD` on a `trunk` branch gives
+  `trunk` (not `refs/remotes/origin/trunk`);
+  `git remote set-head origin
+  --delete` gives null (control: it resolves
+  before the delete); a directory that is not a git repository gives null. The
+  unreachable `branch || null` (exit 0 always prints a ref) is removed.
+- `pushForkCommit` passed `cwd` to `ensureHistoryDepth` as well as pinning every
+  git call to `cwd` in its `gitRunner`, so dropping the option changed nothing.
+  The option is removed; the runner alone pins `cwd`, and the `--depth=1` test
+  stays red if the runner is dropped.
+- Run on this head:
+  `deno task test:unit tests/local_default_branch_test.ts
+  tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts
+  tests/pre_push_gate_retry_test.ts tests/git_push_preflight_test.ts
+  tests/git_push_test.ts tests/deno_test_baseline_test.ts`
+  (224 passed, 0 failed); `deno check` of the two changed lib files passes.
+- Not done: `./quality.sh` was not rerun on this head.

@@ -34,7 +34,8 @@
  *    runs that root's whole `test:unit` suite ({@link needsFullUnitSuite}). A
  *    failing run is judged by `deno_test_baseline.ts`: a module-fetch failure
  *    is an infrastructure failure, and a test that fails the same way where the
- *    push forked (the merge-base with the PR's base when known) is a
+ *    push forked (the merge-base with the base branch, the PR's base or the
+ *    checkout's default branch, when one is known) is a
  *    `[PRE_PUSH_WARNING]` line, not a block, provided every failure of the run
  *    is accounted for and its serial pass ran. Then the repo's `cargo deny check` (Issue #4626)
  *    runs for eligible workflows when intermediate pushes or ShellCheck-only
@@ -1555,11 +1556,8 @@ async function pushForkCommit(
     const deepened = await ensureHistoryDepth(
       [compareRef, ...refs.map((r) => r.localSha)],
       {
-        cwd,
-        gitRunner: async (args, options) => ({
-          ok: true,
-          value: await git(args, options?.cwd ?? cwd),
-        }),
+        // The runner pins every git call to `cwd`; no `cwd` option is needed.
+        gitRunner: async (args) => ({ ok: true, value: await git(args, cwd) }),
       },
     );
     if (!deepened.ok) return null;

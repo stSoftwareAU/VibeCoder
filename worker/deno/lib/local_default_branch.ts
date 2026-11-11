@@ -30,11 +30,8 @@ export async function resolveLocalDefaultBranch(
     options,
   );
   if (result.ok && result.value.code === 0) {
-    const branch = result.value.stdout.trim().replace(
-      "refs/remotes/origin/",
-      "",
-    );
-    return branch || null;
+    // Exit 0 always prints a ref, so the stripped name is never empty.
+    return result.value.stdout.trim().replace("refs/remotes/origin/", "");
   }
   return null;
 }
