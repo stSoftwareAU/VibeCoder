@@ -8,6 +8,7 @@ import { redactSecrets } from "./secret_redaction.ts";
 import {
   logBaseRefreshDecision,
   parseRefreshOwner,
+  persistBaseRefreshCounter,
 } from "./repair_base_merge_4943.ts";
 import {
   acquireBaseRefreshOwner,
@@ -451,7 +452,10 @@ async function readTestMerge(
  * Ask for a strict-base refresh of a ready PR through the shared per-base
  * owner (Issue #4613), and log one diagnostic line for the decision
  * (Issue #4943). `source` names the lane that asked; logging never changes
- * the returned result.
+ * the returned result. `counterDir`, when given, also persists the decision
+ * to `{counterDir}/base_refresh_counters.json` for standalone commands whose
+ * per-cycle summary is never written; it is best effort and never changes the
+ * returned result.
  */
 export async function requestReadyBranchUpdate(
   repo: string,
@@ -462,6 +466,7 @@ export async function requestReadyBranchUpdate(
   ownershipSleepFn?: (ms: number) => Promise<void>,
   ownershipAuthorOptions?: AlertDedupAuthorOptions,
   source?: string,
+  counterDir?: string,
 ): Promise<Result<void>> {
   const result = await requestReadyBranchUpdateInner(
     repo,
@@ -485,6 +490,10 @@ export async function requestReadyBranchUpdate(
         outcome: "refresh-requested",
         reason: "branch update requested from GitHub",
       });
+      await persistBaseRefreshCounter(counterDir, {
+        source: source ?? "unspecified",
+        outcome: "refresh-requested",
+      });
     } else {
       const owner = parseRefreshOwner(result.error.message);
       logBaseRefreshDecision({
@@ -493,6 +502,10 @@ export async function requestReadyBranchUpdate(
         reason: result.error.message,
         ownerPr: owner?.ownerPr,
         ownerWorker: owner?.ownerWorker,
+      });
+      await persistBaseRefreshCounter(counterDir, {
+        source: source ?? "unspecified",
+        outcome: "refresh-skipped",
       });
     }
   } catch {

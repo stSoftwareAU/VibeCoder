@@ -3,10 +3,12 @@
  * decision (Issue #4943).
  *
  * A repair (failed CI or requested review changes) merges the PR's base into
- * its branch only for a genuine conflict, that is, when GitHub reports the PR
- * as `CONFLICTING`. A behind-only PR is not repaired by a base merge: the
- * refresh that brings it up to date is owned by the shared final-refresh
- * owner from Issue #4613 (`requestReadyBranchUpdate`), which also serialises
+ * its branch for a genuine conflict, that is, when GitHub reports the PR as
+ * `CONFLICTING`, or when a failing check already passes on the base, so the
+ * base merge brings the base's fix in (Issue #4943). A behind-only PR with no
+ * such check is not repaired by a base merge: the refresh that brings it up to
+ * date is owned by the shared final-refresh owner from Issue #4613
+ * (`requestReadyBranchUpdate`), which also serialises
  * the per-base refresh across the updater lanes. Every base-refresh lane logs
  * one bounded line per decision through {@link logBaseRefreshDecision} so an
  * operator can see which lane asked for a refresh, which was skipped, and why.
@@ -66,18 +68,30 @@ function describeMergeable(value: unknown): string {
 }
 
 /**
- * merge:true only when mergeable === "CONFLICTING" (reason "genuine conflict:
- * GitHub reports CONFLICTING"); every other value (MERGEABLE, UNKNOWN, null,
- * undefined, anything) -> merge:false with a reason naming the value and
- * saying the base merge is left to the shared final-refresh owner (Issue #4613).
+ * merge:true when mergeable === "CONFLICTING" (reason "genuine conflict:
+ * GitHub reports CONFLICTING"), and also when `fixedOnBase` names at least one
+ * failing check that already passes on the base (Issue #4943), so the base
+ * merge brings the base's fix in. Every other value (MERGEABLE, UNKNOWN, null,
+ * undefined, anything) with no such check -> merge:false with a reason naming
+ * the value and saying the base merge is left to the shared final-refresh
+ * owner (Issue #4613).
  */
 export function decideRepairBaseMerge(
   mergeable: unknown,
+  fixedOnBase?: readonly string[],
 ): RepairBaseMergeDecision {
   if (mergeable === "CONFLICTING") {
     return {
       merge: true,
       reason: "genuine conflict: GitHub reports CONFLICTING",
+    };
+  }
+  if (fixedOnBase !== undefined && fixedOnBase.length > 0) {
+    const names = cleanField(fixedOnBase.join(", "), FIELD_CAP);
+    return {
+      merge: true,
+      reason:
+        `failing check "${names}" passes on the base, so the base merge brings the base fix in`,
     };
   }
   return {
@@ -161,6 +175,17 @@ export async function persistBaseRefreshCounter(
   dir: string | undefined,
   facts: Pick<BaseRefreshDecisionFacts, "outcome" | "source">,
 ): Promise<void> {
+  await persistNamedCounter(dir, baseRefreshCounterName(facts));
+}
+
+/**
+ * Add one to the counter called `name` in `{dir}/base_refresh_counters.json`,
+ * the shared store behind {@link persistBaseRefreshCounter}. Never throws.
+ */
+async function persistNamedCounter(
+  dir: string | undefined,
+  name: string,
+): Promise<void> {
   if (!dir) return;
   try {
     const path = `${dir}/${BASE_REFRESH_COUNTERS_FILE}`;
@@ -178,7 +203,6 @@ export async function persistBaseRefreshCounter(
     } catch {
       counters = {}; // missing or garbled: start the tally again
     }
-    const name = baseRefreshCounterName(facts);
     counters[name] = (counters[name] ?? 0) + 1;
     await Deno.mkdir(dir, { recursive: true });
     const temp = `${path}.${crypto.randomUUID()}.tmp`;
@@ -223,7 +247,7 @@ export function logBaseRefreshDecision(
  * not print it, so a stale deployed worker is visible from the log alone.
  */
 export function formatBaseRefreshStartup(info: WorkerBuildInfo): string {
-  return `[base-refresh] startup repair-base-merge=conflicting-only refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> ${
+  return `[base-refresh] startup repair-base-merge=conflict-or-base-fixed refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> ${
     formatBuildStamp(info)
   }`;
 }
@@ -298,8 +322,10 @@ export function createRepairMergeabilityTracker(input: {
  * An `UNKNOWN` read counts a consecutive refusal; at the threshold one trusted
  * comment says the refresh is waiting. A `MERGEABLE` or `CONFLICTING` read
  * clears the streak and, if the comment was posted, updates it to recovered.
- * Any other value is an inconclusive read and leaves the streak alone. Never
- * throws: tracking must not change the repair's outcome.
+ * Any other value is an inconclusive read and leaves the streak alone. When the
+ * repeated-`UNKNOWN` counter fires it is also persisted to `counterDir`'s
+ * `base_refresh_counters.json`, when one is given. Never throws: tracking must
+ * not change the repair's outcome.
  */
 export async function trackRepairMergeability(
   tracker: RepairMergeabilityTracker | undefined,
@@ -307,6 +333,7 @@ export async function trackRepairMergeability(
   prNumber: number,
   mergeable: unknown,
   log: (line: string) => void = console.warn,
+  counterDir?: string,
 ): Promise<void> {
   if (!tracker) return;
   try {
@@ -334,6 +361,10 @@ export async function trackRepairMergeability(
           );
         }
         incrementCounter("baseRefresh.repeatedMergeabilityUnknown");
+        await persistNamedCounter(
+          counterDir,
+          "baseRefresh.repeatedMergeabilityUnknown",
+        );
         log(
           `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
         );
@@ -376,6 +407,10 @@ export async function trackRepairMergeability(
  * Read the PR's mergeability through gh, decide whether a repair may merge
  * the base, and log the decision. Never throws: an unreadable or garbled read
  * is a refusal to merge, with the redacted failure as the reason.
+ *
+ * The `fixedOnBase` probe (Issue #4943) is called only when the PR is not
+ * `CONFLICTING`. A probe that throws counts as no failing check passing on the
+ * base, and its redacted cause is appended to the skip reason.
  */
 export async function readRepairBaseMergeDecision(input: {
   repo: string;
@@ -388,6 +423,8 @@ export async function readRepairBaseMergeDecision(input: {
   tracker?: RepairMergeabilityTracker;
   /** Directory the decision counter is persisted to (standalone commands). */
   counterDir?: string;
+  /** Names the failing checks that already pass on the base (Issue #4943). */
+  fixedOnBase?: () => Promise<readonly string[]>;
 }): Promise<RepairBaseMergeDecision> {
   let decision: RepairBaseMergeDecision;
   try {
@@ -407,13 +444,28 @@ export async function readRepairBaseMergeDecision(input: {
       throw new Error("gh pr view returned no JSON object");
     }
     const mergeable = (parsed as Record<string, unknown>).mergeable;
-    decision = decideRepairBaseMerge(mergeable);
+    let fixedOnBase: readonly string[] = [];
+    let probeNote = "";
+    if (mergeable !== "CONFLICTING" && input.fixedOnBase !== undefined) {
+      try {
+        fixedOnBase = await input.fixedOnBase();
+      } catch (error) {
+        probeNote = `; base-fix check unreadable: ${
+          redactSecrets(error instanceof Error ? error.message : String(error))
+        }`;
+      }
+    }
+    const verdict = decideRepairBaseMerge(mergeable, fixedOnBase);
+    decision = verdict.merge
+      ? verdict
+      : { merge: false, reason: `${verdict.reason}${probeNote}` };
     await trackRepairMergeability(
       input.tracker,
       input.repo,
       input.prNumber,
       mergeable,
       input.log,
+      input.counterDir,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

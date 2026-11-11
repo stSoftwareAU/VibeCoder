@@ -479,9 +479,10 @@ export type BaseSync =
  * A separate branch-update push after the fix would run the whole CI again
  * and roughly double the Actions bill for that PR (owner rule 2026-11-03).
  *
- * Only invoked for a genuinely conflicting PR (Issue #4943): a behind-only PR
- * is refreshed through the shared base-refresh owner (Issue #4613), so a
- * repair that merely fixes failed CI or review feedback does not add a merge.
+ * Only invoked for a genuinely conflicting PR, or one whose failing check
+ * already passes on the base (Issue #4943): a behind-only PR is refreshed
+ * through the shared base-refresh owner (Issue #4613), so a repair that merely
+ * fixes failed CI or review feedback does not add a merge.
  *
  * The merge is left uncommitted: the agent works and runs its checks against
  * the merged code, and {@link validateAndCommit} records the merge and the fix
@@ -2869,6 +2870,9 @@ export async function fix(
     // Arm before anything else: the strict branch refresh below only updates
     // an armed PR, and a PR this repair makes green should merge at once.
     await (deps.armAutoMerge ?? armBabysitterAutoMerge)(repo, pr, authors, gh);
+    // Hoisted out of the failed-CI block: the base-merge policy below reads its
+    // `baseGreen` (Issue #4943). Only a failed-CI repair sets it.
+    let baseDecision: BaseFailureDecision | undefined;
     if (reason(pr) === "failed CI") {
       const runs = JSON.parse(
         await exec("gh", [
@@ -2890,7 +2894,6 @@ export async function fix(
       }
       // Issue #4921: a failing check already red on the base branch is the
       // base's failure to fix, so defer rather than repair it inside this PR.
-      let baseDecision: BaseFailureDecision;
       try {
         baseDecision = await (deps.classifyBaseFailure ??
           classifyBaseRedFailures)({
@@ -2944,6 +2947,7 @@ export async function fix(
         sleep,
         { fleetAuthors: authors },
         "babysitter-behind",
+        stateDir,
       );
       if (!update.ok) {
         console.log(
@@ -3095,8 +3099,10 @@ export async function fix(
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
       return;
     }
-    // Issue #4943: a repair merges the base only for a genuine conflict. A
-    // repeated UNKNOWN read follows the #4831 transient-refusal recovery.
+    // Issue #4943: a repair merges the base for a genuine conflict, or when the
+    // failing check it repairs already passes on the base, so the base merge
+    // brings the base's fix in. A repeated UNKNOWN read follows the #4831
+    // transient-refusal recovery.
     await trackRepairMergeability(
       createRepairMergeabilityTracker({
         workDir: stateDir,
@@ -3106,8 +3112,13 @@ export async function fix(
       repo,
       pr.number,
       pr.mergeable,
+      undefined,
+      stateDir,
     );
-    const baseMerge = decideRepairBaseMerge(pr.mergeable);
+    const baseMerge = decideRepairBaseMerge(
+      pr.mergeable,
+      baseDecision?.kind === "repair" ? baseDecision.baseGreen : undefined,
+    );
     logBaseRefreshDecision({
       source: "babysitter-repair",
       outcome: baseMerge.merge ? "base-merge-allowed" : "base-merge-skipped",

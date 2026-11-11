@@ -30,6 +30,10 @@ import {
 } from "../lib/pr_ci_processor.ts";
 import { decodeAnnotations } from "../lib/pr_spelling_processor.ts";
 import {
+  readBaseBranchCheck,
+  readCheckIdentity,
+} from "../lib/ci_base_branch_check.ts";
+import {
   createDefaultDeps,
   type WorkerDeps,
 } from "../lib/issue_worker_wiring.ts";
@@ -143,8 +147,9 @@ export const prCiProcessorCommand = {
         );
 
         // Sync feature branch with default branch (Issue #230), only for a
-        // genuine conflict (Issue #4943): a behind-only PR is refreshed by the
-        // shared base-refresh owner (Issue #4613), not by a base merge here.
+        // genuine conflict or a failing check that already passes on the
+        // default branch (Issue #4943). A behind-only PR with no such check is
+        // refreshed by the shared base-refresh owner (Issue #4613), not here.
         const defaultBranchResult = await deps.git.getRepoDefaultBranch(repo);
         const defaultBranch = defaultBranchResult.ok
           ? defaultBranchResult.value
@@ -164,6 +169,25 @@ export const prCiProcessorCommand = {
               fleetPrAuthors: config.fleetPrAuthors ?? [],
             }),
           }),
+          // Issue #4943: the processor's own failing check, read against the
+          // default branch. Only a green base run names it; an unreadable
+          // identity throws, so its cause reaches the skip reason.
+          fixedOnBase: async () => {
+            const identity = await readCheckIdentity({
+              repo,
+              checkRunId,
+              checkName,
+              ghCommandFn: deps.github.runGhCommand,
+            });
+            if (!identity.ok) throw identity.error;
+            const evidence = await readBaseBranchCheck({
+              repo,
+              branch: defaultBranch,
+              failing: identity.value,
+              ghCommandFn: deps.github.runGhCommand,
+            });
+            return evidence.state === "green" ? [checkName] : [];
+          },
         });
         if (baseMerge.merge) {
           await deps.git.syncFeatureBranchWithDefault(

@@ -16,6 +16,10 @@
  * dependency-audit check (fixed in each pull request, Issue #3141), a green or
  * missing or stale base run, an unreadable or different base log.
  *
+ * A failing check whose base run is green is a repair too, but it carries the
+ * name in `baseGreen`, so the repair may merge the base and bring the base's
+ * fix in (Issue #4943). No other repair reading carries it.
+ *
  * Uses Australian English throughout.
  */
 
@@ -38,8 +42,13 @@ export interface BaseRedCheck {
 export type BaseFailureDecision =
   /** Every failing check is the base's own failure: start no repair. */
   | { kind: "defer"; checks: BaseRedCheck[] }
-  /** Repair as usual; `reason` says which reading stopped the deferral. */
-  | { kind: "repair"; reason: string };
+  /**
+   * Repair as usual; `reason` says which reading stopped the deferral.
+   * `baseGreen` is set only when that reading is a failing check whose
+   * base-branch run is `green`: the names of such checks (Issue #4943). It is
+   * undefined for every other reading.
+   */
+  | { kind: "repair"; reason: string; baseGreen?: string[] };
 
 /** Inputs for {@link classifyBaseRedFailures}. */
 export interface ClassifyBaseRedFailuresOptions {
@@ -176,6 +185,13 @@ export async function classifyBaseRedFailures(
       failing: identity.value,
       ghCommandFn: ghFn,
     });
+    if (evidence.state === "green") {
+      return {
+        kind: "repair",
+        reason: `the base's run of "${run.name}" is green, not red`,
+        baseGreen: [run.name],
+      };
+    }
     if (evidence.state !== "red") {
       return repair(
         `the base's run of "${run.name}" is ${evidence.state}, not red`,
