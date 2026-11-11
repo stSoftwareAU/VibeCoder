@@ -27,6 +27,7 @@ import {
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
+import { UnfinishedIssueExecutorError } from "../lib/issue_executor_enforcement.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import {
   setConfiguredAgentProviderId,
@@ -1352,7 +1353,6 @@ Deno.test("runExecuteClaudePhase - an explicit provider stays absolute over the 
 });
 
 Deno.test("runExecuteClaudePhase - turn limit never credits partial changes or self-heals", async () => {
-  let attemptedSelfHealing = false;
   const result = await runExecuteClaudePhase(
     createTestOptions(),
     createMockDeps({
@@ -1360,16 +1360,37 @@ Deno.test("runExecuteClaudePhase - turn limit never credits partial changes or s
         ok: false,
         error: new AgentTurnLimitError("Reached error_max_turns"),
       }),
-      findExistingPrForBranch: async () => {
-        attemptedSelfHealing = true;
-        return { ok: false, error: new Error("No PR") };
-      },
+      findExistingPrForBranch: async () => ({
+        ok: true,
+        value: "https://github.com/owner/repo/pull/99",
+      }),
     }),
   );
   assertEquals(result.action, "failure");
   assertEquals(result.failureType, "turn_limit");
   assertStringIncludes(result.failureMessage ?? "", "error_max_turns");
-  assertEquals(attemptedSelfHealing, false);
+});
+
+Deno.test("runExecuteClaudePhase - an unfinished executor is not an execution error and an open PR never turns it into a success (Issue #5048)", async () => {
+  const result = await runExecuteClaudePhase(
+    createTestOptions(),
+    createMockDeps({
+      runClaudeWithRetry: async () => ({
+        ok: false,
+        error: new UnfinishedIssueExecutorError("an executor had not returned"),
+      }),
+      findExistingPrForBranch: async () => ({
+        ok: true,
+        value: "https://github.com/owner/repo/pull/99",
+      }),
+    }),
+  );
+  assertEquals(result.action, "failure");
+  assertEquals(result.failureType, "executor_unfinished");
+  assertStringIncludes(
+    result.failureMessage ?? "",
+    "an executor had not returned",
+  );
 });
 
 Deno.test("review 4896: standalone issue agent compares against its milestone or base", async () => {

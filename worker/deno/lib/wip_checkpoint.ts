@@ -86,7 +86,13 @@ export type WipPreservationCause =
    * (error_max_turns, Issue #3701) while the agent was still working. Not a
    * timeout and not a failure of the issue: the work is checkpointed here.
    */
-  | "turn-limit";
+  | "turn-limit"
+  /**
+   * A split run ended with an executor sub-agent still unfinished (Issue
+   * #5048). Not a timeout: the work is checkpointed here so the run resumes
+   * from the branch.
+   */
+  | "executor-unfinished";
 
 /** Subject phrase for each cause — the tail of the `wip:` commit subject. */
 const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
@@ -97,6 +103,7 @@ const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
     "was released on schedule (cycle ended, finish deadline reached, or run hard cap reached)",
   "usage-limit": "hit the Claude subscription usage limit",
   "turn-limit": "hit the agent turn limit",
+  "executor-unfinished": "stopped with executor work unfinished",
 };
 
 /**

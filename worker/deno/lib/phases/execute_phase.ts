@@ -10,6 +10,7 @@ import {
 } from "../orchestration/role_config.ts";
 import { classifyRunFailure } from "../run_outcome_classifier.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
+import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
 /**
  * Phase 3 — Execute Claude.
  *
@@ -211,6 +212,22 @@ export const TURN_LIMIT_HEADING = "Claude stopped at its per-run turn limit";
  */
 export const TURN_LIMIT_REASON_PREFIX =
   `Run interrupted before completing — ${TURN_LIMIT_HEADING}`;
+
+/**
+ * Heading of the run a split issue run stopped with an executor sub-agent
+ * still unfinished (Issue #5048; released as `interrupted`, not a crash).
+ */
+export const EXECUTOR_UNFINISHED_HEADING =
+  "Claude stopped with executor work unfinished";
+
+/**
+ * The worker-written start of an executor-unfinished run's failure reason
+ * (Issue #5048). Like {@link TURN_LIMIT_REASON_PREFIX}, it is not added to the
+ * in-process retry check: the interrupted result keeps its one bounded retry,
+ * which resumes the work from the preserved branch.
+ */
+export const EXECUTOR_UNFINISHED_REASON_PREFIX =
+  `Run interrupted before completing — ${EXECUTOR_UNFINISHED_HEADING}`;
 
 /**
  * Credential switches one exhausted execute phase may make (Issue #1670).
@@ -1535,45 +1552,51 @@ async function executeClaudeBody(
   await rtk.record();
 
   if (!claudeResult.ok) {
-    // Issue #4949: the Claude CLI stopped the invocation at its per-run turn
-    // cap (error_max_turns). A policy stop, not a failure of the issue: the
-    // work is preserved on the issue branch and the run is released as
-    // interrupted — never a worker crash, and not retried in-process.
-    if (claudeResult.error instanceof AgentTurnLimitError) {
-      logger.warn(
-        "Claude stopped at its per-run turn limit; preserving the work (Issue #4949)",
-        { issueNumber: ctx.issueNumber, error: claudeResult.error.message },
-      );
+    // Issues #4949 and #5048 release interrupted work the same way: the work
+    // is preserved on the issue branch and the run is released as
+    // interrupted — never a worker crash, and not retried by this branch.
+    // Only the cause, the reason prefix, the detail and the log line differ.
+    const releaseInterrupted = async (failure: {
+      cause: "turn-limit" | "executor-unfinished";
+      prefix: string;
+      detail: string;
+      logMessage: string;
+      error: { message: string; executionResult?: ClaudeRunResult };
+    }): Promise<PhaseResult> => {
+      logger.warn(failure.logMessage, {
+        issueNumber: ctx.issueNumber,
+        error: failure.error.message,
+      });
       const elapsedSeconds = Math.round(
         (Date.now() - state.executeStartTime) / 1000,
       );
       // This invocation's output is on the error, not on state: the failed
       // invocation never reached the success path that fills state.claudeOutput.
-      const turnLimitOutput = claudeResult.error.executionResult?.output ||
+      const interruptedOutput = failure.error.executionResult?.output ||
         state.claudeOutput || "";
       const wip = await preserveRunWip({
         state,
         deps,
         issueNumber: ctx.issueNumber,
         repo: ctx.repo,
-        inspectWorkingTree: turnLimitOutput.length > 0,
+        inspectWorkingTree: interruptedOutput.length > 0,
         buildMessage: (dirtyFiles) =>
           buildInterruptedWipCommitMessage({
-            cause: "turn-limit",
+            cause: failure.cause,
             elapsedSeconds,
             dirtyFiles,
           }),
-        handover: { cause: "turn-limit", elapsedSeconds },
+        handover: { cause: failure.cause, elapsedSeconds },
         onPreserved: () => saveCheckpointState(),
       });
       const reason = formatDetailedFailureMessage(
-        `${TURN_LIMIT_REASON_PREFIX} (error_max_turns) while the agent was still working` +
+        `${failure.prefix} ${failure.detail}` +
           (wip.wipNote ? ` — ${wip.wipNote}` : ""),
         {
           elapsedSeconds,
-          outputSize: turnLimitOutput.length,
+          outputSize: interruptedOutput.length,
           clarityStatus: state.clarityStatus,
-          lastOutputSnippet: redactedTail(turnLimitOutput, 500) || undefined,
+          lastOutputSnippet: redactedTail(interruptedOutput, 500) || undefined,
         },
       );
       return {
@@ -1582,6 +1605,31 @@ async function executeClaudeBody(
         reason,
         classification: classifyRunFailure("interrupted", reason, true),
       };
+    };
+    // Issue #4949: the Claude CLI stopped the invocation at its per-run turn
+    // cap (error_max_turns). A policy stop, not a failure of the issue.
+    if (claudeResult.error instanceof AgentTurnLimitError) {
+      return releaseInterrupted({
+        cause: "turn-limit",
+        prefix: TURN_LIMIT_REASON_PREFIX,
+        detail: "(error_max_turns) while the agent was still working",
+        logMessage:
+          "Claude stopped at its per-run turn limit; preserving the work (Issue #4949)",
+        error: claudeResult.error,
+      });
+    }
+    // Issue #5048: a split run ended with an executor sub-agent still
+    // unfinished. The completion and PR refusal stands; the work is kept on
+    // the branch rather than reported as a worker crash.
+    if (claudeResult.error instanceof UnfinishedIssueExecutorError) {
+      return releaseInterrupted({
+        cause: "executor-unfinished",
+        prefix: EXECUTOR_UNFINISHED_REASON_PREFIX,
+        detail: "— an executor sub-agent had not returned a result",
+        logMessage:
+          "Claude stopped with executor work unfinished; preserving the work (Issue #5048)",
+        error: claudeResult.error,
+      });
     }
     return {
       category: "internal_error",
