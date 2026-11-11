@@ -48,6 +48,7 @@
  */
 
 import { extractAcceptanceCriteria } from "./acceptance_criteria_gate.ts";
+import { ENTRY_REVIEWER_ALL_RE, fieldValue } from "./closure_entry_grammar.ts";
 import { reviewBlockTemplateLines } from "./review_block_template.ts";
 
 /** The Spec axis vocabulary — the closure statuses of a criterion. */
@@ -135,14 +136,6 @@ const LIST_ITEM_RE = /^\s{0,1}(?:[-*+]|\d+[.)])\s+(?:\[[ xX~]?\]\s*)?([^\n]*)/;
 
 /** The leading status token of an entry: `**met**`, `met`, `` `met` ``. */
 const LEADING_TOKEN_RE = /^[`*_\s]*([a-z][a-z-]{1,15})[`*_\s]*(?=[—\-:,.]|$)/i;
-
-// Hardcoded per-label patterns — a `new RegExp(label…)` built from an argument
-// is a ReDoS surface Semgrep blocks on, and only these three labels exist.
-const LABEL_PATTERNS = {
-  evidence: /evidence\s*[:\-—]\s*([^\n]*)/i,
-  reason: /reason\s*[:\-—]\s*([^\n]*)/i,
-  reviewer: /reviewer\s*[:\-—]\s*[`*_]*([a-z-]{1,16})/i,
-} as const;
 
 /**
  * A `violation` reason that records a fix: it opens with `fixed`, `corrected`
@@ -245,12 +238,9 @@ function collectListItems(sectionLines: string[]): string[] {
 /** Whether a labelled field is present and filled. */
 function labelValue(
   entry: string,
-  label: keyof typeof LABEL_PATTERNS,
+  label: "evidence" | "reason",
 ): string | null {
-  const match = entry.match(LABEL_PATTERNS[label]);
-  if (!match) return null;
-  const value = match[1]!.replace(/[`*_\s—-]/g, "");
-  return value === "" ? null : match[1]!.trim();
+  return fieldValue(entry, label);
 }
 
 /**
@@ -275,7 +265,15 @@ function toEntry(
 
   const reason = labelValue(text, "reason");
   const evidence = labelValue(text, "evidence");
-  const reviewerRaw = labelValue(text, "reviewer")?.toLowerCase() ?? null;
+  // Every reviewer field counts. Two that name different verdicts leave the
+  // entry's verdict unknown, so it names none and the gate refuses it (fail
+  // closed); two that agree are that verdict.
+  const reviewerVerdicts = new Set(
+    [...text.matchAll(ENTRY_REVIEWER_ALL_RE)].map((m) => m[1]!.toLowerCase()),
+  );
+  const reviewerRaw = reviewerVerdicts.size === 1
+    ? [...reviewerVerdicts][0]!
+    : null;
   const reviewerVerdict = SPEC_STATUSES.includes(reviewerRaw as SpecStatus)
     ? reviewerRaw as SpecStatus
     : null;

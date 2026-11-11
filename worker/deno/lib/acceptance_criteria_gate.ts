@@ -23,6 +23,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { fieldValue } from "./closure_entry_grammar.ts";
 import { reviewBlockTemplateLines } from "./review_block_template.ts";
 
 /** Statuses a criterion may be closed out with. */
@@ -253,24 +254,16 @@ function statusOf(entry: string): ClosureEntry["status"] | null {
   return match ? match[1]!.toLowerCase() as ClosureEntry["status"] : null;
 }
 
-// Hardcoded per-label patterns — a `new RegExp(label…)` built from an argument
-// is a ReDoS surface Semgrep blocks on, and only these two labels exist.
-// The search is unanchored, so the value is `([^\n]*)` with no `$`: a `(.*)$`
-// tail that a lone `\r` made fail restarted at every later occurrence of the
-// label and rescanned to the end each time — quadratic (Issue #3186).
-const LABEL_PATTERNS = {
-  evidence: /evidence\s*[:\-—]\s*([^\n]*)/i,
-  reason: /reason\s*[:\-—]\s*([^\n]*)/i,
-} as const;
+// The `evidence:` and `reason:` field patterns are shared with the
+// independent-review gate and live in closure_entry_grammar.ts (Issue #4977),
+// so both gates read a field by the same anchored grammar.
 
 /** Whether a labelled field (`evidence:`, `reason:`) is present and filled. */
 function hasFilledLabel(
   entry: string,
-  label: keyof typeof LABEL_PATTERNS,
+  label: "evidence" | "reason",
 ): boolean {
-  const match = entry.match(LABEL_PATTERNS[label]);
-  if (!match) return false;
-  return match[1]!.replace(/[`*_\s—-]/g, "") !== "";
+  return fieldValue(entry, label) !== null;
 }
 
 /**

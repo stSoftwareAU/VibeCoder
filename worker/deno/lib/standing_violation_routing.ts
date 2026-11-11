@@ -64,6 +64,7 @@ function parseChangedLines(
   }
   return changed;
 }
+import { ENTRY_FIELD_PATTERNS } from "./closure_entry_grammar.ts";
 import {
   isStandingViolation,
   type ReviewEntry,
@@ -91,9 +92,6 @@ export interface StandingViolation {
 /** Cap on the evidence text scanned, bounding the regex work. */
 const MAX_EVIDENCE_CHARS = 2_000;
 
-/** The evidence label value runs on into the reason; cut it there. */
-const REASON_CUT_RE = /\breason\s*[:\-—]/i;
-
 /** A `path:line` or `path:line-end` citation (bounded quantifiers). */
 const LOCATION_RE = /([\w.\/-]{1,300}):(\d{1,7})(?:[-–](\d{1,7}))?/g;
 
@@ -112,7 +110,10 @@ const SPACED_PATH_PREFIX_RE = /^[\w.\/ -]+$/;
  */
 export function citedLocations(evidence: string): CitedLocation[] {
   let text = evidence.slice(0, MAX_EVIDENCE_CHARS);
-  const cut = text.search(REASON_CUT_RE);
+  // The evidence value runs on into the `reason:` field, so it is cut there. Only
+  // a label at the start or directly after whitespace counts, so
+  // `src/reason-codes.ts:12` survives (Issue #4977).
+  const cut = text.search(ENTRY_FIELD_PATTERNS.reason);
   if (cut >= 0) text = text.slice(0, cut);
   const ticks: number[] = [];
   for (let i = text.indexOf("`"); i >= 0; i = text.indexOf("`", i + 1)) {

@@ -19,8 +19,9 @@
  *     Measured against the unfixed patterns, a 32 000-char line cost about
  *     0.24 s (repeated `reason:`) and 0.85 s (padded `symptom:`); at the cap,
  *     roughly 8 s and 30 s per call.
- *   - `acceptance_criteria_gate.ts` — `LABEL_PATTERNS.evidence`,
- *     `LABEL_PATTERNS.reason` and `LIST_ITEM_RE`, no scan cap.
+ *   - `acceptance_criteria_gate.ts` — `LIST_ITEM_RE`, no scan cap; and
+ *     `closure_entry_grammar.ts` — `ENTRY_FIELD_PATTERNS.evidence` and
+ *     `ENTRY_FIELD_PATTERNS.reason`, which read the labelled fields.
  *   - `independent_review_gate.ts` — `LIST_ITEM_RE`, the same list-marker tail
  *     as the closure gate's (200 000-char cap).
  *
