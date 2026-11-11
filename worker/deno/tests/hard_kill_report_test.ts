@@ -1324,6 +1324,104 @@ Deno.test("a repeat kill's follow-up occurrence line names its last step (Issue 
   );
 });
 
+Deno.test("the body carries the four guest figures under the last log time (Issue #5062)", () => {
+  const failed =
+    "unavailable: container exec did not answer: exit 1: OCI runtime exec failed";
+  const ev = makeEvidence({
+    lastLogTimestamp: "2026-11-11 16:53:16Z",
+    capturedAt: "2026-11-11T17:42:07.603Z",
+  }, {
+    guest: {
+      ps: failed,
+      meminfo: failed,
+      pressureCpu: failed,
+      pressureMemory: failed,
+      pressureIo: failed,
+    },
+  });
+  const lines = formatHardKillBody(ev, hardKillSignature(ev)).split("\n");
+  const at = lines.indexOf("**Last log time:** 2026-11-11 16:53:16Z");
+  assert(at >= 0, "the last log time line is present");
+  assertEquals(lines.slice(at + 1, at + 5), [
+    "**Silent before capture:** 48m 51s",
+    "**Guest probe:** `did not answer`",
+    "**Guest memory:** not available",
+    "**Guest pressure:** not available",
+  ]);
+  assertEquals(lines[at + 5], "", "a blank line follows the four figures");
+});
+
+Deno.test("an answered guest shows its numbers in the body (Issue #5062)", () => {
+  const ev = makeEvidence({}, {
+    guest: {
+      ps: "PID CMD\n1 init",
+      meminfo: "MemTotal: 4194304 kB\nMemAvailable: 122880 kB",
+      pressureCpu: "some avg10=0.00",
+      pressureMemory: "some avg10=99.00",
+      pressureIo: "some avg10=0.00",
+    },
+  });
+  const body = formatHardKillBody(ev, hardKillSignature(ev));
+  for (
+    const needle of [
+      "**Silent before capture:** 2m 42s",
+      "**Guest probe:** `answered`",
+      "**Guest memory:** MemTotal 4096 MB, MemAvailable 120 MB",
+      "**Guest pressure:** cpu some avg10=0.00; memory some avg10=99.00; io some avg10=0.00",
+    ]
+  ) {
+    assertStringIncludes(body, needle);
+  }
+});
+
+Deno.test("guest free text never reaches the body (Issue #5062)", () => {
+  const ev = makeEvidence({}, {
+    guest: {
+      ps: `PID CMD\n1 private-repo-title-XYZ ${TOKEN}`,
+      meminfo: `MemTotal: 1024 kB private-repo-title-XYZ ${TOKEN}`,
+      pressureCpu: `some avg10=1.00 private-repo-title-XYZ ${TOKEN}`,
+      pressureMemory: `some ${TOKEN}`,
+      pressureIo: "full avg10=bad private-repo-title-XYZ",
+    },
+  });
+  const body = formatHardKillBody(ev, hardKillSignature(ev));
+  assertFalse(
+    body.includes("private-repo-title-XYZ"),
+    "the title is not posted",
+  );
+  assertFalse(body.includes("ghp_"), "no token prefix is posted");
+  assertFalse(body.includes("a1B2c3D4e5F6"), "no token body is posted");
+  assertStringIncludes(body, "**Guest memory:** MemTotal 1 MB");
+  assertStringIncludes(body, "**Guest pressure:** cpu some avg10=1.00");
+});
+
+Deno.test("a recurrence's follow-up line carries the silent time and the guest probe (Issue #5062)", async () => {
+  const fs = fakeFs({
+    [evidenceName("vibe-coder-s1-4254", 1761355800)]: json(makeEvidence()),
+    [evidenceName("vibe-coder-s1-4255", 1761355900)]: json(
+      makeEvidence({ container: "vibe-coder-s1-4255" }, {
+        guest: {
+          ps:
+            "unavailable: container exec did not answer: exit 1: OCI runtime exec failed",
+          meminfo: "MemTotal: 1024 kB",
+          pressureCpu: "some avg10=0.00",
+          pressureMemory: "some avg10=99.00",
+          pressureIo: "some avg10=0.00",
+        },
+      }),
+    ),
+  });
+  const gh = fakeGh();
+  await report(fs, gh);
+
+  assertEquals(gh.creates.length, 1);
+  assertEquals(gh.commentCalls.length, 1, "the repeat comments");
+  assertStringIncludes(
+    argAfter(gh.commentCalls[0]!, "--body"),
+    ", silent 2m 42s, guest probe `did not answer`",
+  );
+});
+
 function assertThrowsWith(fn: () => unknown, fragment: string): void {
   let message = "";
   try {
