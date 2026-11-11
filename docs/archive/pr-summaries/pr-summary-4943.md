@@ -2,12 +2,13 @@
 
 Stops the confirmed source of repeated base-merge churn on strict bases and adds
 attribution for every base-refresh decision that the shared refresh path makes.
+
 Part of #4943.
 
 This is a redo of the earlier attempt (PR #5041, closed unmerged): that branch
 is the base of this one, and this head adds the fixes its two review rounds
-asked for (the base-fix route, counter persistence, dummy and "how" tests,
-a corrected PR record).
+asked for (the base-fix route, counter persistence, dummy and "how" tests, a
+corrected PR record).
 
 - A CI or review repair now merges the base into the PR branch **only when
   GitHub reports the PR `CONFLICTING`, or (failed-CI repairs in the babysitter
@@ -17,14 +18,14 @@ a corrected PR record).
   and the CI, feedback and spelling processors always ran
   `syncFeatureBranchWithDefault`, so each repair of a merely-behind PR pushed a
   base merge and restarted CI for a PR that was not selected for final
-  integration. Behind-only refresh stays with #4613's
-  `requestReadyBranchUpdate` and its shared per-base owner.
-- Every decision of `requestReadyBranchUpdate` and of the repair merge gate
-  logs one bounded stderr line
+  integration. Behind-only refresh stays with #4613's `requestReadyBranchUpdate`
+  and its shared per-base owner.
+- Every decision of `requestReadyBranchUpdate` and of the repair merge gate logs
+  one bounded stderr line
   `[base-refresh] source=… outcome=… repo=… pr=#N base=… owner=#N/worker|none reason="…" version=… commit=…`
   (`worker/deno/lib/repair_base_merge_4943.ts`). `source` is now a required
-  argument of `requestReadyBranchUpdate`, and every production caller passes
-  it. The local conflict-repair merge in `performBranchUpdate`/`updatePrBranch`
+  argument of `requestReadyBranchUpdate`, and every production caller passes it.
+  The local conflict-repair merge in `performBranchUpdate`/`updatePrBranch`
   (branch-update loop, `pr-maintenance`, `update-pr-branch`) logs and counts
   nothing; `docs/MERGE.md` says so.
 - A repair's `UNKNOWN` mergeability read follows the existing #4831 recovery
@@ -58,10 +59,10 @@ Version bump: `VERSION` is not changed by this PR.
   funnel through `requestReadyBranchUpdate`, so they keep that path and gain a
   `source` label and a diagnostic line.
 - Gating on `mergeable === "CONFLICTING"` keeps genuine conflicts repairable and
-  stops every other repair adding a merge. The base-fix exception exists
-  because #4921 defers a red PR until its failure is fixed on the base and says
-  the base merge then brings the fix in; with the gate alone no lane would ever
-  merge that fix into the red PR.
+  stops every other repair adding a merge. The base-fix exception exists because
+  #4921 defers a red PR until its failure is fixed on the base and says the base
+  merge then brings the fix in; with the gate alone no lane would ever merge
+  that fix into the red PR.
 
 ### Essential Design Decisions
 
@@ -122,9 +123,9 @@ Tools observed rather than assumed: `requestReadyBranchUpdate` and the repair
 processors were driven through their real entry points with `gh` and `git` seams
 (see the Test Plan); `gh issue view 5043` returns "fault_tolerance_summary.json
 keeps only the final cycle's named counters: they are reset every cycle but
-written once at run end" (OPEN). Issue numbers cited as provenance: #4613 (shared
-base-refresh ownership), #4831 (transient refusal recovery), #4921 (defer a
-failure red on the base), #5043 (summary keeps only the last cycle).
+written once at run end" (OPEN). Issue numbers cited as provenance: #4613
+(shared base-refresh ownership), #4831 (transient refusal recovery), #4921
+(defer a failure red on the base), #5043 (summary keeps only the last cycle).
 
 ## Acceptance Criteria
 
@@ -134,8 +135,8 @@ failure red on the base), #5043 (summary keeps only the last cycle).
   the same strict base: one eligible PR receives the final refresh; an
   unreviewed or otherwise unready behind-only PR does not." — evidence:
   `worker/deno/tests/base_refresh_churn_4943_test.ts::two ready behind PRs share one owner: #10 refreshes and #11 is refused for every competing caller`
-  — reviewer: partial — reason: the competing lanes are distinct `source`
-  labels passed to `requestReadyBranchUpdate`; the lane entry points (sweep,
+  — reviewer: partial — reason: the competing lanes are distinct `source` labels
+  passed to `requestReadyBranchUpdate`; the lane entry points (sweep,
   branch-update loop) are not driven together.
 - **partial** — "Cover substantive repairs, genuine conflicts, a newer push
   during validation, owner crash/expiry, failed CI and completion advancing to
@@ -151,9 +152,8 @@ failure red on the base), #5043 (summary keeps only the last cycle).
   driven end to end.
 - **met** — "Test the production wiring of any confirmed bypass, not just the
   ownership helper. Demonstrate that the repaired scenario fails before the
-  fix." — evidence:
-  `worker/deno/tests/repair_base_merge_wiring_4943_test.ts` (real
-  `prCiProcessorCommand`, `prFeedbackProcessorCommand` and the spelling
+  fix." — evidence: `worker/deno/tests/repair_base_merge_wiring_4943_test.ts`
+  (real `prCiProcessorCommand`, `prFeedbackProcessorCommand` and the spelling
   processor: "does not sync the base for a behind-only (MERGEABLE) PR"),
   `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts::a failed-CI repair on a behind-only (MERGEABLE) PR does not merge the base and still runs the agent (Issue #4943)`;
   red against the unconditional sync/merge, which is the base-commit behaviour —
@@ -182,12 +182,12 @@ failure red on the base), #5043 (summary keeps only the last cycle).
   code paths only.
 - **partial** — "Ensure every fleet writer observes the appropriate PR lease and
   final-integration ownership. ... record why their refresh was necessary and
-  validate the resulting tree through the supported contained path." —
-  evidence: `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts`
-  — reviewer: partial — reason: the four repair lanes no longer add a
-  gratuitous merge and log why each merge was taken; the local
-  `updatePrBranch` conflict merge records no reason and no counter, and the
-  base-fix and conflict repair merges are not taken under the shared owner.
+  validate the resulting tree through the supported contained path." — evidence:
+  `worker/deno/tests/babysitter_base_merge_policy_4943_test.ts` — reviewer:
+  partial — reason: the four repair lanes no longer add a gratuitous merge and
+  log why each merge was taken; the local `updatePrBranch` conflict merge
+  records no reason and no counter, and the base-fix and conflict repair merges
+  are not taken under the shared owner.
 - **met** — "Handle transient GitHub test-merge/mergeability reads using the
   existing #4831 recovery rather than indefinite polling." — evidence:
   `worker/deno/tests/repair_base_merge_4943_test.ts::trackRepairMergeability posts one waiting notice at the second consecutive UNKNOWN read and one recovered notice after (Issue #4831)`,
@@ -229,8 +229,13 @@ failure red on the base), #5043 (summary keeps only the last cycle).
   `source` arguments — reason: fixed in this diff
   (`worker/deno/tests/base_refresh_call_sites_4943_test.ts`; callers without a
   test are listed in the Test Plan)
-- **clean** — the reviewer's `syncCalls` finding on `worker/deno/tests/repair_base_merge_wiring_4943_test.ts` is disputed, not a violation: the processors expose no state-recording git port, so whether `syncFeatureBranchWithDefault` ran is the repair gate's only observable outcome at that seam (every other call-count assertion was removed). Australian English, no dummy tests, edited expectations still go
-  red without their guard, every named test exists, all production callers of
+- **clean** — the reviewer's `syncCalls` finding on
+  `worker/deno/tests/repair_base_merge_wiring_4943_test.ts` is disputed, not a
+  violation: the processors expose no state-recording git port, so whether
+  `syncFeatureBranchWithDefault` ran is the repair gate's only observable
+  outcome at that seam (every other call-count assertion was removed).
+  Australian English, no dummy tests, edited expectations still go red without
+  their guard, every named test exists, all production callers of
   `requestReadyBranchUpdate` pass `source`, secrets are redacted in reasons and
   errors.
 
@@ -254,8 +259,8 @@ failure red on the base), #5043 (summary keeps only the last cycle).
   clears it. The merge is observed through the repair prompt ("has already
   merged the latest main") and the persisted tally, not a stub call count.
 - `worker/deno/tests/babysitter_base_failure_4921_test.ts` — `baseGreen` is set
-  exactly when the stopping check is green on the base and is undefined for every
-  other repair reading.
+  exactly when the stopping check is green on the base and is undefined for
+  every other repair reading.
 - `worker/deno/tests/base_refresh_churn_4943_test.ts` — competing lanes against
   one strict base: one owner gets `update-branch`; unready/draft/conflicting/
   unreviewed PRs get none; failed-CI, merged, closed and expired owners advance
@@ -285,15 +290,16 @@ failure red on the base), #5043 (summary keeps only the last cycle).
   persist call → two counter tests red; removing the persistence warnings → the
   garbled-file and unwritable-directory tests red; forcing the refresh wording
   for a repair lane → the repair-lane tests red, the default-lane test stays
-  green; changing each covered caller's `source` string → its call-site test red.
+  green; changing each covered caller's `source` string → its call-site test
+  red.
 - Covered through their production entry point (source string reverted → red):
-  `review-fleet-prs` (`branch_update.ts`), `babysitter-behind` (`fix()`, with the
-  tally in the state directory) and `merge-block-repair`
+  `review-fleet-prs` (`branch_update.ts`), `babysitter-behind` (`fix()`, with
+  the tally in the state directory) and `merge-block-repair`
   (`run_core_production_deps.ts`). Not covered: `merge-block-escalation`
   (`handleMergeAttempt`'s default updater reads `CONFIG_PATH`/`GITHUB_USER` with
   no seam, and a test that sets them is barred by the parallel-safety cap),
-  `branch-update-loop` and `auto-merge-sweep` (no existing test builds those lanes
-  with a `gh` fake), and `pr-maintenance` (`source` and the work-directory
+  `branch-update-loop` and `auto-merge-sweep` (no existing test builds those
+  lanes with a `gh` fake), and `pr-maintenance` (`source` and the work-directory
   argument; the command tests never reach the refresh). The required `source`
   parameter makes the type checker name any omission.
 - `deno task check:manifests` and `tests/lib_sweep_coverage_test.ts` pass (the
@@ -301,5 +307,14 @@ failure red on the base), #5043 (summary keeps only the last cycle).
 - Doc comment and manual sections read: the `repair_base_merge_4943.ts` module
   doc, the `baseGreen` type doc, `docs/MERGE.md` (Issue #4943 section and the
   #4613 paragraphs around it).
-- `./quality.sh < /dev/null` on the final head: PASSED (with skipped checks): every stage passed, including all unit tests, `deno lint`, `deno check`, `deno fmt`, markdownlint, mermaid, semgrep and the completeness checks; config integration and checkov were skipped (no `.config.json`, no checkov on PATH). `tests/pr_maintenance_command_test.ts` passes 28 of 28 here, so the earlier PR's claim of five pre-existing failures there was wrong and is withdrawn.
-- Not done or not checked: no runtime evidence from the inspected repositories; the lane entry points are not driven together in one test; the local `updatePrBranch` conflict merge is neither logged nor counted; `merge-block-escalation`, `branch-update-loop`, `auto-merge-sweep` and `pr-maintenance` `source` labels have no production-entry test.
+- `./quality.sh < /dev/null` on the final head: PASSED (with skipped checks):
+  every stage passed, including all unit tests, `deno lint`, `deno check`,
+  `deno fmt`, markdownlint, mermaid, semgrep and the completeness checks; config
+  integration and checkov were skipped (no `.config.json`, no checkov on PATH).
+  `tests/pr_maintenance_command_test.ts` passes 28 of 28 here, so the earlier
+  PR's claim of five pre-existing failures there was wrong and is withdrawn.
+- Not done or not checked: no runtime evidence from the inspected repositories;
+  the lane entry points are not driven together in one test; the local
+  `updatePrBranch` conflict merge is neither logged nor counted;
+  `merge-block-escalation`, `branch-update-loop`, `auto-merge-sweep` and
+  `pr-maintenance` `source` labels have no production-entry test.
