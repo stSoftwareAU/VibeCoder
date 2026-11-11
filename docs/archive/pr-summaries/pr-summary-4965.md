@@ -100,12 +100,12 @@ Added to `worker/deno/tests/ci_failure_classifier_test.ts`:
   `code-fix-required` (negative control for the bare-500 scope).
 
 Results on the final head:
-`deno task test:unit tests/ci_failure_classifier_test.ts` passed (64 at head);
+`deno task test:unit tests/ci_failure_classifier_test.ts` passed (65 at head, 0 failed);
 the full `./quality.sh` gate was not re-run after the review fix.
 
 Red check: against the pre-fix classifier the setup-node and recovered-curl
 tests went red (2 failures). Reverting only the later-curl-error-line operand of
-`retried` turned the silent 504/404 test red (63 passed, 1 failed). Per-branch
+`retried` turned the silent 504/404 test red (64 passed, 1 failed); reverting only the retry-notice operand turned the retry-notice-only test red (64 passed, 1 failed). Per-branch
 flips on the head: dropping the `!retried` operand turned the retry-then-404
 test red; dropping `exit22` turned the terminal-curl test red; dropping the
 `last line` operand turned the download-client tests red; dropping the `errored`
