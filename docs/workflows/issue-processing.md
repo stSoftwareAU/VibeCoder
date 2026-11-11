@@ -1566,8 +1566,20 @@ The shape is fixed and machine-checked, so the worker owns it:
 2. `closure_verdict.ts` renders `## Acceptance Criteria` and
    `## Standards Review` in the `REVIEW_BLOCK_TEMPLATE` shape both validators
    accept, replacing whatever stood under those headings. Every field is
-   sanitised to one line with the label keywords stripped, so the model's own
-   text cannot forge a `reviewer:` verdict or open a third section;
+   sanitised to one line (so it cannot open a third section), and any
+   `evidence:` / `reason:` / `reviewer:` label at the start of the field or
+   after whitespace is removed, to a fixed point (so a label rebuilt by removing
+   another cannot survive), after the field is truncated. A keyword inside a
+   word or path (`src/evidence-store.ts`, `docs/reviewer-guide.md`,
+   `lib/reason-codes.ts`, `Xreviewer:`) is data and is kept verbatim. The
+   validators (`independent_review_gate.ts`, `acceptance_criteria_gate.ts`) and
+   `closure_criterion_match.ts` / `standing_violation_routing.ts` /
+   `degraded_delivery.ts` (`isPendingMergeCheck`) read fields
+   with the same grammar from `worker/deno/lib/closure_entry_grammar.ts` (a label
+   is a field only at the start of the entry or after whitespace, and is
+   followed by `:`; hyphen or dash is not a label separator), so renderer and
+   validators cannot disagree. An entry with two `reviewer:` fields that differ
+   is read as carrying no reviewer verdict, so the gate blocks;
 3. a verdict that does not cover every criterion — or names no evidence where
    the gate requires it — is asked for **once** more with the shortfall named.
    A second short verdict is rendered as it stands and the gate blocks on it:

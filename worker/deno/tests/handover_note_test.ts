@@ -130,6 +130,7 @@ Deno.test("describeWipCause #769 - every cause has prose the note can print", ()
     "scheduled-release",
     "usage-limit",
     "turn-limit",
+    "executor-unfinished",
   ] as const;
   const phrases = causes.map(describeWipCause);
   for (const phrase of phrases) assert(phrase.length > 0, phrase);

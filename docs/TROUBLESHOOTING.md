@@ -234,7 +234,9 @@ the last worker log lines and the runtime's boot logs, so the wedge can be read
 after the container is gone (see
 [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-wedged-container-watchdog)).
 The next worker start files that record as a `bug` issue carrying only the run's
-facts and a last step logged, from a fixed list (`pre-PR verifier`,
+facts, the figures derived from the record (silence before capture, the
+guest-probe state, guest memory and guest pressure) and a last step logged,
+from a fixed list (`pre-PR verifier`,
 `mutation check`, `coverage carry-over check`, `quality gate`, `agent turn` or
 `unknown`; it is the last step the log reported, so the wedge is in or after it,
 and it is not part of the dedup signature), then moves the file to

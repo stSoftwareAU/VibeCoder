@@ -448,14 +448,18 @@ flowchart TD
 - **Filing.** One issue is filed in `stSoftwareAU/VibeCoder` with the label
   `bug`. Its body carries the marker `<!-- VIBE_RUN_FAILURE:<signature> -->`,
   the host, the container, the run id, the handler, the phase, the last step
-  logged, the trigger, the fixed reason for that trigger and the capture and
-  last-log times. The last step logged is the last one the log reported, so the
+  logged, the trigger, the fixed reason for that trigger, the capture and
+  last-log times, the silence before capture, the guest-probe state and the
+  guest memory and pressure figures. The last step logged is the last one the
+  log reported, so the
   wedge is in or after it; it is one of `pre-PR verifier`, `mutation check`,
   `coverage carry-over check`, `quality gate`, `agent turn` or `unknown`,
   matched from a fixed table of log patterns; no log text is posted with it. It
   is not part of the dedup signature. Posted facts must match the launcher
   shapes: hostname, `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run
-  id (or `unknown`), `watchdog` or `pre_launch` trigger, and timestamps.
+  id (or `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the
+  silence, guest-probe, guest-memory and guest-pressure figures in their fixed
+  shapes.
   Free-text reasons or malformed facts are kept and logged as errors without
   filing, commenting or attesting. That repository is public and the killed run
   may have been working a private one, so no evidence text, last log line, tool

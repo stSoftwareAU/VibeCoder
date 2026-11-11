@@ -264,10 +264,20 @@ export function unitTestCommand(files: readonly string[]): string | null {
   return `deno task test:unit ${quoted.join(" ")}`;
 }
 
+/** Where the throwaway worktrees live, under the repository's git directory. */
+export const BASELINE_WORKTREE_DIR = "vibe-deno-test-base";
+
 /**
  * A {@link DenoTestBaseline} that checks the fork commit out into a throwaway
  * worktree and re-runs the failed test files there. Any git failure makes the
  * baseline unavailable (null), never a pass. The worktree is removed after.
+ *
+ * Git itself makes the worktree, under the repository's common git directory
+ * (`git rev-parse --git-common-dir`), and removes it again (`git worktree
+ * remove --force`, then `git worktree prune`). The Deno process writes nothing,
+ * so the agent's pre-push hook, whose Deno process may write only to the temp
+ * directory, can run it (PR #5034 review). A checkout that cannot be made is
+ * an unavailable baseline (null), so the verdict keeps the head's own output.
  */
 export function worktreeBaseline(opts: {
   cwd: string;
@@ -280,25 +290,25 @@ export function worktreeBaseline(opts: {
   ) => Promise<{ code: number; stdout: string; stderr: string }>;
   runner?: PreFlightRunner;
   timeoutSeconds?: number;
-  makeTempDir?: () => Promise<string>;
-  removeDir?: (path: string) => Promise<void>;
 }): DenoTestBaseline {
   return {
     async runAtBase(command, files) {
-      const makeTemp = opts.makeTempDir ??
-        (() => Deno.makeTempDir({ prefix: "vibe_deno_test_base_" }));
-      const removeDir = opts.removeDir ??
-        ((path: string) => Deno.remove(path, { recursive: true }));
-      const dir = await makeTemp();
-      const tree = `${dir}/tree`;
-      let added = false;
+      let tree: string | null = null;
       try {
+        const common = await opts.git(
+          ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+          opts.cwd,
+        );
+        const gitDir = common.stdout.trim();
+        if (common.code !== 0 || !gitDir.startsWith("/")) return null;
+        const candidate =
+          `${gitDir}/${BASELINE_WORKTREE_DIR}/${crypto.randomUUID()}`;
         const add = await opts.git(
-          ["worktree", "add", "--detach", tree, opts.forkSha],
+          ["worktree", "add", "--detach", candidate, opts.forkSha],
           opts.cwd,
         );
         if (add.code !== 0) return null;
-        added = true;
+        tree = candidate;
         const rootDir = opts.root === "." ? tree : `${tree}/${opts.root}`;
         const prefix = opts.root === "." ? "" : `${opts.root}/`;
         const present = await opts.git(
@@ -329,18 +339,25 @@ export function worktreeBaseline(opts: {
           },
         );
         return { ranFiles, error: result.ok ? null : result.error };
+      } catch (error) {
+        console.warn(
+          `[PRE_PUSH_WARNING] the fork checkout for the deno test baseline failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return null;
       } finally {
-        if (added) {
-          await opts.git(["worktree", "remove", "--force", tree], opts.cwd);
-        }
-        try {
-          await removeDir(dir);
-        } catch (error) {
-          console.warn(
-            `[PRE_PUSH_WARNING] could not remove ${dir}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+        if (tree !== null) {
+          const removed = await opts.git(
+            ["worktree", "remove", "--force", tree],
+            opts.cwd,
           );
+          if (removed.code !== 0) {
+            console.warn(
+              `[PRE_PUSH_WARNING] could not remove ${tree}: ${removed.stderr.trim()}`,
+            );
+          }
+          await opts.git(["worktree", "prune"], opts.cwd);
         }
       }
     },

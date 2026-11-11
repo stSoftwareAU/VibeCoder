@@ -80,6 +80,7 @@ import {
 } from "./pr_branch_lock.ts";
 import {
   assertPushTargetAllowed,
+  prBaseCompareRef,
   resolveRepairPreFlightSpec,
 } from "./git_push.ts";
 import { buildPushArgs } from "./git_ref_args.ts";
@@ -1852,6 +1853,7 @@ async function resolveConflict(
           maxRateLimitRetries: processorDeps.maxRateLimitRetries,
         },
         logger,
+        ciCargoCompareRef: prBaseCompareRef(baseBranch),
         runAgent: deps.claude.runClaudeWithRetry,
         onRunStats: (stats) => {
           conflictRunStats = stats;
@@ -1987,6 +1989,7 @@ async function resolveConflict(
             maxRateLimitRetries: processorDeps.maxRateLimitRetries,
           },
           logger,
+          ciCargoCompareRef: prBaseCompareRef(baseBranch),
           runAgent: deps.claude.runClaudeWithRetry,
           repair,
           onRunStats: (stats) => {
@@ -2077,7 +2080,14 @@ async function resolveConflict(
   const finalise = await deps.git.commitAndPushPending(
     branchName,
     `Merge ${baseBranch} into ${branchName} (Issue #84)\n\nResolved the PR's merge conflict without side-picking.`,
-    { cwd: workDir, gateBaseBranch: baseBranch },
+    // The merged tree contains the base, so a CI cargo failure or a failing
+    // unit test the base already has is no verdict on this repair (Issue #4630
+    // review, PR #5034 review).
+    {
+      cwd: workDir,
+      compareBaseBranch: baseBranch,
+      requireCargoBaseComparison: true,
+    },
     false,
     preFlight,
   );

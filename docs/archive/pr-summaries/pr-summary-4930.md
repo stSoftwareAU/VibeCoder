@@ -20,12 +20,16 @@ not a block, but only when every failure of the run is accounted for: a test
 module that failed outside a test (`(uncaught error)`) blocks, and a serial pass
 the runner skipped after a failed parallel pass is run and judged too. The fork
 is the merge-base with the PR's base when the gate knows it (the completion
-phase, CI-fix, review-feedback and spelling pushes with a known PR base, and the
-merge-conflict repair), or with the checkout's default branch for the agent's
-own `git push`, not the PR's own previous head. A shallow clone is deepened
-before the merge-base is looked up. PR-feedback and CI-fix final pushes with
-`shellcheckOnly` specs now run these tests and configured markdownlint;
-formatting policy is retained. Dynamic dependencies in a push that touches no
+phase, and CI-fix, review-feedback, spelling and merge-conflict pushes with a
+known PR base, including the gated milestone fix branch), and the agent's own
+`git push` uses the PR base the worker wrote into the hook spec
+(`compareRef`); otherwise, including a repair whose PR base could not be read,
+it is the checkout's default branch, never the PR's own previous head. Git makes
+the fork checkout under the repository's git directory, so the hook's Deno
+process needs no write permission for it. A shallow clone is deepened before the
+merge-base is looked up. Repair pushes with `shellcheckOnly` specs, and the
+CI-fix and PR-feedback repairs' cargo-only spec (`ciCargoOnly`, from #4896), now
+run these tests and configured markdownlint; formatting policy is retained. Dynamic dependencies in a push that touches no
 prompt or lock file can still be missed.
 
 Version bump: `VERSION` is not touched by this change.
@@ -68,12 +72,14 @@ Part of #4930.
   (`PrePushGateInfrastructureError`; a 404 `JSR package not found` is not), and
   a failed test that is also red at the fork commit (a throwaway `git worktree`
   re-run of the failed files) is a warning. The fork is `git merge-base` of the
-  pushed head and the PR's base (`baseRef`, or `origin/<syncBaseBranch>` or
-  `origin/<gateBaseBranch>` for a repair push), so a repair that leaves a test
+  pushed head and the PR's base (`baseRef`, or `origin/<compareBaseBranch>` or
+  `origin/<syncBaseBranch>` for a repair push), so a repair that leaves a test
   red is compared with the PR's base, not its own previous head; with neither it
-  is the parent of the oldest commit not yet on a remote. The agent's own
-  `git push` runs through the pre-push hook, which passes the checkout's default
-  branch (`origin/HEAD`, `resolveLocalDefaultBranch`) as the baseline. A shallow
+  is the checkout's default branch (`origin/HEAD`), and only with no
+  `origin/HEAD` either the parent of the oldest commit not yet on a remote. The
+  agent's own `git push` runs through the pre-push hook, which passes the PR
+  base from the hook spec's `compareRef` (`origin/<base>`) as the baseline, else
+  the checkout's default branch (`resolveLocalDefaultBranch`). A shallow
   clone is deepened with `ensureHistoryDepth` first, a deepen that fails leaves
   the baseline unavailable. The downgrade needs every failure accounted for: an
   `(uncaught error)` module (a top-level throw, a dangling promise, a missing
@@ -116,8 +122,10 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 `runPrePushGate` loop; `judgeDenoTestCheck`, `unitTestCommand` and
 `worktreeBaseline` (`lib/deno_test_baseline.ts`) are called by `runPrePushGate`;
 `baselineBranch` is set by `gateUnpushedCommits` (from `commitAndPushPending`'s
-`syncBaseBranch` or `gateBaseBranch`) and by `pre_push_gate_cli.ts` (from
-`resolveLocalDefaultBranch`), and read by `runPrePushGate`.
+`compareBaseBranch`, `syncBaseBranch` or `resolveLocalDefaultBranch`) and by
+`pre_push_gate_cli.ts` (from the spec's `compareRef`, else
+`resolveLocalDefaultBranch`), and read by `runPrePushGate`;
+`BASELINE_WORKTREE_DIR` is read by `worktreeBaseline`.
 
 ## Acceptance Criteria
 
@@ -368,3 +376,59 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   tests/git_push_test.ts tests/deno_test_baseline_test.ts`
   (224 passed, 0 failed); `deno check` of the two changed lib files passes.
 - Not done: `./quality.sh` was not rerun on this head.
+
+### PR #5034 review, sixth round (merged with `main`)
+
+- Merged `main` (#4896, CI cargo checks on repair pushes) in the same push. The
+  two PRs had each added a "compare at the PR base without merging" push
+  option; this branch's `gateBaseBranch` is dropped for `main`'s
+  `compareBaseBranch`, which now places both the CI cargo comparison and the
+  `deno test` baseline. The CI-fix and PR-feedback repairs now pass `main`'s
+  `CI_CARGO_ONLY_PRE_FLIGHT` when a repo has no pre-flight commands; that mode
+  keeps the `deno test` and markdownlint checks for the pushed paths, so the
+  repair pushes this issue covers still run them. Changed existing test:
+  `runPrePushGate: ciCargoOnly on a docs-only push ...` (from #4896) asserted
+  that a cargo-only push never looks markdownlint up; it now asserts that a
+  docs-only cargo-only push runs markdownlint for the pushed Markdown and
+  nothing else (blocked on a lint failure, passing otherwise), which is the
+  behaviour this issue asks for. The repair-push test runs both
+  `shellcheckOnly` and `ciCargoOnly`.
+- No Deno write permission for the base checkout: `worktreeBaseline` lets git
+  make the throwaway worktree under `git rev-parse --git-common-dir`
+  (`vibe-deno-test-base/<uuid>`) and removes it with `git worktree remove
+  --force` and `git worktree prune`; any failure to make it (or a throw) is an
+  unavailable baseline, so the verdict keeps the head's output. The
+  `makeTempDir` / `removeDir` seams are gone; the `worktreeBaseline` tests now
+  check nothing is left under that directory.
+- The argument-pin CLI test is replaced by integration tests in
+  `pre_push_hook_test.ts` that push through the installed hook (a fake `deno`
+  on PATH answers `deno task test:unit` by the checkout's `marker.txt`), once
+  with the baseline from `origin/HEAD` and once from the spec's `compareRef`:
+  a test red at the base is let through with the `[PRE_PUSH_WARNING] deno test`
+  line; a test green at the base, red at the PR's previous head and after the
+  repair is blocked with stderr naming it, and no worktree is left. Red checks:
+  the CLI's `compareRef` mapping disabled → the `compareRef` case red; the
+  default-branch lookup disabled → the `origin/HEAD` case red. With the hook's
+  `--allow-write` removed both still pass, so the baseline needs no write.
+- The merge-conflict processor test no longer pins the options a mock got: the
+  fake push answers by its options (refuses with a unit-test failure when the
+  gate is placed at `main`, fails differently with `syncBaseBranch`, succeeds
+  otherwise) and the test asserts the outcome (not merged, the failure comment
+  names the test, nothing marked resolved).
+- Earlier finding 6: (b) the gated milestone fix-branch push now passes the
+  gated PR's base as `compareBaseBranch` (from #4896), which places the
+  baseline too; (c) a repair whose PR base cannot be read compares at the
+  checkout's default branch, as the hook does
+  (`git_push_preflight_test.ts` "a repair push compares a failing unit test at
+  the PR's base": blocked with `origin/HEAD` set, waved through only once it is
+  removed).
+- Run on this head (with local copies of the locked `@std` packages, as jsr.io
+  is unreachable here): `deno_test_baseline_test.ts`, `pre_push_gate_test.ts`,
+  `pre_push_gate_cli_test.ts`, `git_push_preflight_test.ts`,
+  `pr_merge_conflict_processor_test.ts`, `local_default_branch_test.ts` and
+  every other unit test that imports the changed modules or pins
+  `docs/CONFIGURATION.md`. The hook integration tests need the worker's frozen
+  lock, so they were run with a temporary lock and config, then restored; CI
+  runs them as committed. `sync_points_test.ts` and `pr_push_base_sync_test.ts`
+  fail identically on a clean `origin/main` checkout on this host (its git
+  2.43), so they are not caused by this change. `./quality.sh` was not run.

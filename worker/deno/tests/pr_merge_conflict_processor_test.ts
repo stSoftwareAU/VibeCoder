@@ -105,8 +105,10 @@ interface Captured {
   commitAndPushCalls: number;
   /** The `preFlight` spec (5th argument) of each `commitAndPushPending` call. */
   commitAndPushPreFlights: unknown[];
-  /** The options (3rd argument) of each `commitAndPushPending` call. */
+  /** The options (3rd argument) of each `commitAndPushPending` call (Issue #4630). */
   commitAndPushOptions: unknown[];
+  /** The `ciCargoCompareRef` of each agent run, `undefined` when absent (Issue #4630). */
+  agentCompareRefs: (string | undefined)[];
   agentRuns: number;
   /** Prompts the agent was actually given (Issue #466). */
   agentPrompts: string[];
@@ -171,6 +173,11 @@ interface GitScript {
   mergeStderr?: string;
   /** Error message `commitAndPushPending` fails with (default: it succeeds). */
   commitPushError?: string;
+  /**
+   * Answers `commitAndPushPending` by its options (3rd argument): an error
+   * message to fail with, or undefined to succeed. Overrides `commitPushError`.
+   */
+  commitPushAnswer?: (options: Record<string, unknown>) => string | undefined;
   /** Commits left unpushed after the push (default: 0 — a clean push). */
   finalUnpushedCount?: number;
   /** What `git push --dry-run` reports on stderr (Issue #1772). */
@@ -466,10 +473,13 @@ function makeGit(
       captured.commitAndPushPreFlights.push(args[4]);
       captured.commitAndPushOptions.push(args[2]);
       captured.events.push("git:commitAndPushPending");
-      if (script.commitPushError !== undefined) {
+      const pushError = script.commitPushAnswer
+        ? script.commitPushAnswer(args[2] as Record<string, unknown>)
+        : script.commitPushError;
+      if (pushError !== undefined) {
         return Promise.resolve({
           ok: false,
-          error: new Error(script.commitPushError),
+          error: new Error(pushError),
         });
       }
       return Promise.resolve({
@@ -639,9 +649,11 @@ function makeClaude(
         captureInvocationStats?: boolean;
         phase?: string;
         cwd?: string;
+        ciCargoCompareRef?: string;
       },
     ) => {
       captured.agentRuns++;
+      captured.agentCompareRefs.push(options?.ciCargoCompareRef);
       const reply = replies?.[captured.agentRuns - 1];
       if (reply !== undefined && options.cwd) {
         await Deno.writeTextFile(options.cwd + "/.pr_response_message", reply);
@@ -742,6 +754,7 @@ async function runProcessor(
     commitAndPushCalls: 0,
     commitAndPushPreFlights: [],
     commitAndPushOptions: [],
+    agentCompareRefs: [],
     agentRuns: 0,
     agentPrompts: [],
     lockRenewals: [],
@@ -857,6 +870,24 @@ Deno.test("processMergeConflict - the push is gated on the repository's ShellChe
   assertEquals(captured.commitAndPushPreFlights, [
     { commands: [], shellcheckOnly: true },
   ]);
+});
+
+Deno.test("processMergeConflict - the push and the agent compare CI cargo against the PR base (PR #4896 review)", async () => {
+  const { captured, result, workDir } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+  );
+
+  assert(result.ok);
+  // The merged tree contains the base, so a CI cargo failure the base already
+  // has must be a warning, and an unreadable comparison must be infrastructure.
+  assertEquals(captured.commitAndPushOptions, [{
+    cwd: workDir,
+    compareBaseBranch: "main",
+    requireCargoBaseComparison: true,
+  }]);
+  assertEquals(captured.agentRuns, 1);
+  assertEquals(captured.agentCompareRefs, ["origin/main"]);
 });
 
 Deno.test("processMergeConflict - records the attempt before touching the branch", async () => {
@@ -1101,17 +1132,38 @@ Deno.test("processMergeConflict - a clean merge is checked against the head it s
   );
 });
 
-Deno.test("processMergeConflict - the push gate compares a failing unit test at the PR's base, and the push merges nothing more (PR #5034 review)", async () => {
-  const { captured, workDir } = await runProcessor(
+Deno.test("processMergeConflict - a unit test the merge leaves red, judged at the PR's base, fails the attempt and nothing is pushed (PR #5034 review)", async () => {
+  const refusal = "[PRE_PUSH_BLOCKED] deno test (.) failed: " +
+    "foo works => ./tests/foo_test.ts:3:6";
+  // The fake push models the gate: it refuses with the unit-test failure when
+  // the gate is placed at the PR's base (red there only because of the merge),
+  // fails differently when it would merge the base a second time, and
+  // otherwise succeeds, as a gate compared at the previous head would.
+  const answer = (options: Record<string, unknown>) =>
+    options.syncBaseBranch !== undefined
+      ? "the push merged the base a second time"
+      : options.compareBaseBranch === "main"
+      ? refusal
+      : undefined;
+  const { captured, result } = await runProcessor(
     makeInput(),
-    makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+    makeGitScript({
+      mergeCode: 0,
+      unmergedAfterMerge: [],
+      commitPushAnswer: answer,
+    }),
   );
 
-  // `gateBaseBranch` places the baseline at the merge-base with the PR's base;
-  // `syncBaseBranch` would make the push merge the base a second time.
-  assertEquals(captured.commitAndPushOptions, [
-    { cwd: workDir, gateBaseBranch: "main" },
-  ]);
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  // The refusal reaches the PR, naming the failing test.
+  const failure = captured.comments.at(-1) ?? "";
+  assertStringIncludes(failure, CONFLICT_FAILED_MARKER);
+  assertStringIncludes(failure, "foo works");
+  assertEquals(
+    captured.comments.some((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
+    false,
+  );
 });
 
 Deno.test("processMergeConflict - a refused pre-push check pushes nothing and fails the attempt (Issue #4616)", async () => {
@@ -1282,6 +1334,7 @@ Deno.test("processMergeConflict - a failing pre-push check is repaired by the ag
       phase: "merge_conflict",
       cwd: workDir,
     }]);
+    assertEquals(captured.agentCompareRefs, ["origin/main"]);
     assertStringIncludes(captured.agentPrompts[0] ?? "", "Repair Mode");
     assertEquals(captured.commitAndPushCalls, 1);
     assertStringIncludes(

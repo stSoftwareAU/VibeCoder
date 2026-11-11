@@ -227,6 +227,8 @@ Deno.test("pre-push gate retry - success: one agent turn, flag set on entry, fix
   );
   assertEquals(call.sessionResumeState, h.state.sessionResumeState);
   assertEquals(call.cwd, h.state.repoPath);
+  // The agent's own push compares CI cargo against the run's base (Issue #4630 review).
+  assertEquals(call.ciCargoCompareRef, "origin/main");
 
   // The commit is attempted once, with no pre-flight spec, and with a
   // `beforePush` that refuses: the commit stays local and the completion

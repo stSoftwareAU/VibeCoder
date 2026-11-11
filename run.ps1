@@ -1404,6 +1404,7 @@ try {
             "--base-dir", $BaseDir,
             "--free-kb", "$cacheFreeKb",
             "--floor-kb", "$cacheFloorKb",
+            "--disk-path", $cacheDriveRoot,
             "--protect", $BaseDir
         )
         foreach ($line in ($reclaim.StdOut -split "`r?`n")) {

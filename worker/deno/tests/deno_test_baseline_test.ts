@@ -7,6 +7,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  BASELINE_WORKTREE_DIR,
   type DenoTestBaseline,
   denoTestFailureKeys,
   hasUncaughtError,
@@ -485,6 +486,19 @@ async function onlyMainWorktree(repo: string): Promise<boolean> {
   return (await sh(repo, "worktree", "list")).split("\n").length === 1;
 }
 
+/** Checkouts still under the repository's baseline worktree directory. */
+async function leftoverCheckouts(repo: string): Promise<string[]> {
+  const names: string[] = [];
+  try {
+    for await (
+      const entry of Deno.readDir(`${repo}/.git/${BASELINE_WORKTREE_DIR}`)
+    ) names.push(entry.name);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return names;
+}
+
 async function exists(path: string): Promise<boolean> {
   try {
     await Deno.stat(path);
@@ -498,7 +512,6 @@ async function exists(path: string): Promise<boolean> {
 Deno.test("worktreeBaseline: a nested root runs only the files present at the fork, in a checkout of the fork", async () => {
   const { repo, fork } = await makeForkRepo();
   try {
-    const tempDirs: string[] = [];
     const result = await worktreeBaseline({
       cwd: repo,
       root: "worker/deno",
@@ -506,11 +519,6 @@ Deno.test("worktreeBaseline: a nested root runs only the files present at the fo
       git: defaultPrePushGit,
       // Red only in the nested root's checkout of the fork.
       runner: markerRunner((marker) => marker === "fork-nested" ? 1 : 0),
-      makeTempDir: async () => {
-        const dir = await Deno.makeTempDir({ prefix: "vibe_baseline_t_" });
-        tempDirs.push(dir);
-        return dir;
-      },
     }).runAtBase(command, ["./a_test.ts", "./gone_test.ts"]);
 
     assertEquals(result?.ranFiles, ["./a_test.ts"]);
@@ -518,7 +526,7 @@ Deno.test("worktreeBaseline: a nested root runs only the files present at the fo
     // The marker shows the base command ran at the fork, in the nested root.
     assertStringIncludes(result?.error?.output ?? "", "marker=fork-nested");
     assert(await onlyMainWorktree(repo), "the throwaway worktree is removed");
-    assertEquals(await exists(tempDirs[0]!), false);
+    assertEquals(await leftoverCheckouts(repo), []);
     // The head checkout is untouched.
     assertEquals(
       (await Deno.readTextFile(`${repo}/worker/deno/marker.txt`)).trim(),
@@ -570,23 +578,17 @@ Deno.test("worktreeBaseline: a fork that holds none of the files runs nothing", 
 Deno.test("worktreeBaseline: a fork that cannot be checked out is unavailable and leaves nothing behind", async () => {
   const { repo } = await makeForkRepo();
   try {
-    const tempDirs: string[] = [];
     const result = await worktreeBaseline({
       cwd: repo,
       root: ".",
       forkSha: "0".repeat(40),
       git: defaultPrePushGit,
       runner: markerRunner(() => 1),
-      makeTempDir: async () => {
-        const dir = await Deno.makeTempDir({ prefix: "vibe_baseline_t_" });
-        tempDirs.push(dir);
-        return dir;
-      },
     }).runAtBase(command, ["./a_test.ts"]);
 
     assertEquals(result, null);
     assert(await onlyMainWorktree(repo));
-    assertEquals(await exists(tempDirs[0]!), false);
+    assertEquals(await leftoverCheckouts(repo), []);
   } finally {
     await Deno.remove(repo, { recursive: true });
   }
@@ -632,7 +634,7 @@ Deno.test("worktreeBaseline: a command that cannot be built is unavailable and r
   }
 });
 
-Deno.test("worktreeBaseline: the default temp directory is removed after the run", async () => {
+Deno.test("worktreeBaseline: the checkout git made under its own directory is removed after the run", async () => {
   const { repo, fork } = await makeForkRepo();
   try {
     const cwds: string[] = [];
@@ -647,7 +649,9 @@ Deno.test("worktreeBaseline: the default temp directory is removed after the run
     // The checkout the run used is gone, and git no longer lists it.
     assertEquals(cwds.length > 0, true, "the run reached a checkout");
     assertEquals(await exists(cwds[0]!), false);
+    assertStringIncludes(cwds[0]!, `/.git/${BASELINE_WORKTREE_DIR}/`);
     assert(await onlyMainWorktree(repo));
+    assertEquals(await leftoverCheckouts(repo), []);
   } finally {
     await Deno.remove(repo, { recursive: true });
   }

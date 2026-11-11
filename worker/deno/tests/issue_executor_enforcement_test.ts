@@ -16,6 +16,7 @@ import {
   ISSUE_EXECUTOR_DENIAL_MARKER,
   renderIssueEditHookOutput,
   summariseIssueExecutorSplitRun,
+  UnfinishedIssueExecutorError,
 } from "../lib/issue_executor_enforcement.ts";
 import { runIssueEditGuard } from "../lib/issue_edit_guard_cli.ts";
 import { buildExecutorSplitStatsLines } from "../lib/issue_run_stats_comment.ts";
@@ -128,6 +129,11 @@ Deno.test({
         assertEquals(result.ok, completed);
         if (!result.ok) {
           assertStringIncludes(result.error.message, "unfinished executor");
+          // Issue #5048: the refusal is typed and carries this invocation's
+          // result, so the execute phase can preserve the work.
+          assert(result.error instanceof UnfinishedIssueExecutorError);
+          // The invocation's output is the stream's own result text ("done").
+          assertEquals(result.error.executionResult?.output, "done");
         }
       } finally {
         await stub.dispose();

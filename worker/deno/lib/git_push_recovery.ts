@@ -43,12 +43,14 @@ export interface PushLineageOptions extends GitCommandOptions {
    */
   syncBaseBranch?: string;
   /**
-   * The open PR's base branch, used only to place the pre-push gate's baseline
-   * comparison (a failing unit test is judged at the merge-base with it). It
-   * never merges anything. {@link syncBaseBranch} implies it when this is unset.
-   * For a repair push that merges the base itself (the merge-conflict repair).
+   * Base to compare gate diagnostics against, without merging it: a failing
+   * CI cargo check (Issue #4630) and a failing unit test (Issue #4930, judged
+   * at the merge-base with it) are compared there. {@link syncBaseBranch}
+   * implies it when this is unset.
    */
-  gateBaseBranch?: string;
+  compareBaseBranch?: string;
+  /** Require a base comparison before blaming a failed CI cargo check. */
+  requireCargoBaseComparison?: boolean;
 }
 
 /** Whether HEAD still extends the commit a pass started from. */
