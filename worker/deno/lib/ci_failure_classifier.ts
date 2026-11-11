@@ -247,9 +247,12 @@ const INFRA_TEXT_PATTERNS: ReadonlyArray<string> = [
   "503 service unavailable",
   "504 gateway timeout",
   // Download clients: @actions/tool-cache (setup-deno, setup-node) and curl -f.
-  "unexpected http response: 502",
-  "unexpected http response: 503",
-  "unexpected http response: 504",
+  // The tool-cache forms are anchored to the terminal "Error: " line: a
+  // download that fails once and then succeeds on retry still logs the bare
+  // "Unexpected HTTP response: 504" info line, which is not a failure.
+  "error: unexpected http response: 502",
+  "error: unexpected http response: 503",
+  "error: unexpected http response: 504",
   "the requested url returned error: 502",
   "the requested url returned error: 503",
   "the requested url returned error: 504",

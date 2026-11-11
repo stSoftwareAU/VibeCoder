@@ -627,9 +627,18 @@ Deno.test("ci_failure_classifier - a gate-free log keeps humanStep absent", () =
 // =============================================================================
 
 const DOWNLOAD_5XX_CASES: ReadonlyArray<readonly [string, string]> = [
-  ["Error: Unexpected HTTP response: 504", "unexpected http response: 504"],
-  ["Error: Unexpected HTTP response: 503", "unexpected http response: 503"],
-  ["Error: Unexpected HTTP response: 502", "unexpected http response: 502"],
+  [
+    "Error: Unexpected HTTP response: 504",
+    "error: unexpected http response: 504",
+  ],
+  [
+    "Error: Unexpected HTTP response: 503",
+    "error: unexpected http response: 503",
+  ],
+  [
+    "Error: Unexpected HTTP response: 502",
+    "error: unexpected http response: 502",
+  ],
   [
     "curl: (22) The requested URL returned error: 502",
     "the requested url returned error: 502",
@@ -667,6 +676,35 @@ Deno.test("ci_failure_classifier - download-client 502/503/504 in the log excerp
     assertEquals(result.category, "infrastructure", text);
     assertEquals(result.signals.includes(`text:${pattern}`), true, text);
   }
+});
+
+Deno.test("ci_failure_classifier - a recovered tool-cache 504 retry does not mask a real lint finding (Issue #4965)", () => {
+  const log = [
+    "Downloading deno from https://dl.deno.land/release/v2.0.0/deno.zip",
+    "Unexpected HTTP response: 504",
+    "Waiting 14 seconds before trying again",
+    "Extracting deno",
+    "error: no-unused-vars 'x' is never used",
+  ].join("\n");
+  const result = classifyCiFailure("lint", [], log);
+  assertEquals(result.category, "code-fix-required");
+  assertEquals(
+    result.signals.some((s) => s.startsWith("text:unexpected http response")),
+    false,
+  );
+});
+
+Deno.test("ci_failure_classifier - the ##[error] tool-cache 504 line routes to infrastructure (Issue #4965)", () => {
+  const result = classifyCiFailure(
+    "lint",
+    [],
+    "##[error]Error: Unexpected HTTP response: 504",
+  );
+  assertEquals(result.category, "infrastructure");
+  assertEquals(
+    result.signals.includes("text:error: unexpected http response: 504"),
+    true,
+  );
 });
 
 Deno.test("ci_failure_classifier - bare 500 and 4xx download responses stay code-fix-required (Issue #4965)", () => {
