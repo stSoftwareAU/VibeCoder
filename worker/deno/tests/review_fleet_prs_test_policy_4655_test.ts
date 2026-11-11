@@ -18,6 +18,10 @@
 
 import { parseTestChangeNotes } from "../lib/pre_pr_verifier.ts";
 import {
+  MAX_GOVERNING_ISSUES,
+  MILESTONE_PROVENANCE_MAX_CHILDREN,
+} from "../lib/governing_issue_limits.ts";
+import {
   assert,
   assertEquals,
   assertFalse,
@@ -683,16 +687,20 @@ Deno.test("governing issues: a hostile body of repeated Part of text returns qui
   assertEquals(g.calls.length, 1);
 });
 
-Deno.test("governing issues: at most five are read, and invalid input is refused without gh", async () => {
-  const refs = [1, 2, 3, 4, 5, 6].map((n) => ({
-    number: n,
-    repository: { name: "widgets", owner: { login: "acme" } },
-  }));
+Deno.test("governing issues: at most MAX_GOVERNING_ISSUES are read, and invalid input is refused without gh", async () => {
+  const refs = Array.from({ length: MAX_GOVERNING_ISSUES + 2 }, (_, i) => i + 1)
+    .map((n) => ({
+      number: n,
+      repository: { name: "widgets", owner: { login: "acme" } },
+    }));
   const g = fakeGh({
     pr: { closingIssuesReferences: refs, headRefName: "x", body: "" },
   });
   await resolveGoverningIssues(FLEET, TRUST, g.runGh);
-  assertEquals(g.calls.filter((c) => c[0] === "api").length, 5);
+  assertEquals(
+    g.calls.filter((c) => c[0] === "api").length,
+    MAX_GOVERNING_ISSUES,
+  );
 
   const bad = fakeGh();
   const r = await resolveGoverningIssues(
@@ -702,6 +710,57 @@ Deno.test("governing issues: at most five are read, and invalid input is refused
   );
   assertEquals(r.issues, []);
   assertEquals(bad.calls, []);
+});
+
+Deno.test("governing issues: a roll-up body reads its tracking issue, parent and every child up to the cap, not one more (Issue #4967)", async () => {
+  // Issue #4967: `Closes #99` (tracking), `Part of #42` (parent), then one
+  // `Part of` line per delivered child. The child past the cap is the
+  // (MAX_GOVERNING_ISSUES + 1)th candidate and must not be read.
+  const children = Array.from(
+    { length: MILESTONE_PROVENANCE_MAX_CHILDREN + 1 },
+    (_, i) => 101 + i,
+  );
+  const lastChild = children[children.length - 1];
+  const body = [
+    "Milestone roll-up.",
+    "Closes #99",
+    "Part of #42",
+    ...children.map((n) => `Part of #${n}`),
+  ].join("\n");
+  const issues: Record<string, Record<string, unknown>> = {};
+  for (const n of [99, 42, ...children]) {
+    issues[`acme/widgets#${n}`] = { ...ISSUE_3416, title: `Issue ${n}` };
+  }
+  const g = fakeGh({
+    pr: {
+      closingIssuesReferences: [{
+        number: 99,
+        repository: { name: "widgets", owner: { login: "acme" } },
+      }],
+      headRefName: "feature/roll-up",
+      body,
+    },
+    issues,
+  });
+  const r = await resolveGoverningIssues(FLEET, TRUST, g.runGh);
+  assertEquals(
+    g.calls.filter((c) => c[0] === "api").length,
+    MAX_GOVERNING_ISSUES,
+  );
+  assertFalse(
+    g.calls.some((c) => (c[1] ?? "").endsWith(`issues/${lastChild}`)),
+  );
+  assertEquals(r.problems, []);
+  assertEquals(r.issues.map((i) => i.number), [
+    99,
+    42,
+    ...children.slice(0, MILESTONE_PROVENANCE_MAX_CHILDREN),
+  ]);
+  assert(
+    r.issues.some((i) =>
+      i.number === children[MILESTONE_PROVENANCE_MAX_CHILDREN - 1]
+    ),
+  );
 });
 
 // ----- the worker's claim rule (Issue #4763) --------------------------------

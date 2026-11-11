@@ -2526,7 +2526,7 @@ const GAP_ISSUE_JSON = JSON.stringify({
   milestone: { title: "M1" },
 });
 
-Deno.test("sync - workflow version changes retain durable body wording without another edit (Issue #3954)", async () => {
+Deno.test("sync - a stale literal version bump is omitted from the body and later workflow version changes need no edit (Issue #3954, Issue #4972)", async () => {
   const raw =
     "## Summary\n\nVersion bump: `VERSION` 1.2.3 → 1.2.4\n\n## Evidence\n\nRelease evidence: 1.2.3 at commit abc123.\n";
   const repoPath = await makeRepo({ summary: raw });
@@ -2538,7 +2538,8 @@ Deno.test("sync - workflow version changes retain durable body wording without a
     assert(first.result.ok);
     assertEquals(first.result.value.status, "updated");
     const body = first.ghCalls[0]!.bodyFileContent!;
-    assertStringIncludes(body, "the merged commit records the final version");
+    assert(!body.includes("Version bump:"));
+    assert(!body.includes("updated for this change"));
     assertStringIncludes(body, "Release evidence: 1.2.3 at commit abc123.");
     assert(!body.includes("1.2.4"));
     await Deno.writeTextFile(
