@@ -78,7 +78,13 @@ a version line.
     (LF and CRLF),
     `version normalisation removes a list-item bump line between two items (Issue #4972)`,
     `version normalisation removes a final bump line with no trailing newline (Issue #4972)`,
-    and a 50,000-space hostile-input case for the bump pattern.
+    a 50,000-space hostile-input case for the bump pattern,
+    `version normalisation keeps the blank line after a bump list item that follows another item (Issue #4972)`
+    and
+    `version normalisation keeps the next line after a bump list item that follows a blank line (Issue #4972)`
+    (these two pin the blank-line collapse condition at
+    `lib/pr_summary_loader.ts:261-262`: each fails when its operand is replaced
+    with `true`).
 - `worker/deno/tests/pr_body_sync_test.ts`: edited
   `sync - a stale literal version bump is omitted from the body and later workflow version changes need no edit (Issue #3954, Issue #4972)`.
   Removed from `worker/deno/tests/pr_body_sync_test.ts`:

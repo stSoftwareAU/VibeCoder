@@ -459,6 +459,24 @@ Deno.test("version normalisation removes a list-item bump line between two items
   );
 });
 
+Deno.test("version normalisation keeps the blank line after a bump list item that follows another item (Issue #4972)", () => {
+  assertEquals(
+    normaliseSummaryVersionBumps(
+      "## Summary\n\n- one\n- **Version bump:** `package.json` `1.2.3` -> `2.0.0`.\n\nAfter.\n",
+    ),
+    "## Summary\n\n- one\n\nAfter.\n",
+  );
+});
+
+Deno.test("version normalisation keeps the next line after a bump list item that follows a blank line (Issue #4972)", () => {
+  assertEquals(
+    normaliseSummaryVersionBumps(
+      "## Summary\n\n- **Version bump:** `package.json` `1.2.3` -> `2.0.0`.\n- two\n",
+    ),
+    "## Summary\n\n- two\n",
+  );
+});
+
 Deno.test("version normalisation removes a final bump line with no trailing newline (Issue #4972)", () => {
   assertEquals(
     normaliseSummaryVersionBumps(
