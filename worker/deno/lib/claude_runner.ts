@@ -29,6 +29,7 @@ import { runGitCommand } from "./git_timeout.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
+  HOST_DISK_PARK_NOTE,
   inFlightHostDiskGateEnabled,
   parkInFlightBuild,
   parkRunningBuild,
@@ -503,6 +504,8 @@ export interface ClaudeRunResult {
 
 /** Options for running Claude with timeout. */
 export interface RunClaudeOptions {
+  /** Enforced read/research-only CLI; caller publishes the returned discussion. */
+  discussionOnly?: boolean;
   /** Enforced CLI sandbox for a provider-neutral role invocation. */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
@@ -1342,7 +1345,9 @@ async function runClaudeWithTimeoutBody(
   // start (Issue #4360). No checkout means there is no build to bound, and
   // the gate is a no-op until production arms it.
   if (cwd) {
-    const park = await parkInFlightBuild(cwd);
+    const park = options.discussionOnly
+      ? await parkRunningBuild()
+      : await parkInFlightBuild(cwd);
     if (park) return { ok: false, error: new Error(park) };
   }
 
@@ -1356,6 +1361,17 @@ async function runClaudeWithTimeoutBody(
     options.agentProvider,
     options.env ? { env: options.env } : {},
   );
+  // Tool restrictions must survive provider retries. A provider that only
+  // mentions denials in its prompt cannot run without the build headroom.
+  if (options.discussionOnly && provider.id !== CLAUDE_PROVIDER_ID) {
+    return {
+      ok: false,
+      error: new Error(
+        `Read-only discussion requires enforced Claude tool restrictions; ` +
+          `${provider.displayName} waits for build headroom. ${HOST_DISK_PARK_NOTE}`,
+      ),
+    };
+  }
   // Isolation flags and tool denials are Claude-specific; refuse fallback
   // providers before spawning them rather than silently losing the boundary.
   if (options.isolateClaudeConfig && provider.id !== CLAUDE_PROVIDER_ID) {
@@ -1373,12 +1389,13 @@ async function runClaudeWithTimeoutBody(
   // it. Best-effort even then: absent on failure.
   // `true` is the Playwright-only request; the object form (Issue #2156) names
   // what it wants. Anything falsy writes no config at all.
-  const mcpRequest: AgentMcpServerRequest | undefined =
-    options.mcpConfig === true
-      ? { playwright: true }
-      : typeof options.mcpConfig === "object"
-      ? options.mcpConfig
-      : undefined;
+  const mcpRequest: AgentMcpServerRequest | undefined = options.discussionOnly
+    ? undefined
+    : options.mcpConfig === true
+    ? { playwright: true }
+    : typeof options.mcpConfig === "object"
+    ? options.mcpConfig
+    : undefined;
   const mcpConfigPath = mcpRequest && cwd
     ? await ensureAgentMcpConfig({
       // The request is spread first: the clone path, the logger and the
@@ -1395,6 +1412,7 @@ async function runClaudeWithTimeoutBody(
   // at spawn, observed live in container mode.
   const promptViaStdin = provider.promptTransport === "stdin";
   const invocationRequest = {
+    discussionOnly: options.discussionOnly,
     orchestrationRole: options.orchestrationRole,
     prompt: userPrompt,
     systemPrompt,
@@ -1403,21 +1421,31 @@ async function runClaudeWithTimeoutBody(
     ...(options.env ? { env: options.env } : {}),
     effort: options.effort,
     disallowedTools,
-    ...(options.isolateClaudeConfig ? { isolateClaudeConfig: true } : {}),
+    ...(options.isolateClaudeConfig || options.discussionOnly
+      ? { isolateClaudeConfig: true }
+      : {}),
     // Issue #2342: absent unless the caller resolved the split on, and an
     // absent value emits no `--agents` argument.
-    ...(options.agents ? { agents: options.agents } : {}),
-    sessionResumeState: options.sessionResumeState,
+    ...(!options.discussionOnly && options.agents
+      ? { agents: options.agents }
+      : {}),
+    sessionResumeState: options.discussionOnly
+      ? undefined
+      : options.sessionResumeState,
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
     // Issue #2344's advisor edit guard, merged with this spawn's own hooks
     // (Issue #2383's RTK settings) rather than one silently replacing the
     // other when a run has both on. The advisor guard remains Claude-only;
     // Codex translates RTK settings to its own per-spawn hook configuration.
     ...settingsJsonOption(
-      options.issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID
+      options.discussionOnly
+        ? { disableAllHooks: true }
+        : options.issueExecutorSplit && provider.id === CLAUDE_PROVIDER_ID
         ? resolveIssueExecutorHookSettings()
         : undefined,
-      options.settingsJson ? JSON.parse(options.settingsJson) : undefined,
+      !options.discussionOnly && options.settingsJson
+        ? JSON.parse(options.settingsJson)
+        : undefined,
     ),
   };
   let args = provider.buildInvocation({

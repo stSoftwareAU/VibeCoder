@@ -116,6 +116,26 @@ flowchart TD
 
 ---
 
+## Discussion while Rust build headroom is unavailable
+
+Above the host disk floor, a cargo headroom shortfall leaves `grill-me`
+eligible. Its restricted invocation uses only `Read`, `Glob`, `Grep`,
+`WebSearch` and `WebFetch`. The runner removes command execution and delegation,
+starts a fresh session without project/user settings, and omits MCP servers
+and per-run hooks. `disableAllHooks` also suppresses user/project/plugin hooks;
+managed administrative hooks remain subject to the host's policy.
+The [CLI tool allowlist](https://code.claude.com/docs/en/cli-reference)
+enforces this; it is not just a prompt instruction. Providers that cannot
+carry this restriction defer as infrastructure instead of starting unrestricted.
+The current restricted path supports Claude.
+
+The model returns a JSON comment and Current Understanding section. The worker
+validates them, updates only the bounded understanding block in the current
+issue body and posts the comment. The original request and other sections stay
+intact. Publication must be confirmed before the normal Round/Ready handling
+runs. Build-capable phases still require their headroom, and every invocation
+still respects the host disk floor and running-process disk watcher.
+
 ## 🎯 Purpose: when to use grill-me vs planning
 
 The two workflows do different jobs:
@@ -632,6 +652,7 @@ recovers from each common failure as follows:
 | **Claude times out** (per-round timeout exceeded) | Posts a `## Grill-Me Failed` comment with the reason. The label stays on the issue so the next worker scan retries the same round. |
 | **Claude errors / API failure** | Same as timeout — posts a `## Grill-Me Failed` comment and lets the next scan retry. |
 | **The provider refuses to serve** (model refused, quota or credit spent, credential rejected, outage — Issue #4035) | Posts **no** `## Grill-Me Failed` comment and releases the claim. Nothing about the issue failed, and the wait clears by itself, so the round cannot count toward escalation; the next scan retries it. |
+| **Host disk or another recognised host fault** | Releases the claim without a failure marker or a forced-final escalation. Historical failure comments identifying these host faults are excluded from the consecutive-failure count too. Genuine questions still use `needs-human` to request an answer. |
 | **Claude does not post a round comment** | Posts a `## Grill-Me Failed` comment ("Claude did not post a Grill-Me round comment"); next scan retries. |
 | **Two consecutive rounds fail** | The worker adds the `needs-human` label, posts a `## Grill-Me Escalation` comment, and stops. A human takes over. |
 | **User has not replied yet** | The processor adds `needs-human` after each round, and the discovery filter skips any issue carrying `needs-human`. The worker therefore does not even consider the issue until the developer removes `needs-human` after replying. The `**⏳ Awaiting your reply.**` footer plus the `needs-human` label remain the visible cues; the labels stay on the issue indefinitely until either you reply and clear `needs-human`, you remove `grill-me`, or someone else intervenes. |

@@ -258,27 +258,49 @@ export async function enforceEphemeralCargoBudget(
   }
 
   let dirs: EphemeralTargetDir[];
+  let rootAbsent = false;
   try {
     dirs = await deps.listTargetDirs(root);
   } catch (err) {
-    return {
-      proceed: false,
-      prunedBytes: 0,
-      skipCargoBuild: false,
-      detail: `ephemeral cargo root over budget (${terms}) and ${root} could ` +
-        `not be read to prune it: ${
-          err instanceof Error ? err.message : String(err)
-        } (Issue #3178)`,
-    };
+    if (err instanceof Deno.errors.NotFound) {
+      // First launch: there is no cache to prune, not a broken filesystem.
+      dirs = [];
+      rootAbsent = true;
+    } else {
+      return {
+        proceed: false,
+        prunedBytes: 0,
+        skipCargoBuild: false,
+        detail:
+          `ephemeral cargo root over budget (${terms}) and ${root} could ` +
+          `not be read to prune it: ${
+            err instanceof Error ? err.message : String(err)
+          } (Issue #3178)`,
+      };
+    }
   }
 
   const key = checkoutKey(input.checkoutPath, root);
+  const now = deps.nowMs();
+  const ownBytes = dirs.filter((d) => belongsTo(d.path, key))
+    .reduce((sum, d) => sum + d.bytes, 0);
+  const recentBytes = dirs.filter((d) =>
+    !belongsTo(d.path, key) &&
+    now - d.lastWriteMs < EPHEMERAL_TARGET_IN_USE_MS
+  )
+    .reduce((sum, d) => sum + d.bytes, 0);
+  const idleBytes = dirs.reduce((sum, d) => sum + d.bytes, 0) - ownBytes -
+    recentBytes;
+  const inventory = `${rootAbsent ? "cache root absent; " : ""}` +
+    `own cache ${formatGb(ownBytes)}, recent sibling caches ${
+      formatGb(recentBytes)
+    }, ` +
+    `idle sibling caches ${formatGb(idleBytes)}`;
+  terms += `; ${inventory}`;
   if (input.creditOwnCache) {
     // A build into an existing cache is incremental: what is already there was
     // part of the from-scratch build the headroom reserves (Issue #4423).
-    const own = dirs.filter((d) => belongsTo(d.path, key))
-      .reduce((sum, d) => sum + d.bytes, 0);
-    const credit = Math.min(own, headroom);
+    const credit = Math.min(ownBytes, headroom);
     if (credit > 0) {
       shortfall -= credit;
       terms += `; ${formatGb(credit)} already in this checkout's cache`;
@@ -292,7 +314,6 @@ export async function enforceEphemeralCargoBudget(
       }
     }
   }
-  const now = deps.nowMs();
   const candidates = dirs
     .filter((d) => !belongsTo(d.path, key))
     .filter((d) => now - d.lastWriteMs >= EPHEMERAL_TARGET_IN_USE_MS)
@@ -313,6 +334,9 @@ export async function enforceEphemeralCargoBudget(
     }
   }
   const prunedNote = `pruned ${formatGb(pruned)} of idle target dirs` +
+    (input.dryRun
+      ? " (dry run; no files removed)"
+      : "; bytes are reusable inside the guest, not verified host space returned") +
     (failures.length > 0 ? `; could not remove ${failures.join(", ")}` : "");
   if (shortfall <= 0) {
     return {

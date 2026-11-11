@@ -1482,9 +1482,15 @@ reclaim run.
 
 The reclaim runs on any launch where the host is short of the claiming floor
 plus the 25 GB cargo build headroom, not only below the floor (Issue #4540).
-In that band the worker does not claim issues in a cargo repository (see the
-ephemeral root's budget below), so stale caches are cleared there too.
-Candidates go oldest first, and the reclaim stops once the host has the
+In that band the worker defers build-capable issues in a cargo repository
+(see the ephemeral root's budget below); grill-me can continue with restricted
+discussion tools. Stale caches are cleared there too.
+Candidates go oldest first. The launchers pass the filesystem used by their
+disk gate as `--disk-path`; after each removal the command measures that
+filesystem again. Removed cache sizes remain an estimate, separate from
+observed host free space. When deletion returns no host blocks, the command
+continues through eligible caches. If the measurement fails, it stops removing
+caches and reports the failure. The reclaim stops once the host has the
 claiming floor plus the larger of `host_cache_reclaim_headroom_gb` (10 by
 default) and the 25 GB cargo build headroom free. Volume recreation still
 weighs the floor alone.
@@ -1531,10 +1537,13 @@ false` in the moved file switches the reclaim off:
   removed;
 - `[HOST_CACHE_RECLAIM] skipped <path>: <reason>` — a candidate the command
   kept, and why;
-- `[HOST_CACHE_RECLAIM] freed <size>; est. free <size> vs floor <size>` — what
-  was reclaimed, and the host's estimated free space against the floor;
+- `[HOST_CACHE_RECLAIM] removed cache contents <size>; est. free <size> vs floor <size>`
+  — removed file sizes, explicitly separate from measured host recovery;
+- `[HOST_CACHE_RECLAIM] observed host free …` — the before/after host readings
+  and target. Concurrent host activity may affect the change. Without a
+  measurement, the log says host space returned is unverified;
 - `[HOST_CACHE_RECLAIM] largest host directories: <path> (<GB> GB); …` — only
-  when the host is still below its floor, naming where the space went;
+  when the host is still short of its floor plus headroom, naming where the space went;
 - `[HOST_CACHE_RECLAIM] failed - …` — the reclaim itself failed. The launch
   carries on without it: a failed reclaim is said loudly and is never fatal.
 
@@ -1791,12 +1800,17 @@ build artefacts.
   such credit.
   Short of the headroom, other checkouts' target directories are pruned,
   largest first, skipping any written to in the last 20 minutes and the
-  building checkout's own incremental cache. If the build is still not covered,
+  building checkout's own incremental cache. The report separates own, recent
+  sibling and idle sibling cache sizes. A missing cache root is empty; other
+  read errors remain visible. Dry runs explicitly report that no files were
+  removed, and deleted guest bytes are labelled reusable inside the guest,
+  not verified host space returned. If the build is still not covered,
   the new step is parked. The issue scan asks the same question as a dry
   run before it claims (Issue #4540): a repository whose existing clone holds
-  a cargo project the host could not build is left out of that cycle's scan,
-  so the slot goes to other work instead of a claim parked and released at
-  once. Nothing is pruned at scan time, a repository not yet cloned is
+  a cargo project the host could not build is left out of the implementation
+  scan. The separate grill-me discovery path remains eligible with enforced
+  read/research-only tools and worker-managed publication. Nothing is pruned at
+  scan time, a repository not yet cloned is
   claimable, and the scan logs once when the deferral starts and once when it
   ends. Once started, active-process
   polling enforces the host floor;

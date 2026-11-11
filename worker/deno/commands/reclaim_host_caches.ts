@@ -4,14 +4,14 @@
  * Called by the launchers when the host is short of its disk claiming floor
  * plus the cargo build headroom (Issue #4540). It removes stale cargo
  * `target` directories (CACHEDIR.TAG-tagged build caches) from the host's
- * scratch and source roots, oldest first, until the estimated free space
- * clears the floor plus the larger of the configured headroom and the cargo
+ * scratch and source roots, oldest first, until observed host free space
+ * (or the labelled estimate without --disk-path) clears the floor plus the larger of the configured headroom and the cargo
  * build headroom.
  *
  * Usage:
  *   deno run --allow-env --allow-read --allow-write --allow-run \
  *     mod.ts reclaim-host-caches --base-dir <checkout> \
- *     --free-kb <n> --floor-kb <n> [--protect <dir>]...
+ *     --free-kb <n> --floor-kb <n> [--disk-path <host-path>] [--protect <dir>]...
  *
  * The settings come from the host's one `.config.json`, resolved from
  * `--base-dir` and CONFIG_FILE / CONFIG_PATH by `resolveHostConfigPath` exactly
@@ -22,12 +22,12 @@
  *
  * Exit status: 0 whenever the command ran, including when the host is still
  * short afterwards. Non-zero only for bad arguments, an unreadable
- * configuration, or a process table that cannot be read (nothing is removed
- * in that case).
+ * configuration, an unreadable process table (nothing is removed), or a
+ * failed disk remeasurement (further removals stop).
  *
  * The output is multi-line log text, one `[HOST_CACHE_RECLAIM]` line each for
- * removals, notable skips, and the summary. When the host is still below the
- * floor, a final `largest host directories:` line names where the space is.
+ * removals, notable skips, and the summary. When the host is still short of
+ * floor plus headroom, a final `largest host directories:` line names where the space is.
  * The launchers parse that phrase, so it must not change.
  *
  * Australian English spelling throughout (behaviour, colour, etc.).
@@ -45,6 +45,7 @@ import {
   hostPathStyle,
   largestHostDirectories,
   minAgeMsFor,
+  probeReclaimFreeBytes,
   readHostCacheReclaimConfig,
   reclaimHostCaches,
 } from "../lib/host_cache_reclaim.ts";
@@ -75,6 +76,7 @@ export interface ReclaimHostCachesData {
   removed: HostCacheReclaimResult["removed"];
   skipped: HostCacheReclaimResult["skipped"];
   freeBytesAfter: number;
+  measuredFreeBytesAfter?: number;
   targetBytes: number;
   shortBytes: number;
   largest?: HostDirectorySize[];
@@ -253,6 +255,13 @@ export async function runReclaimHostCaches(
       defaultCacheRoots(home, env, [], style)),
     ...config.extraRoots,
   ];
+  const diskPath = optionalString(args["disk-path"]);
+  const reclaimDeps = {
+    ...(diskPath
+      ? { readFreeBytes: () => probeReclaimFreeBytes(diskPath) }
+      : {}),
+    ...deps.reclaim,
+  };
 
   const result = await reclaimHostCaches({
     freeBytes,
@@ -262,7 +271,7 @@ export async function runReclaimHostCaches(
     minAgeMs: minAgeMsFor(config.minAgeHours),
     roots,
     protect,
-  }, deps.reclaim ?? {});
+  }, reclaimDeps);
 
   if (result.processTableError !== undefined) {
     // Nothing was removed, so the host is still below its floor. Sizing the
@@ -302,13 +311,36 @@ export async function runReclaimHostCaches(
     lines.push(`skipped ${skip.path}: ${skip.reason}`);
   }
   lines.push(
-    `freed ${megabytes(freedBytes)}; est. free ${
+    `removed cache contents ${megabytes(freedBytes)}; est. free ${
       megabytes(result.freeBytesAfter)
     } vs floor ${megabytes(floorBytes)}`,
   );
+  if (result.measuredFreeBytesAfter !== undefined) {
+    lines.push(
+      `observed host free ${megabytes(result.measuredFreeBytesAfter)} ` +
+        `(before ${megabytes(freeBytes)}, change ${
+          megabytes(result.measuredFreeBytesAfter - freeBytes)
+        }); ` +
+        `target ${
+          megabytes(result.targetBytes)
+        }; concurrent host activity may affect the change`,
+    );
+  } else {
+    lines.push(
+      "host space returned: unverified; removed file sizes are not a host measurement",
+    );
+  }
+  if (result.diskProbeError) {
+    lines.push(
+      `host disk probe failed — stopped removing caches: ${result.diskProbeError}`,
+    );
+  }
 
   let largest: HostDirectorySize[] | undefined;
-  if (result.freeBytesAfter < floorBytes) {
+  if (
+    (result.measuredFreeBytesAfter ?? result.freeBytesAfter) <
+      result.targetBytes
+  ) {
     largest = await largestHostDirectories(roots, deps.reclaim ?? {});
     lines.push(largestLine(largest));
   }
@@ -317,9 +349,12 @@ export async function runReclaimHostCaches(
     removed: result.removed,
     skipped: result.skipped,
     freeBytesAfter: result.freeBytesAfter,
+    ...(result.measuredFreeBytesAfter === undefined ? {} : {
+      measuredFreeBytesAfter: result.measuredFreeBytesAfter,
+    }),
     targetBytes: result.targetBytes,
     shortBytes: result.shortBytes,
     ...(largest ? { largest } : {}),
   };
-  return { success: true, message: tagged(lines), data };
+  return { success: !result.diskProbeError, message: tagged(lines), data };
 }

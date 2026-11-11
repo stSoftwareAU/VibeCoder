@@ -30,6 +30,7 @@ import {
   lsofDescriptors,
   namesPath,
   parseHostCacheReclaimConfig,
+  probeReclaimFreeBytes,
   readHostCacheReclaimConfig,
   realHostCacheFs,
   reclaimHostCaches,
@@ -194,6 +195,80 @@ function reclaimDeps(
 function removedPaths(result: { removed: { path: string }[] }): string[] {
   return result.removed.map((r) => r.path);
 }
+
+Deno.test("host reclaim uses measured free space when deleted caches return no host blocks", async () => {
+  await withRoot(async (root) => {
+    const first = await makeCache(root, "first", { ageMs: VERY_STALE_MS });
+    const second = await makeCache(root, "second", { ageMs: STALE_MS });
+    const readings = [101 * GIB, 120 * GIB];
+    const result = await reclaimHostCaches(
+      {
+        freeBytes: 101 * GIB,
+        floorBytes: 92.6 * GIB,
+        headroomBytes: 25 * GIB,
+        minAgeMs: DAY,
+        roots: [root],
+        protect: [],
+      },
+      reclaimDeps({
+        dirSizeBytes: async () => 20 * GIB,
+        readFreeBytes: async () => readings.shift() ?? null,
+      }),
+    );
+    assertEquals(removedPaths(result), [first, second]);
+    assertEquals(result.measuredFreeBytesAfter, 120 * GIB);
+    assertEquals(
+      result.freeBytesAfter,
+      141 * GIB,
+      "estimate remains explicitly separate",
+    );
+  });
+});
+
+Deno.test("host reclaim stops deletion when its host probe fails", async () => {
+  await withRoot(async (root) => {
+    const first = await makeCache(root, "first", { ageMs: VERY_STALE_MS });
+    const second = await makeCache(root, "second", { ageMs: STALE_MS });
+    const result = await reclaimHostCaches(
+      oneGibOptions([root], { floorBytes: 4 * GIB }),
+      reclaimDeps({ readFreeBytes: async () => null }),
+    );
+    assertEquals(removedPaths(result), [first]);
+    assertEquals(await exists(second), true);
+    assertEquals(result.measuredFreeBytesAfter, undefined);
+    assertStringIncludes(result.diskProbeError ?? "", "could not be measured");
+  });
+});
+
+Deno.test("Windows host probe accepts only an observed non-negative integer", async () => {
+  for (
+    const [stdout, expected] of [
+      ["12345\r\n", 12345],
+      ["", null],
+      ["-1", null],
+      ["unknown", null],
+    ] as const
+  ) {
+    const result = await probeReclaimFreeBytes(
+      "C:\\test'folder",
+      "windows",
+      async (_command, args) => {
+        assertStringIncludes(args?.join(" ") ?? "", "'C:\\test''folder'");
+        return {
+          ok: true,
+          value: {
+            success: true,
+            code: 0,
+            stdout,
+            stderr: "",
+            timedOut: false,
+          },
+        };
+      },
+    );
+    assertEquals(result, expected);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Acceptance: the fixture tree the issue describes.
@@ -1745,14 +1820,47 @@ Deno.test("command: each removal and the summary are logged, one tagged line eac
     );
     assertStringIncludes(
       result.message,
-      `${HOST_CACHE_RECLAIM_TAG} freed 8192.0 MB; est. free 8192.0 MB vs floor 1024.0 MB`,
+      `${HOST_CACHE_RECLAIM_TAG} removed cache contents 8192.0 MB; est. free 8192.0 MB vs floor 1024.0 MB`,
     );
     assertEquals(
       result.message.includes("largest host directories"),
-      false,
-      "the floor is covered, so no largest-directories line",
+      true,
+      "the cargo headroom is still short, so show where the space went",
     );
   });
+});
+
+Deno.test("command: measured recovery is distinct from deleted sizes and probe errors fail loudly", async () => {
+  for (const measured of [101 * GIB, null]) {
+    await withRoot(async (root) => {
+      await makeCache(root, "stale-target", { ageMs: STALE_MS });
+      const config = await writeConfig(root, {
+        host_cache_reclaim_roots: [root],
+      });
+      const result = await runReclaimHostCaches(
+        {
+          config,
+          "free-kb": String(101 * KIB_PER_GIB),
+          "floor-kb": String(93 * KIB_PER_GIB),
+          "disk-path": root,
+        },
+        commandDeps({
+          dirSizeBytes: async () => 20 * GIB,
+          readFreeBytes: async () => measured,
+        }),
+      );
+      assertEquals(result.success, measured !== null);
+      assertStringIncludes(result.message, "removed cache contents 20480.0 MB");
+      if (measured === null) {
+        assertStringIncludes(result.message, "host disk probe failed");
+        assertStringIncludes(result.message, "host space returned: unverified");
+      } else {
+        assertStringIncludes(result.message, "change 0.0 MB");
+        assertStringIncludes(result.message, "largest host directories");
+        assertEquals(result.data?.measuredFreeBytesAfter, measured);
+      }
+    });
+  }
 });
 
 Deno.test("command: still short after reclaim names the largest host directories, largest first", async () => {
