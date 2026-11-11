@@ -51,6 +51,8 @@ export interface CustomLabelPrCandidate {
   prNumber: number;
   /** Head branch, which the dispatcher checks out. */
   headRefName: string;
+  /** PR base for CI cargo failure comparison; missing remains unknown. */
+  baseRefName?: string;
   /** PR title — untrusted text, fenced by the prompt builder. */
   title: string;
   /** PR URL, for logs and comments. */
@@ -84,12 +86,13 @@ export interface FindCustomLabelPrsOptions {
 
 /** The `gh pr list --json` fields the finder asks for. */
 const PR_LIST_FIELDS =
-  "number,headRefName,title,url,isDraft,author,updatedAt" as const;
+  "number,headRefName,baseRefName,title,url,isDraft,author,updatedAt" as const;
 
 /** One PR as `gh pr list --json` renders it. */
 interface PrListEntry {
   number: number;
   headRefName?: string;
+  baseRefName?: string;
   title?: string;
   url?: string;
   isDraft?: boolean;
@@ -158,6 +161,7 @@ export async function findCustomLabelPrCandidates(
           repo,
           prNumber: pr.number,
           headRefName: pr.headRefName ?? "",
+          baseRefName: pr.baseRefName,
           title: pr.title ?? "",
           url: pr.url ?? "",
           isDraft: pr.isDraft ?? false,

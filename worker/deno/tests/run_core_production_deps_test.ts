@@ -1611,3 +1611,59 @@ Deno.test("createProductionRunCoreDeps - gates get the credentials their own rep
     await Deno.remove(outside, { recursive: true });
   }
 });
+
+Deno.test("review 4896: production custom PR agent receives the actual PR base or unknown sentinel", async () => {
+  const mapping = {
+    label: "custom-pr",
+    promptPath: "/tmp/custom-pr.md",
+    targetPhase: "pr" as const,
+  };
+  const seen: Array<string | undefined> = [];
+  const worker = createMockDeps({
+    claude: {
+      runClaudeWithRetry: (options) => {
+        seen.push(options.ciCargoCompareRef);
+        return Promise.resolve({
+          ok: true,
+          value: { exitCode: 0, output: "done", timedOut: false },
+        });
+      },
+    },
+  });
+  const { deps, cleanup } = await createProductionRunCoreDeps(
+    createTestOptions({
+      config: buildDefaultWorkerConfig({
+        repos: ["org/repo"],
+        customLabelPrompts: [mapping],
+      }),
+      workerDeps: worker,
+      dispatchCustomLabelPrPromptsFn: async (dispatchDeps) => {
+        for (const baseRefName of ["release/2", undefined]) {
+          const candidate = {
+            repo: "org/repo",
+            prNumber: 42,
+            headRefName: "fix",
+            baseRefName,
+            title: "Fix",
+            url: "https://github.com/org/repo/pull/42",
+            isDraft: false,
+            author: "contributor",
+            updatedAt: "2026-01-01T00:00:00Z",
+            mapping,
+          };
+          await dispatchDeps.runAgent(candidate, {
+            prompt: "fix",
+            systemPrompt: "test",
+          });
+        }
+        return { processed: true };
+      },
+    }),
+  );
+  try {
+    await deps.findAndProcessCustomLabelPrPrompts?.();
+    assertEquals(seen, ["origin/release/2", ""]);
+  } finally {
+    cleanup();
+  }
+});

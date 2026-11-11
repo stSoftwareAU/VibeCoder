@@ -4,6 +4,7 @@
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  CI_CARGO_ONLY_PRE_FLIGHT,
   commitAndPushPending,
   resolveRepairPreFlightSpec,
 } from "../lib/git_push.ts";
@@ -151,6 +152,32 @@ Deno.test(
         { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
         false,
         resolveRepairPreFlightSpec(undefined, "org/repo"),
+      );
+      assertEquals(result.ok, false);
+      if (!result.ok) assertStringIncludes(result.error.message, "SC2086");
+      assertEquals(
+        await git(dir, "ls-remote", "origin", "refs/heads/repair"),
+        `${remote}\trefs/heads/repair`,
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "commitAndPushPending: a cargo-only repair blocks a real ShellCheck diagnostic",
+  async () => {
+    const { root, dir } = await fixture();
+    try {
+      const remote = await git(dir, "rev-parse", "origin/repair");
+      await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
+      const result = await commitAndPushPending(
+        "repair",
+        "Fix #4631",
+        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        false,
+        CI_CARGO_ONLY_PRE_FLIGHT,
       );
       assertEquals(result.ok, false);
       if (!result.ok) assertStringIncludes(result.error.message, "SC2086");

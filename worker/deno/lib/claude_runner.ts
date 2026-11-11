@@ -23,7 +23,9 @@ import {
   ensureAgentMcpConfig,
 } from "./agent_mcp_config.ts";
 import { agentPreFlightCommands } from "./agent_pre_flight.ts";
+import type { CiCargoScan } from "./ci_cargo_checks.ts";
 import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
@@ -512,6 +514,14 @@ export interface RunClaudeOptions {
    * Overrides the registry lookup by `repo`; production leaves it unset.
    */
   preFlightCommands?: readonly string[];
+  /**
+   * The ref a failing CI cargo check on the agent's own `git push` is compared
+   * against (Issue #4630 review): the PR base as `origin/<branch>` for a PR
+   * repair, so a failure the base already has is no verdict on the push. `""`
+   * means a comparison is required but the base is unknown, so such a failure
+   * is refused as infrastructure. Unset for a run with no PR base.
+   */
+  ciCargoCompareRef?: string;
   /**
    * Static system prompt for Claude prompt caching (Issue #1262).
    *
@@ -1207,6 +1217,56 @@ export function killCompletionCapMs(killAfterSeconds: number): number {
   ) * 1000;
 }
 
+/**
+ * The repo CI's cargo checks, precomputed before the agent starts so its own
+ * pre-push hook can run them from the hook spec without importing the
+ * workflow scanner (`ci_cargo_checks.ts` and its bare `@std/yaml/parse`
+ * specifier) (Issue #4630 review). Without a checkout there is nothing to
+ * scan and no scan is written. When the scan cannot be produced (the
+ * tracked-file list is unreadable, or the scanner fails to load or throws), the returned
+ * scan has no checks and one `unverifiable` reason naming the fault, and a
+ * warning is logged: a Rust-relevant push through the hook is then refused as
+ * infrastructure, as the worker's own gates refuse it, instead of running no
+ * CI cargo check at all.
+ */
+export async function scanAgentCiCargoChecks(
+  cwd: string | undefined,
+  warn: (message: string) => void = (message) => console.warn(message),
+  // Loaded here, not imported at the top: a static import would put the YAML
+  // parser (`@std/yaml/parse`) into the graph of every script that reaches
+  // this module without the worker's import map (the review-fleet-prs
+  // helpers run with no config), so they could not resolve it. A load that
+  // fails (the parser cannot be resolved) is an unverifiable scan too.
+  loadScanner: () => Promise<typeof import("./ci_cargo_checks.ts")> = () =>
+    import("./ci_cargo_checks.ts"),
+): Promise<CiCargoScan | undefined> {
+  if (cwd === undefined) return undefined;
+  const failed = (cause: string): CiCargoScan => {
+    const reason =
+      `the worker could not scan the CI workflows before the agent ran: ${cause}`;
+    warn(`${reason}; the agent's own Rust pushes will be refused`);
+    return { checks: [], unverifiable: [reason] };
+  };
+  try {
+    const tracked = await runGitCommand(["ls-files", "-z"], { cwd });
+    if (!tracked.ok) return failed(`git ls-files: ${tracked.error.message}`);
+    if (tracked.value.code !== 0) {
+      return failed(
+        `git ls-files exited ${tracked.value.code}: ${
+          tracked.value.stderr.trim().split("\n")[0] ?? ""
+        }`,
+      );
+    }
+    const { repoCiCargoChecks } = await loadScanner();
+    return await repoCiCargoChecks(
+      cwd,
+      tracked.value.stdout.split("\0").filter((path) => path !== ""),
+    );
+  } catch (error) {
+    return failed(error instanceof Error ? error.message : String(error));
+  }
+}
+
 export async function runClaudeWithTimeout(
   options: RunClaudeOptions,
 ): Promise<Result<ClaudeExecutionResult>> {
@@ -1489,11 +1549,22 @@ async function runClaudeWithTimeoutBody(
 
     // Agent self-pushes bypassed the worker's pre-flight chokepoint (Issue
     // #3394): install a per-run git pre-push hook, active only for the agent's
-    // env. Fail closed, like the shim.
+    // env. Fail closed, like the shim. The repo CI's cargo checks are scanned
+    // here, before the agent runs, and written into the hook spec, so the hook
+    // runs them on the agent's own push (Issue #4630 review) without importing
+    // the workflow scanner itself.
+    const agentCiCargo = await scanAgentCiCargoChecks(
+      cwd,
+      (m) => (logger?.warn(m) ?? console.warn(m)),
+    );
     const hookOutcome = await installPrePushHook({
       baseEnv: ghGuard?.env ?? baseEnv,
       preFlightCommands: options.preFlightCommands ??
         agentPreFlightCommands(repo),
+      ...(agentCiCargo === undefined ? {} : { ciCargo: agentCiCargo }),
+      ...(options.ciCargoCompareRef === undefined
+        ? {}
+        : { compareRef: options.ciCargoCompareRef }),
     });
     if (!hookOutcome.ok) {
       return {

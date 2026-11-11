@@ -1,3 +1,4 @@
+import { prBaseCompareRef } from "./git_push.ts";
 import { agentTranscriptDir, agentTranscriptPath } from "./agent_transcript.ts";
 import { createScheduledTranscriptScan } from "./agent_transcript_scan.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -4482,6 +4483,7 @@ export async function createProductionRunCoreDeps(
               const run = await workerDeps.claude.runClaudeWithRetry(
                 buildCustomPrAgentRequest({
                   repo: candidate.repo,
+                  baseBranch: candidate.baseRefName,
                   parts,
                   timeoutSeconds: reactivePhaseTimeout(config, "pr-feedback"),
                   noOutputTimeout: config.claudeNoOutputTimeout,
@@ -7460,6 +7462,7 @@ async function scanStaleWorkflowIssuesFn(
  */
 export function buildCustomPrAgentRequest(input: {
   repo: string;
+  baseBranch?: string;
   parts: PromptParts;
   timeoutSeconds: number;
   noOutputTimeout: number;
@@ -7473,6 +7476,7 @@ export function buildCustomPrAgentRequest(input: {
     noOutputTimeout: input.noOutputTimeout,
     phase: "pr_feedback" as const,
     repo: input.repo,
+    ciCargoCompareRef: prBaseCompareRef(input.baseBranch),
     cwd: input.cwd,
     logger: input.logger,
   };
