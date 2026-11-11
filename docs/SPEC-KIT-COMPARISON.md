@@ -218,10 +218,11 @@ authority on the trusted side of the boundary.
 **An agent-authored `kill` verdict.** spec-kit is right that killing an idea with
 a documented reason is a success. But issue lifecycle is deliberately not the
 agent's to change — `gh issue close` on the worked issue is refused at the guard.
-Where the agent has objective evidence, the path already exists: a performance
-change with no measurable gain gets benchmark numbers, a `negative-result` label
-and a comment. Generalising kill authority to model judgement trades a real
-safety property for a verdict a human still has to confirm.
+Where the agent has deterministic evidence that a change does not help (counts,
+not shared-host timings), the path already exists: a `negative-result` label and
+a comment, which the worker hands to a human for review. Generalising kill
+authority to model judgement trades a real safety property for a verdict a
+human still has to confirm.
 
 **The converge loop itself (as a loop).** Assessing the code against the intent
 is adopted (#518); re-running implement until a model reports "converged" is not.

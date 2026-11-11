@@ -145,6 +145,7 @@ interface Outcome {
   claudeCalls: number;
   prompts: string[];
   prCreateCalls: number;
+  recoveredBodies: string[];
   /** Every `gh` call's arguments, in order. */
   ghCalls: string[][];
   /** How often auto-merge was armed through `deps.pr.finalisePr`. */
@@ -181,6 +182,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   }
 
   const comments: string[] = [];
+  const recoveredBodies: string[] = [];
   const prompts: string[] = [];
   const runnerInputs: MutationRunInput[] = [];
   const warnings: string[] = [];
@@ -352,14 +354,16 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       error: () => {},
     },
     pr: {
+      recoverExistingPr: (_repo, _issue, _url, body) => {
+        recoveredBodies.push(body ?? "");
+        return Promise.resolve({ ok: true as const, value: "recovered" });
+      },
       findExistingPrForIssue: () =>
         Promise.resolve({ ok: false, error: new Error("none") }),
       findExistingPrForBranch: () =>
         scenario.existingPrForBranch
           ? Promise.resolve({ ok: true as const, value: PR_URL })
           : Promise.resolve({ ok: false as const, error: new Error("none") }),
-      recoverExistingPr: () =>
-        Promise.resolve({ ok: true, value: "recovered" }),
       finalisePr: () => {
         finalisePrCalls++;
         return Promise.resolve({
@@ -392,6 +396,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     claudeCalls: prompts.length,
     prompts,
     prCreateCalls,
+    recoveredBodies,
     ghCalls,
     finalisePrCalls,
     comments,
@@ -1217,3 +1222,30 @@ jobs:
   });
   assertEquals(createCall(unread).includes("--draft"), false);
 });
+
+for (const existingPrForBranch of [false, true]) {
+  Deno.test(`completion - mutation hold withholds URL and qualified colon closers on ${existingPrForBranch ? "recovery" : "creation"} (PR #5021 review)`, async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY.replace(
+        `Closes #${ISSUE}.`,
+        `Fixes https://github.com/${REPO}/issues/${ISSUE}\nCloses: ${REPO}#${ISSUE}`,
+      ),
+      mutation: completed([SURVIVOR]),
+      workflow: CI_BLOCKING_WORKFLOW,
+      existingPrForBranch,
+    });
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.finalisePrCalls, 0);
+    assertEquals(outcome.prCreateCalls, existingPrForBranch ? 0 : 1);
+    const body = existingPrForBranch
+      ? outcome.recoveredBodies[0]!
+      : flagValue(createCall(outcome), "--body");
+    assertStringIncludes(body, DRAFT_CONTINUATION_MARKER);
+    assertStringIncludes(body, `Part of ${REPO}#${ISSUE}`);
+    assertEquals(
+      body.includes(`Fixes https://github.com/${REPO}/issues/${ISSUE}`),
+      false,
+    );
+    assertEquals(body.includes(`Closes: ${REPO}#${ISSUE}`), false);
+  });
+}

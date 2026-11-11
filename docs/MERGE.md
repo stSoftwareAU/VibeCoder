@@ -785,6 +785,23 @@ Two changes close that window:
   meets a draft (at creation, or from a listing written before the field
   existed) returns the typed `draft` outcome, logged at info. A draft is the
   author asking for eyes — marking it ready is what puts it back in the sweep.
+- **Orphaned fleet drafts are readied and armed** (Issue #4952). A fleet draft
+  that nothing else will ever mark ready — its issue has no live claim and its
+  body does not open with the draft-continuation or the mutation-hold marker —
+  is the one draft the sweep does not skip. Its `readyOrphanedDraft` hook
+  ([`draft_pr_self_heal.ts`](../worker/deno/lib/draft_pr_self_heal.ts)) readies
+  it only when the head branch names an open issue (`issue-<N>-…`) with no
+  assignee among the fleet authors, and the body does not open with a marker. A
+  marker quoted mid-body, in a code span or in prose, does not count. The
+  PR-body sync keeps a leading marker when it rebuilds a held draft's body
+  (after a merge-conflict repair or at a completion exit), so that rebuild does not
+  turn a hold into an orphan. The sweep
+  only lists PRs by fleet authors, so the author rule holds by construction.
+  The hook marks the PR ready and waits for its ready-for-review CI to start
+  (Issue #4160). When the CI starts, the sweep arms the PR in the same pass. When it does not, the PR is left ready but unarmed,
+  and a later pass arms it once CI has run. A failed `gh` call is logged with
+  the PR number and the PR is not armed in that pass. Any other draft is
+  skipped as above.
 
 ```mermaid
 sequenceDiagram
@@ -857,7 +874,9 @@ Every fleet PR is armed for auto-merge and stays armed (Issue #4291). PRs do
 not merge until they have a review approval and CI is green, and GitHub
 enforces both. No review, finding or label withholds arming or disarms a PR;
 only the routing holds above (a closed milestone route, a retargeted base, a
-retargeted sync PR, an open-children summary PR) and a draft do.
+retargeted sync PR, an open-children summary PR) and a draft do. The one
+draft the sweep arms is an orphaned fleet draft, which it readies first (Issue #4952;
+see *Drafts are skipped, not failed* above).
 When a pre-PR verifier finding or a Standards violation survives its recovery
 turn on an existing PR (Issues #3382, #3796), the completion phase posts the
 findings on that PR and still arms it. A top-level findings comment whose
