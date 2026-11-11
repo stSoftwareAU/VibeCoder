@@ -1813,8 +1813,12 @@ export interface BabysitterRepairFinish {
 
 /**
  * Validate, commit and push a repair, then sync the PR body and dismiss the
- * reviews it addressed (Issue #4637). On a push, GitHub's PR view must first
- * report the pushed head, since it lags behind the push. The body sync runs
+ * reviews it addressed (Issue #4637). Before pushing, a review repair also
+ * refuses when the requested reviews' findings identity differs from the one
+ * the session started from (Issue #4968): a newer change request replaced the
+ * one being repaired. That refusal is a race, so the next scan repairs from the
+ * newest review. On a push, GitHub's PR view must first report the pushed
+ * head, since it lags behind the push. The body sync runs
  * on the committed summary at that head. Inside the sync, the guarded
  * description is published and checked. Reviews are then dismissed only for
  * those whose every finding the independent verifier judged fixed at the
@@ -1875,6 +1879,17 @@ export async function finishBabysitterRepair(
       current.baseRefName !== pr.baseRefName || !reason(current)
     ) {
       throw new Error("PR changed during the fix; refusing to push");
+    }
+    // A newer change request on the same head replaced the findings this
+    // repair was started for (Issue #4968): refuse as a race, not a push.
+    if (reviews.length > 0) {
+      const latest = await readRequestedReviews(repo, pr.number, gh);
+      if (
+        repairFailureIdentity("requested review changes", latest) !==
+          repairFailureIdentity("requested review changes", reviews)
+      ) {
+        throw new Error("PR changed during the fix; refusing to push");
+      }
     }
     await runCommand(
       "git",
