@@ -51,9 +51,10 @@ compile error is therefore caught before the push, not by a CI run. Closes
   fails a CI cargo command, so a warning the push adds, or cargo's
   `warning: build failed, waiting for other jobs to
   finish...`, does not make
-  a base-only failure a verdict. If neither the base tip nor the head's fork point on it fails with every error
-  the push shows, it stays a verdict. An unavailable repair base or a host failure during
-  comparison is infrastructure, not a branch verdict.
+  a base-only failure a verdict. If neither the base tip nor the head's fork
+  point on it fails with every error the push shows, it stays a verdict. An
+  unavailable repair base or a host failure during comparison is infrastructure,
+  not a branch verdict.
 - Scanner fixes: a `cd <dir>` on its own line now holds for the rest of that
   step's run block (any `cd` form it cannot follow, including `pushd`, `popd`, a
   `cd` after `then`/`do`/`else`/`{` and a `cd ... || true`, makes the later
@@ -123,8 +124,12 @@ compile error is therefore caught before the push, not by a CI run. Closes
   same comment (feedback) or failure signature (CI fix) the next fault is
   charged like any failed attempt, so a lasting fault cannot re-run the agent
   without end. An unreadable PR or no trusted author is unknown, and releases
-  again. A lint or compile failure still blocks the push and is charged, unless
-  the PR base already has it (see "Base-failure comparison").
+  again. `countGateInfraReleases` reads each REST comment's author and body
+  (`--jq '.[] | {login: .user.login, body: .body} | @json'`) and matches
+  `gateInfraReleaseMarker(key)` in TypeScript, so the rule that decides which
+  comments count is tested, not hidden in a jq filter. A lint or compile failure
+  still blocks the push and is charged, unless the PR base already has it (see
+  "Base-failure comparison").
 - Merge with main (#4631, #4909): the ShellCheck policy and `shellcheckOnly`
   stay as main has them. The cargo checks are planned from a changed-file list
   that keeps a file reached through a symlinked parent directory
@@ -297,10 +302,10 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   (`--config <worker>/deno.json --frozen --lock
   <worker>/deno.lock`, from main
   PR #4962), so the previous `--no-config` environment workaround no longer
-  applies. `tests/pre_push_gate_test.ts` (150 tests at head) passed in full on the head
-  (`deno task test:unit`: 150 passed, 0 failed). `tests/pr_feedback_processor_test.ts`
-  was not re-run on this head. The real ShellCheck publication suite was not re-run on
-  this head.
+  applies. `tests/pre_push_gate_test.ts` (150 tests at head) passed in full on
+  the head (`deno task test:unit`: 150 passed, 0 failed).
+  `tests/pr_feedback_processor_test.ts` was not re-run on this head. The real
+  ShellCheck publication suite was not re-run on this head.
 - The obsolete environment contract copied the CI output directory into local
   builds. The remaining contract preserves target-specific settings while
   ignoring both output directory keys, including expressions:
@@ -343,18 +348,25 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   each killed by a test in `worker/deno/tests/pre_push_gate_test.ts` (each
   mutation applied to `worker/deno/lib/pre_push_gate.ts`, the test went red,
   then restored): `baseCommitOfHead` dropping the `merge-base` exit-code operand
-  → `review 4896: a merge-base that fails is no fork point, whatever it printed`;
-  `added = true` initially → `...a worktree that cannot be added is infrastructure and is not removed`;
-  the non-`NotFound` stat fault returning `""` → `...a base directory that cannot be read as a directory is infrastructure, not a verdict`
-  (real ENOTDIR: the tip turns `rust/` into a file);
-  `timeoutSeconds` dropped from the base run → `...a base run that outlasts the PR timeout is infrastructure, not a verdict`
-  (a runner that models the deadline cuts the base run off only when it is given less than 100 s; the test asserts the infrastructure error at 77 s and a proceeding push at 200 s);
-  negated `removed.code` check → `...a base worktree and its scratch directory are removed without a warning`
-  and `...a worktree remove that fails warns and still deletes the non-empty scratch directory`;
+  →
+  `review 4896: a merge-base that fails is no fork point, whatever it printed`;
+  `added = true` initially →
+  `...a worktree that cannot be added is infrastructure and is not removed`; the
+  non-`NotFound` stat fault returning `""` →
+  `...a base directory that cannot be read as a directory is infrastructure, not a verdict`
+  (real ENOTDIR: the tip turns `rust/` into a file); `timeoutSeconds` dropped
+  from the base run →
+  `...a base run that outlasts the PR timeout is infrastructure, not a verdict`
+  (a runner that models the deadline cuts the base run off only when it is given
+  less than 100 s; the test asserts the infrastructure error at 77 s and a
+  proceeding push at 200 s); negated `removed.code` check →
+  `...a base worktree and its scratch directory are removed without a warning`
+  and
+  `...a worktree remove that fails warns and still deletes the non-empty scratch directory`;
   `recursive: true` → `false` and the scratch `Deno.remove` deleted → the second
-  of those two (the failed remove leaves the scratch directory non-empty) and the first.
-  Red check: with the fork-point comparison skipped, the test fails with
-  `Pre-flight gate BLOCK ... cargo clippy ... failed`.
+  of those two (the failed remove leaves the scratch directory non-empty) and
+  the first. Red check: with the fork-point comparison skipped, the test fails
+  with `Pre-flight gate BLOCK ... cargo clippy ... failed`.
   `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - a fix branch compares the PR base without merging it`
   and the gated-head case in `pr_ci_processor_test.ts` cover the independent
   comparison ref. Registry refusal on the head is covered by
@@ -474,3 +486,34 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   these local third-party sources fails inside the published std packages.
   Repository CI remains the full compiler/quality check; it was not replaced or
   disabled, and the full local quality gate was not rerun here.
+
+### PR #4896 review revision (round 4)
+
+- Release count by outcome: `tests/support/fake_issue_comments.ts` fakes
+  `gh
+  api …/comments --jq` over REST-shaped comments (`{user: {login}, body}`)
+  and applies the caller's filter with the real `jq`, as `gh --jq` does, so a
+  filter reading a field REST lacks (`.author.login`) gives no login, as it
+  would against GitHub. `gate_infra_release_test.ts` "only trusted authors'
+  comments carrying this key's marker count" counts 2 of five comments (another
+  key's marker, a plain fleet comment and a stranger's copy do not count); the
+  argv assertions are gone.
+- `pr_ci_processor_test.ts`: the CI-fix gate-fault test now runs three cycles
+  against one PR whose comments persist, each posted comment stored as the
+  fleet's and its marker copied by a stranger; the first two cycles are released
+  and record a marker, the third is charged. The count comes from what the
+  processor actually posted, and the `pushCalls` assertion is gone.
+  `pr_feedback_review_dismissal_3383_test.ts` answers the count from REST-shaped
+  comments the same way (this review's earlier releases, a stranger's copy,
+  another review's release and a plain comment).
+- `custom_label_pr_finder_test.ts`: `fakeGh` now answers `gh pr list` with only
+  the fields `--json` asks for, as gh does, and the request-text assertion is
+  dropped; `baseRefName === "release/2"` goes red if `baseRefName` is not
+  requested.
+- The PR body is re-synced from this file, so it names "review 4896: a base run
+  that outlasts the PR timeout is infrastructure, not a verdict" and the Test
+  Plan's results match.
+- Checked here: `deno fmt`, `deno lint` and `deno check` on the changed files
+  (against integrity-verified local copies of the locked std packages, as
+  above), and the release count against the fake with the real `jq`. The Deno
+  test suites were not run here (this client cannot reach JSR); CI runs them.

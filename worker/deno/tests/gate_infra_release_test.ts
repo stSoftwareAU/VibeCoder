@@ -12,6 +12,10 @@ import {
   gateInfraReleaseMarker,
   safeGateDetail,
 } from "../lib/gate_infra_release.ts";
+import {
+  answerCommentsRead,
+  type RestComment,
+} from "./support/fake_issue_comments.ts";
 
 Deno.test("the marker names its key, and a key outside the allow-list is refused", () => {
   assertEquals(
@@ -23,39 +27,26 @@ Deno.test("the marker names its key, and a key outside the allow-list is refused
   }
 });
 
-Deno.test("only trusted authors' marked comments count", async () => {
-  const calls: string[][] = [];
-  const count = await countGateInfraReleases(
-    (args) => {
-      calls.push(args);
-      return Promise.resolve(
-        [
-          "Fleet-Bot\ttrue",
-          "fleet-bot\ttrue",
-          "fleet-bot\tfalse",
-          "stranger\ttrue",
-          "",
-        ].join("\n"),
-      );
+Deno.test("only trusted authors' comments carrying this key's marker count", async () => {
+  const comments: RestComment[] = [
+    {
+      user: { login: "Fleet-Bot" },
+      body: `released ${gateInfraReleaseMarker("ci-sig")}`,
     },
+    { user: { login: "fleet-bot" }, body: gateInfraReleaseMarker("ci-sig") },
+    // Another repair's key, a plain comment and a stranger's copy do not count.
+    { user: { login: "fleet-bot" }, body: gateInfraReleaseMarker("ci-sig2") },
+    { user: { login: "fleet-bot" }, body: "CI fix pushed" },
+    { user: { login: "stranger" }, body: gateInfraReleaseMarker("ci-sig") },
+  ];
+  const count = await countGateInfraReleases(
+    (args) => answerCommentsRead(args, comments),
     "org/repo",
     7,
     "ci-sig",
     ["fleet-bot"],
   );
   assertEquals(count, 2);
-  assertEquals(calls[0]?.slice(0, 5), [
-    "api",
-    "repos/org/repo/issues/7/comments",
-    "--paginate",
-    "--jq",
-    calls[0]?.[4],
-  ]);
-  assertEquals(calls[0]?.length, 5);
-  assertEquals(
-    calls[0]?.at(-1)?.includes("vibe-gate-infra-release key=ci-sig -->"),
-    true,
-  );
 });
 
 Deno.test("an unreadable PR, or no trusted author, is unknown rather than zero", async () => {
@@ -71,7 +62,7 @@ Deno.test("an unreadable PR, or no trusted author, is unknown rather than zero",
   );
   assertEquals(
     await countGateInfraReleases(
-      () => Promise.resolve("fleet-bot\ttrue"),
+      () => Promise.resolve(""),
       "org/repo",
       7,
       "k",

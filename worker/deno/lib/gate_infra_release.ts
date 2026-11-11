@@ -48,6 +48,11 @@ export function safeGateDetail(text: string): string {
  * `null` when they cannot be read, or when `trustedAuthors` is empty so that no
  * marker could be trusted (the caller then keeps releasing, since an unreadable
  * PR is no evidence of a lasting fault).
+ *
+ * `gh` returns each REST comment's author and body as one JSON line; the marker
+ * is matched here, against {@link gateInfraReleaseMarker}, so the rule that
+ * decides which comments count is tested in TypeScript, not hidden in a jq
+ * filter (PR #4896 review).
  */
 export async function countGateInfraReleases(
   gh: (args: string[]) => Promise<string>,
@@ -56,9 +61,8 @@ export async function countGateInfraReleases(
   key: string,
   trustedAuthors: readonly string[],
 ): Promise<number | null> {
-  assertKey(key);
+  const marker = gateInfraReleaseMarker(key);
   if (trustedAuthors.length === 0) return null;
-  const needle = `${MARKER_NAME} key=${key} -->`;
   let output: string;
   try {
     output = await gh([
@@ -66,7 +70,7 @@ export async function countGateInfraReleases(
       `repos/${repo}/issues/${prNumber}/comments`,
       "--paginate",
       "--jq",
-      `.[] | [.user.login, (.body | contains("${needle}"))] | @tsv`,
+      ".[] | {login: .user.login, body: .body} | @json",
     ]);
   } catch {
     return null;
@@ -74,10 +78,29 @@ export async function countGateInfraReleases(
   const trusted = new Set(trustedAuthors.map((login) => login.toLowerCase()));
   let count = 0;
   for (const line of output.split("\n")) {
-    const [login, marked] = line.split("\t");
-    if (marked?.trim() === "true" && trusted.has((login ?? "").toLowerCase())) {
+    const comment = parseComment(line);
+    if (
+      comment !== null && trusted.has(comment.login.toLowerCase()) &&
+      comment.body.includes(marker)
+    ) {
       count++;
     }
   }
   return count;
+}
+
+/** One `{login, body}` line, or `null` for a blank or unreadable line. */
+function parseComment(line: string): { login: string; body: string } | null {
+  if (line.trim() === "") return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  const { login, body } = value as { login?: unknown; body?: unknown };
+  return typeof login === "string" && typeof body === "string"
+    ? { login, body }
+    : null;
 }

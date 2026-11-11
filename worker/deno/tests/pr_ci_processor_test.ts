@@ -62,6 +62,11 @@ import {
   prWriteCalls,
   recordingStateGh,
 } from "./support/pr_live_state_stub.ts";
+import {
+  answerCommentsRead,
+  isIssueCommentsRead,
+  type RestComment,
+} from "./support/fake_issue_comments.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -3818,85 +3823,95 @@ Deno.test("processCiFailure - repair push (Issue #4630): a repo's own pre-flight
  * the scanner cannot reproduce). That is no verdict on the fix: no attempt
  * marker is written, so the PR's fix budget is not charged, and the comment
  * says the gate could not run rather than "failed to push".
+ *
+ * Runs `cycles` CI-fix cycles against one PR whose comments persist between
+ * them: each comment the processor posts is stored as the fleet's, and a
+ * stranger then reposts any release marker it carried, so the count the next
+ * cycle reads comes from what was actually posted. With `fleet` the processor
+ * is given the fleet logins it trusts. Returns each cycle's posted bodies.
  */
 async function runCiGateInfraFault(
   retryOnly: boolean,
-  priorReleases?: number,
-): Promise<string[]> {
+  { cycles = 1, fleet = false }: { cycles?: number; fleet?: boolean } = {},
+): Promise<string[][]> {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const commentBodies: string[] = [];
-    let pushCalls = 0;
-    const infra = () => ({
-      ok: false,
-      error: new PrePushGateInfrastructureError(
-        "CI cargo check could not run: cargo clippy is not installed",
-      ),
-    });
-    const deps = createMockDeps({
-      claude: {
-        runClaudeWithRetry: (() =>
-          Promise.resolve({
-            ok: true,
-            value: { output: "Fixed", exitCode: 0, timedOut: false },
-          })) as unknown as ClaudeDeps["runClaudeWithRetry"],
-      },
-      github: {
-        runGhCommand: (args: string[]) => {
-          if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
-          // The release count: one trusted-author marker row per earlier release.
-          if (
-            args[0] === "api" &&
-            args.some((a) => a.includes("vibe-gate-infra-release"))
-          ) {
-            return Promise.resolve(
-              Array.from(
-                { length: priorReleases ?? 0 },
-                () => "fleet-bot\ttrue",
-              )
-                .concat(["stranger\ttrue", "fleet-bot\tfalse"]).join("\n"),
-            );
-          }
-          if (args[0] === "pr" && args[1] === "comment") {
-            const body = args[args.indexOf("--body") + 1];
-            if (body !== undefined) commentBodies.push(body);
-          }
-          return Promise.resolve("");
+    const comments: RestComment[] = [];
+    const perCycle: string[][] = [];
+    for (let cycle = 0; cycle < cycles; cycle++) {
+      const commentBodies: string[] = [];
+      let pushCalls = 0;
+      const infra = () => ({
+        ok: false,
+        error: new PrePushGateInfrastructureError(
+          "CI cargo check could not run: cargo clippy is not installed",
+        ),
+      });
+      const deps = createMockDeps({
+        claude: {
+          runClaudeWithRetry: (() =>
+            Promise.resolve({
+              ok: true,
+              value: { output: "Fixed", exitCode: 0, timedOut: false },
+            })) as unknown as ClaudeDeps["runClaudeWithRetry"],
         },
-      },
-      git: {
-        commitAndPushPending: (() => {
-          pushCalls++;
-          if (!retryOnly || pushCalls > 1) return Promise.resolve(infra());
-          return Promise.resolve({
-            ok: true,
-            value: {
-              committedNewChanges: true,
-              commitsPushed: 0,
-              finalUnpushedCount: 1,
-            },
-          });
-        }) as unknown as GitDeps["commitAndPushPending"],
-        recoverFromPushRejection: (() =>
-          Promise.resolve({
-            ok: true,
-            value: undefined,
-          })) as unknown as GitDeps["recoverFromPushRejection"],
-      },
-    });
-    const result = await processCiFailure(makeInput(), {
-      promptsDir: PROMPTS_DIR,
-      logger: makeSilentLogger(),
-      deps,
-      stateDir: `${tmpDir}/.ci_check_state`,
-      workDir: tmpDir,
-      workRoot: tmpDir,
-      ...(priorReleases === undefined ? {} : { fleetLogins: ["fleet-bot"] }),
-    });
-    assertEquals(result.ok, true);
-    assertEquals(result.ok && result.value.changesPushed, false);
-    assertEquals(pushCalls, retryOnly ? 2 : 1);
-    return commentBodies;
+        github: {
+          runGhCommand: (args: string[]) => {
+            if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+            if (isIssueCommentsRead(args)) {
+              return answerCommentsRead(args, comments);
+            }
+            if (args[0] === "pr" && args[1] === "comment") {
+              const body = args[args.indexOf("--body") + 1];
+              if (body !== undefined) commentBodies.push(body);
+            }
+            return Promise.resolve("");
+          },
+        },
+        git: {
+          commitAndPushPending: (() => {
+            pushCalls++;
+            if (!retryOnly || pushCalls > 1) return Promise.resolve(infra());
+            return Promise.resolve({
+              ok: true,
+              value: {
+                committedNewChanges: true,
+                commitsPushed: 0,
+                finalUnpushedCount: 1,
+              },
+            });
+          }) as unknown as GitDeps["commitAndPushPending"],
+          recoverFromPushRejection: (() =>
+            Promise.resolve({
+              ok: true,
+              value: undefined,
+            })) as unknown as GitDeps["recoverFromPushRejection"],
+        },
+      });
+      const result = await processCiFailure(makeInput(), {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        // A fresh state directory each cycle, as on any host: only the PR's
+        // comments carry the release count from one cycle to the next.
+        stateDir: `${tmpDir}/cycle-${cycle}/.ci_check_state`,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        ...(fleet ? { fleetLogins: ["fleet-bot"] } : {}),
+      });
+      assertEquals(result.ok, true);
+      assertEquals(result.ok && result.value.changesPushed, false);
+      for (const body of commentBodies) {
+        comments.push({ user: { login: "fleet-bot" }, body });
+        // A stranger copying the marker spends none of the budget.
+        const marker = body.match(/<!-- vibe-gate-infra-release key=[^ ]+ -->/);
+        if (marker) {
+          comments.push({ user: { login: "stranger" }, body: marker[0] });
+        }
+      }
+      perCycle.push(commentBodies);
+    }
+    return perCycle;
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -3917,36 +3932,35 @@ function assertInfraFaultNotCharged(commentBodies: string[]): void {
 }
 
 Deno.test("PR #4896: a CI fix whose pre-push gate fails as infrastructure is not charged", async () => {
-  assertInfraFaultNotCharged(await runCiGateInfraFault(false));
+  const [bodies] = await runCiGateInfraFault(false);
+  assertInfraFaultNotCharged(bodies ?? []);
 });
 
 Deno.test("PR #4896: a CI fix whose retry after push recovery fails as infrastructure is not charged", async () => {
-  assertInfraFaultNotCharged(await runCiGateInfraFault(true));
+  const [bodies] = await runCiGateInfraFault(true);
+  assertInfraFaultNotCharged(bodies ?? []);
 });
 
 Deno.test("PR #4896: a CI fix released for a gate fault records the release, and the third is charged", async () => {
-  // Two earlier releases by the fleet (a stranger's and an unmarked row do not
-  // count): the next fault is charged like any failed attempt.
-  const charged = await runCiGateInfraFault(false, 2);
+  // Each cycle counts the releases the earlier cycles posted; a stranger's
+  // copy of each marker does not count.
+  const cycles = await runCiGateInfraFault(false, { cycles: 3, fleet: true });
+  const releaseMarker = /<!-- vibe-gate-infra-release key=ci-[\w.:-]+ -->/;
+  for (const released of cycles.slice(0, 2)) {
+    assertInfraFaultNotCharged(released);
+    assertEquals(
+      released.some((b) => releaseMarker.test(b)),
+      true,
+      `the release is recorded for the next cycle to count: ${
+        released.join("\n")
+      }`,
+    );
+  }
+  const charged = cycles[2] ?? [];
   assertEquals(
     charged.some((b) => b.includes("vibe-ci-fix-attempt")),
     true,
     `a repeated gate fault must be charged: ${charged.join("\n---\n")}`,
   );
-  assertEquals(
-    charged.some((b) => b.includes("vibe-gate-infra-release")),
-    false,
-  );
-
-  const released = await runCiGateInfraFault(false, 1);
-  assertInfraFaultNotCharged(released);
-  assertEquals(
-    released.some((b) =>
-      /<!-- vibe-gate-infra-release key=ci-[\w.:-]+ -->/.test(b)
-    ),
-    true,
-    `the release is recorded for the next cycle to count: ${
-      released.join("\n")
-    }`,
-  );
+  assertEquals(charged.some((b) => releaseMarker.test(b)), false);
 });

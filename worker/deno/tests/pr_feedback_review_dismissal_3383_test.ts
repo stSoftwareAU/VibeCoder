@@ -46,6 +46,11 @@ import { verifyFeedbackFix } from "../lib/pr_feedback_verifier.ts";
 import { HOST_DISK_PARK_NOTE } from "../lib/heavy_build_gate.ts";
 import { CI_CARGO_ONLY_PRE_FLIGHT } from "../lib/git_push.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
+import {
+  answerCommentsRead,
+  isIssueCommentsRead,
+  type RestComment,
+} from "./support/fake_issue_comments.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -1451,6 +1456,23 @@ async function assertGateInfraFaultReleases(
  * worth of earlier fleet-authored markers on the PR, the feedback is charged.
  */
 async function runRepeatedGateFault(priorReleases: number) {
+  // The PR's comments as the REST API returns them: the fleet's earlier
+  // releases of this review, plus a stranger's copy of the marker, another
+  // review's release and a plain fleet comment, none of which count.
+  const marker =
+    "<!-- vibe-gate-infra-release key=comment-pr_review-rv-777 -->";
+  const prior: RestComment[] = [
+    ...Array.from({ length: priorReleases }, () => ({
+      user: { login: "fleet-bot" },
+      body: `released for a gate fault ${marker}`,
+    })),
+    { user: { login: "stranger" }, body: marker },
+    {
+      user: { login: "fleet-bot" },
+      body: "<!-- vibe-gate-infra-release key=comment-pr_review-rv-778 -->",
+    },
+    { user: { login: "fleet-bot" }, body: "Addressed the review." },
+  ];
   const events: string[] = [];
   const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
   const inner = makeReactionGithub(captured, false).runGhCommand as (
@@ -1462,15 +1484,7 @@ async function runRepeatedGateFault(priorReleases: number) {
     captured,
     githubOverride: {
       runGhCommand: (args: string[]) => {
-        if (
-          args[0] === "api" &&
-          args.some((a) => a.includes("vibe-gate-infra-release"))
-        ) {
-          return Promise.resolve(
-            Array.from({ length: priorReleases }, () => "fleet-bot\ttrue")
-              .concat(["stranger\ttrue", "fleet-bot\tfalse"]).join("\n"),
-          );
-        }
+        if (isIssueCommentsRead(args)) return answerCommentsRead(args, prior);
         return inner(args);
       },
     },
