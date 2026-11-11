@@ -364,6 +364,59 @@ the auto-merge sweep; a conflicting PR still is
 [`auto_merge_sweep.ts`](../worker/deno/lib/auto_merge_sweep.ts)). The queue tests
 the PR against its future head, and lands it once the checks pass there.
 
+**Base-refresh churn guard (Issue #4943).** On a strict base with no merge
+queue, a behind-only PR is refreshed only through `requestReadyBranchUpdate`
+([`required_branch_checks_4613.ts`](../worker/deno/lib/required_branch_checks_4613.ts)),
+under the shared per-base owner. The lanes pass these `source` values:
+`branch-update-loop`, `auto-merge-sweep`, `merge-block-repair`,
+`merge-block-escalation` (`lib/merge_block_escalation.ts`), `babysitter-behind`
+(the babysitter's behind-only refresh), `pr-maintenance`
+(`commands/pr_maintenance.ts`) and `review-fleet-prs` (the review-fleet skill's
+`branch_update.ts`). A caller that omits `source` logs `source=unspecified`. A
+CI or review repair merges the base only when GitHub reports the PR
+`CONFLICTING`. Its `source` values are `babysitter-repair` (babysitter `fix()`),
+`pr-ci-processor`, `pr-feedback-processor` and `pr-spelling-processor`, which is
+gated the same way. For a behind-only, `MERGEABLE`, `UNKNOWN` or unreadable PR
+the base merge is skipped. Previously every babysitter repair merged the base,
+and the CI, feedback and spelling processors always synced the default branch,
+so each repair added a merge commit and re-ran CI on PRs not selected for final
+integration. The trade-off: a failure that appears only against the newer base
+is reproduced after the PR is refreshed as the owner, not inside the repair.
+Each decision logs one line to the host's stderr log,
+`[base-refresh] source=… outcome=… repo=… pr=#N base=… owner=#N/worker|none reason="…" version=… commit=…`,
+with outcomes `refresh-requested`, `refresh-skipped`, `base-merge-allowed` or
+`base-merge-skipped`. It goes to stderr so a command that prints JSON on stdout
+stays parseable. Grep the host's stderr log for `[base-refresh]` and count by
+source and outcome to attribute churn. The version and commit are the worker's
+build stamp, so a deployed worker older than this change shows no such lines.
+Still necessary: genuine conflicts, the owner's own refresh, the non-strict-base
+direct `update-branch` path, and local `updatePrBranch` for conflict repair.
+Merge-queue bases keep their existing path. The counters are what to watch; no
+production improvement is claimed here.
+
+Transient mergeability reads use the existing #4831 recovery, not polling. When
+a repair's read reports `UNKNOWN`, the base merge is skipped for that cycle and
+the read is counted in the persisted refusal state the auto-merge sweep uses
+(`.branch_refresh_refusals_v1` under the worker's work directory; the babysitter
+keeps its own copy under its state directory). On the second consecutive
+`UNKNOWN` read one trusted PR comment says the refresh is waiting, and a
+`MERGEABLE` or `CONFLICTING` read later clears the streak and updates that
+comment to recovered. An unreadable or garbled read is inconclusive and leaves
+the streak alone. Each decision also increments a named counter
+`baseRefresh.<outcome>.<source>` (and `baseRefresh.repeatedMergeabilityUnknown`
+at the threshold). The per-cycle fault-tolerance summary
+(`fault_tolerance_summary.json`) carries them for the lanes that run inside the
+worker process (`branch-update-loop`, `auto-merge-sweep`, `merge-block-repair`).
+The CI, feedback, spelling and babysitter commands are separate processes that
+do not write that summary, so each one tallies its own `base-merge-allowed` and
+`base-merge-skipped` decisions in a cumulative `base_refresh_counters.json`
+(`{"counters": {"baseRefresh.<outcome>.<source>": n}}`) beside its refusal
+state: under the worker's work directory for the CI, feedback and spelling
+commands, and under the babysitter's state directory for `babysitter-repair`.
+An automatic follow-up reads those files, not the log. At startup the worker
+prints `[base-refresh] startup repair-base-merge=conflicting-only …` beside the
+`[worker-build]` banner, so a host that does not print it predates this change.
+
 **A queue removal is a red check, not a re-run.** When the queue removes a PR
 at its current head, the CI-fix lane is handed that removal as a failed check
 named `merge queue`, with the synthetic id `merge-queue-<first 12 characters of

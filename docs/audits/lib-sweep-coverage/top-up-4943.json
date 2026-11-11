@@ -1,0 +1,12 @@
+{
+  "issue": 4943,
+  "chunk": "top-up-4943",
+  "title": "top-up: base-merge policy and base-refresh diagnostics",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4943",
+  "definition": "module added for the base-refresh churn guard: worker/deno/lib/repair_base_merge_4943.ts, the repair base-merge policy (merge only on GitHub CONFLICTING) and the one-line stderr diagnostic per base-refresh decision (#4943)",
+  "status": "claimed",
+  "sweptAt": "73d1964a921256b90deebdde0f23d3e24cead8b1",
+  "paths": [
+    "worker/deno/lib/repair_base_merge_4943.ts"
+  ]
+}

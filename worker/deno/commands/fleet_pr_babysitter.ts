@@ -8,6 +8,13 @@ import {
   classifyBaseRedFailures,
 } from "../lib/babysitter_base_failure.ts";
 import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
+import {
+  createRepairMergeabilityTracker,
+  decideRepairBaseMerge,
+  logBaseRefreshDecision,
+  persistBaseRefreshCounter,
+  trackRepairMergeability,
+} from "../lib/repair_base_merge_4943.ts";
 import { fileURLToPath } from "node:url";
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
@@ -471,6 +478,10 @@ export type BaseSync =
  * so the fix and the branch update reach GitHub in one push and CI runs once.
  * A separate branch-update push after the fix would run the whole CI again
  * and roughly double the Actions bill for that PR (owner rule 2026-11-03).
+ *
+ * Only invoked for a genuinely conflicting PR (Issue #4943): a behind-only PR
+ * is refreshed through the shared base-refresh owner (Issue #4613), so a
+ * repair that merely fixes failed CI or review feedback does not add a merge.
  *
  * The merge is left uncommitted: the agent works and runs its checks against
  * the merged code, and {@link validateAndCommit} records the merge and the fix
@@ -2932,6 +2943,7 @@ export async function fix(
         pr.headRefOid,
         sleep,
         { fleetAuthors: authors },
+        "babysitter-behind",
       );
       if (!update.ok) {
         console.log(
@@ -3083,10 +3095,34 @@ export async function fix(
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
       return;
     }
-    const sync = await (deps.mergeBase ?? mergeBaseForRepair)(
-      dir,
-      pr.baseRefName,
+    // Issue #4943: a repair merges the base only for a genuine conflict. A
+    // repeated UNKNOWN read follows the #4831 transient-refusal recovery.
+    await trackRepairMergeability(
+      createRepairMergeabilityTracker({
+        workDir: stateDir,
+        gh,
+        fleetAuthors: authors,
+      }),
+      repo,
+      pr.number,
+      pr.mergeable,
     );
+    const baseMerge = decideRepairBaseMerge(pr.mergeable);
+    logBaseRefreshDecision({
+      source: "babysitter-repair",
+      outcome: baseMerge.merge ? "base-merge-allowed" : "base-merge-skipped",
+      repo,
+      prNumber: pr.number,
+      base: pr.baseRefName,
+      reason: baseMerge.reason,
+    });
+    await persistBaseRefreshCounter(stateDir, {
+      source: "babysitter-repair",
+      outcome: baseMerge.merge ? "base-merge-allowed" : "base-merge-skipped",
+    });
+    const sync: BaseSync = baseMerge.merge
+      ? await (deps.mergeBase ?? mergeBaseForRepair)(dir, pr.baseRefName)
+      : { kind: "current" };
     if (pr.mergeable === "CONFLICTING" && sync.kind === "current") {
       retryRecord.blockerClass = "infrastructure";
       retryRecord.lastOutcome = "GitHub reports a stale conflict";

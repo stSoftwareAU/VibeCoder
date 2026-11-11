@@ -3169,6 +3169,7 @@ export async function createProductionRunCoreDeps(
               undefined,
               undefined,
               { fleetAuthors: maintenanceAuthors },
+              "branch-update-loop",
             ),
           // Issue #394: this lane works in its **own** worktree, never in the
           // shared `${WORK_DIR}/<repo>` clone. `setupRepo` opens with
@@ -3747,6 +3748,7 @@ export async function createProductionRunCoreDeps(
                 undefined,
                 undefined,
                 { fleetAuthors: maintenanceAuthors },
+                "merge-block-repair",
               );
               return result.ok
                 ? { ok: true, value: "GitHub branch refresh requested" }
@@ -3875,6 +3877,7 @@ export async function createProductionRunCoreDeps(
               undefined,
               undefined,
               { fleetAuthors: maintenanceAuthors },
+              "auto-merge-sweep",
             )
             : Promise.resolve({
               ok: false,

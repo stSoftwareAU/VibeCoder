@@ -333,7 +333,17 @@ export async function handleMergeAttempt(
   }
 
   const updateBranchFn = options.updateBranchFn ??
-    ((r: string, n: number) => requestReadyBranchUpdate(r, n, ghFn));
+    ((r: string, n: number) =>
+      requestReadyBranchUpdate(
+        r,
+        n,
+        ghFn,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        "merge-block-escalation",
+      ));
 
   if (disposition === "update_branch") {
     const update = await updateBranchFn(repo, prNumber);

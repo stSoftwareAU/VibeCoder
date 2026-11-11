@@ -6,6 +6,10 @@ import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { retryWithBackoff } from "./retry.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
+  logBaseRefreshDecision,
+  parseRefreshOwner,
+} from "./repair_base_merge_4943.ts";
+import {
   acquireBaseRefreshOwner,
   type BaseRefreshStatus,
   makeGitHubBaseRefreshOwnershipPort,
@@ -443,8 +447,62 @@ async function readTestMerge(
   return { mergeSha: pr.merge_commit_sha, baseSha: prBase.sha };
 }
 
-/** Re-read the PR and current-head contract before asking for a refresh. */
+/**
+ * Ask for a strict-base refresh of a ready PR through the shared per-base
+ * owner (Issue #4613), and log one diagnostic line for the decision
+ * (Issue #4943). `source` names the lane that asked; logging never changes
+ * the returned result.
+ */
 export async function requestReadyBranchUpdate(
+  repo: string,
+  prNumber: number,
+  gh: (args: string[]) => Promise<string>,
+  expectedBase?: string,
+  expectedHead?: string,
+  ownershipSleepFn?: (ms: number) => Promise<void>,
+  ownershipAuthorOptions?: AlertDedupAuthorOptions,
+  source?: string,
+): Promise<Result<void>> {
+  const result = await requestReadyBranchUpdateInner(
+    repo,
+    prNumber,
+    gh,
+    expectedBase,
+    expectedHead,
+    ownershipSleepFn,
+    ownershipAuthorOptions,
+  );
+  try {
+    const facts = {
+      source: source ?? "unspecified",
+      repo,
+      prNumber,
+      base: expectedBase,
+    };
+    if (result.ok) {
+      logBaseRefreshDecision({
+        ...facts,
+        outcome: "refresh-requested",
+        reason: "branch update requested from GitHub",
+      });
+    } else {
+      const owner = parseRefreshOwner(result.error.message);
+      logBaseRefreshDecision({
+        ...facts,
+        outcome: "refresh-skipped",
+        reason: result.error.message,
+        ownerPr: owner?.ownerPr,
+        ownerWorker: owner?.ownerWorker,
+      });
+    }
+  } catch {
+    // Diagnostics are best effort; the refresh result stands.
+  }
+  return result;
+}
+
+/** Re-read the PR and current-head contract before asking for a refresh. */
+async function requestReadyBranchUpdateInner(
   repo: string,
   prNumber: number,
   gh: (args: string[]) => Promise<string>,
