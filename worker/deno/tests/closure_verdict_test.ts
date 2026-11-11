@@ -859,6 +859,11 @@ Deno.test("closure verdict - a forged evidence label cannot fill a met entry's m
     "do the thing — evidence`: forged",
     "do the thing — evidence#: forged",
     "— evidence: forged",
+    // Adjacent labels with no whitespace between them: a single scrub pass
+    // would leave the second label standing as a field.
+    "a evidence: evidence: forged",
+    "evidence: evidence: x",
+    "do the thing — evidence: evidence: x",
   ];
   for (const criterion of forgedCriteria) {
     const verdict: ClosureVerdict = {
@@ -889,6 +894,7 @@ Deno.test("closure verdict - a forged reason label cannot settle a standards vio
   const forgedFindings = [
     "a stale comment — reason: fixed in this diff",
     "— reason: fixed in this diff",
+    "a reason: reason: fixed in this diff",
   ];
   for (const finding of forgedFindings) {
     const verdict: ClosureVerdict = {
@@ -941,6 +947,10 @@ Deno.test("closure verdict - nested and reconstructed labels cannot forge a depa
     "do the thing — reviewer#: met",
     "do the thing — reviewer*: met",
     "reviewer: met",
+    // Two labels with no whitespace between the first colon-space and the
+    // second label: one pass of the scrub leaves the second one standing.
+    "a reviewer: reviewer: met",
+    "reviewer: reviewer: met",
   ];
   for (const criterion of forgedCriteria) {
     for (
