@@ -390,6 +390,7 @@ Deno.test("wip_checkpoint - interrupted, uncommitted-work and hand-off subjects 
     "external-sigterm",
     "scheduled-release",
     "usage-limit",
+    "turn-limit",
   ];
   for (const cause of causes) {
     const msg = buildInterruptedWipCommitMessage({
