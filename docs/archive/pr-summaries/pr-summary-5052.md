@@ -80,12 +80,12 @@ assertions alongside the new broken “how” assertion exception.
   /tmp/issue-5052-body.md --labels top-priority
   ../../docs/archive/pr-summaries/pr-summary-5052.md`
   from `worker/deno` — passed; zero blocked or unchecked gates.
-- `markdownlint-cli2 docs/archive/pr-summaries/pr-summary-5052.md` — passed;
-  245 files selected by the repository configuration.
+- `markdownlint-cli2 docs/archive/pr-summaries/pr-summary-5052.md` — passed; 245
+  files selected by the repository configuration.
 - Earlier implementation run: `timeout 900 ./quality.sh < /dev/null` — failed
-  only the one-second unit-test
-  budget: `tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` took 1.28s in
-  the gate. Its targeted rerun passed functionally but took 1.36s, so the same
+  only the one-second unit-test budget:
+  `tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` took 1.28s in the
+  gate. Its targeted rerun passed functionally but took 1.36s, so the same
   budget check failed. This file is outside this change. The gate’s lint, type
   check, format, and other reported checks passed; config integration and
   Checkov were skipped by the gate.
@@ -94,22 +94,22 @@ Item 1 verification:
 
 - Reproduced at the incoming head: independently replacing
   `requirement that makes it untrue` with
-  `number, whether or not the behaviour changes` in each scoped section left
-  all three tests passing.
+  `number, whether or not the behaviour changes` in each scoped section left all
+  three tests passing.
 - Coding-standards TDD section: after restoring the narrowed justification
   check, the same section-only mutation failed
   `worker/deno/tests/kept_assertions_3061_docs_test.ts::coding standards - TDD rule keeps still-true assertions when editing a test`;
   the other two tests passed.
 - Issue prompt Instructions: the test now pins
   `for each removed behaviour assertion, the issue requirement that makes it untrue or the coverage that still proves the behaviour`.
-  `drift-pins-on-base` confirmed this clause is absent on `origin/main`.
-  The section-only mutation failed
+  `drift-pins-on-base` confirmed this clause is absent on `origin/main`. The
+  section-only mutation failed
   `worker/deno/tests/kept_assertions_3061_docs_test.ts::issue prompt - Instructions keep the change-only-what-the-issue-changes rule`;
   the other two tests passed.
 - Issue prompt PR Summary File: restored the original
   `the issue requirement that makes it untrue` pin alongside the new exception
-  pin. This retained protection is expected to be present on `origin/main`.
-  The section-only mutation failed
+  pin. This retained protection is expected to be present on `origin/main`. The
+  section-only mutation failed
   `worker/deno/tests/kept_assertions_3061_docs_test.ts::issue prompt - PR Summary Test Plan requires covering removed assertions`;
   the other two tests passed.
 - All three document mutations were restored after verification. The targeted
