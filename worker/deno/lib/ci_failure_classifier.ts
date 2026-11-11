@@ -246,21 +246,91 @@ const INFRA_TEXT_PATTERNS: ReadonlyArray<string> = [
   "502 bad gateway",
   "503 service unavailable",
   "504 gateway timeout",
-  // Download clients: @actions/tool-cache (setup-deno, setup-node) and curl -f.
-  // The tool-cache forms are anchored to the terminal "Error: " line: a
-  // download that fails once and then succeeds on retry still logs the bare
-  // "Unexpected HTTP response: 504" info line, which is not a failure.
+  // Download clients, tool-cache "Error: " form (denoland/setup-deno reports
+  // the HTTPError object itself). A download that fails once and then succeeds
+  // on retry still logs the bare "Unexpected HTTP response: 504" info line,
+  // which is not a failure, so the bare form is only read by
+  // findDownloadOutageSignals. curl's per-attempt line is handled there too.
   "error: unexpected http response: 502",
   "error: unexpected http response: 503",
   "error: unexpected http response: 504",
-  "the requested url returned error: 502",
-  "the requested url returned error: 503",
-  "the requested url returned error: 504",
   "runner lost connection",
   "the runner has received a shutdown signal",
   "lost communication with the server",
   "the self-hosted runner",
 ];
+
+const DOWNLOAD_5XX = "50[234]";
+const TOOL_CACHE_BARE_REGEX = new RegExp(
+  `^unexpected http response: (${DOWNLOAD_5XX})\\b`,
+);
+const CURL_HTTP_ERROR_REGEX = new RegExp(
+  `^(?:curl: \\(22\\) )?the requested url returned error: (${DOWNLOAD_5XX})\\b`,
+);
+const CURL_EXIT_22_REGEX =
+  /\bexit(?:ed)?\s*(?:with\s*)?(?:code|status)\s*[:=]?\s*22\b/;
+const RETRY_NOTICE = "will retry in";
+
+/** A lower-cased log line without timestamp; `errored` when `##[error]`-prefixed. */
+function peelLogLine(line: string): { content: string; errored: boolean } {
+  let content = line.trimStart().replace(LOG_TIMESTAMP_PREFIX, "").trimStart();
+  const prefix = ERROR_PREFIXES.find((p) => content.startsWith(p));
+  if (prefix !== undefined) content = content.slice(prefix.length).trimStart();
+  return {
+    content: content.trimEnd().toLowerCase(),
+    errored: prefix !== undefined,
+  };
+}
+
+/**
+ * Terminal download-outage signals for a 502/503/504 from a download host
+ * (Issue #4965), read per line so a recovered retry cannot masquerade as the
+ * failure:
+ *
+ * - `@actions/tool-cache` clients that call `core.setFailed(err.message)`
+ *   (setup-node, setup-python) end with the annotation message, or the
+ *   `##[error]`-prefixed log line, `Unexpected HTTP response: 504` with no
+ *   `Error: ` prefix. The same text as a plain log line is the library's retry
+ *   info line, so it only counts as an annotation message or `##[error]` line.
+ * - curl prints `curl: (22) The requested URL returned error: 504` for every
+ *   failed attempt, before it decides to retry. The line counts only when no
+ *   `will retry in` notice follows it in its block and the step's own verdict
+ *   is curl's HTTP-error exit (`exit code 22`) or the line ends the block.
+ */
+function findDownloadOutageSignals(
+  annotations: ReadonlyArray<CiAnnotation>,
+  logExcerpt: string | undefined,
+): string[] {
+  const signals = new Set<string>();
+  const blocks: string[] = [];
+  for (const a of annotations) {
+    if (!a.message) continue;
+    blocks.push(a.message);
+    const first = peelLogLine(a.message.trim().split("\n")[0] ?? "").content;
+    const m = TOOL_CACHE_BARE_REGEX.exec(first);
+    if (m) signals.add(`unexpected http response: ${m[1]}`);
+  }
+  if (logExcerpt) blocks.push(logExcerpt);
+  for (const block of blocks) {
+    const lines = block.split("\n").map(peelLogLine).filter((l) =>
+      l.content.length > 0
+    );
+    const exit22 = lines.some((l) => CURL_EXIT_22_REGEX.test(l.content));
+    lines.forEach((l, i) => {
+      const bare = l.errored ? TOOL_CACHE_BARE_REGEX.exec(l.content) : null;
+      if (bare) signals.add(`unexpected http response: ${bare[1]}`);
+      const curl = CURL_HTTP_ERROR_REGEX.exec(l.content);
+      if (!curl) return;
+      const retried = lines.slice(i + 1).some((n) =>
+        n.content.includes(RETRY_NOTICE)
+      );
+      if (!retried && (exit22 || i === lines.length - 1)) {
+        signals.add(`the requested url returned error: ${curl[1]}`);
+      }
+    });
+  }
+  return [...signals];
+}
 
 // -----------------------------------------------------------------------------
 // Classification
@@ -295,7 +365,10 @@ export function classifyCiFailure(
   const haystack = buildHaystack(annotations, logExcerpt);
 
   // ---- Infrastructure signals (checked first — patterns are unambiguous) ----
-  const matchedInfra = INFRA_TEXT_PATTERNS.filter((p) => haystack.includes(p));
+  const matchedInfra = [
+    ...INFRA_TEXT_PATTERNS.filter((p) => haystack.includes(p)),
+    ...findDownloadOutageSignals(annotations, logExcerpt),
+  ];
   if (matchedInfra.length > 0) {
     return {
       category: "infrastructure",

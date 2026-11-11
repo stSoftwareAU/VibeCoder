@@ -707,6 +707,97 @@ Deno.test("ci_failure_classifier - the ##[error] tool-cache 504 line routes to i
   );
 });
 
+Deno.test("ci_failure_classifier - setup-node/setup-python terminal 504 (no Error: prefix) routes to infrastructure (Issue #4965)", () => {
+  // core.setFailed(err.message): annotation message, no "Error: " prefix.
+  const annotated = classifyCiFailure(
+    "build",
+    [{ message: "Unexpected HTTP response: 504" }],
+  );
+  assertEquals(annotated.category, "infrastructure");
+  assertEquals(
+    annotated.signals.includes("text:unexpected http response: 504"),
+    true,
+  );
+  // The same terminal text as the ##[error] log line, with a timestamp and a
+  // warning line that would otherwise make the log code-fix-required.
+  const log = [
+    "2026-11-10T01:02:03.0000000Z warning: deprecated option",
+    "2026-11-10T01:02:04.0000000Z Waiting 14 seconds before trying again",
+    "2026-11-10T01:02:05.0000000Z ##[error]Unexpected HTTP response: 503",
+  ].join("\n");
+  const logged = classifyCiFailure("build", [], log);
+  assertEquals(logged.category, "infrastructure");
+  assertEquals(
+    logged.signals.includes("text:unexpected http response: 503"),
+    true,
+  );
+});
+
+Deno.test("ci_failure_classifier - a bare tool-cache 504 log line without ##[error] stays out of infrastructure (Issue #4965)", () => {
+  const result = classifyCiFailure(
+    "build",
+    [],
+    "warning: deprecated\nUnexpected HTTP response: 504\nWaiting 14 seconds",
+  );
+  assertEquals(result.category, "code-fix-required");
+});
+
+Deno.test("ci_failure_classifier - a recovered curl 504 retry does not mask a real lint finding (Issue #4965)", () => {
+  const retried = [
+    "curl: (22) The requested URL returned error: 504",
+    "Warning: Problem : HTTP error. Will retry in 1 seconds. 3 retries left.",
+    "Installing deno",
+    "error: no-unused-vars x is never used",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+  const a = classifyCiFailure("lint", [], retried);
+  assertEquals(a.category, "code-fix-required");
+  assertEquals(
+    a.signals.some((s) => s.startsWith("text:the requested url")),
+    false,
+  );
+  // curl -s: no retry notice, but the later failure is not curl's exit 22.
+  const silent = [
+    "curl: (22) The requested URL returned error: 504",
+    "Installing deno",
+    "error: no-unused-vars x is never used",
+    "##[error]Process completed with exit code 1.",
+  ].join("\n");
+  assertEquals(
+    classifyCiFailure("lint", [], silent).category,
+    "code-fix-required",
+  );
+});
+
+Deno.test("ci_failure_classifier - a curl 504 followed by a retry notice is not terminal even with exit code 22 (Issue #4965)", () => {
+  const log = [
+    "curl: (22) The requested URL returned error: 504",
+    "Warning: Problem : HTTP error. Will retry in 1 seconds. 3 retries left.",
+    "curl: (22) The requested URL returned error: 404",
+    "error: download failed",
+    "##[error]Process completed with exit code 22.",
+  ].join("\n");
+  assertEquals(
+    classifyCiFailure("build", [], log).category,
+    "code-fix-required",
+  );
+});
+
+Deno.test("ci_failure_classifier - the terminal curl 504 with exit code 22 routes to infrastructure (Issue #4965)", () => {
+  const log = [
+    "Warning: Problem : HTTP error. Will retry in 1 seconds. 1 retries left.",
+    "curl: (22) The requested URL returned error: 504",
+    "curl: (22) The requested URL returned error: 504",
+    "##[error]Process completed with exit code 22.",
+  ].join("\n");
+  const result = classifyCiFailure("build", [], log);
+  assertEquals(result.category, "infrastructure");
+  assertEquals(
+    result.signals.includes("text:the requested url returned error: 504"),
+    true,
+  );
+});
+
 Deno.test("ci_failure_classifier - bare 500 and 4xx download responses stay code-fix-required (Issue #4965)", () => {
   for (
     const message of [
