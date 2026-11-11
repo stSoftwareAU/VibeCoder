@@ -203,7 +203,7 @@ async function listWorkflowFiles(
  * `workflow_call`. The `on` key may parse as the string "on" or as "true" (YAML
  * 1.1 boolean). Other events, such as `pull_request_target`, do not count.
  */
-function triggersOn(doc: Mapping, event: string): boolean {
+export function triggersOn(doc: Mapping, event: string): boolean {
   const trigger = doc.on !== undefined ? doc.on : doc["true"];
   if (typeof trigger === "string") return trigger === event;
   if (Array.isArray(trigger)) return trigger.includes(event);
@@ -229,7 +229,7 @@ const COMMENT_MARKER = /(?:^|\s)#/;
  * line with a ` #` comment marker is never non-failing, because the tail would
  * sit inside the comment and the command would still fail the step.
  */
-function isNonFailing(line: string): boolean {
+export function isNonFailing(line: string): boolean {
   if (COMMENT_MARKER.test(line)) return false;
   const body = line.trim().replace(/;$/, "").trimEnd();
   return NON_FAILING_TAILS.some((tail) => body.endsWith(tail));
@@ -239,7 +239,7 @@ function isNonFailing(line: string): boolean {
  * The logical lines of a `run` script. A line ending in `\` continues onto the
  * next line, so the two are joined with one space.
  */
-function logicalLines(run: string): string[] {
+export function logicalLines(run: string): string[] {
   const lines: string[] = [];
   let parts: string[] = [];
   for (const raw of run.split("\n")) {

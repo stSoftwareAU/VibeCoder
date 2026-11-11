@@ -64,6 +64,7 @@ import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
 import { resolveRepoCredentials } from "../repo_credentials.ts";
 import {
+  prBaseCompareRef,
   PRE_PUSH_GATE_REASON_HEAD_CHARS,
   PRE_PUSH_GATE_REASON_TAIL_CHARS,
   resolvePreFlightSpec,
@@ -1980,6 +1981,9 @@ async function completionBody(
             killAfterSeconds: config.claudeKillAfter,
             model: config.claudeModel || undefined,
             cwd: state.repoPath,
+            // The PR base, so a CI cargo failure the base already has is no
+            // verdict on the push by the agent itself (Issue #4630 review).
+            ciCargoCompareRef: prBaseCompareRef(baseBranch),
             logger,
           },
           { maxRetries: config.maxRateLimitRetries },

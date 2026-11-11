@@ -169,10 +169,19 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders, getRepoConfig } from "./repo_config.ts";
 import {
+  CI_CARGO_ONLY_PRE_FLIGHT,
+  prBaseCompareRef,
   prBaseForSync,
-  resolveRepairPreFlightSpec,
+  resolvePreFlightSpec,
   unstageStateAndAssertSafe,
 } from "./git_push.ts";
+import { mdSafe } from "./mutation_gate.ts";
+import { PrePushGateInfrastructureError } from "./pre_push_gate.ts";
+import {
+  countGateInfraReleases,
+  GATE_INFRA_RELEASE_CAP,
+  gateInfraReleaseMarker,
+} from "./gate_infra_release.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
@@ -1967,6 +1976,20 @@ async function _processCiWithHeartbeat(
   // Destructure PromptParts for prompt caching (Issue #1262)
   const { systemPrompt, prompt: userPrompt } = promptResult.value;
 
+  // The PR's base, read before the agent runs: its own `git push` compares a
+  // failing CI cargo check against it (Issue #4630 review), and the final-mile
+  // push below reuses it. Owner rule 2026-11-03: that push also merges the
+  // base in, so the fix and the branch update reach GitHub in one push and CI
+  // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  const compareBaseBranch = await prBaseForSync(
+    input.baseRef,
+    repo,
+    prNumber,
+    (args) => deps.github.runGhCommand(args),
+    (message) => logger.warn(message),
+  );
+  const ciCargoCompareRef = prBaseCompareRef(compareBaseBranch);
+
   // --- CodeGraph repo-context index (Issue #2160, part of #2145) ---
   // The checkout the agent runs in, which is also the `cwd` below — without
   // one the runner writes no MCP configuration at all, so an unnamed clone is
@@ -2028,6 +2051,7 @@ async function _processCiWithHeartbeat(
       repo,
       cwd: processorDeps.workDir,
       logger,
+      ciCargoCompareRef,
       // The browser unless `skip_screenshot_check` (Issue #2925). CodeGraph
       // and Graft ride beside it only when their index built.
       ...graft.mcpConfigOption(
@@ -2134,6 +2158,7 @@ async function _processCiWithHeartbeat(
     rtk,
     runStatsSink,
     lifecycleStatsSink,
+    ciCargoCompareRef,
   );
 
   if (postQualityResult.turnLimitFailure) {
@@ -2155,7 +2180,10 @@ async function _processCiWithHeartbeat(
   // Issue #3577: enforce the repo's pre-flight gate at the automated-commit
   // chokepoint — a non-zero exit blocks both this commit and the push so a
   // known-broken CI "fix" is never pushed back into the expensive build.
-  const preFlight = resolveRepairPreFlightSpec(processorDeps.repoConfigs, repo);
+  // Issue #4630: a repo with no pre-flight commands still gets CI's cargo checks
+  // (the ShellCheck policy of #4631 runs in every gate).
+  const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo) ??
+    CI_CARGO_ONLY_PRE_FLIGHT;
   // The repo's own formatters run between the commit and the gate (follow-up
   // to #3806): a formatting-only miss in this round is fixed and committed
   // rather than failing the push or reaching CI. Same files the gate checks
@@ -2163,21 +2191,14 @@ async function _processCiWithHeartbeat(
   // worker's archive notes are formatted afterwards. Never fatal.
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
-  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
-  // pushed, so the fix and the branch update reach GitHub in one push and CI
-  // runs once. Not for a gated head's fix branch, whose PR targets the head.
   const syncBaseBranch = fixBranch === undefined
-    ? await prBaseForSync(
-      input.baseRef,
-      repo,
-      prNumber,
-      (args) => deps.github.runGhCommand(args),
-      (message) => logger.warn(message),
-    )
+    ? compareBaseBranch
     : undefined;
   const pushOptions = {
     cwd: processorDeps.workDir,
     expectedAncestor: beforeSha,
+    requireCargoBaseComparison: true,
+    ...(compareBaseBranch !== undefined ? { compareBaseBranch } : {}),
     ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
   };
   const finaliseResult = await deps.git.commitAndPushPending(
@@ -2201,6 +2222,10 @@ async function _processCiWithHeartbeat(
   // step and git's own words. Reaches both the log and the PR comment, so a
   // human never gets a bare "please check the branch status" again.
   let pushFailureDetail = "";
+  // PR #4896 review: the pre-push gate could not run (no toolchain, host disk
+  // full, a CI command it cannot reproduce). That is no verdict on the fix,
+  // so no attempt is charged and the PR is told the gate could not run.
+  let gateInfraFault: string | undefined;
   if (finaliseResult.ok) {
     const { committedNewChanges, commitsPushed, finalUnpushedCount } =
       finaliseResult.value;
@@ -2246,6 +2271,12 @@ async function _processCiWithHeartbeat(
           failureDetail = retryFinalise.ok
             ? `retry after push recovery left ${retryFinalise.value.finalUnpushedCount} commit(s) unpushed`
             : retryFinalise.error.message;
+          if (
+            !retryFinalise.ok &&
+            retryFinalise.error instanceof PrePushGateInfrastructureError
+          ) {
+            gateInfraFault = retryFinalise.error.message;
+          }
         }
       }
       if (!pushSucceeded) {
@@ -2261,6 +2292,9 @@ async function _processCiWithHeartbeat(
     }
   } else {
     pushFailureDetail = finaliseResult.error.message;
+    if (finaliseResult.error instanceof PrePushGateInfrastructureError) {
+      gateInfraFault = finaliseResult.error.message;
+    }
     logger.error("commitAndPushPending failed", {
       error: finaliseResult.error.message,
     });
@@ -2621,13 +2655,46 @@ async function _processCiWithHeartbeat(
     );
   }
 
+  // A gate-infrastructure release is bounded (PR #4896 review): the reply below
+  // carries a marker, and a signature already released GATE_INFRA_RELEASE_CAP
+  // times is charged like any other failed attempt, so a lasting gate fault
+  // cannot re-run a full fix session on every cycle without end.
+  const gateInfraKey = `ci-${signature}`.replace(/[^A-Za-z0-9_.:-]/g, "_")
+    .slice(0, 80);
+  let gateInfraMarker = "";
+  if (gateInfraFault !== undefined && !actuallyPushed) {
+    const prior = await countGateInfraReleases(
+      (args) => deps.github.runGhCommand(args),
+      repo,
+      prNumber,
+      gateInfraKey,
+      processorDeps.fleetLogins ?? [],
+    );
+    if (prior !== null && prior >= GATE_INFRA_RELEASE_CAP) {
+      logger.warn(
+        `CI fix already released ${prior} times for a pre-push gate infrastructure fault — charging this attempt (PR #4896)`,
+        { repo, prNumber, error: gateInfraFault },
+      );
+      gateInfraFault = undefined;
+    } else {
+      if (prior === null) {
+        logger.warn(
+          "The earlier gate-infrastructure releases could not be counted — releasing again (PR #4896)",
+          { repo, prNumber },
+        );
+      }
+      gateInfraMarker = `\n\n${gateInfraReleaseMarker(gateInfraKey)}`;
+    }
+  }
+
   // Issue #1879: every comment this run posts carries the marker the next
   // host counts. An `infrastructure` blip is deliberately not charged, so it
   // writes no marker (see `consumesAutoFixAttempt`). `no-change` is the
   // honest outcome whenever nothing reached the pull request — a fix made
   // locally but never pushed left the head exactly as the last run found it.
   const attemptMarker = _buildAttemptMarker({
-    charge: consumesAutoFixAttempt(failureClassification.category),
+    charge: gateInfraFault === undefined &&
+      consumesAutoFixAttempt(failureClassification.category),
     signature,
     checkName,
     head: beforeSha,
@@ -2642,7 +2709,25 @@ async function _processCiWithHeartbeat(
     : `\n\n${attemptMarker}`;
 
   // Reply with outcome — only claim "pushed" if push actually succeeded
-  if (hasChanges && pushSucceeded && actuallyPushed) {
+  if (gateInfraFault !== undefined && !actuallyPushed) {
+    logger.warn(
+      "CI fix not pushed and not charged: the pre-push gate failed as " +
+        "infrastructure, not the PR's fault (PR #4896)",
+      { repo, prNumber, error: gateInfraFault },
+    );
+    await replyToComment(
+      repo,
+      prNumber,
+      `I made a fix for the CI failure (**${safeCheckName}**), but the pre-push gate could not run on this host, so nothing was pushed. ` +
+        `This is a host fault, not a verdict on the fix, and it does not count as a fix attempt; the worker tries again on a later cycle.\n\n` +
+        // Gate output is untrusted text: no backticks, line breaks or angle
+        // brackets (a `<!-- vibe-… -->` marker must never be forged), bounded.
+        `Gate detail: ${
+          mdSafe(gateInfraFault).replace(/[<>]/g, "").slice(0, 300)
+        }${gateInfraMarker}${markerSuffix}`,
+      deps,
+    );
+  } else if (hasChanges && pushSucceeded && actuallyPushed) {
     const base = customMessage ??
       `I've pushed a fix for the CI failure (**${safeCheckName}**). Please review the changes.`;
     // Issue #630: a force-push that silently rewrote the branch would be an
@@ -3217,6 +3302,8 @@ async function _runPostClaudeQualityCheck(
   /** Issue #3404: collects the retry's stats for the run's USD figure. */
   runStatsSink: (RunStats | undefined)[],
   lifecycleStatsSink: (RunStats | undefined)[],
+  /** The ref the retry's own pushes compare a CI cargo failure against. */
+  ciCargoCompareRef: string,
 ): Promise<PostClaudeQualityResult> {
   const {
     logger,
@@ -3319,6 +3406,7 @@ async function _runPostClaudeQualityCheck(
         repo: input.repo,
         cwd,
         logger,
+        ciCargoCompareRef,
         ...graft.mcpConfigOption(
           codegraph.mcpConfig(browserGranted(repoConfigs, input.repo)),
         ),

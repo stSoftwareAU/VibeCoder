@@ -1,3 +1,4 @@
+import { issueRunCompareRef } from "./git_push.ts";
 import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 /**
@@ -1741,6 +1742,7 @@ async function executeClaudePhaseBody(
       // call it makes runs against the process working directory, which is
       // this checkout.
       cwd: repoDir,
+      ciCargoCompareRef: issueRunCompareRef({ baseBranch, milestoneBranch }),
       // The rate/usage-limit signal belongs on the work volume, never in
       // the per-issue clone the `cwd` above now names (Issue #4315).
       workDir,

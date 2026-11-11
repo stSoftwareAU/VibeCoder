@@ -34,6 +34,7 @@ import type {
   Logger,
 } from "../../types.ts";
 import { browserGranted } from "../browser_grant.ts";
+import { issueRunCompareRef } from "../git_push.ts";
 import {
   type IssueContext,
   type PhaseResult,
@@ -1374,6 +1375,10 @@ async function executeClaudeBody(
             ? { agentProvider: effectiveAgentProvider }
             : {}),
           cwd: state.repoPath,
+          // The PR base for this issue (the milestone branch, else the base branch),
+          // so a CI cargo failure the base already has is no verdict on the
+          // agent's own push (Issue #4630 review).
+          ciCargoCompareRef: issueRunCompareRef(state),
           // The browser on every run unless `skip_screenshot_check`
           // (Issue #2925). Issue #2159 layers the `codegraph` server beside
           // that grant on an enabled run whose index built.

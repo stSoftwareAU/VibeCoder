@@ -42,6 +42,10 @@ export interface PushLineageOptions extends GitCommandOptions {
    * GitHub in one push and CI runs once (owner rule 2026-11-03).
    */
   syncBaseBranch?: string;
+  /** Base to compare gate diagnostics against, without merging it. */
+  compareBaseBranch?: string;
+  /** Require a base comparison before blaming a failed CI cargo check. */
+  requireCargoBaseComparison?: boolean;
 }
 
 /** Whether HEAD still extends the commit a pass started from. */

@@ -26,7 +26,7 @@ import {
   recordClaudeRunStats,
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
+import { issueRunCompareRef, resolvePreFlightSpec } from "./git_push.ts";
 
 /** Repo-relative path of the summary file a pull request body is built from. */
 export function prSummaryFilePath(issueNumber: number): string {
@@ -386,6 +386,9 @@ export async function recoverFromPrBodyLength(
         killAfterSeconds: config.claudeKillAfter,
         model: config.claudeModel || undefined,
         cwd: state.repoPath,
+        // The run base, so a CI cargo failure the base already has is no verdict on
+        // the agent's own push (Issue #4630 review).
+        ciCargoCompareRef: issueRunCompareRef(state),
         logger,
       },
       { maxRetries: config.maxRateLimitRetries },

@@ -22,6 +22,7 @@
  * Australian English throughout.
  */
 
+import { issueRunCompareRef } from "./git_push.ts";
 import { SECURITY_FIX_GATE_MARKER } from "./failure_diagnosis.ts";
 import {
   hostDiskInfrastructureFailure,
@@ -409,6 +410,9 @@ export async function recoverFromSecurityGateBlock(
       killAfterSeconds: config.claudeKillAfter,
       model: config.claudeModel || undefined,
       cwd: state.repoPath,
+      // The run base, so a CI cargo failure the base already has is no verdict on
+      // the agent's own push (Issue #4630 review).
+      ciCargoCompareRef: issueRunCompareRef(state),
       logger,
     },
     { maxRetries: config.maxRateLimitRetries },

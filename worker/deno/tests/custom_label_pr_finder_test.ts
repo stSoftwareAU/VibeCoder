@@ -46,6 +46,7 @@ function recordingLogger(lines: string[]): Logger {
 interface FakePr {
   number: number;
   headRefName: string;
+  baseRefName?: string;
   title: string;
   url: string;
   isDraft: boolean;
@@ -92,9 +93,17 @@ function fakeGh(options: FakeGhOptions = {}) {
     if (args[0] === "pr" && args[1] === "list") {
       const repo = args[args.indexOf("--repo") + 1]!;
       const label = args[args.indexOf("--label") + 1]!;
-      return Promise.resolve(
-        JSON.stringify(options.prs?.[`${repo}::${label}`] ?? []),
+      // Like gh, answer only the fields `--json` asks for, so a field the
+      // finder forgets to request is missing from what it reads (PR #4896
+      // review).
+      const at = args.indexOf("--json");
+      const fields = at === -1 ? [] : (args[at + 1] ?? "").split(",");
+      const projected = (options.prs?.[`${repo}::${label}`] ?? []).map((pr) =>
+        Object.fromEntries(
+          Object.entries(pr).filter(([field]) => fields.includes(field)),
+        )
       );
+      return Promise.resolve(JSON.stringify(projected));
     }
     if (args[0] === "api") {
       const match = /issues\/(\d+)\/timeline/.exec(args[1] ?? "");
@@ -113,7 +122,11 @@ function fakeGh(options: FakeGhOptions = {}) {
 
 Deno.test("pr finder - a trusted collaborator's label on an open PR is a candidate", async () => {
   const gh = fakeGh({
-    prs: { "acme/widgets::secret-squirrel": [fakePr(42)] },
+    prs: {
+      "acme/widgets::secret-squirrel": [
+        fakePr(42, { baseRefName: "release/2" }),
+      ],
+    },
     timelines: { 42: [labelled("secret-squirrel", "trusted-human")] },
   });
   const lines: string[] = [];
@@ -131,6 +144,7 @@ Deno.test("pr finder - a trusted collaborator's label on an open PR is a candida
   assertEquals(candidates[0]?.prNumber, 42);
   assertEquals(candidates[0]?.repo, "acme/widgets");
   assertEquals(candidates[0]?.headRefName, "feature/42");
+  assertEquals(candidates[0]?.baseRefName, "release/2");
   assertEquals(candidates[0]?.mapping.label, "secret-squirrel");
 });
 
