@@ -37,9 +37,9 @@ Version bump: `VERSION` is untouched by this change.
     terminal failure has no `Error:` prefix: it counts only as an annotation
     message or a `##[error]`/`::error::` log line.
   - curl prints `curl: (22) The requested URL returned error: 50x` on every
-    failed attempt, before it retries. It counts only when it is the last
-    curl error line of its block (a later `curl: (N)` line means it was a
-    recovered attempt, which matters for `-s` runs that print no notice), no
+    failed attempt, before it retries. It counts only when it is the last curl
+    error line of its block (a later `curl: (N)` line means it was a recovered
+    attempt, which matters for `-s` runs that print no notice), no
     `will retry in` notice follows it, and either the block reports
     `exit code 22` (read from anywhere in the block) or the line ends the block.
 
@@ -92,11 +92,10 @@ Added to `worker/deno/tests/ci_failure_classifier_test.ts`:
   `infrastructure`;
 - a recovered curl 504 (with and without a `Will retry in` notice) followed by a
   real lint failure stays `code-fix-required`; a curl 504 followed by a retry
-  notice then a 404 with exit code 22 stays `code-fix-required`, as does a silent
-  recovered 504 followed by a `curl -fsSL` 404 and exit code 22 (with and
-  without timestamps); the terminal
-  curl 504 with `Process completed with exit code 22` routes to
-  `infrastructure`;
+  notice then a 404 with exit code 22 stays `code-fix-required`, as does a
+  silent recovered 504 followed by a `curl -fsSL` 404 and exit code 22 (with and
+  without timestamps); the terminal curl 504 with
+  `Process completed with exit code 22` routes to `infrastructure`;
 - `Unexpected HTTP response: 500` / `404` and curl `returned error: 404` stay
   `code-fix-required` (negative control for the bare-500 scope).
 
@@ -105,12 +104,12 @@ Results on the final head:
 the full `./quality.sh` gate was not re-run after the review fix.
 
 Red check: against the pre-fix classifier the setup-node and recovered-curl
-tests went red (2 failures). Reverting only the later-curl-error-line operand
-of `retried` turned the silent 504/404 test red (63 passed, 1 failed). Per-branch flips on the head: dropping the
-`!retried` operand turned the retry-then-404 test red; dropping `exit22` turned
-the terminal-curl test red; dropping the `last line` operand turned the
-download-client tests red; dropping the `errored` gate turned the recovered
-tool-cache and bare-line tests red.
+tests went red (2 failures). Reverting only the later-curl-error-line operand of
+`retried` turned the silent 504/404 test red (63 passed, 1 failed). Per-branch
+flips on the head: dropping the `!retried` operand turned the retry-then-404
+test red; dropping `exit22` turned the terminal-curl test red; dropping the
+`last line` operand turned the download-client tests red; dropping the `errored`
+gate turned the recovered tool-cache and bare-line tests red.
 
 Docs: the file header's "5xx" example was narrowed to "502/503/504" so it
 matches what the table holds. No other doc names these patterns.
