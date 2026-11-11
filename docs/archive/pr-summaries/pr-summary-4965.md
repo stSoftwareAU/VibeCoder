@@ -1,9 +1,11 @@
 ## Summary
 
 The CI failure classifier now reads a terminal tool-download 502/503/504
-(`Error: Unexpected HTTP response: 504`, `##[error]Unexpected HTTP response: 504`,
-`curl: (22) The requested URL returned error: 502` ending in exit code 22) as `infrastructure`, so the
-CI-fix run no longer treats a download outage as a code change. Closes #4965.
+(`Error: Unexpected HTTP response: 504`,
+`##[error]Unexpected HTTP response: 504`,
+`curl: (22) The requested URL returned error: 502` ending in exit code 22) as
+`infrastructure`, so the CI-fix run no longer treats a download outage as a code
+change. Closes #4965.
 
 Version bump: `VERSION` is untouched by this change.
 
@@ -32,7 +34,7 @@ Version bump: `VERSION` is untouched by this change.
     `@actions/tool-cache` logs the bare `Unexpected HTTP response: 504` as an
     info line on every failed attempt, so the bare message alone is not read.
   - setup-node and setup-python call `core.setFailed(err.message)`, so their
-    terminal failure has no `Error: ` prefix: it counts only as an annotation
+    terminal failure has no `Error:` prefix: it counts only as an annotation
     message or a `##[error]`/`::error::` log line.
   - curl prints `curl: (22) The requested URL returned error: 50x` on every
     failed attempt, before it retries. It counts only when no `will retry in`
@@ -63,8 +65,8 @@ CI checks, so it is not a copy of this rule.
 The issue states no Acceptance Criteria or Definition of done heading, and
 nothing it asks is left undone, so no block is required. Its two asks:
 
-- Recognise terminal 502/503/504 in the `unexpected http response: 50[234]`
-  and `the requested url returned error: 50[234]` shapes:
+- Recognise terminal 502/503/504 in the `unexpected http response: 50[234]` and
+  `the requested url returned error: 50[234]` shapes:
   `worker/deno/lib/ci_failure_classifier.ts` (`INFRA_TEXT_PATTERNS`,
   `findDownloadOutageSignals`).
 - Classifier unit tests with the exact annotation strings asserting
@@ -84,10 +86,10 @@ Added to `worker/deno/tests/ci_failure_classifier_test.ts`:
   line without `##[error]`; the `##[error]Error: Unexpected HTTP response: 504`
   line routes to `infrastructure`;
 - setup-node/setup-python terminal shapes (annotation message and
-  `##[error]Unexpected HTTP response: 50x` log line, no `Error: `) route to
+  `##[error]Unexpected HTTP response: 50x` log line, no `Error:`) route to
   `infrastructure`;
-- a recovered curl 504 (with and without a `Will retry in` notice) followed by
-  a real lint failure stays `code-fix-required`; a curl 504 followed by a retry
+- a recovered curl 504 (with and without a `Will retry in` notice) followed by a
+  real lint failure stays `code-fix-required`; a curl 504 followed by a retry
   notice then a 404 with exit code 22 stays `code-fix-required`; the terminal
   curl 504 with `Process completed with exit code 22` routes to
   `infrastructure`;
