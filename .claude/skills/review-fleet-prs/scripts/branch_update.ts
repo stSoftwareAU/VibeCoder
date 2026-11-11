@@ -163,6 +163,7 @@ export async function updateBranch(
     pr.headSha,
     undefined,
     options,
+    "review-fleet-prs",
   );
   return result.ok
     ? { updated: true }

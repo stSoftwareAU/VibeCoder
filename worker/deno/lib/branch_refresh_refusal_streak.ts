@@ -28,6 +28,13 @@ export interface BranchRefreshRefusalEvent {
   prNumber: number;
   entry: BranchRefreshRefusalEntry;
   active: boolean;
+  /**
+   * Which lane was refused. `refresh` (the default) is the strict-base branch
+   * refresh; `repair` is a repair that could not decide its base merge because
+   * mergeability is still UNKNOWN (Issue #4831, #4943). Both share one marker
+   * per PR, so the latest write's wording is the one on the comment.
+   */
+  lane?: "refresh" | "repair";
 }
 
 export type BranchRefreshRefusalState = Map<string, BranchRefreshRefusalEntry>;
@@ -38,15 +45,22 @@ export async function notifyBranchRefreshRefusal(
   gh: (args: string[]) => Promise<string>,
   isTrustedAuthor: (login: string) => boolean,
 ): Promise<void> {
-  const { repo, prNumber, entry, active } = event;
+  const { repo, prNumber, entry, active, lane = "refresh" } = event;
   const marker =
     `${BRANCH_REFRESH_REFUSAL_MARKER} repo="${repo}" pr="${prNumber}" -->`;
   const reason = entry.reason === "mergeability-unknown"
     ? "GitHub has not finished calculating mergeability"
     : "GitHub's test-merge parents still lag the PR head or base";
-  const body = active
-    ? `${marker}\n### Branch refresh is still waiting\n\nThe strict-base branch refresh has been refused on ${entry.streak} consecutive passes because ${reason}. The worker will keep retrying it.\n`
-    : `${marker}\n### Branch refresh recovered\n\nThe strict-base branch refresh is no longer refused for ${reason}; automatic recovery continues.\n`;
+  let body: string;
+  if (lane === "repair") {
+    body = active
+      ? `${marker}\n### Repair is waiting on mergeability\n\nA repair of this PR could not decide whether to merge its base on ${entry.streak} consecutive passes because ${reason}. The worker will keep retrying.\n`
+      : `${marker}\n### Repair mergeability recovered\n\nA repair of this PR is no longer waiting on mergeability; automatic recovery continues.\n`;
+  } else {
+    body = active
+      ? `${marker}\n### Branch refresh is still waiting\n\nThe strict-base branch refresh has been refused on ${entry.streak} consecutive passes because ${reason}. The worker will keep retrying it.\n`
+      : `${marker}\n### Branch refresh recovered\n\nThe strict-base branch refresh is no longer refused for ${reason}; automatic recovery continues.\n`;
+  }
   const comments = await fetchMarkerComments(
     repo,
     prNumber,

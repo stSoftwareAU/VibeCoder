@@ -6,6 +6,11 @@ import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { retryWithBackoff } from "./retry.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
+  logBaseRefreshDecision,
+  parseRefreshOwner,
+  persistBaseRefreshCounter,
+} from "./repair_base_merge_4943.ts";
+import {
   acquireBaseRefreshOwner,
   type BaseRefreshStatus,
   makeGitHubBaseRefreshOwnershipPort,
@@ -443,8 +448,79 @@ async function readTestMerge(
   return { mergeSha: pr.merge_commit_sha, baseSha: prBase.sha };
 }
 
-/** Re-read the PR and current-head contract before asking for a refresh. */
+/**
+ * Ask for a strict-base refresh of a ready PR through the shared per-base
+ * owner (Issue #4613), and log one diagnostic line for the decision
+ * (Issue #4943). `source` names the lane that asked; logging never changes
+ * the returned result. `counterDir`, when given, also persists the decision
+ * to `{counterDir}/base_refresh_counters.json` for standalone commands whose
+ * per-cycle summary is never written; it is best effort and never changes the
+ * returned result.
+ */
 export async function requestReadyBranchUpdate(
+  repo: string,
+  prNumber: number,
+  gh: (args: string[]) => Promise<string>,
+  expectedBase: string | undefined,
+  expectedHead: string | undefined,
+  ownershipSleepFn: ((ms: number) => Promise<void>) | undefined,
+  ownershipAuthorOptions: AlertDedupAuthorOptions | undefined,
+  source: string,
+  counterDir?: string,
+): Promise<Result<void>> {
+  const result = await requestReadyBranchUpdateInner(
+    repo,
+    prNumber,
+    gh,
+    expectedBase,
+    expectedHead,
+    ownershipSleepFn,
+    ownershipAuthorOptions,
+  );
+  try {
+    const facts = {
+      source,
+      repo,
+      prNumber,
+      base: expectedBase,
+    };
+    if (result.ok) {
+      logBaseRefreshDecision({
+        ...facts,
+        outcome: "refresh-requested",
+        reason: "branch update requested from GitHub",
+      });
+      await persistBaseRefreshCounter(counterDir, {
+        source,
+        outcome: "refresh-requested",
+      });
+    } else {
+      const owner = parseRefreshOwner(result.error.message);
+      logBaseRefreshDecision({
+        ...facts,
+        outcome: "refresh-skipped",
+        reason: result.error.message,
+        ownerPr: owner?.ownerPr,
+        ownerWorker: owner?.ownerWorker,
+      });
+      await persistBaseRefreshCounter(counterDir, {
+        source,
+        outcome: "refresh-skipped",
+      });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[base-refresh] could not record the decision for ${repo}#${prNumber}: ${
+        redactSecrets(message)
+      }`,
+    );
+  }
+  return result;
+}
+
+/** Re-read the PR and current-head contract before asking for a refresh. */
+async function requestReadyBranchUpdateInner(
   repo: string,
   prNumber: number,
   gh: (args: string[]) => Promise<string>,

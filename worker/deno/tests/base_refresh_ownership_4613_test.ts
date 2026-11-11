@@ -21,6 +21,7 @@ Deno.test("a refused duplicate PUT leaves ownership blocking the next PR", async
       f.head,
       async () => {},
       { fleetAuthors: ["VibeCoderST"] },
+      "test-ready-updater",
     );
   assertEquals((await request(30)).ok, true);
   f.state.refusal = "HTTP 422: expected head sha changed";

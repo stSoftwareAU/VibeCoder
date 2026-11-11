@@ -30,6 +30,10 @@ import {
 } from "../lib/pr_ci_processor.ts";
 import { decodeAnnotations } from "../lib/pr_spelling_processor.ts";
 import {
+  readBaseBranchCheck,
+  readCheckIdentity,
+} from "../lib/ci_base_branch_check.ts";
+import {
   createDefaultDeps,
   type WorkerDeps,
 } from "../lib/issue_worker_wiring.ts";
@@ -43,6 +47,10 @@ import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
 import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
+import {
+  createRepairMergeabilityTracker,
+  readRepairBaseMergeDecision,
+} from "../lib/repair_base_merge_4943.ts";
 
 // Re-export library functions for external use
 export { formatCiAnnotations };
@@ -138,16 +146,56 @@ export const prCiProcessorCommand = {
           { cwd: repoWorkDir },
         );
 
-        // Sync feature branch with default branch (Issue #230)
+        // Sync feature branch with default branch (Issue #230), only for a
+        // genuine conflict or a failing check that already passes on the
+        // default branch (Issue #4943). A behind-only PR with no such check is
+        // refreshed by the shared base-refresh owner (Issue #4613), not here.
         const defaultBranchResult = await deps.git.getRepoDefaultBranch(repo);
         const defaultBranch = defaultBranchResult.ok
           ? defaultBranchResult.value
           : "main";
-        await deps.git.syncFeatureBranchWithDefault(
-          branchName,
-          defaultBranch,
-          { cwd: repoWorkDir },
-        );
+        const baseMerge = await readRepairBaseMergeDecision({
+          repo,
+          prNumber,
+          gh: deps.github.runGhCommand,
+          source: "pr-ci-processor",
+          base: defaultBranch,
+          counterDir: config.workDir,
+          tracker: createRepairMergeabilityTracker({
+            workDir: config.workDir,
+            gh: deps.github.runGhCommand,
+            fleetAuthors: resolveFleetMaintenanceAuthorSet({
+              githubUser: resolveActingGithubUser(args),
+              fleetPrAuthors: config.fleetPrAuthors ?? [],
+            }),
+          }),
+          // Issue #4943: the processor's own failing check, read against the
+          // default branch. Only a green base run names it; an unreadable
+          // identity throws, so its cause reaches the skip reason.
+          fixedOnBase: async () => {
+            const identity = await readCheckIdentity({
+              repo,
+              checkRunId,
+              checkName,
+              ghCommandFn: deps.github.runGhCommand,
+            });
+            if (!identity.ok) throw identity.error;
+            const evidence = await readBaseBranchCheck({
+              repo,
+              branch: defaultBranch,
+              failing: identity.value,
+              ghCommandFn: deps.github.runGhCommand,
+            });
+            return evidence.state === "green" ? [checkName] : [];
+          },
+        });
+        if (baseMerge.merge) {
+          await deps.git.syncFeatureBranchWithDefault(
+            branchName,
+            defaultBranch,
+            { cwd: repoWorkDir },
+          );
+        }
 
         // Run pre-setup command if configured
         await runPreSetupCommand(repo, repoWorkDir, config.repoConfig);

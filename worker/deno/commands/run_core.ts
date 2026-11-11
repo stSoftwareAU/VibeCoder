@@ -14,10 +14,8 @@ import { createDefaultRunCoreConfig, runCoreLoop } from "../lib/run_core.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import { enableInFlightHostDiskGate } from "../lib/heavy_build_gate.ts";
 import type { RootFilesystemFault } from "../lib/root_filesystem_fault.ts";
-import {
-  formatBuildBanner,
-  resolveWorkerBuildInfo,
-} from "../lib/worker_build_info.ts";
+import { formatStartupBuildLines } from "../lib/repair_base_merge_4943.ts";
+import { resolveWorkerBuildInfo } from "../lib/worker_build_info.ts";
 import {
   formatFleetConfigValidation,
   validateFleetConfig,
@@ -104,7 +102,10 @@ export const runCoreCommand: Command = {
       // (running a build from before a guard fix merged) is detectable from
       // the logs, and fail loud on an incomplete fleet configuration that
       // would blind the open-PR duplicate guard to a sibling's PRs.
-      console.log(formatBuildBanner(resolveWorkerBuildInfo()));
+      // Issue #4943: the base-refresh policy line follows the build banner.
+      for (const line of formatStartupBuildLines(resolveWorkerBuildInfo())) {
+        console.log(line);
+      }
       // Issue #256, #1066: state the trust model this run used, next to the
       // build banner. Reading a worker log later, "who did this host trust?"
       // must be answerable from the log alone — the answer changes what every
