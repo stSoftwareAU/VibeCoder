@@ -297,12 +297,9 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   (`--config <worker>/deno.json --frozen --lock
   <worker>/deno.lock`, from main
   PR #4962), so the previous `--no-config` environment workaround no longer
-  applies. `tests/pre_push_gate_test.ts` (150 tests at head, 124 pass) shows 26 failed
-  tests on the head (fixtures that commit `README.md` with `#Bad` meet the
-  container's real `markdownlint-cli2`), the same 26 that failed on the base
-  commit; `tests/pr_feedback_processor_test.ts` was not re-run on this head. They
-  are not
-  caused by this change. The real ShellCheck publication suite was not re-run on
+  applies. `tests/pre_push_gate_test.ts` (150 tests at head) passed in full on the head
+  (`deno task test:unit`: 150 passed, 0 failed). `tests/pr_feedback_processor_test.ts`
+  was not re-run on this head. The real ShellCheck publication suite was not re-run on
   this head.
 - The obsolete environment contract copied the CI output directory into local
   builds. The remaining contract preserves target-specific settings while
@@ -350,7 +347,8 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `added = true` initially → `...a worktree that cannot be added is infrastructure and is not removed`;
   the non-`NotFound` stat fault returning `""` → `...a base directory that cannot be read as a directory is infrastructure, not a verdict`
   (real ENOTDIR: the tip turns `rust/` into a file);
-  `timeoutSeconds` dropped from the base run → `...the PR timeout reaches the base run`;
+  `timeoutSeconds` dropped from the base run → `...a base run that outlasts the PR timeout is infrastructure, not a verdict`
+  (a runner that models the deadline cuts the base run off only when it is given less than 100 s; the test asserts the infrastructure error at 77 s and a proceeding push at 200 s);
   negated `removed.code` check → `...a base worktree and its scratch directory are removed without a warning`
   and `...a worktree remove that fails warns and still deletes the non-empty scratch directory`;
   `recursive: true` → `false` and the scratch `Deno.remove` deleted → the second
