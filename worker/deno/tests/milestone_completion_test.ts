@@ -26,6 +26,7 @@ import {
   isMilestoneTrackingTitle,
   isMilestoneYoung,
   isSummaryPrMerged,
+  MILESTONE_PROVENANCE_MAX_CHILDREN,
   type MilestoneCompletionDeps,
   selectDuplicateTrackersToClose,
 } from "../lib/milestone_completion.ts";
@@ -36,6 +37,15 @@ import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts"
 import { _resetBaseProtectionMemo } from "../lib/pr_auto_merge.ts";
 import { partialRollupMarker } from "../lib/milestone_partial_rollup.ts";
 import { rollbackCloseComment as rollbackCloseCommentForTest } from "../lib/milestone_rollback_requeue.ts";
+import type { RunGh } from "../../../.claude/skills/review-fleet-prs/scripts/needs_human.ts";
+import type { TestChangeNote } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
+import {
+  type AssessedPr,
+  assessTestChanges,
+  effectiveTestPolicy,
+  resolveGoverningIssues,
+  type TestChangeAssessment,
+} from "../../../.claude/skills/review-fleet-prs/scripts/test_change_policy.ts";
 
 /**
  * Issue #1246: a tracking-shaped title is only a candidate — the fleet's own
@@ -557,6 +567,303 @@ Deno.test("buildMilestoneSummaryBody - flags rather than claims issues with a cl
     true,
   );
   assertEquals(body.includes("### Flagged — not claimed"), true);
+});
+
+// ----- Issue #4967: anchored `Part of #N` provenance lines in the rollup body --
+
+/** The numbers a body's closing keywords (close/fix/resolve, GitHub's list) name. */
+function closingRefsIn(body: string): number[] {
+  return [
+    ...body.matchAll(/\b(?:close[sd]?|fix(?:e[sd]?)?|resolve[sd]?)\s+#(\d+)\b/gi),
+  ].map((m) => Number(m[1]));
+}
+
+Deno.test("buildMilestoneSummaryBody - a leading #N in the title gets a Part of line straight after the Closes line (Issue #4967)", () => {
+  const body = buildMilestoneSummaryBody("#42 Retry policy", "main", [], 99);
+  const lines = body.split("\n");
+  const closesAt = lines.indexOf("Closes #99");
+  assert(closesAt >= 0, `no Closes #99 line: ${body}`);
+  assertEquals(lines[closesAt + 1], "Part of #42");
+  assertEquals(lines.filter((l) => l.startsWith("Part of")), ["Part of #42"]);
+  // Part of is never a closing keyword: only the tracker is closed.
+  assertEquals(closingRefsIn(body), [99]);
+});
+
+Deno.test("buildMilestoneSummaryBody - a title with no leading #N and no claimed children gets no Part of line (Issue #4967)", () => {
+  for (const title of ["v1.0 release", "Fix #42 later"]) {
+    const body = buildMilestoneSummaryBody(title, "main", [], 99);
+    const lines = body.split("\n");
+    assertEquals(lines.filter((l) => l.startsWith("Part of")), [], title);
+    assert(lines.includes("Closes #99"), title);
+  }
+  // Byte-identical to the body before the provenance lines existed.
+  assertEquals(
+    buildMilestoneSummaryBody("v1.0 release", "main", [], 99),
+    "## Milestone: v1.0 release\n\nThis PR merges the completed milestone branch into main.\nCloses #99\n\n### Issues addressed\n_No issues found_\n\n### Review notes\nAll individual issues were reviewed and merged into the milestone branch via separate PRs.\nThis final PR consolidates all changes for a comprehensive review before merging to main.",
+  );
+});
+
+Deno.test("buildMilestoneSummaryBody - claimed children get ascending, deduplicated Part of lines; flagged and unsafe numbers never do (Issue #4967)", () => {
+  const body = buildMilestoneSummaryBody("#42 Retry policy", "main", [
+    { number: 81, title: "Later" },
+    { number: 77, title: "Retry defaults" },
+    { number: 77, title: "Retry defaults" },
+    { number: 42, title: "The parent itself" },
+    { number: 99, title: "The tracker itself" },
+    { number: 63, title: "Flagged", claimProblem: "sync-pr-only" },
+    { number: 2 ** 60, title: "Not a safe integer" },
+  ], 99);
+  assertEquals(
+    body.split("\n").filter((l) => l.startsWith("Part of")),
+    ["Part of #42", "Part of #77", "Part of #81"],
+  );
+  assertFalse(body.includes("Part of #63"));
+  assertFalse(body.includes("Part of #99"));
+  assertEquals(closingRefsIn(body), [99]);
+});
+
+Deno.test("buildMilestoneSummaryBody - at most MILESTONE_PROVENANCE_MAX_CHILDREN child Part of lines, lowest numbers first (Issue #4967)", () => {
+  const children = Array.from(
+    { length: 12 },
+    (_, i) => ({ number: 100 - i, title: `Child ${100 - i}` }),
+  );
+  const body = buildMilestoneSummaryBody("#42 Retry policy", "main", children, 99);
+  const lines = body.split("\n");
+  assertEquals(
+    lines.filter((l) => /^Part of #\d+$/.test(l) && l !== "Part of #42"),
+    Array.from(
+      { length: MILESTONE_PROVENANCE_MAX_CHILDREN },
+      (_, i) => `Part of #${89 + i}`,
+    ),
+  );
+  // The Issue addressed list still names every claimed child.
+  assertEquals(lines.filter((l) => l.startsWith("- #")).length, 12);
+  assertEquals(MILESTONE_PROVENANCE_MAX_CHILDREN, 10);
+});
+
+// The reviewer's governing-issue read (test_change_policy.ts) of a rollup body.
+// Issue #4967: the fake's replies copy the shapes the reviewer's own fixtures
+// (review_fleet_prs_test_policy_4655_test.ts) model for `gh pr view`,
+// `gh api repos/.../issues/N`, the REST timeline and the edit-history GraphQL.
+
+const RV_REPO = "acme/widgets";
+const RV_FLEET_WORKER = "VibeCoderST";
+const RV_ADDED_AT = "2026-11-02T18:32:00Z";
+const RV_REQUIRED =
+  "Retries must run three times before the job is marked failed";
+const RV_POLICY = effectiveTestPolicy({
+  allowed_authors: ["nleck"],
+  service_accounts: [RV_FLEET_WORKER],
+});
+const RV_ROLLUP_PR: AssessedPr = {
+  repo: RV_REPO,
+  number: 90,
+  headSha: "c".repeat(40),
+  kind: "fleet",
+  testChanges: { removed: [], edited: [] },
+  baseRef: "main",
+};
+
+interface RvIssue {
+  title: string;
+  body: string;
+  /** A label a trusted login added, when set (the claim rule). */
+  label?: string;
+  labelledBy?: string;
+}
+
+/** Tracker #99 and unlabelled #55 are fleet-filed; #42 and #77 are claimed. */
+const RV_ISSUES: Record<number, RvIssue> = {
+  99: { title: "Milestone: v1.0", body: "Tracking the v1.0 milestone." },
+  42: {
+    title: "Retry policy",
+    body: "Umbrella for the retry work.",
+    label: "work-on",
+    labelledBy: "nleck",
+  },
+  77: {
+    title: "Retry defaults",
+    body: `Acceptance:\n- ${RV_REQUIRED}.`,
+    label: "top-priority",
+    labelledBy: "nleck",
+  },
+  55: { title: "Unrelated tidy-up", body: "Tidy the fixtures." },
+};
+
+function rvReply(args: string[], body: string): string {
+  if (args[0] === "pr") {
+    return JSON.stringify({
+      closingIssuesReferences: closingRefsIn(body).map((number) => ({
+        number,
+        repository: { name: "widgets", owner: { login: "acme" } },
+      })),
+      headRefName: "milestone/v1-0",
+      body,
+    });
+  }
+  if (args[0] === "api" && args[1] === "graphql") {
+    return JSON.stringify({
+      data: {
+        repository: {
+          issue: {
+            userContentEdits: { totalCount: 0, nodes: [] },
+            timelineItems: { totalCount: 0, nodes: [] },
+          },
+        },
+      },
+    });
+  }
+  const endpoint = args[1] ?? "";
+  const issue = /^repos\/acme\/widgets\/issues\/(\d+)$/.exec(endpoint);
+  if (issue) {
+    const v = RV_ISSUES[Number(issue[1])];
+    if (v === undefined) throw new Error("gh: Not Found (HTTP 404)");
+    return JSON.stringify({
+      title: v.title,
+      body: v.body,
+      state: "open",
+      user: { login: RV_FLEET_WORKER },
+      author_association: "CONTRIBUTOR",
+    });
+  }
+  const timeline =
+    /^repos\/acme\/widgets\/issues\/(\d+)\/timeline\?per_page=\d+&page=(\d+)$/
+      .exec(endpoint);
+  if (timeline) {
+    const v = RV_ISSUES[Number(timeline[1])];
+    if (timeline[2] !== "1" || v === undefined || v.labelledBy === undefined) {
+      return "[]";
+    }
+    return JSON.stringify([{
+      event: "labeled",
+      label: { name: v.label },
+      actor: { login: v.labelledBy },
+      created_at: RV_ADDED_AT,
+    }]);
+  }
+  const file = /^repos\/acme\/widgets\/contents\/(.+)\?ref=.+$/.exec(endpoint);
+  if (file && file[1] === "tests/retry_test.ts") {
+    return JSON.stringify({
+      type: "file",
+      encoding: "base64",
+      content: `${btoa("test('retries three times', () => {});\n")}\n`,
+      path: "tests/retry_test.ts",
+    });
+  }
+  throw new Error(`unexpected gh call: ${args.join(" ")}`);
+}
+
+/** Runs the reviewer's governing read and test-change check on a rollup body. */
+async function assessRollupBody(body: string) {
+  const calls: string[][] = [];
+  const runGh: RunGh = async (args) => {
+    calls.push(args);
+    return rvReply(args, body);
+  };
+  const note: TestChangeNote = {
+    file: "tests/retry_test.ts",
+    line: 7,
+    change: "expects 3 retries instead of 2",
+    kind: "expected-value",
+    verdict: "justified",
+    obsolete: "The old default of two retries.",
+    remaining: "Asserts the new default of three retries.",
+    coverage: [{
+      role: "existing",
+      path: "tests/retry_test.ts",
+      name: "retries three times",
+    }],
+    requirementQuote: RV_REQUIRED,
+    failsWithoutChange: "fails on the base branch with two retries",
+    verification: "reverted the default to 2; the test failed",
+  };
+  const result = await assessTestChanges(
+    RV_ROLLUP_PR,
+    { testChanges: "meaningful", testChangeNotes: [note] },
+    RV_POLICY,
+    runGh,
+  );
+  const governing = await resolveGoverningIssues(
+    { repo: RV_REPO, number: 90, kind: "fleet" },
+    RV_POLICY,
+    runGh,
+  );
+  return { result, governing };
+}
+
+const noUsableGoverningIssue = (r: TestChangeAssessment) =>
+  r.findings.some((f) => f.problem.includes("no usable governing issue"));
+const quoteNotInLinkedIssue = (r: TestChangeAssessment) =>
+  r.findings.some((f) =>
+    f.problem.includes("requirement quote is not found in a linked issue")
+  );
+
+Deno.test("rollup provenance: the reviewer links the parent and the claimed child through Part of, ignores the tracker, and finds the child's quote (Issue #4967)", async () => {
+  const body = buildMilestoneSummaryBody(
+    "#42 Retry policy",
+    "main",
+    [{ number: 77, title: "Retry defaults" }],
+    99,
+  );
+  const { result, governing } = await assessRollupBody(body);
+  assertEquals(
+    governing.issues.map((i) => [i.number, i.source]),
+    [[42, "part-of"], [77, "part-of"]],
+  );
+  assert(
+    governing.problems.includes(
+      "acme/widgets#99 is not by a trusted author; it is ignored",
+    ),
+    `tracker #99 should be ignored: ${governing.problems.join(" | ")}`,
+  );
+  // The checks ran (not a skipped or retried assessment) and found nothing.
+  assertEquals(result.checked, true);
+  assertEquals(result.retry, undefined);
+  assertFalse(noUsableGoverningIssue(result), JSON.stringify(result.findings));
+  assertFalse(quoteNotInLinkedIssue(result), JSON.stringify(result.findings));
+  assertEquals(result.findings, [], JSON.stringify(result.findings));
+  // Part of never closes: the tracker is the only closing reference.
+  assertEquals(closingRefsIn(body), [99]);
+});
+
+Deno.test("rollup provenance (control): without a child Part of line the child-only quote is not found, so the parent link alone does not fix it (Issue #4967)", async () => {
+  const body = buildMilestoneSummaryBody(
+    "#42 Retry policy",
+    "main",
+    [{ number: 77, title: "Retry defaults", claimProblem: "sync-pr-only" }],
+    99,
+  );
+  const { result, governing } = await assessRollupBody(body);
+  assertEquals(governing.issues.map((i) => i.number), [42]);
+  assert(
+    quoteNotInLinkedIssue(result),
+    `expected the quote finding: ${JSON.stringify(result.findings)}`,
+  );
+});
+
+Deno.test("rollup provenance (control): an untrusted fleet-filed child gets a Part of line and is still ignored (Issue #4967)", async () => {
+  const body = buildMilestoneSummaryBody(
+    "#42 Retry policy",
+    "main",
+    [
+      { number: 77, title: "Retry defaults" },
+      { number: 55, title: "Unrelated tidy-up" },
+    ],
+    99,
+  );
+  const { result, governing } = await assessRollupBody(body);
+  assertEquals(
+    governing.issues.map((i) => [i.number, i.source]),
+    [[42, "part-of"], [77, "part-of"]],
+  );
+  assert(
+    governing.problems.includes(
+      "acme/widgets#55 is not by a trusted author; it is ignored",
+    ),
+    `child #55 should be ignored: ${governing.problems.join(" | ")}`,
+  );
+  assertFalse(noUsableGoverningIssue(result));
+  assertFalse(quoteNotInLinkedIssue(result));
 });
 
 Deno.test("classifyClosedIssues - flags sync-pr-only and predates-reopen, claims otherwise (Issue #3476)", async () => {
@@ -2831,6 +3138,62 @@ Deno.test("checkAndHandleMilestoneCompletions - refreshes a legacy redacted fing
     assertEquals(edits(), 1);
     assert(live.body.includes('value="***REDACTED***"') === false);
     assertStringIncludes(live.body, "Owner-added review context.");
+  });
+});
+
+/**
+ * Issue #4967: the fingerprint formula as it was before the
+ * `rollup-provenance-v2` tag. An open rollup stamped with it must be refreshed.
+ */
+async function preProvenanceRollupFingerprint(
+  title: string,
+  defaultBranch: string,
+  trackingIssueNumber: number | null,
+  closedIssues: { number: number; title: string; claimProblem?: string }[],
+): Promise<string> {
+  const payload = JSON.stringify([
+    title,
+    defaultBranch,
+    trackingIssueNumber,
+    closedIssues.map((i) => [i.number, i.title, i.claimProblem ?? null]),
+  ]);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(payload),
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+Deno.test("checkAndHandleMilestoneCompletions - an open rollup stamped with the pre-provenance fingerprint is refreshed once with Part of lines (Issue #4967)", async () => {
+  await withTempCache(async (cache) => {
+    const oldFingerprint = await preProvenanceRollupFingerprint(
+      "v3.0",
+      "main",
+      null,
+      [{ number: 20, title: "Feature B" }],
+    );
+    const live = {
+      state: "OPEN",
+      body:
+        `existing rollup\n\n<!-- vibe-rollup-fingerprint value="${oldFingerprint}" -->`,
+    };
+    const calls: string[] = [];
+    const deps = createMockDeps({
+      ghCommandFn: completedMilestoneWithRollupGhFn(live, calls),
+      cache,
+    });
+    const edits = () => calls.filter((c) => c.includes("pr edit")).length;
+
+    await checkAndHandleMilestoneCompletions(deps);
+    assertEquals(edits(), 1, "the old-shape fingerprint is stale: one refresh");
+    assertStringIncludes(live.body, "\nPart of #20");
+    assertFalse(live.body.includes(oldFingerprint));
+    assertStringIncludes(live.body, "vibe-rollup-fingerprint");
+
+    await checkAndHandleMilestoneCompletions(deps);
+    assertEquals(edits(), 1, "the refreshed body carries its new fingerprint");
   });
 });
 

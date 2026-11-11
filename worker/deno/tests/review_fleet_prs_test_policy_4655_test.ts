@@ -683,8 +683,8 @@ Deno.test("governing issues: a hostile body of repeated Part of text returns qui
   assertEquals(g.calls.length, 1);
 });
 
-Deno.test("governing issues: at most five are read, and invalid input is refused without gh", async () => {
-  const refs = [1, 2, 3, 4, 5, 6].map((n) => ({
+Deno.test("governing issues: at most twelve are read, and invalid input is refused without gh", async () => {
+  const refs = Array.from({ length: 14 }, (_, i) => i + 1).map((n) => ({
     number: n,
     repository: { name: "widgets", owner: { login: "acme" } },
   }));
@@ -692,7 +692,7 @@ Deno.test("governing issues: at most five are read, and invalid input is refused
     pr: { closingIssuesReferences: refs, headRefName: "x", body: "" },
   });
   await resolveGoverningIssues(FLEET, TRUST, g.runGh);
-  assertEquals(g.calls.filter((c) => c[0] === "api").length, 5);
+  assertEquals(g.calls.filter((c) => c[0] === "api").length, 12);
 
   const bad = fakeGh();
   const r = await resolveGoverningIssues(
@@ -702,6 +702,44 @@ Deno.test("governing issues: at most five are read, and invalid input is refused
   );
   assertEquals(r.issues, []);
   assertEquals(bad.calls, []);
+});
+
+Deno.test("governing issues: a roll-up body reads its tracking issue, parent and ten children, not an eleventh child", async () => {
+  // Issue #4967: `Closes #99` (tracking), `Part of #42` (parent), then one
+  // `Part of` line per delivered child. The eleventh child is the 13th
+  // candidate and must not be read.
+  const children = Array.from({ length: 11 }, (_, i) => 101 + i);
+  const body = [
+    "Milestone roll-up.",
+    "Closes #99",
+    "Part of #42",
+    ...children.map((n) => `Part of #${n}`),
+  ].join("\n");
+  const issues: Record<string, Record<string, unknown>> = {};
+  for (const n of [99, 42, ...children]) {
+    issues[`acme/widgets#${n}`] = { ...ISSUE_3416, title: `Issue ${n}` };
+  }
+  const g = fakeGh({
+    pr: {
+      closingIssuesReferences: [{
+        number: 99,
+        repository: { name: "widgets", owner: { login: "acme" } },
+      }],
+      headRefName: "feature/roll-up",
+      body,
+    },
+    issues,
+  });
+  const r = await resolveGoverningIssues(FLEET, TRUST, g.runGh);
+  assertEquals(g.calls.filter((c) => c[0] === "api").length, 12);
+  assertFalse(g.calls.some((c) => (c[1] ?? "").endsWith("issues/111")));
+  assertEquals(r.problems, []);
+  assertEquals(r.issues.map((i) => i.number), [
+    99,
+    42,
+    ...children.slice(0, 10),
+  ]);
+  assert(r.issues.some((i) => i.number === 110));
 });
 
 // ----- the worker's claim rule (Issue #4763) --------------------------------

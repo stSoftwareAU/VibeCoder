@@ -64,7 +64,9 @@ export function isTestPath(path: string): boolean {
   return TEST_PATH_PATTERNS.some((re) => re.test(path));
 }
 
-const MAX_GOVERNING_ISSUES = 5;
+// Covers a milestone roll-up's closing tracking issue, its `Part of` parent and
+// up to 10 delivered children (Issue #4967); it still bounds the per-PR gh reads.
+const MAX_GOVERNING_ISSUES = 12;
 const PART_OF_SCAN_LINES = 200;
 const MAX_PATH_LENGTH = 300;
 const FETCH_FAILED = "fetch failed:";
