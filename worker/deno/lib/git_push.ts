@@ -883,6 +883,8 @@ export async function gateUnpushedCommits(
  *      WIP checkpoint pushes are never refused. The gate output in the
  *      returned error is cut to a head and a tail (as is Step 1's pre-flight
  *      block), because PR processors post it in a comment.
+ *      The baseline a failing unit test is compared at is the merge-base with
+ *      `options.gateBaseBranch`, else `options.syncBaseBranch`.
  *   1c. Step 1c — when `options.syncBaseBranch` is set and there is a fix to
  *      push to an existing branch, {@link mergeBaseBeforePush} merges that
  *      base in, so the fix and the branch update go out in one push.
@@ -1104,7 +1106,7 @@ export async function commitAndPushPending(
       preFlight,
       committedNewChanges,
       undefined,
-      options.syncBaseBranch,
+      options.gateBaseBranch ?? options.syncBaseBranch,
     );
     if (!gate.ok) {
       return { ok: false, error: gate.error };

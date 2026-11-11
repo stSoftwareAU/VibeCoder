@@ -105,6 +105,8 @@ interface Captured {
   commitAndPushCalls: number;
   /** The `preFlight` spec (5th argument) of each `commitAndPushPending` call. */
   commitAndPushPreFlights: unknown[];
+  /** The options (3rd argument) of each `commitAndPushPending` call. */
+  commitAndPushOptions: unknown[];
   agentRuns: number;
   /** Prompts the agent was actually given (Issue #466). */
   agentPrompts: string[];
@@ -462,6 +464,7 @@ function makeGit(
     commitAndPushPending: ((...args: unknown[]) => {
       captured.commitAndPushCalls++;
       captured.commitAndPushPreFlights.push(args[4]);
+      captured.commitAndPushOptions.push(args[2]);
       captured.events.push("git:commitAndPushPending");
       if (script.commitPushError !== undefined) {
         return Promise.resolve({
@@ -738,6 +741,7 @@ async function runProcessor(
     gitArgs: [],
     commitAndPushCalls: 0,
     commitAndPushPreFlights: [],
+    commitAndPushOptions: [],
     agentRuns: 0,
     agentPrompts: [],
     lockRenewals: [],
@@ -1095,6 +1099,19 @@ Deno.test("processMergeConflict - a clean merge is checked against the head it s
     verifiedAt >= 0 && verifiedAt < pushedAt,
     `the check must run before the push; got ${captured.events.join(",")}`,
   );
+});
+
+Deno.test("processMergeConflict - the push gate compares a failing unit test at the PR's base, and the push merges nothing more (PR #5034 review)", async () => {
+  const { captured, workDir } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergeCode: 0, unmergedAfterMerge: [] }),
+  );
+
+  // `gateBaseBranch` places the baseline at the merge-base with the PR's base;
+  // `syncBaseBranch` would make the push merge the base a second time.
+  assertEquals(captured.commitAndPushOptions, [
+    { cwd: workDir, gateBaseBranch: "main" },
+  ]);
 });
 
 Deno.test("processMergeConflict - a refused pre-push check pushes nothing and fails the attempt (Issue #4616)", async () => {

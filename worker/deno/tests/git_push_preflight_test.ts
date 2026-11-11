@@ -893,14 +893,16 @@ Deno.test("commitAndPushPending - a repair push compares a failing unit test at 
         stderr: "",
       });
     };
-    const repair = (syncBaseBranch?: string) =>
+    const repair = (
+      baseOption?: "syncBaseBranch" | "gateBaseBranch",
+    ) =>
       commitAndPushPending(
         branch,
         "Fix CI failure",
         {
           cwd: downstream,
           env: NO_HOST_GIT_CONFIG,
-          ...(syncBaseBranch ? { syncBaseBranch } : {}),
+          ...(baseOption ? { [baseOption]: "main" } : {}),
         },
         false,
         { commands: [], shellcheckOnly: true, runner },
@@ -908,11 +910,19 @@ Deno.test("commitAndPushPending - a repair push compares a failing unit test at 
 
     // The repair leaves the test red. Told the PR's base, the gate blocks it.
     await write("lib/foo.ts", "export const foo = 3;\n");
-    const blocked = await repair("main");
+    const blocked = await repair("syncBaseBranch");
     assert(!blocked.ok, "a repair that leaves the test red must not push");
     if (!blocked.ok) {
       assert(blocked.error.message.includes("[PRE_PUSH_BLOCKED]"));
       assert(blocked.error.message.includes("foo works"));
+    }
+
+    // `gateBaseBranch` alone (the merge-conflict repair, which merges the base
+    // itself) places the comparison at the base too, with no merge of its own.
+    const gateOnly = await repair("gateBaseBranch");
+    assert(!gateOnly.ok, "gateBaseBranch must place the baseline at the base");
+    if (!gateOnly.ok) {
+      assert(gateOnly.error.message.includes("[PRE_PUSH_BLOCKED]"));
     }
 
     // Control: with no PR base the comparison is the previous head, where the

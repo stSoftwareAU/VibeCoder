@@ -20,7 +20,8 @@ not a block, but only when every failure of the run is accounted for: a test
 module that failed outside a test (`(uncaught error)`) blocks, and a serial pass
 the runner skipped after a failed parallel pass is run and judged too. The fork
 is the merge-base with the PR's base when the gate knows it (the completion
-phase, and CI-fix, review-feedback and spelling pushes with a known PR base),
+phase, CI-fix, review-feedback and spelling pushes with a known PR base, and
+the merge-conflict repair),
 not the PR's own previous head. PR-feedback and CI-fix final pushes with
 `shellcheckOnly` specs now run these tests and configured markdownlint;
 formatting policy is retained. Dynamic dependencies in a push that touches no
@@ -66,7 +67,7 @@ Closes #4930.
   (`PrePushGateInfrastructureError`; a 404 `JSR package not found` is not), and
   a failed test that is also red at the fork commit (a throwaway `git worktree`
   re-run of the failed files) is a warning. The fork is `git merge-base` of the
-  pushed head and the PR's base (`baseRef`, or `origin/<syncBaseBranch>` for a
+  pushed head and the PR's base (`baseRef`, or `origin/<syncBaseBranch>` or `origin/<gateBaseBranch>` for a
   repair push), so a repair that leaves a test red is compared with the PR's
   base, not its own previous head; with neither it is the parent of the oldest
   commit not yet on a remote. The downgrade needs every failure accounted for:
@@ -81,7 +82,7 @@ Closes #4930.
 - Not covered: the runner's time budget over a failed parallel pass (it runs
   only after every pass succeeded, and is not re-run); a repo whose `test:unit`
   runner prints no `=== <label> pass:` lines is judged as one pass; the
-  merge-conflict repair and the agent's own `git push` pass no PR base.
+  agent's own `git push` passes no PR base.
 
 ### Undiscoverable Facts
 
@@ -133,7 +134,7 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   suite CI runs (dynamic loader types, computed paths, import-map aliases,
   `jsr:` / `npm:` specifiers and a `_test.ts` outside `tests/` can be missed);
   the runner's time budget over a failed parallel pass is not re-run; a repair
-  whose PR base is unknown, the merge-conflict repair and the agent's own
+  whose PR base is unknown and the agent's own
   `git push` compare at the parent of their oldest unpushed commit.
 
 ## Test Plan
@@ -235,7 +236,7 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   (`Configured pre-flight commands enable changed-file checks`) are restored in
   `quality_gate_budget_test.ts` and `repo_config_test.ts` beside the new clause.
 - Tests at the head: `worker/deno/tests/deno_test_baseline_test.ts` (17 tests at
-  head), `worker/deno/tests/pre_push_gate_test.ts` (120 tests at head) and
+  head), `worker/deno/tests/pre_push_gate_test.ts` (123 tests at head) and
   `worker/deno/tests/git_push_preflight_test.ts` (22 tests at head), including
   `runPrePushGate` cases for a test red at the fork (warning, worktree removed),
   a base that passes, a different test red at the base, a push-added test file,
@@ -244,7 +245,11 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   `(uncaught error)` file (blocked), a base-red parallel failure plus a failing
   serial pass (blocked; a passing serial pass is only a warning), and a repair
   push compared at the PR's base (blocked) against the previous head (waved
-  through); and `commitAndPushPending` with and without `syncBaseBranch`.
+  through); and `commitAndPushPending` with `syncBaseBranch`, with `gateBaseBranch` alone and
+  with neither. The merge-conflict repair passes its `baseBranch` as
+  `gateBaseBranch` (a new `PushLineageOptions` field that only places the
+  baseline and never merges; `syncBaseBranch` would merge a second time), pinned
+  by `worker/deno/tests/pr_merge_conflict_processor_test.ts`.
 - Red checks run by hand on this head (each change made, the test run, then
   restored): `hasUncaughtError` return removed → `deno_test_baseline_test.ts`
   and `pre_push_gate_test.ts` red (2 failed); the `--serial-only` rerun removed
@@ -253,7 +258,11 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   test at the PR's base" red; `options.syncBaseBranch` dropped from the
   `gateUnpushedCommits` call in `commitAndPushPending` →
   `git_push_preflight_test.ts` "a repair push compares a failing unit test at
-  the PR's base" red.
+  the PR's base" red; the merge-conflict repair's `gateBaseBranch` dropped
+  (and the `gateBaseBranch ??` fallback removed from `commitAndPushPending`) →
+  `pr_merge_conflict_processor_test.ts` "the push gate compares a failing unit
+  test at the PR's base" and `git_push_preflight_test.ts` "a repair push
+  compares a failing unit test at the PR's base" red (2 failed).
 - Earlier red checks (second round): fetch classification off; `fresh`
   comparison dropped; `ranFiles` guard dropped; safe-path guard dropped;
   `needsFullUnitSuite` call replaced by `false`; the `prompts/` operand replaced
@@ -266,7 +275,6 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   `(uncaught error)`, the skipped serial pass), the module doc of
   `pre_push_gate.ts`, `runPrePushGate` and `gateUnpushedCommits` doc comments.
 - Run on this head:
-  `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_retry_test.ts tests/git_push_preflight_test.ts tests/git_push_test.ts tests/issue_worker_test.ts`
-  (347 passed, 0 failed); `tests/quality_gate_budget_test.ts` and
-  `tests/repo_config_test.ts` (71 passed, 0 failed). Formatter, lint and
+  `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_retry_test.ts tests/git_push_preflight_test.ts tests/git_push_test.ts tests/issue_worker_test.ts tests/pr_merge_conflict_processor_test.ts tests/quality_gate_budget_test.ts tests/repo_config_test.ts`
+  (528 passed, 0 failed). Formatter, lint and
   `deno check` of the changed files pass.

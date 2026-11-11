@@ -2077,7 +2077,7 @@ async function resolveConflict(
   const finalise = await deps.git.commitAndPushPending(
     branchName,
     `Merge ${baseBranch} into ${branchName} (Issue #84)\n\nResolved the PR's merge conflict without side-picking.`,
-    { cwd: workDir },
+    { cwd: workDir, gateBaseBranch: baseBranch },
     false,
     preFlight,
   );

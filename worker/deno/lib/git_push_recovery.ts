@@ -42,6 +42,13 @@ export interface PushLineageOptions extends GitCommandOptions {
    * GitHub in one push and CI runs once (owner rule 2026-11-03).
    */
   syncBaseBranch?: string;
+  /**
+   * The open PR's base branch, used only to place the pre-push gate's baseline
+   * comparison (a failing unit test is judged at the merge-base with it). It
+   * never merges anything. {@link syncBaseBranch} implies it when this is unset.
+   * For a repair push that merges the base itself (the merge-conflict repair).
+   */
+  gateBaseBranch?: string;
 }
 
 /** Whether HEAD still extends the commit a pass started from. */

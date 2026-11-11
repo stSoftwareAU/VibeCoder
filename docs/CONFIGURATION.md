@@ -5236,10 +5236,12 @@ The hook runs two stages:
      (same name, same file) at the fork is reported as a
      `[PRE_PUSH_WARNING] deno test` line and does not block. The fork is the
      merge-base of the pushed head and the PR's base (`origin/<base>`) when the
-     gate knows it: the completion phase's whole-branch check, and a CI-fix,
+     gate knows it: the completion phase's whole-branch check, a CI-fix,
      review-feedback or spelling repair push whose PR base is known (the base
-     it merges in before the push). Any other push (the agent's own `git push`,
-     the merge-conflict repair, a repair whose PR base could not be read) uses
+     it merges in before the push), and the merge-conflict repair (it passes the
+     base it just merged as `gateBaseBranch`, which places the comparison and
+     merges nothing). Any other push (the agent's own `git push`, a repair
+     whose PR base could not be read) uses
      the parent of its oldest commit not yet on a remote. Only a run whose every
      failure is accounted for is downgraded: a test module that fails outside a
      test (`./x_test.ts (uncaught error)`: a top-level throw, a dangling promise
