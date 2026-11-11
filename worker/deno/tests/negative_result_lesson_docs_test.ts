@@ -2,9 +2,10 @@
  * Documentation-drift tests for the negative-result / benchmark discipline
  * (Issue #3351).
  *
- * The discipline — benchmark before *and* after, raise a PR only on a
- * demonstrated gain, otherwise close the issue with a `negative-result`
- * label — lived only in the mutable `prompts/` templates and in the
+ * The discipline — deterministic evidence first, benchmark timings indicative
+ * only and never a gate, a `negative-result` label (and a hand-off to a human)
+ * only when deterministic evidence shows no help — lived only in the mutable
+ * `prompts/` templates and in the
  * `docs/AGENT-ACCOUNTABILITY.md` label table. The PR-summary archive
  * (`pr-summary-177.md`, `pr-summary-1428.md`) was the sole record of *why*
  * it exists, and that archive is being pruned, so the lesson is now stated
