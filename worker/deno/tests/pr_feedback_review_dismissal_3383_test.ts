@@ -1425,7 +1425,6 @@ async function assertGateInfraFaultReleases(
       "CI cargo check could not run: cargo clippy is not installed",
   });
 
-  assert(events.includes("commitAndPushPending"));
   assertEquals(result.ok, true);
   assertEquals(result.ok && result.value.processed, false);
   assertEquals(

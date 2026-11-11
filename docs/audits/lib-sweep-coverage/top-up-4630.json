@@ -3,7 +3,7 @@
   "chunk": "top-up-4630",
   "title": "top-up: CI cargo check scanner",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4630",
-  "definition": "module added to worker/deno/lib/ after the recorded security-sweep slices: ci_cargo_checks.ts reads the target repository's workflow YAML as data (never executes it), derives the cargo clippy and test-compile commands CI runs, and refuses working directories that are absolute, contain .. or hold expressions (#4630); gate_infra_release.ts (PR #4896 review) counts fleet-authored release markers on a PR through gh, validating its key against an allow-list before it reaches a jq expression",
+  "definition": "module added to worker/deno/lib/ after the recorded security-sweep slices: ci_cargo_checks.ts reads the target repository's workflow YAML as data (never executes it), derives the cargo clippy and test-compile commands CI runs, and refuses working directories that are absolute, contain .. or hold expressions (#4630); gate_infra_release.ts (PR #4896 review) counts release markers on a PR: it reads each PR comment's author login and body through a fixed jq filter (`.[] | {login: .user.login, body: .body} | @json`), parses each untrusted JSON line, and counts only comments by a trusted login (matched case-insensitively) whose body contains the marker for its key, a key validated against an allow-list before it is built into the marker",
   "status": "claimed",
   "paths": [
     "worker/deno/lib/ci_cargo_checks.ts",

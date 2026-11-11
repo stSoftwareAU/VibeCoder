@@ -105,8 +105,9 @@ compile error is therefore caught before the push, not by a CI run. Closes
     (`origin/<base>`, the branch merged in; both the resolution and the repair
     agent runs) carry it too. Custom PR prompt runs use the discovered PR base,
     and standalone issue execution uses its milestone or base. The
-    closure-verdict agent or the planning, refinement, question, revision and
-    quorum runs, so a failing CI cargo check on their own push stays a verdict.
+    closure-verdict agent and the planning, refinement, question, revision and
+    quorum runs carry no `compareRef`, so a failing CI cargo check on their own
+    push stays a verdict.
   - The hook runs with `--allow-write=${TMPDIR:-/tmp}` added to main's
     `--config <worker>/deno.json --frozen --lock <worker>/deno.lock` invocation
     (PR #4962): the base comparison makes its scratch worktree directory with
