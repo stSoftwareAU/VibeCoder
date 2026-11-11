@@ -4,27 +4,22 @@
  * asserts the `source=` token on the `[base-refresh]` decision line, so that
  * reverting or changing that caller's source argument turns the test red.
  *
+ * Not covered here: merge_block_escalation.ts's default updater. It reads the
+ * fleet identity from CONFIG_PATH and GITHUB_USER, and handleMergeAttempt
+ * offers no seam for author or config options, so a test would have to mutate
+ * Deno.env (see tests/parallel_safety_cap_test.ts, Issue #880).
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { handleMergeAttempt } from "../lib/merge_block_escalation.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
 import { createLogger } from "../lib/logger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { Logger } from "../types.ts";
 import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
 import { updateBranch } from "../../../.claude/skills/review-fleet-prs/scripts/branch_update.ts";
 import { fix } from "../commands/fleet_pr_babysitter.ts";
 import { BASE_REFRESH_COUNTERS_FILE } from "../lib/repair_base_merge_4943.ts";
-
-const silentLogger = {
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-  debug: () => {},
-  success: () => {},
-} as unknown as Logger;
 
 /** Run `fn` and return the `[base-refresh]` lines it wrote to console.warn. */
 async function captureBaseRefreshLines<T>(
@@ -43,25 +38,6 @@ async function captureBaseRefreshLines<T>(
     };
   } finally {
     console.warn = original;
-  }
-}
-
-/** Set environment variables for the duration of `fn`, then restore them. */
-async function withTempEnv<T>(
-  vars: Record<string, string>,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const previous = Object.fromEntries(
-    Object.keys(vars).map((name) => [name, Deno.env.get(name)]),
-  );
-  for (const [name, value] of Object.entries(vars)) Deno.env.set(name, value);
-  try {
-    return await fn();
-  } finally {
-    for (const [name, value] of Object.entries(previous)) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
   }
 }
 
@@ -84,55 +60,6 @@ async function withInstantTimers<T>(fn: () => Promise<T>): Promise<T> {
     globalThis.setTimeout = original;
   }
 }
-
-/**
- * handleMergeAttempt's default updater passes no author options, so it reads
- * the fleet identity from CONFIG_PATH and GITHUB_USER. Point both at a temp
- * config naming the fixture's author.
- */
-async function withFleetConfig<T>(fn: () => Promise<T>): Promise<T> {
-  const dir = await Deno.makeTempDir({ prefix: "base_refresh_4943_" });
-  try {
-    await Deno.writeTextFile(
-      `${dir}/.config.json`,
-      JSON.stringify({
-        repos: ["owner/repo"],
-        fleet_pr_authors: ["VibeCoderST"],
-      }),
-    );
-    return await withTempEnv(
-      { CONFIG_PATH: `${dir}/.config.json`, GITHUB_USER: "VibeCoderST" },
-      fn,
-    );
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-}
-
-// merge_block_escalation.ts: handleMergeAttempt's default updateBranchFn
-// (source "merge-block-escalation").
-Deno.test("merge-block escalation default updater logs source=merge-block-escalation", async () => {
-  const fleet = strictRefreshFixture();
-  const { value, lines } = await withFleetConfig(() =>
-    withInstantTimers(() =>
-      captureBaseRefreshLines(() =>
-        handleMergeAttempt({
-          repo: "owner/repo",
-          prNumber: 10,
-          outcome: { kind: "behind_target" },
-          logger: silentLogger,
-          ghFn: fleet.gh,
-        })
-      )
-    )
-  );
-  assertEquals(lines.length, 1);
-  assertStringIncludes(
-    lines[0]!,
-    "[base-refresh] source=merge-block-escalation outcome=refresh-requested repo=owner/repo pr=#10 ",
-  );
-  assertEquals(value.branchUpdateRequested, true);
-});
 
 // review-fleet-prs/scripts/branch_update.ts: updateBranch
 // (source "review-fleet-prs").
@@ -185,7 +112,8 @@ const BEHIND_PR = {
 };
 
 // commands/fleet_pr_babysitter.ts: fix()'s behind path (source
-// "babysitter-behind", counterDir = the babysitter state dir).
+// "babysitter-behind", counterDir = the babysitter state dir, injected through
+// deps.stateDir).
 Deno.test("babysitter behind path logs source=babysitter-behind and persists its tally in the state dir", async () => {
   const fleet = strictRefreshFixture();
   const stateDir = await Deno.makeTempDir({
@@ -207,23 +135,19 @@ Deno.test("babysitter behind path logs source=babysitter-behind and persists its
     return await fleet.gh(args);
   };
   try {
-    const { lines } = await withTempEnv(
-      { XDG_STATE_HOME: stateDir },
-      () =>
-        captureBaseRefreshLines(() =>
-          fix(
-            "owner/repo",
-            initial,
-            ["VibeCoderST"],
-            "VibeCoderST",
-            { appId: "1", installationId: "1", privateKeyPath: "/unused" },
-            "/unused",
-            gh,
-            async () => {},
-            3,
-            { armAutoMerge: async () => {}, stateDir },
-          )
-        ),
+    const { lines } = await captureBaseRefreshLines(() =>
+      fix(
+        "owner/repo",
+        initial,
+        ["VibeCoderST"],
+        "VibeCoderST",
+        { appId: "1", installationId: "1", privateKeyPath: "/unused" },
+        "/unused",
+        gh,
+        async () => {},
+        3,
+        { armAutoMerge: async () => {}, stateDir },
+      )
     );
     assertEquals(updated, true);
     assertEquals(lines.length, 1);
