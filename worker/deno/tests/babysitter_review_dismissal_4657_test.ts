@@ -53,7 +53,13 @@ const pr = {
 };
 
 function review(id: number, body = `finding ${id}`): ReviewItem {
-  return { id, state: "CHANGES_REQUESTED", user: { login: "reviewer" }, body };
+  // One login per review: GitHub keeps only the latest request per reviewer.
+  return {
+    id,
+    state: "CHANGES_REQUESTED",
+    user: { login: `reviewer${id}` },
+    body,
+  };
 }
 
 const verifiedAll: Verifier = (input) =>
@@ -182,7 +188,12 @@ async function runFinish(options: FinishOptions): Promise<FinishRecord> {
         runCommand: fakeRunCommand({ changed: options.changed, events }),
         readPr: () => Promise.resolve({ ...pr }),
         validateAndCommit: () => Promise.resolve(),
-        gh: options.github.gh,
+        // The requested-reviews read answers with the reviews the repair was
+        // started from, so the findings check (Issue #4968) sees no change.
+        gh: (args: string[]) =>
+          args.some((arg) => arg.endsWith("/reviews"))
+            ? Promise.resolve(JSON.stringify([options.reviews]))
+            : options.github.gh(args),
         syncBodyFn: skipSync,
         headWaitDelayMs: 0,
         dismiss: (reviews) => {
