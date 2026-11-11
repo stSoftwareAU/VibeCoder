@@ -37,6 +37,8 @@
  */
 
 import { isProviderUnavailableFailure } from "./agent_output.ts";
+import { detectHostFault } from "./host_fault.ts";
+import { cargoClaimDeferral } from "./heavy_build_gate.ts";
 import {
   failedRunOutcome,
   outcomeForNonCodingResult,
@@ -74,6 +76,8 @@ import {
 import {
   evaluateRequirementsRubric,
   formatRubricFindings,
+  UNDERSTANDING_END_MARKER,
+  UNDERSTANDING_START_MARKER,
 } from "./requirements_rubric.ts";
 import { prepareTrustAnnotatedCommentList } from "./comment_trust_filter.ts";
 import { invalidateComments } from "./comment_cache.ts";
@@ -209,6 +213,8 @@ export interface GrillMeResult {
 
 /** Options for the grill-me processor. */
 export interface GrillMeProcessorDeps {
+  /** Dry-run build admission; discussion can proceed without build tools. */
+  cargoDeferral?: typeof cargoClaimDeferral;
   /** GitHub client for API operations. */
   ghClient: GitHubClient;
   /** Logger for diagnostic output. */
@@ -436,6 +442,11 @@ export function countConsecutiveFailures(
     // A failure marker counts regardless of which worker identity posted it
     // (Issue #2729) — failures by different machines must still accumulate.
     if (body.includes(GRILL_ME_FAILED_MARKER)) {
+      // Read old comments too: removing needs-human must not immediately
+      // recreate the same escalation from two historical host deferrals.
+      const reason = body.split("This grill-me round failed: ")[1]
+        ?.split("\n\n---")[0]?.replace(/^Claude execution failed: /, "");
+      if (reason && detectHostFault(reason) !== null) continue;
       count++;
       continue;
     }
@@ -1956,13 +1967,36 @@ async function _processGrillMeWithHeartbeat(
   }
 
   // 6) Invoke Claude with the grill-me timeout.
+  const discussionOnly =
+    (await (processorDeps.cargoDeferral ?? cargoClaimDeferral)(
+      config.workDir,
+    )) !== null;
+  if (discussionOnly) {
+    logger.info(
+      "Grill-me continues with read-only discussion tools; builds remain deferred",
+      {
+        repo,
+        issueNumber,
+      },
+    );
+  }
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
       // Issue #2561: the Graft and CodeGraph rules, with RTK's outermost so it
       // is the last thing the agent reads — the order planning uses.
       prompt: rtk.applyPrompt(
         graft.applyPrompt(codegraph.applyPrompt(promptResult.value)),
-      ),
+      ) + (discussionOnly
+        ? `\n\n## Read-only discussion delivery\n` +
+          `This invocation has only Read, Glob, Grep, WebSearch and WebFetch. ` +
+          `Do not run commands, builds, tools through delegation, or publish to GitHub. ` +
+          `The worker will publish your response to this issue. This replaces the ` +
+          `delivery commands above; keep their requirements and trust boundaries. ` +
+          `Return exactly one JSON object, without surrounding prose, with two ` +
+          `non-empty string fields: "comment" (the complete Round ${roundNumber} ` +
+          `or Ready comment) and "understanding" (the full Current Understanding ` +
+          `section, without its HTML boundary markers). No other fields.\n`
+        : ""),
       timeoutSeconds: config.grillMeTimeout,
       killAfterSeconds: config.grillMeKillAfter,
       // Issue #3154: grill-me now has the full 1h hard budget so a genuinely
@@ -1972,6 +2006,7 @@ async function _processGrillMeWithHeartbeat(
       // wait when actually thinking" both hold.
       noOutputTimeout: config.claudeNoOutputTimeout,
       phase: "grill_me",
+      discussionOnly,
       repo,
       cwd: config.workDir,
       logger,
@@ -1990,6 +2025,16 @@ async function _processGrillMeWithHeartbeat(
 
   if (!claudeResult.ok) {
     const errorMsg = claudeResult.error.message;
+    if (detectHostFault(errorMsg) !== null) {
+      return await postFailureAndUnassign(
+        ghClient,
+        repo,
+        issueNumber,
+        githubUser,
+        errorMsg,
+        logger,
+      );
+    }
     logger.warn("Claude execution failed during grill-me", {
       repo,
       issueNumber,
@@ -2046,6 +2091,97 @@ async function _processGrillMeWithHeartbeat(
       { outcome: failedRunOutcome("grill-me", reason, 0) },
     );
     return { ok: false, error: new Error(reason) };
+  }
+
+  if (discussionOnly) {
+    try {
+      if (claudeResult.value.exitCode !== 0) {
+        throw new Error("read-only discussion did not complete successfully");
+      }
+      const output = claudeResult.value.output.trim()
+        .replace(/^```json\s*\n([\s\S]*)\n```$/, "$1");
+      const value: unknown = JSON.parse(output);
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("discussion response must be a JSON object");
+      }
+      const record = value as Record<string, unknown>;
+      if (
+        Object.keys(record).sort().join(",") !== "comment,understanding" ||
+        typeof record.comment !== "string" || !record.comment.trim() ||
+        typeof record.understanding !== "string" || !record.understanding.trim()
+      ) {
+        throw new Error(
+          "discussion response requires only comment and understanding strings",
+        );
+      }
+      const comment = redactSecrets(record.comment.trim());
+      const heading = comment.split("\n")[0];
+      if (
+        heading !== `${GRILL_ME_ROUND_MARKER}${roundNumber}` &&
+        heading !== GRILL_ME_READY_MARKER
+      ) {
+        throw new Error(
+          "discussion comment has no current Round or Ready heading",
+        );
+      }
+      const understanding = redactSecrets(record.understanding.trim());
+      if (
+        understanding.includes(UNDERSTANDING_START_MARKER) ||
+        understanding.includes(UNDERSTANDING_END_MARKER)
+      ) {
+        throw new Error(
+          "discussion understanding must not contain boundary markers",
+        );
+      }
+      // Read immediately before publishing. Preserve the human's original
+      // request and every section outside the worker's understanding block.
+      const latest = await ghClient.getIssue(repo, issueNumber);
+      const body = latest.body;
+      const start = body.indexOf(UNDERSTANDING_START_MARKER);
+      const end = body.indexOf(UNDERSTANDING_END_MARKER);
+      const block =
+        `${UNDERSTANDING_START_MARKER}\n${understanding}\n${UNDERSTANDING_END_MARKER}`;
+      if (
+        (start < 0) !== (end < 0) || (start >= 0 && end < start) ||
+        (start >= 0 &&
+          body.indexOf(UNDERSTANDING_START_MARKER, start + 1) >= 0) ||
+        (end >= 0 && body.indexOf(UNDERSTANDING_END_MARKER, end + 1) >= 0)
+      ) {
+        throw new Error(
+          "issue has malformed understanding boundaries; refusing to overwrite it",
+        );
+      }
+      await ghClient.editIssue(repo, issueNumber, {
+        body: start < 0
+          ? `${body.trimEnd()}\n\n${block}`
+          : body.slice(0, start) + block +
+            body.slice(end + UNDERSTANDING_END_MARKER.length),
+      });
+      const posted = await ghClient.postComment(repo, issueNumber, comment);
+      // The legacy GitHub CLI fallback succeeds without returning metadata.
+      // Confirm that path with a fresh read instead of recording a false failure.
+      if (!posted) {
+        invalidateComments(repo, issueNumber);
+        const fresh = await ghClient.getIssueComments(repo, issueNumber);
+        if (!fresh.some((entry) => entry.body.trim() === comment)) {
+          throw new Error("discussion publication was not confirmed by GitHub");
+        }
+      }
+      // The validated first heading owns the outcome, even if the prose
+      // quotes another marker. Only confirmed publication reaches this point.
+      claudeResult.value.output = heading;
+    } catch (error) {
+      return await postFailureAndUnassign(
+        ghClient,
+        repo,
+        issueNumber,
+        githubUser,
+        `Read-only discussion publication failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        logger,
+      );
+    }
   }
 
   // Issue #2561: the query tallies the Graft and CodeGraph lines report.
@@ -2434,7 +2570,20 @@ async function postFailureAndUnassign(
   reason: string,
   logger: Logger,
 ): Promise<Result<GrillMeResult>> {
-  await postFailureComment(ghClient, repo, issueNumber, githubUser, reason);
+  if (
+    detectHostFault(reason.replace(/^Claude execution failed: /, "")) === null
+  ) {
+    await postFailureComment(ghClient, repo, issueNumber, githubUser, reason);
+  } else {
+    logger.info(
+      "Grill-me deferred by infrastructure; no failed round recorded",
+      {
+        repo,
+        issueNumber,
+        reason: redactSecrets(reason),
+      },
+    );
+  }
   await releaseAllWorkerClaims(
     ghClient,
     repo,

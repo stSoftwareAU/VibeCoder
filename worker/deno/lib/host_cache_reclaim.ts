@@ -24,9 +24,9 @@
  *   (Issue #4540): above the floor but short of the cargo headroom, the worker
  *   claims nothing it can build in a cargo repository, so that band needs the
  *   reclaim as much as the floor does. It removes the oldest eligible caches
- *   first and stops once the estimated free space (free space at the start
- *   plus the bytes removed) reaches that target. No `df` is needed after the
- *   start.
+ *   first and stops once observed host free space reaches that target.
+ *   Without a probe it retains the explicitly labelled size estimate.
+ *   A failed probe stops further removals and is reported separately.
  * - If the process table cannot be read, nothing is removed. A cache that
  *   cannot be proven idle is not deleted. On POSIX the table includes lsof's
  *   open-file names, so an lsof that cannot run or times out removes nothing
@@ -46,6 +46,7 @@ import {
 } from "./host_path_style.ts";
 import { resolveOwnUid } from "./private_cache_dir.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
+import { probeDiskReading } from "./host_disk.ts";
 
 /** The file a cache directory carries, per the CACHEDIR.TAG specification. */
 export const CACHEDIR_TAG_FILENAME = "CACHEDIR.TAG";
@@ -129,6 +130,8 @@ export interface HostCacheFs {
 
 /** Everything environment-dependent the reclaim touches. */
 export interface HostCacheReclaimDeps {
+  /** Re-read the launcher's host filesystem after removal; null means unknown. */
+  readFreeBytes?: () => Promise<number | null>;
   now(): number;
   /**
    * Lines of text from the process table and the processes' working
@@ -196,9 +199,13 @@ export interface HostCacheReclaimResult {
   skipped: HostCacheSkip[];
   /** Estimated free bytes after the run: free at the start plus removed bytes. */
   freeBytesAfter: number;
+  /** Observed host free bytes, distinct from the sum of removed cache sizes. */
+  measuredFreeBytesAfter?: number;
+  /** Stop removing caches when the requested host observation fails. */
+  diskProbeError?: string;
   /**
    * floor + the larger headroom: below it the reclaim acts, and it stops once
-   * the estimate reaches it.
+   * measured free space reaches it (the estimate when no probe is supplied).
    */
   targetBytes: number;
   /** Bytes still missing to clear the floor; zero once the floor is cleared. */
@@ -220,6 +227,30 @@ export interface HostDirectorySize {
 /** The host's path spelling, from the platform the worker runs on. */
 export function hostPathStyle(): LauncherPathStyle {
   return Deno.build.os === "windows" ? "windows" : "posix";
+}
+
+/** Measure the same host filesystem whose floor the launcher supplied. */
+export async function probeReclaimFreeBytes(
+  path: string,
+  style: LauncherPathStyle = hostPathStyle(),
+  run: typeof runWithTimeout = runWithTimeout,
+): Promise<number | null> {
+  if (style !== "windows") {
+    return (await probeDiskReading(path))?.availableBytes ?? null;
+  }
+  // A PowerShell single-quoted literal treats every character as data.
+  const literal = "'" + path.replaceAll("'", "''") + "'";
+  const result = await run("powershell", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    `[System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot(${literal})).AvailableFreeSpace`,
+  ], { timeoutMs: 10_000 });
+  if (!result.ok || result.value.timedOut || !result.value.success) return null;
+  const text = result.value.stdout.trim();
+  if (!/^\d+$/.test(text)) return null;
+  const bytes = Number(text);
+  return Number.isSafeInteger(bytes) ? bytes : null;
 }
 
 function errorText(error: unknown): string {
@@ -900,7 +931,7 @@ function usableProcessTable(lines: unknown): string[] {
  *
  * @param options - The space figures, the age rule, the roots and protections
  * @param overrides - Any dependency to replace (the rest are the production ones)
- * @returns What was removed, what was declined and why, and the estimate
+ * @returns Removals, refusals, size estimates and any host disk observation
  */
 export async function reclaimHostCaches(
   options: HostCacheReclaimOptions,
@@ -982,8 +1013,10 @@ export async function reclaimHostCaches(
 
   const removed: HostCacheRemoval[] = [];
   let freeBytes = options.freeBytes;
+  let measuredFreeBytesAfter: number | undefined;
+  let diskProbeError: string | undefined;
   for (const cache of eligible) {
-    if (freeBytes >= targetBytes) break;
+    if ((measuredFreeBytesAfter ?? freeBytes) >= targetBytes) break;
     const bytes = await safeDirSize(deps, cache.path);
     // The path is resolved afresh by the kernel at removal, long after the
     // walk and a possible minute of `du`, so it is vouched for again now.
@@ -1003,14 +1036,31 @@ export async function reclaimHostCaches(
     }
     removed.push({ path: cache.path, bytes, idleMs: cache.idleMs });
     freeBytes += bytes ?? 0;
+    if (deps.readFreeBytes) {
+      try {
+        const measured = await deps.readFreeBytes();
+        if (measured === null || !Number.isFinite(measured) || measured < 0) {
+          throw new Error("host free space could not be measured");
+        }
+        measuredFreeBytesAfter = measured;
+      } catch (error) {
+        diskProbeError = errorText(error);
+        break;
+      }
+    }
   }
 
   return {
     removed,
     skipped,
     freeBytesAfter: freeBytes,
+    ...(measuredFreeBytesAfter === undefined ? {} : { measuredFreeBytesAfter }),
+    ...(diskProbeError ? { diskProbeError } : {}),
     targetBytes,
-    shortBytes: Math.max(0, options.floorBytes - freeBytes),
+    shortBytes: Math.max(
+      0,
+      options.floorBytes - (measuredFreeBytesAfter ?? freeBytes),
+    ),
   };
 }
 

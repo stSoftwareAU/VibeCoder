@@ -15,6 +15,101 @@ import { withAgentStub } from "./support/agent_stub.ts";
 import { createLogger } from "../lib/logger.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
 import { loadConfig } from "../lib/config.ts";
+import {
+  enableInFlightHostDiskGate,
+  registerHeavyBuildDiskProbe,
+} from "../lib/heavy_build_gate.ts";
+
+Deno.test("discussion in a Rust checkout starts above the floor without shell, hooks, MCP or delegation", async () => {
+  await withAgentStub(
+    `printf '%s\\n' "$@" > "$(dirname "$0")/argv"\nprintf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'`,
+    async (stub) => {
+      await Deno.writeTextFile(
+        `${stub.dir}/Cargo.toml`,
+        '[package]\nname = "test"\n',
+      );
+      const gb = 1_073_741_824;
+      enableInFlightHostDiskGate(true);
+      registerHeavyBuildDiskProbe(() =>
+        Promise.resolve({
+          status: {
+            level: "ok",
+            source: "launch-baseline",
+            availableBytes: 101 * gb,
+            totalBytes: 926 * gb,
+            detail: "101 GB free",
+          },
+          floorBytes: 92.6 * gb,
+          trimRefused: true,
+        })
+      );
+      try {
+        const run = await runClaudeWithTimeout({
+          prompt: "test",
+          cwd: stub.dir,
+          discussionOnly: true,
+          agentBinaryPath: stub.path,
+          agentProvider: "claude",
+          clock: fakeClock(),
+          timeoutSeconds: 30,
+          logger: createLogger({ write: () => {} }),
+          settingsJson: JSON.stringify({ hooks: { PreToolUse: [] } }),
+          mcpConfig: true,
+          agents: { executor: { prompt: "test", description: "test" } },
+        });
+        assertEquals(run.ok, true);
+        const argv = (await Deno.readTextFile(`${stub.dir}/argv`)).split("\n");
+        assertEquals(
+          argv[argv.indexOf("--tools") + 1],
+          "Read,Glob,Grep,WebSearch,WebFetch",
+        );
+        assertEquals(argv.includes("--strict-mcp-config"), true);
+        assertEquals(argv[argv.indexOf("--setting-sources") + 1], "");
+        assertEquals(
+          JSON.parse(argv[argv.indexOf("--settings") + 1]),
+          { disableAllHooks: true },
+        );
+        for (const flag of ["--mcp-config", "--agents", "--resume"]) {
+          assertEquals(argv.includes(flag), false, flag);
+        }
+        const refused = await runClaudeWithTimeout({
+          prompt: "test",
+          cwd: stub.dir,
+          discussionOnly: true,
+          agentProvider: "codex",
+          agentBinaryPath: stub.path,
+          clock: fakeClock(),
+        });
+        assertEquals(refused.ok, false);
+        registerHeavyBuildDiskProbe(() =>
+          Promise.resolve({
+            status: {
+              level: "low",
+              source: "launch-baseline",
+              availableBytes: 80 * gb,
+              totalBytes: 926 * gb,
+              detail: "80 GB free",
+            },
+            floorBytes: 92.6 * gb,
+            trimRefused: true,
+          })
+        );
+        const low = await runClaudeWithTimeout({
+          prompt: "test",
+          cwd: stub.dir,
+          discussionOnly: true,
+          agentProvider: "claude",
+          agentBinaryPath: stub.path,
+          clock: fakeClock(),
+        });
+        assertEquals(low.ok, false, "discussion still respects the host floor");
+      } finally {
+        enableInFlightHostDiskGate(false);
+        registerHeavyBuildDiskProbe(undefined);
+      }
+    },
+  );
+});
 
 Deno.test("Claude invocation always carries a positive turn cap, including DeepSeek", () => {
   for (const provider of ["claude", "deepseek"]) {
