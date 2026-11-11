@@ -3,11 +3,11 @@
  * Issue #3061 — a fleet PR editing an existing test for an issue-required
  * change dropped assertions the issue never touched, which were still true;
  * a green gate before and after did not prove nothing was lost. Both the
- * coding standards and the issue prompt must keep the "Change only what the
- * issue changes" rule: edit only the expectation the issue changes, keep
- * every other assertion, and name the issue requirement that makes each
- * removed assertion untrue, or treat its removal as a blocking self-review
- * finding.
+ * coding standards and the issue prompt must keep every other behaviour
+ * assertion when editing a test. A broken "how" assertion is deleted rather
+ * than re-counted or restored, while the outcome assertions that still prove
+ * the behaviour are named. The Test Plan records why each other removed
+ * assertion is justified, or treats it as a blocking self-review finding.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -24,7 +24,17 @@ Deno.test("coding standards - TDD rule keeps still-true assertions when editing 
   );
 
   assertStringIncludes(text, "Change only what the issue changes");
-  assertStringIncludes(text, "an issue requirement that makes it untrue");
+  assertStringIncludes(text, "every other behaviour assertion");
+  assertStringIncludes(
+    text,
+    'A "how" assertion (rule 2 of **Dummy tests and "how" tests are refused**) that the change breaks is deleted, not re-counted or restored',
+  );
+  assertStringIncludes(
+    text,
+    "name the outcome assertions that still prove the behaviour",
+  );
+  assertStringIncludes(text, "Each removed behaviour assertion needs an issue");
+  assertStringIncludes(text, "A behaviour assertion removed without one is a");
   assertStringIncludes(text, "blocking self-review finding");
 });
 
@@ -34,16 +44,28 @@ Deno.test("issue prompt - Instructions keep the change-only-what-the-issue-chang
   assertStringIncludes(instructions, "Change only what the issue changes");
   assertStringIncludes(
     instructions,
-    "the issue requirement that makes it untrue",
+    "every other behaviour assertion the test made",
+  );
+  assertStringIncludes(
+    instructions,
+    'A "how" assertion (rule 2 of **Dummy tests and "how" tests are refused**) that the change breaks is deleted, not re-counted or restored',
+  );
+  assertStringIncludes(
+    instructions,
+    "A behaviour assertion removed without one is a blocking self-review finding",
+  );
+  assertStringIncludes(
+    instructions,
+    "name the outcome assertions that still prove the behaviour",
   );
 });
 
 Deno.test("issue prompt - PR Summary Test Plan requires covering removed assertions", async () => {
   const text = flat(section(await issuePrompt(), "PR Summary File"));
 
+  assertStringIncludes(text, "blocking self-review finding");
   assertStringIncludes(
     text,
-    "the issue requirement that makes it untrue",
+    "this existing entry also covers obsolete call-count and call-order assertions",
   );
-  assertStringIncludes(text, "blocking self-review finding");
 });
