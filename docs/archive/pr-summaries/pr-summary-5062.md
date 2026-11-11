@@ -65,9 +65,9 @@ the repository or posted to GitHub.
   ../../docs/archive/pr-summaries/pr-summary-5062.md` passed: 0 gates blocked,
   0 not checked.
 - `timeout 900 ./quality.sh < /dev/null` failed only at the Deno test unit-time
-  budget: 88 tests exceeded 1.00s; the named first failure was
-  `tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` at 1.20s. The
-  parallel and serial test suites passed; lint, type check and formatting
+  budget: 88 tests exceeded 1.00s; the gate reported
+  `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` at 1.20s.
+  The parallel and serial test suites passed; lint, type check and formatting
   passed. Config integration and Checkov were skipped by the gate.
 
 Not done or not checked: the private archive correlation, failure attribution,
