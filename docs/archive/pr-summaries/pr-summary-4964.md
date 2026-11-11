@@ -98,7 +98,11 @@ contain "Issue #4964"):
   closes are left unchanged;
 - withheld state: line-wrapped, code-split, colon and full-URL forms leave no
   effective close;
-- `assertWithheld` still throws for real closes and not for code-formatted ones.
+- `assertWithheld` still throws for real closes and not for code-formatted ones;
+- "a colon or full-URL close is honoured for this repository in any case, and
+  another repository's is not (PR #5038 review)": a colon close and a full-URL
+  close naming this repository in another letter case are honoured with no
+  `Closes #N` appended, and the same forms naming another repository are not.
 
 Tests added in `worker/deno/tests/pr_body_test.ts`: `hasGithubClosingReference`
 with and without `repo`, and the line-break split.
