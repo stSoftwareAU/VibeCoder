@@ -17,7 +17,11 @@ import { validateAcceptanceClosure } from "./acceptance_criteria_gate.ts";
 import { validateIndependentReview } from "./independent_review_gate.ts";
 import { validateReproductionStatus } from "./reproduction_status_gate.ts";
 import { validateResultPlaceholders } from "./result_placeholder_gate.ts";
-import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
+import {
+  COLON_CLOSE_RE,
+  findMissingCriteria,
+  URL_CLOSE_RE,
+} from "./missing_criterion_close_guard.ts";
 import { closingKeywordLine, ensurePrReferencesIssue } from "./pr_body.ts";
 import {
   markdownLogicalUnits,
@@ -103,6 +107,33 @@ const WAYS_OUT =
   "Mark the unmet criterion missing (`- **missing** — … — reason: …`) so the close is withheld, or drop the Part of / Refs line if this pull request does close the issue.";
 
 /**
+ * The first colon or full-URL closing phrase naming `issueNumber` in the
+ * code-masked summary (Issue #4936), whitespace collapsed as
+ * {@link closingKeywordLine} does. The colon form counts only the unqualified
+ * `#N`, as `closingKeywordLine` does. The URL form counts any repository,
+ * because this gate has no repository identity, so it fails closed.
+ */
+function colonOrUrlClosingPhrase(
+  maskedSummary: string,
+  issueNumber: number,
+): string | null {
+  const colon: RegExpMatchArray | undefined = [
+    ...maskedSummary.matchAll(COLON_CLOSE_RE),
+  ].find((m) => m[3] === undefined && Number(m[4]) === issueNumber);
+  const url: RegExpMatchArray | undefined = [
+    ...maskedSummary.matchAll(URL_CLOSE_RE),
+  ].find((m) => Number(m[5]) === issueNumber);
+  const first = colon === undefined
+    ? url
+    : url === undefined
+    ? colon
+    : (colon.index ?? 0) <= (url.index ?? 0)
+    ? colon
+    : url;
+  return first === undefined ? null : first[0].replace(/\s+/g, " ").trim();
+}
+
+/**
  * When a summary says it is only part of the run's issue, but the assembled
  * body would still close that issue (Issue #4126).
  *
@@ -112,8 +143,9 @@ const WAYS_OUT =
  * #4808), so a summary whose only close is `` `Closes #N` `` still gets the
  * appended close. Route 2: the summary itself contains a closing keyword in
  * prose (code masked), including a negated one such as "does not close #N",
- * which GitHub still honours. A parsed `missing` criterion is the #3177 hold,
- * so it passes.
+ * which GitHub still honours, in the plain, colon (`Closes: #N`) or full-URL
+ * (`Fixes https://github.com/owner/repo/issues/N`) form. A parsed `missing`
+ * criterion is the #3177 hold, so it passes.
  *
  * @returns The block message, or undefined when the gate passes.
  */
@@ -125,7 +157,8 @@ function partOfStillClosesProblem(
   if (phrases.length === 0) return undefined;
   if (findMissingCriteria(summary).length > 0) return undefined;
   const keptOpen = phrases[0]!;
-  const closing = closingKeywordLine(maskMarkdownCode(summary), issueNumber);
+  const closing = closingKeywordLine(maskMarkdownCode(summary), issueNumber) ??
+    colonOrUrlClosingPhrase(maskMarkdownCode(summary), issueNumber);
   if (closing !== null) {
     return `${keptOpen} says the issue stays open, but the summary still contains the closing phrase "${closing}". ${WAYS_OUT}`;
   }

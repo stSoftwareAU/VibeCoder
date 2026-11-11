@@ -424,6 +424,87 @@ Deno.test("runPrSummaryCheck - Part of #N with a closing keyword only in a code 
   );
 });
 
+Deno.test("runPrSummaryCheck - Part of #N with a colon closing phrase blocks and names that phrase (Issue #4126, #4936)", async () => {
+  const colon = await withPartOf("Part of #42.\n\nCloses: #42.");
+  assert(colon.ok);
+  assertEquals(statusOf(colon.value, "#4126"), "blocked");
+  assertStringIncludes(
+    partOfProblem(colon.value),
+    'closing phrase "Closes: #42"',
+  );
+});
+
+Deno.test("runPrSummaryCheck - Part of #N with a full-URL closing phrase blocks and names that phrase (Issue #4126, #4936)", async () => {
+  const url = await withPartOf(
+    "Part of #42.\n\nFixes https://github.com/o/r/issues/42.",
+  );
+  assert(url.ok);
+  assertEquals(statusOf(url.value, "#4126"), "blocked");
+  assertStringIncludes(
+    partOfProblem(url.value),
+    'closing phrase "Fixes https://github.com/o/r/issues/42"',
+  );
+});
+
+Deno.test("runPrSummaryCheck - Part of #N with a parsed missing entry passes for colon and full-URL closing phrases (Issue #4126, #4936)", async () => {
+  const missing = [
+    "## Acceptance Criteria",
+    "",
+    "- **missing** — the owner deploys the baseline — reviewer: missing — reason: not deployed yet",
+  ].join("\n");
+  const colon = await withPartOf(
+    `Part of #42.\n\nCloses: #42.\n\n${missing}`,
+  );
+  assert(colon.ok);
+  assertEquals(statusOf(colon.value, "#4126"), "passed");
+
+  const url = await withPartOf(
+    `Part of #42.\n\nFixes https://github.com/o/r/issues/42.\n\n${missing}`,
+  );
+  assert(url.ok);
+  assertEquals(statusOf(url.value, "#4126"), "passed");
+});
+
+Deno.test("runPrSummaryCheck - Part of #N with colon or full-URL closing phrases only in a code span does not name them as prose closes (Issue #4126, #4936)", async () => {
+  // Code is masked, so the helper never names these phrases. The gate still
+  // blocks: the appender ignores code too and appends a real "Closes #42".
+  const spanned = await withPartOf(
+    "Part of #42.\n\nThe example is `Closes: #42` and `Fixes https://github.com/o/r/issues/42`.",
+  );
+  assert(spanned.ok);
+  assertEquals(statusOf(spanned.value, "#4126"), "blocked");
+  const problem = partOfProblem(spanned.value);
+  assertStringIncludes(problem, "the worker appends Closes #42");
+  assert(!problem.includes('closing phrase "Closes: #42"'));
+  assert(
+    !problem.includes(
+      'closing phrase "Fixes https://github.com/o/r/issues/42"',
+    ),
+  );
+});
+
+Deno.test("runPrSummaryCheck - Part of #N with colon or full-URL closing phrases for another issue does not name them (Issue #4126, #4936)", async () => {
+  // The helper only names #42 here. The gate still blocks because the appender
+  // adds a real "Closes #42" to the assembled body.
+  const other = await withPartOf(
+    "Part of #42.\n\nCloses: #99 and Fixes https://github.com/o/r/issues/99.",
+  );
+  assert(other.ok);
+  assertEquals(statusOf(other.value, "#4126"), "blocked");
+  const problem = partOfProblem(other.value);
+  assertStringIncludes(problem, "the worker appends Closes #42");
+  assert(!problem.includes("closing phrase"));
+});
+
+Deno.test("runPrSummaryCheck - Part of #N with a long run of spaces after close and no issue number is blocked without naming a phrase (Issue #4126, #4936)", async () => {
+  const hostile = await withPartOf(
+    `Part of #42.\n\nclose${" ".repeat(20000)}x`,
+  );
+  assert(hostile.ok);
+  assertEquals(statusOf(hostile.value, "#4126"), "blocked");
+  assert(!partOfProblem(hostile.value).includes("closing phrase"));
+});
+
 Deno.test("runPrSummaryCheck - Part of still closes is not checked without an issue number (Issue #4126)", async () => {
   const r = await run(`${GOOD_SUMMARY}\nPart of #42.`);
   assert(r.ok);

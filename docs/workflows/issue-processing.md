@@ -1157,21 +1157,41 @@ reads that signal at both ends
 - **Degraded runs follow the same rule.** A fallback model changes nothing
   here.
 - **Completion marks a draft ready.** Completion rewrites a draft's body, runs
-  `gh pr ready` and arms squash auto-merge, even when a criterion is still
-  unmet. The body says `Closes #N` unless an entry is `partial` or `missing`, which keeps
-  `Part of #N`.
+  `gh pr ready` on a draft and arms squash auto-merge, even when a criterion is
+  still unmet. A failed ready on a known draft releases the run as
+  `interrupted`: the run outcome names the PR with the failure attached, the
+  claim comment does not report it as raised ready, the PR stays an unarmed
+  draft, and the next run retries. This post-PR failure skips the whole-body
+  infrastructure retry, so the verifier and posted comments are not repeated.
+  When the state lookup cannot read the draft
+  state (after one retry), the ready step's own head read decides: `isDraft`
+  true is handled exactly like a known draft, while `isDraft` false or an
+  unreadable head read only warns on a failed ready, and arming proceeds as
+  before (Issue #4952). Auto-merge on a draft waits for its ready-for-review CI
+  to start; if that cannot be confirmed, the sweep arms it (Issue #4160). The
+  REST fallback runs when `gh pr create` hits the primary GraphQL quota, and
+  the PR it returns can be an open draft continuation on the branch, so its
+  draft flag is read over the quota-exempt REST endpoint (`readPrDraftViaRest`)
+  and the same ready step runs unless that read says the PR is ready. While the
+  quota is latched, `gh pr view` and `gh pr ready` are skipped: a REST-confirmed draft that cannot be readied fails
+  the run as `interrupted` (retried), a REST-confirmed ready PR is left alone,
+  and a flag that cannot be read keeps the fail-open rule above. The body says `Closes #N` unless an entry is
+  `partial` or `missing`, which keeps `Part of #N`. An orphaned draft left
+  anyway is readied by the sweep self-heal (Issue #4952).
 
 - **A timed-out run keeps a draft.** A run that times out (or is released on
   schedule) with its work preserved on the branch opens a DRAFT PR saying
   `Part of #N` — never a closing keyword, never auto-merge (the sweep skips
-  drafts, Issue #1800) — via
+  drafts, Issue #1800; a continuation draft carries the marker, so the
+  orphaned-draft self-heal of Issue #4952 never readies it) — via
   [`draft_continuation_pr.ts`](../../worker/deno/lib/draft_continuation_pr.ts).
   The fleet's own draft never holds its issue (`getBlockingPRForIssue`), so the
   next run re-claims it, resumes the branch and finishes.
 - **Ready, and merging as soon as possible.** When the resumed run completes,
   completion rewrites the draft's body (`Closes #N`, or `Part of #N` while an
   entry is `partial` or `missing`), runs `gh pr ready` and arms squash auto-merge in the
-  same step, rather than waiting for the sweep.
+  same step unless marking it ready fails, rather than waiting for the sweep (a
+  failed ready is handled as in the bullet above).
 
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) keeps
 only the pure scope assessment both this gate and `claim_freshness.ts` read.

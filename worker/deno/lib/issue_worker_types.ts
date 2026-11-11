@@ -244,6 +244,8 @@ export interface PhaseState {
    * invocation. Each phase is capped at one retry — see `infra_retry.ts`.
    */
   infraRetryCounts?: Record<string, number>;
+  /** A failed post-PR ready step must not replay completion's side effects. */
+  completionDraftReadyFailed?: boolean;
   /**
    * True once the execute phase has discarded a resumed session the agent CLI
    * refused as `Prompt is too long` and retried on a fresh one (Issue #2682).
