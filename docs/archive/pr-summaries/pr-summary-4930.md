@@ -9,9 +9,17 @@ test helper whose text names it (path, unique base name, directory, or a
 templated directory), or that imports it directly or through other files
 (relative `.ts` specifiers). Deleted and renamed-away paths count, so a push
 that removes a file still named by a test is checked. Literal `loadPrompt` calls
-also select the tests for that prompt type. PR-feedback and CI-fix final pushes
-with `shellcheckOnly` specs now run these tests and configured markdownlint;
-formatting policy is retained. Dynamic dependencies can still be missed.
+also select the tests for that prompt type. A change under a `prompts/`
+directory, or to a root's `deno.json`, `deno.jsonc` or `deno.lock`, has readers
+no name scan can find (a prompt builder, the lock file), so it runs that root's
+whole `test:unit` suite instead (`needsFullUnitSuite`). A failing `deno test`
+check is judged by `lib/deno_test_baseline.ts`: a module-fetch failure is a
+`PrePushGateInfrastructureError`, and a test that fails the same way (same name,
+same file) at the commit the push forked from is a `[PRE_PUSH_WARNING]` line,
+not a block. PR-feedback and CI-fix final pushes with `shellcheckOnly` specs now
+run these tests and configured markdownlint; formatting policy is retained.
+Dynamic dependencies in a push that touches no prompt or lock file can still be
+missed.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -32,10 +40,13 @@ Closes #4930.
 - A root gets the check only when its `deno.json(c)` defines a `test:unit` task:
   that task runs only unit tests, so the integration suites CI's shards exclude
   are not run, and other Deno repositories are unaffected.
-- Dependency-selected, not the whole suite: a doc or prompt change selects
-  roughly 20 to 300 tests, while a change to a widely imported `lib/` module
+- Dependency-selected, not the whole suite, except where readers cannot be
+  resolved: a doc change selects roughly 20 to 300 tests, a change to a widely
+  imported `lib/` module
   selects most of the unit suite (about 1,870 of 2,300 test files for
-  `lib/jsonc.ts`), the same tests CI would run for it. The selection
+  `lib/jsonc.ts`), the same tests CI would run for it, and a prompt, `deno.json`
+  or `deno.lock` change runs the whole suite (a prompt reaches its tests through
+  `buildIssuePrompt`-style builders and wrappers, which no token names). The selection
   over-approximates on purpose: running an unrelated test costs time, missing a
   reader lets a break reach CI.
 - Only files under `tests/` are read for names. A source that merely quotes a
@@ -45,8 +56,14 @@ Closes #4930.
 - Not followed: import-map, `jsr:` / `npm:` specifiers and computed dynamic
   imports; a path built piecewise with `join()` for a non-unique base name; a
   `_test.ts` outside `tests/`.
-- The check shares the existing runner, so a failure, timeout or missing `deno`
-  blocks the push (fail closed).
+- The check shares the existing runner, so a failure or timeout blocks the push
+  (fail closed). Not every failure is the branch's: a missing `deno` or a
+  module-fetch failure with no failed test in the output is infrastructure
+  (`PrePushGateInfrastructureError`; a 404 `JSR package not found` is not), and
+  a failed test that is also red at the fork commit (a throwaway `git worktree`
+  re-run of the failed files) is a warning. A push-added test file, a base that
+  passes, a base that cannot be checked out (a shallow checkout without the
+  parent) and output naming no failed test stay blocks. A timeout stays a block.
 
 ### Undiscoverable Facts
 
@@ -69,7 +86,10 @@ Backend-only; no UI files. Tests are in
 New non-test members have production readers: `denoUnitTestRoots` and
 `denoReferencedTests` are set in `runPrePushGate` and read in
 `planChangedFileChecks`; `loadDenoUnitTestRoots` and `loadReferencedUnitTests`
-are called by `runPrePushGate`.
+are called by `runPrePushGate`; `denoFullUnitRoots` and `denoTestRoot` are set
+from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
+`runPrePushGate` loop; `judgeDenoTestFailure`, `unitTestCommand` and
+`worktreeBaseline` (`lib/deno_test_baseline.ts`) are called by `runPrePushGate`.
 
 ## Acceptance Criteria
 
@@ -81,11 +101,12 @@ are called by `runPrePushGate`.
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed doc runs the differently named test that reads it (#4930)`,
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a deleted source runs the differently named test that imports it (#4930)`
   — reviewer: met (markdownlint was already in the pre-push gate; `deno test`
-  now runs the unit tests a push can affect, found by name and by import, and
-  its failure blocks the push). Known residual gaps, judged unrealistic or rare
-  by the reviewer: a path built piecewise with `join()` for a non-unique base
-  name, import-map / `jsr:` / `npm:` specifiers, and a `_test.ts` outside
-  `tests/`.
+  now runs the unit tests selected by name and by import, or the whole suite for
+  a prompt or lock change, and a failure the branch caused blocks the push; a
+  base-only failure or a download outage does not). Known residual gaps, judged
+  unrealistic or rare by the reviewer: a path built piecewise with `join()` for
+  a non-unique base name, import-map / `jsr:` / `npm:` specifiers, and a
+  `_test.ts` outside `tests/`.
 
 ## Test Plan
 
@@ -129,7 +150,11 @@ are called by `runPrePushGate`.
 - gitleaks run locally over `origin/main..HEAD` of this branch: no findings.
 - Related rules checked: the module doc and `docs/CONFIGURATION.md` lists of
   changed-file checks (siblings grepped: `cspell`, `ShellCheck`, `cargo deny`)
-  were updated; no other doc lists them as complete.
+  were updated. The PR #5034 review found more: the `git_push.ts` doc comments
+  of `PreFlightGateSpec`, `shellcheckOnly` and `resolveRepairPreFlightSpec`, the
+  `commitAndPushPending` parameter doc, and the `docs/CONFIGURATION.md` push
+  guarantee paragraph said a repair ran no more than ShellCheck and cargo deny;
+  all now name the unit tests and markdownlint.
 - `runPrePushGate` passes the Deno roots and referenced tests to the planner.
   Repair specs retain their formatter policy while passing changed paths for
   unit-test selection and configured Markdown validation.
@@ -140,8 +165,40 @@ are called by `runPrePushGate`.
   `PROMPTS_DIR` / `new URL("../../../prompts", import.meta.url)` pattern.
 - Repair pushes run affected unit tests and markdownlint without enabling their
   skipped formatters. Each failing check blocks; the successful control passes.
-- Both regressions fail before these fixes. All 113 pre-push gate tests pass.
+- Both regressions fail before these fixes. All 113 pre-push gate tests passed at that revision.
 - Corrected the docs and summary to state the scan's heuristics and remaining
   dynamic-dependency limits rather than promising every broken test is selected.
 - Formatting, lint and diff checks pass. Tests use integrity-verified local
   copies of locked dependencies. Full quality gate not rerun here.
+
+### PR #5034 review, second round
+
+- Baseline and outage: `lib/deno_test_baseline.ts` (new) judges a failed
+  `deno test` check. Observed from the real `deno test` 2.x: failed tests print
+  `name => ./file_test.ts:L:C` under FAILURES; a JSR outage prints `error: JSR
+  package manifest for '@std/path' failed to load. Import '...' failed.`, an
+  `https:` import `error: Import '...' failed.` with `error sending request for
+  url`, an npm outage `error: Failed loading ... for package`; a missing package
+  prints `error: JSR package not found` (a 404, so a verdict).
+- Whole suite for unresolvable readers: `needsFullUnitSuite` (prompts, and a
+  root's `deno.json` / `deno.jsonc` / `deno.lock`), passed to the planner as
+  `denoFullUnitRoots`. The module doc and `docs/CONFIGURATION.md` no longer say
+  the check runs "every test that depends on a changed file" without that
+  exception.
+- Docs: `git_push.ts` (`PreFlightGateSpec`, `shellcheckOnly`,
+  `resolveRepairPreFlightSpec`, `commitAndPushPending`) and
+  `docs/CONFIGURATION.md` (push guarantee paragraph, the `deno test` bullet).
+- Tests: `worker/deno/tests/deno_test_baseline_test.ts` (5 tests at head) and
+  `worker/deno/tests/pre_push_gate_test.ts` (120 tests at head), including
+  `runPrePushGate` cases for a test red at the fork (warning, worktree removed),
+  a base that passes, a different test red at the base, a push-added test file,
+  a fetch outage, a 404, a mixed output, and a builder-based reader reached by
+  the whole suite for a prompt and a lock change.
+- Red checks run by hand (each turns a test red, then restored): fetch
+  classification off; `fresh` comparison dropped; `ranFiles` guard dropped;
+  safe-path guard dropped; `needsFullUnitSuite` call replaced by `false`; the
+  `prompts/` operand replaced by `false`.
+- `deno task test:unit` over the seven pre-push gate test files (205 passed) and
+  `git_push_test.ts` / `git_push_preflight_test.ts` (47 passed); formatter, lint,
+  type check and markdownlint on the changed files pass. The full quality gate
+  was not run in this round.

@@ -22,6 +22,7 @@ import {
   loadDenoScopes,
   loadDenoUnitTestRoots,
   loadReferencedUnitTests,
+  needsFullUnitSuite,
   parsePrePushRefs,
   planChangedFileChecks,
   PrePushGateInfrastructureError,
@@ -2679,7 +2680,46 @@ Deno.test("planChangedFileChecks: a changed source runs its same-named tracked t
     label: "deno test (worker/deno)",
     cwd: "/r/worker/deno",
     command: "deno task test:unit 'tests/foo_test.ts'",
+    denoTestRoot: "worker/deno",
   });
+});
+
+Deno.test("planChangedFileChecks: a full-suite root runs test:unit with no file list (PR #5034 review)", () => {
+  const result = planChangedFileChecks(
+    ["worker/deno/lib/foo.ts"],
+    UNIT_TRACKED,
+    {
+      repoRoot: "/r",
+      markdownlintBinary: null,
+      denoUnitTestRoots: ["worker/deno"],
+      denoFullUnitRoots: ["worker/deno"],
+    },
+  );
+  assert(result.ok);
+  assertEquals(result.value.filter((c) => c.label.startsWith("deno test")), [{
+    label: "deno test (worker/deno)",
+    cwd: "/r/worker/deno",
+    command: "deno task test:unit",
+    denoTestRoot: "worker/deno",
+  }]);
+  // A root not marked full keeps its selected list.
+  const selected = planChangedFileChecks(
+    ["worker/deno/lib/foo.ts"],
+    UNIT_TRACKED,
+    {
+      repoRoot: "/r",
+      markdownlintBinary: null,
+      denoUnitTestRoots: ["worker/deno"],
+      denoFullUnitRoots: ["other"],
+    },
+  );
+  assert(selected.ok);
+  assertEquals(
+    selected.value.filter((c) => c.label.startsWith("deno test")).map((c) =>
+      c.command
+    ),
+    ["deno task test:unit 'tests/foo_test.ts'"],
+  );
 });
 
 Deno.test("planChangedFileChecks: changed tests and sources map to one sorted, deduplicated test:unit list (#4930)", () => {
@@ -2805,6 +2845,10 @@ Deno.test("runPrePushGate: a changed test runs the repo's test:unit task, and it
       }) +
         "\n",
     );
+    // The config is already on the remote, so only the tests below are pushed.
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-qm", "test:unit task");
+    await git(clone, "push", "-q", "origin", "HEAD:main");
     await Deno.writeTextFile(
       `${clone}/worker/deno/lib/foo.ts`,
       "export const x = 1;\n",
@@ -3271,5 +3315,309 @@ Deno.test("runPrePushGate: repair pushes enforce unit tests and markdownlint (PR
     }
   } finally {
     await Deno.remove(root, { recursive: true });
+  }
+});
+
+const UNIT_CMD = "deno task test:unit 'tests/foo_test.ts'";
+const FOO_FAILURE =
+  "FAILURES\n\nfoo works => ./tests/foo_test.ts:3:6\n\nFAILED | 0 passed | 1 failed\n";
+
+/**
+ * A repo whose pushed base holds a deno root at worker/deno with a `foo`
+ * source and test, then one local commit made by `edit`.
+ */
+async function makeUnitTestRepo(
+  edit: (clone: string) => Promise<void>,
+): Promise<{ root: string; clone: string; stdin: string }> {
+  const { root, clone } = await makeRepoWithDocCommit();
+  await git(clone, "rm", "-q", "deno.json");
+  await Deno.mkdir(`${clone}/worker/deno/lib`, { recursive: true });
+  await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
+  await Deno.writeTextFile(
+    `${clone}/worker/deno/deno.json`,
+    JSON.stringify({ tasks: { "test:unit": "x" } }),
+  );
+  await Deno.writeTextFile(
+    `${clone}/worker/deno/lib/foo.ts`,
+    "export const foo = 1;\n",
+  );
+  await Deno.writeTextFile(
+    `${clone}/worker/deno/tests/foo_test.ts`,
+    "export {};\n",
+  );
+  await git(clone, "add", "-A");
+  await git(clone, "commit", "-qm", "unit-test base");
+  await git(clone, "push", "-q", "origin", "HEAD:main");
+  await edit(clone);
+  await git(clone, "add", "-A");
+  await git(clone, "commit", "-qm", "push under test");
+  return {
+    root,
+    clone,
+    stdin: prePushInput(await git(clone, "rev-parse", "HEAD")),
+  };
+}
+
+const editFoo = (clone: string) =>
+  Deno.writeTextFile(
+    `${clone}/worker/deno/lib/foo.ts`,
+    "export const foo = 2;\n",
+  );
+
+/** Run the gate; `unit` answers the deno test command and records its cwds. */
+async function gateWithUnitRunner(
+  clone: string,
+  stdin: string,
+  unit: (cwd: string | undefined, command: string) => {
+    code: number;
+    stdout?: string;
+    stderr?: string;
+  },
+  cwds: Array<string | undefined> = [],
+) {
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+  try {
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: (command, options) => {
+        if (!command.startsWith("deno task test:unit")) {
+          return Promise.resolve({
+            started: true,
+            code: 0,
+            stdout: "",
+            stderr: "",
+          });
+        }
+        cwds.push(options.cwd);
+        const answer = unit(options.cwd, command);
+        return Promise.resolve({
+          started: true,
+          stdout: "",
+          stderr: "",
+          ...answer,
+        });
+      },
+    });
+    return { result, warnings };
+  } finally {
+    console.warn = realWarn;
+  }
+}
+
+Deno.test("runPrePushGate: a test red the same way at the fork is a warning, not a block (PR #5034 review)", async () => {
+  const { root, clone, stdin } = await makeUnitTestRepo(editFoo);
+  try {
+    const cwds: Array<string | undefined> = [];
+    const { result, warnings } = await gateWithUnitRunner(
+      clone,
+      stdin,
+      () => ({ code: 1, stderr: FOO_FAILURE }),
+      cwds,
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(result.value.checksRun.includes(UNIT_CMD), false);
+    assertEquals(cwds.length, 2, "once at the head, once at the fork");
+    assertEquals(cwds[0], `${clone}/worker/deno`);
+    assert(!cwds[1]!.startsWith(clone), "the base run uses its own worktree");
+    assert(cwds[1]!.endsWith("/tree/worker/deno"));
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0]!, "[PRE_PUSH_WARNING] deno test");
+    assertStringIncludes(warnings[0]!, "foo works => ./tests/foo_test.ts");
+    // The throwaway worktree is gone.
+    assertEquals(
+      (await git(clone, "worktree", "list")).split("\n").length,
+      1,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a failure the fork does not share still blocks (PR #5034 review)", async () => {
+  const { root, clone, stdin } = await makeUnitTestRepo(editFoo);
+  try {
+    // Control: the test is red at the base too and the push is waved through.
+    const control = await gateWithUnitRunner(
+      clone,
+      stdin,
+      () => ({ code: 1, stderr: FOO_FAILURE }),
+    );
+    assert(control.result.ok);
+    // The base passes, so the push broke the test.
+    const fixedAtBase = await gateWithUnitRunner(
+      clone,
+      stdin,
+      (cwd) =>
+        cwd === `${clone}/worker/deno`
+          ? { code: 1, stderr: FOO_FAILURE }
+          : { code: 0 },
+    );
+    assert(!fixedAtBase.result.ok);
+    assertInstanceOf(fixedAtBase.result.error, PreFlightGateError);
+    assertEquals(fixedAtBase.warnings, []);
+    // The base fails a different test of the same file: the push's own
+    // failure is not covered by it.
+    const otherTest = await gateWithUnitRunner(
+      clone,
+      stdin,
+      (cwd) =>
+        cwd === `${clone}/worker/deno`
+          ? {
+            code: 1,
+            stderr: FOO_FAILURE + "foo also works => ./tests/foo_test.ts:9:6\n",
+          }
+          : { code: 1, stderr: FOO_FAILURE },
+    );
+    assert(!otherTest.result.ok);
+    assertInstanceOf(otherTest.result.error, PreFlightGateError);
+    // A failure that names no test cannot be compared with the base.
+    const unnamed = await gateWithUnitRunner(
+      clone,
+      stdin,
+      () => ({ code: 1, stderr: "boom" }),
+    );
+    assert(!unnamed.result.ok);
+    assertInstanceOf(unnamed.result.error, PreFlightGateError);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a test file the push adds that fails is a block even when named like a base failure (PR #5034 review)", async () => {
+  const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
+    await Deno.writeTextFile(
+      `${c}/worker/deno/tests/new_test.ts`,
+      "export {};\n",
+    );
+  });
+  try {
+    const { result } = await gateWithUnitRunner(clone, stdin, (cwd) => ({
+      code: 1,
+      stderr: "new works => ./tests/new_test.ts:3:6\n",
+      stdout: cwd ?? "",
+    }));
+    assert(!result.ok);
+    assertInstanceOf(result.error, PreFlightGateError);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a module-fetch outage is infrastructure, a 404 and a test failure are verdicts (PR #5034 review)", async () => {
+  const { root, clone, stdin } = await makeUnitTestRepo(editFoo);
+  try {
+    const outage =
+      "error: JSR package manifest for '@std/assert' failed to load. Import 'https://jsr.io/@std/assert/meta.json' failed.\n    at file:///x/tests/foo_test.ts:1:8\n";
+    const down = await gateWithUnitRunner(
+      clone,
+      stdin,
+      () => ({ code: 1, stderr: outage }),
+    );
+    assert(!down.result.ok);
+    assertInstanceOf(down.result.error, PrePushGateInfrastructureError);
+    assertStringIncludes(down.result.error.message, "JSR package manifest");
+
+    const transport = await gateWithUnitRunner(clone, stdin, () => ({
+      code: 1,
+      stderr:
+        "error: Import 'https://example.com/x.ts' failed.\n    0: error sending request for url (https://example.com/x.ts)\n",
+    }));
+    assert(!transport.result.ok);
+    assertInstanceOf(transport.result.error, PrePushGateInfrastructureError);
+
+    // A missing package (404) is a real regression, not an outage.
+    const missing = await gateWithUnitRunner(clone, stdin, () => ({
+      code: 1,
+      stderr: "error: JSR package not found: @std/nonexistent\n",
+    }));
+    assert(!missing.result.ok);
+    assertInstanceOf(missing.result.error, PreFlightGateError);
+
+    // A named test failure wins over a fetch line in the same output.
+    const mixed = await gateWithUnitRunner(clone, stdin, (cwd) => ({
+      code: 1,
+      stderr: cwd === `${clone}/worker/deno`
+        ? outage + FOO_FAILURE
+        : "error: Test failed\n",
+    }));
+    assert(!mixed.result.ok);
+    assertInstanceOf(mixed.result.error, PreFlightGateError);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("needsFullUnitSuite: prompts, deno.json, deno.jsonc and deno.lock of the root only (PR #5034 review)", () => {
+  assert(needsFullUnitSuite(["prompts/issue/prompt.md"], "worker/deno"));
+  assert(needsFullUnitSuite(["worker/deno/prompts/x/prompt.md"], "."));
+  assert(needsFullUnitSuite(["worker/deno/deno.lock"], "worker/deno"));
+  assert(needsFullUnitSuite(["worker/deno/deno.json"], "worker/deno"));
+  assert(needsFullUnitSuite(["worker/deno/deno.jsonc"], "worker/deno"));
+  assert(needsFullUnitSuite(["deno.lock"], "."));
+  assertEquals(needsFullUnitSuite(["web/deno.lock"], "worker/deno"), false);
+  assertEquals(
+    needsFullUnitSuite(["worker/deno/lib/deno.lock.ts"], "worker/deno"),
+    false,
+  );
+  assertEquals(needsFullUnitSuite(["docs/prompts.md"], "worker/deno"), false);
+  assertEquals(needsFullUnitSuite([], "worker/deno"), false);
+});
+
+Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, reaching a builder-based reader (PR #5034 review)", async () => {
+  for (
+    const changed of [
+      "prompts/issue/prompt.md",
+      "worker/deno/deno.lock",
+    ]
+  ) {
+    const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
+      // The reader reaches the prompt through a builder: no token names it.
+      await Deno.writeTextFile(
+        `${c}/worker/deno/tests/builder_test.ts`,
+        'import { buildIssuePrompt } from "../lib/foo.ts";\nbuildIssuePrompt();\n',
+      );
+      await git(c, "add", "-A");
+      await git(c, "commit", "-qm", "builder reader");
+      await git(c, "push", "-q", "origin", "HEAD:main");
+      await Deno.mkdir(`${c}/${changed.replace(/\/[^/]+$/, "")}`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(`${c}/${changed}`, "changed\n");
+    });
+    try {
+      const ran: string[] = [];
+      const result = await runPrePushGate({
+        cwd: clone,
+        stdin,
+        preFlightCommands: [],
+        ...stubShellcheck(),
+        runner: (command) => {
+          ran.push(command);
+          return Promise.resolve({
+            started: true,
+            code: 0,
+            stdout: "",
+            stderr: "",
+          });
+        },
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assert(
+        result.value.checksRun.includes("deno task test:unit"),
+        `${changed}: ${ran.join(" | ")}`,
+      );
+      assertEquals(
+        ran.filter((c) => c.startsWith("deno task test:unit")),
+        ["deno task test:unit"],
+        "the whole suite replaces the selected list",
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
   }
 });

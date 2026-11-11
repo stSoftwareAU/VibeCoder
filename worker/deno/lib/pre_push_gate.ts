@@ -25,11 +25,16 @@
  *    when the push changes `infra/cloudformation/` and the repo tracks its
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
- *    deploy test and the `deno test` run are cheap. The `deno test` check runs the
- *    changed test files, the same-named tests of changed sources and every test
- *    that depends on a changed file (a doc, prompt or differently named or
- *    indirectly imported source), via the repo's own `test:unit` task so integration suites like
- *    CI's shards are excluded. Then the repo's `cargo deny check` (Issue #4626)
+ *    deploy test and the `deno test` run are cheap. The `deno test` check runs
+ *    the changed test files, the same-named tests of changed sources and the
+ *    tests whose text names a changed file or that import such a file, via the
+ *    repo's own `test:unit` task so integration suites like CI's shards are
+ *    excluded. A change under `prompts/`, or to a root's `deno.json`,
+ *    `deno.jsonc` or `deno.lock`, has readers a name scan cannot find, so it
+ *    runs that root's whole `test:unit` suite ({@link needsFullUnitSuite}). A
+ *    failing run is judged by `deno_test_baseline.ts`: a module-fetch failure
+ *    is an infrastructure failure, and a test that fails the same way where the
+ *    push forked is a `[PRE_PUSH_WARNING]` line, not a block. Then the repo's `cargo deny check` (Issue #4626)
  *    runs for eligible workflows when intermediate pushes or ShellCheck-only
  *    repairs change a cargo input (a Cargo manifest, lock file, deny config or
  *    `.cargo/config.toml`). The whole-branch
@@ -64,6 +69,11 @@ import {
 } from "./deno_scope.ts";
 import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
 import { stripJsonc } from "./jsonc.ts";
+import {
+  judgeDenoTestFailure,
+  unitTestCommand,
+  worktreeBaseline,
+} from "./deno_test_baseline.ts";
 import { readRepoFile } from "./repo_file_read.ts";
 
 /**
@@ -286,6 +296,8 @@ export interface ChangedFileCheck {
   /** Absolute working directory. */
   cwd: string;
   command: string;
+  /** Set on a `deno test` check: its deno root, repo-relative ("." for the top). */
+  denoTestRoot?: string;
 }
 
 /** ShellCheck policy read from a repository's runnable CI workflow. */
@@ -985,6 +997,11 @@ export function planChangedFileChecks(
      * (see {@link loadReferencedUnitTests}); they run beside the changed tests.
      */
     denoReferencedTests?: Record<string, string[]>;
+    /**
+     * Deno roots whose whole `test:unit` suite runs, with no file list (see
+     * {@link needsFullUnitSuite}); it covers the changed and referenced tests.
+     */
+    denoFullUnitRoots?: string[];
     shellcheckPolicy?: ShellcheckPolicy | null;
     shellcheckBinary?: string | null;
     shellcheckFiles?: string[];
@@ -1031,6 +1048,15 @@ export function planChangedFileChecks(
       });
     }
     if (opts.denoUnitTestRoots?.includes(root)) {
+      if (opts.denoFullUnitRoots?.includes(root)) {
+        checks.push({
+          label: `deno test (${root})`,
+          cwd: dirCwd(root),
+          command: "deno task test:unit",
+          denoTestRoot: root,
+        });
+        continue;
+      }
       const unitTestFiles = plannedUnitTestFiles(
         (opts.validationChanged ?? changed)
           .filter((p) => root === "." || p.startsWith(`${root}/`))
@@ -1046,6 +1072,7 @@ export function planChangedFileChecks(
           label: `deno test (${root})`,
           cwd: dirCwd(root),
           command: `deno task test:unit ${quoted.value}`,
+          denoTestRoot: root,
         });
       }
     }
@@ -1470,6 +1497,58 @@ export async function loadReferencedUnitTests(
       .map((t) => t.slice(prefix.length));
   }
   return referenced;
+}
+
+/**
+ * Whether a push touches a file whose readers a name scan cannot find, so the
+ * root's whole `test:unit` suite runs instead of a selected list (PR #5034
+ * review): anything under a `prompts/` directory (a test reaches a prompt
+ * through a loader or a prompt builder, not by spelling its path) and the
+ * root's own `deno.json`, `deno.jsonc` or `deno.lock` (every test depends on
+ * them). `paths` should include deleted paths.
+ */
+export function needsFullUnitSuite(
+  paths: readonly string[],
+  root: string,
+): boolean {
+  const prefix = root === "." ? "" : `${root}/`;
+  return paths.some((p) =>
+    /(?:^|\/)prompts\//.test(p) ||
+    (p.startsWith(prefix) &&
+      ["deno.json", "deno.jsonc", "deno.lock"].includes(p.slice(prefix.length)))
+  );
+}
+
+/**
+ * The commit a push forked from: the parent of its oldest commit not already
+ * on a remote (or not on `baseRef`). Null when it cannot be found, for
+ * example a shallow checkout that lacks the parent.
+ */
+async function pushForkCommit(
+  refs: readonly PrePushRef[],
+  cwd: string,
+  git: PrePushGit,
+  baseRef?: string,
+): Promise<string | null> {
+  if (refs.length === 0) return null;
+  if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
+    return null;
+  }
+  const oldest = await git(
+    [
+      "rev-list",
+      "--reverse",
+      ...refs.map((r) => r.localSha),
+      "--not",
+      baseRef ?? "--remotes",
+    ],
+    cwd,
+  );
+  const first = oldest.stdout.split("\n")[0]?.trim();
+  if (oldest.code !== 0 || !first) return null;
+  const parent = await git(["rev-parse", "--verify", `${first}^`], cwd);
+  const sha = parent.stdout.trim();
+  return parent.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
 }
 
 /**
@@ -1912,7 +1991,10 @@ export async function runAffectedShellcheckChecks(opts: {
  * and the cargo-deny gate run whatever the run budget — they are never skipped;
  * all but the Floci deploy test and the `deno test` run are fast. Any git, parse or planning error is
  * an `Err`, never a pass. A cargo-deny failure that shows the tool or advisory
- * database could not be reached is a {@link PrePushGateInfrastructureError}.
+ * database could not be reached is a {@link PrePushGateInfrastructureError}, as
+ * is a `deno test` run that could not fetch a module. A `deno test` failure
+ * that the push's fork commit shares (same test, same file) is a
+ * `[PRE_PUSH_WARNING]` line, not an `Err` (see `deno_test_baseline.ts`).
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -2011,6 +2093,9 @@ export async function runPrePushGate(opts: {
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
     denoUnitTestRoots,
+    denoFullUnitRoots: denoUnitTestRoots.filter((root) =>
+      needsFullUnitSuite(touched.value, root)
+    ),
     validationChanged: contained.value,
     denoReferencedTests: await loadReferencedUnitTests(
       opts.cwd,
@@ -2029,7 +2114,43 @@ export async function runPrePushGate(opts: {
       runner: opts.runner,
       timeoutSeconds: opts.timeoutSeconds,
     });
-    if (!result.ok) return { ok: false, error: result.error };
+    if (!result.ok) {
+      if (check.denoTestRoot === undefined) {
+        return { ok: false, error: result.error };
+      }
+      const root = check.denoTestRoot;
+      const outcome = await judgeDenoTestFailure(result.error, {
+        // The fork commit is looked up only when a test actually failed.
+        runAtBase: async (command, files) => {
+          const forkSha = await pushForkCommit(
+            refs.value,
+            opts.cwd,
+            git,
+            opts.baseRef,
+          );
+          if (forkSha === null) return null;
+          return await worktreeBaseline({
+            cwd: opts.cwd,
+            root,
+            forkSha,
+            git,
+            runner: opts.runner,
+            timeoutSeconds: opts.timeoutSeconds,
+          }).runAtBase(command, files);
+        },
+      }, unitTestCommand);
+      if (outcome.kind === "infrastructure") {
+        return infrastructureFail(outcome.message);
+      }
+      if (outcome.kind === "verdict") {
+        return { ok: false, error: result.error };
+      }
+      // An established base failure is reported, never counted as run or a block.
+      console.warn(
+        `[PRE_PUSH_WARNING] deno test (${root}): ${outcome.warning}`,
+      );
+      continue;
+    }
     checksRun.push(check.command);
   }
 

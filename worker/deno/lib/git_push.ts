@@ -52,8 +52,10 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * cspell, the Floci deploy test and the repository's ShellCheck policy), then
  * cargo deny when applicable (Issue #4626), even when `commands` is empty; an
  * empty list only means no repo pre-flight commands run. A spec with
- * `shellcheckOnly` runs the ShellCheck policy and cargo deny for changed cargo
- * inputs (Issues #4631 and #4626).
+ * `shellcheckOnly` runs the ShellCheck policy, cargo deny for changed cargo
+ * inputs (Issues #4631 and #4626), and the dependency-selected unit tests and
+ * markdownlint for the pushed paths (Issue #4930), but not the deno/cargo
+ * formatters or cspell.
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */
@@ -65,8 +67,10 @@ export interface PreFlightGateSpec {
   /**
    * Step 1b validates the repository's ShellCheck policy for the pushed
    * scripts, plus the CI cargo-deny check when the pushed paths include a
-   * cargo input, and leaves the formatter policy of a repair without
-   * pre-flight commands unchanged (Issues #4631 and #4626).
+   * cargo input, plus the dependency-selected unit tests and configured
+   * markdownlint for the pushed paths (Issue #4930), and leaves the formatter
+   * and cspell policy of a repair without pre-flight commands unchanged
+   * (Issues #4631 and #4626).
    */
   shellcheckOnly?: boolean;
 }
@@ -95,9 +99,10 @@ export function resolvePreFlightSpec(
 /**
  * {@link resolvePreFlightSpec} for the PR repair processors (CI-fix, review
  * feedback, spelling, merge conflict): a repo with no pre-flight commands
- * still gets the ShellCheck publication check, plus the CI cargo-deny check
- * when the pushed paths include a cargo input, and nothing else, before the
- * repair is pushed (Issues #4631 and #4626). WIP checkpoint, timeout-preservation and
+ * still gets the ShellCheck publication check, the CI cargo-deny check when
+ * the pushed paths include a cargo input, and the dependency-selected unit
+ * tests and configured markdownlint for the pushed paths (Issue #4930), and
+ * nothing else, before the repair is pushed (Issues #4631 and #4626). WIP checkpoint, timeout-preservation and
  * declared hand-off pushes never call this; they stay ungated on purpose.
  */
 export function resolveRepairPreFlightSpec(
@@ -901,8 +906,10 @@ export async function gateUnpushedCommits(
  *   a spec, even one with an empty `commands` list, also turns on Step 1b's
  *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
  *   (zero added latency, no gate); a `shellcheckOnly` spec runs the
- *   repository ShellCheck policy, plus the CI cargo-deny check when the pushed
- *   paths include a cargo input (Issues #4631 and #4626).
+ *   repository ShellCheck policy, the CI cargo-deny check when the pushed
+ *   paths include a cargo input, and the dependency-selected unit tests and
+ *   configured markdownlint for the pushed paths (Issues #4631, #4626 and
+ *   #4930).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly

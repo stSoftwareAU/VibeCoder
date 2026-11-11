@@ -2917,9 +2917,12 @@ The push guarantee follows the flow. Issue completion runs the full worker gate
 before creating the PR. A CI fix attempts that gate when Claude leaves
 uncommitted changes after its attempt, then runs configured pre-flight commands
 before the worker push; with no such changes and no pre-flight commands, it runs
-no checks before that push. PR feedback and spelling fixes do not run the full
+only the repair checks before that push: the ShellCheck publication check, the
+CI cargo-deny check when the pushed paths include a cargo input, and the
+dependency-selected unit tests and configured markdownlint for the pushed paths
+(Issue #4930). PR feedback and spelling fixes do not run the full
 gate before the worker push. Configured pre-flight commands also enable
-changed-file checks. PR-review feedback runs its independent fix verifier even
+the full set of changed-file checks. PR-review feedback runs its independent fix verifier even
 without pre-flight configuration; persistent findings can block the push.
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
@@ -5194,7 +5197,8 @@ The hook runs two stages:
    - `deno test` (Issue #4930), per outermost `deno.json` / `deno.jsonc`
      directory whose config defines a `test:unit` task (`deno.json` is preferred;
      an unreadable or unparseable config is left out). It runs the tests the
-     dependency scan selects, not the whole suite: each changed `_test.ts` file under
+     dependency scan selects (not the whole suite, except as noted below): each
+     changed `_test.ts` file under
      that directory's `tests/`; the same-named `tests/<name>_test.ts` of each
      changed `.ts` source outside `tests/`; and tracked `tests/` files reached
      by the reference and import rules below, whatever their own names. A `.ts` file under the
@@ -5209,13 +5213,29 @@ The hook runs two stages:
      Tests importing a seed directly or transitively via relative `.ts`
      specifiers are selected too. Dynamic loader types, computed paths and
      import-map aliases can still be missed; this is a dependency heuristic,
-     and a widely imported module can select most of the unit suite. The files are
+     and a widely imported module can select most of the unit suite. A change
+     under a `prompts/` directory, or to the directory's own `deno.json`,
+     `deno.jsonc` or `deno.lock`, has readers the scan cannot resolve (a test
+     reaches a prompt through a prompt builder, and every test depends on the
+     lock file), so it runs that directory's whole `deno task test:unit` suite
+     with no file list, the same unit tests as CI's shards. Otherwise the files are
      passed to `deno task test:unit` from the directory (for example
      `deno task test:unit tests/foo_test.ts`). The task runs only the unit tests
      among the files it is given, so the integration suites (the ones CI's unit
      shards exclude, including a changed one) are not run here. A deleted or
      renamed-away file still selects the tests that name or import it. A failing
-     test refuses the push. Repair specs called `shellcheckOnly` also run these
+     test refuses the push, with two exceptions that keep a red base or a download
+     outage from blocking an unrelated fix. A failure with no failed test in its
+     output and a module-fetch error (a JSR manifest, an npm package or an import
+     that could not be downloaded; a 404 `JSR package not found` is not one)
+     is a `PrePushGateInfrastructureError`, not a test verdict. When tests fail,
+     the gate checks out the commit the push forked from into a throwaway
+     worktree and re-runs the failed files there; a test that fails the same way
+     (same name, same file) at the fork is reported as a
+     `[PRE_PUSH_WARNING] deno test` line and does not block. A test file the
+     push added, a base run that passes, a base the gate cannot check out (for
+     example a shallow checkout without the parent commit), or an output that
+     names no failed test stays a block. Repair specs called `shellcheckOnly` also run these
      unit tests and configured markdownlint from the pushed paths, while retaining
      their existing formatter policy;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
