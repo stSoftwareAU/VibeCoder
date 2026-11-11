@@ -20,12 +20,11 @@ not a block, but only when every failure of the run is accounted for: a test
 module that failed outside a test (`(uncaught error)`) blocks, and a serial pass
 the runner skipped after a failed parallel pass is run and judged too. The fork
 is the merge-base with the PR's base when the gate knows it (the completion
-phase, CI-fix, review-feedback and spelling pushes with a known PR base, and
-the merge-conflict repair),
-not the PR's own previous head. PR-feedback and CI-fix final pushes with
-`shellcheckOnly` specs now run these tests and configured markdownlint;
-formatting policy is retained. Dynamic dependencies in a push that touches no
-prompt or lock file can still be missed.
+phase, CI-fix, review-feedback and spelling pushes with a known PR base, and the
+merge-conflict repair), not the PR's own previous head. PR-feedback and CI-fix
+final pushes with `shellcheckOnly` specs now run these tests and configured
+markdownlint; formatting policy is retained. Dynamic dependencies in a push that
+touches no prompt or lock file can still be missed.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -67,22 +66,23 @@ Closes #4930.
   (`PrePushGateInfrastructureError`; a 404 `JSR package not found` is not), and
   a failed test that is also red at the fork commit (a throwaway `git worktree`
   re-run of the failed files) is a warning. The fork is `git merge-base` of the
-  pushed head and the PR's base (`baseRef`, or `origin/<syncBaseBranch>` or `origin/<gateBaseBranch>` for a
-  repair push), so a repair that leaves a test red is compared with the PR's
-  base, not its own previous head; with neither it is the parent of the oldest
-  commit not yet on a remote. The downgrade needs every failure accounted for:
-  an `(uncaught error)` module (a top-level throw, a dangling promise, a missing
-  named export, which `--no-check` only surfaces at run time) names no test to
-  compare and blocks. `deno task test:unit` stops after a failed parallel pass,
-  so a downgraded run that never reached its serial pass gets `--serial-only`
-  run and judged the same way (`judgeDenoTestCheck`). A push-added test file, a
-  base that passes, a base that cannot be checked out (a shallow checkout
-  without the history to find the merge-base) and output naming no failed test
-  stay blocks. A timeout stays a block.
+  pushed head and the PR's base (`baseRef`, or `origin/<syncBaseBranch>` or
+  `origin/<gateBaseBranch>` for a repair push), so a repair that leaves a test
+  red is compared with the PR's base, not its own previous head; with neither it
+  is the parent of the oldest commit not yet on a remote. The downgrade needs
+  every failure accounted for: an `(uncaught error)` module (a top-level throw,
+  a dangling promise, a missing named export, which `--no-check` only surfaces
+  at run time) names no test to compare and blocks. `deno task test:unit` stops
+  after a failed parallel pass, so a downgraded run that never reached its
+  serial pass gets `--serial-only` run and judged the same way
+  (`judgeDenoTestCheck`). A push-added test file, a base that passes, a base
+  that cannot be checked out (a shallow checkout without the history to find the
+  merge-base) and output naming no failed test stay blocks. A timeout stays a
+  block.
 - Not covered: the runner's time budget over a failed parallel pass (it runs
   only after every pass succeeded, and is not re-run); a repo whose `test:unit`
-  runner prints no `=== <label> pass:` lines is judged as one pass; the
-  agent's own `git push` passes no PR base.
+  runner prints no `=== <label> pass:` lines is judged as one pass; the agent's
+  own `git push` passes no PR base.
 
 ### Undiscoverable Facts
 
@@ -134,8 +134,8 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   suite CI runs (dynamic loader types, computed paths, import-map aliases,
   `jsr:` / `npm:` specifiers and a `_test.ts` outside `tests/` can be missed);
   the runner's time budget over a failed parallel pass is not re-run; a repair
-  whose PR base is unknown and the agent's own
-  `git push` compare at the parent of their oldest unpushed commit.
+  whose PR base is unknown and the agent's own `git push` compare at the parent
+  of their oldest unpushed commit.
 
 ## Test Plan
 
@@ -245,11 +245,11 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   `(uncaught error)` file (blocked), a base-red parallel failure plus a failing
   serial pass (blocked; a passing serial pass is only a warning), and a repair
   push compared at the PR's base (blocked) against the previous head (waved
-  through); and `commitAndPushPending` with `syncBaseBranch`, with `gateBaseBranch` alone and
-  with neither. The merge-conflict repair passes its `baseBranch` as
-  `gateBaseBranch` (a new `PushLineageOptions` field that only places the
-  baseline and never merges; `syncBaseBranch` would merge a second time), pinned
-  by `worker/deno/tests/pr_merge_conflict_processor_test.ts`.
+  through); and `commitAndPushPending` with `syncBaseBranch`, with
+  `gateBaseBranch` alone and with neither. The merge-conflict repair passes its
+  `baseBranch` as `gateBaseBranch` (a new `PushLineageOptions` field that only
+  places the baseline and never merges; `syncBaseBranch` would merge a second
+  time), pinned by `worker/deno/tests/pr_merge_conflict_processor_test.ts`.
 - Red checks run by hand on this head (each change made, the test run, then
   restored): `hasUncaughtError` return removed → `deno_test_baseline_test.ts`
   and `pre_push_gate_test.ts` red (2 failed); the `--serial-only` rerun removed
@@ -258,8 +258,8 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   test at the PR's base" red; `options.syncBaseBranch` dropped from the
   `gateUnpushedCommits` call in `commitAndPushPending` →
   `git_push_preflight_test.ts` "a repair push compares a failing unit test at
-  the PR's base" red; the merge-conflict repair's `gateBaseBranch` dropped
-  (and the `gateBaseBranch ??` fallback removed from `commitAndPushPending`) →
+  the PR's base" red; the merge-conflict repair's `gateBaseBranch` dropped (and
+  the `gateBaseBranch ??` fallback removed from `commitAndPushPending`) →
   `pr_merge_conflict_processor_test.ts` "the push gate compares a failing unit
   test at the PR's base" and `git_push_preflight_test.ts` "a repair push
   compares a failing unit test at the PR's base" red (2 failed).
@@ -276,5 +276,5 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   `pre_push_gate.ts`, `runPrePushGate` and `gateUnpushedCommits` doc comments.
 - Run on this head:
   `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_retry_test.ts tests/git_push_preflight_test.ts tests/git_push_test.ts tests/issue_worker_test.ts tests/pr_merge_conflict_processor_test.ts tests/quality_gate_budget_test.ts tests/repo_config_test.ts`
-  (528 passed, 0 failed). Formatter, lint and
-  `deno check` of the changed files pass.
+  (528 passed, 0 failed). Formatter, lint and `deno check` of the changed files
+  pass.
