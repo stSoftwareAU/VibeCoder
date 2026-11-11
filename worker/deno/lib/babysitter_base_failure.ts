@@ -8,8 +8,9 @@
  * the same classification before it starts a repair: when every failing check
  * is verified as the base's own failure, no repair starts, because a copy of
  * the base's fix in each open pull request collides with the others and with
- * the base's own fix. Once the base is fixed, the babysitter's ordinary base
- * merge brings the fix in.
+ * the base's own fix. A later repair merges that fix only after the same
+ * failure is verified on the PR merge base and the check is green on a newer
+ * base commit.
  *
  * Every other reading repairs exactly as before. Unknown or unverifiable
  * evidence is never a deferral: a failed read, a commit status, a

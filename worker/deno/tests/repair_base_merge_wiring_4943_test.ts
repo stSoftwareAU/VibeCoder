@@ -226,6 +226,7 @@ function baseFixGh(
       }
       if (
         endpoint === `repos/${REPO}/actions/runs/900` ||
+        endpoint === `repos/${REPO}/actions/runs/902` ||
         endpoint === `repos/${REPO}/actions/runs/${BASE_RUN_ID}`
       ) {
         return Promise.resolve(".github/workflows/ci.yml\n");
@@ -321,7 +322,7 @@ Deno.test("pr-ci-processor merges the base when the same failure is red on the m
     decisions[0]!,
     "pr-ci-processor",
     "base-merge-allowed",
-    /^check "test" failed with the same signature at /,
+    /^check test has the same failure on the PR merge base and passes on the newer base;/,
   );
   assertEquals(syncCalls, [[BRANCH, DEFAULT_BRANCH]]);
 });
@@ -366,7 +367,7 @@ for (const processor of ["feedback", "spelling"] as const) {
   const label = processor === "feedback"
     ? "pr-feedback-processor"
     : "pr-spelling-processor";
-  Deno.test(`${label} keeps its gate for a MERGEABLE PR whose failing check passes on the base (Issue #4943)`, async () => {
+  Deno.test(`${label} keeps its base-merge gate for a MERGEABLE PR (Issue #4943)`, async () => {
     const { syncCalls, lines } = await runWith(
       processor,
       mergeableJson("MERGEABLE"),

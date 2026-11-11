@@ -1,9 +1,9 @@
 /**
  * The babysitter's base-merge policy for repairs (Issue #4943): a repair
  * merges the PR's base for a genuine conflict (GitHub reports `CONFLICTING`),
- * or when the failing check it repairs already passes on the base. A behind-only
- * PR with no such check is refreshed by the shared base-refresh owner (Issue
- * #4613), so a failed-CI or review repair must not merge it here.
+ * or when a matching failure on the PR merge base is proven fixed on a newer
+ * base commit. A behind-only PR is refreshed by the shared base-refresh owner
+ * (Issue #4613), so a failed-CI or review repair must not merge it here.
  *
  * The in-memory GitHub, git and agent boundaries come from
  * tests/support/babysitter_harness.ts, shared with
@@ -59,10 +59,6 @@ const SKIPPED_LINE =
   /^\[base-refresh\] source=babysitter-repair outcome=base-merge-skipped repo=owner\/repo pr=#1 base=main owner=none reason="GitHub reports mergeable MERGEABLE, not CONFLICTING/;
 const ALLOWED_LINE =
   /^\[base-refresh\] source=babysitter-repair outcome=base-merge-allowed repo=owner\/repo pr=#1 base=main owner=none reason="genuine conflict: GitHub reports CONFLICTING"/;
-
-/** The decision line of a repair whose failing check passes on the base. */
-const FIXED_ON_BASE_LINE =
-  /^\[base-refresh\] source=babysitter-repair outcome=base-merge-allowed repo=owner\/repo pr=#1 base=main owner=none reason="failing check Unit tests passes on the base, so the base merge brings the base fix in"/;
 
 const baseRefreshLines = (lines: string[]) =>
   lines.filter((line) => line.includes("[base-refresh]"));
@@ -233,7 +229,7 @@ Deno.test("a failed-CI repair on a MERGEABLE PR with only a green current-base c
   });
 });
 
-Deno.test("a failed-CI repair on a MERGEABLE PR whose failing check is not green on the base does not merge the base (Issue #4943)", async () => {
+Deno.test("a failed-CI repair on a MERGEABLE PR without a proven base fix does not merge the base (Issue #4943)", async () => {
   const readings: Array<Extract<BaseFailureDecision, { kind: "repair" }>> = [
     {
       kind: "repair",

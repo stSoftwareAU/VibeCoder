@@ -169,7 +169,7 @@ export const prCiProcessorCommand = {
           // A green base run alone is ordinary when the PR broke the check.
           // Require this exact failure on the merge-base and green on a newer
           // base commit before merging the base into a repair.
-          fixedOnBase: async () => {
+          provenBaseFixChecks: async () => {
             const prView = JSON.parse(
               await deps.github.runGhCommand([
                 "pr",

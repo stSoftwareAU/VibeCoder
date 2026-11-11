@@ -36,16 +36,16 @@ Deno.test("decideRepairBaseMerge merges for a CONFLICTING PR", () => {
   assertEquals(decision.reason, "genuine conflict: GitHub reports CONFLICTING");
 });
 
-Deno.test("decideRepairBaseMerge merges a MERGEABLE PR when a failing check passes on the base (Issue #4943)", () => {
+Deno.test("decideRepairBaseMerge merges a MERGEABLE PR when a matching historical failure is fixed on a newer base (Issue #4943)", () => {
   const decision = decideRepairBaseMerge("MERGEABLE", ["Unit tests"]);
   assertEquals(decision.merge, true);
   assertEquals(
     decision.reason,
-    'failing check "Unit tests" passes on the base, so the base merge brings the base fix in',
+    'check "Unit tests" has the same failure on the PR merge base and passes on the newer base; merging brings in that fix',
   );
 });
 
-Deno.test("decideRepairBaseMerge merges an UNKNOWN PR when a failing check passes on the base, cleaning and capping the names (Issue #4943)", () => {
+Deno.test("decideRepairBaseMerge merges an UNKNOWN PR with a proven base fix, cleaning and capping the names (Issue #4943)", () => {
   const decision = decideRepairBaseMerge("UNKNOWN", [
     'Lint "x"\n',
     "A".repeat(300),
@@ -53,21 +53,21 @@ Deno.test("decideRepairBaseMerge merges an UNKNOWN PR when a failing check passe
   assertEquals(decision.merge, true);
   assertEquals(
     decision.reason,
-    `failing check "Lint x, ${
+    `check "Lint x, ${
       "A".repeat(72)
-    }" passes on the base, so the base merge brings the base fix in`,
+    }" has the same failure on the PR merge base and passes on the newer base; merging brings in that fix`,
   );
 });
 
-Deno.test("decideRepairBaseMerge keeps the conflict reason for a CONFLICTING PR that also has a check passing on the base (Issue #4943)", () => {
+Deno.test("decideRepairBaseMerge keeps the conflict reason when a base fix is also proven (Issue #4943)", () => {
   const decision = decideRepairBaseMerge("CONFLICTING", ["Unit tests"]);
   assertEquals(decision.merge, true);
   assertEquals(decision.reason, "genuine conflict: GitHub reports CONFLICTING");
 });
 
-Deno.test("decideRepairBaseMerge refuses a non-conflicting PR when no check passes on the base (Issue #4943)", () => {
-  for (const fixedOnBase of [undefined, []] as const) {
-    const decision = decideRepairBaseMerge("MERGEABLE", fixedOnBase);
+Deno.test("decideRepairBaseMerge refuses a non-conflicting PR without a proven base fix (Issue #4943)", () => {
+  for (const provenBaseFixChecks of [undefined, []] as const) {
+    const decision = decideRepairBaseMerge("MERGEABLE", provenBaseFixChecks);
     assertEquals(decision.merge, false);
     assert(decision.reason.includes('"MERGEABLE"'), decision.reason);
     assert(decision.reason.includes("not CONFLICTING"), decision.reason);
@@ -497,7 +497,7 @@ Deno.test("readRepairBaseMergeDecision feeds an UNKNOWN read to the #4831 tracke
   assertEquals(lines.length, 1);
 });
 
-Deno.test("readRepairBaseMergeDecision merges a MERGEABLE PR when the probe names a check passing on the base, and logs the reason (Issue #4943)", async () => {
+Deno.test("readRepairBaseMergeDecision merges a MERGEABLE PR when the probe returns a proven base fix, and logs the reason (Issue #4943)", async () => {
   const lines: string[] = [];
   const decision = await readRepairBaseMergeDecision({
     repo: "owner/repo",
@@ -506,17 +506,17 @@ Deno.test("readRepairBaseMergeDecision merges a MERGEABLE PR when the probe name
     source: "pr-ci-processor",
     base: "main",
     log: (line) => lines.push(line),
-    fixedOnBase: () => Promise.resolve(["test"]),
+    provenBaseFixChecks: () => Promise.resolve(["test"]),
   });
   assertEquals(decision.merge, true);
   assertEquals(lines.length, 1);
   assertMatch(
     lines[0]!,
-    /^\[base-refresh\] source=pr-ci-processor outcome=base-merge-allowed repo=owner\/repo pr=#12 base=main owner=none reason="failing check test passes on the base, so the base merge brings the base fix in" /,
+    /^\[base-refresh\] source=pr-ci-processor outcome=base-merge-allowed repo=owner\/repo pr=#12 base=main owner=none reason="check test has the same failure on the PR merge base and passes on the newer base; merging brings in that fix" /,
   );
 });
 
-Deno.test("readRepairBaseMergeDecision merges a CONFLICTING PR on the conflict reason, even when the probe names a passing check (Issue #4943)", async () => {
+Deno.test("readRepairBaseMergeDecision keeps the conflict reason when the probe returns a proven base fix (Issue #4943)", async () => {
   const lines: string[] = [];
   const decision = await readRepairBaseMergeDecision({
     repo: "owner/repo",
@@ -525,7 +525,7 @@ Deno.test("readRepairBaseMergeDecision merges a CONFLICTING PR on the conflict r
     source: "pr-ci-processor",
     base: "main",
     log: (line) => lines.push(line),
-    fixedOnBase: () => Promise.resolve(["test"]),
+    provenBaseFixChecks: () => Promise.resolve(["test"]),
   });
   assertEquals(decision.merge, true);
   assertEquals(
@@ -544,7 +544,7 @@ Deno.test("readRepairBaseMergeDecision refuses a MERGEABLE PR when the probe nam
     source: "pr-ci-processor",
     base: "main",
     log: (line) => lines.push(line),
-    fixedOnBase: () => Promise.resolve([]),
+    provenBaseFixChecks: () => Promise.resolve([]),
   });
   assertEquals(decision.merge, false);
   assert(!decision.reason.includes("base-fix check unreadable"));
@@ -560,7 +560,7 @@ Deno.test("readRepairBaseMergeDecision treats a throwing probe as no check, reda
     source: "pr-ci-processor",
     base: "main",
     log: (line) => lines.push(line),
-    fixedOnBase: () =>
+    provenBaseFixChecks: () =>
       Promise.reject(new Error(`base read failed with token ${FAKE_TOKEN}`)),
   });
   assertEquals(decision.merge, false);

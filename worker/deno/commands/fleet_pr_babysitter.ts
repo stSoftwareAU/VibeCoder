@@ -481,7 +481,8 @@ export type BaseSync =
  * and roughly double the Actions bill for that PR (owner rule 2026-11-03).
  *
  * Only invoked for a genuinely conflicting PR, or one whose failing check
- * already passes on the base (Issue #4943): a behind-only PR is refreshed
+ * is proven to have the same failure on the PR merge base and now pass on the
+ * newer base (Issue #4943): a behind-only PR is refreshed
  * through the shared base-refresh owner (Issue #4613), so a repair that merely
  * fixes failed CI or review feedback does not add a merge.
  *
@@ -3113,7 +3114,7 @@ export async function fix(
       undefined,
       stateDir,
     );
-    let fixedOnBase: string[] = [];
+    let provenBaseFixChecks: string[] = [];
     if (
       pr.mergeable === "MERGEABLE" && baseDecision?.kind === "repair" &&
       baseDecision.repairCheck
@@ -3127,7 +3128,7 @@ export async function fix(
         checkName: check.name,
         ghFn: gh,
       });
-      if (confirmed.confirmed) fixedOnBase = [check.name];
+      if (confirmed.confirmed) provenBaseFixChecks = [check.name];
       else {
         baseDecision = {
           ...baseDecision,
@@ -3137,14 +3138,17 @@ export async function fix(
         };
       }
     }
-    const baseMerge = decideRepairBaseMerge(pr.mergeable, fixedOnBase);
+    const baseMerge = decideRepairBaseMerge(
+      pr.mergeable,
+      provenBaseFixChecks,
+    );
     logBaseRefreshDecision({
       source: "babysitter-repair",
       outcome: baseMerge.merge ? "base-merge-allowed" : "base-merge-skipped",
       repo,
       prNumber: pr.number,
       base: pr.baseRefName,
-      reason: fixedOnBase.length > 0 || baseDecision?.kind !== "repair"
+      reason: provenBaseFixChecks.length > 0 || baseDecision?.kind !== "repair"
         ? baseMerge.reason
         : `${baseMerge.reason}; ${baseDecision.reason}`,
     });

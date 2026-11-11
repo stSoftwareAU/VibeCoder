@@ -77,16 +77,17 @@ function describeMergeable(value: unknown): string {
 
 /**
  * merge:true when mergeable === "CONFLICTING" (reason "genuine conflict:
- * GitHub reports CONFLICTING"), and also when `fixedOnBase` names at least one
- * failing check that already passes on the base (Issue #4943), so the base
- * merge brings the base's fix in. Every other value (MERGEABLE, UNKNOWN, null,
- * undefined, anything) with no such check -> merge:false with a reason naming
+ * GitHub reports CONFLICTING"), and also when `provenBaseFixChecks` names a failing
+ * check whose matching failure was proven on the PR merge base and which now
+ * passes on a newer base commit (Issue #4943). The base merge then brings the
+ * landed fix into the repair branch. Every other value (MERGEABLE, UNKNOWN,
+ * null, undefined, anything) with no such check -> merge:false with a reason naming
  * the value and saying the base merge is left to the shared final-refresh
  * owner (Issue #4613).
  */
 export function decideRepairBaseMerge(
   mergeable: unknown,
-  fixedOnBase?: readonly string[],
+  provenBaseFixChecks?: readonly string[],
 ): RepairBaseMergeDecision {
   if (mergeable === "CONFLICTING") {
     return {
@@ -94,12 +95,12 @@ export function decideRepairBaseMerge(
       reason: "genuine conflict: GitHub reports CONFLICTING",
     };
   }
-  if (fixedOnBase !== undefined && fixedOnBase.length > 0) {
-    const names = cleanField(fixedOnBase.join(", "), FIELD_CAP);
+  if (provenBaseFixChecks !== undefined && provenBaseFixChecks.length > 0) {
+    const names = cleanField(provenBaseFixChecks.join(", "), FIELD_CAP);
     return {
       merge: true,
       reason:
-        `failing check "${names}" passes on the base, so the base merge brings the base fix in`,
+        `check "${names}" has the same failure on the PR merge base and passes on the newer base; merging brings in that fix`,
     };
   }
   return {
@@ -442,7 +443,7 @@ export async function trackRepairMergeability(
  * the base, and log the decision. Never throws: an unreadable or garbled read
  * is a refusal to merge, with the redacted failure as the reason.
  *
- * The `fixedOnBase` probe (Issue #4943) is called only when the PR is not
+ * The `provenBaseFixChecks` probe (Issue #4943) is called only when the PR is not
  * `CONFLICTING`. A probe that throws counts as no failing check passing on the
  * base, and its redacted cause is appended to the skip reason.
  */
@@ -458,7 +459,7 @@ export async function readRepairBaseMergeDecision(input: {
   /** Directory the decision counter is persisted to (standalone commands). */
   counterDir?: string;
   /** Names the failing checks that already pass on the base (Issue #4943). */
-  fixedOnBase?: () => Promise<readonly string[]>;
+  provenBaseFixChecks?: () => Promise<readonly string[]>;
 }): Promise<RepairBaseMergeDecision> {
   let decision: RepairBaseMergeDecision;
   try {
@@ -478,18 +479,20 @@ export async function readRepairBaseMergeDecision(input: {
       throw new Error("gh pr view returned no JSON object");
     }
     const mergeable = (parsed as Record<string, unknown>).mergeable;
-    let fixedOnBase: readonly string[] = [];
+    let provenBaseFixChecks: readonly string[] = [];
     let probeNote = "";
-    if (mergeable === "MERGEABLE" && input.fixedOnBase !== undefined) {
+    if (
+      mergeable === "MERGEABLE" && input.provenBaseFixChecks !== undefined
+    ) {
       try {
-        fixedOnBase = await input.fixedOnBase();
+        provenBaseFixChecks = await input.provenBaseFixChecks();
       } catch (error) {
         probeNote = `; base-fix check unreadable: ${
           redactSecrets(error instanceof Error ? error.message : String(error))
         }`;
       }
     }
-    const verdict = decideRepairBaseMerge(mergeable, fixedOnBase);
+    const verdict = decideRepairBaseMerge(mergeable, provenBaseFixChecks);
     decision = verdict.merge
       ? verdict
       : { merge: false, reason: `${verdict.reason}${probeNote}` };
