@@ -12,8 +12,12 @@ import {
   isDenoFetchFailure,
   judgeDenoTestFailure,
   unitTestCommand,
+  worktreeBaseline,
 } from "../lib/deno_test_baseline.ts";
-import { PreFlightGateError } from "../lib/pre_flight_gate.ts";
+import {
+  PreFlightGateError,
+  type PreFlightRunner,
+} from "../lib/pre_flight_gate.ts";
 
 // Output shape observed from `deno test` 2.x (ERRORS then FAILURES sections).
 const OBSERVED = `running 3 tests from ./a_test.ts
@@ -202,4 +206,244 @@ Deno.test("unitTestCommand: quotes each path and refuses one it cannot quote", (
     "deno task test:unit 'tests/a_test.ts' 'tests/b_test.ts'",
   );
   assertEquals(unitTestCommand([`tests/a'"_test.ts`]), null);
+});
+
+Deno.test("judgeDenoTestFailure: a timeout is never an outage or a base-only failure", async () => {
+  // A timeout whose output carries a fetch error is still the branch's to fix.
+  const fetchOnTimeout = await judgeDenoTestFailure(
+    failure(
+      "error: JSR package manifest for '@std/path' failed to load. Import 'x' failed.\n",
+      "timeout",
+    ),
+    null,
+    command,
+  );
+  assertEquals(fetchOnTimeout.kind, "verdict");
+  // A timeout that names tests red at the base is not compared with the base.
+  let baseRuns = 0;
+  const timedOut = await judgeDenoTestFailure(
+    failure(OBSERVED, "timeout"),
+    {
+      runAtBase: () => {
+        baseRuns++;
+        return Promise.resolve({
+          ranFiles: ["./a_test.ts"],
+          error: failure(OBSERVED),
+        });
+      },
+    },
+    command,
+  );
+  assertEquals(timedOut.kind, "verdict");
+  assertEquals(baseRuns, 0);
+});
+
+type GitCall = { args: string[]; cwd: string };
+type GitResult = { code: number; stdout: string; stderr: string };
+
+function fakeBaselineGit(opts: {
+  add?: number;
+  lsTree?: GitResult;
+  onAdd?: (tree: string) => Promise<void>;
+}) {
+  const calls: GitCall[] = [];
+  return {
+    calls,
+    git: async (args: string[], cwd: string): Promise<GitResult> => {
+      calls.push({ args, cwd });
+      if (args[1] === "add") {
+        if (opts.add) return { code: opts.add, stdout: "", stderr: "no" };
+        await opts.onAdd?.(args[3]);
+      }
+      if (args[0] === "ls-tree") {
+        return opts.lsTree ?? { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    },
+  };
+}
+
+function recordingRunner(code: number) {
+  const runs: { command: string; cwd?: string; timeoutSeconds: number }[] = [];
+  const runner: PreFlightRunner = (cmd, o) => {
+    runs.push({
+      command: cmd,
+      cwd: o.cwd,
+      timeoutSeconds: o.timeoutSeconds,
+    });
+    return Promise.resolve({
+      started: true,
+      code,
+      stdout: "boom one => ./a_test.ts:1:6\n",
+      stderr: "",
+    });
+  };
+  return { runs, runner };
+}
+
+Deno.test("worktreeBaseline: a nested root runs the present files in the root's directory and removes the worktree", async () => {
+  const git = fakeBaselineGit({
+    lsTree: { code: 0, stdout: "worker/deno/a_test.ts\n", stderr: "" },
+  });
+  const { runs, runner } = recordingRunner(1);
+  const removed: string[] = [];
+  const result = await worktreeBaseline({
+    cwd: "/repo",
+    root: "worker/deno",
+    forkSha: "abc123",
+    git: git.git,
+    runner,
+    timeoutSeconds: 77,
+    makeTempDir: () => Promise.resolve("/tmp/base"),
+    removeDir: (path) => {
+      removed.push(path);
+      return Promise.resolve();
+    },
+  }).runAtBase(command, ["./a_test.ts", "./gone_test.ts"]);
+
+  assertEquals(result?.ranFiles, ["./a_test.ts"]);
+  assertEquals(result?.error?.reason, "non-zero-exit");
+  assertEquals(git.calls.map((c) => c.args), [
+    ["worktree", "add", "--detach", "/tmp/base/tree", "abc123"],
+    [
+      "ls-tree",
+      "-r",
+      "--name-only",
+      "abc123",
+      "--",
+      "worker/deno/a_test.ts",
+      "worker/deno/gone_test.ts",
+    ],
+    ["worktree", "remove", "--force", "/tmp/base/tree"],
+  ]);
+  assertEquals(git.calls.every((c) => c.cwd === "/repo"), true);
+  assertEquals(runs, [{
+    command: "deno task test:unit 'a_test.ts'",
+    cwd: "/tmp/base/tree/worker/deno",
+    timeoutSeconds: 77,
+  }]);
+  assertEquals(removed, ["/tmp/base"]);
+});
+
+Deno.test("worktreeBaseline: the top-level root runs in the tree with unprefixed paths; a passing base has no error", async () => {
+  const git = fakeBaselineGit({
+    lsTree: { code: 0, stdout: "a_test.ts\n", stderr: "" },
+  });
+  const { runs, runner } = recordingRunner(0);
+  const result = await worktreeBaseline({
+    cwd: "/repo",
+    root: ".",
+    forkSha: "abc123",
+    git: git.git,
+    runner,
+    makeTempDir: () => Promise.resolve("/tmp/base"),
+    removeDir: () => Promise.resolve(),
+  }).runAtBase(command, ["./a_test.ts"]);
+
+  assertEquals(result, { ranFiles: ["./a_test.ts"], error: null });
+  assertEquals(git.calls[1].args.slice(3), ["abc123", "--", "a_test.ts"]);
+  assertEquals(runs.map((r) => r.cwd), ["/tmp/base/tree"]);
+});
+
+Deno.test("worktreeBaseline: a failed worktree add is unavailable and removes nothing", async () => {
+  const git = fakeBaselineGit({ add: 128 });
+  const { runs, runner } = recordingRunner(1);
+  const removed: string[] = [];
+  const result = await worktreeBaseline({
+    cwd: "/repo",
+    root: ".",
+    forkSha: "abc123",
+    git: git.git,
+    runner,
+    makeTempDir: () => Promise.resolve("/tmp/base"),
+    removeDir: (path) => {
+      removed.push(path);
+      return Promise.resolve();
+    },
+  }).runAtBase(command, ["./a_test.ts"]);
+
+  assertEquals(result, null);
+  assertEquals(git.calls.map((c) => c.args[0] + " " + c.args[1]), [
+    "worktree add",
+  ]);
+  assertEquals(runs.length, 0);
+  assertEquals(removed, ["/tmp/base"]);
+});
+
+Deno.test("worktreeBaseline: a failed ls-tree is unavailable, but the worktree is still removed", async () => {
+  const git = fakeBaselineGit({
+    lsTree: { code: 128, stdout: "a_test.ts\n", stderr: "fatal" },
+  });
+  const { runs, runner } = recordingRunner(1);
+  const result = await worktreeBaseline({
+    cwd: "/repo",
+    root: ".",
+    forkSha: "abc123",
+    git: git.git,
+    runner,
+    makeTempDir: () => Promise.resolve("/tmp/base"),
+    removeDir: () => Promise.resolve(),
+  }).runAtBase(command, ["./a_test.ts"]);
+
+  assertEquals(result, null);
+  assertEquals(runs.length, 0);
+  assertEquals(git.calls.at(-1)?.args[1], "remove");
+});
+
+Deno.test("worktreeBaseline: no file present at the base runs nothing; an unquotable command is unavailable", async () => {
+  const none = fakeBaselineGit({});
+  const noRun = recordingRunner(1);
+  const absent = await worktreeBaseline({
+    cwd: "/repo",
+    root: ".",
+    forkSha: "abc123",
+    git: none.git,
+    runner: noRun.runner,
+    makeTempDir: () => Promise.resolve("/tmp/base"),
+    removeDir: () => Promise.resolve(),
+  }).runAtBase(command, ["./a_test.ts"]);
+  assertEquals(absent, { ranFiles: [], error: null });
+  assertEquals(noRun.runs.length, 0);
+
+  const present = fakeBaselineGit({
+    lsTree: { code: 0, stdout: "a_test.ts\n", stderr: "" },
+  });
+  const unquotable = await worktreeBaseline({
+    cwd: "/repo",
+    root: ".",
+    forkSha: "abc123",
+    git: present.git,
+    runner: noRun.runner,
+    makeTempDir: () => Promise.resolve("/tmp/base"),
+    removeDir: () => Promise.resolve(),
+  }).runAtBase(() => null, ["./a_test.ts"]);
+  assertEquals(unquotable, null);
+  assertEquals(noRun.runs.length, 0);
+});
+
+Deno.test("worktreeBaseline: the default temp directory is removed recursively after the run", async () => {
+  let dir = "";
+  const git = fakeBaselineGit({
+    // The tree holds a file, so only a recursive remove can delete it.
+    onAdd: async (tree) => {
+      dir = tree.replace(/\/tree$/, "");
+      await Deno.mkdir(tree);
+      await Deno.writeTextFile(`${tree}/f.txt`, "x");
+    },
+  });
+  await worktreeBaseline({
+    cwd: "/repo",
+    root: ".",
+    forkSha: "abc123",
+    git: git.git,
+  }).runAtBase(command, ["./a_test.ts"]);
+  assert(dir.includes("vibe_deno_test_base_"), dir);
+  let exists = true;
+  try {
+    await Deno.stat(dir);
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    exists = false;
+  }
+  assertEquals(exists, false);
 });

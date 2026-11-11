@@ -5110,7 +5110,9 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, `deno test` of the changed and referencing tests, cargo fmt,
+fmt/lint, `deno test` of the changed and referencing tests (the whole
+`test:unit` suite when a `prompts/` file or a root's `deno.json`, `deno.jsonc` or
+`deno.lock` changes), cargo fmt,
 markdownlint, cspell, ShellCheck, cargo deny and the Floci CloudFormation deploy
 test) still run and can fail the run. Unlike Step 1b, the completion gate
 checks every commit the branch has ahead of the PR base, not only commits on no

@@ -11,9 +11,10 @@
  *   established base failure. It is reported as a warning, not a block: the
  *   agent is never told to edit unrelated code to clear it.
  *
- * Only a failure the run can positively attribute to the branch blocks. A
- * failure whose output names no failed test, or one the base run cannot be
- * compared to, stays a verdict (fail closed).
+ * Only a failure that is red at the fork too is downgraded to a warning. Every
+ * other failed run stays a verdict (fail closed): output that names no failed
+ * test, a base that is unavailable or passes, a different test red at the
+ * fork, and a timeout.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */

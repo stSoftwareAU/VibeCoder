@@ -188,7 +188,7 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 - Docs: `git_push.ts` (`PreFlightGateSpec`, `shellcheckOnly`,
   `resolveRepairPreFlightSpec`, `commitAndPushPending`) and
   `docs/CONFIGURATION.md` (push guarantee paragraph, the `deno test` bullet).
-- Tests: `worker/deno/tests/deno_test_baseline_test.ts` (5 tests at head) and
+- Tests: `worker/deno/tests/deno_test_baseline_test.ts` (12 tests at head) and
   `worker/deno/tests/pre_push_gate_test.ts` (120 tests at head), including
   `runPrePushGate` cases for a test red at the fork (warning, worktree removed),
   a base that passes, a different test red at the base, a push-added test file,
@@ -198,7 +198,10 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   classification off; `fresh` comparison dropped; `ranFiles` guard dropped;
   safe-path guard dropped; `needsFullUnitSuite` call replaced by `false`; the
   `prompts/` operand replaced by `false`.
-- `deno task test:unit` over the seven pre-push gate test files (205 passed) and
-  `git_push_test.ts` / `git_push_preflight_test.ts` (47 passed); formatter, lint,
-  type check and markdownlint on the changed files pass. The full quality gate
-  was not run in this round.
+- `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts`
+  (132 passed on the head: 12 + 120); formatter and lint on the changed baseline
+  files pass. The full quality gate was not run in this round.
+- Mutation round: `worktreeBaseline` tests drive the fork worktree, `ls-tree`,
+  root prefix, cwd and cleanup paths through injected git and runner seams, and a
+  timeout case pins that a timeout is neither an outage nor base-only; each
+  listed mutant was applied by hand and turned a test red.
