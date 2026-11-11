@@ -32,8 +32,8 @@ Closes #4930.
 - Before, those push paths ran only `deno fmt`, `deno lint`, markdownlint and
   similar changed-file checks; `deno test` ran only in the issue completion
   phase's full gate. `markdownlint` was already in the changed-file checks
-  (`planChangedFileChecks`, `worker/deno/lib/pre_push_gate.ts`); repair specs now
-  pass their pushed Markdown paths to it too.
+  (`planChangedFileChecks`, `worker/deno/lib/pre_push_gate.ts`); repair specs
+  now pass their pushed Markdown paths to it too.
 
 ### Essential Design Decisions
 
@@ -42,13 +42,12 @@ Closes #4930.
   are not run, and other Deno repositories are unaffected.
 - Dependency-selected, not the whole suite, except where readers cannot be
   resolved: a doc change selects roughly 20 to 300 tests, a change to a widely
-  imported `lib/` module
-  selects most of the unit suite (about 1,870 of 2,300 test files for
-  `lib/jsonc.ts`), the same tests CI would run for it, and a prompt, `deno.json`
-  or `deno.lock` change runs the whole suite (a prompt reaches its tests through
-  `buildIssuePrompt`-style builders and wrappers, which no token names). The selection
-  over-approximates on purpose: running an unrelated test costs time, missing a
-  reader lets a break reach CI.
+  imported `lib/` module selects most of the unit suite (about 1,870 of 2,300
+  test files for `lib/jsonc.ts`), the same tests CI would run for it, and a
+  prompt, `deno.json` or `deno.lock` change runs the whole suite (a prompt
+  reaches its tests through `buildIssuePrompt`-style builders and wrappers,
+  which no token names). The selection over-approximates on purpose: running an
+  unrelated test costs time, missing a reader lets a break reach CI.
 - Only files under `tests/` are read for names. A source that merely quotes a
   doc path in a message depends on nothing; one that reads it has a test that
   names it. Changed integration suites are not passed to the runner: CI's unit
@@ -165,7 +164,8 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   `PROMPTS_DIR` / `new URL("../../../prompts", import.meta.url)` pattern.
 - Repair pushes run affected unit tests and markdownlint without enabling their
   skipped formatters. Each failing check blocks; the successful control passes.
-- Both regressions fail before these fixes. All 113 pre-push gate tests passed at that revision.
+- Both regressions fail before these fixes. All 113 pre-push gate tests passed
+  at that revision.
 - Corrected the docs and summary to state the scan's heuristics and remaining
   dynamic-dependency limits rather than promising every broken test is selected.
 - Formatting, lint and diff checks pass. Tests use integrity-verified local
@@ -175,11 +175,14 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 
 - Baseline and outage: `lib/deno_test_baseline.ts` (new) judges a failed
   `deno test` check. Observed from the real `deno test` 2.x: failed tests print
-  `name => ./file_test.ts:L:C` under FAILURES; a JSR outage prints `error: JSR
-  package manifest for '@std/path' failed to load. Import '...' failed.`, an
-  `https:` import `error: Import '...' failed.` with `error sending request for
-  url`, an npm outage `error: Failed loading ... for package`; a missing package
-  prints `error: JSR package not found` (a 404, so a verdict).
+  `name => ./file_test.ts:L:C` under FAILURES; a JSR outage prints
+  `error: JSR
+  package manifest for '@std/path' failed to load. Import '...' failed.`,
+  an `https:` import `error: Import '...' failed.` with
+  `error sending request for
+  url`, an npm outage
+  `error: Failed loading ... for package`; a missing package prints
+  `error: JSR package not found` (a 404, so a verdict).
 - Whole suite for unresolvable readers: `needsFullUnitSuite` (prompts, and a
   root's `deno.json` / `deno.jsonc` / `deno.lock`), passed to the planner as
   `denoFullUnitRoots`. The module doc and `docs/CONFIGURATION.md` no longer say
@@ -202,6 +205,6 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   (132 passed on the head: 12 + 120); formatter and lint on the changed baseline
   files pass. The full quality gate was not run in this round.
 - Mutation round: `worktreeBaseline` tests drive the fork worktree, `ls-tree`,
-  root prefix, cwd and cleanup paths through injected git and runner seams, and a
-  timeout case pins that a timeout is neither an outage nor base-only; each
+  root prefix, cwd and cleanup paths through injected git and runner seams, and
+  a timeout case pins that a timeout is neither an outage nor base-only; each
   listed mutant was applied by hand and turned a test red.
