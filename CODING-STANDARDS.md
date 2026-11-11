@@ -481,8 +481,8 @@ request for changes), never a style note.
    }
    ```
 
-**The dummy-test scan enforces part of this deterministically** (Issue
-#5016). The fleet reviewer and the pre-PR verifier run
+**The dummy-test scan enforces part of this deterministically** (Issue #5016).
+The fleet reviewer and the pre-PR verifier run
 `worker/deno/lib/dummy_test_scan.ts` over the change's diff. It judges only
 the tests the change adds or edits, in Rust (`#[test]`, `#[tokio::test]`) and
 Deno/TypeScript (`Deno.test`, and `it` / `test` in test files):
