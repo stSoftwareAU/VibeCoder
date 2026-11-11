@@ -77,13 +77,13 @@ function describeMergeable(value: unknown): string {
 
 /**
  * merge:true when mergeable === "CONFLICTING" (reason "genuine conflict:
- * GitHub reports CONFLICTING"), and also when `provenBaseFixChecks` names a failing
- * check whose matching failure was proven on the PR merge base and which now
- * passes on a newer base commit (Issue #4943). The base merge then brings the
- * landed fix into the repair branch. Every other value (MERGEABLE, UNKNOWN,
- * null, undefined, anything) with no such check -> merge:false with a reason naming
- * the value and saying the base merge is left to the shared final-refresh
- * owner (Issue #4613).
+ * GitHub reports CONFLICTING"), and also when `provenBaseFixChecks` names a
+ * failing check whose matching failure was proven on the PR merge base and
+ * which now passes on a newer base commit (Issue #4943). The base merge then
+ * brings the landed fix into the repair branch. Every other value (MERGEABLE,
+ * UNKNOWN, null, undefined, anything) with no such check -> merge:false with a
+ * reason naming the value and saying the base merge is left to the shared
+ * final-refresh owner (Issue #4613).
  */
 export function decideRepairBaseMerge(
   mergeable: unknown,
@@ -443,9 +443,9 @@ export async function trackRepairMergeability(
  * the base, and log the decision. Never throws: an unreadable or garbled read
  * is a refusal to merge, with the redacted failure as the reason.
  *
- * The `provenBaseFixChecks` probe (Issue #4943) is called only when the PR is not
- * `CONFLICTING`. A probe that throws counts as no failing check passing on the
- * base, and its redacted cause is appended to the skip reason.
+ * The `provenBaseFixChecks` probe (Issue #4943) runs only when the PR is
+ * `MERGEABLE`. A probe that throws counts as no proven base fix, and its
+ * redacted cause is appended to the skip reason.
  */
 export async function readRepairBaseMergeDecision(input: {
   repo: string;
@@ -458,7 +458,7 @@ export async function readRepairBaseMergeDecision(input: {
   tracker?: RepairMergeabilityTracker;
   /** Directory the decision counter is persisted to (standalone commands). */
   counterDir?: string;
-  /** Names the failing checks that already pass on the base (Issue #4943). */
+  /** Names checks proven red on merge base and green on a newer base. */
   provenBaseFixChecks?: () => Promise<readonly string[]>;
 }): Promise<RepairBaseMergeDecision> {
   let decision: RepairBaseMergeDecision;
