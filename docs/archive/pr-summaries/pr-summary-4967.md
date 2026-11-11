@@ -32,8 +32,8 @@ anything. Closes #4967.
   `MILESTONE_PROVENANCE_MAX_CHILDREN` = 62), held with the child limit in
   `governing_issue_limits.ts`. It still bounds per-PR `gh` reads. The repo's
   largest milestone has 40 issues, so every claimed child of a realistic
-  milestone is linked (PR #5054 review: the first iteration linked only 10, so
-  a quote held in a later child was still sent back). A milestone with more than
+  milestone is linked (PR #5054 review: the first iteration linked only 10, so a
+  quote held in a later child was still sent back). A milestone with more than
   62 claimed children links the 62 lowest-numbered; the rest stay in "Issues
   addressed".
 - The fingerprint tag `rollup-provenance-v2` is unchanged by the cap change: it
@@ -55,8 +55,8 @@ anything. Closes #4967.
 Backend-only change; no UI files. Tests (all under `worker/deno/tests/`):
 
 - `milestone_completion_test.ts`: body lines, no fabricated parent, children
-  rules and cap (including a 40-child milestone), a roll-up body fed through
-  the real `resolveGoverningIssues`/`assessTestChanges` (including a 15-child
+  rules and cap (including a 40-child milestone), a roll-up body fed through the
+  real `resolveGoverningIssues`/`assessTestChanges` (including a 15-child
   roll-up whose quote is held only in the fifteenth child), two controls, and
   the old-fingerprint refresh.
 - `review_fleet_prs_test_policy_4655_test.ts`: the raised cap, with a
@@ -85,12 +85,13 @@ no milestone in this repo reaches (the largest has 40 issues).
   `Part of #42` straight after `Closes #99` and no closing keyword for 42;
   titles `v1.0 release` and `Fix #42 later` give no `Part of` line and the body
   is byte-identical to today's; claimed children ascending, deduplicated,
-  flagged and unsafe numbers excluded; `MILESTONE_PROVENANCE_MAX_CHILDREN` children for that many plus three claimed
-  (lowest numbers kept) and all 40 for a 40-child milestone;
-  production-path test where tracking #99 is ignored, parent #42 and child #77
-  are accepted and the child-only quote is found; control: without the child
-  line the quote is not found; control: an untrusted fleet-filed child is still
-  ignored; old-fingerprint rollup refreshed once, not again on the next scan.
+  flagged and unsafe numbers excluded; `MILESTONE_PROVENANCE_MAX_CHILDREN`
+  children for that many plus three claimed (lowest numbers kept) and all 40 for
+  a 40-child milestone; production-path test where tracking #99 is ignored,
+  parent #42 and child #77 are accepted and the child-only quote is found;
+  control: without the child line the quote is not found; control: an untrusted
+  fleet-filed child is still ignored; old-fingerprint rollup refreshed once, not
+  again on the next scan.
 - `milestone_completion_test.ts`: a 15-child roll-up whose requirement quote is
   held only in the fifteenth child (#215) is assessed with no finding and lists
   #215 among the governing issues; at the old cap of 12 it is red.
@@ -112,8 +113,8 @@ no milestone in this repo reaches (the largest has 40 issues).
   production-path tests red; fingerprint tag removed → refresh test red;
   reviewer cap set to 12 → the cap, 15-child and 40-child tests red.
 - Edited expectation: the cap test's expectation 5 → `MAX_GOVERNING_ISSUES` (64)
-  goes red when the reviewer's `candidates.length >= MAX_GOVERNING_ISSUES` check is
-  removed (both cap tests fail).
+  goes red when the reviewer's `candidates.length >= MAX_GOVERNING_ISSUES` check
+  is removed (both cap tests fail).
 - Callers/siblings: the only production caller of `buildMilestoneSummaryBody` is
   `milestone_completion.ts` (passes the title and `closedIssues`);
   `security_untrusted_ingestion_1249_test.ts` still passes.
@@ -123,9 +124,11 @@ no milestone in this repo reaches (the largest has 40 issues).
   no count.
 - `./quality.sh < /dev/null` on the final head: PASSED (config integration and
   checkov skipped: no config, no checkov). New module
-  `governing_issue_limits.ts` is claimed by `docs/audits/lib-sweep-coverage/top-up-4967.json`.
+  `governing_issue_limits.ts` is claimed by
+  `docs/audits/lib-sweep-coverage/top-up-4967.json`.
 
 Not done or not checked: the real review path against a private fleet PR; the
-62-child cap means a milestone with more than 62 claimed children links only
-its 62 lowest-numbered (none in this repo is that large). #4763: Reviewer's test-change policy refuses an owner-approved,
-fleet-filed issue as the governing issue.
+62-child cap means a milestone with more than 62 claimed children links only its
+62 lowest-numbered (none in this repo is that large). #4763: Reviewer's
+test-change policy refuses an owner-approved, fleet-filed issue as the governing
+issue.
