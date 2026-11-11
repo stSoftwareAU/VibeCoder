@@ -624,6 +624,39 @@ Deno.test("buildMilestoneSummaryBody - claimed children get ascending, deduplica
   assertEquals(closingRefsIn(body), [99]);
 });
 
+Deno.test("buildMilestoneSummaryBody - the parent is never linked when it is the tracking issue or not a safe integer (Issue #4967)", () => {
+  const partOf = (body: string) =>
+    body.split("\n").filter((l) => l.startsWith("Part of"));
+  // The tracker is closed, never also "Part of".
+  assertEquals(
+    partOf(buildMilestoneSummaryBody("#99 Retry policy", "main", [], 99)),
+    [],
+  );
+  assertEquals(
+    partOf(buildMilestoneSummaryBody("#99 Retry policy", "main", [], 98)),
+    ["Part of #99"],
+  );
+  // A title number beyond Number.MAX_SAFE_INTEGER is not linked.
+  assertEquals(
+    partOf(
+      buildMilestoneSummaryBody("#99999999999999999999 Huge", "main", [], 99),
+    ),
+    [],
+  );
+});
+
+Deno.test("buildMilestoneSummaryBody - zero and negative issue numbers never get a Part of line (Issue #4967)", () => {
+  const body = buildMilestoneSummaryBody("v1.0 release", "main", [
+    { number: 0, title: "Zero" },
+    { number: -5, title: "Negative" },
+    { number: 7, title: "Real" },
+  ], 99);
+  assertEquals(
+    body.split("\n").filter((l) => l.startsWith("Part of")),
+    ["Part of #7"],
+  );
+});
+
 Deno.test("buildMilestoneSummaryBody - at most MILESTONE_PROVENANCE_MAX_CHILDREN child Part of lines, lowest numbers first (Issue #4967)", () => {
   const children = Array.from(
     { length: 12 },

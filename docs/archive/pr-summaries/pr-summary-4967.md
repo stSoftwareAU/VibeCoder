@@ -83,6 +83,14 @@ undone, so no reviewer block is required.
   to `at most twelve are read` (14 refs, 12 reads; the invalid-input half is
   unchanged), and added a roll-up body test (12 candidates read, the 11th child
   not read).
+- Mutation check (survivors on the `Part of` guards): the parent and child
+  guards now share one `isLinkable` predicate (safe integer, positive, not the
+  tracker); the old `parentNumber !== null` and `parentNumber > 0` operands were
+  dead (`isSafeInteger(null)` is false; the title parser only returns positive
+  numbers) and were removed. New tests pin the rest: a parent equal to the
+  tracker, a parent beyond the safe-integer range, and zero or negative child
+  numbers each get no `Part of` line. Dropping `isSafeInteger`, `n > 0` or the
+  tracker check from the predicate turns a test red.
 - Red checks: no child lines → children, cap, production-path, untrusted-child
   and fingerprint tests red; no parent line → leading-`#N`, children and
   production-path tests red; fingerprint tag removed → refresh test red;

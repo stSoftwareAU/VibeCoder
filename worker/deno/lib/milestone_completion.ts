@@ -962,18 +962,15 @@ export function buildMilestoneSummaryBody(
   // read. Numbers are the worker's own (title and closed list), never model
   // text; the tracking issue and the parent are never repeated as children.
   const parentNumber = trackingIssueFromMilestoneTitle(milestoneTitle);
-  const parentLine = parentNumber !== null &&
-      Number.isSafeInteger(parentNumber) && parentNumber > 0 &&
-      parentNumber !== trackingIssueNumber
-    ? [parentNumber]
-    : [];
+  const isLinkable = (n: number): boolean =>
+    Number.isSafeInteger(n) && n > 0 && n !== trackingIssueNumber;
+  const parentLine = parentNumber === null
+    ? []
+    : [parentNumber].filter(isLinkable);
   const childNumbers = [
     ...new Set(claimed.map((issue) => issue.number)),
   ]
-    .filter((n) =>
-      Number.isSafeInteger(n) && n > 0 && n !== parentNumber &&
-      n !== trackingIssueNumber
-    )
+    .filter((n) => isLinkable(n) && n !== parentNumber)
     .sort((a, b) => a - b)
     .slice(0, MILESTONE_PROVENANCE_MAX_CHILDREN);
   const provenanceLines = [...parentLine, ...childNumbers]
