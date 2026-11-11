@@ -625,6 +625,7 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
 
       const result = await ensureAutoMergeOnOpenPrs({
         githubUser,
+        baseRefreshCounterDir: config.workDir || undefined,
         repos,
         logger,
         isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),

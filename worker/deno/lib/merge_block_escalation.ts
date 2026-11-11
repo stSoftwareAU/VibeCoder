@@ -154,6 +154,8 @@ export interface HandleMergeAttemptOptions {
   logger: Logger;
   /** gh command runner used for the update-branch call. */
   ghFn: GhFn;
+  /** Directory for cumulative base-refresh counters in standalone callers. */
+  counterDir?: string;
   /** Injectable branch updater (defaults to {@link requestBranchUpdate}). */
   updateBranchFn?: (repo: string, prNumber: number) => Promise<Result<void>>;
 }
@@ -343,6 +345,7 @@ export async function handleMergeAttempt(
         undefined,
         undefined,
         "merge-block-escalation",
+        options.counterDir,
       ));
 
   if (disposition === "update_branch") {

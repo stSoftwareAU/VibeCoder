@@ -29,9 +29,7 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import { decodeAnnotations } from "../lib/pr_spelling_processor.ts";
-import {
-  confirmBaseFailureFixed,
-} from "../lib/babysitter_base_failure.ts";
+import { confirmBaseFailureFixed } from "../lib/babysitter_base_failure.ts";
 import {
   createDefaultDeps,
   type WorkerDeps,
@@ -172,15 +170,17 @@ export const prCiProcessorCommand = {
           // Require this exact failure on the merge-base and green on a newer
           // base commit before merging the base into a repair.
           fixedOnBase: async () => {
-            const prView = JSON.parse(await deps.github.runGhCommand([
-              "pr",
-              "view",
-              String(prNumber),
-              "--repo",
-              repo,
-              "--json",
-              "headRefOid",
-            ])) as { headRefOid?: unknown };
+            const prView = JSON.parse(
+              await deps.github.runGhCommand([
+                "pr",
+                "view",
+                String(prNumber),
+                "--repo",
+                repo,
+                "--json",
+                "headRefOid",
+              ]),
+            ) as { headRefOid?: unknown };
             if (typeof prView.headRefOid !== "string") {
               throw new Error("PR head SHA is missing from gh pr view");
             }

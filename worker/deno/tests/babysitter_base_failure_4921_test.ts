@@ -251,23 +251,25 @@ Deno.test("confirmBaseFailureFixed accepts a matching red merge-base check only 
     const endpoint = args[1] ?? "";
     const jq = args[args.indexOf("--jq") + 1] ?? "";
     if (endpoint === `repos/${REPO}/check-runs/123`) {
-      return jq === ".head_sha"
-        ? `${HEAD_SHA}\n`
-        : json({
-          name: "Unit tests",
-          app_slug: ACTIONS_APP,
-          details_url: detailsUrl(2000, 1),
-        });
+      return jq === ".head_sha" ? `${HEAD_SHA}\n` : json({
+        name: "Unit tests",
+        app_slug: ACTIONS_APP,
+        details_url: detailsUrl(2000, 1),
+      });
     }
-    if (endpoint === `repos/${REPO}/actions/runs/2000` ||
+    if (
+      endpoint === `repos/${REPO}/actions/runs/2000` ||
       endpoint === `repos/${REPO}/actions/runs/4000` ||
-      endpoint === `repos/${REPO}/actions/runs/5000`) {
+      endpoint === `repos/${REPO}/actions/runs/5000`
+    ) {
       return `${WORKFLOW_PATH}\n`;
     }
     if (endpoint === `repos/${REPO}/commits/${BASE_REF}`) {
       return `${currentBase}\n`;
     }
-    if (endpoint === `repos/${REPO}/commits/${BASE_REF}/check-runs?per_page=100`) {
+    if (
+      endpoint === `repos/${REPO}/commits/${BASE_REF}/check-runs?per_page=100`
+    ) {
       return json({
         check_runs: [{
           id: 9001,
@@ -286,7 +288,9 @@ Deno.test("confirmBaseFailureFixed accepts a matching red merge-base check only 
     if (endpoint === `repos/${REPO}/commits/${mergeBase}`) {
       return jq === ".sha" ? `${mergeBase}\n` : `${tree}\n`;
     }
-    if (endpoint === `repos/${REPO}/commits/${mergeBase}/check-runs?per_page=100`) {
+    if (
+      endpoint === `repos/${REPO}/commits/${mergeBase}/check-runs?per_page=100`
+    ) {
       return json({
         check_runs: [{
           id: 4001,
@@ -308,12 +312,13 @@ Deno.test("confirmBaseFailureFixed accepts a matching red merge-base check only 
     checkRunId: "123",
     checkName: "Unit tests",
     ghFn: gh,
-    actionsLogFn: (input) => Promise.resolve({
-      kind: "excerpt",
-      providerId: "github-actions",
-      jobId: 1,
-      excerpt: input.checkRunId === "123" ? PARSER_FAILURE : PARSER_FAILURE,
-    }),
+    actionsLogFn: (input) =>
+      Promise.resolve({
+        kind: "excerpt",
+        providerId: "github-actions",
+        jobId: 1,
+        excerpt: input.checkRunId === "123" ? PARSER_FAILURE : PARSER_FAILURE,
+      }),
   });
   assertEquals(result.confirmed, true, result.reason);
   assertStringIncludes(result.reason, "same signature");

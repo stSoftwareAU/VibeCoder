@@ -164,6 +164,7 @@ export async function updateBranch(
     undefined,
     options,
     "review-fleet-prs",
+    audit.auditDir,
   );
   return result.ok
     ? { updated: true }

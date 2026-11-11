@@ -328,11 +328,11 @@ export async function confirmBaseFailureFixed(options: {
   }
   const headFailure = await (options.actionsLogFn ??
     fetchGithubActionsLogExcerpt)({
-    repo,
-    checkRunId,
-    checkName,
-    ghFn,
-  });
+      repo,
+      checkRunId,
+      checkName,
+      ghFn,
+    });
   if (headFailure.kind !== "excerpt") {
     return {
       confirmed: false,
@@ -361,6 +361,7 @@ export async function confirmBaseFailureFixed(options: {
   }
   return {
     confirmed: true,
-    reason: `check "${checkName}" failed with the same signature at ${mergeBaseSha} and is green on newer base ${current.sha}`,
+    reason:
+      `check "${checkName}" failed with the same signature at ${mergeBaseSha} and is green on newer base ${current.sha}`,
   };
 }

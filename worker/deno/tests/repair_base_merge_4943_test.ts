@@ -707,6 +707,26 @@ Deno.test("persistBaseRefreshCounter accumulates named decision counters across 
   }
 });
 
+Deno.test("persistBaseRefreshCounter serialises concurrent writers to the same tally (Issue #4943)", async () => {
+  const dir = await Deno.makeTempDir();
+  const counters = `${dir}/${BASE_REFRESH_COUNTERS_FILE}`;
+  const decision = {
+    outcome: "refresh-skipped",
+    source: "pr-maintenance",
+  } as const;
+  try {
+    await Promise.all(
+      Array.from({ length: 8 }, () => persistBaseRefreshCounter(dir, decision)),
+    );
+    const stored = JSON.parse(await Deno.readTextFile(counters));
+    assertEquals(stored.counters, {
+      "baseRefresh.refresh-skipped.pr-maintenance": 8,
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("persistBaseRefreshCounter logs nothing without a directory, and warns with the cause but never throws on an unwritable one (Issue #4943)", async () => {
   const facts = { outcome: "base-merge-skipped", source: "pr-ci" } as const;
 

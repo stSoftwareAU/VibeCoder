@@ -4,20 +4,20 @@
  *
  * A repair (failed CI or requested review changes) merges the PR's base into
  * its branch for a genuine conflict, that is, when GitHub reports the PR as
- * `CONFLICTING`, or when a failing check already passes on the base, so the
- * base merge brings the base's fix in (Issue #4943). A behind-only PR with no
- * such check is not repaired by a base merge: the refresh that brings it up to
- * date is owned by the shared final-refresh owner from Issue #4613
+ * `CONFLICTING`, or when a failing check is proven to have failed with the
+ * same signature on the PR's merge base and passed on a newer base commit
+ * (Issue #4943). A green current-base check alone is not that proof. A
+ * behind-only PR is refreshed by the shared final-refresh owner from Issue #4613
  * (`requestReadyBranchUpdate`), which also serialises
  * the per-base refresh across the updater lanes. The lanes that decide through
  * `requestReadyBranchUpdate`, and the repair lanes (CI, feedback, spelling and
  * the babysitter), log one bounded line per decision through
  * {@link logBaseRefreshDecision}, so an operator can see which lane asked for a
- * refresh, which was skipped, and why. The local `updatePrBranch` conflict merge
- * (`performBranchUpdate` in the branch-update loop and pr-maintenance, and the
- * `update-pr-branch` command) logs no such line and writes no counter. The
- * review-fleet-prs script logs from its own process and writes no counter file.
- * docs/MERGE.md lists the lanes and where their counts land.
+ * refresh, which was skipped, and why. The branch-update loop and
+ * `pr-maintenance` also record local conflict-merge outcomes when their work
+ * directory is available. The lower-level `update-pr-branch` command has no PR
+ * number or repository identity to attach to a decision. See docs/MERGE.md for
+ * the persisted-counter scope.
  */
 import { redactSecrets } from "./secret_redaction.ts";
 import {
@@ -27,6 +27,7 @@ import {
   workerBuildInfoOnce,
 } from "./worker_build_info.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
+import { withFileLock } from "./file_lock.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import {
   BRANCH_REFRESH_REFUSAL_THRESHOLD,
@@ -198,42 +199,44 @@ async function persistNamedCounter(
 ): Promise<void> {
   if (!dir) return;
   try {
+    await Deno.mkdir(dir, { recursive: true });
     const path = `${dir}/${BASE_REFRESH_COUNTERS_FILE}`;
-    let counters: Record<string, number> = {};
-    try {
-      const parsed: unknown = JSON.parse(await Deno.readTextFile(path));
-      const stored = (parsed as { counters?: unknown } | null)?.counters;
-      if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-        for (const [key, count] of Object.entries(stored)) {
-          if (typeof count === "number" && Number.isFinite(count)) {
-            counters[key] = count;
+    await withFileLock(`${path}.lock`, async () => {
+      let counters: Record<string, number> = {};
+      try {
+        const parsed: unknown = JSON.parse(await Deno.readTextFile(path));
+        const stored = (parsed as { counters?: unknown } | null)?.counters;
+        if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+          for (const [key, count] of Object.entries(stored)) {
+            if (typeof count === "number" && Number.isFinite(count)) {
+              counters[key] = count;
+            }
           }
         }
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) {
+          console.warn(
+            `[base-refresh] could not read the counters in ${path}; the tally restarts: ${
+              redactSecrets(
+                error instanceof Error ? error.message : String(error),
+              )
+            }`,
+          );
+        }
+        counters = {};
       }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        console.warn(
-          `[base-refresh] could not read the counters in ${path}; the tally restarts: ${
-            redactSecrets(
-              error instanceof Error ? error.message : String(error),
-            )
-          }`,
-        );
-      }
-      counters = {};
-    }
-    counters[name] = (counters[name] ?? 0) + 1;
-    await Deno.mkdir(dir, { recursive: true });
-    const temp = `${path}.${crypto.randomUUID()}.tmp`;
-    await Deno.writeTextFile(
-      temp,
-      JSON.stringify(
-        { timestamp: new Date().toISOString(), counters },
-        null,
-        2,
-      ),
-    );
-    await Deno.rename(temp, path);
+      counters[name] = (counters[name] ?? 0) + 1;
+      const temp = `${path}.${crypto.randomUUID()}.tmp`;
+      await Deno.writeTextFile(
+        temp,
+        JSON.stringify(
+          { timestamp: new Date().toISOString(), counters },
+          null,
+          2,
+        ),
+      );
+      await Deno.rename(temp, path);
+    });
   } catch (error) {
     console.warn(
       `[base-refresh] could not persist the counter ${name} under ${dir}: ${
@@ -477,7 +480,7 @@ export async function readRepairBaseMergeDecision(input: {
     const mergeable = (parsed as Record<string, unknown>).mergeable;
     let fixedOnBase: readonly string[] = [];
     let probeNote = "";
-  if (mergeable === "MERGEABLE" && input.fixedOnBase !== undefined) {
+    if (mergeable === "MERGEABLE" && input.fixedOnBase !== undefined) {
       try {
         fixedOnBase = await input.fixedOnBase();
       } catch (error) {

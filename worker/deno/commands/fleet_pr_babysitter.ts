@@ -3131,7 +3131,8 @@ export async function fix(
       else {
         baseDecision = {
           ...baseDecision,
-          reason: `${baseDecision.reason}; base fix not proven: ${confirmed.reason}`,
+          reason:
+            `${baseDecision.reason}; base fix not proven: ${confirmed.reason}`,
           repairCheck: undefined,
         };
       }

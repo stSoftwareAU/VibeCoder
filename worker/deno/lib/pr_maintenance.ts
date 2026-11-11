@@ -288,6 +288,8 @@ export interface PrScanOptions {
 
 /** Options for auto-merge scanning. */
 export interface AutoMergeOptions extends PrScanOptions {
+  /** Directory for cumulative branch-refresh counters. */
+  baseRefreshCounterDir?: string;
   /** Function to get per-repo config values. */
   getRepoConfig: (repo: string, key: string) => string;
   /**
@@ -2291,6 +2293,7 @@ export async function ensureAutoMergeOnOpenPrs(
         outcome,
         logger,
         ghFn: ghCommandFn,
+        counterDir: options.baseRefreshCounterDir,
       });
 
       if (handling.disposition === "landed") {

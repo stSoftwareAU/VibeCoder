@@ -8,7 +8,7 @@
  */
 
 import { prBranchConflictError, updatePrBranch } from "../lib/git_pull.ts";
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
 import {
   isForcedPush,
@@ -29,6 +29,7 @@ import {
 } from "../lib/pr_branch_update.ts";
 import type { BranchUpdateLockResult } from "../lib/pr_branch_lock.ts";
 import type { Logger, Result } from "../types.ts";
+import { BASE_REFRESH_COUNTERS_FILE } from "../lib/repair_base_merge_4943.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -624,6 +625,35 @@ Deno.test("executePrBranchUpdates - successfully updates a behind PR", async () 
     assertEquals(result.value.details[0]!.status, "updated");
     assertEquals(result.value.details[0]!.prNumber, 42);
     assertEquals(result.value.details[0]!.branchName, "issue-42-fix-bug");
+  }
+});
+
+Deno.test("executePrBranchUpdates records a successful local conflict repair in its durable tally (Issue #4943)", async () => {
+  const workDir = await Deno.makeTempDir();
+  const originalWarn = console.warn;
+  const lines: string[] = [];
+  console.warn = (...parts: unknown[]) =>
+    lines.push(parts.map(String).join(" "));
+  try {
+    const result = await executePrBranchUpdates(
+      [makeAction({ reason: "conflicting", behindBy: 0 })],
+      makeExecDeps({ workDir, baseRefreshSource: "pr-maintenance" }),
+    );
+    assertEquals(result.ok, true);
+    const decision = lines.find((line) => line.startsWith("[base-refresh]"));
+    assertStringIncludes(
+      decision ?? "",
+      '[base-refresh] source=pr-maintenance outcome=base-merge-allowed repo=org/repo pr=#42 base=main owner=none reason="genuine conflict repaired through local base merge"',
+    );
+    const tally = JSON.parse(
+      await Deno.readTextFile(`${workDir}/${BASE_REFRESH_COUNTERS_FILE}`),
+    );
+    assertEquals(tally.counters, {
+      "baseRefresh.base-merge-allowed.pr-maintenance": 1,
+    });
+  } finally {
+    console.warn = originalWarn;
+    await Deno.remove(workDir, { recursive: true });
   }
 });
 
