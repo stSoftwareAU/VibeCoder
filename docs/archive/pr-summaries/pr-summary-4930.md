@@ -115,18 +115,20 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Make the fleet run `deno test, markdownlint` the way CI does, and
-  require it to pass, before a PR is raised or a fix is pushed — evidence:
+- **partially met** — Make the fleet run `deno test, markdownlint` the way CI
+  does, and require it to pass, before a PR is raised or a fix is pushed —
+  evidence:
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed test runs the repo's test:unit task, and its failure blocks the push (#4930)`,
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed doc runs the differently named test that reads it (#4930)`,
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a deleted source runs the differently named test that imports it (#4930)`
-  — reviewer: met (markdownlint was already in the pre-push gate; `deno test`
-  now runs the unit tests selected by name and by import, or the whole suite for
+  — reviewer: partially met (markdownlint was already in the pre-push gate;
+  `deno test` now runs the unit tests selected by name and by import, or the whole suite for
   a prompt or lock change, and a failure the branch caused blocks the push; a
-  base-only failure or a download outage does not). The PR #5034 review's
-  fail-open cases are closed and tested: an `(uncaught error)` file beside
-  base-red named failures blocks, a skipped serial pass is run and judged, and a
-  repair push is compared at the PR's base. Known residual gaps: outside a
+  base-only failure or a download outage does not). Three PR #5034
+  review cases are now closed and tested: base-red named failures beside an
+  `(uncaught error)` file block, a skipped serial pass is run and judged, and a
+  repair push whose PR base is known is compared at that base. Known open
+  fail-open cases, so the check does not pass-gate every push: outside a
   prompt or lock change the check runs the dependency-selected subset, not the
   whole suite CI runs (dynamic loader types, computed paths, import-map aliases,
   `jsr:` / `npm:` specifiers and a `_test.ts` outside `tests/` can be missed);
@@ -232,9 +234,10 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   assert only the returned outcome. The two pins that the second round replaced
   (`Configured pre-flight commands enable changed-file checks`) are restored in
   `quality_gate_budget_test.ts` and `repo_config_test.ts` beside the new clause.
-- Tests at the head: `worker/deno/tests/deno_test_baseline_test.ts` (17 tests),
-  `worker/deno/tests/pre_push_gate_test.ts` (123 tests) and
-  `worker/deno/tests/git_push_preflight_test.ts` (22 tests), including
+- Tests at the head:
+  `worker/deno/tests/deno_test_baseline_test.ts` (17 tests at head),
+  `worker/deno/tests/pre_push_gate_test.ts` (120 tests at head) and
+  `worker/deno/tests/git_push_preflight_test.ts` (22 tests at head), including
   `runPrePushGate` cases for a test red at the fork (warning, worktree removed),
   a base that passes, a different test red at the base, a push-added test file,
   a fetch outage, a 404, a mixed output, a builder-based reader reached by the
