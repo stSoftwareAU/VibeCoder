@@ -250,7 +250,7 @@ const OUTCOME_LABELS: readonly LabelDefinition[] = [
     name: "negative-result",
     colour: "c5def5",
     description:
-      "Performance work measured no improvement — do not re-attempt without new evidence",
+      "Recorded negative result awaiting human review; do not re-attempt without new evidence",
     category: "content",
   },
   {

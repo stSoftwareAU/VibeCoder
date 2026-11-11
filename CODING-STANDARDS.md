@@ -1499,8 +1499,9 @@ Issue #1135 — still spawns a real agent and still lets the runner kill it; it
 simply no longer waits out a stopwatch to do it.
 
 - **Do not** reduce iteration counts to make a "performance test" fast enough
-  to pass as a unit test. If you need to confirm performance, write a benchmark
-  and include the results in the PR summary.
+  to pass as a unit test. If you need to confirm performance, prefer
+  deterministic evidence (work counts); write a benchmark only for timings, and
+  report any results in the PR summary as indicative evidence, never a gate.
 - **Guard super-linearity by behaviour first** — catastrophic backtracking on
   an adversarial input of any real size does not cost a little more than some
   threshold, it never returns. So the first form to reach for is not a
@@ -2065,8 +2066,10 @@ PR summary — containing:
    behaviour seen only at run time, constraints from outside the repo) — at
    most four bullets each, `None.` when empty.
 3. **Evidence** — Screenshots (saved to `docs/evidence/`) for UI changes,
-   before/after benchmark results for performance changes, or test references
-   for bug fixes. If visual evidence cannot be provided, state why.
+   deterministic evidence (operation or work counts) for performance changes,
+   with any container timings marked indicative (taken on a shared, parallel
+   host) and never a gate, or test references for bug fixes. If visual
+   evidence cannot be provided, state why.
    Name the manual section you read and the doc files you updated (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)).
    The docs-sweep line and the gate that refused a pull request for it were
