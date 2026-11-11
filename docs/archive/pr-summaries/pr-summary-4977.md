@@ -84,20 +84,22 @@ reads the agent-written reproduction block, not a worker-rendered closure entry.
 - `worker/deno/tests/closure_entry_grammar_4977_test.ts`: 10 new tests of the
   grammar itself, plus `subjectOf` keeping `reason-codes.ts` whole and
   `citedLocations` reading `src/reason-codes.ts:12` intact.
-- Existing tests edited: none; no assertion removed (`git diff origin/main`
-  shows no deleted line in either test file).
+- Existing tests edited: none; no assertion removed. Only comments were
+  reworded (see the comments bullet below), so `git diff origin/main` shows
+  deleted comment lines in `closure_verdict_test.ts` and
+  `label_tail_redos_3186_test.ts` but no deleted assertion.
 - Red checks (a mutation applied, tests run, lib restored): old scrub restored →
   path, `subjectOf` and `citedLocations` tests red; patterns made unanchored
   with `[:\-—]` → 9 tests red; `neutraliseFieldLabels` skipped in
   `sanitiseEvidence` → 3 red, in `sanitiseField` → 8 red; single-pass scrub →
   grammar idempotence test and the adjacent-label render tests red;
   reviewer-ambiguity rule removed → read-back test red.
-- `deno task test:unit` on `closure_verdict_test.ts`: 46 passed. On
-  `closure_entry_grammar_4977_test.ts`: 10 passed. The existing tests of the
+- `deno task test:unit` at head: `closure_verdict_test.ts` (46 tests at head),
+  `closure_entry_grammar_4977_test.ts` (10 tests at head). The existing tests of the
   changed readers (gates, `closure_criterion_match`, `degraded_delivery`,
   `closure_met_check_3766`, `label_tail_redos_3186`,
   `standing_violation_routing`) pass unchanged; `degraded_delivery_test.ts`
-  passes with the 2 new tests.
+  passes with the 2 new tests (`degraded_delivery_test.ts`, 14 tests at head).
 - Comments that described the removed unanchored grammar were reworded in
   `closure_verdict_test.ts` (the `Xevidence:` test) and
   `label_tail_redos_3186_test.ts` (header).
@@ -106,8 +108,9 @@ reads the agent-written reproduction block, not a worker-rendered closure entry.
 - Docs: `docs/workflows/issue-processing.md` (closure-verdict rendering item)
   read and updated. `docs/audits/security-sweep-2242-closure-verdict.md` line 27
   is a point-in-time audit record and still describes the old scrub.
-- `./quality.sh < /dev/null` on the final code head: PASSED (config integration
-  and checkov skipped: no config, no checkov). An earlier run failed only the
+- `./quality.sh < /dev/null` on the code head before the PR #5060 review fix:
+  PASSED (config integration and checkov skipped: no config, no checkov); it
+  was re-run after that fix (see the last paragraph). An earlier run failed only the
   lib sweep ledger test, fixed by the ledger file above.
   `deno task pr-summary-check`: 0 blocked, 0 not checked.
 

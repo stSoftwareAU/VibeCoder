@@ -26,8 +26,9 @@
  * every entry, and the boundary never needs a dash-specific rule.
  *
  * The patterns are hardcoded literals rather than built from a label argument:
- * a `new RegExp(label…)` is a ReDoS surface Semgrep blocks on, and only these
- * three labels exist.
+ * a `new RegExp(label…)` is a ReDoS surface Semgrep blocks on, and only three
+ * labels are scrubbed. `ENTRY_EVIDENCE_SPAN_RE` also ends the evidence span at
+ * the generator's `remaining:` label, which is read there and never scrubbed.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

@@ -1573,7 +1573,8 @@ The shape is fixed and machine-checked, so the worker owns it:
    word or path (`src/evidence-store.ts`, `docs/reviewer-guide.md`,
    `lib/reason-codes.ts`, `Xreviewer:`) is data and is kept verbatim. The
    validators (`independent_review_gate.ts`, `acceptance_criteria_gate.ts`) and
-   `closure_criterion_match.ts` / `standing_violation_routing.ts` read fields
+   `closure_criterion_match.ts` / `standing_violation_routing.ts` /
+   `degraded_delivery.ts` (`isPendingMergeCheck`) read fields
    with the same grammar from `worker/deno/lib/closure_entry_grammar.ts` (a label
    is a field only at the start of the entry or after whitespace, and is
    followed by `:`; hyphen or dash is not a label separator), so renderer and
