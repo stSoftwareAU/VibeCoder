@@ -29,7 +29,7 @@ import {
 } from "./issue_worker_types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
+import { issueRunCompareRef, resolvePreFlightSpec } from "./git_push.ts";
 import { releaseRunAtFinishDeadline } from "./phases/run_wip_preservation.ts";
 
 /** The screenshot gate's verdict for this run — its failure message. */
@@ -103,6 +103,9 @@ export async function recoverFromScreenshotGateBlock(
         killAfterSeconds: config.claudeKillAfter,
         model: config.claudeModel || undefined,
         cwd: state.repoPath,
+        // The run base, so a CI cargo failure the base already has is no verdict on
+        // the agent's own push (Issue #4630 review).
+        ciCargoCompareRef: issueRunCompareRef(state),
         // The browser is needed to take the screenshot; a repo with
         // skip_screenshot_check never reaches this recovery at all.
         mcpConfig: true,

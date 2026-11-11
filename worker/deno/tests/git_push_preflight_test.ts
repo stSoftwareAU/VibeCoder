@@ -16,10 +16,14 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  CI_CARGO_ONLY_PRE_FLIGHT,
   commitAndPushPending,
   gateUnpushedCommits,
+  issueRunCompareRef,
+  prBaseCompareRef,
   PrePushGateBlockedError,
 } from "../lib/git_push.ts";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
   type PreFlightCommandResult,
   PreFlightGateError,
@@ -487,6 +491,401 @@ Deno.test("commitAndPushPending - no preFlight spec: WIP checkpoint with a Shell
   }
 });
 
+// Issue #4630: the repair processors pass CI_CARGO_ONLY_PRE_FLIGHT for a repo
+// with no pre-flight commands, so their repairs run the repo CI's cargo clippy
+// (and test-target compile) and nothing else.
+
+const CI_CLIPPY_COMMAND = "cargo clippy --all-targets -- -D warnings";
+
+const CI_CLIPPY_WORKFLOW = [
+  "name: CI",
+  "on:",
+  "  pull_request:",
+  "jobs:",
+  "  rust:",
+  "    runs-on: ubuntu-latest",
+  "    steps:",
+  `      - run: ${CI_CLIPPY_COMMAND}`,
+  "",
+].join("\n");
+
+const CARGO_TOML =
+  '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n';
+
+const RUST_OK = "pub fn value() -> u8 {\n    1\n}\n";
+
+const CLIPPY_ASSERT_IS_EMPTY: PreFlightCommandResult = {
+  started: true,
+  code: 101,
+  stdout: "",
+  stderr: [
+    "error: length comparison to zero",
+    "  --> src/lib.rs:2:5",
+    "  = note: `-D clippy::len_zero` implied by `-D warnings`",
+    "error: could not compile `fixture` due to 1 previous error",
+    "error: `clippy::assert_is_empty` also fires here",
+    "",
+  ].join("\n"),
+};
+
+/**
+ * A runner that answers the cargo version probes and the CI clippy command
+ * with `clippy`, and records every command it is asked to run.
+ */
+function cargoRunner(
+  clippy: PreFlightCommandResult,
+): { runner: PreFlightRunner; calls: string[] } {
+  const calls: string[] = [];
+  const runner: PreFlightRunner = (command) => {
+    calls.push(command);
+    if (command === CI_CLIPPY_COMMAND) return Promise.resolve(clippy);
+    return Promise.resolve({
+      started: true,
+      code: 0,
+      stdout: "cargo 1.80.0\n",
+      stderr: "",
+    });
+  };
+  return { runner, calls };
+}
+
+/** A repo whose CI runs `CI_CLIPPY_COMMAND` on pull requests, pushed to origin. */
+async function seedCargoCi(downstream: string): Promise<void> {
+  await Deno.mkdir(`${downstream}/.github/workflows`, { recursive: true });
+  await Deno.writeTextFile(
+    `${downstream}/.github/workflows/ci.yml`,
+    CI_CLIPPY_WORKFLOW,
+  );
+  await Deno.writeTextFile(`${downstream}/Cargo.toml`, CARGO_TOML);
+  await Deno.writeTextFile(`${downstream}/deno.json`, "{}\n");
+  await runGit(["add", "."], downstream);
+  const c = await runGit(["commit", "-m", "ci fixture"], downstream);
+  assertEquals(c.code, 0, c.stderr);
+  await runGit(["push", "origin", "HEAD"], downstream);
+}
+
+/** Commit `files` locally (unpushed), as the agent's own commit. */
+async function commitUnpushed(
+  downstream: string,
+  files: Record<string, string>,
+): Promise<void> {
+  for (const [file, content] of Object.entries(files)) {
+    await Deno.mkdir(
+      `${downstream}/${file.slice(0, file.lastIndexOf("/") + 1)}`,
+      { recursive: true },
+    );
+    await Deno.writeTextFile(`${downstream}/${file}`, content);
+  }
+  await runGit(["add", "-A"], downstream);
+  const c = await runGit(["commit", "-m", "agent commit"], downstream);
+  assertEquals(c.code, 0, c.stderr);
+}
+
+Deno.test("commitAndPushPending - ciCargoOnly: failing CI clippy refuses the push (#4630)", async () => {
+  const branch = "issue-4630-clippy-fail";
+  const { tmp, downstream } = await makeRepo("preflight_4630_fail_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const before = await originSha(downstream, branch);
+    const { runner, calls } = cargoRunner(CLIPPY_ASSERT_IS_EMPTY);
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+
+    assert(!result.ok, "failing CI clippy must refuse the push");
+    if (!result.ok) {
+      assert(
+        result.error.message.includes("[PRE_PUSH_BLOCKED]"),
+        result.error.message,
+      );
+      assert(
+        result.error.message.includes("clippy::assert_is_empty"),
+        result.error.message,
+      );
+    }
+    assertEquals(calls, [
+      "cargo --version",
+      "cargo clippy --version",
+      CI_CLIPPY_COMMAND,
+    ]);
+    assertEquals(await originSha(downstream, branch), before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+/** A cargo runner whose CI clippy answer depends on the tree it runs in. */
+function baseAwareRunner(
+  onHead: PreFlightCommandResult,
+  onBase: PreFlightCommandResult,
+): { runner: PreFlightRunner; clippyTrees: string[] } {
+  const clippyTrees: string[] = [];
+  const runner: PreFlightRunner = (command, options) => {
+    if (command !== CI_CLIPPY_COMMAND) {
+      return Promise.resolve({
+        started: true,
+        code: 0,
+        stdout: "cargo 1.80.0\n",
+        stderr: "",
+      });
+    }
+    const base = (options.cwd ?? "").includes("vibe-base-check-");
+    clippyTrees.push(base ? "base" : "head");
+    return Promise.resolve(base ? onBase : onHead);
+  };
+  return { runner, clippyTrees };
+}
+
+// PR #4896 review: a repair push compares a failing CI clippy with the PR base
+// (`syncBaseBranch`), so a lint the base already has is not charged to it.
+Deno.test("commitAndPushPending - a CI clippy failure the PR base already has does not refuse the repair push (PR #4896)", async () => {
+  const branch = "issue-4630-base-fails";
+  const { tmp, downstream } = await makeRepo("preflight_4896_base_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const { runner, clippyTrees } = baseAwareRunner(
+      CLIPPY_ASSERT_IS_EMPTY,
+      CLIPPY_ASSERT_IS_EMPTY,
+    );
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG, syncBaseBranch: "main" },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(clippyTrees, ["head", "base"]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+// PR #4896 review: the merge-conflict repair pushes with the repo's own
+// pre-flight commands, so the gate also plans CI clippy; the merged tree holds
+// the base, so a lint the base already has must not be charged to the repair.
+Deno.test("commitAndPushPending - a merge-conflict repair with pre-flight commands pushes past a CI clippy failure the base already has (PR #4896)", async () => {
+  const branch = "issue-4630-conflict-base-fails";
+  const { tmp, downstream } = await makeRepo("preflight_4896_mc_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/b.rs": RUST_OK });
+    const { runner, clippyTrees } = baseAwareRunner(
+      CLIPPY_ASSERT_IS_EMPTY,
+      CLIPPY_ASSERT_IS_EMPTY,
+    );
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      {
+        cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
+        compareBaseBranch: "main",
+        requireCargoBaseComparison: true,
+      },
+      false,
+      { commands: ["cargo test"], runner },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(clippyTrees, ["head", "base"]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - a fix branch compares the PR base without merging it", async () => {
+  const branch = "issue-4630-fix-branch";
+  const { tmp, downstream } = await makeRepo("preflight_fix_base_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const { runner, clippyTrees } = baseAwareRunner(
+      CLIPPY_ASSERT_IS_EMPTY,
+      CLIPPY_ASSERT_IS_EMPTY,
+    );
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG, compareBaseBranch: "main" },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(clippyTrees, ["head", "base"]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)", async () => {
+  const branch = "issue-4630-no-base";
+  const { tmp, downstream } = await makeRepo("preflight_4896_nobase_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const { runner } = cargoRunner(CLIPPY_ASSERT_IS_EMPTY);
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      {
+        cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
+        requireCargoBaseComparison: true,
+      },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+
+    assert(!result.ok, "an unreadable base comparison must refuse the push");
+    if (!result.ok) {
+      assert(result.error instanceof PrePushGateInfrastructureError);
+      assert(!result.error.message.includes("[PRE_PUSH_BLOCKED]"));
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - a CI clippy failure the PR base does not have still refuses the repair push (PR #4896)", async () => {
+  const branch = "issue-4630-base-passes";
+  const { tmp, downstream } = await makeRepo("preflight_4896_new_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const before = await originSha(downstream, branch);
+    const { runner, clippyTrees } = baseAwareRunner(CLIPPY_ASSERT_IS_EMPTY, {
+      started: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG, syncBaseBranch: "main" },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+
+    assert(!result.ok, "a new clippy failure must refuse the push");
+    if (!result.ok) {
+      assert(result.error.message.includes("[PRE_PUSH_BLOCKED]"));
+    }
+    assertEquals(clippyTrees, ["head", "base"]);
+    assertEquals(await originSha(downstream, branch), before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - ciCargoOnly: passing CI clippy pushes (#4630)", async () => {
+  const branch = "issue-4630-clippy-pass";
+  const { tmp, downstream } = await makeRepo("preflight_4630_pass_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const { runner, calls } = cargoRunner({
+      started: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(calls, [
+      "cargo --version",
+      "cargo clippy --version",
+      CI_CLIPPY_COMMAND,
+    ]);
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    assertEquals(await originSha(downstream, branch), head);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - ciCargoOnly: a bad .ts file is not checked by deno (#4630)", async () => {
+  const branch = "issue-4630-ts-ignored";
+  const { tmp, downstream } = await makeRepo("preflight_4630_ts_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, {
+      "src/lib.rs": RUST_OK,
+      "bad.ts": BAD_TS,
+    });
+    const { runner, calls } = cargoRunner({
+      started: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assert(
+      calls.every((c) => !c.startsWith("deno")),
+      `deno must not run in cargo-only mode: ${calls.join(" | ")}`,
+    );
+    assert(calls.includes(CI_CLIPPY_COMMAND), calls.join(" | "));
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    assertEquals(await originSha(downstream, branch), head);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - no preFlight spec: failing-clippy commit still pushed (#4630 WIP path)", async () => {
+  const branch = "issue-4630-wip";
+  const { tmp, downstream } = await makeRepo("preflight_4630_wip_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    assertEquals(await originSha(downstream, branch), head);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 // Issue #3689 / PR #3716 review: the execute phase's WIP checkpoints push the
 // agent's commits with no gate, so by the time the completion phase runs they
 // are already on origin and "unpushed" is empty. The whole-branch mode checks
@@ -855,4 +1254,33 @@ Deno.test("commitAndPushPending - a push recovery merge needs a fresh verdict", 
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
+});
+
+Deno.test('prBaseCompareRef - origin/<base>, or "" when the base is unknown (Issue #4630 review)', () => {
+  assertEquals(prBaseCompareRef("main"), "origin/main");
+  assertEquals(prBaseCompareRef(" release/1 "), "origin/release/1");
+  assertEquals(prBaseCompareRef(undefined), "");
+  assertEquals(prBaseCompareRef(""), "");
+  assertEquals(prBaseCompareRef("  "), "");
+});
+
+Deno.test("issueRunCompareRef - the milestone, else the base, else the default branch; blank names are skipped (Issue #4630 review)", () => {
+  assertEquals(
+    issueRunCompareRef({
+      milestoneBranch: "milestone/1",
+      baseBranch: "main",
+      defaultBranch: "trunk",
+    }),
+    "origin/milestone/1",
+  );
+  assertEquals(
+    issueRunCompareRef({ baseBranch: "main", defaultBranch: "trunk" }),
+    "origin/main",
+  );
+  assertEquals(
+    issueRunCompareRef({ baseBranch: "", defaultBranch: "trunk" }),
+    "origin/trunk",
+  );
+  assertEquals(issueRunCompareRef({ defaultBranch: "trunk" }), "origin/trunk");
+  assertEquals(issueRunCompareRef({ baseBranch: " " }), "");
 });

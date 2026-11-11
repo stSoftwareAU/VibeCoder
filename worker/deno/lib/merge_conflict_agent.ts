@@ -85,6 +85,13 @@ export interface MergeConflictAgentRequest {
    * that runs before the push.
    */
   repair?: MergeConflictRepairContext;
+  /**
+   * The ref a failing CI cargo check on the agent's own `git push` is compared
+   * against (Issue #4630 review): `origin/<base>` for a PR repair, so a failure
+   * the base already has is no verdict on the push. Unset for a run with no
+   * PR base.
+   */
+  ciCargoCompareRef?: string;
   /** The agent runner — `deps.claude.runClaudeWithRetry` in production. */
   runAgent: typeof runClaudeWithRetry;
   /**
@@ -190,6 +197,9 @@ export async function runMergeConflictAgent(
       captureInvocationStats: true,
       repo,
       cwd: workDir,
+      ...(request.ciCargoCompareRef === undefined
+        ? {}
+        : { ciCargoCompareRef: request.ciCargoCompareRef }),
       logger,
     },
     { maxRetries },

@@ -12,6 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { issueRunCompareRef } from "../git_push.ts";
 import type {
   IssueContext,
   PhaseResult,
@@ -759,6 +760,9 @@ async function runQualityGateBody(
         phase: "quality_fix",
         repo,
         cwd: state.repoPath,
+        // The run base, so a CI cargo failure the base already has is no verdict on
+        // the agent's own push (Issue #4630 review).
+        ciCargoCompareRef: issueRunCompareRef(state),
         logger,
       },
     );

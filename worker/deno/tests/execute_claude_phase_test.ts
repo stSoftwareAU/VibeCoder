@@ -1371,3 +1371,34 @@ Deno.test("runExecuteClaudePhase - turn limit never credits partial changes or s
   assertStringIncludes(result.failureMessage ?? "", "error_max_turns");
   assertEquals(attemptedSelfHealing, false);
 });
+
+Deno.test("review 4896: standalone issue agent compares against its milestone or base", async () => {
+  for (
+    const [baseBranch, milestoneBranch, expected] of [
+      ["Develop", "", "origin/Develop"],
+      ["Develop", "milestone/release", "origin/milestone/release"],
+    ]
+  ) {
+    const seen: Array<string | undefined> = [];
+    const result = await runExecuteClaudePhase(
+      createTestOptions({
+        baseBranch,
+        milestoneBranch,
+        includeRecentActivity: false,
+        includeCodebaseMap: false,
+        rtkOutputEnabled: false,
+      }),
+      createMockDeps({
+        runClaudeWithRetry: (options) => {
+          seen.push(options.ciCargoCompareRef);
+          return Promise.resolve({
+            ok: true,
+            value: { exitCode: 0, output: "done", timedOut: false },
+          });
+        },
+      }),
+    );
+    assertEquals(result.action, "success");
+    assertEquals(seen, [expected]);
+  }
+});

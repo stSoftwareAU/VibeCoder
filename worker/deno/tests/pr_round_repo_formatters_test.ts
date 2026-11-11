@@ -29,7 +29,10 @@ import {
   type CiProcessorDeps,
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
-import { commitAndPushPending } from "../lib/git_push.ts";
+import {
+  CI_CARGO_ONLY_PRE_FLIGHT,
+  commitAndPushPending,
+} from "../lib/git_push.ts";
 import { captureBranchHead } from "../lib/branch_head_tracker.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import {
@@ -383,11 +386,13 @@ Deno.test({
   },
 });
 
-const SHELLCHECK_ONLY_SPEC = { commands: [], shellcheckOnly: true };
+// The CI-fix and PR-feedback repairs add CI's cargo checks (Issue #4630); the
+// gate behind any spec also runs the ShellCheck policy (Issue #4631).
+const REPAIR_NO_PRE_FLIGHT_SPEC = CI_CARGO_ONLY_PRE_FLIGHT;
 
 Deno.test({
   name:
-    "pr feedback - a repo with no pre-flight still gets the ShellCheck-only publication spec (Issue #4631)",
+    "pr feedback - a repo with no pre-flight still gets the cargo-only publication spec, which keeps the ShellCheck policy (Issues #4630, #4631)",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
     const fx = await makeFixture();
@@ -397,7 +402,7 @@ Deno.test({
         "worker/deno/lib/a.ts": FORMATTED_TS,
       }, undefined);
       assert(result.ok, result.ok ? "" : result.error.message);
-      assertEquals(observedPreFlights, [SHELLCHECK_ONLY_SPEC]);
+      assertEquals(observedPreFlights, [REPAIR_NO_PRE_FLIGHT_SPEC]);
     } finally {
       await Deno.remove(fx.tmp, { recursive: true });
     }
@@ -406,7 +411,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "ci fix - a repo with no pre-flight still gets the ShellCheck-only publication spec (Issue #4631)",
+    "ci fix - a repo with no pre-flight still gets the cargo-only publication spec, which keeps the ShellCheck policy (Issues #4630, #4631)",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
     const fx = await makeFixture();
@@ -433,7 +438,7 @@ Deno.test({
         verifyPushFn: REMOTE_CONFIRMS_PUSH,
       });
       assert(result.ok, result.ok ? "" : result.error.message);
-      assertEquals(observedPreFlights, [SHELLCHECK_ONLY_SPEC]);
+      assertEquals(observedPreFlights, [REPAIR_NO_PRE_FLIGHT_SPEC]);
     } finally {
       await Deno.remove(fx.tmp, { recursive: true });
     }

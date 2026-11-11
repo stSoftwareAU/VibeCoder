@@ -44,6 +44,13 @@ import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
 import { buildQualityInstructions } from "../lib/repo_config.ts";
 import { verifyFeedbackFix } from "../lib/pr_feedback_verifier.ts";
 import { HOST_DISK_PARK_NOTE } from "../lib/heavy_build_gate.ts";
+import { CI_CARGO_ONLY_PRE_FLIGHT } from "../lib/git_push.ts";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
+import {
+  answerCommentsRead,
+  isIssueCommentsRead,
+  type RestComment,
+} from "./support/fake_issue_comments.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844).
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -279,6 +286,10 @@ interface RunOptions {
   feedbackVerifierFn?: PrFeedbackProcessorDeps["feedbackVerifierFn"];
   qualityInstructions?: string;
   finaliseError?: string;
+  /** The pre-push gate could not run: no verdict on the branch (#4630). */
+  finaliseInfraError?: string;
+  /** Trusted-author options, so earlier gate-infrastructure releases can be counted. */
+  claimAuthorOptions?: PrFeedbackProcessorDeps["claimAuthorOptions"];
   unpushedState?: number | "error" | "throw";
 }
 
@@ -351,6 +362,15 @@ async function runScenario(options: RunOptions) {
       commitAndPushPending:
         (async (...args: Parameters<GitDeps["commitAndPushPending"]>) => {
           preFlightSpecs.push(args[4]);
+          if (options.finaliseInfraError) {
+            options.events.push("commitAndPushPending");
+            return {
+              ok: false,
+              error: new PrePushGateInfrastructureError(
+                options.finaliseInfraError,
+              ),
+            };
+          }
           if (options.finaliseError) {
             return { ok: false, error: new Error(options.finaliseError) };
           }
@@ -378,6 +398,9 @@ async function runScenario(options: RunOptions) {
       workDir,
       workRoot: workDir,
       feedbackVerifierFn: options.feedbackVerifierFn,
+      ...(options.claimAuthorOptions
+        ? { claimAuthorOptions: options.claimAuthorOptions }
+        : {}),
       qualityInstructions: options.qualityInstructions,
       describeUnpushedFn: async () => {
         options.events.push("measure-unpushed");
@@ -1159,11 +1182,8 @@ Deno.test("review-fix verifier - persistent findings stay outstanding without pu
   assertEquals(checks, 2);
   assertEquals(
     preFlightSpecs,
-    [
-      { commands: [], shellcheckOnly: true },
-      { commands: [], shellcheckOnly: true },
-    ],
-    "repairs without configured commands still check ShellCheck",
+    [CI_CARGO_ONLY_PRE_FLIGHT, CI_CARGO_ONLY_PRE_FLIGHT],
+    "no pre-flight commands are configured, so the cargo-only spec gates the push (Issue #4630); the ShellCheck policy runs in every gate (Issue #4631)",
   );
   assertStringIncludes(
     prompts[0] ?? "",
@@ -1376,3 +1396,141 @@ for (const remoteState of ["confirmed", "unconfirmed", "throw"] as const) {
     );
   });
 }
+
+/**
+ * PR #4896 review: the CI cargo checks a repair push now runs can fail as
+ * infrastructure (no toolchain, host disk full, a workflow command the scanner
+ * cannot reproduce). That is no verdict on the fix, so the feedback is
+ * released for the next cycle, never charged as a failed attempt.
+ */
+async function assertGateInfraFaultReleases(
+  commentType: "pr_review" | "issue",
+  commentId: string,
+): Promise<void> {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const warns: string[] = [];
+  const { result } = await runScenario({
+    input: makeInput({ commentType, commentId }),
+    events,
+    captured,
+    logger: makeWarnCapturingLogger(warns),
+    githubOverride: makeReactionGithub(captured, false),
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 0,
+      finalUnpushedCount: 1,
+    },
+    finaliseInfraError:
+      "CI cargo check could not run: cargo clippy is not installed",
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(result.ok && result.value.processed, false);
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+    `an infrastructure fault must not be charged: ${events.join(", ")}`,
+  );
+  // The release is recorded on the PR (one visible comment carrying the
+  // marker the next cycle counts), and nothing else is posted.
+  assertEquals(captured.comments.length, 1, captured.comments.join("\n---\n"));
+  assert(
+    captured.comments[0]!.includes(
+      `<!-- vibe-gate-infra-release key=comment-${commentType}-${commentId} -->`,
+    ),
+    captured.comments[0],
+  );
+  // A `pr_review` carries no mark of its own (Issue #3383); any other comment
+  // has its claim mark taken back so the next scan rediscovers it.
+  assertEquals(
+    captured.calls.filter((c) => c.includes("DELETE")).length,
+    commentType === "pr_review" ? 0 : 1,
+  );
+  assert(warns.some((w) => w.includes("infrastructure")));
+}
+
+/**
+ * A repeated gate-infrastructure fault stops being released: with the cap's
+ * worth of earlier fleet-authored markers on the PR, the feedback is charged.
+ */
+async function runRepeatedGateFault(priorReleases: number) {
+  // The PR's comments as the REST API returns them: the fleet's earlier
+  // releases of this review, plus a stranger's copy of the marker, another
+  // review's release and a plain fleet comment, none of which count.
+  const marker =
+    "<!-- vibe-gate-infra-release key=comment-pr_review-rv-777 -->";
+  const prior: RestComment[] = [
+    ...Array.from({ length: priorReleases }, () => ({
+      user: { login: "fleet-bot" },
+      body: `released for a gate fault ${marker}`,
+    })),
+    { user: { login: "stranger" }, body: marker },
+    {
+      user: { login: "fleet-bot" },
+      body: "<!-- vibe-gate-infra-release key=comment-pr_review-rv-778 -->",
+    },
+    { user: { login: "fleet-bot" }, body: "Addressed the review." },
+  ];
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const inner = makeReactionGithub(captured, false).runGhCommand as (
+    args: string[],
+  ) => Promise<string>;
+  const { result } = await runScenario({
+    input: makeInput({ commentType: "pr_review", commentId: "rv-777" }),
+    events,
+    captured,
+    githubOverride: {
+      runGhCommand: (args: string[]) => {
+        if (isIssueCommentsRead(args)) return answerCommentsRead(args, prior);
+        return inner(args);
+      },
+    },
+    claimAuthorOptions: { fleetAuthors: ["fleet-bot"] },
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 0,
+      finalUnpushedCount: 1,
+    },
+    finaliseInfraError: "CI's cargo checks cannot be reproduced locally",
+  });
+  return { events, captured, result };
+}
+
+Deno.test("PR #4896: a gate-infrastructure fault is released only up to the cap, then charged", async () => {
+  const { events, captured } = await runRepeatedGateFault(2);
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    1,
+    `the repeated fault must be charged: ${events.join(", ")}`,
+  );
+  assertEquals(
+    captured.comments.some((c) => c.includes("vibe-gate-infra-release")),
+    false,
+    "no further release is recorded once the cap is reached",
+  );
+});
+
+Deno.test("PR #4896: a gate-infrastructure fault below the cap is still released and recorded", async () => {
+  const { events, captured, result } = await runRepeatedGateFault(1);
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+    events.join(", "),
+  );
+  assertEquals(result.ok && result.value.processed, false);
+  assertEquals(
+    captured.comments.filter((c) => c.includes("release 2 of 2")).length,
+    1,
+    captured.comments.join("\n---\n"),
+  );
+});
+
+Deno.test("PR #4896: a pr_review whose pre-push gate fails as infrastructure is released, not charged", async () => {
+  await assertGateInfraFaultReleases("pr_review", "rv-555");
+});
+
+Deno.test("PR #4896: an issue comment whose pre-push gate fails as infrastructure is released, not charged", async () => {
+  await assertGateInfraFaultReleases("issue", "ic-321");
+});

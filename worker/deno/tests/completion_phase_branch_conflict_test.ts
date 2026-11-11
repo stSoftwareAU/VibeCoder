@@ -84,6 +84,7 @@ function makeState(overrides?: Partial<PhaseState>): PhaseState {
 function makeBranchConflictDeps(
   comments: RecordedComment[],
   agentSuccess: boolean,
+  compareRefs: Array<string | undefined> = [],
 ) {
   let revListCallCount = 0;
   let agentCallCount = 0;
@@ -181,7 +182,8 @@ function makeBranchConflictDeps(
       },
     },
     claude: {
-      runClaudeWithRetry: () => {
+      runClaudeWithRetry: (options) => {
+        compareRefs.push(options.ciCargoCompareRef);
         agentCallCount++;
         if (agentSuccess) {
           // Agent succeeds: return successful result
@@ -231,7 +233,8 @@ Deno.test(
       const ctx = makeContext();
       const state = makeState({ repoPath });
       const comments: RecordedComment[] = [];
-      const deps = makeBranchConflictDeps(comments, true); // agentSuccess = true
+      const compareRefs: Array<string | undefined> = [];
+      const deps = makeBranchConflictDeps(comments, true, compareRefs);
 
       const result = await workOnIssueCompletion(ctx, state, deps);
 
@@ -243,6 +246,7 @@ Deno.test(
         }`,
       );
 
+      assertEquals(compareRefs, [`origin/${BASE_BRANCH}`]);
       // No conflict comment should be posted on agent success
       const conflictComment = comments.find(
         (c) =>

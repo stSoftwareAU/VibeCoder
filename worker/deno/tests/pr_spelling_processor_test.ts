@@ -215,9 +215,52 @@ Deno.test("processSpellingFailure - succeeds with mock Claude output", async () 
   // alone (PR #3584 review).
   assertEquals(requests.length, 1);
   assertEquals(requests[0]?.repo, makeInput().repo);
+  // The PR base could not be read (the mock gh answers ""), so the agent's
+  // CI cargo comparison is required but has no ref (Issue #4630 review).
+  assertEquals(requests[0]?.ciCargoCompareRef, "");
   // Issue #4631: no pre-flight commands are configured, so the push is gated
   // on the repository's ShellCheck policy alone.
   assertEquals(preFlights, [{ commands: [], shellcheckOnly: true }]);
+});
+
+Deno.test("processSpellingFailure - the agent's own push compares CI cargo against the PR base (Issue #4630 review)", async () => {
+  const requests: Array<Record<string, unknown>> = [];
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: ((request: Record<string, unknown>) => {
+        requests.push(request);
+        return Promise.resolve({
+          ok: true,
+          value: { output: "Fixed spelling", exitCode: 0, timedOut: false },
+        });
+      }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    },
+    github: {
+      runGhCommand: (args: string[]) =>
+        Promise.resolve(args.includes("baseRefName") ? "release/2" : ""),
+    },
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 0,
+            finalUnpushedCount: 0,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+  await processSpellingFailure(makeInput(), {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  });
+  assertEquals(requests.length, 1);
+  assertEquals(requests[0]?.ciCargoCompareRef, "origin/release/2");
 });
 
 Deno.test("processSpellingFailure - the heartbeat state lands in the work root, not the clone (Issue #1662)", async () => {
