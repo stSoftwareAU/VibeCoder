@@ -122,15 +122,15 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a changed doc runs the differently named test that reads it (#4930)`,
   `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a deleted source runs the differently named test that imports it (#4930)`
   — reviewer: partially met (markdownlint was already in the pre-push gate;
-  `deno test` now runs the unit tests selected by name and by import, or the whole suite for
-  a prompt or lock change, and a failure the branch caused blocks the push; a
-  base-only failure or a download outage does not). Three PR #5034
-  review cases are now closed and tested: base-red named failures beside an
-  `(uncaught error)` file block, a skipped serial pass is run and judged, and a
-  repair push whose PR base is known is compared at that base. Known open
-  fail-open cases, so the check does not pass-gate every push: outside a
-  prompt or lock change the check runs the dependency-selected subset, not the
-  whole suite CI runs (dynamic loader types, computed paths, import-map aliases,
+  `deno test` now runs the unit tests selected by name and by import, or the
+  whole suite for a prompt or lock change, and a failure the branch caused
+  blocks the push; a base-only failure or a download outage does not). Three PR
+  #5034 review cases are now closed and tested: base-red named failures beside
+  an `(uncaught error)` file block, a skipped serial pass is run and judged, and
+  a repair push whose PR base is known is compared at that base. Known open
+  fail-open cases, so the check does not pass-gate every push: outside a prompt
+  or lock change the check runs the dependency-selected subset, not the whole
+  suite CI runs (dynamic loader types, computed paths, import-map aliases,
   `jsr:` / `npm:` specifiers and a `_test.ts` outside `tests/` can be missed);
   the runner's time budget over a failed parallel pass is not re-run; a repair
   whose PR base is unknown, the merge-conflict repair and the agent's own
@@ -234,9 +234,8 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   assert only the returned outcome. The two pins that the second round replaced
   (`Configured pre-flight commands enable changed-file checks`) are restored in
   `quality_gate_budget_test.ts` and `repo_config_test.ts` beside the new clause.
-- Tests at the head:
-  `worker/deno/tests/deno_test_baseline_test.ts` (17 tests at head),
-  `worker/deno/tests/pre_push_gate_test.ts` (120 tests at head) and
+- Tests at the head: `worker/deno/tests/deno_test_baseline_test.ts` (17 tests at
+  head), `worker/deno/tests/pre_push_gate_test.ts` (120 tests at head) and
   `worker/deno/tests/git_push_preflight_test.ts` (22 tests at head), including
   `runPrePushGate` cases for a test red at the fork (warning, worktree removed),
   a base that passes, a different test red at the base, a push-added test file,
