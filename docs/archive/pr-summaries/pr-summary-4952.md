@@ -109,6 +109,9 @@ flowchart TD
   `tests/completion_draft_ready_4952_test.ts`,
   `tests/draft_ready_ci_4160_test.ts`, `tests/draft_continuation_4146_test.ts`
   (40 passed, 0 failed) and `tests/issue_worker_test.ts` (128 passed, 0 failed).
+- `./quality.sh < /dev/null` on the head: PASSED (skipped: config integration,
+  checkov). An earlier run failed only the `issue_worker_test.ts` self-heal
+  test, fixed as above.
 
 ## Not done
 
