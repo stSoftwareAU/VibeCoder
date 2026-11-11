@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4977",
   "definition": "Review the one field grammar for closure entries: a label is a field only at the entry start or after whitespace, a keyword inside a path or word is data, the sanitiser removes whitespace-led labels to a fixed point after truncation, and the validators and routing code read fields with the same patterns.",
   "status": "claimed",
-  "sweptAt": "470d8f35089b64e82c389075cc2b3726a6cecf81",
+  "sweptAt": "d431ca10c412abbab98b1ec5f507b49981b4c214",
   "paths": [
     "worker/deno/lib/closure_entry_grammar.ts"
   ]
