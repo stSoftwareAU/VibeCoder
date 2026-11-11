@@ -301,4 +301,5 @@ failure red on the base), #5043 (summary keeps only the last cycle).
 - Doc comment and manual sections read: the `repair_base_merge_4943.ts` module
   doc, the `baseGreen` type doc, `docs/MERGE.md` (Issue #4943 section and the
   #4613 paragraphs around it).
-- `./quality.sh` on the final head: GATE_RESULT_TO_FILL
+- `./quality.sh < /dev/null` on the final head: PASSED (with skipped checks): every stage passed, including all unit tests, `deno lint`, `deno check`, `deno fmt`, markdownlint, mermaid, semgrep and the completeness checks; config integration and checkov were skipped (no `.config.json`, no checkov on PATH). `tests/pr_maintenance_command_test.ts` passes 28 of 28 here, so the earlier PR's claim of five pre-existing failures there was wrong and is withdrawn.
+- Not done or not checked: no runtime evidence from the inspected repositories; the lane entry points are not driven together in one test; the local `updatePrBranch` conflict merge is neither logged nor counted; `merge-block-escalation`, `branch-update-loop`, `auto-merge-sweep` and `pr-maintenance` `source` labels have no production-entry test.
