@@ -71,8 +71,8 @@ import { PLANNING_HANDOFF_LABEL } from "./planning_handoff_trust.ts";
  *   - `needs-screenshot` — screenshot-gate signal (UI changes).
  *   - `idle-task` — the only operational label the worker self-applies
  *     (Issue #1959 framework requirement).
- *   - `negative-result` — performance-task close-out (no measurable
- *     gain — coding-guidelines workflow).
+ *   - `negative-result` — a negative-result record the worker hands to a
+ *     human for review, not a close-out (coding-guidelines workflow).
  *   - `best-practices`, `security`, `test-audit`,
  *     `github-actions-audit` — content tags for scan-template findings
  *     and the wrapper issues those templates file.

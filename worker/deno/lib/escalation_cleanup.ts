@@ -100,8 +100,7 @@ export async function stripDiscoveryLabelsOnEscalation(
     const list = removed.map((l) => `\`${l}\``).join(", ");
     const body = `## Discovery labels removed\n\n` +
       `**Why:** \`${config.needsHumanLabel}\` is on this issue, so the ` +
-      `worker removed ${list} to stop label-based discovery re-surfacing it ` +
-      `(Issue #1487).\n\n` +
+      `worker removed ${list} to stop label-based discovery re-surfacing it.\n\n` +
       `**To resume:** remove \`${config.needsHumanLabel}\` **and** re-add ` +
       `${list}. Clearing \`${config.needsHumanLabel}\` alone leaves this ` +
       `issue with no discovery label, so nothing will claim it.`;

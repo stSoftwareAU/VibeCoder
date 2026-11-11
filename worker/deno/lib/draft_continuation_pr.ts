@@ -11,6 +11,11 @@
  * that run completes, completion marks the draft ready and it takes the
  * normal review and auto-merge path, even with a criterion still unmet
  * (Issue #4234); the body says `Closes #N` unless an entry is `missing`.
+ * When marking a known draft ready fails, the run is not released as having
+ * raised it ready: completion fails the run so the next run retries (Issue
+ * #4952). A draft whose state could not be read is treated as a known draft
+ * only when the ready step's own head read says `isDraft` is true; otherwise a
+ * failed ready only warns.
  *
  * Best-effort: the branch is the deliverable that matters, so a `gh` failure
  * is reported, never thrown.
@@ -18,12 +23,27 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { withholdIssueClose } from "./missing_criterion_close_guard.ts";
+import {
+  type IssueIdentity,
+  withholdIssueClose,
+} from "./missing_criterion_close_guard.ts";
 import { mdSafe } from "./mutation_gate.ts";
 import { buildPrTitle } from "./pr_title_build.ts";
 
 /** Marks a PR body as a draft continuation (timed out, or criteria unmet). */
 export const DRAFT_CONTINUATION_MARKER = "<!-- vibe-draft-continuation -->";
+
+/**
+ * True when `body` opens with {@link DRAFT_CONTINUATION_MARKER} after any
+ * leading whitespace. Every hold body the worker writes puts the marker on its
+ * first line; a body that only quotes it mid-body is not a hold. Shared by the
+ * orphaned-draft self-heal (`draft_pr_self_heal.ts`) and the PR-body sync
+ * (`pr_body_sync.ts`), so the two cannot disagree about what a hold is
+ * (Issue #4952).
+ */
+export function opensWithDraftContinuationMarker(body: string): boolean {
+  return body.trimStart().startsWith(DRAFT_CONTINUATION_MARKER);
+}
 
 /** What {@link ensureDraftContinuationPr} did. */
 export type DraftContinuationResult =
@@ -110,6 +130,8 @@ export async function ensureDraftContinuationPr(args: {
  * @param draftBody - The body to write instead of the unmet-criteria draft
  *   body (Issue #4617: the mutation hold body). Omitted, the unmet-criteria
  *   body is written.
+ * @param identity - Trusted repositories for the PR and its governing issue;
+ *   a qualified closing reference in `body` needs it to be rewritten.
  */
 export async function convertToDraftContinuation(args: {
   repo: string;
@@ -117,10 +139,12 @@ export async function convertToDraftContinuation(args: {
   prNumber: number;
   body: string;
   draftBody?: string;
+  identity?: IssueIdentity;
   gh: (args: string[]) => Promise<string>;
   log: (message: string) => void;
 }): Promise<void> {
-  const { repo, issueNumber, prNumber, body, draftBody, gh, log } = args;
+  const { repo, issueNumber, prNumber, body, draftBody, identity, gh, log } =
+    args;
   const pr = String(prNumber);
   let isDraft = false;
   let armed = true;
@@ -164,7 +188,7 @@ export async function convertToDraftContinuation(args: {
       "--repo",
       repo,
       "--body",
-      draftBody ?? buildUnmetDraftBody(issueNumber, body),
+      draftBody ?? buildUnmetDraftBody(issueNumber, body, identity),
     ]);
   } catch (err) {
     log(`could not rewrite PR #${prNumber}'s body: ${errText(err)}`);
@@ -172,7 +196,11 @@ export async function convertToDraftContinuation(args: {
 }
 
 /** A draft for unmet criteria: the run's body, closing keyword withheld. */
-export function buildUnmetDraftBody(issueNumber: number, body: string): string {
+export function buildUnmetDraftBody(
+  issueNumber: number,
+  body: string,
+  identity?: IssueIdentity,
+): string {
   return [
     DRAFT_CONTINUATION_MARKER,
     "",
@@ -181,7 +209,7 @@ export function buildUnmetDraftBody(issueNumber: number, body: string): string {
     "marked ready and auto-merge armed, even with a criterion still unmet, " +
     "and it says `Closes #N` unless an entry is `missing`.",
     "",
-    withholdIssueClose(body, issueNumber),
+    withholdIssueClose(body, issueNumber, identity),
   ].join("\n");
 }
 
@@ -200,6 +228,7 @@ export function buildMutationHoldDraftBody(
     workflow: string;
     comment: string;
   },
+  identity?: IssueIdentity,
 ): string {
   const job = mdSafe(hold.job);
   const workflow = mdSafe(hold.workflow);
@@ -214,24 +243,25 @@ export function buildMutationHoldDraftBody(
     "",
     hold.comment,
     "",
-    withholdIssueClose(body, issueNumber),
+    withholdIssueClose(body, issueNumber, identity),
   ].join("\n");
 }
 
-/**
- * Mark a draft continuation ready and wait for its CI to start (Issue
- * #4160). Draft PRs skip CI (Issue #4152) and GitHub counts a skipped
- * required check as passing, so arming auto-merge straight after `gh pr
- * ready` could merge on the draft's skipped checks before the
- * ready-for-review run registers.
- *
- * Returns `true` once the head commit carries a check run that was not there
- * before the PR was marked ready and was not skipped — the caller arms
- * auto-merge only then. Returns `false` when marking it ready fails or no
- * such run appears within `timeoutMs`; auto-merge is then left for the
- * sweep, which arms it once CI has run. Never throws.
- */
-export async function markReadyAndAwaitCi(args: {
+/** What {@link markDraftReadyAndAwaitCi} reports (Issues #4160, #4952). */
+export interface MarkReadyResult {
+  /** False only when `gh pr ready` threw: the PR is still a draft. */
+  ready: boolean;
+  /** True once ready-for-review CI has started, so auto-merge may be armed. */
+  ciStarted: boolean;
+  /**
+   * The head read's `isDraft`: true, false, or null when the read failed or
+   * left it out (Issue #4952).
+   */
+  draft: boolean | null;
+}
+
+/** The arguments of {@link markDraftReadyAndAwaitCi}. */
+interface MarkReadyArgs {
   repo: string;
   prNumber: number;
   gh: (args: string[]) => Promise<string>;
@@ -239,12 +269,39 @@ export async function markReadyAndAwaitCi(args: {
   log: (message: string) => void;
   timeoutMs?: number;
   pollMs?: number;
-}): Promise<boolean> {
+}
+
+/**
+ * Mark a draft continuation ready and wait for its CI to start (Issues #4160,
+ * #4952). Draft PRs skip CI (Issue #4152) and GitHub counts a skipped required
+ * check as passing, so arming auto-merge straight after `gh pr ready` could
+ * merge on the draft's skipped checks before the ready-for-review run
+ * registers.
+ *
+ * One `gh pr view` reads the head commit and `isDraft`. When `isDraft` is
+ * exactly `false` the PR is already ready: `gh pr ready` and the CI wait are
+ * skipped and the result is `{ ready: true, ciStarted: true, draft: false }`.
+ * When `isDraft` is missing, the draft is marked ready as before.
+ *
+ * `ready` is `false` only when `gh pr ready` throws, so the PR is still a
+ * draft; the caller decides whether that fails the run (Issue #4952).
+ * `ciStarted` is `true` once the head commit carries a check run that was not
+ * there before the PR was marked ready and was not skipped. It is `false` when
+ * the check runs cannot be read, or when no such run appears within
+ * `timeoutMs`. A caller that treats the PR as a draft must not arm auto-merge
+ * when `ciStarted` is `false`; the sweep arms it once CI has run. `draft` is
+ * what the head read said, so a caller whose draft state is unknown can apply
+ * the same rule when `draft` is `true` (Issue #4952). Never throws.
+ */
+export async function markDraftReadyAndAwaitCi(
+  args: MarkReadyArgs,
+): Promise<MarkReadyResult> {
   const { repo, prNumber, gh, sleep, log } = args;
   const timeoutMs = args.timeoutMs ?? 120_000;
   const pollMs = args.pollMs ?? 10_000;
   const pr = String(prNumber);
   let headRefOid = "";
+  let draft: boolean | null = null;
   let before: Set<number> | undefined;
   const checkRuns = async () =>
     JSON.parse(
@@ -256,9 +313,21 @@ export async function markReadyAndAwaitCi(args: {
       ]),
     ) as { id: number; conclusion: string | null }[];
   try {
-    ({ headRefOid } = JSON.parse(
-      await gh(["pr", "view", pr, "--repo", repo, "--json", "headRefOid"]),
-    ) as { headRefOid: string });
+    const view = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        pr,
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid,isDraft",
+      ]),
+    ) as { headRefOid: string; isDraft?: unknown };
+    headRefOid = view.headRefOid;
+    draft = typeof view.isDraft === "boolean" ? view.isDraft : null;
+    // Issue #4952: already ready, so there is nothing to mark and no CI wait.
+    if (draft === false) return { ready: true, ciStarted: true, draft };
     before = new Set((await checkRuns()).map((run) => run.id));
   } catch (err) {
     log(
@@ -270,16 +339,16 @@ export async function markReadyAndAwaitCi(args: {
     await gh(["pr", "ready", pr, "--repo", repo]);
   } catch (err) {
     log(`could not mark PR #${prNumber} ready: ${errText(err)}`);
-    return false;
+    return { ready: false, ciStarted: false, draft };
   }
-  if (!before) return false;
+  if (!before) return { ready: true, ciStarted: false, draft };
   try {
     // Checked at once, then every `pollMs` up to and including `timeoutMs`.
     for (let waited = 0;; waited += pollMs) {
       const started = (await checkRuns()).some((run) =>
         !before.has(run.id) && run.conclusion !== "skipped"
       );
-      if (started) return true;
+      if (started) return { ready: true, ciStarted: true, draft };
       if (waited >= timeoutMs) break;
       await sleep(pollMs);
     }
@@ -291,10 +360,10 @@ export async function markReadyAndAwaitCi(args: {
   } catch (err) {
     log(`could not read PR #${prNumber}'s check runs: ${errText(err)}`);
   }
-  return false;
+  return { ready: true, ciStarted: false, draft };
 }
 
-function errText(err: unknown): string {
+export function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
