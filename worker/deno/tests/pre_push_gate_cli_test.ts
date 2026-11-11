@@ -203,3 +203,23 @@ Deno.test("pre-push cli: a throwing gate blocks", async () => {
     assertStringIncludes(h2.errs.join(""), "plain string");
   });
 });
+
+Deno.test("pre-push cli: the checkout's default branch is the gate's baseline; unknown leaves it unset (PR #5034 review)", async () => {
+  await withSpec(VALID, async (path) => {
+    const seen: Array<string | undefined> = [];
+    const run = (defaultBranch: () => Promise<string | null>) =>
+      runPrePushGateCli(["--spec", path], {
+        writeErr: () => {},
+        readStdin: () => Promise.resolve(""),
+        cwd: () => "/fake/cwd",
+        defaultBranch,
+        gate: (options) => {
+          seen.push(options.baselineBranch);
+          return okGate(options);
+        },
+      });
+    assertEquals(await run(() => Promise.resolve("trunk")), 0);
+    assertEquals(await run(() => Promise.resolve(null)), 0);
+    assertEquals(seen, ["trunk", undefined]);
+  });
+});

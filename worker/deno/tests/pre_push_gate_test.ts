@@ -8,6 +8,7 @@ import {
   assert,
   assertEquals,
   assertInstanceOf,
+  assertRejects,
   assertStringIncludes,
 } from "@std/assert";
 import { WORKFLOW_SPECS } from "../lib/workflow_definitions.ts";
@@ -3364,7 +3365,15 @@ const editFoo = (clone: string) =>
     "export const foo = 2;\n",
   );
 
-/** Run the gate; `unit` answers the deno test command and records its cwds. */
+/**
+ * Whether a checkout is the pushed head (`editFoo` writes `foo = 2`, a repair `foo = 3`) rather
+ * than the commit the push forked from (`foo = 1`): a runner answers by what
+ * the checkout holds, not by where it sits.
+ */
+const atHead = (cwd: string | undefined) =>
+  !Deno.readTextFileSync(`${cwd}/lib/foo.ts`).includes("= 1");
+
+/** Run the gate; `unit` answers the deno test command in the checkout it is given. */
 async function gateWithUnitRunner(
   clone: string,
   stdin: string,
@@ -3373,7 +3382,6 @@ async function gateWithUnitRunner(
     stdout?: string;
     stderr?: string;
   },
-  cwds: Array<string | undefined> = [],
   extra: { baselineBranch?: string } = {},
 ) {
   const warnings: string[] = [];
@@ -3395,7 +3403,6 @@ async function gateWithUnitRunner(
             stderr: "",
           });
         }
-        cwds.push(options.cwd);
         const answer = unit(options.cwd, command);
         return Promise.resolve({
           started: true,
@@ -3414,19 +3421,14 @@ async function gateWithUnitRunner(
 Deno.test("runPrePushGate: a test red the same way at the fork is a warning, not a block (PR #5034 review)", async () => {
   const { root, clone, stdin } = await makeUnitTestRepo(editFoo);
   try {
-    const cwds: Array<string | undefined> = [];
+    // Red at the head and red at the fork (foo = 1) alike.
     const { result, warnings } = await gateWithUnitRunner(
       clone,
       stdin,
       () => ({ code: 1, stderr: FOO_FAILURE }),
-      cwds,
     );
     assert(result.ok, result.ok ? "" : result.error.message);
     assertEquals(result.value.checksRun.includes(UNIT_CMD), false);
-    assertEquals(cwds.length, 2, "once at the head, once at the fork");
-    assertEquals(cwds[0], `${clone}/worker/deno`);
-    assert(!cwds[1]!.startsWith(clone), "the base run uses its own worktree");
-    assert(cwds[1]!.endsWith("/tree/worker/deno"));
     assertEquals(warnings.length, 1);
     assertStringIncludes(warnings[0]!, "[PRE_PUSH_WARNING] deno test");
     assertStringIncludes(warnings[0]!, "foo works => ./tests/foo_test.ts");
@@ -3454,10 +3456,7 @@ Deno.test("runPrePushGate: a failure the fork does not share still blocks (PR #5
     const fixedAtBase = await gateWithUnitRunner(
       clone,
       stdin,
-      (cwd) =>
-        cwd === `${clone}/worker/deno`
-          ? { code: 1, stderr: FOO_FAILURE }
-          : { code: 0 },
+      (cwd) => atHead(cwd) ? { code: 1, stderr: FOO_FAILURE } : { code: 0 },
     );
     assert(!fixedAtBase.result.ok);
     assertInstanceOf(fixedAtBase.result.error, PreFlightGateError);
@@ -3468,7 +3467,7 @@ Deno.test("runPrePushGate: a failure the fork does not share still blocks (PR #5
       clone,
       stdin,
       (cwd) =>
-        cwd === `${clone}/worker/deno`
+        atHead(cwd)
           ? {
             code: 1,
             stderr: FOO_FAILURE + "foo also works => ./tests/foo_test.ts:9:6\n",
@@ -3493,7 +3492,6 @@ Deno.test("runPrePushGate: a failure the fork does not share still blocks (PR #5
 Deno.test("runPrePushGate: a module that fails outside a test blocks even when every named failure is red at the fork (PR #5034 review)", async () => {
   const { root, clone, stdin } = await makeUnitTestRepo(editFoo);
   try {
-    const headCwd = `${clone}/worker/deno`;
     // Control: the named failure alone is red at the fork and waved through.
     const control = await gateWithUnitRunner(
       clone,
@@ -3505,7 +3503,7 @@ Deno.test("runPrePushGate: a module that fails outside a test blocks even when e
     // The push also broke a module's link, which deno reports unnamed.
     const mixed = await gateWithUnitRunner(clone, stdin, (cwd) => ({
       code: 1,
-      stderr: cwd === headCwd
+      stderr: atHead(cwd)
         ? FOO_FAILURE + "./tests/b_test.ts (uncaught error)\n"
         : FOO_FAILURE,
     }));
@@ -3520,12 +3518,11 @@ Deno.test("runPrePushGate: a module that fails outside a test blocks even when e
 Deno.test("runPrePushGate: a serial pass the runner skipped after a base-red parallel failure is still run and judged (PR #5034 review)", async () => {
   const { root, clone, stdin } = await makeUnitTestRepo(editFoo);
   try {
-    const headCwd = `${clone}/worker/deno`;
     const parallelFailed = FOO_FAILURE + "=== parallel pass: FAILED in 1s\n";
     const serialRun =
       (serial: { code: number; stderr?: string }) =>
       (cwd: string | undefined, command: string) => {
-        if (cwd !== headCwd) return { code: 1, stderr: FOO_FAILURE };
+        if (!atHead(cwd)) return { code: 1, stderr: FOO_FAILURE };
         return command.endsWith(" --serial-only")
           ? serial
           : { code: 1, stderr: parallelFailed };
@@ -3584,18 +3581,86 @@ Deno.test("runPrePushGate: a repair push compares a failing test at the PR's bas
     assert(wavedThrough.result.ok);
     assertEquals(wavedThrough.warnings.length, 1);
     // With it the base is green, so the repair is blocked.
-    const blocked = await gateWithUnitRunner(clone, stdin, red, [], {
+    const blocked = await gateWithUnitRunner(clone, stdin, red, {
       baselineBranch: "main",
     });
     assert(!blocked.result.ok);
     assertInstanceOf(blocked.result.error, PreFlightGateError);
     assertEquals(blocked.warnings, []);
     // A base ref that is not a ref makes the comparison unavailable: blocked.
-    const unknown = await gateWithUnitRunner(clone, stdin, red, [], {
+    const unknown = await gateWithUnitRunner(clone, stdin, red, {
       baselineBranch: "no-such-branch",
     });
     assert(!unknown.result.ok);
     assertInstanceOf(unknown.result.error, PreFlightGateError);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a repair push on a --depth=1 clone is deepened to find the PR's base, so a base-red test is a warning (PR #5034 review)", async () => {
+  const { root, clone } = await makeUnitTestRepo(editFoo);
+  try {
+    // The PR branch is on origin; then the base moves on, so the shallow
+    // clone's two tips share no commit it holds.
+    await git(clone, "push", "-q", "origin", "HEAD:refs/heads/pr");
+    const other = `${root}/other`;
+    await git(root, "clone", "-q", `${root}/remote.git`, other);
+    await Deno.writeTextFile(`${other}/NEWS.md`, "base moved on\n");
+    await git(other, "add", "-A");
+    await git(other, "commit", "-qm", "base moves on");
+    await git(other, "push", "-q", "origin", "HEAD:main");
+    const shallow = `${root}/shallow`;
+    await git(
+      root,
+      "clone",
+      "-q",
+      "--depth=1",
+      "--no-single-branch",
+      "--branch",
+      "pr",
+      `file://${root}/remote.git`,
+      shallow,
+    );
+    // Positive control: the clone is shallow and cannot find the merge-base yet.
+    assertEquals(
+      await git(shallow, "rev-parse", "--is-shallow-repository"),
+      "true",
+    );
+    await assertRejects(() =>
+      git(shallow, "merge-base", "origin/main", "HEAD")
+    );
+    // The repair itself: one new local commit on top of the PR's pushed head.
+    await Deno.writeTextFile(
+      `${shallow}/worker/deno/lib/foo.ts`,
+      "export const foo = 3;\n",
+    );
+    await git(shallow, "add", "-A");
+    await git(shallow, "commit", "-qm", "repair");
+    const stdin = prePushInput(await git(shallow, "rev-parse", "HEAD"));
+    const { result, warnings } = await gateWithUnitRunner(
+      shallow,
+      stdin,
+      () => ({ code: 1, stderr: FOO_FAILURE }),
+      { baselineBranch: "main" },
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0]!, "[PRE_PUSH_WARNING] deno test");
+    assertEquals(
+      (await git(shallow, "worktree", "list")).split("\n").length,
+      1,
+    );
+    // The same clone with a base that passes still blocks: the deepened
+    // fork is compared, not skipped.
+    const fixedAtBase = await gateWithUnitRunner(
+      shallow,
+      stdin,
+      (cwd) => atHead(cwd) ? { code: 1, stderr: FOO_FAILURE } : { code: 0 },
+      { baselineBranch: "main" },
+    );
+    assert(!fixedAtBase.result.ok);
+    assertInstanceOf(fixedAtBase.result.error, PreFlightGateError);
   } finally {
     await Deno.remove(root, { recursive: true });
   }
@@ -3654,9 +3719,7 @@ Deno.test("runPrePushGate: a module-fetch outage is infrastructure, a 404 and a 
     // A named test failure wins over a fetch line in the same output.
     const mixed = await gateWithUnitRunner(clone, stdin, (cwd) => ({
       code: 1,
-      stderr: cwd === `${clone}/worker/deno`
-        ? outage + FOO_FAILURE
-        : "error: Test failed\n",
+      stderr: atHead(cwd) ? outage + FOO_FAILURE : "error: Test failed\n",
     }));
     assert(!mixed.result.ok);
     assertInstanceOf(mixed.result.error, PreFlightGateError);

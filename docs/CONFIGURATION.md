@@ -5240,9 +5240,13 @@ The hook runs two stages:
      review-feedback or spelling repair push whose PR base is known (the base
      it merges in before the push), and the merge-conflict repair (it passes the
      base it just merged as `gateBaseBranch`, which places the comparison and
-     merges nothing). Any other push (the agent's own `git push`, a repair
-     whose PR base could not be read) uses
-     the parent of its oldest commit not yet on a remote. Only a run whose every
+     merges nothing). The agent's own `git push` (the `pre-push` hook does not
+     know the PR) compares at the merge-base with the checkout's default branch
+     (`origin/HEAD`), which for a PR that targets another branch can be older
+     than the PR's own base. A repair whose PR base could not be read, or whose
+     checkout has no `origin/HEAD`, uses the parent of its oldest commit not yet
+     on a remote. A shallow clone is deepened (`ensureHistoryDepth`) before the
+     merge-base is looked up. Only a run whose every
      failure is accounted for is downgraded: a test module that fails outside a
      test (`./x_test.ts (uncaught error)`: a top-level throw, a dangling promise
      or a missing named export) names no test to compare and blocks. The
@@ -5252,7 +5256,7 @@ The hook runs two stages:
      runner applies after both passes succeed is not re-run for a failed
      parallel pass. A test file the
      push added, a base run that passes, a base the gate cannot check out (for
-     example a shallow checkout without the history to find the merge-base), or an output that
+     example a deepen that failed, so no merge-base is found), or an output that
      names no failed test stays a block. Repair specs called `shellcheckOnly` also run these
      unit tests and configured markdownlint from the pushed paths, while retaining
      their existing formatter policy;

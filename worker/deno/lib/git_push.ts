@@ -12,6 +12,9 @@
 import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
+import { resolveLocalDefaultBranch } from "./local_default_branch.ts";
+
+export { resolveLocalDefaultBranch };
 import {
   recoverFromPushRejection,
   refuseUnlessHeadExtends,
@@ -251,36 +254,6 @@ export async function recoverExistingPr(
   );
 
   return { ok: true, value: messages.join("\n") };
-}
-
-/**
- * Resolve the repository's default branch from the local clone (Issue #2584).
- *
- * Uses `git symbolic-ref refs/remotes/origin/HEAD` — the same local resolution
- * `setupRepo()` relies on — so the push guard needs no GitHub API call and works
- * purely from the working tree selected by `options.cwd`. A `git clone` sets
- * `origin/HEAD` to the remote's default branch, so this resolves correctly for
- * every monitored clone.
- *
- * @param options - Git command options (cwd selects the repo)
- * @returns The default branch name, or null when it cannot be determined
- *   (e.g. `origin/HEAD` is unset).
- */
-export async function resolveLocalDefaultBranch(
-  options: GitCommandOptions = {},
-): Promise<string | null> {
-  const result = await runGitCommand(
-    ["symbolic-ref", "refs/remotes/origin/HEAD"],
-    options,
-  );
-  if (result.ok && result.value.code === 0) {
-    const branch = result.value.stdout.trim().replace(
-      "refs/remotes/origin/",
-      "",
-    );
-    return branch || null;
-  }
-  return null;
 }
 
 /**

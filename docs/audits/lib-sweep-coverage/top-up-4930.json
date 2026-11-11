@@ -6,7 +6,8 @@
   "definition": "module added for the pre-push gate's deno test check: classify a module-fetch failure as infrastructure, downgrade a failure already red at the fork point to a warning, and fail closed on every other failed run (#4930)",
   "status": "claimed",
   "paths": [
-    "worker/deno/lib/deno_test_baseline.ts"
+    "worker/deno/lib/deno_test_baseline.ts",
+    "worker/deno/lib/local_default_branch.ts"
   ],
   "sweptAt": "b1562178fe465d921a5e533a82b7a5994e91c766"
 }

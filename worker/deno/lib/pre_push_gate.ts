@@ -58,6 +58,7 @@ import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
+import { ensureHistoryDepth } from "./git_history.ts";
 import {
   type PreFlightRunner,
   runPreFlightGate,
@@ -1529,8 +1530,9 @@ export function needsFullUnitSuite(
  * merge brought in. A repair push must not compare against the PR's own
  * previous head, where a test the repair leaves red is red too. Without a
  * `compareRef` it is the parent of the oldest commit not already on a remote.
- * Null when it cannot be found, for example a shallow checkout that lacks the
- * history: the comparison is then unavailable and the failure blocks.
+ * A shallow checkout is deepened first (`ensureHistoryDepth`). Null when the
+ * fork still cannot be found, for example the deepen failed: the comparison is
+ * then unavailable and the failure blocks.
  */
 async function pushForkCommit(
   refs: readonly PrePushRef[],
@@ -1546,6 +1548,21 @@ async function pushForkCommit(
     return null;
   }
   if (compareRef !== undefined) {
+    // The worker's clones are `--depth=1`: deepen until the heads meet the
+    // base before asking for their merge-base (a no-op on a full clone). A
+    // deepen that fails leaves the baseline unavailable, as a missing
+    // merge-base does.
+    const deepened = await ensureHistoryDepth(
+      [compareRef, ...refs.map((r) => r.localSha)],
+      {
+        cwd,
+        gitRunner: async (args, options) => ({
+          ok: true,
+          value: await git(args, options?.cwd ?? cwd),
+        }),
+      },
+    );
+    if (!deepened.ok) return null;
     const mergeBase = await git(
       ["merge-base", compareRef, ...refs.map((r) => r.localSha)],
       cwd,

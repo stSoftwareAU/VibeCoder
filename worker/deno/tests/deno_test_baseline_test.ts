@@ -188,11 +188,21 @@ Deno.test("judgeDenoTestFailure: base-only needs every failed test red at the ba
       .kind,
     "verdict",
   );
-  // A test path that is not a plain relative _test.ts is never re-run.
+  // A test path that is not a plain relative _test.ts is never re-run, even
+  // when the base would report it ran and failed the same way. Control: the
+  // same shape with a plain path is base-only, so only the path decides.
+  assertEquals(
+    (await judgeDenoTestFailure(
+      failure("x => ./ok_test.ts:1:1\n"),
+      baseline("x => ./ok_test.ts:1:1\n", ["./ok_test.ts"]),
+      command,
+    )).kind,
+    "base-only",
+  );
   assertEquals(
     (await judgeDenoTestFailure(
       failure("x => ./../evil_test.ts:1:1\n"),
-      baseline("x => ./../evil_test.ts:1:1\n"),
+      baseline("x => ./../evil_test.ts:1:1\n", ["./../evil_test.ts"]),
       command,
     )).kind,
     "verdict",
@@ -334,10 +344,12 @@ Deno.test("judgeDenoTestCheck: a base-only parallel failure still runs the seria
     output === null
       ? { ok: true as const, value: undefined }
       : { ok: false as const, error: failure(output) };
-  const onlySerial = (output: string | null) => (cmd: string) => {
-    assertEquals(cmd, "deno task test:unit --serial-only");
-    return serialOutcome(output);
-  };
+  // Answers the serial command; any other command fails a test the base does
+  // not, so running the wrong one changes the outcome.
+  const onlySerial = (output: string | null) => (cmd: string) =>
+    cmd.endsWith(" --serial-only")
+      ? serialOutcome(output)
+      : serialOutcome("wrong command => ./w_test.ts:1:1\n");
 
   // The serial pass passes: the base-only warning stands.
   assertEquals((await check(onlySerial(null))).kind, "base-only");
@@ -380,9 +392,8 @@ Deno.test("judgeDenoTestCheck: a base-only parallel failure still runs the seria
     command: "deno task test:unit",
     baseline: redAtBase,
     baseCommand: command,
-    run: () => {
-      throw new Error("the serial pass must not be run again");
-    },
+    // Running the serial pass again would fail a test the base does not.
+    run: () => Promise.resolve(serialOutcome("rerun => ./w_test.ts:1:1\n")),
   });
   assertEquals(reached.kind, "base-only");
   // A verdict on the first run is returned without running anything else.
@@ -391,9 +402,7 @@ Deno.test("judgeDenoTestCheck: a base-only parallel failure still runs the seria
     command: "deno task test:unit",
     baseline: redAtBase,
     baseCommand: command,
-    run: () => {
-      throw new Error("a blocked run needs no serial pass");
-    },
+    run: () => Promise.resolve(serialOutcome(null)),
   });
   assertEquals(fresh.kind, "verdict");
 });
@@ -417,8 +426,9 @@ async function sh(cwd: string, ...args: string[]): Promise<string> {
 
 /**
  * A repository whose fork commit holds `a_test.ts` at the top and under
- * `worker/deno`, each beside a marker file reading `fork`, and whose head
- * commit changes both markers to `head` and adds `gone_test.ts` in both places.
+ * `worker/deno`, each beside a marker file (`fork`, and `fork-nested` under
+ * `worker/deno`), and whose head commit changes the markers to `head` and
+ * `head-nested` and adds `gone_test.ts` in both places.
  */
 async function makeForkRepo(): Promise<{ repo: string; fork: string }> {
   const repo = await Deno.makeTempDir({ prefix: "vibe_baseline_repo_" });
@@ -429,13 +439,19 @@ async function makeForkRepo(): Promise<{ repo: string; fork: string }> {
   await Deno.mkdir(`${repo}/worker/deno`, { recursive: true });
   for (const dir of [repo, `${repo}/worker/deno`]) {
     await Deno.writeTextFile(`${dir}/a_test.ts`, "export {};\n");
-    await Deno.writeTextFile(`${dir}/marker.txt`, "fork\n");
+    await Deno.writeTextFile(
+      `${dir}/marker.txt`,
+      dir === repo ? "fork\n" : "fork-nested\n",
+    );
   }
   await sh(repo, "add", "-A");
   await sh(repo, "commit", "-qm", "fork");
   const fork = await sh(repo, "rev-parse", "HEAD");
   for (const dir of [repo, `${repo}/worker/deno`]) {
-    await Deno.writeTextFile(`${dir}/marker.txt`, "head\n");
+    await Deno.writeTextFile(
+      `${dir}/marker.txt`,
+      dir === repo ? "head\n" : "head-nested\n",
+    );
     await Deno.writeTextFile(`${dir}/gone_test.ts`, "export {};\n");
   }
   await sh(repo, "add", "-A");
@@ -443,15 +459,22 @@ async function makeForkRepo(): Promise<{ repo: string; fork: string }> {
   return { repo, fork };
 }
 
-/** A runner that reads the marker file in the directory it was asked to run in. */
-function markerRunner(code: number, cwds: string[] = []): PreFlightRunner {
+/**
+ * A runner that answers by the marker file in the checkout it was asked to run
+ * in: `codeFor(marker)` is its exit code. `cwds` collects the checkouts, only
+ * to look for leftovers afterwards.
+ */
+function markerRunner(
+  codeFor: (marker: string) => number,
+  cwds: string[] = [],
+): PreFlightRunner {
   return async (_command, options) => {
     cwds.push(options.cwd ?? "");
     const marker = (await Deno.readTextFile(`${options.cwd}/marker.txt`))
       .trim();
     return {
       started: true,
-      code,
+      code: codeFor(marker),
       stdout: `boom one => ./a_test.ts:1:6\nmarker=${marker}\n`,
       stderr: "",
     };
@@ -475,14 +498,14 @@ async function exists(path: string): Promise<boolean> {
 Deno.test("worktreeBaseline: a nested root runs only the files present at the fork, in a checkout of the fork", async () => {
   const { repo, fork } = await makeForkRepo();
   try {
-    const cwds: string[] = [];
     const tempDirs: string[] = [];
     const result = await worktreeBaseline({
       cwd: repo,
       root: "worker/deno",
       forkSha: fork,
       git: defaultPrePushGit,
-      runner: markerRunner(1, cwds),
+      // Red only in the nested root's checkout of the fork.
+      runner: markerRunner((marker) => marker === "fork-nested" ? 1 : 0),
       makeTempDir: async () => {
         const dir = await Deno.makeTempDir({ prefix: "vibe_baseline_t_" });
         tempDirs.push(dir);
@@ -492,16 +515,14 @@ Deno.test("worktreeBaseline: a nested root runs only the files present at the fo
 
     assertEquals(result?.ranFiles, ["./a_test.ts"]);
     assertEquals(result?.error?.reason, "non-zero-exit");
-    // The marker shows the base command ran at the fork, not at the head.
-    assertStringIncludes(result?.error?.output ?? "", "marker=fork");
-    assertEquals(cwds.length, 1);
-    assert(cwds[0]!.endsWith("/tree/worker/deno"), cwds[0]);
+    // The marker shows the base command ran at the fork, in the nested root.
+    assertStringIncludes(result?.error?.output ?? "", "marker=fork-nested");
     assert(await onlyMainWorktree(repo), "the throwaway worktree is removed");
     assertEquals(await exists(tempDirs[0]!), false);
     // The head checkout is untouched.
     assertEquals(
       (await Deno.readTextFile(`${repo}/worker/deno/marker.txt`)).trim(),
-      "head",
+      "head-nested",
     );
   } finally {
     await Deno.remove(repo, { recursive: true });
@@ -511,17 +532,16 @@ Deno.test("worktreeBaseline: a nested root runs only the files present at the fo
 Deno.test("worktreeBaseline: the top-level root runs in the tree itself; a passing base has no error", async () => {
   const { repo, fork } = await makeForkRepo();
   try {
-    const cwds: string[] = [];
+    // Passes only in the top-level checkout of the fork.
     const result = await worktreeBaseline({
       cwd: repo,
       root: ".",
       forkSha: fork,
       git: defaultPrePushGit,
-      runner: markerRunner(0, cwds),
+      runner: markerRunner((marker) => marker === "fork" ? 0 : 1),
     }).runAtBase(command, ["./a_test.ts"]);
 
     assertEquals(result, { ranFiles: ["./a_test.ts"], error: null });
-    assert(cwds[0]!.endsWith("/tree"), cwds[0]);
     assert(await onlyMainWorktree(repo));
   } finally {
     await Deno.remove(repo, { recursive: true });
@@ -531,17 +551,16 @@ Deno.test("worktreeBaseline: the top-level root runs in the tree itself; a passi
 Deno.test("worktreeBaseline: a fork that holds none of the files runs nothing", async () => {
   const { repo, fork } = await makeForkRepo();
   try {
-    const cwds: string[] = [];
+    // Any run would be red, so a run would show as an error.
     const result = await worktreeBaseline({
       cwd: repo,
       root: "worker/deno",
       forkSha: fork,
       git: defaultPrePushGit,
-      runner: markerRunner(1, cwds),
+      runner: markerRunner(() => 1),
     }).runAtBase(command, ["./gone_test.ts"]);
 
     assertEquals(result, { ranFiles: [], error: null });
-    assertEquals(cwds, []);
     assert(await onlyMainWorktree(repo));
   } finally {
     await Deno.remove(repo, { recursive: true });
@@ -551,14 +570,13 @@ Deno.test("worktreeBaseline: a fork that holds none of the files runs nothing", 
 Deno.test("worktreeBaseline: a fork that cannot be checked out is unavailable and leaves nothing behind", async () => {
   const { repo } = await makeForkRepo();
   try {
-    const cwds: string[] = [];
     const tempDirs: string[] = [];
     const result = await worktreeBaseline({
       cwd: repo,
       root: ".",
       forkSha: "0".repeat(40),
       git: defaultPrePushGit,
-      runner: markerRunner(1, cwds),
+      runner: markerRunner(() => 1),
       makeTempDir: async () => {
         const dir = await Deno.makeTempDir({ prefix: "vibe_baseline_t_" });
         tempDirs.push(dir);
@@ -567,7 +585,6 @@ Deno.test("worktreeBaseline: a fork that cannot be checked out is unavailable an
     }).runAtBase(command, ["./a_test.ts"]);
 
     assertEquals(result, null);
-    assertEquals(cwds, []);
     assert(await onlyMainWorktree(repo));
     assertEquals(await exists(tempDirs[0]!), false);
   } finally {
@@ -578,7 +595,6 @@ Deno.test("worktreeBaseline: a fork that cannot be checked out is unavailable an
 Deno.test("worktreeBaseline: a git lookup that fails is unavailable, but the worktree is still removed", async () => {
   const { repo, fork } = await makeForkRepo();
   try {
-    const cwds: string[] = [];
     const result = await worktreeBaseline({
       cwd: repo,
       root: ".",
@@ -588,11 +604,10 @@ Deno.test("worktreeBaseline: a git lookup that fails is unavailable, but the wor
         args[0] === "ls-tree"
           ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal" })
           : defaultPrePushGit(args, cwd),
-      runner: markerRunner(1, cwds),
+      runner: markerRunner(() => 1),
     }).runAtBase(command, ["./a_test.ts"]);
 
     assertEquals(result, null);
-    assertEquals(cwds, []);
     assert(await onlyMainWorktree(repo));
   } finally {
     await Deno.remove(repo, { recursive: true });
@@ -602,17 +617,15 @@ Deno.test("worktreeBaseline: a git lookup that fails is unavailable, but the wor
 Deno.test("worktreeBaseline: a command that cannot be built is unavailable and runs nothing", async () => {
   const { repo, fork } = await makeForkRepo();
   try {
-    const cwds: string[] = [];
     const result = await worktreeBaseline({
       cwd: repo,
       root: ".",
       forkSha: fork,
       git: defaultPrePushGit,
-      runner: markerRunner(1, cwds),
+      runner: markerRunner(() => 1),
     }).runAtBase(() => null, ["./a_test.ts"]);
 
     assertEquals(result, null);
-    assertEquals(cwds, []);
     assert(await onlyMainWorktree(repo));
   } finally {
     await Deno.remove(repo, { recursive: true });
@@ -628,12 +641,13 @@ Deno.test("worktreeBaseline: the default temp directory is removed after the run
       root: ".",
       forkSha: fork,
       git: defaultPrePushGit,
-      runner: markerRunner(1, cwds),
+      runner: markerRunner(() => 1, cwds),
     }).runAtBase(command, ["./a_test.ts"]);
 
-    const dir = cwds[0]!.replace(/\/tree$/, "");
-    assert(dir.includes("vibe_deno_test_base_"), dir);
-    assertEquals(await exists(dir), false);
+    // The checkout the run used is gone, and git no longer lists it.
+    assertEquals(cwds.length > 0, true, "the run reached a checkout");
+    assertEquals(await exists(cwds[0]!), false);
+    assert(await onlyMainWorktree(repo));
   } finally {
     await Deno.remove(repo, { recursive: true });
   }

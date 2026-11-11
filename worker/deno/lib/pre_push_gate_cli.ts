@@ -19,6 +19,7 @@ import type { Result } from "../types.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { installConsoleRedaction } from "./console_redaction.ts";
 import { runPrePushGate } from "./pre_push_gate.ts";
+import { resolveLocalDefaultBranch } from "./local_default_branch.ts";
 
 /** Injectable seams. */
 export interface PrePushCliDeps {
@@ -26,6 +27,8 @@ export interface PrePushCliDeps {
   cwd?: () => string;
   gate?: typeof runPrePushGate;
   writeErr?: (text: string) => void;
+  /** The checkout's default branch, or null when unknown. */
+  defaultBranch?: (cwd: string) => Promise<string | null>;
 }
 
 interface PrePushSpec {
@@ -105,9 +108,19 @@ export async function runPrePushGateCli(
     }
 
     const gate = deps.gate ?? runPrePushGate;
+    const cwd = (deps.cwd ?? Deno.cwd)();
+    // The hook does not know the PR's base. The default branch is the base of
+    // nearly every PR, so a `deno test` failure is compared there, not at the
+    // PR's own previous head (where a failure the agent leaves is red too).
+    // A PR targeting another branch is compared at its merge-base with the
+    // default branch, which can be older than that PR's own base. When the
+    // default branch is unknown the gate's own fallback applies.
+    const baselineBranch = await (deps.defaultBranch ??
+      ((dir: string) => resolveLocalDefaultBranch({ cwd: dir })))(cwd);
     const result = await gate({
-      cwd: (deps.cwd ?? Deno.cwd)(),
+      cwd,
       stdin,
+      ...(baselineBranch === null ? {} : { baselineBranch }),
       preFlightCommands: spec.value.preFlightCommands,
       timeoutSeconds: spec.value.timeoutSeconds,
     });
