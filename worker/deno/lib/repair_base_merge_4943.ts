@@ -30,6 +30,7 @@ import {
 } from "./worker_build_info.ts";
 import { incrementCounter } from "./fault_tolerance_counters.ts";
 import { withFileLock } from "./file_lock.ts";
+import { atomicWrite } from "./file_utils.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import {
   BRANCH_REFRESH_REFUSAL_THRESHOLD,
@@ -39,6 +40,7 @@ import {
   notifyBranchRefreshRefusal,
   recordBranchRefreshRefusal,
   updateBranchRefreshRefusals,
+  updateRefusalsThenNotify,
 } from "./branch_refresh_refusal_streak.ts";
 
 export type BaseRefreshOutcome =
@@ -188,12 +190,61 @@ export async function persistBaseRefreshCounter(
   await persistNamedCounter(dir, baseRefreshCounterName(facts));
 }
 
+/** Why a counters file that parsed is still unusable, or undefined if usable. */
+function malformedCountersField(parsed: unknown): string | undefined {
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return "the file is not a JSON object";
+  }
+  const stored = (parsed as { counters?: unknown }).counters;
+  if (stored === null || typeof stored !== "object" || Array.isArray(stored)) {
+    return 'the "counters" field is missing or not an object';
+  }
+  for (const [key, count] of Object.entries(stored)) {
+    if (typeof count !== "number" || !Number.isFinite(count)) {
+      return `the "counters" entry ${
+        JSON.stringify(cleanField(key, FIELD_CAP))
+      } is not a finite number`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The stored tally in `path`. A missing file starts the tally silently. A file
+ * that cannot be read, is not JSON, or parses to the wrong shape logs one
+ * redacted warning naming the cause and starts the tally again, so the cumulative
+ * totals are never dropped without a trace.
+ */
+async function readStoredCounters(
+  path: string,
+): Promise<Record<string, number>> {
+  let cause: string;
+  try {
+    const parsed: unknown = JSON.parse(await Deno.readTextFile(path));
+    const malformed = malformedCountersField(parsed);
+    if (malformed === undefined) {
+      return { ...(parsed as { counters: Record<string, number> }).counters };
+    }
+    cause = malformed;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return {};
+    cause = redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  console.warn(
+    `[base-refresh] could not read the counters in ${path}; the tally restarts: ${cause}`,
+  );
+  return {};
+}
+
 /**
  * Add one to the counter called `name` in `{dir}/base_refresh_counters.json`,
  * the shared store behind {@link persistBaseRefreshCounter}. Never throws. A
- * missing file starts the tally silently; a garbled or unreadable one logs one
- * warning that the tally restarts; a failed write logs one warning naming the
- * counter and the directory.
+ * missing file starts the tally silently; a garbled, unreadable or wrongly
+ * shaped one (see {@link readStoredCounters}) logs one warning that the tally
+ * restarts; a failed write logs one warning naming the counter and the
+ * directory.
  */
 async function persistNamedCounter(
   dir: string | undefined,
@@ -204,40 +255,17 @@ async function persistNamedCounter(
     await Deno.mkdir(dir, { recursive: true });
     const path = `${dir}/${BASE_REFRESH_COUNTERS_FILE}`;
     await withFileLock(`${path}.lock`, async () => {
-      let counters: Record<string, number> = {};
-      try {
-        const parsed: unknown = JSON.parse(await Deno.readTextFile(path));
-        const stored = (parsed as { counters?: unknown } | null)?.counters;
-        if (stored && typeof stored === "object" && !Array.isArray(stored)) {
-          for (const [key, count] of Object.entries(stored)) {
-            if (typeof count === "number" && Number.isFinite(count)) {
-              counters[key] = count;
-            }
-          }
-        }
-      } catch (error) {
-        if (!(error instanceof Deno.errors.NotFound)) {
-          console.warn(
-            `[base-refresh] could not read the counters in ${path}; the tally restarts: ${
-              redactSecrets(
-                error instanceof Error ? error.message : String(error),
-              )
-            }`,
-          );
-        }
-        counters = {};
-      }
+      const counters = await readStoredCounters(path);
       counters[name] = (counters[name] ?? 0) + 1;
-      const temp = `${path}.${crypto.randomUUID()}.tmp`;
-      await Deno.writeTextFile(
-        temp,
-        JSON.stringify(
+      const written = await atomicWrite({
+        targetFile: path,
+        content: JSON.stringify(
           { timestamp: new Date().toISOString(), counters },
           null,
           2,
         ),
-      );
-      await Deno.rename(temp, path);
+      });
+      if (!written.ok) throw written.error;
     });
   } catch (error) {
     console.warn(
@@ -251,7 +279,9 @@ async function persistNamedCounter(
 /**
  * Write one diagnostic line to stderr (console.warn), so a command that prints
  * JSON on stdout stays parseable. Never throws: logging must not change the
- * outcome of the refresh or repair it describes.
+ * outcome of the refresh or repair it describes. When the counter or the sink
+ * throws, one redacted fallback line naming the source, repo, PR and error goes
+ * to console.error, so a lost decision line is visible.
  */
 export function logBaseRefreshDecision(
   facts: BaseRefreshDecisionFacts,
@@ -264,8 +294,22 @@ export function logBaseRefreshDecision(
     // without parsing logs.
     incrementCounter(baseRefreshCounterName(facts));
     log(formatBaseRefreshDecision(facts, stamp ?? defaultStamp()));
-  } catch {
-    // Diagnostics are best effort; swallow so the caller's result stands.
+  } catch (error) {
+    // The caller's result stands, but the lost line is never silent.
+    console.error(
+      `[base-refresh] could not record the decision source=${
+        cleanField(facts.source, FIELD_CAP)
+      } repo=${
+        cleanField(facts.repo, FIELD_CAP)
+      } pr=#${facts.prNumber} outcome=${facts.outcome}: ${
+        cleanField(
+          redactSecrets(
+            error instanceof Error ? error.message : String(error),
+          ),
+          REASON_CAP,
+        )
+      }`,
+    );
   }
 }
 
@@ -354,8 +398,10 @@ export function createRepairMergeabilityTracker(input: {
  * A stale-parent refusal survives: mergeability alone does not validate parents.
  * Any other value is an inconclusive read and leaves the streak alone. When the
  * repeated-`UNKNOWN` counter fires it is also persisted to `counterDir`'s
- * `base_refresh_counters.json`, when one is given. Never throws: tracking must
- * not change the repair's outcome.
+ * `base_refresh_counters.json`, when one is given. The refusal lock covers only
+ * the read, decide and write; the comment is posted after it is released
+ * ({@link updateRefusalsThenNotify}). Never throws: tracking must not change
+ * the repair's outcome.
  */
 export async function trackRepairMergeability(
   tracker: RepairMergeabilityTracker | undefined,
@@ -367,72 +413,75 @@ export async function trackRepairMergeability(
 ): Promise<void> {
   if (!tracker) return;
   try {
-    await tracker.update(async (state) => {
-      // Only the test-merge parent validation can recover a stale-parent refusal.
-      if (
-        state.get(`${repo}#${prNumber}`)?.reason === "test-merge-parents-stale"
-      ) return;
-      if (mergeable === "UNKNOWN") {
-        const entry = recordBranchRefreshRefusal(
-          state,
-          repo,
-          prNumber,
-          "mergeability-unknown",
-        );
+    let escalated = false;
+    // Comments go out after the refusal lock is released (updateRefusalsThenNotify).
+    await updateRefusalsThenNotify(
+      tracker.update,
+      (event) => tracker.notify({ ...event, lane: "repair" }),
+      (state, defer) => {
+        // Only the test-merge parent validation can recover a stale-parent refusal.
         if (
-          entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD && !entry.notified
-        ) {
-          try {
-            await tracker.notify({
-              repo,
-              prNumber,
-              entry,
-              active: true,
-              lane: "repair",
+          state.get(`${repo}#${prNumber}`)?.reason ===
+            "test-merge-parents-stale"
+        ) return Promise.resolve();
+        if (mergeable === "UNKNOWN") {
+          const entry = recordBranchRefreshRefusal(
+            state,
+            repo,
+            prNumber,
+            "mergeability-unknown",
+          );
+          if (
+            entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD && !entry.notified
+          ) {
+            defer({
+              event: { repo, prNumber, entry, active: true, lane: "repair" },
+              onFailed: (error) =>
+                log(
+                  `[base-refresh] could not post the refresh-waiting comment on ${repo}#${prNumber}: ${
+                    redactSecrets(
+                      error instanceof Error ? error.message : String(error),
+                    )
+                  }`,
+                ),
             });
-            entry.notified = true;
-          } catch (error) {
+            incrementCounter("baseRefresh.repeatedMergeabilityUnknown");
+            escalated = true;
             log(
-              `[base-refresh] could not post the refresh-waiting comment on ${repo}#${prNumber}: ${
-                redactSecrets(
-                  error instanceof Error ? error.message : String(error),
-                )
-              }`,
+              `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
             );
           }
-          incrementCounter("baseRefresh.repeatedMergeabilityUnknown");
-          await persistNamedCounter(
-            counterDir,
-            "baseRefresh.repeatedMergeabilityUnknown",
-          );
-          log(
-            `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
-          );
-        }
-      } else if (mergeable === "MERGEABLE" || mergeable === "CONFLICTING") {
-        const previous = clearBranchRefreshRefusal(state, repo, prNumber);
-        if (!previous) return;
-        if (previous.notified) {
-          try {
-            await tracker.notify({
-              repo,
-              prNumber,
-              entry: previous,
-              active: false,
-              lane: "repair",
+        } else if (mergeable === "MERGEABLE" || mergeable === "CONFLICTING") {
+          const previous = clearBranchRefreshRefusal(state, repo, prNumber);
+          if (previous?.notified) {
+            defer({
+              event: {
+                repo,
+                prNumber,
+                entry: previous,
+                active: false,
+                lane: "repair",
+              },
+              onFailed: (error) =>
+                log(
+                  `[base-refresh] could not update the refresh-waiting comment on ${repo}#${prNumber}: ${
+                    redactSecrets(
+                      error instanceof Error ? error.message : String(error),
+                    )
+                  }`,
+                ),
             });
-          } catch (error) {
-            log(
-              `[base-refresh] could not update the refresh-waiting comment on ${repo}#${prNumber}: ${
-                redactSecrets(
-                  error instanceof Error ? error.message : String(error),
-                )
-              }`,
-            );
           }
         }
-      }
-    });
+        return Promise.resolve();
+      },
+    );
+    if (escalated) {
+      await persistNamedCounter(
+        counterDir,
+        "baseRefresh.repeatedMergeabilityUnknown",
+      );
+    }
   } catch (error) {
     log(
       `[base-refresh] could not track mergeability of ${repo}#${prNumber}: ${
@@ -543,6 +592,12 @@ export async function repairBaseForPublication(input: {
   warn: (message: string) => void;
   log: (message: string) => void;
   failedCheck?: { id: string; name: string };
+  /**
+   * Directory the `<source>-publication` decision counter is persisted to: the
+   * command's work directory. Without it the decision is counted in memory only
+   * and is lost when the process exits.
+   */
+  counterDir?: string;
 }): Promise<string | undefined> {
   const base = await prBaseForSync(
     input.knownBase,
@@ -559,6 +614,7 @@ export async function repairBaseForPublication(input: {
     base,
     gh: input.gh,
     log: input.log,
+    counterDir: input.counterDir,
     ...(input.failedCheck === undefined ? {} : {
       provenBaseFixChecks: async () => {
         const head = JSON.parse(

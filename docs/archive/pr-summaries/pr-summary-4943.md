@@ -72,7 +72,10 @@ Reproduction and negative controls:
 
 Diagnostics include bounded source/reason/owner/build information and redacted
 reason text. Cumulative `baseRefresh.*` counters permit follow-up when a counter
-work directory is supplied; paths without one retain no durable tally.
+work directory is supplied, including the publication-time decision of the CI,
+feedback and spelling libraries; in-process lanes without one are counted in the
+per-cycle fault-tolerance summary only, and paths with neither retain no durable
+tally.
 
 ## Acceptance Criteria
 
@@ -127,47 +130,73 @@ work directory is supplied; paths without one retain no durable tally.
   Ordinary publication diagnostics use INFO.
 
 The Standards reviewer also identified four findings inherited from earlier
-commits on this branch. They are unchanged by this recovery and remain outside
-its authorised production scope; this is not a full-branch clean verdict.
+commits on this branch. PR #5059 review fixed three of them; the fourth is
+unchanged and remains outside the authorised production scope, so this is not a
+full-branch clean verdict.
 
-- **violation** — Structurally malformed counter JSON silently resets totals —
-  evidence: `worker/deno/lib/repair_base_merge_4943.ts::persistNamedCounter` —
-  reason: unchanged in this recovery; structural validation and a warning remain
-  outstanding.
-- **violation** — A throwing diagnostic sink is caught and ignored — evidence:
-  `worker/deno/lib/repair_base_merge_4943.ts::logBaseRefreshDecision` — reason:
-  unchanged in this recovery; a visible fallback remains outstanding.
-- **violation** — Counter persistence duplicates the existing atomic-write
-  helper — evidence:
-  `worker/deno/lib/repair_base_merge_4943.ts::persistNamedCounter` — reason:
-  unchanged in this recovery; reuse of `atomicWrite` remains outstanding.
 - **violation** — Redaction covers reason text rather than complete diagnostic
   messages — evidence:
   `worker/deno/lib/repair_base_merge_4943.ts::formatBaseRefreshDecision` and
-  persistence warnings — reason: unchanged in this recovery; complete
-  outbound-message redaction remains outstanding.
+  persistence warnings — reason: unchanged; complete outbound-message redaction
+  remains outstanding.
+
+Fixed after the PR #5059 review (tests are under `worker/deno/tests/`):
+
+- `logBaseRefreshDecision` no longer swallows a failure: a throwing sink or
+  counter leaves one redacted fallback line on stderr naming the source, repo,
+  PR and error (`repair_base_merge_4943_test.ts`, “a throwing sink leaves one
+  redacted fallback line”).
+- `persistNamedCounter` treats a non-object root, a missing or non-object
+  `counters` and a non-finite entry as malformed: it warns once, naming the
+  field, before the tally restarts, and writes through `atomicWrite`
+  (`repair_base_merge_4943_test.ts`, five “warns once, naming the field” cases).
+- The auto-merge sweep's refusal persistence is best effort again: a lock or
+  filesystem failure is logged and the pass carries on. The diagnostic comment
+  is posted after the lock is released and `notified` is recorded in a second
+  short transaction (`updateRefusalsThenNotify`; `auto_merge_sweep_test.ts`, “a
+  refusal-state lock failure never aborts the pass” and “the refusal lock is not
+  held while the diagnostic comment is posted”;
+  `repair_base_merge_4943_test.ts`, “a repair tracker posts its comments with
+  the refusal lock released”).
+- The `<lane>-publication` decision of the CI, feedback and spelling libraries
+  is tallied in the command's work directory (`counterDir` through
+  `repairBaseForPublication`; `repair_base_merge_wiring_4943_test.ts`, “counts a
+  publication-time base merge durably”).
+- The babysitter's proven-base-fix merge is covered
+  (`babysitter_base_merge_policy_4943_test.ts`, “merges the base into a
+  MERGEABLE failed-CI repair once the same failure is proven fixed”), and the
+  refused-publication library test now asserts the remote head is unchanged.
 
 ## Test Plan
 
-- All 17 changed test suites passed: 384 tests, with stdin from `/dev/null`.
-  This includes 43 real-Git publication/policy tests and 58 churn,
-  production-host and production tracker tests. Another 207 existing processor
-  and babysitter orchestration tests passed. The strengthened stale-head case
-  also passed its final focused rerun after the negative control.
+- At the head after the PR #5059 review fixes, the 4943, auto-merge sweep,
+  refusal-streak, `pr_push_base_sync` and babysitter orchestration test files
+  (`deno test -A`, stdin from `/dev/null`, 14 files) passed: 256 tests, 0
+  failed. The CI, feedback and spelling processor test files (32 files) passed:
+  364 tests, 0 failed.
+- Red checks run on the fix (each reverted alone, the named test went red):
+  dropping the `provenBaseFixChecks = [check.name]` assignment in
+  `commands/fleet_pr_babysitter.ts` fails the new babysitter proven-fix test;
+  re-throwing in the sweep's `updateRefusals` catch fails the lock-failure test;
+  posting the comment inside the lock fails both lock-released tests; dropping
+  `counterDir` from `pr_ci_processor.ts` fails the publication-counter test; a
+  `null` root treated as well-formed fails its “warns once, naming the field”
+  case; replacing the `console.error` fallback fails the throwing-sink test. The
+  malformed-counters cases for `[]`, `{}` and a non-numeric entry were not
+  separately flipped; they share `malformedCountersField` with the `null` case.
 - `worker/deno/tests/pr_push_base_sync_test.ts` (5 tests) passes. Its spelling
   case now seeds a `CONFLICTING` mergeability reading, because the shared
   mergeability policy merges the base before a spelling push only for a genuine
   conflict; the behind-only case no longer qualifies.
-- Type-check, lint and format checks passed for all 41 changed TypeScript files.
-  `deno task check:manifests` passed.
-- `pr-summary-check` reports the four disclosed Standards violations; no other
-  applicable gate failed. Markdown lint passed.
-- The stale mutation scratch directory was removed successfully. The final
-  disposable `runMutationCheck` rerun with `mutantCap: 1` and
-  `budgetSeconds: 180` returned `budget_exhausted` with `limit: mutant_cap`, one
-  mutant killed, no survivors and 701 candidates. Cleanup completed without the
-  reported error; the remaining candidates are unvalidated. No mutation
-  exemptions or repository skip were added.
+- At the head, `deno fmt`, `deno lint` and `deno check` pass for the files
+  changed in the PR #5059 review fixes. The full `./quality.sh` gate was not run
+  in this fix run (about 15 minutes against the run budget).
+- `deno task pr-summary-check --base main` at the head: 0 gates blocked; 3 not
+  checked (acceptance-criteria closure, two-axis review and reproduction status
+  need an issue body or labels this run did not supply).
+- The disposable mutation run recorded earlier on this branch predates the PR
+  #5059 review fixes; it was not re-run at this head, and no mutation exemptions
+  or repository skip were added.
 
 ## Merge verification
 

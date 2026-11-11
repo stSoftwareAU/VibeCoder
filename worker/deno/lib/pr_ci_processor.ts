@@ -2200,6 +2200,7 @@ async function _processCiWithHeartbeat(
       repo,
       prNumber,
       source: "pr-ci-processor",
+      counterDir: processorDeps.workRoot,
       gh: (args) => deps.github.runGhCommand(args),
       warn: (message) => logger.warn(message),
       log: (message) => logger.info(message),

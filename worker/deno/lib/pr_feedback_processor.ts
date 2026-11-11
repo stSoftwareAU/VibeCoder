@@ -1863,6 +1863,7 @@ async function _processFeedbackWithHeartbeat(
       repo,
       prNumber,
       source: "pr-feedback-processor",
+      counterDir: processorDeps.workRoot,
       gh: (args) => deps.github.runGhCommand(args),
       warn: (message) => logger.warn(message),
       log: (message) => logger.info(message),

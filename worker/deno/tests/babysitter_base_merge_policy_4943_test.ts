@@ -74,6 +74,8 @@ async function publishedRepair(
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN",
   review = false,
   baseState?: BaseRunState,
+  /** The base advance leaves the feature's files alone, so a merge is clean. */
+  cleanBaseAdvance = false,
 ): Promise<{ hasBase: boolean; contents: string; parents: string[] }> {
   const root = await Deno.makeTempDir();
   try {
@@ -89,7 +91,9 @@ async function publishedRepair(
         branch: "main",
         parent: 1,
         subject: "base advance",
-        files: { "shared.txt": "base\n", "base-only.txt": "base advance\n" },
+        files: cleanBaseAdvance
+          ? { "base-only.txt": "base advance\n" }
+          : { "shared.txt": "base\n", "base-only.txt": "base advance\n" },
       },
     ]);
     const head = (await gitOk(["rev-parse", "feature"], remote)).trim();
@@ -336,3 +340,34 @@ for (
     });
   });
 }
+
+Deno.test("babysitter merges the base into a MERGEABLE failed-CI repair once the same failure is proven fixed on a newer base (Issue #4943)", async () => {
+  await withConsole(async (stateDir, lines) => {
+    const published = await publishedRepair(
+      stateDir,
+      "MERGEABLE",
+      false,
+      "matching-historical-failure",
+      true,
+    );
+    // publishedRepair also asserts the published tree holds repair.txt and
+    // that base-only.txt is present exactly when the base is an ancestor.
+    assertEquals(published.hasBase, true);
+    assertEquals(published.contents, "feature\n");
+    assertEquals(published.parents.length, 2);
+    const decisions = baseRefreshLines(lines).filter((line) =>
+      line.includes("source=babysitter-repair")
+    );
+    assertEquals(decisions.length, 1, lines.join("\n"));
+    assertMatch(
+      decisions[0]!,
+      /^\[base-refresh\] source=babysitter-repair outcome=base-merge-allowed repo=owner\/repo pr=#1 base=main owner=none reason="check test has the same failure on the PR merge base and passes on the newer base; merging brings in that fix"/,
+    );
+    assertEquals(
+      (await readCounters(stateDir))[
+        "baseRefresh.base-merge-allowed.babysitter-repair"
+      ],
+      1,
+    );
+  });
+});

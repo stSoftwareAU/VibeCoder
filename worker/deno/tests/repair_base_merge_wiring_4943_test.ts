@@ -46,7 +46,14 @@ async function runWith(
   sharedWorkDir?: string,
   gh?: GitHubDeps["runGhCommand"],
   options: { library?: boolean; rejectPush?: boolean } = {},
-): Promise<{ publishedBase: boolean; lines: string[] }> {
+): Promise<
+  {
+    publishedBase: boolean;
+    lines: string[];
+    beforeSha: string;
+    remoteHead: string;
+  }
+> {
   const root = await Deno.makeTempDir();
   const clone = `${root}/clone`;
   const git = async (args: string[], cwd = clone) =>
@@ -75,6 +82,7 @@ async function runWith(
     await Deno.chmod(hook, 0o755);
   }
   let publishedBase = false;
+  let remoteHead = "";
   const lines: string[] = [];
   const comments: Array<
     { id: number; body: string; created_at: string; author: string }
@@ -254,6 +262,7 @@ async function runWith(
       `origin/${BRANCH}`,
     ], clone);
     publishedBase = ancestor.code === 0;
+    remoteHead = await git(["rev-parse", `origin/${BRANCH}`], clone);
     assertEquals(remoteTree.includes("base-only.txt"), publishedBase);
   } finally {
     console.warn = originalWarn;
@@ -262,7 +271,7 @@ async function runWith(
       await Deno.remove(workDir, { recursive: true });
     }
   }
-  return { publishedBase, lines };
+  return { publishedBase, lines, beforeSha, remoteHead };
 }
 
 /** Assert the one decision line a processor logs, with every field named. */
@@ -483,6 +492,8 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
       );
       assertEquals(tally.counters, {
         [`baseRefresh.base-merge-skipped.${label}`]: 3,
+        // The publication-time re-read of each run is tallied too.
+        [`baseRefresh.base-merge-skipped.${label}-publication`]: 3,
         "baseRefresh.repeatedMergeabilityUnknown": 1,
       });
     } finally {
@@ -513,9 +524,47 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     assertEquals(publishedBase, true);
   });
   Deno.test(`${processor} direct library reports a refused publication and leaves the remote unchanged`, async () => {
-    await runWith(processor, mergeableJson("MERGEABLE"), undefined, undefined, {
-      library: true,
-      rejectPush: true,
-    });
+    const { publishedBase, beforeSha, remoteHead } = await runWith(
+      processor,
+      mergeableJson("MERGEABLE"),
+      undefined,
+      undefined,
+      { library: true, rejectPush: true },
+    );
+    // runWith also asserts the repair never reached the remote tree and that
+    // the library reported changesPushed=false for the refused push.
+    assertEquals(
+      remoteHead,
+      beforeSha,
+      "the refused push left the remote head",
+    );
+    assertEquals(publishedBase, false);
+  });
+
+  const label = processor === "ci"
+    ? "pr-ci-processor"
+    : processor === "feedback"
+    ? "pr-feedback-processor"
+    : "pr-spelling-processor";
+  Deno.test(`${processor} direct library counts a publication-time base merge durably in the work directory (Issue #4943)`, async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      const { publishedBase } = await runWith(
+        processor,
+        mergeableJson("CONFLICTING"),
+        workDir,
+        undefined,
+        { library: true },
+      );
+      assertEquals(publishedBase, true);
+      const tally = JSON.parse(
+        await Deno.readTextFile(`${workDir}/${BASE_REFRESH_COUNTERS_FILE}`),
+      );
+      assertEquals(tally.counters, {
+        [`baseRefresh.base-merge-allowed.${label}-publication`]: 1,
+      });
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
   });
 }

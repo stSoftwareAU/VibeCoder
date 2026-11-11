@@ -24,11 +24,13 @@ import { checkPrBaseIntegrity } from "../lib/pr_base_integrity.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 import {
+  BRANCH_REFRESH_REFUSAL_FILE,
   type BranchRefreshRefusalState,
   notifyBranchRefreshRefusal,
   readBranchRefreshRefusals,
   updateBranchRefreshRefusals,
 } from "../lib/branch_refresh_refusal_streak.ts";
+import { FileLockTimeoutError } from "../lib/file_lock.ts";
 
 const REPOS = [
   "stSoftwareAU/VibeCoder",
@@ -828,6 +830,107 @@ Deno.test("a failed diagnostic comment still raises fleet health and retries the
   assert((await sweep()).ok);
   assertEquals(errors.length, 1);
   assertEquals(updates, 2);
+});
+
+Deno.test("a refusal-state lock failure never aborts the pass or relabels a successful update (PR #5059 review)", async () => {
+  warnings.length = 0;
+  const { state, options } = harness({
+    [VC]: [{ number: 5001 }, { number: 5002 }],
+  }, {
+    prLiveState: (_repo, pr) =>
+      Promise.resolve(
+        pr.number === 5001
+          ? { open: true, mergeable: "MERGEABLE", armed: true, behind: true }
+          : { open: true, mergeable: "MERGEABLE" },
+      ),
+  });
+  const lockFailure = new FileLockTimeoutError(
+    "/work/.branch_refresh_refusals_v1.lock",
+    10_000,
+    "another sweep",
+  );
+
+  const result = await sweepAutoMerge({
+    ...options,
+    repos: [VC],
+    branchRefreshRefusals: {
+      update: () => Promise.reject(lockFailure),
+      notify: () => Promise.resolve(),
+    },
+  });
+
+  assert(result.ok, "a lock failure must not fail the pass");
+  assertEquals(state.updated, [{ repo: VC, prNumber: 5001 }]);
+  assertEquals(
+    state.recorded.filter((r) => r.prNumber === 5001).map((r) => r.result),
+    [AutoMergeResult.BranchUpdateRequested],
+    "a successful update is not relabelled as failed",
+  );
+  assertEquals(
+    state.attempted,
+    [{ repo: VC, prNumber: 5002 }],
+    "the later PR is still processed",
+  );
+  assert(
+    warnings.some((w) =>
+      w.message.includes("could not update the branch-refresh refusal state")
+    ),
+    "the lock failure is logged, not swallowed",
+  );
+});
+
+Deno.test("the refusal lock is not held while the diagnostic comment is posted, and notified is persisted afterwards (PR #5059 review)", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "refusal-notify-lock-" });
+  const lockPath = `${workDir}/${BRANCH_REFRESH_REFUSAL_FILE}.lock`;
+  const lockHeldDuringNotify: boolean[] = [];
+  const tracking = {
+    update: (change: (state: BranchRefreshRefusalState) => Promise<void>) =>
+      updateBranchRefreshRefusals(workDir, change),
+    notify: async () => {
+      lockHeldDuringNotify.push(
+        await Deno.stat(lockPath).then(() => true, () => false),
+      );
+    },
+  };
+  const { options } = harness({ [VC]: [{ number: 5003 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+    updateBranchFn: () =>
+      Promise.resolve({
+        ok: false as const,
+        error: new Error("PR mergeability is still UNKNOWN"),
+      }),
+  });
+  const sweep = () =>
+    sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+    });
+  try {
+    assert((await sweep()).ok);
+    assertEquals(lockHeldDuringNotify, []);
+    assert((await sweep()).ok);
+    assertEquals(lockHeldDuringNotify, [false]);
+    assertEquals(
+      (await readBranchRefreshRefusals(workDir)).get(`${VC}#5003`)?.notified,
+      true,
+      "notified is persisted after the comment went out",
+    );
+    assert((await sweep()).ok);
+    assertEquals(
+      lockHeldDuringNotify,
+      [false],
+      "one comment, not one per pass",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 Deno.test("branch-refresh escalation edits its trusted marker comment instead of duplicating it (Issue #4831)", async () => {

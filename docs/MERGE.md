@@ -1369,7 +1369,11 @@ behind-only refresh. Genuine conflict repairs remain on their conflict-repair
 path.
 
 Repair mergeability tracking and the auto-merge sweep update the persisted
-refusal file under the same file lock. A repair's known mergeability reading
+refusal file under the same file lock. The lock covers only the read, decide and
+write: the diagnostic PR comment is posted after it is released, and `notified`
+is then recorded in a second short transaction. The sweep treats this tracking
+as best effort: a lock or filesystem failure is logged and the pass carries on,
+so it never stops the sweep or relabels a branch update that succeeded. A repair's known mergeability reading
 clears only a mergeability refusal: a stale test-merge-parent refusal remains
 until the refresh path verifies current parents. This keeps concurrent repairs
 and alternating lanes from losing an unresolved refusal or its notification.
@@ -1377,8 +1381,12 @@ and alternating lanes from losing an unresolved refusal or its notification.
 Refresh decisions emit bounded `[base-refresh]` lines with the lane, outcome,
 repository, PR, base, current owner, reason and worker build stamp. Standalone
 repair commands persist cumulative named counters in
-`base_refresh_counters.json`; in-process callers persist to that file when
-their work directory is available. The separate local conflict updater records
+`base_refresh_counters.json`, including the `<lane>-publication` decision the
+CI, feedback and spelling libraries take just before they publish (the command's
+work directory is passed through `repairBaseForPublication`); in-process callers
+persist to that file when their work directory is available. A counters file
+that parses but has the wrong shape logs one warning naming the field before the
+tally restarts. The separate local conflict updater records
 its successful and failed merge attempts when it has a work directory. These
 diagnostics attribute decisions; they do not establish that fleet-wide churn
 has fallen. Local conflict-repair command paths that do not supply a counter

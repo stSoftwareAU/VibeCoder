@@ -268,3 +268,58 @@ export async function updateBranchRefreshRefusals(
     },
   );
 }
+
+/** A diagnostic comment to post or edit once the refusal lock is released. */
+export interface DeferredRefusalNotice {
+  event: BranchRefreshRefusalEvent;
+  /** Runs after the comment was posted or edited. */
+  onPosted?: () => void;
+  /** Runs when posting or editing the comment failed. */
+  onFailed: (error: unknown) => void;
+}
+
+/**
+ * Run a refusal read-modify-write, then post the comments it queued, with no
+ * GitHub call inside the lock. `change` decides under the lock and queues each
+ * comment through `defer`. Once the lock is released each comment is posted. An
+ * active comment that went out is then recorded as `notified` in a second short
+ * transaction, but only on an entry still holding the reason it was posted for.
+ * A failed post leaves the entry un-notified, so the next pass retries it. If the
+ * lock or the write fails the error reaches the caller before any comment goes
+ * out; if only the second transaction fails, that error reaches the caller after
+ * the comments have gone out.
+ */
+export async function updateRefusalsThenNotify(
+  update: (
+    change: (state: BranchRefreshRefusalState) => Promise<void>,
+  ) => Promise<void>,
+  notify: (event: BranchRefreshRefusalEvent) => Promise<void>,
+  change: (
+    state: BranchRefreshRefusalState,
+    defer: (notice: DeferredRefusalNotice) => void,
+  ) => Promise<void>,
+): Promise<void> {
+  const queued: DeferredRefusalNotice[] = [];
+  await update((state) => change(state, (notice) => queued.push(notice)));
+  const posted: BranchRefreshRefusalEvent[] = [];
+  for (const notice of queued) {
+    try {
+      await notify(notice.event);
+    } catch (error) {
+      notice.onFailed(error);
+      continue;
+    }
+    if (notice.event.active) posted.push(notice.event);
+    notice.onPosted?.();
+  }
+  if (posted.length === 0) return;
+  await update((state) => {
+    for (const { repo, prNumber, entry } of posted) {
+      const current = state.get(branchRefreshRefusalKey(repo, prNumber));
+      if (current !== undefined && current.reason === entry.reason) {
+        current.notified = true;
+      }
+    }
+    return Promise.resolve();
+  });
+}

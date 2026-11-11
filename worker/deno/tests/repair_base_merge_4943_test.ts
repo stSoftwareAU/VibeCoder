@@ -21,6 +21,7 @@ import {
   trackRepairMergeability,
 } from "../lib/repair_base_merge_4943.ts";
 import {
+  BRANCH_REFRESH_REFUSAL_FILE,
   notifyBranchRefreshRefusal,
   readBranchRefreshRefusals,
   updateBranchRefreshRefusals,
@@ -324,7 +325,7 @@ Deno.test("readRepairBaseMergeDecision refuses garbled JSON and names the parse 
   assertMatch(lines[0]!, /outcome=base-merge-skipped /);
 });
 
-Deno.test("logBaseRefreshDecision never throws, even when the sink throws", () => {
+Deno.test("logBaseRefreshDecision never throws, and a throwing sink leaves one redacted fallback line on stderr", () => {
   const facts = {
     source: "pr-ci-processor",
     outcome: "base-merge-skipped" as const,
@@ -332,14 +333,32 @@ Deno.test("logBaseRefreshDecision never throws, even when the sink throws", () =
     prNumber: 1,
     reason: "x",
   };
-  const result = logBaseRefreshDecision(
-    facts,
-    () => {
-      throw new Error("sink down");
-    },
-    "build=abc123",
-  );
+  const original = console.error;
+  const fallback: string[] = [];
+  console.error = (...parts: unknown[]) => {
+    fallback.push(parts.map(String).join(" "));
+  };
+  let result: unknown = "unset";
+  try {
+    result = logBaseRefreshDecision(
+      facts,
+      () => {
+        throw new Error(`sink down with ${FAKE_TOKEN}`);
+      },
+      "build=abc123",
+    );
+  } finally {
+    console.error = original;
+  }
   assertEquals(result, undefined);
+  assertEquals(fallback.length, 1, fallback.join("\n"));
+  assert(
+    fallback[0]!.startsWith(
+      "[base-refresh] could not record the decision source=pr-ci-processor repo=owner/repo pr=#1 outcome=base-merge-skipped: sink down with ",
+    ),
+    fallback[0],
+  );
+  assert(!fallback[0]!.includes(FAKE_TOKEN), "the token is redacted");
   // Logging keeps working after a throwing sink: a later call with a working
   // sink writes exactly the one expected line.
   const lines: string[] = [];
@@ -461,6 +480,43 @@ Deno.test("production repair trackers persist concurrent PR streaks and deliver 
         comment.body.includes("Repair is waiting")
       ).length,
       1,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a repair tracker posts its comments with the refusal lock released and records notified afterwards (PR #5059 review)", async () => {
+  const dir = await Deno.makeTempDir();
+  const service = commentService();
+  const lockPath = `${dir}/${BRANCH_REFRESH_REFUSAL_FILE}.lock`;
+  const lockHeld: boolean[] = [];
+  const gh = async (args: string[]) => {
+    if (args[0] === "pr" && args[1] === "comment") {
+      lockHeld.push(await Deno.stat(lockPath).then(() => true, () => false));
+    }
+    return service.gh(args);
+  };
+  const tracker = () =>
+    createRepairMergeabilityTracker({
+      workDir: dir,
+      gh,
+      fleetAuthors: ["VibeCoderST"],
+    })!;
+  try {
+    for (let round = 0; round < 3; round++) {
+      await trackRepairMergeability(
+        tracker(),
+        "owner/repo",
+        9,
+        "UNKNOWN",
+        () => {},
+      );
+    }
+    assertEquals(lockHeld, [false], "one waiting comment, posted lock-free");
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).get("owner/repo#9")?.notified,
+      true,
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -893,6 +949,51 @@ Deno.test("persistBaseRefreshCounter accumulates named decision counters across 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+for (
+  const [shape, text, cause] of [
+    ["an array root", "[]", /not a JSON object/],
+    ["a null root", "null", /not a JSON object/],
+    ["no counters field", "{}", /"counters" field is missing/],
+    [
+      "an array counters field",
+      '{"counters":[]}',
+      /"counters" field is missing/,
+    ],
+    [
+      "a non-numeric entry",
+      '{"counters":{"baseRefresh.a.b":"many"}}',
+      /"counters" entry "baseRefresh.a.b" is not a finite number/,
+    ],
+  ] as const
+) {
+  Deno.test(`persistBaseRefreshCounter warns once, naming the field, before it restarts a tally stored as ${shape} (PR #5059 review)`, async () => {
+    const dir = await Deno.makeTempDir();
+    const counters = `${dir}/${BASE_REFRESH_COUNTERS_FILE}`;
+    try {
+      await Deno.writeTextFile(counters, text);
+      const warns = await captureWarns(() =>
+        persistBaseRefreshCounter(dir, {
+          outcome: "base-merge-skipped",
+          source: "pr-ci",
+        })
+      );
+      assertEquals(warns.length, 1, warns.join("\n"));
+      assert(
+        warns[0]!.startsWith(
+          `[base-refresh] could not read the counters in ${counters}; the tally restarts: `,
+        ),
+        warns[0],
+      );
+      assertMatch(warns[0]!, cause);
+      assertEquals(JSON.parse(await Deno.readTextFile(counters)).counters, {
+        "baseRefresh.base-merge-skipped.pr-ci": 1,
+      });
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
+}
 
 Deno.test("persistBaseRefreshCounter serialises concurrent writers to the same tally (Issue #4943)", async () => {
   const dir = await Deno.makeTempDir();

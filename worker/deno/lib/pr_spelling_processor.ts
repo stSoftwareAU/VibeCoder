@@ -463,6 +463,7 @@ async function _processSpellingWithHeartbeat(
     repo,
     prNumber,
     source: "pr-spelling-processor",
+    counterDir: processorDeps.workRoot,
     gh: (args) => deps.github.runGhCommand(args),
     warn: (message) => logger.warn(message),
     log: (message) => logger.info(message),
