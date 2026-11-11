@@ -33,7 +33,10 @@ Deno.test("coding standards - TDD rule keeps still-true assertions when editing 
     text,
     "name the outcome assertions that still prove the behaviour",
   );
-  assertStringIncludes(text, "Each removed behaviour assertion needs an issue");
+  assertStringIncludes(
+    text,
+    "Each removed behaviour assertion needs an issue requirement that makes it untrue, or the replacement or existing coverage that still proves the behaviour",
+  );
   assertStringIncludes(text, "A behaviour assertion removed without one is a");
   assertStringIncludes(text, "blocking self-review finding");
 });
@@ -45,6 +48,10 @@ Deno.test("issue prompt - Instructions keep the change-only-what-the-issue-chang
   assertStringIncludes(
     instructions,
     "every other behaviour assertion the test made",
+  );
+  assertStringIncludes(
+    instructions,
+    "for each removed behaviour assertion, the issue requirement that makes it untrue or the coverage that still proves the behaviour",
   );
   assertStringIncludes(
     instructions,
@@ -64,6 +71,7 @@ Deno.test("issue prompt - PR Summary Test Plan requires covering removed asserti
   const text = flat(section(await issuePrompt(), "PR Summary File"));
 
   assertStringIncludes(text, "blocking self-review finding");
+  assertStringIncludes(text, "the issue requirement that makes it untrue");
   assertStringIncludes(
     text,
     "this existing entry also covers obsolete call-count and call-order assertions",
