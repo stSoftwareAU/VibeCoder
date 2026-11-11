@@ -35,10 +35,34 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { ClaudeRunResult } from "./claude_runner.ts";
 import { ISSUE_EXECUTOR_AGENT_NAME } from "./issue_executor_agents.ts";
 import { resolveGuardDenoDir } from "./guard_deno_dir.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
+
+/** Message of the refusal raised when a split run stops with an executor unfinished (Issue #4599). */
+export const UNFINISHED_ISSUE_EXECUTOR_MESSAGE =
+  "Split issue run has unfinished executor work; refusing completion and PR creation (Issue #4599).";
+
+/**
+ * A terminal-for-this-invocation refusal: a split run ended with an executor
+ * sub-agent still unfinished, so completion and PR creation are refused
+ * (Issue #4599).
+ *
+ * It carries the invocation's result so the execute phase can preserve the
+ * agent's uncommitted work on the issue branch (Issue #5048) instead of
+ * treating the refusal as a worker crash.
+ */
+export class UnfinishedIssueExecutorError extends Error {
+  constructor(
+    message: string,
+    readonly executionResult?: ClaudeRunResult,
+  ) {
+    super(message);
+    this.name = "UnfinishedIssueExecutorError";
+  }
+}
 
 /** File name of the guard entry point the hook command executes. */
 export const ISSUE_EDIT_GUARD_MODULE = "issue_edit_guard_cli.ts";

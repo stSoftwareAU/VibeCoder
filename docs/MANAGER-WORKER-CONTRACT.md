@@ -111,9 +111,15 @@ the template carries only a placeholder.
   unless they explicitly set `run_in_background: false`. After the CLI exits,
   the runner requires a completed synchronous result for each executor call;
   an outstanding dispatch, launch acknowledgement or error marks the invocation
-  unfinished and prevents completion and PR creation. The existing failure path
-  retains the work for retry. `issue_executor_enforcement_test.ts` covers the
-  guard and drives the real runner with unfinished and completed fake-CLI streams.
+  unfinished and prevents completion and PR creation. The runner returns a typed
+  `UnfinishedIssueExecutorError` carrying the invocation result. The execute
+  phase preserves the working tree on the issue branch with a handover note
+  (`wip: execute stopped with executor work unfinished …`), releases the run as
+  `interrupted` (not a worker crash, never auto-filed), and the bounded
+  in-process infrastructure retry resumes from the branch (Issue #5048).
+  `issue_executor_enforcement_test.ts` covers the guard and drives the real
+  runner with unfinished and completed fake-CLI streams;
+  `execute_phase_unfinished_executor_5048_test.ts` covers the phase.
 - `buildPrompt` splices it into `{{EXECUTOR_SPLIT_INSTRUCTIONS}}` when the split
   is on, and renders the empty string otherwise
   (`worker/deno/lib/prompt_builder.ts:718-728`, `:782`, `:832-834`).
