@@ -16,8 +16,12 @@ roughly double the Actions cost of the repair. After the repair session reports
 a completed fix, the babysitter commits the fix and the merge together as one
 merge commit, checks the fix (not the base's own changes) for whitespace errors
 and conflict markers, and rechecks the PR. It pushes only if the PR still
-matches the original head. A base merge on its own is also pushed when the agent
-made no change, so the branch is never left behind. After a push, the babysitter
+matches the original head; a review repair also pushes only if the PR's
+requested reviews still carry the same findings. A newer change request on the
+same head refuses the push as a race, spends no substantive attempt, and the
+next scan repairs from the newest review (Issue #4968). A base merge on its own
+is also pushed when the agent made no change, so the branch is never left
+behind. After a push, the babysitter
 synchronises the PR description from the summary committed at the pushed head,
 then publishes any description the agent proposed (see below), and dismisses a
 review only after an independent verifier judges every finding in it fixed at
@@ -570,10 +574,11 @@ lifts a human hold.
 A failure is classified from where it is raised: a structured cause (agent
 killed by a signal or exit 137/143, a lock that could not be renewed, a head
 that moved) first, and the error text only as a fallback. Infrastructure, host
-capability (missing tool, full disk) and head or lock races receive bounded
-cooldowns without spending the substantive repair budget and post no attempt
-marker. A diagnostic that names a timeout, network, DNS or rate-limit failure is
-classified as infrastructure. Container failures follow "Failure behaviour":
+capability (missing tool, full disk) and head, review or lock races receive
+bounded cooldowns without spending the substantive repair budget and post no
+attempt marker. A diagnostic that names a timeout, network, DNS or rate-limit
+failure is classified as infrastructure. Container failures follow "Failure
+behaviour":
 exit status 42 is a code failure that spends that budget; a timeout is
 infrastructure unless the 90-minute session budget has run out, which makes it
 `agent session budget exhausted` (code); other launcher failures are
