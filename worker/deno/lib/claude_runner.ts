@@ -131,6 +131,8 @@ import {
   hasUnfinishedIssueExecutor,
   resolveIssueExecutorHookSettings,
   summariseIssueExecutorSplitRun,
+  UNFINISHED_ISSUE_EXECUTOR_MESSAGE,
+  UnfinishedIssueExecutorError,
 } from "./issue_executor_enforcement.ts";
 import { settingsJsonOption } from "./rtk_output.ts";
 import { currentAgentRunOwner } from "./handler_watchdog.ts";
@@ -2941,57 +2943,56 @@ async function runClaudeWithTimeoutBody(
     if (hostDiskPark) {
       return { ok: false, error: new Error(hostDiskPark) };
     }
+    const runResult: ClaudeExecutionResult = {
+      exitCode: timedOut ? TIMEOUT_EXIT_CODE : status.code,
+      // The unclassified truth (Issue #4202): what the process really
+      // exited with, kept alongside whatever the classification says.
+      rawExitCode: status.code,
+      output,
+      stderr,
+      timedOut,
+      timeoutReason,
+      ...(scheduledRelease ? { scheduledRelease } : {}),
+      // The hard watchdog that fired is the finish clamp, not the caller's
+      // own budget (Issue #4244). A silence watchdog or a call storm is a
+      // different ending and does not carry the flag.
+      ...(finishDeadlineReached ||
+          (timedOut && timeoutReason === "hard-timeout" &&
+            finishClamp?.clamped)
+        ? { finishDeadline: true }
+        : {}),
+      ...(terminated ? { terminated: true } : {}),
+      ...(externalSigterm ? { externalSigterm: true } : {}),
+      ...(watchdogLateSeconds !== undefined && watchdogLateSeconds > 0
+        ? { watchdogLateSeconds }
+        : {}),
+      ...(stallReason ? { stallReason } : {}),
+      ...(killIncompleteSeconds !== undefined ? { killIncompleteSeconds } : {}),
+      ...(killDiagnostics !== undefined ? { killDiagnostics } : {}),
+      ...(extensions ? { extensions } : {}),
+      // The normalised decode/classification (Issue #1695). Additive: every
+      // pre-existing field above is unchanged, so a consumer that has never
+      // heard of the contract reads the same result it always did.
+      ...(agentOutput ? { agentOutput } : {}),
+      ...(normalisedFailure ? { agentFailure: normalisedFailure } : {}),
+      runStats,
+      provider: provider.id,
+    };
     if (
       options.issueExecutorSplit && !timedOut && status.code === 0 &&
       hasUnfinishedIssueExecutor(rawOutput)
     ) {
+      // Refused, not crashed: the error carries the result so the execute
+      // phase can preserve the work on the branch (Issue #5048).
       return {
         ok: false,
-        error: new Error(
-          "Split issue run has unfinished executor work; refusing completion and PR creation (Issue #4599).",
+        error: new UnfinishedIssueExecutorError(
+          UNFINISHED_ISSUE_EXECUTOR_MESSAGE,
+          runResult,
         ),
       };
     }
-    return {
-      ok: true,
-      value: {
-        exitCode: timedOut ? TIMEOUT_EXIT_CODE : status.code,
-        // The unclassified truth (Issue #4202): what the process really
-        // exited with, kept alongside whatever the classification says.
-        rawExitCode: status.code,
-        output,
-        stderr,
-        timedOut,
-        timeoutReason,
-        ...(scheduledRelease ? { scheduledRelease } : {}),
-        // The hard watchdog that fired is the finish clamp, not the caller's
-        // own budget (Issue #4244). A silence watchdog or a call storm is a
-        // different ending and does not carry the flag.
-        ...(finishDeadlineReached ||
-            (timedOut && timeoutReason === "hard-timeout" &&
-              finishClamp?.clamped)
-          ? { finishDeadline: true }
-          : {}),
-        ...(terminated ? { terminated: true } : {}),
-        ...(externalSigterm ? { externalSigterm: true } : {}),
-        ...(watchdogLateSeconds !== undefined && watchdogLateSeconds > 0
-          ? { watchdogLateSeconds }
-          : {}),
-        ...(stallReason ? { stallReason } : {}),
-        ...(killIncompleteSeconds !== undefined
-          ? { killIncompleteSeconds }
-          : {}),
-        ...(killDiagnostics !== undefined ? { killDiagnostics } : {}),
-        ...(extensions ? { extensions } : {}),
-        // The normalised decode/classification (Issue #1695). Additive: every
-        // pre-existing field above is unchanged, so a consumer that has never
-        // heard of the contract reads the same result it always did.
-        ...(agentOutput ? { agentOutput } : {}),
-        ...(normalisedFailure ? { agentFailure: normalisedFailure } : {}),
-        runStats,
-        provider: provider.id,
-      },
-    };
+    return { ok: true, value: runResult };
   } catch (error: unknown) {
     // Same ordering as the success path (Issue #4296): stop any in-flight
     // deadline check before the timers are cleared, so it cannot re-arm one.
