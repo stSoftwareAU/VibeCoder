@@ -45,7 +45,7 @@ Grep for `judged instead|whole recorded history|newest actor wins` over
 
 ## Acceptance Criteria
 
-The issue states no acceptance-criteria heading; nothing it asks is left undone.
+The issue states no acceptance-criteria heading. Everything it asks of this documentation change is done; the runtime correction for the read-to-capture gap and clock skew, and the final documentation of that limitation, belong to #5018 and are not done here.
 
 ## Test Plan
 
