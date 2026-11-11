@@ -57,13 +57,19 @@ the repository or posted to GitHub.
 
 ## Test Plan
 
-- No source or test files changed; no Deno tests, formatting, lint or type
-  checks were run because the root cause could not be verified and a speculative
-  production change would violate the reproduction requirement.
-- `deno task pr-summary-check` and `./quality.sh` results are recorded only
-  after those commands run on this head.
-
-<!-- vibe-quality-gate-skipped reason="no verified diagnosis; no source or test changes were made" -->
+- No source or test files changed because the root cause could not be verified
+  and a speculative production change would violate the reproduction
+  requirement.
+- `deno task pr-summary-check --base main --issue-body-file
+  /tmp/issue-5062-body.md --labels bug,top-priority
+  ../../docs/archive/pr-summaries/pr-summary-5062.md` passed: 0 gates blocked,
+  0 not checked.
+- `timeout 900 ./quality.sh < /dev/null` failed only at the Deno test unit-time
+  budget: 88 tests exceeded 1.00s; the named first failure was
+  `tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` at 1.20s. The
+  parallel and serial test suites passed; lint, type check and formatting
+  passed. Config integration and Checkov were skipped by the gate.
 
 Not done or not checked: the private archive correlation, failure attribution,
-regression reproduction, production fix and source-level quality checks.
+regression reproduction and production fix. The quality gate's unit-test time
+budget failure remains unresolved; no unrelated test was changed.
