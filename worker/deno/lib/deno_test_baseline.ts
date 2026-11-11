@@ -11,10 +11,13 @@
  *   established base failure. It is reported as a warning, not a block: the
  *   agent is never told to edit unrelated code to clear it.
  *
- * Only a failure that is red at the fork too is downgraded to a warning. Every
- * other failed run stays a verdict (fail closed): output that names no failed
- * test, a base that is unavailable or passes, a different test red at the
- * fork, and a timeout.
+ * Only a failure that is red at the fork too is downgraded to a warning, and
+ * only when every failure in the output is accounted for. Every other failed
+ * run stays a verdict (fail closed): output that names no failed test, a
+ * module that failed outside a test (`(uncaught error)`), a base that is
+ * unavailable or passes, a different test red at the fork, and a timeout. A
+ * pass the runner never reached because an earlier pass failed is run before
+ * the downgrade stands ({@link judgeDenoTestCheck}).
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -38,6 +41,21 @@ const ANSI = /\x1b\[[0-9;]*m/g;
  * (observed under both the ERRORS and the FAILURES heading).
  */
 const FAILED_TEST_LINE = /^(.+?) => (\.\/[^\s:]+\.ts):\d+:\d+$/;
+
+/**
+ * How deno reports a test module that failed outside any test (a top-level
+ * throw, a dangling promise, a missing named export): `./x_test.ts (uncaught
+ * error)` under ERRORS and FAILURES, and `Uncaught error from ./x_test.ts
+ * FAILED` while running. Neither names a test, so neither becomes a key.
+ */
+const UNCAUGHT_ERROR_LINE =
+  /^(?:\S+ \(uncaught error\)|Uncaught error from \S+ FAILED)$/;
+
+/**
+ * The `deno task test:unit` runner's per-pass result line (see
+ * `unit_test_runner.ts`): `=== parallel pass: FAILED in 3.1s`.
+ */
+const PASS_RESULT_LINE = /^=== (parallel|serial) pass: (PASSED|FAILED)\b/;
 
 /** A test path safe to hand back to deno as an argument. */
 const SAFE_TEST_PATH = /^\.\/(?!.*\.\.)[\w@+./-]+_test\.ts$/;
@@ -77,6 +95,30 @@ export function denoTestFailureKeys(output: string): Set<string> {
   return keys;
 }
 
+/**
+ * Whether a test module failed outside any test, a failure the keys of
+ * {@link denoTestFailureKeys} do not carry, so it cannot be compared with the
+ * base.
+ */
+export function hasUncaughtError(output: string): boolean {
+  return outputLines(output).some((line) => UNCAUGHT_ERROR_LINE.test(line));
+}
+
+/**
+ * Whether the `test:unit` runner stopped after a failed parallel pass and so
+ * never ran its serial pass (or the time budget that follows the passes). A
+ * run whose output has no pass result lines is not judged: its runner is not
+ * ours.
+ */
+export function serialPassSkipped(output: string): boolean {
+  const results = outputLines(output).flatMap((line) => {
+    const match = PASS_RESULT_LINE.exec(line);
+    return match ? [`${match[1]}:${match[2]}`] : [];
+  });
+  return results.includes("parallel:FAILED") &&
+    !results.some((result) => result.startsWith("serial:"));
+}
+
 /** The distinct test files among {@link denoTestFailureKeys}, `./`-prefixed. */
 function failedFiles(keys: ReadonlySet<string>): string[] {
   return [...new Set([...keys].map((key) => key.split(" => ").at(-1)!))]
@@ -104,7 +146,7 @@ function causeLine(output: string): string {
 /** The verdict on a failed `deno test` check. */
 export type DenoTestOutcome =
   | { kind: "infrastructure"; message: string }
-  | { kind: "verdict"; message: string }
+  | { kind: "verdict"; message: string; error: PreFlightGateError }
   | { kind: "base-only"; warning: string };
 
 /** The injected seams {@link judgeDenoTestFailure} reads the base through. */
@@ -127,7 +169,11 @@ export async function judgeDenoTestFailure(
   baseline: DenoTestBaseline | null,
   baseCommand: (files: string[]) => string | null,
 ): Promise<DenoTestOutcome> {
-  const verdict: DenoTestOutcome = { kind: "verdict", message: error.message };
+  const verdict: DenoTestOutcome = {
+    kind: "verdict",
+    message: error.message,
+    error,
+  };
   if (error.reason === "not-started") {
     return {
       kind: "infrastructure",
@@ -150,6 +196,8 @@ export async function judgeDenoTestFailure(
 
   const headKeys = denoTestFailureKeys(error.output);
   if (headKeys.size === 0) return verdict;
+  // A module that failed outside a test has no key to compare: fail closed.
+  if (hasUncaughtError(error.output)) return verdict;
   const files = failedFiles(headKeys);
   if (!files.every((file) => SAFE_TEST_PATH.test(file))) return verdict;
 
@@ -166,6 +214,43 @@ export async function judgeDenoTestFailure(
       `${headKeys.size} unit test(s) fail the same way where this push ` +
       `forked, so they are not blocked: ${[...headKeys].sort().join("; ")}`,
   };
+}
+
+/**
+ * Judge a failed `deno test` check and, when it is base-only, make sure the
+ * rest of the suite was run. `deno task test:unit` stops after a failed
+ * parallel pass, so its serial pass and time budget never ran: the serial pass
+ * is run here (`--serial-only`) and judged the same way, and a pass that did
+ * not run is never counted as passed. `run` runs a command at the head.
+ *
+ * The time budget over a failed parallel pass is the one thing not re-run: the
+ * runner applies it only after every pass succeeded.
+ */
+export async function judgeDenoTestCheck(opts: {
+  error: PreFlightGateError;
+  command: string;
+  baseline: DenoTestBaseline | null;
+  baseCommand: (files: string[]) => string | null;
+  run: (command: string) => Promise<Result<void, PreFlightGateError>>;
+}): Promise<DenoTestOutcome> {
+  const first = await judgeDenoTestFailure(
+    opts.error,
+    opts.baseline,
+    opts.baseCommand,
+  );
+  if (first.kind !== "base-only" || !serialPassSkipped(opts.error.output)) {
+    return first;
+  }
+  const rest = await opts.run(`${opts.command} --serial-only`);
+  if (rest.ok) return first;
+  const second = await judgeDenoTestFailure(
+    rest.error,
+    opts.baseline,
+    opts.baseCommand,
+  );
+  return second.kind === "base-only"
+    ? { kind: "base-only", warning: `${first.warning}\n${second.warning}` }
+    : second;
 }
 
 /** Quote test paths into one `deno task test:unit` command, or null. */

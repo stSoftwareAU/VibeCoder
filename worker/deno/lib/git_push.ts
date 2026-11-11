@@ -733,6 +733,10 @@ export type PrePushGateOutcome =
  * checks the whole branch before it raises the PR. It is a no-op only when
  * the branch has no commit of its own ahead of `baseRef`. That mode never
  * reads the remote head: the range is local, so no `ls-remote` or `fetch` runs.
+ *
+ * `baselineBranch` is the open PR's base branch for a repair push (no
+ * `baseRef`): the gate compares a failing `deno test` at the merge-base with
+ * `origin/<baselineBranch>`, not at the PR's own previous head.
  */
 export async function gateUnpushedCommits(
   branchName: string,
@@ -740,6 +744,7 @@ export async function gateUnpushedCommits(
   preFlight: PreFlightGateSpec,
   preFlightAlreadyRan = false,
   baseRef?: string,
+  baselineBranch?: string,
 ): Promise<
   Result<
     PrePushGateOutcome,
@@ -829,6 +834,7 @@ export async function gateUnpushedCommits(
     timeoutSeconds: preFlight.timeoutSeconds,
     runner: preFlight.runner,
     baseRef,
+    baselineBranch,
   });
   if (!gate.ok) {
     // A lookup that failed is not a verdict: pass it on unmarked.
@@ -1097,6 +1103,8 @@ export async function commitAndPushPending(
       options,
       preFlight,
       committedNewChanges,
+      undefined,
+      options.syncBaseBranch,
     );
     if (!gate.ok) {
       return { ok: false, error: gate.error };

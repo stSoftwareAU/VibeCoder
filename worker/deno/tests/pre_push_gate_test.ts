@@ -3374,6 +3374,7 @@ async function gateWithUnitRunner(
     stderr?: string;
   },
   cwds: Array<string | undefined> = [],
+  extra: { baselineBranch?: string } = {},
 ) {
   const warnings: string[] = [];
   const realWarn = console.warn;
@@ -3383,6 +3384,7 @@ async function gateWithUnitRunner(
       cwd: clone,
       stdin,
       preFlightCommands: [],
+      ...extra,
       ...stubShellcheck(),
       runner: (command, options) => {
         if (!command.startsWith("deno task test:unit")) {
@@ -3483,6 +3485,117 @@ Deno.test("runPrePushGate: a failure the fork does not share still blocks (PR #5
     );
     assert(!unnamed.result.ok);
     assertInstanceOf(unnamed.result.error, PreFlightGateError);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a module that fails outside a test blocks even when every named failure is red at the fork (PR #5034 review)", async () => {
+  const { root, clone, stdin } = await makeUnitTestRepo(editFoo);
+  try {
+    const headCwd = `${clone}/worker/deno`;
+    // Control: the named failure alone is red at the fork and waved through.
+    const control = await gateWithUnitRunner(
+      clone,
+      stdin,
+      () => ({ code: 1, stderr: FOO_FAILURE }),
+    );
+    assert(control.result.ok);
+    assertEquals(control.warnings.length, 1);
+    // The push also broke a module's link, which deno reports unnamed.
+    const mixed = await gateWithUnitRunner(clone, stdin, (cwd) => ({
+      code: 1,
+      stderr: cwd === headCwd
+        ? FOO_FAILURE + "./tests/b_test.ts (uncaught error)\n"
+        : FOO_FAILURE,
+    }));
+    assert(!mixed.result.ok);
+    assertInstanceOf(mixed.result.error, PreFlightGateError);
+    assertEquals(mixed.warnings, []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a serial pass the runner skipped after a base-red parallel failure is still run and judged (PR #5034 review)", async () => {
+  const { root, clone, stdin } = await makeUnitTestRepo(editFoo);
+  try {
+    const headCwd = `${clone}/worker/deno`;
+    const parallelFailed = FOO_FAILURE + "=== parallel pass: FAILED in 1s\n";
+    const serialRun =
+      (serial: { code: number; stderr?: string }) =>
+      (cwd: string | undefined, command: string) => {
+        if (cwd !== headCwd) return { code: 1, stderr: FOO_FAILURE };
+        return command.endsWith(" --serial-only")
+          ? serial
+          : { code: 1, stderr: parallelFailed };
+      };
+    // The serial pass passes: the base-red failure is only a warning.
+    const clean = await gateWithUnitRunner(
+      clone,
+      stdin,
+      serialRun({ code: 0 }),
+    );
+    assert(clean.result.ok, clean.result.ok ? "" : clean.result.error.message);
+    assertEquals(clean.warnings.length, 1);
+    // The serial pass fails a test the fork does not: the push is blocked.
+    const broken = await gateWithUnitRunner(
+      clone,
+      stdin,
+      serialRun({
+        code: 1,
+        stderr:
+          "serial one => ./tests/foo_test.ts:9:6\n=== serial pass: FAILED in 1s\n",
+      }),
+    );
+    assert(!broken.result.ok);
+    assertInstanceOf(broken.result.error, PreFlightGateError);
+    assertStringIncludes(broken.result.error.message, "serial one");
+    assertEquals(broken.warnings, []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a repair push compares a failing test at the PR's base, not at the PR's own previous head (PR #5034 review)", async () => {
+  // The PR's previous head (foo = 2) is on origin and breaks foo's test; the
+  // repair (foo = 3) leaves it red. The PR's base (foo = 1) is green.
+  const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
+    await Deno.writeTextFile(
+      `${c}/worker/deno/lib/foo.ts`,
+      "export const foo = 2;\n",
+    );
+    await git(c, "add", "-A");
+    await git(c, "commit", "-qm", "the PR's previous head");
+    await git(c, "push", "-q", "origin", "HEAD:refs/heads/pr");
+    await Deno.writeTextFile(
+      `${c}/worker/deno/lib/foo.ts`,
+      "export const foo = 3;\n",
+    );
+  });
+  try {
+    const red = (cwd: string | undefined) =>
+      Deno.readTextFileSync(`${cwd}/lib/foo.ts`).includes("= 1")
+        ? { code: 0 }
+        : { code: 1, stderr: FOO_FAILURE };
+    // Without the PR's base the comparison is the previous head, where the
+    // test is red too: the old behaviour waves the repair through.
+    const wavedThrough = await gateWithUnitRunner(clone, stdin, red);
+    assert(wavedThrough.result.ok);
+    assertEquals(wavedThrough.warnings.length, 1);
+    // With it the base is green, so the repair is blocked.
+    const blocked = await gateWithUnitRunner(clone, stdin, red, [], {
+      baselineBranch: "main",
+    });
+    assert(!blocked.result.ok);
+    assertInstanceOf(blocked.result.error, PreFlightGateError);
+    assertEquals(blocked.warnings, []);
+    // A base ref that is not a ref makes the comparison unavailable: blocked.
+    const unknown = await gateWithUnitRunner(clone, stdin, red, [], {
+      baselineBranch: "no-such-branch",
+    });
+    assert(!unknown.result.ok);
+    assertInstanceOf(unknown.result.error, PreFlightGateError);
   } finally {
     await Deno.remove(root, { recursive: true });
   }

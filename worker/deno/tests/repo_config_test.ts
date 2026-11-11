@@ -328,6 +328,10 @@ Deno.test("repo_config - buildQualityInstructions carries the pre-flight record 
     assertEquals(preFlightOnly.includes("runs no checks"), false);
     assertStringIncludes(
       preFlightOnly,
+      "Configured pre-flight commands enable changed-file checks",
+    );
+    assertStringIncludes(
+      preFlightOnly,
       "with none configured, the worker still runs the ShellCheck policy, cargo deny for cargo inputs, and the dependency-selected unit tests and markdownlint",
     );
     assertEquals(

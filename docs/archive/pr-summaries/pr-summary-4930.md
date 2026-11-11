@@ -16,10 +16,15 @@ whole `test:unit` suite instead (`needsFullUnitSuite`). A failing `deno test`
 check is judged by `lib/deno_test_baseline.ts`: a module-fetch failure is a
 `PrePushGateInfrastructureError`, and a test that fails the same way (same name,
 same file) at the commit the push forked from is a `[PRE_PUSH_WARNING]` line,
-not a block. PR-feedback and CI-fix final pushes with `shellcheckOnly` specs now
-run these tests and configured markdownlint; formatting policy is retained.
-Dynamic dependencies in a push that touches no prompt or lock file can still be
-missed.
+not a block, but only when every failure of the run is accounted for: a test
+module that failed outside a test (`(uncaught error)`) blocks, and a serial pass
+the runner skipped after a failed parallel pass is run and judged too. The fork
+is the merge-base with the PR's base when the gate knows it (the completion
+phase, and CI-fix, review-feedback and spelling pushes with a known PR base),
+not the PR's own previous head. PR-feedback and CI-fix final pushes with
+`shellcheckOnly` specs now run these tests and configured markdownlint;
+formatting policy is retained. Dynamic dependencies in a push that touches no
+prompt or lock file can still be missed.
 
 Version bump: `VERSION` is not touched by this change.
 
@@ -60,9 +65,23 @@ Closes #4930.
   module-fetch failure with no failed test in the output is infrastructure
   (`PrePushGateInfrastructureError`; a 404 `JSR package not found` is not), and
   a failed test that is also red at the fork commit (a throwaway `git worktree`
-  re-run of the failed files) is a warning. A push-added test file, a base that
-  passes, a base that cannot be checked out (a shallow checkout without the
-  parent) and output naming no failed test stay blocks. A timeout stays a block.
+  re-run of the failed files) is a warning. The fork is `git merge-base` of the
+  pushed head and the PR's base (`baseRef`, or `origin/<syncBaseBranch>` for a
+  repair push), so a repair that leaves a test red is compared with the PR's
+  base, not its own previous head; with neither it is the parent of the oldest
+  commit not yet on a remote. The downgrade needs every failure accounted for:
+  an `(uncaught error)` module (a top-level throw, a dangling promise, a missing
+  named export, which `--no-check` only surfaces at run time) names no test to
+  compare and blocks. `deno task test:unit` stops after a failed parallel pass,
+  so a downgraded run that never reached its serial pass gets `--serial-only`
+  run and judged the same way (`judgeDenoTestCheck`). A push-added test file, a
+  base that passes, a base that cannot be checked out (a shallow checkout
+  without the history to find the merge-base) and output naming no failed test
+  stay blocks. A timeout stays a block.
+- Not covered: the runner's time budget over a failed parallel pass (it runs
+  only after every pass succeeded, and is not re-run); a repo whose `test:unit`
+  runner prints no `=== <label> pass:` lines is judged as one pass; the
+  merge-conflict repair and the agent's own `git push` pass no PR base.
 
 ### Undiscoverable Facts
 
@@ -87,8 +106,10 @@ New non-test members have production readers: `denoUnitTestRoots` and
 `planChangedFileChecks`; `loadDenoUnitTestRoots` and `loadReferencedUnitTests`
 are called by `runPrePushGate`; `denoFullUnitRoots` and `denoTestRoot` are set
 from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
-`runPrePushGate` loop; `judgeDenoTestFailure`, `unitTestCommand` and
-`worktreeBaseline` (`lib/deno_test_baseline.ts`) are called by `runPrePushGate`.
+`runPrePushGate` loop; `judgeDenoTestCheck`, `unitTestCommand` and
+`worktreeBaseline` (`lib/deno_test_baseline.ts`) are called by `runPrePushGate`;
+`baselineBranch` is set by `gateUnpushedCommits` (from `commitAndPushPending`'s
+`syncBaseBranch`) and read by `runPrePushGate`.
 
 ## Acceptance Criteria
 
@@ -102,10 +123,16 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   — reviewer: met (markdownlint was already in the pre-push gate; `deno test`
   now runs the unit tests selected by name and by import, or the whole suite for
   a prompt or lock change, and a failure the branch caused blocks the push; a
-  base-only failure or a download outage does not). Known residual gaps, judged
-  unrealistic or rare by the reviewer: a path built piecewise with `join()` for
-  a non-unique base name, import-map / `jsr:` / `npm:` specifiers, and a
-  `_test.ts` outside `tests/`.
+  base-only failure or a download outage does not). The PR #5034 review's
+  fail-open cases are closed and tested: an `(uncaught error)` file beside
+  base-red named failures blocks, a skipped serial pass is run and judged, and a
+  repair push is compared at the PR's base. Known residual gaps: outside a
+  prompt or lock change the check runs the dependency-selected subset, not the
+  whole suite CI runs (dynamic loader types, computed paths, import-map aliases,
+  `jsr:` / `npm:` specifiers and a `_test.ts` outside `tests/` can be missed);
+  the runner's time budget over a failed parallel pass is not re-run; a repair
+  whose PR base is unknown, the merge-conflict repair and the agent's own
+  `git push` compare at the parent of their oldest unpushed commit.
 
 ## Test Plan
 
@@ -174,62 +201,70 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
 - Formatting, lint and diff checks pass. Tests use integrity-verified local
   copies of locked dependencies. Full quality gate not rerun here.
 
-### PR #5034 review, second round
+### PR #5034 review, second and third rounds
 
-- Baseline and outage: `lib/deno_test_baseline.ts` (new) judges a failed
-  `deno test` check. Observed from the real `deno test` 2.x: failed tests print
-  `name => ./file_test.ts:L:C` under FAILURES; a JSR outage prints
-  `error: JSR
-  package manifest for '@std/path' failed to load. Import '...' failed.`,
+- Baseline and outage: `lib/deno_test_baseline.ts` judges a failed `deno test`
+  check. Observed from the real `deno test` 2.9.8: failed tests print
+  `name => ./file_test.ts:L:C` under FAILURES; a test module that fails outside
+  a test (a missing named export, a top-level throw) prints
+  `./b_test.ts (uncaught error)` under ERRORS and FAILURES and
+  `Uncaught error from ./b_test.ts FAILED` while running, and names no test; the
+  runner prints `=== parallel pass: FAILED in 3.2s` and stops. A JSR outage
+  prints
+  `error: JSR package manifest for '@std/path' failed to load. Import
+  '...' failed.`,
   an `https:` import `error: Import '...' failed.` with
-  `error sending request for
-  url`, an npm outage
+  `error sending request for url`, an npm outage
   `error: Failed loading ... for package`; a missing package prints
   `error: JSR package not found` (a 404, so a verdict).
 - Whole suite for unresolvable readers: `needsFullUnitSuite` (prompts, and a
   root's `deno.json` / `deno.jsonc` / `deno.lock`), passed to the planner as
-  `denoFullUnitRoots`. The module doc and `docs/CONFIGURATION.md` no longer say
-  the check runs "every test that depends on a changed file" without that
-  exception.
-- Docs: `git_push.ts` (`PreFlightGateSpec`, `shellcheckOnly`,
-  `resolveRepairPreFlightSpec`, `commitAndPushPending`) and
-  `docs/CONFIGURATION.md` (push guarantee paragraph, the `deno test` bullet).
-- Tests: `worker/deno/tests/deno_test_baseline_test.ts` (12 tests at head) and
-  `worker/deno/tests/pre_push_gate_test.ts` (120 tests at head), including
+  `denoFullUnitRoots`.
+- Third round (this head): `hasUncaughtError` makes an `(uncaught error)` run a
+  verdict; `judgeDenoTestCheck` runs `--serial-only` after a base-only run whose
+  serial pass never ran (`serialPassSkipped`) and judges it; the fork is the
+  merge-base with the PR's base (`baselineBranch`, threaded from
+  `commitAndPushPending`'s `syncBaseBranch` through `gateUnpushedCommits`). The
+  `worktreeBaseline` tests now run against a real temporary git repository (fork
+  commit holding some of the files, a runner that reads a marker file from its
+  cwd) and assert the outcome: `ranFiles`, the error, the fork checkout and that
+  `git worktree list` shows only the main worktree afterwards. The judge tests
+  assert only the returned outcome. The two pins that the second round replaced
+  (`Configured pre-flight commands enable changed-file checks`) are restored in
+  `quality_gate_budget_test.ts` and `repo_config_test.ts` beside the new clause.
+- Tests at the head: `worker/deno/tests/deno_test_baseline_test.ts` (17 tests),
+  `worker/deno/tests/pre_push_gate_test.ts` (123 tests) and
+  `worker/deno/tests/git_push_preflight_test.ts` (22 tests), including
   `runPrePushGate` cases for a test red at the fork (warning, worktree removed),
   a base that passes, a different test red at the base, a push-added test file,
-  a fetch outage, a 404, a mixed output, and a builder-based reader reached by
-  the whole suite for a prompt and a lock change.
-- Red checks run by hand (each turns a test red, then restored): fetch
-  classification off; `fresh` comparison dropped; `ranFiles` guard dropped;
-  safe-path guard dropped; `needsFullUnitSuite` call replaced by `false`; the
-  `prompts/` operand replaced by `false`.
-- `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts`
-  (132 passed on the head: 12 + 120); formatter and lint on the changed baseline
-  files pass. The full quality gate was not run in this round.
-- Mutation round: `worktreeBaseline` tests drive the fork worktree, `ls-tree`,
-  root prefix, cwd and cleanup paths through injected git and runner seams, and
-  a timeout case pins that a timeout is neither an outage nor base-only; each
-  listed mutant was applied by hand and turned a test red.
-- Type-check fix at the head: `deno_test_baseline_test.ts` failed `deno check`
-  under `noUncheckedIndexedAccess` (`args[3]` passed to `onAdd`, and
-  `git.calls[1].args` read without a guard). The fake now passes `args[3] ?? ""`
-  and the test reads `git.calls[1]?.args`; assertions are unchanged, so test
-  behaviour and counts are as above (re-run on this head:
-  `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts`,
-  132 passed, 0 failed).
-
-### Host-independence fix at the head
-
-- `runPrePushGate: a prompt or lock change runs the whole unit suite, ...`
-  (`worker/deno/tests/pre_push_gate_test.ts`) planned a markdownlint check for
-  its Markdown prompt change but looked the binary up on the host, so it failed
-  on a runner without markdownlint. It now injects
-  `findMarkdownlint: () => Promise.resolve("/fake/mdl")`, like the other
-  markdownlint cases; assertions are unchanged.
+  a fetch outage, a 404, a mixed output, a builder-based reader reached by the
+  whole suite for a prompt and a lock change, base-red named failures plus an
+  `(uncaught error)` file (blocked), a base-red parallel failure plus a failing
+  serial pass (blocked; a passing serial pass is only a warning), and a repair
+  push compared at the PR's base (blocked) against the previous head (waved
+  through); and `commitAndPushPending` with and without `syncBaseBranch`.
+- Red checks run by hand on this head (each change made, the test run, then
+  restored): `hasUncaughtError` return removed → `deno_test_baseline_test.ts`
+  and `pre_push_gate_test.ts` red (2 failed); the `--serial-only` rerun removed
+  → the same two files red (2 failed); `baselineBranch` ignored in
+  `runPrePushGate` → `pre_push_gate_test.ts` "a repair push compares a failing
+  test at the PR's base" red; `options.syncBaseBranch` dropped from the
+  `gateUnpushedCommits` call in `commitAndPushPending` →
+  `git_push_preflight_test.ts` "a repair push compares a failing unit test at
+  the PR's base" red.
+- Earlier red checks (second round): fetch classification off; `fresh`
+  comparison dropped; `ranFiles` guard dropped; safe-path guard dropped;
+  `needsFullUnitSuite` call replaced by `false`; the `prompts/` operand replaced
+  by `false`; a timeout is neither an outage nor base-only.
+- `pre_push_gate_test.ts` injects `findMarkdownlint` for its Markdown prompt
+  case so it does not depend on the host's install.
 - `docs/audits/lib-sweep-coverage/top-up-4930.json` claims
   `worker/deno/lib/deno_test_baseline.ts` for the sweep-coverage audit.
-- Re-run on this head:
-  `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts`,
-  132 passed, 0 failed (12 + 120). The full quality gate was not re-run for
-  this test-only change.
+- Docs: `docs/CONFIGURATION.md` (the `deno test` bullet: fork choice,
+  `(uncaught error)`, the skipped serial pass), the module doc of
+  `pre_push_gate.ts`, `runPrePushGate` and `gateUnpushedCommits` doc comments.
+- Run on this head:
+  `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts tests/pre_push_gate_cli_test.ts tests/pre_push_gate_retry_test.ts tests/git_push_preflight_test.ts tests/git_push_test.ts tests/issue_worker_test.ts`
+  (347 passed, 0 failed); `tests/quality_gate_budget_test.ts` and
+  `tests/repo_config_test.ts` (71 passed, 0 failed). Formatter, lint and
+  `deno check` of the changed files pass.

@@ -34,7 +34,9 @@
  *    runs that root's whole `test:unit` suite ({@link needsFullUnitSuite}). A
  *    failing run is judged by `deno_test_baseline.ts`: a module-fetch failure
  *    is an infrastructure failure, and a test that fails the same way where the
- *    push forked is a `[PRE_PUSH_WARNING]` line, not a block. Then the repo's `cargo deny check` (Issue #4626)
+ *    push forked (the merge-base with the PR's base when known) is a
+ *    `[PRE_PUSH_WARNING]` line, not a block, provided every failure of the run
+ *    is accounted for and its serial pass ran. Then the repo's `cargo deny check` (Issue #4626)
  *    runs for eligible workflows when intermediate pushes or ShellCheck-only
  *    repairs change a cargo input (a Cargo manifest, lock file, deny config or
  *    `.cargo/config.toml`). The whole-branch
@@ -70,7 +72,7 @@ import {
 import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
 import { stripJsonc } from "./jsonc.ts";
 import {
-  judgeDenoTestFailure,
+  judgeDenoTestCheck,
   unitTestCommand,
   worktreeBaseline,
 } from "./deno_test_baseline.ts";
@@ -1520,19 +1522,36 @@ export function needsFullUnitSuite(
 }
 
 /**
- * The commit a push forked from: the parent of its oldest commit not already
- * on a remote (or not on `baseRef`). Null when it cannot be found, for
- * example a shallow checkout that lacks the parent.
+ * The commit a push forked from, where a `deno test` failure is compared.
+ *
+ * With `compareRef` (the PR's base) it is the merge-base of the pushed heads
+ * and that ref: the point the PR left its base, or the base commit a later
+ * merge brought in. A repair push must not compare against the PR's own
+ * previous head, where a test the repair leaves red is red too. Without a
+ * `compareRef` it is the parent of the oldest commit not already on a remote.
+ * Null when it cannot be found, for example a shallow checkout that lacks the
+ * history: the comparison is then unavailable and the failure blocks.
  */
 async function pushForkCommit(
   refs: readonly PrePushRef[],
   cwd: string,
   git: PrePushGit,
-  baseRef?: string,
+  compareRef?: string,
 ): Promise<string | null> {
   if (refs.length === 0) return null;
-  if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
+  if (
+    compareRef !== undefined &&
+    (compareRef === "" || compareRef.startsWith("-"))
+  ) {
     return null;
+  }
+  if (compareRef !== undefined) {
+    const mergeBase = await git(
+      ["merge-base", compareRef, ...refs.map((r) => r.localSha)],
+      cwd,
+    );
+    const sha = mergeBase.stdout.split("\n")[0]?.trim() ?? "";
+    return mergeBase.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
   }
   const oldest = await git(
     [
@@ -1540,7 +1559,7 @@ async function pushForkCommit(
       "--reverse",
       ...refs.map((r) => r.localSha),
       "--not",
-      baseRef ?? "--remotes",
+      "--remotes",
     ],
     cwd,
   );
@@ -1994,7 +2013,8 @@ export async function runAffectedShellcheckChecks(opts: {
  * database could not be reached is a {@link PrePushGateInfrastructureError}, as
  * is a `deno test` run that could not fetch a module. A `deno test` failure
  * that the push's fork commit shares (same test, same file) is a
- * `[PRE_PUSH_WARNING]` line, not an `Err` (see `deno_test_baseline.ts`).
+ * `[PRE_PUSH_WARNING]` line, not an `Err`, when every failure of the run is
+ * accounted for (see `deno_test_baseline.ts`).
  */
 export async function runPrePushGate(opts: {
   cwd: string;
@@ -2014,6 +2034,13 @@ export async function runPrePushGate(opts: {
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
    */
   baseRef?: string;
+  /**
+   * The PR's base branch (for example `main`), for a repair push that has no
+   * `baseRef`. A `deno test` failure is then compared at the merge-base with
+   * `origin/<baselineBranch>`, not at the PR's own previous head, which a
+   * repair that leaves a test red would otherwise match.
+   */
+  baselineBranch?: string;
 }): Promise<Result<{ checksRun: string[] }, Error>> {
   const git = opts.git ?? defaultPrePushGit;
   const fail = (message: string): Result<never, Error> => ({
@@ -2119,31 +2146,45 @@ export async function runPrePushGate(opts: {
         return { ok: false, error: result.error };
       }
       const root = check.denoTestRoot;
-      const outcome = await judgeDenoTestFailure(result.error, {
-        // The fork commit is looked up only when a test actually failed.
-        runAtBase: async (command, files) => {
-          const forkSha = await pushForkCommit(
-            refs.value,
-            opts.cwd,
-            git,
-            opts.baseRef,
-          );
-          if (forkSha === null) return null;
-          return await worktreeBaseline({
-            cwd: opts.cwd,
-            root,
-            forkSha,
-            git,
+      const outcome = await judgeDenoTestCheck({
+        error: result.error,
+        command: check.command,
+        baseCommand: unitTestCommand,
+        run: (command) =>
+          runPreFlightGate([command], {
+            cwd: check.cwd,
             runner: opts.runner,
             timeoutSeconds: opts.timeoutSeconds,
-          }).runAtBase(command, files);
+          }),
+        baseline: {
+          // The fork commit is looked up only when a test actually failed.
+          runAtBase: async (command, files) => {
+            const forkSha = await pushForkCommit(
+              refs.value,
+              opts.cwd,
+              git,
+              opts.baseRef ??
+                (opts.baselineBranch === undefined
+                  ? undefined
+                  : `origin/${opts.baselineBranch}`),
+            );
+            if (forkSha === null) return null;
+            return await worktreeBaseline({
+              cwd: opts.cwd,
+              root,
+              forkSha,
+              git,
+              runner: opts.runner,
+              timeoutSeconds: opts.timeoutSeconds,
+            }).runAtBase(command, files);
+          },
         },
-      }, unitTestCommand);
+      });
       if (outcome.kind === "infrastructure") {
         return infrastructureFail(outcome.message);
       }
       if (outcome.kind === "verdict") {
-        return { ok: false, error: result.error };
+        return { ok: false, error: outcome.error };
       }
       // An established base failure is reported, never counted as run or a block.
       console.warn(

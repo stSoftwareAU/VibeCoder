@@ -206,6 +206,10 @@ Deno.test("quality_gate_budget - each push record names only checks its path run
     assertEquals(preFlightOnly.includes("runs no checks"), false);
     assertStringIncludes(
       preFlightOnly,
+      "Configured pre-flight commands enable changed-file checks",
+    );
+    assertStringIncludes(
+      preFlightOnly,
       "with none configured, the worker still runs the ShellCheck policy, cargo deny for cargo inputs, and the dependency-selected unit tests and markdownlint",
     );
     assertNotMatch(

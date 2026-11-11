@@ -5234,9 +5234,23 @@ The hook runs two stages:
      the gate checks out the commit the push forked from into a throwaway
      worktree and re-runs the failed files there; a test that fails the same way
      (same name, same file) at the fork is reported as a
-     `[PRE_PUSH_WARNING] deno test` line and does not block. A test file the
+     `[PRE_PUSH_WARNING] deno test` line and does not block. The fork is the
+     merge-base of the pushed head and the PR's base (`origin/<base>`) when the
+     gate knows it: the completion phase's whole-branch check, and a CI-fix,
+     review-feedback or spelling repair push whose PR base is known (the base
+     it merges in before the push). Any other push (the agent's own `git push`,
+     the merge-conflict repair, a repair whose PR base could not be read) uses
+     the parent of its oldest commit not yet on a remote. Only a run whose every
+     failure is accounted for is downgraded: a test module that fails outside a
+     test (`./x_test.ts (uncaught error)`: a top-level throw, a dangling promise
+     or a missing named export) names no test to compare and blocks. The
+     `test:unit` runner stops after a failed parallel pass, so when a
+     downgraded run never reached its serial pass the gate runs it
+     (`--serial-only`) and judges that result the same way. The time budget the
+     runner applies after both passes succeed is not re-run for a failed
+     parallel pass. A test file the
      push added, a base run that passes, a base the gate cannot check out (for
-     example a shallow checkout without the parent commit), or an output that
+     example a shallow checkout without the history to find the merge-base), or an output that
      names no failed test stays a block. Repair specs called `shellcheckOnly` also run these
      unit tests and configured markdownlint from the pushed paths, while retaining
      their existing formatter policy;

@@ -856,3 +856,70 @@ Deno.test("commitAndPushPending - a push recovery merge needs a fresh verdict", 
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+Deno.test("commitAndPushPending - a repair push compares a failing unit test at the PR's base, not at the PR's own previous head (PR #5034 review)", async () => {
+  const branch = "issue-4930-repair-base";
+  const { tmp, downstream } = await makeRepo("preflight_4930_base_", branch);
+  try {
+    const write = (name: string, text: string) =>
+      Deno.writeTextFile(`${downstream}/${name}`, text);
+    const commit = async (message: string) => {
+      assertEquals((await runGit(["add", "-A"], downstream)).code, 0);
+      const done = await runGit(["commit", "-qm", message], downstream);
+      assertEquals(done.code, 0, done.stderr);
+    };
+    await Deno.mkdir(`${downstream}/lib`);
+    await Deno.mkdir(`${downstream}/tests`);
+    await write("deno.json", JSON.stringify({ tasks: { "test:unit": "x" } }));
+    await write("tests/foo_test.ts", "export {};\n");
+    // The PR's base (main) holds foo = 1; its previous head (on origin) foo = 2.
+    await write("lib/foo.ts", "export const foo = 1;\n");
+    await commit("base");
+    const toMain = await runGit(["push", "origin", "HEAD:main"], downstream);
+    assertEquals(toMain.code, 0, toMain.stderr);
+    await write("lib/foo.ts", "export const foo = 2;\n");
+    await commit("previous head");
+    const toPr = await runGit(["push", "origin", "HEAD"], downstream);
+    assertEquals(toPr.code, 0, toPr.stderr);
+
+    // The unit test is red everywhere except where foo is 1 (the base).
+    const runner: PreFlightRunner = (command, options) => {
+      const red = command.startsWith("deno task test:unit") &&
+        !Deno.readTextFileSync(`${options.cwd}/lib/foo.ts`).includes("= 1");
+      return Promise.resolve({
+        started: true,
+        code: red ? 1 : 0,
+        stdout: red ? "foo works => ./tests/foo_test.ts:3:6\n" : "",
+        stderr: "",
+      });
+    };
+    const repair = (syncBaseBranch?: string) =>
+      commitAndPushPending(
+        branch,
+        "Fix CI failure",
+        {
+          cwd: downstream,
+          env: NO_HOST_GIT_CONFIG,
+          ...(syncBaseBranch ? { syncBaseBranch } : {}),
+        },
+        false,
+        { commands: [], shellcheckOnly: true, runner },
+      );
+
+    // The repair leaves the test red. Told the PR's base, the gate blocks it.
+    await write("lib/foo.ts", "export const foo = 3;\n");
+    const blocked = await repair("main");
+    assert(!blocked.ok, "a repair that leaves the test red must not push");
+    if (!blocked.ok) {
+      assert(blocked.error.message.includes("[PRE_PUSH_BLOCKED]"));
+      assert(blocked.error.message.includes("foo works"));
+    }
+
+    // Control: with no PR base the comparison is the previous head, where the
+    // test is red too, so the same repair is waved through and pushed.
+    const wavedThrough = await repair();
+    assert(wavedThrough.ok, wavedThrough.ok ? "" : wavedThrough.error.message);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
