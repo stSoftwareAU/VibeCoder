@@ -27,6 +27,7 @@ import {
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
+import { UnfinishedIssueExecutorError } from "../lib/issue_executor_enforcement.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import {
   setConfiguredAgentProviderId,
@@ -1369,6 +1370,30 @@ Deno.test("runExecuteClaudePhase - turn limit never credits partial changes or s
   assertEquals(result.action, "failure");
   assertEquals(result.failureType, "turn_limit");
   assertStringIncludes(result.failureMessage ?? "", "error_max_turns");
+  assertEquals(attemptedSelfHealing, false);
+});
+
+Deno.test("runExecuteClaudePhase - an unfinished executor is not an execution error and never self-heals (Issue #5048)", async () => {
+  let attemptedSelfHealing = false;
+  const result = await runExecuteClaudePhase(
+    createTestOptions(),
+    createMockDeps({
+      runClaudeWithRetry: async () => ({
+        ok: false,
+        error: new UnfinishedIssueExecutorError("an executor had not returned"),
+      }),
+      findExistingPrForBranch: async () => {
+        attemptedSelfHealing = true;
+        return { ok: false, error: new Error("No PR") };
+      },
+    }),
+  );
+  assertEquals(result.action, "failure");
+  assertEquals(result.failureType, "executor_unfinished");
+  assertStringIncludes(
+    result.failureMessage ?? "",
+    "an executor had not returned",
+  );
   assertEquals(attemptedSelfHealing, false);
 });
 

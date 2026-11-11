@@ -10,8 +10,10 @@ invocation's result. The execute phase preserves the working tree on the issue
 branch with a handover note, releases the run as `interrupted` (not
 code-fixable, never auto-filed), and the existing bounded in-process
 infrastructure retry resumes from the preserved branch. The unfinished-work
-guard, and its refusal of completion and PR creation, are unchanged. Closes
-#5048.
+guard, and its refusal of completion and PR creation, are unchanged. The sibling
+`execute_claude_phase.ts` path (the `execute-claude-phase` command) classifies
+the refusal as a distinct `executor_unfinished` failure type instead of a
+generic `execution_error`, as it already does for `turn_limit`. Closes #5048.
 
 ## Spec
 
@@ -37,6 +39,13 @@ guard, and its refusal of completion and PR creation, are unchanged. Closes
   infrastructure retry, which re-enters the phase on the branch holding the
   preserved work. That is the "resume automatically" contract; a second failure
   is released as `interrupted` with the work preserved.
+- `execute_claude_phase.ts` (a production wiring site of `issueExecutorSplit`)
+  maps `!claudeResult.ok` itself, so it gets the same discriminator:
+  `UnfinishedIssueExecutorError` → `failureType: "executor_unfinished"`, beside
+  `AgentTurnLimitError` → `turn_limit`. Like `turn_limit` there, that path does
+  not preserve or release the work itself; it only stops reporting the refusal
+  as an execution error. Nothing in `lib/` consumes `failureType`, so no other
+  mapping changes.
 - The posted reason carries no issue number (it lands in the target repo's
   comments, Issue #3499 rule), unlike the log line.
 
@@ -95,6 +104,15 @@ flowchart LR
   a fake CLI): additionally asserts the refusal is an
   `UnfinishedIssueExecutorError` whose `executionResult.output` is `done`. No
   assertion removed.
+- `worker/deno/tests/execute_claude_phase_test.ts`: new
+  `runExecuteClaudePhase - an unfinished executor is not an execution error and
+  never self-heals (Issue #5048)`
+  asserts `failureType` is `executor_unfinished` and no PR self-healing is
+  attempted. Two other tests in that file
+  (`a repo provider pin reaches the runner…`,
+  `an explicit provider stays
+  absolute…`) fail identically on the head without
+  this change.
 - Cause lists extended with `executor-unfinished` in
   `worker/deno/tests/wip_checkpoint_test.ts`,
   `worker/deno/tests/handover_note_test.ts`,

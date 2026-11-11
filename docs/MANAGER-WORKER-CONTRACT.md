@@ -109,14 +109,16 @@ the template carries only a placeholder.
   executor still running and reach the PR with no summary. The split-run
   `PreToolUse` guard also matches `Agent|Task` and denies advisor dispatches
   unless they explicitly set `run_in_background: false`. After the CLI exits,
-  the runner requires a completed synchronous result for each executor call;
-  an outstanding dispatch, launch acknowledgement or error marks the invocation
+  the runner requires a completed synchronous result for each executor call; an
+  outstanding dispatch, launch acknowledgement or error marks the invocation
   unfinished and prevents completion and PR creation. The runner returns a typed
   `UnfinishedIssueExecutorError` carrying the invocation result. The execute
   phase preserves the working tree on the issue branch with a handover note
   (`wip: execute stopped with executor work unfinished …`), releases the run as
   `interrupted` (not a worker crash, never auto-filed), and the bounded
-  in-process infrastructure retry resumes from the branch (Issue #5048).
+  in-process infrastructure retry resumes from the branch (Issue #5048). The
+  `execute-claude-phase` path (`lib/execute_claude_phase.ts`) reports the same
+  refusal as `failureType: "executor_unfinished"`, not `execution_error`.
   `issue_executor_enforcement_test.ts` covers the guard and drives the real
   runner with unfinished and completed fake-CLI streams;
   `execute_phase_unfinished_executor_5048_test.ts` covers the phase.
@@ -140,13 +142,13 @@ The audit list's "review gates" area covers more than the two reviewer
 sub-agents. Each row below was opened to verify it, and the citations are
 current.
 
-| Gate                   | Where                                                                                                      | What it does today                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Reviewer sub-agents    | `worker/deno/lib/issue_executor_agents.ts:296`                                                             | `buildIssueReviewerAgents` builds the spec and standards reviewers as read-only — `ISSUE_REVIEWER_TOOLS` is `Read`, `Grep`, `Glob` (`:208`) and `ISSUE_REVIEWER_DISALLOWED_TOOLS` is `Agent` (`:214`) — delivered through `--agents` on Claude only.                                                                                                                                                                                      |
-| Issue-reviewer switch  | `worker/deno/lib/config.ts:1013-1014`                                                                      | `issue_reviewer_agents` (host only, default `true`) toggles the two reviewer definitions.                                                                                                                                                                                                                                                                                                                                                 |
-| PR review claim lease  | `worker/deno/lib/pr_review_claim_lease.ts:29`, `:33`, `:70`, `:102`                                        | A `pr_review` claim comment is a lease, not a dismissal. `createClaimLeaseRenewer` (`:102`) renews it every `PR_REVIEW_CLAIM_RENEW_MS` (five minutes, `:33`) by editing the comment body, and `isLeaseLive` (`:70`) deems it live while its last beat is inside `PR_REVIEW_CLAIM_LEASE_MS` (`:29`, the fleet heartbeat live window). A host that stops renewing lets the lease lapse, and the review becomes reclaimable by another host. |
-| Post-PR reviewer model | `worker/deno/lib/config_defaults.ts:1136`, `:1247`, `worker/deno/lib/pr_feedback_processor.ts:803`         | PR feedback and review runs resolve their model from the phase default: `PHASE_MODEL_DEFAULTS.pr_feedback` is `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`, not the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL` is only the fallback model passed to `estimatePhaseRunUsd` for cost estimation.                                                                                                             |
-| External review gate   | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial the provider cannot enforce on the argv (Gemini, which receives the list only as prompt text); Codex is the stated exception, admitted with `Bash` still not denied because delegation is off and the read-only checkout restoration applies. The subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run.           |
+| Gate                   | Where                                                                                                      | What it does today                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Reviewer sub-agents    | `worker/deno/lib/issue_executor_agents.ts:296`                                                             | `buildIssueReviewerAgents` builds the spec and standards reviewers as read-only — `ISSUE_REVIEWER_TOOLS` is `Read`, `Grep`, `Glob` (`:208`) and `ISSUE_REVIEWER_DISALLOWED_TOOLS` is `Agent` (`:214`) — delivered through `--agents` on Claude only.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Issue-reviewer switch  | `worker/deno/lib/config.ts:1013-1014`                                                                      | `issue_reviewer_agents` (host only, default `true`) toggles the two reviewer definitions.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| PR review claim lease  | `worker/deno/lib/pr_review_claim_lease.ts:29`, `:33`, `:70`, `:102`                                        | A `pr_review` claim comment is a lease, not a dismissal. `createClaimLeaseRenewer` (`:102`) renews it every `PR_REVIEW_CLAIM_RENEW_MS` (five minutes, `:33`) by editing the comment body, and `isLeaseLive` (`:70`) deems it live while its last beat is inside `PR_REVIEW_CLAIM_LEASE_MS` (`:29`, the fleet heartbeat live window). A host that stops renewing lets the lease lapse, and the review becomes reclaimable by another host.                                                                                                                                                                                                              |
+| Post-PR reviewer model | `worker/deno/lib/config_defaults.ts:1136`, `:1247`, `worker/deno/lib/pr_feedback_processor.ts:803`         | PR feedback and review runs resolve their model from the phase default: `PHASE_MODEL_DEFAULTS.pr_feedback` is `DEFAULT_CLAUDE_MODEL_PR_FEEDBACK = "sonnet"`, not the host `claude_model`. `processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL` is only the fallback model passed to `estimatePhaseRunUsd` for cost estimation.                                                                                                                                                                                                                                                                                                                          |
+| External review gate   | `worker/deno/lib/orchestration/issue_run_gate.ts:178`, `worker/deno/lib/orchestration/capabilities.ts:130` | With external orchestration on, the reviewer is a separate read-only call that fails closed before any paid work: `assertRoleSupported` (`:130`) refuses an unsupported provider or a tool denial the provider cannot enforce on the argv (Gemini, which receives the list only as prompt text); Codex is the stated exception, admitted with `Bash` still not denied because delegation is off and the read-only checkout restoration applies. The subscription/CLI preflight (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI, unproved entitlement or exhausted quota. An unsupported reviewer provider is refused, not run. |
 
 The code has no `pr_review` key: `PHASE_MODEL_DEFAULTS`
 (`worker/deno/lib/config_defaults.ts:1236`) lists `pr_feedback` instead, pinned
@@ -436,18 +438,17 @@ orchestration path never sets `--agents`
 that cannot carry a role before any paid work: `assertRoleSupported`
 (`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
 provider and, for providers other than Codex, a capability or tool-denial gap;
-the Codex branch skips both checks and admits only the allow-listed tools
-after a delegation-off probe. The subscription/CLI preflight
+the Codex branch skips both checks and admits only the allow-listed tools after
+a delegation-off probe. The subscription/CLI preflight
 (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
 unproved entitlement or exhausted quota. On that path nothing is dropped
 silently: Claude roles use CLI tool denials, a read-only Codex role has every
 change it makes to the checkout put back by the worker
 (`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356). That
 restoration does not deny Bash or prevent commands and builds outside the
-checkout; Codex receives tool-denial lists as prompt text, not as enforced
-CLI restrictions. Gemini and DeepSeek fail closed. Provider selection alone
-does not disable the model-refusal fallback or provide filesystem/network
-isolation. See
+checkout; Codex receives tool-denial lists as prompt text, not as enforced CLI
+restrictions. Gemini and DeepSeek fail closed. Provider selection alone does not
+disable the model-refusal fallback or provide filesystem/network isolation. See
 [Role configuration](ROLE-CONFIGURATION.md).
 
 ## 8. Rollout and safeguards
@@ -506,9 +507,9 @@ isolation. See
   `issue` run, so with them a host whose `issue` phase runs on `gemini` or
   `deepseek` has each such run rerouted to Claude when Claude is enabled and
   installed and the run is not on a health-gate fallback, or stripped with a
-  warning otherwise (Issue #4109), unless it
-  applies the full rollback below or opts into external orchestration. A `codex`
-  run under automatic provider routing is forced onto external orchestration
+  warning otherwise (Issue #4109), unless it applies the full rollback below or
+  opts into external orchestration. A `codex` run under automatic provider
+  routing is forced onto external orchestration
   (`worker/deno/lib/orchestration/role_config.ts:370`) and is never planned, so
   it is neither rerouted nor stripped; a `codex` run that is not on automatic
   routing and has external orchestration off is rerouted or stripped like the
