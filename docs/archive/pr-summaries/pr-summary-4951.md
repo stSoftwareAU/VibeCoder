@@ -143,7 +143,9 @@ flowchart LR
   `worker/deno/tests/fleet_pr_prefetch_draft_ci_scan_4951_test.ts` (6 tests at
   head), `worker/deno/tests/pr_maintenance_draft_ci_4951_test.ts` (4 tests at
   head), `worker/deno/tests/draft_ci_by_design_4951_test.ts` (7 tests at head, the
-  last being the check-run pagination regression), one added to `worker/deno/tests/pr_bot_lookup_test.ts`, and one added to
+  last being the check-run pagination regression; after the #5030 review they
+  assert which checks are kept and dropped, not how often the skipped list is
+  read), one added to `worker/deno/tests/pr_bot_lookup_test.ts`, and one added to
   `worker/deno/tests/issue_query_test.ts` (`fetchAllOpenPRs` carries `isDraft`
   only when `gh` reported a boolean; red when the `typeof` condition at
   `issue_query.ts:1289` is negated).
@@ -157,8 +159,8 @@ flowchart LR
     red.
 - Branch outcomes: `gate` dropped by name (`draft_ci_by_design_4951_test.ts`);
   needs all skipped dropped; a need that ran kept (operand `every` flipped to
-  `some`); no `needs:` entry kept; no topology kept; skipped list read once
-  across several checks; draft with a real job failure returned
+  `some`); no `needs:` entry kept; no topology kept; a real failure kept beside
+  a dropped `gate` and dropped aggregators; draft with a real job failure returned
   (`fleet_pr_prefetch_draft_ci_scan_4951_test.ts`); ready PR unaffected
   (positive controls). The bot door's `isDraft` is covered by
   `pr_bot_lookup_test.ts`; an unreadable skipped-check read keeps the check for
