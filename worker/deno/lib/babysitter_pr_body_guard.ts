@@ -42,7 +42,12 @@ import {
 } from "./missing_criterion_close_guard.ts";
 import { maskMarkdownCode } from "./markdown_code_spans.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
-import { closingKeywordLine } from "./pr_body.ts";
+import {
+  closingKeywordLine,
+  hasGithubClosingReference,
+  hasGithubColonOrUrlClosingReference,
+  maskCodeWithPlaceholder,
+} from "./pr_body.ts";
 import { issueNumberFromMarker } from "./pr_body_sync.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 
@@ -372,11 +377,14 @@ function closingRefs(masked: string, repo: string): ClosingRef[] {
 
 /**
  * Whether the text already settles the governing issue's close: a closing
- * keyword for it (plain, colon or full-URL form), an explicit `Part of #N`, or
- * another explicit non-closing reference (`Refs #N`, `Related to #N`) in the
- * masked text. The references count only when they name this repository (or no
- * repository). A bare `#N`, or another repository's `owner/repo#N`, settles
- * nothing.
+ * keyword for it, an explicit `Part of #N`, or another explicit non-closing
+ * reference (`Refs #N`, `Related to #N`). The plain keyword counts only when it
+ * is on one line with its `#N` and outside code, as GitHub reads it (Issue
+ * #4964), so `Closes\n#N` or ``Closes `x` #N`` does not settle the close. The
+ * colon and full-URL forms count on the same terms (one line, outside code),
+ * so `Closes:\n#N` does not settle it either. The references count only
+ * when they name this repository (or no repository). A bare `#N`, or another
+ * repository's `owner/repo#N`, settles nothing.
  */
 function namesClosingOrPartOf(
   text: string,
@@ -385,9 +393,8 @@ function namesClosingOrPartOf(
 ): boolean {
   const masked = maskMarkdownCode(text);
   const repoKey = repo.toLowerCase();
-  return closingRefs(masked, repo).some((ref) =>
-    ref.sameRepo && ref.issueNumber === issueNumber
-  ) || governingColonAndUrlCloses(text, issueNumber, repo).length > 0 ||
+  return hasGithubClosingReference(text, issueNumber, repo) ||
+    hasGithubColonOrUrlClosingReference(text, issueNumber, repo) ||
     [...masked.matchAll(PART_OF_RE), ...masked.matchAll(NON_CLOSING_REF_RE)]
       .some((match) => {
         const qualifier = match[2]?.toLowerCase();
@@ -509,9 +516,25 @@ function withholdColonAndUrlClose(
   return out + text.slice(at);
 }
 
-/** Fail loud if a closing keyword for the withheld issue survives the rewrite. */
-function assertWithheld(body: string, issueNumber: number, repo: string): void {
-  const masked = maskMarkdownCode(body);
+/**
+ * Fail loud if a closing keyword for the withheld issue survives the rewrite.
+ *
+ * The backstop reads the body with code replaced by a non-space placeholder
+ * (Issue #4964), so a code span between the keyword and `#N` ("Closes `x`
+ * #N") is not read as a close, as GitHub does not read it either. The backstop
+ * keeps the looser whitespace pattern, so a keyword split by a line break still
+ * throws here: the conservative side.
+ *
+ * Exported so the tests can reach the backstop directly: the withhold rewrites
+ * every plain and colon or URL closing reference for the issue first, so no
+ * proposal reaches the throw through {@link guardPrBodyProposal}.
+ */
+export function assertWithheld(
+  body: string,
+  issueNumber: number,
+  repo: string,
+): void {
+  const masked = maskCodeWithPlaceholder(body);
   const survives = closingKeywordLine(masked, issueNumber) !== null ||
     closingRefs(masked, repo).some((ref) =>
       ref.sameRepo && ref.issueNumber === issueNumber
