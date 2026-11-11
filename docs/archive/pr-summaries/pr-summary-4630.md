@@ -95,11 +95,12 @@ compile error is therefore caught before the push, not by a CI run. Closes
     default branch, skipping blank names; the completion rebase pass, with its
     PR base; and the in-run recovery agents of the pre-push gate, screenshot,
     summary-rule, PR-body-length, security-fix and quality-gate retries, through
-    `issueRunCompareRef`) and spelling repairs (the PR base, read once before
-    the agent runs and reused for the base merge) carry it too. Custom PR
+    `issueRunCompareRef`), spelling repairs (the PR base, read once before
+    the agent runs and reused for the base merge) and merge-conflict repairs
+    (`origin/<base>`, the branch merged in; both the resolution and the repair
+    agent runs) carry it too. Custom PR
     prompt runs use the discovered PR base, and standalone issue execution uses
-    its milestone or base. Merge-conflict repairs pass none, and neither do the
-    closure-verdict agent or the planning, refinement, question, revision and
+    its milestone or base. The closure-verdict agent or the planning, refinement, question, revision and
     quorum runs, so a failing CI cargo check
     on their own push stays a verdict.
   - The hook runs with `--allow-write=${TMPDIR:-/tmp}` added to main's
@@ -198,8 +199,13 @@ flowchart LR
   full changed-file gate does not newly apply to repair pushes. The ShellCheck
   policy (#4631) and the cargo-deny gate (#4626, for changed cargo inputs) run
   in every gate, so these repairs keep both. The spelling and merge-conflict
-  repairs keep main's `resolveRepairPreFlightSpec` (`shellcheckOnly`), with no
-  cargo check.
+  repairs keep main's `resolveRepairPreFlightSpec`: `shellcheckOnly` (no cargo
+  check) in a repo with no pre-flight commands, but the repo's own commands
+  spec in a repo that has them, and that spec also plans the CI cargo checks in
+  Step 1b. Both repairs therefore push with the PR base to compare against
+  (`requireCargoBaseComparison`; the merge-conflict repair also passes
+  `compareBaseBranch: <base>`, the spelling repair `syncBaseBranch`), so a
+  base-only failure is a warning and an unreadable base is infrastructure.
 
 ### Undiscoverable Facts
 
@@ -361,13 +367,20 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   asserts the spelling agent gets `origin/<base>` as its compare ref, and
   `tests/pre_push_gate_test.ts::runPrePushGate: a warning the push adds does not turn a base-only failure into a verdict (Issue #4630 review)`
   covers a plain rustc warning and cargo's build-failed notice. Merge-conflict
-  repairs still carry no `compareRef`: their push stays a verdict, as
-  documented. The unreadable-base path is
+  repairs (PR #4896 review) pass the PR base on the push and to both agent runs:
+  `worker/deno/tests/pr_merge_conflict_processor_test.ts::processMergeConflict - the push and the agent compare CI cargo against the PR base (PR #4896 review)`
+  and the repair-round assertion in `::processMergeConflict - a failing pre-push check is repaired by the agent in repair mode, and each round is costed on its own (Issue #4616)`;
+  `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - a merge-conflict repair with pre-flight commands pushes past a CI clippy failure the base already has (PR #4896)`
+  pushes a repo-commands spec past a base-only clippy failure. Red checks: the
+  processor without `compareBaseBranch`/`requireCargoBaseComparison`/the agent
+  `ciCargoCompareRef` (three processor tests red, including the spelling
+  `requireCargoBaseComparison` assertion in `pr_push_base_sync_test.ts`), and the
+  gate test without `compareBaseBranch` (red). The unreadable-base path is
   `worker/deno/tests/git_push_preflight_test.ts::commitAndPushPending - requireCargoBaseComparison with no readable base is infrastructure (PR #4896)`,
   and the feedback fix-branch wiring is
   `worker/deno/tests/pr_feedback_processor_test.ts::processPrFeedback - a gated-head fix branch compares the PR base and requires the comparison`.
   Spelling and merge-conflict repairs retain the base branch's ShellCheck-only
-  policy. No twinned copy of the changed environment or base-comparison rules
+  policy for a repo with no pre-flight commands. No twinned copy of the changed environment or base-comparison rules
   was found.
 - Historical validation: `./quality.sh` on the pre-merge head (407958d8): every gate passed except
   `deno tests`, which reported 16 failed of 33,624 (33,608 passed). Seven of the

@@ -670,6 +670,40 @@ Deno.test("commitAndPushPending - a CI clippy failure the PR base already has do
   }
 });
 
+// PR #4896 review: the merge-conflict repair pushes with the repo's own
+// pre-flight commands, so the gate also plans CI clippy; the merged tree holds
+// the base, so a lint the base already has must not be charged to the repair.
+Deno.test("commitAndPushPending - a merge-conflict repair with pre-flight commands pushes past a CI clippy failure the base already has (PR #4896)", async () => {
+  const branch = "issue-4630-conflict-base-fails";
+  const { tmp, downstream } = await makeRepo("preflight_4896_mc_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/b.rs": RUST_OK });
+    const { runner, clippyTrees } = baseAwareRunner(
+      CLIPPY_ASSERT_IS_EMPTY,
+      CLIPPY_ASSERT_IS_EMPTY,
+    );
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      {
+        cwd: downstream,
+        env: NO_HOST_GIT_CONFIG,
+        compareBaseBranch: "main",
+        requireCargoBaseComparison: true,
+      },
+      false,
+      { commands: ["cargo test"], runner },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(clippyTrees, ["head", "base"]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test("commitAndPushPending - a fix branch compares the PR base without merging it", async () => {
   const branch = "issue-4630-fix-branch";
   const { tmp, downstream } = await makeRepo("preflight_fix_base_", branch);

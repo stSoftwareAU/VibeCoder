@@ -257,6 +257,9 @@ Deno.test("a spelling fix asks for its PR's base to be merged in before the push
   assert(result.ok);
   assert(pushOptions.length >= 1);
   assertEquals(pushOptions[0]!.syncBaseBranch, "Develop");
+  // An unreadable base must make a base-only CI cargo failure infrastructure,
+  // not a verdict (PR #4896 review).
+  assertEquals(pushOptions[0]!.requireCargoBaseComparison, true);
   // The agent's own pre-push hook compares a failing CI cargo check against
   // the same base, so a base-only clippy failure is no verdict on the
   // spelling fix's self-push (Issue #4630 review).

@@ -105,6 +105,10 @@ interface Captured {
   commitAndPushCalls: number;
   /** The `preFlight` spec (5th argument) of each `commitAndPushPending` call. */
   commitAndPushPreFlights: unknown[];
+  /** The options (3rd argument) of each `commitAndPushPending` call (Issue #4630). */
+  commitAndPushOptions: unknown[];
+  /** The `ciCargoCompareRef` of each agent run, `undefined` when absent (Issue #4630). */
+  agentCompareRefs: (string | undefined)[];
   agentRuns: number;
   /** Prompts the agent was actually given (Issue #466). */
   agentPrompts: string[];
@@ -462,6 +466,7 @@ function makeGit(
     commitAndPushPending: ((...args: unknown[]) => {
       captured.commitAndPushCalls++;
       captured.commitAndPushPreFlights.push(args[4]);
+      captured.commitAndPushOptions.push(args[2]);
       captured.events.push("git:commitAndPushPending");
       if (script.commitPushError !== undefined) {
         return Promise.resolve({
@@ -636,9 +641,11 @@ function makeClaude(
         captureInvocationStats?: boolean;
         phase?: string;
         cwd?: string;
+        ciCargoCompareRef?: string;
       },
     ) => {
       captured.agentRuns++;
+      captured.agentCompareRefs.push(options?.ciCargoCompareRef);
       const reply = replies?.[captured.agentRuns - 1];
       if (reply !== undefined && options.cwd) {
         await Deno.writeTextFile(options.cwd + "/.pr_response_message", reply);
@@ -738,6 +745,8 @@ async function runProcessor(
     gitArgs: [],
     commitAndPushCalls: 0,
     commitAndPushPreFlights: [],
+    commitAndPushOptions: [],
+    agentCompareRefs: [],
     agentRuns: 0,
     agentPrompts: [],
     lockRenewals: [],
@@ -853,6 +862,24 @@ Deno.test("processMergeConflict - the push is gated on the repository's ShellChe
   assertEquals(captured.commitAndPushPreFlights, [
     { commands: [], shellcheckOnly: true },
   ]);
+});
+
+Deno.test("processMergeConflict - the push and the agent compare CI cargo against the PR base (PR #4896 review)", async () => {
+  const { captured, result, workDir } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+  );
+
+  assert(result.ok);
+  // The merged tree contains the base, so a CI cargo failure the base already
+  // has must be a warning, and an unreadable comparison must be infrastructure.
+  assertEquals(captured.commitAndPushOptions, [{
+    cwd: workDir,
+    compareBaseBranch: "main",
+    requireCargoBaseComparison: true,
+  }]);
+  assertEquals(captured.agentRuns, 1);
+  assertEquals(captured.agentCompareRefs, ["origin/main"]);
 });
 
 Deno.test("processMergeConflict - records the attempt before touching the branch", async () => {
@@ -1265,6 +1292,7 @@ Deno.test("processMergeConflict - a failing pre-push check is repaired by the ag
       phase: "merge_conflict",
       cwd: workDir,
     }]);
+    assertEquals(captured.agentCompareRefs, ["origin/main"]);
     assertStringIncludes(captured.agentPrompts[0] ?? "", "Repair Mode");
     assertEquals(captured.commitAndPushCalls, 1);
     assertStringIncludes(

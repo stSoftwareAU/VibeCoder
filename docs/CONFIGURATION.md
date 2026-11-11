@@ -5275,8 +5275,10 @@ gates do (see that bullet):
      PR-body-length, security-fix and quality-gate remediation), and each is written into the hook spec as
      `compareRef` (`origin/<base>`; `""` when the base cannot be read, which
      makes a failing CI cargo check an infrastructure fault, never a verdict).
-     A merge-conflict repair, like any other agent run without a PR or issue base
-     (planning, refinement, question, revision, quorum), has no `compareRef`, so a failing CI cargo check
+     A merge-conflict repair is handed the PR base too (`origin/<base>`, the
+     branch it merged in), for its agent runs and for the worker's own push, which also
+     requires the comparison. Any other agent run without a PR or issue base
+     (planning, refinement, question, revision, quorum) has no `compareRef`, so a failing CI cargo check
      on its push is a verdict. Only error-level diagnostics are compared; a
      warning never fails a CI cargo command, so a warning the push adds does
      not make a base-only failure a verdict. The
@@ -5399,7 +5401,9 @@ gates do (see that bullet):
      a repair through `commitAndPushPending`, including repositories without
      configured pre-flight commands, where it is the only Step 1b check for the
      spelling and merge-conflict repairs (the CI-fix and review-feedback repairs
-     add the CI cargo checks, Issue #4630). The
+     add the CI cargo checks, Issue #4630). A spelling or merge-conflict repair
+     in a repo that has pre-flight commands also gets the CI cargo checks,
+     compared against the PR base as described above. The
      fleet babysitter does not run it: its execution belongs inside the worker
      container (#4768, #4770), never beside the host App key, so babysitter
      repairs are not ShellCheck-validated until that contained path exists. WIP checkpoint,

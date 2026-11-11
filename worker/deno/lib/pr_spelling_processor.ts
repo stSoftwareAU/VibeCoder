@@ -458,6 +458,9 @@ async function _processSpellingWithHeartbeat(
   const pushOptions = {
     cwd: processorDeps.workDir,
     expectedAncestor: beforeSha,
+    // An unreadable PR base makes a base-only CI cargo failure infrastructure,
+    // not a verdict (Issue #4630 review).
+    requireCargoBaseComparison: true,
     ...(syncBaseBranch !== undefined ? { syncBaseBranch } : {}),
   };
   const finaliseResult = await deps.git.commitAndPushPending(
