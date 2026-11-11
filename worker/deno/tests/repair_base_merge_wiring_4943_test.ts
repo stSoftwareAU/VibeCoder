@@ -5,7 +5,7 @@
  * when its failing check has the same failure on the merge base and passes on a
  * newer default-branch commit;
  * a behind-only PR with no such check, or an unreadable mergeability, must not
- * reach `syncFeatureBranchWithDefault`.
+ * publish an unrelated base advance.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -13,11 +13,21 @@
 import { assert, assertEquals, assertMatch } from "@std/assert";
 import { BASE_REFRESH_COUNTERS_FILE } from "../lib/repair_base_merge_4943.ts";
 import { readBranchRefreshRefusals } from "../lib/branch_refresh_refusal_streak.ts";
+import { processCiFailure } from "../lib/pr_ci_processor.ts";
+import { processPrFeedback } from "../lib/pr_feedback_processor.ts";
+import { processSpellingFailure } from "../lib/pr_spelling_processor.ts";
 import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
 import { prSpellingProcessorCommand } from "../commands/pr_spelling_processor.ts";
-import { createMockDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createDefaultDeps,
+  createMockDeps,
+} from "../lib/issue_worker_wiring.ts";
 import type { GitDeps, GitHubDeps } from "../lib/issue_worker_wiring.ts";
+import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
+import { git as gitResult, gitOk } from "./support/git_repo_fixture.ts";
+import { baseFixGh, CI_CHECK_RUN_ID } from "./support/repair_base_checks.ts";
+import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 
 const REPO = "owner/repo";
@@ -25,32 +35,50 @@ const PR_NUMBER = 12;
 const BRANCH = "feature-branch";
 const DEFAULT_BRANCH = "main";
 
-/** Answer only `pr view <n> --json mergeable`; any other gh call fails. */
-function mergeableOnlyGh(
-  read: () => Promise<string>,
-): GitHubDeps["runGhCommand"] {
-  return ((args: string[]) => {
-    const isMergeableRead = args[0] === "pr" && args[1] === "view" &&
-      args[args.indexOf("--json") + 1] === "mergeable";
-    if (isMergeableRead) {
-      return read();
-    }
-    return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
-  }) as unknown as GitHubDeps["runGhCommand"];
-}
-
 /**
- * Run one processor operation with a recording sync stub. The sync stub is
- * the only route into the base merge, so its call count is the gate's effect.
+ * Run a successful repair against a real bare remote. Git operations, final
+ * commit/push and push verification use production adapters; only GitHub and
+ * the agent service are replaced. Inspect the published tree and ancestry.
  */
 async function runWith(
   processor: "ci" | "feedback" | "spelling",
   read: () => Promise<string>,
   sharedWorkDir?: string,
   gh?: GitHubDeps["runGhCommand"],
-): Promise<{ syncCalls: string[][]; lines: string[] }> {
-  const syncCalls: string[][] = [];
+  options: { library?: boolean; rejectPush?: boolean } = {},
+): Promise<{ publishedBase: boolean; lines: string[] }> {
+  const root = await Deno.makeTempDir();
+  const clone = `${root}/clone`;
+  const git = async (args: string[], cwd = clone) =>
+    (await gitOk(args, cwd)).trim();
+  const upstream = await seedGitRemote(root, "main", [
+    { branch: "main", subject: "seed", files: { "README.md": "seed\n" } },
+    {
+      branch: BRANCH,
+      parent: 1,
+      subject: "feature",
+      files: { "feature.txt": "feature\n" },
+    },
+    {
+      branch: "main",
+      parent: 1,
+      subject: "base advances",
+      files: { "base-only.txt": "unrelated base advance\n" },
+    },
+  ]);
+  await cloneGitFixture(upstream, clone, { checkout: BRANCH });
+  const baseSha = await git(["rev-parse", "origin/main"]);
+  const beforeSha = await git(["rev-parse", "HEAD"], clone);
+  if (options.rejectPush) {
+    const hook = `${upstream}/hooks/pre-receive`;
+    await Deno.writeTextFile(hook, "#!/bin/sh\nexit 1\n");
+    await Deno.chmod(hook, 0o755);
+  }
+  let publishedBase = false;
   const lines: string[] = [];
+  const comments: Array<
+    { id: number; body: string; created_at: string; author: string }
+  > = [];
   const workDir = sharedWorkDir ?? await Deno.makeTempDir();
   const originalWarn = console.warn;
   console.warn = (...parts: unknown[]) => {
@@ -59,33 +87,109 @@ async function runWith(
   try {
     const deps = createMockDeps({
       github: {
-        runGhCommand: gh ?? mergeableOnlyGh(read),
+        runGhCommand: async (args: string[]) => {
+          const fields = args[args.indexOf("--json") + 1];
+          if (isPrLiveStateRead(args)) {
+            return JSON.stringify({ state: "OPEN", mergeable: "MERGEABLE" });
+          }
+          if (
+            args[0] === "pr" && args[1] === "view" && fields === "baseRefName"
+          ) return DEFAULT_BRANCH;
+          if (
+            args[0] === "pr" && args[1] === "view" && fields === "mergeable"
+          ) return read();
+          if (args.some((arg) => arg.includes("/rules/branches/"))) return "[]";
+          if (
+            (args[0] === "pr" || args[0] === "issue") && args[1] === "comment"
+          ) {
+            const id = comments.length + 1;
+            comments.push({
+              id,
+              body: args[args.indexOf("--body") + 1]!,
+              created_at: new Date().toISOString(),
+              author: "fixture",
+            });
+            return `https://github.com/${REPO}/issues/${PR_NUMBER}#issuecomment-${id}`;
+          }
+          if (args.some((arg) => arg.includes("/comments"))) {
+            return JSON.stringify(comments);
+          }
+          if (
+            args[0] === "label" || args[0] === "issue" || args[1] === "merge"
+          ) return "";
+          if (gh) return gh(args);
+          return "";
+        },
       },
       git: {
+        ...createDefaultDeps().git,
         setupRepo: () =>
           Promise.resolve(
-            { ok: true as const, value: workDir },
+            { ok: true as const, value: clone },
           ) as ReturnType<GitDeps["setupRepo"]>,
         getRepoDefaultBranch: () =>
           Promise.resolve(
             { ok: true as const, value: DEFAULT_BRANCH },
           ) as ReturnType<GitDeps["getRepoDefaultBranch"]>,
-        syncFeatureBranchWithDefault: ((branch: string, base: string) => {
-          syncCalls.push([branch, base]);
-          return Promise.resolve({ ok: true as const, value: "synced" });
-        }) as unknown as GitDeps["syncFeatureBranchWithDefault"],
       },
       claude: {
-        // Fails fast: no agent run is ever started from this test.
-        runClaudeWithRetry: (() =>
-          Promise.resolve({
-            ok: false,
-            error: new Error("agent disabled in wiring test"),
-          })) as never,
+        runClaudeWithRetry: (async () => {
+          await Deno.writeTextFile(
+            `${clone}/repair.txt`,
+            "substantive repair\n",
+          );
+          return {
+            ok: true,
+            value: { output: "Fixed the defect", exitCode: 0, timedOut: false },
+          };
+        }) as never,
       },
     });
-    const config = { ...buildDefaultWorkerConfig(), workDir };
-    if (processor === "ci") {
+    deps.logger.warn = (message) => lines.push(message);
+    deps.logger.error = (message, context) =>
+      lines.push(`${message} ${JSON.stringify(context)}`);
+    deps.logger.info = (message, context) =>
+      lines.push(`${message} ${JSON.stringify(context)}`);
+    const config = {
+      ...buildDefaultWorkerConfig(),
+      workDir,
+      repoConfig: { [REPO]: { skipQualityCheck: true } },
+    };
+    if (options.library) {
+      const input = {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        branchName: BRANCH,
+        checkRunId: CI_CHECK_RUN_ID,
+        checkName: "test",
+        encodedAnnotations: btoa("[]"),
+      };
+      const processorDeps = {
+        logger: deps.logger,
+        deps,
+        workDir: clone,
+        workRoot: workDir,
+        stateDir: `${workDir}/ci`,
+        promptsDir: new URL("../../../prompts", import.meta.url).pathname,
+        repoConfigs: config.repoConfig,
+      };
+      const result = processor === "ci"
+        ? await processCiFailure(input, processorDeps)
+        : processor === "spelling"
+        ? await processSpellingFailure(input, processorDeps)
+        : await processPrFeedback({
+          ...input,
+          commentId: "77",
+          commentType: "review",
+          commentBody: "please tidy this",
+        }, processorDeps);
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(
+        result.value.changesPushed,
+        !options.rejectPush,
+        JSON.stringify(result),
+      );
+    } else if (processor === "ci") {
       await prCiProcessorCommand.execute(
         {
           operation: "process",
@@ -128,13 +232,37 @@ async function runWith(
         deps,
       );
     }
+    await git(["fetch", "origin"], clone);
+    const remoteTree = await git(
+      ["ls-tree", "--name-only", `origin/${BRANCH}`],
+      clone,
+    );
+    assert(
+      remoteTree.includes("repair.txt") === !options.rejectPush,
+      `repair must reach remote: ${remoteTree}\n${lines.join("\n")}`,
+    );
+    if (options.rejectPush) {
+      assertEquals(
+        await git(["rev-parse", `origin/${BRANCH}`], clone),
+        beforeSha,
+      );
+    }
+    const ancestor = await gitResult([
+      "merge-base",
+      "--is-ancestor",
+      baseSha,
+      `origin/${BRANCH}`,
+    ], clone);
+    publishedBase = ancestor.code === 0;
+    assertEquals(remoteTree.includes("base-only.txt"), publishedBase);
   } finally {
     console.warn = originalWarn;
+    await Deno.remove(root, { recursive: true });
     if (sharedWorkDir === undefined) {
       await Deno.remove(workDir, { recursive: true });
     }
   }
-  return { syncCalls, lines };
+  return { publishedBase, lines };
 }
 
 /** Assert the one decision line a processor logs, with every field named. */
@@ -157,142 +285,12 @@ const mergeableJson = (mergeable: string) => () =>
 
 /** The base-refresh decision lines a run logged. */
 const baseRefreshDecisionLines = (lines: string[]) =>
-  lines.filter((line) => line.startsWith("[base-refresh]"));
-
-/** What the default branch's run of the failing check shows (Issue #4943). */
-type BaseRunState =
-  | "green"
-  | "red"
-  | "no-run"
-  | "unavailable"
-  | "probe-throws"
-  | "matching-historical-failure";
-
-const CI_CHECK_RUN_ID = "123";
-const BASE_RUN_ID = 901;
-const BASE_SHA = "b".repeat(40);
-const HEAD_SHA = "a".repeat(40);
-const MERGE_BASE_SHA = "c".repeat(40);
-
-/**
- * A gh runner for the CI-fix processor's base-fix probe (Issue #4943). It
- * answers the mergeable read with `mergeable`, the PR's failing check (run 123,
- * named like the processor's `check-name`) and its workflow, and the default
- * branch's run of that check as `base` describes. Any other call is rejected.
- */
-function baseFixGh(
-  mergeable: string,
-  base: BaseRunState,
-): GitHubDeps["runGhCommand"] {
-  return (args: string[]) => {
-    const endpoint = args[1] === "--allow-escape-sequences" ? args[2] : args[1];
-    if (args[0] === "pr" && endpoint === "view") {
-      if (args[args.indexOf("--json") + 1] === "headRefOid") {
-        return Promise.resolve(JSON.stringify({ headRefOid: HEAD_SHA }));
-      }
-      return Promise.resolve(JSON.stringify({ mergeable }));
-    }
-    if (args[0] === "api") {
-      if (endpoint === `repos/${REPO}/check-runs/${CI_CHECK_RUN_ID}`) {
-        if (base === "probe-throws") {
-          return Promise.reject(new Error("HTTP 502 from check-runs"));
-        }
-        return Promise.resolve(
-          args[args.indexOf("--jq") + 1] === ".head_sha"
-            ? `${HEAD_SHA}\n`
-            : JSON.stringify({
-              name: "test",
-              app_slug: "github-actions",
-              details_url: `https://github.com/${REPO}/actions/runs/900/job/1`,
-            }),
-        );
-      }
-      if (endpoint === `repos/${REPO}/check-runs/902`) {
-        return Promise.resolve(
-          JSON.stringify({
-            name: "test",
-            app_slug: "github-actions",
-            details_url: `https://github.com/${REPO}/actions/runs/902/job/2`,
-          }),
-        );
-      }
-      if (
-        endpoint === `repos/${REPO}/actions/jobs/1/logs` ||
-        endpoint === `repos/${REPO}/actions/jobs/2/logs`
-      ) {
-        return Promise.resolve(
-          "2026-11-01T10:00:00Z src/parser.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n",
-        );
-      }
-      if (
-        endpoint === `repos/${REPO}/actions/runs/900` ||
-        endpoint === `repos/${REPO}/actions/runs/902` ||
-        endpoint === `repos/${REPO}/actions/runs/${BASE_RUN_ID}`
-      ) {
-        return Promise.resolve(".github/workflows/ci.yml\n");
-      }
-      if (endpoint === `repos/${REPO}/commits/${DEFAULT_BRANCH}`) {
-        return Promise.resolve(`${BASE_SHA}\n`);
-      }
-      if (endpoint === `repos/${REPO}/compare/${BASE_SHA}...${HEAD_SHA}`) {
-        return Promise.resolve(`${MERGE_BASE_SHA}\n`);
-      }
-      if (endpoint === `repos/${REPO}/commits/${MERGE_BASE_SHA}`) {
-        return Promise.resolve(
-          args[args.indexOf("--jq") + 1] === ".sha"
-            ? `${MERGE_BASE_SHA}\n`
-            : `${"f".repeat(40)}\n`,
-        );
-      }
-      if (
-        endpoint ===
-          `repos/${REPO}/commits/${MERGE_BASE_SHA}/check-runs?per_page=100`
-      ) {
-        const checkRuns = base === "matching-historical-failure"
-          ? [{
-            id: 902,
-            name: "test",
-            status: "completed",
-            conclusion: "failure",
-            head_sha: MERGE_BASE_SHA,
-            app_slug: "github-actions",
-            details_url: `https://github.com/${REPO}/actions/runs/902/job/2`,
-          }]
-          : [];
-        return Promise.resolve(JSON.stringify({ check_runs: checkRuns }));
-      }
-      if (
-        endpoint ===
-          `repos/${REPO}/commits/${MERGE_BASE_SHA}/pulls?per_page=5`
-      ) {
-        return Promise.resolve("[]");
-      }
-      if (
-        endpoint ===
-          `repos/${REPO}/commits/${DEFAULT_BRANCH}/check-runs?per_page=100`
-      ) {
-        if (base === "unavailable") {
-          return Promise.reject(new Error("HTTP 503 from check-runs"));
-        }
-        const checkRuns = base === "no-run" ? [] : [{
-          id: BASE_RUN_ID,
-          name: "test",
-          status: "completed",
-          conclusion: base === "red" ? "failure" : "success",
-          head_sha: BASE_SHA,
-          app_slug: "github-actions",
-          details_url:
-            `https://github.com/${REPO}/actions/runs/${BASE_RUN_ID}/job/2`,
-        }];
-        return Promise.resolve(JSON.stringify({ check_runs: checkRuns }));
-      }
-    }
-    return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
-  };
-}
+  lines.filter((line) =>
+    line.startsWith("[base-refresh]") && !line.includes("publication")
+  );
 
 Deno.test("pr-ci-processor does not sync a MERGEABLE PR when its failing check is green only on the current base (Issue #4943)", async () => {
-  const { syncCalls, lines } = await runWith(
+  const { publishedBase, lines } = await runWith(
     "ci",
     mergeableJson("MERGEABLE"),
     undefined,
@@ -306,11 +304,11 @@ Deno.test("pr-ci-processor does not sync a MERGEABLE PR when its failing check i
     "base-merge-skipped",
     /^GitHub reports mergeable MERGEABLE, not CONFLICTING;.*base-fix check unreadable: merge-base check is no-run, not red"/,
   );
-  assertEquals(syncCalls, []);
+  assertEquals(publishedBase, false);
 });
 
 Deno.test("pr-ci-processor merges the base when the same failure is red on the merge base and green on a newer base (Issue #4943)", async () => {
-  const { syncCalls, lines } = await runWith(
+  const { publishedBase, lines } = await runWith(
     "ci",
     mergeableJson("MERGEABLE"),
     undefined,
@@ -324,12 +322,21 @@ Deno.test("pr-ci-processor merges the base when the same failure is red on the m
     "base-merge-allowed",
     /^check test has the same failure on the PR merge base and passes on the newer base;/,
   );
-  assertEquals(syncCalls, [[BRANCH, DEFAULT_BRANCH]]);
+  assertEquals(publishedBase, true);
 });
 
-for (const base of ["red", "no-run", "unavailable", "probe-throws"] as const) {
+for (
+  const base of [
+    "red",
+    "no-run",
+    "unavailable",
+    "probe-throws",
+    "stale-check-head",
+    "different-historical-failure",
+  ] as const
+) {
   Deno.test(`pr-ci-processor does not sync the base for a MERGEABLE PR whose failing check reads ${base} on the base (Issue #4943)`, async () => {
-    const { syncCalls, lines } = await runWith(
+    const { publishedBase, lines } = await runWith(
       "ci",
       mergeableJson("MERGEABLE"),
       undefined,
@@ -343,12 +350,12 @@ for (const base of ["red", "no-run", "unavailable", "probe-throws"] as const) {
       "base-merge-skipped",
       /^GitHub reports mergeable MERGEABLE, not CONFLICTING; the base merge is left to the shared final-refresh owner \(Issue #4613\)/,
     );
-    assertEquals(syncCalls, []);
+    assertEquals(publishedBase, false);
   });
 }
 
 Deno.test("pr-ci-processor names the unreadable identity in the skip reason when the base-fix probe throws (Issue #4943)", async () => {
-  const { syncCalls, lines } = await runWith(
+  const { publishedBase, lines } = await runWith(
     "ci",
     mergeableJson("MERGEABLE"),
     undefined,
@@ -360,7 +367,7 @@ Deno.test("pr-ci-processor names the unreadable identity in the skip reason when
     decisions[0]!,
     /outcome=base-merge-skipped .*base-fix check unreadable: Failed to resolve identity of check run 123/,
   );
-  assertEquals(syncCalls, []);
+  assertEquals(publishedBase, false);
 });
 
 for (const processor of ["feedback", "spelling"] as const) {
@@ -368,7 +375,7 @@ for (const processor of ["feedback", "spelling"] as const) {
     ? "pr-feedback-processor"
     : "pr-spelling-processor";
   Deno.test(`${label} keeps its base-merge gate for a MERGEABLE PR (Issue #4943)`, async () => {
-    const { syncCalls, lines } = await runWith(
+    const { publishedBase, lines } = await runWith(
       processor,
       mergeableJson("MERGEABLE"),
       undefined,
@@ -382,7 +389,7 @@ for (const processor of ["feedback", "spelling"] as const) {
       "base-merge-skipped",
       /^GitHub reports mergeable MERGEABLE, not CONFLICTING; the base merge is left to the shared final-refresh owner \(Issue #4613\)" /,
     );
-    assertEquals(syncCalls, []);
+    assertEquals(publishedBase, false);
   });
 }
 
@@ -393,10 +400,12 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     ? "pr-feedback-processor"
     : "pr-spelling-processor";
   const baseRefreshLines = (lines: string[]) =>
-    lines.filter((line) => line.startsWith("[base-refresh]"));
+    lines.filter((line) =>
+      line.startsWith("[base-refresh]") && !line.includes("publication")
+    );
 
   Deno.test(`${label} does not sync the base for a behind-only (MERGEABLE) PR (Issue #4943)`, async () => {
-    const { syncCalls, lines } = await runWith(
+    const { publishedBase, lines } = await runWith(
       processor,
       mergeableJson("MERGEABLE"),
     );
@@ -408,11 +417,11 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
       "base-merge-skipped",
       /GitHub reports mergeable/,
     );
-    assertEquals(syncCalls, []);
+    assertEquals(publishedBase, false);
   });
 
-  Deno.test(`${label} syncs the base once for a CONFLICTING PR (Issue #4943)`, async () => {
-    const { syncCalls, lines } = await runWith(
+  Deno.test(`${label} publishes base ancestry for a CONFLICTING PR (Issue #4943)`, async () => {
+    const { publishedBase, lines } = await runWith(
       processor,
       mergeableJson("CONFLICTING"),
     );
@@ -424,15 +433,15 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
       "base-merge-allowed",
       /genuine conflict/,
     );
-    assertEquals(syncCalls, [[BRANCH, DEFAULT_BRANCH]]);
+    assertEquals(publishedBase, true);
   });
 
   Deno.test(`${label} does not sync the base when the mergeable read throws (Issue #4943)`, async () => {
-    const { syncCalls, lines } = await runWith(
+    const { publishedBase, lines } = await runWith(
       processor,
       () => Promise.reject(new Error("gh pr view: HTTP 503")),
     );
-    assertEquals(syncCalls, []);
+    assertEquals(publishedBase, false);
     const decisions = baseRefreshLines(lines);
     assertEquals(decisions.length, 1, lines.join("\n"));
     assertDecisionLine(
@@ -447,12 +456,16 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     const workDir = await Deno.makeTempDir();
     try {
       for (const expected of [1, 2]) {
-        const { syncCalls } = await runWith(
+        const { publishedBase } = await runWith(
           processor,
           mergeableJson("UNKNOWN"),
           workDir,
         );
-        assertEquals(syncCalls, [], "an UNKNOWN read never merges the base");
+        assertEquals(
+          publishedBase,
+          false,
+          "an UNKNOWN read never merges the base",
+        );
         const state = await readBranchRefreshRefusals(workDir);
         assertEquals(
           state.get(`${REPO}#${PR_NUMBER}`)?.streak,
@@ -475,5 +488,34 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }
+  });
+}
+
+for (const processor of ["ci", "feedback", "spelling"] as const) {
+  Deno.test(`${processor} direct library repair publishes substantive edits without an unrelated base advance`, async () => {
+    const { publishedBase } = await runWith(
+      processor,
+      mergeableJson("MERGEABLE"),
+      undefined,
+      undefined,
+      { library: true },
+    );
+    assertEquals(publishedBase, false);
+  });
+  Deno.test(`${processor} direct library conflict repair publishes the base ancestry`, async () => {
+    const { publishedBase } = await runWith(
+      processor,
+      mergeableJson("CONFLICTING"),
+      undefined,
+      undefined,
+      { library: true },
+    );
+    assertEquals(publishedBase, true);
+  });
+  Deno.test(`${processor} direct library reports a refused publication and leaves the remote unchanged`, async () => {
+    await runWith(processor, mergeableJson("MERGEABLE"), undefined, undefined, {
+      library: true,
+      rejectPush: true,
+    });
   });
 }

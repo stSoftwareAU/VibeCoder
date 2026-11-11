@@ -169,10 +169,10 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders, getRepoConfig } from "./repo_config.ts";
 import {
-  prBaseForSync,
   resolveRepairPreFlightSpec,
   unstageStateAndAssertSafe,
 } from "./git_push.ts";
+import { repairBaseForPublication } from "./repair_base_merge_4943.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { formatBeforeGate } from "./repo_formatters.ts";
 import {
@@ -2163,17 +2163,19 @@ async function _processCiWithHeartbeat(
   // worker's archive notes are formatted afterwards. Never fatal.
   const formatRound = () =>
     formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
-  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
-  // pushed, so the fix and the branch update reach GitHub in one push and CI
-  // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  // Re-check the repair policy at publication: an initial sync decision
+  // cannot authorise an unrelated base merge after the agent has finished.
   const syncBaseBranch = fixBranch === undefined
-    ? await prBaseForSync(
-      input.baseRef,
+    ? await repairBaseForPublication({
+      knownBase: input.baseRef,
       repo,
       prNumber,
-      (args) => deps.github.runGhCommand(args),
-      (message) => logger.warn(message),
-    )
+      source: "pr-ci-processor",
+      gh: (args) => deps.github.runGhCommand(args),
+      warn: (message) => logger.warn(message),
+      log: (message) => logger.info(message),
+      failedCheck: { id: checkRunId, name: checkName },
+    })
     : undefined;
   const pushOptions = {
     cwd: processorDeps.workDir,

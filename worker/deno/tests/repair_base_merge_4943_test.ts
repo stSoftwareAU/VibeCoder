@@ -18,15 +18,32 @@ import {
   parseRefreshOwner,
   persistBaseRefreshCounter,
   readRepairBaseMergeDecision,
-  type RepairMergeabilityTracker,
   trackRepairMergeability,
 } from "../lib/repair_base_merge_4943.ts";
 import {
-  type BranchRefreshRefusalEntry,
-  type BranchRefreshRefusalState,
+  notifyBranchRefreshRefusal,
   readBranchRefreshRefusals,
+  updateBranchRefreshRefusals,
 } from "../lib/branch_refresh_refusal_streak.ts";
 import { getCounters, resetCounters } from "../lib/fault_tolerance_counters.ts";
+import {
+  sweepAutoMerge,
+  type SweepAutoMergeOptions,
+} from "../lib/auto_merge_sweep.ts";
+import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
+import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
+import {
+  AUTHOR,
+  BASE,
+  BASE_SHA,
+  FakeFleet,
+  headOf,
+  movedHeadOf,
+  readyPr,
+  REPO,
+} from "./support/base_refresh_fleet.ts";
+
+import { createRendezvous } from "./support/rendezvous.ts";
 
 const FAKE_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 
@@ -332,169 +349,334 @@ Deno.test("logBaseRefreshDecision never throws, even when the sink throws", () =
   ]);
 });
 
-/** An in-memory tracker recording every comment notification it is asked for. */
-function memoryTracker(): {
-  tracker: RepairMergeabilityTracker;
-  state: BranchRefreshRefusalState;
-  notices: Array<{ active: boolean; entry: BranchRefreshRefusalEntry }>;
-} {
-  const state: BranchRefreshRefusalState = new Map();
-  const notices: Array<
-    { active: boolean; entry: BranchRefreshRefusalEntry }
-  > = [];
+/** Stateful GitHub boundary: comments survive fresh tracker instances. */
+function commentService() {
+  const comments: Array<{ id: number; body: string; author: string }> = [];
+  let unavailable = false;
+  const gh = async (args: string[]): Promise<string> => {
+    if (unavailable) throw new Error("comment API down");
+    if (args[0] === "api" && args[1]?.includes("/comments?")) {
+      return JSON.stringify(comments);
+    }
+    if (args[0] === "pr" && args[1] === "comment") {
+      const id = comments.length + 1;
+      comments.push({
+        id,
+        body: args[args.indexOf("--body") + 1]!,
+        author: "VibeCoderST",
+      });
+      return `https://github.com/owner/repo/pull/${args[2]}#issuecomment-${id}`;
+    }
+    if (args[0] === "api" && args.includes("PATCH")) {
+      const id = Number(
+        args.find((value) => /comments\/\d+$/.test(value))!.split("/").at(-1),
+      );
+      const comment = comments.find((value) => value.id === id);
+      if (!comment) throw new Error(`comment ${id} does not exist`);
+      comment.body = args.find((value) => value.startsWith("body="))!.slice(5);
+      return "";
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
   return {
-    state,
-    notices,
-    tracker: {
-      load: () => Promise.resolve(state),
-      save: () => Promise.resolve(),
-      notify: ({ active, entry }) => {
-        notices.push({ active, entry: { ...entry } });
-        return Promise.resolve();
-      },
+    comments,
+    gh,
+    setUnavailable: (value: boolean) => {
+      unavailable = value;
     },
   };
 }
 
-Deno.test("trackRepairMergeability posts one waiting notice at the second consecutive UNKNOWN read and one recovered notice after (Issue #4831)", async () => {
-  const { tracker, state, notices } = memoryTracker();
-  const lines: string[] = [];
-  const log = (line: string) => lines.push(line);
-  resetCounters();
-
-  await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN", log);
-  assertEquals(state.get("owner/repo#12")?.streak, 1);
-  assertEquals(notices, [], "no notice below the threshold");
-
-  await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN", log);
-  assertEquals(notices.length, 1);
-  assertEquals(notices[0]!.active, true);
-  assertEquals(notices[0]!.entry.streak, 2);
-  assertEquals(notices[0]!.entry.reason, "mergeability-unknown");
-  assertEquals(state.get("owner/repo#12")?.notified, true);
-  assertEquals(lines.length, 1);
-  assertMatch(
-    lines[0]!,
-    /^\[base-refresh\] fleet health: repair mergeability of owner\/repo#12 still UNKNOWN after 2 consecutive reads$/,
-  );
-  assertEquals(getCounters()["baseRefresh.repeatedMergeabilityUnknown"], 1);
-
-  await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN", log);
-  assertEquals(notices.length, 1, "the waiting notice is posted once");
-  assertEquals(state.get("owner/repo#12")?.streak, 3);
-
-  await trackRepairMergeability(tracker, "owner/repo", 12, "MERGEABLE", log);
-  assertEquals(state.has("owner/repo#12"), false, "a known read clears it");
-  assertEquals(notices.length, 2);
-  assertEquals(notices[1]!.active, false);
-});
-
-Deno.test("trackRepairMergeability clears a streak silently when no notice was posted, and leaves it for an inconclusive read", async () => {
+Deno.test("production repair trackers persist concurrent PR streaks and deliver one comment per PR across restarts", async () => {
   const dir = await Deno.makeTempDir();
-  // A failing gh: any comment attempt would be logged, so `lines` stays empty.
-  const lines: string[] = [];
-  const log = (line: string) => lines.push(line);
-  const tracker = createRepairMergeabilityTracker({
-    workDir: dir,
-    gh: () => Promise.reject(new Error("no comment expected")),
-    fleetAuthors: [],
-  })!;
-  const persistedStreak = async () =>
-    (await readBranchRefreshRefusals(dir)).get("owner/repo#12")?.streak;
+  const service = commentService();
+  const tracker = () =>
+    createRepairMergeabilityTracker({
+      workDir: dir,
+      gh: service.gh,
+      fleetAuthors: ["VibeCoderST"],
+    })!;
+  const read = () => readBranchRefreshRefusals(dir);
   try {
-    await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN", log);
-    assertEquals(await persistedStreak(), 1);
-
-    await trackRepairMergeability(tracker, "owner/repo", 12, null, log);
-    await trackRepairMergeability(tracker, "owner/repo", 12, undefined, log);
-    assertEquals(await persistedStreak(), 1, "inconclusive: kept");
-
-    await trackRepairMergeability(
-      tracker,
-      "owner/repo",
-      12,
-      "CONFLICTING",
-      log,
+    for (let round = 0; round < 3; round++) {
+      await Promise.all(
+        [12, 13, 14, 15].map((pr) =>
+          trackRepairMergeability(
+            tracker(),
+            "owner/repo",
+            pr,
+            "UNKNOWN",
+            () => {},
+          )
+        ),
+      );
+      const state = await read();
+      assertEquals(
+        [...state.keys()].sort(),
+        [12, 13, 14, 15].map((pr) => `owner/repo#${pr}`),
+      );
+      for (const entry of state.values()) {
+        assertEquals(entry.streak, round + 1);
+        assertEquals(entry.notified, round >= 1);
+      }
+      assertEquals(service.comments.length, round === 0 ? 0 : 4);
+    }
+    for (const comment of service.comments) {
+      assertMatch(comment.body, /Repair is waiting on mergeability/);
+    }
+    await Promise.all(
+      [12, 13, 14, 15].map((pr) =>
+        trackRepairMergeability(
+          tracker(),
+          "owner/repo",
+          pr,
+          "MERGEABLE",
+          () => {},
+        )
+      ),
+    );
+    assertEquals((await read()).size, 0);
+    assertEquals(service.comments.length, 4);
+    for (const comment of service.comments) {
+      assertMatch(comment.body, /Repair mergeability recovered/);
+    }
+    await Promise.all(
+      Array.from({ length: 6 }, () =>
+        trackRepairMergeability(
+          tracker(),
+          "owner/repo",
+          14,
+          "UNKNOWN",
+          () => {},
+        )),
+    );
+    assertEquals((await read()).get("owner/repo#14")?.streak, 6);
+    assertEquals(
+      service.comments.length,
+      4,
+      "simultaneous reads update the existing comment without duplicates",
     );
     assertEquals(
-      (await readBranchRefreshRefusals(dir)).has("owner/repo#12"),
-      false,
-      "a known read clears the persisted streak",
+      service.comments.filter((comment) =>
+        comment.body.includes("Repair is waiting")
+      ).length,
+      1,
     );
-
-    await trackRepairMergeability(tracker, "owner/repo", 12, "MERGEABLE", log);
-    assertEquals(
-      (await readBranchRefreshRefusals(dir)).size,
-      0,
-      "no streak left to persist",
-    );
-    assertEquals(lines, [], "no comment was attempted");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
 });
 
-Deno.test("trackRepairMergeability is a no-op without a tracker and never throws when the tracker fails", async () => {
-  await trackRepairMergeability(undefined, "owner/repo", 12, "UNKNOWN");
-
-  const lines: string[] = [];
-  const failing: RepairMergeabilityTracker = {
-    load: () => Promise.reject(new Error("disk full " + FAKE_TOKEN)),
-    save: () => Promise.resolve(),
-    notify: () => Promise.resolve(),
+Deno.test("sweep and repair lanes retain stale-parent escalation until the real parent validation succeeds", async () => {
+  const dir = await Deno.makeTempDir();
+  const service = commentService();
+  const fleet = new FakeFleet([readyPr(10)]);
+  let stale = true;
+  const parentsEntered = createRendezvous(2);
+  const parentsReleased = createRendezvous(2);
+  let pauseParents = true;
+  const gh = async (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "comment" || args.includes("PATCH")) {
+      return service.gh(args);
+    }
+    if (args[1]?.includes("/comments?")) {
+      return JSON.stringify([...fleet.comments, ...service.comments]);
+    }
+    if (stale && args[1]?.includes("/git/commits/")) {
+      if (pauseParents) {
+        pauseParents = false;
+        assertEquals(await parentsEntered.arrive(), 2);
+        assertEquals(await parentsReleased.arrive(), 2);
+      }
+      return JSON.stringify({
+        parents: [{ sha: "0".repeat(40) }, {
+          sha: fleet.prs.get(10)!.headRefOid,
+        }],
+      });
+    }
+    return fleet.gh(args);
   };
-  await trackRepairMergeability(
-    failing,
-    "owner/repo",
-    12,
-    "UNKNOWN",
-    (line) => lines.push(line),
-  );
-  assertEquals(lines.length, 1);
-  assertMatch(
-    lines[0]!,
-    /^\[base-refresh\] could not track mergeability of owner\/repo#12: disk full /,
-  );
-  assert(!lines[0]!.includes(FAKE_TOKEN), "the token is redacted");
-
-  const { tracker, state } = memoryTracker();
-  const noticeFails: RepairMergeabilityTracker = {
-    ...tracker,
-    notify: () => Promise.reject(new Error("comment API down")),
+  const tracker = createRepairMergeabilityTracker({
+    workDir: dir,
+    gh,
+    fleetAuthors: [AUTHOR],
+  })!;
+  const options: SweepAutoMergeOptions = {
+    repos: [REPO],
+    isRepoAllowed: () => true,
+    fleetAuthors: [AUTHOR],
+    listOpenPrs: async () => [{ number: 10, baseRefName: BASE }, {
+      number: 12,
+      baseRefName: BASE,
+    }],
+    prLiveState: async (_repo, pr) =>
+      pr.number === 12
+        ? { unknown: true, error: "transient API read" }
+        : { open: true, armed: true, behind: true, mergeable: "MERGEABLE" },
+    updateBranchFn: (repo, pr, base) =>
+      requestReadyBranchUpdate(repo, pr, gh, base, undefined, async () => {}, {
+        fleetAuthors: [AUTHOR],
+      }, "auto-merge-sweep"),
+    branchRefreshRefusals: {
+      update: (change) => updateBranchRefreshRefusals(dir, change),
+      notify: (event) =>
+        notifyBranchRefreshRefusal(event, gh, (author) => author === AUTHOR),
+    },
+    isMergeQueueBase: async () => false,
+    checkBaseIntegrity: async () => ({ action: "proceed", disarmed: false }),
+    attemptMerge: async () => ({
+      result: AutoMergeResult.Failed,
+      message: "not ready",
+    }),
+    recordOutcome: () => {},
+    invalidateOpenPrCache: async () => {},
+    logger: { info: () => {}, warn: () => {}, error: () => {} },
   };
-  const noticeLines: string[] = [];
-  const log = (line: string) => noticeLines.push(line);
-  await trackRepairMergeability(noticeFails, "owner/repo", 12, "UNKNOWN", log);
-  await trackRepairMergeability(noticeFails, "owner/repo", 12, "UNKNOWN", log);
-  assertEquals(
-    state.get("owner/repo#12")?.notified,
-    false,
-    "a failed post is retried on the next read",
-  );
-  assert(
-    noticeLines.some((line) =>
-      line.includes("could not post the refresh-waiting comment") &&
-      line.includes("comment API down")
-    ),
-    noticeLines.join("\n"),
-  );
+  const run = async () => {
+    const result = await sweepAutoMerge(options);
+    assert(result.ok);
+  };
+  try {
+    const sweep = run();
+    assertEquals(await parentsEntered.arrive(), 2);
+    await trackRepairMergeability(tracker, REPO, 12, "UNKNOWN", () => {});
+    assertEquals(await parentsReleased.arrive(), 2);
+    await sweep;
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).get(`${REPO}#12`)?.streak,
+      1,
+      "the concurrent repair survives the sweep's publication",
+    );
+    await run();
+    const escalated = await readBranchRefreshRefusals(dir);
+    assertEquals(
+      escalated.get(`${REPO}#10`)?.reason,
+      "test-merge-parents-stale",
+    );
+    assertEquals(escalated.get(`${REPO}#10`)?.streak, 2);
+    assertEquals(escalated.get(`${REPO}#10`)?.notified, true);
+    assertEquals(service.comments.length, 1);
+    assertMatch(service.comments[0]!.body, /parents still lag/);
+    for (
+      const mergeable of ["MERGEABLE", "CONFLICTING", "UNKNOWN", "MERGEABLE"]
+    ) {
+      await readRepairBaseMergeDecision({
+        repo: REPO,
+        prNumber: 10,
+        gh: async () => JSON.stringify({ mergeable }),
+        source: "pr-ci-processor",
+        tracker,
+        log: () => {},
+      });
+      assertEquals(await readBranchRefreshRefusals(dir), escalated);
+      assert(!service.comments[0]!.body.includes("recovered"));
+    }
+    fleet.prs.get(10)!.reviewDecision = "REVIEW_REQUIRED";
+    await run();
+    assertEquals(
+      await readBranchRefreshRefusals(dir),
+      escalated,
+      "an unready PR does not prove that parents caught up",
+    );
+    fleet.prs.get(10)!.reviewDecision = "APPROVED";
+    stale = false;
+    await run();
+    assertEquals(fleet.prs.get(10)!.headRefOid, movedHeadOf(10));
+    assertEquals(fleet.parents.get(movedHeadOf(10)), [headOf(10), BASE_SHA]);
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).has(`${REPO}#10`),
+      false,
+    );
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).get(`${REPO}#12`)?.streak,
+      1,
+    );
+    assertEquals(service.comments.length, 1);
+    assertMatch(service.comments[0]!.body, /Branch refresh recovered/);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
-Deno.test("readRepairBaseMergeDecision feeds an UNKNOWN read to the #4831 tracker and still refuses the merge", async () => {
-  const { tracker, state } = memoryTracker();
+Deno.test("production repair tracker preserves inconclusive reads, clears unnotified known reads, and retries failed comment delivery", async () => {
+  const dir = await Deno.makeTempDir();
+  const service = commentService();
+  const tracker = createRepairMergeabilityTracker({
+    workDir: dir,
+    gh: service.gh,
+    fleetAuthors: ["VibeCoderST"],
+  })!;
   const lines: string[] = [];
-  const decision = await readRepairBaseMergeDecision({
-    repo: "owner/repo",
-    prNumber: 12,
-    gh: () => Promise.resolve('{"mergeable":"UNKNOWN"}'),
-    source: "pr-ci-processor",
-    base: "main",
-    log: (line) => lines.push(line),
-    tracker,
-  });
-  assertEquals(decision.merge, false);
-  assertEquals(state.get("owner/repo#12")?.streak, 1);
-  assertEquals(lines.length, 1);
+  const run = (value: unknown) =>
+    trackRepairMergeability(
+      tracker,
+      "owner/repo",
+      12,
+      value,
+      (line) => lines.push(line),
+    );
+  try {
+    await run("UNKNOWN");
+    await run(null);
+    await run(undefined);
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).get("owner/repo#12")?.streak,
+      1,
+    );
+    await run("CONFLICTING");
+    assertEquals((await readBranchRefreshRefusals(dir)).size, 0);
+    assertEquals(service.comments, []);
+    service.setUnavailable(true);
+    await run("UNKNOWN");
+    await run("UNKNOWN");
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).get("owner/repo#12")?.notified,
+      false,
+    );
+    assert(lines.some((line) => line.includes("comment API down")));
+    service.setUnavailable(false);
+    await run("UNKNOWN");
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).get("owner/repo#12")?.notified,
+      true,
+    );
+    assertEquals(service.comments.length, 1);
+    assertMatch(service.comments[0]!.body, /3 consecutive passes/);
+    await run("MERGEABLE");
+    assertEquals((await readBranchRefreshRefusals(dir)).size, 0);
+    assertMatch(service.comments[0]!.body, /Repair mergeability recovered/);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("repair tracking failure is redacted and does not change the base-merge decision", async () => {
+  await trackRepairMergeability(undefined, "owner/repo", 12, "UNKNOWN");
+  const dir = await Deno.makeTempDir();
+  const file = `${dir}/${FAKE_TOKEN}`;
+  await Deno.writeTextFile(file, "not a directory");
+  const tracker = createRepairMergeabilityTracker({
+    workDir: file,
+    gh: async () => "",
+    fleetAuthors: [],
+  })!;
+  const lines: string[] = [];
+  try {
+    const decision = await readRepairBaseMergeDecision({
+      repo: "owner/repo",
+      prNumber: 12,
+      gh: async () => '{"mergeable":"UNKNOWN"}',
+      source: "pr-ci-processor",
+      tracker,
+      log: (line) => lines.push(line),
+    });
+    assertEquals(decision.merge, false);
+    assert(lines.some((line) => line.includes("could not")));
+    for (const line of lines) assert(!line.includes(FAKE_TOKEN), line);
+    assertEquals(await Deno.readTextFile(file), "not a directory");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("readRepairBaseMergeDecision merges a MERGEABLE PR when the probe returns a proven base fix, and logs the reason (Issue #4943)", async () => {
@@ -581,7 +763,12 @@ Deno.test("readRepairBaseMergeDecision treats a throwing probe as no check, reda
 
 Deno.test("readRepairBaseMergeDecision persists the repeated-UNKNOWN counter beside its decision counters, once the threshold is reached (Issue #4943)", async () => {
   const dir = await Deno.makeTempDir();
-  const { tracker } = memoryTracker();
+  const service = commentService();
+  const tracker = createRepairMergeabilityTracker({
+    workDir: dir,
+    gh: service.gh,
+    fleetAuthors: ["VibeCoderST"],
+  })!;
   const readTally = async () =>
     JSON.parse(await Deno.readTextFile(`${dir}/${BASE_REFRESH_COUNTERS_FILE}`))
       .counters;

@@ -24,7 +24,8 @@ import {
 import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { prBaseForSync, resolveRepairPreFlightSpec } from "./git_push.ts";
+import { resolveRepairPreFlightSpec } from "./git_push.ts";
+import { repairBaseForPublication } from "./repair_base_merge_4943.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   commentCarriesOpenPreprReview,
@@ -1795,17 +1796,18 @@ async function _processFeedbackWithHeartbeat(
       return checked;
     }
     : undefined;
-  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
-  // pushed, so the fix and the branch update reach GitHub in one push and CI
-  // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  // Re-check the repair policy at publication: an initial sync decision
+  // cannot authorise an unrelated base merge after the agent has finished.
   const syncBaseBranch = fixBranch === undefined
-    ? await prBaseForSync(
-      undefined,
+    ? await repairBaseForPublication({
+      knownBase: undefined,
       repo,
       prNumber,
-      (args) => deps.github.runGhCommand(args),
-      (message) => logger.warn(message),
-    )
+      source: "pr-feedback-processor",
+      gh: (args) => deps.github.runGhCommand(args),
+      warn: (message) => logger.warn(message),
+      log: (message) => logger.info(message),
+    })
     : undefined;
   const pushOptions = {
     cwd: processorDeps.workDir,

@@ -1357,11 +1357,22 @@ skips that merge. This exception is used by the babysitter and CI-fix lane,
 which have the failing check to compare; review and spelling repairs merge only
 for conflicts.
 
+The same policy applies immediately before repair publication, including when
+the CI, feedback or spelling library is called directly. A successful repair
+does not authorise a base merge during its final commit and push. The CI lane
+rechecks its historical failure evidence at that boundary.
+
 Behind-only refreshes continue through `requestReadyBranchUpdate()` and the
 shared owner above. Required checks and valid review approval remain gates for
 that request. A merge queue still tests the proposed head and does not need a
 behind-only refresh. Genuine conflict repairs remain on their conflict-repair
 path.
+
+Repair mergeability tracking and the auto-merge sweep update the persisted
+refusal file under the same file lock. A repair's known mergeability reading
+clears only a mergeability refusal: a stale test-merge-parent refusal remains
+until the refresh path verifies current parents. This keeps concurrent repairs
+and alternating lanes from losing an unresolved refusal or its notification.
 
 Refresh decisions emit bounded `[base-refresh]` lines with the lane, outcome,
 repository, PR, base, current owner, reason and worker build stamp. Standalone

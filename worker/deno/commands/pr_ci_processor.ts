@@ -144,8 +144,8 @@ export const prCiProcessorCommand = {
         );
 
         // Sync feature branch with default branch (Issue #230), only for a
-        // genuine conflict or a failing check that already passes on the
-        // default branch (Issue #4943). A behind-only PR with no such check is
+        // genuine conflict or the same failure proven on the merge base and
+        // green on a newer base commit (Issue #4943). A behind-only PR is
         // refreshed by the shared base-refresh owner (Issue #4613), not here.
         const defaultBranchResult = await deps.git.getRepoDefaultBranch(repo);
         const defaultBranch = defaultBranchResult.ok

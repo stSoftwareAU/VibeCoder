@@ -131,8 +131,7 @@ import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import { readyOrphanedDraftPr } from "./draft_pr_self_heal.ts";
 import {
   notifyBranchRefreshRefusal,
-  readBranchRefreshRefusals,
-  writeBranchRefreshRefusals,
+  updateBranchRefreshRefusals,
 } from "./branch_refresh_refusal_streak.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
@@ -3888,19 +3887,7 @@ export async function createProductionRunCoreDeps(
               error: new Error("PR base is unknown"),
             }),
         branchRefreshRefusals: {
-          load: () =>
-            readBranchRefreshRefusals(
-              workDir,
-              undefined,
-              (message) => logger.warn(message),
-            ),
-          save: (state) =>
-            writeBranchRefreshRefusals(
-              workDir,
-              state,
-              undefined,
-              (message) => logger.warn(message),
-            ),
+          update: (change) => updateBranchRefreshRefusals(workDir, change),
           notify: async ({ repo, prNumber, entry, active }) => {
             await notifyBranchRefreshRefusal(
               { repo, prNumber, entry, active },

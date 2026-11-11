@@ -1,5 +1,6 @@
 /** Persisted consecutive transient branch-refresh refusals (Issue #4831). */
 
+import { withFileLock } from "./file_lock.ts";
 import { atomicWrite } from "./file_utils.ts";
 import {
   fetchMarkerComments,
@@ -132,6 +133,11 @@ export function recordBranchRefreshRefusal(
 ): BranchRefreshRefusalEntry {
   const key = branchRefreshRefusalKey(repo, prNumber);
   const previous = state.get(key);
+  // A mergeability read cannot prove that previously stale parents caught up.
+  if (
+    previous?.reason === "test-merge-parents-stale" &&
+    reason === "mergeability-unknown"
+  ) return previous;
   const consecutive = previous?.reason === reason &&
     nowMs - previous.lastSeenAtMs <= BRANCH_REFRESH_REFUSAL_TTL_MS;
   const entry: BranchRefreshRefusalEntry = {
@@ -245,4 +251,20 @@ export async function writeBranchRefreshRefusals(
       }`,
     );
   }
+}
+
+/** Serialise the complete refusal read-modify-write across repair and sweep writers. */
+export async function updateBranchRefreshRefusals(
+  workDir: string,
+  update: (state: BranchRefreshRefusalState) => Promise<void>,
+): Promise<void> {
+  await Deno.mkdir(workDir, { recursive: true });
+  await withFileLock(
+    `${workDir}/${BRANCH_REFRESH_REFUSAL_FILE}.lock`,
+    async () => {
+      const state = await readBranchRefreshRefusals(workDir);
+      await update(state);
+      await writeBranchRefreshRefusals(workDir, state);
+    },
+  );
 }

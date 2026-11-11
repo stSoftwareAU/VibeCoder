@@ -27,7 +27,7 @@ import {
   type BranchRefreshRefusalState,
   notifyBranchRefreshRefusal,
   readBranchRefreshRefusals,
-  writeBranchRefreshRefusals,
+  updateBranchRefreshRefusals,
 } from "../lib/branch_refresh_refusal_streak.ts";
 
 const REPOS = [
@@ -578,9 +578,8 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
     { repo: string; prNumber: number; active: boolean; streak: number }
   > = [];
   const tracking = {
-    load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
-    save: (state: Awaited<ReturnType<typeof readBranchRefreshRefusals>>) =>
-      writeBranchRefreshRefusals(workDir, state, undefined, () => {}),
+    update: (change: (state: BranchRefreshRefusalState) => Promise<void>) =>
+      updateBranchRefreshRefusals(workDir, change),
     notify: (
       { repo, prNumber, active, entry }: {
         repo: string;
@@ -680,7 +679,8 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
 
     const afterRestart = {
       ...tracking,
-      load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
+      update: (change: (state: BranchRefreshRefusalState) => Promise<void>) =>
+        updateBranchRefreshRefusals(workDir, change),
     };
     const third = await sweepAutoMerge({
       ...options,
@@ -700,7 +700,8 @@ Deno.test("repeated transient branch refresh refusals persist, notify once, and 
       repos: [VC],
       branchRefreshRefusals: {
         ...tracking,
-        load: () => readBranchRefreshRefusals(workDir, undefined, () => {}),
+        update: (change: (state: BranchRefreshRefusalState) => Promise<void>) =>
+          updateBranchRefreshRefusals(workDir, change),
       },
       updateBranchFn: () => Promise.resolve({ ok: true, value: undefined }),
     });
@@ -729,8 +730,8 @@ Deno.test("a different or permanent refusal does not advance a transient streak 
       }),
   });
   const tracking = {
-    load: () => Promise.resolve(state),
-    save: (_state: typeof state) => Promise.resolve(),
+    update: (change: (state: BranchRefreshRefusalState) => Promise<void>) =>
+      change(state),
     notify: ({ active }: { active: boolean }) => {
       notifications.push(active);
       return Promise.resolve();
@@ -767,15 +768,26 @@ Deno.test("a different or permanent refusal does not advance a transient streak 
     (await run("required-check read failed: PR mergeability is still UNKNOWN"))
       .ok,
   );
-  assertEquals(notifications, [true, false]);
+  assertEquals(notifications, [true]);
   assert(
     (await run("required-check read failed: PR mergeability is still UNKNOWN"))
       .ok,
   );
-  assertEquals(notifications, [true, false, true]);
+  assertEquals(notifications, [true]);
   behind = false;
   assert((await run("unused transient refusal")).ok);
-  assertEquals(notifications, [true, false, true, false]);
+  assertEquals(notifications, [true]);
+  assertEquals(state.get(`${VC}#4832`)?.reason, "test-merge-parents-stale");
+  behind = true;
+  const recovered = await sweepAutoMerge({
+    ...options,
+    repos: [VC],
+    branchRefreshRefusals: tracking,
+    updateBranchFn: () =>
+      Promise.resolve({ ok: true as const, value: undefined }),
+  });
+  assert(recovered.ok);
+  assertEquals(notifications, [true, false]);
   assertEquals(state.size, 0);
 });
 
@@ -800,8 +812,8 @@ Deno.test("a failed diagnostic comment still raises fleet health and retries the
     },
   });
   const tracking = {
-    load: () => Promise.resolve(state),
-    save: (_state: typeof state) => Promise.resolve(),
+    update: (change: (state: BranchRefreshRefusalState) => Promise<void>) =>
+      change(state),
     notify: () => Promise.reject(new Error("comment API unavailable")),
   };
   const sweep = () =>
@@ -1049,8 +1061,7 @@ Deno.test("a requested review clears an escalated refusal even while mergeabilit
   const result = await sweepAutoMerge({
     ...options,
     branchRefreshRefusals: {
-      load: () => Promise.resolve(refusals),
-      save: () => Promise.resolve(),
+      update: (change) => change(refusals),
       notify: ({ active }) => {
         notifications.push(active);
         return Promise.resolve();

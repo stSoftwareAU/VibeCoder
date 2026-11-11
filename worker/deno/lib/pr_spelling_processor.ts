@@ -14,7 +14,8 @@
 
 import type { Logger, RepoConfig, Result } from "../types.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
-import { prBaseForSync, resolveRepairPreFlightSpec } from "./git_push.ts";
+import { resolveRepairPreFlightSpec } from "./git_push.ts";
+import { repairBaseForPublication } from "./repair_base_merge_4943.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   buildSpellingFixPrompt,
@@ -432,16 +433,17 @@ async function _processSpellingWithHeartbeat(
     processorDeps.repoConfigs,
     input.repo,
   );
-  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
-  // pushed, so the fix and the branch update reach GitHub in one push and CI
-  // runs once. A gated head was refused above, so this is the PR head.
-  const syncBaseBranch = await prBaseForSync(
-    undefined,
+  // Re-check the repair policy at publication: an initial sync decision
+  // cannot authorise an unrelated base merge after the agent has finished.
+  const syncBaseBranch = await repairBaseForPublication({
+    knownBase: undefined,
     repo,
     prNumber,
-    (args) => deps.github.runGhCommand(args),
-    (message) => logger.warn(message),
-  );
+    source: "pr-spelling-processor",
+    gh: (args) => deps.github.runGhCommand(args),
+    warn: (message) => logger.warn(message),
+    log: (message) => logger.info(message),
+  });
   const pushOptions = {
     cwd: processorDeps.workDir,
     expectedAncestor: beforeSha,

@@ -473,6 +473,13 @@ const ELAPSED_BOUND =
 export const SUBPROCESS_TIMING_TEST_FILES: ReadonlyMap<string, string> =
   new Map([
     [
+      "tests/base_refresh_production_paths_4943_test.ts",
+      "Two real Deno updater hosts compete through one stateful GitHub boundary (#4943). " +
+      "Independent process state is the contract under test; keep process admission away " +
+      "from parallel worker contention around the bounded rendezvous and owned-child timeout. " +
+      "The isolated eight-case suite takes approximately 200ms.",
+    ],
+    [
       "tests/run_core_signal_cleanup_test.ts",
       "Real SIGINT/SIGTERM entrypoint and descendant cleanup. Full --parallel pass: both tests exceeded 1s (2.38s total); isolated: 887ms and 820ms. Process startup and graceful termination contend with parallel workers. Keep every assertion in the required serial pass.",
     ],

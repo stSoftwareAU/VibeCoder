@@ -19,6 +19,8 @@
  * number or repository identity to attach to a decision. See docs/MERGE.md for
  * the persisted-counter scope.
  */
+import { confirmBaseFailureFixed } from "./babysitter_base_failure.ts";
+import { prBaseForSync } from "./git_push.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
   formatBuildBanner,
@@ -35,9 +37,8 @@ import {
   type BranchRefreshRefusalState,
   clearBranchRefreshRefusal,
   notifyBranchRefreshRefusal,
-  readBranchRefreshRefusals,
   recordBranchRefreshRefusal,
-  writeBranchRefreshRefusals,
+  updateBranchRefreshRefusals,
 } from "./branch_refresh_refusal_streak.ts";
 
 export type BaseRefreshOutcome =
@@ -309,8 +310,9 @@ export function parseRefreshOwner(
 
 /** Durable streak and one-comment escalation, as the sweep wires them (#4831). */
 export interface RepairMergeabilityTracker {
-  load: () => Promise<BranchRefreshRefusalState>;
-  save: (state: BranchRefreshRefusalState) => Promise<void>;
+  update: (
+    change: (state: BranchRefreshRefusalState) => Promise<void>,
+  ) => Promise<void>;
   notify: (event: {
     repo: string;
     prNumber: number;
@@ -333,8 +335,7 @@ export function createRepairMergeabilityTracker(input: {
   const { workDir, gh, fleetAuthors } = input;
   if (!workDir) return undefined;
   return {
-    load: () => readBranchRefreshRefusals(workDir),
-    save: (state) => writeBranchRefreshRefusals(workDir, state),
+    update: (change) => updateBranchRefreshRefusals(workDir, change),
     notify: ({ repo, prNumber, entry, active, lane }) =>
       notifyBranchRefreshRefusal(
         { repo, prNumber, entry, active, lane },
@@ -349,7 +350,8 @@ export function createRepairMergeabilityTracker(input: {
  * mergeability read, instead of polling for GitHub to finish calculating.
  * An `UNKNOWN` read counts a consecutive refusal; at the threshold one trusted
  * comment says the refresh is waiting. A `MERGEABLE` or `CONFLICTING` read
- * clears the streak and, if the comment was posted, updates it to recovered.
+ * clears only a mergeability-unknown streak and updates its comment to recovered.
+ * A stale-parent refusal survives: mergeability alone does not validate parents.
  * Any other value is an inconclusive read and leaves the streak alone. When the
  * repeated-`UNKNOWN` counter fires it is also persisted to `counterDir`'s
  * `base_refresh_counters.json`, when one is given. Never throws: tracking must
@@ -365,70 +367,72 @@ export async function trackRepairMergeability(
 ): Promise<void> {
   if (!tracker) return;
   try {
-    if (mergeable === "UNKNOWN") {
-      const state = await tracker.load();
-      const entry = recordBranchRefreshRefusal(
-        state,
-        repo,
-        prNumber,
-        "mergeability-unknown",
-      );
+    await tracker.update(async (state) => {
+      // Only the test-merge parent validation can recover a stale-parent refusal.
       if (
-        entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD && !entry.notified
-      ) {
-        try {
-          await tracker.notify({
-            repo,
-            prNumber,
-            entry,
-            active: true,
-            lane: "repair",
-          });
-          entry.notified = true;
-        } catch (error) {
+        state.get(`${repo}#${prNumber}`)?.reason === "test-merge-parents-stale"
+      ) return;
+      if (mergeable === "UNKNOWN") {
+        const entry = recordBranchRefreshRefusal(
+          state,
+          repo,
+          prNumber,
+          "mergeability-unknown",
+        );
+        if (
+          entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD && !entry.notified
+        ) {
+          try {
+            await tracker.notify({
+              repo,
+              prNumber,
+              entry,
+              active: true,
+              lane: "repair",
+            });
+            entry.notified = true;
+          } catch (error) {
+            log(
+              `[base-refresh] could not post the refresh-waiting comment on ${repo}#${prNumber}: ${
+                redactSecrets(
+                  error instanceof Error ? error.message : String(error),
+                )
+              }`,
+            );
+          }
+          incrementCounter("baseRefresh.repeatedMergeabilityUnknown");
+          await persistNamedCounter(
+            counterDir,
+            "baseRefresh.repeatedMergeabilityUnknown",
+          );
           log(
-            `[base-refresh] could not post the refresh-waiting comment on ${repo}#${prNumber}: ${
-              redactSecrets(
-                error instanceof Error ? error.message : String(error),
-              )
-            }`,
+            `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
           );
         }
-        incrementCounter("baseRefresh.repeatedMergeabilityUnknown");
-        await persistNamedCounter(
-          counterDir,
-          "baseRefresh.repeatedMergeabilityUnknown",
-        );
-        log(
-          `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
-        );
-      }
-      await tracker.save(state);
-    } else if (mergeable === "MERGEABLE" || mergeable === "CONFLICTING") {
-      const state = await tracker.load();
-      const previous = clearBranchRefreshRefusal(state, repo, prNumber);
-      if (!previous) return;
-      if (previous.notified) {
-        try {
-          await tracker.notify({
-            repo,
-            prNumber,
-            entry: previous,
-            active: false,
-            lane: "repair",
-          });
-        } catch (error) {
-          log(
-            `[base-refresh] could not update the refresh-waiting comment on ${repo}#${prNumber}: ${
-              redactSecrets(
-                error instanceof Error ? error.message : String(error),
-              )
-            }`,
-          );
+      } else if (mergeable === "MERGEABLE" || mergeable === "CONFLICTING") {
+        const previous = clearBranchRefreshRefusal(state, repo, prNumber);
+        if (!previous) return;
+        if (previous.notified) {
+          try {
+            await tracker.notify({
+              repo,
+              prNumber,
+              entry: previous,
+              active: false,
+              lane: "repair",
+            });
+          } catch (error) {
+            log(
+              `[base-refresh] could not update the refresh-waiting comment on ${repo}#${prNumber}: ${
+                redactSecrets(
+                  error instanceof Error ? error.message : String(error),
+                )
+              }`,
+            );
+          }
         }
       }
-      await tracker.save(state);
-    }
+    });
   } catch (error) {
     log(
       `[base-refresh] could not track mergeability of ${repo}#${prNumber}: ${
@@ -527,4 +531,63 @@ export async function readRepairBaseMergeDecision(input: {
     outcome: decision.merge ? "base-merge-allowed" : "base-merge-skipped",
   });
   return decision;
+}
+
+/** Re-read mergeability before publication, including direct library callers. */
+export async function repairBaseForPublication(input: {
+  repo: string;
+  prNumber: number;
+  knownBase?: string;
+  source: string;
+  gh: (args: string[]) => Promise<string>;
+  warn: (message: string) => void;
+  log: (message: string) => void;
+  failedCheck?: { id: string; name: string };
+}): Promise<string | undefined> {
+  const base = await prBaseForSync(
+    input.knownBase,
+    input.repo,
+    input.prNumber,
+    input.gh,
+    input.warn,
+  );
+  if (base === undefined) return undefined;
+  const decision = await readRepairBaseMergeDecision({
+    repo: input.repo,
+    prNumber: input.prNumber,
+    source: `${input.source}-publication`,
+    base,
+    gh: input.gh,
+    log: input.log,
+    ...(input.failedCheck === undefined ? {} : {
+      provenBaseFixChecks: async () => {
+        const head = JSON.parse(
+          await input.gh([
+            "pr",
+            "view",
+            String(input.prNumber),
+            "--repo",
+            input.repo,
+            "--json",
+            "headRefOid",
+          ]),
+        ) as { headRefOid?: unknown };
+        if (typeof head.headRefOid !== "string") {
+          throw new Error("PR head SHA is missing from gh pr view");
+        }
+        const check = input.failedCheck!;
+        const proof = await confirmBaseFailureFixed({
+          repo: input.repo,
+          baseRef: base,
+          headSha: head.headRefOid,
+          checkRunId: check.id,
+          checkName: check.name,
+          ghFn: input.gh,
+        });
+        if (!proof.confirmed) throw new Error(proof.reason);
+        return [check.name];
+      },
+    }),
+  });
+  return decision.merge ? base : undefined;
 }

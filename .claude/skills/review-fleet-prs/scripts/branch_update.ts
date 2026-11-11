@@ -90,6 +90,7 @@ export async function updateBranch(
   authorOptions: AlertDedupAuthorOptions | undefined,
   reviewer: string | undefined,
   audit: BranchUpdateAudit,
+  ownershipSleepFn?: (ms: number) => Promise<void>,
 ): Promise<BranchUpdateResult> {
   const options = authorOptions ?? {
     env: () => undefined,
@@ -161,7 +162,7 @@ export async function updateBranch(
     auditedGh,
     pr.baseRefName,
     pr.headSha,
-    undefined,
+    ownershipSleepFn,
     options,
     "review-fleet-prs",
     audit.auditDir,
