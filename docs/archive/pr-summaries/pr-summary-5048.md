@@ -106,9 +106,12 @@ flowchart LR
   assertion removed.
 - `worker/deno/tests/execute_claude_phase_test.ts`: new
   `runExecuteClaudePhase - an unfinished executor is not an execution error and
-  never self-heals (Issue #5048)`
-  asserts `failureType` is `executor_unfinished` and no PR self-healing is
-  attempted. Two other tests in that file
+  an open PR never turns it into a success (Issue #5048)`
+  asserts `failureType` is `executor_unfinished` and the failure message quotes
+  the refusal even though `findExistingPrForBranch` returns an open PR. The
+  existing turn-limit test now uses the same open-PR fake and no longer asserts
+  on a mock flag. Red check: making the failure path self-heal and succeed on a
+  found PR turns both tests red. Two other tests in that file
   (`a repo provider pin reaches the runner…`,
   `an explicit provider stays
   absolute…`) fail identically on the head without
