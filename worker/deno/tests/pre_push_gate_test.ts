@@ -3596,6 +3596,8 @@ Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, re
         stdin,
         preFlightCommands: [],
         ...stubShellcheck(),
+        // The prompt change is Markdown: do not depend on the host's install.
+        findMarkdownlint: () => Promise.resolve("/fake/mdl"),
         runner: (command) => {
           ran.push(command);
           return Promise.resolve({
