@@ -86,4 +86,4 @@ a version line.
   `loadCommittedPrSummary` (both covered above); their consumers
   (`pr_body_sync`, `pr_body_reconcile`, `closure_verdict_recovery`,
   `completion_phase`, `fleet_pr_babysitter`) only read the content.
-- `./quality.sh < /dev/null`: see the final message for its outcome on the head.
+- `./quality.sh < /dev/null`: PASSED (config integration and checkov skipped), run after the last code change.
