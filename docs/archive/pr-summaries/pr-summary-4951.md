@@ -142,8 +142,8 @@ flowchart LR
 - Tests at head:
   `worker/deno/tests/fleet_pr_prefetch_draft_ci_scan_4951_test.ts` (6 tests at
   head), `worker/deno/tests/pr_maintenance_draft_ci_4951_test.ts` (4 tests at
-  head), `worker/deno/tests/draft_ci_by_design_4951_test.ts` (6 tests at head),
-  one added to `worker/deno/tests/pr_bot_lookup_test.ts`, and one added to
+  head), `worker/deno/tests/draft_ci_by_design_4951_test.ts` (7 tests at head, the
+  last being the check-run pagination regression), one added to `worker/deno/tests/pr_bot_lookup_test.ts`, and one added to
   `worker/deno/tests/issue_query_test.ts` (`fetchAllOpenPRs` carries `isDraft`
   only when `gh` reported a boolean; red when the `typeof` condition at
   `issue_query.ts:1289` is negated).
@@ -164,9 +164,11 @@ flowchart LR
   `pr_bot_lookup_test.ts`; an unreadable skipped-check read keeps the check for
   the fixer (`pr_maintenance_draft_ci_4951_test.ts`, no red flip run: it pins
   current behaviour, which `fetchFailedCheckRuns` already provides).
-- `deno task test:unit` over the 58 test files that touch the scan, listings or
-  drafts: 1334 passed, 0 failed (before the unreadable-read test was added; that
-  file's 4 tests pass).
+- `deno task test:unit` over the six test files this PR adds or edits
+  (`draft_ci_by_design_4951_test.ts`, `pr_maintenance_bot_prs_test.ts`,
+  `pr_maintenance_draft_ci_4951_test.ts`,
+  `fleet_pr_prefetch_draft_ci_scan_4951_test.ts`, `pr_bot_lookup_test.ts`,
+  `issue_query_test.ts`): 190 passed, 0 failed at head.
 - `./quality.sh < /dev/null`: not re-run after this round's changes (run budget
   spent on the targeted checks above); `deno fmt`, `deno lint` and `deno check`
   were run on the changed files, and markdownlint on `CONTRIBUTING.md`.
@@ -180,10 +182,16 @@ deep, not transitively.
 - Restored CONTRIBUTING's hand wrapping and kept only the draft-policy bullet.
 - Added the per-check draft rule, its fail-open boundaries and the
   `draft-by-design-ci` reason to both canonical CI-scan manuals.
-- Check-run reads now request 100 entries and paginate. The existing shared
-  JSON-array-page parser combines the per-page jq output. A regression puts
-  the second skipped dependency on page two: the draft-only aggregator is
-  dropped and the real failing job remains. It fails before the fix.
-- 100 tests pass across draft rules, PR maintenance and prefetch/invitation
-  integration. Formatting, lint and diff checks pass. Tests use integrity-checked
-  local copies of locked packages; full quality gate not rerun here.
+- `fetchFailedCheckRuns` (`pr_maintenance.ts`) now requests
+  `check-runs?per_page=100` with `--paginate` and combines the pages with the
+  existing `parseJsonArrayPages` helper. A regression in
+  `draft_ci_by_design_4951_test.ts` puts the second skipped dependency on page
+  two: the draft-only aggregator is dropped and the real failing job remains.
+  It fails before the fix.
+- The `gh` fake in `pr_maintenance_bot_prs_test.ts` matched only the bare
+  `/check-runs` path; its regex now also accepts the `?per_page=100` query the
+  paged read sends, as GitHub's endpoint does. Without it the fake answered
+  nothing for the paged request and the bot-PR tests broke.
+- At head the six test files above pass (190 tests). The full quality gate was
+  not re-run for this revision; tests use integrity-checked local copies of
+  locked packages.
