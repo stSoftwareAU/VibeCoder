@@ -211,3 +211,10 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   root prefix, cwd and cleanup paths through injected git and runner seams, and
   a timeout case pins that a timeout is neither an outage nor base-only; each
   listed mutant was applied by hand and turned a test red.
+- Type-check fix at the head: `deno_test_baseline_test.ts` failed `deno check`
+  under `noUncheckedIndexedAccess` (`args[3]` passed to `onAdd`, and
+  `git.calls[1].args` read without a guard). The fake now passes `args[3] ?? ""`
+  and the test reads `git.calls[1]?.args`; assertions are unchanged, so test
+  behaviour and counts are as above (re-run on this head:
+  `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts`,
+  132 passed, 0 failed).
