@@ -491,7 +491,7 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
               }),
             },
             "pr-maintenance",
-            config.workDir,
+            workDir || undefined,
           ),
         setupRepo: async (repo: string, wd: string) => {
           const cmdResult = await setupRepo(repo, wd);

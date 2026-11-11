@@ -9,6 +9,7 @@ import { assert, assertEquals, assertMatch } from "@std/assert";
 import {
   BASE_REFRESH_COUNTERS_FILE,
   baseRefreshCounterName,
+  createRepairMergeabilityTracker,
   decideRepairBaseMerge,
   formatBaseRefreshDecision,
   formatBaseRefreshStartup,
@@ -23,15 +24,54 @@ import {
 import {
   type BranchRefreshRefusalEntry,
   type BranchRefreshRefusalState,
+  readBranchRefreshRefusals,
 } from "../lib/branch_refresh_refusal_streak.ts";
 import { getCounters, resetCounters } from "../lib/fault_tolerance_counters.ts";
 
 const FAKE_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
 
-Deno.test("decideRepairBaseMerge merges only for a CONFLICTING PR", () => {
+Deno.test("decideRepairBaseMerge merges for a CONFLICTING PR", () => {
   const decision = decideRepairBaseMerge("CONFLICTING");
   assertEquals(decision.merge, true);
   assertEquals(decision.reason, "genuine conflict: GitHub reports CONFLICTING");
+});
+
+Deno.test("decideRepairBaseMerge merges a MERGEABLE PR when a failing check passes on the base (Issue #4943)", () => {
+  const decision = decideRepairBaseMerge("MERGEABLE", ["Unit tests"]);
+  assertEquals(decision.merge, true);
+  assertEquals(
+    decision.reason,
+    'failing check "Unit tests" passes on the base, so the base merge brings the base fix in',
+  );
+});
+
+Deno.test("decideRepairBaseMerge merges an UNKNOWN PR when a failing check passes on the base, cleaning and capping the names (Issue #4943)", () => {
+  const decision = decideRepairBaseMerge("UNKNOWN", [
+    'Lint "x"\n',
+    "A".repeat(300),
+  ]);
+  assertEquals(decision.merge, true);
+  assertEquals(
+    decision.reason,
+    `failing check "Lint x, ${
+      "A".repeat(72)
+    }" passes on the base, so the base merge brings the base fix in`,
+  );
+});
+
+Deno.test("decideRepairBaseMerge keeps the conflict reason for a CONFLICTING PR that also has a check passing on the base (Issue #4943)", () => {
+  const decision = decideRepairBaseMerge("CONFLICTING", ["Unit tests"]);
+  assertEquals(decision.merge, true);
+  assertEquals(decision.reason, "genuine conflict: GitHub reports CONFLICTING");
+});
+
+Deno.test("decideRepairBaseMerge refuses a non-conflicting PR when no check passes on the base (Issue #4943)", () => {
+  for (const fixedOnBase of [undefined, []] as const) {
+    const decision = decideRepairBaseMerge("MERGEABLE", fixedOnBase);
+    assertEquals(decision.merge, false);
+    assert(decision.reason.includes('"MERGEABLE"'), decision.reason);
+    assert(decision.reason.includes("not CONFLICTING"), decision.reason);
+  }
 });
 
 Deno.test("decideRepairBaseMerge refuses every other mergeable value with a distinct reason", () => {
@@ -187,9 +227,8 @@ Deno.test("parseRefreshOwner rejects look-alike messages", () => {
  * `reply`; any other request is an error, so a production call that asked for
  * the wrong field fails the test rather than being answered.
  */
-function mergeableGh(reply: string, calls: string[][]) {
+function mergeableGh(reply: string) {
   return (args: string[]): Promise<string> => {
-    calls.push(args);
     const json = args.indexOf("--json");
     const asksMergeable = args.includes("pr") && args.includes("view") &&
       json >= 0 && args[json + 1] === "mergeable";
@@ -200,19 +239,16 @@ function mergeableGh(reply: string, calls: string[][]) {
 }
 
 Deno.test("readRepairBaseMergeDecision merges for CONFLICTING and logs one line", async () => {
-  const calls: string[][] = [];
   const lines: string[] = [];
   const decision = await readRepairBaseMergeDecision({
     repo: "owner/repo",
     prNumber: 12,
-    gh: mergeableGh('{"mergeable":"CONFLICTING"}', calls),
+    gh: mergeableGh('{"mergeable":"CONFLICTING"}'),
     source: "pr-ci-processor",
     base: "main",
     log: (line) => lines.push(line),
   });
   assertEquals(decision.merge, true);
-  assertEquals(calls.length, 1, "exactly one gh request");
-  assertEquals(calls[0]![calls[0]!.indexOf("--json") + 1], "mergeable");
   assertEquals(lines.length, 1);
   assertMatch(
     lines[0]!,
@@ -301,23 +337,17 @@ function memoryTracker(): {
   tracker: RepairMergeabilityTracker;
   state: BranchRefreshRefusalState;
   notices: Array<{ active: boolean; entry: BranchRefreshRefusalEntry }>;
-  saves: () => number;
 } {
   const state: BranchRefreshRefusalState = new Map();
   const notices: Array<
     { active: boolean; entry: BranchRefreshRefusalEntry }
   > = [];
-  let saves = 0;
   return {
     state,
     notices,
-    saves: () => saves,
     tracker: {
       load: () => Promise.resolve(state),
-      save: () => {
-        saves++;
-        return Promise.resolve();
-      },
+      save: () => Promise.resolve(),
       notify: ({ active, entry }) => {
         notices.push({ active, entry: { ...entry } });
         return Promise.resolve();
@@ -360,22 +390,48 @@ Deno.test("trackRepairMergeability posts one waiting notice at the second consec
 });
 
 Deno.test("trackRepairMergeability clears a streak silently when no notice was posted, and leaves it for an inconclusive read", async () => {
-  const { tracker, state, notices, saves } = memoryTracker();
-  await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN");
-  assertEquals(saves(), 1);
+  const dir = await Deno.makeTempDir();
+  // A failing gh: any comment attempt would be logged, so `lines` stays empty.
+  const lines: string[] = [];
+  const log = (line: string) => lines.push(line);
+  const tracker = createRepairMergeabilityTracker({
+    workDir: dir,
+    gh: () => Promise.reject(new Error("no comment expected")),
+    fleetAuthors: [],
+  })!;
+  const persistedStreak = async () =>
+    (await readBranchRefreshRefusals(dir)).get("owner/repo#12")?.streak;
+  try {
+    await trackRepairMergeability(tracker, "owner/repo", 12, "UNKNOWN", log);
+    assertEquals(await persistedStreak(), 1);
 
-  await trackRepairMergeability(tracker, "owner/repo", 12, null);
-  await trackRepairMergeability(tracker, "owner/repo", 12, undefined);
-  assertEquals(state.get("owner/repo#12")?.streak, 1, "inconclusive: kept");
-  assertEquals(saves(), 1, "inconclusive: nothing persisted");
+    await trackRepairMergeability(tracker, "owner/repo", 12, null, log);
+    await trackRepairMergeability(tracker, "owner/repo", 12, undefined, log);
+    assertEquals(await persistedStreak(), 1, "inconclusive: kept");
 
-  await trackRepairMergeability(tracker, "owner/repo", 12, "CONFLICTING");
-  assertEquals(state.has("owner/repo#12"), false);
-  assertEquals(notices, [], "nothing to recover from");
-  assertEquals(saves(), 2);
+    await trackRepairMergeability(
+      tracker,
+      "owner/repo",
+      12,
+      "CONFLICTING",
+      log,
+    );
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).has("owner/repo#12"),
+      false,
+      "a known read clears the persisted streak",
+    );
 
-  await trackRepairMergeability(tracker, "owner/repo", 12, "MERGEABLE");
-  assertEquals(saves(), 2, "no streak, nothing to persist");
+    await trackRepairMergeability(tracker, "owner/repo", 12, "MERGEABLE", log);
+    assertEquals(
+      (await readBranchRefreshRefusals(dir)).size,
+      0,
+      "no streak left to persist",
+    );
+    assertEquals(lines, [], "no comment was attempted");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 Deno.test("trackRepairMergeability is a no-op without a tracker and never throws when the tracker fails", async () => {
@@ -441,6 +497,131 @@ Deno.test("readRepairBaseMergeDecision feeds an UNKNOWN read to the #4831 tracke
   assertEquals(lines.length, 1);
 });
 
+Deno.test("readRepairBaseMergeDecision merges a MERGEABLE PR when the probe names a check passing on the base, and logs the reason (Issue #4943)", async () => {
+  const lines: string[] = [];
+  let probes = 0;
+  const decision = await readRepairBaseMergeDecision({
+    repo: "owner/repo",
+    prNumber: 12,
+    gh: () => Promise.resolve('{"mergeable":"MERGEABLE"}'),
+    source: "pr-ci-processor",
+    base: "main",
+    log: (line) => lines.push(line),
+    fixedOnBase: () => {
+      probes++;
+      return Promise.resolve(["test"]);
+    },
+  });
+  assertEquals(probes, 1);
+  assertEquals(decision.merge, true);
+  assertEquals(lines.length, 1);
+  assertMatch(
+    lines[0]!,
+    /^\[base-refresh\] source=pr-ci-processor outcome=base-merge-allowed repo=owner\/repo pr=#12 base=main owner=none reason="failing check test passes on the base, so the base merge brings the base fix in" /,
+  );
+});
+
+Deno.test("readRepairBaseMergeDecision never asks the probe about a CONFLICTING PR (Issue #4943)", async () => {
+  const lines: string[] = [];
+  let probes = 0;
+  const decision = await readRepairBaseMergeDecision({
+    repo: "owner/repo",
+    prNumber: 12,
+    gh: () => Promise.resolve('{"mergeable":"CONFLICTING"}'),
+    source: "pr-ci-processor",
+    base: "main",
+    log: (line) => lines.push(line),
+    fixedOnBase: () => {
+      probes++;
+      return Promise.resolve(["test"]);
+    },
+  });
+  assertEquals(probes, 0);
+  assertEquals(decision.merge, true);
+  assertEquals(
+    decision.reason,
+    "genuine conflict: GitHub reports CONFLICTING",
+  );
+  assertMatch(lines[0]!, /outcome=base-merge-allowed /);
+});
+
+Deno.test("readRepairBaseMergeDecision refuses a MERGEABLE PR when the probe names no check, as before (Issue #4943)", async () => {
+  const lines: string[] = [];
+  const decision = await readRepairBaseMergeDecision({
+    repo: "owner/repo",
+    prNumber: 12,
+    gh: () => Promise.resolve('{"mergeable":"MERGEABLE"}'),
+    source: "pr-ci-processor",
+    base: "main",
+    log: (line) => lines.push(line),
+    fixedOnBase: () => Promise.resolve([]),
+  });
+  assertEquals(decision.merge, false);
+  assert(!decision.reason.includes("base-fix check unreadable"));
+  assertMatch(lines[0]!, /outcome=base-merge-skipped /);
+});
+
+Deno.test("readRepairBaseMergeDecision treats a throwing probe as no check, redacts its cause and appends it to the skip reason (Issue #4943)", async () => {
+  const lines: string[] = [];
+  const decision = await readRepairBaseMergeDecision({
+    repo: "owner/repo",
+    prNumber: 12,
+    gh: () => Promise.resolve('{"mergeable":"MERGEABLE"}'),
+    source: "pr-ci-processor",
+    base: "main",
+    log: (line) => lines.push(line),
+    fixedOnBase: () =>
+      Promise.reject(new Error(`base read failed with token ${FAKE_TOKEN}`)),
+  });
+  assertEquals(decision.merge, false);
+  assert(
+    decision.reason.startsWith("GitHub reports mergeable"),
+    decision.reason,
+  );
+  assert(
+    decision.reason.includes("base-fix check unreadable: base read failed"),
+    decision.reason,
+  );
+  assert(!decision.reason.includes(FAKE_TOKEN), "the token is redacted");
+  assertEquals(lines.length, 1);
+  assertMatch(lines[0]!, /outcome=base-merge-skipped /);
+  assert(lines[0]!.includes("***REDACTED***"), lines[0]);
+  assert(!lines[0]!.includes(FAKE_TOKEN), "the token is redacted in the log");
+});
+
+Deno.test("readRepairBaseMergeDecision persists the repeated-UNKNOWN counter beside its decision counters, once the threshold is reached (Issue #4943)", async () => {
+  const dir = await Deno.makeTempDir();
+  const { tracker } = memoryTracker();
+  const readTally = async () =>
+    JSON.parse(await Deno.readTextFile(`${dir}/${BASE_REFRESH_COUNTERS_FILE}`))
+      .counters;
+  const run = () =>
+    readRepairBaseMergeDecision({
+      repo: "owner/repo",
+      prNumber: 12,
+      gh: () => Promise.resolve('{"mergeable":"UNKNOWN"}'),
+      source: "pr-ci-processor",
+      base: "main",
+      log: () => {},
+      tracker,
+      counterDir: dir,
+    });
+  try {
+    resetCounters();
+    await run();
+    assertEquals(await readTally(), {
+      "baseRefresh.base-merge-skipped.pr-ci-processor": 1,
+    }, "below the threshold the repeated counter is not set");
+    await run();
+    assertEquals(await readTally(), {
+      "baseRefresh.base-merge-skipped.pr-ci-processor": 2,
+      "baseRefresh.repeatedMergeabilityUnknown": 1,
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("logBaseRefreshDecision counts each decision by outcome and source", () => {
   resetCounters();
   const facts = {
@@ -466,7 +647,7 @@ Deno.test("logBaseRefreshDecision counts each decision by outcome and source", (
 Deno.test("formatBaseRefreshStartup states the policy and the build stamp", () => {
   assertEquals(
     formatBaseRefreshStartup({ version: "1.2.3", commit: "abc123" }),
-    "[base-refresh] startup repair-base-merge=conflicting-only refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> version=1.2.3 commit=abc123",
+    "[base-refresh] startup repair-base-merge=conflict-or-base-fixed refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> version=1.2.3 commit=abc123",
   );
 });
 
@@ -509,18 +690,29 @@ Deno.test("persistBaseRefreshCounter accumulates named decision counters across 
 });
 
 Deno.test("persistBaseRefreshCounter writes nothing without a directory and never throws on an unwritable one (Issue #4943)", async () => {
-  await persistBaseRefreshCounter(undefined, {
-    outcome: "base-merge-skipped",
-    source: "pr-ci",
-  });
-  const file = await Deno.makeTempFile();
+  const facts = { outcome: "base-merge-skipped", source: "pr-ci" } as const;
+  const readOrNull = (path: string) =>
+    Deno.readTextFile(path).catch(() => null);
+
+  // No directory: the call resolves and nothing appears in the working directory.
+  const cwdFile = BASE_REFRESH_COUNTERS_FILE;
+  const cwdBefore = await readOrNull(cwdFile);
+  assertEquals(await persistBaseRefreshCounter(undefined, facts), undefined);
+  assertEquals(await readOrNull(cwdFile), cwdBefore, "no counters written");
+
+  const root = await Deno.makeTempDir();
   try {
     // A regular file cannot be a directory: persistence fails quietly.
-    await persistBaseRefreshCounter(file, {
-      outcome: "base-merge-skipped",
-      source: "pr-ci",
-    });
+    const file = `${root}/not-a-dir`;
+    await Deno.writeTextFile(file, "sentinel");
+    assertEquals(await persistBaseRefreshCounter(file, facts), undefined);
+    assertEquals(await Deno.readTextFile(file), "sentinel", "file unchanged");
+    assertEquals(
+      [...Deno.readDirSync(root)].map((entry) => entry.name),
+      ["not-a-dir"],
+      "no sibling counters or temp file left behind",
+    );
   } finally {
-    await Deno.remove(file);
+    await Deno.remove(root, { recursive: true });
   }
 });

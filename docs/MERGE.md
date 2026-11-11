@@ -365,30 +365,45 @@ the auto-merge sweep; a conflicting PR still is
 the PR against its future head, and lands it once the checks pass there.
 
 **Base-refresh churn guard (Issue #4943).** On a strict base with no merge
-queue, a behind-only PR is refreshed only through `requestReadyBranchUpdate`
-([`required_branch_checks_4613.ts`](../worker/deno/lib/required_branch_checks_4613.ts)),
-under the shared per-base owner. The lanes pass these `source` values:
+queue, a behind-only PR is refreshed through `requestReadyBranchUpdate`
+([`required_branch_checks_4613.ts`](../worker/deno/lib/required_branch_checks_4613.ts)).
+On a strict base that refresh runs under the shared per-base owner. On a
+non-strict base it skips the owner and asks GitHub to update the branch directly
+(`update-branch`). The lanes pass these `source` values:
 `branch-update-loop`, `auto-merge-sweep`, `merge-block-repair`,
 `merge-block-escalation` (`lib/merge_block_escalation.ts`), `babysitter-behind`
 (the babysitter's behind-only refresh), `pr-maintenance`
 (`commands/pr_maintenance.ts`) and `review-fleet-prs` (the review-fleet skill's
-`branch_update.ts`). A caller that omits `source` logs `source=unspecified`. A
-CI or review repair merges the base only when GitHub reports the PR
-`CONFLICTING`. Its `source` values are `babysitter-repair` (babysitter `fix()`),
-`pr-ci-processor`, `pr-feedback-processor` and `pr-spelling-processor`, which is
-gated the same way. For a behind-only, `MERGEABLE`, `UNKNOWN` or unreadable PR
-the base merge is skipped. Previously every babysitter repair merged the base,
-and the CI, feedback and spelling processors always synced the default branch,
-so each repair added a merge commit and re-ran CI on PRs not selected for final
+`branch_update.ts`). A caller that omits `source` logs `source=unspecified`.
+
+A CI or review repair merges the base when GitHub reports the PR `CONFLICTING`.
+A failed-CI repair also merges it when a failing check's run on the base branch
+is green, so the base merge brings the base's fix in (Issue #4943). This is the
+route Issue #4921 deferred with "wait for the base fix to land". Only the
+babysitter (`babysitter-repair`, babysitter `fix()`) and the CI processor
+(`pr-ci-processor`) have a failing check to compare with the base, so only they
+take this route. The feedback and spelling processors (`pr-feedback-processor`,
+`pr-spelling-processor`) merge only on `CONFLICTING`. For a behind-only,
+`MERGEABLE`, `UNKNOWN` or unreadable PR with no such passing check, the base
+merge is skipped. Previously every babysitter repair merged the base, and the
+CI, feedback and spelling processors always synced the default branch, so each
+repair added a merge commit and re-ran CI on PRs not selected for final
 integration. The trade-off: a failure that appears only against the newer base
 is reproduced after the PR is refreshed as the owner, not inside the repair.
-Each decision logs one line to the host's stderr log,
+Each repair-policy decision and each `requestReadyBranchUpdate` decision logs
+one line to stderr, so a command that prints JSON on stdout stays parseable:
 `[base-refresh] source=… outcome=… repo=… pr=#N base=… owner=#N/worker|none reason="…" version=… commit=…`,
 with outcomes `refresh-requested`, `refresh-skipped`, `base-merge-allowed` or
-`base-merge-skipped`. It goes to stderr so a command that prints JSON on stdout
-stays parseable. Grep the host's stderr log for `[base-refresh]` and count by
-source and outcome to attribute churn. The version and commit are the worker's
-build stamp, so a deployed worker older than this change shows no such lines.
+`base-merge-skipped`. Grep the host's stderr log for `[base-refresh]` and count
+by source and outcome to attribute churn. The version and commit are the
+worker's build stamp, so a deployed worker older than this change shows no such
+lines. Two cases need care. The local `updatePrBranch` merge of a conflicting PR
+(in `performBranchUpdate` for `branch-update-loop` and `pr-maintenance`, and in
+the `update-pr-branch` git command) emits no `[base-refresh]` line and no
+counter. The `review-fleet-prs` refresh does log, but from the reviewer script's
+own process, which writes no counter file; whether that stderr reaches the
+host's log depends on how the script is launched.
+
 Still necessary: genuine conflicts, the owner's own refresh, the non-strict-base
 direct `update-branch` path, and local `updatePrBranch` for conflict repair.
 Merge-queue bases keep their existing path. The counters are what to watch; no
@@ -402,20 +417,30 @@ keeps its own copy under its state directory). On the second consecutive
 `UNKNOWN` read one trusted PR comment says the refresh is waiting, and a
 `MERGEABLE` or `CONFLICTING` read later clears the streak and updates that
 comment to recovered. An unreadable or garbled read is inconclusive and leaves
-the streak alone. Each decision also increments a named counter
-`baseRefresh.<outcome>.<source>` (and `baseRefresh.repeatedMergeabilityUnknown`
-at the threshold). The per-cycle fault-tolerance summary
-(`fault_tolerance_summary.json`) carries them for the lanes that run inside the
-worker process (`branch-update-loop`, `auto-merge-sweep`, `merge-block-repair`).
-The CI, feedback, spelling and babysitter commands are separate processes that
-do not write that summary, so each one tallies its own `base-merge-allowed` and
-`base-merge-skipped` decisions in a cumulative `base_refresh_counters.json`
-(`{"counters": {"baseRefresh.<outcome>.<source>": n}}`) beside its refusal
-state: under the worker's work directory for the CI, feedback and spelling
-commands, and under the babysitter's state directory for `babysitter-repair`.
-An automatic follow-up reads those files, not the log. At startup the worker
-prints `[base-refresh] startup repair-base-merge=conflicting-only …` beside the
-`[worker-build]` banner, so a host that does not print it predates this change.
+the streak alone.
+
+Each decision also increments a named counter `baseRefresh.<outcome>.<source>`,
+and `baseRefresh.repeatedMergeabilityUnknown` increments when the repeated
+`UNKNOWN` threshold fires. Where those counts land depends on the lane:
+
+- The standalone CI, feedback, spelling and pr-maintenance commands, and the
+  babysitter's `babysitter-repair` and `babysitter-behind` refreshes, persist
+  cumulative tallies to `base_refresh_counters.json`
+  (`{"counters": {"baseRefresh.<outcome>.<source>": n}}`). CI, feedback and
+  spelling write under the worker's work directory, pr-maintenance does so only
+  when a work directory resolves, and the babysitter writes under its state
+  directory. Nothing in the worker reads this file yet; it is the durable tally
+  to read without parsing logs.
+- The in-process worker lanes (`branch-update-loop`, `auto-merge-sweep`,
+  `merge-block-repair`, `merge-block-escalation`) feed
+  `fault_tolerance_summary.json`, but `run_core` resets the named counters at the
+  start of each cycle and writes that summary once, at the end of the run, so
+  only the last cycle's counts survive. This is a known limitation tracked in
+  issue #5043, not current behaviour.
+
+At startup the worker prints `[base-refresh] startup repair-base-merge=conflict-or-base-fixed …`
+beside the `[worker-build]` banner, so a host that does not print it predates
+this change.
 
 **A queue removal is a red check, not a re-run.** When the queue removes a PR
 at its current head, the CI-fix lane is handed that removal as a failed check

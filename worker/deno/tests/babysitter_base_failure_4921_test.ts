@@ -47,7 +47,8 @@ const OTHER_FAILURE =
 interface CheckSpec {
   name: string;
   headConclusion: "failure" | "success";
-  baseConclusion: "success" | "failure";
+  /** `cancelled` reads as no verdict; `startup_failure` reads as unavailable. */
+  baseConclusion: "success" | "failure" | "cancelled" | "startup_failure";
   /** The failure text the pull request's own log holds. */
   prFailure: string;
   /** The failure text the base run's log holds. */
@@ -241,12 +242,28 @@ function classify(scenario: Scenario): Promise<BaseFailureDecision> {
   });
 }
 
-/** The reason of a `repair` decision, failing the test on any other kind. */
-function reasonOf(decision: BaseFailureDecision): string {
+/** A `repair` decision, failing the test on any other kind. */
+function repairOf(
+  decision: BaseFailureDecision,
+): Extract<BaseFailureDecision, { kind: "repair" }> {
   if (decision.kind !== "repair") {
     throw new Error(`expected repair, got ${decision.kind}`);
   }
-  return decision.reason;
+  return decision;
+}
+
+/**
+ * The reason of a `repair` decision that is not a green base run: such a
+ * reading must leave `baseGreen` undefined (Issue #4943).
+ */
+function reasonOf(decision: BaseFailureDecision): string {
+  const repair = repairOf(decision);
+  assertEquals(
+    repair.baseGreen,
+    undefined,
+    `only a green base run sets baseGreen: ${repair.reason}`,
+  );
+  return repair.reason;
 }
 
 /** A `gh` runner that must never be reached. */
@@ -275,11 +292,27 @@ Deno.test("classifyBaseRedFailures - defers when every one of two failing checks
   });
 });
 
-Deno.test("classifyBaseRedFailures - repairs when the base run of the failing check is green", async () => {
+Deno.test("classifyBaseRedFailures - repairs when the base run of the failing check is green, naming it in baseGreen (Issue #4943)", async () => {
   const decision = await classify({
     specs: [{ ...redCheck("Unit tests"), baseConclusion: "success" }],
   });
-  assertStringIncludes(reasonOf(decision), "is green, not red");
+  const repair = repairOf(decision);
+  assertStringIncludes(repair.reason, "is green, not red");
+  assertEquals(repair.baseGreen, ["Unit tests"]);
+});
+
+Deno.test("classifyBaseRedFailures - a base run with no verdict (cancelled) repairs with no baseGreen (Issue #4943)", async () => {
+  const decision = await classify({
+    specs: [{ ...redCheck("Unit tests"), baseConclusion: "cancelled" }],
+  });
+  assertStringIncludes(reasonOf(decision), "is no-run, not red");
+});
+
+Deno.test("classifyBaseRedFailures - a base run with an unavailable conclusion repairs with no baseGreen (Issue #4943)", async () => {
+  const decision = await classify({
+    specs: [{ ...redCheck("Unit tests"), baseConclusion: "startup_failure" }],
+  });
+  assertStringIncludes(reasonOf(decision), "is unavailable, not red");
 });
 
 Deno.test("classifyBaseRedFailures - repairs when the base log shows a different failure", async () => {
@@ -296,10 +329,12 @@ Deno.test("classifyBaseRedFailures - repairs the whole failure when one of two f
       { ...redCheck("Lint", RENDER_FAILURE), baseConclusion: "success" },
     ],
   });
+  const repair = repairOf(decision);
   assertStringIncludes(
-    reasonOf(decision),
+    repair.reason,
     'the base\'s run of "Lint" is green, not red',
   );
+  assertEquals(repair.baseGreen, ["Lint"]);
 });
 
 Deno.test("classifyBaseRedFailures - repairs a dependency audit that is red on the base, and defers the same fixture under a non-audit name", async () => {
