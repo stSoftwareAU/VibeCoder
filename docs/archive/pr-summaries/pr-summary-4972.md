@@ -93,14 +93,24 @@ a version line.
     an assertion that the diff changes a version"
   - Replaced by: `assert(!body.includes("Version bump:"))` and
     `assert(!body.includes("updated for this change"))`
-- Red check: with `lib/pr_summary_loader.ts` restored to the base version, the
-  eight edited or added tests above fail (`87 passed | 8 failed` across the two
-  files); with the fix, `95 passed | 0 failed`.
+- Red check: with `lib/pr_summary_loader.ts` restored to the base version
+  (`git show origin/main:worker/deno/lib/pr_summary_loader.ts`), ten tests fail
+  across `worker/deno/tests/pr_summary_loader_test.ts` (30 tests at head) and
+  `worker/deno/tests/pr_body_sync_test.ts` (67 tests at head):
+  `87 passed | 10 failed`. With the fix, `97 passed | 0 failed`. The ten are the
+  edited or added tests above, including both blank-line collapse tests, which
+  fail on base because it rewrites the list-item bump line instead of removing
+  it.
 - The tests that keep non-bump prose, dependency pins, code blocks, changelog
   and release evidence are unchanged and still pass.
 - Callers of `normaliseSummaryVersionBumps`: `loadPrSummary` and
-  `loadCommittedPrSummary` (both covered above); their consumers
-  (`pr_body_sync`, `pr_body_reconcile`, `closure_verdict_recovery`,
-  `completion_phase`, `fleet_pr_babysitter`) only read the content.
+  `loadCommittedPrSummary` (both covered above). `closure_verdict_recovery`
+  loads the summary through `loadPrSummary`
+  (`worker/deno/lib/closure_verdict_recovery.ts:383`) and writes the normalised
+  content, with the closure blocks added, back to the summary file with
+  `writeSummary` (`closure_verdict_recovery.ts:500`), so on that path the
+  omitted bump line is also removed from the committed summary file. The other
+  consumers (`pr_body_sync`, `completion_phase`) only read the content: the body
+  goes to a temporary file for `gh`, never back to the summary.
 - `./quality.sh < /dev/null`: PASSED (config integration and checkov skipped),
   run after the last code change.
