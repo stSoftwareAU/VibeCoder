@@ -22,15 +22,15 @@ Consolidates #4988. Closes #4977.
 
 ### Essential Design Decisions
 
-- The boundary is start-or-whitespace, a superset of the renderer's ` — `
+- The boundary is start-or-whitespace, a superset of the renderer's `—`
   separator that the issue suggested. `collectListItems` joins nested
-  continuation lines with a single space (`  - evidence: x`), and existing tests
-  pin that form (`acceptance_criteria_gate_test.ts`, `label_tail_redos_3186_test.ts`).
-  A strict ` — ` boundary broke them, and it let a field that begins with a dash
-  forge a label. The sanitiser removes every whitespace-led label, so the wider
-  boundary costs the renderer nothing.
-- The sanitiser truncates to 300 characters first, then removes labels to a fixed
-  point (replace, trim, repeat). It is the last step, so no later step can
+  continuation lines with a single space (`- evidence: x`), and existing tests
+  pin that form (`acceptance_criteria_gate_test.ts`,
+  `label_tail_redos_3186_test.ts`). A strict `—` boundary broke them, and it let
+  a field that begins with a dash forge a label. The sanitiser removes every
+  whitespace-led label, so the wider boundary costs the renderer nothing.
+- The sanitiser truncates to 300 characters first, then removes labels to a
+  fixed point (replace, trim, repeat). It is the last step, so no later step can
   create a field. Removing a label can leave another one adjacent
   (`a reviewer: reviewer: met`), which is why one pass is not enough.
 - An entry carrying two `reviewer:` fields with different verdicts is read as
@@ -80,27 +80,25 @@ defect).
   `citedLocations` reading `src/reason-codes.ts:12` intact.
 - Existing tests edited: none; no assertion removed (`git diff origin/main`
   shows no deleted line in either test file).
-- Red checks (a mutation applied, tests run, lib restored):
-  old scrub restored → path, `subjectOf` and `citedLocations` tests red;
-  patterns made unanchored with `[:\-—]` → 9 tests red;
-  `neutraliseFieldLabels` skipped in `sanitiseEvidence` → 3 red, in
-  `sanitiseField` → 8 red;
-  single-pass scrub → grammar idempotence test and the adjacent-label render
-  tests red;
+- Red checks (a mutation applied, tests run, lib restored): old scrub restored →
+  path, `subjectOf` and `citedLocations` tests red; patterns made unanchored
+  with `[:\-—]` → 9 tests red; `neutraliseFieldLabels` skipped in
+  `sanitiseEvidence` → 3 red, in `sanitiseField` → 8 red; single-pass scrub →
+  grammar idempotence test and the adjacent-label render tests red;
   reviewer-ambiguity rule removed → read-back test red.
 - `deno task test:unit` on `closure_verdict_test.ts`: 46 passed. On
   `closure_entry_grammar_4977_test.ts`: 10 passed. The existing tests of the
   changed readers (gates, `closure_criterion_match`, `degraded_delivery`,
-  `closure_met_check_3766`, `label_tail_redos_3186`, `standing_violation_routing`)
-  pass unchanged.
+  `closure_met_check_3766`, `label_tail_redos_3186`,
+  `standing_violation_routing`) pass unchanged.
 - Completeness: the new module is claimed in
   `docs/audits/lib-sweep-coverage/top-up-4977.json`.
 - Docs: `docs/workflows/issue-processing.md` (closure-verdict rendering item)
   read and updated. `docs/audits/security-sweep-2242-closure-verdict.md` line 27
   is a point-in-time audit record and still describes the old scrub.
 - `./quality.sh < /dev/null` on the final code head: PASSED (config integration
-  and checkov skipped: no config, no checkov). An earlier run failed only the lib
-  sweep ledger test, fixed by the ledger file above.
+  and checkov skipped: no config, no checkov). An earlier run failed only the
+  lib sweep ledger test, fixed by the ledger file above.
   `deno task pr-summary-check`: 0 blocked, 0 not checked.
 
 Not done or not checked: the Spec and Standards reviewer sub-agents were not
