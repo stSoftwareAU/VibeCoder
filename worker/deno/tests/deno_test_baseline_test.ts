@@ -253,7 +253,7 @@ function fakeBaselineGit(opts: {
       calls.push({ args, cwd });
       if (args[1] === "add") {
         if (opts.add) return { code: opts.add, stdout: "", stderr: "no" };
-        await opts.onAdd?.(args[3]);
+        await opts.onAdd?.(args[3] ?? "");
       }
       if (args[0] === "ls-tree") {
         return opts.lsTree ?? { code: 0, stdout: "", stderr: "" };
@@ -341,7 +341,7 @@ Deno.test("worktreeBaseline: the top-level root runs in the tree with unprefixed
   }).runAtBase(command, ["./a_test.ts"]);
 
   assertEquals(result, { ranFiles: ["./a_test.ts"], error: null });
-  assertEquals(git.calls[1].args.slice(3), ["abc123", "--", "a_test.ts"]);
+  assertEquals(git.calls[1]?.args.slice(3), ["abc123", "--", "a_test.ts"]);
   assertEquals(runs.map((r) => r.cwd), ["/tmp/base/tree"]);
 });
 
