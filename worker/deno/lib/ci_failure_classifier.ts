@@ -330,8 +330,9 @@ function findDownloadOutageSignals(
         n.content.includes(RETRY_NOTICE) ||
         CURL_ERROR_LINE_REGEX.test(n.content)
       );
-      const terminal = i === lines.length - 1 ||
-        CURL_EXIT_22_REGEX.test(lines[i + 1].content);
+      const next = lines.at(i + 1);
+      const terminal = next === undefined ||
+        CURL_EXIT_22_REGEX.test(next.content);
       if (!retried && terminal) {
         signals.add(`the requested url returned error: ${curl[1]}`);
       }

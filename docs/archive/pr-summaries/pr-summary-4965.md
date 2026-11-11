@@ -123,6 +123,13 @@ turned the terminal-curl test red; dropping the `last line` operand turned the
 download-client tests red; dropping the `errored` gate turned the recovered
 tool-cache and bare-line tests red.
 
+The `terminal` test reads the next line with `lines.at(i + 1)`: no next line
+is the block's end, else the next line must be the `exit code 22` line. This is
+the same rule as the `last line` and next-line operands above, written so the
+strict `noUncheckedIndexedAccess` type check passes (`deno check
+lib/ci_failure_classifier.ts` is clean; CI's `TS2532` on the earlier head was
+`lines[i + 1].content`).
+
 Docs: the file header's "5xx" example was narrowed to "502/503/504" so it
 matches what the table holds. No other doc names these patterns.
 
