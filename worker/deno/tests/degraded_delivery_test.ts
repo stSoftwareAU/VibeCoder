@@ -13,6 +13,7 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { extractAcceptedScope } from "../lib/acceptance_criteria_gate.ts";
+import { renderClosureBlocks } from "../lib/closure_verdict.ts";
 import {
   assessScopeShortfalls,
   UNSTATED_SCOPE_ITEM,
@@ -234,4 +235,53 @@ Deno.test("unreported required checks remain unassessed rather than implicitly p
     delivered: [],
     shortfalls: [{ criterion: "required CI", status: "unassessed" }],
   });
+});
+
+Deno.test("assessScopeShortfalls - a pending CI check whose evidence cites lib/reason-codes.ts stays pending, no shortfall (PR #5060 review)", () => {
+  const issue =
+    "## Acceptance Criteria\n\n- [ ] required CI checks pass\n- [ ] the export works\n";
+  for (
+    const evidence of [
+      "lib/reason-codes.ts",
+      "docs/evidence-store.md and lib/reason-codes.ts",
+      "src/reviewer-guide.md",
+    ]
+  ) {
+    const rendered = renderClosureBlocks({
+      criteria: [
+        {
+          criterion: "required CI checks pass",
+          status: "partial",
+          evidence,
+          reason: "CI not yet verified",
+        },
+        {
+          criterion: "the export works",
+          status: "met",
+          evidence: "x_test.ts",
+        },
+      ],
+      standards: [{ status: "clean", finding: "checked" }],
+      dropped: [],
+    });
+    const { shortfalls } = assessScopeShortfalls(issue, rendered);
+    assertEquals(shortfalls, [], `evidence ${evidence}: ${rendered}`);
+  }
+});
+
+Deno.test("assessScopeShortfalls - a pending-looking entry whose evidence shows a failed CI is still a shortfall (PR #5060 review)", () => {
+  const issue = "## Acceptance Criteria\n\n- [ ] required CI checks pass\n";
+  const rendered = renderClosureBlocks({
+    criteria: [{
+      criterion: "required CI checks pass",
+      status: "partial",
+      evidence: "lib/reason-codes.ts; CI failed",
+      reason: "CI not yet verified",
+    }],
+    standards: [{ status: "clean", finding: "checked" }],
+    dropped: [],
+  });
+  assertEquals(assessScopeShortfalls(issue, rendered).shortfalls, [
+    { criterion: "required CI checks pass", status: "partial" },
+  ]);
 });

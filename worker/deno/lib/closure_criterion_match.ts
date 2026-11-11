@@ -16,6 +16,10 @@ import type {
   ClosureEntry,
   CriterionStatus,
 } from "./acceptance_criteria_gate.ts";
+import {
+  ENTRY_FIELD_LABEL_RE,
+  ENTRY_FIELD_PATTERNS,
+} from "./closure_entry_grammar.ts";
 
 export type { CriterionStatus };
 
@@ -40,15 +44,14 @@ function words(text: string): Set<string> {
 const LEADING_STATUS_RE =
   /^\s*(?:\*\*\s*)?(met|partial|missing|unrequested)(?:\s*\*\*)?\s*[—\-:]*\s*/i;
 
-// The first labelled field — `evidence:`, `reviewer:` or `reason:` — that
-// closes the subject off from the rest of the entry.
-const LABEL_BOUNDARY_RE = /\b(?:evidence|reviewer|reason)\s*[:\-—]/i;
-
 /** The entry's subject: the text between its leading status and its first
- * labelled field. Also used by closure_met_check.ts. */
+ * labelled field (`ENTRY_FIELD_LABEL_RE`, Issue #4977). The cut lands on the
+ * whitespace before the label, so a dash that stood before it stays in the
+ * subject; the matcher ignores it as punctuation. Also used by
+ * closure_met_check.ts. */
 export function subjectOf(entry: ClosureEntry): string {
   const afterStatus = entry.text.replace(LEADING_STATUS_RE, "");
-  const boundary = afterStatus.search(LABEL_BOUNDARY_RE);
+  const boundary = afterStatus.search(ENTRY_FIELD_LABEL_RE);
   const subject = boundary === -1
     ? afterStatus
     : afterStatus.slice(0, boundary);
@@ -63,7 +66,7 @@ export function subjectOf(entry: ClosureEntry): string {
 export function gapSubject(entry: ClosureEntry): string {
   const subject = subjectOf(entry);
   if (subject.length > 0) return subject;
-  const reason = entry.text.match(/\breason\s*[:\-—]\s*([\s\S]+)$/i);
+  const reason = entry.text.match(ENTRY_FIELD_PATTERNS.reason);
   const named = reason?.[1]?.trim() ?? "";
   return named.length > 0 ? named : entry.text.trim();
 }
