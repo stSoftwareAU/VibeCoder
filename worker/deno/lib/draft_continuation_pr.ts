@@ -15,7 +15,8 @@
  * raised it ready: completion fails the run so the next run retries (Issue
  * #4952). A draft whose state could not be read is treated as a known draft
  * only when the ready step's own head read says `isDraft` is true; otherwise a
- * failed ready only warns.
+ * successful ready arms as before. Any failed ready fails the run, whatever the
+ * draft state (the caller's rule).
  *
  * Best-effort: the branch is the deliverable that matters, so a `gh` failure
  * is reported, never thrown.
