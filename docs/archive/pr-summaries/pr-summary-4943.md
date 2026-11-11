@@ -154,6 +154,10 @@ its authorised production scope; this is not a full-branch clean verdict.
   production-host and production tracker tests. Another 207 existing processor
   and babysitter orchestration tests passed. The strengthened stale-head case
   also passed its final focused rerun after the negative control.
+- `worker/deno/tests/pr_push_base_sync_test.ts` (5 tests) passes. Its spelling
+  case now seeds a `CONFLICTING` mergeability reading, because the shared
+  mergeability policy merges the base before a spelling push only for a genuine
+  conflict; the behind-only case no longer qualifies.
 - Type-check, lint and format checks passed for all 41 changed TypeScript files.
   `deno task check:manifests` passed.
 - `pr-summary-check` reports the four disclosed Standards violations; no other
