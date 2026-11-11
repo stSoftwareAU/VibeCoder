@@ -2092,8 +2092,22 @@ Deno.test("completion - self-heals when PR creation fails but PR exists", async 
   let recoveredPrUrl: string | null = null;
   const deps = createMockDeps({
     github: {
-      runGhCommand: () => {
-        throw new Error("already exists");
+      runGhCommand: (args: string[]) => {
+        // Only `gh pr create` fails; completion's own `gh pr view` /
+        // `gh pr ready` calls on the existing PR must succeed.
+        if (args.includes("create")) {
+          throw new Error("already exists");
+        }
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(
+            JSON.stringify({
+              state: "OPEN",
+              headRefName: "issue-42-test",
+              isDraft: false,
+            }),
+          );
+        }
+        return Promise.resolve("");
       },
     },
     pr: {

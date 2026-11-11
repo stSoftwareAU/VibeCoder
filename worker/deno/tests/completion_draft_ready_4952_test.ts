@@ -4,11 +4,11 @@
  *
  * `recoverAndFinaliseExistingPr` marks a draft ready when its state is known
  * to be draft, and also when the state cannot be read, after one retry. A
- * failed `gh pr ready` leaves the PR a draft, so the run fails as interrupted
- * and auto-merge is not armed when the draft is known, or when the ready
- * step's own head read says `isDraft` is true. Otherwise a failed ready only
- * warns and the run arms as before. A PR already ready is left alone. The REST
- * fallback's PR (Issue #4952) gets the same ready step on the creation path.
+ * failed `gh pr ready` leaves the PR possibly a draft, so the run fails as
+ * interrupted and auto-merge is not armed, whether the draft state is known or
+ * unknown. A successful ready on an unknown state arms as before. A PR already
+ * ready is left alone. The REST fallback's PR (Issue #4952) gets the same ready
+ * step on the creation path.
  *
  * Arming is observed through the `finalisePr` seam (armAutoMergeAtCreation),
  * and `gh` calls through the `runGhCommand` fake.
@@ -264,7 +264,7 @@ Deno.test(
 );
 
 Deno.test(
-  "Issue #4952 - unknown state + unreadable head read + gh pr ready fails → continue, still armed, and a WARN names the PR",
+  "Issue #4952 - unknown state + unreadable head read + gh pr ready fails → the run fails interrupted, names the PR, and does not arm",
   async () => {
     const gh = ghFake({
       lookups: [new Error("HTTP 502"), new Error("HTTP 502")],
@@ -275,20 +275,22 @@ Deno.test(
 
     const result = await recover(deps);
 
-    assertEquals(
-      result,
-      { status: "continue" },
-      "an unknown state never fails",
-    );
+    assert(result.status === "failure", "the run fails, not continues");
+    assertEquals(result.category, "interrupted");
+    assertStringIncludes(result.reason, `PR #${PR}`);
     assertEquals(readyCalls(gh.calls).length, 1, "ready was attempted");
-    assertEquals(armed, [PR], "arming happens exactly as before");
+    assertEquals(armed, [], "auto-merge is not armed after a failed ready");
+    assertStringIncludes(result.reason, "may still be a draft");
+    assert(
+      !result.reason.includes("is still a draft"),
+      "an unknown state is not reported as a known draft",
+    );
     const warning = warns.find((w) =>
-      w.message.includes(
-        "Could not mark the PR ready with its draft state unknown",
-      )
+      w.message.includes("Could not mark the PR ready")
     );
     assert(warning !== undefined, "the failed ready is warned");
     assertEquals(warning.context?.prNumber, PR);
+    assertEquals(warning.context?.draftStateKnown, false);
   },
 );
 
@@ -328,14 +330,15 @@ Deno.test(
     assert(result.status === "failure", "the run fails, not continues");
     assertEquals(result.category, "interrupted");
     assertStringIncludes(result.reason, `PR #${PR}`);
-    assertStringIncludes(result.reason, "still a draft");
+    assertStringIncludes(result.reason, "is still a draft");
     assertEquals(readyCalls(gh.calls).length, 1);
     assertEquals(armed, [], "auto-merge is not armed on a draft");
     const warning = warns.find((w) =>
-      w.message.includes("Could not mark the draft PR ready")
+      w.message.includes("Could not mark the PR ready")
     );
     assert(warning !== undefined, "the failed ready is warned");
     assertEquals(warning.context?.prNumber, PR);
+    assertEquals(warning.context?.draftStateKnown, true);
   },
 );
 
@@ -377,9 +380,10 @@ Deno.test(
     assertEquals(armed, [], "auto-merge is not armed on a draft");
     assert(
       warns.some((w) =>
-        w.message.includes("Could not mark the draft PR ready")
+        w.message.includes("Could not mark the PR ready") &&
+        w.context?.draftStateKnown === true
       ),
-      "the failed ready is warned as a known draft",
+      "the failed ready is warned, with the head read's draft state known",
     );
   },
 );
@@ -474,6 +478,42 @@ Deno.test(
     assert(
       !comments[1]!.includes("still a draft"),
       "a ready PR is not described as a draft",
+    );
+  },
+);
+
+Deno.test(
+  "Issue #4952 - the advisory says the PR may still be a draft when the draft state is unknown and gh pr ready fails",
+  async () => {
+    const comments: string[] = [];
+    const gh = ghFake({
+      lookups: [new Error("HTTP 502"), new Error("HTTP 502")],
+      readyReadFails: true,
+      readyFails: true,
+    });
+    const state = makeState();
+    state.completionAdvisoryComment = "- A finding to note";
+    const result = await recoverAndFinaliseExistingPr(
+      PR_URL,
+      makeContext(),
+      state,
+      BODY,
+      makeDeps(gh, comments).deps,
+      {},
+    );
+
+    assert(result.status === "failure", "the run fails, not continues");
+    assertEquals(readyCalls(gh.calls).length, 1, "ready was attempted");
+    assertEquals(comments.length, 1, "one advisory per run");
+    assertStringIncludes(comments[0]!, "may still be a draft");
+    assertStringIncludes(comments[0]!, "`gh pr ready` failed");
+    assert(
+      !comments[0]!.includes("is still a draft"),
+      "an unknown state is not described as a known draft",
+    );
+    assert(
+      !comments[0]!.includes("auto-merge stays armed"),
+      "a still-draft PR is not described as armed",
     );
   },
 );
@@ -748,12 +788,20 @@ Deno.test(
 );
 
 Deno.test(
-  "Issue #4952 - latched quota + unreadable draft flag: fail-open, armed as before",
+  "Issue #4952 - latched quota + unreadable draft flag: the latched ready cannot run, so the run fails interrupted, names the PR, and is not armed",
   async () => {
     const run = await runRestFallback({ draft: "unreadable", latched: true });
 
-    assertEquals(run.result, { status: "continue" });
-    assertEquals(run.armed, [PR]);
+    assert(run.result.status === "failure", "the run fails, not continues");
+    assertEquals(run.result.category, "interrupted");
+    assertStringIncludes(run.result.reason, `PR #${PR}`);
+    assertStringIncludes(run.result.reason, "may still be a draft");
+    assert(
+      !run.result.reason.includes("is still a draft"),
+      "an unknown state is not reported as a known draft",
+    );
+    assert(readyCalls(run.calls).length >= 1, "ready was attempted");
+    assertEquals(run.armed, [], "auto-merge is not armed after a failed ready");
   },
 );
 
@@ -1011,6 +1059,7 @@ Deno.test("completion - a failed ready does not repeat verifier or PR side effec
   for (
     const run of [
       await runRestFallback({ draft: true, latched: true }),
+      await runRestFallback({ draft: "unreadable", latched: true }),
       await runRestFallback({ draft: true, latched: false, readyFails: true }),
       await runExistingDraftCompletion("branch", true),
       await runExistingDraftCompletion("create-error", true),
