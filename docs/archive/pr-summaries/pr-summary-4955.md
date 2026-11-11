@@ -208,12 +208,10 @@ flowchart LR
   (regenerated inventory), `toolchain_selfcheck_test.ts`,
   `container_image_hash_test.ts` (fragment listed), and the two Containerfile cap
   tests (now 14,543 of 14,600 stripped bytes).
-- `./quality.sh < /dev/null`: the first full run on the head before the final
-  fixes had every stage PASSED except deno tests, whose one failure was
-  `toolchain_selfcheck_test.ts` (no fixture for the new toolchain); that fixture is
-  added and its test passes with the drift test (55 passed). Config integration and
-  checkov were SKIPPED. A second full run after the fix is recorded below if it
-  finished before the deadline.
+- `./quality.sh < /dev/null` on the head after merging `origin/main`: every stage
+  PASSED (deno tests parallel and serial, lint, type check, fmt, markdownlint,
+  mermaid, semgrep); config integration and checkov were SKIPPED (no checkov on
+  PATH; the CI checkov job stays authoritative).
 
 Not done / not checked: no image was built (no container runtime here), so the
 fragment was exercised with a stubbed `curl`, and once against the real archive
