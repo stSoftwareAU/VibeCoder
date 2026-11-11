@@ -247,7 +247,10 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `[PRE_PUSH_WARNING]` and accepted, a base-green push that breaks clippy is
   refused; `compareRef: ""` refuses as
   `Could not compare the failed CI cargo
-  check against the PR base`.
+  check against the PR base`, and its stderr retains the head's diagnostics
+  under `Head diagnostics (comparison unavailable):` (the hook test asserts
+  both the label and the lint text, where it previously asserted the lint text
+  was absent).
 - `tests/claude_runner_test.ts`: `scanAgentCiCargoChecks` reads a checkout's CI
   clippy, returns an unverifiable scan with a warning for an unreadable
   tracked-file list and for a scanner that cannot be loaded, and returns nothing
@@ -322,7 +325,8 @@ Backend/CLI change, no UI files. Tests (all under `worker/deno/`):
   `::integration: a CI scan the worker could not produce refuses a Rust push as infrastructure, and lets a doc push through`,
   `::integration: the hook compares a failing CI clippy against the PR base (compareRef)`
   and
-  `::integration: an unknown PR base (compareRef "") makes a failing CI clippy infrastructure, not a verdict`;
+  `::integration: an unknown PR base (compareRef "") makes a failing CI clippy infrastructure, not a verdict`
+  (retaining the head's diagnostics labelled as an unavailable comparison);
   `worker/deno/tests/agent_run_compare_ref_4630_test.ts` (four tests: the
   screenshot, summary-rule, PR-body-length and quality-gate remediation agents
   each get the run's base as `ciCargoCompareRef`; red with `issueRunCompareRef`
