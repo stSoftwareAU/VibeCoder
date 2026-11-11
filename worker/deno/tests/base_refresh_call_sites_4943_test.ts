@@ -218,6 +218,15 @@ Deno.test("production merge-block repair lane logs source=merge-block-repair", a
       lines[0]!,
       "[base-refresh] source=merge-block-repair outcome=refresh-requested repo=org/repo-a pr=#11 base=main ",
     );
+    // Issue #4943: the in-process lane persists its tally in the work
+    // directory, so it survives the per-cycle reset of the in-memory counters.
+    const persisted = JSON.parse(
+      await Deno.readTextFile(`${workDir}/${BASE_REFRESH_COUNTERS_FILE}`),
+    ) as { counters: Record<string, number> };
+    assertEquals(
+      persisted.counters["baseRefresh.refresh-requested.merge-block-repair"],
+      1,
+    );
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }

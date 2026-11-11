@@ -39,9 +39,11 @@ corrected PR record).
   spelling, babysitter (repair and behind) and `pr-maintenance` commands persist
   their own tally in a cumulative `base_refresh_counters.json`
   (`persistBaseRefreshCounter`; `pr-maintenance` only when a work directory
-  resolves). In-process lanes feed the per-cycle `fault_tolerance_summary.json`,
-  which today keeps only the last cycle of a run (#5043, filed by the earlier
-  review, not fixed here).
+  resolves). The in-process `branch-update-loop`, `auto-merge-sweep` and
+  `merge-block-repair` lanes pass the worker `workDir` as `counterDir`, so they
+  persist to the same file; only `merge-block-escalation` feeds the per-cycle
+  `fault_tolerance_summary.json` alone, which keeps only the last cycle of a run
+  (#5043, filed by the earlier review, not fixed here).
 - The startup banner gains
   `[base-refresh] startup repair-base-merge=conflict-or-base-fixed … version=… commit=…`
   beside `[worker-build]` (`formatStartupBuildLines`, printed by `run_core.ts`).
@@ -313,6 +315,19 @@ written once at run end" (OPEN). Issue numbers cited as provenance: #4613
   integration and checkov were skipped (no `.config.json`, no checkov on PATH).
   `tests/pr_maintenance_command_test.ts` passes 28 of 28 here, so the earlier
   PR's claim of five pre-existing failures there was wrong and is withdrawn.
+- Verifier finding `run_core_production_deps.ts:3164` (and the sites at 3743 and
+  3872): fixed. The three in-process callers now pass `workDir` as `counterDir`;
+  `base_refresh_call_sites_4943_test.ts::production merge-block repair lane logs
+  source=merge-block-repair`
+  now also reads the persisted
+  `baseRefresh.refresh-requested.merge-block-repair` tally from `workDir`, and
+  went red with the `workDir` argument removed. The other two sites are the same
+  one-argument change and are not separately driven.
+- Mutation finding `fleet_pr_babysitter.ts:3124` (negated ternary on the logged
+  `babysitter-repair` outcome): disputed with evidence. Applying the mutation
+  and running `babysitter_base_merge_policy_4943_test.ts` turns 5 of 7 tests red
+  (the `ALLOWED_LINE`/`SKIPPED_LINE` assertions), so a test does kill it; the
+  gate's run stopped after 7 of 351 mutants on its 300 s budget.
 - Not done or not checked: no runtime evidence from the inspected repositories;
   the lane entry points are not driven together in one test; the local
   `updatePrBranch` conflict merge is neither logged nor counted;
