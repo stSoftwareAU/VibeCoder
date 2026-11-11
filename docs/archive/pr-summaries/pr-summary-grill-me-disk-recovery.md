@@ -56,7 +56,11 @@ That issue describes onboarding requirements and is not closed by this fix.
   Deno's registry manifest downloads failed in this environment.
 - The same 55 completeness suites used by `check:manifests` also passed with
   local dependency mapping: 866 tests passed, with one existing ignored test.
-- Repository-wide type checking passed with the same local dependency mapping.
+- Strict type checking remains a CI check. File-mapped standard-library
+  dependencies trigger external `noImplicitReturns` diagnostics locally.
+  CI identified an unchecked array access in the new test; it now asserts
+  the required argument exists before parsing it. Runtime tests were rerun
+  after that correction, with type checking reported separately.
 - Repository-wide Deno lint/format, source targets, Mermaid validation and
   the shell syntax check passed. The full quality gate was attempted but
   cannot be reported green: its normal type/test/completeness commands could

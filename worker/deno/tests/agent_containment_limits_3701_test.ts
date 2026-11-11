@@ -1,4 +1,5 @@
 import {
+  assert,
   assertEquals,
   assertRejects,
   assertStringIncludes,
@@ -65,8 +66,10 @@ Deno.test("discussion in a Rust checkout starts above the floor without shell, h
         );
         assertEquals(argv.includes("--strict-mcp-config"), true);
         assertEquals(argv[argv.indexOf("--setting-sources") + 1], "");
+        const settings = argv[argv.indexOf("--settings") + 1];
+        assert(settings !== undefined, "restricted settings must be present");
         assertEquals(
-          JSON.parse(argv[argv.indexOf("--settings") + 1]),
+          JSON.parse(settings),
           { disableAllHooks: true },
         );
         for (const flag of ["--mcp-config", "--agents", "--resume"]) {
