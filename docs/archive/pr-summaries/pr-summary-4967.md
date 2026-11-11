@@ -121,6 +121,9 @@ no milestone in this repo reaches (the largest has 40 issues).
   `docs/workflows/milestones.md` (Final PR step and fingerprint bullet).
   `CONFIGURATION.md`'s test-change section concerns the reviewer only and names
   no count.
+- `./quality.sh < /dev/null` on the final head: PASSED (config integration and
+  checkov skipped: no config, no checkov). New module
+  `governing_issue_limits.ts` is claimed by `docs/audits/lib-sweep-coverage/top-up-4967.json`.
 
 Not done or not checked: the real review path against a private fleet PR; the
 62-child cap means a milestone with more than 62 claimed children links only
