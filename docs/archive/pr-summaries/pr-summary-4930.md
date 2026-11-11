@@ -218,3 +218,18 @@ from `needsFullUnitSuite` and read by `planChangedFileChecks` and the
   behaviour and counts are as above (re-run on this head:
   `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts`,
   132 passed, 0 failed).
+
+### Host-independence fix at the head
+
+- `runPrePushGate: a prompt or lock change runs the whole unit suite, ...`
+  (`worker/deno/tests/pre_push_gate_test.ts`) planned a markdownlint check for
+  its Markdown prompt change but looked the binary up on the host, so it failed
+  on a runner without markdownlint. It now injects
+  `findMarkdownlint: () => Promise.resolve("/fake/mdl")`, like the other
+  markdownlint cases; assertions are unchanged.
+- `docs/audits/lib-sweep-coverage/top-up-4930.json` claims
+  `worker/deno/lib/deno_test_baseline.ts` for the sweep-coverage audit.
+- Re-run on this head:
+  `deno task test:unit tests/deno_test_baseline_test.ts tests/pre_push_gate_test.ts`,
+  132 passed, 0 failed (12 + 120). The full quality gate was not re-run for
+  this test-only change.
