@@ -129,9 +129,13 @@ flowchart LR
 - Docs: `docs/MANAGER-WORKER-CONTRACT.md` ("The existing failure path retains
   the work for retry" was false) now describes the typed error, preservation and
   release as `interrupted`.
-- Targeted run on the final head: `deno task test:unit` of the new test, the
-  4949 test, the enforcement test and the three cause-list tests plus
-  `execute_phase_killed_test.ts`: 88 passed, 0 failed.
+- Targeted run on the final head (`deno task test:unit`, tests at head per file):
+  `worker/deno/tests/execute_phase_unfinished_executor_5048_test.ts` (5),
+  `worker/deno/tests/execute_phase_turn_limit_4949_test.ts` (6),
+  `worker/deno/tests/issue_executor_enforcement_test.ts` (19),
+  `worker/deno/tests/wip_checkpoint_test.ts` (15),
+  `worker/deno/tests/handover_note_test.ts` (25),
+  `worker/deno/tests/wip_commit_marker_test.ts` (4): 74 passed, 0 failed.
 
 ## Not done
 
