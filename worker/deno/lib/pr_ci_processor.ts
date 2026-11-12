@@ -14,7 +14,14 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
  */
 
 import { isProviderUnavailableFailure } from "./agent_output.ts";
-import type { CiProviderConfig, Logger, RepoConfig, Result } from "../types.ts";
+import type {
+  CiProviderConfig,
+  Logger,
+  RepoConfig,
+  Result,
+  TokenEconomizerConfig,
+} from "../types.ts";
+import { tokenEconomizerSpawnOptions } from "./token_economizer_plugin.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { buildCiFixPrompt, type CiFixPromptOptions } from "./prompt_builder.ts";
@@ -318,6 +325,12 @@ export interface CiProcessorDeps {
    * `dirname` names the lane, not the root.
    */
   workRoot: string;
+  /**
+   * The `token_economizer` block for this host (Issue #4956). Absent, the CI-fix
+   * agent is spawned with no plugin, as every host was before. Set by the
+   * production callers from `config.tokenEconomizer`.
+   */
+  tokenEconomizer?: TokenEconomizerConfig;
   /**
    * Directory the base-refresh decision counters are persisted to
    * (`base_refresh_counters.json`): the production callers pass `WORK_DIR`.
@@ -2042,6 +2055,17 @@ async function _processCiWithHeartbeat(
   carrier.agentRan = true;
   const runStatsSink: (RunStats | undefined)[] = carrier.runStats ??= [];
 
+  // The TokenEconomizer plugin for this CI-fix spawn (Issue #4956). The launch
+  // lives under the work root, never the clone, so the root is passed.
+  const tokenEconomizer = processorDeps.tokenEconomizer
+    ? await tokenEconomizerSpawnOptions({
+      config: processorDeps.tokenEconomizer,
+      workDir: processorDeps.workRoot,
+      repo,
+      runKind: "ci-fix",
+      logger,
+    })
+    : {};
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
@@ -2068,6 +2092,7 @@ async function _processCiWithHeartbeat(
       // Issue #2384: absent unless RTK's hook is installed, so every other
       // run spawns the argv it always did.
       ...settingsJsonOption(undefined, rtk.hookSettings()),
+      ...tokenEconomizer,
     },
     {
       maxRetries: maxRateLimitRetries,
@@ -3410,6 +3435,17 @@ async function _runPostClaudeQualityCheck(
         undefined,
         qualityCommand,
       );
+    // The same TokenEconomizer launch as the first attempt (Issue #4956): the
+    // retry is the CI-fix agent's own second spawn, in the same checkout.
+    const tokenEconomizer = processorDeps.tokenEconomizer
+      ? await tokenEconomizerSpawnOptions({
+        config: processorDeps.tokenEconomizer,
+        workDir: processorDeps.workRoot,
+        repo: input.repo,
+        runKind: "ci-fix",
+        logger,
+      })
+      : {};
     const retryResult = await deps.claude.runClaudeWithRetry(
       {
         // The same index the first attempt was handed (Issue #2160) — it is
@@ -3431,6 +3467,7 @@ async function _runPostClaudeQualityCheck(
           codegraph.mcpConfig(browserGranted(repoConfigs, input.repo)),
         ),
         ...settingsJsonOption(undefined, rtk.hookSettings()),
+        ...tokenEconomizer,
       },
       { maxRetries: maxRateLimitRetries },
     );

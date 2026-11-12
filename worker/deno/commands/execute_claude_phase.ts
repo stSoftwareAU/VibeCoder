@@ -155,6 +155,8 @@ export const executeClaudePhaseCommand: Command = {
       clarityStatus,
       workDir,
       repoConfigs: config.repoConfig,
+      // The TokenEconomizer block (Issue #4956); off unless the host enables it.
+      tokenEconomizer: config.tokenEconomizer,
       // Issue #849: the operator's built-in-phase prompt overrides.
       promptOverrides: promptOverrideMappings(config),
       claudeTimeout,

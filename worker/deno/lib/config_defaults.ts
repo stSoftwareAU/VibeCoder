@@ -497,9 +497,9 @@ export const OPERATIONAL_DEFAULTS = {
   /**
    * The TokenEconomizer block (Issue #4955, part of #4953). Off by default, so
    * an unconfigured host is unchanged; `learningsRepo` has no default and is
-   * required once `enabled` is set. The block is accepted and validated, but
-   * not read yet: #4956 will wire it into runs; today a run is the same
-   * whatever it is set to.
+   * required once `enabled` is set. `enabled`, `microskills` and `loopguard`
+   * are read by the run launch decision; `learnings_repo` is accepted and
+   * validated, but not read yet: #4957 will persist the learnings to it.
    */
   tokenEconomizer: {
     enabled: false,
@@ -1702,7 +1702,8 @@ export function buildDefaultWorkerConfig(
       enabled: OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     },
     rtkOutput: { enabled: OPERATIONAL_DEFAULTS.rtkOutput.enabled },
-    // Issue #4955: accepted and validated, but not read yet (#4956 wires it).
+    // Issue #4955. `learnings_repo` is accepted and validated, but not read yet
+    // (#4957 will persist the learnings to it).
     tokenEconomizer: {
       enabled: OPERATIONAL_DEFAULTS.tokenEconomizer.enabled,
       learningsRepo: OPERATIONAL_DEFAULTS.tokenEconomizer.learningsRepo,

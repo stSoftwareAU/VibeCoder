@@ -3,9 +3,10 @@
  *
  * The acceptance: a disabled host's agent argv and env are unchanged, for both
  * providers. The `token_economizer` block parses (`lib/token_economizer_config.ts`)
- * and `loadConfig` accepts it, but nothing reads it yet; #4956 wires it into
- * runs. This file pins the spawn the worker builds today, so that wiring cannot
- * change a disabled host's spawn unnoticed.
+ * and `loadConfig` accepts it, and the launch decision in
+ * `lib/token_economizer_plugin.ts` returns no launch for a disabled block. This
+ * file pins the spawn the worker builds today, so that the wiring cannot change
+ * a disabled host's spawn unnoticed.
  *
  * What is proved, and what is not:
  *
@@ -24,8 +25,10 @@
  *    disabled one. The baseline is built by the same builders, so it cannot
  *    catch an unconditional change to a builder either. The literal golden
  *    spawn (`GOLDEN_ARGV`, `GOLDEN_ADDED_ENV_KEYS`) is what pins today's argv
- *    and env, and every disabled host is also checked against it. #4956 MUST
- *    keep these tests and add an `enabled: true` case whose argv or env differs.
+ *    and env, and every disabled host is also checked against it. These tests
+ *    must stay. The env an enabled launch carries is pinned in
+ *    `token_economizer_plugin_test.ts`; an enabled argv that differs from this
+ *    golden is not pinned against it yet.
  *
  * 2. No plugin trace. No argv element or env key/value carries a token
  *    economizer name (`/token[-_ ]?economizer/i`), a `--plugin-dir` argument,
@@ -38,8 +41,9 @@
  *    root holding a temp HOME, a temp WORK_DIR and an MCP config file, and
  *    asserts that the tree under the root is unchanged afterwards. That catches
  *    a builder that starts writing under the directories it is handed. It does
- *    NOT prove that a plugin file is absent from wherever #4956 would write one:
- *    there is no seam for that until #4956, and none is faked here.
+ *    NOT prove that a plugin file is absent from an enabled run's state
+ *    directory. The launch decision creates that directory only for an enabled
+ *    run, and the disabled path never reaches it. Nothing is faked here.
  *
  * Every test calls the real functions with real data. Temp directories come
  * from `Deno.makeTempDir`. No wall-clock thresholds, no network.
@@ -98,7 +102,7 @@ const GOLDEN_PHASE = "plan";
  * Today's argv for `GOLDEN_PROMPT` at `GOLDEN_MODEL`, `GOLDEN_EFFORT` and
  * `GOLDEN_PHASE`, per provider, copied from the unmodified builders.
  *
- * update when the builders legitimately change; #4956 must keep these and add an enabled:true case
+ * update when the builders legitimately change; the disabled spawn must keep these
  */
 const GOLDEN_ARGV: Readonly<Record<string, readonly string[]>> = {
   [CLAUDE_PROVIDER_ID]: [
@@ -133,7 +137,7 @@ const GOLDEN_ARGV: Readonly<Record<string, readonly string[]>> = {
  * sorted. Every parent key must also survive with its value unchanged, which is
  * checked separately.
  *
- * update when the builders legitimately change; #4956 must keep these and add an enabled:true case
+ * update when the builders legitimately change; the disabled spawn must keep these
  */
 const GOLDEN_ADDED_ENV_KEYS: Readonly<Record<string, readonly string[]>> = {
   [CLAUDE_PROVIDER_ID]: [

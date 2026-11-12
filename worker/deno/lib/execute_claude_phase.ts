@@ -32,7 +32,9 @@ import type {
   Logger,
   RepoConfig,
   Result,
+  TokenEconomizerConfig,
 } from "../types.ts";
+import { tokenEconomizerSpawnOptions } from "./token_economizer_plugin.ts";
 import {
   buildQualityInstructions,
   getCiFailureLabels,
@@ -282,6 +284,12 @@ export interface ExecuteClaudePhaseOptions {
   workDir: string;
   /** Per-repo configuration map. */
   repoConfigs?: Record<string, RepoConfig>;
+  /**
+   * The `token_economizer` block for this host (Issue #4956). Absent, the
+   * implementation agent is spawned with no plugin, as every host was before.
+   * The standalone command sets it from `config.tokenEconomizer`.
+   */
+  tokenEconomizer?: TokenEconomizerConfig;
   /**
    * Validated `custom_label_prompts` mappings (Issue #849, part of #843).
    * An entry overriding the `issue` phase replaces the built-in template.
@@ -1715,6 +1723,19 @@ async function executeClaudePhaseBody(
   deps.log("Starting Claude Code to work on the issue...");
   let claudeResult: Result<ClaudeRunResult>;
   try {
+    // The TokenEconomizer plugin for this implementation spawn (Issue #4956).
+    // Not on an external orchestration: that path hands these options to every
+    // manager and reviewer role call, and the plugin is for the implementation
+    // run only.
+    const tokenEconomizer = externalOrchestration || !options.tokenEconomizer
+      ? {}
+      : await tokenEconomizerSpawnOptions({
+        config: options.tokenEconomizer,
+        workDir,
+        repo,
+        runKind: "implementation",
+        logger,
+      });
     const claudeRunOptions: RunClaudeOptions = {
       prompt: userPrompt,
       systemPrompt,
@@ -1773,6 +1794,7 @@ async function executeClaudePhaseBody(
       // always spawned; when the split-executor guard lands on this path its
       // entry merges into the same object rather than replacing this one.
       ...settingsJsonOption(undefined, rtk.hookSettings()),
+      ...tokenEconomizer,
       // Opt-in only (Issue #4296) — absent, the hard timeout is unchanged.
       ...(options.progressExtension
         ? { progressExtension: options.progressExtension }
