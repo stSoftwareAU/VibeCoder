@@ -21,8 +21,7 @@ blocks or cannot run, the container removes the `BABYSITTER_READY` line and puts
 a `[BABYSITTER_GATE_BLOCKED]` line with the cause first, so the host's existing
 completion check refuses to push and quotes the cause. A check that failed is a
 `code` failure that spends a repair attempt; a gate that could not run
-(`pre-push
-checks could not run`, for example a module-fetch outage) is raised
+(`pre-push checks could not run`, for example a module-fetch outage) is raised
 on the host as an `infrastructure` failure, which backs off and spends no repair
 attempt. A check that leaves stray files in the clone (which the host's
 `git add -A` would push) also blocks. Part of #4930.
@@ -57,8 +56,8 @@ flowchart LR
   as tracked), and emulates the baseline `git worktree add` with a fresh
   repository under a temp root that borrows the clone's objects
   (`objects/info/alternates`, plus the clone's `shallow` file), the base commit
-  checked out detached with hooks off. Neither writes to `.git`. The baseline
-  is a real git checkout: an earlier `git archive` + `tar` extraction had no
+  checked out detached with hooks off. Neither writes to `.git`. The baseline is
+  a real git checkout: an earlier `git archive` + `tar` extraction had no
   `.git`, so a test that inspects its checkout failed there for that reason
   alone, and a regression the repair caused passed as base-owned (review of
   `d16f355`). A shared clone is not used, because git will not clone a shallow
@@ -70,8 +69,8 @@ flowchart LR
 - The gate's kind reaches the host in the headline of the withheld response:
   `isGateInfrastructureResponse` (`lib/babysitter_tree_gate.ts`) recognises
   `[BABYSITTER_GATE_BLOCKED] pre-push checks could not run:` at the start of the
-  response, and `fix()` raises it before the generic missing-READY failure.
-  Only the gate may write that text: `babysitter-repair` replaces
+  response, and `fix()` raises it before the generic missing-READY failure. Only
+  the gate may write that text: `babysitter-repair` replaces
   `[BABYSITTER_GATE_BLOCKED]` in the agent's own output on every path
   (`neutraliseGateMarker`), so an agent that fails without READY cannot make its
   failure count as infrastructure and dodge the repair cap.
@@ -83,6 +82,14 @@ flowchart LR
   base tip the merge brings in, not the PR's old fork point. Markdownlint has no
   baseline, so dropping the base-owned paths is also what keeps a base markdown
   error from blocking.
+- The gate compares the tree before and after its checks by content, not by path
+  list. Before the checks it snapshots each dirty path (status state, mode,
+  SHA-256 of the bytes, or the symlink target) and Git's staged entries
+  (read-only `git ls-files --stage -z` with literal pathspecs); after them it
+  snapshots again. Any difference blocks a passing verdict, so a check that
+  overwrites an already-dirty file, or replaces a staged blob, cannot slip into
+  the host's `git add -A`. A dirty path that cannot be inspected, or an index
+  that cannot be read, is an `infrastructure` outcome (fail closed).
 - Withholding the READY line, not failing the container, is the verdict channel:
   the host already refuses a response without it and quotes the response.
   `isBabysitterReady` (`lib/babysitter_ready.ts`) is now the one rule for both
@@ -91,8 +98,8 @@ flowchart LR
 ### Undiscoverable Facts
 
 - Not verified in a real container: the unit tests run against injected seams
-  and real temporary git repositories; the gate's wall-clock inside the 90-minute repair budget were not
-  observed.
+  and real temporary git repositories; the gate's wall-clock inside the
+  90-minute repair budget were not observed.
 - The wedge/delivery history: #5014 was closed, #5034 merged as `Part of #4930`.
 
 ## Evidence
@@ -107,9 +114,10 @@ Backend-only; no UI files. Tests:
 `worker/deno/tests/support/babysitter_tree_fixture.ts` (the shared real-git
 clone fixture and the uncommitted-merge fixture). Docs:
 `docs/workflows/fleet-pr-babysitter.md` (repair flow, diagram step, new
-"Pre-push gate" paragraph, merge-in-progress and marker-neutralisation text, READY and missing-marker paragraphs, shift-left
-paragraph), `docs/CONFIGURATION.md` (push-guarantee paragraph; the cargo-deny
-and ShellCheck items no longer say babysitter repairs are unchecked). Ledger:
+"Pre-push gate" paragraph, merge-in-progress and marker-neutralisation text,
+READY and missing-marker paragraphs, shift-left paragraph),
+`docs/CONFIGURATION.md` (push-guarantee paragraph; the cargo-deny and ShellCheck
+items no longer say babysitter repairs are unchecked). Ledger:
 `docs/audits/lib-sweep-coverage/top-up-4930.json` claims the two new modules
 (`sweptAt` moved to `96824f40`, so drift for the two older modules is measured
 from there).
@@ -151,9 +159,9 @@ container runs the unit tests and markdownlint after the agent.
   delivered": a repair run of the fleet PR babysitter in its real container
   showing the gate blocking a failing test and a markdown error before a push —
   reviewer: missing — reason: this needs the deployed babysitter image and a
-  live fleet PR, so it can only be observed after merge; the closest evidence
-  is the tests above, which drive the real `runPrePushGate` and the real
-  completion path with only the command runner faked.
+  live fleet PR, so it can only be observed after merge; the closest evidence is
+  the tests above, which drive the real `runPrePushGate` and the real completion
+  path with only the command runner faked.
 
 ## Standards Review
 
@@ -170,23 +178,17 @@ container runs the unit tests and markdownlint after the agent.
 ## Test Plan
 
 - `cd worker/deno && deno task test:unit tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts tests/babysitter_ready_test.ts tests/fleet_babysitter_container_4738_test.ts tests/babysitter_fix_orchestration_test.ts tests/fleet_pr_babysitter_test.ts`:
-  each file passed when run by its author on the previous head (37, 42, 7, 55,
-  76 and 121 tests). On this head the six files were re-run with `deno test`:
-  44, 42, 7, 55, 77 and 120 passed. That run had no route to jsr.io, so
-  `@std/assert`, `@std/crypto` and `@std/yaml` were local stand-ins
-  (`--no-lock`); the one `fleet_pr_babysitter_test.ts` failure, `babysitter
-  default heartbeat resolves its checkout revision`, is that subprocess failing
-  to fetch `@std/yaml`, and fails the same way on the previous head there.
-- `deno fmt`, `deno lint`, `deno check` of the changed files and
-  `markdownlint-cli2` of the changed doc passed on the working tree. The full
-  `./quality.sh` was not re-run for this review round; CI runs it on the pushed
+  all 349 tests across the six files passed on this head, with the repository's
+  locked dependencies.
+- `deno fmt --check`, `deno lint` and `deno check` of the changed source and
+  test files passed on the working tree, and `deno fmt` was applied to this
+  summary. The full `./quality.sh` was not run here; CI runs it on the pushed
   head.
 - Real-gate tests (`babysitter_tree_gate_test.ts`): `runBabysitterTreeGate`
   drives the real `runPrePushGate` over a clone of a bare remote, with only the
   command runner and the markdownlint lookup faked. An uncommitted new test file
   that fails is `blocked` and names its command, with no `deno fmt` or
-  `deno
-  lint` run; a test failing identically at the PR base is a warning
+  `deno lint` run; a test failing identically at the PR base is a warning
   (`passed`); one that passes at the base but fails in the tree blocks; without
   a base branch the same failure blocks; a changed `.md` runs markdownlint and
   its failure blocks; no markdownlint binary is not a pass; a module-fetch
@@ -216,8 +218,8 @@ container runs the unit tests and markdownlint after the agent.
   `post-checkout` hook does not run (the test hands the hooks path to git as an
   outer `-c` through the git seam, so it sets no process environment and stays
   parallel-safe under Issue #880's rule).
-- Marker tests (`babysitter_repair_4738_test.ts`): a non-READY reply, and a READY
-  reply, that start with the infrastructure headline are written with the
+- Marker tests (`babysitter_repair_4738_test.ts`): a non-READY reply, and a
+  READY reply, that start with the infrastructure headline are written with the
   marker neutralised, so `isGateInfrastructureResponse` is false; a withheld
   response carries the gate's marker once, also when a check's message quotes
   the marker (`babysitter_tree_gate_test.ts`).
@@ -232,32 +234,36 @@ container runs the unit tests and markdownlint after the agent.
   new untracked directory is listed by path); `defaultMakeTempDir`'s return (the
   default temp root is a real directory, handed to the adapter, then removed);
   `defaultRemoveTree`'s NotFound branch (a root already gone is not a failure);
-  `defaultCheckoutTree`'s copied `shallow` file (history reads in the
-  baseline), its empty `--template=` (no hooks directory), its
-  `core.hooksPath=/dev/null` (a configured `post-checkout` hook does not run)
-  and its absolute object path branch (a `--separate-git-dir` clone). The redundant
+  `defaultCheckoutTree`'s copied `shallow` file (history reads in the baseline),
+  its empty `--template=` (no hooks directory), its `core.hooksPath=/dev/null`
+  (a configured `post-checkout` hook does not run) and its absolute object path
+  branch (a `--separate-git-dir` clone). The redundant
   `!isBabysitterReady(response)` operand in `fix()` that survived mutation is
   gone: the infrastructure check is nested under the missing-READY branch.
-  Exempt (untestable):
-  `worker/deno/lib/babysitter_tree_gate.ts` `--porcelain=v1` (git's `-z` implies
-  the porcelain v1 format, so removing it changes nothing);
-  `pathsBeyondMerge`'s `--no-optional-locks` (it matters only on the container's
-  read-only `.git`, where git skips the optional index refresh anyway) and
-  `--no-renames` (an agent's move leaves an unstaged deletion and an untracked
-  file, which `git diff <commit>` never pairs as a rename).
+  Exempt (untestable): `worker/deno/lib/babysitter_tree_gate.ts`
+  `--porcelain=v1` (git's `-z` implies the porcelain v1 format, so removing it
+  changes nothing); `pathsBeyondMerge`'s `--no-optional-locks` (it matters only
+  on the container's read-only `.git`, where git skips the optional index
+  refresh anyway) and `--no-renames` (an agent's move leaves an unstaged
+  deletion and an untracked file, which `git diff <commit>` never pairs as a
+  rename).
 - Behaviour tests (names end `(#4930)`): status parsing (modified, deleted,
   renamed, untracked, scratch files); each git interception (`log`, `ls-files`,
-  git-common-dir, `worktree add` really extracting the fork commit via
-  a real checkout with its own `.git`, `remove`, `prune`, refusal outside the
-  temp root);
-  outcome mapping (passed, infrastructure, blocked, a throw); redaction and
-  1500-character cap; tree-pollution (a stray untracked file turns a pass into
-  blocked, keeps the gate's own failure otherwise); `withholdReady`; the command
-  withholds READY on blocked, infrastructure and a throw, leaves passed/clean
-  unchanged, never calls the gate for a not-ready response, forwards and
-  validates `--base-branch`; container argv gains `--base-branch` only when
-  given and refuses an unsafe name; `startBabysitterAgent` and the repair flow
-  forward `pr.baseRefName`.
+  git-common-dir, `worktree add` really extracting the fork commit via a real
+  checkout with its own `.git`, `remove`, `prune`, refusal outside the temp
+  root); outcome mapping (passed, infrastructure, blocked, a throw); redaction
+  and 1500-character cap; tree-pollution (a stray untracked file turns a pass
+  into blocked, keeps the gate's own failure otherwise; same-path edits to an
+  already-untracked or already-modified file by a passing check block, and so
+  does a staged blob replaced with identical status and worktree bytes:
+  `same-path untracked edits made by passing checks block the push (#4930)`,
+  `same-path tracked edits made by passing checks block the push (#4930)`,
+  `a changed staged blob is blocked even with identical status and worktree bytes (#4930)`);
+  `withholdReady`; the command withholds READY on blocked, infrastructure and a
+  throw, leaves passed/clean unchanged, never calls the gate for a not-ready
+  response, forwards and validates `--base-branch`; container argv gains
+  `--base-branch` only when given and refuses an unsafe name;
+  `startBabysitterAgent` and the repair flow forward `pr.baseRefName`.
 - Red checks run by hand and restored: skip the READY check (1 test red); ignore
   the gate outcome (3 red); drop the `ls-files` interception (1 red); drop the
   `log --name-only` interception (1 red); drop the tree comparison (1 red); drop
@@ -274,19 +280,5 @@ container runs the unit tests and markdownlint after the agent.
   (the one production caller of `startBabysitterAgent`) passes it; the
   Apple-helper and plain argv builds in `runBabysitterRepairContainer` both pass
   it.
-- Skipped / not checked: a real container run; the sweep-drift baseline move
-  noted above.
-
-## Latest review repair and validation
-
-- The follow-up repair at `4f27ecedfaa4e521ba1846858cb56a85152024cc` updated `babysitter_tree_gate_test.ts` following the checkout-semantics review: tests now exercise a real temporary Git baseline rather than relying only on archive extraction or a faked test runner. The temporary checkout has Git metadata while the mounted source `.git` remains untouched.
-- On that commit, Dependency Review and Cargo Audit completed successfully. The Quality workflow's general `validate-scripts / validate` job failed solely at the PR-summary freshness check because the regression-test edit was committed after this summary. This summary update repairs that ordering; the new head's CI results must be checked separately. The other Quality jobs were still running when that failure was inspected.
-- Real deployed-container validation is still outstanding, so this change does not close issue #4930.
-
-## Same-path mutation guard (review of `8e1475a`)
-
-- The pre-push gate now snapshots each dirty working-tree path before the checks and again after them: status state, executable bits and other mode data, file bytes via SHA-256, or symlink target. It also captures the Git index's staged object entries with read-only `git ls-files --stage -z`. The snapshots are compared before a successful gate verdict can be reported. Git status path membership alone was insufficient because a passing check could overwrite an already-modified file without changing the list of paths.
-- The snapshot uses literal Git pathspecs and fails closed as an infrastructure outcome if a dirty file cannot be inspected or Git's index cannot be read. A check that modifies an already-dirty file is now blocked, even when `git status` prints the same names and statuses; a staged blob replacement is blocked even when working-tree bytes and status text remain unchanged. The existing path-addition guard remains in place.
-- Added behaviour tests in `worker/deno/tests/babysitter_tree_gate_test.ts` with real temporary Git repositories: `same-path untracked edits made by passing checks block the push (#4930)`, `same-path tracked edits made by passing checks block the push (#4930)`, and `a changed staged blob is blocked even with identical status and worktree bytes (#4930)`. The existing unmodified-tree and stray-file tests remain.
-- CI results for this commit are not asserted here; GitHub Actions verifies it after push. The live deployed-container validation remains outstanding under #4930, which must stay open.
-- The first CI run found only Deno formatting differences in two edited files. These were corrected in follow-up commits; Deno's type check was green before the formatting fix. No functional change was made in the formatting commits.
+- Skipped / not checked: a real container run, which is why issue #4930 must
+  stay open; the sweep-drift baseline move noted above.
