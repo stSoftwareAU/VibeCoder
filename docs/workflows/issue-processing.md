@@ -1164,19 +1164,24 @@ reads that signal at both ends
   draft, and the next run retries. This post-PR failure skips the whole-body
   infrastructure retry, so the verifier and posted comments are not repeated.
   When the state lookup cannot read the draft
-  state (after one retry), the ready step's own head read decides: `isDraft`
-  true is handled exactly like a known draft, while `isDraft` false or an
-  unreadable head read only warns on a failed ready, and arming proceeds as
-  before (Issue #4952). Auto-merge on a draft waits for its ready-for-review CI
-  to start; if that cannot be confirmed, the sweep arms it (Issue #4160). The
+  state (after one retry), the ready step is still attempted. A failed ready
+  then fails the run as `interrupted` exactly like a known draft, whatever the
+  ready step's own head read says, so auto-merge is never armed after a failed
+  ready. A successful ready on an unknown state arms as before, except when the
+  head read says `isDraft` true: that PR is treated as a known draft and armed
+  only once its ready-for-review CI has started (Issue #4952). Auto-merge on a
+  draft waits for its ready-for-review CI to start; if that cannot be
+  confirmed, the sweep arms it (Issue #4160). The
   REST fallback runs when `gh pr create` hits the primary GraphQL quota, and
   the PR it returns can be an open draft continuation on the branch, so its
   draft flag is read over the quota-exempt REST endpoint (`readPrDraftViaRest`)
   and the same ready step runs unless that read says the PR is ready. While the
-  quota is latched, `gh pr view` and `gh pr ready` are skipped: a REST-confirmed draft that cannot be readied fails
-  the run as `interrupted` (retried), a REST-confirmed ready PR is left alone,
-  and a flag that cannot be read keeps the fail-open rule above. The body says `Closes #N` unless an entry is
-  `partial` or `missing`, which keeps `Part of #N`. An orphaned draft left
+  quota is latched, `gh pr view` and `gh pr ready` are skipped: a REST-confirmed
+  draft that cannot be readied fails the run as `interrupted` (retried), a
+  REST-confirmed ready PR is left alone, and a flag that cannot be read is an
+  unknown state whose failed ready fails the run the same way. The body says
+  `Closes #N` unless an entry is `partial` or `missing`, which keeps
+  `Part of #N`. An orphaned draft left
   anyway is readied by the sweep self-heal (Issue #4952).
 
 - **A timed-out run keeps a draft.** A run that times out (or is released on
@@ -1561,8 +1566,20 @@ The shape is fixed and machine-checked, so the worker owns it:
 2. `closure_verdict.ts` renders `## Acceptance Criteria` and
    `## Standards Review` in the `REVIEW_BLOCK_TEMPLATE` shape both validators
    accept, replacing whatever stood under those headings. Every field is
-   sanitised to one line with the label keywords stripped, so the model's own
-   text cannot forge a `reviewer:` verdict or open a third section;
+   sanitised to one line (so it cannot open a third section), and any
+   `evidence:` / `reason:` / `reviewer:` label at the start of the field or
+   after whitespace is removed, to a fixed point (so a label rebuilt by removing
+   another cannot survive), after the field is truncated. A keyword inside a
+   word or path (`src/evidence-store.ts`, `docs/reviewer-guide.md`,
+   `lib/reason-codes.ts`, `Xreviewer:`) is data and is kept verbatim. The
+   validators (`independent_review_gate.ts`, `acceptance_criteria_gate.ts`) and
+   `closure_criterion_match.ts` / `standing_violation_routing.ts` /
+   `degraded_delivery.ts` (`isPendingMergeCheck`) read fields
+   with the same grammar from `worker/deno/lib/closure_entry_grammar.ts` (a label
+   is a field only at the start of the entry or after whitespace, and is
+   followed by `:`; hyphen or dash is not a label separator), so renderer and
+   validators cannot disagree. An entry with two `reviewer:` fields that differ
+   is read as carrying no reviewer verdict, so the gate blocks;
 3. a verdict that does not cover every criterion — or names no evidence where
    the gate requires it — is asked for **once** more with the shortfall named.
    A second short verdict is rendered as it stands and the gate blocks on it:

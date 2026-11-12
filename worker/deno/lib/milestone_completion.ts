@@ -45,6 +45,7 @@ import {
   finalisePr,
 } from "./pr_auto_merge.ts";
 import { retireMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
+import { trackingIssueFromMilestoneTitle } from "./milestone_sync_streak.ts";
 import { isFleetRollbackCloseComment } from "./milestone_rollback_marker.ts";
 import { raiseDeadlockPartialRollups } from "./milestone_deadlock_rollup.ts";
 import {
@@ -81,6 +82,7 @@ import {
 } from "./milestone_not_planned_refs.ts";
 import { fetchOpenMilestonePages } from "./open_milestone_pages.ts";
 import { logAt } from "./log_sink.ts";
+import { MILESTONE_PROVENANCE_MAX_CHILDREN } from "./governing_issue_limits.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -909,8 +911,25 @@ const CLAIM_PROBLEM_REASONS: Record<ClaimProblem, string> = {
     "merged PR search could not be read, so delivery is unconfirmed",
 };
 
+// Issue #4967: the most `Part of #N` child lines a rollup body carries lives in
+// governing_issue_limits.ts beside the reviewer's cap, so the two cannot drift.
+export { MILESTONE_PROVENANCE_MAX_CHILDREN };
+
 /**
  * Build the PR body for a milestone summary PR.
+ *
+ * Issue #4967: directly under the `Closes #<tracking>` line the body carries
+ * anchored `Part of #N` lines (one per line, never a closing keyword) so the
+ * reviewer's test-change policy can link the issues the rollup serves:
+ * - `Part of #<parent>`, the leading `#N` of the milestone title (for example
+ *   `#42 Retry policy`), skipped when the title has none or it is the tracking
+ *   issue;
+ * - `Part of #<child>` for each claimed delivered issue, ascending, deduplicated,
+ *   excluding the parent and tracking issues, capped at
+ *   {@link MILESTONE_PROVENANCE_MAX_CHILDREN}. Flagged issues never get a line.
+ * The numbers come only from the title and the worker's own closed-issue list.
+ * With no leading `#N` in the title and no claimed children, the output is
+ * byte-identical to the body without these lines.
  *
  * @param milestoneTitle - The milestone title
  * @param defaultBranch - The default branch name
@@ -936,6 +955,24 @@ export function buildMilestoneSummaryBody(
   const claimed = closedIssues.filter((issue) => !issue.claimProblem);
   const flagged = closedIssues.filter((issue) => Boolean(issue.claimProblem));
 
+  // Issue #4967: anchored `Part of` lines for the reviewer's governing-issue
+  // read. Numbers are the worker's own (title and closed list), never model
+  // text; the tracking issue and the parent are never repeated as children.
+  const parentNumber = trackingIssueFromMilestoneTitle(milestoneTitle);
+  const isLinkable = (n: number): boolean =>
+    Number.isSafeInteger(n) && n > 0 && n !== trackingIssueNumber;
+  const parentLine = parentNumber === null
+    ? []
+    : [parentNumber].filter(isLinkable);
+  const childNumbers = [
+    ...new Set(claimed.map((issue) => issue.number)),
+  ]
+    .filter((n) => isLinkable(n) && n !== parentNumber)
+    .sort((a, b) => a - b)
+    .slice(0, MILESTONE_PROVENANCE_MAX_CHILDREN);
+  const provenanceLines = [...parentLine, ...childNumbers]
+    .map((n) => `Part of #${n}`);
+
   // Closed-issue titles are attacker-writable text quoted into a PR body the
   // worker signs, so they are scrubbed before interpolation (Issue #1249,
   // finding 8).
@@ -959,9 +996,12 @@ export function buildMilestoneSummaryBody(
     }\n`
     : "";
 
-  const trackingRef = trackingIssueNumber
-    ? `\nCloses #${trackingIssueNumber}`
-    : "";
+  // Issue #4967: the `Closes` line stays as it was; the `Part of` lines follow
+  // it on the same paragraph and are empty when there are none.
+  const trackingRef = [
+    ...(trackingIssueNumber ? [`Closes #${trackingIssueNumber}`] : []),
+    ...provenanceLines,
+  ].map((line) => `\n${line}`).join("");
 
   // Issue #3014 / #3223: already-rendered section(s) — pending declared
   // dependencies and/or not-planned doc references — slotted between
@@ -1340,6 +1380,11 @@ function fingerprintMarker(fingerprint: string): string {
  * not-planned sections are deliberately not part of it: they are advisory, the
  * merge gate re-checks them before merging, and they refresh whenever the
  * fingerprint changes or the PR is raised.
+ *
+ * Issue #4967: the payload leads with a version tag. The body gained the
+ * `Part of #N` provenance lines, so every fingerprint stamped before that
+ * change mismatches and an existing open rollup is rewritten once to carry
+ * them. Bump the tag whenever the rendered body's inputs or shape change.
  */
 async function summaryPrFingerprint(
   milestoneTitle: string,
@@ -1348,6 +1393,7 @@ async function summaryPrFingerprint(
   closedIssues: ClosedIssue[],
 ): Promise<string> {
   const payload = JSON.stringify([
+    "rollup-provenance-v2",
     milestoneTitle,
     defaultBranch,
     trackingIssueNumber,

@@ -51,6 +51,7 @@ import {
 } from "../lib/grill_me_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
+import { HOST_DISK_PARK_NOTE } from "../lib/heavy_build_gate.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { GitHubComment, GitHubIssue, WorkerConfig } from "../types.ts";
 import type { IssueContext } from "../lib/issue_worker.ts";
@@ -175,6 +176,196 @@ function assertNoForbiddenLabel(addedLabels: readonly string[]): void {
     );
   }
 }
+
+Deno.test("grill-me disk deferrals never become failed rounds, including legacy comments", async () => {
+  const reason =
+    `ephemeral cargo root over budget (101.0 GB free, floor 92.6 GB + headroom 25.0 GB). ${HOST_DISK_PARK_NOTE}`;
+  const comments = [1, 2].map((id) =>
+    makeComment({
+      id,
+      author: "testbot",
+      body:
+        `${GRILL_ME_FAILED_MARKER}\n\nThis grill-me round failed: Claude execution failed: ${reason}`,
+    })
+  );
+  assertEquals(countConsecutiveFailures(comments, "testbot"), 0);
+  const posted: string[] = [];
+  const labels: string[] = [];
+  let released = 0;
+  let invoked = 0;
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () => {
+        invoked++;
+        return Promise.resolve({ ok: false, error: new Error(reason) });
+      },
+    },
+  });
+  const ghClient = stubGhClient({
+    getIssueComments: () => Promise.resolve(comments),
+    postComment: (_r, _n, body) => {
+      posted.push(body);
+      return Promise.resolve(undefined);
+    },
+    addLabel: (_r, _n, label) => {
+      labels.push(label);
+      return Promise.resolve();
+    },
+    unassignIssue: () => {
+      released++;
+      return Promise.resolve();
+    },
+  });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await processGrillMe(makeContext(), {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      deps,
+      logger: deps.logger,
+    });
+    assert(!result.ok);
+  }
+  assertEquals(invoked, 2);
+  assertEquals(released, 2);
+  assertEquals(
+    posted.filter((body) => body.includes(GRILL_ME_FAILED_MARKER)),
+    [],
+  );
+  assertEquals(labels, []);
+});
+
+Deno.test("restricted discussion publishes its understanding and comment through the worker", async () => {
+  for (const returnMetadata of [true, false]) {
+    const posted: string[] = [];
+    const labels: string[] = [];
+    const original =
+      "Human requirement, preserved verbatim.\n\n<!-- GRILL-ME-UNDERSTANDING-START -->\nOld understanding\n<!-- GRILL-ME-UNDERSTANDING-END -->\n\nHuman appendix.";
+    let body = original;
+    let restricted = false;
+    const ghClient = {
+      ...stubGhClient({
+        getIssue: () => Promise.resolve(makeIssue({ body })),
+        getIssueComments: () =>
+          Promise.resolve(
+            posted.map((body, id) =>
+              makeComment({ id, body, author: "testbot" })
+            ),
+          ),
+        postComment: (_r, _n, comment) => {
+          posted.push(comment);
+          return Promise.resolve(
+            returnMetadata
+              ? makeComment({
+                id: posted.length,
+                body: comment,
+                author: "testbot",
+              })
+              : undefined,
+          );
+        },
+        addLabel: (_r, _n, label) => {
+          labels.push(label);
+          return Promise.resolve();
+        },
+      }),
+      editIssue: (_r: string, _n: number, update: { body?: string }) => {
+        body = update.body ?? body;
+        return Promise.resolve();
+      },
+    };
+    const comment =
+      `${GRILL_ME_ROUND_MARKER}1\n\nWhich existing account should be connected?\n\nNext time, aim for \`${GRILL_ME_READY_MARKER}\`.`;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: (options) => {
+          restricted = options.discussionOnly === true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: JSON.stringify({
+                comment,
+                understanding:
+                  "## Current Understanding\nConnect an existing account.",
+              }),
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+    });
+    const result = await processGrillMe(makeContext({ issueBody: original }), {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      deps,
+      logger: deps.logger,
+      cargoDeferral: async () => "cargo budget short",
+    });
+    assert(result.ok);
+    assertEquals(result.value.workerCommentPosted, true);
+    assertEquals(restricted, true);
+    assertEquals(posted.filter((text) => text === comment), [comment]);
+    assertEquals(
+      body,
+      original.replace(
+        "Old understanding",
+        "## Current Understanding\nConnect an existing account.",
+      ),
+    );
+    assertEquals(
+      labels,
+      ["needs-human"],
+      "only the genuine question requires an answer",
+    );
+  }
+});
+
+Deno.test("restricted discussion rejects malformed publication without changing the issue", async () => {
+  let edits = 0;
+  const posted: string[] = [];
+  const ghClient = {
+    ...stubGhClient({
+      postComment: (_r, _n, body) => {
+        posted.push(body);
+        return Promise.resolve(undefined);
+      },
+    }),
+    editIssue: () => {
+      edits++;
+      return Promise.resolve();
+    },
+  };
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: () =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            output: JSON.stringify({
+              comment: "## Grill-Me Round 99",
+              understanding: "x",
+              title: "overwrite",
+            }),
+            exitCode: 0,
+            timedOut: false,
+          },
+        }),
+    },
+  });
+  const result = await processGrillMe(makeContext(), {
+    promptsDir: PROMPTS_DIR,
+    ghClient,
+    deps,
+    logger: deps.logger,
+    cargoDeferral: async () => "cargo budget short",
+  });
+  assertEquals(result.ok, false);
+  assertEquals(edits, 0);
+  assertEquals(
+    posted.some((body) => body.startsWith(GRILL_ME_ROUND_MARKER)),
+    false,
+  );
+});
 
 // ============================================================================
 // countGrillMeRounds — pure helper

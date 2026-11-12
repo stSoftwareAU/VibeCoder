@@ -13,6 +13,7 @@ import {
   extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
   hasClosingKeyword,
+  hasGithubClosingReference,
   neutraliseSubAgentTierMarkers,
   subAgentTierFromBody,
 } from "../lib/pr_body.ts";
@@ -167,6 +168,37 @@ Deno.test("pr_body - ensurePrReferencesIssue leads with the close when the body 
   const result = ensurePrReferencesIssue(body, 42);
   assertEquals(result, `Closes #42\n\n${body}`);
   assertEquals(extractClosingIssueNumbers(maskMarkdownCode(result)), [42]);
+});
+
+// --- hasGithubClosingReference with a repository (Issue #4964) ---
+
+Deno.test("pr_body - hasGithubClosingReference counts a qualified reference only for its own repository", () => {
+  assertEquals(
+    hasGithubClosingReference("Closes owner/repo#42", 42, "owner/repo"),
+    true,
+  );
+  assertEquals(
+    hasGithubClosingReference("Closes Owner/Repo#42", 42, "owner/repo"),
+    true,
+  );
+  assertEquals(hasGithubClosingReference("Closes owner/repo#42", 42), false);
+  assertEquals(
+    hasGithubClosingReference("Closes other/repo#42", 42, "owner/repo"),
+    false,
+  );
+  assertEquals(hasGithubClosingReference("Closes #42", 42, "owner/repo"), true);
+  assertEquals(hasGithubClosingReference("Closes #42", 42), true);
+});
+
+Deno.test("pr_body - hasGithubClosingReference needs the keyword and #N on one line", () => {
+  assertEquals(
+    hasGithubClosingReference("Closes\n#42", 42, "owner/repo"),
+    false,
+  );
+  assertEquals(
+    hasGithubClosingReference("Closes owner/repo\n#42", 42, "owner/repo"),
+    false,
+  );
 });
 
 // --- buildMilestonePrSection ---

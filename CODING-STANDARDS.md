@@ -304,14 +304,18 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    bypass: CI and an independent approval remain required.
    **Change only what the issue changes.** When an issue alters part of what
    an existing test expects, edit that expectation and keep every other
-   assertion the test made — a green gate before and after does not prove
-   nothing was lost. Before raising the PR, go through the assertions your
+   behaviour assertion the test made — a green gate before and after does not
+   prove nothing was lost. Before raising the PR, go through the assertions your
    diff removes from each existing test (`git diff <base>...HEAD` over the
-   edited test files). Each one needs an issue requirement that makes it
-   untrue, or the replacement or existing coverage that still proves the
-   behaviour, recorded in the PR summary. An assertion removed without one is a
-   blocking self-review finding: restore it, or move it to a test that still
-   covers the behaviour and say where. The Test Plan table that used to block the pull request for this was removed (Issue #4234). The requirement
+   edited test files). Each removed behaviour assertion needs an issue
+   requirement that makes it untrue, or the replacement or existing coverage
+   that still proves the behaviour, recorded in the PR summary. A behaviour
+   assertion removed without one is a blocking self-review finding: restore it,
+   or move it to a test that still covers the behaviour and say where. A "how"
+   assertion (rule 2 of **Dummy tests and "how" tests are refused**) that the
+   change breaks is deleted, not re-counted or restored; name the outcome
+   assertions that still prove the behaviour. The Test Plan table that used to
+   block the pull request for this was removed (Issue #4234). The requirement
    shows the new value is right, not that the edited test still checks
    anything: each edited
    expectation also owes the red-check in **An edited expectation must
@@ -481,8 +485,8 @@ request for changes), never a style note.
    }
    ```
 
-**The dummy-test scan enforces part of this deterministically** (Issue
-#5016). The fleet reviewer and the pre-PR verifier run
+**The dummy-test scan enforces part of this deterministically** (Issue #5016).
+The fleet reviewer and the pre-PR verifier run
 `worker/deno/lib/dummy_test_scan.ts` over the change's diff. It judges only
 the tests the change adds or edits, in Rust (`#[test]`, `#[tokio::test]`) and
 Deno/TypeScript (`Deno.test`, and `it` / `test` in test files):
@@ -2217,14 +2221,9 @@ script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
 
-**Project version wording (Issue #3954).** Write the summary's own version-bump
-statement in Summary using durable wording, for example:
-``Version bump: `VERSION` updated for this change; the merged commit records the final version.``
-Do not predict a literal before/after pair that CI can change after your push.
-Name a specific relation to the actual target branch, such as one patch above
-it, only after checking that repository's workflow guarantees that policy.
-Otherwise keep the policy-neutral wording; manual or minor version changes do
-not imply an automatic patch policy. Exact release/build evidence belongs in
+**Project version wording (Issue #3954).** A summary needs no version-bump line:
+the diff and the merged commit record the version, and CI or a base merge can
+change it after your push. When a version is release evidence, give it in
 Evidence with its final commit or release provenance. Preserve dependency pins,
 historical reproduction versions, migration examples and changelog entries.
 

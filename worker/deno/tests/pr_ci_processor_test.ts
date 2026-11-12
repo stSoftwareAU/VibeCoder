@@ -16,6 +16,7 @@ import {
   resolveCiCheckStateDir,
 } from "../lib/pr_ci_processor.ts";
 import { AgentTurnLimitError } from "../lib/claude_turn_limit.ts";
+import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
   getCiCheckRetryCount,
   recordCiCheckRetry,
@@ -36,7 +37,11 @@ import {
   mockGitHubClient,
 } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
-import type { Logger } from "../types.ts";
+import type { Logger, RepoConfig } from "../types.ts";
+import {
+  CI_CARGO_ONLY_PRE_FLIGHT,
+  type PreFlightGateSpec,
+} from "../lib/git_push.ts";
 import type {
   ClaudeDeps,
   GitDeps,
@@ -57,6 +62,11 @@ import {
   prWriteCalls,
   recordingStateGh,
 } from "./support/pr_live_state_stub.ts";
+import {
+  answerCommentsRead,
+  isIssueCommentsRead,
+  type RestComment,
+} from "./support/fake_issue_comments.ts";
 
 // Prompts resolve against this checkout, never the worker host's (Issue #844)
 // — named as a parameter on every call rather than pinned by deleting the
@@ -2458,6 +2468,7 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
     const stateDir = `${tmpDir}/.ci_check_state`;
     const gitCommands: string[][] = [];
     const commitAndPushCalls: string[] = [];
+    const pushOptions: Record<string, unknown>[] = [];
     const ghCalls: string[][] = [];
     let claudeRan = false;
     let fixBranchCheckoutBeforeClaude = false;
@@ -2504,8 +2515,13 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
             value: { code: 0, stdout: "", stderr: "" },
           });
         }) as unknown as GitDeps["runGitCommand"],
-        commitAndPushPending: ((branchName: string) => {
+        commitAndPushPending: ((
+          branchName: string,
+          _message: string,
+          options: Record<string, unknown>,
+        ) => {
           commitAndPushCalls.push(branchName);
+          pushOptions.push(options);
           return Promise.resolve({
             ok: true,
             value: {
@@ -2532,6 +2548,7 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
         repo: "org/repo",
         prNumber: GATED_PR_NUMBER,
         branchName: GATED_MILESTONE_HEAD,
+        baseRef: "main",
         checkRunId: "gated-happy-1",
       }),
       {
@@ -2562,6 +2579,9 @@ Deno.test("processCiFailure - a gated head with no fix PR in flight pushes to a 
       [GATED_FIX_BRANCH],
       "the fix, not the PR's own head, receives the commit and push",
     );
+    assertEquals(pushOptions[0]?.compareBaseBranch, "main");
+    assertEquals(pushOptions[0]?.syncBaseBranch, undefined);
+    assertEquals(pushOptions[0]?.requireCargoBaseComparison, true);
     assertEquals(
       gitCommands.some((args) =>
         args[0] === "push" && args.includes("--delete")
@@ -3633,4 +3653,314 @@ Deno.test("processCiFailure - refuses history rebuild when commit authors cannot
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4630: the final-mile push's pre-flight spec
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs `processCiFailure` through to its final-mile push and returns the
+ * pre-flight spec that push was handed.
+ */
+async function finalMilePreFlight(
+  repoConfigs?: Record<string, RepoConfig>,
+): Promise<PreFlightGateSpec | undefined> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const finalMile: Array<PreFlightGateSpec | undefined> = [];
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+        })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+    };
+    const mockGithub: Partial<GitHubDeps> = {
+      runGhCommand: openPrGh(),
+    };
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: mockGithub,
+      git: {
+        commitAndPushPending: ((...args: unknown[]) => {
+          if (String(args[1]).startsWith("Fix CI failure:")) {
+            finalMile.push(args[4] as PreFlightGateSpec | undefined);
+          }
+          return Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          });
+        }) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      ...(repoConfigs ? { repoConfigs } : {}),
+    };
+
+    await processCiFailure(makeInput(), processorDeps);
+    assertEquals(finalMile.length >= 1, true, "expected a final-mile push");
+    return finalMile[0];
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+/**
+ * The `ciCargoCompareRef` each CI-fix agent run was handed for a PR with
+ * `baseRef`: the first run and, because the post-fix quality gate fails fixably
+ * over uncommitted changes, the retry run.
+ */
+async function agentCompareRefs(
+  baseRef: string | undefined,
+  prBase: string,
+): Promise<unknown[]> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const seen: unknown[] = [];
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: ((request: { ciCargoCompareRef?: string }) => {
+          seen.push(request.ciCargoCompareRef);
+          return Promise.resolve({
+            ok: true,
+            value: { output: "Fixed CI", exitCode: 0, timedOut: false },
+          });
+        }) as unknown as ClaudeDeps["runClaudeWithRetry"],
+      },
+      github: {
+        runGhCommand: openPrGh((args) =>
+          Promise.resolve(args.includes("baseRefName") ? prBase : "")
+        ),
+      },
+      git: {
+        runGitCommand: ((args: string[]) =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              code: 0,
+              stdout: args[0] === "status" ? " M src/broken.ts\n" : "",
+              stderr: "",
+            },
+          })) as unknown as GitDeps["runGitCommand"],
+        commitAndPushPending: (() =>
+          Promise.resolve({
+            ok: true,
+            value: {
+              committedNewChanges: false,
+              commitsPushed: 1,
+              finalUnpushedCount: 0,
+            },
+          })) as unknown as GitDeps["commitAndPushPending"],
+      },
+    });
+    await processCiFailure(makeInput(baseRef ? { baseRef } : {}), {
+      promptsDir: PROMPTS_DIR,
+      logger: makeSilentLogger(),
+      deps,
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+      qualityGateFn: () =>
+        Promise.resolve({
+          action: "failed_fixable" as const,
+          qualityOutput: "deno check failed",
+          retryPrompt: "./quality.sh failing:\ndeno check failed",
+        }),
+    });
+    return seen;
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+Deno.test("processCiFailure - agent runs (Issue #4630 review): the first run and the quality retry compare CI cargo against the PR base", async () => {
+  assertEquals(await agentCompareRefs("main", "unused"), [
+    "origin/main",
+    "origin/main",
+  ]);
+  assertEquals(await agentCompareRefs(undefined, "release/2"), [
+    "origin/release/2",
+    "origin/release/2",
+  ]);
+});
+
+Deno.test('processCiFailure - agent runs (Issue #4630 review): an unreadable PR base is "" (comparison required) on both runs', async () => {
+  assertEquals(await agentCompareRefs(undefined, ""), ["", ""]);
+});
+
+Deno.test("processCiFailure - repair push (Issue #4630): no pre-flight commands passes the cargo-only spec", async () => {
+  const spec = await finalMilePreFlight();
+  assertEquals(spec?.ciCargoOnly, true);
+  assertEquals(spec?.commands, []);
+  assertEquals(spec, CI_CARGO_ONLY_PRE_FLIGHT);
+});
+
+Deno.test("processCiFailure - repair push (Issue #4630): a repo's own pre-flight spec is kept", async () => {
+  const spec = await finalMilePreFlight({
+    "org/repo": { preFlight: ["deno task check"] },
+  });
+  assertEquals(spec?.commands, ["deno task check"]);
+  assertEquals(spec?.ciCargoOnly === true, false);
+});
+
+/**
+ * PR #4896 review: a repair push now runs the repo's CI cargo checks, which
+ * can fail as infrastructure (no toolchain, host disk full, a workflow command
+ * the scanner cannot reproduce). That is no verdict on the fix: no attempt
+ * marker is written, so the PR's fix budget is not charged, and the comment
+ * says the gate could not run rather than "failed to push".
+ *
+ * Runs `cycles` CI-fix cycles against one PR whose comments persist between
+ * them: each comment the processor posts is stored as the fleet's, and a
+ * stranger then reposts any release marker it carried, so the count the next
+ * cycle reads comes from what was actually posted. With `fleet` the processor
+ * is given the fleet logins it trusts. Returns each cycle's posted bodies.
+ */
+async function runCiGateInfraFault(
+  retryOnly: boolean,
+  { cycles = 1, fleet = false }: { cycles?: number; fleet?: boolean } = {},
+): Promise<string[][]> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const comments: RestComment[] = [];
+    const perCycle: string[][] = [];
+    for (let cycle = 0; cycle < cycles; cycle++) {
+      const commentBodies: string[] = [];
+      let pushCalls = 0;
+      const infra = () => ({
+        ok: false,
+        error: new PrePushGateInfrastructureError(
+          "CI cargo check could not run: cargo clippy is not installed",
+        ),
+      });
+      const deps = createMockDeps({
+        claude: {
+          runClaudeWithRetry: (() =>
+            Promise.resolve({
+              ok: true,
+              value: { output: "Fixed", exitCode: 0, timedOut: false },
+            })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+        },
+        github: {
+          runGhCommand: (args: string[]) => {
+            if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+            if (isIssueCommentsRead(args)) {
+              return answerCommentsRead(args, comments);
+            }
+            if (args[0] === "pr" && args[1] === "comment") {
+              const body = args[args.indexOf("--body") + 1];
+              if (body !== undefined) commentBodies.push(body);
+            }
+            return Promise.resolve("");
+          },
+        },
+        git: {
+          commitAndPushPending: (() => {
+            pushCalls++;
+            if (!retryOnly || pushCalls > 1) return Promise.resolve(infra());
+            return Promise.resolve({
+              ok: true,
+              value: {
+                committedNewChanges: true,
+                commitsPushed: 0,
+                finalUnpushedCount: 1,
+              },
+            });
+          }) as unknown as GitDeps["commitAndPushPending"],
+          recoverFromPushRejection: (() =>
+            Promise.resolve({
+              ok: true,
+              value: undefined,
+            })) as unknown as GitDeps["recoverFromPushRejection"],
+        },
+      });
+      const result = await processCiFailure(makeInput(), {
+        promptsDir: PROMPTS_DIR,
+        logger: makeSilentLogger(),
+        deps,
+        // A fresh state directory each cycle, as on any host: only the PR's
+        // comments carry the release count from one cycle to the next.
+        stateDir: `${tmpDir}/cycle-${cycle}/.ci_check_state`,
+        workDir: tmpDir,
+        workRoot: tmpDir,
+        ...(fleet ? { fleetLogins: ["fleet-bot"] } : {}),
+      });
+      assertEquals(result.ok, true);
+      assertEquals(result.ok && result.value.changesPushed, false);
+      for (const body of commentBodies) {
+        comments.push({ user: { login: "fleet-bot" }, body });
+        // A stranger copying the marker spends none of the budget.
+        const marker = body.match(/<!-- vibe-gate-infra-release key=[^ ]+ -->/);
+        if (marker) {
+          comments.push({ user: { login: "stranger" }, body: marker[0] });
+        }
+      }
+      perCycle.push(commentBodies);
+    }
+    return perCycle;
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+}
+
+function assertInfraFaultNotCharged(commentBodies: string[]): void {
+  assertEquals(
+    commentBodies.some((b) => b.includes("vibe-ci-fix-attempt")),
+    false,
+    `no attempt marker may be written: ${commentBodies.join("\n---\n")}`,
+  );
+  assertEquals(commentBodies.some((b) => b.includes("failed to push")), false);
+  assertEquals(
+    commentBodies.some((b) => b.includes("could not run")),
+    true,
+    "the PR is told the gate could not run",
+  );
+}
+
+Deno.test("PR #4896: a CI fix whose pre-push gate fails as infrastructure is not charged", async () => {
+  const [bodies] = await runCiGateInfraFault(false);
+  assertInfraFaultNotCharged(bodies ?? []);
+});
+
+Deno.test("PR #4896: a CI fix whose retry after push recovery fails as infrastructure is not charged", async () => {
+  const [bodies] = await runCiGateInfraFault(true);
+  assertInfraFaultNotCharged(bodies ?? []);
+});
+
+Deno.test("PR #4896: a CI fix released for a gate fault records the release, and the third is charged", async () => {
+  // Each cycle counts the releases the earlier cycles posted; a stranger's
+  // copy of each marker does not count.
+  const cycles = await runCiGateInfraFault(false, { cycles: 3, fleet: true });
+  const releaseMarker = /<!-- vibe-gate-infra-release key=ci-[\w.:-]+ -->/;
+  for (const released of cycles.slice(0, 2)) {
+    assertInfraFaultNotCharged(released);
+    assertEquals(
+      released.some((b) => releaseMarker.test(b)),
+      true,
+      `the release is recorded for the next cycle to count: ${
+        released.join("\n")
+      }`,
+    );
+  }
+  const charged = cycles[2] ?? [];
+  assertEquals(
+    charged.some((b) => b.includes("vibe-ci-fix-attempt")),
+    true,
+    `a repeated gate fault must be charged: ${charged.join("\n---\n")}`,
+  );
+  assertEquals(charged.some((b) => releaseMarker.test(b)), false);
 });

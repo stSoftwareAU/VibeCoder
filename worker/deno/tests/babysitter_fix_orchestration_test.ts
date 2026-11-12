@@ -669,6 +669,77 @@ Deno.test("head movement defers, and a head that moves mid-repair spends no subs
   });
 });
 
+const NATIVE_CHECK_FINDING =
+  "**`quality.sh:20`**: The native check has not run.\n\n**Fix:** Run the native check.\n\nReview summary.";
+const CLI_FINDING =
+  "**`cli.ts:5`**: The CLI case fails.\n\n**Fix:** Fix the newly failing CLI case.\n\nNew summary.";
+
+Deno.test("a newer change request landing mid-repair refuses the push as a race and the next pass repairs from it (Issue #4968)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }],
+    });
+    h.state.reviewBody = NATIVE_CHECK_FINDING;
+    h.state.changes = true;
+    const startAgent = h.deps.startAgent!;
+    h.deps.startAgent = async (...args) => {
+      const ran = await startAgent(...args);
+      h.state.reviewId++;
+      h.state.reviewBody = CLI_FINDING;
+      return ran;
+    };
+    await assertRejects(() => h.attempt(), Error, "PR changed during the fix");
+    assertEquals(h.state.pushed, 0);
+    assertEquals(h.state.dismissals, 0);
+    assertEquals(h.state.markers.length, 0);
+    const [race] = await records(stateDir);
+    assertEquals(race!.blockerClass, "race");
+    assertEquals(race!.attempts, { infrastructure: 1, substantive: 0 });
+
+    h.deps.startAgent = startAgent;
+    // The next pass clones the PR head afresh, so nothing is committed yet.
+    h.state.committed = false;
+    await elapse(stateDir);
+    await h.attempt();
+    assertEquals(h.state.sessions, 2);
+    assertEquals(h.state.pushed, 1);
+    assertEquals(h.state.dismissals, 1);
+    const newIdentity = repairFailureIdentity("requested review changes", [{
+      id: 11,
+      state: "CHANGES_REQUESTED",
+      user: { login: "reviewer" },
+      body: CLI_FINDING,
+    }]);
+    const pushed = (await records(stateDir)).find((record) =>
+      record.pushedHead === PUSHED
+    );
+    assertEquals(pushed?.failureIdentity, newIdentity);
+  });
+});
+
+Deno.test("a newer change request with the same findings mid-repair still pushes (Issue #4968)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({
+      reviewDecision: "CHANGES_REQUESTED",
+      statusCheckRollup: [{ conclusion: "SUCCESS", status: "COMPLETED" }],
+    });
+    h.state.reviewBody = NATIVE_CHECK_FINDING;
+    h.state.changes = true;
+    const startAgent = h.deps.startAgent!;
+    h.deps.startAgent = async (...args) => {
+      const ran = await startAgent(...args);
+      h.state.reviewId++;
+      return ran;
+    };
+    await h.attempt();
+    assertEquals(h.state.sessions, 1);
+    assertEquals(h.state.pushed, 1);
+  });
+});
+
 Deno.test("missing tools, a full disk, a timed-out fetch and a killed agent spend no substantive budget", async () => {
   const cases = [
     ["git failed: fatal: write error: No space left on device", "capability"],

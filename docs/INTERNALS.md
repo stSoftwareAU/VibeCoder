@@ -2851,6 +2851,12 @@ route is never taken on a guess.
 1. Lists open PRs authored by the worker (with `baseRefName` for priority
    sorting).
 2. Queries check runs for each PR (`repos/{repo}/commits/{branch}/check-runs`).
+   On a draft, the scan drops `gate` by name and drops a check whose immediate
+   `needs:` (one level, read from the host clone) were all skipped on that head.
+   The skipped-check lookup reads all pages, 100 check runs per page. A check
+   with no needs, no topology, or an unreadable skipped list is kept; a job that
+   ran and failed on a draft still goes to the fixer. The skip reason is
+   `draft-by-design-ci`.
 3. Filters for failed checks, **excluding** the ones the spelling route
    claims — a check is excluded only when its failing *step* is a spelling
    tool (see [Routing by failed step](#routing-by-failed-step-issue-1579)),
@@ -3418,7 +3424,12 @@ remote, a prompt-build failure) is charged the same way as a failed attempt,
 except an agent error caused by a host-disk fault, which is released without a
 charge (Issue #4511, see `docs/CONTAINER.md`).
 A branch the host could not check out releases the review **uncharged**, with
-no reply and no attempt counted.
+no reply and no attempt counted. A pre-push gate that fails as infrastructure
+(PR #4896) is released uncharged too, but only twice per comment: each release
+posts a comment carrying a `vibe-gate-infra-release` marker, and a comment with
+two fleet-authored markers already is charged like any other failed attempt. The
+CI-fix processor bounds its gate-infrastructure releases per failure signature
+the same way.
 
 ---
 
@@ -3707,7 +3718,15 @@ first configured issue label for automatic discovery.
 `has_existing_milestone_tracking_issue()` prevents duplicates by searching for
 existing issues with the same title (across all states — open + closed). The
 summary PR body includes a `Closes #N` reference so the tracking issue is
-automatically closed when the PR merges.
+automatically closed when the PR merges. Directly under it the body also carries
+anchored `Part of #N` lines (Issue #4967), never a closing keyword: one for the
+parent issue (the leading `#N` of the milestone title, when there is one) and one
+for each claimed delivered issue, ascending and capped at 62
+(`MILESTONE_PROVENANCE_MAX_CHILDREN`: the reviewer's `MAX_GOVERNING_ISSUES` of 64
+less the tracking issue and the parent, both held in
+`worker/deno/lib/governing_issue_limits.ts` so they cannot drift), so the fleet
+reviewer can read the issues the rollup serves. Flagged issues get no line. The fingerprint version bump
+refreshes each open rollup once so it gains these lines.
 
 **Closed-issue rollup classification** — each closed milestone issue is claimed
 when a merged PR either has the canonical `(Issue #N)` / `(#N)` title reference
@@ -5989,6 +6008,7 @@ remain included in the cost/model comment and fleet figures.
 The completion phase's pre-push gate (`gateBeforePush()` in
 `completion_phase.ts`) blocks with `[PRE_PUSH_BLOCKED]` followed by the failing
 check's output (cut to a head and tail, see "Two limits" below): `cargo fmt --check` and `deno fmt --check` diff hunks,
+CI cargo clippy and test-build diagnostics (Issue #4630),
 markdownlint `[Context: ...]` excerpts and quoted pre-flight test names. That
 text is repository content, so a source comment such as `// back off when the
 exchange rate limit is hit` was read as a rate limit: the run was released

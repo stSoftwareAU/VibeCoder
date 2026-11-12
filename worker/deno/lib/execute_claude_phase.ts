@@ -1,5 +1,7 @@
+import { issueRunCompareRef } from "./git_push.ts";
 import { isAutomaticProviderRoutingActive } from "./provider_auto_state.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
+import { UnfinishedIssueExecutorError } from "./issue_executor_enforcement.ts";
 /**
  * Claude execution phase orchestration (Issue #1227).
  *
@@ -174,6 +176,11 @@ export type ExecuteClaudeFailureType =
   | "timeout"
   | "rate_limit"
   | "turn_limit"
+  /**
+   * A split run ended with an executor sub-agent still unfinished and the
+   * completion refusal stood (Issue #5048) — a policy stop, not a crash.
+   */
+  | "executor_unfinished"
   | "out_of_memory"
   /** SIGKILLed with no watchdog firing — possible VM OOM (Issue #4202). */
   | "killed"
@@ -1741,6 +1748,7 @@ async function executeClaudePhaseBody(
       // call it makes runs against the process working directory, which is
       // this checkout.
       cwd: repoDir,
+      ciCargoCompareRef: issueRunCompareRef({ baseBranch, milestoneBranch }),
       // The rate/usage-limit signal belongs on the work volume, never in
       // the per-issue clone the `cwd` above now names (Issue #4315).
       workDir,
@@ -1828,6 +1836,8 @@ async function executeClaudePhaseBody(
       action: "failure",
       failureType: claudeResult.error instanceof AgentTurnLimitError
         ? "turn_limit"
+        : claudeResult.error instanceof UnfinishedIssueExecutorError
+        ? "executor_unfinished"
         : "execution_error",
       failureMessage: `Claude execution failed: ${claudeResult.error.message}`,
       elapsedSeconds,

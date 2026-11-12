@@ -1,0 +1,12 @@
+{
+  "issue": 4951,
+  "chunk": "top-up-4951",
+  "title": "top-up: draft PR by-design CI failures are not handed to the CI fixer",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4951",
+  "definition": "Review the pure rule that drops a draft PR's red checks that cannot pass there (the always-running gate, and checks whose needs were all skipped), keeping every genuinely failed job for the CI fixer.",
+  "status": "claimed",
+  "sweptAt": "7f0180250e3f42e663f616f4d0a32e5eb9d8d6d8",
+  "paths": [
+    "worker/deno/lib/draft_ci_by_design.ts"
+  ]
+}

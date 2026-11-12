@@ -14,7 +14,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
+import {
+  TURN_LIMIT_HEADING,
+  workOnIssueExecuteClaude,
+} from "../lib/phases/execute_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
@@ -276,6 +279,28 @@ Deno.test("execute_phase - the failure message carries the memory-pressure readi
   assert(
     reason.includes("400 MiB") && reason.includes("16.0 GiB"),
     `the diagnostics carry the numbers: ${reason}`,
+  );
+});
+
+Deno.test("execute_phase - a killed run whose output quotes the turn-limit heading keeps its single retry (PR #5025 review)", async () => {
+  // The agent's own output, quoted in the killed reason, names the turn-limit
+  // heading. Only the worker-written turn-limit reason may skip the retry.
+  const result = await runPhaseSequence([
+    {
+      ...KILLED_OK_PRESSURE,
+      output: `Running the full quality gate\n${TURN_LIMIT_HEADING}`,
+    },
+  ]);
+  assertEquals(result.status, "failure");
+  assert(
+    (result.reason ?? "").includes(TURN_LIMIT_HEADING),
+    `the quoted heading reaches the killed reason: ${result.reason}`,
+  );
+  assertEquals(detectFailureCategory(result.reason ?? ""), "killed");
+  assertEquals(
+    result.runnerCalls,
+    2,
+    "a kill is still retried once, whatever its output quotes",
   );
 });
 

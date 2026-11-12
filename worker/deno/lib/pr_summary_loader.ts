@@ -51,8 +51,8 @@ export function prSummaryCandidatePaths(issueNumber: number): string[] {
  * Use {@link loadCommittedPrSummary} when the content must match a commit.
  *
  * Checks three file locations in precedence order and returns the
- * content from the first non-empty file found, with standalone project-bump
- * statements normalised to durable wording.
+ * content from the first non-empty file found, with stale literal project-bump
+ * statements omitted (Issue #4972; see {@link normaliseSummaryVersionBumps}).
  *
  * @param repoPath - Absolute path to the repo work directory
  * @param issueNumber - The issue number to look up
@@ -177,6 +177,20 @@ function committedReadError(
   );
 }
 
+/**
+ * Omit stale literal version-bump lines from a PR summary (Issue #3954, Issue #4972).
+ *
+ * A line such as ``Version bump: `VERSION` 1.2.3 → 1.2.4`` in a Summary or
+ * Test Plan scope is omitted, never replaced by an assertion. The diff and the
+ * merged commit already record the version, and CI or deploy can change it
+ * after the push, so no claim about the version is made in its place.
+ *
+ * Lines already worded without a literal version pair, dependency pins,
+ * release evidence, changelog and migration text, and code blocks are untouched.
+ *
+ * @param content - Raw PR summary text (LF, CRLF or other line separators)
+ * @returns The content with matching bump lines removed, separators preserved
+ */
 export function normaliseSummaryVersionBumps(content: string): string {
   const chunks = content.split(/(\r\n|[\n\r\u2028\u2029])/);
   const lines = chunks.filter((_, index) => index % 2 === 0);
@@ -235,9 +249,23 @@ export function normaliseSummaryVersionBumps(content: string): string {
     if (!bump) {
       continue;
     }
-    chunks[index * 2] = `${bump[1]}\`${
-      bump[2]
-    }\` updated for this change; the merged commit records the final version.`;
+    // Omit the line and its trailing separator (the separator is absent on the
+    // last line). Then, if the line sat between two blank lines, also omit the
+    // following blank line so no two blank lines are left in a row.
+    chunks[index * 2] = "";
+    if (index * 2 + 1 < chunks.length) {
+      chunks[index * 2 + 1] = "";
+    }
+    const following = index + 1;
+    if (
+      (index === 0 || lines[index - 1]!.trim() === "") &&
+      following < lines.length && lines[following]!.trim() === ""
+    ) {
+      chunks[following * 2] = "";
+      if (following * 2 + 1 < chunks.length) {
+        chunks[following * 2 + 1] = "";
+      }
+    }
   }
   return chunks.join("");
 }

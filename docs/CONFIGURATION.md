@@ -1963,7 +1963,7 @@ unless explicitly overridden.
 | Setting                        | Config Key                       | Default    | Description                                                                                                                                                                                          |
 | ------------------------------ | -------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Claude timeout | `claude_timeout` | `3600` | Safety-net ceiling for Claude CLI (1 hour) — real stuck detection uses no-output timeout. Lowered from 4 hours by so one wedged run cannot starve every other repository. |
-| Claude turn cap | `claude_max_turns` | `100` | Positive integer agentic turns per Claude Code invocation (including the Claude-compatible DeepSeek CLI). Passed as `--max-turns`; reaching it logs `AGENT_TURN_LIMIT` / `error_max_turns` and ends that invocation without a retry. Issue, PR-feedback and CI-fix processing stop before publishing partial work, including capped recovery/verifier calls. The config value overrides stale internal shell transport. Each phase/resume has its own cap; this does not impose a total issue-wide token budget or a cap on Codex/Gemini. |
+| Claude turn cap | `claude_max_turns` | `100` | Positive integer agentic turns per Claude Code invocation (including the Claude-compatible DeepSeek CLI). Passed as `--max-turns`; reaching it logs `AGENT_TURN_LIMIT` / `error_max_turns` and ends that invocation without a retry. An issue-work execute run that reaches the cap is released as `interrupted` (never a worker crash, never auto-filed), its work preserved on the issue branch with a handover note, and is not retried in-process. Issue, PR-feedback and CI-fix processing stop before publishing partial work, including capped recovery/verifier calls. The config value overrides stale internal shell transport. Each phase/resume has its own cap; this does not impose a total issue-wide token budget or a cap on Codex/Gemini. |
 | Progress extension enabled | `progress_extension_enabled` | `true` | Extend the **issue-work** hard deadline while the run is demonstrably progressing. On by default (Issue #422) and bounded by the run hard cap; set it to `false` for the flat one-shot kill. The same settings re-arm a maintenance handler's watchdog while its own agent is still producing output, up to one agent budget from dispatch (Issue #2720). See [Progress-extended deadline](#-progress-extended-deadline). |
 | Progress extension grant | `progress_extension_grant_seconds` | `900` | Seconds each grant adds to the deadline, measured from the moment of the check. |
 | Progress extension stall window | `progress_extension_stall_seconds` | `300` | The agent is judged stalled only when **both** its last tool call and its last stdout chunk are older than this (Issue #767). Must be at least `progress_extension_check_seconds`. |
@@ -5048,8 +5048,11 @@ repo-specific commands in the worker.
 - A repo with **no** `pre-flight` entry has no commands to run, but is not
   fully unaffected: the issue completion phase's push (and Step 1b, for
   callers that pass a pre-flight spec) still runs the changed-file checks
-  described below, and a failure there fails the run. Pushes that pass no spec
-  (such as WIP-preservation pushes) stay ungated.
+  described below, and a failure there fails the run. The CI-fix and PR-feedback
+  repair pushes are the exception: for such a repo they pass a cargo-only spec
+  (Issue #4630), so only the repo CI's cargo clippy and test-target compile,
+  the ShellCheck policy and `cargo deny` run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
+  ungated.
 
 Commands run directly (not through a shell), so each entry is a program plus
 arguments; shell features (pipes, redirects, globs) are not interpreted. Wrap
@@ -5100,22 +5103,33 @@ configuration or newer registry version cannot change the hook's dependencies.
 The worker's own pushes do not carry the agent's
 environment, so the hook does not gate them; instead its final-mile
 commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
-same changed-files check through `runPrePushGate` on the already-committed
+changed-files check through `runPrePushGate` on the already-committed
 unpushed commits before pushing, and refuses the push on failure (Issue #3689).
+That check includes the CI cargo checks, as does the agent's own hook, which
+receives the scan precomputed in its spec (see the CI cargo bullet below).
 WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
 Step 1b runs only when a pre-flight spec exists, so callers passing no spec
-(such as WIP-preservation pushes) are not gated there. The completion phase's
+(such as WIP-preservation pushes) are not gated there. The CI-fix and
+PR-feedback repair processors pass a cargo-only spec when the repo has no
+pre-flight commands (Issue #4630), so their repair pushes run only the repo
+CI's cargo clippy and test-target compile, the ShellCheck policy
+(Issue #4631) and cargo deny for changed cargo inputs (Issue #4626), through
+Step 1b, and not the other changed-file checks listed below. Repos with
+pre-flight commands keep their own spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
-the changed-file checks (listed under the hook's first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell, ShellCheck, cargo deny and the Floci CloudFormation deploy
-test) still run and can fail the run. Unlike Step 1b, the completion gate
-checks every commit the branch has ahead of the PR base, not only commits on no
-remote-tracking ref; a merge commit contributes only the paths the merge itself
-changed (a conflict resolution), never the files it brings in from the base. The execute phase's WIP checkpoints (periodic, and once more at phase end)
-push the agent's commits through `commitAndPushPending` with no spec, so those
-pushes are ungated and the commits are usually already on origin when the
-completion phase runs; the whole-branch range is what keeps them from reaching
+the changed-file checks (listed under the first stage below: deno
+fmt/lint, cargo fmt, markdownlint, cspell, ShellCheck and the Floci CloudFormation
+deploy test), the CI cargo clippy and test-target compile (which the agent's
+hook also runs from its precomputed spec) and cargo deny still run and can fail the run. Unlike Step
+1b, the completion gate checks every commit the branch has
+ahead of the PR base, not only commits on no remote-tracking ref; a merge commit
+contributes only the paths the merge itself changed (a conflict resolution),
+never the files it brings in from the base. The execute phase's WIP checkpoints
+(periodic, and once more at phase end) push the agent's commits through
+`commitAndPushPending` with no spec, so those pushes are ungated and the
+commits are usually already on origin when the completion phase runs; the
+whole-branch range is what keeps them from reaching
 `gh pr create` unchecked (PR #3716 review). If the base ref cannot be resolved,
 the completion gate falls back to the unpushed-only check. The completion gate
 does nothing when the branch has no commit of its own ahead of the base, and in
@@ -5167,7 +5181,9 @@ or not the repo configures a pre-flight, so a repo with no Step 1b gate still
 has the miss fixed before CI sees it. A hook that throws is logged, and Step 1b
 still checks everything. WIP-preservation pushes pass no hook.
 
-The hook runs two stages:
+The gate runs two stages. The agent's own hook runs them with the CI cargo
+checks in stage 1, from the scan precomputed in its spec, as the worker's own
+gates do (see that bullet):
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
@@ -5193,6 +5209,103 @@ The hook runs two stages:
      deno to judge, and an unparseable `deno.json` is left unfiltered;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
+   - **CI's cargo clippy and test-target compile** (Issue #4630), when the push
+     changes a Rust-relevant file (a `.rs` file, `Cargo.toml`, `Cargo.lock`,
+     `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
+     `.clippy.toml`) in a directory the repo's CI runs cargo in. These run in
+     the worker's own gates (Step 1b, the completion gate and the repair
+     processors' cargo-only spec) and in the agent's own pre-push hook: before
+     the agent runs, the worker scans the workflows and writes the derived
+     checks (and any unverifiable reasons) into the hook's spec file, so the
+     hook runs them without importing the workflow scanner
+     (`ci_cargo_checks.ts` and its bare `@std/yaml/parse` specifier). If
+     that scan cannot be produced (the tracked-file list is unreadable, or the
+     scanner fails to load or throws), the worker logs a warning and writes a
+     scan with no checks and one unverifiable reason, so a Rust-relevant push
+     through the hook is refused as an infrastructure fault, not waved through
+     with no CI cargo check. The commands are read from the repo's own `.github/workflows/*.yml|yaml` files, and only
+     from workflows triggered on `pull_request`. Jobs and steps explicitly
+     allowed to fail (`continue-on-error: true` or `"true"`) are excluded.
+     A job-level expression for that policy makes its cargo checks unverifiable.
+     Each enforced `cargo clippy` run in a step is run exactly as written: its `working-directory` (step, job or
+     workflow; a plain relative path inside the repo), its `+toolchain` (or the
+     toolchain of the job's `dtolnay/rust-toolchain`,
+     `actions-rust-lang/setup-rust-toolchain` or `actions-rs/toolchain` step),
+     its flags (for example `--all-targets`, `--locked`, `-- -D warnings`), and
+     its cargo-relevant environment (`RUSTFLAGS` and similar, taken verbatim). A
+     test-target compile (`cargo test --no-run`) is derived from a CI
+     `cargo test`, `cargo nextest run` or `cargo llvm-cov` only when no clippy
+     run in that directory already compiles the same test targets: a clippy run
+     with `--all-targets` or `--tests` covers it only when the toolchain,
+     package selection (`--workspace`, `--all`, `-p`, `--exclude`), features,
+     profile, target, manifest path and env also match. Otherwise the test
+     build is kept, so the checked set is never silently reduced. Within a directory, clippy runs before the test-target compile,
+     after cargo fmt. A `cd <dir>` on its own line holds for the rest of that
+     step's run block, as in the shell; any `cd` form the scanner cannot follow
+     (`pushd`, `popd`, a variable, a `cd ... || true`) makes the later cargo
+     lines of that step unverifiable. For `cargo nextest run` (and `cargo
+     llvm-cov nextest`), `--profile` and `-P` name a nextest profile and are
+     dropped, and `--cargo-profile` becomes cargo's `--profile`. Before any CI
+     cargo command runs, a probe checks every distinct toolchain the plan uses
+     (per directory and env): `cargo [+toolchain] --version`, and `cargo
+     [+toolchain] clippy --version` where a clippy check uses it. An
+     infrastructure fault (a missing `cargo` or `clippy`, a toolchain,
+     component or `--target` that rustup or rustc reports as not installed, a
+     directory that is missing or resolves outside the repo, a cargo registry or
+     git-dependency network refusal, host disk full, a
+     timeout, or a CI command with a `${{ }}` expression, a pipe or shell syntax
+     the gate does not reproduce) is reported as an infrastructure fault, not as
+     a verdict on the commit, and it never reduces the set of checks run. Disk
+     full is recognised only in the build's own error lines, not in quoted
+     source excerpts (gutter lines, `-->` locations, `= note` and `= help`). A
+     failing clippy lint or test build is a verdict and blocks the push with its
+     output, unless the PR base already fails the same way: when the push knows
+     the PR base (the repair processors' base branch, or the completion gate's
+     base ref), a failing check is re-run, as CI wrote it, in a detached
+     worktree of that base's refreshed tip and, when the head forked from an
+     older commit, in a second one at that fork point (the base merge comes
+     after this gate, so a failure the head inherited and the tip has since fixed
+     is the base's). Remote `origin/<base>` refs are fetched before
+     resolution; a failed fetch is infrastructure, even if an older local ref
+     exists. Pinned commit refs are used directly. When every diagnostic the push shows (matched by
+     message and file, each no more often than on the base; not line) is also on the base, the failure is no verdict
+     on this push and is reported as a `[PRE_PUSH_WARNING]`. The agent's own
+     hook compares too, but only for a run that is handed the PR base: the
+     CI-fix, PR-feedback, spelling and merge-conflict processors read the PR's
+     base branch before the agent runs, and custom PR prompts carry the base
+     from PR discovery. Both main-loop and standalone issue runs pass theirs (the milestone branch,
+     else the base branch, else the default branch, skipping blank names) on the execute run, the completion rebase pass and
+     the in-run recovery agents (pre-push gate, screenshot, summary-rule,
+     PR-body-length, security-fix and quality-gate remediation), and each is written into the hook spec as
+     `compareRef` (`origin/<base>`; `""` when the base cannot be read, which
+     makes a failing CI cargo check an infrastructure fault, never a verdict).
+     A merge-conflict repair is handed the PR base too (`origin/<base>`, the
+     branch it merged in), for its agent runs and for the worker's own push, which also
+     requires the comparison. Any other agent run without a PR or issue base
+     (planning, refinement, question, revision, quorum) has no `compareRef`, so a failing CI cargo check
+     on its push is a verdict. Only error-level diagnostics are compared; a
+     warning never fails a CI cargo command, so a warning the push adds does
+     not make a base-only failure a verdict. The
+     hook's Deno process is allowed to write only to the temp directory, for
+     the base worktree; the git and cargo commands it runs are not limited to
+     it. When neither the
+     tip nor the fork point fails with every diagnostic the push shows (each
+     passes, lacks the check's directory, or lacks a diagnostic), the failure
+     stays a verdict. An unresolvable or unreadable base, a head whose fork
+     point on the base cannot be found, a worktree that cannot be made, a base
+     directory that cannot be read, a base run that times out, cannot start or
+     fails for the host, and a push output with no readable diagnostic are
+     infrastructure faults. These comparison faults
+     retain a redacted, size-limited excerpt of the head's diagnostics. A CI-fix or review-feedback repair
+     released uncharged because its gate failed as infrastructure leaves a PR
+     comment carrying a `vibe-gate-infra-release` marker, and after two such
+     releases (counted from fleet-authored markers) the next one is charged like
+     any other failed attempt, so a lasting fault cannot re-run the agent for
+     ever. Known limits: an `if:` on the step is not evaluated,
+     matrix entries are not expanded, reusable workflows are not followed, a
+     cargo run reached through a script the step calls is not detected, and
+     steps with `continue-on-error: true` or a line ending in `|| true` are
+     skipped;
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
      root carries a markdownlint config (`.markdownlint-cli2.*` or
      `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
@@ -5293,7 +5406,11 @@ The hook runs two stages:
      gets no ShellCheck check. The same validation runs before the PR repair
      processors (CI fix, review feedback, spelling and merge conflict) publish
      a repair through `commitAndPushPending`, including repositories without
-     configured pre-flight commands, where it is the only Step 1b check. The
+     configured pre-flight commands, where it is the only Step 1b check for the
+     spelling and merge-conflict repairs (the CI-fix and review-feedback repairs
+     add the CI cargo checks, Issue #4630). A spelling or merge-conflict repair
+     in a repo that has pre-flight commands also gets the CI cargo checks,
+     compared against the PR base as described above. The
      fleet babysitter does not run it: its execution belongs inside the worker
      container (#4768, #4770), never beside the host App key, so babysitter
      repairs are not ShellCheck-validated until that contained path exists. WIP checkpoint,
@@ -5326,16 +5443,30 @@ fail is the one exception: it only prints a `[PRE_PUSH_WARNING]`); markdownlint 
 the repo's CI but `cspell` not found refuses the push (a cspell config alone
 does not); a ShellCheck CI policy with a missing or mismatched binary, an
 unreadable config, or an unsupported workflow shape is incomplete and refuses
-a push that changes a script, a ShellCheck config or a ShellCheck workflow; a Floci deploy
-test that exits non-zero, including when Floci cannot be started or the `aws` CLI is missing for
-a deployable template, refuses the push; a `cargo deny` diagnostic (`error[...]`)
+a push that changes a script, a ShellCheck config or a ShellCheck workflow; a
+Floci deploy test that exits non-zero, including when Floci cannot be started
+or the `aws` CLI is missing for a deployable template, refuses the push; a CI
+cargo check that fails refuses the push with its output, unless the PR base
+fails with every diagnostic the push shows, when it is a `[PRE_PUSH_WARNING]`
+(in the worker's own gates, and in the agent's hook when its spec carries a
+`compareRef`, the PR base the CI-fix, PR-feedback, spelling and merge-conflict
+processors and the issue-run agents hand it),
+while a CI cargo check that cannot
+start or time out, hits a cargo registry or git-dependency network refusal or
+host disk full, or whose toolchain, component,
+target, directory or command is missing or cannot be reproduced here, or whose
+base comparison cannot be read, or whose CI workflows the worker could not scan
+before the agent ran, refuses it
+as an infrastructure fault (the
+push is still refused, but the run does not blame the branch, and the checked
+set is not reduced); a `cargo deny` diagnostic (`error[...]`)
 or a CI invocation the hook cannot reproduce refuses the push as a verdict, and
 a missing `cargo deny`, unreachable advisory database, network or host, or a
 timeout refuses it as an infrastructure failure (except on an invocation CI
-allows to fail, where each of these is only a `[PRE_PUSH_WARNING]`); a missing hook module, spec or
-`deno` binary refuses the push. Refusals print lines starting
-`[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
-pre-flight (the hook reuses `runPreFlightGate`).
+allows to fail, where each of these is only a `[PRE_PUSH_WARNING]`); a missing
+hook module, spec or `deno` binary refuses the push. Refusals print lines
+starting `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment
+as pre-flight (the hook reuses `runPreFlightGate`).
 
 ```mermaid
 flowchart TD

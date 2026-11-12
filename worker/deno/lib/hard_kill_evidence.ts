@@ -27,6 +27,12 @@ export const HARD_KILL_EVIDENCE_VERSION = 1;
 /** Prefix on every field that could not be collected, and why. */
 export const UNAVAILABLE_PREFIX = "unavailable: ";
 
+/** Cause of a guest field when the runtime's exec probe did not answer. */
+export const GUEST_EXEC_NO_ANSWER_CAUSE = "container exec did not answer";
+
+/** Cause of a field the capture cap ended before it was read. */
+export const NOT_COLLECTED_CAUSE = "not collected";
+
 /** Lines of the worker log kept in the evidence. */
 export const WORKER_LOG_TAIL_LINES = 200;
 
@@ -357,7 +363,7 @@ export async function captureHardKillEvidence(
   const unavailable = (cause: string): string =>
     `${UNAVAILABLE_PREFIX}${cause}`;
   const notCollected = unavailable(
-    `not collected before the ${DEFAULT_TOTAL_CAP_MS}ms capture cap ended`,
+    `${NOT_COLLECTED_CAUSE} before the ${DEFAULT_TOTAL_CAP_MS}ms capture cap ended`,
   );
 
   let host: string;
@@ -534,7 +540,7 @@ export async function captureHardKillEvidence(
       failure = `exit ${probe.value.code}: ${firstLine(probe.value.stderr)}`;
     }
     if (failure !== undefined) {
-      const cause = unavailable(`container exec did not answer: ${failure}`);
+      const cause = unavailable(`${GUEST_EXEC_NO_ANSWER_CAUSE}: ${failure}`);
       record.evidence.guest = {
         ps: cause,
         meminfo: cause,

@@ -70,7 +70,7 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { workOnIssueQualityGate } from "./phases/quality_gate_remediation_phase.ts";
 import { releaseRunAtFinishDeadline } from "./phases/run_wip_preservation.ts";
 import { renderClosureBlocksFromVerdict } from "./closure_verdict_recovery.ts";
-import { resolvePreFlightSpec } from "./git_push.ts";
+import { issueRunCompareRef, resolvePreFlightSpec } from "./git_push.ts";
 import {
   buildBoundaryIntegrityInstruction,
   fenceUntrustedIssueText,
@@ -433,6 +433,9 @@ export async function recoverFromSummaryRuleBlock(
       killAfterSeconds: config.claudeKillAfter,
       model: config.claudeModel || undefined,
       cwd: state.repoPath,
+      // The run base, so a CI cargo failure the base already has is no verdict on
+      // the agent's own push (Issue #4630 review).
+      ciCargoCompareRef: issueRunCompareRef(state),
       logger,
     },
     { maxRetries: config.maxRateLimitRetries },

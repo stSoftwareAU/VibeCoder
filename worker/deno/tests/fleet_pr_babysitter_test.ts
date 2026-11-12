@@ -274,6 +274,10 @@ function fakePrBodyService(
           closingIssuesReferences: [],
         });
       }
+      // The requested-reviews read (Issue #4968) answers with the one review repairs use.
+      if (args.some((arg) => arg.endsWith("/reviews"))) {
+        return JSON.stringify([changesRequestedBy()]);
+      }
       if (args[0] === "pr" && args[1] === "edit") {
         editCount++;
         if (options.failEdit) {
@@ -1026,6 +1030,10 @@ function fakeRepairGitHub(options: {
   let edits = 0;
   let headReads = 0;
   const gh = async (args: string[]): Promise<string> => {
+    // The requested-reviews read (Issue #4968) answers with the one review repairs use.
+    if (args.some((arg) => arg.endsWith("/reviews"))) {
+      return JSON.stringify([changesRequestedBy()]);
+    }
     if (args[0] === "pr" && args[1] === "view") {
       headReads++;
       const stale = options.staleHeadReads;

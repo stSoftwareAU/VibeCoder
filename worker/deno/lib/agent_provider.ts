@@ -356,6 +356,8 @@ export interface AgentDefinition {
 
 /** One invocation of the provider's CLI. */
 export interface AgentInvocationRequest {
+  /** Built-in tool allowlist for a discussion that cannot execute commands. */
+  discussionOnly?: boolean;
   /** Enforced sandbox for orchestrator-owned Codex role calls. */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** The user prompt. */
@@ -647,6 +649,9 @@ function buildClaudeCliArgs(
 
   args.push("--max-turns", String(resolveClaudeMaxTurns(request.env)));
   args.push("--dangerously-skip-permissions");
+  if (request.discussionOnly) {
+    args.push("--tools", "Read,Glob,Grep,WebSearch,WebFetch");
+  }
   const disallowed = request.disallowedTools ?? [];
   if (disallowed.length > 0) {
     args.push("--disallowed-tools", disallowed.join(","));

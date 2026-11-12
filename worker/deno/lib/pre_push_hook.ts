@@ -27,6 +27,7 @@
 
 import { dirname } from "node:path";
 import type { Result } from "../types.ts";
+import type { CiCargoScan } from "./ci_cargo_checks.ts";
 import { resolveGuardModulePath } from "./guard_module_path.ts";
 import { posixSingleQuote } from "./shell_quote.ts";
 
@@ -37,6 +38,8 @@ export const PRE_PUSH_HOOK_MARKER = "Vibe Coder pre-push gate";
  * Render the hook script. It fails closed: a missing Deno binary, module,
  * spec, worker `deno.json` or worker `deno.lock` blocks the push rather than silently allowing it. `DENO_DIR` is
  * deliberately not pinned — this is a quality gate, not a security boundary.
+ * Writes are limited to the temp directory, where the gate makes the scratch
+ * worktree for the PR-base comparison of a failing CI cargo check (Issue #4630).
  */
 export function renderPrePushHookScript(opts: {
   denoPath: string;
@@ -74,7 +77,7 @@ if [ ! -f ${lock} ]; then
   exit 1
 fi
 
-exec ${deno} run --quiet --config ${config} --frozen --lock ${lock} --allow-read --allow-run --allow-env ${module} --spec ${spec} -- "$@"
+exec ${deno} run --quiet --config ${config} --frozen --lock ${lock} --allow-read --allow-write="${"$"}{TMPDIR:-/tmp}" --allow-run --allow-env ${module} --spec ${spec} -- "$@"
 `;
 }
 
@@ -92,6 +95,20 @@ export async function installPrePushHook(opts: {
   baseEnv: Record<string, string>;
   preFlightCommands: readonly string[];
   timeoutSeconds?: number;
+  /**
+   * The repo's CI cargo checks, precomputed by the worker before the agent
+   * runs (Issue #4630 review). Written into the hook spec so the hook can run
+   * them without importing the workflow scanner (`ci_cargo_checks.ts`)
+   * itself. Omit to keep the hook
+   * scanning no CI cargo check.
+   */
+  ciCargo?: CiCargoScan;
+  /**
+   * The ref a failing CI cargo check is compared against (the PR base, as
+   * `origin/<branch>`; `""` when a comparison is required but the base is
+   * unknown). Written into the spec as `compareRef`; omit for no comparison.
+   */
+  compareRef?: string;
   denoPath?: string;
   modulePath?: string;
   makeTempDir?: () => Promise<string>;
@@ -125,6 +142,10 @@ export async function installPrePushHook(opts: {
         ...(opts.timeoutSeconds === undefined
           ? {}
           : { timeoutSeconds: opts.timeoutSeconds }),
+        ...(opts.ciCargo === undefined ? {} : { ciCargo: opts.ciCargo }),
+        ...(opts.compareRef === undefined
+          ? {}
+          : { compareRef: opts.compareRef }),
       }),
     );
     await Deno.writeTextFile(

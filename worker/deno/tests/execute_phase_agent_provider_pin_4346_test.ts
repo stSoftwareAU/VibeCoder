@@ -80,6 +80,7 @@ interface ObservedRun {
   assignmentProvider: string | undefined;
   agents: unknown;
   issueExecutorSplit: unknown;
+  ciCargoCompareRef: unknown;
 }
 
 /** Run one issue and capture the provider the runner, RTK and assignment saw. */
@@ -140,6 +141,7 @@ async function observe(
     assignmentProvider: assignmentProviders[0],
     agents: runOptions[0]?.agents,
     issueExecutorSplit: runOptions[0]?.issueExecutorSplit,
+    ciCargoCompareRef: runOptions[0]?.ciCargoCompareRef,
   };
 }
 
@@ -211,6 +213,18 @@ Deno.test("execute_phase - an issue run with no repo pin leaves the runner provi
     assertEquals(observed.agentProvider, undefined);
     assertEquals(observed.rtkSelector, undefined);
     assertEquals(observed.assignmentProvider, "claude");
+  } finally {
+    resetProviderConfig();
+  }
+});
+
+Deno.test("execute_phase - the agent's own push compares CI cargo against the run's base (Issue #4630 review)", async () => {
+  configureClaudeHost();
+  try {
+    const config = buildDefaultWorkerConfig();
+    withoutSubAgents(config);
+    const observed = await observe(config);
+    assertEquals(observed.ciCargoCompareRef, "origin/main");
   } finally {
     resetProviderConfig();
   }

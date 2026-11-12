@@ -298,13 +298,17 @@ guessing.
    width guard reflowed rows on phones while the phone check only clicked.
    Name the widths in the PR summary's Test Plan (Issue #3656).
    **Change only what the issue changes.** Edit only the expectation the
-   issue changes and keep every other assertion the test made; renaming or
-   rewriting the whole test is how still-true assertions get lost. Before
+   issue changes and keep every other behaviour assertion the test made;
+   renaming or rewriting the whole test is how still-true assertions get lost. Before
    raising the PR, list the assertions your diff removes from each existing
-   test and name, for each, the issue requirement that makes it untrue,
-   recording it in the PR summary's Test Plan. An assertion removed without
-   one is a blocking self-review finding — restore it, or move it to a test
-   that still covers the behaviour and say where.
+   test and name, for each removed behaviour assertion, the issue requirement
+   that makes it untrue or the coverage that still proves the behaviour,
+   recording it in the PR summary's Test Plan. A behaviour assertion removed
+   without one is a blocking self-review finding — restore it, or move it to a test
+   that still covers the behaviour and say where. A "how" assertion (rule 2
+   of **Dummy tests and "how" tests are refused**) that the change breaks is
+   deleted, not re-counted or restored; name the outcome assertions that still
+   prove the behaviour.
    An issue requirement shows a new expected value is right, not that the
    edited test still guards anything: break the code the test's name says
    it guards, confirm the edited test goes red, then restore it (see **An
@@ -1334,14 +1338,9 @@ rewrite it, never append to it:
   because the sentence made wrong is not one the diff adds or edits (see
   **Check where you insert** in `CODING-STANDARDS.md`).
 
-**Project version wording (Issue #3954).** Write the summary's own version-bump
-statement in Summary using durable wording, for example:
-``Version bump: `VERSION` updated for this change; the merged commit records the final version.``
-Do not predict a literal before/after pair that CI can change after your push.
-Name a specific relation to the actual target branch, such as one patch above
-it, only after checking that repository's workflow guarantees that policy.
-Otherwise keep the policy-neutral wording; manual or minor version changes do
-not imply an automatic patch policy. Exact release/build evidence belongs in
+**Project version wording (Issue #3954).** A summary needs no version-bump line:
+the diff and the merged commit record the version, and CI or a base merge can
+change it after your push. When a version is release evidence, give it in
 Evidence with its final commit or release provenance. Preserve dependency pins,
 historical reproduction versions, migration examples and changelog entries.
 
@@ -1440,8 +1439,9 @@ The file MUST contain:
      its original guards and coverage preserved;
    - `Obsolete: <old behaviour that is gone or intentionally changed>` followed
      by `Still covered by: <repo-relative path::test name>` when the required
-     behaviour remains; or `Removed functionality: <symbol, and the evidence
-     that its callers are gone>` when the behaviour was removed outright.
+     behaviour remains; this existing entry also covers obsolete call-count
+     and call-order assertions; or `Removed functionality: <symbol, and the
+     evidence that its callers are gone>` when the behaviour was removed outright.
    Independent review checks each entry against the code at the head. Your
    own assertion that a removal is justified is not proof, and a removal the
    reviewer cannot verify is sent back; a fabricated replacement test is never

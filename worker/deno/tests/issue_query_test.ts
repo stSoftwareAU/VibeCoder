@@ -894,6 +894,36 @@ Deno.test("issue_query - fetchAllOpenPRs - asks for labels and carries them on e
   }
 });
 
+// Issue #4951: the CI-fix scan's draft rule reads `isDraft` off this listing.
+Deno.test("issue_query - fetchAllOpenPRs - carries isDraft only when gh reported a boolean (Issue #4951)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const calls: string[][] = [];
+    const row = { baseRefName: "main", headRefName: "h", title: "t" };
+    const mockGh = (args: string[]): Promise<string> => {
+      calls.push(args);
+      return Promise.resolve(JSON.stringify([
+        { ...row, number: 1, isDraft: true },
+        { ...row, number: 2, isDraft: false },
+        { ...row, number: 3 },
+        { ...row, number: 4, isDraft: "yes" },
+      ]));
+    };
+    const prs = await fetchAllOpenPRs("o/r", cache, 50, mockGh);
+
+    const fields = calls[0]?.[calls[0].indexOf("--json") + 1] ?? "";
+    assert(fields.split(",").includes("isDraft"), `fields: ${fields}`);
+    assertEquals(prs.map((pr) => pr.isDraft), [
+      true,
+      false,
+      undefined,
+      undefined,
+    ]);
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("issue_query - fetchAllOpenPRs - cache hit avoids gh call", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {

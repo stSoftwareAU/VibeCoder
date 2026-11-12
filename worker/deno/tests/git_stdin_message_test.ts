@@ -109,6 +109,28 @@ Deno.test("stdin message - a stream that never ends is refused on the deadline",
   assertStringIncludes(raised.message, "-F <path>");
 });
 
+Deno.test("stdin message - a stall after a partial chunk names the whole-read deadline, not the time left", async () => {
+  // The first chunk arrives after a real delay, so the time left on the second
+  // read is below the configured deadline; the message must still quote the
+  // configured one (a remainder would read as a different, misleading figure).
+  let reads = 0;
+  const raised = await refusal({
+    isTerminal: false,
+    read: () => {
+      reads++;
+      if (reads === 1) {
+        return new Promise<Uint8Array | null>((resolve) =>
+          setTimeout(() => resolve(new TextEncoder().encode("partial")), 40)
+        );
+      }
+      return new Promise<Uint8Array | null>(() => {});
+    },
+    deadlineMs: 150,
+  });
+  assertEquals(reads, 2, "the stall must happen on the read after a chunk");
+  assertStringIncludes(raised.message, "did not arrive within 150ms");
+});
+
 Deno.test("stdin message - a message past the bound is refused, never truncated", async () => {
   const raised = await refusal({
     isTerminal: false,

@@ -23,6 +23,8 @@ const CAUSES: readonly WipPreservationCause[] = [
   "external-sigterm",
   "scheduled-release",
   "usage-limit",
+  "turn-limit",
+  "executor-unfinished",
 ];
 
 Deno.test("wip_commit_marker - recognises every worker-authored WIP subject", () => {

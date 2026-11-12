@@ -54,7 +54,7 @@ export const INVITATION_PR_FIELDS: readonly string[] = [
  */
 export const INVITATION_CACHE_FIELDS =
   "number,title,headRefName,headRefOid,baseRefName,autoMergeRequest," +
-  "createdAt,updatedAt,author,mergeable,labels,comments,reviews";
+  "createdAt,updatedAt,author,mergeable,labels,comments,reviews,isDraft";
 
 /** Options for {@link listInvitedHumanPrs}. */
 export interface ListInvitedHumanPrsOptions {

@@ -62,7 +62,7 @@ const LOW_DETAIL =
  * (Issue #4326).
  */
 const BUDGET_REASON =
-  "ephemeral cargo root over budget (55.3 GB free, floor 46.0 GB + headroom 25.0 GB) — pruned 0.0 GB of idle target dirs and 15.7 GB is still short, so cargo builds wait for CI (Issue #3178 budget; Issue #4326 skip); cargo builds wait for CI; Deno projects keep their normal checks (Issue #4326)";
+  "ephemeral cargo root over budget (55.3 GB free, floor 46.0 GB + headroom 25.0 GB; own cache 0.0 GB, recent sibling caches 0.0 GB, idle sibling caches 0.0 GB) — pruned 0.0 GB of idle target dirs; bytes are reusable inside the guest, not verified host space returned and 15.7 GB is still short, so cargo builds wait for CI (Issue #3178 budget; Issue #4326 skip); cargo builds wait for CI; Deno projects keep their normal checks (Issue #4326)";
 
 function reading(
   overrides: Partial<HeavyBuildDiskReading> & {
@@ -308,6 +308,45 @@ Deno.test("enforceEphemeralCargoBudget - an unreadable root refuses rather than 
   });
   assertEquals(verdict.proceed, false);
   assertStringIncludes(verdict.detail, "EACCES");
+});
+
+Deno.test("cargo budget treats an absent cache as empty and reports protected versus disposable bytes", async () => {
+  const absent = await enforceEphemeralCargoBudget({
+    checkoutPath: CHECKOUT,
+    hostFreeBytes: 101 * GB,
+    floorBytes: 92.6 * GB,
+    root: ROOT,
+  }, {
+    listTargetDirs: () => Promise.reject(new Deno.errors.NotFound("absent")),
+    removeDir: () => {
+      throw new Error("nothing to remove");
+    },
+    nowMs: () => NOW,
+  });
+  assertEquals(absent.skipCargoBuild, true);
+  assertStringIncludes(absent.detail, "16.6 GB");
+  assertStringIncludes(absent.detail, "cache root absent");
+
+  const root = fakeRoot([
+    {
+      path: cargoTargetDirForCheckout(CHECKOUT, { root: ROOT }),
+      bytes: 4 * GB,
+      lastWriteMs: NOW - 3_600_000,
+    },
+    { path: `${ROOT}/busy`, bytes: 3 * GB, lastWriteMs: NOW },
+    { path: `${ROOT}/idle`, bytes: 2 * GB, lastWriteMs: NOW - 3_600_000 },
+  ]);
+  const verdict = await enforceEphemeralCargoBudget({
+    checkoutPath: CHECKOUT,
+    hostFreeBytes: 101 * GB,
+    floorBytes: 92.6 * GB,
+    root: ROOT,
+  }, root.deps);
+  assertStringIncludes(verdict.detail, "own cache 4.0 GB");
+  assertStringIncludes(verdict.detail, "recent sibling caches 3.0 GB");
+  assertStringIncludes(verdict.detail, "idle sibling caches 2.0 GB");
+  assertStringIncludes(verdict.detail, "reusable inside the guest");
+  assertEquals(root.removed, [`${ROOT}/idle`]);
 });
 
 // ---------------------------------------------------------------------------

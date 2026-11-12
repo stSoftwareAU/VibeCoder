@@ -124,6 +124,8 @@ async function recover(
     workDir?: string;
     /** Runs before the temporary work directory is removed. */
     inspect?: (workDir: string, prompts: string[]) => Promise<void>;
+    /** Receives the `ciCargoCompareRef` of each agent run (Issue #4630 review). */
+    compareRefs?: Array<string | undefined>;
   } = {},
 ) {
   const prompts: string[] = [];
@@ -173,6 +175,7 @@ async function recover(
       claude: {
         runClaudeWithRetry: (opts) => {
           prompts.push(opts.prompt);
+          options.compareRefs?.push(opts.ciCargoCompareRef);
           return Promise.resolve(
             launchFails
               ? { ok: false as const, error: new Error("rate limited") }
@@ -221,6 +224,12 @@ Deno.test("gate retry - a second block ends the run in failure with the gate mar
   const reason = result.status === "failure" ? result.reason : "";
   assertEquals(reason.startsWith(`${SECURITY_FIX_GATE_MARKER}: `), true);
   assertStringIncludes(reason, "Attempt 1: test-file-changed");
+});
+
+Deno.test("gate retry - the agent's own push compares CI cargo against the run's base (Issue #4630 review)", async () => {
+  const compareRefs: Array<string | undefined> = [];
+  await recover(false, { compareRefs });
+  assertEquals(compareRefs, ["origin/main"]);
 });
 
 Deno.test("gate retry - a retry that cannot be launched ends the run in failure, unmarked (Issue #3454)", async () => {
