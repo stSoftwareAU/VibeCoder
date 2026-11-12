@@ -20,11 +20,12 @@ outage is an infrastructure fault, and anything else blocks. When the gate
 blocks or cannot run, the container removes the `BABYSITTER_READY` line and puts
 a `[BABYSITTER_GATE_BLOCKED]` line with the cause first, so the host's existing
 completion check refuses to push and quotes the cause. A check that failed is a
-`code` failure that spends a repair attempt; a gate that could not run (`pre-push
-checks could not run`, for example a module-fetch outage) is raised on the host
-as an `infrastructure` failure, which backs off and spends no repair attempt. A check that leaves stray
-files in the clone (which the host's `git add -A` would push) also blocks. Part
-of #4930.
+`code` failure that spends a repair attempt; a gate that could not run
+(`pre-push
+checks could not run`, for example a module-fetch outage) is raised
+on the host as an `infrastructure` failure, which backs off and spends no repair
+attempt. A check that leaves stray files in the clone (which the host's
+`git add -A` would push) also blocks. Part of #4930.
 
 ```mermaid
 flowchart LR
@@ -148,29 +149,29 @@ container runs the unit tests and markdownlint after the agent.
 - Real-gate tests (`babysitter_tree_gate_test.ts`): `runBabysitterTreeGate`
   drives the real `runPrePushGate` over a clone of a bare remote, with only the
   command runner and the markdownlint lookup faked. An uncommitted new test file
-  that fails is `blocked` and names its command, with no `deno fmt` or `deno
-  lint` run; a test failing identically at the PR base is a warning (`passed`);
-  one that passes at the base but fails in the tree blocks; without a base
-  branch the same failure blocks; a changed `.md` runs markdownlint and its
-  failure blocks; no markdownlint binary is not a pass; a module-fetch outage is
-  `infrastructure`. The earlier test that asserted the arguments handed to a
-  fake gate was removed (its stdin, `shellcheckOnly` and base-branch behaviour
-  is now shown by those outcomes).
+  that fails is `blocked` and names its command, with no `deno fmt` or
+  `deno
+  lint` run; a test failing identically at the PR base is a warning
+  (`passed`); one that passes at the base but fails in the tree blocks; without
+  a base branch the same failure blocks; a changed `.md` runs markdownlint and
+  its failure blocks; no markdownlint binary is not a pass; a module-fetch
+  outage is `infrastructure`. The earlier test that asserted the arguments
+  handed to a fake gate was removed (its stdin, `shellcheckOnly` and base-branch
+  behaviour is now shown by those outcomes).
 - Host test (`babysitter_fix_orchestration_test.ts`): a response withheld
   because the gate could not run records an `infrastructure` attempt with
   backoff and no substantive attempt; one withheld because a check failed stays
   a substantive `code` attempt.
 - Mutation survivors killed: `treeGate` in the production deps
   (`babysitter_repair_4738_test.ts`); `--untracked-files=all` (a file inside a
-  new untracked directory is listed by path); `defaultMakeTempDir`'s return
-  (the default temp root is a real directory, handed to the adapter, then
-  removed); `defaultRemoveTree`'s NotFound branch (a root already gone is not a
-  failure); `defaultExtractTree`'s archive-failure return and its timeout
-  result (`code`, `stderr`; driven with an aborted signal).
-  Exempt (untestable): `worker/deno/lib/babysitter_tree_gate.ts` `--porcelain=v1`
-  (git's `-z` implies the porcelain v1 format, so removing it changes nothing)
-  and the `tar` call's `stdin: "null"` (`tar -xf <file>` never reads stdin, so
-  no outcome differs).
+  new untracked directory is listed by path); `defaultMakeTempDir`'s return (the
+  default temp root is a real directory, handed to the adapter, then removed);
+  `defaultRemoveTree`'s NotFound branch (a root already gone is not a failure);
+  `defaultExtractTree`'s archive-failure return and its timeout result (`code`,
+  `stderr`; driven with an aborted signal). Exempt (untestable):
+  `worker/deno/lib/babysitter_tree_gate.ts` `--porcelain=v1` (git's `-z` implies
+  the porcelain v1 format, so removing it changes nothing) and the `tar` call's
+  `stdin: "null"` (`tar -xf <file>` never reads stdin, so no outcome differs).
 - Behaviour tests (names end `(#4930)`): status parsing (modified, deleted,
   renamed, untracked, scratch files); each git interception (`log`, `ls-files`,
   git-common-dir, `worktree add` really extracting the fork commit via
@@ -188,8 +189,8 @@ container runs the unit tests and markdownlint after the agent.
   `log --name-only` interception (1 red); drop the tree comparison (1 red); drop
   the `--base-branch` argv append (2 red); drop the forward in
   `startBabysitterAgent` (1 red); drop the call-site
-  `baseBranch: pr.baseRefName` (1 red). The `tar` timeout branch is
-  now driven with an aborted signal.
+  `baseBranch: pr.baseRefName` (1 red). The `tar` timeout branch is now driven
+  with an aborted signal.
 - Removed from existing tests: none. `babysitter_repair_4738_test.ts` changed
   one harness `return` line to also return `treeCalls`; no assertion was edited.
 - Callers checked for the new `baseBranch`: `fix()` in `fleet_pr_babysitter.ts`
