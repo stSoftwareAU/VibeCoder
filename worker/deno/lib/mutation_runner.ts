@@ -40,11 +40,6 @@ import {
   inFlightHostDiskGateEnabled,
   parkRunningBuild,
 } from "./heavy_build_gate.ts";
-import {
-  restoreTree,
-  snapshotTree,
-  type TreeSnapshot,
-} from "./mutation_tree_guard.ts";
 
 export interface ProcessResult {
   code: number;
@@ -80,17 +75,6 @@ export interface MutationRunnerSeams {
   listTestFiles(repoPath: string): Promise<string[]>;
   /** Create an empty, writable temporary directory outside any repository; rejects when none can be created. */
   makeTempDir(): Promise<string>;
-  /**
-   * The untracked and modified paths of the working tree at `repoPath`, taken
-   * before a Deno run (Issue #4905); null when git cannot list it. Never throws.
-   */
-  snapshotTree(repoPath: string): Promise<TreeSnapshot | null>;
-  /**
-   * Restore the working tree at `repoPath` to `before` after a Deno run: delete
-   * untracked files new since the snapshot, check out newly modified tracked
-   * files. A failure is a warning, never a throw (Issue #4905).
-   */
-  restoreTree(repoPath: string, before: TreeSnapshot): Promise<void>;
 }
 
 const DENO_MARKERS = ["deno.json", "deno.jsonc", "deno.lock"];
@@ -581,9 +565,10 @@ export function defaultMutationRunnerSeams(
       }
       let timedOut = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
-      // SIGTERM first: cargo-mutants catches it, stops its cargo process
-      // groups and removes its scratch copy of the tree, none of which
-      // SIGKILL lets it do. SIGKILL follows only if it has not exited.
+      // SIGTERM first, so a child such as cargo can stop the process groups it
+      // started and remove its own scratch files, which SIGKILL does not let it
+      // do. SIGKILL follows only if it has not exited. The coverage carry-over
+      // and security-fix discrimination checks share this teardown.
       const timer = setTimeout(() => {
         timedOut = true;
         try {
@@ -672,7 +657,5 @@ export function defaultMutationRunnerSeams(
     },
     makeTempDir: () => makeMutationTempDir(lookup),
     listTestFiles: (repoPath) => listDenoTestFiles(repoPath),
-    snapshotTree: (repoPath) => snapshotTree(repoPath),
-    restoreTree: (repoPath, before) => restoreTree(repoPath, before),
   };
 }

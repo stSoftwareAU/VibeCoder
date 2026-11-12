@@ -1,7 +1,8 @@
 /**
  * Tests for `collectRunOwnBaseline`, the baseline for a review-fix run's own
- * changes (Issue #3750; moved from `pr_feedback_mutation_check_3750_test.ts`
- * with the mutation check's retirement, Issue #5095).
+ * changes (Issue #3750). These cases moved with `collectRunOwnBaseline` when
+ * it was split out of the review-fix mutation check, which was retired under
+ * Issue #5095.
  *
  * Real temporary git repos throughout: the scope rule is about what git's
  * merge machinery reports (merge bases, merge-tree), so a fake git seam would

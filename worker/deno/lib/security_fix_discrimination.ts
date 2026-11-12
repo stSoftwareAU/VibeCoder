@@ -535,13 +535,16 @@ async function discriminate(
       postFix: head.outcome,
     };
   } finally {
-    // Best-effort cleanup, as coverage_carryover_runner.ts does: the verdict is
-    // already decided, and a cleanup that races a writer (Issue #5078) must not
-    // turn a completed check into a failure.
+    // Best-effort cleanup: the verdict is already decided, and a cleanup that
+    // races a writer (Issue #5078) must not turn a completed check into a
+    // failure. A leftover temp dir is logged, not hidden.
     try {
       await seams.removeDir(tmp);
-    } catch {
-      // The temporary clone is left behind; the check's result stands.
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[security-fix] could not remove temp dir ${tmp}: ${message} (Issue #5078)`,
+      );
     }
   }
 }

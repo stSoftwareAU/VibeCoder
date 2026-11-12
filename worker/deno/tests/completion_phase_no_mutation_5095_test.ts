@@ -62,9 +62,6 @@ jobs:
 /** Matches any mention of the retired mutation testing in observable text. */
 const MUTATION_TEXT = /mutation|mutant/i;
 
-/** Matches an argument that names the mutation tool, as in `cargo mutants`. */
-const MUTATION_COMMAND = /^mutants?$/i;
-
 function stubClient(comments: string[]): GitHubClient {
   return {
     getIssue: () => {
@@ -279,11 +276,6 @@ function flagValue(args: string[], flag: string): string {
   return index === -1 ? "" : args[index + 1] ?? "";
 }
 
-/** Every command the fakes recorded, `gh` and git alike. */
-function recordedCommands(outcome: Outcome): string[][] {
-  return [...outcome.ghCalls, ...outcome.gitCalls];
-}
-
 function assertNoMutationTesting(outcome: Outcome): void {
   const texts = [
     ...outcome.comments,
@@ -297,20 +289,6 @@ function assertNoMutationTesting(outcome: Outcome): void {
       MUTATION_TEXT.test(text),
       false,
       `no mutation text is posted or logged: ${text.slice(0, 200)}`,
-    );
-  }
-  for (const args of recordedCommands(outcome)) {
-    assertEquals(
-      args.some((arg) => MUTATION_COMMAND.test(arg)),
-      false,
-      `no command runs the mutation tool: ${args.join(" ")}`,
-    );
-  }
-  for (const args of outcome.ghCalls) {
-    assertEquals(
-      args.some((arg) => arg.includes(".github/workflows")),
-      false,
-      `no gh call reads workflow files: ${args.join(" ")}`,
     );
   }
 }

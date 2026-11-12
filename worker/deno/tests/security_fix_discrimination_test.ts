@@ -690,6 +690,11 @@ Deno.test("discrimination: a cleanup that throws ENOTEMPTY once keeps a complete
           return realRemoveDir(path);
         },
       };
+      const warnings: string[] = [];
+      const realWarn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(" "));
+      };
       try {
         const r = await runSecurityFixDiscrimination(
           input(root, {
@@ -704,7 +709,14 @@ Deno.test("discrimination: a cleanup that throws ENOTEMPTY once keeps a complete
           postFix: "pass",
         });
         assertEquals(thrown, true);
+        assert(
+          warnings.some((w) => w.includes("ENOTEMPTY")),
+          `expected a warning naming ENOTEMPTY, got ${
+            JSON.stringify(warnings)
+          }`,
+        );
       } finally {
+        console.warn = realWarn;
         for (const d of rec.tempDirs) {
           await Deno.remove(d, { recursive: true }).catch(() => undefined);
         }

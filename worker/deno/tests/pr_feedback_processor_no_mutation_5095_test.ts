@@ -167,10 +167,15 @@ function makeDriftGit(): GitDeps["runGitCommand"] {
 
 /**
  * A `gh` stub: the base ref, the base branch's required check `mutants` (what
- * made the retired check blocking), and the PR comments it records.
+ * made the retired check blocking), and the PR comments it records. Every call
+ * is also appended to `ghCalls`.
  */
-function makeGh(recordedComments: string[]): GitHubDeps["runGhCommand"] {
+function makeGh(
+  recordedComments: string[],
+  ghCalls: string[][] = [],
+): GitHubDeps["runGhCommand"] {
   return openPrGh((args: string[]) => {
+    ghCalls.push(args);
     if (
       args[0] === "pr" && args[1] === "view" && args.includes("baseRefName")
     ) {
@@ -271,6 +276,7 @@ Deno.test("processPrFeedback - a push with a blocking cargo mutants job complete
     const events: string[] = [];
     const recordedComments: string[] = [];
     const recordedOptions: CapturedOptions[] = [];
+    const ghCalls: string[][] = [];
 
     const outputs: ReadonlyArray<string | ((o: CapturedOptions) => string)> = [
       "Fixed",
@@ -281,7 +287,7 @@ Deno.test("processPrFeedback - a push with a blocking cargo mutants job complete
       claude: {
         runClaudeWithRetry: makeClaudeMock(events, outputs, recordedOptions),
       },
-      github: { runGhCommand: makeGh(recordedComments) },
+      github: { runGhCommand: makeGh(recordedComments, ghCalls) },
       git: {
         runGitCommand: makeDriftGit(),
         commitAndPushPending: makeCommitMock(events),
@@ -307,6 +313,14 @@ Deno.test("processPrFeedback - a push with a blocking cargo mutants job complete
 
     // No mutants output tree was written.
     assertEquals(await fileExists(`${workDir}/mutants.out`), false);
+
+    // No required-checks lookup for the CI mutation job was made.
+    assert(
+      !ghCalls.some((args) =>
+        args.some((arg) => arg.includes("rules/branches"))
+      ),
+      `no gh call reads rules/branches: ${JSON.stringify(ghCalls)}`,
+    );
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }

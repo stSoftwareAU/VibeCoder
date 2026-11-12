@@ -69,8 +69,7 @@
  *
  * Issue #4360: a build already running is held to the same floor. The claim
  * gate only stops new claims, so {@link parkInFlightBuild} checks admission
- * before an agent, discrimination, quality-remediation or merge fast-check
- * build. A checkout with no cargo
+ * before an agent or discrimination build. A checkout with no cargo
  * project is held to the floor only, and its idle sibling target directories
  * are not pruned for it, because only cargo writes to the ephemeral cargo root
  * (Issue #4413). {@link parkRunningBuild}

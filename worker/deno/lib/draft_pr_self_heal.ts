@@ -4,7 +4,8 @@
  *
  * A fleet draft is normally a draft continuation (Issue #4146), and the
  * completion path marks it ready when its issue finishes. A draft whose issue
- * has no live claim and whose body carries neither marker is different:
+ * has no live claim and whose body lacks the draft-continuation marker is
+ * different:
  * nothing will ever mark it ready, the sweep skips every draft (Issue #1800),
  * and it sits as a draft forever. This module is the narrow self-heal for
  * that case. It marks such a PR ready, waits for the ready-for-review CI to
