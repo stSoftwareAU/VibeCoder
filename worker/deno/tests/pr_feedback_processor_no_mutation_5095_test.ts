@@ -19,11 +19,11 @@ import {
   type PrFeedbackProcessorDeps,
   processPrFeedback,
 } from "../lib/pr_feedback_processor.ts";
-import { createMockDeps } from "../lib/issue_worker_wiring.ts";
-import type {
-  ClaudeDeps,
-  GitDeps,
-  GitHubDeps,
+import {
+  type ClaudeDeps,
+  createMockDeps,
+  type GitDeps,
+  type GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
 import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
 import type { Logger } from "../types.ts";

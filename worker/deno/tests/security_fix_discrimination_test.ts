@@ -718,7 +718,7 @@ Deno.test("discrimination: a cleanup that throws ENOTEMPTY once keeps a complete
       } finally {
         console.warn = realWarn;
         for (const d of rec.tempDirs) {
-          await Deno.remove(d, { recursive: true }).catch(() => undefined);
+          await realRemoveDir(d);
         }
       }
     },
