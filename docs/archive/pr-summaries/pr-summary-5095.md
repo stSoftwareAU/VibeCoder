@@ -287,10 +287,11 @@ flowchart LR
   and profiling exposed a real `gh` call. The existing shared spawn seam now
   routes those calls to the same fake; no assertion or budget changed. The
   wiring and draft self-heal tests then passed the unit gate.
-- Results observed in this continuation:
+- Final validation observed in this continuation:
   - `timeout 900 ./quality.sh --sequential < /dev/null` exited 0: passed with
     configured skips. Both unit passes, the test time-budget check, Semgrep, lint, type
-    checking, formatting, manifests, Markdown and Mermaid validation passed.
+    checking, formatting, manifests, Markdown and Mermaid validation passed
+    after the coverage/Standards recovery-prompt correction.
   - `deno task test:unit` over the added/modified test files and retained
     CI-parser, deferred-store, pre-push, coverage-gate and subprocess
     regressions passed in both passes. The prompt and historical-log suites were
