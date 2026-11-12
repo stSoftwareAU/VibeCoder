@@ -1495,9 +1495,11 @@ recovery prompt lists those violations as fenced `CODE FIX` items: the turn may
 edit the cited
 files and add the tests the finding or reason names, re-dispatch the Standards
 reviewer over the new diff, and write `reason: fixed in this diff` only for a
-breach it actually fixed. Every other `REQUIRED ITEM` keeps the
-documentation-shortfall rule, "do not change the code", and "this turn cannot
-change code" is not a settling reason. The quality gate re-runs over the
+breach it actually fixed. Coverage carry-over items allow test fixes, pre-PR
+verifier items allow the code and test fixes their findings request, and unmet
+criteria allow finishing the implementation. The remaining `REQUIRED ITEM`s
+keep the documentation-shortfall rule, "do not change the code", and "this turn
+cannot change code" is not a settling reason. The quality gate re-runs over the
 changed tree before completion re-runs. If a later block in the same run
 finalises an existing PR as `summary_incomplete` while such a violation is
 still standing, the worker posts the violation on that PR and arms auto-merge

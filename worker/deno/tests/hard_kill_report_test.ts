@@ -1036,7 +1036,7 @@ function coverageNote(result: CoverageCarryOverResult): string {
   return evaluateCoverageCarryOverGate(result, "").note;
 }
 
-Deno.test("hardKillLastStep names the step for every note the two gates log (Issue #4815 review)", () => {
+Deno.test("hardKillLastStep names the step for historical mutation notes and current coverage notes (Issue #4815 review)", () => {
   // The notes the mutation gate logged for each result kind. The gate itself
   // was retired by Issue #5095, so the notes are written out here.
   const mutation: Record<string, string> = {

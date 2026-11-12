@@ -396,12 +396,17 @@ Deno.test("summary-rule retry - a standing violation and a coverage carry-over i
     7,
     "0123456789ab",
   );
+  assertEquals(
+    prompt.includes("A REQUIRED ITEM is a documentation shortfall"),
+    false,
+    "the coverage item must keep its test-change allowance alongside CODE FIX items",
+  );
   assertStringIncludes(prompt, "CODE FIX 1 of 1");
   assertStringIncludes(
     prompt,
     "adding or restoring tests that reach each listed line",
   );
-  assertStringIncludes(prompt, "A CODE FIX item is the one exception");
+  assertStringIncludes(prompt, "A CODE FIX item is an additional exception");
   assertEquals(prompt.includes("so do not change it"), false);
 });
 

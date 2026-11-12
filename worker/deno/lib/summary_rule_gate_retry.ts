@@ -315,12 +315,16 @@ ${blocks.join("\n\n")}
   const step2Base = standing.length > 0
     ? `2. Fix every REQUIRED ITEM the notice lists, and every CODE FIX item below, and nothing else. ${
       allowsTests ? STEP_TWO_TEST_RULE : ""
-    }A REQUIRED ITEM is a documentation shortfall in the summary file: do not change the code for it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. A CODE FIX item is the one exception: change the code it cites, as described under the CODE FIX items.`
+    }${
+      allowsTests ? "Every other" : "A"
+    } REQUIRED ITEM is a documentation shortfall in the summary file: do not change the code for it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. A CODE FIX item is ${
+      allowsTests ? "an additional" : "the one"
+    } exception: change the code it cites, as described under the CODE FIX items.`
     : allowsTests
     ? STEP_TWO_WITH_TESTS
     : STEP_TWO_DOCS_ONLY;
-  // An unmet criterion is the one item the "do not change the code" rule
-  // never covers: say so before that rule is stated.
+  // Unmet criteria are outside the documentation-only rule: say so before
+  // that rule is stated.
   const step2 = unmet.length > 0
     ? step2Base.replace(
       /^2\. /,
