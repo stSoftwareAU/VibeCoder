@@ -442,7 +442,7 @@ export async function makeMutationTempDir(
 }
 
 /**
- * Child environment for one mutation or discrimination command.
+ * Child environment for one coverage carry-over or discrimination command.
  *
  * `cargo` and `deno` take the ephemeral target directory when the launch
  * refuses the volume trim (Issue #4360), the same placement the agent and the

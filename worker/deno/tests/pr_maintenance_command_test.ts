@@ -26,6 +26,29 @@ function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
   return { ...buildDefaultWorkerConfig(), ...overrides };
 }
 
+/** Keep argument/empty-scan tests off the host's GitHub quota and state. */
+async function executeWithoutOpenPrs(
+  args: Record<string, unknown>,
+  config: WorkerConfig,
+) {
+  _setGhSpawnRunner(async (ghArgs) => {
+    if (ghArgs[0] === "pr" && ghArgs[1] === "list") {
+      return { code: 0, success: true, stdout: "[]", stderr: "" };
+    }
+    if (
+      ghArgs[0] === "api" && /^repos\/org\/repo[12]?$/.test(ghArgs[1] ?? "")
+    ) {
+      return { code: 0, success: true, stdout: "main", stderr: "" };
+    }
+    throw new Error(`Unexpected empty-scan gh call: ${ghArgs.join(" ")}`);
+  });
+  try {
+    return await prMaintenanceCommand.execute(args, config);
+  } finally {
+    _resetGhSpawnRunner();
+  }
+}
+
 // ============================================================================
 // find-pr-comments-to-fix argument validation
 // ============================================================================
@@ -58,10 +81,9 @@ Deno.test("pr-maintenance command - find-pr-comments-to-fix rejects empty repos"
 });
 
 Deno.test("pr-maintenance command - find-pr-comments-to-fix parses comma-separated repos", async () => {
-  // This test verifies the argument parsing; the actual API call will fail
-  // gracefully since we're not in a real GitHub environment
+  // Empty PR listings let the command exercise parsing without live API calls.
   const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
+  const result = await executeWithoutOpenPrs(
     {
       operation: "find-pr-comments-to-fix",
       "github-user": "testbot",
@@ -69,8 +91,7 @@ Deno.test("pr-maintenance command - find-pr-comments-to-fix parses comma-separat
     },
     config,
   );
-  // It should attempt to process (not reject with validation error)
-  // The actual gh command will fail, which is expected in test environment
+  // It should attempt to process (not reject with validation error).
   assertEquals(
     !result.message.includes("Missing required") &&
       !result.message.includes("No repositories"),
@@ -138,7 +159,7 @@ Deno.test("pr-maintenance command - find-failed-ci-checks rejects empty repos", 
 
 Deno.test("pr-maintenance command - find-failed-ci-checks parses comma-separated repos", async () => {
   const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
+  const result = await executeWithoutOpenPrs(
     {
       operation: "find-failed-ci-checks",
       "github-user": "testbot",
@@ -184,9 +205,9 @@ Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs rejects empty 
 });
 
 Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs returns scan result message", async () => {
-  // With no real GH API, the scan will find no PRs and return success with counts
+  // The empty listing returns success with counts.
   const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
+  const result = await executeWithoutOpenPrs(
     {
       operation: "ensure-auto-merge-on-open-prs",
       "github-user": "testbot",
@@ -194,7 +215,7 @@ Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs returns scan r
     },
     config,
   );
-  // Should succeed with zero counts (gh calls will fail gracefully — no PRs found)
+  // Should succeed with zero counts — no PRs found.
   assertEquals(result.success, true);
   assertEquals(result.message.includes("enabled="), true);
   assertEquals(result.message.includes("skipped="), true);
@@ -203,7 +224,7 @@ Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs returns scan r
 
 Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs parses comma-separated repos", async () => {
   const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
+  const result = await executeWithoutOpenPrs(
     {
       operation: "ensure-auto-merge-on-open-prs",
       "github-user": "testbot",
@@ -249,9 +270,9 @@ Deno.test("pr-maintenance command - update-open-pr-branches rejects empty repos"
 });
 
 Deno.test("pr-maintenance command - update-open-pr-branches returns structured summary", async () => {
-  // With no real GH API, scan will find no PRs and return success with counts
+  // The empty listing returns success with counts.
   const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
+  const result = await executeWithoutOpenPrs(
     {
       operation: "update-open-pr-branches",
       "github-user": "testbot",
@@ -272,7 +293,7 @@ Deno.test("pr-maintenance command - update-open-pr-branches returns structured s
 
 Deno.test("pr-maintenance command - update-open-pr-branches parses comma-separated repos", async () => {
   const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
+  const result = await executeWithoutOpenPrs(
     {
       operation: "update-open-pr-branches",
       "github-user": "testbot",

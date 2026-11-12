@@ -145,6 +145,17 @@ function makeDriftGit(): GitDeps["runGitCommand"] {
         value: { code: 0, stdout: "lib/rule.ts\n", stderr: "" },
       };
     }
+    if (args[0] === "diff" && args[1] === "--unified=0") {
+      return {
+        ok: true,
+        value: {
+          code: 0,
+          stdout:
+            "diff --git a/lib/rule.ts b/lib/rule.ts\n+++ b/lib/rule.ts\n@@ -1 +1 @@\n-export const x = 0;\n+export const x = 1;\n",
+          stderr: "",
+        },
+      };
+    }
     if (args[0] === "ls-files" && args.includes("--others")) {
       return { ok: true, value: { code: 0, stdout: "", stderr: "" } };
     }
@@ -294,11 +305,21 @@ Deno.test("processPrFeedback - a push with a blocking cargo mutants job complete
       },
     });
 
+    let mutationCalls = 0;
+    // Trap the retired external operation even if an invocation is restored.
+    Object.assign(deps.quality, {
+      runMutationCheck: () => {
+        mutationCalls++;
+        throw new Error("automatic mutation runner must stay retired");
+      },
+    });
+
     const result = await processPrFeedback(
       makeInput(),
       baseProcessorDeps(workDir, deps),
     );
 
+    assertEquals(mutationCalls, 0, "no local mutation runner is invoked");
     // The normal path: the main turn, one read-only drift question, the push.
     assertEquals(result.ok, true, result.ok ? "" : result.error.message);
     assertEquals(events, ["agent:0", "agent:1", "commit"]);

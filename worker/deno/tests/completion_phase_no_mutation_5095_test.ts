@@ -105,6 +105,7 @@ interface Outcome {
   finalisePrCalls: number;
   comments: string[];
   warnings: string[];
+  mutationCalls: number;
 }
 
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
@@ -133,6 +134,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let createArgs: string[] | undefined;
   let prCreateCalls = 0;
   let finalisePrCalls = 0;
+  let mutationCalls = 0;
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -164,6 +166,17 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
         ghCalls.push(args);
+        if (args[0] === "api" && args[1]?.includes("rules/branches/")) {
+          return Promise.resolve(JSON.stringify([[{
+            type: "required_status_checks",
+            parameters: { required_status_checks: [{ context: "mutants" }] },
+          }]]));
+        }
+        if (args[0] === "api" && args[1]?.includes("/branches/")) {
+          return Promise.resolve(
+            JSON.stringify({ protection: { enabled: false } }),
+          );
+        }
         if (args[0] === "pr" && args[1] === "create") {
           prCreateCalls++;
           createArgs = args;
@@ -245,6 +258,14 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     },
   });
 
+  // Trap the retired external operation even if an invocation is restored.
+  Object.assign(deps.quality, {
+    runMutationCheck: () => {
+      mutationCalls++;
+      throw new Error("automatic mutation runner must stay retired");
+    },
+  });
+
   let result;
   try {
     result = await workOnIssueCompletion(ctx, state, deps);
@@ -268,6 +289,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     finalisePrCalls,
     comments,
     warnings,
+    mutationCalls,
   };
 }
 
@@ -277,6 +299,7 @@ function flagValue(args: string[], flag: string): string {
 }
 
 function assertNoMutationTesting(outcome: Outcome): void {
+  assertEquals(outcome.mutationCalls, 0, "no local mutation runner is invoked");
   const texts = [
     ...outcome.comments,
     ...outcome.recoveredBodies,

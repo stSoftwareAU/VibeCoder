@@ -51,14 +51,22 @@ The worker container image no longer installs `cargo-mutants`.
 
 ## Issue #5078 and the narrow cleanup fix
 
-Issue #5078 reported ENOTEMPTY when the mutation temporary-directory cleanup raced
-a writer. It was closed as superseded by this retirement.
+Issue #5078 recorded this cleanup failure after mutation results were available:
 
-The same fault remained in the security-fix discrimination check, which keeps its
-temporary clone in `worker/deno/lib/security_fix_discrimination.ts`. Its `finally`
-block removes that directory. This change fixed it narrowly: a cleanup failure is
-now ignored, so it no longer turns a completed check into a not-checked result.
-The coverage carry-over check already ignored cleanup errors.
+```text
+mutation check failed to run (Directory not empty (os error 39): remove '/tmp/vibe-mutation-…')
+```
+
+A child still writing into the directory was suspected; the underlying writer
+race was not reproduced or repaired. The issue was closed as superseded by this
+retirement, without claiming that race was fixed.
+
+The retained security-fix discrimination check also removes a temporary clone
+in `worker/deno/lib/security_fix_discrimination.ts`. Its cleanup failure now logs
+a warning with the directory and cause, preserving the check's completed verdict.
+An injected ENOTEMPTY regression test verifies that handling; it does not prove
+or repair a live-writer race. The coverage carry-over check already treats
+cleanup as best effort.
 
 The modules `mutation_runner.ts`, `mutation_gate.ts` and `ci_mutation_contract.ts`
 keep only shared helpers, such as the runner seams, `isDenoTestFile`,
