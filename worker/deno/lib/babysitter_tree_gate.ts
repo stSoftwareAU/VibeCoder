@@ -228,7 +228,13 @@ export async function defaultCheckoutTree(
  */
 function parseStatus(
   output: string,
-): { paths: string[]; added: string[]; untracked: Set<string> } {
+): {
+  paths: string[];
+  added: string[];
+  untracked: Set<string>;
+  states: Map<string, string>;
+} {
+  const states = new Map<string, string>();
   const paths = new Set<string>();
   const added = new Set<string>();
   const untracked = new Set<string>();
@@ -256,11 +262,12 @@ function parseStatus(
     for (const field of fields) {
       if (SCRATCH_PATHS.has(field.path)) continue;
       paths.add(field.path);
+      states.set(field.path, `${xy}\0${path}\0${fields.length === 2 ? fields[1]!.path : ""}`);
       if (field.isNew) added.add(field.path);
       if (field.untracked) untracked.add(field.path);
     }
   }
-  return { paths: [...paths], added: [...added], untracked };
+  return { paths: [...paths], added: [...added], untracked, states };
 }
 
 /** Whether `target` is a path strictly under `root` (no traversal). */
@@ -396,28 +403,110 @@ function listChangedPaths(changed: readonly string[]): string {
 }
 
 /**
- * Re-reads the working tree after the gate returned and compares its paths
- * with `before`, the set read before the checks (Issue #4930). A failed re-read
- * is infrastructure whatever the gate said. A changed set overrides a pass; a
- * gate that already blocked or hit infrastructure keeps its own outcome.
+ * A content snapshot of every dirty file the host could stage after the gate,
+ * plus Git's index entries. Comparing only status *paths* is unsafe: a passing
+ * check may overwrite an already-dirty file without changing its status.
+ */
+interface TreeSnapshot {
+  states: Map<string, string>;
+  content: Map<string, string>;
+  index: string;
+}
+
+/**
+ * Fingerprint the bytes and type/mode of a path, not its mtime (which can change
+ * without a content change). Preserve symlink targets without following them.
+ * A deleted file is a legitimate part of a repair; an unreadable or unsupported
+ * path instead fails closed as infrastructure, never a successful gate.
+ */
+async function fingerprintPath(dir: string, path: string): Promise<string> {
+  if (
+    path.startsWith("/") ||
+    path.split("/").some((component) => component === ".." || component === ".")
+  ) {
+    throw new Error(`unsafe git status path: ${path}`);
+  }
+  const name = `${dir}/${path}`;
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(name);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return "missing";
+    throw error;
+  }
+  if (info.isSymlink) {
+    return `symlink:${info.mode}:${await Deno.readLink(name)}`;
+  }
+  if (!info.isFile) {
+    throw new Error(`cannot fingerprint non-file git status path: ${path}`);
+  }
+  const bytes = await Deno.readFile(name);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  return `file:${info.mode}:${hash}`;
+}
+
+/** Capture both unstaged bytes and staged object IDs without writing to .git. */
+async function snapshotTree(
+  git: PrePushGit,
+  dir: string,
+  parsed: ReturnType<typeof parseStatus>,
+): Promise<TreeSnapshot> {
+  // Literal pathspecs prevent a filename containing Git glob syntax from
+  // accidentally expanding to unrelated paths.
+  const index = await git(
+    ["ls-files", "--stage", "-z", "--", ...parsed.paths.map((p) => `:(literal)${p}`)],
+    dir,
+  );
+  if (index.code !== 0) {
+    throw new Error(
+      `git ls-files --stage failed (exit ${index.code}): ${index.stderr.trim()}`,
+    );
+  }
+  const content = new Map<string, string>();
+  for (const path of parsed.paths) {
+    content.set(path, await fingerprintPath(dir, path));
+  }
+  return { states: parsed.states, content, index: index.stdout };
+}
+
+/** The specific files that changed, including same-path edits or index changes. */
+function changedSnapshotPaths(
+  before: TreeSnapshot,
+  after: TreeSnapshot,
+): string[] {
+  const paths = new Set([...before.content.keys(), ...after.content.keys()]);
+  const changed = [...paths].filter((path) =>
+    before.content.get(path) !== after.content.get(path) ||
+    before.states.get(path) !== after.states.get(path)
+  );
+  // The status may stay the same even when a check replaces a staged blob.
+  // If only the index changed, name the dirty files rather than silently pass.
+  if (before.index !== after.index && changed.length === 0) {
+    changed.push(...paths);
+  }
+  return changed.sort();
+}
+
+/**
+ * Re-read both Git state and file contents after the gate returns. Any change
+ * attributable to checks blocks a pass; snapshot failures are infrastructure.
  */
 async function settleAfterChecks(
   git: PrePushGit,
   dir: string,
-  before: readonly string[],
+  before: TreeSnapshot,
   verdict: BabysitterTreeGateOutcome,
 ): Promise<BabysitterTreeGateOutcome> {
-  const after = await git([...STATUS_ARGS], dir);
-  if (after.code !== 0) {
+  const status = await git([...STATUS_ARGS], dir);
+  if (status.code !== 0) {
     return infrastructure(
-      `git status failed after the checks (exit ${after.code}): ${after.stderr.trim()}`,
+      `git status failed after the checks (exit ${status.code}): ${status.stderr.trim()}`,
     );
   }
-  const afterPaths = new Set(parseStatus(after.stdout).paths);
-  const beforePaths = new Set(before);
-  const changed = [...new Set([...beforePaths, ...afterPaths])]
-    .filter((path) => beforePaths.has(path) !== afterPaths.has(path))
-    .sort();
+  const after = await snapshotTree(git, dir, parseStatus(status.stdout));
+  const changed = changedSnapshotPaths(before, after);
   if (changed.length === 0 || verdict.kind !== "passed") return verdict;
   return {
     kind: "blocked",
@@ -478,6 +567,8 @@ export async function runBabysitterTreeGate(
       );
     }
 
+    // Snapshot the agent's files and staged blobs before any check can mutate them.
+    const before = await snapshotTree(git, dir, parsed);
     const tempRoot = await makeTempDir();
     root = tempRoot;
     const adapter = gateGit({
@@ -514,7 +605,7 @@ export async function runBabysitterTreeGate(
         message: boundedMessage(result.error.message),
       };
     }
-    return await settleAfterChecks(git, dir, paths, verdict);
+    return await settleAfterChecks(git, dir, before, verdict);
   };
 
   let outcome: BabysitterTreeGateOutcome;
