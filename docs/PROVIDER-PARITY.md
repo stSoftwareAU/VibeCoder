@@ -199,8 +199,10 @@ invocation that was refused is retried on the next alternative, so a phase whose
 model the provider will not serve does not give up while the health gate
 passes on a different model (Issue #4034). A Codex ChatGPT-login refusal of a
 built-in default model is first retried once on Codex with no `--model`
-(Issue #4221) before that switch. It is
-not restricted to fixed-price subscriptions — see [Subscription-only billing
+(Issue #4221) before that switch. External orchestration role calls are the
+exception: the gate pins the role's provider, so a refusal ends that call on
+its own provider (Issue #4986). The fallback is not restricted to fixed-price
+subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
 alternative is metered. Quota-aware auto selection is the default on a host
 with two or more subscription providers enabled (#5089); a host with one stays

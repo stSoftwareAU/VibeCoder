@@ -1413,7 +1413,10 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   session. It is capped at one switch per
   invocation and logged as `[provider-fallback] <from> refused model … retrying
   on <to>`. With the list empty (pinned, the default) the run still gives up
-  with `no cheaper fallback available`, as before.
+  with `no cheaper fallback available`, as before. External orchestration role
+  calls are the exception: the gate pins the role's provider, so a refusal ends
+  that call on its own provider and is logged as `[provider-fallback] … the
+  caller pinned the provider` (Issue #4986).
 - Fallback transitions are recorded in credit logs as `fallbackFrom`: `runClaudeWithRetry` threads the pre-fallback model into the
   re-invocation via the `fallbackFrom` option, so the post-fallback
   `logInvocation()` records the original→cheaper transition and the

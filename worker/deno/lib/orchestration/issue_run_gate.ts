@@ -113,6 +113,8 @@ function claudeOptionsFor(
     ],
     // Fallback to another model would hide a failure the operator should see.
     enableModelFallback: false,
+    // A role's provider passed the role, billing and read-only checks; another provider from agent_provider_fallback did not (Issue #4986).
+    enableProviderFallback: false,
     // The gate never uses Claude's native `--agents` sub-agent path.
     agents: undefined,
     // Per-attempt usage is what the cost bound is priced from.

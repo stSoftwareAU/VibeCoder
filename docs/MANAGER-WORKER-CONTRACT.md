@@ -447,8 +447,10 @@ change it makes to the checkout put back by the worker
 (`worker/deno/lib/orchestration/read_only_guard.ts`, Issue #4356). That
 restoration does not deny Bash or prevent commands and builds outside the
 checkout; Codex receives tool-denial lists as prompt text, not as enforced CLI
-restrictions. Gemini and DeepSeek fail closed. Provider selection alone does not
-disable the model-refusal fallback or provide filesystem/network isolation. See
+restrictions. Gemini and DeepSeek fail closed. A role call never moves to
+`agent_provider_fallback` after a model refusal, because the gate pins its
+provider through the retry ladder (Issue #4986), but provider selection alone
+does not provide filesystem/network isolation. See
 [Role configuration](ROLE-CONFIGURATION.md).
 
 ## 8. Rollout and safeguards
@@ -481,7 +483,10 @@ disable the model-refusal fallback or provide filesystem/network isolation. See
   (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
   unproved entitlement or exhausted quota. The gate never falls back to
   `--agents` or a metered API
-  (`worker/deno/lib/orchestration/issue_run_gate.ts:112`).
+  (`worker/deno/lib/orchestration/issue_run_gate.ts:112`), and it never moves
+  a role call to `agent_provider_fallback`: role calls pass
+  `enableProviderFallback: false`, so after a model refusal the retry ladder
+  gives up on the role's own provider instead (Issue #4986).
 - **Native split, current state.** The native `issue_executor_split` path runs
   only when external orchestration is off
   (`worker/deno/lib/execute_claude_phase.ts:1298-1307`,
@@ -492,8 +497,8 @@ disable the model-refusal fallback or provide filesystem/network isolation. See
   (`worker/deno/lib/claude_runner.ts:1263-1275`) refuses loudly as a backstop
   when a run carries `agents` but the provider's argv lacks `--agents` (Issue
   #4010). The retry ladder (`runRetryLadder`,
-  `worker/deno/lib/claude_runner.ts:2938`) can also move a run to another
-  provider: after a model refusal with no cheaper model, it switches
+  `worker/deno/lib/claude_runner.ts:2938`) can also move a non-role run to
+  another provider: after a model refusal with no cheaper model, it switches
   `agentProvider` to `agent_provider_fallback`
   (`worker/deno/lib/claude_runner.ts:3496-3516`, Issue #4034) and keeps
   `agents`, so the #4010 refusal can still fire for a fallback provider such as
