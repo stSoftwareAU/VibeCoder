@@ -242,13 +242,13 @@ export function buildQualityGateBudgetLines(
     `   - A skipped gate must be recorded, never silent. Put the \`${GATE_SKIP_MARKER} … -->\` note in the PR summary (or \`.pr_response_message\`) saying the gate was skipped for budget, and push what you have.`;
   const record = pushGuarantee === "pre-flight-only" ||
       pushGuarantee === "pr-review-verifier"
-    ? `${recordCore} This PR already exists. The worker does not run the full gate before this push. Configured pre-flight commands enable changed-file checks and run before the worker push. ${
+    ? `${recordCore} This PR already exists. The worker does not run the full gate before this push. Configured pre-flight commands enable changed-file checks and run before the worker push; with none configured, the worker still runs the ShellCheck policy, cargo deny for cargo inputs, and the dependency-selected unit tests and markdownlint for the pushed paths. ${
       pushGuarantee === "pr-review-verifier"
         ? "The worker runs its fix verifier even without configured pre-flight commands."
         : "The worker does not run a fix verifier for this flow."
     } Name exactly which checks you ran, and do not say the worker will run the full gate.`
     : pushGuarantee === "ci-fix"
-    ? `${recordCore} The worker attempts the full gate if Claude leaves uncommitted changes after the fix; before its push, it also runs the repository's configured pre-flight commands, if any. If Claude leaves no uncommitted changes and no pre-flight commands are configured, the worker runs no checks before that push. Name exactly which checks you ran.`
+    ? `${recordCore} The worker attempts the full gate if Claude leaves uncommitted changes after the fix; before its push, it also runs the repository's configured pre-flight commands, if any. If Claude leaves no uncommitted changes and no pre-flight commands are configured, the worker still runs the ShellCheck policy, cargo deny for cargo inputs, and the dependency-selected unit tests and markdownlint for the pushed paths before that push. Name exactly which checks you ran.`
     : pushGuarantee === "agent-pre-push"
     ? `${recordCore} This custom PR flow's agent pre-push hook runs changed-file checks and the repository's configured pre-flight commands, if any, when the agent pushes. The worker verifies the push after the agent finishes; it does not run a full gate before that push. Name exactly which checks you ran.`
     : `${recordCore} The worker runs the gate again before the PR is raised.`;

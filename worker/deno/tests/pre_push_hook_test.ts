@@ -538,3 +538,152 @@ Deno.test('integration: an unknown PR base (compareRef "") makes a failing CI cl
     await Deno.remove(fx.root, { recursive: true });
   }
 });
+
+// ---- Integration: the `deno test` baseline on the agent's own push ---------
+// (PR #5034 review). A fake `deno` first on PATH stands in for the gate's
+// `deno task test:unit` (the hook itself runs the real Deno by absolute path):
+// it fails `foo works` whenever `marker.txt` in the checkout it runs in says
+// `red`, so a run at the fork commit answers by the fork's own content.
+
+const FAKE_DENO = `#!/bin/bash
+if [ "\${1:-}" = "task" ] && [ "\${2:-}" = "test:unit" ]; then
+  if grep -q red marker.txt 2>/dev/null; then
+    printf 'FAILURES\\n\\nfoo works => ./tests/foo_test.ts:3:6\\n\\nFAILED | 0 passed | 1 failed\\n'
+    exit 1
+  fi
+  echo "ok | 1 passed | 0 failed"
+fi
+exit 0
+`;
+
+/** An agent hook env with the fake `deno` first on PATH. */
+async function denoTestHookEnv(
+  fx: PushFixture,
+  spec: { compareRef?: string },
+): Promise<{ env: Record<string, string>; cleanup: () => Promise<void> }> {
+  const bin = `${fx.root}/bin`;
+  await Deno.mkdir(bin, { recursive: true });
+  await Deno.writeTextFile(`${bin}/deno`, FAKE_DENO);
+  await Deno.chmod(`${bin}/deno`, 0o755);
+  const base = Deno.env.toObject();
+  const hook = await installPrePushHook({
+    baseEnv: { ...base, PATH: `${bin}:${base.PATH ?? ""}` },
+    preFlightCommands: [],
+    modulePath: new URL("../lib/pre_push_gate_cli.ts", import.meta.url)
+      .pathname,
+    ...spec,
+  });
+  assert(hook.ok);
+  return { env: hook.value.env, cleanup: hook.value.cleanup };
+}
+
+/**
+ * Seeds `main` (pushed with no hook) with a deno root whose `test:unit` task
+ * the gate runs, `lib/foo.ts`, its test and `marker.txt` = `baseMarker`. Then
+ * a previous PR head, red, is pushed to `pr` with no hook, and a repair that
+ * changes `lib/foo.ts` and leaves `marker.txt` red is committed on top. A
+ * baseline at the PR's previous head would be red too, so only a baseline at
+ * `main` tells a repair that left the test red from one that inherited it.
+ */
+async function seedUnitTestPush(
+  fx: PushFixture,
+  baseMarker: string,
+): Promise<void> {
+  await Deno.mkdir(`${fx.clone}/lib`, { recursive: true });
+  await Deno.mkdir(`${fx.clone}/tests`, { recursive: true });
+  await Deno.writeTextFile(
+    `${fx.clone}/deno.json`,
+    JSON.stringify({ tasks: { "test:unit": "true" } }),
+  );
+  await Deno.writeTextFile(`${fx.clone}/lib/foo.ts`, "export const foo = 1;\n");
+  await Deno.writeTextFile(`${fx.clone}/tests/foo_test.ts`, "export {};\n");
+  await Deno.writeTextFile(`${fx.clone}/marker.txt`, `${baseMarker}\n`);
+  await commitAll(fx.clone, "base");
+  const seed = await push(fx, Deno.env.toObject());
+  assertEquals(seed.code, 0, seed.stderr);
+  await Deno.writeTextFile(`${fx.clone}/marker.txt`, "red\n");
+  await Deno.writeTextFile(`${fx.clone}/previous.txt`, "previous head\n");
+  await commitAll(fx.clone, "previous PR head");
+  const previous = await pushPr(fx, Deno.env.toObject());
+  assertEquals(previous.code, 0, previous.stderr);
+  await Deno.writeTextFile(`${fx.clone}/lib/foo.ts`, "export const foo = 2;\n");
+  await commitAll(fx.clone, "repair");
+}
+
+const pushPr = (fx: PushFixture, env: Record<string, string>) =>
+  run("git", ["push", "-q", "origin", "HEAD:pr"], fx.clone, env);
+
+async function remotePr(remote: string): Promise<string> {
+  const r = await run("git", ["rev-parse", "-q", "--verify", "pr"], remote);
+  return r.code === 0 ? r.stdout.trim() : "";
+}
+
+/** Worktrees git still lists for the clone, the main one included. */
+async function worktreeCount(clone: string): Promise<number> {
+  const listed = await run("git", ["worktree", "list"], clone);
+  return listed.stdout.trim().split("\n").length;
+}
+
+for (
+  const [label, setUp] of [
+    [
+      "the checkout's default branch (origin/HEAD)",
+      async (fx: PushFixture) => {
+        const set = await run(
+          "git",
+          ["remote", "set-head", "origin", "main"],
+          fx.clone,
+        );
+        assertEquals(set.code, 0, set.stderr);
+        return {};
+      },
+    ],
+    [
+      "the PR base the worker wrote into the spec (compareRef)",
+      (_fx: PushFixture) => Promise.resolve({ compareRef: "origin/main" }),
+    ],
+  ] as const
+) {
+  Deno.test(`integration: through the installed hook, a unit test red at the base is a warning; one green at the base and red after the repair blocks, naming the test — baseline from ${label} (PR #5034 review)`, async () => {
+    // Red at both: the agent's push goes through with the warning.
+    const both = await makeFixture();
+    let hook = await denoTestHookEnv(both, {});
+    try {
+      await seedUnitTestPush(both, "red");
+      const spec = await setUp(both);
+      await hook.cleanup();
+      hook = await denoTestHookEnv(both, spec);
+      const before = await remotePr(both.remote);
+      const allowed = await pushPr(both, hook.env);
+      assertEquals(allowed.code, 0, allowed.stderr);
+      assertStringIncludes(allowed.stderr, "[PRE_PUSH_WARNING] deno test");
+      assertStringIncludes(allowed.stderr, "foo works");
+      assert((await remotePr(both.remote)) !== before, "the push landed");
+      assertEquals(await worktreeCount(both.clone), 1, "no checkout is left");
+    } finally {
+      await hook.cleanup();
+      await Deno.remove(both.root, { recursive: true });
+    }
+
+    // Red at the head and the PR's previous head, green at the base: the
+    // repair left it red, so the push is refused and stderr names the test.
+    const fresh = await makeFixture();
+    let freshHook = await denoTestHookEnv(fresh, {});
+    try {
+      await seedUnitTestPush(fresh, "green");
+      const spec = await setUp(fresh);
+      await freshHook.cleanup();
+      freshHook = await denoTestHookEnv(fresh, spec);
+      const before = await remotePr(fresh.remote);
+      const blocked = await pushPr(fresh, freshHook.env);
+      assert(blocked.code !== 0, blocked.stderr);
+      assertStringIncludes(blocked.stderr, "[PRE_PUSH_BLOCKED]");
+      assertStringIncludes(blocked.stderr, "foo works");
+      assertEquals(await remotePr(fresh.remote), before);
+      assertEquals(await worktreeCount(fresh.clone), 1, "no checkout is left");
+    } finally {
+      await freshHook.cleanup();
+      await Deno.remove(fresh.root, { recursive: true });
+    }
+  });
+}
