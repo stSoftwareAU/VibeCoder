@@ -10,9 +10,6 @@ pin.
 
 Closes #4955.
 
-Version bump: `VERSION` updated for this change; the merged commit records the
-final version.
-
 ## Spec
 
 ### Intent and Rationale
