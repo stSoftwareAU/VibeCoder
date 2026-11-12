@@ -9,6 +9,7 @@ import {
   terminateDescendants,
   terminateProcessTree,
 } from "./pid_guard.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
 
 export const TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS = 4;
@@ -90,7 +91,7 @@ function fence(text: string): string {
 }
 
 /** Bounded reads fail closed rather than treating truncated output as complete. */
-async function readBounded(
+export async function readTokenEconomizerMessage(
   stream: ReadableStream<Uint8Array>,
   limit: number,
 ): Promise<string> {
@@ -127,7 +128,10 @@ export async function runTokenEconomizerHook(
   ) {
     throw new Error("unexpected hook dispatcher");
   }
-  const input = await readBounded(Deno.stdin.readable, 1024 * 1024);
+  const input = await readTokenEconomizerMessage(
+    Deno.stdin.readable,
+    1024 * 1024,
+  );
   const payload = object(JSON.parse(input));
   if (!EVENTS.includes(String(payload.hook_event_name))) {
     throw new Error("unknown hook event");
@@ -157,6 +161,12 @@ export async function runTokenEconomizerHook(
     return result;
   });
   const identity = await captureProcessIdentity(child.pid);
+  if (identity === null) {
+    // No input reaches the pinned dispatcher without an identifiable process.
+    await child.stdin.close();
+    await status;
+    throw new Error("hook process identity unavailable");
+  }
   const kill = async () => {
     if (reaped) return;
     await terminateDescendants(child.pid, 1, undefined, { identity });
@@ -187,7 +197,7 @@ export async function runTokenEconomizerHook(
     const writer = child.stdin.getWriter();
     await writer.write(new TextEncoder().encode(input));
     await writer.close();
-    const output = await readBounded(child.stdout, 64 * 1024);
+    const output = await readTokenEconomizerMessage(child.stdout, 64 * 1024);
     const result = await status;
     if (timedOut) throw new Error("hook dispatcher timed out");
     if (!result.success) throw new Error(`hook dispatcher exit ${result.code}`);
@@ -201,6 +211,8 @@ export async function runTokenEconomizerHook(
 }
 
 if (import.meta.main) {
+  // Shared process probes must not mix diagnostics into hook JSON stdout.
+  console.debug = (...args: unknown[]) => console.error(...args);
   let output: Record<string, unknown> = {};
   try {
     output = await runTokenEconomizerHook(Deno.args);
@@ -213,7 +225,17 @@ if (import.meta.main) {
           `${home}/${TOKEN_ECONOMIZER_HOOK_FAILURE}`,
           JSON.stringify({
             rule: "plugin-run-failure",
-            reason: "hook adapter rejected input or failed",
+            reason: "TokenEconomizer hook failure: " + redactSecrets(
+              error instanceof SyntaxError
+                ? "invalid hook JSON"
+                : error instanceof TypeError
+                ? "invalid hook UTF-8 or data"
+                : error instanceof Deno.errors.NotFound
+                ? "hook executable or checkout missing"
+                : error instanceof Error
+                ? error.message
+                : "unknown hook fault",
+            ).split("\n").join(" ").slice(0, 250),
           }),
           { createNew: true, mode: 0o600 },
         );

@@ -626,7 +626,9 @@ async function countFiles(dir: string): Promise<number> {
 }
 
 /** The three hook events the test replays, in the order a session sends them. */
-function sessionEvents(checkout: string): Record<string, unknown>[] {
+function sessionEvents(
+  checkout: string,
+): [Record<string, unknown>, ...Record<string, unknown>[]] {
   return [
     {
       hook_event_name: "SessionStart",
@@ -754,13 +756,15 @@ Deno.test({
       });
       assertAdjacent(dump.argv, "--plugin-dir", launch.pluginDir);
       assertEquals(reports.length, 1);
+      assert(reports[0]);
+      assert(reports[0]);
       assertEquals(
         (await readTokenEconomizerStop(layout.workDir))?.rule,
         "plugin-run-failure",
       );
       assertStringIncludes(
         reports[0].join(" "),
-        "hook adapter rejected input or failed",
+        "hook executable or checkout missing",
       );
       const next = await tokenEconomizerSpawnOptions({
         config: enabledBlock("off"),
@@ -966,6 +970,44 @@ Deno.test("an unavailable failure monitor falls back to ordinary plugin-off argv
     });
     assert(!off.argv.includes("--plugin-dir"));
     assertEquals(off.env.get("TOKENECONOMIZER_HOME"), undefined);
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("the runner's final scan catches a hook fault that predates its filesystem watcher", async () => {
+  const layout = await makeLayout();
+  try {
+    const options = await enabledSpawnOptions(layout, "implementation");
+    assert(options.tokenEconomizer);
+    await Deno.writeTextFile(
+      join(
+        options.tokenEconomizer.env.TOKENECONOMIZER_HOME,
+        TOKEN_ECONOMIZER_HOOK_FAILURE,
+      ),
+      JSON.stringify({
+        rule: "plugin-run-failure",
+        reason: "earlier hook fault",
+      }),
+    );
+    const reports: string[][] = [];
+    await spawnWithStub(layout, {
+      ...options,
+      tokenEconomizerNotify: (args) => {
+        reports.push(args);
+        return Promise.resolve("reported");
+      },
+    });
+    assertEquals(reports.length, 1);
+    assert(reports[0]);
+    assertEquals(
+      (await readTokenEconomizerStop(layout.workDir))?.rule,
+      "plugin-run-failure",
+    );
+    assertStringIncludes(
+      reports[0].join(" "),
+      "earlier hook fault",
+    );
   } finally {
     await Deno.remove(layout.root, { recursive: true });
   }

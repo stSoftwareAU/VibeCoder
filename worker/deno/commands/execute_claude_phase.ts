@@ -49,7 +49,7 @@ import { resolveRunHardCap } from "../lib/run_hard_cap.ts";
 import { extensionCeiling } from "../lib/run_timeline.ts";
 import { promptOverrideMappings } from "../lib/custom_label_prompts_config.ts";
 
-export const executeClaudePhaseCommand: Command = {
+export const executeClaudePhaseCommand = {
   name: "execute-claude-phase",
   description:
     "Execute Claude phase — prompt building, Claude invocation, timeout/error handling, self-healing (Issue #1227)",
@@ -217,4 +217,4 @@ export const executeClaudePhaseCommand: Command = {
       data: result,
     };
   },
-};
+} satisfies Command;

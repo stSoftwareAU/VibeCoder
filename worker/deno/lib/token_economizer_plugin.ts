@@ -93,7 +93,9 @@ export interface TokenEconomizerLaunch {
   readonly pluginDir: string;
   /** Worker-owned root for the shared stop controller; never inferred from plugin output. */
   readonly workDir: string;
-  readonly env: Readonly<Record<string, string>>;
+  readonly env: Readonly<
+    Record<string, string> & { TOKENECONOMIZER_HOME: string }
+  >;
 }
 
 /**
@@ -222,6 +224,22 @@ export function tokenEconomizerStatePath(workDir: string): string {
   return join(workDir, STATE_DIR_NAME, STOP_FILE_NAME);
 }
 
+/** Resolve the fixed controller directory without allowing a symlink alias. */
+export async function tokenEconomizerControlDirectory(
+  workDir: string,
+): Promise<string> {
+  const work = await Deno.realPath(resolve(workDir));
+  const directory = await confinePath(work, STATE_DIR_NAME, {
+    realPath: Deno.realPath,
+  });
+  if (directory !== join(work, STATE_DIR_NAME)) {
+    throw new Error(
+      "TokenEconomizer controller directory is aliased or outside the work root",
+    );
+  }
+  return directory;
+}
+
 /**
  * Record a durable stop until authorised recovery or purge. An existing valid
  * or unreadable latch is preserved. Atomic hard-link creation makes the first
@@ -251,6 +269,7 @@ export async function recordTokenEconomizerStop(
         `may record only ${FINDABLE_STOP_RULES.join(", ")}`,
     );
   }
+  const stateDir = await tokenEconomizerControlDirectory(workDir);
   const existing = await readStopFile(workDir);
   if (existing.kind === "ok") return existing.stop;
   if (existing.kind === "bad") return (await readTokenEconomizerStop(workDir))!;
@@ -261,7 +280,6 @@ export async function recordTokenEconomizerStop(
     recordedAt: now().toISOString(),
   };
   const path = tokenEconomizerStatePath(workDir);
-  const stateDir = join(workDir, STATE_DIR_NAME);
   await Deno.mkdir(stateDir, { recursive: true, mode: 0o700 });
   const temp = await Deno.makeTempFile({ dir: stateDir, prefix: ".stop-" });
   try {
@@ -404,11 +422,17 @@ export async function resolveTokenEconomizerLaunch(
       return null;
     }
     const checkout = await canonicalOrNormalised(
-      resolve(repoCheckoutPath(work, repo)),
+      resolve(repoCheckoutPath(realWork, repo)),
     );
     if (isWithin(stateDir, checkout)) {
       logger?.warn(
         "token-economizer: plugin off, per-run state directory lies inside the repo checkout",
+      );
+      return null;
+    }
+    if (stateDir !== join(realWork, STATE_DIR_NAME, "runs", runId)) {
+      logger?.warn(
+        "token-economizer: plugin off, per-run state directory is aliased",
       );
       return null;
     }
@@ -504,7 +528,7 @@ async function readStopFile(workDir: string): Promise<StopFileRead> {
   }
   if (
     typeof record.reason !== "string" ||
-    record.reason.length > STOP_REASON_MAX_CHARS
+    [...record.reason].length > STOP_REASON_MAX_CHARS
   ) {
     return { kind: "bad", cause: `${path} has no string reason` };
   }

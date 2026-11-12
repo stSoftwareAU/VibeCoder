@@ -113,8 +113,10 @@ The worker loads it only on a host that sets `token_economizer.enabled` in the
 On a host that enables it, the worker adds `--plugin-dir /opt/tokeneconomizer/plugin`
 to the Claude argv of the implementation, PR-feedback and CI-fix runs, and to
 nothing else: reviewer and verifier calls, external orchestration and the other
-providers get no plugin. The environment keys the launch sets, the failure
-isolation and the real-CLI check are in the
+providers get no plugin. The pinned launcher's `TE_PYTHON` interface selects
+the worker's audited hook adapter, which bounds and fences context without
+modifying the archive. The environment, failure isolation, remaining controller
+protection gap and real-CLI check are in the
 [TokenEconomizer trial protocol](TOKEN-ECONOMIZER-TRIAL.md), section 1.
 
 ## Node and npm

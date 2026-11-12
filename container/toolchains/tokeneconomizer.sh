@@ -3,9 +3,10 @@
 #
 # TokenEconomizer is the Microsoft plugin the worker's own trial drives. The
 # image carries one source archive at one pinned commit, verified against a
-# recorded sha256 and never cloned at run time. Nothing in the image invokes it
-# yet. The `token_economizer` config block is added by Issue #4955; Issue #4956
-# wires that block into runs, so until then the command sits on the PATH unused.
+# recorded sha256 and never cloned at run time. The image does not activate it.
+# The worker loads the vendored plugin on an opted-in host (Issue #4956), with
+# its audited hook adapter selected through TE_PYTHON. The PATH wrapper remains
+# available for diagnostics; worker launches use --plugin-dir instead.
 #
 # Pins live in container/tools.json, read here with jq rather than restated:
 # the version, the commit and the archive checksum. The Containerfile only

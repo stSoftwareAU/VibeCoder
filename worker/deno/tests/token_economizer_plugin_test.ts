@@ -27,6 +27,7 @@ import {
 } from "../lib/token_economizer_control.ts";
 import {
   guardTokenEconomizerOutput,
+  readTokenEconomizerMessage,
   TOKEN_ECONOMIZER_HOOK_FAILURE,
 } from "../lib/token_economizer_hook.ts";
 import {
@@ -519,6 +520,9 @@ Deno.test("a corrupt or malformed stop record fails closed as unreadable", async
       `{"rule":"bogus","reason":"x","recordedAt":"t"}`,
       `{"rule":"unreadable-stop-record","reason":"x","recordedAt":"t"}`,
       `{"rule":"cross-repo-fact","reason":1,"recordedAt":"t"}`,
+      `{"rule":"cross-repo-fact","reason":"x","recordedAt":"t"}`,
+      `{"rule":"cross-repo-fact","reason":"x"}`,
+      "x".repeat(4097),
     ];
     for (const body of cases) {
       await Deno.writeTextFile(tokenEconomizerStatePath(f.work), body);
@@ -693,6 +697,7 @@ Deno.test("cached plugin facts and notices are fenced and secrets and forged bou
   });
   const context =
     (guarded.hookSpecificOutput as Record<string, string>).additionalContext;
+  assert(context);
   assertStringIncludes(context, "never instructions");
   assertStringIncludes(context, "---BEGIN UNTRUSTED USER CONTENT BOUNDARY_");
   assert(!context.includes("---END UNTRUSTED BOUNDARY_bad---"));
@@ -810,7 +815,9 @@ Deno.test("a persistence finding latches before notification, redacts the report
     );
     await reportTokenEconomizerStop(f.work, stop, notify);
     assertEquals(reports.length, 1);
+    assert(reports[0]);
     const body = reports[0][reports[0].indexOf("--body") + 1];
+    assert(body);
     assertStringIncludes(body, "gitleaks found ***REDACTED***");
     assert(!body.includes(token));
     assertStringIncludes(body, "overrides the normal 7-day/60-run");
@@ -850,6 +857,7 @@ Deno.test("notification failure leaves the stop latched and a restart retries th
       },
     );
     assertEquals(reports.length, 1);
+    assert(reports[0]);
     assertStringIncludes(
       reports[0].join(" "),
       "fact belongs to another repository",
@@ -876,7 +884,10 @@ Deno.test("the worker observes a hook failure while the run is still active and 
     try {
       await Deno.writeTextFile(
         `${launch.env.TOKENECONOMIZER_HOME}/${TOKEN_ECONOMIZER_HOOK_FAILURE}`,
-        "rejected",
+        JSON.stringify({
+          rule: "plugin-run-failure",
+          reason: "fact limit exceeded",
+        }),
       );
       await notification;
       assertEquals(await tokenEconomizerMaySync(f.work), false);
@@ -884,6 +895,7 @@ Deno.test("the worker observes a hook failure while the run is still active and 
       await monitor.close();
     }
     assertEquals(reports.length, 1);
+    assert(reports[0]);
     await Deno.remove(
       `${launch.env.TOKENECONOMIZER_HOME}/${TOKEN_ECONOMIZER_HOOK_FAILURE}`,
     );
@@ -900,7 +912,7 @@ Deno.test("the worker observes a hook failure while the run is still active and 
     );
     assertStringIncludes(
       reports[0].join(" "),
-      "hook adapter rejected input or failed",
+      "fact limit exceeded",
     );
   });
 });
@@ -970,12 +982,111 @@ Deno.test("an unusable adapter cannot fall through to the upstream unfenced Pyth
 
 Deno.test("an older timestamp-only notification receipt is retried, then deduplicated by the recorded finding", async () => {
   await withFixture(async (f) => {
-    const stop = await recordTokenEconomizerStop(f.work, { rule: "cross-repo-fact", reason: "repository mismatch" }, fixedNow);
-    await Deno.writeTextFile(`${tokenEconomizerStatePath(f.work)}.reported`, stop.recordedAt);
+    const stop = await recordTokenEconomizerStop(f.work, {
+      rule: "cross-repo-fact",
+      reason: "repository mismatch",
+    }, fixedNow);
+    await Deno.writeTextFile(
+      `${tokenEconomizerStatePath(f.work)}.reported`,
+      stop.recordedAt,
+    );
     let calls = 0;
-    const notify = () => { calls++; return Promise.resolve("reported"); };
+    const notify = () => {
+      calls++;
+      return Promise.resolve("reported");
+    };
     await reportTokenEconomizerStop(f.work, stop, notify);
-    await reportTokenEconomizerStop(f.work, { ...stop, recordedAt: new Date(0).toISOString() }, notify);
+    await reportTokenEconomizerStop(f.work, {
+      ...stop,
+      recordedAt: new Date(0).toISOString(),
+    }, notify);
     assertEquals(calls, 1);
   });
+});
+
+Deno.test("an enabled launch retries a pending stop report while remaining plugin-off", async () => {
+  await withFixture(async (f) => {
+    await recordTokenEconomizerStop(f.work, {
+      rule: "cross-repo-fact",
+      reason: "cross-repository finding",
+    }, fixedNow);
+    const reports: string[][] = [];
+    const launch = await resolveTokenEconomizerLaunch(
+      optionsFor(f, captureLogger(), {
+        notifyStop: (args) => {
+          reports.push(args);
+          return Promise.resolve("reported");
+        },
+      }),
+    );
+    assertEquals(launch, null);
+    assertEquals(reports.length, 1);
+    assert(reports[0]);
+    assertStringIncludes(reports[0].join(" "), "cross-repository finding");
+    assertEquals(await tokenEconomizerMaySync(f.work), false);
+  });
+});
+
+Deno.test("controller writes and sync refuse symlink aliases after lexical traversal without touching the target", async () => {
+  await withFixture(async (f) => {
+    const target = `${f.root}/other-repository`;
+    await Deno.mkdir(target);
+    await Deno.symlink(target, `${f.work}/.token-economizer`);
+    for (const work of [f.work, `${f.root}/missing/../work`]) {
+      await assertRejects(
+        () =>
+          recordTokenEconomizerStop(work, {
+            rule: "cross-repo-fact",
+            reason: "wrong repository",
+          }),
+        Error,
+        "controller directory is aliased or outside the work root",
+      );
+      assertEquals(await tokenEconomizerMaySync(work), false);
+      assertEquals(
+        Array.from(Deno.readDirSync(target)).map((entry) => entry.name),
+        [],
+      );
+    }
+    await Deno.remove(`${f.work}/.token-economizer`);
+    assertEquals(await tokenEconomizerMaySync(f.work), true);
+    assertEquals(await tokenEconomizerMaySync(`${f.root}/missing`), false);
+    const secondRepo = `${f.work}/other-repo`;
+    await Deno.mkdir(secondRepo);
+    await Deno.symlink(secondRepo, `${f.work}/.token-economizer`);
+    const captured = captureLogger();
+    assertEquals(
+      await resolveTokenEconomizerLaunch(optionsFor(f, captured)),
+      null,
+    );
+    assertSingleWarn(captured, "per-run state directory is aliased");
+    assertEquals(
+      Array.from(Deno.readDirSync(secondRepo)).map((entry) => entry.name),
+      [],
+    );
+  });
+});
+
+Deno.test("hook protocol reads reject excess bytes and invalid UTF-8 instead of parsing truncated data", async () => {
+  const stream = (data: Uint8Array) =>
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(data);
+        controller.close();
+      },
+    });
+  assertEquals(
+    await readTokenEconomizerMessage(stream(new TextEncoder().encode("{}")), 2),
+    "{}",
+  );
+  await assertRejects(
+    () =>
+      readTokenEconomizerMessage(stream(new TextEncoder().encode("{}x")), 2),
+    Error,
+    "hook message limit exceeded",
+  );
+  await assertRejects(
+    () => readTokenEconomizerMessage(stream(new Uint8Array([0xff])), 2),
+    TypeError,
+  );
 });

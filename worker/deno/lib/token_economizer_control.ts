@@ -6,6 +6,7 @@ import { TOKEN_ECONOMIZER_HOOK_FAILURE } from "./token_economizer_hook.ts";
 import {
   readTokenEconomizerStop,
   recordTokenEconomizerStop,
+  tokenEconomizerControlDirectory,
   type TokenEconomizerLaunch,
   tokenEconomizerStatePath,
   type TokenEconomizerStop,
@@ -64,7 +65,7 @@ export async function reportTokenEconomizerStop(
         stop.reason,
         "Recorded failure reason (untrusted data):",
       ).join("\n") + "\n\n" +
-      "Plugin loading and learning synchronisation are inhibited by the shared stop record. " +
+      "Plugin loading is inhibited and the shared sync permission is false. Persistence must honour that permission before each transfer. " +
       "This failed trial overrides the normal 7-day/60-run measurement window.\n\n" +
       "<!-- vibe-token-economizer-stop -->",
     ]);
@@ -95,11 +96,9 @@ export async function finishTokenEconomizerRun(
           launch.workDir,
           {
             rule: "plugin-run-failure",
-            reason: `TokenEconomizer failure: ${
-              name === "errors.log"
-                ? "upstream hook recorded an error"
-                : "hook adapter rejected input or failed"
-            }`,
+            reason: name === "errors.log"
+              ? "TokenEconomizer failure: upstream hook recorded an error"
+              : await hookFailureReason(join(home, name)),
           },
           notify,
           logger,
@@ -113,11 +112,35 @@ export async function finishTokenEconomizerRun(
   return false;
 }
 
+/** Keep the adapter's cause, but never interpret its text as a stop category. */
+async function hookFailureReason(path: string): Promise<string> {
+  try {
+    if ((await Deno.stat(path)).size <= 4096) {
+      const finding: unknown = JSON.parse(await Deno.readTextFile(path));
+      if (
+        typeof finding === "object" && finding !== null &&
+        "reason" in finding && typeof finding.reason === "string"
+      ) {
+        return `TokenEconomizer failure: ${finding.reason}`;
+      }
+    }
+  } catch {
+    // A corrupt signal is a fault, never permission to continue the trial.
+  }
+  return "TokenEconomizer failure: malformed hook-failure marker";
+}
+
 /** Required before each persistence transfer, including a rebase retry. */
 export async function tokenEconomizerMaySync(
   workDir: string,
 ): Promise<boolean> {
-  return await readTokenEconomizerStop(workDir) === null;
+  try {
+    await tokenEconomizerControlDirectory(workDir);
+    return await readTokenEconomizerStop(workDir) === null;
+  } catch {
+    // An unverified controller location never authorises a transfer.
+    return false;
+  }
 }
 
 /** Observe hook faults during the run, with a final scan covering shutdown races. */
