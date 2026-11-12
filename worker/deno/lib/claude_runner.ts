@@ -136,6 +136,10 @@ import {
   UnfinishedIssueExecutorError,
 } from "./issue_executor_enforcement.ts";
 import { settingsJsonOption } from "./rtk_output.ts";
+import {
+  overlayTokenEconomizerEnv,
+  type TokenEconomizerLaunch,
+} from "./token_economizer_plugin.ts";
 import { currentAgentRunOwner } from "./handler_watchdog.ts";
 import {
   type AgentActivitySnapshot,
@@ -727,6 +731,14 @@ export interface RunClaudeOptions {
    * and the argv is the one every host spawned before.
    */
   settingsJson?: string;
+  /**
+   * The TokenEconomizer plugin launch for this spawn (Issue #4956): the
+   * directory handed to `--plugin-dir`, and the allow-listed environment
+   * overlaid on the child's. Claude provider only; any other provider (a
+   * fallback such as Codex) is spawned without it. Omitted, the argv and the
+   * environment are the ones every host spawned before.
+   */
+  tokenEconomizer?: TokenEconomizerLaunch;
   /** Effort level override — low, medium, high, xhigh, max (Issue #1403, #2620). */
   effort?: string;
   /**
@@ -1411,6 +1423,12 @@ async function runClaudeWithTimeoutBody(
   // round or a long issue thread exceeds that — "Argument list too long"
   // at spawn, observed live in container mode.
   const promptViaStdin = provider.promptTransport === "stdin";
+  // The TokenEconomizer plugin (Issue #4956) is the Claude CLI's: any other
+  // provider, such as a Codex fallback, is spawned with neither the flag nor
+  // the environment.
+  const tokenEconomizerLaunch = provider.id === CLAUDE_PROVIDER_ID
+    ? options.tokenEconomizer
+    : undefined;
   const invocationRequest = {
     discussionOnly: options.discussionOnly,
     orchestrationRole: options.orchestrationRole,
@@ -1433,6 +1451,9 @@ async function runClaudeWithTimeoutBody(
       ? undefined
       : options.sessionResumeState,
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
+    ...(tokenEconomizerLaunch
+      ? { pluginDir: tokenEconomizerLaunch.pluginDir }
+      : {}),
     // Issue #2344's advisor edit guard, merged with this spawn's own hooks
     // (Issue #2383's RTK settings) rather than one silently replacing the
     // other when a run has both on. The advisor guard remains Claude-only;
@@ -1550,6 +1571,15 @@ async function runClaudeWithTimeoutBody(
     // the checkout this run works in. On a runtime that honours the trim, and
     // on a developer host, this adds nothing.
     Object.assign(baseEnv, buildCacheEnvForCheckout(cwd, { source: baseEnv }));
+    // The TokenEconomizer plugin's allow-listed environment (Issue #4956),
+    // overlaid before the gh guard shim and the pre-push hook copy baseEnv, so
+    // both carry it to the agent. The plugin's own hooks and model calls are
+    // child processes of this agent: they inherit the same clear-env child
+    // environment and sit in the same descendant tree the timeout watchdogs
+    // and kill path track (Issue #4382).
+    if (tokenEconomizerLaunch) {
+      overlayTokenEconomizerEnv(baseEnv, tokenEconomizerLaunch);
+    }
     // Interpose the `gh` guard on the child's PATH (Issue #3643): the agent
     // holds GH_TOKEN and runs unrestricted bash, so without this its own `gh`
     // writes bypass the write-repo allowlist and the reserved-label guard the

@@ -1,0 +1,524 @@
+/**
+ * TokenEconomizer plugin launch decision (Issue #4956, part of #4953).
+ *
+ * This module decides whether one Claude run loads the vendored Microsoft
+ * TokenEconomizer Claude Code plugin (`--plugin-dir`) and, if so, with which
+ * environment. It covers the implementation, PR-feedback and CI-fix runs only.
+ * Reviewer and verifier calls are deliberately not run kinds: their cost would
+ * confound the trial, and learned facts must not steer them.
+ *
+ * The plugin is installed in the container at {@link TOKEN_ECONOMIZER_PLUGIN_DIR}
+ * at a pinned checksum. Wiring the result into `agent_provider.ts` and
+ * `claude_runner.ts` is done elsewhere; this module only decides and builds.
+ *
+ * ## Fail-open for the run, fail-closed for the plugin
+ *
+ * {@link resolveTokenEconomizerLaunch} never throws. A plugin fault must never
+ * fail a run, so every refusal (and any unexpected error) returns `null`, which
+ * the caller reads as "plugin off". The plugin is then simply not loaded.
+ * Refusals are logged with the cause, except a disabled block, which is silent.
+ *
+ * ## Micro-skills are clamped to environment facts
+ *
+ * {@link effectiveMicroskills} lets only the `envfacts` mechanism inject. The
+ * upstream plugin injects learned facts as plain bullet lines under a header,
+ * with no data fencing, and the distiller's facts are free model-written text.
+ * The plugin is vendored at a pinned checksum, so it cannot be patched to fence
+ * them. The worker therefore lets only the mechanical, linted environment-facts
+ * mechanism inject: the issue's stated fallback of "microskills=envfacts only".
+ *
+ * ## Stop record: durable, needs no human
+ *
+ * A finding (a secret in the learnings, a cross-repository fact, a plugin run
+ * failure) is recorded in `${workDir}/.token-economizer/stop.json`. While that
+ * record exists every later run has the plugin off, across restarts. A stop
+ * record that cannot be read, parsed or understood fails closed: it inhibits
+ * the plugin rather than being read as "no stop". Issue #4957 (gitleaks and
+ * cross-repository checks before every push) is planned to call
+ * {@link recordTokenEconomizerStop} when it finds such a problem; that wiring is
+ * not present yet.
+ *
+ * ## Path confinement
+ *
+ * The per-run state directory is `${workDir}/.token-economizer/runs/<runId>`.
+ * The path is joined, normalised and then canonicalised with `realpath`, and
+ * only then compared, segment by segment. It must lie under the real work
+ * directory and must not lie inside the repo checkout.
+ *
+ * Uses Australian English throughout (behaviour, recognised, organisation).
+ */
+
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import type {
+  TokenEconomizerConfig,
+  TokenEconomizerMicroskills,
+} from "../types.ts";
+import { repoCheckoutPath } from "./repo_checkout_path.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+
+/** The vendored TokenEconomizer plugin, as installed in the container. */
+export const TOKEN_ECONOMIZER_PLUGIN_DIR = "/opt/tokeneconomizer/plugin";
+
+/** The runs that may load the plugin. Reviewer and verifier calls are not among them. */
+export type TokenEconomizerRunKind =
+  | "implementation"
+  | "pr-feedback"
+  | "ci-fix";
+
+/** Every run kind that may load the plugin. */
+export const TOKEN_ECONOMIZER_RUN_KINDS: readonly TokenEconomizerRunKind[] = [
+  "implementation",
+  "pr-feedback",
+  "ci-fix",
+];
+
+/** Most learned facts the environment-facts mechanism may inject. */
+export const TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS = 4;
+
+/** Most tokens the environment-facts mechanism may inject. */
+export const TOKEN_ECONOMIZER_MICROSKILLS_MAX_TOKENS = 150;
+
+/** A launch the caller hands to `--plugin-dir` and the spawn environment. */
+export interface TokenEconomizerLaunch {
+  readonly pluginDir: string;
+  readonly env: Readonly<Record<string, string>>;
+}
+
+/**
+ * The only environment keys a launch may carry. {@link overlayTokenEconomizerEnv}
+ * copies these and nothing else, so the overlay can never touch `PATH` or a
+ * credential.
+ */
+export const TOKEN_ECONOMIZER_ENV_KEYS: readonly string[] = [
+  "TOKENECONOMIZER_HOME",
+  "TE_TOOLPRUNE",
+  "TE_REPOMAP",
+  "TE_HISTORY_IMPORT",
+  "TE_MICROSKILLS",
+  "TE_LOOPGUARD",
+  "TE_MICROSKILLS_MAX_FACTS",
+  "TE_MICROSKILLS_MAX_TOKENS",
+];
+
+/** The causes that durably stop the plugin. `unreadable-stop-record` is never recorded; it is reported on read. */
+export type TokenEconomizerStopRule =
+  | "secret-in-learnings"
+  | "cross-repo-fact"
+  | "plugin-run-failure"
+  | "unreadable-stop-record";
+
+/** A recorded stop. The `reason` is redacted, single-line and at most 300 characters. */
+export interface TokenEconomizerStop {
+  rule: TokenEconomizerStopRule;
+  reason: string;
+  /** ISO 8601 timestamp of when the stop was recorded. */
+  recordedAt: string;
+}
+
+/** Options for {@link resolveTokenEconomizerLaunch}. */
+export interface ResolveTokenEconomizerLaunchOptions {
+  config: TokenEconomizerConfig;
+  workDir: string;
+  repo: string;
+  runKind: TokenEconomizerRunKind;
+  runId?: string;
+  pluginDir?: string;
+  logger?: {
+    info(m: string, c?: Record<string, unknown>): void;
+    warn(m: string, c?: Record<string, unknown>): void;
+  };
+}
+
+/** The directory under the work directory that holds the stop record and the per-run state. */
+const STATE_DIR_NAME = ".token-economizer";
+/** The stop record file name inside the state directory. */
+const STOP_FILE_NAME = "stop.json";
+/** Stop rules a finding may record. `unreadable-stop-record` is excluded. */
+const FINDABLE_STOP_RULES: readonly TokenEconomizerStopRule[] = [
+  "secret-in-learnings",
+  "cross-repo-fact",
+  "plugin-run-failure",
+];
+/** Longest stop reason kept on disk, in characters. */
+const STOP_REASON_MAX_CHARS = 300;
+/** The run id allow-list: letters, digits, dots, underscores and hyphens, 1 to 80 characters. */
+const RUN_ID_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
+/** The manifest a usable plugin directory carries. */
+const PLUGIN_MANIFEST_PATH = [".claude-plugin", "plugin.json"];
+/** The micro-skills fact cap the plugin is launched with, as a string. */
+const MAX_FACTS_ENV = String(TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS);
+/** The micro-skills token cap the plugin is launched with, as a string. */
+const MAX_TOKENS_ENV = String(TOKEN_ECONOMIZER_MICROSKILLS_MAX_TOKENS);
+
+/**
+ * The micro-skills value the plugin is launched with. `off` stays `off`; the
+ * other three configured values all give `envfacts`.
+ *
+ * Only the mechanical, linted environment-facts mechanism may inject, because
+ * the vendored plugin cannot fence the distiller's free model-written facts
+ * (see the module header).
+ *
+ * @param configured - The `microskills` value from the `token_economizer` block.
+ * @returns `off`, or `envfacts` for any other configured value.
+ */
+export function effectiveMicroskills(
+  configured: TokenEconomizerMicroskills,
+): "off" | "envfacts" {
+  return configured === "off" ? "off" : "envfacts";
+}
+
+/**
+ * Copy the allow-listed TokenEconomizer keys from a launch into a spawn
+ * environment. Keys outside {@link TOKEN_ECONOMIZER_ENV_KEYS} are ignored, so a
+ * launch can never set `PATH` or a credential.
+ *
+ * @param baseEnv - The environment the agent will be spawned with. Mutated in place.
+ * @param launch - The launch whose env is copied.
+ */
+export function overlayTokenEconomizerEnv(
+  baseEnv: Record<string, string>,
+  launch: TokenEconomizerLaunch,
+): void {
+  for (const key of TOKEN_ECONOMIZER_ENV_KEYS) {
+    const value = Object.hasOwn(launch.env, key) ? launch.env[key] : undefined;
+    if (value !== undefined) baseEnv[key] = value;
+  }
+}
+
+/**
+ * The durable stop record's path: `${workDir}/.token-economizer/stop.json`.
+ *
+ * @param workDir - The parent work directory that holds the clones.
+ * @returns The path of the stop record.
+ */
+export function tokenEconomizerStatePath(workDir: string): string {
+  return join(workDir, STATE_DIR_NAME, STOP_FILE_NAME);
+}
+
+/**
+ * Record a durable stop, so every later run has the plugin off until the
+ * record is removed by hand. The first stop wins: an existing, readable stop
+ * record is kept and returned unchanged. A record that is unreadable is
+ * replaced, since it never held a real finding.
+ *
+ * The reason is redacted with {@link redactSecrets}, its line breaks become
+ * spaces, and it is cut to 300 characters. The file is written to a temporary
+ * file in the same directory (mode 0600) and then renamed, so a reader never
+ * sees a half-written record.
+ *
+ * Issue #4957 (gitleaks and cross-repository checks before every push) is
+ * planned to call this function when it finds a problem. That wiring is not
+ * present yet.
+ *
+ * @param workDir - The parent work directory that holds the clones.
+ * @param finding - The rule that tripped, and the human-readable reason.
+ * @param now - Clock for the `recordedAt` stamp; injectable for tests.
+ * @returns The stop that is now in force: the new one, or the existing one.
+ * @throws If `finding.rule` is not a rule a finding may record.
+ */
+export async function recordTokenEconomizerStop(
+  workDir: string,
+  finding: {
+    rule: Exclude<TokenEconomizerStopRule, "unreadable-stop-record">;
+    reason: string;
+  },
+  now: () => Date = () => new Date(),
+): Promise<TokenEconomizerStop> {
+  if (!isFindableStopRule(finding.rule)) {
+    throw new Error(
+      `unknown TokenEconomizer stop rule "${
+        String(finding.rule)
+      }": a finding ` +
+        `may record only ${FINDABLE_STOP_RULES.join(", ")}`,
+    );
+  }
+  const existing = await readStopFile(workDir);
+  if (existing.kind === "ok") return existing.stop;
+
+  const stop: TokenEconomizerStop = {
+    rule: finding.rule,
+    reason: storedStopReason(finding.reason),
+    recordedAt: now().toISOString(),
+  };
+  const path = tokenEconomizerStatePath(workDir);
+  const stateDir = join(workDir, STATE_DIR_NAME);
+  await Deno.mkdir(stateDir, { recursive: true, mode: 0o700 });
+  const temp = await Deno.makeTempFile({ dir: stateDir, prefix: ".stop-" });
+  try {
+    await Deno.writeTextFile(temp, `${JSON.stringify(stop)}\n`, {
+      mode: 0o600,
+    });
+    await Deno.rename(temp, path);
+  } catch (err) {
+    // The temporary file is gone after a successful rename; on failure, drop
+    // it and rethrow the original error.
+    await Deno.remove(temp).catch(() => undefined);
+    throw err;
+  }
+  return stop;
+}
+
+/**
+ * Read the durable stop record.
+ *
+ * A missing file is `null`: nothing has stopped the plugin. Any other state
+ * fails closed: a file that cannot be read, cannot be parsed, or carries an
+ * unknown rule comes back as an `unreadable-stop-record` stop, so the plugin
+ * stays off. It is never read as `null`.
+ *
+ * @param workDir - The parent work directory that holds the clones.
+ * @returns The stop in force, or `null` when there is no stop record.
+ */
+export async function readTokenEconomizerStop(
+  workDir: string,
+): Promise<TokenEconomizerStop | null> {
+  const read = await readStopFile(workDir);
+  if (read.kind === "missing") return null;
+  if (read.kind === "ok") return read.stop;
+  return {
+    rule: "unreadable-stop-record",
+    reason: storedStopReason(read.cause),
+    recordedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Decide whether one run loads the TokenEconomizer plugin, and with which
+ * environment.
+ *
+ * Checks run in this order, and the first refusal wins: disabled block (silent),
+ * stop record, run kind, plugin manifest, run id, state directory. Any refusal
+ * or unexpected error returns `null` and logs the cause. A plugin fault never
+ * fails the run.
+ *
+ * @param opts - The block, the work directory, the repo, the run kind and the
+ *   optional run id, plugin directory and logger.
+ * @returns The launch to hand to `--plugin-dir`, or `null` for plugin off.
+ */
+export async function resolveTokenEconomizerLaunch(
+  opts: ResolveTokenEconomizerLaunchOptions,
+): Promise<TokenEconomizerLaunch | null> {
+  const { config, workDir, repo, runKind, logger } = opts;
+  if (!config.enabled) return null;
+  try {
+    const stop = await readTokenEconomizerStop(workDir);
+    if (stop !== null) {
+      logger?.warn(
+        `token-economizer: plugin off, stop record in force (rule ${stop.rule}): ${
+          redactSecrets(stop.reason)
+        }`,
+      );
+      return null;
+    }
+
+    if (!(TOKEN_ECONOMIZER_RUN_KINDS as readonly string[]).includes(runKind)) {
+      logger?.warn(
+        `token-economizer: plugin off, run kind "${String(runKind)}" is not ` +
+          `one of ${TOKEN_ECONOMIZER_RUN_KINDS.join(", ")}`,
+      );
+      return null;
+    }
+
+    const pluginDir = opts.pluginDir ?? TOKEN_ECONOMIZER_PLUGIN_DIR;
+    const manifest = join(pluginDir, ...PLUGIN_MANIFEST_PATH);
+    if (!(await isFile(manifest))) {
+      logger?.warn(
+        `token-economizer: plugin off, plugin manifest missing at ${manifest}`,
+      );
+      return null;
+    }
+
+    const runId = opts.runId ?? runIdFromEnvOrRandom();
+    if (!isSafeRunId(runId)) {
+      logger?.warn(
+        `token-economizer: plugin off, run id fails the allow-list ` +
+          `${RUN_ID_PATTERN.source} or is "." or ".."`,
+      );
+      return null;
+    }
+
+    // Join, normalise, canonicalise, then compare: see the module header.
+    const work = resolve(workDir);
+    const stateDir = join(work, STATE_DIR_NAME, "runs", runId);
+    try {
+      await Deno.mkdir(stateDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      logger?.warn(
+        `token-economizer: plugin off, per-run state directory cannot be ` +
+          `created: ${errorMessage(err)}`,
+      );
+      return null;
+    }
+    const realState = await Deno.realPath(stateDir);
+    const realWork = await Deno.realPath(work);
+    if (!isWithin(realState, realWork)) {
+      logger?.warn(
+        `token-economizer: plugin off, per-run state directory lies outside ` +
+          `the work directory`,
+      );
+      return null;
+    }
+    const checkout = await canonicalOrNormalised(
+      resolve(repoCheckoutPath(work, repo)),
+    );
+    if (isWithin(realState, checkout)) {
+      logger?.warn(
+        `token-economizer: plugin off, per-run state directory lies inside ` +
+          `the repo checkout`,
+      );
+      return null;
+    }
+
+    logger?.info(`token-economizer: plugin on for a ${runKind} run`);
+    return {
+      pluginDir,
+      env: {
+        TOKENECONOMIZER_HOME: realState,
+        TE_TOOLPRUNE: "off",
+        TE_REPOMAP: "off",
+        TE_HISTORY_IMPORT: "false",
+        TE_MICROSKILLS: effectiveMicroskills(config.microskills),
+        TE_LOOPGUARD: config.loopguard,
+        TE_MICROSKILLS_MAX_FACTS: MAX_FACTS_ENV,
+        TE_MICROSKILLS_MAX_TOKENS: MAX_TOKENS_ENV,
+      },
+    };
+  } catch (err) {
+    logger?.warn(
+      `token-economizer: plugin off, launch failed: ${
+        redactSecrets(errorMessage(err))
+      }`,
+    );
+    return null;
+  }
+}
+
+/**
+ * Spread-ready options for `runClaude`: the launch when the plugin is on, and
+ * nothing when it is off.
+ *
+ * @param opts - The same options as {@link resolveTokenEconomizerLaunch}.
+ * @returns `{ tokenEconomizer }` when a launch resolves, otherwise `{}`.
+ */
+export async function tokenEconomizerSpawnOptions(
+  opts: ResolveTokenEconomizerLaunchOptions,
+): Promise<{ tokenEconomizer?: TokenEconomizerLaunch }> {
+  const launch = await resolveTokenEconomizerLaunch(opts);
+  return launch === null ? {} : { tokenEconomizer: launch };
+}
+
+/** Result of reading the stop record file, before it is judged. */
+type StopFileRead =
+  | { kind: "missing" }
+  | { kind: "ok"; stop: TokenEconomizerStop }
+  | { kind: "bad"; cause: string };
+
+/**
+ * Read and validate the stop record file. Only a missing file (`ENOENT`) is
+ * `missing`. Every other problem is `bad`, with a short cause.
+ */
+async function readStopFile(workDir: string): Promise<StopFileRead> {
+  const path = tokenEconomizerStatePath(workDir);
+  let text: string;
+  try {
+    text = await Deno.readTextFile(path);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return { kind: "missing" };
+    return { kind: "bad", cause: `cannot read ${path}: ${errorMessage(err)}` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { kind: "bad", cause: `cannot parse ${path}: ${errorMessage(err)}` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { kind: "bad", cause: `${path} is not a JSON object` };
+  }
+  const record = parsed as Record<string, unknown>;
+  if (!isFindableStopRule(record.rule)) {
+    return { kind: "bad", cause: `${path} carries an unknown stop rule` };
+  }
+  if (typeof record.reason !== "string") {
+    return { kind: "bad", cause: `${path} has no string reason` };
+  }
+  if (typeof record.recordedAt !== "string") {
+    return { kind: "bad", cause: `${path} has no string recordedAt` };
+  }
+  return {
+    kind: "ok",
+    stop: {
+      rule: record.rule,
+      reason: record.reason,
+      recordedAt: record.recordedAt,
+    },
+  };
+}
+
+/** Whether `rule` is one a finding may record. */
+function isFindableStopRule(
+  rule: unknown,
+): rule is Exclude<TokenEconomizerStopRule, "unreadable-stop-record"> {
+  return typeof rule === "string" &&
+    (FINDABLE_STOP_RULES as readonly string[]).includes(rule);
+}
+
+/**
+ * Redact a stop reason, collapse its line breaks to spaces and cut it to 300
+ * characters. Redaction runs first, so a token is masked whole.
+ */
+function storedStopReason(reason: string): string {
+  const redacted = redactSecrets(reason).replace(/[\r\n]+/g, " ");
+  return [...redacted].slice(0, STOP_REASON_MAX_CHARS).join("");
+}
+
+/** Whether a run id passes the allow-list and is not a relative path segment. */
+function isSafeRunId(runId: string): boolean {
+  return RUN_ID_PATTERN.test(runId) && runId !== "." && runId !== "..";
+}
+
+/** The run id from `VIBE_RUN_ID` when set and non-empty, otherwise a fresh UUID. */
+function runIdFromEnvOrRandom(): string {
+  const fromEnv = Deno.env.get("VIBE_RUN_ID");
+  return fromEnv !== undefined && fromEnv !== ""
+    ? fromEnv
+    : crypto.randomUUID();
+}
+
+/**
+ * Whether `child` is `parent` or lies beneath it. Compared by path segment,
+ * never by string prefix, so `/work-other` is not under `/work`.
+ */
+function isWithin(child: string, parent: string): boolean {
+  const rel = relative(parent, child);
+  if (rel === "") return true;
+  if (isAbsolute(rel)) return false;
+  return rel.split(sep)[0] !== "..";
+}
+
+/**
+ * The real path of `path` when it exists, otherwise the normalised path. Other
+ * errors are not swallowed.
+ */
+async function canonicalOrNormalised(path: string): Promise<string> {
+  try {
+    return await Deno.realPath(path);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return path;
+    throw err;
+  }
+}
+
+/** Whether `path` exists and is a regular file. Any error counts as not a file. */
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await Deno.stat(path)).isFile;
+  } catch {
+    return false;
+  }
+}
+
+/** The message of an unknown thrown value. */
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

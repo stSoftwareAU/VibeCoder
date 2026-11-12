@@ -437,6 +437,15 @@ export interface AgentInvocationRequest {
    */
   settingsJson?: string;
   /**
+   * Directory handed to the Claude CLI as `--plugin-dir` (Issue #4956): the
+   * vendored TokenEconomizer plugin for an implementation, PR-feedback or
+   * CI-fix run. Absent emits nothing, so the argv is byte-for-byte the one
+   * every host spawned before. Only the Claude CLI takes it; the DeepSeek
+   * descriptor strips it, since its endpoint is not the trial's and the
+   * plugin's hooks are not wanted there.
+   */
+  pluginDir?: string;
+  /**
    * The prompt will be written to the child's stdin (Issue #4385): build
    * the argv so the CLI reads it from there, and put no prompt text in
    * argv. Only meaningful for a provider whose `promptTransport` is
@@ -675,6 +684,10 @@ function buildClaudeCliArgs(
   // Absent pushes nothing.
   if (request.settingsJson) {
     args.push("--settings", request.settingsJson);
+  }
+  // The TokenEconomizer plugin directory (Issue #4956). Absent pushes nothing.
+  if (request.pluginDir) {
+    args.push("--plugin-dir", request.pluginDir);
   }
   args.push("--verbose");
   args.push("--output-format", "stream-json");
@@ -1187,6 +1200,10 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
         // binary would forward `--settings` to an endpoint that runs nothing,
         // so the payload is dropped here rather than in the caller.
         settingsJson: undefined,
+        // The TokenEconomizer plugin (Issue #4956) is an Anthropic-endpoint
+        // feature too: DeepSeek's endpoint is not the trial's, so the plugin
+        // directory is dropped here as the settings payload is.
+        pluginDir: undefined,
       },
       { model: routing.model },
     );
