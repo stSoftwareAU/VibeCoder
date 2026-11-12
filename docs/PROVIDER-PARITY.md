@@ -128,7 +128,7 @@ flowchart TD
 | --- | ------- | ------- |
 | `agent_provider` | `claude` | Preferred provider |
 | `repo_config.<repo>.agent_provider` | unset | Per-repo provider pin (Issue #2048); binds when no per-invocation selection names one, and beats both the global `agent_provider` and `auto` ranking for that repo |
-| `agent_provider_mode` | `pinned` | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions |
+| `agent_provider_mode` | `auto` with two or more subscription providers enabled, else `pinned` | `pinned` preserves the existing provider choice; `auto` ranks eligible fixed-price subscriptions (default since #5089) |
 | `agent_providers` | preferred alone | Enabled set (credentials mounted) |
 | `agent_provider_fallback` | `[]` | Ordered alternatives; empty **pins** the preferred provider |
 
@@ -136,8 +136,8 @@ flowchart TD
 work item it ranks enabled Claude OAuth and Codex ChatGPT subscriptions using
 the lowest remaining percentage across each provider's current known windows.
 The provider with more remaining capacity wins in either direction. Status
-freshness still controls eligibility; reset timing and configured provider
-preference break equal-capacity ties. API-key accounts, unknown billing and providers without a
+freshness still controls eligibility; an exact tie is not broken (the input
+order stands, and the next work item re-decides — owner decision, #5089). API-key accounts, unknown billing and providers without a
 fixed-subscription status adapter are excluded. A real quota or authentication
 failure makes that provider unavailable to subsequent work; quota failures are
 rechecked at the stated reset, or after a five-minute cooldown when no reset was
@@ -202,12 +202,9 @@ built-in default model is first retried once on Codex with no `--model`
 (Issue #4221) before that switch. It is
 not restricted to fixed-price subscriptions — see [Subscription-only billing
 policy](#subscription-only-billing-policy) for what it logs when the
-alternative is metered. Neither automatic mechanism is turned on for the
-production fleet by default.
-
-`agent_provider_mode: "auto"` is **not recommended as production-ready** until
-the restart/soak qualification in [Subscription soak](SUBSCRIPTION-SOAK.md)
-passes; see its staged rollout sign-off.
+alternative is metered. Quota-aware auto selection is the default on a host
+with two or more subscription providers enabled (#5089); a host with one stays
+pinned.
 
 ## Staged rollout
 
@@ -221,7 +218,7 @@ passes; see its staged rollout sign-off.
 4. Expand only after the mixed host has completed a quota-exhaustion
    and recovery cycle with correct provider attribution.
 
-Rollback: remove `agent_provider_mode` (or set it to `pinned`), set
+Rollback: set `agent_provider_mode` to `pinned`, set
 `agent_provider` back to `claude`, and relaunch. Existing Claude sessions and
 WIP branches are untouched.
 

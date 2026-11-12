@@ -127,6 +127,13 @@ container runs the unit tests and markdownlint after the agent.
   — reviewer: met — reason: the gate runs in the container with no host
   execution, preserves the base comparison and infrastructure recovery; a real
   container run was not observed (see the Test Plan).
+- **missing** — "Keep this issue open until its requirements are actually
+  delivered": a repair run of the fleet PR babysitter in its real container
+  showing the gate blocking a failing test and a markdown error before a push —
+  reviewer: missing — reason: this needs the deployed babysitter image and a
+  live fleet PR, so it can only be observed after merge; the closest evidence
+  is the tests above, which drive the real `runPrePushGate` and the real
+  completion path with only the command runner faked.
 
 ## Standards Review
 

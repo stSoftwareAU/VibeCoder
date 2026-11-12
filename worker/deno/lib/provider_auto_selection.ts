@@ -13,9 +13,9 @@
  * accidentally turn into API spend.
  *
  * Selection prefers the largest remaining percentage in each provider's most
- * constrained window. Reset time breaks equal-capacity ties; it cannot make
- * a nearly spent subscription outrank one with more capacity. Configured
- * provider order is the final deterministic tie-breaker.
+ * constrained window. An exact tie is not broken (owner decision 2026-11-12,
+ * Issue #5089): the stable sort leaves the input order, and the next run
+ * re-decides anyway.
  *
  * Unknown quota is not exhaustion. A provider whose fixed-price status is
  * known but whose quota is unknown remains a last-resort candidate after every
@@ -48,7 +48,6 @@ export type AutomaticProviderBand =
 export interface AutomaticProviderCandidate {
   readonly provider: string;
   readonly credentialLabel: string;
-  readonly preferenceIndex: number;
   readonly band: AutomaticProviderBand | null;
   readonly score: number | null;
   readonly earliestResetAt: number | null;
@@ -78,17 +77,6 @@ export interface AutomaticProviderSelectionOptions {
   readonly now: number;
   /** Maximum accepted evidence age. */
   readonly maxAgeMs?: number;
-  /** Provider ids in operator preference order. */
-  readonly preference?: readonly string[];
-}
-
-function preferenceIndex(
-  provider: string,
-  preference: readonly string[],
-  fallbackIndex: number,
-): number {
-  const configured = preference.indexOf(provider);
-  return configured === -1 ? preference.length + fallbackIndex : configured;
 }
 
 function futureResets(
@@ -129,13 +117,10 @@ function constrainedRemainingPercent(
 
 function candidateView(
   status: ProviderSubscriptionStatus,
-  inputIndex: number,
-  options:
-    & Required<Pick<AutomaticProviderSelectionOptions, "now" | "maxAgeMs">>
-    & Pick<AutomaticProviderSelectionOptions, "preference">,
+  options: Required<
+    Pick<AutomaticProviderSelectionOptions, "now" | "maxAgeMs">
+  >,
 ): AutomaticProviderCandidate {
-  const preference = options.preference ?? [];
-  const index = preferenceIndex(status.provider, preference, inputIndex);
   const resets = futureResets(status, options.now);
   const earliestResetAt = resets.length === 0 ? null : Math.min(...resets);
 
@@ -143,7 +128,6 @@ function candidateView(
     return {
       provider: status.provider,
       credentialLabel: status.credentialLabel,
-      preferenceIndex: index,
       band: null,
       score: null,
       earliestResetAt,
@@ -155,7 +139,6 @@ function candidateView(
     return {
       provider: status.provider,
       credentialLabel: status.credentialLabel,
-      preferenceIndex: index,
       band: null,
       score: null,
       earliestResetAt,
@@ -167,7 +150,6 @@ function candidateView(
     return {
       provider: status.provider,
       credentialLabel: status.credentialLabel,
-      preferenceIndex: index,
       band: null,
       score: null,
       earliestResetAt,
@@ -179,7 +161,6 @@ function candidateView(
     return {
       provider: status.provider,
       credentialLabel: status.credentialLabel,
-      preferenceIndex: index,
       band: null,
       score: null,
       earliestResetAt,
@@ -193,7 +174,6 @@ function candidateView(
     return {
       provider: status.provider,
       credentialLabel: status.credentialLabel,
-      preferenceIndex: index,
       band: "stale",
       score: null,
       earliestResetAt,
@@ -208,7 +188,6 @@ function candidateView(
   return {
     provider: status.provider,
     credentialLabel: status.credentialLabel,
-    preferenceIndex: index,
     band: score === null ? "fresh-unknown-quota" : "fresh-known",
     score,
     earliestResetAt,
@@ -242,19 +221,11 @@ function compareCandidates(
   const rightBand = bandRank(right.band);
   if (leftBand !== rightBand) return leftBand - rightBand;
 
-  // Prefer the subscription with more remaining capacity.
-  if (left.score !== null || right.score !== null) {
-    const l = left.score ?? Number.NEGATIVE_INFINITY;
-    const r = right.score ?? Number.NEGATIVE_INFINITY;
-    if (l !== r) return r - l;
-  }
-
-  // If the score is equal, use the capacity that resets sooner, then the
-  // operator's stable preference order. Unknown reset sorts after known reset.
-  const leftReset = left.earliestResetAt ?? Number.MAX_SAFE_INTEGER;
-  const rightReset = right.earliestResetAt ?? Number.MAX_SAFE_INTEGER;
-  if (leftReset !== rightReset) return leftReset - rightReset;
-  return left.preferenceIndex - right.preferenceIndex;
+  // Prefer the subscription with more remaining capacity. A tie stays in
+  // input order (Array.prototype.sort is stable).
+  const l = left.score ?? Number.NEGATIVE_INFINITY;
+  const r = right.score ?? Number.NEGATIVE_INFINITY;
+  return l === r ? 0 : r - l;
 }
 
 /**
@@ -282,13 +253,7 @@ export function selectAutomaticProvider(
   }
 
   const ranked = statuses
-    .map((status, index) =>
-      candidateView(status, index, {
-        now: options.now,
-        maxAgeMs,
-        preference: options.preference,
-      })
-    )
+    .map((status) => candidateView(status, { now: options.now, maxAgeMs }))
     .sort(compareCandidates);
   const winner = ranked.find((candidate) => candidate.excluded === null) ??
     null;

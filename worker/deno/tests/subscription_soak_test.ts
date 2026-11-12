@@ -238,7 +238,6 @@ Deno.test("soak status - failover then recovery-after-reset is observable", () =
     now: NOW,
     selection: selectAutomaticProvider([exhaustedClaude, healthyCodex], {
       now: NOW,
-      preference: ["claude", "codex"],
     }),
   });
   assertEquals(failover.selection.winner?.provider, "codex");
@@ -246,7 +245,7 @@ Deno.test("soak status - failover then recovery-after-reset is observable", () =
   assertEquals(failover.retryAt, NOW + 3_600_000);
 
   // Quota reset: after the reset instant Claude is eligible again and wins on
-  // the deterministic preference tie-break.
+  // remaining capacity (100% against Codex's 40%).
   const later = NOW + 3_600_001;
   const resetClaude = status("claude", {
     windows: [{
@@ -263,7 +262,6 @@ Deno.test("soak status - failover then recovery-after-reset is observable", () =
     now: later,
     selection: selectAutomaticProvider([resetClaude, healthyCodex], {
       now: later,
-      preference: ["claude", "codex"],
     }),
   });
   assertEquals(recovery.selection.winner?.provider, "claude");
@@ -296,7 +294,7 @@ Deno.test("soak status - all subscriptions exhausted defers, never a metered fal
 
   const selection = selectAutomaticProvider(
     [exhaustedClaude, exhaustedCodex, meteredCodex],
-    { now: NOW, preference: ["claude", "codex"] },
+    { now: NOW },
   );
   const soak = buildSubscriptionSoakStatus({
     enabledProviderIds: ["claude", "codex"],
@@ -340,7 +338,6 @@ Deno.test("soak status - malformed quota telemetry keeps the worker conservative
 
   const selection = selectAutomaticProvider([unknownClaude, unknownCodex], {
     now: NOW,
-    preference: ["claude", "codex"],
   });
   const soak = buildSubscriptionSoakStatus({
     enabledProviderIds: ["claude", "codex"],
@@ -396,7 +393,6 @@ Deno.test("soak status - an authentication failure names the provider for re-aut
     now: NOW,
     selection: selectAutomaticProvider([claudeRejected, codex], {
       now: NOW,
-      preference: ["claude", "codex"],
     }),
   });
 

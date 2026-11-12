@@ -708,7 +708,7 @@ Deno.test("a directory that is not a repository is infrastructure (#4930)", asyn
 Deno.test("a blocked message is redacted and capped at 1500 characters, keeping its head (#4930)", async () => {
   await fixture(async (repo, root) => {
     await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
-    const token = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";
+    const token = `ghp_${"x7Q".repeat(12)}`;
     const { deps } = depsFor(root, async () => ({
       ok: false,
       error: new Error(`deno test failed: token ${token}\n${"x".repeat(3000)}`),
