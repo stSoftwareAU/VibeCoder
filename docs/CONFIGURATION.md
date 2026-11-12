@@ -5475,9 +5475,16 @@ gates do (see that bullet):
      workflows are ignored. Workflow, configuration and delegated-script reads
      are capped at 1 MiB and refused above it. For a `find` policy the
      gate checks the available binary against the version declared by CI
-     before running it (an action-managed ShellCheck declares none). A policy
-     the gate cannot read (an unsupported command shape, other action input,
-     delegated gate or action, or `SHELLCHECK_OPTS` in that workflow), an unreadable config, or an unavailable or
+     before running it (an action-managed ShellCheck declares none). A CI step
+     that runs ShellCheck through a repository script, or inline in any other
+     shape, is run as GitHub runs it (`bash --noprofile --norc -eo pipefail`,
+     from the repository root), so the repository's own baseline and
+     exclusions decide; a finding blocks the push as a lint failure, and a
+     missing ShellCheck is infrastructure (Issue #5046). Only an executed
+     `shellcheck` counts: a `case` pattern, `command -v shellcheck` or a
+     harness label does not. A policy
+     the gate cannot read (other action input, a delegated step that uses
+     workflow expressions, or `SHELLCHECK_OPTS` in that workflow), an unreadable config, or an unavailable or
      mismatched tool is an incomplete infrastructure result, never a
      successful validation, but only for a push that changes a possible shell
      script, a ShellCheck config or a ShellCheck workflow. A repository with no CI ShellCheck invocation
