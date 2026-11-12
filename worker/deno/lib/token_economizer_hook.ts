@@ -179,6 +179,9 @@ export async function runTokenEconomizerHook(
   const timer = setTimeout(() => {
     timedOut = true;
     killing = kill();
+    killing.catch(() =>
+      console.error("[TOKEN_ECONOMIZER_FAILURE] hook tree teardown failed")
+    );
   }, budget);
   try {
     const writer = child.stdin.getWriter();

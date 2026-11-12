@@ -9,7 +9,7 @@
 | **Switch** | `token_economizer.enabled` in a host's `.config.json`, default `false`: when `true`, the implementation, PR-feedback and CI-fix Claude runs load the plugin ([#4956](https://github.com/stSoftwareAU/VibeCoder/issues/4956), §1) |
 | **Bar** | ≥ 10% lower mean cost per completed implementation run, success rate and PR merge rate no worse (§4) |
 | **First judged** | after **7 days** or **60** completed switched-on implementation runs, whichever is later (§3) |
-| **Status** | ⚪ **not started** — this page is written before the window opens, and no run has used the plugin |
+| **Status** | ⚪ **not started** — no eligible persisted and accounted trial completion is recorded |
 
 This page is the protocol the TokenEconomizer trial
 ([#4953](https://github.com/stSoftwareAU/VibeCoder/issues/4953)) is judged by.
@@ -70,8 +70,8 @@ to it, so it changes no run today.
 
 | Mechanism | Setting | State | Why |
 | --------- | ------- | ----- | --- |
-| Micro-skills | `microskills` clamped to `envfacts`: the configured `envfacts+distiller` and `distiller` both launch as `envfacts`, and `off` stays `off` | **on**, `envfacts` only | Facts about how a repository works (a build step that must run first, a command spelling that works there), learned from repeated failures. A fact is injected at session start once three sessions have confirmed it. The `distiller`, which writes facts with a model, is switched off: the vendored plugin injects learned facts as plain `- ` bullet lines under a fixed header with no data fencing, and the distiller's facts are free model-written text the worker cannot fence, because the pinned archive cannot be patched. The caps are set explicitly to 4 facts (`TE_MICROSKILLS_MAX_FACTS`) and 150 tokens (`TE_MICROSKILLS_MAX_TOKENS`), the upstream defaults made explicit so that an upstream change cannot move them. The issue asked for the proposer's facts to be capped, which upstream leaves uncapped. The proposer is the distiller's path, so the clamp switches it off, and the cap that applies is the one on the environment facts. |
-| Loop guard | `loopguard` = `nudge` | **on** | A judge model redirects a turn that is stuck in a failure loop with a short note. It never stops a turn itself. |
+| Micro-skills | `microskills` clamped to `envfacts`; `off` stays `off` | **on**, `envfacts` only | The distiller's model-written proposals remain disabled because upstream does not independently cap them. The worker sets `TE_MICROSKILLS_MAX_FACTS=4` and `TE_MICROSKILLS_MAX_TOKENS=150`. Its audited adapter also checks cached context at injection: at most four bullet facts and 600 characters, matching upstream's four-characters-per-token estimate. This is a character budget, not an exact tokenizer measurement; fence overhead is additional. Oversized or unsupported output is rejected, never truncated into an apparently valid block. |
+| Loop guard | `loopguard` = `nudge` | **on** | A judge model redirects a stuck turn with a short note. The adapter forces synchronous judge/fold execution and bounds their process tree within the hook deadline. Judge text is untrusted and fenced too. Worker cost aggregation is not yet delivered: #4958 owns it. |
 | Tool pruning | `TE_TOOLPRUNE=off` | off | The worker already fixes the tool policy with `--disallowed-tools`, isolated runs ignore project settings, and pruning writes a settings file into the issue checkout, a stray file a commit can pick up. |
 | Repository map | `TE_REPOMAP=off` | off | The worker already supplies repository context, the codebase map and, where switched on, Graft and CodeGraph. A third source would confound this trial and the repo-context trial alike. |
 | History import | `TE_HISTORY_IMPORT=false` | off | Importing sessions that predate the trial would put learnings from outside the window into the store, so the first runs could not be told from later ones, and it would persist past transcripts into text that is injected into later runs. |
@@ -104,14 +104,19 @@ and CI fix. The decision is `resolveTokenEconomizerLaunch()` in
 `worker/deno/lib/token_economizer_plugin.ts`. A run that gets a launch adds
 `--plugin-dir /opt/tokeneconomizer/plugin` to its Claude argv (built by
 `buildClaudeCliArgs` in `worker/deno/lib/agent_provider.ts`), and its spawn
-environment gets these keys and no others: `TOKENECONOMIZER_HOME`, the run's
-state directory under `<work>/.token-economizer/runs/<runId>`, which lies outside
-the repository checkout; `TE_TOOLPRUNE=off`, `TE_REPOMAP=off` and
-`TE_HISTORY_IMPORT=false`; `TE_MICROSKILLS`, the effective value from the table
-above; `TE_LOOPGUARD`, from `loopguard`; and `TE_MICROSKILLS_MAX_FACTS=4` and
-`TE_MICROSKILLS_MAX_TOKENS=150`. Any `TE_` or `TOKENECONOMIZER_` variable the
-worker's own environment carries is removed from that spawn first, so a stray
-value cannot steer the plugin.
+environment receives these plugin settings: `TOKENECONOMIZER_HOME`, the run's
+state directory under `<work>/.token-economizer/runs/<runId>` outside the
+checkout; `TE_TOOLPRUNE=off`, `TE_REPOMAP=off`, `TE_HISTORY_IMPORT=false`;
+`TE_MICROSKILLS`, clamped as above; `TE_LOOPGUARD`, from config; and the two
+fact/token caps. `TE_PYTHON` selects the executable
+`worker/deno/lib/token_economizer_hook.ts` from the trusted worker checkout.
+The upstream `te-hook` launcher invokes this adapter instead of Python directly;
+the adapter invokes the pinned Python dispatcher and reuses
+`fenceUntrustedIssueText()` before returning context to Claude. The vendored
+archive is unchanged. Stray `TE_` and `TOKENECONOMIZER_` parent variables are
+removed before this overlay. The adapter forces `TE_FOLD_SYNC=1` and
+`TE_JUDGE_SYNC=1` in Python's child environment, rejects a checkout mismatch,
+and tears down unfinished descendants within the event's deadline.
 
 Each spawn gets its own `TOKENECONOMIZER_HOME`, a fresh state directory per
 launch, so a fact the plugin learns in one spawn is not in another spawn's home.
@@ -127,31 +132,35 @@ launch only for the Claude provider. An isolated Claude run carries
 `--setting-sources ""` (Issue #4657), so a repository's own settings are not
 read, and the worker adds the plugin only through `--plugin-dir`.
 
-**Checked on this image.** On 2026-11-12, `claude --version` reported `2.1.310`.
-In a fresh `git init` directory, with no model credentials, the command
-`claude -p "say hi" --plugin-dir /opt/tokeneconomizer/plugin --setting-sources ""
---max-turns 1 --output-format stream-json --verbose`, run with the environment
-above, showed:
+**Checked on this image.** On 2026-11-12, `claude --version` reported
+`2.1.322`. A complete headless call used `--plugin-dir
+/opt/tokeneconomizer/plugin --setting-sources "" --tools ""
+--strict-mcp-config --mcp-config '{"mcpServers":{}}' --no-session-persistence
+--max-turns 1 --output-format stream-json --verbose`, with the plugin settings
+above and `loopguard=off`. A local Messages API fixture returned `OK`, ten input
+tokens and two output tokens; no production credential or paid endpoint was
+used. Observed results:
 
-- a `SessionStart:startup` hook that ran: `hook_started`, then `hook_response`
-  with `exit_code` 0 and `outcome` `success`, and stdout `{}`;
-- a `system/init` event that lists the plugin `tokeneconomizer` at
-  `/opt/tokeneconomizer/plugin`, version `0.1.0`, with its `:config`, `:facts`,
-  `:microskills`, `:repos`, `:status`, `:toolprune` and `:untool` commands;
-- a state directory under `TOKENECONOMIZER_HOME`, with `repos/<repo>/claude/` and
-  `sessions/claude/<id>.json` in it;
-- an empty `git status --short` in the checkout.
+- `SessionStart:startup` emitted `hook_started`, then `hook_response` with
+  `exit_code: 0` and `outcome: success`; `system/init` listed the plugin.
+- The CLI returned `result/subtype: success`, `is_error: false`, result `OK`,
+  exit 0. The adapter recorded no failure.
+- Staged, unstaged and untracked changes in the checkout had identical
+  `git status --porcelain` before and after; plugin state stayed outside it.
+- A separate call through the real pinned `sidecall.claude_call` used the same
+  fixture endpoint and dummy credential and returned `OK`, 20 effective-token
+  units. This exercises the real nested CLI adapter, not the judge's trigger
+  inside an implementation run.
 
-So `--plugin-dir` loads the plugin's hooks even with `--setting-sources ""`, and
-the plugin writes only under `TOKENECONOMIZER_HOME`.
-
-**Not observed.** That check never reached the model, because there were no
-credentials. Not observed: a `SessionStart` fact injection with a non-empty
-block, and the cost of the plugin's own model calls, above all the loop-guard
-judge. (The micro-skills proposer belongs to the distiller path, which the clamp
-switches off.) Those calls run through the agent CLI as child processes of the
-hook, which inherit the hook's environment. That is the design reading of the
-plugin, not something this check observed.
+This verifies hook loading on the installed CLI with isolated settings and a
+complete fixture-backed session. It is not trial cost evidence. The two fixture
+requests used the same endpoint and credential channel. In production the hook
+and Python child inherit the run's sanitised environment and network namespace;
+no new egress permission is granted. The adapter keeps judge/fold jobs
+synchronous rather than allowing the upstream detached launch. The proposer
+remains off. **Not observed:** a paid judge triggered inside an implementation
+run, production egress traffic for it, or inclusion in worker cost totals.
+#4958 is still open and its accounting integration is absent at this head.
 
 **Failure isolation.** The launch decision never throws, and a launch is never
 the cause of a failed run. A disabled block is silent. Any other refusal returns
@@ -202,9 +211,11 @@ flowchart LR
 
 **Window opened:** — (not yet opened).
 
-Both steps are manual. No code schedules the window, nothing watches the clock,
-and no worker flips the switch, to open the window, to close it or to react to a
-figure it read halfway through.
+Initial host opt-in remains within the owner's configuration authority. Once
+enabled, hook-failure monitoring and the shared stop controller below run
+without operator participation. Normal window scheduling and verdict processing
+are not present yet: #4959 owns them. A stop report does not wait for either
+normal threshold.
 
 ## 4. 📏 The bar
 
@@ -264,24 +275,31 @@ rule outranks cost.
 | A fact injected into a run **comes from another repository** | A fact is derived from one repository's content and must never steer another's |
 | The plugin causes a run failure that is **the plugin's fault**, such as a hook error that ends a run | The plugin must never fail a run; it is an accelerator |
 
-The worker inhibits the plugin itself, with no human step, once a finding is
-recorded. A finding writes a durable stop record to
-`<work>/.token-economizer/stop.json`, through `recordTokenEconomizerStop()` in
-`worker/deno/lib/token_economizer_plugin.ts`. Every later run on that host then
-has the plugin off, across restarts, and logs a warning. A stop record that
-cannot be read, cannot be parsed or names no known rule also keeps the plugin
-off, because it fails closed. The stop outranks the 7-day and 60-run wait in §3,
-so the verdict is failed and the window does not have to run out. The record is
-removed by hand.
+The shared controller is `worker/deno/lib/token_economizer_control.ts`.
+`stopTokenEconomizerTrial(workDir, finding)` records the first finding at
+`<work>/.token-economizer/stop.json` before notifying the outcome issue #4959.
+Hook faults are observed while the run is active and scanned again at shutdown;
+rejected context returns `{}` and the underlying implementation continues.
+The local reason is redacted and bounded; report bodies fence it as untrusted
+data. An offline or denied GitHub write leaves a pending report, retried at a
+later enabled launch without widening the worker's permissions. Reporting a stop
+overrides the 7-day/60-run wait, rather than declaring the normal window complete.
 
-Nothing calls `recordTokenEconomizerStop()` yet. The gitleaks check and the
-cross-repository check that would find these are #4957, still planned, and no
-code yet detects a plugin run failure, so the worker writes a stop record only
-when code calls it. A human can still set `token_economizer.enabled` to `false`
-at any time. Reporting a failed trial to
-[#4959](https://github.com/stSoftwareAU/VibeCoder/issues/4959), the verdict
-issue that owns the keep-or-purge verdict and the purge, is not part of this
-change.
+Persistence (#4957, still open) must pass its secret/isolation findings to that
+same function and call `tokenEconomizerMaySync(workDir)` before each transfer,
+including retries. No persistence implementation is present at this head, so
+this is its integration contract, not a claim that sync is already wired.
+Unreadable stop records inhibit loading and sync permission. A healthy run does
+not clear a failed experiment: the latch remains until authorised recovery or
+purge through #4959.
+
+**Remaining boundary gap:** the local stop record is mode 0600 under a mode 0700
+directory, but Claude currently runs with the worker's Unix UID. Those modes do
+not prevent a deliberately hostile agent from changing the controller's state.
+No stronger filesystem boundary is claimed. The available `setpriv` Landlock
+probe returned `landlock_create_ruleset failed: Function not implemented` in this
+environment. This head does not enable the trial host or widen container
+permissions; protection of the durable controller remains unfinished.
 
 ## 7. 📥 Where each figure is read from
 
@@ -343,6 +361,8 @@ State is `present` when the path exists and names the plugin today, and
 | Doc section | the `token_economizer` row of the configuration reference | `docs/CONFIGURATION.md` | present |
 | Source | the `--plugin-dir` argument in the Claude argv, and the drop of the plugin directory in the DeepSeek descriptor | `worker/deno/lib/agent_provider.ts` | present |
 | Source | the launch decision: run kinds, environment, stop record and state-directory confinement | `worker/deno/lib/token_economizer_plugin.ts` | present |
+| Source | the audited executable hook adapter and context bounds | `worker/deno/lib/token_economizer_hook.ts` | present |
+| Source | the shared stop, sync-permission and outcome-reporting controller | `worker/deno/lib/token_economizer_control.ts` | present |
 | Source | the plugin option on `runClaude`, and its environment overlay | `worker/deno/lib/claude_runner.ts` | present |
 | Source | the implementation spawn's launch, in the phase | `worker/deno/lib/phases/execute_phase.ts` | present |
 | Source | the implementation spawn's launch, in the standalone phase | `worker/deno/lib/execute_claude_phase.ts` | present |

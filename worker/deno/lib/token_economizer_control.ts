@@ -45,8 +45,9 @@ export async function reportTokenEconomizerStop(
   logger?: Log,
 ): Promise<void> {
   const receipt = `${tokenEconomizerStatePath(workDir)}.reported`;
+  const fingerprint = JSON.stringify([stop.rule, stop.reason]);
   try {
-    if (await Deno.readTextFile(receipt) === stop.recordedAt) return;
+    if (await Deno.readTextFile(receipt) === fingerprint) return;
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
@@ -67,12 +68,13 @@ export async function reportTokenEconomizerStop(
       "This failed trial overrides the normal 7-day/60-run measurement window.\n\n" +
       "<!-- vibe-token-economizer-stop -->",
     ]);
-    await Deno.writeTextFile(receipt, stop.recordedAt, { mode: 0o600 });
+    await Deno.writeTextFile(receipt, fingerprint, { mode: 0o600 });
   } catch {
     // Do not echo remote output: it can contain credentials or learned text.
-    logger?.warn(
-      "token-economizer: stopped; outcome notification pending (GitHub write or receipt failed)",
-    );
+    const message =
+      "token-economizer: stopped; outcome notification pending (GitHub write or receipt failed)";
+    if (logger) logger.warn(message);
+    else console.error(message);
   }
 }
 

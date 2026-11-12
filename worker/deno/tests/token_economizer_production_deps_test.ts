@@ -9,9 +9,9 @@
  * processor deps carry the enabled block. The same harness shape as
  * `run_core_production_deps_test.ts` drives the closures.
  *
- * The standalone command entry points (`pr-feedback-processor`,
- * `pr-ci-processor`, `execute-claude-phase`) are not covered here: they have no
- * processor seam and need a full git and GitHub stack to reach the processor.
+ * Standalone commands are covered through the real command handlers in
+ * token_economizer_impl_callsites_test.ts and
+ * token_economizer_reactive_callsites_test.ts.
  *
  * Uses Australian English throughout (behaviour, recognised, organisation).
  */

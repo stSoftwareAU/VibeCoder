@@ -23,28 +23,27 @@
  * {@link effectiveMicroskills} lets only the `envfacts` mechanism inject. The
  * upstream plugin injects learned facts as plain bullet lines under a header,
  * with no data fencing, and the distiller's facts are free model-written text.
- * The plugin is vendored at a pinned checksum, so it cannot be patched to fence
- * them. The worker therefore lets only the mechanical, linted environment-facts
- * mechanism inject: the issue's stated fallback of "microskills=envfacts only".
+ * The audited executable selected by TE_PYTHON fences the pinned plugin's
+ * output with the worker's shared untrusted-text boundary and rejects excessive
+ * context or facts. The archive is unchanged. Distillation stays disabled:
+ * its free model-written proposals are not independently capped upstream.
  *
- * ## Stop record: durable, needs no human
+ * ## Stop record
  *
- * A finding (a secret in the learnings, a cross-repository fact, a plugin run
- * failure) is recorded in `${workDir}/.token-economizer/stop.json`. While that
- * record exists every later run has the plugin off, across restarts. A stop
- * record that cannot be read, parsed or understood fails closed: it inhibits
- * the plugin rather than being read as "no stop". Issue #4957 (gitleaks and
- * cross-repository checks before every push) is planned to call
- * {@link recordTokenEconomizerStop} when it finds such a problem; that wiring is
- * not present yet.
+ * The shared controller consumes hook failures and exposes the finding/sync
+ * contract for persistence (#4957). It latches `${workDir}/.token-economizer/stop.json`,
+ * reports to #4959 through the worker's guarded channel and retries pending
+ * reports on later enabled launches. A healthy run never clears a trial failure;
+ * only authorised recovery or purge may do that. Unreadable records fail closed.
+ * This local file is not a security boundary against a same-UID agent.
  *
  * ## Path confinement
  *
  * The per-spawn state directory is `${workDir}/.token-economizer/runs/<runId>`,
- * where `<runId>` is the caller's run id or, when none is given, a fresh UUID
- * for each launch. The path is joined, normalised and then canonicalised with
- * `realpath`, and only then compared, segment by segment. It must lie under the real work
- * directory and must not lie inside the repo checkout.
+ * where `<runId>` is the caller's run id or a fresh UUID. The path is normalised
+ * and its existing prefix canonicalised before creation. It must lie under the
+ * real work directory and outside the repo checkout; the created path is checked
+ * again before being used.
  *
  * Uses Australian English throughout (behaviour, recognised, organisation).
  */
@@ -63,6 +62,7 @@ import type {
   TokenEconomizerConfig,
   TokenEconomizerMicroskills,
 } from "../types.ts";
+import { reportTokenEconomizerStop } from "./token_economizer_control.ts";
 import { confinePath } from "./mutation_runner.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { redactSecrets } from "./secret_redaction.ts";
@@ -137,6 +137,10 @@ export interface ResolveTokenEconomizerLaunchOptions {
   /** Names the state directory. Must pass the allow-list. Absent: a fresh UUID per launch. */
   runId?: string;
   pluginDir?: string;
+  /** Audited worker executable; override only for isolated launch validation. */
+  hookAdapterPath?: string;
+  /** Guarded worker notification channel; injectable for offline validation. */
+  notifyStop?: (args: string[]) => Promise<string>;
   logger?: {
     info(m: string, c?: Record<string, unknown>): void;
     warn(m: string, c?: Record<string, unknown>): void;
@@ -168,9 +172,8 @@ const MAX_TOKENS_ENV = String(TOKEN_ECONOMIZER_MICROSKILLS_MAX_TOKENS);
  * The micro-skills value the plugin is launched with. `off` stays `off`; the
  * other three configured values all give `envfacts`.
  *
- * Only the mechanical, linted environment-facts mechanism may inject, because
- * the vendored plugin cannot fence the distiller's free model-written facts
- * (see the module header).
+ * Only the mechanical environment-facts mechanism may inject. The adapter
+ * fences its output; the distiller's uncapped proposals remain disabled.
  *
  * @param configured - The `microskills` value from the `token_economizer` block.
  * @returns `off`, or `envfacts` for any other configured value.
@@ -220,19 +223,11 @@ export function tokenEconomizerStatePath(workDir: string): string {
 }
 
 /**
- * Record a durable stop, so every later run has the plugin off until the
- * record is removed by hand. The first stop wins: an existing, readable stop
- * record is kept and returned unchanged. A record that is unreadable is
- * replaced, since it never held a real finding.
- *
- * The reason is redacted with {@link redactSecrets}, its line breaks become
- * spaces, and it is cut to 300 characters. The file is written to a temporary
- * file in the same directory (mode 0600) and then renamed, so a reader never
- * sees a half-written record.
- *
- * Issue #4957 (gitleaks and cross-repository checks before every push) is
- * planned to call this function when it finds a problem. That wiring is not
- * present yet.
+ * Record a durable stop until authorised recovery or purge. An existing valid
+ * or unreadable latch is preserved. Atomic hard-link creation makes the first
+ * writer win even across concurrent lanes; readers never see a partial record.
+ * Reasons are redacted, single-line and capped at 300 characters. Persistence
+ * uses stopTokenEconomizerTrial in token_economizer_control.ts to report as well.
  *
  * @param workDir - The parent work directory that holds the clones.
  * @param finding - The rule that tripped, and the human-readable reason.
@@ -258,6 +253,7 @@ export async function recordTokenEconomizerStop(
   }
   const existing = await readStopFile(workDir);
   if (existing.kind === "ok") return existing.stop;
+  if (existing.kind === "bad") return (await readTokenEconomizerStop(workDir))!;
 
   const stop: TokenEconomizerStop = {
     rule: finding.rule,
@@ -272,12 +268,19 @@ export async function recordTokenEconomizerStop(
     await Deno.writeTextFile(temp, `${JSON.stringify(stop)}\n`, {
       mode: 0o600,
     });
-    await Deno.rename(temp, path);
-  } catch (err) {
-    // The temporary file is gone after a successful rename; on failure, drop
-    // it and rethrow the original error.
-    await Deno.remove(temp).catch(() => undefined);
-    throw err;
+    try {
+      // Atomic create without replacement: two lanes cannot overwrite the first finding.
+      await Deno.link(temp, path);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.AlreadyExists)) throw error;
+      const winner = await readTokenEconomizerStop(workDir);
+      if (winner === null) {
+        throw new Error("TokenEconomizer stop disappeared during recording");
+      }
+      return winner;
+    }
+  } finally {
+    await Deno.remove(temp);
   }
   return stop;
 }
@@ -328,6 +331,7 @@ export async function resolveTokenEconomizerLaunch(
   try {
     const stop = await readTokenEconomizerStop(workDir);
     if (stop !== null) {
+      await reportTokenEconomizerStop(workDir, stop, opts.notifyStop, logger);
       logger?.warn(
         `token-economizer: plugin off, stop record in force (rule ${stop.rule}): ${
           redactSecrets(stop.reason)
@@ -349,6 +353,18 @@ export async function resolveTokenEconomizerLaunch(
     if (!(await isFile(manifest))) {
       logger?.warn(
         `token-economizer: plugin off, plugin manifest missing at ${manifest}`,
+      );
+      return null;
+    }
+
+    const adapter = opts.hookAdapterPath ?? TOKEN_ECONOMIZER_HOOK_ADAPTER;
+    const adapterInfo = await Deno.stat(adapter);
+    if (
+      !adapterInfo.isFile ||
+      (adapterInfo.mode !== null && (adapterInfo.mode & 0o111) === 0)
+    ) {
+      logger?.warn(
+        "token-economizer: plugin off, audited hook adapter is not executable",
       );
       return null;
     }
@@ -424,7 +440,7 @@ export async function resolveTokenEconomizerLaunch(
         TE_LOOPGUARD: config.loopguard,
         TE_MICROSKILLS_MAX_FACTS: MAX_FACTS_ENV,
         TE_MICROSKILLS_MAX_TOKENS: MAX_TOKENS_ENV,
-        TE_PYTHON: TOKEN_ECONOMIZER_HOOK_ADAPTER,
+        TE_PYTHON: adapter,
       },
     };
   } catch (err) {
@@ -465,6 +481,9 @@ async function readStopFile(workDir: string): Promise<StopFileRead> {
   const path = tokenEconomizerStatePath(workDir);
   let text: string;
   try {
+    if ((await Deno.stat(path)).size > 4096) {
+      return { kind: "bad", cause: "stop record exceeds its size limit" };
+    }
     text = await Deno.readTextFile(path);
   } catch (err) {
     if (err instanceof Deno.errors.NotFound) return { kind: "missing" };
@@ -483,10 +502,16 @@ async function readStopFile(workDir: string): Promise<StopFileRead> {
   if (!isFindableStopRule(record.rule)) {
     return { kind: "bad", cause: `${path} carries an unknown stop rule` };
   }
-  if (typeof record.reason !== "string") {
+  if (
+    typeof record.reason !== "string" ||
+    record.reason.length > STOP_REASON_MAX_CHARS
+  ) {
     return { kind: "bad", cause: `${path} has no string reason` };
   }
-  if (typeof record.recordedAt !== "string") {
+  if (
+    typeof record.recordedAt !== "string" ||
+    !Number.isFinite(Date.parse(record.recordedAt))
+  ) {
     return { kind: "bad", cause: `${path} has no string recordedAt` };
   }
   return {

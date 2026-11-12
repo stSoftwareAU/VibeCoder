@@ -127,6 +127,7 @@ function optionsFor(
     runId: "run-1",
     pluginDir: f.plugin,
     logger: captured.logger,
+    notifyStop: () => Promise.resolve("reported by test channel"),
     ...overrides,
   };
 }
@@ -901,5 +902,80 @@ Deno.test("the worker observes a hook failure while the run is still active and 
       reports[0].join(" "),
       "hook adapter rejected input or failed",
     );
+  });
+});
+
+Deno.test("concurrent stop writers retain one first finding and a corrupt latch is never replaced", async () => {
+  await withFixture(async (f) => {
+    const [one, two] = await Promise.all([
+      recordTokenEconomizerStop(f.work, {
+        rule: "secret-in-learnings",
+        reason: "first contender",
+      }, fixedNow),
+      recordTokenEconomizerStop(f.work, {
+        rule: "cross-repo-fact",
+        reason: "second contender",
+      }, fixedNow),
+    ]);
+    assertEquals(one, two);
+    assertEquals(await readTokenEconomizerStop(f.work), one);
+    await Deno.writeTextFile(tokenEconomizerStatePath(f.work), "corrupt latch");
+    const stop = await recordTokenEconomizerStop(f.work, {
+      rule: "plugin-run-failure",
+      reason: "new finding",
+    });
+    assertEquals(stop.rule, "unreadable-stop-record");
+    assertEquals(
+      await Deno.readTextFile(tokenEconomizerStatePath(f.work)),
+      "corrupt latch",
+    );
+    assertEquals(await tokenEconomizerMaySync(f.work), false);
+  });
+});
+
+Deno.test("an unusable adapter cannot fall through to the upstream unfenced Python hook", async () => {
+  await withFixture(async (f) => {
+    const adapter = `${f.root}/adapter`;
+    await Deno.mkdir(adapter);
+    const captured = captureLogger();
+    assertEquals(
+      await resolveTokenEconomizerLaunch(
+        optionsFor(f, captured, { hookAdapterPath: adapter }),
+      ),
+      null,
+    );
+    assertSingleWarn(captured, "audited hook adapter is not executable");
+    await Deno.remove(adapter);
+    await Deno.writeTextFile(adapter, "#!/bin/sh\necho '{}'\n", {
+      mode: 0o600,
+    });
+    if (Deno.build.os !== "windows") {
+      const notExecutable = captureLogger();
+      assertEquals(
+        await resolveTokenEconomizerLaunch(
+          optionsFor(f, notExecutable, { hookAdapterPath: adapter }),
+        ),
+        null,
+      );
+      assertSingleWarn(notExecutable, "audited hook adapter is not executable");
+    }
+    await Deno.chmod(adapter, 0o755);
+    const accepted = await resolveTokenEconomizerLaunch(
+      optionsFor(f, captureLogger(), { hookAdapterPath: adapter }),
+    );
+    assert(accepted);
+    assertEquals(accepted.env.TE_PYTHON, adapter);
+  });
+});
+
+Deno.test("an older timestamp-only notification receipt is retried, then deduplicated by the recorded finding", async () => {
+  await withFixture(async (f) => {
+    const stop = await recordTokenEconomizerStop(f.work, { rule: "cross-repo-fact", reason: "repository mismatch" }, fixedNow);
+    await Deno.writeTextFile(`${tokenEconomizerStatePath(f.work)}.reported`, stop.recordedAt);
+    let calls = 0;
+    const notify = () => { calls++; return Promise.resolve("reported"); };
+    await reportTokenEconomizerStop(f.work, stop, notify);
+    await reportTokenEconomizerStop(f.work, { ...stop, recordedAt: new Date(0).toISOString() }, notify);
+    assertEquals(calls, 1);
   });
 });
