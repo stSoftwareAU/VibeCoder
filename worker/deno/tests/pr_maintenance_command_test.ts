@@ -16,6 +16,7 @@ import {
   _setGhSpawnRunner,
   type GhSpawnRunner,
 } from "../lib/gh_spawn.ts";
+import { clearPrimaryQuotaLatch } from "../lib/primary_quota_latch.ts";
 import { _resetMergeQueueMemo } from "../lib/merge_queue_runtime.ts";
 import type { WorkerConfig } from "../types.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
@@ -344,6 +345,8 @@ function fakeGhBehindOnlyPr(rules: string): {
 }
 
 Deno.test("pr-maintenance command - update-open-pr-branches takes no action on a behind-only PR behind a merge queue (Issue #4424)", async () => {
+  // An earlier test's real gh call can latch the host's quota; this one runs on a fake (Issue #4986 pre-push gate).
+  clearPrimaryQuotaLatch();
   _resetMergeQueueMemo();
   const { runner, calls } = fakeGhBehindOnlyPr("pull_request,merge_queue");
   // A throwaway work dir: were the PR wrongly updated, the clone would land
@@ -391,6 +394,7 @@ async function strictRefreshPutCount(
   config: Partial<WorkerConfig>,
   seedOwner: boolean,
 ): Promise<number> {
+  clearPrimaryQuotaLatch();
   _resetMergeQueueMemo();
   const refresh = strictRefreshFixture(MERGE_QUEUE_REPO, "main", author);
   const runner: GhSpawnRunner = async (args) => {
