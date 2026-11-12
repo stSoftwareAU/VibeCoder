@@ -72,3 +72,6 @@ checked against the head code:
   (from `worker/deno`): `mermaid: PASSED (1755 file(s), 1436 block(s) checked)`.
 - `deno fmt --check lib/milestone_sync_streak.ts` and
   `deno check lib/milestone_sync_streak.ts` passed.
+- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`. Config
+  integration and checkov were skipped by the gate itself.
+- `deno task pr-summary-check`: 0 gates blocked, 0 not checked.
