@@ -99,6 +99,13 @@ export interface SpellingProcessorDeps {
    * so `dirname` names the lane, not the root.
    */
   workRoot: string;
+  /**
+   * Directory the base-refresh decision counters are persisted to
+   * (`base_refresh_counters.json`): the production callers pass `WORK_DIR`.
+   * Unset (as in tests), a publication-time decision is counted in memory only,
+   * so no test writes into a shared directory (PR #5059 review).
+   */
+  baseRefreshCounterDir?: string;
   /** Quality instructions for the prompt. */
   qualityInstructions?: string;
   /** Custom repo-specific instructions. */
@@ -463,7 +470,7 @@ async function _processSpellingWithHeartbeat(
     repo,
     prNumber,
     source: "pr-spelling-processor",
-    counterDir: processorDeps.workRoot,
+    counterDir: processorDeps.baseRefreshCounterDir,
     gh: (args) => deps.github.runGhCommand(args),
     warn: (message) => logger.warn(message),
     log: (message) => logger.info(message),

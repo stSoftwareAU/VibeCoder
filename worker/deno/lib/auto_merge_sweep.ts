@@ -292,14 +292,22 @@ export async function sweepAutoMerge(
     }
   };
 
+  /**
+   * End a PR's refusal streak (and mark a notified comment recovered). Every
+   * skip, a permanent refusal and a successful refresh end it, as consecutive
+   * transient refusals are what the streak counts. Only a pass whose evidence
+   * is a mergeability reading sets `mergeabilityOnly`: that reading cannot
+   * prove stale test-merge parents caught up, so a stale-parent entry is kept
+   * (PR #5059 review).
+   */
   const clearRefusal = (
     repo: string,
     prNumber: number,
-    parentsVerified = false,
+    mergeabilityOnly = false,
   ) =>
     updateRefusals((state, defer) => {
       if (
-        !parentsVerified &&
+        mergeabilityOnly &&
         state.get(`${repo}#${prNumber}`)?.reason === "test-merge-parents-stale"
       ) return Promise.resolve();
       clearInState(state, defer, repo, prNumber);
@@ -448,7 +456,7 @@ export async function sweepAutoMerge(
           reading = { unknown: true, error: errorMessage(err) };
         }
         if (!reading.open) {
-          if (reading.open === false) await clearRefusal(repo, pr.number, true);
+          if (reading.open === false) await clearRefusal(repo, pr.number);
           summary.prsSkippedNotOpen++;
           logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
           continue;
@@ -546,7 +554,7 @@ export async function sweepAutoMerge(
                 },
             );
             if (update.ok) {
-              await clearRefusal(repo, pr.number, true);
+              await clearRefusal(repo, pr.number);
             } else {
               const reason = classifyTransientBranchRefreshRefusal(
                 update.error.message,
@@ -618,7 +626,7 @@ export async function sweepAutoMerge(
         }
 
         if (!armedNow || reading.mergeable !== "UNKNOWN") {
-          await clearRefusal(repo, pr.number);
+          await clearRefusal(repo, pr.number, true);
         }
 
         try {

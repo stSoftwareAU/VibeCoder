@@ -235,6 +235,13 @@ export interface PrFeedbackProcessorDeps {
    */
   workRoot: string;
   /**
+   * Directory the base-refresh decision counters are persisted to
+   * (`base_refresh_counters.json`): the production callers pass `WORK_DIR`.
+   * Unset (as in tests), a publication-time decision is counted in memory only,
+   * so no test writes into a shared directory (PR #5059 review).
+   */
+  baseRefreshCounterDir?: string;
+  /**
    * Fleet identity inputs for the PR-comment claim's author check
    * (Issue #1124), and for the PR total on the round's run-stats comment
    * (Issue #1249, finding 12). Omitted reads the configured fleet, which is what
@@ -1863,7 +1870,7 @@ async function _processFeedbackWithHeartbeat(
       repo,
       prNumber,
       source: "pr-feedback-processor",
-      counterDir: processorDeps.workRoot,
+      counterDir: processorDeps.baseRefreshCounterDir,
       gh: (args) => deps.github.runGhCommand(args),
       warn: (message) => logger.warn(message),
       log: (message) => logger.info(message),

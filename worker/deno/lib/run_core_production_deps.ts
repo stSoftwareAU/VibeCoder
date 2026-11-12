@@ -2676,6 +2676,7 @@ export async function createProductionRunCoreDeps(
             // Issue #1662: heartbeat and marker state belong in the work
             // root, not the clone `setupRepo` returned above.
             workRoot: workDir,
+            baseRefreshCounterDir: workDir,
             qualityInstructions,
             customInstructions,
             // Issue #213: the dedicated reactive budget, not the issue-work
@@ -2834,6 +2835,7 @@ export async function createProductionRunCoreDeps(
             // Issue #1662: heartbeat and marker state belong in the work
             // root, not the clone `setupRepo` returned above.
             workRoot: workDir,
+            baseRefreshCounterDir: workDir,
             qualityInstructions,
             customInstructions,
             claudeTimeout: config.claudeTimeout,
@@ -2971,6 +2973,7 @@ export async function createProductionRunCoreDeps(
             // Issue #1662: heartbeat, marker and milestone state belong in
             // the work root, not the clone `setupRepo` returned above.
             workRoot: workDir,
+            baseRefreshCounterDir: workDir,
             // Issue #213: the dedicated reactive budget, not the issue-work
             // `claude_timeout` — this dispatch path passing `claudeTimeout` is
             // why a host with `claude_timeout: 3600` logged "Running Claude

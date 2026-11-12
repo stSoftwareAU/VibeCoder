@@ -215,6 +215,7 @@ export const prSpellingProcessorCommand = {
           // Issue #1662: heartbeat and marker state live in the work
           // root, not in the clone `setupRepo` returned above.
           workRoot: config.workDir,
+          baseRefreshCounterDir: config.workDir,
           qualityInstructions,
           customInstructions,
           repoConfigs: config.repoConfig,

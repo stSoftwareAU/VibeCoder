@@ -1236,6 +1236,85 @@ Deno.test("a requested review clears an escalated refusal even while mergeabilit
   assertEquals(state.attempted, []);
 });
 
+const SKIPPED_PRS: Array<
+  [string, SweepablePr, Partial<PrLiveStateReading>]
+> = [
+  ["a draft", { number: 44, isDraft: true }, {}],
+  ["a needs-human PR", { number: 44, labels: [{ name: "needs-human" }] }, {}],
+  ["a PR with changes requested", { number: 44 }, { changesRequested: true }],
+];
+for (const [label, pr, live] of SKIPPED_PRS) {
+  Deno.test(`a skipped PR (${label}) ends an escalated stale-parent refusal and marks its comment recovered (PR #5059 review)`, async () => {
+    const refusals: BranchRefreshRefusalState = new Map([[`${VC}#44`, {
+      reason: "test-merge-parents-stale" as const,
+      streak: 2,
+      lastSeenAtMs: Date.now(),
+      notified: true,
+    }]]);
+    const notifications: boolean[] = [];
+    const { options } = harness({ [VC]: [pr] }, {
+      prLiveState: () =>
+        Promise.resolve({
+          open: true,
+          armed: true,
+          behind: true,
+          mergeable: "MERGEABLE",
+          ...live,
+        } as PrLiveStateReading),
+    });
+    const result = await sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: {
+        update: (change) => change(refusals),
+        notify: ({ active }) => {
+          notifications.push(active);
+          return Promise.resolve();
+        },
+      },
+    });
+    assert(result.ok);
+    // The streak ends and the waiting comment no longer says it will retry.
+    assertEquals(refusals.size, 0);
+    assertEquals(notifications, [false]);
+  });
+}
+
+Deno.test("stale-parent, permanent, stale-parent refusals do not escalate: the permanent refusal ends the streak (PR #5059 review)", async () => {
+  const state: BranchRefreshRefusalState = new Map();
+  const notifications: boolean[] = [];
+  const { options } = harness({ [VC]: [{ number: 4834 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+  });
+  const run = (message: string) =>
+    sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: {
+        update: (change) => change(state),
+        notify: ({ active }) => {
+          notifications.push(active);
+          return Promise.resolve();
+        },
+      },
+      updateBranchFn: () =>
+        Promise.resolve({ ok: false as const, error: new Error(message) }),
+    });
+  const stale =
+    "required-check read failed: PR test merge parents do not match its head and base";
+  assert((await run(stale)).ok);
+  assert((await run("permission denied")).ok);
+  assert((await run(stale)).ok);
+  assertEquals(notifications, []);
+  assertEquals(state.get(`${VC}#4834`)?.streak, 1);
+});
+
 Deno.test("an armed, behind PR labelled needs-human gets no branch update (owner rule 2026-11-01)", async () => {
   // A needs-human PR waits on a person: updating it only reruns CI.
   infos.length = 0;

@@ -177,6 +177,7 @@ async function runWith(
         deps,
         workDir: clone,
         workRoot: workDir,
+        baseRefreshCounterDir: workDir,
         stateDir: `${workDir}/ci`,
         promptsDir: new URL("../../../prompts", import.meta.url).pathname,
         repoConfigs: config.repoConfig,

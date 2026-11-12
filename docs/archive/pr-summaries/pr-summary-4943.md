@@ -226,6 +226,27 @@ Fixed after the PR #5059 review (tests are under `worker/deno/tests/`):
   `branch_refresh_refusal_streak_test.ts` and `repair_base_merge_4943_test.ts`
   pass (81 tests).
 
+- PR #5059 review, third round. The sweep's stale-parent guard now applies only
+  where a mergeability reading would clear the entry (the not-behind pass,
+  `clearRefusal(..., mergeabilityOnly = true)`, and the repair tracker). Every
+  skip path (closed, needs-human, draft, base-integrity hold, disarm, changes
+  requested, merge-queue base), a permanent refusal and a successful refresh
+  end the streak as on `main` and mark a notified comment recovered, so
+  refusals that are not consecutive no longer escalate. New sweep tests in
+  `auto_merge_sweep_test.ts`: a seeded, escalated stale-parent entry is cleared
+  with a recovered comment by the draft, needs-human and changes-requested
+  skips; stale, permanent, stale stays at streak 1 with no comment. Each turns
+  red with the old always-on guard. Changed existing test:
+  `repair_base_merge_4943_test.ts` "sweep and repair lanes retain stale-parent
+  escalation ..." asserted that a skipped (review-required) pass kept the
+  entry; it now asserts the pass ends the streak and the comment reads
+  recovered. The publication counters no longer use `workRoot`: a new optional
+  `baseRefreshCounterDir` processor dependency is set to `WORK_DIR` by the
+  three commands and the three run-core call sites, and left unset by tests, so
+  a test counts in memory only. Running the processor test files no longer
+  creates `/tmp/test-work-root/base_refresh_counters.json` (it did before this
+  change). The direct-library counter test passes the new dependency.
+
 ## Merge verification
 
 The worker will rerun the full quality gate, completion checks and pre-PR

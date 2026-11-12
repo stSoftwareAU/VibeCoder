@@ -642,11 +642,14 @@ Deno.test("sweep and repair lanes retain stale-parent escalation until the real 
     }
     fleet.prs.get(10)!.reviewDecision = "REVIEW_REQUIRED";
     await run();
+    // A pass that skips the PR ends the consecutive-refusal streak, as on main,
+    // and corrects the waiting comment (PR #5059 review).
     assertEquals(
-      await readBranchRefreshRefusals(dir),
-      escalated,
-      "an unready PR does not prove that parents caught up",
+      (await readBranchRefreshRefusals(dir)).has(`${REPO}#10`),
+      false,
+      "a skipped pass ends the stale-parent streak",
     );
+    assertMatch(service.comments[0]!.body, /Branch refresh recovered/);
     fleet.prs.get(10)!.reviewDecision = "APPROVED";
     stale = false;
     await run();
