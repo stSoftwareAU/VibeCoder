@@ -208,6 +208,10 @@ The other review findings are addressed:
   the two babysitter harness suites no longer creates
   `~/.local/state/vibe-coder/fleet-pr-babysitter/base_refresh_counters.json`
   (the previous head did).
+- `base_refresh_call_sites_4943_test.ts`: its babysitter behind-path test now
+  injects `baseRefreshCounterDir` alongside `stateDir`, so the test reads the
+  counter file the production-only setting would otherwise leave unwritten
+  (commit `dc14745b`). The file's 3 tests pass at the head.
 
 ## Merge verification
 
