@@ -118,6 +118,7 @@ flowchart LR
 - Modified `worker/deno/tests/pr_maintenance_command_test.ts`: six empty-scan fixtures use the existing `gh_spawn` seam; no assertion was removed. Injecting quota exhaustion before the fix produced the five reported failures; after the fix the same harness passed the file. No production quota or cache behaviour changed.
 - Modified `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts`: after readiness the sweep reaches merge helpers beyond its local `autoMergeGhCommandFn` seam. The first full gate passed both unit passes but failed this file's time-budget check. An isolated run reproduced that failure, and profiling exposed a real `gh` call. The existing shared spawn seam now routes those calls to the same fake; no assertion or budget changed. The wiring and draft self-heal tests then passed the unit gate.
 - Results on the current code:
+  - `timeout 1200 ./quality.sh < /dev/null` exited 0: passed with configured skips. Both unit passes, the test time-budget check, Semgrep, lint, type checking, formatting, manifests, Markdown and Mermaid validation passed.
   - `deno task test:unit` over the added/modified test files and retained CI-parser, deferred-store, pre-push, coverage-gate and subprocess regressions passed (35 files, both passes).
   - `deno check .`, `deno lint` and `deno fmt --check` from `worker/deno` passed.
   - `deno task check:manifests` passed; its existing ignored case remains ignored.
@@ -125,7 +126,7 @@ flowchart LR
 - Production defaults still wire the retained coverage and discrimination runners through `defaultMutationRunnerSeams`. The `collectRunOwnBaseline` caller is the production drift check. The retained workflow helpers are consumed by `ci_cargo_checks.ts`.
 - Persistence compatibility is covered by the retired-key loader test and `worker/deno/tests/deferred_pr_drain_test.ts::deferred drain - a record persisted with draft: true before Issue #5095 is still raised as a draft (Issue #4617)`. The record shape and key were not changed.
 
-Removed assertions (each test below was removed along with the production code it exercised):
+Removed or replaced assertions:
 
 - Removed from `worker/deno/tests/mutation_runner_test.ts`: every `runMutationCheck`, `detectMutationLanguage` and `confinement` / `confinement rust` assertion
   - Removed functionality: `runMutationCheck` and `detectMutationLanguage` are deleted, and `git grep runMutationCheck -- worker/deno/lib` finds no caller. `confinePath`, `importsModule`, `listTestFiles`, `makeMutationTempDir` and the `runProcess` SIGTERM/SIGKILL teardown keep their tests in the same file.
@@ -146,11 +147,11 @@ Removed assertions (each test below was removed along with the production code i
 - Removed from `worker/deno/tests/summary_rule_gate_retry_test.ts`: the mutation-check-item expectations in "a mutation-check item allows test changes" and "a standing violation and a mutation-check item both allow code and tests"
   - Obsolete: mutation-check items no longer exist.
   - Still covered by: `worker/deno/tests/summary_rule_gate_retry_test.ts`, whose same two cases now assert the coverage carry-over wording.
-- Deleted whole files, with their production modules:
+- Deleted mutation-only suites whose runtime paths are gone; retained cases moved as noted:
   - `worker/deno/tests/ci_mutation_lookup_test.ts`
   - `worker/deno/tests/ci_mutation_contract_remote_test.ts`
   - `worker/deno/tests/completion_phase_mutation_gate_test.ts`
-  - `worker/deno/tests/draft_continuation_mutation_hold_test.ts`
+  - `worker/deno/tests/draft_continuation_mutation_hold_test.ts`; unmet-criteria and governing-reference cases remain in `worker/deno/tests/draft_continuation_unmet_body_test.ts`
   - `worker/deno/tests/pr_feedback_mutation_check_3750_test.ts`, whose `collectRunOwnBaseline` cases moved to `worker/deno/tests/run_own_baseline_test.ts`
   - `worker/deno/tests/pr_feedback_processor_mutation_check_3750_test.ts`
   - `worker/deno/tests/mutation_tree_guard_test.ts`
@@ -162,6 +163,7 @@ Required repository CI and the routine PR review remain pending.
 
 ## Not checked / remaining risk
 
+- Checkov was skipped because neither its pinned binary nor Docker/Podman was available. Config integration was skipped because the checkout has no `.config.json`. Their skips are not passes; required repository CI remains authoritative.
 - The container image was not rebuilt; manifest, installation-input and toolchain self-check regressions passed.
 - The historical ENOTEMPTY live-writer race was not reproduced or repaired. A failed cleanup may leave a temporary directory; the security check warns and preserves its verdict.
 - Integration suites outside the repository's required local gate were not run. No mutation or fuzzing campaign was run.
