@@ -2,9 +2,8 @@
  * Tests for the orphaned fleet draft self-heal (Issue #4952).
  *
  * A fleet draft whose issue has no live claim and whose body does not open
- * with a draft-continuation or mutation-hold marker is marked ready, and its CI
- * is awaited, so the auto-merge sweep can arm it. Every other draft stays a
- * draft.
+ * with a draft-continuation marker is marked ready, and its CI is awaited, so
+ * the auto-merge sweep can arm it. Every other draft stays a draft.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -12,7 +11,6 @@
 import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   buildDraftContinuationBody,
-  buildMutationHoldDraftBody,
   buildUnmetDraftBody,
   DRAFT_CONTINUATION_MARKER,
 } from "../lib/draft_continuation_pr.ts";
@@ -156,14 +154,10 @@ Deno.test("#4952 - a draft carrying the draft-continuation marker is held and ne
   assertEquals(run.readyCalls, []);
 });
 
-Deno.test("#4952 - a mutation-hold draft carrying the marker is held and never readied", async () => {
+Deno.test("#4952 - an unmet-criteria draft carrying the marker is held and never readied", async () => {
   const run = await heal({
     pr: healthyDraft({
-      body: buildMutationHoldDraftBody(7, "Closes #7", {
-        job: "mutation",
-        workflow: "ci.yml",
-        comment: "survivors remain",
-      }),
+      body: buildUnmetDraftBody(7, "Closes #7"),
     }),
     issue: OPEN_UNCLAIMED,
   });

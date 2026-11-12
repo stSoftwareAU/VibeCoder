@@ -74,10 +74,6 @@ export function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
 }
 
-/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
-export const notMutationChecked: DriftCheckDeps["runMutationCheck"] =
-  async () => ({ kind: "not_applicable", reason: "not under test" });
-
 export type AgentResponse =
   | { ok: true; output: string }
   | { ok: false; error: Error };

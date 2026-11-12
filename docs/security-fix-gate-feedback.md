@@ -97,8 +97,8 @@ remote and deleted afterwards. The issue checkout itself is untouched.
 - With the merge-base versions of the branch's changed non-test files restored,
   it must fail. Files the branch added have no base version and stay at head.
 
-The run reuses the mutation gate's runner seams (`MutationRunnerSeams`,
-allowlisted child environment) and executes one of two commands, chosen by the
+The run reuses the shared runner seams (`MutationRunnerSeams` in
+`worker/deno/lib/mutation_runner.ts`, allowlisted child environment) and executes one of two commands, chosen by the
 cited test's file:
 
 - a Deno test: `deno test --no-check -A --filter <name> <file>` from the test's

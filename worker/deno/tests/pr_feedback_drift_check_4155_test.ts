@@ -4,10 +4,7 @@
 // Uses Australian English throughout.
 
 import { assert, assertEquals } from "@std/assert";
-import {
-  type DriftCheckDeps,
-  runPrFeedbackDriftCheck,
-} from "../lib/pr_feedback_drift_check.ts";
+import { runPrFeedbackDriftCheck } from "../lib/pr_feedback_drift_check.ts";
 
 interface GitRunResult {
   code: number;
@@ -64,11 +61,6 @@ async function initRepo(branch: string): Promise<string> {
   return dir;
 }
 
-const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
-  kind: "not_applicable",
-  reason: "not under test",
-});
-
 function verdictOwn(): string {
   return [
     "<!-- vibe-drift-verdict -->",
@@ -110,7 +102,6 @@ Deno.test("runPrFeedbackDriftCheck scopes prose findings to the PR's own summary
       {
         runGit: (args) => git(dir, args),
         runGh: async () => "main\n",
-        runMutationCheck: notMutationChecked,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
         runAgent: async (req) => {
           calls.push(req);
@@ -159,7 +150,6 @@ Deno.test("a base merge does not make another issue's summary part of the drift 
       {
         runGit: (args) => git(dir, args),
         runGh: async () => "main\n",
-        runMutationCheck: notMutationChecked,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
         runAgent: async () => ({ ok: true, output: verdictOwn() }),
       },
@@ -190,7 +180,6 @@ Deno.test("an edit to another issue's archived summary is restored (Issue #4155)
       {
         runGit: (args) => git(dir, args),
         runGh: async () => "main\n",
-        runMutationCheck: notMutationChecked,
         logger: {
           info: () => {},
           error: () => {},
@@ -246,7 +235,6 @@ Deno.test("run-own drift scope excludes merged source prose and retains the run 
       {
         runGit: (args) => git(dir, args),
         runGh: async () => "main",
-        runMutationCheck: notMutationChecked,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
         runAgent: async (req) => {
           calls.push(req);
@@ -297,7 +285,6 @@ Deno.test("an unavailable run-own baseline is reported without repair (Issue #46
             })
             : git(dir, args),
         runGh: async () => "main",
-        runMutationCheck: notMutationChecked,
         logger: { info: () => {}, warn: () => {}, error: () => {} },
         runAgent: () => {
           invoked = true;

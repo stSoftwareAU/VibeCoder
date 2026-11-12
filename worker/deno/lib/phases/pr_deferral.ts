@@ -30,7 +30,6 @@ import { resolveRunHardCap } from "../run_hard_cap.ts";
 import {
   type DeferredPrRecord,
   formatPrPendingComment,
-  PR_PENDING_MARKER,
   recordDeferredPr,
 } from "../deferred_pr_store.ts";
 import { prDeferredOutcome } from "../run_outcome.ts";
@@ -160,7 +159,7 @@ export interface PendingPr {
   reviewers: readonly string[];
   /** Posted on the PR once the drain raises it (Issue #3237); empty = none. */
   advisoryComment?: string;
-  /** Raise it as a draft when the drain opens it (Issue #4617 mutation hold). */
+  /** Raise it as a draft when the drain opens it. */
   draft?: boolean;
 }
 
@@ -244,10 +243,7 @@ export async function deferPrCreation(
 
   try {
     const client = deps.github.createClient(logger);
-    const pendingNote = pr.draft && state.mutationHold
-      ? `${PR_PENDING_MARKER}\n⏳ **PR pending** — mutation validation is incomplete for CI job \`${state.mutationHold.job}\` (${state.mutationHold.workflow}). ` +
-        `The PR will open as a draft from \`${state.branchName}\` once the GitHub secondary rate limit clears. The next run continues this branch.\n\n${state.mutationHold.comment}`
-      : formatPrPendingComment(record);
+    const pendingNote = formatPrPendingComment(record);
     await client.postComment(repo, issueNumber, pendingNote);
   } catch (err) {
     logger.warn(

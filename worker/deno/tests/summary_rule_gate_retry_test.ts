@@ -352,28 +352,40 @@ Deno.test("summary-rule retry - no sections carries the whole comment as REQUIRE
   assertStringIncludes(prompt, VERDICT.comment);
 });
 
-Deno.test("summary-rule retry - a mutation-check item allows test changes; other items stay documentation-only", () => {
+Deno.test("summary-rule retry - a coverage carry-over item allows test changes; other items stay documentation-only (Issue #3795)", () => {
   const docsOnly = buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 7);
   assertStringIncludes(docsOnly, "so do not change it.");
-  assertEquals(docsOnly.includes("adding or strengthening tests"), false);
+  assertEquals(docsOnly.includes("adding or restoring tests"), false);
 
   const withTests = buildSummaryRuleRetryPrompt(
     { ...VERDICT, allowsTestChanges: true },
     "org/repo",
     7,
   );
-  assertStringIncludes(withTests, "adding or strengthening tests");
+  assertStringIncludes(
+    withTests,
+    "adding or restoring tests that reach each listed line",
+  );
+  assertStringIncludes(
+    withTests,
+    "A coverage carry-over item (it lists `file:line` lines that an edited or removed test used to reach and no test reaches now)",
+  );
   assertEquals(withTests.includes("so do not change it."), false);
   // The exemption is for lines no test can reach, not an alternative to a test.
   assertStringIncludes(
     withTests,
     "only for a line that genuinely cannot be tested",
   );
+  // The exemption is written in the form the coverage gate parses.
+  assertStringIncludes(
+    withTests,
+    "`file:line` exempt (untestable): <reason> in the summary",
+  );
   // New work and PR creation stay forbidden.
   assertStringIncludes(withTests, "Do not create the PR yourself");
 });
 
-Deno.test("summary-rule retry - a standing violation and a mutation-check item both allow code and test changes", () => {
+Deno.test("summary-rule retry - a standing violation and a coverage carry-over item both allow code and test changes", () => {
   const prompt = buildSummaryRuleRetryPrompt(
     {
       ...VERDICT,
@@ -384,9 +396,17 @@ Deno.test("summary-rule retry - a standing violation and a mutation-check item b
     7,
     "0123456789ab",
   );
+  assertEquals(
+    prompt.includes("A REQUIRED ITEM is a documentation shortfall"),
+    false,
+    "the coverage item must keep its test-change allowance alongside CODE FIX items",
+  );
   assertStringIncludes(prompt, "CODE FIX 1 of 1");
-  assertStringIncludes(prompt, "adding or strengthening tests");
-  assertStringIncludes(prompt, "A CODE FIX item is the one exception");
+  assertStringIncludes(
+    prompt,
+    "adding or restoring tests that reach each listed line",
+  );
+  assertStringIncludes(prompt, "A CODE FIX item is an additional exception");
   assertEquals(prompt.includes("so do not change it"), false);
 });
 

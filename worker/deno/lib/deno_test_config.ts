@@ -1,7 +1,8 @@
 /**
- * Deno project configuration for the diff-scoped mutation check (Issue #4533):
- * which repo-relative files are Deno tests, and which local module an import
- * specifier names.
+ * Deno project configuration for the Deno test-file and import rules (Issue
+ * #4533): which repo-relative files are Deno tests, and which local module an
+ * import specifier names. Its current users are `mutation_runner.ts` callers:
+ * the discrimination runner and the coverage carry-over runner.
  *
  * The mutation check used to decide a test by file name alone (`*_test.ts`,
  * `*.test.ts`) and to find a module's importers by relative specifier alone
@@ -86,7 +87,8 @@ function localImports(value: unknown, source: string): Map<string, string> {
 }
 
 /**
- * Read the fields the mutation check uses from a `deno.json` / `deno.jsonc`.
+ * Read the fields the test-file and import rules use from a `deno.json` /
+ * `deno.jsonc`.
  * Empty or whitespace-only text is an empty config. Throws an `Error` naming
  * `source` and the field at fault on invalid JSON, a non-object top level,
  * or a wrongly typed field. Negated patterns fall back to the suffix rule.

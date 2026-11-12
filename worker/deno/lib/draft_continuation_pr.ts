@@ -28,7 +28,6 @@ import {
   type IssueIdentity,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
-import { mdSafe } from "./mutation_gate.ts";
 import { buildPrTitle } from "./pr_title_build.ts";
 
 /** Marks a PR body as a draft continuation (timed out, or criteria unmet). */
@@ -128,9 +127,6 @@ export async function ensureDraftContinuationPr(args: {
  *
  * @param body - The PR body the run assembled; its closing keyword for the
  *   issue is withheld.
- * @param draftBody - The body to write instead of the unmet-criteria draft
- *   body (Issue #4617: the mutation hold body). Omitted, the unmet-criteria
- *   body is written.
  * @param identity - Trusted repositories for the PR and its governing issue;
  *   a qualified closing reference in `body` needs it to be rewritten.
  */
@@ -139,13 +135,11 @@ export async function convertToDraftContinuation(args: {
   issueNumber: number;
   prNumber: number;
   body: string;
-  draftBody?: string;
   identity?: IssueIdentity;
   gh: (args: string[]) => Promise<string>;
   log: (message: string) => void;
 }): Promise<void> {
-  const { repo, issueNumber, prNumber, body, draftBody, identity, gh, log } =
-    args;
+  const { repo, issueNumber, prNumber, body, identity, gh, log } = args;
   const pr = String(prNumber);
   let isDraft = false;
   let armed = true;
@@ -189,7 +183,7 @@ export async function convertToDraftContinuation(args: {
       "--repo",
       repo,
       "--body",
-      draftBody ?? buildUnmetDraftBody(issueNumber, body, identity),
+      buildUnmetDraftBody(issueNumber, body, identity),
     ]);
   } catch (err) {
     log(`could not rewrite PR #${prNumber}'s body: ${errText(err)}`);
@@ -209,40 +203,6 @@ export function buildUnmetDraftBody(
     "The next run continues this branch; when it completes, the PR is " +
     "marked ready and auto-merge armed, even with a criterion still unmet, " +
     "and it says `Closes #N` unless an entry is `missing`.",
-    "",
-    withholdIssueClose(body, issueNumber, identity),
-  ].join("\n");
-}
-
-/**
- * A draft for surviving mutants the repository's CI blocks on (Issue #4617).
- * Unlike the unmet-criteria draft it says validation is incomplete, carries
- * the mutation gate's comment, and is still `Part of #N` with no closing
- * keyword. The job and workflow names come from repository files, so any
- * backtick or line break is stripped again here.
- */
-export function buildMutationHoldDraftBody(
-  issueNumber: number,
-  body: string,
-  hold: {
-    job: string;
-    workflow: string;
-    comment: string;
-  },
-  identity?: IssueIdentity,
-): string {
-  const job = mdSafe(hold.job);
-  const workflow = mdSafe(hold.workflow);
-  return [
-    DRAFT_CONTINUATION_MARKER,
-    "",
-    "> **Draft — validation incomplete.** The worker's mutation check still " +
-    "reports surviving mutants on the changed lines, and this repository's " +
-    `CI job \`${job}\` (${workflow}) blocks on them. Part of #${issueNumber}. ` +
-    "The next run continues this branch; the pull request is marked ready " +
-    "once the mutation check reports no survivor.",
-    "",
-    hold.comment,
     "",
     withholdIssueClose(body, issueNumber, identity),
   ].join("\n");
