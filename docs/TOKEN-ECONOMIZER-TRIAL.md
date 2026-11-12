@@ -1,12 +1,12 @@
 # 🧮 TokenEconomizer trial — learnings that persist across runs
 
-<!-- cspell:ignore microskills loopguard envfacts TOOLPRUNE REPOMAP tokeneconomizer Containerfile -->
+<!-- cspell:ignore microskills loopguard envfacts TOOLPRUNE REPOMAP tokeneconomizer Containerfile noarch pyproject opencode codegraph worktrees -->
 
 | | |
 | - | - |
 | **Candidate** | [microsoft/TokenEconomizer](https://github.com/microsoft/TokenEconomizer) at commit `264e7a7f32f0112a06aa83a97b9c2c4681563968` (§1) |
 | **Trial host** | **GRQ-25** — one host, Claude Code only (§2) |
-| **Switch** | `token_economizer.enabled` in a host's `.config.json`, default `false` — not yet: [#4955](https://github.com/stSoftwareAU/VibeCoder/issues/4955) adds it |
+| **Switch** | `token_economizer.enabled` in a host's `.config.json`, default `false` — accepted and validated, but not read yet: [#4956](https://github.com/stSoftwareAU/VibeCoder/issues/4956) will wire it into runs |
 | **Bar** | ≥ 10% lower mean cost per completed implementation run, success rate and PR merge rate no worse (§4) |
 | **First judged** | after **7 days** or **60** completed switched-on implementation runs, whichever is later (§3) |
 | **Status** | ⚪ **not started** — this page is written before the window opens, and no run has used the plugin |
@@ -35,19 +35,32 @@ from this fleet's own runs (§4).
 **Pinned commit.** The trial runs the plugin at commit
 `264e7a7f32f0112a06aa83a97b9c2c4681563968`, the tip of upstream `main` when this
 page was written (committed 2026-11-08T22:09:30Z, read with
-`gh api repos/microsoft/TokenEconomizer/commits/HEAD`). The container sub-issue
-(#4955) is to vendor that one commit into the image as a source tarball checked
-against a recorded sha256; it is never cloned at run time. Not yet: #4955 pins
-this commit, so today the image carries nothing of TokenEconomizer. The commit
-named here and the pin in the image are one value, changed in one PR, and the
-drift test fails when they differ.
+`gh api repos/microsoft/TokenEconomizer/commits/HEAD`). The image vendors that
+one commit as a source archive, checked against a recorded sha256 before
+anything is installed; it is never cloned at run time. The pin lives in
+`container/tools.json`, in the `tokeneconomizer` toolchain entry, as its
+`commit` and its `sha256` (under `noarch`), with the version `0.1.0`.
+`container/toolchains/tokeneconomizer.sh` reads those pins with jq, refuses an
+image `python3` below the package's `requires-python` floor (`>=3.10`, read from
+the archive's `pyproject.toml`) at build, and installs only the archive's
+`plugin/` and `tokeneconomizer/` trees under `/opt/tokeneconomizer`. The
+`tokeneconomizer` wrapper at `/usr/local/bin/tokeneconomizer` answers
+`--version` with the pinned version and commit. Nothing in the image invokes the
+plugin yet. The `token_economizer` block that #4955 adds is parsed but not
+read, and #4956 wires it into runs, so the command sits unused until then. The commit named here and the pin in the image are one
+value, changed in one PR, and the drift test fails when they differ.
 
 **The block.** The switches are one `token_economizer` block in a host's
 `.config.json`, off by default, with four keys: `token_economizer.enabled`,
 `token_economizer.learnings_repo` (an `owner/name` private repository, required
 when enabled), `token_economizer.microskills` and `token_economizer.loopguard`.
-Not yet: #4955 adds the block and #4956 wires it into runs; until then no code
-reads any of these keys.
+`worker/deno/lib/token_economizer_config.ts` parses and validates the block at
+config load, and a malformed block fails the load with an error naming the key.
+`microskills` takes `off`, `envfacts`, `distiller` or `envfacts+distiller` (the
+default); `loopguard` takes `off` or `nudge` (the default). The error cases and
+the defaults are set out in the [Configuration Reference](CONFIGURATION.md). The
+block is accepted and validated, but not read yet: #4956 will wire it into runs;
+today a run is the same whatever it is set to.
 
 **The mechanisms.** Two are switched on and three are off:
 
@@ -59,10 +72,27 @@ reads any of these keys.
 | Repository map | `TE_REPOMAP=off` | off | The worker already supplies repository context, the codebase map and, where switched on, Graft and CodeGraph. A third source would confound this trial and the repo-context trial alike. |
 | History import | `TE_HISTORY_IMPORT=false` | off | Importing sessions that predate the trial would put learnings from outside the window into the store, so the first runs could not be told from later ones, and it would persist past transcripts into text that is injected into later runs. |
 
-**Claude Code only.** The fleet's agent CLIs are newer than the plugin's tested
-version range, so the trial is run on Claude Code alone. The upstream
-supported-version table is to be quoted here with the image's actual Claude Code
-version beside it. Not yet: #4955 supplies both.
+**Claude Code only.** The image installs Claude Code alone (`installedProviders`
+in `container/tools.json`), so the trial is run on Claude Code alone. Upstream's
+supported-version table is quoted here from its `README.md` at the pinned
+commit, under `### Supported versions`. Its "(below)" notes are upstream's, not
+this page's.
+
+| Agent | Supported | Older versions |
+| --- | --- | --- |
+| Claude Code | 2.1.300 to 2.1.310 | not supported |
+| Codex | 0.153.1 to 0.164.0 | not supported |
+| Copilot CLI | 1.0.83 to 1.0.102 | not supported |
+| Pi | 1.2.0 to 1.3.0 | 0.99.x: load the extension by path (below) |
+| Cursor Agent (experimental) | 3.24.9 and cursor-agent 2026.11.05, macOS and Linux (below) | not tested |
+| Grok Build (experimental) | 1.0.70 | not tested |
+| opencode (experimental) | 1.19.5 and 2.2.0 | not tested |
+| Hermes Agent (experimental) | 0.22.5 | not tested |
+| Antigravity CLI (experimental) | agy 1.5.1, macOS and Linux | not tested |
+
+The commands above were tested on the oldest and newest version in each range; newer versions have not been tested yet.
+
+This image's Claude Code: **2.1.310**, the newest version in upstream's tested range for Claude Code. It is the `claude` provider's `version` in `container/tools.json`, and this line changes in the same PR as any Claude Code bump.
 
 ## 2. 🏠 The trial host
 
@@ -197,12 +227,14 @@ learnings directory the trial adds. Not yet:
 [#4959](https://github.com/stSoftwareAU/VibeCoder/issues/4959), the verdict
 issue, will remove exactly this list when the bar is missed or a stop rule
 fired. The drift test fails when a text file tracked by git, other than the
-historical records under `docs/archive/` and `docs/audits/`, names the plugin
-and is missing from the list. Gitignored local files, such as agent worktrees
+worker state under `graft/` and `.codegraph/` and the historical records under
+`docs/archive/` and `docs/audits/`, names the plugin and is missing from the
+list. Gitignored local files, such as agent worktrees
 and an operator's `.config.json`, are not repository files and are not read.
 
 State is `present` when the path exists and names the plugin today, and
-`planned #N` when issue #N is to add it.
+`planned #N` when issue #N is to add it. A row with no path (`—`) is
+`planned #N`, because nothing in the repository can show that it exists yet.
 
 | Kind | What | Path | State |
 | ---- | ---- | ---- | ----- |
@@ -210,9 +242,22 @@ State is `present` when the path exists and names the plugin today, and
 | Doc link | the README Documentation-table row | `README.md` | present |
 | Doc link | the link in the RTK trial's related documentation | `docs/RTK-OUTPUT-TRIAL.md` | present |
 | Doc link | the link in the Repo-context trial's related documentation | `docs/REPO-CONTEXT-TRIAL.md` | present |
-| Image layer | the pinned commit, its recorded sha256, the Python 3.10+ check, and the `plugin/` and `tokeneconomizer/` install | `container/Containerfile` | planned #4955 |
-| Config key | the `token_economizer` block and its parser | — | planned #4955 |
-| Doc section | the config row and the learnings store layout | `docs/CONFIGURATION.md` | planned #4955 |
+| Image layer | the `tokeneconomizer` id in the toolchain install list of the image build | `container/Containerfile` | present |
+| Image layer | the `tokeneconomizer` toolchain entry: its version, commit and recorded sha256 | `container/tools.json` | present |
+| Image layer | the install fragment: the archive fetch and sha256 check, the `python3` floor check, the `plugin/` and `tokeneconomizer/` install under `/opt/tokeneconomizer`, and the `/usr/local/bin/tokeneconomizer` wrapper | `container/toolchains/tokeneconomizer.sh` | present |
+| Image layer | the fragment's entry in the image hash inputs | `worker/deno/lib/container_image_hash.ts` | present |
+| Image layer | the fragment's install tests in the toolchain test file | `worker/deno/tests/install_toolchains_test.ts` | present |
+| Image layer | the start-up self-check's fixture for the wrapper's `--version` output | `worker/deno/tests/toolchain_selfcheck_test.ts` | present |
+| Doc section | the `tokeneconomizer` row of the image's toolchain table | `docs/CONTAINER.md` | present |
+| Doc section | the paragraph on `tokeneconomizer` in the image's layer description | `docs/CONTAINER-IMAGE.md` | present |
+| Config key | the `token_economizer` block: its parser and its validation | `worker/deno/lib/token_economizer_config.ts` | present |
+| Config key | the block's type, its config field and its raw file key | `worker/deno/types.ts` | present |
+| Config key | the block's load-time parse and the config error | `worker/deno/lib/config.ts` | present |
+| Config key | the block's defaults | `worker/deno/lib/config_defaults.ts` | present |
+| Config key | the block's known keys and its nested-key warnings | `worker/deno/lib/config_unknown_keys.ts` | present |
+| Config key | the block's parser and loader tests | `worker/deno/tests/token_economizer_config_test.ts` | present |
+| Config key | the block's off-by-default spawn tests | `worker/deno/tests/token_economizer_off_spawn_test.ts` | present |
+| Doc section | the `token_economizer` row of the configuration reference | `docs/CONFIGURATION.md` | present |
 | Source | the `--plugin-dir` and environment wiring in the Claude spawn | `worker/deno/lib/agent_provider.ts` | planned #4956 |
 | Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | planned #4956 |
 | Source | the learnings pull and push, with the gitleaks check | — | planned #4957 |
@@ -220,7 +265,7 @@ State is `present` when the path exists and names the plugin today, and
 | Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | planned #4958 |
 | Callback field | the new optional fields on the run callback | `docs/CALLBACKS.md` | planned #4958 |
 | Report section | the weekly report's comparison section | — | planned #4958 |
-| Host config | the key in the trial host's `.config.json`, switched off first | — | planned #4955 |
+| Host config | the `token_economizer` block in the trial host's gitignored `.config.json`, with `enabled` set to `false` first; a purge removes the block there | — | planned #4956 |
 
 **What stays.** This page, with its Status changed to *purged* and the measured
 figures added, as the record of the negative result. After a purge,

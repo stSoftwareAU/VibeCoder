@@ -217,7 +217,7 @@ ENV RTK_TELEMETRY_DISABLED="1" \
 
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer
 
 # markdownlint-cli2 backs the check-markdownlint gate stage; cspell (Issue
 # #3689) backs the pre-push gate's spelling stage for a repository that tracks
@@ -368,42 +368,42 @@ ENV CHROMIUM_PATH="/usr/local/bin/chromium"
 # The Chromium, chromium-headless-shell and ffmpeg zips are downloaded and
 # SHA-256 verified before install (Issues #274, #3256).
 RUN set -eu; \
-    tarball="/tmp/playwright-core.tgz"; \
-    curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/playwright-core/-/playwright-core-${PLAYWRIGHT_VERSION}.tgz"; \
-    echo "${PLAYWRIGHT_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
-    npm install -g --ignore-scripts "${tarball}"; \
-    rm -rf /tmp/npmc "${tarball}"; \
-    playwright-core --version; \
-    mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"; \
-    browsers="$(npm root -g)/playwright-core/browsers.json"; \
-    pw() { jq -r ".browsers[] | select(.name==\"$1\") | .$2" "${browsers}"; }; \
-    chromium_rev="$(pw chromium revision)"; chromium_ver="$(pw chromium browserVersion)"; \
-    shell_rev="$(pw chromium-headless-shell revision)"; shell_ver="$(pw chromium-headless-shell browserVersion)"; \
-    ffmpeg_rev="$(pw ffmpeg revision)"; \
-    cft=https://cdn.playwright.dev/builds/cft; az=https://cdn.playwright.dev/dbazure/download/playwright/builds; \
-    pw_zip() { curl -fsSL ${CURL_RETRY} -o /tmp/pw.zip "$1"; echo "$2  /tmp/pw.zip" | sha256sum -c -; mkdir -p "$3"; unzip -q /tmp/pw.zip -d "$3"; test -x "$3/$4"; : > "$3/INSTALLATION_COMPLETE"; rm -f /tmp/pw.zip; }; \
-    case "$(uname -m)" in \
-      x86_64) \
-        chromium_url="$cft/${chromium_ver}/linux64/chrome-linux64.zip"; chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_AMD64}"; chromium_exe="chrome-linux64/chrome"; \
-        shell_url="$cft/${shell_ver}/linux64/chrome-headless-shell-linux64.zip"; shell_sha="${PLAYWRIGHT_SHA256_HEADLESS_SHELL_AMD64}"; shell_exe="chrome-headless-shell-linux64/chrome-headless-shell"; \
-        ffmpeg_url="$az/ffmpeg/${ffmpeg_rev}/ffmpeg-linux.zip"; ffmpeg_sha="${PLAYWRIGHT_SHA256_FFMPEG_AMD64}" ;; \
-      aarch64) \
-        chromium_url="$az/chromium/${chromium_rev}/chromium-linux-arm64.zip"; chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_ARM64}"; chromium_exe="chrome-linux/chrome"; \
-        shell_url="$az/chromium/${shell_rev}/chromium-headless-shell-linux-arm64.zip"; shell_sha="${PLAYWRIGHT_SHA256_HEADLESS_SHELL_ARM64}"; shell_exe="chrome-linux/headless_shell"; \
-        ffmpeg_url="$az/ffmpeg/${ffmpeg_rev}/ffmpeg-linux-arm64.zip"; ffmpeg_sha="${PLAYWRIGHT_SHA256_FFMPEG_ARM64}" ;; \
-      *) echo "Unsupported build architecture: $(uname -m)" >&2; exit 1 ;; \
-    esac; \
-    chromium_dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium-${chromium_rev}"; \
-    shell_dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium_headless_shell-${shell_rev}"; \
-    ffmpeg_dest="${PLAYWRIGHT_BROWSERS_PATH}/ffmpeg-${ffmpeg_rev}"; \
-    pw_zip "${chromium_url}" "${chromium_sha}" "${chromium_dest}" "${chromium_exe}"; \
-    ln -s "${chromium_dest}/${chromium_exe}" "${CHROMIUM_PATH}"; \
-    pw_zip "${shell_url}" "${shell_sha}" "${shell_dest}" "${shell_exe}"; \
-    pw_zip "${ffmpeg_url}" "${ffmpeg_sha}" "${ffmpeg_dest}" "ffmpeg-linux"; \
-    playwright-core install --with-deps chromium; \
-    rm -rf /var/lib/apt/lists/*; \
-    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
-    NODE_PATH="$(npm root -g)" node -e "require('playwright-core').chromium.launch({executablePath: process.env.CHROMIUM_PATH, args: ['--no-sandbox']}).then(async (b) => { const p = await b.newPage(); await p.setContent('<h1>baked</h1>'); const t = await p.textContent('h1'); await b.close(); if (t !== 'baked') throw new Error('unexpected page content: ' + t); console.log('headless Chromium launched from ' + process.env.CHROMIUM_PATH); }).catch((e) => { console.error(e); process.exit(1); })"
+  tarball="/tmp/playwright-core.tgz"; \
+  curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/playwright-core/-/playwright-core-${PLAYWRIGHT_VERSION}.tgz"; \
+  echo "${PLAYWRIGHT_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
+  npm install -g --ignore-scripts "${tarball}"; \
+  rm -rf /tmp/npmc "${tarball}"; \
+  playwright-core --version; \
+  mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}"; \
+  browsers="$(npm root -g)/playwright-core/browsers.json"; \
+  pw() { jq -r ".browsers[] | select(.name==\"$1\") | .$2" "${browsers}"; }; \
+  chromium_rev="$(pw chromium revision)"; chromium_ver="$(pw chromium browserVersion)"; \
+  shell_rev="$(pw chromium-headless-shell revision)"; shell_ver="$(pw chromium-headless-shell browserVersion)"; \
+  ffmpeg_rev="$(pw ffmpeg revision)"; \
+  cft=https://cdn.playwright.dev/builds/cft; az=https://cdn.playwright.dev/dbazure/download/playwright/builds; \
+  pw_zip() { curl -fsSL ${CURL_RETRY} -o /tmp/pw.zip "$1"; echo "$2  /tmp/pw.zip" | sha256sum -c -; mkdir -p "$3"; unzip -q /tmp/pw.zip -d "$3"; test -x "$3/$4"; : > "$3/INSTALLATION_COMPLETE"; rm -f /tmp/pw.zip; }; \
+  case "$(uname -m)" in \
+    x86_64) \
+      chromium_url="$cft/${chromium_ver}/linux64/chrome-linux64.zip"; chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_AMD64}"; chromium_exe="chrome-linux64/chrome"; \
+      shell_url="$cft/${shell_ver}/linux64/chrome-headless-shell-linux64.zip"; shell_sha="${PLAYWRIGHT_SHA256_HEADLESS_SHELL_AMD64}"; shell_exe="chrome-headless-shell-linux64/chrome-headless-shell"; \
+      ffmpeg_url="$az/ffmpeg/${ffmpeg_rev}/ffmpeg-linux.zip"; ffmpeg_sha="${PLAYWRIGHT_SHA256_FFMPEG_AMD64}" ;; \
+    aarch64) \
+      chromium_url="$az/chromium/${chromium_rev}/chromium-linux-arm64.zip"; chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_ARM64}"; chromium_exe="chrome-linux/chrome"; \
+      shell_url="$az/chromium/${shell_rev}/chromium-headless-shell-linux-arm64.zip"; shell_sha="${PLAYWRIGHT_SHA256_HEADLESS_SHELL_ARM64}"; shell_exe="chrome-linux/headless_shell"; \
+      ffmpeg_url="$az/ffmpeg/${ffmpeg_rev}/ffmpeg-linux-arm64.zip"; ffmpeg_sha="${PLAYWRIGHT_SHA256_FFMPEG_ARM64}" ;; \
+    *) echo "Unsupported build architecture: $(uname -m)" >&2; exit 1 ;; \
+  esac; \
+  chromium_dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium-${chromium_rev}"; \
+  shell_dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium_headless_shell-${shell_rev}"; \
+  ffmpeg_dest="${PLAYWRIGHT_BROWSERS_PATH}/ffmpeg-${ffmpeg_rev}"; \
+  pw_zip "${chromium_url}" "${chromium_sha}" "${chromium_dest}" "${chromium_exe}"; \
+  ln -s "${chromium_dest}/${chromium_exe}" "${CHROMIUM_PATH}"; \
+  pw_zip "${shell_url}" "${shell_sha}" "${shell_dest}" "${shell_exe}"; \
+  pw_zip "${ffmpeg_url}" "${ffmpeg_sha}" "${ffmpeg_dest}" "ffmpeg-linux"; \
+  playwright-core install --with-deps chromium; \
+  rm -rf /var/lib/apt/lists/*; \
+  chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \
+  NODE_PATH="$(npm root -g)" node -e "require('playwright-core').chromium.launch({executablePath: process.env.CHROMIUM_PATH, args: ['--no-sandbox']}).then(async (b) => { const p = await b.newPage(); await p.setContent('<h1>baked</h1>'); const t = await p.textContent('h1'); await b.close(); if (t !== 'baked') throw new Error('unexpected page content: ' + t); console.log('headless Chromium launched from ' + process.env.CHROMIUM_PATH); }).catch((e) => { console.error(e); process.exit(1); })"
 
 # private-repo-9's gate runs `rustup update stable` unless this is set. The
 # image owns its Rust toolchain, so the gate must use the baked one rather

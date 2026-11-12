@@ -1476,3 +1476,547 @@ Deno.test("container/toolchains/floci.sh - installs the wrapper and passes the s
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// container/toolchains/tokeneconomizer.sh (Issue #4955, parent #4953)
+// ---------------------------------------------------------------------------
+//
+// The real fragment runs against a fixture archive with the pinned commit's
+// top-level directory and the layout it relies on (plugin/, tokeneconomizer/,
+// experiments/, tests/, docs/, scripts/ and a pyproject.toml), served by a stub
+// curl. Only the checksum case uses the committed manifest, so the real pin is
+// the one that refuses the fixture bytes; the others copy the entry and set
+// the checksum to the fixture's own.
+
+const TE_FRAGMENT = `${REPO_ROOT}/container/toolchains/tokeneconomizer.sh`;
+const TE_MANIFEST = `${REPO_ROOT}/container/tools.json`;
+
+/** The committed manifest, parsed. Entries stay loosely typed, as the manifest is. */
+async function readCommittedManifest(): Promise<{
+  toolchains: Array<Record<string, unknown>>;
+}> {
+  return JSON.parse(await Deno.readTextFile(TE_MANIFEST));
+}
+
+/** The pins the committed `tokeneconomizer` entry records. */
+interface TokenEconomizerPin {
+  version: string;
+  commit: string;
+  sha256: string;
+}
+
+async function committedTokenEconomizer(): Promise<TokenEconomizerPin> {
+  const entry = (await readCommittedManifest()).toolchains.find((t) =>
+    t.id === "tokeneconomizer"
+  );
+  assert(entry !== undefined, "container/tools.json must pin tokeneconomizer");
+  const sha256 = entry.sha256 as Record<string, string>;
+  return {
+    version: entry.version as string,
+    commit: entry.commit as string,
+    sha256: sha256.noarch!,
+  };
+}
+
+/** Whether a path exists, without following a final symlink; other errors are raised. */
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.lstat(path);
+    return true;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    return false;
+  }
+}
+
+async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** The interpreter the test process would run, resolved before any stub is put on the PATH. */
+async function realPython(): Promise<string> {
+  const found = await new Deno.Command("sh", {
+    args: ["-c", "command -v python3"],
+    stdout: "piped",
+    stderr: "piped",
+    stdin: "null",
+  }).output();
+  const path = new TextDecoder().decode(found.stdout).trim();
+  assert(
+    found.code === 0 && path !== "",
+    "python3 must be on PATH for the fragment's own checks",
+  );
+  return path;
+}
+
+interface TeFixture {
+  archive: string;
+  sha256: string;
+}
+
+/**
+ * A stand-in for the pinned source archive: the real top-level directory and
+ * the layout the fragment relies on, with the bytes each case chooses.
+ * `escapeLink` adds a symlink to that absolute path, for the containment case.
+ * `relativeLink` adds a relative symlink at `at`, a path under the archive's
+ * top level, pointing at `target` as written.
+ */
+async function buildTeFixture(
+  dir: string,
+  options: {
+    version: string;
+    requiresPython?: string;
+    escapeLink?: string;
+    relativeLink?: { at: string; target: string };
+  },
+): Promise<TeFixture> {
+  const pin = await committedTokenEconomizer();
+  const root = `${dir}/fixture`;
+  const top = `${root}/TokenEconomizer-${pin.commit}`;
+  for (
+    const sub of [
+      "plugin/scripts",
+      "plugin/lib",
+      "tokeneconomizer",
+      "experiments",
+      "tests",
+      "docs",
+      "scripts",
+    ]
+  ) {
+    await Deno.mkdir(`${top}/${sub}`, { recursive: true });
+  }
+  await Deno.writeTextFile(
+    `${top}/plugin/scripts/te`,
+    `#!/bin/sh\necho "te $*"\n`,
+  );
+  await Deno.chmod(`${top}/plugin/scripts/te`, 0o755);
+  // The plugin's own symlink is relative, so it stays valid once both trees
+  // sit side by side under the install prefix.
+  await Deno.symlink(
+    "../../tokeneconomizer",
+    `${top}/plugin/lib/tokeneconomizer`,
+  );
+  await Deno.writeTextFile(
+    `${top}/tokeneconomizer/__init__.py`,
+    `__version__ = "${options.version}"\n`,
+  );
+  await Deno.writeTextFile(`${top}/experiments/run.py`, "\n");
+  await Deno.writeTextFile(`${top}/docs/README.md`, "docs\n");
+  const requires = options.requiresPython ?? ">=3.10";
+  await Deno.writeTextFile(
+    `${top}/pyproject.toml`,
+    `[project]\nname = "tokeneconomizer"\nversion = "${options.version}"\n` +
+      `requires-python = "${requires}"\n`,
+  );
+  if (options.escapeLink !== undefined) {
+    await Deno.symlink(options.escapeLink, `${top}/plugin/lib/escape`);
+  }
+  if (options.relativeLink !== undefined) {
+    await Deno.symlink(
+      options.relativeLink.target,
+      `${top}/${options.relativeLink.at}`,
+    );
+  }
+
+  const archive = `${dir}/tokeneconomizer.tar.gz`;
+  const tar = await new Deno.Command("tar", {
+    args: ["-czf", archive, "-C", root, `TokenEconomizer-${pin.commit}`],
+    stdout: "piped",
+    stderr: "piped",
+    stdin: "null",
+  }).output();
+  assertEquals(tar.code, 0, new TextDecoder().decode(tar.stderr));
+  return { archive, sha256: await sha256Hex(await Deno.readFile(archive)) };
+}
+
+/** A `curl` on the PATH that copies the fixture to the path given with `-o`. */
+async function stubCurl(dir: string, archive: string): Promise<void> {
+  await Deno.mkdir(`${dir}/bin`, { recursive: true });
+  await Deno.writeTextFile(
+    `${dir}/bin/curl`,
+    `#!/bin/sh\nout=""\nwhile [ $# -gt 0 ]; do\n` +
+      `  case "$1" in -o) shift; out="$1" ;; esac\n  shift\ndone\n` +
+      `cp "${archive}" "\${out}"\n`,
+  );
+  await Deno.chmod(`${dir}/bin/curl`, 0o755);
+}
+
+/**
+ * A `python3` on the PATH that reports `reported` for the fragment's version
+ * probe and otherwise runs the real interpreter, so the smoke check still
+ * imports the package for real.
+ */
+async function stubPython(dir: string, reported: string): Promise<void> {
+  const real = await realPython();
+  await Deno.mkdir(`${dir}/bin`, { recursive: true });
+  await Deno.writeTextFile(
+    `${dir}/bin/python3`,
+    `#!/bin/sh\ncase "$*" in\n` +
+      `  *version_info*) echo "${reported}" ;;\n` +
+      `  *) exec "${real}" "$@" ;;\nesac\n`,
+  );
+  await Deno.chmod(`${dir}/bin/python3`, 0o755);
+}
+
+/** The committed manifest with the tokeneconomizer checksum replaced, so a fixture can verify. */
+async function manifestWithChecksum(
+  dir: string,
+  sha256: string,
+): Promise<string> {
+  const manifest = await readCommittedManifest();
+  const entry = manifest.toolchains.find((t) => t.id === "tokeneconomizer");
+  assert(entry !== undefined, "container/tools.json must pin tokeneconomizer");
+  entry.sha256 = { noarch: sha256 };
+  const path = `${dir}/tools.json`;
+  await Deno.writeTextFile(path, JSON.stringify(manifest));
+  return path;
+}
+
+interface TeRun {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run the real fragment against a manifest. Its install and bin directories
+ * sit under `${dir}/prefix`, so "nothing installed" is one lstat.
+ */
+async function runTokeneconomizer(
+  dir: string,
+  manifest: string,
+): Promise<TeRun> {
+  const result = await new Deno.Command("bash", {
+    args: [TE_FRAGMENT],
+    env: {
+      PATH: await containerPath(dir),
+      TOOLCHAIN_MANIFEST: manifest,
+      CURL_RETRY: "",
+      TOKENECONOMIZER_INSTALL_DIR: `${dir}/prefix/opt/tokeneconomizer`,
+      TOKENECONOMIZER_BIN_DIR: `${dir}/prefix/bin`,
+    },
+    stdout: "piped",
+    stderr: "piped",
+    stdin: "null",
+  }).output();
+  return {
+    code: result.code,
+    stdout: new TextDecoder().decode(result.stdout),
+    stderr: new TextDecoder().decode(result.stderr),
+  };
+}
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a verified archive installs plugin/ and tokeneconomizer/ only, and the wrapper reports the pin", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    const fixture = await buildTeFixture(dir, { version: pin.version });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    assertEquals(run.code, 0, run.stderr);
+
+    const prefix = `${dir}/prefix/opt/tokeneconomizer`;
+    assert(await pathExists(`${prefix}/plugin`), "plugin/ must be installed");
+    assert(
+      await pathExists(`${prefix}/tokeneconomizer`),
+      "tokeneconomizer/ must be installed",
+    );
+    for (
+      const left of [
+        "experiments",
+        "tests",
+        "docs",
+        "scripts",
+        "pyproject.toml",
+      ]
+    ) {
+      assert(
+        !(await pathExists(`${prefix}/${left}`)),
+        `${left} must not be installed`,
+      );
+    }
+    assertEquals(
+      await Deno.readLink(`${prefix}/plugin/lib/tokeneconomizer`),
+      "../../tokeneconomizer",
+    );
+    assertStringIncludes(run.stdout, `imports from ${prefix}/plugin/lib`);
+
+    const wrapper = `${dir}/prefix/bin/tokeneconomizer`;
+    const version = await new Deno.Command(wrapper, {
+      args: ["--version"],
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+    assertEquals(
+      new TextDecoder().decode(version.stdout).trim(),
+      `tokeneconomizer ${pin.version} (commit ${pin.commit})`,
+    );
+
+    // Anything but --version execs the plugin's own command line unchanged.
+    const passthrough = await new Deno.Command(wrapper, {
+      args: ["status"],
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+    assertEquals(
+      new TextDecoder().decode(passthrough.stdout).trim(),
+      "te status",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a checksum mismatch aborts before anything is installed", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    const fixture = await buildTeFixture(dir, { version: pin.version });
+    assert(
+      fixture.sha256 !== pin.sha256,
+      "the fixture must not match the committed checksum, or this case proves nothing",
+    );
+    await stubCurl(dir, fixture.archive);
+
+    // The committed manifest, so the real pin is the one that refuses the bytes.
+    const run = await runTokeneconomizer(dir, TE_MANIFEST);
+    assert(run.code !== 0, "a checksum mismatch must fail the build");
+    assertStringIncludes(run.stderr, "Archive checksum mismatch");
+    assert(
+      !(await pathExists(`${dir}/prefix`)),
+      "nothing may be installed after a checksum mismatch",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a python3 below requires-python aborts, naming the floor", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      requiresPython: ">=3.10",
+    });
+    await stubCurl(dir, fixture.archive);
+    await stubPython(dir, "3.9");
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    assert(run.code !== 0, "a python3 below the floor must fail the build");
+    assertStringIncludes(run.stderr, "python3 is 3.9");
+    assertStringIncludes(run.stderr, "requires-python >=3.10");
+    assert(
+      !(await pathExists(`${dir}/prefix`)),
+      "nothing may be installed for an unsupported python3",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a python3 at the requires-python floor installs the same fixture", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      requiresPython: ">=3.10",
+    });
+    await stubCurl(dir, fixture.archive);
+    // The floor itself is sufficient: 3.10 is the boundary, not 3.11.
+    await stubPython(dir, "3.10");
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    assertEquals(run.code, 0, run.stderr);
+    assertStringIncludes(
+      run.stdout,
+      "python3 3.10 meets requires-python >=3.10",
+    );
+    assert(
+      await pathExists(`${dir}/prefix/opt/tokeneconomizer/plugin`),
+      "a sufficient python3 must install plugin/",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a source version other than the manifest's aborts", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    const fixture = await buildTeFixture(dir, { version: "9.9.9" });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    assert(run.code !== 0, "a version the manifest does not pin must fail");
+    assertStringIncludes(run.stderr, `declares version "9.9.9"`);
+    assertStringIncludes(run.stderr, `pins ${pin.version}`);
+    assert(
+      !(await pathExists(`${dir}/prefix`)),
+      "nothing may be installed for a version the manifest does not pin",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a symlink that resolves outside the install directory aborts", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    // A real directory outside the install prefix, which the escaping link names.
+    const outside = `${dir}/outside`;
+    await Deno.mkdir(outside);
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      escapeLink: outside,
+    });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    assert(run.code !== 0, "a symlink escaping the prefix must fail the build");
+    assertStringIncludes(run.stderr, "resolves to");
+    assertStringIncludes(run.stderr, "outside");
+    const prefix = `${dir}/prefix/opt/tokeneconomizer`;
+    assert(
+      !(await pathExists(`${prefix}/plugin`)) &&
+        !(await pathExists(`${prefix}/tokeneconomizer`)),
+      "the trees installed before the escape was found must be removed",
+    );
+    assert(
+      !(await pathExists(`${dir}/prefix/bin/tokeneconomizer`)),
+      "no wrapper may be installed for an escaping archive",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * Asserts that the fragment refused a relative symlink `plugin/<name>` leaving
+ * the install directory: it aborted naming that symlink, and nothing it
+ * installed or wrapped survived.
+ */
+async function assertRelativeEscapeRefused(
+  dir: string,
+  run: TeRun,
+  name: string,
+): Promise<void> {
+  const prefix = `${dir}/prefix/opt/tokeneconomizer`;
+  assert(
+    run.code !== 0,
+    `a relative symlink plugin/${name} leaving the install directory must fail the build`,
+  );
+  assertStringIncludes(
+    run.stderr,
+    `symlink ${prefix}/plugin/${name} resolves to`,
+  );
+  assertStringIncludes(run.stderr, "outside");
+  assert(
+    !(await pathExists(`${prefix}/plugin`)) &&
+      !(await pathExists(`${prefix}/tokeneconomizer`)),
+    "the trees installed before the escape was found must be removed",
+  );
+  assert(
+    !(await pathExists(`${dir}/prefix/bin/tokeneconomizer`)),
+    "no wrapper may be installed for an escaping archive",
+  );
+}
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a relative symlink climbing out of the install directory aborts, naming it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    // plugin/ sits one level inside the install directory, so ../../ lands in
+    // the directory beside it: a real target outside the install prefix.
+    await Deno.mkdir(`${dir}/prefix/opt/outside`, { recursive: true });
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      relativeLink: { at: "plugin/escape", target: "../../outside" },
+    });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    await assertRelativeEscapeRefused(dir, run, "escape");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a relative symlink through a missing component that climbs out aborts, naming it", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    // `missing` does not exist, so the guard must resolve its `..` without
+    // touching the disk. From plugin/ the three `..` climb out of the install
+    // directory, landing in prefix/opt/outside.
+    await Deno.mkdir(`${dir}/prefix/opt/outside`, { recursive: true });
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      relativeLink: {
+        at: "plugin/escape",
+        target: "missing/../../../outside",
+      },
+    });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    await assertRelativeEscapeRefused(dir, run, "escape");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/tokeneconomizer.sh - a relative symlink that stays inside the install directory is accepted", async () => {
+  // The positive control for the two escape cases above: the same placement
+  // and depth, with a target that climbs but stays under the install directory.
+  // The real plugin/lib/tokeneconomizer link is in this fixture too.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const pin = await committedTokenEconomizer();
+    const fixture = await buildTeFixture(dir, {
+      version: pin.version,
+      relativeLink: { at: "plugin/alias", target: "../tokeneconomizer" },
+    });
+    await stubCurl(dir, fixture.archive);
+    const manifest = await manifestWithChecksum(dir, fixture.sha256);
+
+    const run = await runTokeneconomizer(dir, manifest);
+    assertEquals(run.code, 0, run.stderr);
+    assert(
+      !run.stderr.includes("resolves to"),
+      "an in-prefix relative symlink must not be reported as an escape",
+    );
+    const prefix = `${dir}/prefix/opt/tokeneconomizer`;
+    assertEquals(
+      await Deno.readLink(`${prefix}/plugin/alias`),
+      "../tokeneconomizer",
+    );
+    assertEquals(
+      await Deno.readLink(`${prefix}/plugin/lib/tokeneconomizer`),
+      "../../tokeneconomizer",
+    );
+    assert(
+      await pathExists(`${prefix}/plugin`),
+      "plugin/ must be installed when every symlink stays inside",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

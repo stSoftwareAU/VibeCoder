@@ -495,6 +495,19 @@ export const OPERATIONAL_DEFAULTS = {
    */
   rtkOutput: { enabled: true },
   /**
+   * The TokenEconomizer block (Issue #4955, part of #4953). Off by default, so
+   * an unconfigured host is unchanged; `learningsRepo` has no default and is
+   * required once `enabled` is set. The block is accepted and validated, but
+   * not read yet: #4956 will wire it into runs; today a run is the same
+   * whatever it is set to.
+   */
+  tokenEconomizer: {
+    enabled: false,
+    learningsRepo: undefined,
+    microskills: "envfacts+distiller",
+    loopguard: "nudge",
+  },
+  /**
    * TTL in seconds for the issue-timeline cache used by label-author
    * checks (Issue #1673). Defaults to 5 minutes — shorter than the
    * 10-minute issues TTL because timelines mutate when labels are
@@ -1689,6 +1702,13 @@ export function buildDefaultWorkerConfig(
       enabled: OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     },
     rtkOutput: { enabled: OPERATIONAL_DEFAULTS.rtkOutput.enabled },
+    // Issue #4955: accepted and validated, but not read yet (#4956 wires it).
+    tokenEconomizer: {
+      enabled: OPERATIONAL_DEFAULTS.tokenEconomizer.enabled,
+      learningsRepo: OPERATIONAL_DEFAULTS.tokenEconomizer.learningsRepo,
+      microskills: OPERATIONAL_DEFAULTS.tokenEconomizer.microskills,
+      loopguard: OPERATIONAL_DEFAULTS.tokenEconomizer.loopguard,
+    },
     timelineCacheTtlSeconds: OPERATIONAL_DEFAULTS.timelineCacheTtlSeconds,
     enableSessionResume: OPERATIONAL_DEFAULTS.enableSessionResume,
     verbosity: DEFAULT_VERBOSITY,

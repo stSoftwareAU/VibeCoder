@@ -251,6 +251,16 @@ Deno.test("checkContainerToolchains - a letter after the pin still makes it a di
 // The committed manifest against what the image really prints
 // ---------------------------------------------------------------------------
 
+/** The committed entry for `id`; a fixture is built from it, never typed. */
+function committedToolchain(id: string): Record<string, unknown> {
+  const toolchains = COMMITTED_MANIFEST["toolchains"] as Array<
+    Record<string, unknown>
+  >;
+  const entry = toolchains.find((toolchain) => toolchain["id"] === id);
+  assert(entry, `container/tools.json pins no "${id}" toolchain`);
+  return entry;
+}
+
 /**
  * What each pinned toolchain's probe printed inside the fleet image
  * (vibe-coder:6824bdd1574c, 2026-09-15), captured verbatim.
@@ -314,6 +324,15 @@ const REAL_IMAGE_OUTPUT: Record<
   // floci.sh installs a /usr/local/bin/floci wrapper whose --version prints
   // "floci <pinned version>" (Issue #3367).
   floci: { command: "floci 2.3.0\n" },
+  // The wrapper container/toolchains/tokeneconomizer.sh installs prints
+  // "tokeneconomizer <version> (commit <commit>)" for --version. Captured by
+  // running the real fragment against the real pinned archive (Issue #4955);
+  // built from the committed entry so a bump cannot leave it stale.
+  tokeneconomizer: {
+    command: `tokeneconomizer ${
+      String(committedToolchain("tokeneconomizer")["version"])
+    } (commit ${String(committedToolchain("tokeneconomizer")["commit"])})\n`,
+  },
 };
 
 Deno.test("checkContainerToolchains - every probe of the committed manifest passes against what the image really prints", async () => {

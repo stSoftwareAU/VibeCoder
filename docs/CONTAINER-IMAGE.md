@@ -48,7 +48,7 @@ the largest download, so it sits last and a Rust bump rebuilds only itself.
 
 The fetch-verify-extract toolchains in that block are **fragments**
 (Issue #1594): `COPY toolchains/*.sh` puts them in the image, then
-`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci`
+`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
 blocks. `markdownlint-cli2`, `cspell` and `graft` sit between the two runs, unchanged —
@@ -89,6 +89,23 @@ fail the build on no response, stop the process, and remove the copied
 binary. `container/entrypoint.sh` does not start floci; it exists for the
 worker's own runs as the LocalStack drop-in on port 4566, and whatever needs
 it starts it.
+
+`tokeneconomizer` is the Microsoft TokenEconomizer plugin the worker's own
+trial drives (Issue #4955, parent #4953; the protocol is in
+[TOKEN-ECONOMIZER-TRIAL.md](TOKEN-ECONOMIZER-TRIAL.md)). It is Apache-2.0
+licensed, and the image carries one commit,
+`264e7a7f32f0112a06aa83a97b9c2c4681563968` (package version 0.1.0). The pin is
+that commit's GitHub source archive, checked against the sha256 recorded in
+`container/tools.json` (`4ace6dc1c945e79841163279d0d54a58fab71cbcab08569e6941b63c26154f9a`)
+before anything is extracted. It is never cloned at run time. Only the
+archive's `plugin/` and `tokeneconomizer/` trees are installed, under
+`/opt/tokeneconomizer` (`experiments/` is not), so the plugin's relative
+`lib/tokeneconomizer` symlink still resolves. A `tokeneconomizer` wrapper on
+the PATH answers `--version` with the pinned version and commit and otherwise
+execs the plugin's `te` command line. The package declares
+`requires-python >=3.10`, and the build fails unless the image's `python3`
+meets that floor. It is off by default: nothing reads it until #4956 wires it
+in through the `token_economizer` config block (#4955).
 
 ## Node and npm
 

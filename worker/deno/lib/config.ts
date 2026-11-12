@@ -48,6 +48,7 @@ import { parseContainerTools } from "./container_tools_config.ts";
 import { parseContainerExtension } from "./container_extension_config.ts";
 import { parseCodegraphContext } from "./codegraph_context_config.ts";
 import { parseRtkOutput } from "./rtk_output_config.ts";
+import { parseTokenEconomizer } from "./token_economizer_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertGraftContextConfig } from "./graft_context_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
@@ -1284,6 +1285,18 @@ export async function loadConfig(
   }
   const rtkOutput = parsedRtkOutput.value;
 
+  // TokenEconomizer (Issue #4955, part of #4953). Off unless the host sets
+  // `enabled: true`. Accepted and validated, but not read yet: #4956 will wire
+  // it into runs; today a run is the same whatever it is set to. A malformed
+  // block fails the load loudly here rather than reading as the default.
+  const parsedTokenEconomizer = parseTokenEconomizer(file.token_economizer);
+  if (!parsedTokenEconomizer.ok) {
+    throw new Error(
+      `Config file ${configPath} is invalid: ${parsedTokenEconomizer.error}`,
+    );
+  }
+  const tokenEconomizer = parsedTokenEconomizer.value;
+
   const config: WorkerConfig = {
     allowedAuthors,
     allowedAuthor,
@@ -1408,6 +1421,7 @@ export async function loadConfig(
     includeCodebaseMap,
     codegraphContext,
     rtkOutput,
+    tokenEconomizer,
     recentActivityMergedPrLimit,
     recentActivityCommitLimit,
     recentActivityMaxTokens,
