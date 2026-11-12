@@ -96,6 +96,18 @@ export interface CostBreakdown {
  * Same input/output rate as Fable 5, with cache reads at a quarter of the
  * Fable 5 rate (0.025× base input rather than the usual 0.1×).
  */
+/**
+ * Claude Fable 5.2 (Issue #5082): $8 / $40 per MTok, 5-minute cache writes $10,
+ * cache reads $0.20 — cheaper than 5.1 across the board (platform pricing
+ * page, 2026-11-12).
+ */
+const FABLE_5_2_PRICING: ModelPricing = {
+  inputPerMillion: 8,
+  outputPerMillion: 40,
+  cacheWritePerMillion: 10,
+  cacheReadPerMillion: 0.20,
+};
+
 const FABLE_5_1_PRICING: ModelPricing = {
   inputPerMillion: 10,
   outputPerMillion: 50,
@@ -370,7 +382,7 @@ const DEEPSEEK_FLASH_PRICING: ModelPricing = {
  * falling through to the oldest/legacy row.
  */
 export const TIER_CURRENT_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
-  ["fable", FABLE_5_1_PRICING],
+  ["fable", FABLE_5_2_PRICING],
   ["opus", OPUS_5_5_PRICING],
   ["sonnet", SONNET_5_PRICING],
   // Not Haiku 5.5's row, though `haiku` now serves Haiku 5.5 (Issue #3400):
@@ -672,6 +684,7 @@ export function lookupModelPricing(model: string): ModelPricing | null {
       // hypothetical `claude-fable-4-1` must not inherit it on minor alone.
       const cheapCache = parsed.major >= FABLE_CHEAP_CACHE_MIN_MAJOR &&
         parsed.minor >= FABLE_CHEAP_CACHE_MIN_MINOR;
+      if (parsed.major >= 5 && parsed.minor >= 2) return FABLE_5_2_PRICING;
       return cheapCache ? FABLE_5_1_PRICING : FABLE_5_PRICING;
     }
     if (parsed.tier === "sonnet") {

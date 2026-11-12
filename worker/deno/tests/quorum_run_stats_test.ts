@@ -198,7 +198,7 @@ Deno.test("quorum stats - the whole plan-off is judged under the drafting phase"
 // reportQuorumDegradation — healthy path
 // ---------------------------------------------------------------------------
 
-Deno.test("reportQuorumDegradation - an opus-served plan-off is not degraded and stays quiet (Issue #2560)", async () => {
+Deno.test("reportQuorumDegradation - a fable-served plan-off is not degraded and stays quiet (Issues #2560, #5081)", async () => {
   resetModelResolution();
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -208,9 +208,9 @@ Deno.test("reportQuorumDegradation - an opus-served plan-off is not degraded and
     repo: "owner/repo",
     issueNumber: 4434,
     observations: [
-      draft("A", { runStats: runStats(["claude-opus-5-5"]) }),
-      draft("B", { runStats: runStats(["claude-opus-5-5"]) }),
-      judge({ runStats: runStats(["claude-opus-5-5"]) }),
+      draft("A", { runStats: runStats(["claude-fable-5-2"]) }),
+      draft("B", { runStats: runStats(["claude-fable-5-2"]) }),
+      judge({ runStats: runStats(["claude-fable-5-2"]) }),
     ],
     ghClient,
     runGhCommand: ghCommandFn,
@@ -303,8 +303,9 @@ Deno.test("reportQuorumDegradation - a rerouted judgement is degraded too", asyn
     repo: "owner/repo",
     issueNumber: 78,
     observations: [
-      draft("A", { runStats: runStats(["claude-opus-5-5"]) }),
-      draft("B", { runStats: runStats(["claude-opus-5-5"]) }),
+      // The drafts served the expected Fable; only the judgement was rerouted.
+      draft("A", { runStats: runStats(["claude-fable-5-2"]) }),
+      draft("B", { runStats: runStats(["claude-fable-5-2"]) }),
       judge({
         runStats: runStats(["claude-opus-5-5"]),
         preflightDegraded: true,

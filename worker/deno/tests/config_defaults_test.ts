@@ -500,21 +500,22 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_SUMMARISE stays haiku (effort-
   assertEquals(DEFAULT_CLAUDE_MODEL_SUMMARISE, "haiku");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PLANNING is the Opus top tier (Issues #2621, #2560)", () => {
-  // Issue #2621: planning moved off opus to the tier above it. Issue #2560:
-  // Opus 5.5 matches Fable 5.1's plan quality at a fifth of the price, so the
-  // top tier is the opus alias again.
-  assertEquals(DEFAULT_CLAUDE_MODEL_PLANNING, "opus");
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PLANNING is the Fable top tier (Issues #2621, #2560, #5081)", () => {
+  // Issue #2621: planning moved off opus to the tier above it. Issue #2560
+  // put it back on opus; Issue #5081 (owner policy 2026-11-12): Fable 5.2 at
+  // high matches Opus 5.5 at max for about half the cost per task, so the
+  // top tier is the fable alias again.
+  assertEquals(DEFAULT_CLAUDE_MODEL_PLANNING, "fable");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_TOP_TIER is the opus alias (Issue #2560)", () => {
-  assertEquals(DEFAULT_CLAUDE_MODEL_TOP_TIER, "opus");
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_TOP_TIER is the fable alias (Issues #2560, #5081)", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_TOP_TIER, "fable");
 });
 
-Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_GRILL_ME is the Opus top tier (Issues #2621, #2560)", () => {
+Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_GRILL_ME is the Fable top tier (Issues #2621, #2560, #5081)", () => {
   // Same plan-quality argument as planning: requirements interrogation shapes
   // everything downstream.
-  assertEquals(DEFAULT_CLAUDE_MODEL_GRILL_ME, "opus");
+  assertEquals(DEFAULT_CLAUDE_MODEL_GRILL_ME, "fable");
 });
 
 Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_GRILL_ME is high (Issue #3229)", () => {
@@ -526,7 +527,7 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_EFFORT_GRILL_ME is high (Issue #3229
 Deno.test("config_defaults - grill_me has explicit model and effort entries, no longer fallback-dependent (Issues #2621, #3229)", () => {
   // Before #2621 grill_me had no entry and silently rode the global fallbacks
   // (opus + high). It pins the top tier explicitly; #3229 set effort to high.
-  assertEquals(PHASE_MODEL_DEFAULTS["grill_me"], "opus");
+  assertEquals(PHASE_MODEL_DEFAULTS["grill_me"], "fable");
   assertEquals(PHASE_EFFORT_DEFAULTS["grill_me"], "high");
 });
 
@@ -542,8 +543,8 @@ Deno.test("config_defaults - DEFAULT_CLAUDE_MODEL_PR_FEEDBACK is sonnet (Sonnet 
   assertEquals(DEFAULT_CLAUDE_MODEL_PR_FEEDBACK, "sonnet");
 });
 
-Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases to opus, reactive to sonnet, trivial to haiku (Issues #2391, #2621, #3229, #2560, #2812)", () => {
-  // Issue #2560: Opus 5.5 is the top tier for planning-shaped work; trivial
+Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases to fable, issue to opus, reactive to sonnet, trivial to haiku (Issues #2391, #2621, #3229, #2560, #2812, #5081)", () => {
+  // Issue #5081: Fable 5.2 is the top tier for planning-shaped work; trivial
   // phases stay on Haiku. Issue #2812: Sonnet 5.5 costs half of Opus 5.5, so
   // the reactive phases move to Sonnet at high effort.
   const topTierPhases = new Set([
@@ -564,22 +565,27 @@ Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases 
     "health",
     "compaction",
   ]);
-  // Owner decision on #3473: the `issue` manager joins them on Sonnet, with
-  // Haiku executors under it and the PR reviewer on Opus. Issue #4174:
-  // merge_conflict is the same standard tier.
+  // Issue #4174: merge_conflict is the same standard tier.
   const sonnetPhases = new Set([
     "ci_fix",
     "pr_feedback",
     "quality_fix",
-    "issue",
     "merge_conflict",
   ]);
   for (const [phase, model] of Object.entries(PHASE_MODEL_DEFAULTS)) {
     if (topTierPhases.has(phase)) {
       assertEquals(
         model,
+        "fable",
+        `Planning-shaped phase "${phase}" should run on the Fable top tier`,
+      );
+    } else if (phase === "issue") {
+      // Owner policy #5081: the `issue` manager is Opus, over Sonnet
+      // executors, with the PR reviewer on Fable.
+      assertEquals(
+        model,
         "opus",
-        `Planning-shaped phase "${phase}" should run on the Opus top tier`,
+        `The issue manager should run on Opus (Issue #5081)`,
       );
     } else if (sonnetPhases.has(phase)) {
       assertEquals(
@@ -938,9 +944,10 @@ Deno.test("config_defaults - PHASE_EFFORT_DEFAULTS has exactly 17 phases (Issues
 // Effort-first routing invariant (Issue #2391)
 // =============================================================================
 
-Deno.test("config_defaults - routing: trivial phases on haiku, reactive on sonnet, planning-shaped on opus (Issues #2391, #2621, #3229, #2560, #2812)", () => {
+Deno.test("config_defaults - routing: trivial phases on haiku, reactive on sonnet, planning-shaped on fable (Issues #2391, #2621, #3229, #2560, #2812, #5081)", () => {
   // Trivial phases run on Haiku; the reactive phases on Sonnet 5.5, half the
-  // Opus 5.5 price (Issue #2812); planning-shaped phases on the Opus tier.
+  // Opus 5.5 price (Issue #2812); planning-shaped phases on the Fable top
+  // tier (Issue #5081).
   const haikuPhases = new Set([
     "spelling_fix",
     "summarise",
@@ -959,7 +966,7 @@ Deno.test("config_defaults - routing: trivial phases on haiku, reactive on sonne
       ? "haiku"
       : sonnetPhases.has(phase)
       ? "sonnet"
-      : DEFAULT_CLAUDE_MODEL;
+      : DEFAULT_CLAUDE_MODEL_TOP_TIER;
     assertEquals(
       PHASE_MODEL_DEFAULTS[phase],
       expected,
@@ -1013,26 +1020,26 @@ Deno.test("config_defaults - effort-first: effort tiers rank by phase complexity
 // Full fifteen-phase model + effort table (Issues #3229, #4112)
 //
 // A single exhaustive table so any future drift in either map is caught at
-// once. The eight planning-shaped phases run on opus + high; issue runs on
-// sonnet + high; the three reactive phases (ci_fix, pr_feedback, quality_fix) on sonnet + high
+// once. The eight planning-shaped phases run on fable + high; issue runs on
+// opus + high (Issue #5081); the three reactive phases (ci_fix, pr_feedback, quality_fix) on sonnet + high
 // (Issue #2812); the three trivial phases on haiku + low.
 // =============================================================================
 
-Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues #3229, #4112, #2560, #2812)", () => {
+Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues #3229, #4112, #2560, #2812, #5081)", () => {
   const table: Record<string, { model: string; effort: string }> = {
-    // Eight planning-shaped phases → Opus top tier at high (Issue #2560).
-    planning: { model: "opus", effort: "high" },
-    grill_me: { model: "opus", effort: "high" },
+    // Eight planning-shaped phases → Fable top tier at high (Issue #5081).
+    planning: { model: "fable", effort: "high" },
+    grill_me: { model: "fable", effort: "high" },
     // Issue #4112: Quorum drafts and judges a plan — planning-shaped work.
-    quorum: { model: "opus", effort: "high" },
-    quorum_judge: { model: "opus", effort: "high" },
-    refinement: { model: "opus", effort: "high" },
-    revision: { model: "opus", effort: "high" },
-    question: { model: "opus", effort: "high" },
-    clarification: { model: "opus", effort: "high" },
-    // Implementation phase → Sonnet manager at high; Haiku executors
-    // (issueSubAgentTier) and an Opus PR reviewer around it (owner, #3473).
-    issue: { model: "sonnet", effort: "high" },
+    quorum: { model: "fable", effort: "high" },
+    quorum_judge: { model: "fable", effort: "high" },
+    refinement: { model: "fable", effort: "high" },
+    revision: { model: "fable", effort: "high" },
+    question: { model: "fable", effort: "high" },
+    clarification: { model: "fable", effort: "high" },
+    // Implementation phase → Opus manager at high; Sonnet executors
+    // (issueSubAgentTier) and a Fable PR reviewer around it (owner, #5081).
+    issue: { model: "opus", effort: "high" },
     // Reactive phases → Sonnet 5.5 at high (Issue #2812).
     ci_fix: { model: "sonnet", effort: "high" },
     pr_feedback: { model: "sonnet", effort: "high" },

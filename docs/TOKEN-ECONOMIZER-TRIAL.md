@@ -92,7 +92,7 @@ this page's.
 
 The commands above were tested on the oldest and newest version in each range; newer versions have not been tested yet.
 
-This image's Claude Code: **2.1.310**, the newest version in upstream's tested range for Claude Code. It is the `claude` provider's `version` in `container/tools.json`, and this line changes in the same PR as any Claude Code bump.
+This image's Claude Code: **2.1.322**, newer than upstream's tested range for Claude Code (2.1.300 to 2.1.310): the bump to the Fable 5.2 CLI (Issue #5082) moved past it, so the trial runs on an untested Claude Code version until upstream extends the range. It is the `claude` provider's `version` in `container/tools.json`, and this line changes in the same PR as any Claude Code bump.
 
 ## 2. 🏠 The trial host
 

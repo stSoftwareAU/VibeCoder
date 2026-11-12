@@ -41,6 +41,7 @@
  */
 
 import { CLAUDE_PROVIDER_ID } from "./agent_provider.ts";
+import { DEFAULT_CLAUDE_MODEL_TOP_TIER } from "./config_defaults.ts";
 import type { Logger, Result } from "../types.ts";
 import type { TestChangeKind, TestChangeNote } from "./fleet_review_log.ts";
 import {
@@ -1163,7 +1164,9 @@ async function verifyInCheckout(
       PRE_PR_VERIFIER_TIMEOUT_SECONDS,
     ),
     killAfterSeconds: input.killAfterSeconds,
-    model: input.model,
+    // Issue #5081: a code review takes the reviewer's top-tier model, not the
+    // issue manager's, unless the host pins one.
+    model: input.model ?? DEFAULT_CLAUDE_MODEL_TOP_TIER,
     cwd: checkout,
     logger: input.logger,
     disallowedTools: [

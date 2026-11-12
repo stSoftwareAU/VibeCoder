@@ -100,25 +100,37 @@ const UNCONFIGURED: ConfigFile = {
   repos: ["org/repo"],
 };
 
-Deno.test("issue #4117: an unconfigured host spawns the issue manager on Sonnet", async () => {
+Deno.test("issue #4117: an unconfigured host spawns the issue manager on Opus (Issue #5081)", async () => {
   const options = await issueRunOptions(UNCONFIGURED);
-  assertEquals(spawnedModel(options), "sonnet");
+  assertEquals(spawnedModel(options), "opus");
 });
 
-Deno.test("issue #4117: a resumed issue session is spawned on Sonnet too", async () => {
+Deno.test("issue #4117: a resumed issue session is spawned on Opus too (Issue #5081)", async () => {
   const options = await issueRunOptions(UNCONFIGURED);
   const resumed: SessionResumeState = {
     sessionId: "4a9c39a9-587e-4beb-9779-dcaa40c8ace2",
     phaseCount: 3,
     providerId: "claude",
   };
-  assertEquals(spawnedModel(options, resumed), "sonnet");
+  assertEquals(spawnedModel(options, resumed), "opus");
 });
 
 Deno.test("issue #4117: a host that sets claude_model keeps it for the issue manager", async () => {
   const options = await issueRunOptions({
     ...UNCONFIGURED,
-    claude_model: "opus",
+    // Issue #5081: the default manager is Opus, so pin a different model to
+    // keep this test able to tell the host setting from the default.
+    claude_model: "sonnet",
   });
-  assertEquals(spawnedModel(options), "opus");
+  assertEquals(spawnedModel(options), "sonnet");
+});
+
+// Issue #5081: with the Opus manager as the default, the #4117 regression (an
+// explicit `--model opus` from the loaded `claudeModel`) would pass the
+// unconfigured-host test unnoticed. Pin the cause instead: an unconfigured
+// host hands the runner no explicit model, so phase routing decides.
+Deno.test("issue #4117: an unconfigured host passes no explicit model, so phase routing decides (Issue #5081)", async () => {
+  const options = await issueRunOptions(UNCONFIGURED);
+  assertEquals(options.model, undefined);
+  assertEquals(options.phase, "issue");
 });

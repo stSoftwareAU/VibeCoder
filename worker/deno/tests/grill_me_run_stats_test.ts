@@ -157,7 +157,7 @@ Deno.test("buildGrillMeInvocations - carries the fallbackModel", () => {
 // Behaviour change (Issue #3756): a healthy round no longer stays completely
 // silent — it posts the issue's single cost/model stats comment. The "no
 // label" half of the original assertion is unchanged.
-Deno.test("reportGrillMeDegradation - an opus-served round (the top tier since #2560) is not degraded; no label, one stats comment", async () => {
+Deno.test("reportGrillMeDegradation - a fable-served round (the top tier since #5081) is not degraded; no label, one stats comment", async () => {
   resetModelResolution();
   const { ghCommandFn, addLabelCalls } = fakeGh();
   const { ghClient, comments } = fakeClient();
@@ -166,7 +166,7 @@ Deno.test("reportGrillMeDegradation - an opus-served round (the top tier since #
   const verdict = await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-opus-5-5"]) },
+    claudeResult: { runStats: runStats(["claude-fable-5-2"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -196,7 +196,7 @@ Deno.test("reportGrillMeDegradation - healthy round posts at most one stats comm
   await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-opus-5-5"]) },
+    claudeResult: { runStats: runStats(["claude-fable-5-2"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -220,7 +220,7 @@ Deno.test("reportGrillMeDegradation - an earlier round's stats comment does not 
   await reportGrillMeDegradation({
     repo: "owner/repo",
     issueNumber: 5,
-    claudeResult: { runStats: runStats(["claude-opus-5-5"]) },
+    claudeResult: { runStats: runStats(["claude-fable-5-2"]) },
     ghClient,
     runGhCommand: ghCommandFn,
     logger,
@@ -280,7 +280,7 @@ Deno.test("reportGrillMeDegradation - explicit pre-flight flag is degraded even 
     issueNumber: 21,
     // Served the expected tier, but the pre-flight reroute flag is set.
     claudeResult: {
-      runStats: runStats(["claude-opus-5-5"]),
+      runStats: runStats(["claude-fable-5-2"]),
       preflightDegraded: true,
       preflightDegradedReason: "fable-unavailable (pre-flight health probe)",
     },

@@ -30,6 +30,15 @@ const SUBSCRIPTION_ENV = { CLAUDE_CODE_OAUTH_TOKEN: "test-token" };
 /** A fixed clock, so the lease never lapses during a test. */
 const now = () => 1_000;
 
+/**
+ * The Claude role default models (owner policy 2026-11-12, Issue #5081): Opus
+ * manages, Sonnet executes, Fable reviews. The fakes below tell the calls
+ * apart by the model each role requests.
+ */
+const MANAGER_MODEL = "opus";
+const EXECUTOR_MODEL = "sonnet";
+const REVIEWER_MODEL = "fable";
+
 /** The manager review prompt starts with this text (see the orchestrator). */
 const REVIEW_PREFIX = "Manager review";
 
@@ -75,7 +84,7 @@ function answerByPhase(options: RunClaudeOptions): ClaudeRunResult {
 /** The plan calls: manager calls that are not the review. */
 function isPlanCall(options: RunClaudeOptions): boolean {
   return !options.prompt.startsWith(REVIEW_PREFIX) &&
-    options.model === "sonnet";
+    options.model === MANAGER_MODEL;
 }
 
 async function withWorkDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -130,7 +139,7 @@ function depsFor(
   };
 }
 
-Deno.test("orchestration gate - default selection uses the Sonnet manager, Haiku executor and Opus reviewer, never --agents or fallback (Issue #3642)", async () => {
+Deno.test("orchestration gate - default selection uses the Opus manager, Sonnet executor and Fable reviewer, never --agents or fallback (Issues #3642, #5081)", async () => {
   await withWorkDir(async (dir) => {
     const fake = fakeRunner();
     const outcome = await runOrchestratedIssueRun(
@@ -147,9 +156,10 @@ Deno.test("orchestration gate - default selection uses the Sonnet manager, Haiku
     const selections = [
       ...new Set(fake.calls.map((o) => `${o.model}/${o.effort}`)),
     ].sort();
-    // Opus does the code reviews (owner decision 2026-10-22): a separate
-    // reviewer call even with no reviewer role configured.
-    assertEquals(selections, ["haiku/high", "opus/high", "sonnet/high"]);
+    // Fable does the code reviews (owner policy #5081): a separate reviewer
+    // call even with no reviewer role configured. The Sonnet executor runs at
+    // medium, its sub-agent effort.
+    assertEquals(selections, ["fable/high", "opus/high", "sonnet/medium"]);
   });
 });
 
@@ -168,11 +178,11 @@ Deno.test("orchestration gate - every role call denies sub-agent dispatch, and t
       depsFor(dir, fake.runClaudeWithRetry),
     );
     assertEquals(outcome.ok, true);
-    const manager = fake.calls.filter((o) => o.model === "sonnet");
-    const executor = fake.calls.filter((o) => o.model === "haiku");
-    // The review is the Opus reviewer's call, not a second manager call
-    // (owner decision 2026-10-22); it is read-only like the manager.
-    const reviewer = fake.calls.filter((o) => o.model === "opus");
+    const manager = fake.calls.filter((o) => o.model === MANAGER_MODEL);
+    const executor = fake.calls.filter((o) => o.model === EXECUTOR_MODEL);
+    // The review is the Fable reviewer's call, not a second manager call
+    // (owner policy #5081); it is read-only like the manager.
+    const reviewer = fake.calls.filter((o) => o.model === REVIEWER_MODEL);
     assertEquals(manager.length, 1);
     assertEquals(executor.length, 1);
     assertEquals(reviewer.length, 1);
@@ -202,26 +212,27 @@ Deno.test("orchestration gate - a provider-only override takes that provider's o
     assertEquals(outcome.ok, true);
     const executor = fake.calls.filter((o) => o.agentProvider === "codex");
     assertEquals(executor.length, 1);
-    // Never the Claude default ("haiku") on another provider: Codex's own
-    // executor model, Luna — Codex's Haiku (owner decision 2026-10-22).
-    assertEquals(executor[0]?.model, "gpt-6-luna");
+    // Never the Claude default ("sonnet") on another provider: Codex's own
+    // executor model, 6.1 Sol — Codex's daily driver (owner policy #5081).
+    assertEquals(executor[0]?.model, "gpt-6.1-sol");
     assertEquals(executor[0]?.effort, "high");
     // The manager and reviewer keep their default provider, so they keep
     // their defaults too.
     const claude = fake.calls.filter((o) => o.agentProvider === "claude");
     assertEquals(
       [...new Set(claude.map((o) => `${o.model}/${o.effort}`))].sort(),
-      ["opus/high", "sonnet/high"],
+      ["fable/high", "opus/high"],
     );
 
     // Positive control: a model and effort named beside the provider are kept.
+    // Luna, not the 6.1 Sol default, so the named model is provably kept.
     const named = fakeRunner();
     await withWorkDir(async (controlDir) => {
       const control = await runOrchestratedIssueRun(
         inputFor(controlDir, {
           executor: {
             provider: "codex",
-            model: "gpt-6.1-sol",
+            model: "gpt-6-luna",
             effort: "low",
           },
         }),
@@ -230,7 +241,7 @@ Deno.test("orchestration gate - a provider-only override takes that provider's o
       assertEquals(control.ok, true);
     });
     const chosen = named.calls.find((o) => o.agentProvider === "codex");
-    assertEquals(chosen?.model, "gpt-6.1-sol");
+    assertEquals(chosen?.model, "gpt-6-luna");
     assertEquals(chosen?.effort, "low");
   });
 });
@@ -304,8 +315,8 @@ Deno.test("orchestration gate - per-role overrides replace the defaults (Issue #
     const fake = fakeRunner();
     const outcome = await runOrchestratedIssueRun(
       inputFor(dir, {
-        manager: { provider: "claude", model: "opus", effort: "max" },
-        executor: { provider: "claude", model: "sonnet", effort: "low" },
+        manager: { provider: "claude", model: "sonnet", effort: "max" },
+        executor: { provider: "claude", model: "haiku", effort: "low" },
       }),
       depsFor(dir, fake.runClaudeWithRetry),
     );
@@ -313,8 +324,9 @@ Deno.test("orchestration gate - per-role overrides replace the defaults (Issue #
     const selections = [
       ...new Set(fake.calls.map((o) => `${o.model}/${o.effort}`)),
     ].sort();
-    // The unconfigured reviewer keeps its own Opus/high default.
-    assertEquals(selections, ["opus/high", "opus/max", "sonnet/low"]);
+    // The unconfigured reviewer keeps its own Fable/high default; both
+    // overrides differ from the role defaults, so each is provably applied.
+    assertEquals(selections, ["fable/high", "haiku/low", "sonnet/max"]);
   });
 });
 
@@ -395,7 +407,7 @@ Deno.test("orchestration gate - a resumed run reuses the completed manager plan 
     // call. The checkpoint copied mid-call is what that worker left behind.
     let snapshot: string | undefined;
     const dying: IssueRunGateDeps["runClaudeWithRetry"] = async (options) => {
-      if (options.model === "haiku") {
+      if (options.model === EXECUTOR_MODEL) {
         snapshot = await Deno.readTextFile(checkpointFile(dir));
         return { ok: false, error: new Error("worker died") };
       }
@@ -913,10 +925,11 @@ Deno.test("orchestration gate - the result carries the plan and executor calls' 
         output: options.prompt.startsWith(REVIEW_PREFIX)
           ? "manager review"
           : "step output",
-        // Distinct figures per call: plan 100 (sonnet), executor 7000 (haiku), review 300 (opus).
-        runStats: options.model === "haiku"
+        // Distinct figures per call: plan 100, executor 7000, review 300. The
+        // served ids are labels only; the role is told apart by its model.
+        runStats: options.model === EXECUTOR_MODEL
           ? statsFor("claude-haiku-4-5", 7000)
-          : options.model === "opus"
+          : options.model === REVIEWER_MODEL
           ? statsFor("claude-opus-4-8", 300)
           : statsFor("claude-sonnet-4-6", 100),
       })
@@ -954,10 +967,10 @@ Deno.test("orchestration gate - a retried executor call contributes every attemp
         output: options.prompt.startsWith(REVIEW_PREFIX)
           ? "manager review"
           : "step output",
-        runStats: options.model === "haiku"
+        runStats: options.model === EXECUTOR_MODEL
           ? finalAttempt
           : statsFor("claude-opus-4-8", 300),
-        ...(options.model === "haiku"
+        ...(options.model === EXECUTOR_MODEL
           ? { invocationStats: [failedAttempt, undefined, finalAttempt] }
           : {}),
       })
@@ -1008,7 +1021,7 @@ Deno.test("orchestration gate - a timed-out run still carries the earlier calls'
   });
 });
 
-/** Answers each call from its role: the executor (haiku) gets `executor`, the plan `plan`, the review `review`. */
+/** Answers each call from its role: the executor gets `executor`, the plan `plan`, the review `review`. */
 function answerByRole(
   plan: Partial<ClaudeRunResult>,
   executor: Partial<ClaudeRunResult>,
@@ -1016,7 +1029,7 @@ function answerByRole(
 ): Responder {
   return (options) =>
     runResult(
-      options.model === "haiku"
+      options.model === EXECUTOR_MODEL
         ? { output: "step output", ...executor }
         : options.prompt.startsWith(REVIEW_PREFIX)
         ? { output: "manager review", ...review }

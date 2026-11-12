@@ -4,10 +4,10 @@
 // the provider, the model(s) and the effort of the round that wrote it and its
 // estimated USD, plus a hidden `vibe-review-run` marker a report can sum:
 //
-//   _Review run: provider claude · model claude-opus-5-5 · effort xhigh ·
+//   _Review run: provider claude · model claude-fable-5-2 · effort high ·
 //   estimated cost $0.4100 (estimate only; this PR's 1/3 share of the round)._
 //   <!-- vibe-review-run round="20261016-101500" attempt="1" provider="claude"
-//   models="claude-opus-5-5" effort="xhigh" usd="0.4100" share="1/3" -->
+//   models="claude-fable-5-2" effort="high" usd="0.4100" share="1/3" -->
 //
 // How the cost is attributed. One round is one `claude -p` session: its main
 // session reads the skill and starts one reviewer sub-agent per ready PR, in
