@@ -256,8 +256,8 @@ the evidence obtained since that review.
   not checked. This validates summary structure, not a fresh review.
 
 - Completion `runPrePushGate()` against `origin/main`: passed. Its selected
-  unit-test command, changed-file format/lint checks and ShellCheck passed;
-  the previously reproduced unit-budget failure did not recur.
+  unit-test command, changed-file format/lint checks and ShellCheck passed; the
+  previously reproduced unit-budget failure did not recur.
 
 ## Deno regression avoided
 
