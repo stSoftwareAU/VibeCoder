@@ -6,11 +6,14 @@
  * provider between work items. Explicit per-invocation provider selections do
  * not use that default and therefore remain absolute.
  *
- * Automatic mode is opt-in through `agent_provider_mode: "auto"`. The existing
- * `agent_provider` remains the preferred/tie-break provider and the existing
- * `agent_providers` array remains the explicit set whose binaries and
- * credentials are installed. `VIBE_AGENT_PROVIDER` is a hard environment pin
- * and disables automatic switching for that process.
+ * Automatic mode is the default when `agent_providers` enables two or more
+ * subscription-capable providers (Issue #5089); otherwise the host stays
+ * pinned, because auto pauses rather than spend when no fixed-price
+ * subscription is eligible. An explicit `agent_provider_mode` always wins.
+ * Under auto, `agent_provider` plays no part in the choice; `agent_providers`
+ * remains the explicit set whose binaries and credentials are installed.
+ * `VIBE_AGENT_PROVIDER` is a hard environment pin and disables automatic
+ * switching for that process.
  *
  * Only providers whose billing mode can be proved to be a fixed subscription
  * are eligible. Claude is proved by `CLAUDE_CODE_OAUTH_TOKEN`; Codex is proved
@@ -23,6 +26,7 @@
 import {
   activeAgentProvider,
   AGENT_PROVIDER_ENV,
+  isSubscriptionCapable,
   setConfiguredAgentProviderId,
 } from "./agent_provider.ts";
 import { subscriptionStatusFromClaudeBudget } from "./claude_pool_budget.ts";
@@ -64,9 +68,10 @@ export const AGENT_PROVIDER_MODE_CONFIG_KEY = "agent_provider_mode";
 /** Automatic routing is the only non-default strategy currently supported. */
 export type AgentProviderMode = "pinned" | "auto";
 
-/** Result of resolving the operator's provider mode and preference order. */
+/** Result of resolving the operator's provider mode. */
 export interface AutomaticProviderConfig {
   readonly mode: AgentProviderMode;
+  /** The `VIBE_AGENT_PROVIDER` pin, when one is set; empty otherwise. */
   readonly preference: readonly string[];
   readonly reason: string;
 }
@@ -91,9 +96,8 @@ function stringArray(value: unknown): string[] {
  * Resolve automatic routing without reading files or process state.
  *
  * An environment provider is an explicit emergency/operator pin and wins over
- * automatic mode. When auto is selected, `agent_provider` is a preference
- * only because the operator explicitly changed the strategy from pinned to
- * auto; it is followed by `agent_providers` in their configured order.
+ * automatic mode. An absent mode resolves to auto when two or more distinct
+ * subscription-capable providers are enabled (Issue #5089), else pinned.
  */
 export function resolveAutomaticProviderConfig(
   input: AutomaticProviderConfigInput,
@@ -116,22 +120,21 @@ export function resolveAutomaticProviderConfig(
         `${JSON.stringify(input.configuredMode)}`,
     );
   }
-  const mode: AgentProviderMode = input.configuredMode === "auto"
-    ? "auto"
-    : "pinned";
-  const provider = typeof input.configuredProvider === "string"
-    ? input.configuredProvider.trim()
-    : "";
-  const enabled = stringArray(input.configuredProviders);
-  const preference = [provider, ...enabled]
-    .filter((value) => value.length > 0)
-    .filter((value, index, all) => all.indexOf(value) === index);
-
-  return {
-    mode,
-    preference,
-    reason: mode === "auto" ? "configured-auto" : "default-pinned",
-  };
+  if (input.configuredMode !== undefined) {
+    return {
+      mode: input.configuredMode,
+      preference: [],
+      reason: input.configuredMode === "auto"
+        ? "configured-auto"
+        : "configured-pinned",
+    };
+  }
+  const subscriptions = new Set(
+    stringArray(input.configuredProviders).filter(isSubscriptionCapable),
+  );
+  return subscriptions.size >= 2
+    ? { mode: "auto", preference: [], reason: "default-auto" }
+    : { mode: "pinned", preference: [], reason: "default-pinned" };
 }
 
 /** File-backed config subset used only for the new routing strategy. */
@@ -475,10 +478,6 @@ export async function refreshAutomaticProviderRouting(options: {
   const enabled = options.enabledProviderIds
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
-  const preference = [
-    ...config.preference.filter((id) => enabled.includes(id)),
-    ...enabled,
-  ].filter((id, index, all) => all.indexOf(id) === index);
   const resolver = options.resolveStatus ?? resolveAutomaticProviderStatus;
   const statuses = await Promise.all(enabled.map(async (providerId) => {
     try {
@@ -503,7 +502,7 @@ export async function refreshAutomaticProviderRouting(options: {
     }
   }));
 
-  const selection = selectAutomaticProvider(statuses, { now, preference });
+  const selection = selectAutomaticProvider(statuses, { now });
   const decision = formatAutomaticProviderSelection(selection);
   if (decision !== lastDecision) {
     log(decision);
