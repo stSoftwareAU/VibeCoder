@@ -1,119 +1,267 @@
 ## Summary
 
-On a host with `token_economizer.enabled: true`, the Claude implementation,
-PR-feedback and CI-fix runs now load the vendored TokenEconomizer plugin through
-`--plugin-dir`, with the plugin's environment set in the agent's spawn
-environment. Reviewer and verifier calls, external orchestration role calls and
-the other providers get neither. The launch decision is
-`worker/deno/lib/token_economizer_plugin.ts`; `buildClaudeCliArgs` emits the
-flag; `runClaude` overlays the environment. Learned facts cannot be fenced (the
-pinned archive cannot be patched), so the issue's stated fallback applies: only
-the environment-facts mechanism injects, capped at 4 facts and 150 tokens. A
-durable stop record switches the plugin off across restarts. Part of #4956.
-
-```mermaid
-flowchart LR
-    S[Claude spawn: implementation, PR-feedback or CI-fix] --> E{enabled and no stop record?}
-    E -- no --> O[Ordinary plugin-off argv and env]
-    E -- yes --> C{run kind, manifest, run id, state dir inside work dir and outside checkout}
-    C -- any refusal or error --> O
-    C -- all pass --> L[--plugin-dir plus TOKENECONOMIZER_HOME and TE_ variables, stray TE_ variables removed]
-```
+Load the pinned TokenEconomizer plugin for enabled Claude implementation,
+PR-feedback and CI-fix runs, with bounded, fenced hook output and automatic
+fault latching/reporting. Add coverage through the three standalone commands and
+repair the reproduced pre-push test-budget failure. Part of #4956: protection of
+the stop controller from a same-UID agent and production nested-call accounting
+remain incomplete.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The plugin is a supply-chain component and its facts are cross-run injected
-  text, so every trust check rejects the plugin (plugin off) rather than
-  injecting on a best-effort basis, and a plugin fault never fails a run.
-- Fencing was not possible: the pinned plugin injects facts as plain `- ` bullets
-  under a fixed header. The issue's fallback (`microskills=envfacts` only) is
-  taken, and the reason is in `docs/TOKEN-ECONOMIZER-TRIAL.md` §1.
+- Reuse the pinned launcher's `TE_PYTHON` interface for an audited Deno adapter;
+  the vendored archive and its pin stay unchanged. Reuse
+  `fenceUntrustedIssueText()` rather than inventing another prompt boundary.
+- Keep the issue's permitted `envfacts` fallback: the uncapped distiller
+  proposer remains disabled. Fencing limits authority; it does not establish
+  fact truth.
+- Keep ordinary work running when a hook fails. Latch the trial before
+  attempting notification, and retry a pending report without re-enabling the
+  plugin.
 
 ### Essential Design Decisions
 
-- `microskills` is clamped: `off` stays `off`; `distiller`, `envfacts` and
-  `envfacts+distiller` all launch as `envfacts`. The proposer's facts are the
-  distiller path, so the clamp switches it off instead of capping it.
-- Each spawn gets its own state directory (`<work>/.token-economizer/runs/<uuid>`),
-  not one per worker process: `VIBE_RUN_ID` is set once per process, so using it
-  would have shared one home across runs. The overlay also deletes any `TE_` or
-  `TOKENECONOMIZER_` variable the worker's own environment carries, so the host
-  cannot steer the plugin.
-- `tokenEconomizer?` on the processor deps and phase options is optional on
-  purpose: absent means plugin off, the safe direction for an opt-in security
-  feature, and making it required would change every test fixture. All five
-  production callers pass it (the factory's two closures, the three commands) and
-  the two closures plus the four spawn sites are tested.
-- `recordTokenEconomizerStop` has no production caller yet: the issue asks for the
-  shared durable mechanism and for #4957's findings to use it, and #4957 is open.
-  It is the public API the issue asks for.
+- A fresh state directory belongs to each launch. Resolve and confine paths
+  before creating anything; a symlink alias cannot redirect state into the
+  checkout. Pass the checked canonical checkout to the Python dispatcher.
+- SessionStart cached text allows four bullet facts and 600 characters (the
+  pinned plugin's estimate for 150 tokens). Non-fact context and notices allow
+  4,096 characters; the complete output protocol allows 64 KiB. Reject
+  malformed, unsupported or oversized output before returning context.
+- `stopTokenEconomizerTrial()` and `tokenEconomizerMaySync()` are the shared
+  finding/sync contract for open #4957. Hook failures already call the
+  controller; persistence transfers do not exist at this head. A first stop wins
+  atomically and remains latched until authorised recovery or purge, including
+  healthy runs.
+- The local stop file is still writable by an agent sharing the worker UID. File
+  modes are not a security boundary. No host was enabled and no container
+  privilege was expanded. This gap prevents claiming the automatic-stop
+  criterion complete.
 
 ### Undiscoverable Facts
 
-- The real-CLI check ran on Claude Code 2.1.310 with no model credentials, so the
-  plugin's model calls (loop-guard judge) were not observed.
-- The enabled-launch tests that need the real plugin at `/opt/tokeneconomizer`
-  are `ignore`d where it is absent; `REQUIRE_TOKENECONOMIZER_PLUGIN=1` makes a
-  missing plugin fail loudly, but no CI job sets it yet.
+- Claude Code 2.1.322 loaded SessionStart hooks with `--setting-sources ""`. A
+  local Messages API fixture used a dummy credential; this was not a paid
+  production run or trial measurement. The separate real nested CLI call used
+  that same fixture endpoint and credential.
+- #4955 is closed and its pinned plugin is installed. #4957, #4958 and #4959 are
+  open; persistence producers, accounting integration and the normal verdict
+  scheduler are absent from this head. Depending on them here would create a
+  cycle because their issues depend on #4956.
+- `setpriv --no-new-privs --landlock-access fs --landlock-rule
+  path-beneath:read-file,read-dir,execute:/ /usr/bin/true`
+  failed with `landlock_create_ruleset failed: Function not implemented`. A
+  separate `unshare --user --map-root-user --mount /usr/bin/true` probe
+  succeeded; filesystem/PID namespace confinement of the agent is not
+  implemented here.
+- The review verdicts below are the actual historical review record retained
+  from checkpoint `6f84491ee`, with departures explained by new evidence. No
+  fresh reviewer was dispatched: this executor was explicitly told “Do not
+  delegate.” Current additions await independent review.
 
 ## Evidence
 
-Backend-only; no UI files. Real-CLI check (version, command and outputs):
-`docs/TOKEN-ECONOMIZER-TRIAL.md` §1 "Checked on this image". Threat model:
-`docs/THREAT-MODEL.md` (learned-facts row, AP-19, AP-20, C37 to C41, R16, R17).
+Backend/CLI changes; no UI surface or screenshot requirement.
 
-Production readers of the new members: `resolveTokenEconomizerLaunch` and
-`tokenEconomizerSpawnOptions` are called by `lib/phases/execute_phase.ts`,
-`lib/execute_claude_phase.ts`, `lib/pr_feedback_processor.ts` and
-`lib/pr_ci_processor.ts`; `pluginDir` is read by `buildClaudeCliArgs`;
-`tokenEconomizer` (run option) by `runClaudeWithTimeoutBody`;
-`overlayTokenEconomizerEnv` by `claude_runner.ts`.
+```mermaid
+flowchart LR
+    C[Enabled Claude implementation or reactive run] --> G{Launch guards and stop latch}
+    G -- refused --> O[Ordinary plugin-off run]
+    G -- allowed --> A[TE_PYTHON audited adapter]
+    A --> P[Pinned Python hook, synchronous descendants]
+    P --> V{Strict output bounds and shared fence}
+    V -- accepted --> D[Untrusted context]
+    V -- rejected --> F[Empty hook output and failure signal]
+    F --> L[Durable first-stop latch]
+    L --> R[Guarded report to issue 4959]
+    L --> S[Loading off; shared sync permission false]
+```
 
-Issue numbers cited: #4953: Trial microsoft/TokenEconomizer with learnings
-persisted to a repository across runs: keep it or purge it; #4955: Vendor
-TokenEconomizer at a pinned SHA in the container image behind a token_economizer
-config block, off by default; #4957: Persist TokenEconomizer learnings to a
-private git repository across runs, with gitleaks before every push; #4958:
-Record TokenEconomizer's actions and own cost in run stats, the run callback
-(additive only) and the weekly report; #4959: TokenEconomizer: run the agreed
-trial to an automatic keep-or-purge verdict.
+- Real command:
+  `claude -p "Reply OK" --model haiku --plugin-dir
+  /opt/tokeneconomizer/plugin --setting-sources "" --tools ""
+  --strict-mcp-config --mcp-config '{"mcpServers":{}}'
+  --no-session-persistence --max-turns 1 --output-format stream-json --verbose`.
+  Version 2.1.322 emitted `hook_started` and `hook_response` for
+  `SessionStart:startup`, exit 0 / success; the plugin appeared in init output
+  and the run returned `OK`. The fixture checkout retained exactly
+  `A  staged.txt`, `M tracked.txt`, `?? untracked.txt` before and after.
+- A separate call through the installed plugin's
+  `sidecall.claude_call("Reply OK", model="haiku", timeout=30)` invoked the real
+  nested Claude CLI and returned `OK` and 20 effective units. Both requests used
+  the same dummy credential and local endpoint. The outer fixture reported 10
+  input / 2 output tokens; its estimated dollar amount is synthetic and is not
+  evidence that nested usage reaches worker totals.
+- `worker/deno/tests/token_economizer_plugin_wiring_test.ts` drives the real
+  vendored dispatcher through the executable adapter, including Store-produced
+  cached injection, the real loop-guard writer's 1,200-character output, clean
+  and dirty checkouts, missing Python and invalid hook events. Required-plugin
+  checks fail on a stamped container image or when
+  `REQUIRE_TOKENECONOMIZER_PLUGIN=1`; they cannot silently skip in this image.
+- The exact completion pre-push gate was reproduced with `runPrePushGate()`
+  against `origin/main`. Its first failure was the unit-budget audit:
+  `every test in tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts
+  (1, 1.51s) is over the 1.00s unit-test budget`.
+  The existing readiness fixture continued into real merge work. It now ends
+  after observing readiness; its original assertion remains. The historical
+  attempt's full stderr was unavailable, so this is the reproduced gate fault,
+  not a claim about unseen historical output.
+- Documentation read and updated: trial protocol §§1, 3, 6 and purge inventory;
+  configuration's `token_economizer` row; container image's plugin section;
+  threat-model learned-facts row, AP-19/AP-20, C37–C41 and R16/R17. The source
+  contracts are `worker/deno/lib/token_economizer_hook.ts`,
+  `worker/deno/lib/token_economizer_plugin.ts` and
+  `worker/deno/lib/token_economizer_control.ts`. No prompt rule changed.
+- Issue provenance checked with `gh issue view`: #4952, “A completed run leaves
+  its draft continuation PR a draft and unarmed, then releases the claim, so
+  nothing ever un-drafts it”; #4953, “Trial microsoft/TokenEconomizer with
+  learnings persisted to a repository across runs: keep it or purge it”; #4955,
+  “Vendor TokenEconomizer at a pinned SHA in the container image behind a
+  token_economizer config block, off by default”; #4956, “Load TokenEconomizer
+  into Claude implementation, PR-feedback and CI-fix runs on an enabled host,
+  with learned facts fenced as untrusted data”; #4957, “Persist TokenEconomizer
+  learnings to a private git repository across runs, with gitleaks before every
+  push”; #4958, “Record TokenEconomizer's actions and own cost in run stats, the
+  run callback (additive only) and the weekly report”; #4959, “TokenEconomizer:
+  run the agreed trial to an automatic keep-or-purge verdict”.
 
 ## Acceptance Criteria
 
+The provenance markers retain the earlier reviews, not a new review of the
+resumed additions. The current closure statuses distinguish their verdicts from
+the evidence obtained since that review.
+
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — With the host enabled, the Claude argv carries `--plugin-dir` and the env carries the settings above, for the three run kinds. Without it, neither is present (both directions tested) — evidence: `worker/deno/tests/token_economizer_plugin_wiring_test.ts::an enabled implementation run reaches the Claude child with --plugin-dir and the eight variables (Issue #4956)` (and the pr-feedback and ci-fix variants), `::a disabled host spawns the Claude child with neither --plugin-dir nor a launch variable (Issue #4956)`, `worker/deno/tests/token_economizer_impl_callsites_test.ts`, `worker/deno/tests/token_economizer_reactive_callsites_test.ts`, `worker/deno/tests/token_economizer_production_deps_test.ts` — reviewer: partial — reason: the reviewer saw no test through the four spawn sites; they were added after its review and each spread was removed in turn and a test went red. The three command entry points (`commands/execute_claude_phase.ts`, `commands/pr_feedback_processor.ts`, `commands/pr_ci_processor.ts`) pass the block untested.
-- **met** — A recorded real-CLI check shows the hooks firing on the image's Claude Code version — evidence: `docs/TOKEN-ECONOMIZER-TRIAL.md` §1 "Checked on this image" (2.1.310, `--setting-sources ""`) — reviewer: met
-- **partial** — The fencing test and the clean-checkout test pass, and each turns red with its guard removed — evidence: `worker/deno/tests/token_economizer_plugin_test.ts::microskills is clamped to envfacts for every configured value`, `worker/deno/tests/token_economizer_plugin_wiring_test.ts::the real vendored te-hook leaves a clean checkout clean and writes only to the state directory (Issue #4956)` — reviewer: partial — reason: no fencing exists (the issue's `envfacts` fallback is the guard, and the clamp test is red without it); the clean-checkout test drives the vendored hook, not a full agent run, and removing the state-directory confinement does not turn it red.
-- **met** — `docs/THREAT-MODEL.md` updated — evidence: `docs/THREAT-MODEL.md` AP-19, AP-20, C37 to C41, R16, R17 — reviewer: met
-- **partial** — Hook failure falls back safely; a stop-rule finding inhibits subsequent plugin use across restart without weakening the container boundary or requiring a human — evidence: `worker/deno/tests/token_economizer_plugin_test.ts::the stop record is durable: a fresh call is still off, and the file holds the stop`, `::a corrupt or malformed stop record fails closed as unreadable`, `::an unexpected error falls back to plugin off rather than throwing`; `worker/deno/tests/token_economizer_plugin_wiring_test.ts::the real vendored te-hook fails open to {} when no Python is on PATH (Issue #4956)` — reviewer: partial — reason: nothing calls `recordTokenEconomizerStop` until #4957 lands, and no code detects a plugin hook failing during a run; the stop file sits in the work directory the agent can write.
-- **missing** — "Confirm those calls run under the same egress, credentials channel and timeline as the run, and that they are counted in the run's cost" — reviewer: missing — reason: no model credentials in the check; the doc records this as a design reading, not an observation (cost accounting is #4958).
-- **missing** — "Report the failed trial to #4959" — reviewer: missing — reason: nothing writes the stop to #4959 yet; the verdict is #4959's and the findings come from #4957.
-- **unrequested** — The DeepSeek descriptor drops `pluginDir` — reviewer: unrequested — reason: keeps the plugin's hooks off a provider the Claude-only trial does not cover; pinned by `::deepseek argv strips --plugin-dir, so the argv is the one it built before`.
-- **unrequested** — Stop-record details (first stop wins, 300-character redacted reason) — reviewer: unrequested — reason: choices for a durable record the issue asks for.
+- **met** — With the host enabled, the Claude argv carries `--plugin-dir` and
+  the env carries the settings above, for the three run kinds. Without it,
+  neither is present (both directions tested) — evidence:
+  `worker/deno/tests/token_economizer_plugin_wiring_test.ts`,
+  `worker/deno/tests/token_economizer_impl_callsites_test.ts`,
+  `worker/deno/tests/token_economizer_reactive_callsites_test.ts`,
+  `worker/deno/tests/token_economizer_production_deps_test.ts` — reviewer:
+  partial — reason: the previous missing command coverage is now present;
+  enabled/disabled command handlers and individual caller reverts were
+  exercised.
+- **met** — A recorded real-CLI check shows the hooks firing on the image's
+  Claude Code version — evidence: the 2.1.322 command/output above and
+  `docs/TOKEN-ECONOMIZER-TRIAL.md` §1 — reviewer: met
+- **met** — The fencing test and the clean-checkout test pass, and each turns
+  red with its guard removed — evidence:
+  `worker/deno/tests/token_economizer_plugin_wiring_test.ts`,
+  `worker/deno/tests/token_economizer_plugin_test.ts` — reviewer: partial —
+  reason: the adapter now fences actual hook output; removing the fence or
+  checkout guard turns tests red. A complete real-CLI fixture run also preserves
+  pre-existing checkout changes.
+- **met** — `docs/THREAT-MODEL.md` updated — evidence: `docs/THREAT-MODEL.md`
+  learned facts, AP-20, C39/C40, R16/R17 — reviewer: met
+- **partial** — Hook failure falls back safely; a stop-rule finding inhibits
+  subsequent plugin use across restart without weakening the container boundary
+  or requiring a human. #4959 owns the verdict and purge, and #4958 owns
+  accounting — evidence: `worker/deno/tests/token_economizer_plugin_test.ts`,
+  `worker/deno/tests/token_economizer_plugin_wiring_test.ts` — reviewer: partial
+  — reason: hook monitoring, plugin-off fallback, durable first-stop/restart
+  inhibition and notification retry are implemented; protection against
+  deliberate same-UID controller modification is not. #4957's persistence
+  producers and #4958's accounting remain absent.
+- **missing** — Confirm those calls run under the same egress, credentials
+  channel and timeline as the run, and that they are counted in the run's cost —
+  reviewer: missing — reason: the fixture verifies endpoint/credential
+  inheritance and the adapter keeps Python descendants synchronous, but a paid
+  judge call within a full production run, production egress/lifetime
+  enforcement and #4958 worker accounting were not observed.
+- **met** — Report the failed trial to #4959 — evidence:
+  `worker/deno/lib/token_economizer_control.ts`,
+  `worker/deno/tests/token_economizer_plugin_test.ts` — reviewer: missing —
+  reason: the new controller attempts the fixed outcome report immediately after
+  latching and retries denied/offline notifications while staying off. A denied
+  write is recorded as pending; no GitHub permission is widened.
+- **unrequested** — The DeepSeek descriptor drops `pluginDir` — reviewer:
+  unrequested — reason: preserves the Claude-only trial boundary; other-provider
+  argv coverage demonstrates the exclusion.
+- **unrequested** — First-stop-wins record, bounded redacted reason and
+  notification receipt — reviewer: unrequested — reason: concrete choices for
+  the durable controller requested by the issue; the receipt is not an authority
+  to re-enable loading.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — One state directory per worker process, not per spawn — evidence: `worker/deno/lib/token_economizer_plugin.ts:344` — reason: fixed in this diff (a fresh UUID per launch)
-- **violation** — A test mutated the process environment — evidence: `worker/deno/tests/token_economizer_plugin_test.ts:277` — reason: fixed in this diff (the test no longer reads `VIBE_RUN_ID`)
-- **violation** — No test went red when a spawn site's spread was removed — evidence: `worker/deno/lib/pr_feedback_processor.ts:1497` — reason: fixed in this diff (`worker/deno/tests/token_economizer_reactive_callsites_test.ts`, `worker/deno/tests/token_economizer_impl_callsites_test.ts`, `worker/deno/tests/token_economizer_production_deps_test.ts`); the three command entry points remain untested because they have no processor seam
-- **violation** — `tokenEconomizer?` optional on the deps — evidence: `worker/deno/lib/pr_ci_processor.ts:333` — reason: fixed in this diff (decision recorded under Essential Design Decisions; every production caller passes it and is tested)
-- **violation** — External-orchestration guard untested — evidence: `worker/deno/lib/execute_claude_phase.ts:1730` — reason: fixed in this diff (`worker/deno/tests/token_economizer_impl_callsites_test.ts`, each operand removed in turn went red)
-- **violation** — Real-plugin tests skipped in silence — evidence: `worker/deno/tests/token_economizer_plugin_wiring_test.ts:66` — reason: fixed in this diff (`REQUIRE_TOKENECONOMIZER_PLUGIN=1` fails loudly); no CI job sets it yet
-- **clean** — Australian English, no hidden or secret paths staged, named tests exist, no workflow file touched, recorded stop reasons are redacted, `distiller` clamped.
+- **clean** — The historical reviewer checked Australian English, secret/hidden
+  staging safety, named-test existence, unchanged workflow files, redacted stop
+  reasons and the distiller clamp. Its earlier findings on per-process state,
+  environment mutation, missing caller coverage, external-orchestration guards
+  and silent real-plugin skips were repaired on this branch.
+- Current resumed additions have not received an independent Standards review.
+  This is pending, not a clean verdict on those additions. The same-UID stop
+  protection gap is explicitly retained as unfinished acceptance scope.
 
 ## Test Plan
 
-- `cd worker/deno && deno task test:unit tests/token_economizer_plugin_test.ts tests/token_economizer_plugin_wiring_test.ts tests/token_economizer_impl_callsites_test.ts tests/token_economizer_reactive_callsites_test.ts tests/token_economizer_production_deps_test.ts tests/token_economizer_config_test.ts tests/token_economizer_off_spawn_test.ts tests/token_economizer_trial_docs_test.ts tests/threat_model_docs_test.ts tests/lib_sweep_coverage_test.ts`: run by the authors of each file, all passed.
-- Red checks: remove `...tokenEconomizer` at each of `lib/phases/execute_phase.ts`, `lib/execute_claude_phase.ts`, `lib/pr_feedback_processor.ts`, `lib/pr_ci_processor.ts` (both spawns) → a test red each time; drop the `externalOrchestration` guard in the two implementation sites → red; remove either `tokenEconomizer: config.tokenEconomizer` line in `lib/run_core_production_deps.ts` → red; remove the `TE_` deletion loop in `overlayTokenEconomizerEnv` → overlay and wiring tests red.
-- Removed from existing tests: none. `token_economizer_trial_docs_test.ts` changed `BLOCK_LANDED` to the new sentence (goes red without the sentence). `token_economizer_off_spawn_test.ts` and `token_economizer_config_test.ts` changed comments only.
-- Callers checked for `tokenEconomizer`: `execute_phase.ts`, `execute_claude_phase.ts`, both spawns in `pr_ci_processor.ts`, `pr_feedback_processor.ts` pass it; reviewer and verifier calls and external orchestration deliberately do not.
-- After merging `main` into the branch: `deno task test:unit` (whole suite) passed
-  (34486 and 1038 tests, 0 failed), `deno fmt --check` and `deno lint` clean,
-  `deno task pr-summary-check` 0 gates blocked, and `./quality.sh < /dev/null`
-  `Result: PASSED (with skipped checks)`.
-- Not checked: model calls inside the real plugin; the three command entry points; a CI job that sets `REQUIRE_TOKENECONOMIZER_PLUGIN=1`.
+- Targeted final production/type checks passed. With
+  `REQUIRE_TOKENECONOMIZER_PLUGIN=1`, the twelve relevant unit files passed: 221
+  tests, zero failures. They are the five TokenEconomizer launch/caller files
+  named above, plus `worker/deno/tests/token_economizer_config_test.ts`,
+  `worker/deno/tests/token_economizer_off_spawn_test.ts`,
+  `worker/deno/tests/token_economizer_trial_docs_test.ts`,
+  `worker/deno/tests/threat_model_docs_test.ts`,
+  `worker/deno/tests/lib_sweep_coverage_test.ts`,
+  `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` and
+  `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts`.
+- Caller red checks: remove each standalone command's config wiring
+  (`execute-claude-phase`, PR-feedback, CI-fix), each of the five spawn spreads
+  (fleet implementation, standalone implementation, feedback, initial CI-fix,
+  retry CI-fix), and each of the two run-core callback properties separately:
+  the corresponding caller test fails. Reviewer/verifier, external orchestration
+  and other-provider exclusions remain covered.
+- Adapter red checks: remove `TE_PYTHON` wiring, shared context fence, notice
+  fence, fact-count bound, context bound, protocol byte cap or envfacts clamp:
+  the relevant plugin/wiring tests fail. Misclassifying real writer output as
+  facts or applying the 600-character fact cap to it also fails its
+  real-producer regression. Allowing coercible event arrays or dropping the
+  canonical cwd handoff fails the corresponding schema/real-hook regression.
+- Confinement red checks: remove pre-creation confinement, controller-directory
+  guard or real dirty-checkout guard: tests fail. Fixtures cover `..` after a
+  missing component, symlink aliases and their combination. The dirty-checkout
+  regression reaches the actual conflicting path and asserts status
+  preservation.
+- Controller red checks: remove restart inhibition, sync inhibition, pending
+  report retry, adapter file/executable guard, final scan or recorded cause:
+  tests fail. The final-scan fixture predates watcher creation, so it cannot be
+  satisfied by live monitoring. Replacing atomic creation with overwrite makes
+  the concurrent first-writer test fail. A persisted credential-bearing reason
+  fails the receipt test without read-side redaction. Old timestamp receipts
+  trigger a fresh report rather than suppressing it.
+- The trial-doc pin's source key changed from `learnings_repo` to
+  `learnings_store` → red; remove only the new protocol sentence → red. The
+  expected key comes from `TOKEN_ECONOMIZER_KEYS`. The changed existing drift
+  expectation still guards the code/docs mismatch.
+- Removed behaviour assertions from existing tests: none. The PR branch-lock
+  fake moved unchanged into `worker/deno/tests/support/pr_branch_lock_stub.ts`
+  and uses the real lock acquisition with an injected scheduler; the existing
+  command assertions remain. The readiness fixture stops unrelated merge work
+  after the original readiness assertion's event. Config/off-spawn test changes
+  are documentation only.
+- `deno task check:manifests`: passed, 866 tests, one documented ignore.
+- `deno task drift-pins-on-base` confirms the new `learnings_repo` sentence
+  is absent from the base protocol’s “The candidate” section.
+- `deno task pr-summary-check --base origin/main`: zero gates blocked and
+  zero not checked. This validates summary structure, not a fresh review.
+
+## Deno regression avoided
+
+The audited adapter and contract tests use Deno; no Node tooling or dependency
+was added. The adapter invokes the already-vendored Python plugin.
+
+## Merge verification
+
+Independent review of the resumed additions and remote CI remain pending. No
+host was enabled and no issue or PR lifecycle was changed.
+
+Skipped or remaining: same-UID controller protection, #4957 persistence finding
+producers/transfers, #4958 worker accounting, #4959 normal verdict/purge
+execution, and a paid production judge/egress/lifetime measurement. These are
+not reported as completed trial evidence.
