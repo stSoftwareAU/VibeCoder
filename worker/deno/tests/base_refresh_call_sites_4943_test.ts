@@ -112,8 +112,8 @@ const BEHIND_PR = {
 };
 
 // commands/fleet_pr_babysitter.ts: fix()'s behind path (source
-// "babysitter-behind", counterDir = the babysitter state dir, injected through
-// deps.stateDir).
+// "babysitter-behind", counterDir = deps.baseRefreshCounterDir, which only the
+// production entry point sets; the test injects a temp dir).
 Deno.test("babysitter behind path logs source=babysitter-behind and persists its tally in the state dir", async () => {
   const fleet = strictRefreshFixture();
   const stateDir = await Deno.makeTempDir({
@@ -146,7 +146,11 @@ Deno.test("babysitter behind path logs source=babysitter-behind and persists its
         gh,
         async () => {},
         3,
-        { armAutoMerge: async () => {}, stateDir },
+        {
+          armAutoMerge: async () => {},
+          stateDir,
+          baseRefreshCounterDir: stateDir,
+        },
       )
     );
     assertEquals(updated, true);
