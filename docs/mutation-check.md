@@ -1,5 +1,24 @@
 # Diff-scoped mutation check
 
+## Scope decision — 12 November 2026
+
+The owner has removed automatic mutation testing from the intended ordinary
+feature and repair workflow. Test adequacy is assessed during implementation
+and code review; existing deterministic tests provide later regression
+protection. A newly discovered bug gets a failing regression test before its
+fix. Mutation testing, fuzzing and broader discovery are separately requested
+investigations. See [Testing scope](../CODING-STANDARDS.md#test-driven-development-tdd).
+
+**Implementation status:** the guidelines and prompts state this decision.
+The worker code still invokes the legacy check described below at PR completion
+and during review fixes unless `skip_mutation_check: true` is configured for
+the repository. Updating prompts alone does not disable those invocations.
+Retiring that automatic runner and its recovery paths is tracked in
+[#5095](https://github.com/stSoftwareAU/VibeCoder/issues/5095);
+this manual records current behaviour, not a requirement to keep or recreate it.
+
+## Legacy worker behaviour
+
 The mutation check runs at two call points. At PR raise it is an advisory
 completion gate (Issue #3393, Issue #4234): the first report is one in-session
 note, and a survivor that remains is one comment on the pull request, which is

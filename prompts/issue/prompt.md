@@ -121,6 +121,11 @@ guessing.
 
 1. Follow the repository's canonical testing guidance. A test must protect a
    supported behaviour, invariant or contract, not merely increase coverage.
+   Assess positive, negative and boundary cases for this change and the
+   interactions it affects during implementation and review. Protect unrelated
+   features by running their existing deterministic regression tests. Mutation
+   testing, fuzzing and broader test discovery require a separately requested
+   investigation; do not add them to the ordinary feature or repair workflow.
    Not every change needs a new test. When a new test is warranted, follow TDD:
    - Write a failing test first that defines the expected behaviour; for a bug,
      reproduce the externally meaningful failure before fixing it where
@@ -310,8 +315,8 @@ guessing.
    deleted, not re-counted or restored; name the outcome assertions that still
    prove the behaviour.
    An issue requirement shows a new expected value is right, not that the
-   edited test still guards anything: break the code the test's name says
-   it guards, confirm the edited test goes red, then restore it (see **An
+   edited test still guards anything: review its discriminating fixtures and
+   remaining assertions on supported behaviour (see **An
    edited expectation must still go red without its guard** in the
    guidelines).
 3. Update the documentation in the same change. A change that **adds, changes
@@ -664,8 +669,8 @@ When things go wrong during implementation, follow these guidelines:
    **A browser check you did not run is not a safety net.** An `e2e/` (or
    other browser) script you add or change must be run against the baked
    Chromium — `$CHROMIUM_PATH`, also `chromium` on PATH — before you call it a
-   regression guard; quote the passing run and, for a regression guard, the
-   failing run with the fix reverted. If it genuinely cannot run, quote the
+   regression guard; quote the observed run and, for a diagnosed browser bug, the
+   failing regression before its fix and passing result afterwards. If it genuinely cannot run, quote the
    error, say so in the PR summary, and do not present it as the regression
    guard. Do not conclude Chromium is missing from `which chromium` alone —
    check `$CHROMIUM_PATH` and `$PLAYWRIGHT_BROWSERS_PATH`.
@@ -1453,71 +1458,23 @@ The file MUST contain:
    the diff touches a test; it is required. The worker counts as removed a
    multi-line assertion with any line changed, and an assertion re-added under
    a new condition, loop or callback, into a skipped or ignored test, or after
-   a new early `return`. Every expectation the diff changes in an existing
-   test counts only once you have seen that test go red with the code its
-   name says it guards broken on purpose (see **An edited expectation must
-   still go red without its guard** in the guidelines); record one red-check
-   line per edited expectation, and an edited test that stays green without
-   its guard is a blocking self-review finding — add an assertion that goes
-   red, or move the lost check to a test that still covers it and name that
-   test. Every new test added to guard a change (a fix, a new guard, a new
-   rule) counts only once you have seen it go red with only its change removed
-   (see **A new test must go red without its change** in the guidelines); one
-   that stays green without its change is a blocking self-review finding. When
-   the change adds the same handling at more than one step of a path, a new
-   test named for one step counts only once it goes red with only that step
-   broken and the earlier steps left in place — reverting the whole change
-   does not show which step a test reached — and, when the steps share one
-   mechanism, only once it also asserts that the run got past the earlier
-   steps (see **A test named for one step must reach that step** in the
-   guidelines); record one line per such test naming the step, the step-only
-   break and the result. For a documentation-drift test that check is per
-   pinned phrase, not per test: look for each phrase in the base branch's
-   version of the section the test reads (`git show <base>:<doc>`, narrowed
-   to the same section title; in the Vibe Coder repository, `deno task
-   drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
-   `worker/deno` does this); a phrase the base section already held is a
-   blocking self-review finding. A pin that names a value a module or
-   checked-in config file already holds is built from that source, never typed
-   in (condition 3 of **Documentation-drift tests** in `CODING-STANDARDS.md`);
-   record here one line per such value — the value changed at its source and
-   the result, for example `buildShallowCloneArgs --depth=1 →
-   --filter=blob:none: test red` — and a pin that stays green when its source
-   value changes is a blocking self-review finding. A pin the diff only moves,
-   while converting an existing whole-file drift test to `section()`,
-   is meant to be on base,
-   so that check does not apply to it; follow **Re-scoping an existing drift
-   test** in `CODING-STANDARDS.md` instead: scope each pin to the section
-   holding the sentence it was written for, leave no pin a substring of
-   another in the same list, keep each whole-file absence check on
-   `flatWholeFile`, and record here one line per moved check — the pin, its
-   section and the red-check result. A test that only pins current behaviour, because the
-   fault was unreproduced or already fixed and no production change was made,
-   is expected green on base, and the Test Plan says so. A negative test — one asserting something does
-   *not* happen — counts only once you have seen it go red with its guard
-   broken on purpose (see **A test must be able to fail on the wrong input**
-   in the guidelines); one that stays green without its guard is a blocking
-   self-review finding. Likewise, a test that pins which of two similar values
-   the code reads, or that two figures agree (two bases, two parallel records,
-   a displayed and a derived figure), counts only once its fixture gives the
-   candidates different values and you have seen it go red with the code
-   pointed at the sibling value; record that break here, for example
-   `reads base B instead of A → red`, and a fixture where the candidates are
-   equal is a blocking self-review finding. Likewise, a refusal test — one expecting an input
-   to be refused, rejected or answered with `false` or an error — counts
-   only once it asserts the specific error variant or rule and the same
-   input with only the probed value made legal is accepted (see **A
-   refusal test must be refused by the rule it names** in the
-   guidelines); when the diff adds a refusal that runs before an existing
-   one, re-run the existing tests that expect the later refusal, and one
-   that now stops earlier is a blocking self-review finding.
-   Likewise, each call site or entry point the diff changes — a single CLI
-   command, route, scheduled job or UI control's handler included — needs a
-   test that goes red when only that caller's change is reverted (see **Every
-   changed call site needs a test that goes red without it** in the
-   guidelines); for a UI control that test invokes the handler, the Test Plan
-   lists each entry point checked, and a changed call site whose revert leaves
-   the suite green is a blocking self-review finding. Likewise, a parameter,
+   a new early `return`. Review edited expectations for lost protection,
+   discriminating fixtures and assertions on real results. Record the
+   remaining coverage, not a per-expectation mutation log.
+   For a bug fix, record the failing regression test against unfixed code and
+   the passing result after the fix. A test that only pins current behaviour
+   for an unreproduced or already-fixed issue is expected green on base; say so.
+   A negative test must contain the forbidden input, assert the specific refusal
+   and include an allowed control. Give competing source values different
+   fixture values. A test named for one step must get past earlier steps and
+   assert that step's outcome. Review coverage through the actual affected
+   entry points, including a UI handler when the requirement is a user action;
+   existing coverage and a visual check may suffice for a presentation change.
+   For documentation-drift tests, apply the section-scoping, live-source and
+   per-phrase relevance rules in `CODING-STANDARDS.md`; keep whole-file absence
+   checks whole-file. Do not require deliberate code breaks, branch flips or
+   a repeated discovery campaign as Test Plan evidence.
+   Likewise, a parameter,
    value or behaviour the diff adds that the issue needs on every path
    reaches every caller and sibling route that needs it (see **A new
    argument or behaviour reaches every caller that needs it** in the
@@ -1533,35 +1490,14 @@ The file MUST contain:
    renders, each marked still true or changed for the new state, with a
    test asserting each one that differs; a pre-existing message left
    false or misleading in the new state is a blocking self-review
-   finding. Likewise, every outcome of a branch the diff adds — each new
-   condition, match arm, exit code and interface default —
-   counts only once a named test reaches it and flipping that outcome on
-   purpose turns the suite red (see **Every outcome of a branch you add needs
-   a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding. Each operand of a compound condition
-   (`a || b`, `a && b`, a chained `?:`) is its own outcome: its flip deletes
-   that operand alone, or forces it to the value that lets the other operands
-   decide — reverting the
-   whole change or deleting the whole condition does not show which operand a
-   test reaches. An outcome no test reaches is work still
-   to do before the summary: add the test, or remove the
-   branch. An outcome no input can reach is dead code: remove it, never
-   exempt it. `exempt (untestable)` is for an outcome production can reach
-   but a test cannot stage, such as a permission or I/O fault the suite
-   cannot stage portably; its reason names what blocks staging and the
-   harness search — the test files that already call the enclosing function
-   or script (a grep of the test tree for its name), each with why it cannot
-   reach the outcome. "No existing harness" with no search named is not a
-   reason. An outcome the linked issue asks a test for, in its acceptance
-   criteria or Definition of done, cannot be `exempt (untestable)`. Before the
-   PR is raised the worker also mutates the lines the diff adds and re-runs
-   the covering tests; a mutation the tests do not catch is reported (to you
-   once, then on the pull request) unless the summary names it as
-   `` `path:line` `` with
-   `exempt (untestable): <reason>` (a non-empty reason), the same convention. Where the repository's own CI runs a
-   blocking mutants job, that line does not clear the survivor: CI does not read
-   the summary, so the survivor must be killed by a test or excluded the way that
-   CI job allows.
+   finding. Likewise, review every meaningful outcome of a branch the diff adds
+   using the guidelines' **Every outcome of a branch you add needs a test that
+   reaches it** rule. Use inputs reaching the independent acceptance and refusal
+   cases of compound conditions. Existing tests count; an outcome no test
+   reaches is a blocking self-review finding when it leaves supported behaviour
+   unprotected. State any genuine staging limitation and the harnesses
+   considered, and satisfy explicit acceptance tests. No mutation campaign or
+   per-operand flip is required.
    A named test that does not exist at the head is the same finding as
    above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct
@@ -1569,8 +1505,8 @@ The file MUST contain:
    claim — keeps that path's guards (see **A new path to an existing outcome
    keeps that outcome's guards** in the guidelines): list each guard kept or
    excluded with its reason, and a kept guard counts only once a named test
-   reaches the new path with the guard's trigger holding and goes red when
-   the new branch is moved ahead of the guard; a new path that skips a guard
+   reaches the new path with the guard's trigger holding and asserts the
+   refusal alongside an allowed case; a new path that skips a guard
    with no stated reason is a blocking self-review finding. Likewise, a
    branch, guard, capture or hand-off the diff adds below existing early
    exits must be reachable by the input it exists for (see **A new branch
@@ -1579,8 +1515,7 @@ The file MUST contain:
    branch above any exit a realistic input for its case can fire first (or
    state why that exit must win — a real infrastructure signal, never a
    wording guess), and name a test whose realistic input also trips each
-   earlier exit the new branch now precedes and goes red when the branch is
-   moved back below it; a new branch that a realistic input for its own
+   earlier exit the new branch now precedes and asserts the intended outcome; a new branch that a realistic input for its own
    case cannot reach is a blocking self-review finding. Likewise, code
    the diff adds that deletes or replaces state — an `rm -rf`, a clone or
    `.git` swap, a `git reset --hard` or `git clean -fdx` — proves everything
@@ -1596,8 +1531,7 @@ The file MUST contain:
    finds the condition gone (see **State recorded on a failure path is cleared
    on the path that recovers** in the guidelines): list the set/clear pairs
    checked, and name a test that uses the real record helper, drives the
-   failure and then a healthy run, asserts the record is gone, and goes red
-   when the clear is deleted; a record with no clear on a healthy path is a
+   failure and then a healthy run, asserts the record is gone; a record with no clear on a healthy path is a
    blocking self-review finding. Likewise, each field, prop, parameter, type
    or export the diff adds to non-test code has a production reader or
    setter (see **Nothing exists only for a test to read** in the

@@ -30,6 +30,14 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    the externally meaningful regression; existing coverage may suffice.
    Refactors and UI restyles may need no new test. {{NO_TEST_ADDED_NOTE}}
    A missing safety net that matters is a finding.
+   Assess positive, negative and boundary cases for the changed behaviour and
+   affected callers in this review. Existing deterministic tests protect
+   unrelated features; do not make a PR pay for discovering missing tests in
+   unchanged behaviour. A shared contract changed by the PR is in scope.
+   For a bug fix, verify the failing regression against unfixed code and its
+   passing result after the fix. Mutation testing, fuzzing and broader audits
+   require a separately requested investigation; do not demand code-breaking
+   exercises for every test, branch operand or caller as routine review proof.
    Apply the Vibe Coder rule **Dummy tests and "how" tests are refused**
    (https://github.com/stSoftwareAU/VibeCoder/blob/main/CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused), in short: a new or edited test that asserts nothing, asserts
    only success, presence or non-emptiness, restates the implementation,
@@ -60,9 +68,9 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    is a finding.
    For a documentation-drift test, check each pin that names a value a module
    or checked-in config file holds (a flag, command line, function name, key,
-   version or tag): it must be built from that source, not typed in, and
-   changing the value at its source must turn the test red; a typed-in copy is
-   a finding.
+   version or tag): it must be built from that source, not typed in. Review
+   the source linkage; a typed-in copy is a finding. Do not require a
+   source-mutation run for every pin.
 5. Judge every change to an existing test: {{TEST_CHANGES}}, plus any
    inline test module (e.g. Rust `#[cfg(test)]`) the diff touches. A change
    is **meaningful** if it removes a test case, weakens or deletes an
@@ -91,8 +99,8 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
      functionality, evidence that the behaviour and its callers are gone (`gone`
      coverage of production code) is the relevant proof; never demand a
      fabricated replacement test for it.
-   - Where applicable, a reproducible regression or mutation check shows that
-     the replacement fails without the fix. A boolean claim, a vacuous
+   - For a bug fix, the observed failing regression against unfixed code and
+     the passing result after the fix show the replacement catches that bug. A boolean claim, a vacuous
      assertion or the implementer's own assertion is not proof.
    - Still **unjustified**, and a blocking **finding** (request changes):
      unjustified lost protection, deleting a failing useful test, widening a
@@ -147,7 +155,7 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
      edited test still fails without the code it guards. It is required for
      `expected-value`, `replaced`, and any entry with a `replacement`
      coverage role.
-   - `verification`: a short reproducible check (the command or mutation and
+   - `verification`: a short reproducible check (the regression command or coverage inspection and
      the observed result, at least three words). It is required under the
      same conditions as `failsWithoutChange`, and also when every `coverage`
      entry is `gone`: there it is the search or build that showed the removed
@@ -210,7 +218,7 @@ diff and a concrete failure scenario. A problem the change introduces,
 widens or newly exposes is always a finding, never an unrelated issue.
 
 Reply with only this JSON:
-`{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "...", "category": "quality_check" | "summary_incomplete"}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value" | "replaced" | "removed-case" | "removed-file" | "weakened-assertion" | "added-skip" | "threshold-reduced" | "other", "verdict": "justified" | "unjustified" | "owner", "ownerQuestion": "<only for owner: the unclear product contract>", "obsolete": "<old behaviour that is obsolete or intentionally changed>", "remaining": "<required behaviour that remains, or omit when every coverage role is gone>", "coverage": [{"role": "replacement" | "existing" | "gone", "path": "<repo-relative path at the head>", "name": "<test name, optional>"}], "requirementQuote": "<verbatim from the governing issue's title or body, or omit>", "failsWithoutChange": true, "verification": "<command or mutation and the observed result>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "closure": [{"criterion": "<text as listed>", "verdict": "met" | "partial" | "missing", "note": "<what is left out, or why every case is delivered>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
+`{"summary": "<one or two sentences>", "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<evidence covering every ask in this earlier finding>"}], "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "...", "category": "quality_check" | "summary_incomplete"}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value" | "replaced" | "removed-case" | "removed-file" | "weakened-assertion" | "added-skip" | "threshold-reduced" | "other", "verdict": "justified" | "unjustified" | "owner", "ownerQuestion": "<only for owner: the unclear product contract>", "obsolete": "<old behaviour that is obsolete or intentionally changed>", "remaining": "<required behaviour that remains, or omit when every coverage role is gone>", "coverage": [{"role": "replacement" | "existing" | "gone", "path": "<repo-relative path at the head>", "name": "<test name, optional>"}], "requirementQuote": "<verbatim from the governing issue's title or body, or omit>", "failsWithoutChange": true, "verification": "<regression command or coverage inspection and the observed result>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "closure": [{"criterion": "<text as listed>", "verdict": "met" | "partial" | "missing", "note": "<what is left out, or why every case is delivered>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
 Use `[]` for `checklist` when there is no checklist section, and for `closure` when no closure entry is listed.
 
 For each finding, use `quality_check` for an implementation or test defect and

@@ -1232,24 +1232,22 @@ Reproduce the reported fault before changing production behaviour. Reproduction
 status is advisory at completion (Issue #4234); the testing standards still
 apply to the implementation and to review.
 
-A test named for a later step in a pipeline must reach that step: break only
-its own step and leave the earlier ones in place, then confirm the test fails.
-Passing because an earlier step rejects the input does not prove the later
-step works (Issue #3666).
+Test adequacy is assessed during implementation and review of the feature
+being changed. Cover positive, negative and boundary cases through the real
+production paths, including affected existing callers. Unrelated features are
+protected by their existing deterministic regression tests. A later defect is
+reproduced with a failing test before its fix; a routine feature or repair run
+does not start a mutation, fuzzing or broader test-discovery campaign.
+
+A test named for a later step in a pipeline must reach that step: its fixture
+gets past earlier steps, and a positive control shows that it did. An earlier
+refusal cannot stand in for testing the later step (Issue #3666).
 
 **Each operand of a compound condition is its own outcome (Issue #3376).**
-Fleet PRs flipped a compound condition as one outcome — reverting the whole
-change or deleting the whole condition — so one operand went untested or was
-cited with a test that reached only the other: VibeCoder#3079 left the
-`fa.filename !== fb.filename` half of an `||` in the review-fleet-prs gate
-untested, and VibeCoder#3372 recorded a `Branch outcomes:` entry for the
-inline-form operand of a `PREFIX_RE || HEADING_RE` break with a test that
-reached only the heading form. `CODING-STANDARDS.md` and the guidelines now
-give a compound condition (`a || b`, `a && b`, a chained `?:`) one outcome per
-operand, each flipped on its own — deleted, or forced to the value that lets
-the other operands decide — with a test that goes red for each, and a `Branch
-outcomes:` line that names its operand. The issue prompt's Test Plan step and
-the pr_feedback re-enumeration rule carry the same requirement.
+Use discriminating inputs to cover the independent acceptance and refusal
+cases of a changed compound condition. Name the relevant existing or new tests
+in the current PR's review; do not require flipping operands individually or
+repeating mutation proofs during later unrelated work.
 
 **A fake mirrors the production implementation it stands in for (Issues #3224, #3900).**
 The stub-contract and observe-real-tool rules cover external callees —
@@ -1285,7 +1283,7 @@ is set. A change whose only proof is a fixture the producer never emits
 is a blocking self-review finding.
 
 When two inputs could supply the result, give the candidates different values
-and point the code at the sibling value to confirm the test fails (Issue #3851).
+and assert the required source value in the result (Issue #3851).
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
@@ -1524,7 +1522,9 @@ independent review (#663), reproduction status (#521), the placeholder-token
 gate (#3124), the mutation check (#3393), coverage carry-over (#3795), the
 pre-PR verifier (#3395) and unmet criteria (#4146). Each is advice: the first
 report is one in-session note, and whatever remains is one pull-request
-comment (Issue #4234). The mutation check is the exception where the repository's
+comment (Issue #4234). The mutation invocation is legacy behaviour pending
+[#5095](https://github.com/stSoftwareAU/VibeCoder/issues/5095), not a requirement
+to preserve it. In current code, the mutation check is the exception where the repository's
 CI runs a blocking mutation job (Issue #4617): a survivor that remains after the
 recovery turn holds the pull request as a draft that is not auto-merged, and
 on the secondary-rate-limit deferral path it is parked with `draft: true` and
