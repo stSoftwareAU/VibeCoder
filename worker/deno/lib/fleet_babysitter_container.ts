@@ -31,6 +31,13 @@
  * what a run reaches. This module is the only way `fix()` in
  * `commands/fleet_pr_babysitter.ts` runs a repair (Issue #4770), with no host
  * fallback.
+ *
+ * Pre-push gate (Issue #4930): before the READY line stands, the in-container
+ * `babysitter-repair` runs the repo's unit tests for the agent's changed files
+ * and markdownlint over the uncommitted tree. It compares failing tests
+ * against the PR's base branch, which this module passes as an optional
+ * trailing `--base-branch <name>` (see {@link BabysitterContainerInput}).
+ * A failing gate removes the READY line, and the host then refuses to push.
  */
 
 import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
@@ -53,6 +60,7 @@ import {
 import { redactSecrets } from "./secret_redaction.ts";
 import { startEgressSidecar, stopEgressSidecar } from "./egress_sidecar.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { assertSafeGitRef } from "./git_ref_args.ts";
 
 /** A repair may run for 90 minutes before it is killed. */
 export const BABYSITTER_REPAIR_TIMEOUT_MS = 90 * 60_000;
@@ -62,7 +70,12 @@ export const BABYSITTER_CLONE_MOUNT = "/babysitter/clone";
 export const BABYSITTER_SCRATCH_MOUNT = "/babysitter/scratch";
 /**
  * The fixed command line after the image. The in-container `babysitter-repair`
- * command (Issue #4768) is routed by container/entrypoint.sh and runs it.
+ * command (Issue #4768) is routed by container/entrypoint.sh and runs it. An
+ * optional trailing `--base-branch <name>` (appended by
+ * {@link buildBabysitterRunArgs}) lets its pre-push check (Issue #4930) compare
+ * failing tests against the PR's base branch; the check runs the repo's unit
+ * tests and markdownlint over the agent's changes and withholds the READY line
+ * when they fail.
  */
 export const BABYSITTER_REPAIR_COMMAND: readonly string[] = [
   "babysitter-repair",
@@ -183,6 +196,12 @@ export interface BabysitterContainerInput {
   privateKeyPath: string;
   /** The agent's read-only GH_TOKEN. Passed in the env only. */
   token: string;
+  /**
+   * The PR's base branch. The in-container pre-push gate (Issue #4930)
+   * compares failing tests against it. Absent: no argument is passed and the
+   * gate has no baseline, so a failing test blocks.
+   */
+  baseBranch?: string;
   /** Default {@link BABYSITTER_REPAIR_TIMEOUT_MS}. */
   timeoutMs?: number;
   /**
@@ -406,13 +425,21 @@ function isCustomPromptEnvSpec(spec: string): boolean {
  * custom prompt target (`…/.vibe-coder/custom-prompts`), and the plan's
  * `VIBE_CUSTOM_PROMPT_PATHS` env spec. The provider credential sub-directories
  * are kept. Then appends the clone mount, the clone's `.git` mounted
- * read-only over it, the scratch mount, `--env GH_TOKEN`, the image and the repair command. Refuses any plan flag that could mount a
+ * read-only over it, the scratch mount, `--env GH_TOKEN`, the image, the repair
+ * command and, when a base branch is given, `--base-branch <name>` (Issue
+ * #4930). Refuses any plan flag that could mount a
  * path or load an env file by another spelling, and any plan env spec that
- * sets GH_TOKEN. Pure; exported for tests.
+ * sets GH_TOKEN. A base branch that git would read as an option is refused.
+ * Pure; exported for tests.
  */
 export function buildBabysitterRunArgs(
   plan: ContainerLaunchPlan,
-  input: { clone: string; scratch: string; workspaceSnapshot?: string },
+  input: {
+    clone: string;
+    scratch: string;
+    workspaceSnapshot?: string;
+    baseBranch?: string;
+  },
 ): string[] {
   const runArgs = plan.runArgs;
   if (runArgs.length === 0 || runArgs[runArgs.length - 1] !== plan.image) {
@@ -533,6 +560,9 @@ export function buildBabysitterRunArgs(
       );
     }
   }
+  if (input.baseBranch !== undefined) {
+    assertSafeGitRef(input.baseBranch, "babysitter base branch");
+  }
   return [
     ...body,
     "--volume",
@@ -547,6 +577,9 @@ export function buildBabysitterRunArgs(
     "GH_TOKEN",
     plan.image,
     ...BABYSITTER_REPAIR_COMMAND,
+    ...(input.baseBranch !== undefined
+      ? ["--base-branch", input.baseBranch]
+      : []),
   ];
 }
 
@@ -1548,6 +1581,9 @@ export async function runBabysitterRepairContainer(
       clone: input.clone,
       scratch: input.scratch,
       ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
+      ...(input.baseBranch !== undefined
+        ? { baseBranch: input.baseBranch }
+        : {}),
     });
     await assertBabysitterKeyOutOfRunArgs(planArgs, input.privateKeyPath);
 
@@ -1570,6 +1606,9 @@ export async function runBabysitterRepairContainer(
           clone: input.clone,
           scratch: input.scratch,
           ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
+          ...(input.baseBranch !== undefined
+            ? { baseBranch: input.baseBranch }
+            : {}),
         });
         await assertBabysitterKeyOutOfRunArgs(args, input.privateKeyPath);
       } else if (plan.egressEnforced) {

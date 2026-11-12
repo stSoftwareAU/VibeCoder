@@ -2925,6 +2925,11 @@ dependency-selected unit tests and configured markdownlint for the pushed paths
 gate before the worker push. Configured pre-flight commands also enable
 the full set of changed-file checks. PR-review feedback runs its independent fix verifier even
 without pre-flight configuration; persistent findings can block the push.
+A fleet babysitter repair is gated inside its container before it reports
+ready: the unit tests selected for its uncommitted changes, markdownlint when
+configured, the ShellCheck policy and the cargo-deny gate run there, but not
+the formatters or linters (Issue #4930; see
+[babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
 that push afterwards. PR-side callers pass their flow to
@@ -5453,10 +5458,11 @@ gates do (see that bullet):
      matched with bounded dynamic programming. An unreadable `on:` runs the
      workflow. Jobs and their
      `defaults` and `continue-on-error` are found at any indent. Quoted
-     multiline container scripts are not host commands. The fleet babysitter does not run
-     it: its execution belongs inside the worker container (#4768, #4770),
-     never beside the host App key, so babysitter repairs are not checked by
-     it until that contained path exists;
+     multiline container scripts are not host commands. The fleet babysitter's
+     repair container runs the cargo-deny gate over the agent's uncommitted
+     changes before a repair reports ready (Issue #4930), inside the worker
+     container (#4768, #4770), never beside the host App key, so babysitter
+     repairs are checked by it there;
    - `shellcheck` on changed `.sh` files when a tracked workflow contains the
      supported `find . -name "*.sh" -type f -exec shellcheck … {} +` form, or on
      the action's named shell files and executable extensionless shell scripts for a
@@ -5489,9 +5495,10 @@ gates do (see that bullet):
      add the CI cargo checks, Issue #4630). A spelling or merge-conflict repair
      in a repo that has pre-flight commands also gets the CI cargo checks,
      compared against the PR base as described above. The
-     fleet babysitter does not run it: its execution belongs inside the worker
-     container (#4768, #4770), never beside the host App key, so babysitter
-     repairs are not ShellCheck-validated until that contained path exists. WIP checkpoint,
+     fleet babysitter's repair container runs the ShellCheck policy over the
+     agent's uncommitted changes before a repair reports ready (Issue #4930),
+     inside the worker container (#4768, #4770), never beside the host App key,
+     so babysitter repairs are ShellCheck-validated there. WIP checkpoint,
      timeout-preservation and declared hand-off pushes pass no pre-flight spec
      and stay ungated;
    - **Floci CloudFormation deploy test** (Issue #3727), only when the push

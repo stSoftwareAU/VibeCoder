@@ -2487,3 +2487,81 @@ Deno.test("fix refuses a nested repository before finish runs host Git", async (
     await assertRejects(() => Deno.stat(marker), Deno.errors.NotFound);
   });
 });
+
+// Issue #4930: the repair flow passes the PR's base branch to the agent start,
+// so the in-container pre-push gate can compare failing tests against it.
+Deno.test("the repair flow hands the PR's base branch to startAgent for the in-container gate (Issue #4930)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.pr = basePr({ baseRefName: "release/2" }) as never;
+    h.state.changes = true;
+    const baseBranches: Array<string | undefined> = [];
+    const startAgent = h.deps.startAgent!;
+    h.deps.startAgent = async (...args) => {
+      baseBranches.push(args[2].baseBranch);
+      return await startAgent(...args);
+    };
+    await h.attempt();
+    assertEquals(baseBranches, ["release/2"]);
+  });
+});
+
+Deno.test("startBabysitterAgent forwards the base branch so the container repair gets --base-branch (Issue #4930)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const dirs = await repairDirs();
+    try {
+      const spawns: RuntimeSpawn[] = [];
+      const started = await startBabysitterAgent(
+        { appId: "1", installationId: "1", privateKeyPath },
+        REPO,
+        {
+          ...dirs,
+          prompt: "repair",
+          baseBranch: "release/2",
+          fetchFn: fakeTokenExchange(
+            { permissions: BABYSITTER_AGENT_PERMISSIONS },
+            [],
+          ),
+          container: fakeContainer(spawns),
+        },
+        () => Promise.resolve(true),
+      );
+      assertEquals(started, true);
+      assertEquals(spawns.length, 1);
+      assertEquals(spawns[0]!.args.slice(-2), ["--base-branch", "release/2"]);
+    } finally {
+      await Deno.remove(dirs.root, { recursive: true });
+    }
+  });
+});
+
+Deno.test("startBabysitterAgent without a base branch passes no --base-branch flag (Issue #4930)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    const dirs = await repairDirs();
+    try {
+      const spawns: RuntimeSpawn[] = [];
+      const started = await startBabysitterAgent(
+        { appId: "1", installationId: "1", privateKeyPath },
+        REPO,
+        {
+          ...dirs,
+          prompt: "repair",
+          fetchFn: fakeTokenExchange(
+            { permissions: BABYSITTER_AGENT_PERMISSIONS },
+            [],
+          ),
+          container: fakeContainer(spawns),
+        },
+        () => Promise.resolve(true),
+      );
+      assertEquals(started, true);
+      assertEquals(spawns.length, 1);
+      assert(
+        !spawns[0]!.args.includes("--base-branch"),
+        "no --base-branch flag without a base branch",
+      );
+    } finally {
+      await Deno.remove(dirs.root, { recursive: true });
+    }
+  });
+});

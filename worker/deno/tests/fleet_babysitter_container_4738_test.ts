@@ -21,6 +21,7 @@ import {
   assertBabysitterKeyOutOfRunArgs,
   BABYSITTER_CLONE_MOUNT,
   BABYSITTER_QUOTA_PARK_EXIT_CODE,
+  BABYSITTER_REPAIR_COMMAND,
   BABYSITTER_SCRATCH_MOUNT,
   babysitterCheckoutDir,
   type BabysitterContainerDeps,
@@ -1928,5 +1929,102 @@ Deno.test("babysitterImageExists passes the given env, and only that, to the ins
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Issue #4930: the PR's base branch reaches the in-container pre-push gate as a
+// trailing `--base-branch <name>` after the fixed repair command.
+Deno.test("repair appends --base-branch after the fixed command when a base branch is given (Issue #4930)", async () => {
+  const f = await makeFixture();
+  try {
+    const plan = fakePlan(f.root, "vibe-test");
+    const args = buildBabysitterRunArgs(plan, {
+      clone: f.clone,
+      scratch: f.scratch,
+      baseBranch: "main",
+    });
+    assertEquals(args.slice(-(BABYSITTER_REPAIR_COMMAND.length + 2)), [
+      ...BABYSITTER_REPAIR_COMMAND,
+      "--base-branch",
+      "main",
+    ]);
+    assertEquals(args[args.length - 1], "main");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair argv is unchanged, with no --base-branch, when no base branch is given (Issue #4930)", async () => {
+  const f = await makeFixture();
+  try {
+    const plan = fakePlan(f.root, "vibe-test");
+    const args = buildBabysitterRunArgs(plan, {
+      clone: f.clone,
+      scratch: f.scratch,
+    });
+    assertEquals(args.slice(-BABYSITTER_REPAIR_COMMAND.length), [
+      ...BABYSITTER_REPAIR_COMMAND,
+    ]);
+    assert(!args.includes("--base-branch"), "no --base-branch flag");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("repair refuses a base branch that git would read as an option (Issue #4930)", async () => {
+  const f = await makeFixture();
+  try {
+    const plan = fakePlan(f.root, "vibe-test");
+    for (const baseBranch of ["-x", "--upload-pack=echo", ""]) {
+      assertThrowsMessage(
+        () =>
+          buildBabysitterRunArgs(plan, {
+            clone: f.clone,
+            scratch: f.scratch,
+            baseBranch,
+          }),
+        "babysitter base branch",
+      );
+    }
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("runBabysitterRepairContainer refuses an unsafe base branch before any process starts (Issue #4930)", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps, calls } = fakeDeps(f);
+    await assertRejects(
+      () =>
+        runBabysitterRepairContainer(
+          { ...inputFor(f), baseBranch: "-x" },
+          deps,
+        ),
+      Error,
+      "babysitter base branch",
+    );
+    assertEquals(calls.imageExists.length, 0, "no image check ran");
+    assertEquals(calls.spawns.length, 0, "no container spawned");
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+Deno.test("runBabysitterRepairContainer spawns the repair with --base-branch after the fixed command (Issue #4930)", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps, calls } = fakeDeps(f);
+    await runBabysitterRepairContainer(
+      { ...inputFor(f), baseBranch: "release/2" },
+      deps,
+    );
+    assertEquals(calls.spawns.length, 1, "exactly one repair spawn");
+    assertEquals(
+      spawnAt(calls, 0).args.slice(-(BABYSITTER_REPAIR_COMMAND.length + 2)),
+      [...BABYSITTER_REPAIR_COMMAND, "--base-branch", "release/2"],
+    );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
   }
 });

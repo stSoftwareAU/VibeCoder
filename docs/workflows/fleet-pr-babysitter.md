@@ -12,8 +12,11 @@ the babysitter merges the PR's latest base into the temporary clone without
 committing, for every kind of repair, so the agent works and runs its checks
 against up-to-date code and the fix and the branch update reach GitHub in **one
 push**. A second push just to update the branch would run the whole CI again and
-roughly double the Actions cost of the repair. After the repair session reports
-a completed fix, the babysitter commits the fix and the merge together as one
+roughly double the Actions cost of the repair. In the container, a pre-push gate
+runs over the agent's uncommitted changes before its completion line counts, and
+a blocked gate means nothing is committed or pushed (see
+[Container repairs](#container-repairs)). After the repair session reports a
+completed fix, the babysitter commits the fix and the merge together as one
 merge commit, checks the fix (not the base's own changes) for whitespace errors
 and conflict markers, and rechecks the PR. It pushes only if the PR still
 matches the original head; a review repair also pushes only if the PR's
@@ -57,6 +60,7 @@ beside it (Issue #4755).
 sequenceDiagram
     participant B as Babysitter
     participant G as GitHub
+    B->>B: Container pre-push gate, a block stops the push
     B->>B: Validate and commit repair
     B->>G: Push updated branch
     B->>G: Rebuild and publish PR description
@@ -356,7 +360,10 @@ runner stages the PR description it applies there before
 `.babysitter-response` in the clone. After the container exits, the host reads
 that file through the no-follow, regular-file, size-bounded reader, removes it
 from the clone, and hands it to the exchange directory, where the
-`BABYSITTER_READY` completion check runs on the host. The agent can also write
+`BABYSITTER_READY` completion check runs on the host. A blocked pre-push gate
+removes that line before the container exits and puts a
+`[BABYSITTER_GATE_BLOCKED]` line with the cause first in the response (see
+[Container repairs](#container-repairs)). The agent can also write
 `.babysitter-pr-body` in the clone, so the runner reads that file through the
 same reader. A symlink, FIFO, hard link or oversized file fails the repair
 before anything is published. The bounded reader opens read-write, so a FIFO
@@ -378,7 +385,8 @@ Each repair runs in one container, started by `runBabysitterRepairContainer`
 `/babysitter/clone` and a scratch directory holding `prompt.md` is mounted at
 `/babysitter/scratch`. The image runs the in-container `babysitter-repair`
 command with `--dir /babysitter/clone`, `--prompt-file` pointing at the prompt,
-and `--response-file /babysitter/clone/.babysitter-response`. The agent's
+and `--response-file /babysitter/clone/.babysitter-response`, with
+`--base-branch` carrying the PR's base branch for the gate's baseline. The agent's
 read-only repository token is passed as `GH_TOKEN` by name only, so its value
 never appears on a command line. The clone's `.git` is mounted read-only over
 the read-write clone (`<clone>/.git` at `/babysitter/clone/.git:ro`, listed
@@ -400,6 +408,28 @@ gitlink absent from both HEAD and the pending merge parent, any `refs/replace`
 ref, and a `.git/info/grafts` or
 `.git/shallow` file. Checked-out existing submodules are also refused; the
 staged merge is preserved.
+
+**Pre-push gate.** Once the agent's final message ends with the
+`BABYSITTER_READY` line, the container runs the repository's pre-push gate over
+the agent's uncommitted working-tree changes, before the host reads the
+response. A response without that line, or an agent that changed nothing, runs
+no check. The gate runs the unit tests selected for the changed files
+(`deno task test:unit` for a Deno root that defines that task, with the same
+selection as the worker's other repair pushes; a change to a prompt, `deno.json`
+or `deno.lock` runs the whole suite), markdownlint when configured, the
+ShellCheck policy and the cargo-deny gate. It does not run the formatters or
+linters. A failing unit test that also fails the same way at the merge-base with
+the PR base is a warning, as in the other repair pushes. Without
+`--base-branch`, which the host passes from the PR's base branch, the gate has no
+baseline and a failing test blocks. A check that cannot run, such as a missing
+tool or a module-fetch outage, is an infrastructure fault, not a pass. The
+container's `.git` is mounted read-only, so the baseline is a `git archive`
+extraction into a temporary directory under the container's temp dir, not a git
+worktree. If a check blocks or cannot run, the container removes the
+`BABYSITTER_READY` line and puts a `[BABYSITTER_GATE_BLOCKED]` line with the
+cause first in the response. The host's completion check then refuses to push
+("agent did not report that its fix was ready") and quotes the cause; nothing is
+pushed.
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container
@@ -623,7 +653,9 @@ until cleared. Waiting paths release the branch lock; the next scan logs the
 cause, next action, and eligible time.
 
 A missing ready marker retains up to 2,000 characters of the redacted agent
-reply in the failure, labelled as untrusted evidence. It cannot classify its
+reply in the failure, labelled as untrusted evidence. A gate block is a missing
+ready marker too, and its `[BABYSITTER_GATE_BLOCKED]` line with the cause is the
+first line of that reply. It cannot classify its
 own failure, authorise a push or dismiss a review. The existing bounded
 evidence ledger carries the cause into the next diagnosis.
 
@@ -709,7 +741,10 @@ check earlier.
 Each repair also re-runs its checks locally before it reports ready: a CI repair
 reproduces the failing step with the command the workflow runs and confirms it
 passes, and review and conflict repairs run the formatter, linter and type or
-compile check for the code they touched.
+compile check for the code they touched. The container also withholds the
+READY line unless the pre-push gate over the uncommitted changes passes (see
+[Container repairs](#container-repairs)); that gate runs the unit tests,
+markdownlint, ShellCheck and cargo-deny checks, but no formatters or linters.
 
 This MVP uses the configured GitHub App and the worker's agent providers; it
 does not handle Dependabot, use per-repository quality commands, or review PRs.
