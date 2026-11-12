@@ -1256,6 +1256,107 @@ Deno.test("commitAndPushPending - a push recovery merge needs a fresh verdict", 
   }
 });
 
+Deno.test("commitAndPushPending - a repair push compares a failing unit test at the PR's base, not at the PR's own previous head (PR #5034 review)", async () => {
+  const branch = "issue-4930-repair-base";
+  const { tmp, downstream } = await makeRepo("preflight_4930_base_", branch);
+  try {
+    const write = (name: string, text: string) =>
+      Deno.writeTextFile(`${downstream}/${name}`, text);
+    const commit = async (message: string) => {
+      assertEquals((await runGit(["add", "-A"], downstream)).code, 0);
+      const done = await runGit(["commit", "-qm", message], downstream);
+      assertEquals(done.code, 0, done.stderr);
+    };
+    await Deno.mkdir(`${downstream}/lib`);
+    await Deno.mkdir(`${downstream}/tests`);
+    await write("deno.json", JSON.stringify({ tasks: { "test:unit": "x" } }));
+    await write("tests/foo_test.ts", "export {};\n");
+    // The PR's base (main) holds foo = 1; its previous head (on origin) foo = 2.
+    await write("lib/foo.ts", "export const foo = 1;\n");
+    await commit("base");
+    const toMain = await runGit(["push", "origin", "HEAD:main"], downstream);
+    assertEquals(toMain.code, 0, toMain.stderr);
+    await write("lib/foo.ts", "export const foo = 2;\n");
+    await commit("previous head");
+    const toPr = await runGit(["push", "origin", "HEAD"], downstream);
+    assertEquals(toPr.code, 0, toPr.stderr);
+
+    // The unit test is red everywhere except where foo is 1 (the base).
+    const runner: PreFlightRunner = (command, options) => {
+      const red = command.startsWith("deno task test:unit") &&
+        !Deno.readTextFileSync(`${options.cwd}/lib/foo.ts`).includes("= 1");
+      return Promise.resolve({
+        started: true,
+        code: red ? 1 : 0,
+        stdout: red ? "foo works => ./tests/foo_test.ts:3:6\n" : "",
+        stderr: "",
+      });
+    };
+    const repair = (
+      baseOption?: "syncBaseBranch" | "compareBaseBranch",
+    ) =>
+      commitAndPushPending(
+        branch,
+        "Fix CI failure",
+        {
+          cwd: downstream,
+          env: NO_HOST_GIT_CONFIG,
+          ...(baseOption ? { [baseOption]: "main" } : {}),
+        },
+        false,
+        { commands: [], shellcheckOnly: true, runner },
+      );
+
+    // The repair leaves the test red. Told the PR's base, the gate blocks it.
+    await write("lib/foo.ts", "export const foo = 3;\n");
+    const blocked = await repair("syncBaseBranch");
+    assert(!blocked.ok, "a repair that leaves the test red must not push");
+    if (!blocked.ok) {
+      assert(blocked.error.message.includes("[PRE_PUSH_BLOCKED]"));
+      assert(blocked.error.message.includes("foo works"));
+    }
+
+    // `compareBaseBranch` alone (the merge-conflict repair, which merges the
+    // base itself) places the comparison at the base too, with no merge of its
+    // own.
+    const gateOnly = await repair("compareBaseBranch");
+    assert(
+      !gateOnly.ok,
+      "compareBaseBranch must place the baseline at the base",
+    );
+    if (!gateOnly.ok) {
+      assert(gateOnly.error.message.includes("[PRE_PUSH_BLOCKED]"));
+    }
+
+    // A repair whose PR base could not be read compares at the checkout's
+    // default branch (origin/HEAD, here main), as the agent's hook does, so it
+    // is blocked too (PR #5034 review).
+    const setHead = await runGit(
+      ["remote", "set-head", "origin", "main"],
+      downstream,
+    );
+    assertEquals(setHead.code, 0, setHead.stderr);
+    const unknownBase = await repair();
+    assert(!unknownBase.ok, "an unknown PR base must fall back to origin/HEAD");
+    if (!unknownBase.ok) {
+      assert(unknownBase.error.message.includes("[PRE_PUSH_BLOCKED]"));
+    }
+
+    // Control: with no PR base and no origin/HEAD the comparison is the
+    // previous head, where the test is red too, so the same repair is waved
+    // through and pushed.
+    const unset = await runGit(
+      ["remote", "set-head", "origin", "--delete"],
+      downstream,
+    );
+    assertEquals(unset.code, 0, unset.stderr);
+    const wavedThrough = await repair();
+    assert(wavedThrough.ok, wavedThrough.ok ? "" : wavedThrough.error.message);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test('prBaseCompareRef - origin/<base>, or "" when the base is unknown (Issue #4630 review)', () => {
   assertEquals(prBaseCompareRef("main"), "origin/main");
   assertEquals(prBaseCompareRef(" release/1 "), "origin/release/1");

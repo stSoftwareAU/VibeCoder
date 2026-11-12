@@ -173,6 +173,11 @@ interface GitScript {
   mergeStderr?: string;
   /** Error message `commitAndPushPending` fails with (default: it succeeds). */
   commitPushError?: string;
+  /**
+   * Answers `commitAndPushPending` by its options (3rd argument): an error
+   * message to fail with, or undefined to succeed. Overrides `commitPushError`.
+   */
+  commitPushAnswer?: (options: Record<string, unknown>) => string | undefined;
   /** Commits left unpushed after the push (default: 0 — a clean push). */
   finalUnpushedCount?: number;
   /** What `git push --dry-run` reports on stderr (Issue #1772). */
@@ -468,10 +473,13 @@ function makeGit(
       captured.commitAndPushPreFlights.push(args[4]);
       captured.commitAndPushOptions.push(args[2]);
       captured.events.push("git:commitAndPushPending");
-      if (script.commitPushError !== undefined) {
+      const pushError = script.commitPushAnswer
+        ? script.commitPushAnswer(args[2] as Record<string, unknown>)
+        : script.commitPushError;
+      if (pushError !== undefined) {
         return Promise.resolve({
           ok: false,
-          error: new Error(script.commitPushError),
+          error: new Error(pushError),
         });
       }
       return Promise.resolve({
@@ -1121,6 +1129,40 @@ Deno.test("processMergeConflict - a clean merge is checked against the head it s
   assert(
     verifiedAt >= 0 && verifiedAt < pushedAt,
     `the check must run before the push; got ${captured.events.join(",")}`,
+  );
+});
+
+Deno.test("processMergeConflict - a unit test the merge leaves red, judged at the PR's base, fails the attempt and nothing is pushed (PR #5034 review)", async () => {
+  const refusal = "[PRE_PUSH_BLOCKED] deno test (.) failed: " +
+    "foo works => ./tests/foo_test.ts:3:6";
+  // The fake push models the gate: it refuses with the unit-test failure when
+  // the gate is placed at the PR's base (red there only because of the merge),
+  // fails differently when it would merge the base a second time, and
+  // otherwise succeeds, as a gate compared at the previous head would.
+  const answer = (options: Record<string, unknown>) =>
+    options.syncBaseBranch !== undefined
+      ? "the push merged the base a second time"
+      : options.compareBaseBranch === "main"
+      ? refusal
+      : undefined;
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      mergeCode: 0,
+      unmergedAfterMerge: [],
+      commitPushAnswer: answer,
+    }),
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  // The refusal reaches the PR, naming the failing test.
+  const failure = captured.comments.at(-1) ?? "";
+  assertStringIncludes(failure, CONFLICT_FAILED_MARKER);
+  assertStringIncludes(failure, "foo works");
+  assertEquals(
+    captured.comments.some((c) => c.includes(CONFLICT_RESOLVED_MARKER)),
+    false,
   );
 });
 

@@ -42,7 +42,12 @@ export interface PushLineageOptions extends GitCommandOptions {
    * GitHub in one push and CI runs once (owner rule 2026-11-03).
    */
   syncBaseBranch?: string;
-  /** Base to compare gate diagnostics against, without merging it. */
+  /**
+   * Base to compare gate diagnostics against, without merging it: a failing
+   * CI cargo check (Issue #4630) and a failing unit test (Issue #4930, judged
+   * at the merge-base with it) are compared there. {@link syncBaseBranch}
+   * implies it when this is unset.
+   */
   compareBaseBranch?: string;
   /** Require a base comparison before blaming a failed CI cargo check. */
   requireCargoBaseComparison?: boolean;

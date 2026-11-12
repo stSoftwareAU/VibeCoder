@@ -17,6 +17,8 @@
  * `compareRef` is the PR base (`origin/<branch>`, or `""` when a comparison is
  * required but the base is unknown): a CI cargo failure the base already has is
  * no verdict on the push, and an unavailable comparison is infrastructure.
+ * The same base (else the checkout's default branch) places the fork commit a
+ * failing `deno test` is compared at (Issue #4930).
  * A missing or invalid spec, unreadable stdin or any thrown error blocks the
  * push (exit 1). Git's own hook arguments (remote name, URL) are ignored.
  *
@@ -28,6 +30,7 @@ import type { CiCargoScan } from "./ci_cargo_checks.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
 import { installConsoleRedaction } from "./console_redaction.ts";
 import { runPrePushGate } from "./pre_push_gate.ts";
+import { resolveLocalDefaultBranch } from "./local_default_branch.ts";
 
 /** Injectable seams. */
 export interface PrePushCliDeps {
@@ -35,6 +38,8 @@ export interface PrePushCliDeps {
   cwd?: () => string;
   gate?: typeof runPrePushGate;
   writeErr?: (text: string) => void;
+  /** The checkout's default branch, or null when unknown. */
+  defaultBranch?: (cwd: string) => Promise<string | null>;
 }
 
 interface PrePushSpec {
@@ -230,10 +235,27 @@ export async function runPrePushGateCli(
     }
 
     const gate = deps.gate ?? runPrePushGate;
+    const cwd = (deps.cwd ?? Deno.cwd)();
+    // A `deno test` failure is compared at the merge-base with the PR's base
+    // when the worker handed it over (the spec's `compareRef`, for a CI-fix,
+    // PR-feedback, spelling or merge-conflict run), not at the PR's own previous
+    // head (where a failure the agent leaves is red too). Otherwise it is the
+    // checkout's default branch, the base of nearly every PR; a PR targeting
+    // another branch is then compared at its merge-base with the default
+    // branch, which can be older than that PR's own base. When neither is known
+    // the gate's own fallback applies.
+    const handedBase = spec.value.compareRef?.startsWith("origin/")
+      ? spec.value.compareRef.slice("origin/".length)
+      : "";
+    const baselineBranch = handedBase !== ""
+      ? handedBase
+      : await (deps.defaultBranch ??
+        ((dir: string) => resolveLocalDefaultBranch({ cwd: dir })))(cwd);
     const ciCargo = spec.value.ciCargo;
     const result = await gate({
-      cwd: (deps.cwd ?? Deno.cwd)(),
+      cwd,
       stdin,
+      ...(baselineBranch === null ? {} : { baselineBranch }),
       preFlightCommands: spec.value.preFlightCommands,
       timeoutSeconds: spec.value.timeoutSeconds,
       ...(ciCargo === undefined ? {} : { findCiCargo: async () => ciCargo }),

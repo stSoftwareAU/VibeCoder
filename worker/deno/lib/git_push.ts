@@ -12,6 +12,9 @@
 import type { Result } from "../types.ts";
 import { runGitCommand, runGitCommandChecked } from "./git_timeout.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
+import { resolveLocalDefaultBranch } from "./local_default_branch.ts";
+
+export { resolveLocalDefaultBranch };
 import {
   recoverFromPushRejection,
   refuseUnlessHeadExtends,
@@ -52,12 +55,15 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * cspell, the Floci deploy test and the repository's ShellCheck policy), then
  * cargo deny when applicable (Issue #4626), even when `commands` is empty; an
  * empty list only means no repo pre-flight commands run. A spec with
- * `shellcheckOnly` runs the ShellCheck policy and cargo deny for changed cargo
- * inputs (Issues #4631 and #4626).
+ * `shellcheckOnly` runs the ShellCheck policy, cargo deny for changed cargo
+ * inputs (Issues #4631 and #4626), and the dependency-selected unit tests and
+ * markdownlint for the pushed paths (Issue #4930), but not the deno/cargo
+ * formatters or cspell.
  *
  * `ciCargoOnly` (Issue #4630) narrows Step 1b to the repo CI's own cargo
  * clippy and test-target compile plus the ShellCheck policy and cargo deny for
- * changed cargo inputs: no fmt, lint, markdownlint, cspell or Floci checks, and
+ * changed cargo inputs, and the dependency-selected unit tests and markdownlint
+ * for the pushed paths (Issue #4930): no fmt, lint, cspell or Floci checks, and
  * no pre-flight commands. See {@link CI_CARGO_ONLY_PRE_FLIGHT}.
  */
 export interface PreFlightGateSpec {
@@ -69,15 +75,18 @@ export interface PreFlightGateSpec {
   runner?: PreFlightRunner;
   /**
    * Run only the repo CI's cargo clippy and test-target compile (plus the
-   * ShellCheck policy and cargo deny for changed cargo inputs) over the
-   * unpushed commits (Issue #4630). Omit for the full changed-file gate.
+   * ShellCheck policy, cargo deny for changed cargo inputs, and the pushed
+   * paths' unit tests and markdownlint) over the unpushed commits
+   * (Issues #4630 and #4930). Omit for the full changed-file gate.
    */
   ciCargoOnly?: boolean;
   /**
    * Step 1b validates the repository's ShellCheck policy for the pushed
    * scripts, plus the CI cargo-deny check when the pushed paths include a
-   * cargo input, and leaves the formatter policy of a repair without
-   * pre-flight commands unchanged (Issues #4631 and #4626).
+   * cargo input, plus the dependency-selected unit tests and configured
+   * markdownlint for the pushed paths (Issue #4930), and leaves the formatter
+   * and cspell policy of a repair without pre-flight commands unchanged
+   * (Issues #4631 and #4626).
    */
   shellcheckOnly?: boolean;
 }
@@ -87,7 +96,9 @@ export interface PreFlightGateSpec {
  * no pre-flight commands (Issue #4630). Their repairs otherwise reach the
  * branch with no gate, and CI then fails on clippy. Only the repo CI's cargo
  * clippy and test-target compile run, plus the ShellCheck policy and the CI
- * cargo-deny check for changed cargo inputs (Issues #4631 and #4626). Frozen so that no caller can change the
+ * cargo-deny check for changed cargo inputs (Issues #4631 and #4626), and the
+ * pushed paths' dependency-selected unit tests and markdownlint (Issue #4930).
+ * Frozen so that no caller can change the
  * shared spec. To inject a runner, copy it: `{ ...CI_CARGO_ONLY_PRE_FLIGHT,
  * runner }`.
  */
@@ -123,9 +134,10 @@ export function resolvePreFlightSpec(
  * {@link resolvePreFlightSpec} for the spelling and merge-conflict PR repair
  * processors (the CI-fix and PR-feedback processors use
  * {@link CI_CARGO_ONLY_PRE_FLIGHT} instead): a repo with no pre-flight commands
- * still gets the ShellCheck publication check, plus the CI cargo-deny check
- * when the pushed paths include a cargo input, and nothing else, before the
- * repair is pushed (Issues #4631 and #4626). WIP checkpoint, timeout-preservation and
+ * still gets the ShellCheck publication check, the CI cargo-deny check when
+ * the pushed paths include a cargo input, and the dependency-selected unit
+ * tests and configured markdownlint for the pushed paths (Issue #4930), and
+ * nothing else, before the repair is pushed (Issues #4631 and #4626). WIP checkpoint, timeout-preservation and
  * declared hand-off pushes never call this; they stay ungated on purpose.
  */
 export function resolveRepairPreFlightSpec(
@@ -274,36 +286,6 @@ export async function recoverExistingPr(
   );
 
   return { ok: true, value: messages.join("\n") };
-}
-
-/**
- * Resolve the repository's default branch from the local clone (Issue #2584).
- *
- * Uses `git symbolic-ref refs/remotes/origin/HEAD` — the same local resolution
- * `setupRepo()` relies on — so the push guard needs no GitHub API call and works
- * purely from the working tree selected by `options.cwd`. A `git clone` sets
- * `origin/HEAD` to the remote's default branch, so this resolves correctly for
- * every monitored clone.
- *
- * @param options - Git command options (cwd selects the repo)
- * @returns The default branch name, or null when it cannot be determined
- *   (e.g. `origin/HEAD` is unset).
- */
-export async function resolveLocalDefaultBranch(
-  options: GitCommandOptions = {},
-): Promise<string | null> {
-  const result = await runGitCommand(
-    ["symbolic-ref", "refs/remotes/origin/HEAD"],
-    options,
-  );
-  if (result.ok && result.value.code === 0) {
-    const branch = result.value.stdout.trim().replace(
-      "refs/remotes/origin/",
-      "",
-    );
-    return branch || null;
-  }
-  return null;
 }
 
 /**
@@ -798,6 +780,11 @@ export type PrePushGateOutcome =
  * `compareRef` (the PR base, for a repair push) lets the CI cargo checks tell a
  * failure the base already has from a new one; with a `baseRef` it defaults to
  * that ref.
+ *
+ * `baselineBranch` is the open PR's base branch (or, when that is unknown, the
+ * checkout's default branch) for a push with no `baseRef`: the gate compares a
+ * failing `deno test` at the merge-base with `origin/<baselineBranch>`, not at
+ * the PR's own previous head.
  */
 export async function gateUnpushedCommits(
   branchName: string,
@@ -806,6 +793,7 @@ export async function gateUnpushedCommits(
   preFlightAlreadyRan = false,
   baseRef?: string,
   compareRef?: string,
+  baselineBranch?: string,
 ): Promise<
   Result<
     PrePushGateOutcome,
@@ -903,6 +891,7 @@ export async function gateUnpushedCommits(
     findCiCargo: repoCiCargoChecks,
     baseRef,
     compareRef,
+    baselineBranch,
   });
   if (!gate.ok) {
     // A lookup that failed is not a verdict: pass it on unmarked.
@@ -948,13 +937,17 @@ export async function gateUnpushedCommits(
  *      also re-runs the repo's pre-flight commands; when Step 1 committed,
  *      those commands already ran there and are not repeated. A spec with
  *      `ciCargoOnly` (Issue #4630) runs only the repo CI's cargo clippy and
- *      test-target compile, the ShellCheck policy and cargo deny for changed
- *      cargo inputs (Issue #4626), in this step. A block
+ *      test-target compile, the ShellCheck policy, cargo deny for changed
+ *      cargo inputs (Issue #4626) and the pushed paths' unit tests and
+ *      markdownlint (Issue #4930), in this step. A block
  *      refuses the push. With no pre-flight spec Step 1b does not run, so
  *      WIP checkpoint pushes are never refused. The gate output in the
  *      returned error is cut to a head and a tail (as is Step 1's pre-flight
  *      block), because PR processors post it in a comment. A caller that omits
  *      `preFlight` gets no Step 1b at all, so the push is ungated.
+ *      The baseline a failing unit test is compared at is the merge-base with
+ *      `options.compareBaseBranch`, else `options.syncBaseBranch`, else the
+ *      checkout's default branch (`origin/HEAD`).
  *   1c. Step 1c — when `options.syncBaseBranch` is set and there is a fix to
  *      push to an existing branch, {@link mergeBaseBeforePush} merges that
  *      base in, so the fix and the branch update go out in one push.
@@ -984,10 +977,12 @@ export async function gateUnpushedCommits(
  *   a spec, even one with an empty `commands` list, also turns on Step 1b's
  *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
  *   (zero added latency, no gate); a `shellcheckOnly` spec runs the
- *   repository ShellCheck policy, plus the CI cargo-deny check when the pushed
- *   paths include a cargo input (Issues #4631 and #4626). A spec with
- *   `ciCargoOnly` narrows Step 1b to the repo CI's cargo checks, that
- *   ShellCheck policy and the same cargo-deny check (Issue #4630).
+ *   repository ShellCheck policy, the CI cargo-deny check when the pushed
+ *   paths include a cargo input, and the dependency-selected unit tests and
+ *   configured markdownlint for the pushed paths (Issues #4631, #4626 and
+ *   #4930). A spec with `ciCargoOnly` narrows Step 1b to the repo CI's cargo
+ *   checks, that ShellCheck policy, the same cargo-deny check, and the same
+ *   unit tests and markdownlint (Issue #4630).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly
@@ -1182,6 +1177,10 @@ export async function commitAndPushPending(
         : options.requireCargoBaseComparison
         ? ""
         : undefined,
+      // A failing unit test is judged at the PR's base; when the base could not
+      // be read, at the checkout's default branch, as the agent's hook does.
+      options.compareBaseBranch ?? options.syncBaseBranch ??
+        (await resolveLocalDefaultBranch(options)) ?? undefined,
     );
     if (!gate.ok) {
       return { ok: false, error: gate.error };
