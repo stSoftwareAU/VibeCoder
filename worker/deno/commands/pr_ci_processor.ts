@@ -43,6 +43,7 @@ import { getWorkerUniqueId } from "../lib/worker_identity.ts";
 import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
+import { acquireBranchUpdateLock } from "../lib/pr_branch_lock.ts";
 import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
 import {
   createRepairMergeabilityTracker,
@@ -61,6 +62,7 @@ export const prCiProcessorCommand = {
     args: Record<string, unknown>,
     config: WorkerConfig,
     workerDeps?: WorkerDeps,
+    acquireLockFn: typeof acquireBranchUpdateLock = acquireBranchUpdateLock,
   ): Promise<CommandResult<CiFixResult>> {
     const operation = String(args["operation"] ?? "");
 
@@ -262,6 +264,7 @@ export const prCiProcessorCommand = {
           // Issue #3754: cross-host PR lock so two hosts cannot fix the
           // same PR's CI failure concurrently.
           workerId: getWorkerUniqueId(config.workerName),
+          acquireLockFn,
           // Issue #1879: the fleet logins whose CI-fix markers on the PR
           // count, so a single-shot run shares the same fleet-wide attempt
           // budget the run loop uses.

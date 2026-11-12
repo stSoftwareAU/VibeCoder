@@ -380,22 +380,28 @@ Deno.test({
 
 for (const enabled of [false, true]) {
   Deno.test({
-    name: `execute-claude-phase command carries the ${enabled ? "enabled" : "disabled"} host block to the agent (Issue #4956)`,
+    name: `execute-claude-phase command carries the ${
+      enabled ? "enabled" : "disabled"
+    } host block to the agent (Issue #4956)`,
     ignore: enabled && !REAL_PLUGIN_PRESENT,
     async fn() {
       await withWorkDir(async (workDir) => {
         const calls: RunClaudeOptions[] = [];
-        await executeClaudePhaseCommand.execute({
-          repo: "owner/repo",
-          "issue-number": 4956,
-          "branch-name": "issue-4956",
-          "base-branch": "main",
-        }, buildDefaultWorkerConfig({
-          workDir,
-          includeRecentActivity: false,
-          includeCodebaseMap: false,
-          tokenEconomizer: { ...enabledBlock(), enabled },
-        }), standaloneDeps(calls));
+        await executeClaudePhaseCommand.execute(
+          {
+            repo: "owner/repo",
+            "issue-number": 4956,
+            "branch-name": "issue-4956",
+            "base-branch": "main",
+          },
+          buildDefaultWorkerConfig({
+            workDir,
+            includeRecentActivity: false,
+            includeCodebaseMap: false,
+            tokenEconomizer: { ...enabledBlock(), enabled },
+          }),
+          standaloneDeps(calls),
+        );
         if (enabled) assertEveryCallLaunched(calls, "command enabled");
         else assertNoCallLaunched(calls, "command disabled");
       });

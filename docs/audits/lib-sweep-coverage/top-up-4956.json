@@ -7,6 +7,8 @@
   "status": "claimed",
   "sweptAt": "918d8f3e3eee221bc971287ae0364adfad50549c",
   "paths": [
-    "worker/deno/lib/token_economizer_plugin.ts"
+    "worker/deno/lib/token_economizer_plugin.ts",
+    "worker/deno/lib/token_economizer_hook.ts",
+    "worker/deno/lib/token_economizer_control.ts"
   ]
 }

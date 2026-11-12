@@ -54,7 +54,10 @@ import {
   TOKEN_ECONOMIZER_PLUGIN_DIR,
   type TokenEconomizerLaunch,
 } from "../lib/token_economizer_plugin.ts";
-import { openPrGh } from "./support/pr_live_state_stub.ts";
+import {
+  acquireBranchLockWithoutDelay,
+  openPrWithBranchLockGh,
+} from "./support/pr_branch_lock_stub.ts";
 import { rtkSeam } from "./support/rtk_seam.ts";
 import type { SpawnOptions } from "./support/rtk_wiring_asserts.ts";
 
@@ -176,12 +179,15 @@ async function runFeedback(
     prepareRtkRun: rtkSeam([]).prepare,
     rtkProviderId: () => CLAUDE_PROVIDER_ID,
   };
-  const mockGithub: Partial<GitHubDeps> = { runGhCommand: openPrGh() };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrWithBranchLockGh(),
+  };
   const deps = createMockDeps({
     claude: mockClaude,
     github: mockGithub,
     git: {
-      setupRepo: () => Promise.resolve({ ok: true, value: join(workRoot, "clone") }),
+      setupRepo: () =>
+        Promise.resolve({ ok: true, value: join(workRoot, "clone") }),
       commitAndPushPending: (() =>
         Promise.resolve({
           ok: true,
@@ -213,16 +219,26 @@ async function runFeedback(
   };
 
   if (throughCommand) {
-    const result = await prFeedbackProcessorCommand.execute({
-      operation: "process", repo: REPO, "pr-number": 42,
-      "branch-name": "issue-42-fix-bug", "comment-type": "review",
-      "comment-id": "123", "comment-body": "Please fix the typo on line 10",
-    }, buildDefaultWorkerConfig({
-      workDir: workRoot,
-      tokenEconomizer: tokenEconomizer ?? buildDefaultWorkerConfig().tokenEconomizer,
-      repoConfig: { [REPO]: { skipMutationCheck: true } },
-    }), deps);
+    const result = await prFeedbackProcessorCommand.execute(
+      {
+        operation: "process",
+        repo: REPO,
+        "pr-number": 42,
+        "branch-name": "issue-42-fix-bug",
+        "comment-type": "review",
+        "comment-id": "123",
+        "comment-body": "Please fix the typo on line 10",
+      },
+      buildDefaultWorkerConfig({
+        workDir: workRoot,
+        tokenEconomizer: tokenEconomizer ??
+          buildDefaultWorkerConfig().tokenEconomizer,
+        repoConfig: { [REPO]: { skipMutationCheck: true } },
+      }),
+      deps,
+    );
     assertEquals(result.success, true, result.message);
+    assert(spawns.length > 0, result.message);
     return spawns;
   }
 
@@ -263,7 +279,9 @@ async function runCiFix(
     prepareRtkRun: rtkSeam([]).prepare,
     rtkProviderId: () => CLAUDE_PROVIDER_ID,
   };
-  const mockGithub: Partial<GitHubDeps> = { runGhCommand: openPrGh() };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrWithBranchLockGh(),
+  };
   // Uncommitted changes before and after the gate, so the retry path runs.
   const gitMock = ((args: string[]) =>
     Promise.resolve({
@@ -280,7 +298,8 @@ async function runCiFix(
     claude: mockClaude,
     github: mockGithub,
     git: {
-      setupRepo: () => Promise.resolve({ ok: true, value: join(workRoot, "clone") }),
+      setupRepo: () =>
+        Promise.resolve({ ok: true, value: join(workRoot, "clone") }),
       runGitCommand: gitMock,
       commitAndPushPending: (() =>
         Promise.resolve({
@@ -326,16 +345,27 @@ async function runCiFix(
   };
 
   if (options.throughCommand) {
-    const result = await prCiProcessorCommand.execute({
-      operation: "process", repo: REPO, "pr-number": 42,
-      "branch-name": "issue-42-fix-bug", "check-run-id": "67890",
-      "check-name": "CI / test", "encoded-annotations": btoa(JSON.stringify(ANNOTATIONS)),
-    }, buildDefaultWorkerConfig({
-      workDir: workRoot,
-      tokenEconomizer: options.tokenEconomizer ?? buildDefaultWorkerConfig().tokenEconomizer,
-      repoConfig: { [REPO]: { skipMutationCheck: true } },
-    }), deps);
+    const result = await prCiProcessorCommand.execute(
+      {
+        operation: "process",
+        repo: REPO,
+        "pr-number": 42,
+        "branch-name": "issue-42-fix-bug",
+        "check-run-id": "67890",
+        "check-name": "CI / test",
+        "encoded-annotations": btoa(JSON.stringify(ANNOTATIONS)),
+      },
+      buildDefaultWorkerConfig({
+        workDir: workRoot,
+        tokenEconomizer: options.tokenEconomizer ??
+          buildDefaultWorkerConfig().tokenEconomizer,
+        repoConfig: { [REPO]: { skipMutationCheck: true } },
+      }),
+      deps,
+      acquireBranchLockWithoutDelay,
+    );
     assertEquals(result.success, true, result.message);
+    assert(spawns.length > 0, result.message);
     return spawns;
   }
 
@@ -423,19 +453,31 @@ Deno.test("pr_ci_processor - with no tokenEconomizer in the deps the post-qualit
 for (const enabled of [false, true]) {
   for (const kind of ["pr-feedback", "ci-fix"] as const) {
     Deno.test({
-      name: `${kind} command carries the ${enabled ? "enabled" : "disabled"} host block to the agent (Issue #4956)`,
+      name: `${kind} command carries the ${
+        enabled ? "enabled" : "disabled"
+      } host block to the agent (Issue #4956)`,
       ignore: enabled && !REAL_PLUGIN_PRESENT,
-      fn: () => withTempWorkRoot(async (workRoot) => {
-        const block = { ...enabledBlock(), enabled };
-        const spawns = kind === "pr-feedback"
-          ? await runFeedback(workRoot, block, true)
-          : await runCiFix(workRoot, { tokenEconomizer: block, qualityRetry: false, throughCommand: true });
-        assert(spawns.length > 0, "the command must reach the agent");
-        for (const spawn of spawns) {
-          if (enabled) await assertLaunchWired(spawn, workRoot, `${kind} command enabled`);
-          else assertNoLaunch(spawn, `${kind} command disabled`);
-        }
-      }),
+      fn: () =>
+        withTempWorkRoot(async (workRoot) => {
+          const block = { ...enabledBlock(), enabled };
+          const spawns = kind === "pr-feedback"
+            ? await runFeedback(workRoot, block, true)
+            : await runCiFix(workRoot, {
+              tokenEconomizer: block,
+              qualityRetry: false,
+              throughCommand: true,
+            });
+          assert(spawns.length > 0, "the command must reach the agent");
+          for (const spawn of spawns) {
+            if (enabled) {
+              await assertLaunchWired(
+                spawn,
+                workRoot,
+                `${kind} command enabled`,
+              );
+            } else assertNoLaunch(spawn, `${kind} command disabled`);
+          }
+        }),
     });
   }
 }

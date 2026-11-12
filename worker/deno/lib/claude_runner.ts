@@ -136,6 +136,7 @@ import {
   UnfinishedIssueExecutorError,
 } from "./issue_executor_enforcement.ts";
 import { settingsJsonOption } from "./rtk_output.ts";
+import { monitorTokenEconomizerRun } from "./token_economizer_control.ts";
 import {
   overlayTokenEconomizerEnv,
   type TokenEconomizerLaunch,
@@ -739,6 +740,8 @@ export interface RunClaudeOptions {
    * environment are the ones every host spawned before.
    */
   tokenEconomizer?: TokenEconomizerLaunch;
+  /** Notification transport; production uses the worker's guarded GitHub channel. */
+  tokenEconomizerNotify?: (args: string[]) => Promise<string>;
   /** Effort level override — low, medium, high, xhigh, max (Issue #1403, #2620). */
   effort?: string;
   /**
@@ -1426,7 +1429,7 @@ async function runClaudeWithTimeoutBody(
   // The TokenEconomizer plugin (Issue #4956) is the Claude CLI's: any other
   // provider, such as a Codex fallback, is spawned with neither the flag nor
   // the environment.
-  const tokenEconomizerLaunch = provider.id === CLAUDE_PROVIDER_ID
+  let tokenEconomizerLaunch = provider.id === CLAUDE_PROVIDER_ID
     ? options.tokenEconomizer
     : undefined;
   const invocationRequest = {
@@ -1550,7 +1553,25 @@ async function runClaudeWithTimeoutBody(
   // stranger's process tree.
   let childReaped = false;
 
+  let tokenEconomizerMonitor:
+    | ReturnType<typeof monitorTokenEconomizerRun>
+    | undefined;
   try {
+    if (tokenEconomizerLaunch) {
+      try {
+        tokenEconomizerMonitor = monitorTokenEconomizerRun(
+          tokenEconomizerLaunch,
+          options.tokenEconomizerNotify,
+          logger,
+        );
+      } catch {
+        logger?.warn(
+          "token-economizer: plugin off, hook failure monitor could not start",
+        );
+        tokenEconomizerLaunch = undefined;
+        delete invocationRequest.pluginDir;
+      }
+    }
     // Sanitise the child environment (Issue #3203): clear it and pass an
     // explicit copy with the GitHub App private-key material dropped, so a
     // prompt-injected model running unrestricted bash cannot read the PEM.
@@ -3077,6 +3098,15 @@ async function runClaudeWithTimeoutBody(
       ),
     };
   } finally {
+    if (tokenEconomizerMonitor) {
+      try {
+        await tokenEconomizerMonitor.close();
+      } catch {
+        logger?.warn(
+          "token-economizer: could not persist the trial stop; plugin failure was not reported as a clean result",
+        );
+      }
+    }
     // Flush the transcript's trailing partial line, whatever path exits.
     transcript?.close();
     // The shim directory is per-spawn — remove it once the child has exited.

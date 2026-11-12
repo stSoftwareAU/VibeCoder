@@ -44,6 +44,7 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 import {
   resolveTokenEconomizerLaunch,
+  TOKEN_ECONOMIZER_HOOK_ADAPTER,
   TOKEN_ECONOMIZER_PLUGIN_DIR,
   TOKEN_ECONOMIZER_RUN_KINDS,
   type TokenEconomizerLaunch,
@@ -131,6 +132,7 @@ function expectedLaunchEnv(
     TE_LOOPGUARD: loopguard,
     TE_MICROSKILLS_MAX_FACTS: "4",
     TE_MICROSKILLS_MAX_TOKENS: "150",
+    TE_PYTHON: TOKEN_ECONOMIZER_HOOK_ADAPTER,
   };
 }
 

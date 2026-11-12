@@ -50,10 +50,20 @@
  */
 
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS,
+  TOKEN_ECONOMIZER_MICROSKILLS_MAX_TOKENS,
+} from "./token_economizer_hook.ts";
+export {
+  TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS,
+  TOKEN_ECONOMIZER_MICROSKILLS_MAX_TOKENS,
+} from "./token_economizer_hook.ts";
 import type {
   TokenEconomizerConfig,
   TokenEconomizerMicroskills,
 } from "../types.ts";
+import { confinePath } from "./mutation_runner.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
@@ -73,15 +83,16 @@ export const TOKEN_ECONOMIZER_RUN_KINDS: readonly TokenEconomizerRunKind[] = [
   "ci-fix",
 ];
 
-/** Most learned facts the environment-facts mechanism may inject. */
-export const TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS = 4;
-
-/** Most tokens the environment-facts mechanism may inject. */
-export const TOKEN_ECONOMIZER_MICROSKILLS_MAX_TOKENS = 150;
+/** The audited executable selected by the upstream launcher's TE_PYTHON interface. */
+export const TOKEN_ECONOMIZER_HOOK_ADAPTER = fileURLToPath(
+  new URL("./token_economizer_hook.ts", import.meta.url),
+);
 
 /** A launch the caller hands to `--plugin-dir` and the spawn environment. */
 export interface TokenEconomizerLaunch {
   readonly pluginDir: string;
+  /** Worker-owned root for the shared stop controller; never inferred from plugin output. */
+  readonly workDir: string;
   readonly env: Readonly<Record<string, string>>;
 }
 
@@ -99,6 +110,7 @@ export const TOKEN_ECONOMIZER_ENV_KEYS: readonly string[] = [
   "TE_LOOPGUARD",
   "TE_MICROSKILLS_MAX_FACTS",
   "TE_MICROSKILLS_MAX_TOKENS",
+  "TE_PYTHON",
 ];
 
 /** The causes that durably stop the plugin. `unreadable-stop-record` is never recorded; it is reported on read. */
@@ -350,41 +362,59 @@ export async function resolveTokenEconomizerLaunch(
       return null;
     }
 
-    // Join, normalise, canonicalise, then compare: see the module header.
+    // Check the canonical destination before mkdir: a refusal must not write
+    // through a symlink into the checkout or another repository.
     const work = resolve(workDir);
-    const stateDir = join(work, STATE_DIR_NAME, "runs", runId);
+    let realWork: string;
     try {
-      await Deno.mkdir(stateDir, { recursive: true, mode: 0o700 });
+      realWork = await Deno.realPath(work);
     } catch (err) {
       logger?.warn(
-        `token-economizer: plugin off, per-run state directory cannot be ` +
-          `created: ${errorMessage(err)}`,
+        `token-economizer: plugin off, per-run state directory cannot be created: ${
+          errorMessage(err)
+        }`,
       );
       return null;
     }
-    const realState = await Deno.realPath(stateDir);
-    const realWork = await Deno.realPath(work);
-    if (!isWithin(realState, realWork)) {
+    const stateDir = await confinePath(
+      realWork,
+      join(STATE_DIR_NAME, "runs", runId),
+      { realPath: Deno.realPath },
+    );
+    if (stateDir === null) {
       logger?.warn(
-        `token-economizer: plugin off, per-run state directory lies outside ` +
-          `the work directory`,
+        "token-economizer: plugin off, per-run state directory lies outside the work directory",
       );
       return null;
     }
     const checkout = await canonicalOrNormalised(
       resolve(repoCheckoutPath(work, repo)),
     );
-    if (isWithin(realState, checkout)) {
+    if (isWithin(stateDir, checkout)) {
       logger?.warn(
-        `token-economizer: plugin off, per-run state directory lies inside ` +
-          `the repo checkout`,
+        "token-economizer: plugin off, per-run state directory lies inside the repo checkout",
       );
       return null;
+    }
+    try {
+      await Deno.mkdir(stateDir, { recursive: true, mode: 0o700 });
+    } catch (err) {
+      logger?.warn(
+        `token-economizer: plugin off, per-run state directory cannot be created: ${
+          errorMessage(err)
+        }`,
+      );
+      return null;
+    }
+    const realState = await Deno.realPath(stateDir);
+    if (realState !== stateDir) {
+      throw new Error("state directory changed during launch");
     }
 
     logger?.info(`token-economizer: plugin on for a ${runKind} run`);
     return {
       pluginDir,
+      workDir: realWork,
       env: {
         TOKENECONOMIZER_HOME: realState,
         TE_TOOLPRUNE: "off",
@@ -394,6 +424,7 @@ export async function resolveTokenEconomizerLaunch(
         TE_LOOPGUARD: config.loopguard,
         TE_MICROSKILLS_MAX_FACTS: MAX_FACTS_ENV,
         TE_MICROSKILLS_MAX_TOKENS: MAX_TOKENS_ENV,
+        TE_PYTHON: TOKEN_ECONOMIZER_HOOK_ADAPTER,
       },
     };
   } catch (err) {
