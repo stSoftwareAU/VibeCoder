@@ -1,15 +1,8 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3429 — fleet failure reasons quoted git's boilerplate last line
- * ("fatal: Could not read from remote repository.") instead of the line that
- * names the cause, and the tests asserted only the fixed prefix. The
- * "failure reason names the cause" bullet in Never Fail Silently and the
- * "failure-reason test asserts the cause" paragraph in the test-coverage
- * section must be on both CODING-STANDARDS.md and the coding_guidelines
- * prompt, word for word once wrapping is ignored, and the issue prompt must
- * require the check.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -94,8 +87,8 @@ Deno.test("both surfaces carry the failure-reason-test rule, identical, between 
       "a fake built from its observed output",
       "asserts that the cause text appears in the reason",
       "Asserting only the fixed prefix, the exit code or a wrapper's own text is not enough",
-      "Remove the cause from the reason on purpose and confirm the test goes red",
-      "passes with the cause missing is a blocking self-review finding",
+      "asserts the cause",
+      "no assertion on the cause is a blocking self-review finding",
     ]);
 
     const observe = text.indexOf(

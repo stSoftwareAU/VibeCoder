@@ -264,6 +264,33 @@ covered behaviour may be verified by existing tests and appropriate manual or
 browser checks. A test earns its maintenance cost when failure is strong
 evidence that supported behaviour, an invariant, or a contract regressed.
 
+**Test discovery belongs to the change being developed.** During implementation
+and code review, assess the changed behaviour's positive, negative and boundary
+cases and its affected callers. When developing feature Y, run feature X's
+existing deterministic regression tests; do not search X for missing tests
+unless Y changes behaviour X depends on or a concrete defect is found. For a
+bug found later in X, first write and observe a failing regression test against
+the unfixed code, then fix the bug and run the relevant regression suite. If
+reproduction is unavailable, report that limit; never claim a red run occurred.
+Keep tests repeatable: seed randomness and control clocks, external responses
+and shared state where they affect the result. Existing coverage may suffice
+for a refactor or presentation change; moving a button does not require a
+test-suite audit.
+
+**Discovery campaigns are separately scoped work.** Run mutation testing,
+fuzzing or a broader search for inadequate tests only when the owner explicitly
+requests that investigation. Do not add or invoke them as an automatic feature,
+review-fix, repair or PR/CI step, or require per-line, per-operand or per-caller
+code-breaking exercises as routine evidence. Review test adequacy in the
+feature's own PR using meaningful fixtures and assertions through real
+production paths. For a diagnosed bug, the focused failing-test/fix/passing-test
+sequence is TDD, not a discovery campaign. Continue running established
+regression, build, lint and security checks; changing this guidance does not
+authorise bypassing a repository's required check or claiming an unrun check
+passed. Retiring an existing automatic discovery gate requires an explicit
+implementation or workflow change. A dedicated audit explicitly configured by
+the owner is separately scoped work; do not attach it to ordinary PR runs.
+
 1. When a new test is warranted, write a failing test first that defines the
    expected behaviour.
 2. Implement the code to make the tests pass.
@@ -281,8 +308,8 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    behaviour remains, and (3) which replacement or existing coverage proves it.
    For genuinely removed functionality, evidence that the behaviour and its
    callers are gone is the relevant proof; a replacement test is never demanded
-   for it. Where applicable, a reproducible regression or mutation check shows
-   that the replacement fails without the fix. A boolean claim or a vacuous
+   for it. For a bug fix, the observed failing regression before the fix and
+   passing result afterwards show that the replacement detects that bug. A boolean claim or a vacuous
    assertion is not proof, and the implementer's own assertion is not
    independent proof. Unjustified lost protection, deleting a failing useful
    test, widening a range until it is tautological, adding a skip, removing an
@@ -317,10 +344,8 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    assertions that still prove the behaviour. The Test Plan table that used to
    block the pull request for this was removed (Issue #4234). The requirement
    shows the new value is right, not that the edited test still checks
-   anything: each edited
-   expectation also owes the red-check in **An edited expectation must
-   still go red without its guard** under **Test coverage expectations**
-   below.
+   anything: each edited expectation must preserve meaningful protection under
+   **An edited expectation must still go red without its guard** below.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored without changing its
@@ -542,34 +567,21 @@ earns its place by meeting all four conditions:
    version or a tag, and for a value a checked-in config file holds: call the
    function that builds it, read the file (the `tag` of an entry in
    `container/tools.json`, say), and use `fn.name` for a function name.
-   Deleting the new doc sentence does not catch a typed-in value, because the
-   test still goes red, so the red check for each code-held value is a source
-   mutation: change the value in the module or file that produces it, run the
-   drift test, see it fail, then restore it, and record one Test Plan line per
-   value. VibeCoder#3478 typed in the Floci tag that `container/tools.json`
-   holds, and VibeCoder#3654 typed in the clone flags that
-   `buildShallowCloneArgs` returns; a reviewer changed each source value and
-   the test stayed green.
-4. **Every pinned phrase occurs only in the rule being added.** A phrase the
-   section already held before the change stays green when the new rule is
-   deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
-   issue prompt already carried. The check is **per pinned phrase, not per
-   test**: each phrase must be absent from the base branch's version of its
-   scoped section (`git show <base>:<doc>`, narrowed with the same `section()`
-   title). "The test goes red against the base" is not enough when a test pins
-   more than one phrase — one new pin turns it red and hides a vacuous pin
-   beside it, which is how VibeCoder#3156 kept a bare `needs-human` pin the
-   base section already held four times. Run
-   `deno task drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
-   `worker/deno` for each section a test reads: it lists every phrase the base
-   section already held and exits 1 when there is one. `<doc>` is relative to
-   the repo root (`prompts/issue/prompt.md`, not `../../prompts/...`); a path
-   it cannot resolve exits 2 naming the path, and a doc the base never had
-   prints one `doc not on base` line.
+   Review that the assertion uses the live source value, so changing the
+   source cannot leave a stale value duplicated in both the test and the doc.
+   Prefer a fixture-based regression for a diagnosed drift-check defect; do not
+   require a source mutation and a separate result entry for each value.
+4. **Every pinned phrase identifies the intended rule.** Review each assertion
+   in its scoped section: a generic phrase already used by another rule does
+   not protect the new rule, and one new pin can hide a vacuous pin beside it.
+   Retain assertions for still-supported rules when updating existing tests.
+   The optional `deno task drift-pins-on-base` helper can compare phrases with
+   a base revision when investigating a specific drift-test defect; routine
+   changes do not require a baseline run or proof log for every phrase.
 
 **Re-scoping an existing drift test.** Converting an existing whole-file drift
 test to `section()` moves pins whose phrases are meant to be on base, so
-condition 4 and "the test goes red against the base" say nothing about them.
+a base-red check says nothing about their scope.
 Keeping every pinned string is not enough. Two fleet PRs were sent back for
 this: a review round of VibeCoder#3240 had narrowed two absence checks to one
 section, and one of VibeCoder#3297 had moved the pin "In an issue run" into a
@@ -590,11 +602,10 @@ moves:
   `assertNotMatch`, `assertFalse`) that read the whole file stays on
   `flatWholeFile`. Narrowing it to a section weakens it, which is a finding
   unless the issue asks for it.
-- **Red-check each moved check, not the test.** Delete the rule's text from
-  its section only, leaving every other copy of the phrase alone, run the
-  test, see it fail, then restore it. For an absence check, add the forbidden
-  text under a different heading instead. The Test Plan records one line per
-  moved check: the pin, its section and the red-check result.
+- **Review each moved check's scope.** Confirm its assertion reads the rule's
+  own section and that unrelated copies cannot satisfy it. Keep whole-file
+  absence checks whole-file. Run the existing drift tests after the move;
+  do not mutate every rule merely to produce a proof log.
 
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
@@ -809,102 +820,47 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
-**A new test must go red without its change.** A test added to guard a
-change — a regression test a fix or a review asks for, a documentation-drift
-test, a growth guard — must go red when only that change is removed. A test
-whose input never reaches the failure passes either way: a fake that throws
-into a catch that returns the expected value, a fixture that a re-sort puts
-in order before the assertion runs, a phrase the section already held before
-the change. Remove the change on purpose (delete the clause, drop the cap,
-restore the old expression), run the test, see it fail, then restore it. A
-new test that stays green without its change is a blocking self-review
-finding. For a documentation-drift test the check is per pinned phrase, not
-per test: one new pin turns a test red against the base and hides a vacuous
-pin beside it. Look for each phrase in the base branch's version of every
-section the test reads (`git show <base>:<doc>`, narrowed to the same section
-title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
-<doc> <section> <phrase>...` from `worker/deno` does this); a phrase the
-base section already held is a blocking self-review finding. A pin that
-names a value a module or a checked-in config file already holds — a flag, a
-command line, a function or export name, a status, marker, key, default,
-version or tag — is built from that module or file, never typed in: import it,
-call it, or read the JSON, and use `fn.name` for a function name (condition 3
-of **Documentation-drift tests** in `CODING-STANDARDS.md` is the canonical
-rule). Removing the doc change does not catch a typed-in value, because the
-test still goes red without the new sentence; so for each such value, change
-it in the module or file that produces it, run the drift test, see it fail,
-then restore it. Record one Test Plan line per value, for example
-`buildShallowCloneArgs --depth=1 → --filter=blob:none: test red`. A pin that
-stays green when its source value changes is a blocking self-review finding. A
-pin a change only moves, while converting an existing whole-file drift test to
-`section()`, is meant to be on base, so this check does not apply to it:
-**Re-scoping an existing drift test** in `CODING-STANDARDS.md` red-checks
-each moved check in its own section instead. A test that only pins current
-behaviour — the fault was unreproduced or already fixed, and no production
-change was made — is expected green on base, and the Test Plan says so.
-**A test named for one step must reach that step** below is this rule for a
-change that adds the same handling at more than one step, **A test must be
-able to fail on the wrong input** below is this rule for an assertion that
-something does *not* happen or for which of two similar values the code reads,
-and **An edited expectation must still go red without its guard** below is
-this rule for a test the diff edits rather than adds.
+**A new test must go red without its change.** A test added for a new
+behaviour or bug fix must distinguish the expected result from the relevant
+failure. Write and run it before implementing the change when a new test is
+warranted, and retain that observed TDD result. Review its input, production
+path and assertions; a fake that throws into a catch returning the expected
+value or a fixture repaired before the assertion runs is not protection.
+Do not manufacture a separate code mutation for every test. A test that only
+pins current behaviour because a fault is unreproduced or already fixed is
+expected green on base, and the Test Plan says so. Documentation-drift tests
+follow the section-scoping and live-value rules in **Documentation-drift
+tests** in `CODING-STANDARDS.md`.
 
-**A test named for one step must reach that step.** When a change adds the
-same handling at more than one step of a path — a deadline checked up front
-and again on each iteration, a time limit on the connect and on every read
-after it, the same error handling in two loops run one after the other —
-removing the whole change removes the earlier step too. A test named for a
-later step whose fixture trips an earlier step that gives the same outcome
-then goes red at that earlier step, so the red check above seems to pass while
-the named step never runs. For each new test named for one step, break only
-that step and leave the earlier ones in place (delete the per-iteration check
-but keep the up-front one, stall only the read and not the connect), run that
-test, and confirm that test goes red. Reverting the whole change does not show
-which step a test reached, just as it does not show which operand of a
-compound condition a test reaches (**Every outcome of a branch you add needs a
-test that reaches it** below). When the steps share one mechanism — one
-deadline, one stub matched by pattern, one error mapper — the code may have no
-per-step branch to break, so the test also asserts that the run got past the
-earlier steps: the stub records which request it stalled and the test asserts
-it was the read, or the test asserts the first loop finished or the up-front
-check passed. Without that positive control a later fixture or stub change can
-move the test back to the earlier step unnoticed. Record one Test Plan line
-per such test naming the step, the step-only break and the result, for example
-`read-stall test: stall only the first read after connect → red`. A test that
-stays green when only its own step is broken is a blocking self-review
+**A test named for one step must reach that step.** When similar handling
+exists at several steps, use a fixture that reaches the named step and gets
+past earlier steps that could produce the same result. For example, a read
+timeout test must connect successfully before stalling the read. Assert the
+specific outcome and a positive control showing earlier steps completed.
+Review this while adding or changing the test; do not require breaking each
+step in turn. A test that stops at an earlier step is a blocking self-review
 finding.
 
-**An edited expectation must still go red without its guard.** When an
-issue changes an expected value or expected behaviour in an existing test,
-the edited test must still fail when the code its name says it guards is
-broken. The issue requirement that justifies the new value does not show
-this: a new value the code produces either way — a de-duplicated list, an
-action taken with or without the bound, an earlier refusal — leaves the
-test green with that code gone, and nothing replaces the check it made.
-Break that code on purpose (delete the check, invert the condition, drop
-the stop), run the edited test, confirm it goes red, then restore the code.
-If it stays green, add an assertion that does go red, or move the lost
-check to a test that still covers it and name that test. Record the
-red-check result per edited expectation in the Test Plan. An edited test
-that stays green without its guard is a blocking self-review finding.
+**An edited expectation must still go red without its guard.** When a
+requirement changes an existing expectation, review the old and new assertions
+to establish which supported behaviour remains protected. A de-duplicated
+list, an earlier refusal or an outcome produced for both valid and invalid
+inputs can make the revised assertion vacuous. Use discriminating fixtures
+and positive and negative cases; restore a lost assertion or move the lost
+check to a test that still covers it. Record the remaining coverage in the
+Test Plan. Losing meaningful regression protection is a blocking self-review
+finding; a synthetic break of each edited expectation is not required.
 
 **A test must be able to fail on the wrong input.** An assertion that
-something does *not* happen — not leaked, not carried over, not exported, not
-called, null rather than stale — needs a fixture that contains the forbidden
-thing: a real token to leak, an earlier value to carry over, a caller that
-would otherwise run. A new guard has no base-branch red run to lean on, so
-before raising the PR break the guard on purpose (remove the filter, invert
-the check, or fill from the wrong source), run the test, confirm it goes red,
-then restore the guard. A negative test that stays green without its guard is
-a blocking self-review finding. The same holds for a test that pins which of
-two similar values the code uses, or that two figures agree (two bases, two
-parallel records, a displayed and a derived figure): its fixture gives the
-candidates different values, and the break is to read the sibling value.
-Reverting the whole change does not show this, because the test then goes red
-for want of the code under test, not for the value it reads. Record the
-sibling break in the Test Plan as you would a negative test's, for example
-`reads base B instead of A → red`. A fixture where the candidates are equal is
-a blocking self-review finding.
+something does *not* happen needs a fixture containing the forbidden thing:
+a token to redact, an earlier value to exclude, or an operation that would
+otherwise be eligible. Pair it with an allowed case and assert the actual
+result or specific refusal. When the test distinguishes two similar values
+(two bases, parallel records, or displayed and derived figures), give the
+candidates different values and assert the required one. A fixture where the
+candidates are equal or another guard rejects both is a blocking self-review
+finding. Check these cases during implementation and review; do not require
+inverting guards or selecting the wrong source to generate routine evidence.
 
 **A refusal test must be refused by the rule it names.** A test that
 expects an input to be refused, rejected or answered with `false` or an
@@ -941,29 +897,21 @@ stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
 a plain temporary directory that no longer reached the guard it pins
 (Issue #3530).
 
-**Every changed call site needs a test that goes red without it.** This
-covers every new or changed wiring between an entry point and the code it
-drives, including a single caller: a CLI command or task, an HTTP route or
-handler, a scheduled job, a UI control's event handler, and each production
-caller a new argument, flag or behaviour is threaded through. A test of the
-helper, or of some callers, does not cover the others. For each call site
-or entry point the diff changes, revert only that caller's change (restore
-its old wiring, pass the old value, drop the new argument, restore the old
-filter, or point the handler at a no-op) and confirm at least one test goes
-red. For a new or changed UI control, a test must invoke the control's
-handler (press the button or submit the form, as the repo's UI test style
-does it) and assert what it sends or changes; when the linked issue states
-an acceptance criterion as a user action ("pressing X requests Y"), a test
-of the helper behind X does not cover that criterion. A test double that
-bypasses the production path (for example, a stub that ignores the filter
-it is passed, or forcing a fallback path) does not count for that path. In a
-Deno repository the mutation gate now performs this revert itself for object
-properties, array elements and renamed property values (Issue #3601): a
-surviving mutant of that kind is this rule's finding at that call site.
-List each entry point checked in the PR summary. A changed call site
-whose revert leaves the suite green is a blocking self-review finding: add
-a test through that caller, ideally at the level the linked issue's
-Failure Detection names.
+**Every changed call site needs a test that goes red without it.** Review
+whether tests exercise the real production entry points affected by the change:
+a CLI command, HTTP route, scheduled job or UI control's handler, including
+production defaults such as a default-dependencies factory, a real runner or
+client, and a registered dispatch spec. Existing
+direct or indirect coverage counts; add a test where meaningful behaviour is
+otherwise unprotected. When the requirement is a user action, invoke that
+action or its real handler and assert the observable result. A helper test
+that supplies its own wiring, or a fake replacing the production default, does
+not cover that wiring. An external fake should answer according to its input
+so incorrect wiring produces an incorrect caller outcome; asserting only the
+fake's recorded arguments is insufficient. A presentation-only button move can use existing
+behaviour tests and a visual check. Name the relevant coverage in the Test
+Plan; a missing safety net for changed behaviour is a blocking self-review
+finding. Do not revert every caller or run automatic mutation checks.
 
 **A new argument or behaviour reaches every caller that needs it.** When a
 change adds a parameter, value or behaviour that the linked issue needs on
@@ -977,9 +925,8 @@ make it required, so the compiler or type checker names each caller you
 missed. A caller that hard-codes the old value (`Scheduled`, `""`, `false`)
 where the new one belongs is a blocking self-review finding, and so is a test
 that hands the new value straight to the helper while no production caller
-passes it. **Every changed call site needs a test that goes red without it**
-above cannot find this caller, because the diff never changed it and there
-is nothing to revert. List the callers and siblings checked in the PR summary
+passes it. Review the affected callers even when their wiring is outside
+the diff; an unchanged caller can still need the new behaviour. List the callers and siblings checked in the PR summary
 (Issue #3253).
 
 **A new case re-reads the text it now reaches.** When a change sends a new
@@ -992,9 +939,8 @@ is still true in the new state. If it is not, reword it, hide it or mark it,
 so the new state never shows a message written for another state. Add a test that
 renders the new state and asserts each message that differs in that state,
 or is absent from it. A test that renders only the new rows stays green
-while an old message is wrong, and **Every changed call site needs a test
-that goes red without it** above cannot find it, because the diff never
-touched that message. A pre-existing message left unchanged that is false
+while an old message is wrong, so include existing messages whose meaning
+the new state changes. A pre-existing message left unchanged that is false
 or misleading in the new state is a blocking self-review finding. This is
 the rendered-screen counterpart of the bullet under **A Code Change Owes
 a Docs Change** below on a change that alters what an existing state
@@ -1024,39 +970,20 @@ left without a verdict, or reported `regressed`, blocks the PR. A changed
 shared helper with no test through an existing caller whose behaviour it
 touches is a blocking self-review finding (Issues #3100, #3779).
 
-**Every outcome of a branch you add needs a test that reaches it.** For each
-new condition, match arm, exit-code check or trait/interface default in the
-diff, list its outcomes (success, absent/empty, error, fail-closed default)
-and name the test that drives each one. A test double that overrides the
-default, or a stub that always returns the same code, does not reach the other
-outcomes. Flip each outcome on purpose (return the lenient value instead of
-the error, treat "absent" as "failed"), run the tests, confirm at least one
-goes red, then restore it. A compound condition (`a || b`, `a && b`, a chained
-`?:`) has one outcome per operand: flip each operand on its own, by deleting
-it or forcing it to the value that lets the other operands decide, and name a
-test that goes red for each one. Reverting the whole change, or deleting the
-whole condition, does not show which operand a test reaches. An outcome with
-no test, or one whose flip leaves the suite green, is a blocking self-review
-finding: add a test for it. Every test the summary names must exist at the
-head (see **A named test must exist**). The test plan names the operand it covers. A compound condition's flip is that
-operand's flip (Issue #3376). An outcome no test reaches is work still to do:
-add the test that goes red, or remove the branch. An outcome no
-input can reach is dead code: remove it, never exempt it. `exempt (untestable)`
-is for an outcome production can reach but a test cannot stage, such as a
-permission or I/O fault the suite cannot stage portably; its reason names what
-blocks staging and the harness search — the test files that already call the
-enclosing function or script (a grep of the test tree for its name), each with
-why it cannot reach the outcome. "No existing harness" with no search named is
-not a reason. An outcome the linked issue asks a test for, in its acceptance
-criteria or Definition of done, cannot be `exempt (untestable)`. Name the
-search so a reviewer can check it (Issue #3428). The diff-scoped mutation
-check (Issue #3393, `docs/mutation-check.md`) reports any added line whose
-mutation the tests do not catch; it does not stop the pull request, unless the
-repository's CI runs a blocking mutation job (Issue #4617). There a survivor that
-remains after the recovery turn holds the pull request as a draft that is not
-auto-merged; on the deferral path it is parked with `draft: true` and opened as a draft by the drain
-(`docs/mutation-check.md`). A fix to an existing PR re-checks every branch its own commits add, not only those a
-review finding named.
+**Every outcome of a branch you add needs a test that reaches it.** For
+changed behaviour, review meaningful success, absent/empty and error outcomes,
+including a match arm or trait/interface default used in production. A stub
+that always returns the same code cannot cover the other outcomes, and a test
+double overriding a default cannot cover that default. For compound conditions,
+use inputs that exercise each independent reason for acceptance or refusal.
+Existing tests count; name the test and outcome in the Test Plan where coverage
+needs explanation. An outcome with no meaningful protection is a blocking
+self-review finding: add a focused test or explain why the case is outside the
+supported contract. Remove unreachable dead code. When a production outcome
+cannot be staged portably, state the limitation and the existing harnesses
+considered; do not claim it was tested. An explicit acceptance test remains
+required. This assessment belongs to the current change and its review, not
+an automatic campaign of flipping branches or operands.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -1068,8 +995,8 @@ spacing and attempt limits, replying to or releasing a claim. For each one,
 either make the new path apply it (or order the new branch after it), or
 state in the PR summary why it does not apply. For each guard the new path
 keeps, add a test that reaches the new path while the guard's trigger
-condition holds and asserts the guard's effect, then move the new branch
-ahead of the guard (or remove the guard call) and confirm the test goes red.
+condition holds and asserts the guard's effect, with an allowed case that
+reaches the intended outcome.
 List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
@@ -1084,7 +1011,7 @@ exits are the usual culprits. If one can, move the new branch above it, or
 state in the PR summary why that exit must win. A real infrastructure signal
 can justify that; a wording guess cannot. Then add a test whose input is the
 realistic case and also trips each earlier exit the new branch now precedes.
-Move the new branch back below that exit and confirm the test goes red. A
+Assert that this input reaches the intended new outcome. A
 new branch that a realistic input for its own case cannot reach is a
 blocking self-review finding (Issue #3167).
 
@@ -1118,8 +1045,8 @@ existing set/clear pair on a sibling path and follow it. A record held in
 shared GitHub state (a label, a marker comment) is cleared only as **Remove
 only what you can prove you added** allows. Add a test that uses the real
 record helper against a temporary store, not a stub: drive the failure, then
-a healthy run, and assert the record is gone. Then delete the clear and
-confirm the test goes red. List the set/clear pairs checked in the PR summary.
+a healthy run, and assert the record is gone. List the set/clear pairs
+checked in the PR summary.
 A record with no clear on a healthy path is a blocking self-review finding
 (Issue #3430).
 
@@ -1206,10 +1133,10 @@ ledger reason triggers a realistic failure of the real tool, or of a fake built
 from its observed output, and asserts that the cause text appears in the reason
 (for example `does not appear to be a git repository`). Asserting only the fixed
 prefix, the exit code or a wrapper's own text is not enough: such a test stays
-green when the quoted cause is dropped or replaced by boilerplate. Remove the
-cause from the reason on purpose and confirm the test goes red (see **A new test
-must go red without its change**). A failure-reason test that passes with the
-cause missing is a blocking self-review finding.
+green when the quoted cause is dropped or replaced by boilerplate. Review the
+fixture and assertion to ensure they distinguish the cause from the wrapper.
+A failure-reason test with no assertion on the cause is a blocking self-review
+finding.
 
 **A workflow behaviour change extends the workflow validator.** When a change
 alters what a `.github/workflows/*` file does — a new or changed flag, step,

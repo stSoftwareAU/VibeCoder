@@ -1,19 +1,13 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3162 — fleet refusal tests passed on a refusal from another rule
- * (GRQ-AutoTrader#2386, #2393, VibeCoder#3079): they asserted only that
- * something refused, so the rule they were named for was never reached.
- * CODING-STANDARDS.md and the coding_guidelines prompt must both carry the
- * same "a refusal test must be refused by the rule it names" rule, inside
- * the test-coverage section, word for word once wrapping is ignored; the
- * issue prompt's Test Plan step and the pr_feedback prompt's Making Changes
- * section must point at it.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  assertPins,
   type DocSection,
   excerpt,
   flat,
@@ -72,26 +66,13 @@ Deno.test("both surfaces carry the refusal-test rule (Issue #3162)", async () =>
   );
 });
 
-Deno.test("issue prompt Test Plan step points at the refusal-test rule (Issue #3162)", async () => {
-  const text = flat(
+Deno.test("issue prompt keeps specific refusal and allowed controls", async () => {
+  assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-  );
-
-  assert(
-    text.includes("A refusal test must be refused by the rule it names"),
-    `PR Summary File section is missing the refusal-test rule: ${text}`,
-  );
-  assert(
-    text.includes(
-      "the same input with only the probed value made legal is accepted",
-    ),
-    `PR Summary File section is missing the made-legal check: ${text}`,
-  );
-  assert(
-    text.includes(
-      "one that now stops earlier is a blocking self-review finding",
-    ),
-    `PR Summary File section is missing the stops-earlier finding: ${text}`,
+    [
+      "specific refusal",
+      "allowed case",
+    ],
   );
 });
 

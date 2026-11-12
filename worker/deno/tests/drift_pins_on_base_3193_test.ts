@@ -1,25 +1,14 @@
 /**
- * Issue #3193 — a documentation-drift test that pins a phrase its section
- * already held on the base branch can never fail. Checking "the test goes red
- * against main" is not enough when one test pins several phrases: one new pin
- * turns it red and hides the vacuous pin beside it (stSoftwareAU/VibeCoder#3156).
- *
- * `pinsAlreadyOnBase` does the check per phrase: it reads the doc at the base
- * ref, narrows it with the same `section()` title, and lists every pinned
- * phrase the base section already held.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
-  assertEquals,
-  assertFalse,
-  assertRejects,
-  assertStringIncludes,
-} from "@std/assert";
-import {
+  assertPins,
   DRIFT_PINS_TASK,
-  flat,
   pinsAlreadyInSection,
   pinsAlreadyOnBase,
   readRepoDoc,
@@ -134,67 +123,51 @@ Deno.test("deno.json - the per-phrase check is a runnable task", async () => {
   );
 });
 
-Deno.test("CODING-STANDARDS - condition 4 checks each pinned phrase, not each test", async () => {
-  const text = flat(
+Deno.test("standards make per-phrase baseline comparison a diagnostic aid", async () => {
+  assertPins(
     section(
       await readRepoDoc("CODING-STANDARDS.md"),
       "Documentation-drift tests",
     ),
+    [
+      "Every pinned phrase identifies the intended rule",
+      "optional `deno task drift-pins-on-base`",
+      "do not require a baseline run or proof log for every phrase",
+    ],
   );
-  assertStringIncludes(text, "per pinned phrase, not per test");
-  assertStringIncludes(text, "hides a vacuous pin");
-  assertStringIncludes(text, `deno task ${DRIFT_PINS_TASK}`);
-  // Issue #4470 dropped the per-phrase Test Plan record from condition 4.
-  assertFalse(text.includes("Record the result for every pinned phrase"));
 });
 
-Deno.test("coding guidelines - a drift test's red run is checked per pinned phrase", async () => {
-  const text = flat(
+Deno.test("guidelines defer to scoped documentation rules", async () => {
+  assertPins(
     section(
       await readRepoDoc("prompts/coding_guidelines/prompt.md"),
       "Test Coverage Expectations",
     ),
-  );
-  assertStringIncludes(text, "per pinned phrase, not per test");
-  assertStringIncludes(text, `deno task ${DRIFT_PINS_TASK}`);
-  assertStringIncludes(
-    text,
-    "the base section already held is a blocking self-review finding",
-  );
-  assertFalse(
-    text.includes("each pinned phrase is absent from the base section"),
+    [
+      "section-scoping and live-value rules",
+      "Documentation-drift tests",
+    ],
   );
 });
 
-Deno.test("issue prompt - a drift test's base check is per pinned phrase", async () => {
-  const text = flat(
+Deno.test("issue prompt reviews pin relevance without proof campaigns", async () => {
+  assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-  );
-  assertStringIncludes(text, "per pinned phrase, not per test");
-  assertStringIncludes(text, `deno task ${DRIFT_PINS_TASK}`);
-  assertStringIncludes(
-    text,
-    "the base section already held is a blocking self-review finding",
-  );
-  assertFalse(
-    text.includes("each pinned phrase is absent from the base section"),
+    [
+      "per-phrase relevance rules",
+      "Do not require deliberate code breaks",
+    ],
   );
 });
 
-Deno.test("pr_feedback prompt - a drift test's base check is per pinned phrase", async () => {
-  const text = flat(
+Deno.test("feedback reviews canonical documentation scope", async () => {
+  assertPins(
     section(
       await readRepoDoc("prompts/pr_feedback/prompt.md"),
       "Making Changes",
     ),
-  );
-  assertStringIncludes(text, "each pinned phrase on its own");
-  assertStringIncludes(text, `deno task ${DRIFT_PINS_TASK}`);
-  assertStringIncludes(
-    text,
-    "the base section already held is a blocking self-review finding",
-  );
-  assertFalse(
-    text.includes("each pinned phrase is absent from the base section"),
+    [
+      "section-scoping and live-source rules",
+    ],
   );
 });
