@@ -114,10 +114,10 @@ export function decideRepairBaseMerge(
   };
 }
 
-/** Strip control characters, newlines and quotes, then cap the length. */
+/** Redact before stripping control characters and quotes or capping length. */
 function cleanField(value: string, cap: number): string {
   let kept = "";
-  for (const ch of value) {
+  for (const ch of redactSecrets(value)) {
     const code = ch.codePointAt(0) ?? 0;
     const control = code < 0x20 || (code >= 0x7f && code <= 0x9f);
     if (!control && !QUOTE_CHARS.has(ch)) kept += ch;
@@ -128,14 +128,14 @@ function cleanField(value: string, cap: number): string {
 /**
  * One bounded single-line diagnostic:
  * `[base-refresh] source=<s> outcome=<o> repo=<r> pr=#<n> base=<b|none> owner=<#N/worker|none> reason="<...>" <stamp>`.
- * The reason is redacted before it is cleaned and capped, so a secret cannot
- * survive truncation as a fragment.
+ * Every field is redacted before it is cleaned and capped, so a secret cannot
+ * survive truncation as a fragment. The assembled line is redacted at the sink.
  */
 export function formatBaseRefreshDecision(
   facts: BaseRefreshDecisionFacts,
   stamp: string,
 ): string {
-  const reason = cleanField(redactSecrets(facts.reason), REASON_CAP);
+  const reason = cleanField(facts.reason, REASON_CAP);
   const base = facts.base === undefined
     ? "none"
     : cleanField(facts.base, FIELD_CAP) || "none";
@@ -144,7 +144,7 @@ export function formatBaseRefreshDecision(
     : `#${facts.ownerPr}/${
       cleanField(facts.ownerWorker ?? "unknown", FIELD_CAP)
     }`;
-  return [
+  return redactSecrets([
     "[base-refresh]",
     `source=${cleanField(facts.source, FIELD_CAP)}`,
     `outcome=${facts.outcome}`,
@@ -154,7 +154,7 @@ export function formatBaseRefreshDecision(
     `owner=${owner}`,
     `reason="${reason}"`,
     cleanField(stamp, FIELD_CAP),
-  ].join(" ");
+  ].join(" "));
 }
 
 function defaultStamp(): string {
@@ -233,7 +233,9 @@ async function readStoredCounters(
     );
   }
   console.warn(
-    `[base-refresh] could not read the counters in ${path}; the tally restarts: ${cause}`,
+    redactSecrets(
+      `[base-refresh] could not read the counters in ${path}; the tally restarts: ${cause}`,
+    ),
   );
   return {};
 }
@@ -269,9 +271,11 @@ async function persistNamedCounter(
     });
   } catch (error) {
     console.warn(
-      `[base-refresh] could not persist the counter ${name} under ${dir}: ${
-        redactSecrets(error instanceof Error ? error.message : String(error))
-      }`,
+      redactSecrets(
+        `[base-refresh] could not persist the counter ${name} under ${dir}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
     );
   }
 }
@@ -297,18 +301,18 @@ export function logBaseRefreshDecision(
   } catch (error) {
     // The caller's result stands, but the lost line is never silent.
     console.error(
-      `[base-refresh] could not record the decision source=${
-        cleanField(facts.source, FIELD_CAP)
-      } repo=${
-        cleanField(facts.repo, FIELD_CAP)
-      } pr=#${facts.prNumber} outcome=${facts.outcome}: ${
-        cleanField(
-          redactSecrets(
+      redactSecrets(
+        `[base-refresh] could not record the decision source=${
+          cleanField(facts.source, FIELD_CAP)
+        } repo=${
+          cleanField(facts.repo, FIELD_CAP)
+        } pr=#${facts.prNumber} outcome=${facts.outcome}: ${
+          cleanField(
             error instanceof Error ? error.message : String(error),
-          ),
-          REASON_CAP,
-        )
-      }`,
+            REASON_CAP,
+          )
+        }`,
+      ),
     );
   }
 }
@@ -319,9 +323,11 @@ export function logBaseRefreshDecision(
  * not print it, so a stale deployed worker is visible from the log alone.
  */
 export function formatBaseRefreshStartup(info: WorkerBuildInfo): string {
-  return `[base-refresh] startup repair-base-merge=conflict-or-base-fixed refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> ${
-    formatBuildStamp(info)
-  }`;
+  return redactSecrets(
+    `[base-refresh] startup repair-base-merge=conflict-or-base-fixed refresh-owner=shared-per-base(#4613) transient-recovery=refusal-streak(#4831) counters=baseRefresh.<outcome>.<source> ${
+      formatBuildStamp(info)
+    }`,
+  );
 }
 
 /**
@@ -438,17 +444,19 @@ export async function trackRepairMergeability(
               event: { repo, prNumber, entry, active: true, lane: "repair" },
               onFailed: (error) =>
                 log(
-                  `[base-refresh] could not post the refresh-waiting comment on ${repo}#${prNumber}: ${
-                    redactSecrets(
-                      error instanceof Error ? error.message : String(error),
-                    )
-                  }`,
+                  redactSecrets(
+                    `[base-refresh] could not post the refresh-waiting comment on ${repo}#${prNumber}: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  ),
                 ),
             });
             incrementCounter("baseRefresh.repeatedMergeabilityUnknown");
             escalated = true;
             log(
-              `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
+              redactSecrets(
+                `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
+              ),
             );
           }
         } else if (
@@ -467,11 +475,11 @@ export async function trackRepairMergeability(
               },
               onFailed: (error) =>
                 log(
-                  `[base-refresh] could not update the refresh-waiting comment on ${repo}#${prNumber}: ${
-                    redactSecrets(
-                      error instanceof Error ? error.message : String(error),
-                    )
-                  }`,
+                  redactSecrets(
+                    `[base-refresh] could not update the refresh-waiting comment on ${repo}#${prNumber}: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  ),
                 ),
             });
           }
@@ -487,9 +495,11 @@ export async function trackRepairMergeability(
     }
   } catch (error) {
     log(
-      `[base-refresh] could not track mergeability of ${repo}#${prNumber}: ${
-        redactSecrets(error instanceof Error ? error.message : String(error))
-      }`,
+      redactSecrets(
+        `[base-refresh] could not track mergeability of ${repo}#${prNumber}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ),
     );
   }
 }

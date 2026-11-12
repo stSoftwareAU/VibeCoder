@@ -1373,14 +1373,18 @@ refusal file under the same file lock. The lock covers only the read, decide and
 write: the diagnostic PR comment is posted after it is released, and `notified`
 is then recorded in a second short transaction. The sweep treats this tracking
 as best effort: a lock or filesystem failure is logged and the pass carries on,
-so it never stops the sweep or relabels a branch update that succeeded. A repair's known mergeability reading
-clears only a mergeability refusal: a stale test-merge-parent refusal remains
-until the refresh path verifies current parents. This keeps concurrent repairs
-and alternating lanes from losing an unresolved refusal or its notification.
+so it never stops the sweep or relabels a branch update that succeeded. A
+repair's known mergeability reading clears only a mergeability refusal: it
+cannot clear a stale test-merge-parent refusal. A successful refresh, a skipped
+PR or a permanent refusal ends the streak; an UNKNOWN reading continues it.
+This keeps concurrent repairs and alternating lanes from losing an unresolved
+refusal while ensuring that only consecutive transient refusals escalate.
 
 Refresh decisions emit bounded `[base-refresh]` lines with the lane, outcome,
-repository, PR, base, current owner, reason and worker build stamp. Standalone
-repair commands persist cumulative named counters in
+repository, PR, base, current owner, reason and worker build stamp. Every field
+is redacted before truncation, and complete diagnostic messages, including
+counter paths and refusal-tracking warnings, pass through secret redaction
+before emission. Standalone repair commands persist cumulative named counters in
 `base_refresh_counters.json`, including the `<lane>-publication` decision the
 CI, feedback and spelling libraries take just before they publish (the command's
 work directory is passed through `repairBaseForPublication`); in-process callers

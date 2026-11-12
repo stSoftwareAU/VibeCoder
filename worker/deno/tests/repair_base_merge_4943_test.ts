@@ -201,6 +201,45 @@ Deno.test("formatBaseRefreshDecision redacts a fake GitHub token in the reason",
   assert(line.includes("***REDACTED***"), "placeholder present");
 });
 
+Deno.test("base-refresh diagnostics redact every field before truncation", () => {
+  const source = `lane-${FAKE_TOKEN}`;
+  const facts = {
+    source,
+    outcome: "base-merge-skipped" as const,
+    repo: `owner/${FAKE_TOKEN}`,
+    prNumber: 3,
+    base: "b".repeat(70) + FAKE_TOKEN,
+    ownerPr: 4,
+    ownerWorker: `worker-${FAKE_TOKEN}`,
+    reason: "waiting",
+  };
+  const lines: string[] = [];
+  logBaseRefreshDecision(
+    facts,
+    (line) => lines.push(line),
+    `build=${FAKE_TOKEN}`,
+  );
+  assertEquals(lines, [
+    "[base-refresh] source=lane-***REDACTED*** outcome=base-merge-skipped repo=owner/***REDACTED*** pr=#3 base=" +
+    "b".repeat(70) +
+    '***REDACTE owner=#4/worker-***REDACTED*** reason="waiting" build=***REDACTED***',
+  ]);
+
+  const original = console.error;
+  const fallback: string[] = [];
+  console.error = (line: string) => fallback.push(line);
+  try {
+    logBaseRefreshDecision(facts, () => {
+      throw new Error("sink unavailable");
+    }, "build=abc123");
+  } finally {
+    console.error = original;
+  }
+  assertEquals(fallback, [
+    "[base-refresh] could not record the decision source=lane-***REDACTED*** repo=owner/***REDACTED*** pr=#3 outcome=base-merge-skipped: sink unavailable",
+  ]);
+});
+
 Deno.test("formatBaseRefreshDecision caps a 10000-character reason at 200 characters", () => {
   const line = formatBaseRefreshDecision(
     {
@@ -405,6 +444,45 @@ function commentService() {
     },
   };
 }
+
+Deno.test("repair notifications redact repository identifiers in every diagnostic", async () => {
+  const dir = await Deno.makeTempDir();
+  const service = commentService();
+  const repo = `owner/${FAKE_TOKEN}`;
+  const tracker = createRepairMergeabilityTracker({
+    workDir: dir,
+    gh: service.gh,
+    fleetAuthors: ["VibeCoderST"],
+  })!;
+  const lines: string[] = [];
+  const read = (mergeable: string) =>
+    trackRepairMergeability(
+      tracker,
+      repo,
+      12,
+      mergeable,
+      (line) => lines.push(line),
+    );
+  try {
+    service.setUnavailable(true);
+    await read("UNKNOWN");
+    await read("UNKNOWN");
+    service.setUnavailable(false);
+    await read("UNKNOWN");
+    assertEquals(service.comments.length, 1);
+    service.setUnavailable(true);
+    await read("MERGEABLE");
+    assertEquals((await readBranchRefreshRefusals(dir)).size, 0);
+    assertEquals(lines, [
+      "[base-refresh] fleet health: repair mergeability of owner/***REDACTED***#12 still UNKNOWN after 2 consecutive reads",
+      "[base-refresh] could not post the refresh-waiting comment on owner/***REDACTED***#12: comment API down",
+      "[base-refresh] fleet health: repair mergeability of owner/***REDACTED***#12 still UNKNOWN after 3 consecutive reads",
+      "[base-refresh] could not update the refresh-waiting comment on owner/***REDACTED***#12: comment API down",
+    ]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 
 Deno.test("production repair trackers persist concurrent PR streaks and deliver one comment per PR across restarts", async () => {
   const dir = await Deno.makeTempDir();
@@ -735,7 +813,7 @@ Deno.test("repair tracking failure is redacted and does not change the base-merg
   const lines: string[] = [];
   try {
     const decision = await readRepairBaseMergeDecision({
-      repo: "owner/repo",
+      repo: `owner/${FAKE_TOKEN}`,
       prNumber: 12,
       gh: async () => '{"mergeable":"UNKNOWN"}',
       source: "pr-ci-processor",
@@ -922,6 +1000,56 @@ async function captureWarns(fn: () => Promise<unknown>): Promise<string[]> {
   }
   return lines;
 }
+
+Deno.test("counter warnings redact directory names and malformed counter keys", async () => {
+  const root = await Deno.makeTempDir();
+  const dir = `${root}/${FAKE_TOKEN}`;
+  try {
+    await Deno.mkdir(dir);
+    await Deno.writeTextFile(
+      `${dir}/${BASE_REFRESH_COUNTERS_FILE}`,
+      JSON.stringify({
+        counters: { [FAKE_TOKEN]: "invalid" },
+      }),
+    );
+    const warnings = await captureWarns(() =>
+      persistBaseRefreshCounter(dir, {
+        source: "pr-ci",
+        outcome: "base-merge-skipped",
+      })
+    );
+    assertEquals(warnings, [
+      `[base-refresh] could not read the counters in ${root}/***REDACTED***/${BASE_REFRESH_COUNTERS_FILE}; the tally restarts: the "counters" entry "***REDACTED***" is not a finite number`,
+    ]);
+    assertEquals(
+      JSON.parse(
+        await Deno.readTextFile(`${dir}/${BASE_REFRESH_COUNTERS_FILE}`),
+      ).counters,
+      {
+        "baseRefresh.base-merge-skipped.pr-ci": 1,
+      },
+    );
+
+    const file = `${root}/blocked-${FAKE_TOKEN}`;
+    await Deno.writeTextFile(file, "sentinel");
+    const failed = await captureWarns(() =>
+      persistBaseRefreshCounter(file, {
+        source: `lane-${FAKE_TOKEN}`,
+        outcome: "base-merge-skipped",
+      })
+    );
+    assertEquals(failed.length, 1);
+    assertEquals(failed[0]!.includes(FAKE_TOKEN), false);
+    assertMatch(
+      failed[0]!,
+      /could not persist the counter baseRefresh\.base-merge-skipped\.lane-\*\*\*REDACTED\*\*\* under /,
+    );
+    assertMatch(failed[0]!, /File exists|AlreadyExists|already exists/i);
+    assertEquals(await Deno.readTextFile(file), "sentinel");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 Deno.test("persistBaseRefreshCounter accumulates named decision counters across calls, and restarts the tally with one warning on a garbled file (Issue #4943)", async () => {
   const dir = await Deno.makeTempDir();

@@ -11,7 +11,10 @@ Separate reviewer and babysitter processes now compete against one strict base
 in tests. Refusal updates share a file-locked transaction across repair and
 sweep writers; a mergeability reading cannot clear a stale-parent refusal, but
 an `UNKNOWN` reading still counts towards its streak, so the #4831 escalation
-fires.
+fires. Skipped PRs and permanent refusals end the streak. Durable counters use
+explicit production directories; callers without one retain only in-memory
+counts. Diagnostic fields are redacted before truncation and complete messages
+are redacted before emission.
 
 Closes #4943.
 
@@ -33,8 +36,9 @@ Version bump: none; the merged commit records the final version.
   The CI publication path rechecks historical failure evidence.
 - Repair and sweep transactions read and update the same refusal file under the
   existing file lock. The persisted v1 record shape is unchanged.
-- Stale-parent recovery requires successful parent validation; known
-  mergeability and an unready PR do not establish recovery.
+- A mergeability reading cannot clear a stale-parent refusal. Successful
+  refreshes, skip paths and permanent refusals end its streak; only consecutive
+  transient refusals count towards escalation.
 - Stateful GitHub boundaries model published heads and ancestry. Repair tests
   additionally publish into real local bare Git repositories.
 
@@ -42,8 +46,8 @@ Version bump: none; the merged commit records the final version.
 
 - Private fleet runtime evidence was unavailable. Synthetic tests establish
   behaviour, not a measured reduction in production churn.
-- Independent Spec and Standards sub-agents reviewed the final issue/diff and
-  standards/diff respectively. Their verdicts are recorded below.
+- Earlier independent Spec and Standards reviews and subsequent fleet reviews
+  are recorded on the PR. Review of the final redaction repair is pending.
 
 ## Evidence
 
@@ -58,7 +62,8 @@ merges introduced during substantive repair publication. Necessary classes
 remain selected-owner refreshes, genuine conflict repairs, proven base-fix
 integration, eligible non-strict updates and native merge-queue operation.
 
-Reproduction and negative controls:
+Previously recorded reproduction and negative controls for the merge policy
+(not repeated in the final diagnostics repair):
 
 - The new spelling-library publication regression failed against `origin/main`
   production code in a disposable checkout: unrelated base ancestry was
@@ -72,8 +77,10 @@ Reproduction and negative controls:
 - Removing only the stale-check-head guard makes the otherwise valid historical
   proof authorise a base merge and fails the publication regression.
 
-Diagnostics include bounded source/reason/owner/build information and redacted
-reason text. Cumulative `baseRefresh.*` counters permit follow-up when a counter
+Diagnostics include bounded source/reason/owner/build information. All fields
+are redacted before truncation, including counter names; complete decision,
+fallback, counter-persistence and refusal-tracking messages are also redacted.
+Cumulative `baseRefresh.*` counters permit follow-up when a counter
 work directory is supplied, including the publication-time decision of the CI,
 feedback and spelling libraries; in-process lanes without one are counted in the
 per-cycle fault-tolerance summary only, and paths with neither retain no durable
@@ -131,136 +138,67 @@ tally.
   Replaced tests preserve their required behaviour through observable outcomes.
   Ordinary publication diagnostics use INFO.
 
-The Standards reviewer also identified four findings inherited from earlier
-commits on this branch. PR #5059 review fixed three of them; the fourth is
-unchanged and remains outside the authorised production scope, so this is not a
-full-branch clean verdict.
+- **violation** — Redaction previously covered reason text instead of complete
+  diagnostic messages — evidence:
+  `worker/deno/lib/repair_base_merge_4943.ts::formatBaseRefreshDecision`, counter
+  warnings and refusal-tracking logs — reason: fixed in this diff. Every field
+  is redacted before truncation and every complete diagnostic is redacted before
+  emission. Regression tests cover identifiers, paths, malformed counter keys,
+  truncation, a throwing sink and failed comment notifications.
 
-- **violation** — Redaction covers reason text rather than complete diagnostic
-  messages — evidence:
-  `worker/deno/lib/repair_base_merge_4943.ts::formatBaseRefreshDecision` and
-  persistence warnings — reason: unchanged; complete outbound-message redaction
-  remains outstanding.
+The other review findings are addressed:
 
-Fixed after the PR #5059 review (tests are under `worker/deno/tests/`):
-
-- `logBaseRefreshDecision` no longer swallows a failure: a throwing sink or
-  counter leaves one redacted fallback line on stderr naming the source, repo,
-  PR and error (`repair_base_merge_4943_test.ts`, “a throwing sink leaves one
-  redacted fallback line”).
-- `persistNamedCounter` treats a non-object root, a missing or non-object
-  `counters` and a non-finite entry as malformed: it warns once, naming the
-  field, before the tally restarts, and writes through `atomicWrite`
-  (`repair_base_merge_4943_test.ts`, five “warns once, naming the field” cases).
-- The auto-merge sweep's refusal persistence is best effort again: a lock or
-  filesystem failure is logged and the pass carries on. The diagnostic comment
-  is posted after the lock is released and `notified` is recorded in a second
-  short transaction (`updateRefusalsThenNotify`; `auto_merge_sweep_test.ts`, “a
-  refusal-state lock failure never aborts the pass” and “the refusal lock is not
-  held while the diagnostic comment is posted”;
-  `repair_base_merge_4943_test.ts`, “a repair tracker posts its comments with
-  the refusal lock released”).
-- The `<lane>-publication` decision of the CI, feedback and spelling libraries
-  is tallied in the command's work directory (`counterDir` through
-  `repairBaseForPublication`; `repair_base_merge_wiring_4943_test.ts`, “counts a
-  publication-time base merge durably”).
-- The babysitter's proven-base-fix merge is covered
-  (`babysitter_base_merge_policy_4943_test.ts`, “merges the base into a
-  MERGEABLE failed-CI repair once the same failure is proven fixed”), and the
-  refused-publication library test now asserts the remote head is unchanged.
+- A throwing diagnostic sink leaves a redacted fallback message. Structurally
+  malformed counters warn with the field name and reuse `atomicWrite`.
+- Refusal persistence is best effort. GitHub comments are posted outside the
+  lock; recording notification success uses a second short transaction.
+- Stale-parent refusals continue counting UNKNOWN readings, while skip paths
+  and permanent refusals end their streak.
+- CI publication and babysitter tests cover proven base fixes; refused
+  publication asserts that the remote head remains unchanged.
+- CI, feedback, spelling and branch-update processors accept an optional
+  `baseRefreshCounterDir`. Production callers provide the work directory;
+  tests without it do not write shared counter files. Reviewer branch updates
+  use the separate optional `BranchUpdateAudit.counterDir`, supplied by both
+  `gate.ts` and `post.ts`.
 
 ## Test Plan
 
-- At the head after the PR #5059 review fixes, the 4943, auto-merge sweep,
-  refusal-streak, `pr_push_base_sync` and babysitter orchestration test files
-  (`deno test -A`, stdin from `/dev/null`, 14 files) passed: 256 tests, 0
-  failed. The CI, feedback and spelling processor test files (32 files) passed:
-  364 tests, 0 failed.
-- Red checks run on the fix (each reverted alone, the named test went red):
-  dropping the `provenBaseFixChecks = [check.name]` assignment in
-  `commands/fleet_pr_babysitter.ts` fails the new babysitter proven-fix test;
-  re-throwing in the sweep's `updateRefusals` catch fails the lock-failure test;
-  posting the comment inside the lock fails both lock-released tests; dropping
-  `counterDir` from `pr_ci_processor.ts` fails the publication-counter test; a
-  `null` root treated as well-formed fails its “warns once, naming the field”
-  case; replacing the `console.error` fallback fails the throwing-sink test. The
-  malformed-counters cases for `[]`, `{}` and a non-numeric entry were not
-  separately flipped; they share `malformedCountersField` with the `null` case.
-- `worker/deno/tests/pr_push_base_sync_test.ts` (5 tests) passes. Its spelling
-  case now seeds a `CONFLICTING` mergeability reading, because the shared
-  mergeability policy merges the base before a spelling push only for a genuine
-  conflict; the behind-only case no longer qualifies.
-- At the head, `deno fmt`, `deno lint` and `deno check` pass for the files
-  changed in the PR #5059 review fixes. The full `./quality.sh` gate was not run
-  in this fix run (about 15 minutes against the run budget).
-- `deno task pr-summary-check --base main` at the head: 0 gates blocked; 3 not
-  checked (acceptance-criteria closure, two-axis review and reproduction status
-  need an issue body or labels this run did not supply).
-- The disposable mutation run recorded earlier on this branch predates the PR
-  #5059 review fixes; it was not re-run at this head, and no mutation exemptions
-  or repository skip were added.
-
-- PR #5059 review, second round. `recordBranchRefreshRefusal` no longer returns
-  a stale-parent entry unchanged on a mergeability-unknown refusal: it keeps the
-  `test-merge-parents-stale` reason and advances the streak and `lastSeenAtMs`.
-  `trackRepairMergeability` no longer returns early for a stale-parent entry: an
-  `UNKNOWN` read records (and so counts), and only a `MERGEABLE` or
-  `CONFLICTING` read is kept from clearing it. New sweep test in
-  `auto_merge_sweep_test.ts`, "one stale-parent refusal followed by two UNKNOWN
-  refusals escalates once": one fleet-health error and one comment; red with
-  the old `recordBranchRefreshRefusal`. Changed existing test:
-  `repair_base_merge_4943_test.ts` "sweep and repair lanes retain stale-parent
-  escalation ..." pinned that an `UNKNOWN` repair read left the escalated entry
-  unchanged (the freeze); it now checks that no mergeability read clears or
-  re-labels the entry or posts a second comment, and that an `UNKNOWN` read
-  adds one to the streak. New direct-library CI test in
-  `repair_base_merge_wiring_4943_test.ts`, "ci direct library merges the base
-  at publication when the failure is proven fixed on the base": the library
-  path has no initial sync, so only the publication-time `failedCheck` evidence
-  can authorise the merge; it asserts base ancestry on the published head and
-  the `pr-ci-processor-publication` `base-merge-allowed` line with the proof
-  reason. That file's direct-library tests cannot run on the fix host (its git
-  2.43 refuses `checkout -B ... --end-of-options`, and the existing
-  direct-library tests fail there the same way), so the new test and its red
-  check are left to CI. `auto_merge_sweep_test.ts`,
-  `branch_refresh_refusal_streak_test.ts` and `repair_base_merge_4943_test.ts`
-  pass (81 tests).
-
-- PR #5059 review, third round. The sweep's stale-parent guard now applies only
-  where a mergeability reading would clear the entry (the not-behind pass,
-  `clearRefusal(..., mergeabilityOnly = true)`, and the repair tracker). Every
-  skip path (closed, needs-human, draft, base-integrity hold, disarm, changes
-  requested, merge-queue base), a permanent refusal and a successful refresh
-  end the streak as on `main` and mark a notified comment recovered, so
-  refusals that are not consecutive no longer escalate. New sweep tests in
-  `auto_merge_sweep_test.ts`: a seeded, escalated stale-parent entry is cleared
-  with a recovered comment by the draft, needs-human and changes-requested
-  skips; stale, permanent, stale stays at streak 1 with no comment. Each turns
-  red with the old always-on guard. Changed existing test:
-  `repair_base_merge_4943_test.ts` "sweep and repair lanes retain stale-parent
-  escalation ..." asserted that a skipped (review-required) pass kept the
-  entry; it now asserts the pass ends the streak and the comment reads
-  recovered. The publication counters no longer use `workRoot`: a new optional
-  `baseRefreshCounterDir` processor dependency is set to `WORK_DIR` by the
-  three commands and the three run-core call sites, and left unset by tests, so
-  a test counts in memory only. Running the processor test files no longer
-  creates `/tmp/test-work-root/base_refresh_counters.json` (it did before this
-  change). The direct-library counter test passes the new dependency.
-
-- PR #5059 review, fourth round. The other two new counter writers no longer
-  default to a directory tests share. `executePrBranchUpdates` persists to a
-  new optional `PrBranchExecutionDeps.baseRefreshCounterDir`, which
-  `run_core_production_deps.ts` and `commands/pr_maintenance.ts` set to
-  `WORK_DIR`; the reviewer script's `updateBranch` persists to a new optional
-  `BranchUpdateAudit.counterDir`, which `gate.ts` and `post.ts` set to their
-  audit directory. Tests leave both unset and count in memory only. Running
-  `pr_branch_update_test.ts`, `pr_branch_update_integration_test.ts` and
-  `review_fleet_prs_backlog_3225_test.ts` no longer creates `/tmp/work`,
-  `/tmp/test-work`, `/tmp/integration-test` or a relative `unused/` directory
-  (the old code created `unused/base_refresh_counters.json` in the checkout).
-  The executor's durable-tally test passes the new dependency.
+- `pr_branch_update_test.ts`, `pr_branch_update_integration_test.ts` and
+  `review_fleet_prs_backlog_3225_test.ts`: 93 passed after the fleet's counter
+  directory repair at `662ad407`.
+- The six core repair, counter, refusal-streak, auto-merge sweep and babysitter
+  policy suites: 120 passed on the final production code.
+- The seven selected direct-library publication tests: all passed, including
+  refused publication, genuine conflicts, durable counters for all three
+  processors and the CI library's proven-base-fix check.
+- All four new or strengthened redaction regressions fail with the production
+  module restored to `662ad407` and pass with the fix. They reproduce exposed
+  identifiers, paths, malformed counter keys and a truncated token fragment.
+- The initial combined run including the entire publication-wiring suite hit
+  its four-minute timeout without a reported assertion failure; it is not
+  counted as a pass. The focused suites above completed successfully.
+- `pr-summary-check`: zero blocked gates; acceptance closure, independent
+  review and reproduction-status checks were not run because issue-body and
+  label inputs were not supplied.
+- The derived manifest family: 866 passed, 1 existing ignore across 55 files.
+  Formatting, lint and `git diff --check` pass for this repair.
+- Strict local type checking reports two `noImplicitReturns` errors in the
+  externally mapped standard-library dependencies (`@std/internal/format.ts`
+  and `@std/yaml/_loader_state.ts`), with no project-source diagnostics. Normal
+  locked-package type checking remains CI's verification; the repository's
+  compiler settings and dependencies are unchanged.
+- The final diagnostics repair reuses `redactSecrets`; no new redaction rules,
+  dependency, persisted schema, gate exemption or suppression is introduced.
+  The related rule and sink copies were checked in `CODING-STANDARDS.md`,
+  `SECURITY.md` and all diagnostics in `repair_base_merge_4943.ts`.
+- Local test dependencies are the locked package versions, verified against
+  their checksums and loaded through an external import map because direct JSR
+  package resolution failed on this host. Repository configuration is unchanged.
 
 ## Merge verification
 
-The worker will rerun the full quality gate, completion checks and pre-PR
-verifier. Required CI and independent PR approval remain pending.
+The targeted behavioural checks pass; required CI will run on the pushed head. Independent review of
+this repair remains pending. A full local `./quality.sh` run has not been made;
+the remote Quality workflow provides the complete CI gate. Private fleet
+runtime measurements and macOS execution are not available in this run.
