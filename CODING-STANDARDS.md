@@ -1267,19 +1267,19 @@ guidance under **Unit tests** below.
   Avoid DOM hierarchy and framework internals unless that structure is itself a
   stated contract. Use visual snapshots deliberately when appearance is the
   contract and the baseline can be reviewed. A restyle should not break a
-  behaviour test. **A style literal is incidental wherever it lives.** An exact
-  colour, length or pixel dimension, `calc()`/`min()` expression, font, z-index,
-  class name or similar style value is incidental whether it sits in a
-  stylesheet, in a TS/JS options object (chart or theme config, an inline
-  `style` prop) or in a computed style a browser test reads (`getComputedStyle`,
-  `toHaveCSS`): it is never a test's expected value unless the issue names that
-  value. Before raising the PR, for every new or edited assertion whose expected
-  value is a style literal, either quote the issue sentence that names it in the
-  Test Plan, or replace the literal with the behaviour it stands for — not
-  transparent, differs from the off state, the panel's box ends above the bar's
-  top, the element is within the viewport. Semantic state the product exposes is
-  not a style literal: an `aria-*` attribute, or the open-only class the
-  closed-state check below relies on.
+  behaviour test.
+  **Do not pin incidental appearance choices.** An incidental class name, purely
+  presentational tag, colour, length, font or other style value is not a test's
+  expected value unless that exact value is part of the issue's contract: it
+  breaks on a restyle while the regression can still pass. Test
+  semantic/accessibility contracts through roles, names, states or behaviour;
+  this rule does not ban meaningful semantic-element checks. A component unit
+  test cannot see weight, colour, wrapping or layout, so for a requested visual
+  outcome, the class that produces the look is not a test of it. The outcome can
+  be tested even when the issue does not prescribe an exact CSS value. Its test
+  is the browser check described next, which measures the result. `aria-*`
+  state, and an open-only class whose absence marks the closed state, are
+  semantic state, not style.
   A test that reads a stylesheet (`.css`, `.scss`) and matches selectors or
   property values is a source-text grep (rule 5 of **Test-Driven Development
   (TDD)** above), not a layout test, even where appearance is the contract: a
