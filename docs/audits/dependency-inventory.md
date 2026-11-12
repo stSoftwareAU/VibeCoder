@@ -44,7 +44,6 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | actionlint | toolchain | 1.7.12 | amd64: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8<br>arm64: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 | exact version + SHA-256 verified |
 | bats-core | toolchain | 1.14.0 | noarch: bb537b70b15b732f6d8827dd6578e3d8ce166636ce1f18ea9a074184fcce9177 | exact version + SHA-256 verified |
 | cargo-deny | toolchain | 0.20.2 | amd64: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f<br>arm64: 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d | exact version + SHA-256 verified |
-| cargo-mutants | toolchain | 27.1.0 | amd64: dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e | exact version + SHA-256 verified |
 | codegraph | toolchain | 1.6.2 | amd64: ef0af416092128fb1ccc723786000b7edf4a6971fe604acd08bf966e4f37b828<br>arm64: c8c6be292be21d00dea26bad8b28d434731cf612fb8cc475dc10f5b3038b5b64 | exact version + SHA-256 verified |
 | codespell | toolchain | 2.4.3 | noarch: af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a | exact version + SHA-256 verified |
 | cspell | toolchain | 10.4.1 | noarch: 38c4760a68a7c421c25c93d887885bcc84e6f4740a8377b8891c5fe264ed8501 | exact version + SHA-256 verified |

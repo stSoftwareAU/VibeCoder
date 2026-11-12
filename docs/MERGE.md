@@ -787,7 +787,7 @@ Two changes close that window:
   author asking for eyes — marking it ready is what puts it back in the sweep.
 - **Orphaned fleet drafts are readied and armed** (Issue #4952). A fleet draft
   that nothing else will ever mark ready — its issue has no live claim and its
-  body does not open with the draft-continuation or the mutation-hold marker —
+  body does not open with the draft-continuation marker —
   is the one draft the sweep does not skip. Its `readyOrphanedDraft` hook
   ([`draft_pr_self_heal.ts`](../worker/deno/lib/draft_pr_self_heal.ts)) readies
   it only when the head branch names an open issue (`issue-<N>-…`) with no

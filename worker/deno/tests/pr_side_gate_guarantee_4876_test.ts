@@ -212,7 +212,7 @@ for (const commentType of ["review", "issue", "pr_review"]) {
       const config = buildDefaultWorkerConfig({
         workDir,
         repoConfig: {
-          "org/repo": { skipMutationCheck: true },
+          "org/repo": {},
         },
       });
 
@@ -299,7 +299,6 @@ for (const preFlight of [undefined, ["deno fmt --check"]]) {
         claudeTimeout: 600,
         repoConfig: {
           "org/repo": {
-            skipMutationCheck: true,
             ...(preFlight ? { preFlight } : {}),
           },
         },
@@ -374,7 +373,7 @@ Deno.test("prCiProcessorCommand - agent receives the CI push guarantee and dedic
         workDir,
         ciFixTimeout: 600,
         claudeTimeout: 3600,
-        repoConfig: { "org/repo": { skipMutationCheck: true } },
+        repoConfig: { "org/repo": {} },
       }),
       deps,
     );

@@ -32,7 +32,6 @@ import {
   makeRunGh,
   makeRunGit,
   noopLogger,
-  notMutationChecked,
   verdictBlock,
   writeFile,
 } from "./support/drift_check_fixture.ts";
@@ -166,7 +165,6 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure runs the reco
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -220,7 +218,6 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure that survives
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -279,7 +276,6 @@ Deno.test("runPrFeedbackDriftCheck - an unchecked Test Plan figure the recovery 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -341,7 +337,6 @@ Deno.test("runPrFeedbackDriftCheck - the residual warning reports the unchecked 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: capturingLogger(warnings),
       },
@@ -381,7 +376,6 @@ Deno.test("runPrFeedbackDriftCheck - a Test Plan with no unchecked figure stays 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -434,7 +428,6 @@ Deno.test("runPrFeedbackDriftCheck - a red result naming only a Rust test file i
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: capturingLogger(warnings),
       },
@@ -478,7 +471,6 @@ Deno.test("runPrFeedbackDriftCheck - the same Rust-named red result with a chang
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },

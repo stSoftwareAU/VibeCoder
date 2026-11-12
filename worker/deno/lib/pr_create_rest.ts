@@ -38,7 +38,11 @@ export interface RestPrCreateOptions {
   base: string;
   /** Reviewers to request — best-effort, never fails the creation. */
   reviewers?: readonly string[];
-  /** Open the pull request as a draft (Issue #4617: a mutation-held PR). */
+  /**
+   * Open the pull request as a draft. Kept so a record persisted before Issue
+   * #5095 retired the mutation hold (Issue #4617) still opens as a draft;
+   * nothing new sets it.
+   */
   draft?: boolean;
 }
 

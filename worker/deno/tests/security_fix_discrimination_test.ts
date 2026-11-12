@@ -661,6 +661,70 @@ Deno.test("discrimination: an unexpected throw is wrapped as a runner failure", 
   });
 });
 
+Deno.test("discrimination: a cleanup that throws ENOTEMPTY once keeps a completed check checked (Issue #5078)", async () => {
+  await withRepo(
+    { "src/sanitise.ts": VULN },
+    {
+      "src/sanitise.ts": FIXED,
+      "src/added.ts": "export const added = 1;\n",
+      "tests/sanitise_test.ts": TEST_SRC,
+    },
+    async (root) => {
+      const rec = recordingSeams(markerDeno);
+      const realRemoveDir = rec.seams.removeDir.bind(rec.seams);
+      let thrown = false;
+      const seams: MutationRunnerSeams = {
+        ...rec.seams,
+        removeDir(path) {
+          if (!thrown) {
+            thrown = true;
+            return Promise.reject(
+              Object.assign(
+                new Error(`ENOTEMPTY: directory not empty, rmdir '${path}'`),
+                {
+                  code: "ENOTEMPTY",
+                },
+              ),
+            );
+          }
+          return realRemoveDir(path);
+        },
+      };
+      const warnings: string[] = [];
+      const realWarn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(" "));
+      };
+      try {
+        const r = await runSecurityFixDiscrimination(
+          input(root, {
+            productionFiles: ["src/sanitise.ts", "src/added.ts"],
+          }),
+          seams,
+        );
+        assertEquals(r, {
+          kind: "checked",
+          test: CITED,
+          preFix: "fail",
+          postFix: "pass",
+        });
+        assertEquals(thrown, true);
+        assert(
+          warnings.some((w) => w.includes("ENOTEMPTY")),
+          `expected a warning naming ENOTEMPTY, got ${
+            JSON.stringify(warnings)
+          }`,
+        );
+      } finally {
+        console.warn = realWarn;
+        for (const d of rec.tempDirs) {
+          await realRemoveDir(d);
+        }
+      }
+    },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // End to end with real deno
 // ---------------------------------------------------------------------------

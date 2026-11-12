@@ -34,7 +34,7 @@
  *    item 5 has marked it ready.
  * 5. **An orphaned fleet draft is readied, then armed** (Issue #4952) — a
  *    draft whose issue has no live claim and whose body does not open with a
- *    draft-continuation or mutation-hold marker is marked ready by the
+ *    draft-continuation marker is marked ready by the
  *    `readyOrphanedDraft` hook, and armed in the same pass once its
  *    ready-for-review CI has started. Every other draft is skipped (Issue
  *    #1800), so a held or claimed draft is never published by the sweep.
