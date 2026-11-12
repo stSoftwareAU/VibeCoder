@@ -57,7 +57,9 @@ import {
   type BranchRefreshRefusalState,
   classifyTransientBranchRefreshRefusal,
   clearBranchRefreshRefusal,
+  type DeferredRefusalNotice,
   recordBranchRefreshRefusal,
+  updateRefusalsThenNotify,
 } from "./branch_refresh_refusal_streak.ts";
 
 /** One open PR the sweep may act on. */
@@ -137,8 +139,9 @@ export interface SweepAutoMergeOptions {
   ) => Promise<Result<void>>;
   /** Durable streak and one-comment escalation for repeated transient refusals. */
   branchRefreshRefusals?: {
-    load: () => Promise<BranchRefreshRefusalState>;
-    save: (state: BranchRefreshRefusalState) => Promise<void>;
+    update: (
+      change: (state: BranchRefreshRefusalState) => Promise<void>,
+    ) => Promise<void>;
     notify: (event: {
       repo: string;
       prNumber: number;
@@ -238,35 +241,78 @@ export async function sweepAutoMerge(
     logger,
   } = options;
 
-  const refusalState = branchRefreshRefusals
-    ? await branchRefreshRefusals.load()
-    : new Map();
-  const listedRepos = new Set<string>();
-  const listedPrs = new Set<string>();
-  const clearRefusal = async (repo: string, prNumber: number) => {
-    const previous = clearBranchRefreshRefusal(refusalState, repo, prNumber);
-    if (previous?.notified && branchRefreshRefusals) {
-      try {
-        await branchRefreshRefusals.notify({
-          repo,
-          prNumber,
-          entry: previous,
-          active: false,
-        });
-        logger.info("Auto-merge branch-refresh refusal recovered", {
-          repo,
-          prNumber,
-          reason: previous.reason,
-        });
-      } catch (err) {
-        logger.warn("Could not update branch-refresh diagnostic comment", {
-          repo,
-          prNumber,
-          error: errorMessage(err),
-        });
-      }
+  // Refusal tracking is best effort: a lock or filesystem failure is logged and
+  // the pass carries on, so it can never abort the sweep or relabel an update
+  // that succeeded. Comments are posted after the lock is released.
+  const updateRefusals = async (
+    change: (
+      state: BranchRefreshRefusalState,
+      defer: (notice: DeferredRefusalNotice) => void,
+    ) => Promise<void>,
+  ) => {
+    if (!branchRefreshRefusals) return;
+    try {
+      await updateRefusalsThenNotify(
+        (inner) => branchRefreshRefusals.update(inner),
+        (event) => branchRefreshRefusals.notify(event),
+        change,
+      );
+    } catch (err) {
+      logger.warn(
+        "Auto-merge sweep could not update the branch-refresh refusal state — continuing without it",
+        { error: errorMessage(err) },
+      );
     }
   };
+  const listedRepos = new Set<string>();
+  const listedPrs = new Set<string>();
+  const clearInState = (
+    refusalState: BranchRefreshRefusalState,
+    defer: (notice: DeferredRefusalNotice) => void,
+    repo: string,
+    prNumber: number,
+  ) => {
+    const previous = clearBranchRefreshRefusal(refusalState, repo, prNumber);
+    if (previous?.notified) {
+      defer({
+        event: { repo, prNumber, entry: previous, active: false },
+        onPosted: () =>
+          logger.info("Auto-merge branch-refresh refusal recovered", {
+            repo,
+            prNumber,
+            reason: previous.reason,
+          }),
+        onFailed: (err) =>
+          logger.warn("Could not update branch-refresh diagnostic comment", {
+            repo,
+            prNumber,
+            error: errorMessage(err),
+          }),
+      });
+    }
+  };
+
+  /**
+   * End a PR's refusal streak (and mark a notified comment recovered). Every
+   * skip, a permanent refusal and a successful refresh end it, as consecutive
+   * transient refusals are what the streak counts. Only a pass whose evidence
+   * is a mergeability reading sets `mergeabilityOnly`: that reading cannot
+   * prove stale test-merge parents caught up, so a stale-parent entry is kept
+   * (PR #5059 review).
+   */
+  const clearRefusal = (
+    repo: string,
+    prNumber: number,
+    mergeabilityOnly = false,
+  ) =>
+    updateRefusals((state, defer) => {
+      if (
+        mergeabilityOnly &&
+        state.get(`${repo}#${prNumber}`)?.reason === "test-merge-parents-stale"
+      ) return Promise.resolve();
+      clearInState(state, defer, repo, prNumber);
+      return Promise.resolve();
+    });
 
   const summary: SweepAutoMergeSummary = {
     reposVisited: [],
@@ -521,44 +567,53 @@ export async function sweepAutoMerge(
               } else if (!reason || !branchRefreshRefusals) {
                 await clearRefusal(repo, pr.number);
               } else {
-                const prior = refusalState.get(`${repo}#${pr.number}`);
-                if (prior?.notified && prior.reason !== reason) {
-                  await clearRefusal(repo, pr.number);
-                }
-                const entry = recordBranchRefreshRefusal(
-                  refusalState,
-                  repo,
-                  pr.number,
-                  reason,
-                );
-                if (
-                  entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD &&
-                  !entry.notified
-                ) {
-                  try {
-                    await branchRefreshRefusals.notify({
-                      repo,
-                      prNumber: pr.number,
-                      entry,
-                      active: true,
+                await updateRefusals((refusalState, defer) => {
+                  const prior = refusalState.get(`${repo}#${pr.number}`);
+                  if (
+                    prior?.notified && prior.reason !== reason &&
+                    prior.reason !== "test-merge-parents-stale"
+                  ) {
+                    clearInState(refusalState, defer, repo, pr.number);
+                  }
+                  const entry = recordBranchRefreshRefusal(
+                    refusalState,
+                    repo,
+                    pr.number,
+                    reason,
+                  );
+                  if (
+                    entry.streak >= BRANCH_REFRESH_REFUSAL_THRESHOLD &&
+                    !entry.notified
+                  ) {
+                    defer({
+                      event: {
+                        repo,
+                        prNumber: pr.number,
+                        entry,
+                        active: true,
+                      },
+                      onFailed: (err) =>
+                        logger.warn(
+                          "Could not post branch-refresh diagnostic comment",
+                          {
+                            repo,
+                            prNumber: pr.number,
+                            error: errorMessage(err),
+                          },
+                        ),
                     });
-                    entry.notified = true;
-                  } catch (err) {
-                    logger.warn(
-                      "Could not post branch-refresh diagnostic comment",
-                      { repo, prNumber: pr.number, error: errorMessage(err) },
+                    logger.error(
+                      "Fleet health: repeated transient branch-refresh refusal",
+                      {
+                        repo,
+                        prNumber: pr.number,
+                        reason,
+                        streak: entry.streak,
+                      },
                     );
                   }
-                  logger.error(
-                    "Fleet health: repeated transient branch-refresh refusal",
-                    {
-                      repo,
-                      prNumber: pr.number,
-                      reason,
-                      streak: entry.streak,
-                    },
-                  );
-                }
+                  return Promise.resolve();
+                });
               }
             }
           } catch (err) {
@@ -571,7 +626,7 @@ export async function sweepAutoMerge(
         }
 
         if (!armedNow || reading.mergeable !== "UNKNOWN") {
-          await clearRefusal(repo, pr.number);
+          await clearRefusal(repo, pr.number, true);
         }
 
         try {
@@ -602,15 +657,17 @@ export async function sweepAutoMerge(
       }
       quota.repoDone();
     }
-    for (const [key] of refusalState) {
-      const separator = key.lastIndexOf("#");
-      const repo = key.slice(0, separator);
-      const prNumber = Number(key.slice(separator + 1));
-      if (listedRepos.has(repo) && !listedPrs.has(key)) {
-        await clearRefusal(repo, prNumber);
+    await updateRefusals((refusalState, defer) => {
+      for (const [key] of [...refusalState]) {
+        const separator = key.lastIndexOf("#");
+        const repo = key.slice(0, separator);
+        const prNumber = Number(key.slice(separator + 1));
+        if (listedRepos.has(repo) && !listedPrs.has(key)) {
+          clearInState(refusalState, defer, repo, prNumber);
+        }
       }
-    }
-    if (branchRefreshRefusals) await branchRefreshRefusals.save(refusalState);
+      return Promise.resolve();
+    });
     return { ok: true, value: summary };
   } catch (err) {
     return {

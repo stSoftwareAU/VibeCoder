@@ -457,6 +457,8 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
       const workerId = getWorkerUniqueId(config.workerName);
       const execResult = await executePrBranchUpdates(actions, {
         workDir,
+        baseRefreshSource: "pr-maintenance",
+        baseRefreshCounterDir: workDir,
         logger,
         workerId,
         // Issue #335: count consecutive failures per (repo, branch) so a
@@ -490,6 +492,8 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
                 serviceAccounts: config.serviceAccounts ?? [],
               }),
             },
+            "pr-maintenance",
+            workDir || undefined,
           ),
         setupRepo: async (repo: string, wd: string) => {
           const cmdResult = await setupRepo(repo, wd);
@@ -622,6 +626,7 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
 
       const result = await ensureAutoMergeOnOpenPrs({
         githubUser,
+        baseRefreshCounterDir: config.workDir || undefined,
         repos,
         logger,
         isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),

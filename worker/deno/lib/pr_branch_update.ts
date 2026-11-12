@@ -37,6 +37,10 @@ import {
   clearPrBranchUpdateFailure,
   recordPrBranchUpdateFailure,
 } from "./pr_branch_update_failure_streak.ts";
+import {
+  logBaseRefreshDecision,
+  persistBaseRefreshCounter,
+} from "./repair_base_merge_4943.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -301,6 +305,14 @@ export interface PrBranchUpdateExecutionResult {
 export interface PrBranchExecutionDeps {
   /** Working directory where repos are cloned. */
   workDir: string;
+  /** Lane name used to attribute local conflict-repair merges. */
+  baseRefreshSource?: string;
+  /**
+   * Directory the base-refresh decision counters are persisted to: the
+   * production callers pass `WORK_DIR`. Unset (as in tests), a decision is
+   * counted in memory only, so no test writes a counters file (PR #5059 review).
+   */
+  baseRefreshCounterDir?: string;
   /** Logger for diagnostic output. */
   logger: Logger;
   /** Set up a repository (clone/update). Returns repo path on success. */
@@ -1338,6 +1350,33 @@ export async function executePrBranchUpdates(
     const postState = updateResult.ok
       ? "UNKNOWN"
       : await resolvePrLiveState(deps, action);
+
+    if (action.reason === "conflicting") {
+      const source = deps.baseRefreshSource ?? "branch-update-loop";
+      const finished = !updateResult.ok && isFinishedPrState(postState);
+      const outcome = updateResult.ok
+        ? "base-merge-allowed"
+        : finished
+        ? "refresh-skipped"
+        : "base-merge-failed";
+      const reason = updateResult.ok
+        ? "genuine conflict repaired through local base merge"
+        : finished
+        ? `PR ${postState.toLowerCase()} during conflict repair`
+        : `genuine conflict repair failed: ${updateResult.error.message}`;
+      logBaseRefreshDecision({
+        source,
+        outcome,
+        repo: action.repo,
+        prNumber: action.prNumber,
+        base: action.baseBranch,
+        reason,
+      });
+      await persistBaseRefreshCounter(deps.baseRefreshCounterDir, {
+        source,
+        outcome,
+      });
+    }
 
     if (updateResult.ok) {
       updatedCount++;

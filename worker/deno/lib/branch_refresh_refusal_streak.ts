@@ -1,5 +1,6 @@
 /** Persisted consecutive transient branch-refresh refusals (Issue #4831). */
 
+import { withFileLock } from "./file_lock.ts";
 import { atomicWrite } from "./file_utils.ts";
 import {
   fetchMarkerComments,
@@ -28,6 +29,13 @@ export interface BranchRefreshRefusalEvent {
   prNumber: number;
   entry: BranchRefreshRefusalEntry;
   active: boolean;
+  /**
+   * Which lane was refused. `refresh` (the default) is the strict-base branch
+   * refresh; `repair` is a repair that could not decide its base merge because
+   * mergeability is still UNKNOWN (Issue #4831, #4943). Both share one marker
+   * per PR, so the latest write's wording is the one on the comment.
+   */
+  lane?: "refresh" | "repair";
 }
 
 export type BranchRefreshRefusalState = Map<string, BranchRefreshRefusalEntry>;
@@ -38,15 +46,22 @@ export async function notifyBranchRefreshRefusal(
   gh: (args: string[]) => Promise<string>,
   isTrustedAuthor: (login: string) => boolean,
 ): Promise<void> {
-  const { repo, prNumber, entry, active } = event;
+  const { repo, prNumber, entry, active, lane = "refresh" } = event;
   const marker =
     `${BRANCH_REFRESH_REFUSAL_MARKER} repo="${repo}" pr="${prNumber}" -->`;
   const reason = entry.reason === "mergeability-unknown"
     ? "GitHub has not finished calculating mergeability"
     : "GitHub's test-merge parents still lag the PR head or base";
-  const body = active
-    ? `${marker}\n### Branch refresh is still waiting\n\nThe strict-base branch refresh has been refused on ${entry.streak} consecutive passes because ${reason}. The worker will keep retrying it.\n`
-    : `${marker}\n### Branch refresh recovered\n\nThe strict-base branch refresh is no longer refused for ${reason}; automatic recovery continues.\n`;
+  let body: string;
+  if (lane === "repair") {
+    body = active
+      ? `${marker}\n### Repair is waiting on mergeability\n\nA repair of this PR could not decide whether to merge its base on ${entry.streak} consecutive passes because ${reason}. The worker will keep retrying.\n`
+      : `${marker}\n### Repair mergeability recovered\n\nA repair of this PR is no longer waiting on mergeability; automatic recovery continues.\n`;
+  } else {
+    body = active
+      ? `${marker}\n### Branch refresh is still waiting\n\nThe strict-base branch refresh has been refused on ${entry.streak} consecutive passes because ${reason}. The worker will keep retrying it.\n`
+      : `${marker}\n### Branch refresh recovered\n\nThe strict-base branch refresh is no longer refused for ${reason}; automatic recovery continues.\n`;
+  }
   const comments = await fetchMarkerComments(
     repo,
     prNumber,
@@ -118,10 +133,18 @@ export function recordBranchRefreshRefusal(
 ): BranchRefreshRefusalEntry {
   const key = branchRefreshRefusalKey(repo, prNumber);
   const previous = state.get(key);
-  const consecutive = previous?.reason === reason &&
+  // A mergeability read cannot prove that previously stale parents caught up,
+  // so the stale-parent reason is kept; the refusal still counts towards the
+  // same streak, so a run of transient refusals escalates (PR #5059 review).
+  const recorded: BranchRefreshTransientReason =
+    previous?.reason === "test-merge-parents-stale" &&
+      reason === "mergeability-unknown"
+      ? previous.reason
+      : reason;
+  const consecutive = previous?.reason === recorded &&
     nowMs - previous.lastSeenAtMs <= BRANCH_REFRESH_REFUSAL_TTL_MS;
   const entry: BranchRefreshRefusalEntry = {
-    reason,
+    reason: recorded,
     streak: consecutive ? previous.streak + 1 : 1,
     lastSeenAtMs: nowMs,
     notified: consecutive && previous.notified,
@@ -231,4 +254,75 @@ export async function writeBranchRefreshRefusals(
       }`,
     );
   }
+}
+
+/** Serialise the complete refusal read-modify-write across repair and sweep writers. */
+export async function updateBranchRefreshRefusals(
+  workDir: string,
+  update: (state: BranchRefreshRefusalState) => Promise<void>,
+): Promise<void> {
+  await Deno.mkdir(workDir, { recursive: true });
+  await withFileLock(
+    `${workDir}/${BRANCH_REFRESH_REFUSAL_FILE}.lock`,
+    async () => {
+      const state = await readBranchRefreshRefusals(workDir);
+      await update(state);
+      await writeBranchRefreshRefusals(workDir, state);
+    },
+  );
+}
+
+/** A diagnostic comment to post or edit once the refusal lock is released. */
+export interface DeferredRefusalNotice {
+  event: BranchRefreshRefusalEvent;
+  /** Runs after the comment was posted or edited. */
+  onPosted?: () => void;
+  /** Runs when posting or editing the comment failed. */
+  onFailed: (error: unknown) => void;
+}
+
+/**
+ * Run a refusal read-modify-write, then post the comments it queued, with no
+ * GitHub call inside the lock. `change` decides under the lock and queues each
+ * comment through `defer`. Once the lock is released each comment is posted. An
+ * active comment that went out is then recorded as `notified` in a second short
+ * transaction, but only on an entry still holding the reason it was posted for.
+ * A failed post leaves the entry un-notified, so the next pass retries it. If the
+ * lock or the write fails the error reaches the caller before any comment goes
+ * out; if only the second transaction fails, that error reaches the caller after
+ * the comments have gone out.
+ */
+export async function updateRefusalsThenNotify(
+  update: (
+    change: (state: BranchRefreshRefusalState) => Promise<void>,
+  ) => Promise<void>,
+  notify: (event: BranchRefreshRefusalEvent) => Promise<void>,
+  change: (
+    state: BranchRefreshRefusalState,
+    defer: (notice: DeferredRefusalNotice) => void,
+  ) => Promise<void>,
+): Promise<void> {
+  const queued: DeferredRefusalNotice[] = [];
+  await update((state) => change(state, (notice) => queued.push(notice)));
+  const posted: BranchRefreshRefusalEvent[] = [];
+  for (const notice of queued) {
+    try {
+      await notify(notice.event);
+    } catch (error) {
+      notice.onFailed(error);
+      continue;
+    }
+    if (notice.event.active) posted.push(notice.event);
+    notice.onPosted?.();
+  }
+  if (posted.length === 0) return;
+  await update((state) => {
+    for (const { repo, prNumber, entry } of posted) {
+      const current = state.get(branchRefreshRefusalKey(repo, prNumber));
+      if (current !== undefined && current.reason === entry.reason) {
+        current.notified = true;
+      }
+    }
+    return Promise.resolve();
+  });
 }

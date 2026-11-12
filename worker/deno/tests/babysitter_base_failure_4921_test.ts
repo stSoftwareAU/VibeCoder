@@ -16,6 +16,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type BaseFailureDecision,
   classifyBaseRedFailures,
+  confirmBaseFailureFixed,
 } from "../lib/babysitter_base_failure.ts";
 import type {
   ActionsLogOptions,
@@ -47,7 +48,8 @@ const OTHER_FAILURE =
 interface CheckSpec {
   name: string;
   headConclusion: "failure" | "success";
-  baseConclusion: "success" | "failure";
+  /** `cancelled` reads as no verdict; `startup_failure` reads as unavailable. */
+  baseConclusion: "success" | "failure" | "cancelled" | "startup_failure";
   /** The failure text the pull request's own log holds. */
   prFailure: string;
   /** The failure text the base run's log holds. */
@@ -241,12 +243,110 @@ function classify(scenario: Scenario): Promise<BaseFailureDecision> {
   });
 }
 
-/** The reason of a `repair` decision, failing the test on any other kind. */
-function reasonOf(decision: BaseFailureDecision): string {
+Deno.test("confirmBaseFailureFixed accepts a matching red merge-base check only after the newer base is green (Issue #4943)", async () => {
+  const currentBase = "d".repeat(40);
+  const mergeBase = "c".repeat(40);
+  const tree = "e".repeat(40);
+  const gh = async (args: string[]): Promise<string> => {
+    const endpoint = args[1] ?? "";
+    const jq = args[args.indexOf("--jq") + 1] ?? "";
+    if (endpoint === `repos/${REPO}/check-runs/123`) {
+      return jq === ".head_sha" ? `${HEAD_SHA}\n` : json({
+        name: "Unit tests",
+        app_slug: ACTIONS_APP,
+        details_url: detailsUrl(2000, 1),
+      });
+    }
+    if (
+      endpoint === `repos/${REPO}/actions/runs/2000` ||
+      endpoint === `repos/${REPO}/actions/runs/4000` ||
+      endpoint === `repos/${REPO}/actions/runs/5000`
+    ) {
+      return `${WORKFLOW_PATH}\n`;
+    }
+    if (endpoint === `repos/${REPO}/commits/${BASE_REF}`) {
+      return `${currentBase}\n`;
+    }
+    if (
+      endpoint === `repos/${REPO}/commits/${BASE_REF}/check-runs?per_page=100`
+    ) {
+      return json({
+        check_runs: [{
+          id: 9001,
+          name: "Unit tests",
+          status: "completed",
+          conclusion: "success",
+          head_sha: currentBase,
+          app_slug: ACTIONS_APP,
+          details_url: detailsUrl(5000, 1),
+        }],
+      });
+    }
+    if (endpoint === `repos/${REPO}/compare/${currentBase}...${HEAD_SHA}`) {
+      return `${mergeBase}\n`;
+    }
+    if (endpoint === `repos/${REPO}/commits/${mergeBase}`) {
+      return jq === ".sha" ? `${mergeBase}\n` : `${tree}\n`;
+    }
+    if (
+      endpoint === `repos/${REPO}/commits/${mergeBase}/check-runs?per_page=100`
+    ) {
+      return json({
+        check_runs: [{
+          id: 4001,
+          name: "Unit tests",
+          status: "completed",
+          conclusion: "failure",
+          head_sha: mergeBase,
+          app_slug: ACTIONS_APP,
+          details_url: detailsUrl(4000, 1),
+        }],
+      });
+    }
+    throw new Error(`unexpected gh call: ${args.join(" ")}`);
+  };
+  const result = await confirmBaseFailureFixed({
+    repo: REPO,
+    baseRef: BASE_REF,
+    headSha: HEAD_SHA,
+    checkRunId: "123",
+    checkName: "Unit tests",
+    ghFn: gh,
+    actionsLogFn: (input) =>
+      Promise.resolve({
+        kind: "excerpt",
+        providerId: "github-actions",
+        jobId: 1,
+        excerpt: input.checkRunId === "123" ? PARSER_FAILURE : PARSER_FAILURE,
+      }),
+  });
+  assertEquals(result.confirmed, true, result.reason);
+  assertStringIncludes(result.reason, "same signature");
+  assertStringIncludes(result.reason, mergeBase);
+});
+
+/** A `repair` decision, failing the test on any other kind. */
+function repairOf(
+  decision: BaseFailureDecision,
+): Extract<BaseFailureDecision, { kind: "repair" }> {
   if (decision.kind !== "repair") {
     throw new Error(`expected repair, got ${decision.kind}`);
   }
-  return decision.reason;
+  return decision;
+}
+
+/**
+ * The reason of a `repair` decision that is not a green base run: such a
+ * reading must not prove that a base fix landed (Issue #4943).
+ */
+function reasonOf(decision: BaseFailureDecision): string {
+  const repair = repairOf(decision);
+  assertEquals(
+    repair.repairCheck,
+    undefined,
+    `only a green base run identifies a candidate check: ${repair.reason}`,
+  );
+  return repair.reason;
 }
 
 /** A `gh` runner that must never be reached. */
@@ -275,11 +375,30 @@ Deno.test("classifyBaseRedFailures - defers when every one of two failing checks
   });
 });
 
-Deno.test("classifyBaseRedFailures - repairs when the base run of the failing check is green", async () => {
+Deno.test("classifyBaseRedFailures - a green current base identifies the check but does not prove a base fix (Issue #4943)", async () => {
   const decision = await classify({
     specs: [{ ...redCheck("Unit tests"), baseConclusion: "success" }],
   });
-  assertStringIncludes(reasonOf(decision), "is green, not red");
+  const repair = repairOf(decision);
+  assertStringIncludes(repair.reason, "is green, not red");
+  assertEquals(repair.repairCheck, {
+    name: "Unit tests",
+    headRunId: idsOf(0).prRun,
+  });
+});
+
+Deno.test("classifyBaseRedFailures - a base run with no verdict (cancelled) repairs without a candidate check (Issue #4943)", async () => {
+  const decision = await classify({
+    specs: [{ ...redCheck("Unit tests"), baseConclusion: "cancelled" }],
+  });
+  assertStringIncludes(reasonOf(decision), "is no-run, not red");
+});
+
+Deno.test("classifyBaseRedFailures - a base run with an unavailable conclusion repairs without a candidate check (Issue #4943)", async () => {
+  const decision = await classify({
+    specs: [{ ...redCheck("Unit tests"), baseConclusion: "startup_failure" }],
+  });
+  assertStringIncludes(reasonOf(decision), "is unavailable, not red");
 });
 
 Deno.test("classifyBaseRedFailures - repairs when the base log shows a different failure", async () => {
@@ -296,10 +415,15 @@ Deno.test("classifyBaseRedFailures - repairs the whole failure when one of two f
       { ...redCheck("Lint", RENDER_FAILURE), baseConclusion: "success" },
     ],
   });
+  const repair = repairOf(decision);
   assertStringIncludes(
-    reasonOf(decision),
+    repair.reason,
     'the base\'s run of "Lint" is green, not red',
   );
+  assertEquals(repair.repairCheck, {
+    name: "Lint",
+    headRunId: idsOf(1).prRun,
+  });
 });
 
 Deno.test("classifyBaseRedFailures - repairs a dependency audit that is red on the base, and defers the same fixture under a non-audit name", async () => {

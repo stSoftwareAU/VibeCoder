@@ -29,6 +29,7 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import { decodeAnnotations } from "../lib/pr_spelling_processor.ts";
+import { confirmBaseFailureFixed } from "../lib/babysitter_base_failure.ts";
 import {
   createDefaultDeps,
   type WorkerDeps,
@@ -43,6 +44,10 @@ import { resolveActingGithubUser } from "../lib/acting_github_user.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import { isGraftContextEnabled } from "../lib/graft_context_config.ts";
 import { resolveCiCheckStateDir } from "../lib/ci_check_state_dir.ts";
+import {
+  createRepairMergeabilityTracker,
+  readRepairBaseMergeDecision,
+} from "../lib/repair_base_merge_4943.ts";
 
 // Re-export library functions for external use
 export { formatCiAnnotations };
@@ -138,16 +143,66 @@ export const prCiProcessorCommand = {
           { cwd: repoWorkDir },
         );
 
-        // Sync feature branch with default branch (Issue #230)
+        // Sync feature branch with default branch (Issue #230), only for a
+        // genuine conflict or the same failure proven on the merge base and
+        // green on a newer base commit (Issue #4943). A behind-only PR is
+        // refreshed by the shared base-refresh owner (Issue #4613), not here.
         const defaultBranchResult = await deps.git.getRepoDefaultBranch(repo);
         const defaultBranch = defaultBranchResult.ok
           ? defaultBranchResult.value
           : "main";
-        await deps.git.syncFeatureBranchWithDefault(
-          branchName,
-          defaultBranch,
-          { cwd: repoWorkDir },
-        );
+        const baseMerge = await readRepairBaseMergeDecision({
+          repo,
+          prNumber,
+          gh: deps.github.runGhCommand,
+          source: "pr-ci-processor",
+          base: defaultBranch,
+          counterDir: config.workDir,
+          tracker: createRepairMergeabilityTracker({
+            workDir: config.workDir,
+            gh: deps.github.runGhCommand,
+            fleetAuthors: resolveFleetMaintenanceAuthorSet({
+              githubUser: resolveActingGithubUser(args),
+              fleetPrAuthors: config.fleetPrAuthors ?? [],
+            }),
+          }),
+          // A green base run alone is ordinary when the PR broke the check.
+          // Require this exact failure on the merge-base and green on a newer
+          // base commit before merging the base into a repair.
+          provenBaseFixChecks: async () => {
+            const prView = JSON.parse(
+              await deps.github.runGhCommand([
+                "pr",
+                "view",
+                String(prNumber),
+                "--repo",
+                repo,
+                "--json",
+                "headRefOid",
+              ]),
+            ) as { headRefOid?: unknown };
+            if (typeof prView.headRefOid !== "string") {
+              throw new Error("PR head SHA is missing from gh pr view");
+            }
+            const result = await confirmBaseFailureFixed({
+              repo,
+              baseRef: defaultBranch,
+              headSha: prView.headRefOid,
+              checkRunId,
+              checkName,
+              ghFn: deps.github.runGhCommand,
+            });
+            if (!result.confirmed) throw new Error(result.reason);
+            return [checkName];
+          },
+        });
+        if (baseMerge.merge) {
+          await deps.git.syncFeatureBranchWithDefault(
+            branchName,
+            defaultBranch,
+            { cwd: repoWorkDir },
+          );
+        }
 
         // Run pre-setup command if configured
         await runPreSetupCommand(repo, repoWorkDir, config.repoConfig);
@@ -185,6 +240,7 @@ export const prCiProcessorCommand = {
           // Issue #1662: heartbeat, marker and milestone state live in the
           // work root, not in the clone `setupRepo` returned above.
           workRoot: config.workDir,
+          baseRefreshCounterDir: config.workDir,
           stateDir: resolveCiCheckStateDir(config.workDir),
           qualityInstructions,
           customInstructions,

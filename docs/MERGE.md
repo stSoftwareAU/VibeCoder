@@ -1345,6 +1345,57 @@ it after merge, closure, required-check failure or the six-hour expiry. A
 merge-queue base is not refreshed merely for being behind. Conflict resolution
 continues through the explicit conflict-repair path.
 
+### Repair merges and refresh attribution (Issue #4943)
+
+Repair lanes merge the base only for a `CONFLICTING` pull request. The
+babysitter and CI-fix lane can also merge for a failed check when
+`confirmBaseFailureFixed()` proves that the same check failed with the same
+failure signature on the PR's merge base and passes on a newer base commit. A
+green check on the current base alone is not proof: a PR can introduce its own
+failure while the base remains green. An unreadable or inconclusive comparison
+skips that merge. This exception is used by the babysitter and CI-fix lane,
+which have the failing check to compare; review and spelling repairs merge only
+for conflicts.
+
+The same policy applies immediately before repair publication, including when
+the CI, feedback or spelling library is called directly. A successful repair
+does not authorise a base merge during its final commit and push. The CI lane
+rechecks its historical failure evidence at that boundary.
+
+Behind-only refreshes continue through `requestReadyBranchUpdate()` and the
+shared owner above. Required checks and valid review approval remain gates for
+that request. A merge queue still tests the proposed head and does not need a
+behind-only refresh. Genuine conflict repairs remain on their conflict-repair
+path.
+
+Repair mergeability tracking and the auto-merge sweep update the persisted
+refusal file under the same file lock. The lock covers only the read, decide and
+write: the diagnostic PR comment is posted after it is released, and `notified`
+is then recorded in a second short transaction. The sweep treats this tracking
+as best effort: a lock or filesystem failure is logged and the pass carries on,
+so it never stops the sweep or relabels a branch update that succeeded. A
+repair's known mergeability reading clears only a mergeability refusal: it
+cannot clear a stale test-merge-parent refusal. A successful refresh, a skipped
+PR or a permanent refusal ends the streak; an UNKNOWN reading continues it.
+This keeps concurrent repairs and alternating lanes from losing an unresolved
+refusal while ensuring that only consecutive transient refusals escalate.
+
+Refresh decisions emit bounded `[base-refresh]` lines with the lane, outcome,
+repository, PR, base, current owner, reason and worker build stamp. Every field
+is redacted before truncation, and complete diagnostic messages, including
+counter paths and refusal-tracking warnings, pass through secret redaction
+before emission. Standalone repair commands persist cumulative named counters in
+`base_refresh_counters.json`, including the `<lane>-publication` decision the
+CI, feedback and spelling libraries take just before they publish (the command's
+work directory is passed through `repairBaseForPublication`); in-process callers
+persist to that file when their work directory is available. A counters file
+that parses but has the wrong shape logs one warning naming the field before the
+tally restarts. The separate local conflict updater records
+its successful and failed merge attempts when it has a work directory. These
+diagnostics attribute decisions; they do not establish that fleet-wide churn
+has fallen. Local conflict-repair command paths that do not supply a counter
+directory are logged but are not retained across process exits.
+
 ## Related implementation
 
 - [`worker/deno/lib/branch_protection_definitions.ts`](../worker/deno/lib/branch_protection_definitions.ts)

@@ -8,13 +8,17 @@
  * the same classification before it starts a repair: when every failing check
  * is verified as the base's own failure, no repair starts, because a copy of
  * the base's fix in each open pull request collides with the others and with
- * the base's own fix. Once the base is fixed, the babysitter's ordinary base
- * merge brings the fix in.
+ * the base's own fix. A later repair merges that fix only after the same
+ * failure is verified on the PR merge base and the check is green on a newer
+ * base commit.
  *
  * Every other reading repairs exactly as before. Unknown or unverifiable
  * evidence is never a deferral: a failed read, a commit status, a
  * dependency-audit check (fixed in each pull request, Issue #3141), a green or
  * missing or stale base run, an unreadable or different base log.
+ *
+ * A repair whose stopping check is green on the base is still only a repair:
+ * green on the current base alone does not prove that a base fix landed.
  *
  * Uses Australian English throughout.
  */
@@ -38,8 +42,16 @@ export interface BaseRedCheck {
 export type BaseFailureDecision =
   /** Every failing check is the base's own failure: start no repair. */
   | { kind: "defer"; checks: BaseRedCheck[] }
-  /** Repair as usual; `reason` says which reading stopped the deferral. */
-  | { kind: "repair"; reason: string };
+  /**
+   * Repair as usual; `reason` says which reading stopped the deferral.
+   * `repairCheck` names the first check that was not verified as a matching
+   * base failure. A green current-base run is not evidence of a landed fix.
+   */
+  | {
+    kind: "repair";
+    reason: string;
+    repairCheck?: { name: string; headRunId: number };
+  };
 
 /** Inputs for {@link classifyBaseRedFailures}. */
 export interface ClassifyBaseRedFailuresOptions {
@@ -63,8 +75,13 @@ interface FailingRun {
 const HEAD_SHA = /^[0-9a-f]{40}$/;
 
 /** Repair, with the reason carried so the log names why nothing was deferred. */
-function repair(reason: string): BaseFailureDecision {
-  return { kind: "repair", reason };
+function repair(
+  reason: string,
+  repairCheck?: { name: string; headRunId: number },
+): BaseFailureDecision {
+  return repairCheck === undefined
+    ? { kind: "repair", reason }
+    : { kind: "repair", reason, repairCheck };
 }
 
 function message(error: unknown): string {
@@ -176,6 +193,13 @@ export async function classifyBaseRedFailures(
       failing: identity.value,
       ghCommandFn: ghFn,
     });
+    if (evidence.state === "green") {
+      return {
+        kind: "repair",
+        reason: `the base's run of "${run.name}" is green, not red`,
+        repairCheck: { name: run.name, headRunId: run.id },
+      };
+    }
     if (evidence.state !== "red") {
       return repair(
         `the base's run of "${run.name}" is ${evidence.state}, not red`,
@@ -201,4 +225,144 @@ export async function classifyBaseRedFailures(
     matched.push({ name: run.name, baseRunId: evidence.runId });
   }
   return { kind: "defer", checks: matched };
+}
+
+/**
+ * Confirm that a failing PR check was the same failure on the PR's merge-base
+ * and is now green on a newer base commit. A green base run by itself is the
+ * normal result when the PR caused the failure, so it never authorises a merge.
+ */
+export async function confirmBaseFailureFixed(options: {
+  repo: string;
+  baseRef: string;
+  headSha: string;
+  checkRunId: string;
+  checkName: string;
+  ghFn: (args: string[]) => Promise<string>;
+  actionsLogFn?: typeof fetchGithubActionsLogExcerpt;
+}): Promise<{ confirmed: boolean; reason: string }> {
+  const { repo, baseRef, headSha, checkRunId, checkName, ghFn } = options;
+  if (!HEAD_SHA.test(headSha)) {
+    return { confirmed: false, reason: "PR head is not a full SHA" };
+  }
+
+  const identity = await readCheckIdentity({
+    repo,
+    checkRunId,
+    checkName,
+    ghCommandFn: ghFn,
+  });
+  if (!identity.ok) {
+    return { confirmed: false, reason: identity.error.message };
+  }
+  let checkHeadSha: string;
+  try {
+    checkHeadSha = (await ghFn([
+      "api",
+      `repos/${repo}/check-runs/${checkRunId}`,
+      "--jq",
+      ".head_sha",
+    ])).trim();
+  } catch (error) {
+    return {
+      confirmed: false,
+      reason: `could not read the PR check head: ${message(error)}`,
+    };
+  }
+  if (checkHeadSha !== headSha) {
+    return {
+      confirmed: false,
+      reason: "PR check belongs to a different head revision",
+    };
+  }
+  const current = await readBaseBranchCheck({
+    repo,
+    branch: baseRef,
+    failing: identity.value,
+    ghCommandFn: ghFn,
+  });
+  if (current.state !== "green") {
+    return {
+      confirmed: false,
+      reason: `current base check is ${current.state}, not green`,
+    };
+  }
+
+  let mergeBaseSha: string;
+  try {
+    mergeBaseSha = (await ghFn([
+      "api",
+      `repos/${repo}/compare/${current.sha}...${headSha}`,
+      "--jq",
+      ".merge_base_commit.sha",
+    ])).trim();
+  } catch (error) {
+    return {
+      confirmed: false,
+      reason: `could not read PR merge-base: ${message(error)}`,
+    };
+  }
+  if (!HEAD_SHA.test(mergeBaseSha)) {
+    return {
+      confirmed: false,
+      reason: "PR comparison returned no full merge-base SHA",
+    };
+  }
+  if (current.sha === mergeBaseSha) {
+    return {
+      confirmed: false,
+      reason: "base has no commit newer than the PR merge-base",
+    };
+  }
+
+  const historical = await readBaseBranchCheck({
+    repo,
+    branch: mergeBaseSha,
+    failing: identity.value,
+    ghCommandFn: ghFn,
+  });
+  if (historical.state !== "red") {
+    return {
+      confirmed: false,
+      reason: `merge-base check is ${historical.state}, not red`,
+    };
+  }
+  const headFailure = await (options.actionsLogFn ??
+    fetchGithubActionsLogExcerpt)({
+      repo,
+      checkRunId,
+      checkName,
+      ghFn,
+    });
+  if (headFailure.kind !== "excerpt") {
+    return {
+      confirmed: false,
+      reason: `PR failure log is not comparable: ${
+        headFailure.kind === "error" ? headFailure.error : headFailure.reason
+      }`,
+    };
+  }
+  const comparison = await compareBaseFailure({
+    repo,
+    checkName,
+    baseCheckRunId: historical.runId,
+    failureText: headFailure.excerpt,
+    ghFn,
+    ...(options.actionsLogFn !== undefined
+      ? { actionsLogFn: options.actionsLogFn }
+      : {}),
+  });
+  if (comparison.state !== "same") {
+    return {
+      confirmed: false,
+      reason: comparison.state === "different"
+        ? "PR failure differs from the merge-base failure"
+        : `merge-base failure is not comparable: ${comparison.reason}`,
+    };
+  }
+  return {
+    confirmed: true,
+    reason:
+      `check "${checkName}" failed with the same signature at ${mergeBaseSha} and is green on newer base ${current.sha}`,
+  };
 }

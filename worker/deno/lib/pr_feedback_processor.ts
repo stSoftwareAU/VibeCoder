@@ -30,6 +30,7 @@ import {
   prBaseForSync,
   resolvePreFlightSpec,
 } from "./git_push.ts";
+import { repairBaseForPublication } from "./repair_base_merge_4943.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import { PrePushGateInfrastructureError } from "./pre_push_gate.ts";
 import {
@@ -233,6 +234,13 @@ export interface PrFeedbackProcessorDeps {
    * so `dirname` names the lane, not the root.
    */
   workRoot: string;
+  /**
+   * Directory the base-refresh decision counters are persisted to
+   * (`base_refresh_counters.json`): the production callers pass `WORK_DIR`.
+   * Unset (as in tests), a publication-time decision is counted in memory only,
+   * so no test writes into a shared directory (PR #5059 review).
+   */
+  baseRefreshCounterDir?: string;
   /**
    * Fleet identity inputs for the PR-comment claim's author check
    * (Issue #1124), and for the PR total on the round's run-stats comment
@@ -1843,9 +1851,12 @@ async function _processFeedbackWithHeartbeat(
       return checked;
     }
     : undefined;
-  // Owner rule 2026-11-03: merge the PR's base in just before the fix is
-  // pushed, so the fix and the branch update reach GitHub in one push and CI
-  // runs once. Not for a gated head's fix branch, whose PR targets the head.
+  // Owner rule 2026-11-03: the fix and the branch update reach GitHub in one
+  // push so CI runs once. Not for a gated head's fix branch, whose PR targets
+  // the head. `compareBaseBranch` is the PR base for the pre-push CI compare;
+  // whether the base is merged in is re-checked at publication (Issue #4943):
+  // an initial sync decision cannot authorise an unrelated base merge after
+  // the agent has finished.
   const compareBaseBranch = await prBaseForSync(
     undefined,
     repo,
@@ -1854,7 +1865,16 @@ async function _processFeedbackWithHeartbeat(
     (message) => logger.warn(message),
   );
   const syncBaseBranch = fixBranch === undefined
-    ? compareBaseBranch
+    ? await repairBaseForPublication({
+      knownBase: undefined,
+      repo,
+      prNumber,
+      source: "pr-feedback-processor",
+      counterDir: processorDeps.baseRefreshCounterDir,
+      gh: (args) => deps.github.runGhCommand(args),
+      warn: (message) => logger.warn(message),
+      log: (message) => logger.info(message),
+    })
     : undefined;
   const pushOptions = {
     cwd: processorDeps.workDir,

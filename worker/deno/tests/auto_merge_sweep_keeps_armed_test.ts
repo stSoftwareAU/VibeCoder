@@ -241,6 +241,7 @@ for (const scenario of ["owned", "awaiting-review", "ready"]) {
           refresh.head,
           async () => {},
           { fleetAuthors: [WORKER_USER] },
+          "test-ready-updater",
         );
         assert(first.ok);
       }

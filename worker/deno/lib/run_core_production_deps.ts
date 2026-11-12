@@ -132,8 +132,7 @@ import { sweepAutoMerge } from "./auto_merge_sweep.ts";
 import { readyOrphanedDraftPr } from "./draft_pr_self_heal.ts";
 import {
   notifyBranchRefreshRefusal,
-  readBranchRefreshRefusals,
-  writeBranchRefreshRefusals,
+  updateBranchRefreshRefusals,
 } from "./branch_refresh_refusal_streak.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestReadyBranchUpdate } from "./required_branch_checks_4613.ts";
@@ -2677,6 +2676,7 @@ export async function createProductionRunCoreDeps(
             // Issue #1662: heartbeat and marker state belong in the work
             // root, not the clone `setupRepo` returned above.
             workRoot: workDir,
+            baseRefreshCounterDir: workDir,
             qualityInstructions,
             customInstructions,
             // Issue #213: the dedicated reactive budget, not the issue-work
@@ -2835,6 +2835,7 @@ export async function createProductionRunCoreDeps(
             // Issue #1662: heartbeat and marker state belong in the work
             // root, not the clone `setupRepo` returned above.
             workRoot: workDir,
+            baseRefreshCounterDir: workDir,
             qualityInstructions,
             customInstructions,
             claudeTimeout: config.claudeTimeout,
@@ -2972,6 +2973,7 @@ export async function createProductionRunCoreDeps(
             // Issue #1662: heartbeat, marker and milestone state belong in
             // the work root, not the clone `setupRepo` returned above.
             workRoot: workDir,
+            baseRefreshCounterDir: workDir,
             // Issue #213: the dedicated reactive budget, not the issue-work
             // `claude_timeout` — this dispatch path passing `claudeTimeout` is
             // why a host with `claude_timeout: 3600` logged "Running Claude
@@ -3145,6 +3147,8 @@ export async function createProductionRunCoreDeps(
         const workerId = getWorkerUniqueId(config.workerName);
         const execResult = await executePrBranchUpdates(actions, {
           workDir,
+          baseRefreshSource: "branch-update-loop",
+          baseRefreshCounterDir: workDir,
           logger,
           workerId,
           // Issue #335: count consecutive failures per (repo, branch) so a
@@ -3170,6 +3174,8 @@ export async function createProductionRunCoreDeps(
               undefined,
               undefined,
               { fleetAuthors: maintenanceAuthors },
+              "branch-update-loop",
+              workDir,
             ),
           // Issue #394: this lane works in its **own** worktree, never in the
           // shared `${WORK_DIR}/<repo>` clone. `setupRepo` opens with
@@ -3748,6 +3754,8 @@ export async function createProductionRunCoreDeps(
                 undefined,
                 undefined,
                 { fleetAuthors: maintenanceAuthors },
+                "merge-block-repair",
+                workDir,
               );
               return result.ok
                 ? { ok: true, value: "GitHub branch refresh requested" }
@@ -3876,25 +3884,15 @@ export async function createProductionRunCoreDeps(
               undefined,
               undefined,
               { fleetAuthors: maintenanceAuthors },
+              "auto-merge-sweep",
+              workDir,
             )
             : Promise.resolve({
               ok: false,
               error: new Error("PR base is unknown"),
             }),
         branchRefreshRefusals: {
-          load: () =>
-            readBranchRefreshRefusals(
-              workDir,
-              undefined,
-              (message) => logger.warn(message),
-            ),
-          save: (state) =>
-            writeBranchRefreshRefusals(
-              workDir,
-              state,
-              undefined,
-              (message) => logger.warn(message),
-            ),
+          update: (change) => updateBranchRefreshRefusals(workDir, change),
           notify: async ({ repo, prNumber, entry, active }) => {
             await notifyBranchRefreshRefusal(
               { repo, prNumber, entry, active },

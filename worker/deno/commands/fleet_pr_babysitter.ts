@@ -6,8 +6,16 @@ import { BABYSITTER_HANDOFF_MARKER } from "../lib/babysitter_retry_state.ts";
 import {
   type BaseFailureDecision,
   classifyBaseRedFailures,
+  confirmBaseFailureFixed,
 } from "../lib/babysitter_base_failure.ts";
 import { resolveBuildCommitStamp } from "../lib/worker_build_info.ts";
+import {
+  createRepairMergeabilityTracker,
+  decideRepairBaseMerge,
+  logBaseRefreshDecision,
+  persistBaseRefreshCounter,
+  trackRepairMergeability,
+} from "../lib/repair_base_merge_4943.ts";
 import { fileURLToPath } from "node:url";
 /** A small fleet PR babysitter with bounded parallel repairs. */
 import { loadConfig } from "../lib/config.ts";
@@ -473,6 +481,12 @@ export type BaseSync =
  * so the fix and the branch update reach GitHub in one push and CI runs once.
  * A separate branch-update push after the fix would run the whole CI again
  * and roughly double the Actions bill for that PR (owner rule 2026-11-03).
+ *
+ * Only invoked for a genuinely conflicting PR, or one whose failing check
+ * is proven to have the same failure on the PR merge base and now pass on the
+ * newer base (Issue #4943): a behind-only PR is refreshed
+ * through the shared base-refresh owner (Issue #4613), so a repair that merely
+ * fixes failed CI or review feedback does not add a merge.
  *
  * The merge is left uncommitted: the agent works and runs its checks against
  * the merged code, and {@link validateAndCommit} records the merge and the fix
@@ -2521,6 +2535,13 @@ export interface FixDeps {
   classifyBaseFailure?: typeof classifyBaseRedFailures;
   escalate?: (request: EscalationRequest) => Promise<string>;
   stateDir?: string;
+  /**
+   * Directory the base-refresh decision counters are persisted to. Only the
+   * production entry point sets it (the babysitter's state directory); unset,
+   * as in tests, a decision is counted in memory only, so no test writes into
+   * the host's babysitter state (PR #5059 review).
+   */
+  baseRefreshCounterDir?: string;
   dismiss?: BabysitterRepairFinishDeps["dismiss"];
   /** Independent review verifier; defaults to the production verifier (Issue #4657). */
   verifyReviews?: BabysitterRepairFinishDeps["verifyReviews"];
@@ -2896,6 +2917,9 @@ export async function fix(
     // Arm before anything else: the strict branch refresh below only updates
     // an armed PR, and a PR this repair makes green should merge at once.
     await (deps.armAutoMerge ?? armBabysitterAutoMerge)(repo, pr, authors, gh);
+    // Hoisted so a repair may use historical failure evidence to prove a base
+    // fix; a green current-base check alone is not sufficient.
+    let baseDecision: BaseFailureDecision | undefined;
     if (reason(pr) === "failed CI") {
       const runs = JSON.parse(
         await exec("gh", [
@@ -2917,7 +2941,6 @@ export async function fix(
       }
       // Issue #4921: a failing check already red on the base branch is the
       // base's failure to fix, so defer rather than repair it inside this PR.
-      let baseDecision: BaseFailureDecision;
       try {
         baseDecision = await (deps.classifyBaseFailure ??
           classifyBaseRedFailures)({
@@ -2970,6 +2993,8 @@ export async function fix(
         pr.headRefOid,
         sleep,
         { fleetAuthors: authors },
+        "babysitter-behind",
+        deps.baseRefreshCounterDir,
       );
       if (!update.ok) {
         console.log(
@@ -3121,10 +3146,64 @@ export async function fix(
       await settleSubstantiveOutcome(pr.headRefOid, "no-change");
       return;
     }
-    const sync = await (deps.mergeBase ?? mergeBaseForRepair)(
-      dir,
-      pr.baseRefName,
+    // A repeated UNKNOWN read follows the #4831 transient-refusal recovery.
+    await trackRepairMergeability(
+      createRepairMergeabilityTracker({
+        workDir: stateDir,
+        gh,
+        fleetAuthors: authors,
+      }),
+      repo,
+      pr.number,
+      pr.mergeable,
+      undefined,
+      stateDir,
     );
+    let provenBaseFixChecks: string[] = [];
+    if (
+      pr.mergeable === "MERGEABLE" && baseDecision?.kind === "repair" &&
+      baseDecision.repairCheck
+    ) {
+      const check = baseDecision.repairCheck;
+      const confirmed = await confirmBaseFailureFixed({
+        repo,
+        baseRef: pr.baseRefName,
+        headSha: pr.headRefOid,
+        checkRunId: String(check.headRunId),
+        checkName: check.name,
+        ghFn: gh,
+      });
+      if (confirmed.confirmed) provenBaseFixChecks = [check.name];
+      else {
+        baseDecision = {
+          ...baseDecision,
+          reason:
+            `${baseDecision.reason}; base fix not proven: ${confirmed.reason}`,
+          repairCheck: undefined,
+        };
+      }
+    }
+    const baseMerge = decideRepairBaseMerge(
+      pr.mergeable,
+      provenBaseFixChecks,
+    );
+    logBaseRefreshDecision({
+      source: "babysitter-repair",
+      outcome: baseMerge.merge ? "base-merge-allowed" : "base-merge-skipped",
+      repo,
+      prNumber: pr.number,
+      base: pr.baseRefName,
+      reason: provenBaseFixChecks.length > 0 || baseDecision?.kind !== "repair"
+        ? baseMerge.reason
+        : `${baseMerge.reason}; ${baseDecision.reason}`,
+    });
+    await persistBaseRefreshCounter(deps.baseRefreshCounterDir, {
+      source: "babysitter-repair",
+      outcome: baseMerge.merge ? "base-merge-allowed" : "base-merge-skipped",
+    });
+    const sync: BaseSync = baseMerge.merge
+      ? await (deps.mergeBase ?? mergeBaseForRepair)(dir, pr.baseRefName)
+      : { kind: "current" };
     if (pr.mergeable === "CONFLICTING" && sync.kind === "current") {
       retryRecord.blockerClass = "infrastructure";
       retryRecord.lastOutcome = "GitHub reports a stale conflict";
@@ -3822,6 +3901,7 @@ export async function pass(
                     undefined,
                     undefined,
                     resolveMaxAutoFixAttempts(config, repo),
+                    { baseRefreshCounterDir: babysitterStateDir() },
                   ),
               );
             },

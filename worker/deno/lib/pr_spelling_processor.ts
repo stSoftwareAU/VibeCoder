@@ -19,6 +19,7 @@ import {
   prBaseForSync,
   resolveRepairPreFlightSpec,
 } from "./git_push.ts";
+import { repairBaseForPublication } from "./repair_base_merge_4943.ts";
 import { classifyHeadExtension } from "./git_push_recovery.ts";
 import {
   buildSpellingFixPrompt,
@@ -98,6 +99,13 @@ export interface SpellingProcessorDeps {
    * so `dirname` names the lane, not the root.
    */
   workRoot: string;
+  /**
+   * Directory the base-refresh decision counters are persisted to
+   * (`base_refresh_counters.json`): the production callers pass `WORK_DIR`.
+   * Unset (as in tests), a publication-time decision is counted in memory only,
+   * so no test writes into a shared directory (PR #5059 review).
+   */
+  baseRefreshCounterDir?: string;
   /** Quality instructions for the prompt. */
   qualityInstructions?: string;
   /** Custom repo-specific instructions. */
@@ -453,8 +461,20 @@ async function _processSpellingWithHeartbeat(
   // Owner rule 2026-11-03: merge the PR's base in just before the fix is
   // pushed, so the fix and the branch update reach GitHub in one push and CI
   // runs once. A gated head was refused above, so this is the PR head. The
-  // base was read before the agent ran.
-  const syncBaseBranch = prBase;
+  // base read before the agent ran (`prBase`) feeds the agent's CI compare
+  // only; the repair policy is re-checked at publication (Issue #4943): an
+  // initial sync decision cannot authorise an unrelated base merge after the
+  // agent has finished.
+  const syncBaseBranch = await repairBaseForPublication({
+    knownBase: undefined,
+    repo,
+    prNumber,
+    source: "pr-spelling-processor",
+    counterDir: processorDeps.baseRefreshCounterDir,
+    gh: (args) => deps.github.runGhCommand(args),
+    warn: (message) => logger.warn(message),
+    log: (message) => logger.info(message),
+  });
   const pushOptions = {
     cwd: processorDeps.workDir,
     expectedAncestor: beforeSha,

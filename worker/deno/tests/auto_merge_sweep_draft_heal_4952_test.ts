@@ -170,8 +170,7 @@ Deno.test("#4952 - a skipped draft clears its recorded branch-refresh refusal", 
   const result = await sweepAutoMerge({
     ...run.options,
     branchRefreshRefusals: {
-      load: () => Promise.resolve(state),
-      save: () => Promise.resolve(),
+      update: (change) => change(state),
       notify: ({ repo, prNumber, active }) => {
         notified.push({ repo, prNumber, active });
         return Promise.resolve();
