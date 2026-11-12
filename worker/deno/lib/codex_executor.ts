@@ -373,7 +373,13 @@ export function resolveCodexEffort(
 
 /** What {@link buildCodexArgs} needs to build one invocation. */
 export interface CodexInvocation extends CodexPromptParts {
-  /** External role calls opt into the CLI sandbox instead of bypassing it. */
+  /**
+   * Marks an orchestrator-owned role call. `buildCodexArgs` still pushes
+   * STANDARD_FLAGS (including `--dangerously-bypass-approvals-and-sandbox`,
+   * Issue #4356) and only adds `approval_policy="never"` and
+   * `features.multi_agent=false`. The container is the boundary; read-only
+   * roles rely on checkout restoration, which does not deny Bash.
+   */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Explicit model id; omitted leaves Codex on its configured default. */
   model?: string;

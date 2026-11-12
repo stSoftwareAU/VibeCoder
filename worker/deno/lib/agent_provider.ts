@@ -358,7 +358,13 @@ export interface AgentDefinition {
 export interface AgentInvocationRequest {
   /** Built-in tool allowlist for a discussion that cannot execute commands. */
   discussionOnly?: boolean;
-  /** Enforced sandbox for orchestrator-owned Codex role calls. */
+  /**
+   * Marks an orchestrator-owned role call, which turns off approvals and
+   * multi-agent delegation. Codex's CLI sandbox is bypassed (the container is
+   * the boundary); a read-only role (manager, reviewer) is held only by the
+   * worker restoring checkout changes (`orchestration/read_only_guard.ts`),
+   * which does not deny Bash or confine commands to the checkout.
+   */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** The user prompt. */
   prompt: string;

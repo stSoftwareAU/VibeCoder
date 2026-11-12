@@ -506,7 +506,12 @@ export interface ClaudeRunResult {
 export interface RunClaudeOptions {
   /** Enforced read/research-only CLI; caller publishes the returned discussion. */
   discussionOnly?: boolean;
-  /** Enforced CLI sandbox for a provider-neutral role invocation. */
+  /**
+   * Marks a provider-neutral orchestrator role call, passed through to the
+   * provider request. It does not by itself provide a sandbox: Claude roles get
+   * tool denials through `disallowedTools`; Codex roles run unsandboxed in the
+   * container, held only by checkout restoration.
+   */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
   captureInvocationStats?: boolean;
