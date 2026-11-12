@@ -40,9 +40,10 @@
  *
  * ## Path confinement
  *
- * The per-run state directory is `${workDir}/.token-economizer/runs/<runId>`.
- * The path is joined, normalised and then canonicalised with `realpath`, and
- * only then compared, segment by segment. It must lie under the real work
+ * The per-spawn state directory is `${workDir}/.token-economizer/runs/<runId>`,
+ * where `<runId>` is the caller's run id or, when none is given, a fresh UUID
+ * for each launch. The path is joined, normalised and then canonicalised with
+ * `realpath`, and only then compared, segment by segment. It must lie under the real work
  * directory and must not lie inside the repo checkout.
  *
  * Uses Australian English throughout (behaviour, recognised, organisation).
@@ -121,6 +122,7 @@ export interface ResolveTokenEconomizerLaunchOptions {
   workDir: string;
   repo: string;
   runKind: TokenEconomizerRunKind;
+  /** Names the state directory. Must pass the allow-list. Absent: a fresh UUID per launch. */
   runId?: string;
   pluginDir?: string;
   logger?: {
@@ -172,6 +174,11 @@ export function effectiveMicroskills(
  * environment. Keys outside {@link TOKEN_ECONOMIZER_ENV_KEYS} are ignored, so a
  * launch can never set `PATH` or a credential.
  *
+ * First, every `TE_` and `TOKENECONOMIZER_` key already in `baseEnv` is deleted,
+ * so a stray value in the worker's own environment (a `TE_DISABLE` or a
+ * `TE_LOOPGUARD_NUDGES`, say) cannot steer the plugin. Only the launch's own
+ * allow-listed keys survive under those prefixes.
+ *
  * @param baseEnv - The environment the agent will be spawned with. Mutated in place.
  * @param launch - The launch whose env is copied.
  */
@@ -179,6 +186,11 @@ export function overlayTokenEconomizerEnv(
   baseEnv: Record<string, string>,
   launch: TokenEconomizerLaunch,
 ): void {
+  for (const key of Object.keys(baseEnv)) {
+    if (key.startsWith("TE_") || key.startsWith("TOKENECONOMIZER_")) {
+      delete baseEnv[key];
+    }
+  }
   for (const key of TOKEN_ECONOMIZER_ENV_KEYS) {
     const value = Object.hasOwn(launch.env, key) ? launch.env[key] : undefined;
     if (value !== undefined) baseEnv[key] = value;
@@ -292,7 +304,8 @@ export async function readTokenEconomizerStop(
  * fails the run.
  *
  * @param opts - The block, the work directory, the repo, the run kind and the
- *   optional run id, plugin directory and logger.
+ *   optional run id, plugin directory and logger. With no run id, each launch
+ *   gets a fresh UUID, so every spawn has its own state directory.
  * @returns The launch to hand to `--plugin-dir`, or `null` for plugin off.
  */
 export async function resolveTokenEconomizerLaunch(
@@ -328,7 +341,7 @@ export async function resolveTokenEconomizerLaunch(
       return null;
     }
 
-    const runId = opts.runId ?? runIdFromEnvOrRandom();
+    const runId = opts.runId ?? crypto.randomUUID();
     if (!isSafeRunId(runId)) {
       logger?.warn(
         `token-economizer: plugin off, run id fails the allow-list ` +
@@ -475,14 +488,6 @@ function storedStopReason(reason: string): string {
 /** Whether a run id passes the allow-list and is not a relative path segment. */
 function isSafeRunId(runId: string): boolean {
   return RUN_ID_PATTERN.test(runId) && runId !== "." && runId !== "..";
-}
-
-/** The run id from `VIBE_RUN_ID` when set and non-empty, otherwise a fresh UUID. */
-function runIdFromEnvOrRandom(): string {
-  const fromEnv = Deno.env.get("VIBE_RUN_ID");
-  return fromEnv !== undefined && fromEnv !== ""
-    ? fromEnv
-    : crypto.randomUUID();
 }
 
 /**

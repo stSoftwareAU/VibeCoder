@@ -13,6 +13,7 @@
 import {
   assert,
   assertEquals,
+  assertNotEquals,
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
@@ -270,23 +271,25 @@ Deno.test("run ids outside the allow-list, and . and .., are refused", async () 
   });
 });
 
-Deno.test("with no run id given, VIBE_RUN_ID names the state directory", async () => {
+Deno.test("with no run id given, every launch gets its own state directory under runs/", async () => {
   await withFixture(async (f) => {
-    const previous = Deno.env.get("VIBE_RUN_ID");
-    try {
-      Deno.env.set("VIBE_RUN_ID", "env-run-7");
-      const launch = await resolveTokenEconomizerLaunch(
-        optionsFor(f, captureLogger(), { runId: undefined }),
-      );
-      assert(launch !== null);
-      assertEquals(
-        launch.env.TOKENECONOMIZER_HOME,
-        await expectedHome(f.work, "env-run-7"),
-      );
-    } finally {
-      if (previous === undefined) Deno.env.delete("VIBE_RUN_ID");
-      else Deno.env.set("VIBE_RUN_ID", previous);
-    }
+    const first = await resolveTokenEconomizerLaunch(
+      optionsFor(f, captureLogger(), { runId: undefined }),
+    );
+    const second = await resolveTokenEconomizerLaunch(
+      optionsFor(f, captureLogger(), { runId: undefined }),
+    );
+    assert(first !== null, "the first launch must resolve");
+    assert(second !== null, "the second launch must resolve");
+
+    const runsDir = `${await Deno.realPath(f.work)}/.token-economizer/runs/`;
+    const homeOne = first.env.TOKENECONOMIZER_HOME ?? "";
+    const homeTwo = second.env.TOKENECONOMIZER_HOME ?? "";
+    assert(homeOne.startsWith(runsDir), `${homeOne} must lie under ${runsDir}`);
+    assert(homeTwo.startsWith(runsDir), `${homeTwo} must lie under ${runsDir}`);
+    assertNotEquals(homeOne, homeTwo, "two launches must not share a home");
+    assert((await Deno.stat(homeOne)).isDirectory, homeOne);
+    assert((await Deno.stat(homeTwo)).isDirectory, homeTwo);
   });
 });
 
@@ -588,6 +591,48 @@ Deno.test("the overlay copies only the allow-listed keys", () => {
     TE_HISTORY_IMPORT: "false",
     TE_MICROSKILLS: "envfacts",
     TE_LOOPGUARD: "nudge",
+    TE_MICROSKILLS_MAX_FACTS: "4",
+    TE_MICROSKILLS_MAX_TOKENS: "150",
+  });
+});
+
+Deno.test("the overlay drops stray TE_ and TOKENECONOMIZER_ keys from the base env before copying", () => {
+  const baseEnv: Record<string, string> = {
+    PATH: "/usr/bin",
+    TE_LOOPGUARD_NUDGES: "off",
+    TE_DISABLE: "1",
+    TE_MICROSKILLS: "distiller",
+    TOKENECONOMIZER_X: "stray",
+    TOKENECONOMIZER_HOME: "/stray/home",
+    // Positive control: the prefix is exact, so these are not touched.
+    TEMP_DIR: "/tmp/kept",
+    TEXT_EDITOR: "vi",
+  };
+  const launch: TokenEconomizerLaunch = {
+    pluginDir: TOKEN_ECONOMIZER_PLUGIN_DIR,
+    env: {
+      TOKENECONOMIZER_HOME: "/state/run-2",
+      TE_TOOLPRUNE: "off",
+      TE_REPOMAP: "off",
+      TE_HISTORY_IMPORT: "false",
+      TE_MICROSKILLS: "envfacts",
+      TE_LOOPGUARD: "off",
+      TE_MICROSKILLS_MAX_FACTS: "4",
+      TE_MICROSKILLS_MAX_TOKENS: "150",
+    },
+  };
+  overlayTokenEconomizerEnv(baseEnv, launch);
+
+  assertEquals(baseEnv, {
+    PATH: "/usr/bin",
+    TEMP_DIR: "/tmp/kept",
+    TEXT_EDITOR: "vi",
+    TOKENECONOMIZER_HOME: "/state/run-2",
+    TE_TOOLPRUNE: "off",
+    TE_REPOMAP: "off",
+    TE_HISTORY_IMPORT: "false",
+    TE_MICROSKILLS: "envfacts",
+    TE_LOOPGUARD: "off",
     TE_MICROSKILLS_MAX_FACTS: "4",
     TE_MICROSKILLS_MAX_TOKENS: "150",
   });

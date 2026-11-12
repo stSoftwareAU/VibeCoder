@@ -11,10 +11,18 @@
  *    and its environment. A launch built by the real
  *    `tokenEconomizerSpawnOptions` (against temp directories and a fake plugin
  *    directory) reaches the child as `--plugin-dir` and the eight variables. A
- *    disabled host, and a non-Claude provider, get neither.
+ *    stray `TE_` or `TOKENECONOMIZER_` variable in the parent never reaches an
+ *    enabled child. A disabled host, and a non-Claude provider, get neither.
  * c. The real vendored plugin. Where `/opt/tokeneconomizer/plugin` is present
  *    (the container image), its `te-hook` runs as a subprocess against a clean
  *    git checkout, and writes only to the state directory outside it.
+ *
+ * Prerequisite for (c): the vendored TokenEconomizer plugin at
+ * {@link TOKEN_ECONOMIZER_PLUGIN_DIR}, which ships only in the container image.
+ * Where it is absent the real-plugin tests are ignored, so a host without it
+ * runs (a) and (b). Set `REQUIRE_TOKENECONOMIZER_PLUGIN=1` on a run that must
+ * exercise (c): the always-run guard test then fails the suite, naming the
+ * missing plugin, rather than reporting a green suite that tested nothing.
  *
  * Temporary directories come from `Deno.makeTempDir` and are removed afterwards.
  * Nothing is timed against the wall clock. Australian English throughout
@@ -73,6 +81,41 @@ const REAL_PLUGIN_PRESENT = ((): boolean => {
     return false;
   }
 })();
+
+/** The env var that turns a missing vendored plugin into a failure, not a skip. */
+const REQUIRE_PLUGIN_ENV = "REQUIRE_TOKENECONOMIZER_PLUGIN";
+
+/**
+ * The refusal a missing prerequisite makes when {@link REQUIRE_PLUGIN_ENV} is
+ * `1`, or `null` when nothing is required or the plugin is present.
+ */
+function missingRequiredPlugin(
+  required: string | undefined,
+  present: boolean,
+): string | null {
+  if (required !== "1" || present) return null;
+  return `${REQUIRE_PLUGIN_ENV}=1 but the vendored TokenEconomizer plugin is absent at ${TOKEN_ECONOMIZER_PLUGIN_DIR} (its te-hook is missing): install the container image that ships it, or unset ${REQUIRE_PLUGIN_ENV}`;
+}
+
+Deno.test("the vendored plugin is present wherever REQUIRE_TOKENECONOMIZER_PLUGIN=1 requires it (Issue #4956)", () => {
+  const problem = missingRequiredPlugin(
+    Deno.env.get(REQUIRE_PLUGIN_ENV),
+    REAL_PLUGIN_PRESENT,
+  );
+  assert(problem === null, problem ?? "");
+});
+
+Deno.test("the plugin guard refuses only a required run without the plugin (Issue #4956)", () => {
+  // Positive control: a required run with the plugin present is accepted.
+  assertEquals(missingRequiredPlugin("1", true), null);
+  // Nothing required: the real-plugin tests may skip, with no failure.
+  assertEquals(missingRequiredPlugin(undefined, false), null);
+  assertEquals(missingRequiredPlugin("0", false), null);
+  // Required and absent: refused, naming the variable and the directory.
+  const refusal = missingRequiredPlugin("1", false) ?? "";
+  assertStringIncludes(refusal, REQUIRE_PLUGIN_ENV);
+  assertStringIncludes(refusal, TOKEN_ECONOMIZER_PLUGIN_DIR);
+});
 
 /** The eight variables a launch sets, with the loop-guard value under test. */
 function expectedLaunchEnv(
@@ -207,15 +250,17 @@ function parentEnvFor(layout: Layout): Record<string, string> {
   return {
     PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
     HOME: layout.home,
-    // A stray value the worker's own environment might carry. A launch must
-    // overwrite it; a disabled run keeps it (see the known-gap test below).
+    // A stray value the worker's own environment might carry. An enabled launch
+    // removes it; a disabled run keeps it, and nothing loads to read it (see the
+    // inert-when-off test below).
     TE_MICROSKILLS: "distiller",
   };
 }
 
 /**
  * Runs one Claude-provider spawn against the dump stub and returns what the
- * stub recorded. `extra` carries the provider and the launch option under test.
+ * stub recorded. `extra` carries the provider and the launch option under test,
+ * and `parentEnv` adds parent variables to the default run environment.
  */
 async function spawnWithStub(
   layout: Layout,
@@ -223,8 +268,10 @@ async function spawnWithStub(
     agentProvider?: string;
     tokenEconomizer?: TokenEconomizerLaunch;
     env?: (key: string) => string | undefined;
+    parentEnv?: Record<string, string>;
   },
 ): Promise<SpawnDump> {
+  const { parentEnv, ...rest } = extra;
   return await withAgentStub(DUMP_STUB, async (stub) => {
     await runClaudeWithTimeout({
       clock: fakeClock(),
@@ -234,8 +281,8 @@ async function spawnWithStub(
       agentBinaryPath: stub.path,
       cwd: layout.checkout,
       repo: REPO,
-      parentEnv: parentEnvFor(layout),
-      ...extra,
+      parentEnv: { ...parentEnvFor(layout), ...parentEnv },
+      ...rest,
     });
     return await readDump(stub.dir);
   });
@@ -410,19 +457,74 @@ Deno.test({
 
 Deno.test({
   name:
-    "KNOWN GAP: a stray TE_MICROSKILLS in the worker's environment reaches a disabled child unchanged (Issue #4956)",
+    "a stray TE_MICROSKILLS in the worker's environment reaches a disabled child unchanged, inert because nothing loads the plugin (Issue #4956)",
   permissions: { run: true, read: true, write: true, env: true },
   ignore: Deno.build.os === "windows",
   async fn() {
-    // This pins what the runner does today, so a change is noticed. The
-    // runner's env sanitiser (`lib/agent_env.ts`, `buildAgentChildEnv`) drops
-    // only denylisted names and copies every other key, and no `TE_` name is
-    // on the denylist. With the plugin off nothing loads, so the value is
-    // inert; it is not hidden here. See the report accompanying this test.
+    // This pins what the runner passes through when the plugin is off. The
+    // runner's env sanitiser (`lib/agent_env.ts`, `buildAgentChildEnv`) copies
+    // every key that is not denylisted, so the stray value reaches the child.
+    // The overlay that removes `TE_` keys runs only for an enabled launch, and
+    // with the plugin off no plugin is loaded, so nothing reads the value: it
+    // is inert. This test pins that, so a change to the pass-through is noticed.
     const layout = await makeLayout();
     try {
       const dump = await spawnWithStub(layout, {});
       assertEquals(dump.env.get("TE_MICROSKILLS"), "distiller");
+    } finally {
+      await Deno.remove(layout.root, { recursive: true }).catch(() => {});
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "an enabled Claude run drops stray TE_ and TOKENECONOMIZER_ parent variables, and the child gets only the launch's eight (Issue #4956)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const layout = await makeLayout();
+    try {
+      const options = await enabledSpawnOptions(
+        layout,
+        "implementation",
+        "nudge",
+      );
+      assert(options.tokenEconomizer, "the launch must resolve");
+      const stateHome = await Deno.realPath(
+        join(
+          layout.workDir,
+          ".token-economizer",
+          "runs",
+          "wiring-implementation",
+        ),
+      );
+      // Strays a worker environment might carry. None of them is a launch key:
+      // TE_LOOPGUARD_NUDGES is not TE_LOOPGUARD, so it is not overwritten, only
+      // removed.
+      const dump = await spawnWithStub(layout, {
+        ...options,
+        parentEnv: {
+          TE_LOOPGUARD_NUDGES: "off",
+          TE_DISABLE: "1",
+          TOKENECONOMIZER_X: "stray",
+        },
+      });
+
+      assertAdjacent(
+        dump.argv,
+        "--plugin-dir",
+        options.tokenEconomizer.pluginDir,
+      );
+      for (
+        const key of ["TE_LOOPGUARD_NUDGES", "TE_DISABLE", "TOKENECONOMIZER_X"]
+      ) {
+        assertEquals(dump.env.get(key), undefined, `stray child env ${key}`);
+      }
+      const expected = expectedLaunchEnv(stateHome, "nudge");
+      for (const [key, value] of Object.entries(expected)) {
+        assertEquals(dump.env.get(key), value, `child env ${key}`);
+      }
     } finally {
       await Deno.remove(layout.root, { recursive: true }).catch(() => {});
     }

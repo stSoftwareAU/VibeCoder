@@ -109,11 +109,15 @@ state directory under `<work>/.token-economizer/runs/<runId>`, which lies outsid
 the repository checkout; `TE_TOOLPRUNE=off`, `TE_REPOMAP=off` and
 `TE_HISTORY_IMPORT=false`; `TE_MICROSKILLS`, the effective value from the table
 above; `TE_LOOPGUARD`, from `loopguard`; and `TE_MICROSKILLS_MAX_FACTS=4` and
-`TE_MICROSKILLS_MAX_TOKENS=150`.
+`TE_MICROSKILLS_MAX_TOKENS=150`. Any `TE_` or `TOKENECONOMIZER_` variable the
+worker's own environment carries is removed from that spawn first, so a stray
+value cannot steer the plugin.
 
-Each run gets its own `TOKENECONOMIZER_HOME`, so a fact the plugin learns in one
-run is not in another run's home. Carrying learnings across runs is what the
-learnings repository (#4957) is for. Until it lands, the cross-run part of the
+Each spawn gets its own `TOKENECONOMIZER_HOME`, a fresh state directory per
+launch, so a fact the plugin learns in one spawn is not in another spawn's home.
+The run id that names it is the caller's, or a fresh UUID when none is given; it
+is never read from the worker's environment. Carrying learnings across runs is
+what the learnings repository (#4957) is for. Until it lands, the cross-run part of the
 trial is not exercised, and a verdict on that part would be a verdict on nothing.
 
 Nothing else loads it. Reviewer and verifier calls are not run kinds, and an
@@ -351,7 +355,7 @@ State is `present` when the path exists and names the plugin today, and
 | Test | the launch decision's tests | `worker/deno/tests/token_economizer_plugin_test.ts` | present |
 | Test | the spawn-wiring tests | `worker/deno/tests/token_economizer_plugin_wiring_test.ts` | present |
 | Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | present |
-| Runtime directory | `.token-economizer/` under the work directory, holding the stop record and the per-run state directories; the launch decision creates it at run time, so no repository file shows it | — | planned #4956 |
+| Runtime directory | `.token-economizer/` under the work directory, holding the stop record and the per-spawn state directories; the launch decision creates it at run time | `worker/deno/lib/token_economizer_plugin.ts` | present |
 | Source | the learnings pull and push, with the gitleaks check | — | planned #4957 |
 | Learnings directory | `token-economizer/` in the repository named by `token_economizer.learnings_repo` | — | planned #4957 |
 | Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | planned #4958 |
