@@ -2026,7 +2026,7 @@ Deno.test("processIssuePlanning - the Failure-Detection gate counts reach the pa
               exitCode: 0,
               timedOut: false,
               runStats: {
-                servedModels: ["claude-fable-5-1-20260901"],
+                servedModels: ["claude-fable-5-2-20261101"],
                 requestedModel: "fable",
                 wallClockMs: 1_000,
               },
@@ -2042,7 +2042,7 @@ Deno.test("processIssuePlanning - the Failure-Detection gate counts reach the pa
             exitCode: 0,
             timedOut: false,
             runStats: {
-              servedModels: ["claude-fable-5-1-20260901"],
+              servedModels: ["claude-fable-5-2-20261101"],
               requestedModel: "fable",
               wallClockMs: 1_000,
             },
@@ -2476,7 +2476,7 @@ Planning complete. **2 sub-issue(s)** created:
               exitCode: 0,
               timedOut: false,
               runStats: {
-                servedModels: ["claude-fable-5-1-20260901"],
+                servedModels: ["claude-fable-5-2-20261101"],
                 requestedModel: "fable",
                 effort: "high",
                 wallClockMs: 1000,
@@ -2576,7 +2576,7 @@ Planning complete. **2 sub-issue(s)** created:
   // must NOT appear on the recovery path any more.
   const allParentText = parentComments.join("\n");
   assertEquals(allParentText.includes("no served model observed"), false);
-  assertStringIncludes(allParentText, "claude-fable-5-1-20260901");
+  assertStringIncludes(allParentText, "claude-fable-5-2-20261101");
 });
 
 // ============================================================================
@@ -4403,10 +4403,10 @@ Deno.test("processIssuePlanning - appends stats section to summary comment with 
             exitCode: 0,
             timedOut: false,
             runStats: {
-              // The top tier planning requests since #2560.
-              servedModels: ["claude-opus-5-5"],
-              requestedModel: "opus",
-              effort: "max",
+              // The top tier planning requests since #5081.
+              servedModels: ["claude-fable-5-2"],
+              requestedModel: "fable",
+              effort: "high",
               wallClockMs: 12_000,
             },
           },
@@ -4434,7 +4434,7 @@ Deno.test("processIssuePlanning - appends stats section to summary comment with 
   const body = record.comments[0]!;
   assertEquals(body.includes("## Planning Complete"), true);
   assertEquals(body.includes("## Planning run model stats"), true);
-  assertEquals(body.includes("claude-opus-5-5"), true);
+  assertEquals(body.includes("claude-fable-5-2"), true);
   assertEquals(body.includes("Degraded:** no"), true);
 });
 
@@ -4566,8 +4566,8 @@ Deno.test("processIssuePlanning - healthy run applies no degraded-model label (#
             exitCode: 0,
             timedOut: false,
             runStats: {
-              servedModels: ["claude-opus-5-5"], // matches expected → healthy
-              requestedModel: "opus",
+              servedModels: ["claude-fable-5-2"], // matches expected → healthy
+              requestedModel: "fable",
               wallClockMs: 5_000,
             },
           },
@@ -4615,7 +4615,7 @@ Deno.test("processIssuePlanning - failing postComment is non-fatal (#2649)", asy
             exitCode: 0,
             timedOut: false,
             runStats: {
-              servedModels: ["claude-fable-5-1-20260901"],
+              servedModels: ["claude-fable-5-2-20261101"],
               requestedModel: "fable",
               wallClockMs: 5_000,
             },

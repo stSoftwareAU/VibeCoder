@@ -903,7 +903,8 @@ Deno.test("run.sh asks the round for stream-json, so its result carries per-mode
   assertEquals(code, 0, output);
   const args = (await claudeArgs(home))!;
   assertStringIncludes(args, '"--output-format","stream-json","--verbose"');
-  assertStringIncludes(args, '"--model","claude-opus-5-5","--effort","xhigh"');
+  // Owner policy #5081: the reviewer bot runs on Fable 5.2 at high.
+  assertStringIncludes(args, '"--model","claude-fable-5-2","--effort","high"');
 });
 
 Deno.test("run.sh prices the round's reviews once the round is over, as the reviewer App", async () => {

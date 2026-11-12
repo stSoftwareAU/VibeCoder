@@ -16,38 +16,49 @@ import { lookupModelPricing } from "../lib/token_usage.ts";
 // previousGenerationOf
 // ---------------------------------------------------------------------------
 
-Deno.test("previousGenerationOf - Fable 5 is a previous generation of Fable 5.1 (Issue #1362)", () => {
+Deno.test("previousGenerationOf - Fable 5 is a previous generation of Fable 5.2 (Issues #1362, #5082)", () => {
   assertEquals(previousGenerationOf("claude-fable-5"), {
     tier: "fable",
-    current: "claude-fable-5-1",
+    current: "claude-fable-5-2",
   });
+});
+
+Deno.test("previousGenerationOf - Fable 5.1 is a previous generation of Fable 5.2 (Issue #5082)", () => {
+  assertEquals(previousGenerationOf("claude-fable-5-1"), {
+    tier: "fable",
+    current: "claude-fable-5-2",
+  });
+  assertEquals(
+    previousGenerationOf("claude-fable-5-1-20260901")?.current,
+    "claude-fable-5-2",
+  );
 });
 
 Deno.test("previousGenerationOf - a dated Fable 5 id is still a previous generation (Issue #1362)", () => {
   // The date suffix is not a minor version, so `claude-fable-5-20260101`
-  // resolves to 5.0 and is stale against the current 5.1.
+  // resolves to 5.0 and is stale against the current 5.2.
   assertEquals(
     previousGenerationOf("claude-fable-5-20260101")?.current,
-    "claude-fable-5-1",
+    "claude-fable-5-2",
   );
 });
 
 Deno.test("previousGenerationOf - case and surrounding whitespace do not matter (Issue #1362)", () => {
   assertEquals(
     previousGenerationOf("  Claude-Fable-5  ")?.current,
-    "claude-fable-5-1",
+    "claude-fable-5-2",
   );
 });
 
 Deno.test("previousGenerationOf - the current model is not previous-generation (Issue #1362)", () => {
-  assertEquals(previousGenerationOf("claude-fable-5-1"), undefined);
-  assertEquals(previousGenerationOf("claude-fable-5-1-20260901"), undefined);
+  assertEquals(previousGenerationOf("claude-fable-5-2"), undefined);
+  assertEquals(previousGenerationOf("claude-fable-5-2-20261101"), undefined);
 });
 
 Deno.test("previousGenerationOf - a newer generation than the reference is not stale (Issue #1362)", () => {
-  // A Fable 5.2 the reference has never seen must not be flagged: the worker's
+  // A Fable 5.3 the reference has never seen must not be flagged: the worker's
   // reference lags a release, it does not lead it.
-  assertEquals(previousGenerationOf("claude-fable-5-2"), undefined);
+  assertEquals(previousGenerationOf("claude-fable-5-3"), undefined);
 });
 
 Deno.test("previousGenerationOf - untracked tiers are never flagged (Issue #1362)", () => {
@@ -99,8 +110,8 @@ Deno.test("previousGenerationOf - unparseable and empty ids are not flagged (Iss
 // CURRENT_TIER_MODELS — the worker-maintained reference itself
 // ---------------------------------------------------------------------------
 
-Deno.test("CURRENT_TIER_MODELS - Fable's current model is Fable 5.1 (Issue #1362, #747)", () => {
-  assertEquals(CURRENT_TIER_MODELS.get("fable"), "claude-fable-5-1");
+Deno.test("CURRENT_TIER_MODELS - Fable's current model is Fable 5.2, the fable alias on CLI 2.1.322 (Issues #1362, #747, #5082)", () => {
+  assertEquals(CURRENT_TIER_MODELS.get("fable"), "claude-fable-5-2");
 });
 
 Deno.test("CURRENT_TIER_MODELS - Opus's current model is Opus 5.5 (Issues #1362, #2560)", () => {

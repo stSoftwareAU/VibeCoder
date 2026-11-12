@@ -173,7 +173,10 @@ Labels choose work phases, and one shared `PHASE_MODEL_TIERS` policy maps
 those phases to provider-independent `best`, `standard` or `fast` tiers.
 Planning, questions, refinement, revision and Quorum use `best`; implementation
 and reactive fixes use `standard`; spelling, summaries and health use `fast`.
-Only the provider's tier catalogue contains concrete model names.
+Only the provider's tier catalogue contains concrete model names. One Claude
+exception (Issue #5081): the `issue` manager is pinned to Opus above Claude's
+Sonnet `standard` tier, and keeps that pin when an operator regenerates the
+tier map, unless `phase_model_tiers` names `issue` itself.
 
 Operators can change that policy once in `.config.json`:
 
@@ -223,25 +226,23 @@ guiding rule: **wherever the Vibe Coder interprets the user's words
 into an implementable state, use the highest model available.** That names
 eight *planning-shaped* phases — `planning`, `grill_me`, `refinement`,
 `revision`, `question`, `clarification`, and the two Quorum phases `quorum` and
-`quorum_judge` — each of which defaults to the top tier (**Opus** since
-Issue #2560) at `high` effort. They remain *Fable-preferring*: a phase an operator
-pins back to Fable still reroutes to **Opus at `max` effort** when Fable is
-unavailable, and the run is recorded degraded (see
+`quorum_judge` — each of which defaults to the top tier (**Fable 5.2** since
+Issue #5081; Opus from Issue #2560 until then) at `high` effort. They are
+*Fable-preferring*: when Fable is unavailable the phase reroutes to **Opus at
+`max` effort**, and the run is recorded degraded (see
 [Fable-unavailable auto-fallback + self-heal](#fable-unavailable-auto-fallback--self-heal)).
-With the default routing no phase requests Fable, so none is affected by Fable
-availability.
 
 | Phase | Model | Effort | When pinned to Fable and Fable is unavailable |
 |-------|-------|--------|------------------------|
-| planning | Opus | high | Opus @ max, recorded degraded |
-| grill_me | Opus | high | Opus @ max, recorded degraded |
-| refinement | Opus | high | Opus @ max, recorded degraded |
-| revision | Opus | high | Opus @ max, recorded degraded |
-| question | Opus | high | Opus @ max, recorded degraded |
-| clarification | Opus | high | Opus @ max, recorded degraded |
-| quorum | Opus | high | Opus @ max, recorded degraded |
-| quorum_judge | Opus | high | Opus @ max, recorded degraded |
-| issue (implementation) | Sonnet | high | unchanged — Sonnet manager over Haiku executors since Issue #3473 |
+| planning | Fable | high | Opus @ max, recorded degraded |
+| grill_me | Fable | high | Opus @ max, recorded degraded |
+| refinement | Fable | high | Opus @ max, recorded degraded |
+| revision | Fable | high | Opus @ max, recorded degraded |
+| question | Fable | high | Opus @ max, recorded degraded |
+| clarification | Fable | high | Opus @ max, recorded degraded |
+| quorum | Fable | high | Opus @ max, recorded degraded |
+| quorum_judge | Fable | high | Opus @ max, recorded degraded |
+| issue (implementation) | Opus | high | unchanged — Opus manager over Sonnet executors since Issue #5081 (Sonnet over Haiku from Issue #3473) |
 | ci_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | pr_feedback | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | quality_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
@@ -745,11 +746,14 @@ Issue #2575) defines them instead, in
 
 | Agent | Model | Effort | Tools | Inputs |
 | --- | --- | --- | --- | --- |
-| `spec-reviewer` | `opus` (every tier) | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body |
-| `standards-reviewer` | `opus` (every tier) | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
+| `spec-reviewer` | `fable` (every tier) | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body |
+| `standards-reviewer` | `fable` (every tier) | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
 
-**Role models (owner decision 2026-10-22).** Opus does the code reviews,
-Sonnet manages and Haiku executes. On Codex each role takes the similar
+**Role models (owner policy 2026-11-12, Issue #5081).** Code review and
+planning take the best model the subscriptions can afford — Fable 5.2 — the
+actual work takes the daily drivers (Opus manages, Sonnet executes), and
+trivial phases stay on Haiku. It superseded the 2026-10-22 decision (#4142:
+Opus reviews, Sonnet manages, Haiku executes). On Codex each role takes the similar
 OpenAI tier: the [Codex routing tiers](#-codex-per-phase-routing) for the
 phases, and the external orchestrator's per-provider role defaults
 (`ROLE_DEFAULTS` in
@@ -759,9 +763,17 @@ default for that role rather than no model.
 
 | Role | Claude | Codex |
 | --- | --- | --- |
-| reviewer (in-run reviewers, orchestrator reviewer, PR reviewer bot) | `opus` | `gpt-6-astra` |
-| manager (`issue` phase advisor) | `sonnet` | `gpt-6.1-sol` |
-| executor (and explorer) | `haiku` | `gpt-6-luna` |
+| reviewer (in-run reviewers, pre-PR verifier, orchestrator reviewer, PR reviewer bot) | `fable` | `gpt-6-astra` |
+| planning-shaped phases | `fable` | `gpt-6-astra` |
+| manager (`issue` phase advisor) | `opus` | `gpt-6.1-sol` |
+| executor | `sonnet` | `gpt-6.1-sol` |
+| trivial phases (spelling, summarise, health, compaction) | `haiku` | `gpt-6-luna` |
+
+The PR reviewer bot runs `claude-fable-5-2` at `high` effort: per the
+release, Fable 5.2 at `high` scores about as Opus 5.5 at `max` on
+FrontierCode 2.0 at roughly half the cost per task. A round that hits a
+usage limit steps down to `claude-opus-5-5` at `xhigh` on the same
+subscription before it rotates subscriptions or falls back to DeepSeek.
 
 The in-run reviewers are Claude `--agents` definitions, so a native Codex run
 cannot carry them yet (Issue #4109); the Codex column is what that work and
@@ -776,7 +788,8 @@ standards say only review enforces, which is always a `violation` and is
 named on the `clean` line when checked (Issue #3230) — and anything else is
 listed as `optional` and not chased.
 
-**Expected effect.** Two review contexts run on Opus 5.5 ($4/$20 per MTok)
+**Expected effect.** Two review contexts run on Fable 5.2 ($8/$40 per MTok)
+at `medium` (Issue #5081). Before that they ran on Opus 5.5 ($4/$20 per MTok)
 at `medium`, below the advisor's `high`. They were on Sonnet 5.5 ($2/$10) —
 and the Standards reviewer on Haiku on the Haiku tier — until the owner
 decided on 2026-10-22 that Opus does the code reviews: the review is what
@@ -798,7 +811,7 @@ Every `claude` child, on every phase, runs with Claude Code's deterministic
 sub-agent caps set in its spawn environment by
 [`worker/deno/lib/claude_env.ts`](../worker/deno/lib/claude_env.ts)
 (`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217;
-the image pins 2.1.310 in [`container/tools.json`](../container/tools.json).
+the image pins 2.1.322 in [`container/tools.json`](../container/tools.json).
 
 | Variable | Value | CLI default | Effect |
 | --- | --- | --- | --- |
@@ -819,7 +832,7 @@ The `claude` child is built by `buildClaudeChildEnv`
 ([`claude_env.ts`](../worker/deno/lib/claude_env.ts), Issue #4913). The `deepseek`
 child is built by `buildDeepSeekChildEnv`
 ([`deepseek_env.ts`](../worker/deno/lib/deepseek_env.ts), Issue #4926). The
-`deepseek` binary is the same Claude Code CLI (2.1.310, pinned in
+`deepseek` binary is the same Claude Code CLI (2.1.322, pinned in
 `container/tools.json`), so it reads the same variable. Claude Code stops a
 foreground Bash command at 600000 ms unless that variable raises the ceiling,
 so the bounded foreground gate run the prompts require can run up to 30

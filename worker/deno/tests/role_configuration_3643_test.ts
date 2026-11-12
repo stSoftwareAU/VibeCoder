@@ -334,7 +334,8 @@ Deno.test("main loop enacts repository role settings, records the treatment and 
   assertEquals(external, 1);
   assertEquals(native, 0);
   assertEquals(treatment, [
-    { role: "manager", provider: "claude", model: "sonnet", effort: "high" },
+    // The manager keeps its Claude default, Opus (owner policy #5081).
+    { role: "manager", provider: "claude", model: "opus", effort: "high" },
     // Moved to Codex, the executor takes Codex's executor default effort;
     // its explicit model still wins (owner decision 2026-10-22).
     {

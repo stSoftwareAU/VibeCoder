@@ -100,8 +100,8 @@ Deno.test("#3641 contract — haiku-tier payload pins the agent names, models an
       ) => [name, { model: def.model, effort: def.effort }]),
     ),
     {
-      "spec-reviewer": { model: "opus", effort: "medium" },
-      "standards-reviewer": { model: "opus", effort: "medium" },
+      "spec-reviewer": { model: "fable", effort: "medium" },
+      "standards-reviewer": { model: "fable", effort: "medium" },
       executor: { model: "haiku", effort: "high" },
       explorer: { model: "haiku", effort: "medium" },
     },
@@ -154,14 +154,14 @@ Deno.test("#3641 contract — reviewers and explorer are read-only; the executor
   }
 });
 
-Deno.test("#3641 contract — issue-phase switch defaults are split on, tier haiku, reviewers on", () => {
+Deno.test("#3641 contract — issue-phase switch defaults are split on, tier sonnet, reviewers on (Issue #5081)", () => {
   assertEquals(OPERATIONAL_DEFAULTS.issueExecutorSplit, true);
-  assertEquals(OPERATIONAL_DEFAULTS.issueSubAgentTier, "haiku");
+  assertEquals(OPERATIONAL_DEFAULTS.issueSubAgentTier, "sonnet");
   assertEquals(OPERATIONAL_DEFAULTS.issueReviewerAgents, true);
 });
 
-Deno.test("#3641 contract — manager issue-phase defaults are sonnet at high effort", () => {
-  assertEquals(DEFAULT_CLAUDE_MODEL_ISSUE, "sonnet");
+Deno.test("#3641 contract — manager issue-phase defaults are opus at high effort (Issue #5081)", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_ISSUE, "opus");
   assertEquals(DEFAULT_CLAUDE_EFFORT_ISSUE, "high");
 });
 

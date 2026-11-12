@@ -958,7 +958,7 @@ Deno.test(
 );
 
 Deno.test(
-  "handle_no_changes_phase - the default config records a haiku-tier run (Issues #3403, #3473)",
+  "handle_no_changes_phase - the default config records a sonnet-tier run (Issues #3403, #5081)",
   async () => {
     resetFleetTelemetry();
     const calls = makeStubGhCalls();
@@ -989,8 +989,8 @@ Deno.test(
     await workOnIssueHandleNoChanges(ctx, state, deps);
 
     const telemetry = getFleetTelemetry(1_000);
-    assertEquals(telemetry.issuePhaseHaikuRuns, 1);
-    assertEquals(telemetry.issuePhaseSonnetRuns, 0);
+    assertEquals(telemetry.issuePhaseSonnetRuns, 1);
+    assertEquals(telemetry.issuePhaseHaikuRuns, 0);
     resetFleetTelemetry();
   },
 );
