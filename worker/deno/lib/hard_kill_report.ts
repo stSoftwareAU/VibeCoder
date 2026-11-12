@@ -115,9 +115,10 @@ const AGENT_PROGRESS_LINE = /\[agent-progress\]/;
  * from this table, so no log text (the run may be on a private repository) is
  * published. It does not feed the dedup key `hard-kill-<handler>-<phase>`.
  * Each pattern matches what its step logs when it ends, including the notes
- * `evaluateMutationGate` and `evaluateCoverageCarryOverGate` return on every
- * path (clean, capped, budget, not applicable). The pre-PR verifier, the
- * mutation check and the coverage check log nothing as they start, so a label
+ * `evaluateCoverageCarryOverGate` returns on every path (clean, capped, budget,
+ * not applicable). The mutation check label is kept for older logs written
+ * before the automatic mutation check was retired (Issue #5095). The pre-PR
+ * verifier, the mutation check and the coverage check log nothing as they start, so a label
  * names the last step that logged: the wedge is in or after it. An
  * `[agent-progress]` line never reaches this table: {@link hardKillLastStep}
  * labels it `agent turn` first, so the table needs no entry for it.

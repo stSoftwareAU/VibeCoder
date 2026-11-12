@@ -1,31 +1,31 @@
 /**
- * Working-tree guard for the Deno mutation gate (Issue #4905).
+ * Working-tree snapshot and restore helpers (Issue #4905). They were written
+ * for the Deno mutation gate, whose automatic mutation check was retired by
+ * Issue #5095. The module now holds only the shared helpers still in use:
+ * {@link snapshotTree} (which returns a {@link TreeSnapshot}), {@link restoreTree}
+ * and {@link isUnsafePath}.
  *
- * The Deno path writes each mutant over the real module and runs `deno test`
- * in the issue clone. A test run can leave files behind (a file literally
- * named `undefined`, a fixture a test rewrites), and the worker's later
- * recovery commit runs `git add -A`, which would commit them. So the runner
- * takes a snapshot of the tree before its first child runs and, once it is
- * done, restores the tree to that snapshot: untracked files that are new since
- * the snapshot are deleted, and tracked files that are newly modified are
- * checked out again. This mirrors the cargo path, which points `cargo mutants`
- * at an out-of-tree `mutants.out` for the same reason.
+ * A test run can leave files behind (a file literally named `undefined`, a
+ * fixture a test rewrites), and a later recovery commit that runs `git add -A`
+ * would commit them. So a caller takes a snapshot of the tree before a run and,
+ * once it is done, restores the tree to that snapshot: untracked files that are
+ * new since the snapshot are deleted, and tracked files that are newly modified
+ * are checked out again.
  *
  * Accepted limits:
  * - A tracked file that was already modified before the run, and that a
- *   mutant run changes further, is left as it is. Restoring it would lose the
+ *   test run changes further, is left as it is. Restoring it would lose the
  *   earlier edit.
- * - Empty directories a mutant run created are left, because git does not
+ * - Empty directories a test run created are left, because git does not
  *   track them.
  * - Ignored files are left, because the listing honours `.gitignore`.
  *
  * Every git call goes through {@link runGitCommand} (Issue #1214). Neither
  * function throws: a failure is reported as a `console.warn` and never changes
- * the mutation verdict.
+ * the caller's verdict.
  *
  * Australian English spelling used throughout.
  */
-
 import type { Result } from "../types.ts";
 import { type GitCommandOutput, runGitCommand } from "./git_timeout.ts";
 

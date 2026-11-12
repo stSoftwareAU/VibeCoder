@@ -44,14 +44,6 @@
  * shared scope builder. A push changing only the PR summary or non-source,
  * non-Markdown docs still gets no model pass.
  *
- * Issue #3750 adds a sixth check: the diff-scoped mutation gate (Issue #3393)
- * runs over the lines this run itself added since `beforeSha`, base merges
- * excluded, through the injected `runMutationCheck` seam. Survivors that no
- * PR-summary exemption covers are a hit: they drive the same one recovery
- * turn, and any that survive it are reported under their own heading. A check
- * that could not run, or whose budget or mutant cap left candidates untried,
- * is reported but never drives recovery on its own.
- *
  * Issue #3740 found that a Test Plan figure the recount cannot check
  * (`findUncheckedRunResults`) was only logged, so a review-fix push could leave
  * an unverifiable figure in the summary and nothing would report it. Such a
@@ -68,12 +60,10 @@
  *     B -- no --> S["skipped"]
  *     B -- yes --> C["Collect this push's files,<br/>the PR's full file list,<br/>PR summaries, head test counts"]
  *     C --> D["Deterministic checks:<br/>Test Plan recount (mismatches<br/>and unchecked figures),<br/>stale change-request quotes"]
- *     C --> MC["Mutation check over this run's own lines"]
  *     C --> E{"Code, test or manual/prompt<br/>Markdown changed?"}
  *     E -- yes --> F["One constrained,<br/>read-only model question:<br/>quote the drifted sentences"]
  *     E -- no --> G["No model pass"]
  *     D --> H{"Any hit at all?"}
- *     MC --> H
  *     F --> H
  *     G --> H
  *     H -- no --> I["clean"]
@@ -100,11 +90,7 @@ import {
   renderProseRanges,
 } from "./doc_prose_scope.ts";
 
-import { collectRunOwnBaseline } from "./pr_feedback_mutation_check.ts";
-import {
-  findBlockingMutationJob,
-  type FindBlockingMutationJobOptions,
-} from "./ci_mutation_contract.ts";
+import { collectRunOwnBaseline } from "./run_own_baseline.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "./closure_verdict_recovery.ts";
 import {
@@ -119,14 +105,6 @@ import {
   isManualProsePath,
   isProseSourcePath,
 } from "./doc_prose_claims.ts";
-import {
-  buildMutationGateComment,
-  type CiMutationBlock,
-  evaluateMutationGate,
-  type Mutant,
-  type MutationCheckResult,
-  type MutationGateVerdict,
-} from "./mutation_gate.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 
 const DOC_EXTENSION_RE = /\.(md|mdx|markdown|rst|adoc|txt)$/i;
@@ -527,13 +505,6 @@ export function buildDriftRecoveryPrompt(opts: {
   staleCitations?: readonly string[];
   /** Test Plan figures the recount could not check (Issue #3740). */
   uncheckedFigures?: readonly string[];
-  /**
-   * The mutation gate's feedback comment, present only when it has survivors
-   * (Issue #3750). Its presence switches the closing "Change no code" step to
-   * the tests-first wording that still lets a dead or wrong line be removed or
-   * fixed (Issue #4594).
-   */
-  mutationGateComment?: string;
   boundaryId?: string;
 }): string {
   const boundaryId = isBoundaryId(opts.boundaryId)
@@ -624,19 +595,6 @@ export function buildDriftRecoveryPrompt(opts: {
     blocks.push("the stale line citations");
   }
 
-  const mutationGateComment = opts.mutationGateComment;
-  if (mutationGateComment) {
-    lines.push(
-      ...fenceUntrustedIssueText(
-        mutationGateComment,
-        "Mutation survivors — lines this push added that no test pins:",
-        boundaryId,
-      ),
-    );
-    lines.push("");
-    blocks.push("the mutation survivors");
-  }
-
   // Only the steps for what this turn actually found are numbered — a
   // mismatch-only recovery must not be asked to touch a Docs sweep line it
   // was never told was wrong (Issue #3143 review).
@@ -685,26 +643,10 @@ export function buildDriftRecoveryPrompt(opts: {
         "its `Branch outcomes:` list.",
     );
   }
-  if (mutationGateComment) {
-    steps.push(
-      "Add a test that kills each listed mutation (it fails when the " +
-        "mutation is applied), and re-run those tests on the head. Where the " +
-        "mutation shows the line is dead (no input can reach it) or wrong, " +
-        "remove or fix that line instead of testing it. Record `file:line` " +
-        "exempt (untestable): <reason> in the PR summary only for a line " +
-        "production can reach but a test cannot stage.",
-    );
-    steps.push(
-      "Change production code only where a listed mutation shows the line " +
-        "is dead or wrong; otherwise add or change tests, and documentation, " +
-        `only. Commit the change, referencing PR #${opts.prNumber}.`,
-    );
-  } else {
-    steps.push(
-      "Change no code — this is a documentation fix only. Commit the " +
-        `change, referencing PR #${opts.prNumber}.`,
-    );
-  }
+  steps.push(
+    "Change no code — this is a documentation fix only. Commit the " +
+      `change, referencing PR #${opts.prNumber}.`,
+  );
   steps.push(
     "If a listed finding is wrong — the sentence is not actually made " +
       "false by this push — leave the sentence as it is and say so, with " +
@@ -763,24 +705,6 @@ export interface DriftResidual {
    * like `quoteCheckUnavailable`, but is not a hit on its own.
    */
   citationCheckUnavailable?: string;
-  /**
-   * Mutation-gate survivors still unpinned after the recovery turn (Issue
-   * #3750), each formatted `` `file:line` — description ``. Rendered under
-   * its own heading and a hit that drives the recovery turn, but never the
-   * "found text" intro.
-   */
-  mutationSurvivors?: string[];
-  /**
-   * Set when the mutation check's wall-clock budget or mutant cap left
-   * candidate mutants untried (Issue #3750). Fails loud, but is not a hit on
-   * its own: it never drives the recovery turn.
-   */
-  mutationNote?: string;
-  /**
-   * Set when the mutation check could not run (Issue #3750). Fails loud, but
-   * is not a hit on its own: it never drives the recovery turn.
-   */
-  mutationCheckUnavailable?: string;
 }
 
 /** Collapse a quoted sentence or reason to one line for the reply. */
@@ -789,9 +713,9 @@ function flatten(text: string): string {
 }
 
 /**
- * Whether the residual holds a text hit (Issues #3143, #3750): the only kind
- * of residual the "found text …" wording may describe. Mutation survivors
- * are not text hits, and neither are the unavailable or note lines.
+ * Whether the residual holds a text hit (Issue #3143): the only kind of
+ * residual the "found text …" wording may describe. The unavailable lines
+ * are not text hits either.
  */
 function residualHasTextHits(residual: DriftResidual): boolean {
   return residual.findings.length > 0 ||
@@ -871,34 +795,6 @@ export function formatDriftResidual(residual: DriftResidual): string {
     lines.push("");
   }
 
-  const survivors = residual.mutationSurvivors ?? [];
-  if (
-    survivors.length > 0 || residual.mutationNote !== undefined ||
-    residual.mutationCheckUnavailable !== undefined
-  ) {
-    // Mutation check section (Issue #3750); the heading carries no issue number.
-    lines.push("#### Mutation check");
-    lines.push("");
-    if (survivors.length > 0) {
-      lines.push(
-        "No test went red when each of these mutations was applied to a " +
-          "line this push added, still unresolved after the drift check's " +
-          "one recovery attempt:",
-      );
-      lines.push("");
-      for (const s of survivors) lines.push(`- ${flatten(s)}`);
-      lines.push("");
-    }
-    if (residual.mutationNote) {
-      lines.push(flatten(residual.mutationNote));
-      lines.push("");
-    }
-    if (residual.mutationCheckUnavailable) {
-      lines.push(flatten(residual.mutationCheckUnavailable));
-      lines.push("");
-    }
-  }
-
   return lines.join("\n").trimEnd();
 }
 
@@ -914,16 +810,6 @@ export interface DriftCheckDeps {
   runAgent: (
     req: { prompt: string; readOnly: boolean },
   ) => Promise<{ ok: true; output: string } | { ok: false; error: Error }>;
-  /**
-   * Runs the diff-scoped mutation check (Issue #3393) over the lines this run
-   * itself added since `beforeSha`, base merges excluded (Issue #3750).
-   */
-  runMutationCheck: (beforeSha: string) => Promise<MutationCheckResult>;
-  /**
-   * The base branch's required checks and a remote-workflow reader for the CI
-   * mutation contract (Issue #4617); absent means the local files alone.
-   */
-  ciLookupOptions?: () => Promise<FindBlockingMutationJobOptions>;
   logger: Pick<Logger, "info" | "warn" | "error">;
 }
 
@@ -1191,79 +1077,6 @@ async function checkStaleQuotes(
   };
 }
 
-/**
- * One mutation survivor as a residual line (Issue #3750): `file:line` in a
- * code span, then the description. Backticks and line breaks are stripped
- * from the untrusted file and description, as `mutation_gate.ts` does for
- * its feedback comment.
- */
-function mutationSurvivorText(s: Mutant): string {
-  const clean = (text: string) =>
-    text.replaceAll("`", "").replace(/[\r\n]+/g, " ");
-  return `\`${clean(s.file)}:${s.line}\` — ${clean(s.description)}`;
-}
-
-/**
- * Run the mutation check seam once and evaluate it (Issue #3750).
- *
- * A throw from the seam becomes an `error` result, so it is reported as
- * unavailable rather than failing the whole check. Logging follows the
- * result: not applicable and completed runs log their note at info, a run
- * that ran out of budget or hit the mutant cap logs it at warn.
- */
-async function runMutationGateOnce(
-  deps: DriftCheckDeps,
-  repoPath: string,
-  beforeSha: string,
-  summaries: readonly LoadedSummary[],
-  context: { repo: string; prNumber: number },
-): Promise<MutationGateVerdict> {
-  let result: MutationCheckResult;
-  try {
-    result = await deps.runMutationCheck(beforeSha);
-  } catch (err) {
-    result = {
-      kind: "error",
-      reason: `mutation runner failed: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    };
-  }
-  // Issue #4617: a blocking repository CI job reads the survivors, so a
-  // PR-summary exemption cannot clear them. Review-fix pushes cannot hold a
-  // PR, so only this verdict changes. A lookup fault is logged and read as
-  // non-blocking, as the completion phase does.
-  let ciBlock: (CiMutationBlock & { tool: "cargo" | "deno_task" }) | undefined;
-  try {
-    const contract = await findBlockingMutationJob(
-      repoPath,
-      await deps.ciLookupOptions?.(),
-    );
-    ciBlock = contract.blocking ?? undefined;
-  } catch (err) {
-    deps.logger.warn(
-      "Could not read the repository's CI workflows, so the mutation check is treated as non-blocking (Issue #4617)",
-      {
-        ...context,
-        error: err instanceof Error ? err.message : String(err),
-      },
-    );
-  }
-  const verdict = evaluateMutationGate(
-    result,
-    summaries.map((s) => s.content).join("\n"),
-    ciBlock,
-  );
-  if (verdict.budgetExhausted) {
-    deps.logger.warn(verdict.note, context);
-  } else if (verdict.blocked && verdict.survivors.length === 0) {
-    deps.logger.warn(verdict.reason, context);
-  } else {
-    deps.logger.info(verdict.note, context);
-  }
-  return verdict;
-}
-
 /** Append the residual drift to `.pr_response_message`, keeping any existing text first. */
 async function appendResidualToResponseMessage(
   repoPath: string,
@@ -1284,9 +1097,6 @@ async function appendResidualToResponseMessage(
   const lead = residualHasTextHits(residual)
     ? "I've pushed a fix for this feedback, but the worker's drift check " +
       "found text it leaves out of step with the code — see below."
-    : (residual.mutationSurvivors?.length ?? 0) > 0
-    ? "I've pushed a fix for this feedback, but the worker's mutation check " +
-      "found lines this push added that no test pins — see below."
     : "I've pushed a fix for this feedback. The worker's drift check " +
       "could not check it fully — see below.";
   await Deno.writeTextFile(path, `${lead}\n\n${section}`);
@@ -1303,13 +1113,6 @@ const MAX_MODEL_PASS_FILES = 40;
  * (an unreadable diff, a base ref that could not be resolved, a model pass
  * that returned nothing usable) is logged and the check degrades gracefully
  * rather than blocking the push.
- *
- * Issue #3750: the diff-scoped mutation check (`deps.runMutationCheck`) runs
- * after the deterministic checks and before the model pass. Its unexempted
- * survivors are a hit that drives the one recovery turn, and when the turn
- * ran the check is run again against the head so the residual reflects it.
- * An error, or a budget or mutant cap that left candidates untried, is
- * reported in the residual but never drives recovery on its own.
  */
 export async function runPrFeedbackDriftCheck(
   input: DriftCheckInput,
@@ -1498,17 +1301,6 @@ export async function runPrFeedbackDriftCheck(
   // pass — a citation can go stale on a docs-only push too.
   const initialCitations = { stale: [] as string[], unchecked: [] as string[] };
 
-  // Diff-scoped mutation check over this run's own lines, base merges
-  // excluded (Issue #3750). Survivors not covered by a PR-summary exemption
-  // are a hit; an error or a budget or cap shortfall is reported only.
-  const initialMutation = await runMutationGateOnce(
-    deps,
-    repoPath,
-    beforeSha,
-    summaries,
-    { repo, prNumber },
-  );
-
   // One constrained, read-only model question — when this push changed a
   // code or test file (Issue #3244) or a manual or prompt Markdown file
   // (Issue #3347), including recognised source under docs/ (Issue #3715).
@@ -1662,9 +1454,6 @@ export async function runPrFeedbackDriftCheck(
     initialStaleQuotes.unchecked.length === 0 &&
     initialCitations.stale.length === 0 &&
     initialCitations.unchecked.length === 0 &&
-    initialMutation.survivors.length === 0 &&
-    !initialMutation.blocked &&
-    !initialMutation.budgetExhausted &&
     modelPassUnavailable === undefined
   ) {
     return { status: "clean", checked };
@@ -1673,8 +1462,7 @@ export async function runPrFeedbackDriftCheck(
   // One recovery turn, only when there is a genuine hit to recover from.
   // An unchecked (unreadable) named summary is reported but never drives
   // this turn on its own (Issue #3244) — there is nothing a recovery turn
-  // could fix about a file this check could not even read. Likewise a
-  // mutation check that errored or ran short (Issue #3750).
+  // could fix about a file this check could not even read.
   let recoveryRan = false;
   if (
     findingsWithStatus.length > 0 ||
@@ -1682,8 +1470,7 @@ export async function runPrFeedbackDriftCheck(
     initialChecks.docsSweepProblems.length > 0 ||
     initialChecks.testPlanUnchecked.length > 0 ||
     initialStaleQuotes.stale.length > 0 ||
-    initialCitations.stale.length > 0 ||
-    initialMutation.survivors.length > 0
+    initialCitations.stale.length > 0
   ) {
     logger.warn(
       "Drift check found hits — running one recovery turn (Issue #3143)",
@@ -1696,7 +1483,6 @@ export async function runPrFeedbackDriftCheck(
         testPlanUnchecked: initialChecks.testPlanUnchecked.length,
         staleQuotes: initialStaleQuotes.stale.length,
         staleCitations: initialCitations.stale.length,
-        mutationSurvivors: initialMutation.survivors.length,
       },
     );
     const recoveryResult = await deps.runAgent({
@@ -1709,9 +1495,6 @@ export async function runPrFeedbackDriftCheck(
         uncheckedFigures: initialChecks.testPlanUnchecked,
         staleQuotes: initialStaleQuotes.stale,
         staleCitations: initialCitations.stale,
-        ...(initialMutation.survivors.length > 0
-          ? { mutationGateComment: buildMutationGateComment(initialMutation) }
-          : {}),
       }),
       readOnly: false,
     });
@@ -1765,15 +1548,6 @@ export async function runPrFeedbackDriftCheck(
     changeRequestFindings,
   );
   const freshCitations = { stale: [] as string[], unchecked: [] as string[] };
-  // The mutation check runs again only when the recovery turn ran against
-  // initial survivors (Issue #3750): the fresh summaries then supply any
-  // exemption the turn added. Otherwise the initial verdict stands.
-  const finalMutation = initialMutation.survivors.length > 0 && recoveryRan
-    ? await runMutationGateOnce(deps, repoPath, beforeSha, freshSummaries, {
-      repo,
-      prNumber,
-    })
-    : initialMutation;
 
   const residual: DriftResidual = {
     findings: remainingFindings,
@@ -1805,18 +1579,6 @@ export async function runPrFeedbackDriftCheck(
         }`,
       }
       : {}),
-    ...(finalMutation.survivors.length > 0
-      ? {
-        mutationSurvivors: finalMutation.survivors.map(mutationSurvivorText),
-      }
-      : {}),
-    ...(finalMutation.budgetExhausted
-      ? { mutationNote: finalMutation.note }
-      : {}),
-    // An error verdict is blocked with no survivors (Issue #3750).
-    ...(finalMutation.blocked && finalMutation.survivors.length === 0
-      ? { mutationCheckUnavailable: finalMutation.reason }
-      : {}),
   };
 
   if (
@@ -1828,10 +1590,7 @@ export async function runPrFeedbackDriftCheck(
     (residual.staleCitations?.length ?? 0) === 0 &&
     residual.modelPassUnavailable === undefined &&
     residual.quoteCheckUnavailable === undefined &&
-    residual.citationCheckUnavailable === undefined &&
-    (residual.mutationSurvivors?.length ?? 0) === 0 &&
-    residual.mutationNote === undefined &&
-    residual.mutationCheckUnavailable === undefined
+    residual.citationCheckUnavailable === undefined
   ) {
     logger.info(
       "Drift check's recovery turn resolved everything it found",
@@ -1854,9 +1613,6 @@ export async function runPrFeedbackDriftCheck(
       modelPassUnavailable: residual.modelPassUnavailable,
       quoteCheckUnavailable: residual.quoteCheckUnavailable,
       citationCheckUnavailable: residual.citationCheckUnavailable,
-      mutationSurvivors: residual.mutationSurvivors?.length ?? 0,
-      mutationNote: residual.mutationNote,
-      mutationCheckUnavailable: residual.mutationCheckUnavailable,
     },
   );
   await appendResidualToResponseMessage(repoPath, residual);

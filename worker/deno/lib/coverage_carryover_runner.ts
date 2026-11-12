@@ -78,7 +78,7 @@ const ANSI_SGR = /\x1b\[[0-9;]*m/g;
 /** Repo-relative file -> line -> hit count. */
 type Coverage = Map<string, Map<number, number>>;
 
-/** Throws nothing: any failure becomes an `error` result, as runMutationCheck does. */
+/** Throws nothing: any failure becomes an `error` result. */
 export async function runCoverageCarryOverCheck(
   input: CoverageCarryOverInput,
   seams: MutationRunnerSeams,

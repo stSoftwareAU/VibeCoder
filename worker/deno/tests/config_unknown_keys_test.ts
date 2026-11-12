@@ -7,6 +7,7 @@
 
 import { assertEquals } from "@std/assert";
 import {
+  detectRetiredRepoConfigKeys,
   detectUnknownConfigKeys,
   detectUnknownNestedKeys,
   KNOWN_CONFIG_KEYS,
@@ -449,4 +450,31 @@ Deno.test("config_unknown_keys - the review-fleet-prs test-policy keys are known
   ) {
     assertEquals(KNOWN_CONFIG_KEYS.has(key), true, key);
   }
+});
+
+Deno.test("config_unknown_keys - a retired mutation-check repo_config key is warned about by name (Issue #5095)", () => {
+  const warnings = detectRetiredRepoConfigKeys({
+    "org/repo": {
+      skip_mutation_check: true,
+      mutationCheckBudgetSeconds: 120,
+      skipScreenshotCheck: true,
+    },
+    "org/other": { skip_quality_check: true },
+  });
+  assertEquals(
+    warnings.map((warning) => warning.field),
+    [
+      "repo_config.org/repo.skip_mutation_check",
+      "repo_config.org/repo.mutationCheckBudgetSeconds",
+    ],
+  );
+  for (const warning of warnings) {
+    assertEquals(warning.message.includes("Issue #5095"), true);
+    assertEquals(warning.message.includes("ignored"), true);
+  }
+});
+
+Deno.test("config_unknown_keys - detectRetiredRepoConfigKeys is empty when no repo_config is set (Issue #5095)", () => {
+  assertEquals(detectRetiredRepoConfigKeys(undefined), []);
+  assertEquals(detectRetiredRepoConfigKeys({}), []);
 });

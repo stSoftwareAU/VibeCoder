@@ -1,9 +1,11 @@
 /**
- * Working-tree guard for the Deno mutation gate (Issue #4905).
+ * Working-tree snapshot and restore helpers (Issue #4905). The mutation check
+ * that used them was retired by Issue #5095, so these cases exercise the
+ * helpers directly.
  *
- * Runs `runMutationCheck` against a real git repository in a temporary
- * directory, with a fake process runner that misbehaves the way a test run can
- * (writes a stray file, rewrites a tracked fixture, deletes a tracked file).
+ * Runs them against a real git repository in a temporary directory, with a
+ * fake test run that misbehaves the way a test run can (writes a stray file,
+ * rewrites a tracked fixture, deletes a tracked file).
  * The fixture repository is set up through `runGitCommandChecked` (Issue #1214).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
@@ -11,40 +13,9 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runGitCommandChecked } from "../lib/git_timeout.ts";
-import {
-  defaultMutationRunnerSeams,
-  type MutationRunnerSeams,
-  runMutationCheck,
-} from "../lib/mutation_runner.ts";
-import {
-  resetRunTimelineForTests,
-  type RunTimeline,
-  setRunTimeline,
-} from "../lib/run_timeline.ts";
-import {
-  isUnsafePath,
-  restoreTree,
-  snapshotTree,
-} from "../lib/mutation_tree_guard.ts";
+import { resetRunTimelineForTests, type RunTimeline, setRunTimeline } from "../lib/run_timeline.ts";
+import { isUnsafePath, restoreTree, snapshotTree } from "../lib/mutation_tree_guard.ts";
 
-const MODULE = "lib/m.ts";
-const SOURCE =
-  "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
-const TEST_SRC =
-  'import { f } from "../lib/m.ts";\nDeno.test("t", () => f(true));\n';
-const DIFF =
-  `diff --git a/${MODULE} b/${MODULE}\n--- a/${MODULE}\n+++ b/${MODULE}\n` +
-  "@@ -0,0 +1,6 @@\n" +
-  SOURCE.split("\n").slice(0, 6).map((l) => "+" + l).join("\n") + "\n";
-
-/** A project whose module is mutated and whose test imports it. */
-const PROJECT: Record<string, string> = {
-  "deno.json": "{}\n",
-  [MODULE]: SOURCE,
-  "tests/m_test.ts": TEST_SRC,
-};
-
-/** Git with the identity and signing settings the fixtures need. */
 function git(cwd: string, args: string[]): Promise<string> {
   return runGitCommandChecked([
     "-c",
@@ -103,26 +74,6 @@ async function withRepo(
   }
 }
 
-function seamsFor(
-  scratch: string,
-  runProcess: MutationRunnerSeams["runProcess"],
-): MutationRunnerSeams {
-  return { ...defaultMutationRunnerSeams({ TMPDIR: scratch }), runProcess };
-}
-
-const result = (code: number) => ({
-  code,
-  stdout: "",
-  stderr: "",
-  timedOut: false,
-});
-
-/** Passes only while the module is unmutated, as a real suite would. */
-async function passesOnlyUnmutated(cwd: string): Promise<number> {
-  const current = await Deno.readTextFile(`${cwd}/${MODULE}`);
-  return current === SOURCE ? 0 : 1;
-}
-
 async function exists(path: string): Promise<boolean> {
   try {
     await Deno.stat(path);
@@ -148,88 +99,6 @@ async function captureWarnings<T>(
     console.warn = original;
   }
 }
-
-Deno.test("Issue #4905 - a stray file a test run writes is deleted and a pre-existing untracked file is kept", async () => {
-  await withRepo(PROJECT, async (repo, scratch) => {
-    await Deno.writeTextFile(`${repo}/keep.txt`, "keep\n");
-    let runs = 0;
-    const outcome = await runMutationCheck(
-      { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
-      seamsFor(scratch, async (_cmd, _args, opts) => {
-        runs++;
-        await Deno.writeTextFile(`${opts.cwd}/undefined`, "stray\n");
-        return result(await passesOnlyUnmutated(opts.cwd));
-      }),
-    );
-    assertEquals(outcome.kind, "completed");
-    assert(runs > 1, "the baseline and at least one mutant must have run");
-    assertEquals(await exists(`${repo}/undefined`), false);
-    assertEquals(await Deno.readTextFile(`${repo}/keep.txt`), "keep\n");
-    assertEquals(await Deno.readTextFile(`${repo}/${MODULE}`), SOURCE);
-  });
-});
-
-Deno.test("Issue #4905 - a tracked fixture a test run rewrites is checked out again, and an earlier uncommitted edit is kept", async () => {
-  await withRepo({
-    ...PROJECT,
-    "fixtures/data.json": '{"v":1}\n',
-    "notes.txt": "base\n",
-  }, async (repo, scratch) => {
-    await Deno.writeTextFile(`${repo}/notes.txt`, "base\nedited\n");
-    let runs = 0;
-    const outcome = await runMutationCheck(
-      { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
-      seamsFor(scratch, async (_cmd, _args, opts) => {
-        runs++;
-        await Deno.writeTextFile(
-          `${opts.cwd}/fixtures/data.json`,
-          '{"v":"rewritten"}\n',
-        );
-        return result(await passesOnlyUnmutated(opts.cwd));
-      }),
-    );
-    assertEquals(outcome.kind, "completed");
-    assert(runs > 1, "the baseline and at least one mutant must have run");
-    assertEquals(
-      await Deno.readTextFile(`${repo}/fixtures/data.json`),
-      '{"v":1}\n',
-    );
-    assertEquals(
-      await Deno.readTextFile(`${repo}/notes.txt`),
-      "base\nedited\n",
-    );
-  });
-});
-
-Deno.test("Issue #4905 - a mutant run that deletes a tracked file gets it back from git", async () => {
-  await withRepo({
-    ...PROJECT,
-    "fixtures/gone.txt": "keep me\n",
-  }, async (repo, scratch) => {
-    let deletions = 0;
-    const outcome = await runMutationCheck(
-      { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
-      seamsFor(scratch, async (_cmd, _args, opts) => {
-        const code = await passesOnlyUnmutated(opts.cwd);
-        if (code !== 0) {
-          try {
-            await Deno.remove(`${opts.cwd}/fixtures/gone.txt`);
-            deletions++;
-          } catch (err) {
-            if (!(err instanceof Deno.errors.NotFound)) throw err;
-          }
-        }
-        return result(code);
-      }),
-    );
-    assertEquals(outcome.kind, "completed");
-    assert(deletions > 0, "a mutant run must have deleted the tracked file");
-    assertEquals(
-      await Deno.readTextFile(`${repo}/fixtures/gone.txt`),
-      "keep me\n",
-    );
-  });
-});
 
 Deno.test("Issue #4905 - snapshotTree returns null and warns with the git cause outside a git repository", async () => {
   const dir = await Deno.makeTempDir({ prefix: "mutation-tree-guard-plain-" });
@@ -417,102 +286,4 @@ Deno.test("Issue #4905 - snapshotTree and restoreTree warn instead of throwing w
   } finally {
     await Deno.remove(repo, { recursive: true });
   }
-});
-
-Deno.test("Issue #4905 - a run past its deadline keeps its verdict and removes its temporary directory", async () => {
-  await withRepo(PROJECT, async (repo, scratch) => {
-    const run = async (refuse: boolean) => {
-      const removed: string[] = [];
-      const base = seamsFor(
-        scratch,
-        async (_cmd, _args, opts) =>
-          result(await passesOnlyUnmutated(opts.cwd)),
-      );
-      const seams: MutationRunnerSeams = {
-        ...base,
-        removeDir: (p) => {
-          removed.push(p);
-          return base.removeDir(p);
-        },
-      };
-      if (refuse) setRunTimeline(REFUSING_TIMELINE);
-      try {
-        const outcome = await captureWarnings(() =>
-          runMutationCheck(
-            { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
-            seams,
-          )
-        );
-        return { outcome: outcome.value, warnings: outcome.warnings, removed };
-      } finally {
-        resetRunTimelineForTests();
-      }
-    };
-    const normal = await run(false);
-    const refused = await run(true);
-    assertEquals(normal.outcome.kind, "completed");
-    assertEquals(refused.outcome, normal.outcome);
-    assertEquals(refused.removed.length, 1);
-    assertEquals(await exists(refused.removed[0] ?? ""), false);
-    assert(
-      refused.warnings.some((w) => w.includes("could not snapshot")),
-      "the refused snapshot must be warned",
-    );
-  });
-});
-
-Deno.test("Issue #4905 - a snapshotTree or restoreTree seam that rejects does not change the verdict or skip removeDir", async () => {
-  await withRepo(PROJECT, async (repo, scratch) => {
-    const run = async (reject: boolean) => {
-      const removed: string[] = [];
-      const base = seamsFor(
-        scratch,
-        async (_cmd, _args, opts) =>
-          result(await passesOnlyUnmutated(opts.cwd)),
-      );
-      const seams: MutationRunnerSeams = {
-        ...base,
-        removeDir: (p) => {
-          removed.push(p);
-          return base.removeDir(p);
-        },
-        snapshotTree: reject
-          ? () => Promise.reject(new Error("snapshot boom"))
-          : base.snapshotTree,
-        restoreTree: reject
-          ? () => Promise.reject(new Error("restore boom"))
-          : base.restoreTree,
-      };
-      const outcome = await runMutationCheck(
-        { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
-        seams,
-      );
-      return { outcome, removed };
-    };
-    const normal = await run(false);
-    const snapshotRejects = await run(true);
-    assertEquals(normal.outcome.kind, "completed");
-    assertEquals(snapshotRejects.outcome, normal.outcome);
-    assertEquals(snapshotRejects.removed.length, 1);
-
-    // restoreTree rejecting alone: the snapshot succeeds, the restore throws.
-    const removed: string[] = [];
-    const base = seamsFor(
-      scratch,
-      async (_cmd, _args, opts) => result(await passesOnlyUnmutated(opts.cwd)),
-    );
-    const outcome = await runMutationCheck(
-      { repoPath: repo, diff: DIFF, budgetSeconds: 600 },
-      {
-        ...base,
-        removeDir: (p) => {
-          removed.push(p);
-          return base.removeDir(p);
-        },
-        restoreTree: () => Promise.reject(new Error("restore boom")),
-      },
-    );
-    assertEquals(outcome, normal.outcome);
-    assertEquals(removed.length, 1);
-  });
 });

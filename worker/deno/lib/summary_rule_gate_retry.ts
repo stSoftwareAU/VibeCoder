@@ -115,8 +115,9 @@ export interface SummaryRuleRunVerdict {
   standingViolations?: readonly StandingViolation[];
   /**
    * True when one of the gates folded into `comment` can only be satisfied by
-   * changing tests (the diff-scoped mutation gate, Issue #3393: a surviving
-   * mutant is fixed by adding a test that kills it). The recovery prompt then
+   * changing tests (the coverage carry-over gate, Issue #3795: a line that a
+   * removed test used to reach is fixed by adding a test that reaches it). The
+   * recovery prompt then
    * allows test changes for that item instead of telling the agent the code is
    * final. Absent means every item is a documentation shortfall.
    */
