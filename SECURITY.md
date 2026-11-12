@@ -50,9 +50,12 @@ not control general egress.
 Provider tool restrictions are separate from execution containment. Claude's
 CLI enforces `--disallowed-tools`; Codex and Gemini receive the list as prompt
 text. Selecting a provider does not disable model-refusal fallback or create
-filesystem/network isolation. Codex's read-only role guard restores changes to
-the selected checkout, but does not deny Bash or undo commands and builds run
-elsewhere. The container and network controls above are the isolation boundary.
+filesystem/network isolation. External orchestration role calls are pinned:
+the gate passes `enableProviderFallback: false`, so a role call never moves to
+`agent_provider_fallback` after a model refusal (Issue #4986). Codex's
+read-only role guard restores changes to the selected checkout, but does not
+deny Bash or undo commands and builds run elsewhere. The container and network
+controls above are the isolation boundary.
 
 The GhostCommit image-injection surface has its own pair of reports: the
 [image prompt-injection assessment](docs/security/ghostcommit-image-injection-assessment.md)

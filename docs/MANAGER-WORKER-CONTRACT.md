@@ -434,7 +434,7 @@ when external orchestration is off
 (`worker/deno/lib/execute_claude_phase.ts:1298-1307`,
 `worker/deno/lib/phases/execute_phase.ts:799-815`). The opt-in external
 orchestration path never sets `--agents`
-(`worker/deno/lib/orchestration/issue_run_gate.ts:112`) and refuses a provider
+(`worker/deno/lib/orchestration/issue_run_gate.ts:120`) and refuses a provider
 that cannot carry a role before any paid work: `assertRoleSupported`
 (`worker/deno/lib/orchestration/capabilities.ts:130`) refuses an unsupported
 provider and, for providers other than Codex, a capability or tool-denial gap;
@@ -483,10 +483,12 @@ does not provide filesystem/network isolation. See
   (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
   unproved entitlement or exhausted quota. The gate never falls back to
   `--agents` or a metered API
-  (`worker/deno/lib/orchestration/issue_run_gate.ts:112`), and it never moves
+  (`worker/deno/lib/orchestration/issue_run_gate.ts:120`), and it never moves
   a role call to `agent_provider_fallback`: role calls pass
-  `enableProviderFallback: false`, so after a model refusal the retry ladder
-  gives up on the role's own provider instead (Issue #4986).
+  `enableProviderFallback: false`
+  (`worker/deno/lib/orchestration/issue_run_gate.ts:118`), so after a
+  model refusal the retry ladder gives up on the role's own provider instead
+  (Issue #4986).
 - **Native split, current state.** The native `issue_executor_split` path runs
   only when external orchestration is off
   (`worker/deno/lib/execute_claude_phase.ts:1298-1307`,
@@ -497,10 +499,10 @@ does not provide filesystem/network isolation. See
   (`worker/deno/lib/claude_runner.ts:1263-1275`) refuses loudly as a backstop
   when a run carries `agents` but the provider's argv lacks `--agents` (Issue
   #4010). The retry ladder (`runRetryLadder`,
-  `worker/deno/lib/claude_runner.ts:2938`) can also move a non-role run to
+  `worker/deno/lib/claude_runner.ts:3280`) can also move a non-role run to
   another provider: after a model refusal with no cheaper model, it switches
   `agentProvider` to `agent_provider_fallback`
-  (`worker/deno/lib/claude_runner.ts:3496-3516`, Issue #4034) and keeps
+  (`worker/deno/lib/claude_runner.ts:3855-3878`, Issue #4034) and keeps
   `agents`, so the #4010 refusal can still fire for a fallback provider such as
   Codex. Codex, Gemini and DeepSeek no longer silently drop `agents` on the
   native split. The `settingsJson` drop at the descriptor layer (section 3) is

@@ -748,6 +748,8 @@ export interface RunClaudeOptions {
    * Naming a provider the running image did not install fails loudly, naming
    * the installed set (Issue #3234). Selection alone does not disable the
    * model-refusal provider fallback or provide filesystem/network isolation.
+   * A caller pins the provider with `enableProviderFallback: false`
+   * (Issue #4986).
    * Callers relying on a provider-specific tool restriction must check the
    * selected adapter and every permitted fallback.
    */

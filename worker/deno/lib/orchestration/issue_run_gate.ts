@@ -2,9 +2,9 @@
  * The opt-in gate that runs one issue through the external orchestrator
  * (Issue #3642). It is the only place the orchestrator meets the Claude
  * runner: each role call becomes one `runClaudeWithRetry` call pinned to the
- * selected provider, with model fallback off and the native `--agents`
- * sub-agent path never set. Every refusal fails closed. Nothing here falls
- * back to `--agents` or to a metered API.
+ * selected provider, with model and provider fallback off and the native
+ * `--agents` sub-agent path never set. Every refusal fails closed. Nothing
+ * here falls back to `--agents` or to a metered API.
  *
  * Australian English spelling throughout (behaviour, honoured, recognised).
  */
@@ -113,7 +113,8 @@ function claudeOptionsFor(
     ],
     // Fallback to another model would hide a failure the operator should see.
     enableModelFallback: false,
-    // A role's provider passed the role, billing and read-only checks; another provider from agent_provider_fallback did not (Issue #4986).
+    // A role's provider passed the role, billing and read-only checks; another
+    // provider from agent_provider_fallback did not (Issue #4986).
     enableProviderFallback: false,
     // The gate never uses Claude's native `--agents` sub-agent path.
     agents: undefined,
