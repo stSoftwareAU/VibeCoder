@@ -6,8 +6,8 @@
  *
  * The tests drive the real resolver (`resolveSetting`) to establish that the
  * behaviour the manuals describe is live, then assert the docs label it with a
- * release that actually exists — a version at or below
- * [`.release-floor`](../../../.release-floor) — and that every link into the
+ * release that actually exists — a major no higher than the newest release the
+ * release notes record — and that every link into the
  * release note resolves to a heading that is really there. They assert against
  * the resolver's real output and the headings the file really has rather than
  * on prose wording, so a harmless reword never reddens the suite.
@@ -42,24 +42,29 @@ function majorOf(raw: string): number | null {
 }
 
 /**
- * The major the released series is on.
+ * The major the released series is on: the highest version any release-note
+ * heading (`## X.Y.Z — …`) names.
  *
- * `.release-floor` states the **lowest** version the next release tag may
- * take, so it is not an upper bound on the tags that exist — the series runs
- * past it on the automatic patch increment. Its major is the bound that does
- * hold: a release in the *next* major cannot exist until the floor moves to
- * it, so a document dating already-shipped behaviour to a higher major is
- * describing a release nobody can install.
+ * Every release that moves the major is written up in the release notes with
+ * its migration, so no release in a higher major can exist without a heading
+ * here; a document dating already-shipped behaviour to a higher major is
+ * describing a release nobody can install. (The bound used to be the
+ * hand-edited `.release-floor`; the version is now derived from the change by
+ * `.github/scripts/next-release-tag.sh`, and the notes are the record a human
+ * reads.)
  */
-async function releasedMajor(): Promise<{ floor: string; major: number }> {
-  const raw = await readRepoFile(".release-floor");
-  const floor = raw
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"))[0] ?? "";
-  const major = majorOf(floor);
-  assert(major !== null, `.release-floor must state a semver, got "${floor}"`);
-  return { floor, major };
+async function releasedMajor(): Promise<{ release: string; major: number }> {
+  const notes = await readRepoFile("docs/RELEASE-NOTES.md");
+  const versions = [...notes.matchAll(/^## (\d+\.\d+\.\d+) /gm)]
+    .map((m) => m[1] ?? "");
+  assert(
+    versions.length > 0,
+    "docs/RELEASE-NOTES.md must record at least one release heading",
+  );
+  const majors = versions.map((v) => majorOf(v) ?? 0);
+  const major = Math.max(...majors);
+  const release = versions[majors.indexOf(major)] ?? "";
+  return { release, major };
 }
 
 /** GitHub's heading-anchor slug for a Markdown `##` heading. */
@@ -135,7 +140,7 @@ Deno.test("RELEASE-NOTES.md - the config-precedence note names a release that ex
     major <= series.major,
     `the config-precedence change shipped already, so its release note must ` +
       `name a release that exists — "${heading}" is in a major above the ` +
-      `series the floor (${series.floor}) is on`,
+      `series the newest release note (${series.release}) is on`,
   );
 });
 
@@ -183,7 +188,7 @@ Deno.test("docs - no manual dates the shipped precedence flip to an unreleased v
           major <= series.major,
           `${doc} dates the shipped config-precedence flip to ${stated}, a ` +
             `release that cannot exist — the series is still on ` +
-            `${series.major}.x (floor ${series.floor})`,
+            `${series.major}.x (newest release note ${series.release})`,
         );
       }
     }
