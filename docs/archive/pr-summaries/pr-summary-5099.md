@@ -110,11 +110,19 @@ flowchart LR
   probe that times out after TERM was sent reports the pids already signalled
   (Issue #5099)". It asserts `collected` is `[102, 101]` and that both lines
   name those pids and the cause. Red on the unfixed code.
+- Added to `worker/deno/tests/orphan_collector_test.ts`: "orphan collector - the
+  logged cause is the error's message, or the thrown value itself when it is not
+  an Error (Issue #5099)". A `sendSignal` that rejects with an `Error` and then
+  with a bare string must give the exact line
+  `[ORPHANS_UNCOLLECTED] after=AGENT_KILLED cause=<message> signalled=none` and a
+  matching error line. This pins the `error instanceof Error` ternary at
+  `orphan_collector.ts:221`. With that condition negated the test fails (the
+  cause becomes `Error: …` or `undefined`); on the head it passes.
 - Edited only the `capturingLogger()` helper in both test files, which now also
   records `error` lines. No assertion was removed. The existing collector tests,
   including the success-path `ORPHANS_COLLECTED` test, run unchanged.
 - `deno test -A tests/orphan_collector_test.ts tests/claude_runner_killed_test.ts`
-  from `worker/deno` on the head: 22 passed, 0 failed.
+  from `worker/deno` on the head: 23 passed, 0 failed.
 - `./quality.sh < /dev/null` on the fix commit: passed. Config integration and
   checkov were skipped by the gate itself. Deno tests, lint, type check, fmt,
   markdownlint, mermaid and semgrep passed.

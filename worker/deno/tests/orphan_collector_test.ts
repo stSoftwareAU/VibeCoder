@@ -460,3 +460,44 @@ Deno.test("orphan collector - a probe that times out after TERM was sent reports
     `security lines: ${JSON.stringify(security)}`,
   );
 });
+
+Deno.test("orphan collector - the logged cause is the error's message, or the thrown value itself when it is not an Error (Issue #5099)", async () => {
+  const cases: { thrown: unknown; cause: string }[] = [
+    {
+      thrown: new Error("ps timed out after 10000ms"),
+      cause: "ps timed out after 10000ms",
+    },
+    {
+      thrown: "kill timed out after 10000ms",
+      cause: "kill timed out after 10000ms",
+    },
+  ];
+  for (const { thrown, cause } of cases) {
+    const { table, deps } = fakeTable({
+      100: { ppid: 20, alive: true, elapsedSeconds: 900 },
+      101: { ppid: 100, alive: true, elapsedSeconds: 88 },
+    });
+    const tracker = new DescendantTracker(CHILD, {
+      ...deps,
+      sendSignal: () => Promise.reject(thrown),
+    }, { nowMs: () => 1_000_000 });
+    await tracker.refresh();
+    table.get(100)!.alive = false;
+    table.get(101)!.ppid = 1;
+
+    const { logger, security, errors } = capturingLogger();
+    await tracker.collectOrphans({
+      reason: "AGENT_KILLED",
+      maxWaitSeconds: 2,
+      logger,
+    });
+    assertEquals(security, [
+      `[ORPHANS_UNCOLLECTED] after=AGENT_KILLED cause=${cause} signalled=none`,
+    ]);
+    assertEquals(errors.length, 1);
+    assert(
+      errors.some((e) => e.includes(`stopped after AGENT_KILLED: ${cause};`)),
+      `error lines: ${JSON.stringify(errors)}`,
+    );
+  }
+});
