@@ -840,9 +840,11 @@ sides of the boundary:
   1 field set so a removal fails in review rather than in the fleet.
 - **A bump is a fleet-wide breaking change.** The number moves only when a field
   is removed or its meaning changes, and that is a decision with a release-notes
-  entry, a release-floor move and the extensions upgraded **before** the worker
-  ships — never a side effect of a feature. The worker updates itself on every
-  host within the hour; an operator's hooks do not.
+  entry and the extensions upgraded **before** the worker ships — never a side
+  effect of a feature. The moved version is a removed line of the
+  [release contract](RELEASE-TAGGING.md#the-release-contract), so that release
+  is a major automatically. The worker updates itself on every host within the
+  hour; an operator's hooks do not.
 - **A hook refuses the versions it cannot read, not the versions it has not
   met.** Refuse a malformed version, and refuse a version _older_ than the one
   the hook was written against if it depends on a later field. A **newer**

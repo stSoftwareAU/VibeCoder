@@ -1,7 +1,8 @@
 /**
  * Tests for `.github/workflows/release-tag.yml` (Issue #627): every merge
- * to `main` is tagged with the next auto-incremented patch semver, so a
- * frozen host has released versions to pin to.
+ * to `main` is tagged with the next semver — major, minor or patch decided
+ * by what the merge changed — so a frozen host has released versions to pin
+ * to.
  *
  * The trigger only exists post-merge, so the workflow structure is
  * asserted from the parsed YAML (not source text), and the plumbing
@@ -111,16 +112,21 @@ Deno.test("release-tag.yml - the tag is created only when the plan says so", asy
   );
 });
 
-Deno.test("release-tag.yml - the plan is given the repository's release floor", async () => {
+Deno.test("release-tag.yml - the plan reads the checkout and the merge commit, nothing hand-edited", async () => {
   const steps = tagJob(await loadWorkflow()).steps ?? [];
   const plan = steps.find((s) => s.id === "plan");
   assert(plan, "the job must plan the tag before creating it");
-  // Issue #808: without the floor the workflow can only ever mint the next
-  // patch, so a release that moves the series would have to be tagged by
-  // hand and the automation would fight it on the following merge.
+  // The whole version comes from what the merge changed since the newest
+  // release (docs/audits/release-contract.txt and container/), read straight
+  // from the full-history checkout — the hand-edited `.release-floor` of
+  // Issue #808 is gone, and nothing may stand in for it.
   assert(
-    plan.run?.includes(".release-floor"),
-    "the plan step must pass the repository's release floor to the script",
+    plan.run?.includes('next-release-tag.sh . "${GITHUB_SHA}"'),
+    "the plan step must classify the checkout at the merge commit",
+  );
+  assert(
+    !plan.run?.includes(".release-floor"),
+    "no hand-edited release floor may decide the version",
   );
 });
 
@@ -226,27 +232,25 @@ Deno.test("release-tag - the plan step reads real git tag output", async () => {
     await git(["config", "commit.gpgsign", "false"], dir);
     await git(["config", "user.email", "test@example.com"], dir);
     await git(["config", "user.name", "test"], dir);
+    await Deno.mkdir(`${dir}/docs/audits`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/docs/audits/release-contract.txt`,
+      "# generated\nconfig repos\n",
+    );
     await Deno.writeTextFile(`${dir}/file.txt`, "one\n");
-    await git(["add", "file.txt"], dir);
+    await git(["add", "-A"], dir);
     await git(["commit", "-qm", "first"], dir);
     await git(["tag", "1.0.9"], dir);
     await Deno.writeTextFile(`${dir}/file.txt`, "two\n");
     await git(["commit", "-qam", "second"], dir);
     const head = await git(["rev-parse", "HEAD"], dir);
 
-    // Exactly what the workflow step runs, against real git output.
+    // Exactly what the workflow step runs: the checkout and the merge commit.
     const script = `${repoRoot()}.github/scripts/next-release-tag.sh`;
     const runPlan = async () => {
-      await Deno.writeTextFile(
-        `${dir}/all-tags.txt`,
-        `${await git(["tag", "--list"], dir)}\n`,
-      );
-      await Deno.writeTextFile(
-        `${dir}/head-tags.txt`,
-        `${await git(["tag", "--points-at", head], dir)}\n`,
-      );
       const out = await new Deno.Command("bash", {
-        args: [script, `${dir}/all-tags.txt`, `${dir}/head-tags.txt`],
+        args: [script, ".", head],
+        cwd: dir,
         stdout: "piped",
         stderr: "piped",
       }).output();
@@ -254,11 +258,14 @@ Deno.test("release-tag - the plan step reads real git tag output", async () => {
       return new TextDecoder().decode(out.stdout);
     };
 
-    assertEquals(await runPlan(), "should_tag=true\ntag=1.0.10\n");
+    assertEquals(await runPlan(), "should_tag=true\ntag=1.0.10\nbump=patch\n");
 
     // Re-running after the tag exists is a no-op, not a second tag.
     await git(["tag", "1.0.10", head], dir);
-    assertEquals(await runPlan(), "should_tag=false\ntag=1.0.10\n");
+    assertEquals(
+      await runPlan(),
+      "should_tag=false\ntag=1.0.10\nbump=none\n",
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
