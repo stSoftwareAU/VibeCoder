@@ -7,13 +7,11 @@
  * base is a milestone branch that is behind its default branch, with the run
  * target already past.
  *
- * The sweep's `attemptMerge` passes the injected runner to `enableAutoMerge`, so
- * the merge gate's milestone lookups reach `sweepGh`, which answers them through
- * `answerMilestoneLookup`. Calls still made through the default runner reach
- * `gh` through the low-level spawn chokepoint (`lib/gh_spawn.ts`), which the
- * test replaces with `_setGhSpawnRunner` for its duration. Both record every
- * argv. The deferral comment is posted only by the start gate, so its text
- * proves the flag reached the gate.
+ * The sweep's `attemptMerge` does not receive a `ghCommandFn`, so its merge
+ * gate reaches `gh` through the low-level spawn chokepoint (`lib/gh_spawn.ts`).
+ * The test replaces that runner with `_setGhSpawnRunner` for its duration: it
+ * records every argv and answers the milestone lookups. The deferral comment is
+ * posted only by the start gate, so its text proves the flag reached the gate.
  *
  * Australian English spelling used throughout (behaviour, organisation).
  */
@@ -61,8 +59,7 @@ function answerMilestoneLookup(args: readonly string[]): string {
 /**
  * Run the production sweep over one unarmed milestone-child PR with the run
  * target already two hours past. Returns every gh argv issued, from both the
- * sweep's injected runner, which the merge gate now uses too, and the spawn
- * runner.
+ * sweep's injected runner and the spawn runner the merge gate uses.
  */
 async function sweepBehindMilestonePastTarget(): Promise<string[]> {
   resetAnnouncedDraftsForTest();
@@ -104,7 +101,7 @@ async function sweepBehindMilestonePastTarget(): Promise<string[]> {
         },
       }));
     }
-    return Promise.resolve(answerMilestoneLookup(args));
+    return Promise.resolve("");
   };
 
   const spawnCalls: string[] = [];

@@ -10,16 +10,7 @@ cannot see. `CODING-STANDARDS.md` (**Choosing assertions → UI / PWA**) and rul
 opens **Do not pin incidental appearance choices.** The Test Plan quote and
 removed-line obligations are gone. The `prompts/pr_feedback/prompt.md` copy (**A
 replaced style literal is removed, not joined.**) is deleted, and the docs test
-now pins the new wording.
-
-The pre-push gate blocked the first attempt. Its unit-test list includes tests
-that mention a changed prompt type, and one of them,
-`worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts`, made real
-`gh` calls and ran over the one-second unit budget. The cause is in
-`ensureAutoMerge`: its `attemptMerge` never passed the sweep's gh runner to
-`enableAutoMerge`, so an injected runner did not reach the merge. It now passes
-`ghCommandFn: gh`. The #4243 wiring test's fake now answers the milestone
-lookups that reach it. Closes #4991.
+now pins the new wording. Closes #4991.
 
 ## Spec
 
@@ -52,14 +43,7 @@ lookups that reach it. Closes #4991.
 
 ## Evidence
 
-Documentation and prompt change, plus one runtime line. In
-`worker/deno/lib/run_core_production_deps.ts`, `ensureAutoMerge`'s
-`attemptMerge` now passes `ghCommandFn: gh` (`gh` is
-`options.autoMergeGhCommandFn ?? runGhCommand`) to `enableAutoMerge`. In
-production `autoMergeGhCommandFn` is unset, so `gh` is `runGhCommand`, the same
-runner `enableAutoMerge` used by default. Only a test that injects a runner sees
-a difference. This change is outside the issue's text and is here only because
-the gate's unit list for this branch includes the 4952 wiring test.
+Documentation and prompt change only. No runtime code changes.
 
 - Related existing rules checked, all consistent with the new passage:
   - `prompts/coding_guidelines/prompt.md`: "Avoid pinning incidental CSS, DOM or
@@ -147,30 +131,9 @@ the gate's unit list for this branch includes the 4952 wiring test.
   `worker/deno/tests/stylesheet_regex_layout_3247_docs_test.ts` and
   `worker/deno/tests/coding_guidelines_twin_drift_test.ts`. Result: 157 passed,
   0 failed.
-- Modified `worker/deno/tests/milestone_sync_after_target_wiring_test.ts`. No
-  assertion changed. The `sweepGh` fake's fallback now returns
-  `answerMilestoneLookup(args)` instead of `""`, because the merge gate's
-  milestone lookups now reach the injected runner and no longer the spawn
-  runner. The module doc and the helper's doc comment now say this. Without the
-  fixture change the test failed with "the behind PR must reach the in-cycle
-  sync path". With it, the test passes and still asserts the start gate's
-  deferral text.
-- `deno task test:unit` over the 35 `tests/*.ts` files that name
-  `autoMergeGhCommandFn` or `createProductionRunCoreDeps`: 302 passed, 0 failed.
-  Run alone,
-  `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` is no
-  longer listed as a slow unit test.
-  `worker/deno/tests/auto_merge_sweep_keeps_armed_test.ts` takes about 6 s per
-  test with or without the fix, and the time budget does not flag it.
-- `deno task test:unit` over all 541 `tests/*.ts` files that name the edited
-  prompts, `CODING-STANDARDS.md` or a prompt type, before the wiring fix:
-  parallel pass 9,446 passed, 0 failed; serial pass 145 passed, 0 failed. The
-  time budget listed three files over budget but did not enforce it, because the
-  git guard shim was on PATH. Of the three,
-  `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` is the
-  one whose overrun comes from real `gh` calls, not from the shim. The gate's
-  own output for this branch was truncated and named no file, so its block is
-  attributed to that test by this reproduction, not by the gate itself.
-- `./quality.sh < /dev/null` on c0deb839 (the final code commit) passed, with
-  config integration and checkov skipped by the gate itself. Deno tests, deno
-  lint, type check, fmt, markdownlint, mermaid and semgrep all passed.
+- After reverting an earlier runtime edit, `run_core_production_deps.ts` and
+  `milestone_sync_after_target_wiring_test.ts` match the base branch.
+  `deno test -A` from `worker/deno` over
+  `tests/milestone_sync_after_target_wiring_test.ts`,
+  `tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` and
+  `tests/style_literal_assertions_3444_docs_test.ts`: 4 passed, 0 failed.
