@@ -28,9 +28,18 @@ import {
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
 import {
+  BABYSITTER_QUOTA_PARK_EXIT_CODE,
   BABYSITTER_REPAIR_TIMEOUT_MS,
   BABYSITTER_TASK_FAILURE_EXIT_CODE,
 } from "../lib/fleet_babysitter_container.ts";
+import {
+  CLAUDE_PROVIDER_ID,
+  DEEPSEEK_PROVIDER_ID,
+  resolveAgentProvider,
+} from "../lib/agent_provider.ts";
+import { createClaudeCredentialPool } from "../lib/claude_credential_pool.ts";
+import { applyProviderCredentialEnv } from "../lib/credential_preflight.ts";
+import type { EnvLookup } from "../lib/env_lookup.ts";
 import { redactSecrets } from "../lib/secret_redaction.ts";
 
 /** Redacted stderr up to this length is quoted whole in a failure message. */
@@ -39,11 +48,53 @@ const STDERR_QUOTE_CHARS = 500;
 /** Characters kept from each end of longer redacted stderr. */
 const STDERR_EDGE_CHARS = 250;
 
+/** What {@link exportBabysitterSubscriptionCredentials} needs. */
+export interface BabysitterCredentialExportOptions {
+  readonly enabledProviderIds: readonly string[];
+  readonly log: (message: string) => void;
+  /** Credential directory; production resolves it from the environment. */
+  readonly dir?: string;
+  readonly env?: EnvLookup;
+  readonly setEnv?: (name: string, value: string) => void;
+}
+
+/**
+ * Exports the enabled subscription providers' logins into this process, the
+ * way the worker loop and reviewer rounds do, so the automatic choice can see
+ * them (Issue #5072). Without this every subscription read as billing-unknown
+ * and each repair bought paid DeepSeek overflow. DeepSeek is left out: its
+ * credential is exported only by the overflow choice, into an isolated env.
+ *
+ * @returns The variable names exported, for names-only logging.
+ */
+export async function exportBabysitterSubscriptionCredentials(
+  options: BabysitterCredentialExportOptions,
+): Promise<string[]> {
+  const providers = options.enabledProviderIds
+    .map((id) => id.trim())
+    .filter((id) => id !== "" && id !== DEEPSEEK_PROVIDER_ID)
+    .map(resolveAgentProvider);
+  const pool = createClaudeCredentialPool({
+    log: options.log,
+    provider: resolveAgentProvider(CLAUDE_PROVIDER_ID),
+  });
+  return await applyProviderCredentialEnv({
+    dir: options.dir,
+    env: options.env,
+    setEnv: options.setEnv,
+    providers,
+    selectToken: pool.selectToken,
+  });
+}
+
 /** The seams the repair touches, injected so tests need no real agent. */
 export interface BabysitterRepairDeps {
   readTextFile: (path: string) => Promise<string>;
   writeTextFile: (path: string, text: string) => Promise<void>;
   removeFile: (path: string) => Promise<void>;
+  exportSubscriptionCredentials: (
+    options: BabysitterCredentialExportOptions,
+  ) => Promise<string[]>;
   chooseProvider: typeof chooseBabysitterProvider;
   runClaude: typeof runClaudeWithTimeout;
   log: (message: string) => void;
@@ -54,6 +105,7 @@ export const productionBabysitterRepairDeps: BabysitterRepairDeps = {
   readTextFile: (path) => Deno.readTextFile(path),
   writeTextFile: (path, text) => Deno.writeTextFile(path, text),
   removeFile: (path) => Deno.remove(path),
+  exportSubscriptionCredentials: exportBabysitterSubscriptionCredentials,
   chooseProvider: chooseBabysitterProvider,
   runClaude: runClaudeWithTimeout,
   log: (message) => console.error(message),
@@ -188,7 +240,27 @@ async function repairResponse(
   }
   if (prompt.trim() === "") return fail(`prompt file ${promptFile} is empty`);
 
-  // f. Choose the provider; the choice owns the subscription-or-overflow policy.
+  // f. Load the subscription logins first: the choice can only rank what it
+  // can see, and an unseen subscription must never become paid overflow.
+  try {
+    const exported = await deps.exportSubscriptionCredentials({
+      enabledProviderIds: config.enabledAgentProviders,
+      log: deps.log,
+    });
+    if (exported.length > 0) {
+      deps.log(
+        `[babysitter-repair] subscription credentials exported: ${
+          exported.join(", ")
+        }`,
+      );
+    }
+  } catch (error) {
+    return fail(
+      `subscription credential export failed: ${errorMessage(error)}`,
+    );
+  }
+
+  // g. Choose the provider; the choice owns the subscription-or-overflow policy.
   let choice: BabysitterProviderChoice;
   try {
     choice = await deps.chooseProvider({
@@ -203,7 +275,7 @@ async function repairResponse(
     `[babysitter-repair] provider=${choice.providerId} overflow=${choice.overflow}`,
   );
 
-  // g. Run the agent. Only the DeepSeek overflow choice carries a parent env.
+  // h. Run the agent. Only the DeepSeek overflow choice carries a parent env.
   const runOptions: RunClaudeOptions = {
     prompt,
     cwd: dir,
@@ -233,6 +305,8 @@ async function repairResponse(
       `agent exited ${run.exitCode}; ${cause}`,
       run.agentFailure?.category === "task-failure"
         ? BABYSITTER_TASK_FAILURE_EXIT_CODE
+        : run.agentFailure?.category === "quota-exhausted"
+        ? BABYSITTER_QUOTA_PARK_EXIT_CODE
         : 1,
     );
   }
@@ -240,7 +314,7 @@ async function repairResponse(
     return fail("agent returned an empty final message");
   }
 
-  // h. Only a complete, successful run writes the response file. A partial
+  // i. Only a complete, successful run writes the response file. A partial
   // write is cleared by the caller's failure path.
   try {
     await deps.writeTextFile(responseFile, run.output);

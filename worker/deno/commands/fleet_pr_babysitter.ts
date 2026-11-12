@@ -78,6 +78,7 @@ import {
 import {
   babysitterCheckoutDir,
   type BabysitterContainerDeps,
+  BabysitterQuotaPark,
   BabysitterTaskFailure,
   checkBabysitterContainerChromium,
   runBabysitterRepairContainer,
@@ -109,6 +110,7 @@ import {
 import {
   BabysitterFailure,
   babysitterFailureSignature,
+  BabysitterParked,
   babysitterRetryDelayMs,
   babysitterRetryEligible,
   type BabysitterRetryRecord,
@@ -836,6 +838,12 @@ export async function runRepairs(
       const task = queue.splice(index, 1)[0]!;
       const version = JSON.stringify([task.key, task.version]);
       const promise = task.run().catch((error) => {
+        // Issue #5072: a spent quota is normal; the retry record already
+        // holds its cooldown, so it is one quiet line, not a pass failure.
+        if (error instanceof BabysitterParked) {
+          console.log(`Babysitter repair parked: ${error.message}`);
+          return;
+        }
         failures.push(error);
         console.error("Babysitter repair failed:", error);
       }).finally(() => {
@@ -2260,13 +2268,36 @@ async function removeFileIfPresent(path: string): Promise<void> {
  * failures are infrastructure; the command's reserved exit status carries
  * task failures as a structured host error type.
  */
-function repairFailureClass(message: string) {
+/** The blocker class of a repair container failure, from its message. */
+export function repairFailureClass(message: string) {
   if (
+    // Issue #5072: a host whose subscription logins never loaded is
+    // misconfigured; the chooser refuses to spend paid overflow on it.
+    message.includes("refusing paid DeepSeek overflow") ||
     message.includes("the container runtime is not on PATH") ||
     message.includes("the worker image is not built") ||
     message.includes("No supported container runtime is available")
   ) return "capability" as const;
   return "infrastructure" as const;
+}
+
+/**
+ * The {@link BabysitterFailure} a failed repair container raises. A spent
+ * provider quota is a {@link BabysitterParked}: normal, quiet (Issue #5072).
+ */
+export function startBabysitterFailure(error: unknown): BabysitterFailure {
+  const message = redactSecrets(
+    error instanceof Error ? error.message : String(error),
+  );
+  if (error instanceof BabysitterQuotaPark) {
+    return new BabysitterParked(message);
+  }
+  return new BabysitterFailure(
+    message,
+    error instanceof BabysitterTaskFailure
+      ? "code"
+      : repairFailureClass(message),
+  );
 }
 
 /**
@@ -2337,15 +2368,7 @@ export async function startBabysitterAgent(
       signal: options.signal,
     }, options.container);
   } catch (error) {
-    const message = redactSecrets(
-      error instanceof Error ? error.message : String(error),
-    );
-    throw new BabysitterFailure(
-      message,
-      error instanceof BabysitterTaskFailure
-        ? "code"
-        : repairFailureClass(message),
-    );
+    throw startBabysitterFailure(error);
   }
   let response: string | null;
   try {
