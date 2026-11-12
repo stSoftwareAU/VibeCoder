@@ -406,6 +406,21 @@
       },
       "repos": ["stSoftwareAU/VibeCoder"],
       "notes": "Floci, the MIT-licensed LocalStack drop-in on port 4566 that the worker's own runs use (Issue #3367, parent #3346). The sha256 pins are of /app/application inside each architecture's image under the pinned digest; the binary has no version flag, so the fragment installs a /usr/local/bin/floci wrapper that answers --version with \"floci <version>\" and execs the native binary otherwise. Not started by the entrypoint."
+    },
+    {
+      "id": "tokeneconomizer",
+      "version": "0.1.0",
+      "fragment": "toolchains/tokeneconomizer.sh",
+      "commands": ["tokeneconomizer"],
+      "versionCommand": "tokeneconomizer",
+      "commit": "264e7a7f32f0112a06aa83a97b9c2c4681563968",
+      "licence": "Apache-2.0",
+      "source": "https://github.com/microsoft/TokenEconomizer",
+      "sha256": {
+        "noarch": "4ace6dc1c945e79841163279d0d54a58fab71cbcab08569e6941b63c26154f9a"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "The TokenEconomizer plugin's command line and Python package, vendored into the image for the worker's own trial (Issue #4955, parent #4953). It is off by default: nothing reads it until #4956 wires in the token_economizer config block, so it is a binary on the PATH that no run invokes. The pin is commit 264e7a7f32f0112a06aa83a97b9c2c4681563968 of microsoft/TokenEconomizer (Apache-2.0, stdlib-only Python, package version 0.1.0 in pyproject.toml, requires-python >=3.10); sha256 is the checksum of that commit's GitHub source archive, which the fragment verifies before extracting. GitHub's archive bytes are not guaranteed to stay byte-identical, so a regenerated archive fails the checksum and aborts the build rather than installing unverified bytes. The fragment installs only plugin/ and tokeneconomizer/, side by side under /opt/tokeneconomizer so the relative plugin/lib/tokeneconomizer symlink stays valid; experiments/ is not installed. It never clones. The pin and checksum live here and the fragment reads them with jq, rather than as Containerfile ARGs, because the Containerfile is size-capped (container/Containerfile header): the Containerfile only names the id. The manifest's version must equal the pyproject version, and the python3 on the image must meet the requires-python floor, or the build fails. The /usr/local/bin/tokeneconomizer wrapper answers --version with the pinned version and commit."
     }
   ],
   "tools": [

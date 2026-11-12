@@ -1,0 +1,12 @@
+{
+  "issue": 4955,
+  "chunk": "top-up-4955",
+  "title": "top-up: TokenEconomizer .config.json surface",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4955",
+  "definition": "Parse and validate the token_economizer block of .config.json: the enabled, learnings_repo, microskills and loopguard keys, failing loud on a malformed block.",
+  "status": "claimed",
+  "sweptAt": "2ad72b7ac40e6a5c527cb32e46cdd3fd8a6eee6d",
+  "paths": [
+    "worker/deno/lib/token_economizer_config.ts"
+  ]
+}

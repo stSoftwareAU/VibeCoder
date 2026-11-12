@@ -60,6 +60,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | rust | toolchain | 1.99.1 | amd64: aded4e6c1d580415e7b594a3080d8e23e9cbe06f159f97e300aa6875211f71bf<br>arm64: 703b190f0d723ae68985797f3bb5f62f01b1723f138464c6f30f32b766eb0abf<br>clippy_amd64: 3c6d008544b6e456cc785c86f8ce3713f0d845b94be3a6c8a34662b8504561b5<br>clippy_arm64: e1082c9d61ce461d2f5cd1878c9efe8c3faf6a5b896e0807481e0301791de848<br>rustfmt_amd64: e3a88008061f485126fe24569c4d3e5a0f49462a06ee6339920f8f202124b13a<br>rustfmt_arm64: b61cf040e386c53732522066da16d2ba88d5766a743b3b411f1c66f3d0cb97e2 | exact version + SHA-256 verified |
 | semgrep | toolchain | 1.182.1 | amd64: bba25e5a38db5061d725c0920699ecee3e8137026427e722a271bd9bb8d25a40<br>arm64: 3fdfbd68ac5eeead60983dbcd539428bbc40d01f805e0569301068d06be7eaa3 | exact version + SHA-256 verified |
 | shellcheck | toolchain | 0.11.0 | amd64: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198<br>arm64: 12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 | exact version + SHA-256 verified |
+| tokeneconomizer | toolchain | 0.1.0 | noarch: 4ace6dc1c945e79841163279d0d54a58fab71cbcab08569e6941b63c26154f9a | exact version + SHA-256 verified |
 
 ## Worker Deno dependencies
 

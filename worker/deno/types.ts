@@ -614,6 +614,14 @@ export interface WorkerConfig {
    */
   rtkOutput: RtkOutputConfig;
   /**
+   * The TokenEconomizer block, read from the `.config.json` `token_economizer`
+   * block (Issue #4955, part of #4953) and validated by
+   * `parseTokenEconomizer()` in `lib/token_economizer_config.ts`. Off unless
+   * the host sets `enabled: true`. Accepted and validated, but not read yet:
+   * #4956 will wire it into runs; today a run is the same whatever it is set to.
+   */
+  tokenEconomizer: TokenEconomizerConfig;
+  /**
    * Cache TTL in seconds for the issue-timeline cache (Issue #1673).
    * Used by label-authorship checks (`wasLabelAddedByAllowedAuthor`,
    * `getLabelLastAddInfo`). Defaults to 300 seconds (5 minutes).
@@ -829,6 +837,39 @@ export interface CodegraphContextConfig {
 export interface RtkOutputConfig {
   /** Whether a run offers the agent RTK output shaping (default: true). */
   enabled: boolean;
+}
+
+/** The TokenEconomizer micro-skills mechanism, as the `microskills` key allows. */
+export type TokenEconomizerMicroskills =
+  | "off"
+  | "envfacts"
+  | "distiller"
+  | "envfacts+distiller";
+
+/** The TokenEconomizer loop-guard mechanism, as the `loopguard` key allows. */
+export type TokenEconomizerLoopguard = "off" | "nudge";
+
+/**
+ * The TokenEconomizer block as the worker reads it (Issue #4955, part of
+ * #4953).
+ *
+ * Parsed from the `.config.json` `token_economizer` block by
+ * `parseTokenEconomizer()` in `lib/token_economizer_config.ts`. Accepted and
+ * validated, but not read yet: #4956 will wire it into runs; today a run is the
+ * same whatever it is set to.
+ */
+export interface TokenEconomizerConfig {
+  /** Whether the plugin is switched on for this host (default: false). */
+  enabled: boolean;
+  /**
+   * The private `owner/name` repository that holds the learnings, required
+   * when `enabled` is true (default: undefined).
+   */
+  learningsRepo: string | undefined;
+  /** The micro-skills mechanism (default: "envfacts+distiller"). */
+  microskills: TokenEconomizerMicroskills;
+  /** The loop-guard mechanism (default: "nudge"). */
+  loopguard: TokenEconomizerLoopguard;
 }
 
 /**
@@ -1641,6 +1682,13 @@ export interface ConfigFile {
    * the config load.
    */
   rtk_output?: unknown;
+  /**
+   * Raw `token_economizer` block (Issue #4955). Typed `unknown` because it is
+   * operator-written JSON: `parseTokenEconomizer()` in
+   * `lib/token_economizer_config.ts` is the trust boundary that turns it into a
+   * {@link TokenEconomizerConfig} or fails the config load.
+   */
+  token_economizer?: unknown;
   /** Cache TTL in seconds for the issue-timeline cache (Issue #1673) */
   timeline_cache_ttl_seconds?: number;
   /** Whether to enable CLI session resume across phases (Issue #1324) */
