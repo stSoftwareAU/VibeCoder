@@ -74,6 +74,7 @@ flowchart LR
 - **unrequested** — `worker/deno/lib/heavy_build_gate.ts` header claimed extra `parkInFlightBuild` callers — reviewer: unrequested — reason: reverted in `c4650290` to the base wording minus the mutation mention, so the diff now only drops "mutation".
 - **unrequested** — `worker/deno/lib/summary_rule_gate_retry.ts`: `STEP_TWO_MUTATION_RULE` became `STEP_TWO_TEST_RULE`, with coverage carry-over wording — reviewer: unrequested — reason: the old rule described mutation survivors and became false. Coverage carry-over is the only remaining test-change item, so the wording had to change with it.
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3750.json` / `top-up-4617.json` `sweptAt` re-stamped, and `top-up-4905.json` deleted — reviewer: unrequested — reason: the repository's ledger recorder re-stamps a slice when its paths change. The `top-up-4905` slice only covered the deleted `mutation_tree_guard.ts`.
+- **unrequested** — `worker/deno/lib/merge_fallback_issue.ts`: `createFallbackFlagFiler` takes an optional `labelCacheDir`, defaulting to `defaultLabelCacheDir()` — reviewer: unrequested — reason: the pre-push gate blocked this branch on `merge_fallback_issue_test.ts` "routes the label creation through the caller's gh". That test read the host's live per-account label cache, which already listed the merge-fallback label, so no `POST` reached the fake `gh`. It failed the same way on `origin/main` on this host. The test now uses its own temp directory; production behaviour is unchanged.
 
 ## Standards Review
 
@@ -111,6 +112,8 @@ flowchart LR
   - At `c4650290` every stage passed except `deno type check`, which failed on one TS2345 in the new helper test; that run's `deno tests` stage passed.
   - That error was fixed in `5e075710`. After the fix, `deno check .` from `worker/deno` exited 0 and `deno task test:unit tests/ci_mutation_contract_helpers_test.ts` passed 12/12.
   - The targeted runs for every edited test file passed.
+  - At `c7aac8cd`, `deno task test:unit` ran over the 724 test files that import a changed module or are in the diff. The serial pass (6 parallel-unsafe files) passed. The parallel pass had one red file: `worker/deno/tests/pr_maintenance_command_test.ts` (5 Issue #4424/#4613 cases). That file fails the same way in a clean `origin/main` worktree on this host and passed in this branch's previous run of the same list, so it is host-state dependent and was not caused by this diff.
+  - `worker/deno/tests/merge_fallback_issue_test.ts` was red on this host before `c7aac8cd` (`the label creation did not go through the given gh`) and passes 29/29 after it.
 
 Removed assertions (each test below was removed along with the production code it exercised):
 
@@ -149,4 +152,8 @@ Not checked / remaining risk:
 
 - `isDenoTestFile` and `mdSafe` have no test that names them; their callers' tests cover them indirectly.
 - The `rules/branches` assertion in the review-fix test was not run against the base branch, so its red on base is reasoned from the base code, not observed.
+- The cause of the host-dependent `pr_maintenance_command_test.ts` failure was not diagnosed. The fake `gh` sees only the default-branch read, which points to a shared PR-list cache.
+- The full `./quality.sh` was not re-run after `c7aac8cd`; the worker re-runs it before the PR is raised.
+  <!-- vibe-quality-gate-skipped reason="run budget: about 30 minutes were left after the unit-test runs, under the gate's cost plus push time" -->
+
 - `docs/pre-pr-ci-audit.md` and the archived PR summaries still mention the mutation check as history and were left as they are.
