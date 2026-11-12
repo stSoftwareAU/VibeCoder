@@ -87,7 +87,7 @@ const CHECKOUT_NO_CREDENTIALS = `        with:
  * outside the 24h supply-chain quarantine. Bump this in lock-step with
  * `container/tools.json` and `.github/workflows/markdown-lint.yml`.
  */
-const MARKDOWNLINT_CLI2_VERSION = "0.24.0";
+const MARKDOWNLINT_CLI2_VERSION = "0.24.1";
 
 /**
  * Exact `cargo-audit` version installed by the cargo-audit template.

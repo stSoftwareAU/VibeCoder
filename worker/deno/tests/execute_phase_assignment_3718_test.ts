@@ -345,7 +345,9 @@ Deno.test("automatic Codex worker dispatch uses Codex role models", async () => 
             assertEquals(input.claudeOptions.issueExecutorSplit, undefined);
             assertEquals(input.settings.manager?.provider, "codex");
             assertEquals(input.settings.manager?.model, "gpt-6.1-sol");
-            assertEquals(input.settings.executor?.model, "gpt-6-luna");
+            // Owner policy 2026-11-12 (#5081): the executor is the daily
+            // driver, so Codex's executor is 6.1 Sol, not Luna.
+            assertEquals(input.settings.executor?.model, "gpt-6.1-sol");
             assertEquals(input.settings.reviewer?.model, "gpt-6-astra");
             return {
               ok: true,

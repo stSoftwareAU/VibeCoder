@@ -132,7 +132,7 @@ function selfHealStubBody(): string {
     `  fi`,
     `  prev="$arg"`,
     `done`,
-    `printf '%s\\n' '{"type":"assistant","message":{"model":"claude-fable-5-1-20260901"}}'`,
+    `printf '%s\\n' '{"type":"assistant","message":{"model":"claude-fable-5-2-20261101"}}'`,
     `printf '%s\\n' '{"type":"result","result":"Done on Fable."}'`,
     `exit 0`,
   ].join("\n");

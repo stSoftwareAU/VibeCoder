@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are judged for lost regression protection, and held for the owner only where the intended product contract is unclear or the repo overrides that. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, a Claude Fable 5.2 reviewer checks each PR at high effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are judged for lost regression protection, and held for the owner only where the intended product contract is unclear or the repo overrides that. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
 ---
 
 # Review fleet PRs
@@ -285,8 +285,10 @@ rest come back on the next gate run. Do not pick among them, re-check their
 CI or look at other PRs. Launch one Agent per PR in a single message so they
 run in parallel, each with
 `subagent_type: "fleet-pr-reviewer"` — the agent definition in
-`.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-opus-5-5`
-at `xhigh` effort (Issue #2976) — and the brief in
+`.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-fable-5-2`
+at `high` effort (Issue #5081; Opus 5.5 at `xhigh` before it, Issue #2976). An
+unattended round that hits a Fable usage limit steps down to `claude-opus-5-5`
+at `xhigh` on the same subscription before it rotates or falls back — and the brief in
 [`prompts/pr_review_brief/prompt.md`](../../../prompts/pr_review_brief/prompt.md),
 shared with the worker's pre-PR verifier
 (`worker/deno/lib/pre_pr_verifier.ts`, Issue #3395), so change the review

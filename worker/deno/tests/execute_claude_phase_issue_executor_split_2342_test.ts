@@ -245,7 +245,7 @@ Deno.test("execute_claude_phase - no tier option with split and reviewers on is 
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "medium");
 });
 
-Deno.test("execute_claude_phase - issueSubAgentTier haiku with split and reviewers on carries haiku executor, both Opus reviewers, and an explorer (Issue #3402)", async () => {
+Deno.test("execute_claude_phase - issueSubAgentTier haiku with split and reviewers on carries haiku executor, both Fable reviewers, and an explorer (Issues #3402, #5081)", async () => {
   const runOptions = await runWith({
     issueExecutorSplit: true,
     issueReviewerAgents: true,
@@ -267,9 +267,9 @@ Deno.test("execute_claude_phase - issueSubAgentTier haiku with split and reviewe
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "high");
   // The tier picks the executor, never the reviewers (owner decision
   // 2026-10-22).
-  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "opus");
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "fable");
   assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "medium");
-  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "opus");
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "fable");
   assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
   assertEquals(agents[EXPLORER_AGENT_NAME]!.tools, ["Read", "Grep", "Glob"]);
 });

@@ -541,7 +541,7 @@ export const OPERATIONAL_DEFAULTS = {
    * resolved tier in fleet telemetry (per-tier runs and USD) and stamps it
    * on the PR body as a `vibe-sub-agent-tier` marker (Issue #3403).
    */
-  issueSubAgentTier: "haiku" as IssueSubAgentTier,
+  issueSubAgentTier: "sonnet" as IssueSubAgentTier,
   /**
    * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
    * defined cheaper sub-agents (Issue #2575). On by default (Issue #2812);
@@ -1072,8 +1072,14 @@ export const DEFAULT_CLAUDE_MODEL = "opus" as const;
  * The constant is kept — rather than folded into {@link DEFAULT_CLAUDE_MODEL} —
  * so a future tier above Opus is a one-line change again, and so operators
  * pinning `CLAUDE_MODEL_PLANNING=fable` keep a documented rollback.
+ *
+ * Issue #5081 (owner policy 2026-11-12) made it that one-line change: the top
+ * tier is `fable`, served by Claude Fable 5.2, which at `high` effort scores
+ * about as Opus 5.5 at `max` at roughly half the cost per task. Code review
+ * and planning take the best model the subscriptions can afford; a phase whose
+ * Fable is unavailable still reroutes to Opus at `max`.
  */
-export const DEFAULT_CLAUDE_MODEL_TOP_TIER = "opus" as const;
+export const DEFAULT_CLAUDE_MODEL_TOP_TIER = "fable" as const;
 
 /** Planning phase model — Opus top tier (effort: high, Issues #2621, #3229, #2560). */
 export const DEFAULT_CLAUDE_MODEL_PLANNING = DEFAULT_CLAUDE_MODEL_TOP_TIER;
@@ -1144,8 +1150,25 @@ export function defaultQuorumJudge(): string {
  * subscription ran out and the fleet fell back to DeepSeek, while the Opus
  * review is what keeps merged quality high. `phase_model_overrides.issue:
  * "opus"` restores the Opus manager.
+ *
+ * Issue #5081 (owner policy 2026-11-12) restored the Opus manager by default,
+ * over Sonnet executors: the actual work takes the daily drivers, and
+ * subscription-first routing (#5079) now spills to Codex rather than stalling
+ * when Claude runs out. `phase_model_overrides.issue: "sonnet"` restores the
+ * Sonnet manager.
  */
-export const DEFAULT_CLAUDE_MODEL_ISSUE = "sonnet" as const;
+export const DEFAULT_CLAUDE_MODEL_ISSUE = "opus" as const;
+
+/**
+ * Claude's `standard` model tier — Sonnet, the daily driver for the reactive
+ * code phases (ci_fix, pr_feedback, quality_fix, merge_conflict; Issue #2812).
+ *
+ * Issue #5081 split it from {@link DEFAULT_CLAUDE_MODEL_ISSUE}: the `issue`
+ * manager is Opus while the reactive phases stay on Sonnet, so the `issue`
+ * phase is pinned on top of the shared tier map in {@link PHASE_MODEL_DEFAULTS}
+ * rather than riding the `standard` tier.
+ */
+export const DEFAULT_CLAUDE_MODEL_STANDARD_TIER = "sonnet" as const;
 
 /**
  * Refinement phase model — Opus top tier (effort: high, Issues #3229, #2560).
@@ -1255,22 +1278,27 @@ export function getCheaperModel(currentModel: string): string | null {
  * is the *primary* cost lever; model tier is the *secondary* lever, and since
  * #2560 it is applied at the cheap end only. The eight planning-shaped
  * phases (planning, grill_me, refinement, revision, question, clarification,
- * quorum, quorum_judge) run on Opus at "high" effort, because wherever the
- * Vibe Coder interprets the user's words into an implementable state a better
- * interpretation compounds across every downstream sub-issue and PR (#2621,
- * #3229); `issue` runs on Opus too. The reactive phases (ci_fix, pr_feedback,
- * quality_fix) run on Sonnet at "high" (#2812). The three trivial phases
+ * quorum, quorum_judge) run on the Fable top tier at "high" effort (#5081),
+ * because wherever the Vibe Coder interprets the user's words into an
+ * implementable state a better interpretation compounds across every
+ * downstream sub-issue and PR (#2621, #3229); `issue` runs on the Opus manager,
+ * pinned above the Sonnet `standard` tier (#5081). The reactive phases
+ * (ci_fix, pr_feedback, quality_fix, merge_conflict) run on Sonnet at "high"
+ * (#2812). The three trivial phases
  * (spelling_fix, summarise, health) stay on the cheaper Haiku tier. The map
  * stays populated (rather than empty) so each phase is explicitly pinned
  * regardless of the CLI's own default, while the override chain keeps tier
  * fully tunable.
  */
-export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
-  modelsForPhaseTiers({
+export const PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> = {
+  ...modelsForPhaseTiers({
     best: DEFAULT_CLAUDE_MODEL_TOP_TIER,
-    standard: DEFAULT_CLAUDE_MODEL_ISSUE,
+    standard: DEFAULT_CLAUDE_MODEL_STANDARD_TIER,
     fast: DEFAULT_CLAUDE_MODEL_HEALTH,
-  });
+  }),
+  // Issue #5081: the Opus manager sits above the Sonnet standard tier.
+  issue: DEFAULT_CLAUDE_MODEL_ISSUE,
+};
 
 // ---------------------------------------------------------------------------
 // Codex per-phase routing (Issue #363, parent #357)
@@ -1507,7 +1535,7 @@ export const DEEPSEEK_PHASE_MODEL_DEFAULTS: Readonly<Record<string, string>> =
 export const PROVIDER_MODEL_TIERS = {
   claude: {
     best: DEFAULT_CLAUDE_MODEL_TOP_TIER,
-    standard: DEFAULT_CLAUDE_MODEL_ISSUE,
+    standard: DEFAULT_CLAUDE_MODEL_STANDARD_TIER,
     fast: DEFAULT_CLAUDE_MODEL_HEALTH,
   },
   codex: {

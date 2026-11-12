@@ -172,11 +172,11 @@ Deno.test({
       "fable",
     ]);
 
-    // …and with no pin, planning is on the default Opus tier (Issue #2560), so
-    // the reroute has nothing to arm.
+    // …and with no pin, planning is on the default Fable tier too (Issue
+    // #5081), so an unpinned host resolves the same tier the reroute guards.
     assertEquals(buildClaudeModelArgs("planning", emptyEnv), [
       "--model",
-      "opus",
+      "fable",
     ]);
   },
 });

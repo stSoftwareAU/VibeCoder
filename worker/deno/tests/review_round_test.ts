@@ -351,3 +351,61 @@ Deno.test("renderStreamLine keeps the round's log readable: result text and non-
   );
   assertEquals(renderStreamLine(""), null);
 });
+
+// Issue #5081: the reviewer runs on Fable 5.2, whose limit can be capped apart
+// from the rest of the subscription. A Fable round that hits a usage limit
+// steps down to Opus on the same subscription before any rotation or provider
+// switch; only when Opus is spent too does the chain move on.
+Deno.test("runReviewRound steps a Fable round down to Opus xhigh on the same subscription first (Issue #5081)", async () => {
+  const { deps, calls, excluded, log } = fakeDeps([
+    { code: 1, output: USAGE_LIMIT },
+    { code: 0, output: "Round done on Opus" },
+  ]);
+  assertEquals(
+    await runReviewRound(
+      "p",
+      ["--model", "claude-fable-5-2", "--effort", "high"],
+      deps,
+    ),
+    0,
+  );
+  assertEquals(calls.length, 2);
+  assertEquals(calls[1]!.args, [
+    "-p",
+    "p",
+    "--model",
+    "claude-opus-5-5",
+    "--effort",
+    "xhigh",
+  ]);
+  assertEquals(excluded, [], "no rotation while Opus has budget");
+  assertStringIncludes(log.join("\n"), "stepping down to claude-opus-5-5");
+});
+
+Deno.test("runReviewRound rotates once the Opus step-down hits the limit too (Issue #5081)", async () => {
+  const { deps, calls } = fakeDeps([
+    { code: 1, output: USAGE_LIMIT },
+    { code: 1, output: USAGE_LIMIT },
+    { code: 0, output: "Round done on the next subscription" },
+  ]);
+  assertEquals(
+    await runReviewRound(
+      "p",
+      ["--model", "claude-fable-5-2", "--effort", "high"],
+      deps,
+    ),
+    0,
+  );
+  assertEquals(calls.length, 3);
+  // The rotated subscription gets the configured Fable round again.
+  assertEquals(calls[2]!.args[3], "claude-fable-5-2");
+});
+
+Deno.test("runReviewRound does not step down a round that is not on Fable (Issue #5081)", async () => {
+  const { deps, calls } = fakeDeps([
+    { code: 1, output: USAGE_LIMIT },
+    { code: 0, output: "Round done on the next subscription" },
+  ]);
+  await runReviewRound("p", ["--model", "claude-opus-5-5"], deps);
+  assertEquals(calls[1]!.args[3], "claude-opus-5-5");
+});

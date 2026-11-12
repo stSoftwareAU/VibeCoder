@@ -194,11 +194,11 @@ Deno.test("resolveExpectedPlanningModel - defaults to the active provider, Claud
   const env = CLEAN_ROUTING_ENV;
   assertEquals(
     resolveExpectedPlanningModel(undefined, "planning", undefined, env),
-    "opus",
+    "fable",
   );
   assertEquals(
     resolveExpectedPlanningModel(undefined, "grill_me", undefined, env),
-    "opus",
+    "fable",
   );
   assertEquals(
     resolveExpectedPlanningModel(

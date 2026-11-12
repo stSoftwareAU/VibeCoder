@@ -130,14 +130,14 @@ Deno.test("token_usage - lookupModelPricing prices a dated Fable 5.1 id at the 5
   assertEquals(pricing?.cacheReadPerMillion, 0.25);
 });
 
-Deno.test("token_usage - lookupModelPricing returns pricing for bare fable alias (Issue #2619, #747)", () => {
+Deno.test("token_usage - lookupModelPricing returns pricing for bare fable alias (Issues #2619, #747, #5082)", () => {
   // The worker requests the `fable` alias, which the CLI resolves to the
-  // latest Fable — Fable 5.1 since 2026-09-01, hence the 5.1 cache-read rate.
+  // latest Fable — Fable 5.2 since CLI 2.1.321, hence the 5.2 rates.
   const pricing = lookupModelPricing("fable");
-  assertEquals(pricing?.inputPerMillion, 10);
-  assertEquals(pricing?.outputPerMillion, 50);
-  assertEquals(pricing?.cacheWritePerMillion, 12.50);
-  assertEquals(pricing?.cacheReadPerMillion, 0.25);
+  assertEquals(pricing?.inputPerMillion, 8);
+  assertEquals(pricing?.outputPerMillion, 40);
+  assertEquals(pricing?.cacheWritePerMillion, 10);
+  assertEquals(pricing?.cacheReadPerMillion, 0.20);
 });
 
 Deno.test("token_usage - lookupModelPricing returns pricing for Opus 5 (Issue #3559)", () => {
@@ -822,4 +822,22 @@ Deno.test("token_usage - the bare haiku alias is costed no lower than either Hai
   const cost = estimateCost(usage, "haiku", { singleRequest: true });
   assert(cost);
   assertAlmostEquals(cost.totalCost, costAt(usage, HAIKU_4_5_FLAT), 1e-12);
+});
+
+// Issue #5082: Fable 5.2 is cheaper than 5.1 ($8 / $40, cache write $10, cache
+// read $0.20 per MTok); pricing it as 5.1 overstated review and planning cost.
+Deno.test("lookupModelPricing prices Claude Fable 5.2 at its own rates (Issue #5082)", () => {
+  assertEquals(lookupModelPricing("claude-fable-5-2"), {
+    inputPerMillion: 8,
+    outputPerMillion: 40,
+    cacheWritePerMillion: 10,
+    cacheReadPerMillion: 0.20,
+  });
+  // The bare alias follows the current Fable.
+  assertEquals(
+    lookupModelPricing("fable"),
+    lookupModelPricing("claude-fable-5-2"),
+  );
+  // Fable 5.1 keeps its own row.
+  assertEquals(lookupModelPricing("claude-fable-5-1")?.inputPerMillion, 10);
 });
