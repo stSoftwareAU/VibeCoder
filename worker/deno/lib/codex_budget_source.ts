@@ -7,7 +7,8 @@
  * transfers.** Codex is a different vendor with a different credential, a
  * different header family and a different quota model, so this module states
  * what was originally confirmed against Codex `0.147.0`, plus the App Server
- * account protocol used by the current `0.164.0` image pin.
+ * account protocol used by the current `0.167.2` image pin (its
+ * `account/rateLimits` types are unchanged from 0.164.0).
  *
  * ## What was verified, and how
  *
