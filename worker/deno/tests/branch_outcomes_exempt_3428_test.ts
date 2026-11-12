@@ -1,16 +1,8 @@
 /**
- * Documentation-drift test for Issue #3428 — fleet PRs used `exempt
- * (untestable)` for dead code (VibeCoder#3312) and for an outcome existing
- * tests could reach, behind an unverified "no existing harness" claim. The
- * branch-outcome rule now says an unreachable outcome is dead code to remove,
- * `exempt (untestable)` covers only an outcome production can reach but a test
- * cannot stage, its reason names what blocks staging and the harness search,
- * and an outcome the linked issue asks a test for cannot be `exempt
- * (untestable)`. This test pins the shared wording on all four surfaces:
- * CODING-STANDARDS.md, the coding_guidelines prompt, the issue prompt's PR
- * Summary File step, and the pr_feedback prompt's Making Changes section.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assertPins, readRepoDoc, section } from "./support/markdown_docs.ts";
@@ -23,30 +15,43 @@ const PINS = [
   "An outcome the linked issue asks a test for, in its acceptance criteria or Definition of done, cannot be `exempt (untestable)`.",
 ] as const;
 
-Deno.test("CODING-STANDARDS.md pins the tightened exempt (untestable) rule (Issue #3428)", async () => {
+Deno.test("CODING-STANDARDS.md preserves honest staging limitations", async () => {
   assertPins(
     section(
       await readRepoDoc("CODING-STANDARDS.md"),
       "Test coverage expectations",
     ),
-    PINS,
+    [
+      "Remove unreachable dead code",
+      "state the limitation and the existing harnesses considered",
+      "do not claim it was tested",
+      "An explicit acceptance test remains required",
+    ],
   );
 });
 
-Deno.test("coding_guidelines pins the tightened exempt (untestable) rule (Issue #3428)", async () => {
+Deno.test("coding_guidelines preserves honest staging limitations", async () => {
   assertPins(
     section(
       await readRepoDoc("prompts/coding_guidelines/prompt.md"),
       "Test Coverage Expectations",
     ),
-    PINS,
+    [
+      "Remove unreachable dead code",
+      "state the limitation and the existing harnesses considered",
+      "do not claim it was tested",
+      "An explicit acceptance test remains required",
+    ],
   );
 });
 
-Deno.test("issue prompt PR Summary File pins the tightened exempt (untestable) rule (Issue #3428)", async () => {
+Deno.test("issue prompt requires genuine staging limits and acceptance tests", async () => {
   assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-    PINS,
+    [
+      "genuine staging limitation and the harnesses considered",
+      "satisfy explicit acceptance tests",
+    ],
   );
 });
 

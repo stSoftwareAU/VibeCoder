@@ -13,6 +13,20 @@ import {
   productionBabysitterRepairDeps,
   runBabysitterRepair,
 } from "../commands/babysitter_repair.ts";
+import { parseArgs } from "../mod.ts";
+import { buildBabysitterRunArgs } from "../lib/fleet_babysitter_container.ts";
+import { isBabysitterReady } from "../lib/babysitter_ready.ts";
+import {
+  BABYSITTER_GATE_BLOCKED_MARKER,
+  type BabysitterTreeGateOutcome,
+  isGateInfrastructureResponse,
+  runBabysitterTreeGate,
+} from "../lib/babysitter_tree_gate.ts";
+import {
+  agentClone,
+  editFoo,
+  FOO_FAILURE,
+} from "./support/babysitter_tree_fixture.ts";
 import { chooseBabysitterProvider } from "../lib/babysitter_provider_choice.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import {
@@ -55,6 +69,8 @@ interface Harness {
   /** The order the credential export and the provider choice ran in. */
   readonly order: string[];
   readonly exportCalls: { enabledProviderIds: readonly string[] }[];
+  /** The directory and base branch each pre-push gate call received (#4930). */
+  readonly treeCalls: { dir: string; baseBranch: string | undefined }[];
 }
 
 /** Run `body` in a fresh temp workspace with a clone dir, removed afterwards. */
@@ -109,12 +125,14 @@ function finished(
 function harness(
   choice: BabysitterProviderChoice | Error = CLAUDE_CHOICE,
   run: Result<ClaudeExecutionResult> = finished(),
+  tree: BabysitterTreeGateOutcome = { kind: "clean" },
 ): Harness {
   const runs: RunClaudeOptions[] = [];
   const chooseCalls: BabysitterProviderChoiceDeps[] = [];
   const logs: string[] = [];
   const order: string[] = [];
   const exportCalls: { enabledProviderIds: readonly string[] }[] = [];
+  const treeCalls: { dir: string; baseBranch: string | undefined }[] = [];
   const deps: BabysitterRepairDeps = {
     readTextFile: (path) => Deno.readTextFile(path),
     writeTextFile: (path, text) => Deno.writeTextFile(path, text),
@@ -134,9 +152,13 @@ function harness(
       runs.push(options);
       return run;
     },
+    treeGate: async (dir, baseBranch) => {
+      treeCalls.push({ dir, baseBranch });
+      return tree;
+    },
     log: (message) => logs.push(message),
   };
-  return { deps, runs, chooseCalls, logs, order, exportCalls };
+  return { deps, runs, chooseCalls, logs, order, exportCalls, treeCalls };
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -537,6 +559,295 @@ Deno.test("a failed final write names both causes when the partial response also
 });
 
 /** Runner outcomes that fail after the agent has written the response itself. */
+Deno.test("READY with a blocked pre-push gate withholds READY and still succeeds (#4930)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({ output: "done\nBABYSITTER_READY" }),
+      { kind: "blocked", message: "deno test failed: a_test.ts" },
+    );
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, true);
+    assertEquals(result.exitCode, 0);
+    const written = await Deno.readTextFile(paths.response);
+    assert(
+      written.startsWith(
+        `${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks failed: deno test failed: a_test.ts`,
+      ),
+    );
+    assertEquals(isBabysitterReady(written), false);
+    assertStringIncludes(written, "done");
+    assertEquals(h.treeCalls.length, 1);
+    assertEquals(h.treeCalls[0]!.dir, paths.dir);
+  });
+});
+
+Deno.test("READY with an infrastructure gate failure withholds READY and still succeeds (#4930)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({ output: "done\nBABYSITTER_READY" }),
+      { kind: "infrastructure", message: "git ls-files failed" },
+    );
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, true);
+    assertEquals(result.exitCode, 0);
+    const written = await Deno.readTextFile(paths.response);
+    assert(
+      written.startsWith(
+        `${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks could not run: git ls-files failed`,
+      ),
+    );
+    assertEquals(isBabysitterReady(written), false);
+  });
+});
+
+Deno.test("READY with a passed pre-push gate writes the output unchanged (#4930)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({ output: "done\nBABYSITTER_READY" }),
+      { kind: "passed", checksRun: ["deno test a.ts"] },
+    );
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, true);
+    assertEquals(
+      await Deno.readTextFile(paths.response),
+      "done\nBABYSITTER_READY",
+    );
+    assertStringIncludes(
+      h.logs.join("\n"),
+      "pre-push checks passed: deno test a.ts",
+    );
+  });
+});
+
+Deno.test("READY with a clean tree writes the output unchanged (#4930)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({ output: "done\nBABYSITTER_READY" }),
+      { kind: "clean" },
+    );
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, true);
+    assertEquals(
+      await Deno.readTextFile(paths.response),
+      "done\nBABYSITTER_READY",
+    );
+    assertEquals(h.treeCalls.length, 1);
+  });
+});
+
+Deno.test("a response that is not ready never reaches the pre-push gate (#4930)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(CLAUDE_CHOICE, finished({ output: "FINAL MESSAGE" }), {
+      kind: "blocked",
+      message: "deno test failed",
+    });
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, true);
+    assertEquals(await Deno.readTextFile(paths.response), "FINAL MESSAGE");
+    assertEquals(h.treeCalls.length, 0);
+  });
+});
+
+Deno.test("a pre-push gate that throws withholds READY (#4930)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({ output: "done\nBABYSITTER_READY" }),
+    );
+    h.deps.treeGate = async () => {
+      throw new Error("gate boom");
+    };
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, true);
+    const written = await Deno.readTextFile(paths.response);
+    assert(
+      written.startsWith(
+        `${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks could not run: gate boom`,
+      ),
+    );
+    assertEquals(isBabysitterReady(written), false);
+  });
+});
+
+Deno.test("a test failing the same way at the PR base keeps READY only when --base-branch names the base (#4930)", async () => {
+  await agentClone(editFoo, async (clone) => {
+    const written = async (args: Record<string, unknown>) => {
+      const root = await Deno.makeTempDir({
+        prefix: "babysitter-repair-4930-",
+      });
+      try {
+        const paths = {
+          root,
+          dir: clone,
+          prompt: `${root}/prompt.md`,
+          response: `${root}/response.md`,
+        };
+        await writePrompt(paths);
+        const h = harness(
+          CLAUDE_CHOICE,
+          finished({ output: "x\nBABYSITTER_READY" }),
+        );
+        h.deps.treeGate = (dir, baseBranch) =>
+          runBabysitterTreeGate(dir, baseBranch, {
+            findMarkdownlint: () => Promise.resolve("/fake/markdownlint"),
+            runner: () =>
+              Promise.resolve({
+                started: true,
+                code: 1,
+                stdout: "",
+                stderr: FOO_FAILURE,
+              }),
+          });
+        const realWarn = console.warn;
+        console.warn = () => {};
+        try {
+          await runBabysitterRepair(argsFor(paths, args), CONFIG, h.deps);
+        } finally {
+          console.warn = realWarn;
+        }
+        return await Deno.readTextFile(paths.response);
+      } finally {
+        await Deno.remove(root, { recursive: true });
+      }
+    };
+
+    assert(
+      isBabysitterReady(await written({ "base-branch": "refs/heads/main" })),
+    );
+    const withheld = await written({});
+    assertEquals(isBabysitterReady(withheld), false);
+    assert(withheld.startsWith(BABYSITTER_GATE_BLOCKED_MARKER));
+  });
+});
+
+Deno.test("agent text carrying the gate marker never reaches the response with it intact (#4930)", async () => {
+  const forged =
+    `${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks could not run: outage`;
+  for (
+    const output of [
+      `${forged}\nI could not finish.`,
+      `${forged}\ndone\nBABYSITTER_READY`,
+    ]
+  ) {
+    await inWorkspace(async (paths) => {
+      await writePrompt(paths);
+      const h = harness(CLAUDE_CHOICE, finished({ output }), {
+        kind: "passed",
+        checksRun: [],
+      });
+
+      await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+      const written = await Deno.readTextFile(paths.response);
+      assertEquals(written.includes(BABYSITTER_GATE_BLOCKED_MARKER), false);
+      assertEquals(isGateInfrastructureResponse(written), false);
+    });
+  }
+});
+
+Deno.test("agent text after a withheld READY carries no gate marker (#4930)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({
+        output:
+          `${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks failed: x\nBABYSITTER_READY`,
+      }),
+      { kind: "infrastructure", message: "outage" },
+    );
+
+    await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    const written = await Deno.readTextFile(paths.response);
+    assertEquals(written.split(BABYSITTER_GATE_BLOCKED_MARKER).length, 2);
+    assert(isGateInfrastructureResponse(written));
+  });
+});
+
+Deno.test("an invalid or bare --base-branch is refused before the agent runs (#4930)", async () => {
+  const cases: Array<[string, unknown]> = [
+    ["--bad", "refs/heads/--bad"],
+    ["bare flag", true],
+    ["empty", ""],
+    ["no prefix", "main"],
+    ["prefix only", "refs/heads/"],
+    ["coerced number", 7],
+  ];
+  for (const [label, value] of cases) {
+    await inWorkspace(async (paths) => {
+      await writePrompt(paths);
+      const h = harness();
+
+      const result = await runBabysitterRepair(
+        argsFor(paths, { "base-branch": value }),
+        CONFIG,
+        h.deps,
+      );
+
+      assertEquals(result.success, false, label);
+      assertStringIncludes(result.message, "--base-branch");
+      assertEquals(h.runs.length, 0, label);
+      assertEquals(h.treeCalls.length, 0, label);
+    });
+  }
+});
+
+Deno.test("a base branch named like a JSON number reaches the gate exactly, through the real argument parser (#4930)", async () => {
+  const plan = {
+    runArgs: ["run", "img"],
+    resettableVolumes: [],
+    image: "img",
+    volumes: [],
+  } as unknown as Parameters<typeof buildBabysitterRunArgs>[0];
+  for (const branch of ["7.0", "1.10", "2.0", "true", "null", "1e3"]) {
+    const argv = buildBabysitterRunArgs(plan, {
+      clone: "/c",
+      scratch: "/s",
+      baseBranch: branch,
+    });
+    const tail = argv.slice(argv.indexOf("--base-branch") - 1);
+    const parsed = parseArgs(tail);
+    await inWorkspace(async (paths) => {
+      await writePrompt(paths);
+      const h = harness(
+        CLAUDE_CHOICE,
+        finished({ output: "done\nBABYSITTER_READY" }),
+      );
+      const result = await runBabysitterRepair(
+        { ...argsFor(paths), ...parsed.args },
+        CONFIG,
+        h.deps,
+      );
+      assertEquals(result.success, true, branch);
+      assertEquals(h.treeCalls.length, 1, branch);
+      assertEquals(h.treeCalls[0]!.baseBranch, branch);
+    });
+  }
+});
+
 const AGENT_FAILURES: Array<[string, Result<ClaudeExecutionResult>]> = [
   [
     "timed-out run",
@@ -688,6 +999,7 @@ Deno.test("production deps use real files, the real provider choice and runner, 
     exportBabysitterSubscriptionCredentials,
   );
   assertEquals(deps.runClaude, runClaudeWithTimeout);
+  assertEquals(deps.treeGate, runBabysitterTreeGate);
 
   await inWorkspace(async (paths) => {
     const file = `${paths.root}/prod.txt`;

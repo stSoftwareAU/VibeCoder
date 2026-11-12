@@ -495,15 +495,13 @@ in the summary file itself. The prose rule asks the agent to recount; the
 worker now recounts it too — see **The worker's drift check (Issue #3143)**
 below.
 
-A red-on-base result is recounted the same way (Issue #3381): when the
-push adds, removes or changes a test, the head test file is re-run against
-the base branch's production code and the earlier passed and failed
-figures and failing-test list are replaced, not left beside a second
-block. A run against the PR's own earlier commit is not "red on base" and,
-if kept, is labelled with that commit. Review fixes had left a first
-round's "77 passed, 2 failed" from a 79-test file standing after the file
-grew to 80 tests (VibeCoder#3372), and a "0 passed, 3 failed" after the
-file grew to five tests (VibeCoder#3066).
+For a diagnosed bug, if a push changes its reproducing test, refresh its
+relevant before/after evidence where feasible and remove stale figures
+(Issue #3381). Do not rerun a base-code or mutation campaign for unrelated
+edits. A run against the PR's own earlier commit is not "red on base";
+label it with the commit actually tested. Evidence in the summary must match
+what was observed; never invent a red run or retain misleading figures.
+
 
 #### The worker's drift check (Issue #3143)
 
@@ -622,7 +620,12 @@ Six checks run, each only when it applies:
    checked rather than given a recovery turn on its own — the same as a
    model pass that returns no verdict.
 5. **Line-citation check** — removed with the branch-outcomes facts file (Issue #4234). A test the summary names must still exist at the head.
-6. **Diff-scoped mutation check (Issue #3750)** — in every review-fix run the
+6. **Diff-scoped mutation check (Issue #3750)** — legacy implementation;
+   [#5095](https://github.com/stSoftwareAU/VibeCoder/issues/5095) tracks removal
+   from routine review fixes under the owner's testing-scope decision. The
+   following describes current code, not the desired workflow.
+
+   **Current behaviour** — in every review-fix run the
    mutation check runs over the lines this run itself added: the working tree,
    uncommitted edits and untracked files included, against the before-run head.
    Lines that a base-branch merge brought in are excluded, and a conflict

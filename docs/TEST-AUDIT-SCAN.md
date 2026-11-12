@@ -18,6 +18,19 @@ For the **agent-facing** rules (label policy, suppression syntax,
 trigger summary) see
 [DESIGN-PRINCIPLES.md → Test-audit scans](../DESIGN-PRINCIPLES.md#test-audit-scans-template-3).
 
+## Testing scope — 12 November 2026
+
+A broader search for inadequate tests is a separately requested investigation.
+Assess the current feature's positive, negative and boundary cases in its own
+implementation and review; protect unrelated features with their deterministic
+regression tests. A later diagnosed bug gets a failing regression test before
+its fix. Explicitly requested or configured audits remain separate work.
+
+**Implementation status:** the prompt states this boundary, but the registered
+`test-audit` template is still a candidate for automatic idle selection.
+[#5096](https://github.com/stSoftwareAU/VibeCoder/issues/5096) tracks the runtime
+change. This manual does not claim that changing a prompt disables the filer.
+
 ## Design intent — Static Test-Suite Maintainability and Coverage-Gap Audit
 
 The test-audit scan is an **evidence-backed static review** of the
