@@ -471,10 +471,27 @@ export async function hashFile(
  * A deleted path is a legitimate part of a repair, and so is one that is now a
  * directory (a submodule or a nested repository) or sits under a file where a
  * directory was: each is recorded by its kind. A path whose parent leads out of
- * the clone, or a file over the size cap, is a {@link TreeInspectionError}; any
- * other unreadable path fails closed as infrastructure, never a pass.
+ * the clone, or a file over the size cap, is a {@link TreeInspectionError}, and
+ * so is any other path the gate cannot read (a mode-000 file, a looping
+ * symlink): each is a fact about the tree, so it is `blocked`, never a pass and
+ * never an uncapped infrastructure retry.
  */
 async function fingerprintPath(
+  dir: string,
+  realDir: string,
+  path: string,
+): Promise<string> {
+  try {
+    return await inspectPath(dir, realDir, path);
+  } catch (error) {
+    if (error instanceof TreeInspectionError) throw error;
+    throw new TreeInspectionError(
+      `cannot read ${path} to compare it: ${errorMessage(error)}`,
+    );
+  }
+}
+
+async function inspectPath(
   dir: string,
   realDir: string,
   path: string,

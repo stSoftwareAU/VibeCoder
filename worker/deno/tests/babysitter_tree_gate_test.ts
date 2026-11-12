@@ -1311,6 +1311,30 @@ Deno.test("a tracked directory replaced by a symlink out of the clone blocks wit
   });
 });
 
+Deno.test("an untracked file the gate cannot open blocks, it is not an infrastructure outage (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/locked.txt`, "secret\n");
+    await Deno.chmod(`${repo}/locked.txt`, 0o000);
+    // A superuser reads a mode-000 file, so the shape cannot be made unreadable.
+    try {
+      (await Deno.open(`${repo}/locked.txt`)).close();
+      return;
+    } catch {
+      // Unreadable, as the test needs.
+    }
+    const { deps, calls } = depsFor(root, async () => PASS);
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome.kind, "blocked");
+    assertStringIncludes(
+      (outcome as { message: string }).message,
+      "locked.txt",
+    );
+    assertEquals(calls.length, 0);
+  });
+});
+
 Deno.test("a check failure with a stray file keeps the gate's own outcome (#4930)", async () => {
   await fixture(async (repo, root) => {
     await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");

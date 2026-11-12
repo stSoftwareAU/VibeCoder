@@ -36,7 +36,7 @@
  * `babysitter-repair` runs the repo's unit tests for the agent's changed files
  * and markdownlint over the uncommitted tree. It compares failing tests
  * against the PR's base branch, which this module passes as an optional
- * trailing `--base-branch <name>` (see {@link BabysitterContainerInput}).
+ * trailing `--base-branch refs/heads/<name>` (see {@link BabysitterContainerInput}).
  * A failing gate removes the READY line, and the host then refuses to push.
  */
 
@@ -69,9 +69,17 @@ export const BABYSITTER_CLONE_MOUNT = "/babysitter/clone";
 /** Where the scratch directory (the prompt file) is mounted inside it. */
 export const BABYSITTER_SCRATCH_MOUNT = "/babysitter/scratch";
 /**
+ * Prefix carried on the `--base-branch` value. The worker's argument parser
+ * runs `JSON.parse` on every flag value, so a branch named `7.0` or `1.10`
+ * would reach the command as the number 7 or 1.1. A value that is not valid
+ * JSON on its own is passed through as the string it is (Issue #4930).
+ */
+export const BABYSITTER_BASE_BRANCH_PREFIX = "refs/heads/";
+
+/**
  * The fixed command line after the image. The in-container `babysitter-repair`
  * command (Issue #4768) is routed by container/entrypoint.sh and runs it. An
- * optional trailing `--base-branch <name>` (appended by
+ * optional trailing `--base-branch refs/heads/<name>` (appended by
  * {@link buildBabysitterRunArgs}) lets its pre-push check (Issue #4930) compare
  * failing tests against the PR's base branch; the check runs the repo's unit
  * tests and markdownlint over the agent's changes and withholds the READY line
@@ -426,7 +434,7 @@ function isCustomPromptEnvSpec(spec: string): boolean {
  * `VIBE_CUSTOM_PROMPT_PATHS` env spec. The provider credential sub-directories
  * are kept. Then appends the clone mount, the clone's `.git` mounted
  * read-only over it, the scratch mount, `--env GH_TOKEN`, the image, the repair
- * command and, when a base branch is given, `--base-branch <name>` (Issue
+ * command and, when a base branch is given, `--base-branch refs/heads/<name>` (Issue
  * #4930). Refuses any plan flag that could mount a
  * path or load an env file by another spelling, and any plan env spec that
  * sets GH_TOKEN. A base branch that git would read as an option is refused.
@@ -578,7 +586,7 @@ export function buildBabysitterRunArgs(
     plan.image,
     ...BABYSITTER_REPAIR_COMMAND,
     ...(input.baseBranch !== undefined
-      ? ["--base-branch", input.baseBranch]
+      ? ["--base-branch", `${BABYSITTER_BASE_BRANCH_PREFIX}${input.baseBranch}`]
       : []),
   ];
 }

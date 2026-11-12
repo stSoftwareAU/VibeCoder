@@ -35,6 +35,7 @@ import {
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
 import {
+  BABYSITTER_BASE_BRANCH_PREFIX,
   BABYSITTER_QUOTA_PARK_EXIT_CODE,
   BABYSITTER_REPAIR_TIMEOUT_MS,
   BABYSITTER_TASK_FAILURE_EXIT_CODE,
@@ -268,10 +269,18 @@ async function repairResponse(
   const baseFlag = args["base-branch"];
   let baseBranch: string | undefined;
   if (baseFlag !== undefined) {
-    if (!hasValue(baseFlag)) {
-      return fail("--base-branch <value> must not be empty or a bare flag");
+    // The host sends `refs/heads/<name>` because the argument parser would
+    // coerce a branch named like a JSON number (`7.0`) before it arrived.
+    if (
+      typeof baseFlag !== "string" ||
+      !baseFlag.startsWith(BABYSITTER_BASE_BRANCH_PREFIX) ||
+      baseFlag.slice(BABYSITTER_BASE_BRANCH_PREFIX.length).trim() === ""
+    ) {
+      return fail(
+        `--base-branch must be a string of the form ${BABYSITTER_BASE_BRANCH_PREFIX}<name>`,
+      );
     }
-    baseBranch = String(baseFlag);
+    baseBranch = baseFlag.slice(BABYSITTER_BASE_BRANCH_PREFIX.length);
     try {
       assertSafeGitRef(baseBranch, "--base-branch");
     } catch (error) {

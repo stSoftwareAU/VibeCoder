@@ -2509,7 +2509,10 @@ Deno.test("the repair flow starts the container repair with the PR's base branch
       );
       await h.attempt();
       assertEquals(spawns.length, 1);
-      assertEquals(spawns[0]!.args.slice(-2), ["--base-branch", "release/2"]);
+      assertEquals(spawns[0]!.args.slice(-2), [
+        "--base-branch",
+        "refs/heads/release/2",
+      ]);
     });
   });
 });
@@ -2536,7 +2539,10 @@ Deno.test("startBabysitterAgent forwards the base branch so the container repair
       );
       assertEquals(started, true);
       assertEquals(spawns.length, 1);
-      assertEquals(spawns[0]!.args.slice(-2), ["--base-branch", "release/2"]);
+      assertEquals(spawns[0]!.args.slice(-2), [
+        "--base-branch",
+        "refs/heads/release/2",
+      ]);
     } finally {
       await Deno.remove(dirs.root, { recursive: true });
     }

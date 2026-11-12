@@ -62,10 +62,15 @@ flowchart LR
   alone, and a regression the repair caused passed as base-owned (review of
   `d16f355`). A shared clone is not used, because git will not clone a shallow
   repository locally and would fetch only its branches, not the base commit.
-- The PR base reaches the container as optional `--base-branch <name>`
-  (`BabysitterContainerInput.baseBranch`, set from `pr.baseRefName`, validated
-  with `assertSafeGitRef`). Without it there is no baseline and a failing test
-  blocks (fail closed). `BABYSITTER_REPAIR_COMMAND` itself is unchanged.
+- The PR base reaches the container as optional `--base-branch refs/heads/<name>`
+  (`BabysitterContainerInput.baseBranch`, set from `pr.baseRefName`). The worker's
+  argument parser runs `JSON.parse` on every flag value, so a bare `7.0` or `1.10`
+  would arrive as the number 7 or 1.1; the fixed `refs/heads/` prefix
+  (`BABYSITTER_BASE_BRANCH_PREFIX`) is not valid JSON, so the value stays a string.
+  `babysitter-repair` requires a string with that prefix, strips it, and validates
+  the name with `assertSafeGitRef`; a non-string, an unprefixed or an empty name
+  fails the command before the agent runs. Without the flag there is no baseline
+  and a failing test blocks (fail closed). `BABYSITTER_REPAIR_COMMAND` itself is unchanged.
 - The gate's kind reaches the host in the headline of the withheld response:
   `isGateInfrastructureResponse` (`lib/babysitter_tree_gate.ts`) recognises
   `[BABYSITTER_GATE_BLOCKED] pre-push checks could not run:` at the start of the
@@ -94,8 +99,11 @@ flowchart LR
   shapes are not outages. A file is hashed through a stream with a 64 MiB cap
   and a path whose parent resolves outside the clone is refused; both are
   `blocked` (naming the path), so the attempt is counted and the repair cap is
-  reachable. Any other dirty path that cannot be inspected, or an index that
-  cannot be read, is an `infrastructure` outcome (fail closed).
+  reachable. So is any other dirty path the gate cannot read (a mode-000 file,
+  a looping symlink): `fingerprintPath` turns every per-path error into the same
+  `blocked` outcome naming the path, so no tree shape is an uncapped
+  infrastructure retry. Only a failure of the gate's own machinery (an index that
+  cannot be read, the clone's real path) is `infrastructure` (fail closed).
 - Withholding the READY line, not failing the container, is the verdict channel:
   the host already refuses a response without it and quotes the response.
   `isBabysitterReady` (`lib/babysitter_ready.ts`) is now the one rule for both
@@ -178,14 +186,14 @@ container runs the unit tests and markdownlint after the agent.
   command runner faked; no test asserts only a mock's arguments. The two tests
   that did (the `--base-branch` forwarding in `babysitter_repair_4738_test.ts`
   and the `startAgent` options in `babysitter_fix_orchestration_test.ts`) now
-  assert outcomes: READY is kept with `--base-branch main` over the real gate
+  assert outcomes: READY is kept with `--base-branch refs/heads/main` over the real gate
   and withheld without it, and the container argv built by the real
-  `startBabysitterAgent` ends with `--base-branch <pr.baseRefName>`.
+  `startBabysitterAgent` ends with `--base-branch refs/heads/<pr.baseRefName>`.
 
 ## Test Plan
 
 - `cd worker/deno && deno task test:unit tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts tests/babysitter_ready_test.ts tests/fleet_babysitter_container_4738_test.ts tests/babysitter_fix_orchestration_test.ts tests/fleet_pr_babysitter_test.ts`:
-  all 356 tests across the six files passed on this head, with the repository's
+  all 358 tests across the six files passed on this head, with the repository's
   locked dependencies.
 - `deno fmt --check`, `deno lint` and `deno check` of the changed source and
   test files passed on the working tree, and `deno fmt` was applied to this
@@ -279,10 +287,19 @@ container runs the unit tests and markdownlint after the agent.
   `a dirty file over the size limit blocks, naming it (#4930)`,
   `hashing stops at the byte limit even when the file grew after its size was read (#4930)`,
   `a tracked directory replaced by a symlink out of the clone blocks without reading through it (#4930)`);
+  an untracked file the gate cannot open blocks, naming it, rather than being an
+  outage
+  (`an untracked file the gate cannot open blocks, it is not an infrastructure outage (#4930)`;
+  it returns early when run as a superuser, who can read any file);
   `withholdReady`; the command withholds READY on blocked, infrastructure and a
   throw, leaves passed/clean unchanged, never calls the gate for a not-ready
-  response, forwards and validates `--base-branch`; container argv gains
-  `--base-branch` only when given and refuses an unsafe name;
+  response, forwards and validates `--base-branch`, refusing a value without the
+  `refs/heads/` prefix or that the parser coerced to a number; container argv
+  gains `--base-branch refs/heads/<name>` only when given and refuses an unsafe
+  name; the argv built for the base branches `7.0`, `1.10`, `2.0`, `true`, `null`
+  and `1e3` goes through `parseArgs` from `mod.ts` into `runBabysitterRepair`
+  and the gate receives the exact name
+  (`a base branch named like a JSON number reaches the gate exactly, through the real argument parser (#4930)`);
   `startBabysitterAgent` and the repair flow forward `pr.baseRefName`.
 - Red checks run by hand and restored: skip the READY check (1 test red); ignore
   the gate outcome (3 red); drop the `ls-files` interception (1 red); drop the
@@ -292,6 +309,10 @@ container runs the unit tests and markdownlint after the agent.
   `baseBranch: pr.baseRefName` (1 red). Stripping the baseline's `.git` after
   checkout, as the archive extraction left it, turns the real-Deno regression
   test and the two checkout tests red.
+  Sending the bare branch name instead of `refs/heads/<name>` turns 5 tests red
+  (the repair, container argv and orchestration files); letting a per-path
+  inspection error escape `fingerprintPath` unconverted turns the unreadable
+  file test red (1).
 - Removed from existing tests: none from the base. This PR's own two
   mock-argument tests were replaced by the outcome tests above (the PR added
   them in an earlier push). `babysitter_repair_4738_test.ts` changed one harness

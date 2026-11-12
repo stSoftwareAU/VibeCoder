@@ -13,6 +13,8 @@ import {
   productionBabysitterRepairDeps,
   runBabysitterRepair,
 } from "../commands/babysitter_repair.ts";
+import { parseArgs } from "../mod.ts";
+import { buildBabysitterRunArgs } from "../lib/fleet_babysitter_container.ts";
 import { isBabysitterReady } from "../lib/babysitter_ready.ts";
 import {
   BABYSITTER_GATE_BLOCKED_MARKER,
@@ -731,7 +733,9 @@ Deno.test("a test failing the same way at the PR base keeps READY only when --ba
       }
     };
 
-    assert(isBabysitterReady(await written({ "base-branch": "main" })));
+    assert(
+      isBabysitterReady(await written({ "base-branch": "refs/heads/main" })),
+    );
     const withheld = await written({});
     assertEquals(isBabysitterReady(withheld), false);
     assert(withheld.startsWith(BABYSITTER_GATE_BLOCKED_MARKER));
@@ -785,9 +789,12 @@ Deno.test("agent text after a withheld READY carries no gate marker (#4930)", as
 
 Deno.test("an invalid or bare --base-branch is refused before the agent runs (#4930)", async () => {
   const cases: Array<[string, unknown]> = [
-    ["--bad", "--bad"],
+    ["--bad", "refs/heads/--bad"],
     ["bare flag", true],
     ["empty", ""],
+    ["no prefix", "main"],
+    ["prefix only", "refs/heads/"],
+    ["coerced number", 7],
   ];
   for (const [label, value] of cases) {
     await inWorkspace(async (paths) => {
@@ -804,6 +811,39 @@ Deno.test("an invalid or bare --base-branch is refused before the agent runs (#4
       assertStringIncludes(result.message, "--base-branch");
       assertEquals(h.runs.length, 0, label);
       assertEquals(h.treeCalls.length, 0, label);
+    });
+  }
+});
+
+Deno.test("a base branch named like a JSON number reaches the gate exactly, through the real argument parser (#4930)", async () => {
+  const plan = {
+    runArgs: ["run", "img"],
+    resettableVolumes: [],
+    image: "img",
+    volumes: [],
+  } as unknown as Parameters<typeof buildBabysitterRunArgs>[0];
+  for (const branch of ["7.0", "1.10", "2.0", "true", "null", "1e3"]) {
+    const argv = buildBabysitterRunArgs(plan, {
+      clone: "/c",
+      scratch: "/s",
+      baseBranch: branch,
+    });
+    const tail = argv.slice(argv.indexOf("--base-branch") - 1);
+    const parsed = parseArgs(tail);
+    await inWorkspace(async (paths) => {
+      await writePrompt(paths);
+      const h = harness(
+        CLAUDE_CHOICE,
+        finished({ output: "done\nBABYSITTER_READY" }),
+      );
+      const result = await runBabysitterRepair(
+        { ...argsFor(paths), ...parsed.args },
+        CONFIG,
+        h.deps,
+      );
+      assertEquals(result.success, true, branch);
+      assertEquals(h.treeCalls.length, 1, branch);
+      assertEquals(h.treeCalls[0]!.baseBranch, branch);
     });
   }
 });

@@ -1946,9 +1946,9 @@ Deno.test("repair appends --base-branch after the fixed command when a base bran
     assertEquals(args.slice(-(BABYSITTER_REPAIR_COMMAND.length + 2)), [
       ...BABYSITTER_REPAIR_COMMAND,
       "--base-branch",
-      "main",
+      "refs/heads/main",
     ]);
-    assertEquals(args[args.length - 1], "main");
+    assertEquals(args[args.length - 1], "refs/heads/main");
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }
@@ -2022,7 +2022,11 @@ Deno.test("runBabysitterRepairContainer spawns the repair with --base-branch aft
     assertEquals(calls.spawns.length, 1, "exactly one repair spawn");
     assertEquals(
       spawnAt(calls, 0).args.slice(-(BABYSITTER_REPAIR_COMMAND.length + 2)),
-      [...BABYSITTER_REPAIR_COMMAND, "--base-branch", "release/2"],
+      [
+        ...BABYSITTER_REPAIR_COMMAND,
+        "--base-branch",
+        "refs/heads/release/2",
+      ],
     );
   } finally {
     await Deno.remove(f.root, { recursive: true });

@@ -386,7 +386,9 @@ Each repair runs in one container, started by `runBabysitterRepairContainer`
 `/babysitter/scratch`. The image runs the in-container `babysitter-repair`
 command with `--dir /babysitter/clone`, `--prompt-file` pointing at the prompt,
 and `--response-file /babysitter/clone/.babysitter-response`, with
-`--base-branch` carrying the PR's base branch for the gate's baseline. The agent's
+`--base-branch refs/heads/<base>` carrying the PR's base branch for the gate's
+baseline (the prefix keeps the argument parser from turning a branch named
+`7.0` into the number 7). The agent's
 read-only repository token is passed as `GH_TOKEN` by name only, so its value
 never appears on a command line. The clone's `.git` is mounted read-only over
 the read-write clone (`<clone>/.git` at `/babysitter/clone/.git:ro`, listed
@@ -432,7 +434,8 @@ ShellCheck and a missing or unusable cargo toolchain are infrastructure faults:
 no repair attempt is spent and the repair is retried after a backoff. A
 markdownlint binary that is not found blocks like a failed check, so it spends
 an attempt. A dirty file the gate cannot compare also blocks: one over the
-64 MiB limit, or one whose parent directory leads out of the clone. A status
+64 MiB limit, one whose parent directory leads out of the clone, or one it
+cannot read at all (no permission, a looping symlink). A status
 path that is a directory (a submodule pointer or a nested repository), is
 missing, or sits under a file where a directory was is recorded by its kind, not
 refused. The
