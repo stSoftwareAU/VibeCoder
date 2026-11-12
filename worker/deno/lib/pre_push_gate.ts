@@ -19,13 +19,25 @@
  * It does four things, in order:
  *
  * 1. Always runs a fast check over just the files the push introduces
- *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`, `cspell` and ShellCheck when the repo's CI runs
- *    them, and the Floci CloudFormation deploy test
+ *    (`deno fmt --check`, `deno lint`, `deno test` (Issue #4930),
+ *    `cargo fmt --check`, `markdownlint-cli2`, `cspell` and ShellCheck when the
+ *    repo's CI runs them, and the Floci CloudFormation deploy test
  *    when the push changes `infra/cloudformation/` and the repo tracks its
  *    script), whatever the repo's own pre-flight list says and whatever the
  *    run budget — these checks are never skipped for budget; all but the Floci
- *    deploy test are cheap.
+ *    deploy test and the `deno test` run are cheap. The `deno test` check runs
+ *    the changed test files, the same-named tests of changed sources and the
+ *    tests whose text names a changed file or that import such a file, via the
+ *    repo's own `test:unit` task so integration suites like CI's shards are
+ *    excluded. A change under `prompts/`, or to a root's `deno.json`,
+ *    `deno.jsonc` or `deno.lock`, has readers a name scan cannot find, so it
+ *    runs that root's whole `test:unit` suite ({@link needsFullUnitSuite}). A
+ *    failing run is judged by `deno_test_baseline.ts`: a module-fetch failure
+ *    is an infrastructure failure, and a test that fails the same way where the
+ *    push forked (the merge-base with the base branch, the PR's base or the
+ *    checkout's default branch, when one is known) is a
+ *    `[PRE_PUSH_WARNING]` line, not a block, provided every failure of the run
+ *    is accounted for and its serial pass ran.
  * 2. Then runs the CI cargo checks (Issue #4630): the `cargo clippy` and
  *    test-target `cargo test --no-run` commands the repo's pull-request
  *    workflows run, for each crate directory a pushed Rust file touches. Only
@@ -63,6 +75,7 @@ import type { Result } from "../types.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
+import { ensureHistoryDepth } from "./git_history.ts";
 import {
   type PreFlightGateError,
   type PreFlightRunner,
@@ -75,6 +88,13 @@ import {
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
+import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
+import { stripJsonc } from "./jsonc.ts";
+import {
+  judgeDenoTestCheck,
+  unitTestCommand,
+  worktreeBaseline,
+} from "./deno_test_baseline.ts";
 // Types only: a value import would put the workflow scanner, and its bare
 // `@std/yaml/parse` specifier, into the hook's runtime graph; the hook
 // receives the scan precomputed into its spec instead (see the module
@@ -87,7 +107,6 @@ import type {
 import { isHostDiskFaultText } from "./host_fault.ts";
 import { redactedHeadTail } from "./redacted_text.ts";
 import { redactSecrets } from "./secret_redaction.ts";
-import { ensureHistoryDepth } from "./git_history.ts";
 import { readRepoFile } from "./repo_file_read.ts";
 
 /**
@@ -320,6 +339,8 @@ export interface ChangedFileCheck {
   /** Absolute working directory. */
   cwd: string;
   command: string;
+  /** Set on a `deno test` check: its deno root, repo-relative ("." for the top). */
+  denoTestRoot?: string;
   /** Env the command runs with: the cargo-relevant env CI sets. Absent otherwise. */
   env?: Record<string, string>;
   /**
@@ -1012,11 +1033,55 @@ function quoteArguments(args: string[]): Result<string, string> {
 }
 
 /**
- * Plan the always-on changed-file format/lint commands. `denoScopes` maps a
- * deno root to its parsed include/exclude config: explicit paths override
- * deno's own `include`, so a file the repo's `deno fmt` / `deno lint` would
- * not check is dropped here instead of being passed to deno. A root with no
- * entry is unfiltered.
+ * The root-relative test files a root's `deno test` check runs: each changed
+ * `_test.ts` under `tests/`, the `tests/<name>_test.ts` sibling of each
+ * changed non-test `.ts` source outside `tests/`, and the `referenced` tests
+ * ({@link loadReferencedUnitTests}) whose text names a changed file. Only files
+ * `tracked` still holds count, so a deleted test is not run. Deduplicated and
+ * sorted.
+ */
+function plannedUnitTestFiles(
+  rel: string[],
+  tracked: string[],
+  root: string,
+  referenced: readonly string[],
+): string[] {
+  const trackedSet = new Set(tracked);
+  const isTracked = (file: string) =>
+    trackedSet.has(root === "." ? file : `${root}/${file}`);
+  const testFiles = new Set<string>();
+  for (const file of referenced) {
+    if (isTracked(file)) testFiles.add(file);
+  }
+  for (const file of rel) {
+    if (file.startsWith("tests/") && file.endsWith("_test.ts")) {
+      if (isTracked(file)) testFiles.add(file);
+    } else if (
+      file.endsWith(".ts") && !file.endsWith("_test.ts") &&
+      !file.startsWith("tests/")
+    ) {
+      const base = file.slice(file.lastIndexOf("/") + 1, -".ts".length);
+      const sibling = `tests/${base}_test.ts`;
+      if (isTracked(sibling)) testFiles.add(sibling);
+    }
+  }
+  // The unit runner refuses a list with no unit suite in it, and CI's unit
+  // shards do not run the integration suites, so a changed one is left out.
+  return [...testFiles].filter((f) => !INTEGRATION_TEST_FILES.includes(f))
+    .sort();
+}
+
+/**
+ * Plan the always-on changed-file format, lint and unit-test commands.
+ * `denoScopes` maps a deno root to its parsed include/exclude config: explicit
+ * paths override deno's own `include`, so a file the repo's `deno fmt` /
+ * `deno lint` would not check is dropped here instead of being passed to deno.
+ * A root with no entry is unfiltered. `denoUnitTestRoots` lists the roots
+ * whose changed tests get a `deno test` check (see
+ * {@link loadDenoUnitTestRoots}); absent means no `deno test` check. The check
+ * runs the changed test files, the same-named tests of changed sources and the
+ * `denoReferencedTests` beside them, via the repo's own `test:unit` task, so
+ * integration suites like CI's shards are not run here.
  *
  * `ciCargo` (Issue #4630) is the CI cargo scan. Each of its checks is planned,
  * after the cargo fmt check, when the push changes a Rust-relevant file under
@@ -1040,6 +1105,20 @@ export function planChangedFileChecks(
      */
     cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
+    /** Pushed paths for unit tests and markdownlint when formatting is skipped. */
+    validationChanged?: string[];
+    /** Deno roots whose `test:unit` task the changed tests run through. */
+    denoUnitTestRoots?: string[];
+    /**
+     * Per deno root, the root-relative tests whose text names a changed file
+     * (see {@link loadReferencedUnitTests}); they run beside the changed tests.
+     */
+    denoReferencedTests?: Record<string, string[]>;
+    /**
+     * Deno roots whose whole `test:unit` suite runs, with no file list (see
+     * {@link needsFullUnitSuite}); it covers the changed and referenced tests.
+     */
+    denoFullUnitRoots?: string[];
     /** The cargo clippy and test-target commands CI runs (Issue #4630). */
     ciCargo?: CiCargoScan;
     /**
@@ -1094,6 +1173,35 @@ export function planChangedFileChecks(
         command: `${base} ${quoted.value}`,
       });
     }
+    if (opts.denoUnitTestRoots?.includes(root)) {
+      if (opts.denoFullUnitRoots?.includes(root)) {
+        checks.push({
+          label: `deno test (${root})`,
+          cwd: dirCwd(root),
+          command: "deno task test:unit",
+          denoTestRoot: root,
+        });
+        continue;
+      }
+      const unitTestFiles = plannedUnitTestFiles(
+        (opts.validationChanged ?? changed)
+          .filter((p) => root === "." || p.startsWith(`${root}/`))
+          .map((p) => root === "." ? p : p.slice(root.length + 1)),
+        tracked,
+        root,
+        opts.denoReferencedTests?.[root] ?? [],
+      );
+      if (unitTestFiles.length > 0) {
+        const quoted = quoteAll(unitTestFiles);
+        if (!quoted.ok) return quoted;
+        checks.push({
+          label: `deno test (${root})`,
+          cwd: dirCwd(root),
+          command: `deno task test:unit ${quoted.value}`,
+          denoTestRoot: root,
+        });
+      }
+    }
   }
 
   for (const root of outermostConfigDirs(tracked, ["Cargo.toml"])) {
@@ -1108,7 +1216,9 @@ export function planChangedFileChecks(
     });
   }
 
-  const markdown = changed.filter((p) => hasExtension(p, MARKDOWN_EXTENSIONS));
+  const markdown = (opts.validationChanged ?? changed).filter((p) =>
+    hasExtension(p, MARKDOWN_EXTENSIONS)
+  );
   const configured = MARKDOWNLINT_CONFIGS.some((name) =>
     tracked.includes(name)
   );
@@ -1349,22 +1459,283 @@ export async function loadDenoScopes(
   for (
     const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
   ) {
-    for (const name of ["deno.json", "deno.jsonc"]) {
-      let text: string;
-      try {
-        text = await readRepoFile(
-          repoRoot,
-          root === "." ? name : `${root}/${name}`,
-        );
-      } catch {
-        continue; // This config name is absent; try the other.
-      }
-      const parsed = parseDenoScope(text);
-      if (parsed !== null) scopes[root] = parsed;
-      break; // Deno prefers deno.json; do not fall through to deno.jsonc.
-    }
+    const text = await readDenoConfigText(repoRoot, root);
+    if (text === null) continue;
+    const parsed = parseDenoScope(text);
+    if (parsed !== null) scopes[root] = parsed;
   }
   return scopes;
+}
+
+/**
+ * A deno root's config text: `deno.json`, else `deno.jsonc` when `deno.json` is
+ * absent or unreadable (a symlink, a non-regular file or one over the size cap
+ * is unreadable); null when neither can be read. Deno prefers `deno.json`, so
+ * the two are never both used.
+ */
+async function readDenoConfigText(
+  repoRoot: string,
+  root: string,
+): Promise<string | null> {
+  for (const name of ["deno.json", "deno.jsonc"]) {
+    try {
+      return await readRepoFile(
+        repoRoot,
+        root === "." ? name : `${root}/${name}`,
+      );
+    } catch {
+      // This config name is absent or unreadable; try the other.
+    }
+  }
+  return null;
+}
+
+/** Whether a deno.json(c) document's `tasks` object defines `test:unit`. */
+function definesUnitTestTask(text: string): boolean {
+  const stripped = stripJsonc(text);
+  let parsed: { tasks?: unknown } | null;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch {
+    return false;
+  }
+  const tasks = parsed?.tasks;
+  return typeof tasks === "object" && tasks !== null &&
+    Object.hasOwn(tasks, "test:unit");
+}
+
+/**
+ * The deno roots whose config defines a `test:unit` task (Issue #4930), so the
+ * gate can run the repo's own unit suite for changed tests. Root discovery
+ * matches {@link loadDenoScopes}; a root whose config is unreadable or
+ * unparseable is left out.
+ */
+export async function loadDenoUnitTestRoots(
+  repoRoot: string,
+  tracked: string[],
+): Promise<string[]> {
+  const roots: string[] = [];
+  for (
+    const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
+  ) {
+    const text = await readDenoConfigText(repoRoot, root);
+    if (text === null) continue;
+    if (definesUnitTestTask(text)) roots.push(root);
+  }
+  return roots;
+}
+
+/**
+ * Strings whose presence in a test's source marks it as reading `file` (a
+ * repo-relative path): its base name when no other tracked file shares it
+ * (else its last two segments), and, for a non-`.ts` file such
+ * as a doc or prompt, its directory followed by `/` (a test that lists it) and
+ * each ancestor directory followed by `/${` so a path built in a template
+ * literal is caught. A deliberate over-approximation: running an
+ * unrelated test costs time, missing a reader lets a break reach CI.
+ */
+function referenceTokens(
+  file: string,
+  basenameCounts: ReadonlyMap<string, number>,
+): string[] {
+  const parts = file.split("/");
+  const base = parts[parts.length - 1] as string;
+  // The last two segments (or the base name) are a substring of the path, so a
+  // text naming the whole path matches them too and the path needs no token.
+  const tokens = [
+    basenameCounts.get(base) === 1 ? base : parts.slice(-2).join("/"),
+  ];
+  if (!file.endsWith(".ts")) {
+    // A test that lists the directory names neither the file nor a template.
+    if (parts.length > 1) tokens.push(`${parts.slice(0, -1).join("/")}/`);
+    for (let i = 1; i < parts.length; i++) {
+      tokens.push(`${parts.slice(0, i).join("/")}/\${`);
+    }
+  }
+  return tokens;
+}
+
+/** The `./x.ts` / `../x.ts` module specifiers quoted in a TypeScript source. */
+function relativeTsSpecifiers(text: string): string[] {
+  return [...text.matchAll(/["'`](\.{1,2}\/[^"'`\s]+\.ts)["'`]/g)].map((m) =>
+    m[1] as string
+  );
+}
+
+/** `specifier` resolved against the directory of `from`, both tracked paths. */
+function resolveSpecifier(from: string, specifier: string): string {
+  const parts = from.split("/").slice(0, -1);
+  for (const part of specifier.split("/")) {
+    if (part === "..") parts.pop();
+    else if (part !== ".") parts.push(part);
+  }
+  return parts.join("/");
+}
+
+/**
+ * Per deno root, the root-relative `_test.ts` files under `tests/` a change can
+ * break (Issue #4930), so a change to a source, doc or prompt runs the tests
+ * that depend on it, not only a same-named one. A TypeScript file under the
+ * root is a seed when it is changed, or when it sits under `tests/` and its text
+ * names a changed file (see {@link referenceTokens}) or calls `loadPrompt` with
+ * the changed prompt's literal type; a test is selected when it
+ * is a seed or imports one,
+ * directly or through other files (relative `.ts` specifiers). Changed tests
+ * themselves are left out (they run anyway). A tracked file that cannot be read
+ * is skipped.
+ */
+export async function loadReferencedUnitTests(
+  repoRoot: string,
+  tracked: string[],
+  changed: string[],
+  roots: string[],
+): Promise<Record<string, string[]>> {
+  const basenameCounts = new Map<string, number>();
+  for (const path of tracked) {
+    const base = path.slice(path.lastIndexOf("/") + 1);
+    basenameCounts.set(base, (basenameCounts.get(base) ?? 0) + 1);
+  }
+  const tokens = [
+    ...new Set(
+      changed.filter((p) => !p.endsWith("_test.ts")).flatMap((p) =>
+        referenceTokens(p, basenameCounts)
+      ),
+    ),
+  ];
+  const promptTypes = new Set(changed.flatMap((path) => {
+    const match = /(?:^|\/)prompts\/([^/]+)\/prompt\.md$/.exec(path);
+    return match ? [match[1]!] : [];
+  }));
+  const referenced: Record<string, string[]> = {};
+  if (tokens.length === 0) return referenced;
+  for (const root of roots) {
+    const prefix = root === "." ? "" : `${root}/`;
+    const importers = new Map<string, string[]>();
+    const seeds = new Set(changed);
+    const testPaths: string[] = [];
+    for (const path of tracked) {
+      if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
+      let text: string;
+      try {
+        text = await readRepoFile(repoRoot, path);
+      } catch {
+        continue; // Deleted, a symlink or unreadable: nothing to run.
+      }
+      for (const specifier of relativeTsSpecifiers(text)) {
+        const target = resolveSpecifier(path, specifier);
+        importers.set(target, [...(importers.get(target) ?? []), path]);
+      }
+      if (!path.startsWith(`${prefix}tests/`)) continue;
+      // Only the test tree is read for names: a source that merely quotes a
+      // doc path in a message depends on nothing, and one that does read it
+      // has a test that names it.
+      // Prompt readers pass a type to loadPrompt rather than spelling its path.
+      // This is a conservative dependency scan: a quoted example may select an
+      // extra test, but never exempts a real loader call.
+      const loadsPrompt = [
+        ...text.matchAll(/\bloadPrompt\s*\(\s*["'`]([^"'`]+)["'`]/g),
+      ]
+        .some((match) => promptTypes.has(match[1]!));
+      if (tokens.some((t) => text.includes(t)) || loadsPrompt) seeds.add(path);
+      if (path.endsWith("_test.ts")) testPaths.push(path);
+    }
+    const reached = new Set(seeds);
+    const queue = [...seeds];
+    for (const file of queue) {
+      for (const importer of importers.get(file) ?? []) {
+        if (!reached.has(importer)) {
+          reached.add(importer);
+          queue.push(importer);
+        }
+      }
+    }
+    referenced[root] = testPaths
+      .filter((t) => reached.has(t) && !changed.includes(t))
+      .map((t) => t.slice(prefix.length));
+  }
+  return referenced;
+}
+
+/**
+ * Whether a push touches a file whose readers a name scan cannot find, so the
+ * root's whole `test:unit` suite runs instead of a selected list (PR #5034
+ * review): anything under a `prompts/` directory (a test reaches a prompt
+ * through a loader or a prompt builder, not by spelling its path) and the
+ * root's own `deno.json`, `deno.jsonc` or `deno.lock` (every test depends on
+ * them). `paths` should include deleted paths.
+ */
+export function needsFullUnitSuite(
+  paths: readonly string[],
+  root: string,
+): boolean {
+  const prefix = root === "." ? "" : `${root}/`;
+  return paths.some((p) =>
+    /(?:^|\/)prompts\//.test(p) ||
+    (p.startsWith(prefix) &&
+      ["deno.json", "deno.jsonc", "deno.lock"].includes(p.slice(prefix.length)))
+  );
+}
+
+/**
+ * The commit a push forked from, where a `deno test` failure is compared.
+ *
+ * With `compareRef` (the PR's base) it is the merge-base of the pushed heads
+ * and that ref: the point the PR left its base, or the base commit a later
+ * merge brought in. A repair push must not compare against the PR's own
+ * previous head, where a test the repair leaves red is red too. Without a
+ * `compareRef` it is the parent of the oldest commit not already on a remote.
+ * A shallow checkout is deepened first (`ensureHistoryDepth`). Null when the
+ * fork still cannot be found, for example the deepen failed: the comparison is
+ * then unavailable and the failure blocks.
+ */
+async function pushForkCommit(
+  refs: readonly PrePushRef[],
+  cwd: string,
+  git: PrePushGit,
+  compareRef?: string,
+): Promise<string | null> {
+  if (refs.length === 0) return null;
+  if (
+    compareRef !== undefined &&
+    (compareRef === "" || compareRef.startsWith("-"))
+  ) {
+    return null;
+  }
+  if (compareRef !== undefined) {
+    // The worker's clones are `--depth=1`: deepen until the heads meet the
+    // base before asking for their merge-base (a no-op on a full clone). A
+    // deepen that fails leaves the baseline unavailable, as a missing
+    // merge-base does.
+    const deepened = await ensureHistoryDepth(
+      [compareRef, ...refs.map((r) => r.localSha)],
+      {
+        // The runner pins every git call to `cwd`; no `cwd` option is needed.
+        gitRunner: async (args) => ({ ok: true, value: await git(args, cwd) }),
+      },
+    );
+    if (!deepened.ok) return null;
+    const mergeBase = await git(
+      ["merge-base", compareRef, ...refs.map((r) => r.localSha)],
+      cwd,
+    );
+    const sha = mergeBase.stdout.split("\n")[0]?.trim() ?? "";
+    return mergeBase.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+  }
+  const oldest = await git(
+    [
+      "rev-list",
+      "--reverse",
+      ...refs.map((r) => r.localSha),
+      "--not",
+      "--remotes",
+    ],
+    cwd,
+  );
+  const first = oldest.stdout.split("\n")[0]?.trim();
+  if (oldest.code !== 0 || !first) return null;
+  const parent = await git(["rev-parse", "--verify", `${first}^`], cwd);
+  const sha = parent.stdout.trim();
+  return parent.code === 0 && /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
 }
 
 /**
@@ -2155,8 +2526,13 @@ async function failsOnBaseToo(args: {
  * pre-flight commands. `checksRun` lists the changed-file, CI cargo and
  * cargo-deny commands run.
  * The changed-file checks run whatever the run
- * budget — they are never skipped; all but the Floci deploy test are fast. Any
- * git, parse or planning error is an `Err`, never a pass.
+ * budget — they are never skipped; all but the Floci deploy test and the
+ * `deno test` run are fast. Any git, parse or planning error is an `Err`, never
+ * a pass. A `deno test` run that could not fetch a module is a
+ * {@link PrePushGateInfrastructureError}. A `deno test` failure that the push's
+ * fork commit shares (same test, same file) is a `[PRE_PUSH_WARNING]` line, not
+ * an `Err`, when every failure of the run is accounted for (see
+ * `deno_test_baseline.ts`).
  *
  * The CI cargo checks are read from the repo's pull-request workflows by
  * `findCiCargo`, which is opt-in with no default: a caller that does not pass it
@@ -2186,11 +2562,14 @@ async function failsOnBaseToo(args: {
  *
  * `ciCargoOnly` (repair pushes of repos with no pre-flight configuration, where
  * only the CI cargo checks should gate) runs nothing but those CI cargo checks,
- * the repository's ShellCheck policy (Issue #4631) and the cargo-deny gate
- * (Issue #4626), which every gate run applies: the changed files are still listed and the CI cargo scan still
- * read, but the other changed-file checks, their binary lookups and the repo's
- * pre-flight commands are skipped. Only the Rust-relevant changed files are
- * planned, so no other checker's planning error can block the push. With no
+ * the repository's ShellCheck policy (Issue #4631), the cargo-deny gate
+ * (Issue #4626), which every gate run applies, and, as every repair push does,
+ * the `deno test` check and markdownlint for the pushed paths (Issue #4930):
+ * the changed files are still listed and the CI cargo scan still read, but the
+ * other changed-file checks (fmt, lint, cspell, Floci), their binary lookups
+ * and the repo's pre-flight commands are skipped. Only the Rust-relevant changed
+ * files are planned for those, so no other checker's planning error can block
+ * the push. With no
  * `findCiCargo`, `ciCargoOnly` plans and runs no cargo check. `shellcheckOnly`
  * plans no changed-file check at all, so it reads no CI cargo scan either.
  *
@@ -2232,6 +2611,12 @@ export async function runPrePushGate(opts: {
    * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
    */
   baseRef?: string;
+  /**
+   * The PR's base branch (for example `main`), for a push that has no `baseRef`. A `deno test` failure is then compared at the merge-base with
+   * `origin/<baselineBranch>`, not at the PR's own previous head, which a
+   * repair that leaves a test red would otherwise match.
+   */
+  baselineBranch?: string;
   /**
    * The PR base the CI cargo checks are compared with: a check that fails here
    * and fails the same way on this ref is not a verdict on the push. Defaults
@@ -2299,7 +2684,7 @@ export async function runPrePushGate(opts: {
     ? changed.value.filter(isRustRelevant)
     : changed.value;
 
-  const needsMarkdownlint = considered.some((p) =>
+  const needsMarkdownlint = contained.value.some((p) =>
     hasExtension(p, MARKDOWN_EXTENSIONS)
   );
   let markdownlintBinary: string | null = null;
@@ -2346,20 +2731,37 @@ export async function runPrePushGate(opts: {
   });
   if (!shellcheck.ok) return shellcheck;
 
+  const denoUnitTestRoots = await loadDenoUnitTestRoots(opts.cwd, tracked);
   const plan = planChangedFileChecks(considered, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
     cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
+    denoUnitTestRoots,
+    denoFullUnitRoots: denoUnitTestRoots.filter((root) =>
+      needsFullUnitSuite(touched.value, root)
+    ),
+    validationChanged: contained.value,
+    denoReferencedTests: await loadReferencedUnitTests(
+      opts.cwd,
+      tracked,
+      // Deleted and renamed-away paths too: a test can still name them.
+      touched.value,
+      denoUnitTestRoots,
+    ),
     ciCargo,
     cargoChanged,
   });
   if (!plan.ok) return fail(plan.error);
 
-  // CI-cargo-only mode keeps the CI cargo checks and nothing else.
+  // CI-cargo-only mode keeps the CI cargo checks and, as every repair push
+  // does, the pushed paths' unit tests and markdownlint (Issue #4930).
   const checks = opts.ciCargoOnly
-    ? plan.value.filter((c) => c.cargo !== undefined)
+    ? plan.value.filter((c) =>
+      c.cargo !== undefined || c.denoTestRoot !== undefined ||
+      c.label === "markdownlint"
+    )
     : plan.value;
   const cargoChecks = checks.filter((c) => c.cargo !== undefined);
   const compareRef = opts.compareRef ?? opts.baseRef;
@@ -2372,7 +2774,57 @@ export async function runPrePushGate(opts: {
         runner: opts.runner,
         timeoutSeconds: opts.timeoutSeconds,
       });
-      if (!result.ok) return { ok: false, error: result.error };
+      if (!result.ok) {
+        if (check.denoTestRoot === undefined) {
+          return { ok: false, error: result.error };
+        }
+        const root = check.denoTestRoot;
+        const outcome = await judgeDenoTestCheck({
+          error: result.error,
+          command: check.command,
+          baseCommand: unitTestCommand,
+          run: (command) =>
+            runPreFlightGate([command], {
+              cwd: check.cwd,
+              runner: opts.runner,
+              timeoutSeconds: opts.timeoutSeconds,
+            }),
+          baseline: {
+            // The fork commit is looked up only when a test actually failed.
+            runAtBase: async (command, files) => {
+              const forkSha = await pushForkCommit(
+                refs.value,
+                opts.cwd,
+                git,
+                opts.baseRef ??
+                  (opts.baselineBranch === undefined
+                    ? undefined
+                    : `origin/${opts.baselineBranch}`),
+              );
+              if (forkSha === null) return null;
+              return await worktreeBaseline({
+                cwd: opts.cwd,
+                root,
+                forkSha,
+                git,
+                runner: opts.runner,
+                timeoutSeconds: opts.timeoutSeconds,
+              }).runAtBase(command, files);
+            },
+          },
+        });
+        if (outcome.kind === "infrastructure") {
+          return infrastructureFail(outcome.message);
+        }
+        if (outcome.kind === "verdict") {
+          return { ok: false, error: outcome.error };
+        }
+        // An established base failure is reported, never counted as run or a block.
+        console.warn(
+          `[PRE_PUSH_WARNING] deno test (${root}): ${outcome.warning}`,
+        );
+        continue;
+      }
       checksRun.push(check.command);
       continue;
     }

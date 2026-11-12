@@ -2080,8 +2080,9 @@ async function resolveConflict(
   const finalise = await deps.git.commitAndPushPending(
     branchName,
     `Merge ${baseBranch} into ${branchName} (Issue #84)\n\nResolved the PR's merge conflict without side-picking.`,
-    // The merged tree contains the base, so a CI cargo failure the base already
-    // has is no verdict on this repair (Issue #4630 review).
+    // The merged tree contains the base, so a CI cargo failure or a failing
+    // unit test the base already has is no verdict on this repair (Issue #4630
+    // review, PR #5034 review).
     {
       cwd: workDir,
       compareBaseBranch: baseBranch,

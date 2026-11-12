@@ -2917,9 +2917,12 @@ The push guarantee follows the flow. Issue completion runs the full worker gate
 before creating the PR. A CI fix attempts that gate when Claude leaves
 uncommitted changes after its attempt, then runs configured pre-flight commands
 before the worker push; with no such changes and no pre-flight commands, it runs
-no checks before that push. PR feedback and spelling fixes do not run the full
+only the repair checks before that push: the ShellCheck publication check, the
+CI cargo-deny check when the pushed paths include a cargo input, and the
+dependency-selected unit tests and configured markdownlint for the pushed paths
+(Issue #4930). PR feedback and spelling fixes do not run the full
 gate before the worker push. Configured pre-flight commands also enable
-changed-file checks. PR-review feedback runs its independent fix verifier even
+the full set of changed-file checks. PR-review feedback runs its independent fix verifier even
 without pre-flight configuration; persistent findings can block the push.
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
@@ -5050,7 +5053,8 @@ repo-specific commands in the worker.
   described below, and a failure there fails the run. The CI-fix and PR-feedback
   repair pushes are the exception: for such a repo they pass a cargo-only spec
   (Issue #4630), so only the repo CI's cargo clippy and test-target compile,
-  the ShellCheck policy and `cargo deny` run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
+  the ShellCheck policy, `cargo deny` and the pushed paths' `deno test` and
+  markdownlint checks (Issue #4930) run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
   ungated.
 
 Commands run directly (not through a shell), so each entry is a program plus
@@ -5112,21 +5116,24 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 PR-feedback repair processors pass a cargo-only spec when the repo has no
 pre-flight commands (Issue #4630), so their repair pushes run only the repo
 CI's cargo clippy and test-target compile, the ShellCheck policy
-(Issue #4631) and cargo deny for changed cargo inputs (Issue #4626), through
+(Issue #4631), cargo deny for changed cargo inputs (Issue #4626) and the
+pushed paths' `deno test` and markdownlint checks (Issue #4930), through
 Step 1b, and not the other changed-file checks listed below. Repos with
 pre-flight commands keep their own spec. The completion phase's
 `gateBeforePush()` also runs this gate before the first push and the retry push,
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
-the changed-file checks (listed under the first stage below: deno
-fmt/lint, cargo fmt, markdownlint, cspell, ShellCheck and the Floci CloudFormation
-deploy test), the CI cargo clippy and test-target compile (which the agent's
-hook also runs from its precomputed spec) and cargo deny still run and can fail the run. Unlike Step
-1b, the completion gate checks every commit the branch has
-ahead of the PR base, not only commits on no remote-tracking ref; a merge commit
-contributes only the paths the merge itself changed (a conflict resolution),
-never the files it brings in from the base. The execute phase's WIP checkpoints
-(periodic, and once more at phase end) push the agent's commits through
-`commitAndPushPending` with no spec, so those pushes are ungated and the
+the changed-file checks (listed under the first stage below: deno fmt/lint,
+`deno test` of the changed and referencing tests (the whole `test:unit` suite
+when a `prompts/` file or a root's `deno.json`, `deno.jsonc` or `deno.lock`
+changes), cargo fmt, markdownlint, cspell, ShellCheck and the Floci
+CloudFormation deploy test), the CI cargo clippy and test-target compile (which
+the agent's hook also runs from its precomputed spec) and cargo deny still run
+and can fail the run. Unlike Step 1b, the completion gate checks every commit
+the branch has ahead of the PR base, not only commits on no remote-tracking ref;
+a merge commit contributes only the paths the merge itself changed (a conflict
+resolution), never the files it brings in from the base. The execute phase's
+WIP checkpoints (periodic, and once more at phase end) push the agent's commits
+through `commitAndPushPending` with no spec, so those pushes are ungated and the
 commits are usually already on origin when the completion phase runs; the
 whole-branch range is what keeps them from reaching
 `gh pr create` unchecked (PR #3716 review). If the base ref cannot be resolved,
@@ -5206,6 +5213,77 @@ gates do (see that bullet):
      `"include": ["."]` keeps every file in scope. An `include` the hook cannot
      represent (such as one with a `..` segment) leaves the file in scope for
      deno to judge, and an unparseable `deno.json` is left unfiltered;
+   - `deno test` (Issue #4930), per outermost `deno.json` / `deno.jsonc`
+     directory whose config defines a `test:unit` task (`deno.json` is preferred;
+     an unreadable or unparseable config is left out). It runs the tests the
+     dependency scan selects (not the whole suite, except as noted below): each
+     changed `_test.ts` file under
+     that directory's `tests/`; the same-named `tests/<name>_test.ts` of each
+     changed `.ts` source outside `tests/`; and tracked `tests/` files reached
+     by the reference and import rules below, whatever their own names. A `.ts` file under the
+     directory is a seed when it is changed, or when it sits under `tests/` and
+     its text names a changed file: it contains the file's repo-relative path,
+     its base name (when no other tracked file shares it, else its last two path
+     segments), or, for a doc, prompt or other non-`.ts` file, its directory
+     followed by `/` (a test that lists the directory) or one of its ancestor
+     directories followed by `/${` (a path built in a template literal). A test
+     is also a seed when it calls `loadPrompt` with the changed prompt's literal
+     type, including a wrapped call using a separate prompts-directory value.
+     Tests importing a seed directly or transitively via relative `.ts`
+     specifiers are selected too. Dynamic loader types, computed paths and
+     import-map aliases can still be missed; this is a dependency heuristic,
+     and a widely imported module can select most of the unit suite. A change
+     under a `prompts/` directory, or to the directory's own `deno.json`,
+     `deno.jsonc` or `deno.lock`, has readers the scan cannot resolve (a test
+     reaches a prompt through a prompt builder, and every test depends on the
+     lock file), so it runs that directory's whole `deno task test:unit` suite
+     with no file list, the same unit tests as CI's shards. Otherwise the files are
+     passed to `deno task test:unit` from the directory (for example
+     `deno task test:unit tests/foo_test.ts`). The task runs only the unit tests
+     among the files it is given, so the integration suites (the ones CI's unit
+     shards exclude, including a changed one) are not run here. A deleted or
+     renamed-away file still selects the tests that name or import it. A failing
+     test refuses the push, with two exceptions that keep a red base or a download
+     outage from blocking an unrelated fix. A failure with no failed test in its
+     output and a module-fetch error (a JSR manifest, an npm package or an import
+     that could not be downloaded; a 404 `JSR package not found` is not one)
+     is a `PrePushGateInfrastructureError`, not a test verdict. When tests fail,
+     the gate checks out the commit the push forked from into a throwaway
+     worktree and re-runs the failed files there; a test that fails the same way
+     (same name, same file) at the fork is reported as a
+     `[PRE_PUSH_WARNING] deno test` line and does not block. The fork is the
+     merge-base of the pushed head and the PR's base (`origin/<base>`) when the
+     gate knows it: the completion phase's whole-branch check, and a CI-fix,
+     review-feedback, spelling or merge-conflict repair push whose PR base is
+     known (`compareBaseBranch`, which places the comparison and merges
+     nothing, else the `syncBaseBranch` it merges in before the push; a CI fix
+     on a gated milestone fix branch passes the gated PR's base). The agent's
+     own `git push` compares at the merge-base with the PR base the worker wrote
+     into the hook spec (`compareRef`, see the CI cargo checks below), and,
+     for a run handed no base, with the checkout's default branch
+     (`origin/HEAD`), which for a PR that targets another branch can be older
+     than the PR's own base. A repair whose PR base could not be read compares
+     at the default branch too. Only a push with neither a base nor an
+     `origin/HEAD` uses the parent of its oldest commit not yet on a remote.
+     Git makes the throwaway worktree under the repository's own git directory
+     and removes it again, so the hook's Deno process writes nothing for it; a
+     worktree that cannot be made leaves the baseline unavailable, so the
+     failure blocks with the head's own test output. A shallow clone is deepened (`ensureHistoryDepth`) before the
+     merge-base is looked up. Only a run whose every
+     failure is accounted for is downgraded: a test module that fails outside a
+     test (`./x_test.ts (uncaught error)`: a top-level throw, a dangling promise
+     or a missing named export) names no test to compare and blocks. The
+     `test:unit` runner stops after a failed parallel pass, so when a
+     downgraded run never reached its serial pass the gate runs it
+     (`--serial-only`) and judges that result the same way. The time budget the
+     runner applies after both passes succeed is not re-run for a failed
+     parallel pass. A test file the
+     push added, a base run that passes, a base the gate cannot check out (for
+     example a deepen that failed, so no merge-base is found), or an output that
+     names no failed test stays a block. Repair specs called `shellcheckOnly`,
+     and the CI-fix and PR-feedback repairs' cargo-only spec (`ciCargoOnly`),
+     also run these unit tests and configured markdownlint from the pushed
+     paths, while retaining their existing formatter policy;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - **CI's cargo clippy and test-target compile** (Issue #4630), when the push

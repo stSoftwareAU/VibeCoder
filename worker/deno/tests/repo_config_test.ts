@@ -330,6 +330,10 @@ Deno.test("repo_config - buildQualityInstructions carries the pre-flight record 
       preFlightOnly,
       "Configured pre-flight commands enable changed-file checks",
     );
+    assertStringIncludes(
+      preFlightOnly,
+      "with none configured, the worker still runs the ShellCheck policy, cargo deny for cargo inputs, and the dependency-selected unit tests and markdownlint",
+    );
     assertEquals(
       preFlightOnly.includes("again before the PR is raised"),
       false,
@@ -342,7 +346,10 @@ Deno.test("repo_config - buildQualityInstructions carries the pre-flight record 
     });
     assertStringIncludes(ciFix, "attempts the full gate");
     assertStringIncludes(ciFix, "if Claude leaves uncommitted changes");
-    assertStringIncludes(ciFix, "no checks before that push");
+    assertStringIncludes(
+      ciFix,
+      "dependency-selected unit tests and markdownlint for the pushed paths before that push",
+    );
     assertEquals(ciFix.includes("again before the PR is raised"), false);
 
     const customPr = buildQualityInstructions(undefined, "org/x", {
