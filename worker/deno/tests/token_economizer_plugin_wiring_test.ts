@@ -1012,3 +1012,36 @@ Deno.test("the runner's final scan catches a hook fault that predates its filesy
     await Deno.remove(layout.root, { recursive: true });
   }
 });
+
+Deno.test("the checkout guard preserves a real dirty checkout at the controller path", async () => {
+  const layout = await makeLayout();
+  const checkout = join(layout.workDir, ".token-economizer");
+  try {
+    await Deno.rename(layout.checkout, checkout);
+    await Deno.writeTextFile(
+      join(checkout, "existing.txt"),
+      "pre-existing work\n",
+    );
+    const before = await gitStatus(checkout);
+    assertStringIncludes(before, "existing.txt");
+    const launch = await resolveTokenEconomizerLaunch({
+      config: enabledBlock("off"),
+      workDir: layout.workDir,
+      repo: "owner/.token-economizer",
+      runKind: "implementation",
+      pluginDir: layout.fakePluginDir,
+    });
+    assertEquals(launch, null);
+    assertEquals(await gitStatus(checkout), before);
+    assertEquals(
+      await Deno.readTextFile(join(checkout, "existing.txt")),
+      "pre-existing work\n",
+    );
+    assertEquals(
+      Array.from(Deno.readDirSync(checkout)).map((entry) => entry.name).sort(),
+      [".git", "existing.txt"],
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});

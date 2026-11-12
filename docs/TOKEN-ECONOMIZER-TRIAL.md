@@ -192,8 +192,10 @@ may be open on it, or neither result means anything.
 
 ## 3. 🪟 The window
 
-The window opens when the **first switched-on run completes**, not on the day
-the key is set. It is first judged at whichever comes later: **7 days**, or
+The agreed window opens when the **first switched-on run completes** with
+persistence and accounting working, not on the day the key is set. An
+unpersisted or unaccounted completion does not open it. It is first judged at
+whichever comes later: **7 days**, or
 **60** completed switched-on implementation runs.
 
 A shorter window measures nothing. Micro-skills needs three sessions to confirm
@@ -378,7 +380,7 @@ State is `present` when the path exists and names the plugin today, and
 | Test | the PR-feedback and CI-fix spawn sites' tests | `worker/deno/tests/token_economizer_reactive_callsites_test.ts` | present |
 | Test | the production dependency pass-through tests | `worker/deno/tests/token_economizer_production_deps_test.ts` | present |
 | Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | present |
-| Runtime directory | `.token-economizer/` under the work directory, holding the stop record and the per-spawn state directories; the launch decision creates it at run time | `worker/deno/lib/token_economizer_plugin.ts` | present |
+| Runtime directory | `.token-economizer/` under the work directory, holding the stop record, notification receipt and per-spawn state directories; the launch decision creates it at run time | `worker/deno/lib/token_economizer_plugin.ts` | present |
 | Source | the learnings pull and push, with the gitleaks check | — | planned #4957 |
 | Learnings directory | `token-economizer/` in the repository named by `token_economizer.learnings_repo` | — | planned #4957 |
 | Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | planned #4958 |
