@@ -13,7 +13,9 @@ import {
   type BabysitterTreeGateDeps,
   type BabysitterTreeGateOutcome,
   defaultCheckoutTree,
+  hashFile,
   isGateInfrastructureResponse,
+  MAX_FINGERPRINT_BYTES,
   runBabysitterTreeGate,
   withholdReady,
 } from "../lib/babysitter_tree_gate.ts";
@@ -1158,6 +1160,154 @@ Deno.test("checks that change nothing keep a pass (#4930)", async () => {
     const outcome = await runBabysitterTreeGate(repo, undefined, deps);
 
     assertEquals(outcome, { kind: "passed", checksRun: [] });
+  });
+});
+
+/** Commits `files` (path to text) to the fixture repository. */
+async function commitFiles(
+  repo: string,
+  files: Record<string, string>,
+): Promise<void> {
+  for (const [path, text] of Object.entries(files)) {
+    await Deno.mkdir(
+      `${repo}/${path.split("/").slice(0, -1).join("/") || "."}`,
+      {
+        recursive: true,
+      },
+    );
+    await Deno.writeTextFile(`${repo}/${path}`, text);
+  }
+  await git(repo, "add", "-A");
+  await git(repo, "commit", "-q", "-m", "add files");
+}
+
+Deno.test("a file replaced by a directory at the same path is not an outage and a clean check passes (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.remove(`${repo}/gone.txt`);
+    await Deno.mkdir(`${repo}/gone.txt`);
+    await Deno.writeTextFile(`${repo}/gone.txt/inner.txt`, "inner\n");
+    const { deps } = depsFor(root, async () => PASS);
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome, { kind: "passed", checksRun: [] });
+  });
+});
+
+Deno.test("a directory replaced by a file at the same path is not an outage (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await commitFiles(repo, { "d/a": "a\n" });
+    await Deno.remove(`${repo}/d`, { recursive: true });
+    await Deno.writeTextFile(`${repo}/d`, "now a file\n");
+    const { deps } = depsFor(root, async () => PASS);
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome, { kind: "passed", checksRun: [] });
+  });
+});
+
+Deno.test("a check that rewrites the file now at a swapped path still blocks (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await commitFiles(repo, { "d/a": "a\n" });
+    await Deno.remove(`${repo}/d`, { recursive: true });
+    await Deno.writeTextFile(`${repo}/d`, "agent file\n");
+    const { deps } = depsFor(root, async () => {
+      await Deno.writeTextFile(`${repo}/d`, "check rewrote it\n");
+      return PASS;
+    });
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome, {
+      kind: "blocked",
+      message: "the checks changed the working tree: d",
+    });
+  });
+});
+
+Deno.test("a submodule pointer in the tree and a nested repository are not an outage (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    const sha = (await git(repo, "rev-parse", "HEAD")).trim();
+    await git(
+      repo,
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${sha},sub`,
+    );
+    await Deno.mkdir(`${repo}/sub`);
+    await Deno.mkdir(`${repo}/nested`);
+    await git(`${repo}/nested`, "init", "-q");
+    const { deps } = depsFor(root, async () => PASS);
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome, { kind: "passed", checksRun: [] });
+  });
+});
+
+Deno.test("a dirty file over the size limit blocks, naming it (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    const file = await Deno.open(`${repo}/huge.bin`, {
+      write: true,
+      create: true,
+    });
+    await file.truncate(MAX_FINGERPRINT_BYTES + 1);
+    file.close();
+    const { deps, calls } = depsFor(root, async () => PASS);
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome.kind, "blocked");
+    assertStringIncludes((outcome as { message: string }).message, "huge.bin");
+    assertEquals(calls.length, 0);
+  });
+});
+
+Deno.test("hashing stops at the byte limit even when the file grew after its size was read (#4930)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "tree-gate-hash-4930-" });
+  try {
+    await Deno.writeTextFile(`${dir}/f`, "0123456789");
+    assertEquals(
+      (await hashFile(`${dir}/f`, "f", 10)).length,
+      64,
+    );
+    let message = "";
+    try {
+      await hashFile(`${dir}/f`, "f", 9);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    assertStringIncludes(message, "f is larger than the 9-byte limit");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a tracked directory replaced by a symlink out of the clone blocks without reading through it (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await commitFiles(repo, { "sub/f": "tracked\n" });
+    const outside = await Deno.makeTempDir({
+      prefix: "tree-gate-outside-4930-",
+    });
+    try {
+      await Deno.writeTextFile(`${outside}/f`, "outside the clone\n");
+      await Deno.remove(`${repo}/sub`, { recursive: true });
+      await Deno.symlink(outside, `${repo}/sub`);
+      const { deps, calls } = depsFor(root, async () => PASS);
+
+      const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+      assertEquals(outcome.kind, "blocked");
+      assertStringIncludes(
+        (outcome as { message: string }).message,
+        "sub/f resolves outside the clone",
+      );
+      assertEquals(calls.length, 0);
+    } finally {
+      await Deno.remove(outside, { recursive: true });
+    }
   });
 });
 

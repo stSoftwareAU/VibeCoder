@@ -426,8 +426,16 @@ commit (the gate names it beside the head, so the merge-base is the base tip),
 not the PR's old fork point. A failing unit test that also fails the same way at
 the merge-base with the PR base is a warning, as in the other repair pushes.
 Without `--base-branch`, which the host passes from the PR's base branch, the
-gate has no baseline and a failing test blocks. A check that cannot run, such as a missing
-tool or a module-fetch outage, is an infrastructure fault, not a pass. The
+gate has no baseline and a failing test blocks. A check that cannot run is never a pass, and
+the kind of failure decides what it costs. A module-fetch outage, a missing
+ShellCheck and a missing or unusable cargo toolchain are infrastructure faults:
+no repair attempt is spent and the repair is retried after a backoff. A
+markdownlint binary that is not found blocks like a failed check, so it spends
+an attempt. A dirty file the gate cannot compare also blocks: one over the
+64 MiB limit, or one whose parent directory leads out of the clone. A status
+path that is a directory (a submodule pointer or a nested repository), is
+missing, or sits under a file where a directory was is recorded by its kind, not
+refused. The
 container's `.git` is mounted read-only, so the baseline is not a git worktree
 of the clone: it is a fresh repository in a temporary directory under the
 container's temp dir that borrows the clone's objects (`objects/info/alternates`

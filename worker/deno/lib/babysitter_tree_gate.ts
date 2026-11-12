@@ -21,6 +21,8 @@
  * Uses Australian English spelling (behaviour, neutralise, etc.)
  */
 
+import { createHash } from "node:crypto";
+
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
 import {
   defaultPrePushGit,
@@ -417,37 +419,114 @@ interface TreeSnapshot {
 }
 
 /**
+ * A dirty path the gate cannot fingerprint safely (a file over the size cap, or
+ * a path whose real location leaves the clone). That is a verdict on the tree,
+ * not an outage, so it is `blocked`: the attempt is counted and the repair cap
+ * and the human hand-off are reachable (Issue #4930).
+ */
+class TreeInspectionError extends Error {}
+
+/** Largest dirty file the gate will hash; a bigger one blocks, naming it. */
+export const MAX_FINGERPRINT_BYTES = 64 * 1024 * 1024;
+
+const HASH_CHUNK_BYTES = 64 * 1024;
+
+/** Whether `error` says a path, or a parent of it, is not there. */
+function isMissingError(error: unknown): boolean {
+  return error instanceof Deno.errors.NotFound ||
+    error instanceof Deno.errors.NotADirectory;
+}
+
+/** SHA-256 of a file, streamed, refusing a file that passes `limit` bytes. */
+export async function hashFile(
+  name: string,
+  path: string,
+  limit: number,
+): Promise<string> {
+  const hash = createHash("sha256");
+  const file = await Deno.open(name, { read: true });
+  try {
+    const chunk = new Uint8Array(HASH_CHUNK_BYTES);
+    let total = 0;
+    for (;;) {
+      const read = await file.read(chunk);
+      if (read === null) break;
+      total += read;
+      if (total > limit) {
+        throw new TreeInspectionError(
+          `${path} is larger than the ${limit}-byte limit the gate can compare`,
+        );
+      }
+      hash.update(chunk.subarray(0, read));
+    }
+  } finally {
+    file.close();
+  }
+  return hash.digest("hex");
+}
+
+/**
  * Fingerprint the bytes and type/mode of a path, not its mtime (which can change
  * without a content change). Preserve symlink targets without following them.
- * A deleted file is a legitimate part of a repair; an unreadable or unsupported
- * path instead fails closed as infrastructure, never a successful gate.
+ * A deleted path is a legitimate part of a repair, and so is one that is now a
+ * directory (a submodule or a nested repository) or sits under a file where a
+ * directory was: each is recorded by its kind. A path whose parent leads out of
+ * the clone, or a file over the size cap, is a {@link TreeInspectionError}; any
+ * other unreadable path fails closed as infrastructure, never a pass.
  */
-async function fingerprintPath(dir: string, path: string): Promise<string> {
+async function fingerprintPath(
+  dir: string,
+  realDir: string,
+  path: string,
+): Promise<string> {
   if (
     path.startsWith("/") ||
     path.split("/").some((component) => component === ".." || component === ".")
   ) {
     throw new Error(`unsafe git status path: ${path}`);
   }
-  const name = `${dir}/${path}`;
+  const trimmed = path.replace(/\/+$/, "");
+  const cut = trimmed.lastIndexOf("/");
+  if (cut !== -1) {
+    // lstat does not follow the final component but does follow a parent, so
+    // a directory swapped for a symlink must not lead the read outside.
+    let parent: string;
+    try {
+      parent = await Deno.realPath(`${dir}/${trimmed.slice(0, cut)}`);
+    } catch (error) {
+      if (isMissingError(error)) return "missing";
+      throw error;
+    }
+    if (parent !== realDir && !parent.startsWith(`${realDir}/`)) {
+      throw new TreeInspectionError(
+        `${path} resolves outside the clone, so the gate cannot compare it`,
+      );
+    }
+  }
+  const name = `${dir}/${trimmed}`;
   let info: Deno.FileInfo;
   try {
     info = await Deno.lstat(name);
   } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return "missing";
+    if (isMissingError(error)) return "missing";
     throw error;
   }
   if (info.isSymlink) {
     return `symlink:${info.mode}:${await Deno.readLink(name)}`;
   }
-  if (!info.isFile) {
-    throw new Error(`cannot fingerprint non-file git status path: ${path}`);
+  // A gitlink's commit is held by the index snapshot; a directory has no bytes.
+  if (info.isDirectory) return "directory";
+  if (!info.isFile) return `special:${info.mode}`;
+  if (info.size > MAX_FINGERPRINT_BYTES) {
+    throw new TreeInspectionError(
+      `${path} is larger than the ${MAX_FINGERPRINT_BYTES}-byte limit the gate can compare`,
+    );
   }
-  const bytes = await Deno.readFile(name);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-  return `file:${info.mode}:${hash}`;
+  return `file:${info.mode}:${await hashFile(
+    name,
+    path,
+    MAX_FINGERPRINT_BYTES,
+  )}`;
 }
 
 /** Capture both unstaged bytes and staged object IDs without writing to .git. */
@@ -474,8 +553,9 @@ async function snapshotTree(
     );
   }
   const content = new Map<string, string>();
+  const realDir = await Deno.realPath(dir);
   for (const path of parsed.paths) {
-    content.set(path, await fingerprintPath(dir, path));
+    content.set(path, await fingerprintPath(dir, realDir, path));
   }
   return { states: parsed.states, content, index: index.stdout };
 }
@@ -621,7 +701,9 @@ export async function runBabysitterTreeGate(
   try {
     outcome = await check();
   } catch (error) {
-    outcome = infrastructure(errorMessage(error));
+    outcome = error instanceof TreeInspectionError
+      ? { kind: "blocked", message: boundedMessage(error.message) }
+      : infrastructure(errorMessage(error));
   }
   if (root !== undefined) {
     try {

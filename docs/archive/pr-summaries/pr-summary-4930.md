@@ -88,8 +88,14 @@ flowchart LR
   (read-only `git ls-files --stage -z` with literal pathspecs); after them it
   snapshots again. Any difference blocks a passing verdict, so a check that
   overwrites an already-dirty file, or replaces a staged blob, cannot slip into
-  the host's `git add -A`. A dirty path that cannot be inspected, or an index
-  that cannot be read, is an `infrastructure` outcome (fail closed).
+  the host's `git add -A`. A path that is a directory (a submodule pointer or a
+  nested repository) is recorded by its kind, and a path that is missing or sits
+  under a file where a directory was counts as missing, so those legitimate tree
+  shapes are not outages. A file is hashed through a stream with a 64 MiB cap
+  and a path whose parent resolves outside the clone is refused; both are
+  `blocked` (naming the path), so the attempt is counted and the repair cap is
+  reachable. Any other dirty path that cannot be inspected, or an index that
+  cannot be read, is an `infrastructure` outcome (fail closed).
 - Withholding the READY line, not failing the container, is the verdict channel:
   the host already refuses a response without it and quotes the response.
   `isBabysitterReady` (`lib/babysitter_ready.ts`) is now the one rule for both
@@ -115,7 +121,8 @@ Backend-only; no UI files. Tests:
 clone fixture and the uncommitted-merge fixture). Docs:
 `docs/workflows/fleet-pr-babysitter.md` (repair flow, diagram step, new
 "Pre-push gate" paragraph, merge-in-progress and marker-neutralisation text,
-READY and missing-marker paragraphs, shift-left paragraph),
+READY and missing-marker paragraphs, shift-left paragraph; the "Pre-push gate"
+paragraph now says which unavailable checks are infrastructure and which block),
 `docs/CONFIGURATION.md` (push-guarantee paragraph; the cargo-deny and ShellCheck
 items no longer say babysitter repairs are unchecked). Ledger:
 `docs/audits/lib-sweep-coverage/top-up-4930.json` claims the two new modules
@@ -178,7 +185,7 @@ container runs the unit tests and markdownlint after the agent.
 ## Test Plan
 
 - `cd worker/deno && deno task test:unit tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts tests/babysitter_ready_test.ts tests/fleet_babysitter_container_4738_test.ts tests/babysitter_fix_orchestration_test.ts tests/fleet_pr_babysitter_test.ts`:
-  all 349 tests across the six files passed on this head, with the repository's
+  all 356 tests across the six files passed on this head, with the repository's
   locked dependencies.
 - `deno fmt --check`, `deno lint` and `deno check` of the changed source and
   test files passed on the working tree, and `deno fmt` was applied to this
@@ -259,6 +266,19 @@ container runs the unit tests and markdownlint after the agent.
   `same-path untracked edits made by passing checks block the push (#4930)`,
   `same-path tracked edits made by passing checks block the push (#4930)`,
   `a changed staged blob is blocked even with identical status and worktree bytes (#4930)`);
+  tree shapes and bounds: a file swapped for a directory, a directory swapped
+  for a file and a submodule pointer with a nested repository all pass a clean
+  check; a check rewriting the file at a swapped path still blocks; a dirty file
+  over the size limit blocks naming it; hashing stops at the byte limit; a
+  tracked directory replaced by a symlink out of the clone blocks without being
+  read
+  (`a file replaced by a directory at the same path is not an outage and a clean check passes (#4930)`,
+  `a directory replaced by a file at the same path is not an outage (#4930)`,
+  `a check that rewrites the file now at a swapped path still blocks (#4930)`,
+  `a submodule pointer in the tree and a nested repository are not an outage (#4930)`,
+  `a dirty file over the size limit blocks, naming it (#4930)`,
+  `hashing stops at the byte limit even when the file grew after its size was read (#4930)`,
+  `a tracked directory replaced by a symlink out of the clone blocks without reading through it (#4930)`);
   `withholdReady`; the command withholds READY on blocked, infrastructure and a
   throw, leaves passed/clean unchanged, never calls the gate for a not-ready
   response, forwards and validates `--base-branch`; container argv gains
