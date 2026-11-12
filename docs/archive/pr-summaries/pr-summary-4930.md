@@ -276,3 +276,9 @@ container runs the unit tests and markdownlint after the agent.
   it.
 - Skipped / not checked: a real container run; the sweep-drift baseline move
   noted above.
+
+## Latest review repair and validation
+
+- The follow-up repair at `4f27ecedfaa4e521ba1846858cb56a85152024cc` updated `babysitter_tree_gate_test.ts` following the checkout-semantics review: tests now exercise a real temporary Git baseline rather than relying only on archive extraction or a faked test runner. The temporary checkout has Git metadata while the mounted source `.git` remains untouched.
+- On that commit, Dependency Review and Cargo Audit completed successfully. The Quality workflow's general `validate-scripts / validate` job failed solely at the PR-summary freshness check because the regression-test edit was committed after this summary. This summary update repairs that ordering; the new head's CI results must be checked separately. The other Quality jobs were still running when that failure was inspected.
+- Real deployed-container validation is still outstanding, so this change does not close issue #4930.
