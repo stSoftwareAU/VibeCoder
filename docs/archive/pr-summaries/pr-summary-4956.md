@@ -255,6 +255,10 @@ the evidence obtained since that review.
 - `deno task pr-summary-check --base origin/main`: zero gates blocked and zero
   not checked. This validates summary structure, not a fresh review.
 
+- Completion `runPrePushGate()` against `origin/main`: passed. Its selected
+  unit-test command, changed-file format/lint checks and ShellCheck passed;
+  the previously reproduced unit-budget failure did not recur.
+
 ## Deno regression avoided
 
 The audited adapter and contract tests use Deno; no Node tooling or dependency
