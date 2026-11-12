@@ -1,0 +1,12 @@
+{
+  "issue": 4956,
+  "chunk": "top-up-4956",
+  "title": "top-up: TokenEconomizer plugin launch decision and stop record",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4956",
+  "definition": "Decide whether a Claude implementation, PR-feedback or CI-fix run loads the vendored TokenEconomizer plugin and with which environment, failing open for the run and closed for the plugin, and keep the durable stop record that switches the plugin off.",
+  "status": "claimed",
+  "sweptAt": "918d8f3e3eee221bc971287ae0364adfad50549c",
+  "paths": [
+    "worker/deno/lib/token_economizer_plugin.ts"
+  ]
+}
