@@ -495,7 +495,7 @@ export async function repoShellcheckPolicy(
       runSteps,
     );
     if (!delegated.ok) return delegated;
-    if (delegated.value) {
+    if (delegated.value !== null) {
       return {
         ok: false,
         error:
@@ -551,11 +551,7 @@ export async function repoShellcheckPolicy(
     }
     const version = uniqueVersions[0]!;
     for (const command of commands) {
-      const match =
-        /^find\s+\.\s+-name\s+["']\*\.sh["']\s+-type\s+f\s+-exec\s+shellcheck(?:\s+(.+?))?\s+\{\}\s+\+$/
-          .exec(
-            command,
-          );
+      const match = SUPPORTED_SHELLCHECK_COMMAND.exec(command);
       if (!match) {
         return {
           ok: false,
@@ -669,11 +665,88 @@ export async function repoShellcheckPolicy(
   };
 }
 
+/**
+ * The workflow command that delegates ShellCheck to a repository script —
+ * directly or through scripts it calls — or null when none does (Issue #5046).
+ */
+/** A workflow `run:` step that runs ShellCheck in a shape the gate can't model. */
+export interface ShellcheckDelegation {
+  workflow: string;
+  /** The step's `run:` body, run as GitHub runs it. */
+  step: string;
+}
+
+/** The one ShellCheck command shape the gate turns into its own policy. */
+const SUPPORTED_SHELLCHECK_COMMAND =
+  /^find\s+\.\s+-name\s+["']\*\.sh["']\s+-type\s+f\s+-exec\s+shellcheck(?:\s+(.+?))?\s+\{\}\s+\+$/;
+
+/**
+ * Every tracked workflow step that runs ShellCheck through a repository
+ * script, or inline in a shape other than the supported `find … -exec
+ * shellcheck` (Issue #5046). The gate runs these steps as CI does rather than
+ * refusing the push: the step — its script, baseline, exclusions and file
+ * set — is the policy, and it cannot be rebuilt from outside.
+ */
+export async function shellcheckDelegations(
+  repoRoot: string,
+  tracked: readonly string[],
+): Promise<Result<ShellcheckDelegation[], string>> {
+  const delegations: ShellcheckDelegation[] = [];
+  for (const path of tracked) {
+    if (!path.startsWith(".github/workflows/") || !/\.ya?ml$/.test(path)) {
+      continue;
+    }
+    let text: string;
+    try {
+      const info = await shellcheckFileInfo(repoRoot, path);
+      if (info === null) continue;
+      text = await readBoundedPolicyFile(repoRoot, path, info);
+    } catch (error) {
+      return {
+        ok: false,
+        error: `cannot read tracked workflow ${path}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      };
+    }
+    const bodies = workflowRunStepBodies(text);
+    if (!bodies.ok) return bodies;
+    for (const step of bodies.value) {
+      const inline = executableShellCommands(step).filter(
+        isShellcheckInvocation,
+      );
+      let delegates = inline.some((command) =>
+        !SUPPORTED_SHELLCHECK_COMMAND.test(command)
+      );
+      if (!delegates) {
+        const viaScript = await workflowDelegatesToShellcheck(
+          repoRoot,
+          tracked,
+          [step],
+        );
+        if (!viaScript.ok) return viaScript;
+        delegates = viaScript.value !== null;
+      }
+      if (!delegates) continue;
+      if (step.includes("${{")) {
+        return {
+          ok: false,
+          error:
+            `repository CI runs ShellCheck in workflow ${path} through a step ` +
+            "that uses workflow expressions, which the gate cannot run locally",
+        };
+      }
+      delegations.push({ workflow: path, step });
+    }
+  }
+  return { ok: true, value: delegations };
+}
+
 async function workflowDelegatesToShellcheck(
   repoRoot: string,
   tracked: readonly string[],
   runSteps: readonly string[],
-): Promise<Result<boolean, string>> {
+): Promise<Result<string | null, string>> {
   const scriptCalls = (body: string): string[] =>
     executableShellCommands(body)
       .map((line) => {
@@ -691,8 +764,26 @@ async function workflowDelegatesToShellcheck(
         path.endsWith(".sh") &&
         isRepoRelativeShellcheckConfig(path) && tracked.includes(path)
       );
-  const pending = new Set(runSteps.flatMap(scriptCalls));
+  for (const command of runSteps.flatMap(executableShellCommands)) {
+    const entries = scriptCalls(command);
+    if (entries.length === 0) continue;
+    const reached = await scriptsReachShellcheck(
+      repoRoot,
+      entries,
+      scriptCalls,
+    );
+    if (!reached.ok) return reached;
+    if (reached.value) return { ok: true, value: command };
+  }
+  return { ok: true, value: null };
+}
 
+async function scriptsReachShellcheck(
+  repoRoot: string,
+  entries: readonly string[],
+  scriptCalls: (body: string) => string[],
+): Promise<Result<boolean, string>> {
+  const pending = new Set(entries);
   const inspected = new Set<string>();
   while (pending.size > 0) {
     const path = pending.values().next().value as string;
@@ -722,12 +813,29 @@ async function workflowDelegatesToShellcheck(
 
 function isShellcheckInvocation(line: string): boolean {
   const tokens = tokeniseCommand(line);
-  const commandOption = tokens.findIndex((token, i) =>
-    i > 0 && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)
+  const wrappers = [
+    "xargs",
+    "parallel",
+    "do",
+    "time",
+    "exec",
+    "nice",
+    "timeout",
+  ];
+  const wrapped = wrappers.includes(tokens[0] ?? "");
+  // `bash -c '…'`, directly or under a wrapper such as `xargs -0 bash -c '…'`
+  // (Issue #5046): the quoted body is a script of its own.
+  const shellAt = tokens.findIndex((token, i) =>
+    (i === 0 || wrapped) &&
+    ["bash", "sh"].includes(token.split("/").at(-1) ?? "")
   );
-  const shellCommand =
-    ["bash", "sh"].includes(tokens[0]?.split("/").at(-1) ?? "") &&
-    commandOption > 0 && tokens[commandOption + 1] !== undefined &&
+  const commandOption = shellAt < 0
+    ? -1
+    : tokens.findIndex((token, i) =>
+      i > shellAt && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(token)
+    );
+  const shellCommand = commandOption > 0 &&
+    tokens[commandOption + 1] !== undefined &&
     executableShellCommands(tokens[commandOption + 1]!).some(
       isShellcheckInvocation,
     );
@@ -735,34 +843,17 @@ function isShellcheckInvocation(line: string): boolean {
     tokens.some((token) =>
       /(?:^|\/)koalaman\/shellcheck(?::[^\s@]+)?(?:@[^\s]+)?$/.test(token)
     );
-  const indirect = ![
-    "echo",
-    "printf",
-    "apt",
-    "apt-get",
-    "brew",
-    "curl",
-    "wget",
-    "tar",
-    "mv",
-    "cp",
-    "chmod",
-    "install",
-  ]
-    .includes(tokens[0] ?? "") &&
-    tokens.slice(1).some((token, index, rest) =>
-      (token.split("/").at(-1)?.includes("shellcheck") ?? false) &&
-      rest[index + 1] !== "--version"
-    );
-  const wrapped = ["xargs", "parallel", "do", "time", "exec", "nice", "timeout"]
-    .includes(tokens[0] ?? "") &&
+  // Only an executed `shellcheck` counts. A later argument that merely names
+  // it — `command -v shellcheck`, `grep shellcheck`, a harness's label — is
+  // not CI running ShellCheck over the repository (Issue #5046).
+  const wrappedShellcheck = wrapped &&
     tokens.slice(1).some((token, index, rest) =>
       token.split("/").at(-1) === "shellcheck" &&
       rest[index + 1] !== "--version"
     );
   return ((tokens[0]?.split("/").at(-1)?.includes("shellcheck") ?? false) &&
     tokens[1] !== "--version") ||
-    wrapped || shellCommand || dockerImage || indirect ||
+    wrappedShellcheck || shellCommand || dockerImage ||
     (tokens[0] === "find" &&
       tokens.some((t, i) => t === "-exec" && tokens[i + 1] === "shellcheck"));
 }
@@ -771,7 +862,22 @@ function isShellcheckInvocation(line: string): boolean {
 function executableShellCommands(body: string): string[] {
   const commands: string[] = [];
   let inArray = false;
-  for (const line of body.replace(/\\\r?\n\s*/g, " ").split("\n")) {
+  // A `case` arm's pattern (`shellcheck)`, `*.sh | .shellcheckrc)`) is data,
+  // not a command; only what follows the `)` runs (Issue #5046).
+  let caseDepth = 0;
+  for (let line of body.replace(/\\\r?\n\s*/g, " ").split("\n")) {
+    if (/^\s*esac\b/.test(line)) {
+      caseDepth = Math.max(0, caseDepth - 1);
+      continue;
+    }
+    if (caseDepth > 0) {
+      const arm = /^\s*\(?([^()]*)\)(.*)$/.exec(line);
+      if (arm) line = arm[2]!;
+    }
+    if (/^\s*case\s.*\sin\s*(?:#.*)?$/.test(line)) {
+      caseDepth++;
+      continue;
+    }
     if (inArray) {
       if (/^\s*\)/.test(line)) inArray = false;
       continue;
@@ -2048,11 +2154,61 @@ export async function runAffectedShellcheckChecks(opts: {
     ]);
     if (!policy.ok || policy.value !== null) shellcheckWorkflowChanged = true;
   }
-  if (!shellcheckPolicy.ok) {
+  const delegations = await shellcheckDelegations(opts.cwd, opts.tracked);
+  if (delegations.ok && delegations.value.length > 0) {
+    // Issue #5046: CI runs ShellCheck through the repository's own script,
+    // so run that script here exactly as CI does. A finding fails the push
+    // as a lint failure; only a missing ShellCheck is infrastructure.
+    let touched: boolean;
+    try {
+      touched = shellcheckWorkflowChanged ||
+        await touchesShellcheckSurface(opts.cwd, opts.changed);
+    } catch (error) {
+      return infrastructureFail(
+        `cannot inspect changed ShellCheck file: ${error}`,
+      );
+    }
+    if (!touched) return { ok: true, value: { checksRun: [] } };
+    const find = opts.findShellcheck ??
+      ((_root: string) => findShellcheckBinary(Deno.env.get("PATH") ?? ""));
+    if (!await find(opts.cwd)) {
+      return infrastructureFail(
+        "ShellCheck is required by repository CI but could not be found",
+      );
+    }
+    const checksRun: string[] = [];
+    const seenSteps = new Set<string>();
+    for (const { workflow, step } of delegations.value) {
+      if (seenSteps.has(step)) continue;
+      seenSteps.add(step);
+      // Written outside the checkout and run as GitHub runs a `run:` step.
+      const script = await Deno.makeTempFile({ suffix: ".sh" });
+      try {
+        await Deno.writeTextFile(script, `${step}\n`);
+        const command = `bash --noprofile --norc -eo pipefail ${script}`;
+        const result = await runPreFlightGate([command], {
+          cwd: opts.cwd,
+          runner: opts.runner,
+          timeoutSeconds: opts.timeoutSeconds,
+        });
+        if (!result.ok) return result;
+      } finally {
+        await Deno.remove(script).catch(() => {});
+      }
+      checksRun.push(`ShellCheck step of ${workflow}`);
+    }
+    return { ok: true, value: { checksRun } };
+  }
+  if (!shellcheckPolicy.ok || !delegations.ok) {
+    const error = !delegations.ok
+      ? delegations.error
+      : !shellcheckPolicy.ok
+      ? shellcheckPolicy.error
+      : "";
     try {
       return await touchesShellcheckSurface(opts.cwd, opts.changed) ||
           shellcheckWorkflowChanged
-        ? infrastructureFail(shellcheckPolicy.error)
+        ? infrastructureFail(error)
         : { ok: true, value: { checksRun: [] } };
     } catch (error) {
       return infrastructureFail(

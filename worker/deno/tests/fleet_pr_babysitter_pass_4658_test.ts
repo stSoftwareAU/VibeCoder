@@ -253,7 +253,9 @@ Deno.test("pass journals the policy fingerprint, and a changed policy writes a f
     const base = buildDefaultWorkerConfig();
     await run(base);
     await run(base);
-    await run({ ...base, issueSubAgentTier: "sonnet" });
+    // Any non-default tier changes the policy; Sonnet is the default since
+    // Issue #5081, so the change is to Haiku.
+    await run({ ...base, issueSubAgentTier: "haiku" });
     const rows = await readPrDiscoveryEvents(
       `${root}/state/pr-discovery-events.jsonl`,
     );

@@ -936,6 +936,23 @@ Deno.test("runPrePrVerifier passes maxRetries to ask and caps the timeout at 180
   }
 });
 
+// Issue #5081: the pre-PR verifier is a code review, so with no host model
+// override it runs on the reviewer's model (Fable), not the issue manager's.
+Deno.test("runPrePrVerifier defaults to the Fable reviewer model when no model is pinned (Issue #5081)", async () => {
+  const f = await makeRepo();
+  try {
+    const seen: Array<string | undefined> = [];
+    const deps = makeDeps((options) => {
+      seen.push(options.model);
+      return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+    }, []);
+    await runPrePrVerifier(inputFor(f, { model: undefined }), deps);
+    assertEquals(seen, ["fable"]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 // ---- shared parser: every caller still parses what it used to -------------
 
 Deno.test("the fleet reviewer's parser and audit send-back survive the shared parser", () => {

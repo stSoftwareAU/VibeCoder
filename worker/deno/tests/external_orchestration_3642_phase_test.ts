@@ -234,7 +234,11 @@ Deno.test("automatic Codex issue phase keeps all roles on Codex without native s
       undefined,
     );
     assertEquals(observed.externalInput.settings.manager?.model, "gpt-6.1-sol");
-    assertEquals(observed.externalInput.settings.executor?.model, "gpt-6-luna");
+    // Owner policy #5081: 6.1 Sol manages and executes; Astra reviews.
+    assertEquals(
+      observed.externalInput.settings.executor?.model,
+      "gpt-6.1-sol",
+    );
     assertEquals(
       observed.externalInput.settings.reviewer?.model,
       "gpt-6-astra",

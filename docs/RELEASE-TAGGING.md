@@ -1,13 +1,15 @@
 # 🏷️ Release tagging
 
-Every merge to `main` is tagged with the next patch semver, automatically
+Every merge to `main` is tagged with the next semver, automatically
 (Issue #627). A host running in frozen mode pins to a released version, so
-without tags the only thing it could pin to is a raw commit SHA. A release that
-moves the series — a minor or a major — is minted from
-[the release floor](#the-release-floor) instead, and is written up in
-[Release notes](RELEASE-NOTES.md). What a released tag guarantees once it
-exists — an immutable release record, and a tag that cannot be deleted or moved
-— is [Release integrity](#release-integrity).
+without tags the only thing it could pin to is a raw commit SHA. **Which part of
+the version moves is decided by what the merge changed** — nothing is edited by
+hand to move the series: a release that removes configuration is a major, one
+that changes the container or adds configuration is a minor, and everything
+else is a patch ([How the bump is chosen](#how-the-bump-is-chosen)). A release
+that moves the major is written up in [Release notes](RELEASE-NOTES.md). What a
+released tag guarantees once it exists — an immutable release record, and a tag
+that cannot be deleted or moved — is [Release integrity](#release-integrity).
 
 ## What runs
 
@@ -18,88 +20,105 @@ the tag needs is scoped to the one job that creates it, and the tag is created
 through the API so the checkout persists no git credentials.
 
 The version decision itself lives in `.github/scripts/next-release-tag.sh`, so
-it is exercised by unit tests rather than only by a real merge:
+it is exercised by unit tests against real throwaway repositories rather than
+only by a real merge. It reads the full-history checkout (`fetch-depth: 0`) at
+the merge commit:
 
 ```bash
-git tag --list > all-tags.txt
-git tag --points-at "$GITHUB_SHA" > head-tags.txt
-.github/scripts/next-release-tag.sh all-tags.txt head-tags.txt .release-floor
+.github/scripts/next-release-tag.sh . "$GITHUB_SHA"
 # should_tag=true
-# tag=1.0.1
+# tag=1.5.0
+# bump=minor
 ```
 
 ```mermaid
 flowchart TD
-    M["Merge to main"] --> P["Plan: read every tag<br/>+ the tags on the commit"]
-    P --> A{"Commit already<br/>carries a release tag?"}
+    M["Merge to main"] --> A{"Commit already<br/>carries a release tag?"}
     A -- yes --> S["Skip the mint — reuse<br/>the tag already on the commit"]
     A -- no --> N{"Any release tag<br/>in the repository?"}
     N -- no --> F["Mint 1.0.0"]
-    N -- yes --> I["Increment the patch of<br/>the newest tag: 1.0.0 → 1.0.1"]
-    F --> B{".release-floor above<br/>that number?"}
-    I --> B
-    B -- no --> T["Create the tag at the merge commit"]
-    B -- yes --> R["Mint the floor instead:<br/>1.0.72 → 1.2.0"]
-    R --> T
+    N -- yes --> C["Compare the merge with the newest<br/>release tag (from their merge base)"]
+    C --> R{"A release-contract<br/>line removed?"}
+    R -- yes --> MJ["Major: 1.4.7 → 2.0.0"]
+    R -- no --> G{"Contract grew, or<br/>container/ changed?"}
+    G -- yes --> MN["Minor: 1.4.7 → 1.5.0"]
+    G -- no --> P["Patch: 1.4.7 → 1.4.8"]
+    F --> T["Create the tag at the merge commit"]
+    MJ --> T
+    MN --> T
+    P --> T
     T --> V["Publish tool-versions.json<br/>on the release for that tag"]
     S --> V
 ```
 
+## How the bump is chosen
+
+The script compares the merge commit with the newest release tag, from the
+**merge base** of the two (so an out-of-order re-run never counts a change its
+own commit does not contain). The highest category wins, once — three merges'
+worth of change since the last release still make one release:
+
+| Bump      | When                                                                                                               | Example           |
+| --------- | ------------------------------------------------------------------------------------------------------------------ | ----------------- |
+| **major** | a line of [the release contract](#the-release-contract) is **gone**: a configuration key removed or renamed, or the callback schema version moved | `1.4.7` → `2.0.0` |
+| **minor** | the release contract only **grew** (a new configuration key), or the **container definition** changed — any path under `container/` | `1.4.7` → `1.5.0` |
+| **patch** | anything else                                                                                                      | `1.4.7` → `1.4.8` |
+
+- **A version number is compatibility, not a changelog.** A major means an
+  operator's `.config.json` or post-run hook written for the last release may
+  no longer mean the same thing; a minor means it still loads unchanged but the
+  image the host runs, or the settings on offer, are different. An addition is
+  never a major (see [Coding Standards](../CODING-STANDARDS.md)).
+- **No hand-edited input.** The release floor file that once moved the series
+  by hand (Issue #808) is gone: the Vibe Coder runs unattended, and a version
+  that waits for a person to remember a bump is a version that is wrong.
+
+### The release contract
+
+`docs/audits/release-contract.txt` lists the operator-facing surface whose
+removal breaks an existing host, one entry per line:
+
+```text
+callback-schema 2
+config agent_provider
+config codegraph_context.enabled
+config repos
+```
+
+- `config <key>` — every top-level key the config loader accepts
+  (`KNOWN_CONFIG_KEYS`), and `config <block>.<key>` for the fixed-vocabulary
+  blocks (`knownNestedConfigKeys()`).
+- `callback-schema <n>` — the post-run callback schema version
+  (`CALLBACK_SCHEMA_VERSION`). Moving it removes the old line, so it is a major
+  — the fleet-wide breaking change [Callbacks](CALLBACKS.md) describes.
+
+The file is **generated from that code** by `deno task release-contract` (in
+`worker/deno/`), and `worker/deno/tests/release_contract_test.ts` fails when
+the committed copy no longer matches — so every change to the surface lands
+with a reviewable diff of the record, and the tagger reads only the committed
+file (tagging needs no Deno). `#` lines are comments and never count.
+
+- **A last release with no record is a major.** It cannot show its
+  configuration is compatible. That is the release that introduced the record:
+  `1.10.x` → `2.0.0`, after which every release compares record to record.
+- **A merge with no record fails the step.** The bump cannot be decided, and
+  guessing a patch is the exact mistake the classification exists to prevent.
+
 ## The rules
 
-- **Patch only, unless the floor says otherwise.** The newest release tag
-  decides the major and minor; a human moves the series by editing
-  [`.release-floor`](#the-release-floor), and the next merge continues from
-  there (`1.2.0` → `1.2.1`).
 - **First tag is `1.0.0`.** A repository with no release tag yet starts there.
 - **Numeric, not lexical.** `1.0.10` is newer than `1.0.9`.
 - **A release tag is a bare `MAJOR.MINOR.PATCH` triple**, optionally
   `v`-prefixed. Pre-releases (`1.0.0-rc1`), build metadata and moving names
   (`latest`) are ignored, and minted tags are always bare.
 - **Idempotent.** A commit that already carries a release tag is never tagged
-  again, so a re-run is a no-op.
+  again, so a re-run is a no-op (`bump=none`).
 - **Serialised.** The `concurrency` group never cancels: two merges landing
   together are tagged one after the other, so the second run sees the first
   run's tag instead of racing for the same number.
 - **Never blocks a merge.** The merge has already landed by the time this runs.
   A failed tag shows as a red run on the workflow and a missing tag on the
   commit — nothing downstream waits on it.
-
-## The release floor
-
-Only the patch number is automated, so a release that changes a contract —
-where semver asks for a minor or a major — needs a way to say so that the
-automation will honour. That is `.release-floor` at the repository root: **one
-line, one version**, `#` comments and blank lines ignored.
-
-```text
-# 1.2.0 releases the callback extension point and the removal of the
-# fleet_health_dir / fleet_health_repo configuration keys.
-1.2.0
-```
-
-The workflow passes the file to the same script that does the increment, and
-the minted tag is the **higher** of the floor and the automatic patch number:
-
-| Newest release | Floor   | Minted  | Why                                     |
-| -------------- | ------- | ------- | --------------------------------------- |
-| `1.0.71`       | `1.2.0` | `1.2.0` | the floor is above the patch (`1.0.72`) |
-| `1.2.0`        | `1.2.0` | `1.2.1` | the patch is already above the floor    |
-| `1.2.4`        | `1.2.0` | `1.2.5` | a floor below the series does nothing   |
-| _(none)_       | `1.2.0` | `1.2.0` | the floor decides the first tag too     |
-
-- **It raises, it never holds.** The floor cannot lower a version or re-mint
-  one, so it is inert the moment the release it names exists and the file can
-  be left in place until the next series move.
-- **It never re-tags.** A commit that already carries a release tag is still
-  left alone — idempotency comes first, floor or no floor.
-- **A malformed or ambiguous floor fails the step.** A version that is not a
-  bare triple, or two versions in the file, exits non-zero and mints nothing:
-  silently ignoring a typo would ship the release under the automatic patch
-  number, which is the exact mistake the floor exists to prevent. A file with
-  no version line at all is simply no floor.
-- **Editing it is the release decision.** The version, and the reason for it,
-  belong in the same commit as the entry in [Release notes](RELEASE-NOTES.md).
 
 ## The tool-version manifest
 
@@ -298,10 +317,10 @@ it.
 **What it deliberately does not block:**
 
 - **Creating a new tag.** There is **no `creation` rule**, so
-  `release-tag.yml` keeps minting the next patch on every merge to `main`, and
-  a series-moving release — the `1.2.0` a raised
-  [release floor](#the-release-floor) mints, or a tag pushed by hand — is
-  still accepted (Issue #808). Only *existing* tags are frozen.
+  `release-tag.yml` keeps minting the next release on every merge to `main` —
+  a major or minor [chosen from the change](#how-the-bump-is-chosen) as readily
+  as a patch — and a tag pushed by hand is still accepted. Only *existing*
+  tags are frozen.
 
 **What it covers.** The ref condition includes bare and `v`-prefixed
 `MAJOR.MINOR.PATCH` tags and excludes pre-releases (`*-*`) and build metadata
@@ -415,8 +434,11 @@ flowchart LR
 
 ## When a run goes red
 
-The step output names the newest tag it found and the tag it tried to mint. The
-usual causes are a tag that appeared between the plan and the create (re-run the
+The step output names the newest tag it found, the bump it chose and why (the
+contract entries removed or added, or the container paths changed), and the tag
+it tried to mint. A merge without `docs/audits/release-contract.txt` fails the
+plan: regenerate it with `deno task release-contract`. The other usual causes
+are a tag that appeared between the plan and the create (re-run the
 workflow — the second attempt sees it and either skips or mints the next
 number), and a token without `contents: write` (check the job-level
 `permissions:` block).
@@ -429,9 +451,14 @@ same commit publishes the manifest against that tag once the tool resolves.
 ## Tests
 
 - `worker/deno/tests/next_release_tag_test.ts` — the version selection and
-  increment logic, over tag lists, including the release floor: the merge that
-  mints it, the merges after it, and the malformed and ambiguous floors that
-  fail the step.
+  bump classification, over real throwaway repositories: the patch, the
+  container and added-key minors, the removed-key, renamed-key and
+  callback-schema majors, highest-category-wins, the merge-base comparison, the
+  record-less last release (the 2.0.0 transition), and the inputs that fail the
+  step.
+- `worker/deno/tests/release_contract_test.ts` — the committed release contract
+  against the code it is generated from: every accepted config key, every
+  fixed-vocabulary nested key and the callback schema version.
 - `worker/deno/tests/release_tag_ruleset_test.ts` — the checked-in tag-ruleset
   payload: deletion, update and non-fast-forward blocked, no creation rule,
   active enforcement, no bypass actors, and the ref condition evaluated against
@@ -449,7 +476,8 @@ same commit publishes the manifest against that tag once the tool resolves.
   cross-link resolves.
 - `worker/deno/tests/release_tag_workflow_test.ts` — the workflow structure
   (trigger, permissions, concurrency, SHA-pinned credential-free checkout, the
-  floor passed to the plan, the release-notes link, the tag-before-publish
+  plan reading the checkout at the merge commit with no hand-edited input, the
+  release-notes link, the tag-before-publish
   order and the idempotent manifest publish) and the plumbing between real
   `git tag` output and the script.
 - `worker/deno/tests/release_manifest_test.ts` — the manifest shape: the

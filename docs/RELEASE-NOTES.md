@@ -1,6 +1,9 @@
 # 📣 Release notes
 
-Every merge to `main` is tagged with the next patch semver automatically, and a
+Every merge to `main` is tagged with the next semver automatically, and which
+part moves is [chosen from the change](RELEASE-TAGGING.md#how-the-bump-is-chosen):
+a removed configuration key or a moved callback schema is a major, a new
+configuration key or a container change is a minor, anything else a patch. A
 patch carries nothing an operator has to read: the code moved, the
 [`tool-versions.json` manifest](RELEASE-TAGGING.md#the-tool-version-manifest)
 says what it was cut against, and a frozen host upgrades onto it with
@@ -8,11 +11,54 @@ says what it was cut against, and a frozen host upgrades onto it with
 
 This page is for the other kind of release — one that **changes a contract an
 operator's configuration depends on**. Those releases are recorded here newest
-first, with the exact migration and the exact rollback. Most move the minor or
-the major and are minted from
-[the release floor](RELEASE-TAGGING.md#the-release-floor) rather than from the
-automatic increment; one landed on the automatic patch because the floor was
-not moved ahead of it, and it is recorded under the version it actually took.
+first, with the exact migration and the exact rollback. Every major belongs
+here. Before 2.0.0 the minor and major were moved by hand from a release floor
+file; one release landed on the automatic patch because the floor was not
+moved ahead of it, and it is recorded under the version it actually took.
+
+## 2.0.0 — the version is chosen from the change
+
+**The release series moves to 2.x, and from here every part of the version is
+automatic. This release itself removes no configuration key; read on if you
+pin hosts to a release series, and for the default changes that landed as
+1.10.x patches.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| `release-tag.yml` chooses the bump from what the merge changed since the newest release: a removed or renamed configuration key, or a moved callback schema version, is a **major**; a new configuration key or any change under `container/` is a **minor**; anything else is a **patch**. The `.release-floor` file that moved the series by hand is removed | this release |
+| The configuration and callback surface is recorded in [`docs/audits/release-contract.txt`](audits/release-contract.txt), generated from the config loader's accepted keys and `CALLBACK_SCHEMA_VERSION` by `deno task release-contract` and pinned to the code by test | this release |
+
+### Why a major
+
+The last 1.x release has no release contract to compare against, so it cannot
+show its configuration surface is compatible with this one. The tagger treats
+that as a major exactly once; every release after 2.0.0 compares record to
+record.
+
+It also ends a 1.10.x series of about 530 patch releases in which defaults an
+operator can see changed without the series moving, among them:
+
+- **#5087** — the owner model policy is the default: Fable plans and reviews,
+  Opus manages the `issue` phase, Sonnet executes (was Opus, Sonnet and Haiku),
+  and the container pins Claude Code 2.1.322.
+- **#5090** — with two or more subscription providers in `agent_providers` and
+  no `agent_provider_mode`, a host now runs `auto` provider selection rather
+  than `pinned`; under `auto`, `agent_provider` no longer affects the choice.
+
+### Migration
+
+**None for the tagging change.** A host pinned to a `1.10.x` tag stays there
+until it is moved; `./run.sh upgrade` moves it onto 2.0.0 like any release. To
+keep the provider behaviour from before #5090, set
+`"agent_provider_mode": "pinned"`.
+
+### Rollback
+
+Pin the host to the last `1.10.x` tag. For the model defaults, set the
+per-phase model variables (as in [1.9.0](#190--opus-55-replaces-fable-as-the-top-model-tier))
+to the models you want back.
 
 ## 1.10.0 — Haiku 5.5 becomes the `haiku` alias's served model
 

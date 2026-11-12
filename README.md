@@ -85,13 +85,14 @@ API-key and unknown-billing accounts are never selected:
 
 ```json
 {
-  "agent_provider_mode": "auto",
-  "agent_provider": "claude",
   "agent_providers": ["claude", "codex"]
 }
 ```
 
-In auto mode, `agent_provider` is the preference tie-break. An explicit
+Auto mode is the default whenever two or more subscription providers are
+enabled (Issue #5089); set `agent_provider_mode: "pinned"` to keep one
+provider. The provider with the most remaining quota wins; an exact tie is not
+broken, and `agent_provider` plays no part in the choice. An explicit
 per-invocation provider remains absolute, and `VIBE_AGENT_PROVIDER` can pin an
 enabled provider for that process. If every eligible subscription is exhausted
 or unavailable, the worker waits instead of falling through to metered usage.
@@ -519,7 +520,7 @@ flowchart LR
 | **[Cross-repo Fix](docs/CROSS-REPO-FIX.md)**                                   | Raising a PR in an internal `stSoftwareAU` dependency's own repo: the "can access" classification, PR plumbing, the agent→worker declaration bridge, and release-gating boundaries |
 | **[Issue Routing](docs/ISSUE-ROUTING.md)**                                    | Which repository an issue belongs in, the #2592 diagnostic exception, and the `route-issue` command: dry-run, `--resolve-duplicate` and `--part` |
 | **[Merge Enforcement](docs/MERGE.md)**                                         | Operator manual for the dual-layer pre-merge gate: required checks, defer-and-retry, read-only default branch                                          |
-| **[Release Tagging](docs/RELEASE-TAGGING.md)**                                 | How every merge to `main` is tagged with the next patch semver: the patch-only rule, the `.release-floor` that moves the series, idempotency, concurrency, and the `tool-versions.json` manifest each release ships |
+| **[Release Tagging](docs/RELEASE-TAGGING.md)**                                 | How every merge to `main` is tagged with the next semver: major, minor or patch chosen from the change (the release contract and `container/`), idempotency, concurrency, and the `tool-versions.json` manifest each release ships |
 | **[Release Notes](docs/RELEASE-NOTES.md)**                                     | Notes for the releases that change a configuration contract: what moved, the migration, the canary gate, and how to pin and roll back                  |
 | **[Human-authored PR Policy](docs/HUMAN-PR-POLICY.md)**                        | What the worker will and will not do to a PR it did not author: the two author lists, inviting it onto your PR, revoking, the blocked-issue nudge, and bot-authored PRs |
 | **[Add-repo Onboarding](docs/ADD-REPO.md)**                                    | Onboarding a new repository to the monitored set via an `add-repo:` issue: validation, label/branch-protection sync                                    |

@@ -1,13 +1,17 @@
 /**
- * The owner's role-model decision of 2026-10-22: Opus does the code reviews,
- * Sonnet manages, Haiku executes — and when the provider is Codex each role
- * maps to the similar OpenAI model from the account's catalogue:
+ * The owner's role-model policy of 2026-11-12 (Issue #5081, superseding the
+ * 2026-10-22 decision of #4142): code review and planning take the best model
+ * the subscriptions can afford, the actual work takes the daily drivers, and
+ * trivial work the cheapest — and when the provider is Codex each role maps
+ * to the similar OpenAI model from the account's catalogue:
  *
  * | Role     | Claude | Codex         |
  * | -------- | ------ | ------------- |
- * | reviewer | opus   | `gpt-6-astra` |
- * | manager  | sonnet | `gpt-6.1-sol` |
- * | executor | haiku  | `gpt-6-luna`  |
+ * | reviewer | fable  | `gpt-6-astra` |
+ * | planning | fable  | `gpt-6-astra` |
+ * | manager  | opus   | `gpt-6.1-sol` |
+ * | executor | sonnet | `gpt-6.1-sol` |
+ * | trivial  | haiku  | `gpt-6-luna`  |
  *
  * Asserted on every surface that picks a role's model: the in-run reviewer
  * sub-agents (at both executor tiers), the external orchestrator's role
@@ -31,11 +35,15 @@ import {
 import {
   CODEX_PHASE_MODEL_DEFAULTS,
   DEFAULT_CLAUDE_MODEL_ISSUE,
+  DEFAULT_CLAUDE_MODEL_PLANNING,
+  DEFAULT_CLAUDE_MODEL_SPELLING_FIX,
+  DEFAULT_CLAUDE_MODEL_TOP_TIER,
+  OPERATIONAL_DEFAULTS,
   PROVIDER_MODEL_TIERS,
 } from "../lib/config_defaults.ts";
 import { getContextWindowSize } from "../lib/context_budget.ts";
 
-Deno.test("role models - both in-run reviewers run on Opus at every executor tier", () => {
+Deno.test("role models - both in-run reviewers run on Fable at every executor tier", () => {
   for (const subAgentTier of ["sonnet", "haiku"] as const) {
     const agents = buildIssueRunAgents({
       executorSplit: true,
@@ -49,39 +57,46 @@ Deno.test("role models - both in-run reviewers run on Opus at every executor tie
       const reviewer = agents[name]!;
       assertEquals(
         reviewer.model,
-        "opus",
+        "fable",
         `${name} on the ${subAgentTier} tier`,
       );
       assertEquals(reviewer.effort, "medium", `${name} effort`);
       assert(
         !reviewer.prompt.includes(HAIKU_SUB_AGENT_GUIDANCE),
-        `${name} runs on Opus and must not carry the Haiku guidance`,
+        `${name} runs on Fable and must not carry the Haiku guidance`,
       );
     }
   }
 });
 
-Deno.test("role models - the manager is Sonnet and the default executor is Haiku", () => {
-  assertEquals(DEFAULT_CLAUDE_MODEL_ISSUE, "sonnet");
+Deno.test("role models - the manager is Opus and the default executor is Sonnet", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_ISSUE, "opus");
+  assertEquals(OPERATIONAL_DEFAULTS.issueSubAgentTier, "sonnet");
   const agents = buildIssueRunAgents({
     executorSplit: true,
     reviewerAgents: false,
-    subAgentTier: "haiku",
+    subAgentTier: OPERATIONAL_DEFAULTS.issueSubAgentTier,
   });
-  assertEquals(agents?.[ISSUE_EXECUTOR_AGENT_NAME]?.model, "haiku");
+  assertEquals(agents?.[ISSUE_EXECUTOR_AGENT_NAME]?.model, "sonnet");
 });
 
-Deno.test("role models - the orchestrator's reviewer defaults to its own Opus role, not the manager", () => {
+Deno.test("role models - planning-shaped phases take the Fable top tier, trivial ones Haiku", () => {
+  assertEquals(DEFAULT_CLAUDE_MODEL_TOP_TIER, "fable");
+  assertEquals(DEFAULT_CLAUDE_MODEL_PLANNING, "fable");
+  assertEquals(DEFAULT_CLAUDE_MODEL_SPELLING_FIX, "haiku");
+});
+
+Deno.test("role models - the orchestrator's reviewer defaults to its own Fable role, not the manager", () => {
   const roles = effectiveRoleSelections({});
   assertEquals(roles.manager, {
     provider: "claude",
-    model: "sonnet",
+    model: "opus",
     effort: "high",
   });
-  assertEquals(roles.executor.model, "haiku");
+  assertEquals(roles.executor.model, "sonnet");
   assertEquals(roles.reviewer, {
     provider: "claude",
-    model: "opus",
+    model: "fable",
     effort: "high",
   });
 });
@@ -94,7 +109,7 @@ Deno.test("role models - a role moved to Codex gets the mapped OpenAI model, not
   });
   assertEquals(roles.manager.provider, "codex");
   assertEquals(roles.manager.model, "gpt-6.1-sol");
-  assertEquals(roles.executor.model, "gpt-6-luna");
+  assertEquals(roles.executor.model, "gpt-6.1-sol");
   assertEquals(roles.reviewer.model, "gpt-6-astra");
   for (const role of Object.values(roles)) {
     assertEquals(role.effort, "high");
@@ -133,7 +148,7 @@ Deno.test("automatic issue orchestration follows the selected provider and retai
   assertEquals(codex.externalOrchestration, true);
   const roles = effectiveRoleSelections(codex.effectiveOrchestrationSettings);
   assertEquals(roles.manager.model, "gpt-6.1-sol");
-  assertEquals(roles.executor.model, "gpt-6-luna");
+  assertEquals(roles.executor.model, "gpt-6.1-sol");
   assertEquals(roles.reviewer.model, "gpt-6-astra");
   assert(Object.values(roles).every((role) => role.provider === "codex"));
   const pinned = resolveIssueOrchestration(

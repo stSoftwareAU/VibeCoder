@@ -64,14 +64,11 @@ jobs:
         id: plan
         run: |
           set -euo pipefail
-          git tag --list > all-tags.txt
-          git tag --points-at "${GITHUB_SHA}" > head-tags.txt
-          # Issue #808: `.release-floor` is the one line a human edits to move
-          # the series. The script mints the higher of that floor and the
-          # automatic patch increment, so the file is inert once the release
-          # it names exists.
-          .github/scripts/next-release-tag.sh \
-            all-tags.txt head-tags.txt .release-floor |
+          # The whole version is decided by what the merge changed since the
+          # newest release tag — no hand-edited input: a removed line of
+          # docs/audits/release-contract.txt is a major, an added line or a
+          # container/ change a minor, anything else a patch.
+          .github/scripts/next-release-tag.sh . "${GITHUB_SHA}" |
             tee -a "${GITHUB_OUTPUT}"
 
       - name: Create the tag

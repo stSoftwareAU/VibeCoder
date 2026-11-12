@@ -2037,10 +2037,11 @@ every host, however small the diff.
   removal or a change of meaning — never for an addition — and pin the field
   set an existing version promised with a test, so a removal fails in review.
 - **A bump is a release decision, not a side effect.** It needs the entry in
-  [Release notes](docs/RELEASE-NOTES.md), the
-  [release floor](docs/RELEASE-TAGGING.md#the-release-floor) moved, and the
-  extensions upgraded on every host **before** the worker that emits the new
-  version ships. If that sequence cannot be run, the change is not ready.
+  [Release notes](docs/RELEASE-NOTES.md) and the extensions upgraded on every
+  host **before** the worker that emits the new version ships; the moved
+  version in the [release contract](docs/RELEASE-TAGGING.md#the-release-contract)
+  makes that release a major on its own. If that sequence cannot be run, the
+  change is not ready.
 - **The scar.** On 2026-09-11 the post-run callback schema went 1 → 2 for an
   additive change. Every deployed hook refused the version, every callback on
   every host failed on every issue, and each host was reinstalled by hand

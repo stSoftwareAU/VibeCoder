@@ -341,7 +341,7 @@ run_round() {
   # of the state directory stays out of reach, and /workspace is read-only.
   claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" --arg dir "$C_DIR" \
     --argjson bash "$(round_bash_rules)" '["--model",
-    "claude-opus-5-5", "--effort", "xhigh", "--output-format", "stream-json",
+    "claude-fable-5-2", "--effort", "high", "--output-format", "stream-json",
     "--verbose", "--add-dir", "/tmp", "--add-dir", $dir,
     "--permission-mode", "acceptEdits", "--allowedTools", "Agent",
     "Read", "Grep", "Glob", $edit] + $bash')

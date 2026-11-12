@@ -49,6 +49,16 @@ export { REVIEW_RUN_FILE, type ReviewRunAttempt, type ReviewRunRecord };
  */
 export const REVIEW_FALLBACK_MODEL = "deepseek-v4-pro";
 
+/**
+ * Where a Fable round steps down to on the same subscription when it hits a
+ * usage limit (Issue #5081). Fable can be capped at a share of the weekly
+ * limit apart from the rest of the plan, so Opus 5.5 — the previous reviewer —
+ * may still have budget; `xhigh` because Opus at `xhigh` is what reviewed
+ * before Fable 5.2 at `high` replaced it.
+ */
+export const REVIEW_STEP_DOWN_MODEL = "claude-opus-5-5";
+export const REVIEW_STEP_DOWN_EFFORT = "xhigh";
+
 /** Options for {@link runReviewRound}. */
 export interface ReviewRoundOptions {
   /**
@@ -194,6 +204,26 @@ export async function runReviewRound(
     deps.log(`round on Claude subscription ${held}`);
   }
   let attempt = await runAttempt(args, env, CLAUDE_PROVIDER_ID);
+  // Issue #5081: a Fable round that hit a usage limit first tries Opus on the
+  // same subscription — Fable's own cap is not the whole plan's.
+  const requested = argValue(args, "--model") ?? "";
+  if (
+    attempt.code !== 0 && /^(claude-)?fable/.test(requested) &&
+    detectUsageLimit(attempt.output)
+  ) {
+    deps.log(
+      `round hit a usage limit on ${requested}; stepping down to ` +
+        `${REVIEW_STEP_DOWN_MODEL} on the same subscription`,
+    );
+    attempt = await runAttempt(
+      withEffort(
+        withModel(args, REVIEW_STEP_DOWN_MODEL),
+        REVIEW_STEP_DOWN_EFFORT,
+      ),
+      env,
+      CLAUDE_PROVIDER_ID,
+    );
+  }
   // A token that came from no pool file cannot say which one ran out, so
   // rotating could hand it straight back: only a held label is rotated.
   if (
@@ -245,6 +275,18 @@ function withModel(claudeArgs: readonly string[], model: string): string[] {
     args[idx + 1] = model;
   } else {
     args.push("--model", model);
+  }
+  return args;
+}
+
+/** The round's CLI arguments with the `--effort` value set (Issue #5081). */
+function withEffort(claudeArgs: readonly string[], effort: string): string[] {
+  const args = [...claudeArgs];
+  const idx = args.indexOf("--effort");
+  if (idx >= 0 && idx + 1 < args.length) {
+    args[idx + 1] = effort;
+  } else {
+    args.push("--effort", effort);
   }
   return args;
 }
