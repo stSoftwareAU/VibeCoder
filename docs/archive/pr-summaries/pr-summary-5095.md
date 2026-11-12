@@ -13,7 +13,9 @@ used by `ci_cargo_checks.ts`. A failed temporary-directory removal in
 security-fix discrimination now logs a warning and preserves the completed
 verdict. The suspected live-writer race reported in #5078 is not claimed
 repaired. Coverage repair instructions remain available alongside Standards code
-fixes, without the retired mutation instructions. Closes #5095.
+fixes, without the retired mutation instructions. Retained runner comments now
+describe their remaining callers and no longer cite the removed project loader.
+Closes #5095.
 
 Test fixtures no longer consume live GitHub quota: six maintenance command cases
 stub empty PR listings, and the orphaned-draft wiring test fakes the merge
@@ -54,18 +56,16 @@ helpers it reaches after readiness. Existing assertions are preserved.
   here touches any repository's CI. A repository that still runs a mutation job
   in CI keeps it as its own required check.
 - #5078 is closed. Its ENOTEMPTY evidence is kept in `docs/mutation-check.md`.
-- The maintenance file initially passed with healthy quota. Injecting quota
-  exhaustion at its first formerly live PR listing reproduced the five reported
-  branch-refresh failures: the process-wide latch skipped their fakes. The
-  command's PR-list path has no cache. The fixed fixtures also pass with that
-  injected failure waiting at the external boundary. A later
-  `gh issue view 5095` returned `API rate limit already exceeded`; the
-  historical failing host's response was not retained.
+- Earlier pre-push attempts reported `[PRE_PUSH_BLOCKED] Pre-flight gate BLOCK`
+  on `deno task test:unit`. The GitHub comments retain the command but truncate
+  the underlying diagnostic. The checkpointed fixture fixes isolate maintenance
+  PR listings, merge helpers and the fallback label cache from host state; this
+  run's complete unit gate passed.
 - The independent review verdicts below are retained from the checkpointed
   review record at `12cebfc74`. No fresh independent review was dispatched: this
   continuation's executor instruction forbids delegation. Subsequent fixture,
-  prompt and documentation changes were reviewed locally; the validation results
-  below were refreshed in this continuation.
+  prompt and documentation changes were reviewed locally. The results below were
+  refreshed on the final production code in `26741540e`.
 
 ## Evidence
 
@@ -200,8 +200,11 @@ flowchart LR
   the comment-marker negative case, continuation lines, the linear-growth guard)
   — evidence: `worker/deno/tests/ci_mutation_contract_test.ts` — reason: fixed
   in this diff. The cases are restored in
-  `worker/deno/tests/ci_mutation_contract_helpers_test.ts`, with the
-  linear-growth guard now checked by output instead of wall-clock time.
+  `worker/deno/tests/ci_mutation_contract_helpers_test.ts`, including a long
+  continuation fixture that asserts complete joined output without wall-clock
+  thresholds. The base timing assertion called the deleted
+  `blockingMutationLine`; no measured complexity claim is made for the retained
+  helper.
 - **violation** — The new review-fix test would also pass on base because the
   mock never wired the mutation runner — evidence:
   `worker/deno/tests/pr_feedback_processor_no_mutation_5095_test.ts:268` —
@@ -287,22 +290,19 @@ flowchart LR
   and profiling exposed a real `gh` call. The existing shared spawn seam now
   routes those calls to the same fake; no assertion or budget changed. The
   wiring and draft self-heal tests then passed the unit gate.
-- Final validation observed in this continuation:
-  - `timeout 900 ./quality.sh --sequential < /dev/null` exited 0: passed with
-    configured skips. Both unit passes, the test time-budget check, Semgrep,
-    lint, type checking, formatting, manifests, Markdown and Mermaid validation
-    passed after the coverage/Standards recovery-prompt correction.
-  - `deno task test:unit` over the added/modified test files and retained
-    CI-parser, deferred-store, pre-push, coverage-gate and subprocess
-    regressions passed in both passes. The prompt and historical-log suites were
-    rerun successfully after the wording correction.
-  - `deno check .`, `deno lint` and `deno fmt --check` from `worker/deno`
-    passed.
-  - `deno task check:manifests` passed; its existing ignored case remains
-    ignored.
+- Validation on the final production code (`26741540e`):
+  - `timeout 1080 ./quality.sh --sequential < /dev/null` exited 0: passed with
+    configured skips. Deno tests, their time-budget check, Semgrep, lint, type
+    checking, formatting, manifests, Markdown and Mermaid validation passed.
+  - Targeted `deno task test:unit` over the added/modified test files and retained
+    CI-parser, deferred-store, pre-push and coverage-gate regressions passed:
+    875 parallel-pass tests and 27 serial-pass tests, with no failures.
+  - `deno fmt --check` and `deno lint` on the three corrected runner-comment
+    files passed before the full gate.
+  - The manifest stage passed; its existing ignored case remains ignored.
   - `deno task pr-summary-check` (base `main`, saved issue body and labels
-    `top-priority,failed-once`) passed with no blocked or unchecked gate;
-    reproduction status is not applicable because the issue is not bug-labelled.
+    `top-priority,failed-once`) passed with zero blocked or unchecked gates.
+    Reproduction status is not applicable because the issue is not bug-labelled.
 - Production defaults still wire the retained coverage and discrimination
   runners through `defaultMutationRunnerSeams`. The `collectRunOwnBaseline`
   caller is the production drift check. The retained workflow helpers are
