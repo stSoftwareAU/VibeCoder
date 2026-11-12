@@ -473,3 +473,46 @@ Deno.test("default DeepSeek export reads only its provider credential and isolat
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// Issue #5072: subscriptions whose billing reads unknown were never loaded —
+// that proves nothing about their quota, so it must never buy paid DeepSeek.
+Deno.test("billing-unknown subscriptions refuse paid DeepSeek overflow (Issue #5072)", async () => {
+  await withProviderState(async () => {
+    const unknown = (provider: string): ProviderSubscriptionStatus => ({
+      ...status(provider, 0, "exhausted"),
+      billingMode: "unknown",
+      availability: "unavailable",
+      reason: "subscription-credential-missing",
+    });
+    const fixture = baseDeps({
+      statuses: { claude: unknown("claude"), codex: unknown("codex") },
+    });
+
+    const error = await assertRejects(
+      () => chooseBabysitterProvider(fixture.deps),
+      Error,
+    );
+    assert(
+      error.message.includes("refusing paid DeepSeek overflow"),
+      error.message,
+    );
+    assertEquals(fixture.calls().credentialCalls, 0);
+  });
+});
+
+Deno.test("one exhausted subscription beside a billing-unknown one still allows overflow (Issue #5072)", async () => {
+  await withProviderState(async () => {
+    const fixture = baseDeps({
+      statuses: {
+        codex: {
+          ...status("codex", 0, "exhausted"),
+          billingMode: "unknown",
+          availability: "unavailable",
+        },
+      },
+    });
+    const result = await chooseBabysitterProvider(fixture.deps);
+    assertEquals(result.providerId, "deepseek");
+    assertEquals(result.overflow, true);
+  });
+});

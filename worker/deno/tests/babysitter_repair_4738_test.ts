@@ -9,12 +9,16 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   babysitterRepairCommand,
   type BabysitterRepairDeps,
+  exportBabysitterSubscriptionCredentials,
   productionBabysitterRepairDeps,
   runBabysitterRepair,
 } from "../commands/babysitter_repair.ts";
 import { chooseBabysitterProvider } from "../lib/babysitter_provider_choice.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
-import { BABYSITTER_TASK_FAILURE_EXIT_CODE } from "../lib/fleet_babysitter_container.ts";
+import {
+  BABYSITTER_QUOTA_PARK_EXIT_CODE,
+  BABYSITTER_TASK_FAILURE_EXIT_CODE,
+} from "../lib/fleet_babysitter_container.ts";
 import type {
   BabysitterProviderChoice,
   BabysitterProviderChoiceDeps,
@@ -48,6 +52,9 @@ interface Harness {
   readonly runs: RunClaudeOptions[];
   readonly chooseCalls: BabysitterProviderChoiceDeps[];
   readonly logs: string[];
+  /** The order the credential export and the provider choice ran in. */
+  readonly order: string[];
+  readonly exportCalls: { enabledProviderIds: readonly string[] }[];
 }
 
 /** Run `body` in a fresh temp workspace with a clone dir, removed afterwards. */
@@ -106,11 +113,19 @@ function harness(
   const runs: RunClaudeOptions[] = [];
   const chooseCalls: BabysitterProviderChoiceDeps[] = [];
   const logs: string[] = [];
+  const order: string[] = [];
+  const exportCalls: { enabledProviderIds: readonly string[] }[] = [];
   const deps: BabysitterRepairDeps = {
     readTextFile: (path) => Deno.readTextFile(path),
     writeTextFile: (path, text) => Deno.writeTextFile(path, text),
     removeFile: (path) => Deno.remove(path),
+    exportSubscriptionCredentials: async (options) => {
+      order.push("export");
+      exportCalls.push({ enabledProviderIds: options.enabledProviderIds });
+      return ["CLAUDE_CODE_OAUTH_TOKEN"];
+    },
     chooseProvider: async (choiceDeps) => {
+      order.push("choose");
       chooseCalls.push(choiceDeps);
       if (choice instanceof Error) throw choice;
       return choice;
@@ -121,7 +136,7 @@ function harness(
     },
     log: (message) => logs.push(message),
   };
-  return { deps, runs, chooseCalls, logs };
+  return { deps, runs, chooseCalls, logs, order, exportCalls };
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -668,6 +683,10 @@ Deno.test("a non-Error throw is reported as its string form, an Error as its mes
 Deno.test("production deps use real files, the real provider choice and runner, and stderr logging", async () => {
   const deps = productionBabysitterRepairDeps;
   assertEquals(deps.chooseProvider, chooseBabysitterProvider);
+  assertEquals(
+    deps.exportSubscriptionCredentials,
+    exportBabysitterSubscriptionCredentials,
+  );
   assertEquals(deps.runClaude, runClaudeWithTimeout);
 
   await inWorkspace(async (paths) => {
@@ -690,4 +709,100 @@ Deno.test("production deps use real files, the real provider choice and runner, 
     console.error = original;
   }
   assertEquals(seen, [["prod log line"]]);
+});
+
+// Issue #5072: the repair container never loaded the subscription logins, so
+// every automatic choice read claude/codex as billing-unknown and went to paid
+// DeepSeek overflow. The logins must be in the environment before the choice.
+Deno.test("subscription credentials are exported before the provider choice (Issue #5072)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness();
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, true);
+    assertEquals(h.order, ["export", "choose"]);
+    assertEquals(h.exportCalls[0]!.enabledProviderIds, [
+      "claude",
+      "codex",
+      "deepseek",
+    ]);
+  });
+});
+
+Deno.test("a failed subscription credential export stops before any provider is chosen (Issue #5072)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness();
+    h.deps.exportSubscriptionCredentials = () =>
+      Promise.reject(new Error("credential dir unreadable"));
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, false);
+    assertStringIncludes(
+      result.message,
+      "subscription credential export failed: credential dir unreadable",
+    );
+    assertEquals(h.chooseCalls.length, 0);
+    assertEquals(h.runs.length, 0);
+  });
+});
+
+Deno.test("production export loads the Claude and Codex logins but never DeepSeek's (Issue #5072)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "babysitter-creds-5072-" });
+  try {
+    await Deno.mkdir(`${dir}/claude`);
+    await Deno.writeTextFile(
+      `${dir}/claude/provider.env`,
+      "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-fixture\n",
+    );
+    await Deno.mkdir(`${dir}/deepseek`);
+    await Deno.writeTextFile(
+      `${dir}/deepseek/provider.env`,
+      "DEEPSEEK_API_KEY=sk-deepseek-fixture\n",
+    );
+    const set: Record<string, string> = {};
+    const exported = await exportBabysitterSubscriptionCredentials({
+      enabledProviderIds: ["claude", "deepseek"],
+      log: () => {},
+      dir,
+      env: (name) => set[name],
+      setEnv: (name, value) => set[name] = value,
+    });
+
+    assertEquals(exported, ["CLAUDE_CODE_OAUTH_TOKEN"]);
+    assertEquals(set["CLAUDE_CODE_OAUTH_TOKEN"], "sk-ant-oat01-fixture");
+    assertEquals(set["DEEPSEEK_API_KEY"], undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("a quota-exhausted agent exits with the reserved park status (Issue #5072)", async () => {
+  await inWorkspace(async (paths) => {
+    await writePrompt(paths);
+    const h = harness(
+      CLAUDE_CHOICE,
+      finished({
+        exitCode: 1,
+        stderr: "",
+        agentFailure: {
+          category: "quota-exhausted",
+          message: "DeepSeek's account balance is spent",
+          evidence: "structured",
+          terminal: true,
+          errors: [],
+        },
+      }),
+    );
+
+    const result = await runBabysitterRepair(argsFor(paths), CONFIG, h.deps);
+
+    assertEquals(result.success, false);
+    assertEquals(result.exitCode, BABYSITTER_QUOTA_PARK_EXIT_CODE);
+    assertStringIncludes(result.message, "quota-exhausted");
+    assertEquals(await exists(paths.response), false);
+  });
 });

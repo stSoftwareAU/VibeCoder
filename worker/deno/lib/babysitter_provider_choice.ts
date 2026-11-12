@@ -161,6 +161,21 @@ export async function chooseBabysitterProvider(
   if (!selection) {
     throw new Error("automatic babysitter routing paused without a selection");
   }
+  // Issue #5072: DeepSeek is the last resort, bought only once a subscription
+  // is proved spent. A subscription whose billing reads unknown was never
+  // loaded — that proves nothing about its quota, so it buys no overflow.
+  const subscriptions = selection.ranked.filter((candidate) =>
+    candidate.provider !== DEEPSEEK_PROVIDER_ID
+  );
+  if (
+    subscriptions.length > 0 &&
+    subscriptions.every((candidate) => candidate.excluded === "billing-unknown")
+  ) {
+    throw new Error(
+      "refusing paid DeepSeek overflow: no subscription credential is loaded " +
+        `(${rankedExclusions(selection)})`,
+    );
+  }
 
   const exportedValues: Record<string, string> = {};
   const exported =

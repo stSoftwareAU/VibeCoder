@@ -435,8 +435,18 @@ instruction and the babysitter logs that the repair runs without RTK.
   non-automatic `agent_provider_mode`, or a `VIBE_AGENT_PROVIDER` value. In
   automatic mode a `VIBE_AGENT_PROVIDER` pin must name a provider in the enabled
   `agent_providers` set, or the repair fails.
+- Before choosing, `babysitter-repair` exports the enabled subscription
+  providers' logins (Claude, Codex) from the mounted credential directory, the
+  same way the worker loop and reviewer rounds do (Issue #5072). DeepSeek's
+  credential is not exported here; only the overflow choice exports it, into an
+  isolated environment.
 - In automatic mode the worker's subscription ranking chooses first. If routing
   finds a winner, that subscription runs the repair.
+- DeepSeek is the last resort. If every subscription reads `billing-unknown`,
+  meaning its login was never loaded, nothing is known about its quota. The
+  chooser then refuses overflow with `refusing paid DeepSeek overflow: no
+  subscription credential is loaded`, and the repair fails as a host capability
+  fault instead of spending money.
 - Only when routing pauses because no subscription has budget does the repair
   use DeepSeek as paid overflow. The chooser logs
   `[quota] babysitter paid overflow
@@ -579,7 +589,11 @@ bounded cooldowns without spending the substantive repair budget and post no
 attempt marker. A diagnostic that names a timeout, network, DNS or rate-limit
 failure is classified as infrastructure. Container failures follow "Failure
 behaviour":
-exit status 42 is a code failure that spends that budget; a timeout is
+exit status 42 is a code failure that spends that budget; exit status 43 means a
+provider's quota, credit or balance is spent. That is a normal park
+(`BabysitterParked`): infrastructure cooldown, one `Babysitter repair parked:`
+log line, and it never joins the pass's `AggregateError` (Issue #5072). A
+timeout is
 infrastructure unless the 90-minute session budget has run out, which makes it
 `agent session budget exhausted` (code); other launcher failures are
 infrastructure and do not spend it. Code failures, runner session-budget
