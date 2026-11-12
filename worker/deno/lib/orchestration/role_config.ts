@@ -4,12 +4,11 @@ import {
   DEFAULT_CLAUDE_MODEL_ISSUE,
   DEFAULT_CLAUDE_MODEL_TOP_TIER,
   DEFAULT_CODEX_MODEL,
-  DEFAULT_CODEX_MODEL_CHEAP_TIER,
   DEFAULT_CODEX_MODEL_TOP_TIER,
 } from "../config_defaults.ts";
 import {
-  HAIKU_ISSUE_EXECUTOR_EFFORT,
-  HAIKU_ISSUE_EXECUTOR_MODEL,
+  ISSUE_EXECUTOR_EFFORT,
+  ISSUE_EXECUTOR_MODEL,
 } from "../issue_executor_agents.ts";
 import type {
   ExternalOrchestrationRoleSettings,
@@ -288,10 +287,10 @@ export function validateRoleProviders(config: WorkerConfig): void {
 type OrchestrationRole = "manager" | "executor" | "reviewer";
 
 /**
- * Each role's default model, per provider (owner decision 2026-10-22): Opus
- * does the code reviews, Sonnet manages, Haiku executes, and on Codex each
- * role takes the similar OpenAI tier — Astra reviews, 6.1 Sol manages, Luna
- * executes. A provider with no row here leaves the model to the CLI.
+ * Each role's default model, per provider (owner policy 2026-11-12, Issue
+ * #5081): Fable reviews, Opus manages, Sonnet executes, and on Codex each role
+ * takes the similar OpenAI tier — Astra reviews, 6.1 Sol manages and executes.
+ * A provider with no row here leaves the model to the CLI.
  */
 const ROLE_DEFAULTS: Readonly<
   Record<string, Readonly<Record<OrchestrationRole, RoleSelection>>>
@@ -304,8 +303,8 @@ const ROLE_DEFAULTS: Readonly<
     },
     executor: {
       provider: "claude",
-      model: HAIKU_ISSUE_EXECUTOR_MODEL,
-      effort: HAIKU_ISSUE_EXECUTOR_EFFORT,
+      model: ISSUE_EXECUTOR_MODEL,
+      effort: ISSUE_EXECUTOR_EFFORT,
     },
     reviewer: {
       provider: "claude",
@@ -317,7 +316,7 @@ const ROLE_DEFAULTS: Readonly<
     manager: { provider: "codex", model: DEFAULT_CODEX_MODEL, effort: "high" },
     executor: {
       provider: "codex",
-      model: DEFAULT_CODEX_MODEL_CHEAP_TIER,
+      model: DEFAULT_CODEX_MODEL,
       effort: "high",
     },
     reviewer: {

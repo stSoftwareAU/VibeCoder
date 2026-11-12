@@ -31,6 +31,7 @@ import {
 import {
   DEFAULT_CLAUDE_MODEL,
   DEFAULT_CLAUDE_MODEL_ISSUE,
+  DEFAULT_CLAUDE_MODEL_TOP_TIER,
   DEFAULT_CODEX_MODEL,
   DEFAULT_CODEX_MODEL_CHEAP_TIER,
   DEFAULT_CODEX_MODEL_TOP_TIER,
@@ -88,15 +89,20 @@ export function modelKey(provider: string, model: string): string {
 /**
  * The default candidate models, per provider, in a stable order.
  *
- * Claude's are the production tiers the fleet already routes to; Codex's are
+ * Claude's are the production tiers the fleet already routes to — since Issue
+ * #5081 that is four: Fable reviews and plans, Opus manages, Sonnet executes,
+ * Haiku takes the trivial phases. Each is named by its role constant, so a
+ * role moving tier cannot silently drop a model out of the report. Codex's are
  * the three tiers it maps them to (Astra, 6.1 Sol, Luna).
  */
 const DEFAULT_CANDIDATES: ReadonlyMap<string, readonly string[]> = new Map([
   [
     CLAUDE_PROVIDER_ID,
     [
+      DEFAULT_CLAUDE_MODEL_TOP_TIER,
       DEFAULT_CLAUDE_MODEL,
       DEFAULT_CLAUDE_MODEL_ISSUE,
+      ISSUE_EXECUTOR_MODEL,
       HAIKU_ISSUE_EXECUTOR_MODEL,
     ],
   ],

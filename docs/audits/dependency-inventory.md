@@ -33,9 +33,9 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 
 | Tool | Kind | Version | SHA-256 | Verdict |
 | --- | --- | --- | --- | --- |
-| claude | provider | 2.1.310 | amd64: b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56<br>arm64: 9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54 | exact version + SHA-256 verified |
+| claude | provider | 2.1.322 | amd64: bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478<br>arm64: f220ca50ea4f3222043ff83cc224a1262e0196e9897acc0871efa94235b0c1fd | exact version + SHA-256 verified |
 | codex | provider | 0.167.2 | amd64: 8246e846c550ea21197fcc4067bc270dca895e94ea42ed6a282e6f4e0125b15f<br>arm64: ed81fa2c7d209689af061b6f305ed554218de92a1c2c4019142b28f66fa64add | exact version + SHA-256 verified |
-| deepseek | provider | 2.1.310 | amd64: b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56<br>arm64: 9c64d9a7442436b65fcd7cc02c1aa0051bb5a7041e7788576ed3b5f29c447d54 | exact version + SHA-256 verified |
+| deepseek | provider | 2.1.322 | amd64: bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478<br>arm64: f220ca50ea4f3222043ff83cc224a1262e0196e9897acc0871efa94235b0c1fd | exact version + SHA-256 verified |
 | gemini | provider | 0.68.0 | noarch: 325099ddcb56937c27d119e7297bfa8a5e29b529bae3c92fdf3b71a36d5fa006 | exact version + SHA-256 verified |
 | gh | tool | 2.103.2 | amd64: 62ccf747115ddc61237efffdde66a3c8f70ba249433dc64f70801089b59c59c8<br>arm64: 4c3e99a50bd8b181a3fe9d69b25dd978bac768148d88f01507c6b4d1ef61a443 | exact version + SHA-256 verified |
 | jq | tool | 1.8.2 | amd64: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f<br>arm64: 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 | exact version + SHA-256 verified |

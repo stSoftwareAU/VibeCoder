@@ -43,8 +43,9 @@ export const CURRENT_TIER_MODELS: ReadonlyMap<ModelTier, string> = new Map<
   ModelTier,
   string
 >([
-  // Fable 5.1 — the latest Fable since 2026-09-01 (Issue #747).
-  ["fable", "claude-fable-5-1"],
+  // Fable 5.2 — the latest Fable since 2026-11 (Issue #5082); the pinned CLI
+  // 2.1.322 resolves the `fable` alias to it.
+  ["fable", "claude-fable-5-2"],
   // Opus 5.5 — the latest Opus, and the tier every substantive phase now
   // requests by alias (Issue #2560).
   ["opus", "claude-opus-5-5"],

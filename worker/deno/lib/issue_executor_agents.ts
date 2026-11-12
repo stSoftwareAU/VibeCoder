@@ -166,25 +166,26 @@ export const STANDARDS_REVIEWER_AGENT_NAME = "standards-reviewer";
 /**
  * The Spec reviewer's tier and effort.
  *
- * Opus at `medium`, at every executor tier: the owner's decision of
- * 2026-10-22 is that Opus does the code reviews, Sonnet manages and Haiku
- * executes. The review is what keeps merged quality high, and a send-back
+ * Fable at `medium`, at every executor tier: the owner's policy of
+ * 2026-11-12 (Issue #5081) is that code review takes the best model the
+ * subscriptions can afford (Fable 5.2), Opus manages and Sonnet executes. It
+ * was Opus from 2026-10-22 (#4142). The review is what keeps merged quality high, and a send-back
  * round costs more than the review. The reviewer's independence still comes
  * from its fresh context; `medium` rather than the advisor's `high` because
  * it judges a finished diff rather than planning one.
  */
-export const SPEC_REVIEWER_MODEL = "opus";
+export const SPEC_REVIEWER_MODEL = "fable";
 export const SPEC_REVIEWER_EFFORT = "medium";
 
 /**
  * The Standards reviewer's tier and effort.
  *
- * Opus at `medium`, at every executor tier, for the same owner decision as
+ * Fable at `medium`, at every executor tier, for the same owner policy as
  * {@link SPEC_REVIEWER_MODEL}. It used to follow the run's sub-agent tier
  * down to Haiku (Issue #3402); a review is no longer the place the tier
  * saves money.
  */
-export const STANDARDS_REVIEWER_MODEL = "opus";
+export const STANDARDS_REVIEWER_MODEL = "fable";
 export const STANDARDS_REVIEWER_EFFORT = "medium";
 
 /**
@@ -265,9 +266,9 @@ const STANDARDS_REVIEWER_PROMPT = [
 /**
  * Build the two reviewer definitions (Issue #2575).
  *
- * Both reviewers run on Opus whatever the run's sub-agent tier resolved to
- * (owner decision 2026-10-22): the tier picks the executor's model, never the
- * reviewers'.
+ * Both reviewers run on Fable whatever the run's sub-agent tier resolved to
+ * (owner policy 2026-11-12, Issue #5081): the tier picks the executor's model,
+ * never the reviewers'.
  *
  * @returns The Spec and Standards reviewer definitions, keyed by name.
  */

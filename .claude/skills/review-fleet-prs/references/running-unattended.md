@@ -181,8 +181,8 @@ round directory's `review-run.json` before it starts (provider, `--model`,
 and a hidden marker:
 
 ```text
-_Review run: provider claude · model claude-opus-5-5 · effort xhigh · cost unknown._
-<!-- vibe-review-run round="20261016-101500" attempt="1" provider="claude" models="claude-opus-5-5" effort="xhigh" usd="unknown" -->
+_Review run: provider claude · model claude-fable-5-2 · effort high · cost unknown._
+<!-- vibe-review-run round="20261016-101500" attempt="1" provider="claude" models="claude-fable-5-2" effort="high" usd="unknown" -->
 ```
 
 and appends the PR to the round's `posted.jsonl`. After the round, whether it

@@ -249,8 +249,8 @@ Deno.test("execute_phase - issue_reviewer_agents on carries both reviewer defini
     [SPEC_REVIEWER_AGENT_NAME, STANDARDS_REVIEWER_AGENT_NAME].sort(),
   );
   for (const def of Object.values(agents)) {
-    // Opus does the code reviews (owner decision 2026-10-22).
-    assertEquals(def.model, "opus");
+    // Fable does the code reviews (owner policy #5081).
+    assertEquals(def.model, "fable");
     assertEquals(def.tools, ["Read", "Grep", "Glob"]);
     assertEquals(def.disallowedTools, ["Agent"]);
   }
@@ -275,7 +275,7 @@ Deno.test("execute_phase - reviewers and the split together carry all three defi
 // The sub-agent tier (Issue #3402)
 // ---------------------------------------------------------------------------
 
-Deno.test("execute_phase - a haiku host tier carries the haiku executor, both Opus reviewers and an explorer (Issue #3402)", async () => {
+Deno.test("execute_phase - a haiku host tier carries the haiku executor, both Fable reviewers and an explorer (Issues #3402, #5081)", async () => {
   const options = await runPhase(true, undefined, true, {
     hostTier: "haiku",
   });
@@ -293,25 +293,25 @@ Deno.test("execute_phase - a haiku host tier carries the haiku executor, both Op
   );
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.model, "haiku");
   assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "high");
-  // The tier picks the executor, never the reviewers (owner decision
-  // 2026-10-22).
-  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "opus");
+  // The tier picks the executor, never the reviewers (owner decisions
+  // 2026-10-22, #5081).
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "fable");
   assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "medium");
-  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "opus");
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "fable");
   assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
 });
 
-Deno.test("execute_phase - a default config carries the explorer and a haiku executor (Issues #3402, #3473)", async () => {
+Deno.test("execute_phase - a default config carries a sonnet executor and no explorer (Issues #3402, #5081)", async () => {
   const options = await runPhase(true, undefined, false, { defaultTier: true });
   const executor = executorOf(options);
   assert(executor, "the split run carries the executor");
-  assertEquals(executor.model, "haiku");
-  assertEquals(executor.effort, "high");
+  assertEquals(executor.model, "sonnet");
+  assertEquals(executor.effort, "medium");
   const agents = options?.agents as Record<string, AgentDefinition>;
   assertEquals(
     Object.keys(agents).includes(EXPLORER_AGENT_NAME),
-    true,
-    "the default haiku tier carries the explorer",
+    false,
+    "the default sonnet tier carries no explorer",
   );
 });
 
