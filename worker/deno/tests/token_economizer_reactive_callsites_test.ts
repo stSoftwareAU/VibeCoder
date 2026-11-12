@@ -29,6 +29,8 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { prFeedbackProcessorCommand } from "../commands/pr_feedback_processor.ts";
+import { prCiProcessorCommand } from "../commands/pr_ci_processor.ts";
 import { join, sep } from "node:path";
 import {
   type PrFeedbackProcessorDeps,
@@ -160,6 +162,7 @@ function assertNoLaunch(spawn: SpawnOptions | undefined, label: string): void {
 async function runFeedback(
   workRoot: string,
   tokenEconomizer: TokenEconomizerConfig | undefined,
+  throughCommand = false,
 ): Promise<SpawnOptions[]> {
   const spawns: SpawnOptions[] = [];
   const mockClaude: Partial<ClaudeDeps> = {
@@ -178,6 +181,7 @@ async function runFeedback(
     claude: mockClaude,
     github: mockGithub,
     git: {
+      setupRepo: () => Promise.resolve({ ok: true, value: join(workRoot, "clone") }),
       commitAndPushPending: (() =>
         Promise.resolve({
           ok: true,
@@ -208,6 +212,20 @@ async function runFeedback(
       }),
   };
 
+  if (throughCommand) {
+    const result = await prFeedbackProcessorCommand.execute({
+      operation: "process", repo: REPO, "pr-number": 42,
+      "branch-name": "issue-42-fix-bug", "comment-type": "review",
+      "comment-id": "123", "comment-body": "Please fix the typo on line 10",
+    }, buildDefaultWorkerConfig({
+      workDir: workRoot,
+      tokenEconomizer: tokenEconomizer ?? buildDefaultWorkerConfig().tokenEconomizer,
+      repoConfig: { [REPO]: { skipMutationCheck: true } },
+    }), deps);
+    assertEquals(result.success, true, result.message);
+    return spawns;
+  }
+
   const result = await processPrFeedback({
     repo: REPO,
     prNumber: 42,
@@ -230,6 +248,7 @@ async function runCiFix(
   options: {
     tokenEconomizer: TokenEconomizerConfig | undefined;
     qualityRetry: boolean;
+    throughCommand?: boolean;
   },
 ): Promise<SpawnOptions[]> {
   const spawns: SpawnOptions[] = [];
@@ -261,6 +280,7 @@ async function runCiFix(
     claude: mockClaude,
     github: mockGithub,
     git: {
+      setupRepo: () => Promise.resolve({ ok: true, value: join(workRoot, "clone") }),
       runGitCommand: gitMock,
       commitAndPushPending: (() =>
         Promise.resolve({
@@ -304,6 +324,20 @@ async function runCiFix(
         reason: "verified in test",
       }),
   };
+
+  if (options.throughCommand) {
+    const result = await prCiProcessorCommand.execute({
+      operation: "process", repo: REPO, "pr-number": 42,
+      "branch-name": "issue-42-fix-bug", "check-run-id": "67890",
+      "check-name": "CI / test", "encoded-annotations": btoa(JSON.stringify(ANNOTATIONS)),
+    }, buildDefaultWorkerConfig({
+      workDir: workRoot,
+      tokenEconomizer: options.tokenEconomizer ?? buildDefaultWorkerConfig().tokenEconomizer,
+      repoConfig: { [REPO]: { skipMutationCheck: true } },
+    }), deps);
+    assertEquals(result.success, true, result.message);
+    return spawns;
+  }
 
   const result = await processCiFailure({
     repo: REPO,
@@ -385,3 +419,23 @@ Deno.test("pr_ci_processor - with no tokenEconomizer in the deps the post-qualit
     assertEquals(spawns.length, 2, "the quality retry must have spawned");
     assertNoLaunch(spawns[1], "CI-fix retry spawn");
   }));
+
+for (const enabled of [false, true]) {
+  for (const kind of ["pr-feedback", "ci-fix"] as const) {
+    Deno.test({
+      name: `${kind} command carries the ${enabled ? "enabled" : "disabled"} host block to the agent (Issue #4956)`,
+      ignore: enabled && !REAL_PLUGIN_PRESENT,
+      fn: () => withTempWorkRoot(async (workRoot) => {
+        const block = { ...enabledBlock(), enabled };
+        const spawns = kind === "pr-feedback"
+          ? await runFeedback(workRoot, block, true)
+          : await runCiFix(workRoot, { tokenEconomizer: block, qualityRetry: false, throughCommand: true });
+        assert(spawns.length > 0, "the command must reach the agent");
+        for (const spawn of spawns) {
+          if (enabled) await assertLaunchWired(spawn, workRoot, `${kind} command enabled`);
+          else assertNoLaunch(spawn, `${kind} command disabled`);
+        }
+      }),
+    });
+  }
+}

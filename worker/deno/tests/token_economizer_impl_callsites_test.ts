@@ -26,6 +26,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { executeClaudePhaseCommand } from "../commands/execute_claude_phase.ts";
 import { join } from "node:path";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { CLAUDE_PROVIDER_ID } from "../lib/agent_provider.ts";
@@ -376,3 +377,28 @@ Deno.test({
     });
   },
 });
+
+for (const enabled of [false, true]) {
+  Deno.test({
+    name: `execute-claude-phase command carries the ${enabled ? "enabled" : "disabled"} host block to the agent (Issue #4956)`,
+    ignore: enabled && !REAL_PLUGIN_PRESENT,
+    async fn() {
+      await withWorkDir(async (workDir) => {
+        const calls: RunClaudeOptions[] = [];
+        await executeClaudePhaseCommand.execute({
+          repo: "owner/repo",
+          "issue-number": 4956,
+          "branch-name": "issue-4956",
+          "base-branch": "main",
+        }, buildDefaultWorkerConfig({
+          workDir,
+          includeRecentActivity: false,
+          includeCodebaseMap: false,
+          tokenEconomizer: { ...enabledBlock(), enabled },
+        }), standaloneDeps(calls));
+        if (enabled) assertEveryCallLaunched(calls, "command enabled");
+        else assertNoCallLaunched(calls, "command disabled");
+      });
+    },
+  });
+}

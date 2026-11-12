@@ -38,6 +38,7 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
+  type ExecuteClaudePhaseDeps,
   type ExecuteClaudePhaseResult,
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
@@ -56,6 +57,7 @@ export const executeClaudePhaseCommand: Command = {
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    phaseDeps?: ExecuteClaudePhaseDeps,
   ): Promise<CommandResult<ExecuteClaudePhaseResult>> {
     const repo = String(args["repo"] ?? "");
     const issueNumber = Number(args["issue-number"] ?? 0);
@@ -199,7 +201,7 @@ export const executeClaudePhaseCommand: Command = {
       contextBudgetErrorPercent: config.contextBudgetErrorPercent,
       contextBudgetBlockPercent: config.contextBudgetBlockPercent,
       ...(progressExtension ? { progressExtension } : {}),
-    });
+    }, phaseDeps);
 
     // Save Claude session state to per-repo store after execution (Issue #1321, #1322)
     await saveSession(repoPath, workDir, repo, undefined, milestoneId);
