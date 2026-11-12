@@ -196,6 +196,19 @@ The other review findings are addressed:
   their checksums and loaded through an external import map because direct JSR
   package resolution failed on this host. Repository configuration is unchanged.
 
+- PR #5059 review, fifth round. The babysitter's `fix()` no longer persists
+  counters to its defaulted `stateDir` (the host's real babysitter state when a
+  test passes none). A new optional `FixDeps.baseRefreshCounterDir` is passed to
+  `requestReadyBranchUpdate` on the behind path and to the
+  `babysitter-repair` counter; only the production entry point sets it (to
+  `babysitterStateDir()`). The shared test harness sets it to its per-test
+  temporary state directory, so the counter assertions in
+  `babysitter_base_merge_policy_4943_test.ts` still read a real file. Running
+  `fleet_pr_babysitter_test.ts`, `fleet_pr_babysitter_single_push_test.ts` and
+  the two babysitter harness suites no longer creates
+  `~/.local/state/vibe-coder/fleet-pr-babysitter/base_refresh_counters.json`
+  (the previous head did).
+
 ## Merge verification
 
 The targeted behavioural checks pass; required CI will run on the pushed head. Independent review of

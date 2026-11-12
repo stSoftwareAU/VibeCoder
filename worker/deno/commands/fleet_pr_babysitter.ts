@@ -2512,6 +2512,13 @@ export interface FixDeps {
   classifyBaseFailure?: typeof classifyBaseRedFailures;
   escalate?: (request: EscalationRequest) => Promise<string>;
   stateDir?: string;
+  /**
+   * Directory the base-refresh decision counters are persisted to. Only the
+   * production entry point sets it (the babysitter's state directory); unset,
+   * as in tests, a decision is counted in memory only, so no test writes into
+   * the host's babysitter state (PR #5059 review).
+   */
+  baseRefreshCounterDir?: string;
   dismiss?: BabysitterRepairFinishDeps["dismiss"];
   /** Independent review verifier; defaults to the production verifier (Issue #4657). */
   verifyReviews?: BabysitterRepairFinishDeps["verifyReviews"];
@@ -2964,7 +2971,7 @@ export async function fix(
         sleep,
         { fleetAuthors: authors },
         "babysitter-behind",
-        stateDir,
+        deps.baseRefreshCounterDir,
       );
       if (!update.ok) {
         console.log(
@@ -3167,7 +3174,7 @@ export async function fix(
         ? baseMerge.reason
         : `${baseMerge.reason}; ${baseDecision.reason}`,
     });
-    await persistBaseRefreshCounter(stateDir, {
+    await persistBaseRefreshCounter(deps.baseRefreshCounterDir, {
       source: "babysitter-repair",
       outcome: baseMerge.merge ? "base-merge-allowed" : "base-merge-skipped",
     });
@@ -3871,6 +3878,7 @@ export async function pass(
                     undefined,
                     undefined,
                     resolveMaxAutoFixAttempts(config, repo),
+                    { baseRefreshCounterDir: babysitterStateDir() },
                   ),
               );
             },

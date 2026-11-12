@@ -279,6 +279,9 @@ export function harness(
   };
   const deps: FixDeps = {
     stateDir,
+    // The harness's state directory is a per-test temporary one, so the
+    // decision counters may be persisted there.
+    baseRefreshCounterDir: stateDir,
     run,
     clone: () => Promise.resolve(),
     mergeBase: (dir: string, baseRef: string) => {
