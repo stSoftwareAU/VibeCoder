@@ -1090,7 +1090,10 @@ Deno.test("same-path untracked edits made by passing checks block the push (#493
   await fixture(async (repo, root) => {
     await Deno.writeTextFile(`${repo}/fresh.txt`, "agent content\\n");
     const { deps } = depsFor(root, async () => {
-      await Deno.writeTextFile(`${repo}/fresh.txt`, "check overwrote agent content\\n");
+      await Deno.writeTextFile(
+        `${repo}/fresh.txt`,
+        "check overwrote agent content\\n",
+      );
       return PASS;
     });
 
@@ -1136,7 +1139,10 @@ Deno.test("a changed staged blob is blocked even with identical status and workt
     const outcome = await runBabysitterTreeGate(repo, undefined, deps);
 
     assertEquals(await git(repo, "status", "--porcelain"), beforeStatus);
-    assertEquals(await Deno.readTextFile(`${repo}/committed.txt`), "working content\\n");
+    assertEquals(
+      await Deno.readTextFile(`${repo}/committed.txt`),
+      "working content\\n",
+    );
     assertEquals(outcome, {
       kind: "blocked",
       message: "the checks changed the working tree: committed.txt",
