@@ -246,10 +246,14 @@ the evidence obtained since that review.
   after the original readiness assertion's event. Config/off-spawn test changes
   are documentation only.
 - `deno task check:manifests`: passed, 866 tests, one documented ignore.
-- `deno task drift-pins-on-base` confirms the new `learnings_repo` sentence
-  is absent from the base protocol’s “The candidate” section.
-- `deno task pr-summary-check --base origin/main`: zero gates blocked and
-  zero not checked. This validates summary structure, not a fresh review.
+- Final `./quality.sh < /dev/null`: PASSED (with skipped checks). Deno tests,
+  lint, type checks, formatting, Markdown/Mermaid and Semgrep passed. Config
+  integration skipped because no `.config.json` is present; Checkov skipped
+  because neither its executable nor its pinned container image is available.
+- `deno task drift-pins-on-base` confirms the new `learnings_repo` sentence is
+  absent from the base protocol’s “The candidate” section.
+- `deno task pr-summary-check --base origin/main`: zero gates blocked and zero
+  not checked. This validates summary structure, not a fresh review.
 
 ## Deno regression avoided
 
