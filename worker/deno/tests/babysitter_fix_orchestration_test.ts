@@ -2489,21 +2489,23 @@ Deno.test("fix refuses a nested repository before finish runs host Git", async (
   });
 });
 
-// Issue #4930: the repair flow passes the PR's base branch to the agent start,
-// so the in-container pre-push gate can compare failing tests against it.
-Deno.test("the repair flow hands the PR's base branch to startAgent for the in-container gate (Issue #4930)", async () => {
-  await withState(async (stateDir) => {
-    const h = harness(stateDir);
-    h.state.pr = basePr({ baseRefName: "release/2" }) as never;
-    h.state.changes = true;
-    const baseBranches: Array<string | undefined> = [];
-    const startAgent = h.deps.startAgent!;
-    h.deps.startAgent = async (...args) => {
-      baseBranches.push(args[2].baseBranch);
-      return await startAgent(...args);
-    };
-    await h.attempt();
-    assertEquals(baseBranches, ["release/2"]);
+// Issue #4930: the repair flow passes the PR's base branch to the container, so
+// the in-container pre-push gate can compare failing tests against it.
+Deno.test("the repair flow starts the container repair with the PR's base branch (Issue #4930)", async () => {
+  await withTestKey(async (privateKeyPath) => {
+    await withState(async (stateDir) => {
+      const h = harness(stateDir);
+      h.state.pr = basePr({ baseRefName: "release/2" }) as never;
+      h.state.changes = true;
+      const spawns: RuntimeSpawn[] = [];
+      h.deps.startAgent = productionAgent(
+        privateKeyPath,
+        answeringContainer(spawns),
+      );
+      await h.attempt();
+      assertEquals(spawns.length, 1);
+      assertEquals(spawns[0]!.args.slice(-2), ["--base-branch", "release/2"]);
+    });
   });
 });
 

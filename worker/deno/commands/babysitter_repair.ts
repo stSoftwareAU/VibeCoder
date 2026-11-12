@@ -51,6 +51,7 @@ import type { EnvLookup } from "../lib/env_lookup.ts";
 import { assertSafeGitRef } from "../lib/git_ref_args.ts";
 import {
   type BabysitterTreeGateOutcome,
+  neutraliseGateMarker,
   runBabysitterTreeGate,
   withholdReady,
 } from "../lib/babysitter_tree_gate.ts";
@@ -366,7 +367,8 @@ async function repairResponse(
   // i. A response that reports READY must pass the pre-push gate over the
   // agent's uncommitted tree (Issue #4930). A blocked or unrunnable gate
   // withholds the READY line; a response that is not ready never reaches it.
-  let response = run.output;
+  // The gate's marker is the gate's alone, so agent text carries it on no path.
+  let response = neutraliseGateMarker(run.output);
   if (isBabysitterReady(run.output)) {
     const outcome = await runTreeGate(dir, baseBranch, deps);
     if (outcome.kind === "passed") {

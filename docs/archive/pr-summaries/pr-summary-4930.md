@@ -64,6 +64,18 @@ flowchart LR
   `isGateInfrastructureResponse` (`lib/babysitter_tree_gate.ts`) recognises
   `[BABYSITTER_GATE_BLOCKED] pre-push checks could not run:` at the start of the
   response, and `fix()` raises it before the generic missing-READY failure.
+  Only the gate may write that text: `babysitter-repair` replaces
+  `[BABYSITTER_GATE_BLOCKED]` in the agent's own output on every path
+  (`neutraliseGateMarker`), so an agent that fails without READY cannot make its
+  failure count as infrastructure and dodge the repair cap.
+- While the repair holds an uncommitted `git merge --no-commit` of the PR base,
+  `git status` lists every file the merge brings in. The gate then keeps only
+  the paths that are untracked or differ from `MERGE_HEAD` (the base's content
+  is the base's, as the host's `checkBaseline` reads the merged tree), and its
+  stdin also names `MERGE_HEAD`, so the merge-base with `origin/<base>` is the
+  base tip the merge brings in, not the PR's old fork point. Markdownlint has no
+  baseline, so dropping the base-owned paths is also what keeps a base markdown
+  error from blocking.
 - Withholding the READY line, not failing the container, is the verdict channel:
   the host already refuses a response without it and quotes the response.
   `isBabysitterReady` (`lib/babysitter_ready.ts`) is now the one rule for both
@@ -85,9 +97,11 @@ Backend-only; no UI files. Tests:
 `worker/deno/tests/babysitter_ready_test.ts`,
 `worker/deno/tests/fleet_babysitter_container_4738_test.ts`,
 `worker/deno/tests/babysitter_fix_orchestration_test.ts`,
-`worker/deno/tests/fleet_pr_babysitter_test.ts`. Docs:
+`worker/deno/tests/fleet_pr_babysitter_test.ts`,
+`worker/deno/tests/support/babysitter_tree_fixture.ts` (the shared real-git
+clone fixture and the uncommitted-merge fixture). Docs:
 `docs/workflows/fleet-pr-babysitter.md` (repair flow, diagram step, new
-"Pre-push gate" paragraph, READY and missing-marker paragraphs, shift-left
+"Pre-push gate" paragraph, merge-in-progress and marker-neutralisation text, READY and missing-marker paragraphs, shift-left
 paragraph), `docs/CONFIGURATION.md` (push-guarantee paragraph; the cargo-deny
 and ShellCheck items no longer say babysitter repairs are unchecked). Ledger:
 `docs/audits/lib-sweep-coverage/top-up-4930.json` claims the two new modules
@@ -140,19 +154,22 @@ container runs the unit tests and markdownlint after the agent.
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **clean** — the new tests drive the real `runPrePushGate` with only the
-  command runner faked; no test asserts only a mock's arguments.
+  command runner faked; no test asserts only a mock's arguments. The two tests
+  that did (the `--base-branch` forwarding in `babysitter_repair_4738_test.ts`
+  and the `startAgent` options in `babysitter_fix_orchestration_test.ts`) now
+  assert outcomes: READY is kept with `--base-branch main` over the real gate
+  and withheld without it, and the container argv built by the real
+  `startBabysitterAgent` ends with `--base-branch <pr.baseRefName>`.
 
 ## Test Plan
 
 - `cd worker/deno && deno task test:unit tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts tests/babysitter_ready_test.ts tests/fleet_babysitter_container_4738_test.ts tests/babysitter_fix_orchestration_test.ts tests/fleet_pr_babysitter_test.ts`:
-  each file passed when run by its author (34, 40, 7, 55, 76 and 121 tests); the
-  full gate re-ran them.
-- `./quality.sh < /dev/null` on the head before this summary commit:
-  `Result: PASSED (with skipped checks)`; deno tests, lint, type check, fmt,
-  markdownlint, semgrep, spawn timeout and completeness checks passed; config
-  integration and checkov were skipped by the gate. An earlier run failed
-  `spawn timeout` (the `tar` spawn had no signal) and the sweep ledger test;
-  both are fixed in the head (`570e38c6`).
+  each file passed when run by its author on this head (37, 42, 7, 55, 76 and 121
+  tests).
+- `deno fmt`, `deno lint`, `deno check` of the changed files and
+  `markdownlint-cli2` of the changed doc passed on the working tree. The full
+  `./quality.sh` was not re-run for this review round; CI runs it on the pushed
+  head.
 - Real-gate tests (`babysitter_tree_gate_test.ts`): `runBabysitterTreeGate`
   drives the real `runPrePushGate` over a clone of a bare remote, with only the
   command runner and the markdownlint lookup faked. An uncommitted new test file
@@ -165,6 +182,18 @@ container runs the unit tests and markdownlint after the agent.
   outage is `infrastructure`. The earlier test that asserted the arguments
   handed to a fake gate was removed (its stdin, `shellcheckOnly` and base-branch
   behaviour is now shown by those outcomes).
+- Uncommitted-merge tests (`babysitter_tree_gate_test.ts`, real git and the real
+  gate over `git merge --no-commit` of a base holding a red test and a markdown
+  error): the base-owned test and markdown error do not block (`clean`, no check
+  run); an edit on top of the merge to a base file whose test fails the same way
+  at the base tip is a warning (`passed`); a failure the repair adds (a test
+  failing only in the tree, a markdown error in a new file) still blocks.
+  Reverting the gate to the previous code turns the first two red.
+- Marker tests (`babysitter_repair_4738_test.ts`): a non-READY reply, and a READY
+  reply, that start with the infrastructure headline are written with the
+  marker neutralised, so `isGateInfrastructureResponse` is false and the host
+  records a substantive attempt; a withheld response carries the gate's marker
+  once.
 - Host test (`babysitter_fix_orchestration_test.ts`): a response withheld
   because the gate could not run records an `infrastructure` attempt with
   backoff and no substantive attempt; one withheld because a check failed stays
@@ -198,8 +227,10 @@ container runs the unit tests and markdownlint after the agent.
   `startBabysitterAgent` (1 red); drop the call-site
   `baseBranch: pr.baseRefName` (1 red). The `tar` timeout branch is now driven
   with an aborted signal.
-- Removed from existing tests: none. `babysitter_repair_4738_test.ts` changed
-  one harness `return` line to also return `treeCalls`; no assertion was edited.
+- Removed from existing tests: none from the base. This PR's own two
+  mock-argument tests were replaced by the outcome tests above (the PR added
+  them in an earlier push). `babysitter_repair_4738_test.ts` changed one harness
+  `return` line to also return `treeCalls`; no base assertion was edited.
 - Callers checked for the new `baseBranch`: `fix()` in `fleet_pr_babysitter.ts`
   (the one production caller of `startBabysitterAgent`) passes it; the
   Apple-helper and plain argv builds in `runBabysitterRepairContainer` both pass

@@ -418,10 +418,15 @@ no check. The gate runs the unit tests selected for the changed files
 selection as the worker's other repair pushes; a change to a prompt, `deno.json`
 or `deno.lock` runs the whole suite), markdownlint when configured, the
 ShellCheck policy and the cargo-deny gate. It does not run the formatters or
-linters. A failing unit test that also fails the same way at the merge-base with
-the PR base is a warning, as in the other repair pushes. Without
-`--base-branch`, which the host passes from the PR's base branch, the gate has no
-baseline and a failing test blocks. A check that cannot run, such as a missing
+linters. When the repair has merged the PR's base without committing, the gate
+checks only the paths whose working-tree content differs from the merged base
+commit, or that are untracked, so a file the merge merely brings in is the
+base's and is neither checked nor compared. The baseline is then the merged base
+commit (the gate names it beside the head, so the merge-base is the base tip),
+not the PR's old fork point. A failing unit test that also fails the same way at
+the merge-base with the PR base is a warning, as in the other repair pushes.
+Without `--base-branch`, which the host passes from the PR's base branch, the
+gate has no baseline and a failing test blocks. A check that cannot run, such as a missing
 tool or a module-fetch outage, is an infrastructure fault, not a pass. The
 container's `.git` is mounted read-only, so the baseline is a `git archive`
 extraction into a temporary directory under the container's temp dir, not a git
@@ -433,7 +438,10 @@ and quotes the cause; nothing is pushed. A failed check
 ("agent did not report that its fix was ready"). A gate that could not run
 (`pre-push checks could not run`, for example a module-fetch outage) is raised as
 an infrastructure failure: it backs off and retries, and spends no repair
-attempt.
+attempt. Only the gate writes the `[BABYSITTER_GATE_BLOCKED]` text: the
+in-container command replaces it in the agent's own reply on every path, so an
+agent that fails without `BABYSITTER_READY` cannot pass its failure off as an
+infrastructure outage.
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container

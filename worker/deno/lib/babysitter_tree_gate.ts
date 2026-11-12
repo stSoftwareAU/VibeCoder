@@ -47,6 +47,15 @@ export function isGateInfrastructureResponse(response: string): boolean {
   );
 }
 
+/**
+ * The agent's own text with the gate marker defused. Only the gate may write
+ * the marker, as the host reads its headline to tell an outage from a verdict,
+ * so agent text never reaches a response with it intact (Issue #4930).
+ */
+export function neutraliseGateMarker(text: string): string {
+  return text.replaceAll(BABYSITTER_GATE_BLOCKED_MARKER, "gate blocked marker");
+}
+
 /** The READY line the host looks for; never allowed in a withheld message. */
 const READY_LINE = "BABYSITTER_READY";
 
@@ -61,6 +70,9 @@ const MESSAGE_CHARS = 1500;
 
 /** The pseudo ref the gate is asked to check, as git's pre-push stdin names it. */
 const TREE_REF = "refs/heads/babysitter-tree";
+
+/** The pseudo ref naming the base commit an uncommitted merge brings in. */
+const MERGE_REF = "refs/heads/babysitter-merge-head";
 
 const SHA_PATTERN = /^[0-9a-f]{40,64}$/;
 
@@ -168,14 +180,16 @@ export async function defaultExtractTree(
 
 /**
  * The paths `git status --porcelain=v1 -z` reports, without the scratch files.
- * `paths` holds every touched path; `added` holds the untracked or new ones.
+ * `paths` holds every touched path; `added` holds the untracked or new ones;
+ * `untracked` holds those git does not know at all.
  * A rename or copy record is `XY new\0orig`, so the next field is taken too.
  */
 function parseStatus(
   output: string,
-): { paths: string[]; added: string[] } {
+): { paths: string[]; added: string[]; untracked: Set<string> } {
   const paths = new Set<string>();
   const added = new Set<string>();
+  const untracked = new Set<string>();
   const records = output.split("\0");
   for (let i = 0; i < records.length; i++) {
     const record = records[i]!;
@@ -185,21 +199,26 @@ function parseStatus(
     }
     const xy = record.slice(0, 2);
     const path = record.slice(3);
-    const fields = [{ path, isNew: xy === "??" || /[ARC]/.test(xy) }];
+    const fields = [{
+      path,
+      isNew: xy === "??" || /[ARC]/.test(xy),
+      untracked: xy === "??",
+    }];
     if (/[RC]/.test(xy)) {
       const original = records[++i];
       if (original === undefined || original === "") {
         throw new Error(`git status rename without an original path: ${path}`);
       }
-      fields.push({ path: original, isNew: false });
+      fields.push({ path: original, isNew: false, untracked: false });
     }
     for (const field of fields) {
       if (SCRATCH_PATHS.has(field.path)) continue;
       paths.add(field.path);
       if (field.isNew) added.add(field.path);
+      if (field.untracked) untracked.add(field.path);
     }
   }
-  return { paths: [...paths], added: [...added] };
+  return { paths: [...paths], added: [...added], untracked };
 }
 
 /** Whether `target` is a path strictly under `root` (no traversal). */
@@ -273,6 +292,58 @@ function gateGit(opts: {
 }
 
 /**
+ * The commit an uncommitted `git merge --no-commit` is merging in, or
+ * undefined when no merge is in progress. Any other failure is thrown, so an
+ * unreadable merge state is never taken for no merge.
+ */
+async function readMergeHead(
+  git: PrePushGit,
+  dir: string,
+): Promise<string | undefined> {
+  const result = await git(["rev-parse", "-q", "--verify", "MERGE_HEAD"], dir);
+  const sha = result.stdout.trim();
+  if (result.code === 0 && SHA_PATTERN.test(sha)) return sha;
+  if (result.code === 1 && sha === "") return undefined;
+  throw new Error(
+    `git rev-parse MERGE_HEAD failed (exit ${result.code}): ${result.stderr.trim()}`,
+  );
+}
+
+/**
+ * The status paths the agent's repair owns while a merge is in progress: those
+ * that are untracked or whose working-tree content differs from `mergeHead`.
+ * A path the merge merely brought in is the base's, so it is neither checked
+ * nor compared (the host's `checkBaseline` reads the merged tree the same way).
+ */
+async function pathsBeyondMerge(
+  git: PrePushGit,
+  dir: string,
+  mergeHead: string,
+  status: { paths: string[]; untracked: Set<string> },
+): Promise<string[]> {
+  const diff = await git(
+    [
+      "--no-optional-locks",
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      mergeHead,
+    ],
+    dir,
+  );
+  if (diff.code !== 0) {
+    throw new Error(
+      `git diff against MERGE_HEAD failed (exit ${diff.code}): ${diff.stderr.trim()}`,
+    );
+  }
+  const differing = new Set(diff.stdout.split("\0").filter((p) => p !== ""));
+  return status.paths.filter((path) =>
+    status.untracked.has(path) || differing.has(path)
+  );
+}
+
+/**
  * Sorted, comma-separated list of the first {@link CHANGED_PATHS_NAMED} paths
  * the checks added or removed, with a count of any beyond them.
  */
@@ -342,8 +413,18 @@ export async function runBabysitterTreeGate(
         `git status failed (exit ${status.code}): ${status.stderr.trim()}`,
       );
     }
-    const { paths, added } = parseStatus(status.stdout);
+    const parsed = parseStatus(status.stdout);
+    const { paths, added } = parsed;
     if (paths.length === 0) return { kind: "clean" };
+
+    // An uncommitted merge of the PR's base lists every file it brings in. The
+    // gate sees only what the repair changed on top of it, and compares at the
+    // base commit the merge brings in, not the PR's old fork point.
+    const mergeHead = await readMergeHead(git, dir);
+    const gatePaths = mergeHead === undefined
+      ? paths
+      : await pathsBeyondMerge(git, dir, mergeHead, parsed);
+    if (gatePaths.length === 0) return { kind: "clean" };
 
     const head = await git(["rev-parse", "HEAD"], dir);
     const sha = head.stdout.trim();
@@ -358,14 +439,17 @@ export async function runBabysitterTreeGate(
     const adapter = gateGit({
       real: git,
       root: tempRoot,
-      paths,
+      paths: gatePaths,
       added,
       removeTree,
       extractTree,
     });
     const result = await gate({
       cwd: dir,
-      stdin: `${TREE_REF} ${sha} ${TREE_REF} ${sha}\n`,
+      stdin: `${TREE_REF} ${sha} ${TREE_REF} ${sha}\n` +
+        (mergeHead === undefined
+          ? ""
+          : `${MERGE_REF} ${mergeHead} ${TREE_REF} ${sha}\n`),
       preFlightCommands: [],
       shellcheckOnly: true,
       git: adapter,
@@ -442,5 +526,5 @@ export function withholdReady(
     : INFRASTRUCTURE_HEADLINE;
   return `${BABYSITTER_GATE_BLOCKED_MARKER} ${headline}: ${
     boundedMessage(outcome.message)
-  }\n\n${withoutReadyLines(output)}`;
+  }\n\n${neutraliseGateMarker(withoutReadyLines(output))}`;
 }

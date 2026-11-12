@@ -19,6 +19,14 @@ import {
 } from "../lib/babysitter_tree_gate.ts";
 import { isBabysitterReady } from "../lib/babysitter_ready.ts";
 import {
+  agentClone,
+  BAR_FAILURE,
+  editFoo,
+  FOO_FAILURE,
+  git,
+  mergeNewerBase,
+} from "./support/babysitter_tree_fixture.ts";
+import {
   defaultPrePushGit,
   PrePushGateInfrastructureError,
   type PrePushGit,
@@ -27,25 +35,6 @@ import {
 
 type GateOptions = Parameters<typeof runPrePushGate>[0];
 type GateResult = Awaited<ReturnType<typeof runPrePushGate>>;
-
-const decoder = new TextDecoder();
-
-/** Runs real git in `cwd` and returns its trimmed stdout; throws on failure. */
-async function git(cwd: string, ...args: string[]): Promise<string> {
-  const out = await new Deno.Command("git", {
-    args,
-    cwd,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  if (out.code !== 0) {
-    throw new Error(
-      `git ${args.join(" ")} failed: ${decoder.decode(out.stderr)}`,
-    );
-  }
-  return decoder.decode(out.stdout).trim();
-}
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -285,57 +274,6 @@ Deno.test("a worktree add or remove outside the temp root is refused (#4930)", a
   });
 });
 
-const FOO_FAILURE =
-  "FAILURES\n\nfoo works => ./tests/foo_test.ts:3:6\n\nFAILED | 0 passed | 1 failed\n";
-
-/**
- * A clone of a bare remote whose `main` holds a Deno root at worker/deno (a
- * `foo` source and its test) and a markdownlint config, left clean. `edit` then
- * makes the agent's uncommitted changes.
- */
-async function agentClone(
-  edit: (clone: string) => Promise<void>,
-  body: (clone: string) => Promise<void>,
-): Promise<void> {
-  const top = await Deno.makeTempDir({ prefix: "tree-gate-real-4930-" });
-  try {
-    const clone = `${top}/clone`;
-    await git(top, "init", "-q", "--bare", "-b", "main", `${top}/remote.git`);
-    await git(top, "clone", "-q", `${top}/remote.git`, clone);
-    await git(clone, "config", "user.email", "tree-gate@example.invalid");
-    await git(clone, "config", "user.name", "Tree Gate Test");
-    await git(clone, "config", "commit.gpgsign", "false");
-    await Deno.mkdir(`${clone}/worker/deno/lib`, { recursive: true });
-    await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
-    await Deno.writeTextFile(
-      `${clone}/worker/deno/deno.json`,
-      JSON.stringify({ tasks: { "test:unit": "x" } }),
-    );
-    await Deno.writeTextFile(
-      `${clone}/worker/deno/lib/foo.ts`,
-      "export const foo = 1;\n",
-    );
-    await Deno.writeTextFile(
-      `${clone}/worker/deno/tests/foo_test.ts`,
-      "export {};\n",
-    );
-    await Deno.writeTextFile(`${clone}/.markdownlint-cli2.jsonc`, "{}\n");
-    await git(clone, "add", "-A");
-    await git(clone, "commit", "-q", "-m", "base");
-    await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
-    await edit(clone);
-    await body(clone);
-  } finally {
-    await Deno.remove(top, { recursive: true }).catch(() => {});
-  }
-}
-
-const editFoo = (clone: string) =>
-  Deno.writeTextFile(
-    `${clone}/worker/deno/lib/foo.ts`,
-    "export const foo = 2;\n",
-  );
-
 /**
  * Runs the real pre-push gate through the adapter with only the command runner
  * faked. `unit` answers the deno test command in the checkout it runs in;
@@ -443,6 +381,81 @@ Deno.test("without a base branch the same failing test blocks (#4930)", async ()
 
     assertEquals(outcome.kind, "blocked");
     assertEquals(warnings, []);
+  });
+});
+
+/** What a base that has moved on brings in: a red test and a markdown error. */
+const RED_BASE: Record<string, string> = {
+  "worker/deno/lib/bar.ts": "export const bar = 1;\n",
+  "worker/deno/tests/bar_test.ts": "export {};\n",
+  "BASE.md": "#Bad\n",
+};
+
+Deno.test("files an uncommitted merge brings in from a red base do not block the repair (#4930)", async () => {
+  await agentClone(
+    (clone) => mergeNewerBase(clone, RED_BASE),
+    async (clone) => {
+      const { outcome, commands } = await realGate(
+        clone,
+        "main",
+        () => ({ code: 1, stderr: BAR_FAILURE }),
+        1,
+      );
+
+      assertEquals(outcome.kind, "clean");
+      assertEquals(commands, []);
+    },
+  );
+});
+
+Deno.test("a repair edit on top of an uncommitted merge is compared at the base commit it brings in (#4930)", async () => {
+  await agentClone(async (clone) => {
+    await mergeNewerBase(clone, RED_BASE);
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/lib/bar.ts`,
+      "export const bar = 2;\n",
+    );
+  }, async (clone) => {
+    const { outcome, warnings } = await realGate(
+      clone,
+      "main",
+      () => ({ code: 1, stderr: BAR_FAILURE }),
+    );
+
+    assertEquals(outcome.kind, "passed");
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0]!, "[PRE_PUSH_WARNING] deno test");
+  });
+});
+
+Deno.test("a failure the repair adds on top of an uncommitted merge still blocks (#4930)", async () => {
+  await agentClone(async (clone) => {
+    await mergeNewerBase(clone, RED_BASE);
+    await editFoo(clone);
+    await Deno.writeTextFile(`${clone}/NOTES.md`, "#Bad\n");
+  }, async (clone) => {
+    const unit = (cwd: string | undefined) =>
+      Deno.readTextFileSync(`${cwd}/lib/foo.ts`).includes("= 1")
+        ? { code: 0 }
+        : { code: 1, stderr: FOO_FAILURE };
+
+    const testFailure = await realGate(clone, "main", unit);
+    assertEquals(testFailure.outcome.kind, "blocked");
+    assertStringIncludes(
+      (testFailure.outcome as { message: string }).message,
+      "tests/foo_test.ts",
+    );
+
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/lib/foo.ts`,
+      "export const foo = 1;\n",
+    );
+    const markdownFailure = await realGate(clone, "main", unit, 1);
+    assertEquals(markdownFailure.outcome.kind, "blocked");
+    assertStringIncludes(
+      (markdownFailure.outcome as { message: string }).message,
+      "/fake/markdownlint",
+    );
   });
 });
 
