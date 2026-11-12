@@ -516,7 +516,7 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Six checks run, each only when it applies:
+The drift-check stages are listed below; removed and retired checks are marked:
 
 1. **Model drift pass** — only when the push changes a code file, a test
    file, a recognised source file (`isProseSourcePath`, including source under
@@ -636,13 +636,11 @@ and is gone after it — a finding whose file was not one of the files the
 question was asked about is never read back, so it stays reported
 regardless of the recovery turn. A stale quoted sentence counts as fixed
 only when it is actually gone after the recovery turn — a correction
-appended below it leaves it standing, so it stays reported. A line-citation
-hit counts as fixed only when the re-run check no longer reports it. A
-model pass that returns no verdict is not a hit and does not trigger a
-recovery turn on its own; it goes straight to the reply note, and a named
-summary the quoted-sentence or line-citation check could not read at the
-head goes there too, along with any not-checked citation case the
-line-citation check reported. Whatever remains after the recovery turn —
+appended below it leaves it standing, so it stays reported. A model pass
+that returns no verdict is not a hit and does not trigger a recovery turn
+on its own; it goes straight to the reply note, and a named summary the
+quoted-sentence check could not read at the head goes there too.
+Whatever remains after the recovery turn —
 plus a model pass that returned no verdict and a summary that could not be
 checked — is appended to `.pr_response_message` under `### Drift check`, so it
 reaches the PR reply instead of being pushed silently.
