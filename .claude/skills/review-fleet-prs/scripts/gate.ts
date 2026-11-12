@@ -1293,6 +1293,7 @@ export async function pass(
           reviewer,
           {
             auditDir: `${dir}/audit`,
+            counterDir: `${dir}/audit`,
             runId: `reviewer:gate:${new Date(now()).toISOString()}`,
           },
         );

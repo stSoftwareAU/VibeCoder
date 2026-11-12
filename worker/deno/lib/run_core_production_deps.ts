@@ -3148,6 +3148,7 @@ export async function createProductionRunCoreDeps(
         const execResult = await executePrBranchUpdates(actions, {
           workDir,
           baseRefreshSource: "branch-update-loop",
+          baseRefreshCounterDir: workDir,
           logger,
           workerId,
           // Issue #335: count consecutive failures per (repo, branch) so a

@@ -307,6 +307,12 @@ export interface PrBranchExecutionDeps {
   workDir: string;
   /** Lane name used to attribute local conflict-repair merges. */
   baseRefreshSource?: string;
+  /**
+   * Directory the base-refresh decision counters are persisted to: the
+   * production callers pass `WORK_DIR`. Unset (as in tests), a decision is
+   * counted in memory only, so no test writes a counters file (PR #5059 review).
+   */
+  baseRefreshCounterDir?: string;
   /** Logger for diagnostic output. */
   logger: Logger;
   /** Set up a repository (clone/update). Returns repo path on success. */
@@ -1366,7 +1372,10 @@ export async function executePrBranchUpdates(
         base: action.baseBranch,
         reason,
       });
-      await persistBaseRefreshCounter(deps.workDir, { source, outcome });
+      await persistBaseRefreshCounter(deps.baseRefreshCounterDir, {
+        source,
+        outcome,
+      });
     }
 
     if (updateResult.ok) {

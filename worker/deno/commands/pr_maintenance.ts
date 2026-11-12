@@ -458,6 +458,7 @@ export const prMaintenanceCommand: PrMaintenanceCommand = {
       const execResult = await executePrBranchUpdates(actions, {
         workDir,
         baseRefreshSource: "pr-maintenance",
+        baseRefreshCounterDir: workDir,
         logger,
         workerId,
         // Issue #335: count consecutive failures per (repo, branch) so a

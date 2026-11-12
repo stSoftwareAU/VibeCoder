@@ -637,7 +637,11 @@ Deno.test("executePrBranchUpdates records a successful local conflict repair in 
   try {
     const result = await executePrBranchUpdates(
       [makeAction({ reason: "conflicting", behindBy: 0 })],
-      makeExecDeps({ workDir, baseRefreshSource: "pr-maintenance" }),
+      makeExecDeps({
+        workDir,
+        baseRefreshCounterDir: workDir,
+        baseRefreshSource: "pr-maintenance",
+      }),
     );
     assertEquals(result.ok, true);
     const decision = lines.find((line) => line.startsWith("[base-refresh]"));

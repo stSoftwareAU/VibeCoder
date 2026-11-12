@@ -78,6 +78,12 @@ export type BranchUpdateResult =
 export interface BranchUpdateAudit {
   auditDir: string;
   runId: string;
+  /**
+   * Directory the base-refresh decision counters are persisted to. gate.ts and
+   * post.ts set it; left unset (as in tests), a decision is counted in memory
+   * only, so no test writes a counters file (PR #5059 review).
+   */
+  counterDir?: string;
 }
 
 // Asks GitHub to merge the base branch into the PR. `expected_head_sha`
@@ -165,7 +171,7 @@ export async function updateBranch(
     ownershipSleepFn,
     options,
     "review-fleet-prs",
-    audit.auditDir,
+    audit.counterDir,
   );
   return result.ok
     ? { updated: true }

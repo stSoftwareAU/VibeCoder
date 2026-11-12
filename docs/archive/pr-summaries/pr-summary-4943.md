@@ -247,6 +247,19 @@ Fixed after the PR #5059 review (tests are under `worker/deno/tests/`):
   creates `/tmp/test-work-root/base_refresh_counters.json` (it did before this
   change). The direct-library counter test passes the new dependency.
 
+- PR #5059 review, fourth round. The other two new counter writers no longer
+  default to a directory tests share. `executePrBranchUpdates` persists to a
+  new optional `PrBranchExecutionDeps.baseRefreshCounterDir`, which
+  `run_core_production_deps.ts` and `commands/pr_maintenance.ts` set to
+  `WORK_DIR`; the reviewer script's `updateBranch` persists to a new optional
+  `BranchUpdateAudit.counterDir`, which `gate.ts` and `post.ts` set to their
+  audit directory. Tests leave both unset and count in memory only. Running
+  `pr_branch_update_test.ts`, `pr_branch_update_integration_test.ts` and
+  `review_fleet_prs_backlog_3225_test.ts` no longer creates `/tmp/work`,
+  `/tmp/test-work`, `/tmp/integration-test` or a relative `unused/` directory
+  (the old code created `unused/base_refresh_counters.json` in the checkout).
+  The executor's durable-tally test passes the new dependency.
+
 ## Merge verification
 
 The worker will rerun the full quality gate, completion checks and pre-PR
