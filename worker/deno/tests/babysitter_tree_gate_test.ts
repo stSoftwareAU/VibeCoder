@@ -735,22 +735,14 @@ Deno.test("a hooks path configured for git runs no hook in the baseline checkout
       `#!/bin/sh\ntouch '${ran}'\n`,
     );
     await Deno.chmod(`${hooks}/post-checkout`, 0o755);
-    await Deno.writeTextFile(
-      `${root}/gitconfig`,
-      `[core]\n\thooksPath = ${hooks}\n`,
-    );
     const dest = `${root}/base`;
     await Deno.mkdir(dest);
     const head = await git(repo, "rev-parse", "HEAD");
-    const previous = Deno.env.get("GIT_CONFIG_GLOBAL");
-    Deno.env.set("GIT_CONFIG_GLOBAL", `${root}/gitconfig`);
-    let checkedOut;
-    try {
-      checkedOut = await defaultCheckoutTree(repo, head, dest);
-    } finally {
-      if (previous === undefined) Deno.env.delete("GIT_CONFIG_GLOBAL");
-      else Deno.env.set("GIT_CONFIG_GLOBAL", previous);
-    }
+    // The hooks path comes in as the outermost `-c`, ahead of the adapter's own,
+    // so the test sets no process environment.
+    const hooked: PrePushGit = (args, cwd) =>
+      defaultPrePushGit(["-c", `core.hooksPath=${hooks}`, ...args], cwd);
+    const checkedOut = await defaultCheckoutTree(repo, head, dest, hooked);
 
     assertEquals(checkedOut, { code: 0, stderr: "" });
     assertEquals(
