@@ -14,9 +14,9 @@ removal in security-fix discrimination now logs
 a warning and preserves the completed verdict. The suspected live-writer race
 reported in #5078 is not claimed repaired. Closes #5095.
 
-The pre-push blocker is also addressed: six maintenance command fixtures now
-stub empty PR listings instead of consuming the host's GitHub quota. Their
-assertions and the five downstream branch-refresh tests are preserved.
+Test fixtures no longer consume live GitHub quota: six maintenance command
+cases stub empty PR listings, and the orphaned-draft wiring test fakes the
+merge helpers it reaches after readiness. Existing assertions are preserved.
 
 ## Spec
 
@@ -116,11 +116,12 @@ flowchart LR
   - `issue_worker_wiring.ts`, where the seam was removed
   - no other caller of `invokeMutationCheck` existed
 - Modified `worker/deno/tests/pr_maintenance_command_test.ts`: six empty-scan fixtures use the existing `gh_spawn` seam; no assertion was removed. Injecting quota exhaustion before the fix produced the five reported failures; after the fix the same harness passed the file. No production quota or cache behaviour changed.
+- Modified `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts`: after readiness the sweep reaches merge helpers beyond its local `autoMergeGhCommandFn` seam. The first full gate passed both unit passes but failed this file's time-budget check. An isolated run reproduced that failure, and profiling exposed a real `gh` call. The existing shared spawn seam now routes those calls to the same fake; no assertion or budget changed. The wiring and draft self-heal tests then passed the unit gate.
 - Results on the current code:
   - `deno task test:unit` over the added/modified test files and retained CI-parser, deferred-store, pre-push, coverage-gate and subprocess regressions passed (35 files, both passes).
   - `deno check .`, `deno lint` and `deno fmt --check` from `worker/deno` passed.
   - `deno task check:manifests` passed; its existing ignored case remains ignored.
-  - `deno task pr-summary-check --base main --issue-body-file <saved issue body> --labels top-priority,failed-once` passed with no blocked or unchecked gate; reproduction status is not applicable because the issue is not bug-labelled.
+  - `deno task pr-summary-check` (base `main`, saved issue body and labels `top-priority,failed-once`) passed with no blocked or unchecked gate; reproduction status is not applicable because the issue is not bug-labelled.
 - Production defaults still wire the retained coverage and discrimination runners through `defaultMutationRunnerSeams`. The `collectRunOwnBaseline` caller is the production drift check. The retained workflow helpers are consumed by `ci_cargo_checks.ts`.
 - Persistence compatibility is covered by the retired-key loader test and `worker/deno/tests/deferred_pr_drain_test.ts::deferred drain - a record persisted with draft: true before Issue #5095 is still raised as a draft (Issue #4617)`. The record shape and key were not changed.
 
