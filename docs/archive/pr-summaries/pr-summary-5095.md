@@ -15,6 +15,7 @@ verdict. The suspected live-writer race reported in #5078 is not claimed
 repaired. Coverage repair instructions remain available alongside Standards code
 fixes, without the retired mutation instructions. Retained runner comments now
 describe their remaining callers and no longer cite the removed project loader.
+
 Closes #5095.
 
 Test fixtures no longer consume live GitHub quota: six maintenance command cases
@@ -294,9 +295,9 @@ flowchart LR
   - `timeout 1080 ./quality.sh --sequential < /dev/null` exited 0: passed with
     configured skips. Deno tests, their time-budget check, Semgrep, lint, type
     checking, formatting, manifests, Markdown and Mermaid validation passed.
-  - Targeted `deno task test:unit` over the added/modified test files and retained
-    CI-parser, deferred-store, pre-push and coverage-gate regressions passed:
-    875 parallel-pass tests and 27 serial-pass tests, with no failures.
+  - Targeted `deno task test:unit` over the added/modified test files and
+    retained CI-parser, deferred-store, pre-push and coverage-gate regressions
+    passed: 875 parallel-pass tests and 27 serial-pass tests, with no failures.
   - `deno fmt --check` and `deno lint` on the three corrected runner-comment
     files passed before the full gate.
   - The manifest stage passed; its existing ignored case remains ignored.
