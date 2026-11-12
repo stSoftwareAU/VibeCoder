@@ -283,7 +283,7 @@ async function realGate(
   clone: string,
   baseBranch: string | undefined,
   unit: (cwd: string | undefined) => { code: number; stderr?: string },
-  markdownlintExit = 0,
+  markdownlintExit: number | ((command: string) => number) = 0,
 ) {
   const commands: string[] = [];
   const warnings: string[] = [];
@@ -296,9 +296,13 @@ async function realGate(
         commands.push(command);
         const isUnit = command.startsWith("deno task test:unit");
         const isMarkdown = command.includes("/fake/markdownlint");
-        const answer = isUnit
-          ? unit(options.cwd)
-          : { code: isMarkdown ? markdownlintExit : 0 };
+        const answer = isUnit ? unit(options.cwd) : {
+          code: !isMarkdown
+            ? 0
+            : typeof markdownlintExit === "number"
+            ? markdownlintExit
+            : markdownlintExit(command),
+        };
         return Promise.resolve({
           started: true,
           stdout: "",
@@ -520,6 +524,73 @@ Deno.test("a module-fetch outage in the unit tests is infrastructure, not blocke
       (outcome as { message: string }).message,
       "JSR package manifest",
     );
+  });
+});
+
+Deno.test("a conflict the agent resolves on top of an uncommitted merge is checked, and the base's own markdown is not (#4930)", async () => {
+  // Both sides add docs/SHARED.md, so the merge stops with an unmerged index
+  // entry, as mergeBaseForRepair leaves a conflicting PR.
+  await agentClone(async (clone) => {
+    await git(clone, "checkout", "-q", "-b", "newer-base");
+    await Deno.mkdir(`${clone}/docs`);
+    await Deno.writeTextFile(`${clone}/docs/SHARED.md`, "# Shared\n\nBase\n");
+    await Deno.writeTextFile(`${clone}/docs/BASE.md`, "#Bad base heading\n");
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-q", "-m", "base moves on");
+    await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
+    await git(clone, "checkout", "-q", "main");
+    await Deno.mkdir(`${clone}/docs`, { recursive: true });
+    await Deno.writeTextFile(`${clone}/docs/SHARED.md`, "# Shared\n\nPR\n");
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-q", "-m", "PR change");
+    const merge = await new Deno.Command("git", {
+      args: ["merge", "--no-commit", "--no-ff", "refs/remotes/origin/main"],
+      cwd: clone,
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    assertEquals(merge.code, 1, "the base merge conflicts on docs/SHARED.md");
+    await Deno.writeTextFile(
+      `${clone}/docs/SHARED.md`,
+      "# Shared\n\nPR and base\n",
+    );
+  }, async (clone) => {
+    const { outcome, commands } = await realGate(
+      clone,
+      "main",
+      () => ({ code: 0 }),
+      (command) => command.includes("BASE.md") ? 1 : 0,
+    );
+
+    assertEquals(outcome.kind, "passed", JSON.stringify(outcome));
+    const markdown = commands.filter((c) => c.includes("/fake/markdownlint"));
+    assert(
+      markdown.some((c) => c.includes("docs/SHARED.md")),
+      `the resolved conflict is linted: ${markdown}`,
+    );
+    assertEquals(markdown.filter((c) => c.includes("BASE.md")), []);
+  });
+});
+
+Deno.test("an unreadable MERGE_HEAD is infrastructure, and the gate is not called (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/committed.txt`, "changed\n");
+    const { deps, calls } = depsFor(root, () => Promise.resolve(PASS), {
+      git: (args, cwd) =>
+        args.includes("MERGE_HEAD")
+          ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: broken" })
+          : defaultPrePushGit(args, cwd),
+    });
+
+    const outcome = await runBabysitterTreeGate(repo, "main", deps);
+
+    assertEquals(outcome.kind, "infrastructure");
+    assertStringIncludes(
+      (outcome as { message: string }).message,
+      "MERGE_HEAD failed (exit 128): fatal: broken",
+    );
+    assertEquals(calls.length, 0);
   });
 });
 
@@ -865,6 +936,22 @@ Deno.test("withholdReady neutralises the READY text inside the message (#4930)",
   );
   assertEquals(result.includes("BABYSITTER_READY"), false);
   assertEquals(isBabysitterReady(result), false);
+});
+
+Deno.test("withholdReady neutralises a gate marker a check's message quotes (#4930)", () => {
+  const result = withholdReady("ok\nBABYSITTER_READY", {
+    kind: "blocked",
+    message:
+      `a test printed ${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks could not run: x`,
+  });
+
+  assertEquals(result.split(BABYSITTER_GATE_BLOCKED_MARKER).length - 1, 1);
+  assert(
+    result.startsWith(
+      `${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks failed:`,
+    ),
+  );
+  assertEquals(isGateInfrastructureResponse(result), false);
 });
 
 Deno.test("withholdReady adds only the marker to output without READY (#4930)", () => {

@@ -3349,18 +3349,18 @@ export async function fix(
       break;
     }
     const response = await readAgentResponse(exchange);
-    if (
-      !isBabysitterReady(response) && isGateInfrastructureResponse(response)
-    ) {
+    if (!isBabysitterReady(response)) {
       // The in-container pre-push gate could not run (Issue #4930): an outage,
       // not a verdict on the agent's fix, so no substantive attempt is spent.
-      throw new BabysitterFailure(
-        "the in-container pre-push checks could not run; refusing to push. " +
-          "Untrusted gate message: " + redactSecrets(response).slice(0, 2000),
-        "infrastructure",
-      );
-    }
-    if (!isBabysitterReady(response)) {
+      // The container neutralises the gate's marker in the agent's own text,
+      // so only the gate can open a response with this headline.
+      if (isGateInfrastructureResponse(response)) {
+        throw new BabysitterFailure(
+          "the in-container pre-push checks could not run; refusing to push. " +
+            "Untrusted gate message: " + redactSecrets(response).slice(0, 2000),
+          "infrastructure",
+        );
+      }
       throw new BabysitterFailure(
         "agent did not report that its fix was ready; refusing to push. " +
           "Untrusted agent explanation: " +

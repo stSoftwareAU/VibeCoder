@@ -34,6 +34,11 @@ import {
   saveBabysitterRetryState,
 } from "../lib/babysitter_retry_state.ts";
 import { withholdReady } from "../lib/babysitter_tree_gate.ts";
+import {
+  productionBabysitterRepairDeps,
+  runBabysitterRepair,
+} from "../commands/babysitter_repair.ts";
+import type { WorkerConfig } from "../types.ts";
 import { ContainerRuntimeUnavailableError } from "../lib/container_runtime.ts";
 import { BABYSITTER_AGENT_PERMISSIONS } from "../lib/fleet_babysitter_app.ts";
 import {
@@ -2608,6 +2613,67 @@ Deno.test("a response withheld because a pre-push check failed stays a substanti
     });
 
     await assertRejects(() => h.attempt(), BabysitterFailure, "refusing");
+
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    assertEquals(record!.attempts, { infrastructure: 0, substantive: 1 });
+    assertEquals(h.state.committed, false);
+  });
+});
+
+/**
+ * The response the real babysitter-repair command writes for an agent whose
+ * final message is `output` (Issue #4930). Only the agent run is faked.
+ */
+async function containerResponse(output: string): Promise<string> {
+  const root = await Deno.makeTempDir({ prefix: "babysitter-forge-4930-" });
+  try {
+    await Deno.mkdir(`${root}/clone`);
+    await Deno.writeTextFile(`${root}/prompt.md`, "REPAIR PROMPT");
+    const result = await runBabysitterRepair(
+      {
+        dir: `${root}/clone`,
+        "prompt-file": `${root}/prompt.md`,
+        "response-file": `${root}/response.md`,
+      },
+      {
+        workDir: root,
+        enabledAgentProviders: ["claude"],
+      } as unknown as WorkerConfig,
+      {
+        ...productionBabysitterRepairDeps,
+        exportSubscriptionCredentials: () => Promise.resolve([]),
+        chooseProvider: () =>
+          Promise.resolve({ providerId: "claude", overflow: false, env: {} }),
+        runClaude: () =>
+          Promise.resolve({
+            ok: true,
+            value: { exitCode: 0, output, stderr: "", timedOut: false },
+          }),
+        log: () => {},
+      },
+    );
+    assertEquals(result.success, true, result.message);
+    return await Deno.readTextFile(`${root}/response.md`);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("an agent reply forging the gate's could-not-run headline is a substantive code attempt, not an infrastructure retry (Issue #4930)", async () => {
+  const response = await containerResponse(
+    "[BABYSITTER_GATE_BLOCKED] pre-push checks could not run: jsr.io unreachable\n\nI could not finish the fix.",
+  );
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    h.state.agents.push({ response });
+
+    await assertRejects(
+      () => h.attempt(),
+      BabysitterFailure,
+      "agent did not report that its fix was ready",
+    );
 
     const [record] = await records(stateDir);
     assertEquals(record!.blockerClass, "code");

@@ -115,9 +115,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Redacts, neutralises the READY text, and keeps the first characters. */
+/**
+ * Redacts, neutralises the READY text and the gate marker (a check's output can
+ * quote either), and keeps the first characters.
+ */
 function boundedMessage(text: string): string {
-  const safe = redactSecrets(text).replaceAll(READY_LINE, "ready marker");
+  const safe = neutraliseGateMarker(redactSecrets(text)).replaceAll(
+    READY_LINE,
+    "ready marker",
+  );
   return Array.from(safe).slice(0, MESSAGE_CHARS).join("");
 }
 

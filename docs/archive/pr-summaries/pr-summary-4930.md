@@ -164,8 +164,13 @@ container runs the unit tests and markdownlint after the agent.
 ## Test Plan
 
 - `cd worker/deno && deno task test:unit tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts tests/babysitter_ready_test.ts tests/fleet_babysitter_container_4738_test.ts tests/babysitter_fix_orchestration_test.ts tests/fleet_pr_babysitter_test.ts`:
-  each file passed when run by its author on this head (37, 42, 7, 55, 76 and 121
-  tests).
+  each file passed when run by its author on the previous head (37, 42, 7, 55,
+  76 and 121 tests). On this head the six files were re-run with `deno test`:
+  40, 42, 7, 55, 77 and 120 passed. That run had no route to jsr.io, so
+  `@std/assert`, `@std/crypto` and `@std/yaml` were local stand-ins
+  (`--no-lock`); the one `fleet_pr_babysitter_test.ts` failure, `babysitter
+  default heartbeat resolves its checkout revision`, is that subprocess failing
+  to fetch `@std/yaml`, and fails the same way on the previous head there.
 - `deno fmt`, `deno lint`, `deno check` of the changed files and
   `markdownlint-cli2` of the changed doc passed on the working tree. The full
   `./quality.sh` was not re-run for this review round; CI runs it on the pushed
@@ -187,27 +192,40 @@ container runs the unit tests and markdownlint after the agent.
   error): the base-owned test and markdown error do not block (`clean`, no check
   run); an edit on top of the merge to a base file whose test fails the same way
   at the base tip is a warning (`passed`); a failure the repair adds (a test
-  failing only in the tree, a markdown error in a new file) still blocks.
-  Reverting the gate to the previous code turns the first two red.
+  failing only in the tree, a markdown error in a new file) still blocks; a
+  conflict on `docs/SHARED.md` that the agent resolves (an unmerged index entry
+  under `merge --no-commit`) is linted while the base's own broken `BASE.md` is
+  not; an unreadable `MERGE_HEAD` is `infrastructure` with the gate not called.
+  Reverting the gate to the previous code turns the first two red; dropping the
+  merge scoping turns the first and the conflict test red.
 - Marker tests (`babysitter_repair_4738_test.ts`): a non-READY reply, and a READY
   reply, that start with the infrastructure headline are written with the
-  marker neutralised, so `isGateInfrastructureResponse` is false and the host
-  records a substantive attempt; a withheld response carries the gate's marker
-  once.
+  marker neutralised, so `isGateInfrastructureResponse` is false; a withheld
+  response carries the gate's marker once, also when a check's message quotes
+  the marker (`babysitter_tree_gate_test.ts`).
 - Host test (`babysitter_fix_orchestration_test.ts`): a response withheld
   because the gate could not run records an `infrastructure` attempt with
   backoff and no substantive attempt; one withheld because a check failed stays
-  a substantive `code` attempt.
+  a substantive `code` attempt; an agent reply that forges the could-not-run
+  headline, written by the real `runBabysitterRepair`, is a substantive `code`
+  attempt (red when the command writes the agent's output unneutralised).
 - Mutation survivors killed: `treeGate` in the production deps
   (`babysitter_repair_4738_test.ts`); `--untracked-files=all` (a file inside a
   new untracked directory is listed by path); `defaultMakeTempDir`'s return (the
   default temp root is a real directory, handed to the adapter, then removed);
   `defaultRemoveTree`'s NotFound branch (a root already gone is not a failure);
   `defaultExtractTree`'s archive-failure return and its timeout result (`code`,
-  `stderr`; driven with an aborted signal). Exempt (untestable):
+  `stderr`; driven with an aborted signal). The redundant
+  `!isBabysitterReady(response)` operand in `fix()` that survived mutation is
+  gone: the infrastructure check is nested under the missing-READY branch.
+  Exempt (untestable):
   `worker/deno/lib/babysitter_tree_gate.ts` `--porcelain=v1` (git's `-z` implies
   the porcelain v1 format, so removing it changes nothing) and the `tar` call's
-  `stdin: "null"` (`tar -xf <file>` never reads stdin, so no outcome differs).
+  `stdin: "null"` (`tar -xf <file>` never reads stdin, so no outcome differs);
+  `pathsBeyondMerge`'s `--no-optional-locks` (it matters only on the container's
+  read-only `.git`, where git skips the optional index refresh anyway) and
+  `--no-renames` (an agent's move leaves an unstaged deletion and an untracked
+  file, which `git diff <commit>` never pairs as a rename).
 - Behaviour tests (names end `(#4930)`): status parsing (modified, deleted,
   renamed, untracked, scratch files); each git interception (`log`, `ls-files`,
   git-common-dir, `worktree add` really extracting the fork commit via
