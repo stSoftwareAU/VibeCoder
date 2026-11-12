@@ -354,6 +354,9 @@ State is `present` when the path exists and names the plugin today, and
 | Command | the standalone CI-fix command that passes `config.tokenEconomizer` | `worker/deno/commands/pr_ci_processor.ts` | present |
 | Test | the launch decision's tests | `worker/deno/tests/token_economizer_plugin_test.ts` | present |
 | Test | the spawn-wiring tests | `worker/deno/tests/token_economizer_plugin_wiring_test.ts` | present |
+| Test | the implementation spawn sites' tests | `worker/deno/tests/token_economizer_impl_callsites_test.ts` | present |
+| Test | the PR-feedback and CI-fix spawn sites' tests | `worker/deno/tests/token_economizer_reactive_callsites_test.ts` | present |
+| Test | the production dependency pass-through tests | `worker/deno/tests/token_economizer_production_deps_test.ts` | present |
 | Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | present |
 | Runtime directory | `.token-economizer/` under the work directory, holding the stop record and the per-spawn state directories; the launch decision creates it at run time | `worker/deno/lib/token_economizer_plugin.ts` | present |
 | Source | the learnings pull and push, with the gitleaks check | — | planned #4957 |
