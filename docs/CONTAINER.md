@@ -88,7 +88,6 @@ calls it. Its row says so, and it is deliberately absent from
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `rust` 1.99.1 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
-| `cargo-mutants` 27.1.0 (arm64 built from source)    | `cargo-mutants`                           | The Rust crates' diff-scoped mutation check (`cargo mutants --in-diff`, Issue #3393)              |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
 | `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
@@ -105,7 +104,9 @@ calls it. Its row says so, and it is deliberately absent from
 | `semgrep` 1.182.1 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 | `graft` 0.25.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
-`rust`, `cargo-deny`, `cargo-mutants`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
+`cargo-mutants` is no longer installed: the automatic mutation check it backed was retired from the completion and review-fix workflows (Issue #5095).
+
+`rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
 `bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci`, `tokeneconomizer` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
@@ -1327,15 +1328,15 @@ reading of `host-disk.json` can be minutes old (the launcher refreshes it on
 `HOST_DISK_REFRESH_SECONDS`, default five minutes), so the claim gate did not
 drain the pool until after the filesystem had gone read-only.
 
-Before an agent invocation in a checkout, a quality-gate run, a mutation
-check or a discrimination `cargo`/`deno`, the worker reads the same monitor
+Before an agent invocation in a checkout, a quality-gate run or a
+discrimination `cargo`/`deno`, the worker reads the same monitor
 with the cache skipped (`check({ force: true })`) and parks the step when the
 host is below the floor or, where the trim is refused, short of the floor
 plus the 25 GB headroom. The headroom park applies only to a checkout that
 holds a cargo project, because only cargo writes to the ephemeral cargo root;
 a Deno-only checkout is parked only below the floor (Issue #4413). The park is
 infrastructure: the reason carries
-`Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
+`Parked as infrastructure (Issue #4360)`, it is not a security-fix
 gate verdict, and it does not earn `failed-once`. It keeps the `disk-full`
 diagnostic class but is not code-fixable, so the worker does not auto-file a
 worker-fault issue for a protective release; an actual ENOSPC or read-only
@@ -1793,7 +1794,7 @@ build artefacts.
   released at every relaunch, but **within** a launch every byte written there
   is real host disk. Before a maintenance build, the host must have its floor
   **plus 25 GB of headroom** free where the trim is refused. Before each new
-  agent, quality, mutation or discrimination step, the same holds in a
+  agent, quality or discrimination step, the same holds in a
   checkout that holds a cargo project; a checkout with no cargo project is
   held to the floor only, and nothing is pruned for its step (Issue #4413).
   The cargo checkout's own target directories count towards the headroom for

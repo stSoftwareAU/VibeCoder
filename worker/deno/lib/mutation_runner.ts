@@ -495,9 +495,9 @@ const HOST_DISK_POLL_MS = 30_000;
 /**
  * Real seams: `Deno.Command` with kill-on-timeout, real clock and filesystem.
  *
- * The mutation gate runs repository code (`deno test -A`, `cargo mutants`'s
- * build scripts and tests) after the agent has written tests, so a child never
- * inherits the worker's environment: it gets
+ * The seams run repository code (`deno test -A` and `cargo test`) after the
+ * agent has written tests, so a child never inherits the worker's environment:
+ * it gets
  * {@link buildUntrustedCommandEnv}'s allowlist with `clearEnv`, the same
  * control every other repository-controlled spawn uses (Issue #572). The
  * credentials the repository declared come in as `opts.env` and are applied as

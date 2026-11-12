@@ -266,6 +266,9 @@ Deno.test("defaultMutationRunnerSeams runProcess - a declared credential reaches
 // Budget expiry: SIGTERM first, SIGKILL only after a grace period
 // ---------------------------------------------------------------------------
 
+const SOURCE =
+  "export function f(a: boolean) {\n  if (a) {\n    return 1;\n  }\n  return 2;\n}\n";
+
 const SH_ENV = { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" };
 
 Deno.test("defaultMutationRunnerSeams runProcess - a timeout sends SIGTERM first so the child can clean up", async () => {

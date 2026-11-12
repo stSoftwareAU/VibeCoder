@@ -13,8 +13,16 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { runGitCommandChecked } from "../lib/git_timeout.ts";
-import { resetRunTimelineForTests, type RunTimeline, setRunTimeline } from "../lib/run_timeline.ts";
-import { isUnsafePath, restoreTree, snapshotTree } from "../lib/mutation_tree_guard.ts";
+import {
+  resetRunTimelineForTests,
+  type RunTimeline,
+  setRunTimeline,
+} from "../lib/run_timeline.ts";
+import {
+  isUnsafePath,
+  restoreTree,
+  snapshotTree,
+} from "../lib/mutation_tree_guard.ts";
 
 function git(cwd: string, args: string[]): Promise<string> {
   return runGitCommandChecked([

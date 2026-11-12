@@ -535,7 +535,14 @@ async function discriminate(
       postFix: head.outcome,
     };
   } finally {
-    await seams.removeDir(tmp);
+    // Best-effort cleanup, as coverage_carryover_runner.ts does: the verdict is
+    // already decided, and a cleanup that races a writer (Issue #5078) must not
+    // turn a completed check into a failure.
+    try {
+      await seams.removeDir(tmp);
+    } catch {
+      // The temporary clone is left behind; the check's result stands.
+    }
   }
 }
 

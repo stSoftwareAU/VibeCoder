@@ -118,9 +118,9 @@ const AGENT_PROGRESS_LINE = /\[agent-progress\]/;
  * `evaluateCoverageCarryOverGate` returns on every path (clean, capped, budget,
  * not applicable). The mutation check label is kept for older logs written
  * before the automatic mutation check was retired (Issue #5095). The pre-PR
- * verifier, the mutation check and the coverage check log nothing as they start, so a label
- * names the last step that logged: the wedge is in or after it. An
- * `[agent-progress]` line never reaches this table: {@link hardKillLastStep}
+ * verifier, the mutation check and the coverage check log nothing as they
+ * start, so a label names the last step that logged: the wedge is in or after
+ * it. An `[agent-progress]` line never reaches this table: {@link hardKillLastStep}
  * labels it `agent turn` first, so the table needs no entry for it.
  */
 const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [

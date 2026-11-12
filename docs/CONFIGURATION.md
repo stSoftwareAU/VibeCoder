@@ -123,8 +123,7 @@ Where the credentials go depends on the account the command runs as:
 - **The worker account** (`vibe`) runs the gate commands above only where the
   image has no `agent` account at all, with the same restricted environment,
   and the declared values are placed in that environment. It also runs the
-  repository formatters, the mutation check and the coverage carry-over, which
-  never drop to `agent` and keep the environment route. A declared credential
+  repository formatters and the coverage carry-over, which never drop to `agent` and keep the environment route. A declared credential
   never changes the account a gate command runs as.
 
 The `agent` account can only run a gate command in a checkout it can reach. The
@@ -178,13 +177,11 @@ that line, the merge fast check reports the merge as `unverified`, and the
 milestone gates report `GateAccountUnavailable` and leave the check to CI. A
 credential that cannot be minted is never a pass either: the quality gate fails the phase with the mint error, and the merge conflict gate parks the merge with it.
 
-The same credentials reach the diff-scoped mutation check, which reruns the
-repository's tests; there a failed `mint` makes the check not applicable, with
-a warning, instead of failing the phase. The check also runs on review-fix
-pushes, where survivors are reported in the PR reply rather than blocking the
-push (see [Diff-scoped mutation check](mutation-check.md)).
-The [coverage carry-over check](coverage-carryover-check.md) passes the
-repository's resolved `quality_credentials` to its test runs in the same way.
+The same credentials reach the [coverage carry-over check](coverage-carryover-check.md),
+which reruns the repository's tests; there a failed `mint` makes the check not
+applicable, with a warning, instead of failing the phase. The automatic mutation
+check that once received them is retired (see
+[Diff-scoped mutation check (retired)](mutation-check.md)).
 
 
 ## Two axes of trust
@@ -4935,8 +4932,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `requires_screenshots`  | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
 | `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives. |
 | `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, that the named test, run by the worker in a disposable checkout, passes at the head and fails with the merge-base versions of the changed non-test files restored (only Deno and Rust tests can be executed today, so a security fix whose cited test is in another language blocks as not checked), and additionally that the summary states the original trigger is closed with no trivial bypass. A diff that cannot be computed, or a discrimination run that cannot execute, blocks the PR rather than passing it. Opting out also skips the executed check. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
-| `skip_mutation_check` | boolean | When `true`, skips the diff-scoped mutation check that runs before the PR is raised. The check mutates only the lines the PR adds or changes and blocks the PR when a mutation survives the covering tests. Defaults to `false`. See [Diff-scoped mutation check](mutation-check.md). |
-| `mutation_check_budget_seconds` | integer | Time budget in seconds for one mutation-check run: a positive integer, default `300`, maximum `3600`. On exhaustion the gate warns that the remaining mutants are untested (never a pass); survivors found earlier still block. See [Diff-scoped mutation check](mutation-check.md). |
+| `skip_mutation_check`, `mutation_check_budget_seconds` | — | Retired by Issue #5095 and no longer read (the camelCase spellings `skipMutationCheck` and `mutationCheckBudgetSeconds` too). A config that still sets them loads and logs one warning naming the key; remove them. See [Diff-scoped mutation check (retired)](mutation-check.md). |
 | `skip_coverage_carryover_check` | boolean | When `true`, skips the coverage carry-over check that runs before the PR is raised. It always collects the PR diff, and blocks the PR when it cannot (including an unresolvable base ref). It runs tests only when the PR deletes or removes lines from a Deno test file, and then blocks the PR when a production line those tests used to execute is no longer executed at head, or when the runner fails (merge-base, worktree, a failing base or head test, or coverage export). Defaults to `false`. See [Coverage carry-over check](coverage-carryover-check.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
