@@ -4,6 +4,7 @@
  * TE_PYTHON selects this executable; the upstream archive stays unchanged.
  * Distillation stays disabled. Cached facts and judge text are still untrusted.
  */
+import { resolve } from "node:path";
 import { installConsoleRedaction } from "./console_redaction.ts";
 import {
   captureProcessIdentity,
@@ -17,6 +18,8 @@ export const TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS = 4;
 export const TOKEN_ECONOMIZER_MICROSKILLS_MAX_TOKENS = 150;
 /** Upstream budgets tokens as four characters; enforce that ceiling on cached text too. */
 const MAX_CONTEXT_CHARS = TOKEN_ECONOMIZER_MICROSKILLS_MAX_TOKENS * 4;
+/** Nudges are a different mechanism; allow the upstream 1,200-character writer and bound notices too. */
+const MAX_NOTICE_CHARS = 4096;
 const EVENTS = [
   "SessionStart",
   "UserPromptSubmit",
@@ -48,15 +51,21 @@ export function guardTokenEconomizerOutput(
     ) {
       throw new Error("unsupported hook context field");
     }
-    if (!EVENTS.includes(String(specific.hookEventName))) {
+    if (!isHookEvent(specific.hookEventName)) {
       throw new Error("unknown hook event");
     }
-    const text = boundedText(specific.additionalContext);
-    const facts = text.split("\n").filter((line) =>
-      line.startsWith("- ")
-    ).length;
-    if (facts > TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS) {
-      throw new Error("fact limit exceeded");
+    const isFacts = specific.hookEventName === "SessionStart";
+    const text = boundedText(
+      specific.additionalContext,
+      isFacts ? MAX_CONTEXT_CHARS : MAX_NOTICE_CHARS,
+    );
+    if (isFacts) {
+      const facts = text.split("\n").filter((line) =>
+        line.startsWith("- ")
+      ).length;
+      if (facts > TOKEN_ECONOMIZER_MICROSKILLS_MAX_FACTS) {
+        throw new Error("fact limit exceeded");
+      }
     }
     guarded.hookSpecificOutput = {
       hookEventName: specific.hookEventName,
@@ -64,9 +73,16 @@ export function guardTokenEconomizerOutput(
     };
   }
   if (Object.hasOwn(out, "systemMessage")) {
-    guarded.systemMessage = fence(boundedText(out.systemMessage));
+    guarded.systemMessage = fence(
+      boundedText(out.systemMessage, MAX_NOTICE_CHARS),
+    );
   }
   return guarded;
+}
+
+/** Strict membership also rejects non-strings without coercing JSON arrays. */
+function isHookEvent(value: unknown): value is string {
+  return EVENTS.includes(value as string);
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -76,9 +92,9 @@ function object(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function boundedText(value: unknown): string {
+function boundedText(value: unknown, limit: number): string {
   if (typeof value !== "string") throw new Error("hook context must be text");
-  if (value.length > MAX_CONTEXT_CHARS) {
+  if (value.length > limit) {
     throw new Error("context limit exceeded");
   }
   return value;
@@ -134,18 +150,22 @@ export async function runTokenEconomizerHook(
     1024 * 1024,
   );
   const payload = object(JSON.parse(input));
-  if (!EVENTS.includes(String(payload.hook_event_name))) {
+  const event = payload.hook_event_name;
+  if (!isHookEvent(event)) {
     throw new Error("unknown hook event");
   }
+  const checkout = await Deno.realPath(Deno.cwd());
   if (
     typeof payload.cwd !== "string" ||
-    await Deno.realPath(payload.cwd) !== await Deno.realPath(Deno.cwd())
+    await Deno.realPath(resolve(payload.cwd)) !== checkout
   ) {
     throw new Error("hook checkout mismatch");
   }
+  payload.cwd = checkout;
   const controller = new AbortController();
   const child = new Deno.Command("python3", {
     signal: controller.signal,
+    cwd: checkout,
     args: ["-I", ...args],
     stdin: "piped",
     stdout: "piped",
@@ -179,7 +199,6 @@ export async function runTokenEconomizerHook(
   };
   // Keep teardown inside Claude's hook deadline. The synchronous vendor mode
   // keeps paid calls and folds in this descendant tree instead of detaching.
-  const event = String(payload.hook_event_name);
   const budget = event === "PostToolUse" || event === "PostToolUseFailure"
     ? 55_000
     : event === "SessionStart"
@@ -198,7 +217,7 @@ export async function runTokenEconomizerHook(
   }, budget);
   try {
     const writer = child.stdin.getWriter();
-    await writer.write(new TextEncoder().encode(input));
+    await writer.write(new TextEncoder().encode(JSON.stringify(payload)));
     await writer.close();
     const output = await readTokenEconomizerMessage(child.stdout, 64 * 1024);
     const result = await status;

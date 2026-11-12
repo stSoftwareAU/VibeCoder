@@ -1122,3 +1122,50 @@ Deno.test("a tampered persisted stop reason is redacted before its report receip
     assertStringIncludes(reports[0].join(" "), "detected ***REDACTED***");
   });
 });
+
+Deno.test("non-fact hook text and notices retain a separate finite bound", () => {
+  const output = (text: string) => ({
+    hookSpecificOutput: {
+      hookEventName: "PostToolUse",
+      additionalContext: text,
+    },
+  });
+  assertStringIncludes(
+    JSON.stringify(guardTokenEconomizerOutput(output("x".repeat(4096)))),
+    "x".repeat(4096),
+  );
+  assertThrows(
+    () => guardTokenEconomizerOutput(output("x".repeat(4097))),
+    Error,
+    "context limit exceeded",
+  );
+  assertStringIncludes(
+    JSON.stringify(
+      guardTokenEconomizerOutput({ systemMessage: "x".repeat(4096) }),
+    ),
+    "xxx",
+  );
+  assertThrows(
+    () => guardTokenEconomizerOutput({ systemMessage: "x".repeat(4097) }),
+    Error,
+    "context limit exceeded",
+  );
+});
+
+Deno.test("a hook event must be a string, not an array that string coercion turns into a known event", () => {
+  const output = (event: unknown) => ({
+    hookSpecificOutput: {
+      hookEventName: event,
+      additionalContext: "observation",
+    },
+  });
+  assertStringIncludes(
+    JSON.stringify(guardTokenEconomizerOutput(output("SessionStart"))),
+    "observation",
+  );
+  assertThrows(
+    () => guardTokenEconomizerOutput(output(["SessionStart"])),
+    Error,
+    "unknown hook event",
+  );
+});

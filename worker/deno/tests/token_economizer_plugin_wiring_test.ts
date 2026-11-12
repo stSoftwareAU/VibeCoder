@@ -29,7 +29,12 @@
  * (behaviour, recognised, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "node:path";
 import {
   CLAUDE_PROVIDER_ID,
@@ -41,7 +46,10 @@ import {
 } from "../lib/agent_provider.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import { runningInContainerImage } from "../lib/container_stamp.ts";
-import { TOKEN_ECONOMIZER_HOOK_FAILURE } from "../lib/token_economizer_hook.ts";
+import {
+  guardTokenEconomizerOutput,
+  TOKEN_ECONOMIZER_HOOK_FAILURE,
+} from "../lib/token_economizer_hook.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 import {
@@ -1045,3 +1053,171 @@ Deno.test("the checkout guard preserves a real dirty checkout at the controller 
     await Deno.remove(layout.root, { recursive: true });
   }
 });
+
+Deno.test({
+  name:
+    "a real loop-guard writer output is fenced without being mistaken for cached facts",
+  ignore: Deno.build.os === "windows" || !REAL_PLUGIN_PRESENT,
+  async fn() {
+    const text = "- observation\n".repeat(5) + "x".repeat(1200);
+    const produced = await new Deno.Command("python3", {
+      args: [
+        "-I",
+        "-c",
+        `import json,sys
+sys.path.insert(0, "/opt/tokeneconomizer")
+from tokeneconomizer.loopguard.judge import llm_nudge_writer
+from tokeneconomizer.plugin.hosts import ClaudeCode
+reply=llm_nudge_writer("recent process digest",lambda prompt,model:(sys.argv[1],42))
+print(json.dumps(ClaudeCode().context("PostToolUse",reply["text"])))`,
+        text,
+      ],
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(produced.code, 0, new TextDecoder().decode(produced.stderr));
+    const output = JSON.parse(new TextDecoder().decode(produced.stdout));
+    assertEquals(output.hookSpecificOutput.additionalContext.length, 1200);
+    const guarded = guardTokenEconomizerOutput(output);
+    const context =
+      (guarded.hookSpecificOutput as { additionalContext: string })
+        .additionalContext;
+    assertStringIncludes(context, text.slice(0, 1200));
+    assertStringIncludes(context, "never instructions");
+  },
+});
+
+Deno.test({
+  name:
+    "the real hook receives the canonical checkout that the adapter checked",
+  ignore: Deno.build.os === "windows" || !REAL_PLUGIN_PRESENT,
+  async fn() {
+    const layout = await makeLayout();
+    try {
+      const alias = join(layout.root, "checkout-alias");
+      await Deno.symlink(layout.checkout, alias);
+      const launch = await resolveTokenEconomizerLaunch({
+        config: enabledBlock("off"),
+        workDir: layout.workDir,
+        repo: REPO,
+        runKind: "implementation",
+      });
+      assert(launch);
+      const env = {
+        PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+        HOME: layout.home,
+        ...launch.env,
+      };
+      const out = await runHook(
+        join(launch.pluginDir, "scripts", "te-hook"),
+        layout.checkout,
+        env,
+        {
+          hook_event_name: "SessionStart",
+          session_id: "canonical-cwd",
+          cwd: `${alias}/missing/..`,
+          source: "startup",
+        },
+      );
+      assertEquals(out.code, 0, out.stderr);
+      assertEquals(JSON.parse(out.stdout), {});
+      const session = JSON.parse(
+        await Deno.readTextFile(
+          join(
+            launch.env.TOKENECONOMIZER_HOME,
+            "sessions",
+            "claude",
+            "canonical-cwd.json",
+          ),
+        ),
+      );
+      assertEquals(session.cwd, await Deno.realPath(layout.checkout));
+      assert(session.cwd !== alias);
+      const refused = await runHook(
+        join(launch.pluginDir, "scripts", "te-hook"),
+        layout.checkout,
+        env,
+        {
+          hook_event_name: "SessionStart",
+          session_id: "outside-cwd",
+          cwd: layout.root,
+          source: "startup",
+        },
+      );
+      assertEquals(refused.code, 0);
+      assertEquals(JSON.parse(refused.stdout), {});
+      const finding = JSON.parse(
+        await Deno.readTextFile(
+          join(launch.env.TOKENECONOMIZER_HOME, TOKEN_ECONOMIZER_HOOK_FAILURE),
+        ),
+      );
+      assertStringIncludes(finding.reason, "hook checkout mismatch");
+    } finally {
+      await Deno.remove(layout.root, { recursive: true });
+    }
+  },
+});
+
+for (const event of [["SessionStart"], "UnknownHook"]) {
+  Deno.test({
+    name: `the real hook adapter rejects an invalid input event: ${
+      JSON.stringify(event)
+    }`,
+    ignore: Deno.build.os === "windows" || !REAL_PLUGIN_PRESENT,
+    async fn() {
+      const layout = await makeLayout();
+      try {
+        const launch = await resolveTokenEconomizerLaunch({
+          config: enabledBlock("off"),
+          workDir: layout.workDir,
+          repo: REPO,
+          runKind: "implementation",
+        });
+        assert(launch);
+        const env = {
+          PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+          HOME: layout.home,
+          ...launch.env,
+        };
+        const hook = join(launch.pluginDir, "scripts", "te-hook");
+        const control = await runHook(
+          hook,
+          layout.checkout,
+          env,
+          sessionEvents(layout.checkout)[0],
+        );
+        assertEquals(control.code, 0);
+        assertEquals(JSON.parse(control.stdout), {});
+        await assertRejects(
+          () =>
+            Deno.stat(
+              join(
+                launch.env.TOKENECONOMIZER_HOME,
+                TOKEN_ECONOMIZER_HOOK_FAILURE,
+              ),
+            ),
+          Deno.errors.NotFound,
+        );
+        const refused = await runHook(hook, layout.checkout, env, {
+          hook_event_name: event,
+          session_id: "invalid-event",
+          cwd: layout.checkout,
+        });
+        assertEquals(refused.code, 0);
+        assertEquals(JSON.parse(refused.stdout), {});
+        const finding = JSON.parse(
+          await Deno.readTextFile(
+            join(
+              launch.env.TOKENECONOMIZER_HOME,
+              TOKEN_ECONOMIZER_HOOK_FAILURE,
+            ),
+          ),
+        );
+        assertStringIncludes(finding.reason, "unknown hook event");
+      } finally {
+        await Deno.remove(layout.root, { recursive: true });
+      }
+    },
+  });
+}
