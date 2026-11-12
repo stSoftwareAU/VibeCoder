@@ -20,12 +20,14 @@ import { REPO_ROOT } from "./fixtures/launcher_harness.ts";
 import {
   assertBabysitterKeyOutOfRunArgs,
   BABYSITTER_CLONE_MOUNT,
+  BABYSITTER_QUOTA_PARK_EXIT_CODE,
   BABYSITTER_SCRATCH_MOUNT,
   babysitterCheckoutDir,
   type BabysitterContainerDeps,
   type BabysitterContainerInput,
   type BabysitterEnvReader,
   babysitterImageExists,
+  BabysitterQuotaPark,
   babysitterRuntimeOnPath,
   babysitterSpawn,
   type BabysitterSpawnResult,
@@ -1883,6 +1885,30 @@ Deno.test("repair's non-zero exit names the rebuild hint and keeps the stderr ca
       error.message,
       "; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it",
     );
+  } finally {
+    await Deno.remove(f.root, { recursive: true });
+  }
+});
+
+// Issue #5072: a spent provider balance is a normal park, not a fault — no
+// rebuild hint, and a distinct type the host can stay quiet about.
+Deno.test("the quota-park exit is a BabysitterQuotaPark without the rebuild hint (Issue #5072)", async () => {
+  const f = await makeFixture();
+  try {
+    const { deps } = fakeDeps(f, {
+      spawnResults: [{
+        success: false,
+        code: BABYSITTER_QUOTA_PARK_EXIT_CODE,
+        stderr: "agent exited 1; quota-exhausted: balance is spent",
+        timedOut: false,
+      }],
+    });
+    const error = await assertRejects(
+      () => runBabysitterRepairContainer(inputFor(f), deps),
+      BabysitterQuotaPark,
+    );
+    assertStringIncludes(error.message, "quota-exhausted: balance is spent");
+    assertEquals(error.message.includes("predates"), false);
   } finally {
     await Deno.remove(f.root, { recursive: true });
   }

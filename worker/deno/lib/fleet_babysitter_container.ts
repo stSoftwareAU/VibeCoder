@@ -75,6 +75,11 @@ export const BABYSITTER_REPAIR_COMMAND: readonly string[] = [
 ];
 /** Exit status reserved for an agent task failure inside babysitter-repair. */
 export const BABYSITTER_TASK_FAILURE_EXIT_CODE = 42;
+/**
+ * Exit status reserved for a repair whose provider quota, credit or balance is
+ * spent (Issue #5072): a normal park, not a fault.
+ */
+export const BABYSITTER_QUOTA_PARK_EXIT_CODE = 43;
 /** Chromium launch probe command executed by the worker image's bash. */
 export const BABYSITTER_CHROMIUM_CHECK_COMMAND =
   '"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank';
@@ -83,6 +88,9 @@ export const BABYSITTER_CHROMIUM_CHECK_TIMEOUT_MS = 60_000;
 
 /** A task failure reported through the container's structured exit status. */
 export class BabysitterTaskFailure extends Error {}
+
+/** A spent provider quota reported through the container's exit status (#5072). */
+export class BabysitterQuotaPark extends Error {}
 
 /** What one runtime process did. */
 export interface BabysitterSpawnResult {
@@ -1214,14 +1222,21 @@ async function runRepairProcess(run: RepairRun): Promise<void> {
     );
   }
   if (!result.success) {
-    const message =
+    const cause =
       `babysitter repair container ${run.containerName} exited with code ${result.code}: ${
         describeStderr(result.stderr, run.token)
-      }; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`;
-    if (result.code === BABYSITTER_TASK_FAILURE_EXIT_CODE) {
-      throw new BabysitterTaskFailure(message);
+      }`;
+    // The reserved statuses come from a current image's babysitter-repair, so
+    // the rebuild hint would only mislead (Issue #5072).
+    if (result.code === BABYSITTER_QUOTA_PARK_EXIT_CODE) {
+      throw new BabysitterQuotaPark(cause);
     }
-    throw new Error(message);
+    if (result.code === BABYSITTER_TASK_FAILURE_EXIT_CODE) {
+      throw new BabysitterTaskFailure(cause);
+    }
+    throw new Error(
+      `${cause}; if the worker image predates the babysitter-repair mode, relaunch with ./run.sh to rebuild it`,
+    );
   }
 }
 

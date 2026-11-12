@@ -67,6 +67,18 @@ export class BabysitterFailure extends Error {
   }
 }
 
+/**
+ * A repair that stopped because a provider's quota, credit or balance is spent
+ * (Issue #5072). That is normal, not a fault: the pass records the cooldown and
+ * logs one quiet line, and it never joins the pass's AggregateError.
+ */
+export class BabysitterParked extends BabysitterFailure {
+  constructor(message: string, retryAt?: number) {
+    super(message, "infrastructure", retryAt);
+    this.name = "BabysitterParked";
+  }
+}
+
 export interface LoadBabysitterRetryStateOptions {
   stateDir: string;
   repo: string;
