@@ -114,8 +114,8 @@ flowchart LR
   logged cause is the error's message, or the thrown value itself when it is not
   an Error (Issue #5099)". A `sendSignal` that rejects with an `Error` and then
   with a bare string must give the exact line
-  `[ORPHANS_UNCOLLECTED] after=AGENT_KILLED cause=<message> signalled=none` and a
-  matching error line. This pins the `error instanceof Error` ternary at
+  `[ORPHANS_UNCOLLECTED] after=AGENT_KILLED cause=<message> signalled=none` and
+  a matching error line. This pins the `error instanceof Error` ternary at
   `orphan_collector.ts:221`. With that condition negated the test fails (the
   cause becomes `Error: …` or `undefined`); on the head it passes.
 - Edited only the `capturingLogger()` helper in both test files, which now also
