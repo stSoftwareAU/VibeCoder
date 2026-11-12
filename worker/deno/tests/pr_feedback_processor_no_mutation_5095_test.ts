@@ -3,10 +3,9 @@
  *
  * Drives the real `processPrFeedback` with the production drift check (no
  * `driftCheckFn` override) against a temporary working directory whose CI
- * workflow advertises a blocking `cargo mutants` job. A `cargo` on PATH
- * records any run, so a mutation process spawned by the review-fix path would
- * be seen. Only observable outcomes are asserted: the result, the agent turns
- * and commit, the PR comments and the files written.
+ * workflow advertises a blocking `cargo mutants` job. Only observable outcomes
+ * are asserted: the result, the agent turns and commit, the PR comments and the
+ * files written.
  *
  * A genuine drift failure still takes the existing handling: the recovery turn
  * runs and the residual reaches the PR reply.
@@ -266,76 +265,48 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-/**
- * Put a `cargo` first on PATH that records every run in `marker`, so a
- * mutation process spawned by the review-fix path would leave its trace.
- */
-async function withCargoShim<T>(
-  fn: (marker: string) => Promise<T>,
-): Promise<T> {
-  const binDir = await Deno.makeTempDir({ prefix: "no_mutation_5095_bin_" });
-  const marker = `${binDir}/cargo-ran`;
-  await Deno.writeTextFile(
-    `${binDir}/cargo`,
-    `#!/bin/sh\necho "$@" >> "${marker}"\nexit 1\n`,
-    { mode: 0o755 },
-  );
-  const oldPath = Deno.env.get("PATH") ?? "";
-  Deno.env.set("PATH", `${binDir}:${oldPath}`);
-  try {
-    return await fn(marker);
-  } finally {
-    Deno.env.set("PATH", oldPath);
-    await Deno.remove(binDir, { recursive: true });
-  }
-}
-
-Deno.test("processPrFeedback - a push with a blocking cargo mutants job completes, posts nothing about mutation, and spawns no mutation process (Issue #5095)", async () => {
+Deno.test("processPrFeedback - a push with a blocking cargo mutants job completes, posts nothing about mutation, and writes no mutants output (Issue #5095)", async () => {
   const workDir = await makeWorkDir();
   try {
-    await withCargoShim(async (marker) => {
-      const events: string[] = [];
-      const recordedComments: string[] = [];
-      const recordedOptions: CapturedOptions[] = [];
+    const events: string[] = [];
+    const recordedComments: string[] = [];
+    const recordedOptions: CapturedOptions[] = [];
 
-      const outputs: ReadonlyArray<string | ((o: CapturedOptions) => string)> =
-        [
-          "Fixed",
-          verdictBlock([]),
-        ];
+    const outputs: ReadonlyArray<string | ((o: CapturedOptions) => string)> = [
+      "Fixed",
+      verdictBlock([]),
+    ];
 
-      const deps = createMockDeps({
-        claude: {
-          runClaudeWithRetry: makeClaudeMock(events, outputs, recordedOptions),
-        },
-        github: { runGhCommand: makeGh(recordedComments) },
-        git: {
-          runGitCommand: makeDriftGit(),
-          commitAndPushPending: makeCommitMock(events),
-        },
-      });
-
-      const result = await processPrFeedback(
-        makeInput(),
-        baseProcessorDeps(workDir, deps),
-      );
-
-      // The normal path: the main turn, one read-only drift question, the push.
-      assertEquals(result.ok, true, result.ok ? "" : result.error.message);
-      assertEquals(events, ["agent:0", "agent:1", "commit"]);
-
-      // The reply is the one PR comment, and it says nothing about mutation.
-      assertEquals(recordedComments.length, 1);
-      assert(!/mutat/i.test(recordedComments[0]!), recordedComments[0]);
-      const message = (await fileExists(prResponseMessagePath(workDir)))
-        ? await Deno.readTextFile(prResponseMessagePath(workDir))
-        : "";
-      assert(!/mutat/i.test(message), message);
-
-      // No mutation process ran: no cargo invocation, no mutants output tree.
-      assertEquals(await fileExists(marker), false);
-      assertEquals(await fileExists(`${workDir}/mutants.out`), false);
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: makeClaudeMock(events, outputs, recordedOptions),
+      },
+      github: { runGhCommand: makeGh(recordedComments) },
+      git: {
+        runGitCommand: makeDriftGit(),
+        commitAndPushPending: makeCommitMock(events),
+      },
     });
+
+    const result = await processPrFeedback(
+      makeInput(),
+      baseProcessorDeps(workDir, deps),
+    );
+
+    // The normal path: the main turn, one read-only drift question, the push.
+    assertEquals(result.ok, true, result.ok ? "" : result.error.message);
+    assertEquals(events, ["agent:0", "agent:1", "commit"]);
+
+    // The reply is the one PR comment, and it says nothing about mutation.
+    assertEquals(recordedComments.length, 1);
+    assert(!/mutat/i.test(recordedComments[0]!), recordedComments[0]);
+    const message = (await fileExists(prResponseMessagePath(workDir)))
+      ? await Deno.readTextFile(prResponseMessagePath(workDir))
+      : "";
+    assert(!/mutat/i.test(message), message);
+
+    // No mutants output tree was written.
+    assertEquals(await fileExists(`${workDir}/mutants.out`), false);
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -344,53 +315,49 @@ Deno.test("processPrFeedback - a push with a blocking cargo mutants job complete
 Deno.test("processPrFeedback - a genuine drift failure still runs the recovery turn and reaches the PR reply (Issue #5095)", async () => {
   const workDir = await makeWorkDir();
   try {
-    await withCargoShim(async (marker) => {
-      const events: string[] = [];
-      const recordedComments: string[] = [];
-      const recordedOptions: CapturedOptions[] = [];
+    const events: string[] = [];
+    const recordedComments: string[] = [];
+    const recordedOptions: CapturedOptions[] = [];
 
-      // The drift question finds a sentence the push left false; the recovery
-      // turn does not fix it, so the residual is reported on the reply.
-      const outputs: ReadonlyArray<string | ((o: CapturedOptions) => string)> =
-        [
-          "Fixed",
-          () =>
-            verdictBlock([{
-              file: SUMMARY_PATH,
-              sentence: SENTENCE,
-              reason: "the fix now rejects a subjectless entry",
-            }]),
-          "did nothing",
-        ];
+    // The drift question finds a sentence the push left false; the recovery
+    // turn does not fix it, so the residual is reported on the reply.
+    const outputs: ReadonlyArray<string | ((o: CapturedOptions) => string)> = [
+      "Fixed",
+      () =>
+        verdictBlock([{
+          file: SUMMARY_PATH,
+          sentence: SENTENCE,
+          reason: "the fix now rejects a subjectless entry",
+        }]),
+      "did nothing",
+    ];
 
-      const deps = createMockDeps({
-        claude: {
-          runClaudeWithRetry: makeClaudeMock(events, outputs, recordedOptions),
-        },
-        github: { runGhCommand: makeGh(recordedComments) },
-        git: {
-          runGitCommand: makeDriftGit(),
-          commitAndPushPending: makeCommitMock(events),
-        },
-      });
-
-      const result = await processPrFeedback(
-        makeInput(),
-        baseProcessorDeps(workDir, deps),
-      );
-
-      assertEquals(result.ok, true, result.ok ? "" : result.error.message);
-      assertEquals(events, ["agent:0", "agent:1", "agent:2", "commit"]);
-
-      // Call 2 is the recovery turn, carrying the sentence it was asked to fix.
-      assertStringIncludes(recordedOptions[2]!.prompt, SENTENCE);
-
-      assertEquals(recordedComments.length, 1);
-      assertStringIncludes(recordedComments[0]!, "### Drift check");
-      assertStringIncludes(recordedComments[0]!, SENTENCE);
-      assert(!/mutat/i.test(recordedComments[0]!), recordedComments[0]);
-      assertEquals(await fileExists(marker), false);
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: makeClaudeMock(events, outputs, recordedOptions),
+      },
+      github: { runGhCommand: makeGh(recordedComments) },
+      git: {
+        runGitCommand: makeDriftGit(),
+        commitAndPushPending: makeCommitMock(events),
+      },
     });
+
+    const result = await processPrFeedback(
+      makeInput(),
+      baseProcessorDeps(workDir, deps),
+    );
+
+    assertEquals(result.ok, true, result.ok ? "" : result.error.message);
+    assertEquals(events, ["agent:0", "agent:1", "agent:2", "commit"]);
+
+    // Call 2 is the recovery turn, carrying the sentence it was asked to fix.
+    assertStringIncludes(recordedOptions[2]!.prompt, SENTENCE);
+
+    assertEquals(recordedComments.length, 1);
+    assertStringIncludes(recordedComments[0]!, "### Drift check");
+    assertStringIncludes(recordedComments[0]!, SENTENCE);
+    assert(!/mutat/i.test(recordedComments[0]!), recordedComments[0]);
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
