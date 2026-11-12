@@ -262,7 +262,10 @@ function parseStatus(
     for (const field of fields) {
       if (SCRATCH_PATHS.has(field.path)) continue;
       paths.add(field.path);
-      states.set(field.path, `${xy}\0${path}\0${fields.length === 2 ? fields[1]!.path : ""}`);
+      states.set(
+        field.path,
+        `${xy}\0${path}\0${fields.length === 2 ? fields[1]!.path : ""}`,
+      );
       if (field.isNew) added.add(field.path);
       if (field.untracked) untracked.add(field.path);
     }
@@ -456,7 +459,13 @@ async function snapshotTree(
   // Literal pathspecs prevent a filename containing Git glob syntax from
   // accidentally expanding to unrelated paths.
   const index = await git(
-    ["ls-files", "--stage", "-z", "--", ...parsed.paths.map((p) => `:(literal)${p}`)],
+    [
+      "ls-files",
+      "--stage",
+      "-z",
+      "--",
+      ...parsed.paths.map((p) => `:(literal)${p}`),
+    ],
     dir,
   );
   if (index.code !== 0) {
