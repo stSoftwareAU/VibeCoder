@@ -93,7 +93,7 @@ Deno.test("logicalLines: a line continuation joins cargo and mutants", () => {
 Deno.test("logicalLines: a line continuation into a no-op tail is non-failing", () => {
   const lines = logicalLines(["cargo mutants \\", "  || true"].join("\n"));
   assertEquals(lines, ["cargo mutants || true"]);
-  assertEquals(isNonFailing(lines[0]), true);
+  assertEquals(isNonFailing(lines[0] ?? ""), true);
 });
 
 Deno.test("continued workflow lines have linear growth", () => {
