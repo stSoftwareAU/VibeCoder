@@ -290,7 +290,9 @@ flowchart LR
   - `issue_worker_wiring.ts`, where the seam was removed
   - no other caller of `invokeMutationCheck` existed
 - Modified `worker/deno/tests/pr_maintenance_command_test.ts`: six empty-scan
-  fixtures use the existing `gh_spawn` seam; no assertion was removed. Injecting
+  fixtures use the existing `gh_spawn` seam through `executeWithoutOpenPrs`,
+  inside the base's offline `ghTest` wrapper (clean quota latch, offline `gh`
+  default); no assertion was removed. Injecting
   quota exhaustion before the fix produced the five reported failures; after the
   fix the same harness passed the file. No production quota or cache behaviour
   changed.

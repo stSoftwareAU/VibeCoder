@@ -17,10 +17,42 @@ import {
   type GhSpawnRunner,
 } from "../lib/gh_spawn.ts";
 import { _resetMergeQueueMemo } from "../lib/merge_queue_runtime.ts";
+import { clearPrimaryQuotaLatch } from "../lib/primary_quota_latch.ts";
 import type { WorkerConfig } from "../types.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 import { requestReadyBranchUpdate } from "../lib/required_branch_checks_4613.ts";
 import { strictRefreshFixture } from "./support/strict_refresh_fixture.ts";
+
+/**
+ * Every test here runs offline, on a clean GraphQL quota latch.
+ *
+ * Tests that install no fake `gh` used to reach real GitHub (90 s a run). On
+ * a fleet host GitHub was rate-limiting, one of them latched the
+ * process-wide quota, and every later fake-runner test in the file was
+ * short-circuited before its fake was asked — so the pre-push unit-test gate
+ * refused every VibeCoder push from that host. A test that wants `gh` installs
+ * its own runner, which replaces this one for its body.
+ */
+const offlineGh: GhSpawnRunner = () =>
+  Promise.resolve({
+    code: 1,
+    success: false,
+    stdout: "",
+    stderr: "gh is offline in this test",
+  });
+
+function ghTest(name: string, fn: () => Promise<void> | void): void {
+  Deno.test(name, async () => {
+    clearPrimaryQuotaLatch();
+    _setGhSpawnRunner(offlineGh);
+    try {
+      await fn();
+    } finally {
+      _resetGhSpawnRunner();
+      clearPrimaryQuotaLatch();
+    }
+  });
+}
 
 function makeConfig(overrides?: Partial<WorkerConfig>): WorkerConfig {
   return { ...buildDefaultWorkerConfig(), ...overrides };
@@ -53,262 +85,310 @@ async function executeWithoutOpenPrs(
 // find-pr-comments-to-fix argument validation
 // ============================================================================
 
-Deno.test("pr-maintenance command - find-pr-comments-to-fix rejects missing github-user", async () => {
-  const config = makeConfig({ repos: ["org/repo"] });
-  const result = await prMaintenanceCommand.execute(
-    {
-      operation: "find-pr-comments-to-fix",
-    },
-    config,
-    emptyEnv,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("Missing required"), true);
-});
+ghTest(
+  "pr-maintenance command - find-pr-comments-to-fix rejects missing github-user",
+  async () => {
+    const config = makeConfig({ repos: ["org/repo"] });
+    const result = await prMaintenanceCommand.execute(
+      {
+        operation: "find-pr-comments-to-fix",
+      },
+      config,
+      emptyEnv,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("Missing required"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - find-pr-comments-to-fix rejects empty repos", async () => {
-  const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
-    {
-      operation: "find-pr-comments-to-fix",
-      "github-user": "testbot",
-      repos: [],
-    },
-    config,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("No repositories"), true);
-});
+ghTest(
+  "pr-maintenance command - find-pr-comments-to-fix rejects empty repos",
+  async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await prMaintenanceCommand.execute(
+      {
+        operation: "find-pr-comments-to-fix",
+        "github-user": "testbot",
+        repos: [],
+      },
+      config,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("No repositories"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - find-pr-comments-to-fix parses comma-separated repos", async () => {
-  // Empty PR listings let the command exercise parsing without live API calls.
-  const config = makeConfig({ repos: [] });
-  const result = await executeWithoutOpenPrs(
-    {
-      operation: "find-pr-comments-to-fix",
-      "github-user": "testbot",
-      repos: "org/repo1,org/repo2",
-    },
-    config,
-  );
-  // It should attempt to process (not reject with validation error).
-  assertEquals(
-    !result.message.includes("Missing required") &&
-      !result.message.includes("No repositories"),
-    true,
-  );
-});
+ghTest(
+  "pr-maintenance command - find-pr-comments-to-fix parses comma-separated repos",
+  async () => {
+    // Empty PR listings let the command exercise parsing without live API calls.
+    const config = makeConfig({ repos: [] });
+    const result = await executeWithoutOpenPrs(
+      {
+        operation: "find-pr-comments-to-fix",
+        "github-user": "testbot",
+        repos: "org/repo1,org/repo2",
+      },
+      config,
+    );
+    // It should attempt to process (not reject with validation error).
+    assertEquals(
+      !result.message.includes("Missing required") &&
+        !result.message.includes("No repositories"),
+      true,
+    );
+  },
+);
 
 // ============================================================================
 // find-failed-pr-checks argument validation (Issue #1120)
 // ============================================================================
 
-Deno.test("pr-maintenance command - find-failed-pr-checks rejects missing github-user", async () => {
-  const config = makeConfig({ repos: ["org/repo"] });
-  const result = await prMaintenanceCommand.execute(
-    { operation: "find-failed-pr-checks" },
-    config,
-    emptyEnv,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("Missing required"), true);
-});
+ghTest(
+  "pr-maintenance command - find-failed-pr-checks rejects missing github-user",
+  async () => {
+    const config = makeConfig({ repos: ["org/repo"] });
+    const result = await prMaintenanceCommand.execute(
+      { operation: "find-failed-pr-checks" },
+      config,
+      emptyEnv,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("Missing required"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - find-failed-pr-checks rejects empty repos", async () => {
-  const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
-    {
-      operation: "find-failed-pr-checks",
-      "github-user": "testbot",
-      repos: [],
-    },
-    config,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("No repositories"), true);
-});
+ghTest(
+  "pr-maintenance command - find-failed-pr-checks rejects empty repos",
+  async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await prMaintenanceCommand.execute(
+      {
+        operation: "find-failed-pr-checks",
+        "github-user": "testbot",
+        repos: [],
+      },
+      config,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("No repositories"), true);
+  },
+);
 
 // ============================================================================
 // find-failed-ci-checks argument validation (Issue #1120)
 // ============================================================================
 
-Deno.test("pr-maintenance command - find-failed-ci-checks rejects missing github-user", async () => {
-  const config = makeConfig({ repos: ["org/repo"] });
-  const result = await prMaintenanceCommand.execute(
-    { operation: "find-failed-ci-checks" },
-    config,
-    emptyEnv,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("Missing required"), true);
-});
+ghTest(
+  "pr-maintenance command - find-failed-ci-checks rejects missing github-user",
+  async () => {
+    const config = makeConfig({ repos: ["org/repo"] });
+    const result = await prMaintenanceCommand.execute(
+      { operation: "find-failed-ci-checks" },
+      config,
+      emptyEnv,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("Missing required"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - find-failed-ci-checks rejects empty repos", async () => {
-  const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
-    {
-      operation: "find-failed-ci-checks",
-      "github-user": "testbot",
-      repos: [],
-    },
-    config,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("No repositories"), true);
-});
+ghTest(
+  "pr-maintenance command - find-failed-ci-checks rejects empty repos",
+  async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await prMaintenanceCommand.execute(
+      {
+        operation: "find-failed-ci-checks",
+        "github-user": "testbot",
+        repos: [],
+      },
+      config,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("No repositories"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - find-failed-ci-checks parses comma-separated repos", async () => {
-  const config = makeConfig({ repos: [] });
-  const result = await executeWithoutOpenPrs(
-    {
-      operation: "find-failed-ci-checks",
-      "github-user": "testbot",
-      repos: "org/repo1,org/repo2",
-    },
-    config,
-  );
-  // Should attempt to process (not reject with validation error)
-  assertEquals(
-    !result.message.includes("Missing required") &&
-      !result.message.includes("No repositories"),
-    true,
-  );
-});
+ghTest(
+  "pr-maintenance command - find-failed-ci-checks parses comma-separated repos",
+  async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await executeWithoutOpenPrs(
+      {
+        operation: "find-failed-ci-checks",
+        "github-user": "testbot",
+        repos: "org/repo1,org/repo2",
+      },
+      config,
+    );
+    // Should attempt to process (not reject with validation error)
+    assertEquals(
+      !result.message.includes("Missing required") &&
+        !result.message.includes("No repositories"),
+      true,
+    );
+  },
+);
 
 // ============================================================================
 // ensure-auto-merge-on-open-prs argument validation (Issue #1234)
 // ============================================================================
 
-Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs rejects missing github-user", async () => {
-  const config = makeConfig({ repos: ["org/repo"] });
-  const result = await prMaintenanceCommand.execute(
-    { operation: "ensure-auto-merge-on-open-prs" },
-    config,
-    emptyEnv,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("Missing required"), true);
-});
+ghTest(
+  "pr-maintenance command - ensure-auto-merge-on-open-prs rejects missing github-user",
+  async () => {
+    const config = makeConfig({ repos: ["org/repo"] });
+    const result = await prMaintenanceCommand.execute(
+      { operation: "ensure-auto-merge-on-open-prs" },
+      config,
+      emptyEnv,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("Missing required"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs rejects empty repos", async () => {
-  const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
-    {
-      operation: "ensure-auto-merge-on-open-prs",
-      "github-user": "testbot",
-      repos: [],
-    },
-    config,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("No repositories"), true);
-});
+ghTest(
+  "pr-maintenance command - ensure-auto-merge-on-open-prs rejects empty repos",
+  async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await prMaintenanceCommand.execute(
+      {
+        operation: "ensure-auto-merge-on-open-prs",
+        "github-user": "testbot",
+        repos: [],
+      },
+      config,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("No repositories"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs returns scan result message", async () => {
-  // The empty listing returns success with counts.
-  const config = makeConfig({ repos: [] });
-  const result = await executeWithoutOpenPrs(
-    {
-      operation: "ensure-auto-merge-on-open-prs",
-      "github-user": "testbot",
-      repos: "org/repo1",
-    },
-    config,
-  );
-  // Should succeed with zero counts — no PRs found.
-  assertEquals(result.success, true);
-  assertEquals(result.message.includes("enabled="), true);
-  assertEquals(result.message.includes("skipped="), true);
-  assertEquals(result.message.includes("failed="), true);
-});
+ghTest(
+  "pr-maintenance command - ensure-auto-merge-on-open-prs returns scan result message",
+  async () => {
+    // The empty listing returns success with counts.
+    const config = makeConfig({ repos: [] });
+    const result = await executeWithoutOpenPrs(
+      {
+        operation: "ensure-auto-merge-on-open-prs",
+        "github-user": "testbot",
+        repos: "org/repo1",
+      },
+      config,
+    );
+    // Should succeed with zero counts — no PRs found.
+    assertEquals(result.success, true);
+    assertEquals(result.message.includes("enabled="), true);
+    assertEquals(result.message.includes("skipped="), true);
+    assertEquals(result.message.includes("failed="), true);
+  },
+);
 
-Deno.test("pr-maintenance command - ensure-auto-merge-on-open-prs parses comma-separated repos", async () => {
-  const config = makeConfig({ repos: [] });
-  const result = await executeWithoutOpenPrs(
-    {
-      operation: "ensure-auto-merge-on-open-prs",
-      "github-user": "testbot",
-      repos: "org/repo1,org/repo2",
-    },
-    config,
-  );
-  // Should attempt to process (not reject with validation error)
-  assertEquals(
-    !result.message.includes("Missing required") &&
-      !result.message.includes("No repositories"),
-    true,
-  );
-});
+ghTest(
+  "pr-maintenance command - ensure-auto-merge-on-open-prs parses comma-separated repos",
+  async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await executeWithoutOpenPrs(
+      {
+        operation: "ensure-auto-merge-on-open-prs",
+        "github-user": "testbot",
+        repos: "org/repo1,org/repo2",
+      },
+      config,
+    );
+    // Should attempt to process (not reject with validation error)
+    assertEquals(
+      !result.message.includes("Missing required") &&
+        !result.message.includes("No repositories"),
+      true,
+    );
+  },
+);
 
 // ============================================================================
 // update-open-pr-branches argument validation (Issue #1233)
 // ============================================================================
 
-Deno.test("pr-maintenance command - update-open-pr-branches rejects missing github-user", async () => {
-  const config = makeConfig({ repos: ["org/repo"] });
-  const result = await prMaintenanceCommand.execute(
-    { operation: "update-open-pr-branches" },
-    config,
-    emptyEnv,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("Missing required"), true);
-});
+ghTest(
+  "pr-maintenance command - update-open-pr-branches rejects missing github-user",
+  async () => {
+    const config = makeConfig({ repos: ["org/repo"] });
+    const result = await prMaintenanceCommand.execute(
+      { operation: "update-open-pr-branches" },
+      config,
+      emptyEnv,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("Missing required"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - update-open-pr-branches rejects empty repos", async () => {
-  const config = makeConfig({ repos: [] });
-  const result = await prMaintenanceCommand.execute(
-    {
-      operation: "update-open-pr-branches",
-      "github-user": "testbot",
-      repos: [],
-    },
-    config,
-  );
-  assertEquals(result.success, false);
-  assertEquals(result.message.includes("No repositories"), true);
-});
+ghTest(
+  "pr-maintenance command - update-open-pr-branches rejects empty repos",
+  async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await prMaintenanceCommand.execute(
+      {
+        operation: "update-open-pr-branches",
+        "github-user": "testbot",
+        repos: [],
+      },
+      config,
+    );
+    assertEquals(result.success, false);
+    assertEquals(result.message.includes("No repositories"), true);
+  },
+);
 
-Deno.test("pr-maintenance command - update-open-pr-branches returns structured summary", async () => {
-  // The empty listing returns success with counts.
-  const config = makeConfig({ repos: [] });
-  const result = await executeWithoutOpenPrs(
-    {
-      operation: "update-open-pr-branches",
-      "github-user": "testbot",
-      repos: "org/repo1",
-      "work-dir": "/tmp/test-work",
-    },
-    config,
-  );
-  // Should succeed — scan finds no PRs, so 0 updated / 0 failed
-  assertEquals(result.success, true);
-  // Message should be human-readable summary (not pipe-delimited)
-  assertEquals(result.message.includes("PR branch update complete"), true);
-  assertEquals(result.message.includes("updated"), true);
-  assertEquals(result.message.includes("failed"), true);
-  // Should NOT contain pipe-delimited data
-  assertEquals(result.message.includes("|"), false);
-});
+ghTest(
+  "pr-maintenance command - update-open-pr-branches returns structured summary",
+  async () => {
+    // The empty listing returns success with counts.
+    const config = makeConfig({ repos: [] });
+    const result = await executeWithoutOpenPrs(
+      {
+        operation: "update-open-pr-branches",
+        "github-user": "testbot",
+        repos: "org/repo1",
+        "work-dir": "/tmp/test-work",
+      },
+      config,
+    );
+    // Should succeed — scan finds no PRs, so 0 updated / 0 failed
+    assertEquals(result.success, true);
+    // Message should be human-readable summary (not pipe-delimited)
+    assertEquals(result.message.includes("PR branch update complete"), true);
+    assertEquals(result.message.includes("updated"), true);
+    assertEquals(result.message.includes("failed"), true);
+    // Should NOT contain pipe-delimited data
+    assertEquals(result.message.includes("|"), false);
+  },
+);
 
-Deno.test("pr-maintenance command - update-open-pr-branches parses comma-separated repos", async () => {
-  const config = makeConfig({ repos: [] });
-  const result = await executeWithoutOpenPrs(
-    {
-      operation: "update-open-pr-branches",
-      "github-user": "testbot",
-      repos: "org/repo1,org/repo2",
-      "work-dir": "/tmp/test-work",
-    },
-    config,
-  );
-  // Should attempt to process (not reject with validation error)
-  assertEquals(
-    !result.message.includes("Missing required") &&
-      !result.message.includes("No repositories"),
-    true,
-  );
-});
+ghTest(
+  "pr-maintenance command - update-open-pr-branches parses comma-separated repos",
+  async () => {
+    const config = makeConfig({ repos: [] });
+    const result = await executeWithoutOpenPrs(
+      {
+        operation: "update-open-pr-branches",
+        "github-user": "testbot",
+        repos: "org/repo1,org/repo2",
+        "work-dir": "/tmp/test-work",
+      },
+      config,
+    );
+    // Should attempt to process (not reject with validation error)
+    assertEquals(
+      !result.message.includes("Missing required") &&
+        !result.message.includes("No repositories"),
+      true,
+    );
+  },
+);
 
 // ============================================================================
 // update-open-pr-branches — merge-queue base (Issue #4424)
@@ -364,41 +444,44 @@ function fakeGhBehindOnlyPr(rules: string): {
   return { runner, calls };
 }
 
-Deno.test("pr-maintenance command - update-open-pr-branches takes no action on a behind-only PR behind a merge queue (Issue #4424)", async () => {
-  _resetMergeQueueMemo();
-  const { runner, calls } = fakeGhBehindOnlyPr("pull_request,merge_queue");
-  // A throwaway work dir: were the PR wrongly updated, the clone would land
-  // here, never in the real WORK_DIR.
-  const workDir = await Deno.makeTempDir({ prefix: "pr_maint_mq_" });
-  _setGhSpawnRunner(runner);
-  try {
-    const config = makeConfig({ repos: [MERGE_QUEUE_REPO] });
-    const result = await prMaintenanceCommand.execute(
-      {
-        operation: "update-open-pr-branches",
-        "github-user": "testbot",
-        repos: MERGE_QUEUE_REPO,
-        "work-dir": workDir,
-      },
-      config,
-    );
-    // The branch-rules endpoint was consulted for the default branch...
-    assertEquals(
-      calls.some((c) => c.includes(`rules/branches/main`)),
-      true,
-      `expected a merge-queue rules read, got: ${JSON.stringify(calls)}`,
-    );
-    // ...and the behind-only PR was counted as already current, not updated.
-    assertEquals(result.success, true);
-    assertEquals(
-      result.message,
-      "PR branch update complete: 0 updated, 1 already current, 0 failed (Issue #379)",
-    );
-  } finally {
-    _resetGhSpawnRunner();
-    await Deno.remove(workDir, { recursive: true });
-  }
-});
+ghTest(
+  "pr-maintenance command - update-open-pr-branches takes no action on a behind-only PR behind a merge queue (Issue #4424)",
+  async () => {
+    _resetMergeQueueMemo();
+    const { runner, calls } = fakeGhBehindOnlyPr("pull_request,merge_queue");
+    // A throwaway work dir: were the PR wrongly updated, the clone would land
+    // here, never in the real WORK_DIR.
+    const workDir = await Deno.makeTempDir({ prefix: "pr_maint_mq_" });
+    _setGhSpawnRunner(runner);
+    try {
+      const config = makeConfig({ repos: [MERGE_QUEUE_REPO] });
+      const result = await prMaintenanceCommand.execute(
+        {
+          operation: "update-open-pr-branches",
+          "github-user": "testbot",
+          repos: MERGE_QUEUE_REPO,
+          "work-dir": workDir,
+        },
+        config,
+      );
+      // The branch-rules endpoint was consulted for the default branch...
+      assertEquals(
+        calls.some((c) => c.includes(`rules/branches/main`)),
+        true,
+        `expected a merge-queue rules read, got: ${JSON.stringify(calls)}`,
+      );
+      // ...and the behind-only PR was counted as already current, not updated.
+      assertEquals(result.success, true);
+      assertEquals(
+        result.message,
+        "PR branch update complete: 0 updated, 1 already current, 0 failed (Issue #379)",
+      );
+    } finally {
+      _resetGhSpawnRunner();
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
 
 /**
  * Run `update-open-pr-branches` over one strict-base behind PR whose fleet
@@ -496,14 +579,17 @@ async function strictRefreshPutCount(
 
 // A strict-base behind PR is refreshed using the command's loaded fleet
 // identity, not a second read of CONFIG_PATH / .config.json (Issue #4613).
-Deno.test("pr-maintenance command - update-open-pr-branches refreshes a strict-base PR with the loaded fleet identity (Issue #4613)", async () => {
-  assertEquals(
-    await strictRefreshPutCount("VibeCoderST", {
-      fleetPrAuthors: ["VibeCoderST"],
-    }, false),
-    1,
-  );
-});
+ghTest(
+  "pr-maintenance command - update-open-pr-branches refreshes a strict-base PR with the loaded fleet identity (Issue #4613)",
+  async () => {
+    assertEquals(
+      await strictRefreshPutCount("VibeCoderST", {
+        fleetPrAuthors: ["VibeCoderST"],
+      }, false),
+      1,
+    );
+  },
+);
 
 // Each source of the command's fleet identity must reach the refresh: an
 // existing owner authored by that login is only honoured (the refresh is
@@ -515,19 +601,22 @@ for (
     ["serviceAccounts", "svc-account", { serviceAccounts: ["svc-account"] }],
   ] as Array<[string, string, Partial<WorkerConfig>]>)
 ) {
-  Deno.test(`pr-maintenance command - update-open-pr-branches honours a base owner from ${source} (Issue #4613)`, async () => {
-    // Control: with no owner the same identity refreshes, so the suppression
-    // below is the owner being honoured, not the refresh failing outright.
-    assertEquals(await strictRefreshPutCount(author, config, false), 1);
-    assertEquals(await strictRefreshPutCount(author, config, true), 1);
-  });
+  ghTest(
+    `pr-maintenance command - update-open-pr-branches honours a base owner from ${source} (Issue #4613)`,
+    async () => {
+      // Control: with no owner the same identity refreshes, so the suppression
+      // below is the owner being honoured, not the refresh failing outright.
+      assertEquals(await strictRefreshPutCount(author, config, false), 1);
+      assertEquals(await strictRefreshPutCount(author, config, true), 1);
+    },
+  );
 }
 
 // ============================================================================
 // Unknown operation
 // ============================================================================
 
-Deno.test("pr-maintenance command - unknown operation returns error", async () => {
+ghTest("pr-maintenance command - unknown operation returns error", async () => {
   const config = makeConfig();
   const result = await prMaintenanceCommand.execute(
     { operation: "nonexistent" },
@@ -541,7 +630,7 @@ Deno.test("pr-maintenance command - unknown operation returns error", async () =
   assertEquals(result.message.includes("ensure-auto-merge-on-open-prs"), true);
 });
 
-Deno.test("pr-maintenance command - has correct name", () => {
+ghTest("pr-maintenance command - has correct name", () => {
   assertEquals(prMaintenanceCommand.name, "pr-maintenance");
 });
 
@@ -567,16 +656,19 @@ const USER_CHECKING_OPERATIONS = [
 ] as const;
 
 for (const operation of USER_CHECKING_OPERATIONS) {
-  Deno.test(`pr-maintenance command - ${operation} accepts the injected GITHUB_USER`, async () => {
-    const config = makeConfig({ repos: [] });
-    const result = await prMaintenanceCommand.execute(
-      { operation },
-      config,
-      envFrom({ GITHUB_USER: "seam-only-bot" }),
-    );
-    // Past the identity check on the injected login, and stopped by the next
-    // guard instead — no repositories to scan.
-    assertEquals(result.success, false);
-    assertEquals(result.message, "No repositories configured");
-  });
+  ghTest(
+    `pr-maintenance command - ${operation} accepts the injected GITHUB_USER`,
+    async () => {
+      const config = makeConfig({ repos: [] });
+      const result = await prMaintenanceCommand.execute(
+        { operation },
+        config,
+        envFrom({ GITHUB_USER: "seam-only-bot" }),
+      );
+      // Past the identity check on the injected login, and stopped by the next
+      // guard instead — no repositories to scan.
+      assertEquals(result.success, false);
+      assertEquals(result.message, "No repositories configured");
+    },
+  );
 }
