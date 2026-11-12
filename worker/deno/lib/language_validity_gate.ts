@@ -119,17 +119,19 @@ const VALIDITY_SPECS: Record<ValidityGateLanguage, ValiditySpec> = {
     gatePhrase: "`cargo check` / `cargo build`",
     suggested: "cargo check --all-targets",
   },
+  // Suggestion avoids a shell glob: an unquoted `**` in a bash `run:` step
+  // reaches only one directory deep (Issue #4997).
   typescript: {
     label: "TypeScript",
     pattern: COMPILE_GATE_PATTERNS.typescript,
     gatePhrase: "`deno check` / `tsc --noEmit`",
-    suggested: "deno check **/*.ts` (or `npx tsc --noEmit",
+    suggested: "deno check .` (or `npx tsc --noEmit",
   },
   react: {
     label: "React",
     pattern: COMPILE_GATE_PATTERNS.react,
     gatePhrase: "`deno check` / `tsc --noEmit`",
-    suggested: "deno check **/*.ts` (or `npx tsc --noEmit",
+    suggested: "deno check .` (or `npx tsc --noEmit",
   },
   java: {
     label: "Java",

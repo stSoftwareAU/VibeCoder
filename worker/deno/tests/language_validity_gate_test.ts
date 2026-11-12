@@ -244,6 +244,36 @@ Deno.test("typescript — no compile gate flagged even when eslint runs", async 
   );
 });
 
+Deno.test("typescript/react #4997 — suggested compile gate uses no shell glob", async () => {
+  const cases: Array<[string, RepoLanguages]> = [
+    ["typescript", langs({ TypeScript: 1 })],
+    [
+      "react",
+      langs({ TypeScript: 200 }, {
+        hasReactDependency: true,
+        hasJsxFiles: true,
+      }),
+    ],
+  ];
+  for (const [lang, repoLangs] of cases) {
+    await withTempRepo(
+      {
+        "package.json": '{"name":"x"}',
+        ".github/workflows/ci.yml": workflow("npx eslint ."),
+      },
+      async (tmp) => {
+        const res = byLang(
+          await checkLanguageValidityGates(tmp, repoLangs),
+          lang as ValidityGateLanguage,
+        );
+        assertEquals(res.present, false);
+        assertStringIncludes(res.details, "`deno check .`");
+        assertEquals(res.details.includes("**"), false);
+      },
+    );
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Java — reused compile-gate detection
 // ---------------------------------------------------------------------------
