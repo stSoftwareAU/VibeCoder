@@ -301,11 +301,11 @@ const REAL_IMAGE_OUTPUT: Record<
   node: { command: "v24.22.1\n" },
   npm: { command: "12.2.1\n" },
   "markdownlint-cli2": {
-    command: "markdownlint-cli2 v0.24.0 (markdownlint v0.42.0)\n" +
+    command: "markdownlint-cli2 v0.24.1 (markdownlint v0.42.1)\n" +
       "Finding: --version\nLinting: 0 files\nSummary: 0 issues in 0 files\n",
   },
   // `cspell --version` prints the bare version (Issue #3689).
-  cspell: { command: "10.4.0\n" },
+  cspell: { command: "10.4.1\n" },
   // Captured from the image's own binary (Issue #2097): `graft --version`
   // prints the bare version, so the manifest entry needs no versionArgs.
   graft: { command: "0.25.0\n" },

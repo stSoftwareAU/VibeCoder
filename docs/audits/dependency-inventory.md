@@ -34,9 +34,9 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | Tool | Kind | Version | SHA-256 | Verdict |
 | --- | --- | --- | --- | --- |
 | claude | provider | 2.1.322 | amd64: bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478<br>arm64: f220ca50ea4f3222043ff83cc224a1262e0196e9897acc0871efa94235b0c1fd | exact version + SHA-256 verified |
-| codex | provider | 0.164.0 | amd64: 90dd0b03b28afcb7fa733a4f73b413db2916a47347efd43fb669cc1c774ee8e4<br>arm64: 29a507a2a3fd8f6cd94b96b762d281d299d15d7902dee6132d314b78cf9108eb | exact version + SHA-256 verified |
+| codex | provider | 0.167.2 | amd64: 8246e846c550ea21197fcc4067bc270dca895e94ea42ed6a282e6f4e0125b15f<br>arm64: ed81fa2c7d209689af061b6f305ed554218de92a1c2c4019142b28f66fa64add | exact version + SHA-256 verified |
 | deepseek | provider | 2.1.322 | amd64: bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478<br>arm64: f220ca50ea4f3222043ff83cc224a1262e0196e9897acc0871efa94235b0c1fd | exact version + SHA-256 verified |
-| gemini | provider | 0.65.0 | noarch: 97f1f7f1e7e189054d27edfb9c62c6a45cec15b678840dfdde3c0ccd87fab376 | exact version + SHA-256 verified |
+| gemini | provider | 0.68.0 | noarch: 325099ddcb56937c27d119e7297bfa8a5e29b529bae3c92fdf3b71a36d5fa006 | exact version + SHA-256 verified |
 | gh | tool | 2.103.2 | amd64: 62ccf747115ddc61237efffdde66a3c8f70ba249433dc64f70801089b59c59c8<br>arm64: 4c3e99a50bd8b181a3fe9d69b25dd978bac768148d88f01507c6b4d1ef61a443 | exact version + SHA-256 verified |
 | jq | tool | 1.8.2 | amd64: b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f<br>arm64: 8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309 | exact version + SHA-256 verified |
 | pip | tool | 26.2.2 | noarch: fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70 | exact version + SHA-256 verified |
@@ -47,11 +47,11 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | cargo-mutants | toolchain | 27.1.0 | amd64: dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e | exact version + SHA-256 verified |
 | codegraph | toolchain | 1.6.2 | amd64: ef0af416092128fb1ccc723786000b7edf4a6971fe604acd08bf966e4f37b828<br>arm64: c8c6be292be21d00dea26bad8b28d434731cf612fb8cc475dc10f5b3038b5b64 | exact version + SHA-256 verified |
 | codespell | toolchain | 2.4.3 | noarch: af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a | exact version + SHA-256 verified |
-| cspell | toolchain | 10.4.0 | noarch: 73b8354d9bf11df027d08283848f67fc45fae15bdad804dd741ef6ffc1b22ac2 | exact version + SHA-256 verified |
+| cspell | toolchain | 10.4.1 | noarch: 38c4760a68a7c421c25c93d887885bcc84e6f4740a8377b8891c5fe264ed8501 | exact version + SHA-256 verified |
 | floci | toolchain | 2.3.0 | amd64: bb4be0860e3b2394c1822ed98450f9432d8054d867e072b5e66901b93adfa514<br>arm64: ab62c17a4f81234b1ab646415137d0fbbe36750451774d6db3a9fb0b513bf600 | exact version + SHA-256 verified |
 | gitleaks | toolchain | 8.30.1 | amd64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb<br>arm64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | exact version + SHA-256 verified |
 | graft | toolchain | 0.25.0 | noarch: 685f2af74ab4ded3b2af01d92f25877648e78cf00c4db99baa5c0e732f8ef35e | exact version + SHA-256 verified |
-| markdownlint-cli2 | toolchain | 0.24.0 | noarch: 66ab8e028fd8e6eb64a4f277660142e1c4ea8c61501974d91a060f2586a0c548 | exact version + SHA-256 verified |
+| markdownlint-cli2 | toolchain | 0.24.1 | noarch: dea9b1cc84c9247f82bdf73e6090c7166fc6cf8e72fd89a2f8d149f5b80e7436 | exact version + SHA-256 verified |
 | node | toolchain | 24.22.1 | amd64: 6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6<br>arm64: dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e | exact version + SHA-256 verified |
 | npm | toolchain | 12.2.1 | noarch: 228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67 | exact version + SHA-256 verified |
 | pwsh | toolchain | 7.6.8 | amd64: 59112e38ad83350e4f6dc0195953c66b5926792f300ca2e7691b8242e7a16e7f<br>arm64: 3179e07fd98f026d39c730ebcb7626d071aac3351b171dda13f9f38d99efcef0 | exact version + SHA-256 verified |
