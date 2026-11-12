@@ -4,6 +4,7 @@ import { neutraliseAgentMarkers } from "../lib/agent_marker_neutralisation.ts";
 import { isFleetAuthor } from "../lib/fleet_authors.ts";
 import { BABYSITTER_HANDOFF_MARKER } from "../lib/babysitter_retry_state.ts";
 import { isBabysitterReady } from "../lib/babysitter_ready.ts";
+import { isGateInfrastructureResponse } from "../lib/babysitter_tree_gate.ts";
 import {
   type BaseFailureDecision,
   classifyBaseRedFailures,
@@ -3348,6 +3349,17 @@ export async function fix(
       break;
     }
     const response = await readAgentResponse(exchange);
+    if (
+      !isBabysitterReady(response) && isGateInfrastructureResponse(response)
+    ) {
+      // The in-container pre-push gate could not run (Issue #4930): an outage,
+      // not a verdict on the agent's fix, so no substantive attempt is spent.
+      throw new BabysitterFailure(
+        "the in-container pre-push checks could not run; refusing to push. " +
+          "Untrusted gate message: " + redactSecrets(response).slice(0, 2000),
+        "infrastructure",
+      );
+    }
     if (!isBabysitterReady(response)) {
       throw new BabysitterFailure(
         "agent did not report that its fix was ready; refusing to push. " +

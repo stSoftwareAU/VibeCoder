@@ -33,6 +33,7 @@ import {
   listBabysitterRetryStates,
   saveBabysitterRetryState,
 } from "../lib/babysitter_retry_state.ts";
+import { withholdReady } from "../lib/babysitter_tree_gate.ts";
 import { ContainerRuntimeUnavailableError } from "../lib/container_runtime.ts";
 import { BABYSITTER_AGENT_PERMISSIONS } from "../lib/fleet_babysitter_app.ts";
 import {
@@ -2563,5 +2564,52 @@ Deno.test("startBabysitterAgent without a base branch passes no --base-branch fl
     } finally {
       await Deno.remove(dirs.root, { recursive: true });
     }
+  });
+});
+
+// Issue #4930: a gate that could not run (an outage) is not a verdict on the fix.
+Deno.test("a response withheld because the pre-push gate could not run is an infrastructure attempt with backoff, not a substantive one (Issue #4930)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    h.state.agents.push({
+      response: withholdReady(
+        "fixed it\nBABYSITTER_READY\n",
+        { kind: "infrastructure", message: "module fetch failed: jsr.io" },
+      ),
+    });
+
+    await assertRejects(
+      () => h.attempt(),
+      BabysitterFailure,
+      "pre-push checks could not run",
+    );
+
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "infrastructure");
+    assertEquals(record!.attempts, { infrastructure: 1, substantive: 0 });
+    assertEquals(record!.unpublishedAttempts ?? 0, 0);
+    assert(record!.nextEligibleAt !== null);
+    assertEquals(h.state.committed, false);
+  });
+});
+
+Deno.test("a response withheld because a pre-push check failed stays a substantive code attempt (Issue #4930)", async () => {
+  await withState(async (stateDir) => {
+    const h = harness(stateDir);
+    h.state.changes = true;
+    h.state.agents.push({
+      response: withholdReady(
+        "fixed it\nBABYSITTER_READY\n",
+        { kind: "blocked", message: "deno test failed: a_test.ts" },
+      ),
+    });
+
+    await assertRejects(() => h.attempt(), BabysitterFailure, "refusing");
+
+    const [record] = await records(stateDir);
+    assertEquals(record!.blockerClass, "code");
+    assertEquals(record!.attempts, { infrastructure: 0, substantive: 1 });
+    assertEquals(h.state.committed, false);
   });
 });

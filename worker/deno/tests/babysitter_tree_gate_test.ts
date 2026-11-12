@@ -12,6 +12,8 @@ import {
   BABYSITTER_GATE_BLOCKED_MARKER,
   type BabysitterTreeGateDeps,
   type BabysitterTreeGateOutcome,
+  defaultExtractTree,
+  isGateInfrastructureResponse,
   runBabysitterTreeGate,
   withholdReady,
 } from "../lib/babysitter_tree_gate.ts";
@@ -283,26 +285,330 @@ Deno.test("a worktree add or remove outside the temp root is refused (#4930)", a
   });
 });
 
-Deno.test("the gate is given the pre-push stdin, shellcheckOnly and no baseline unless one is named (#4930)", async () => {
+const FOO_FAILURE =
+  "FAILURES\n\nfoo works => ./tests/foo_test.ts:3:6\n\nFAILED | 0 passed | 1 failed\n";
+
+/**
+ * A clone of a bare remote whose `main` holds a Deno root at worker/deno (a
+ * `foo` source and its test) and a markdownlint config, left clean. `edit` then
+ * makes the agent's uncommitted changes.
+ */
+async function agentClone(
+  edit: (clone: string) => Promise<void>,
+  body: (clone: string) => Promise<void>,
+): Promise<void> {
+  const top = await Deno.makeTempDir({ prefix: "tree-gate-real-4930-" });
+  try {
+    const clone = `${top}/clone`;
+    await git(top, "init", "-q", "--bare", "-b", "main", `${top}/remote.git`);
+    await git(top, "clone", "-q", `${top}/remote.git`, clone);
+    await git(clone, "config", "user.email", "tree-gate@example.invalid");
+    await git(clone, "config", "user.name", "Tree Gate Test");
+    await git(clone, "config", "commit.gpgsign", "false");
+    await Deno.mkdir(`${clone}/worker/deno/lib`, { recursive: true });
+    await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/deno.json`,
+      JSON.stringify({ tasks: { "test:unit": "x" } }),
+    );
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/lib/foo.ts`,
+      "export const foo = 1;\n",
+    );
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/tests/foo_test.ts`,
+      "export {};\n",
+    );
+    await Deno.writeTextFile(`${clone}/.markdownlint-cli2.jsonc`, "{}\n");
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-q", "-m", "base");
+    await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
+    await edit(clone);
+    await body(clone);
+  } finally {
+    await Deno.remove(top, { recursive: true }).catch(() => {});
+  }
+}
+
+const editFoo = (clone: string) =>
+  Deno.writeTextFile(
+    `${clone}/worker/deno/lib/foo.ts`,
+    "export const foo = 2;\n",
+  );
+
+/**
+ * Runs the real pre-push gate through the adapter with only the command runner
+ * faked. `unit` answers the deno test command in the checkout it runs in;
+ * every other command passes and is recorded.
+ */
+async function realGate(
+  clone: string,
+  baseBranch: string | undefined,
+  unit: (cwd: string | undefined) => { code: number; stderr?: string },
+  markdownlintExit = 0,
+) {
+  const commands: string[] = [];
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+  try {
+    const outcome = await runBabysitterTreeGate(clone, baseBranch, {
+      findMarkdownlint: () => Promise.resolve("/fake/markdownlint"),
+      runner: (command, options) => {
+        commands.push(command);
+        const isUnit = command.startsWith("deno task test:unit");
+        const isMarkdown = command.includes("/fake/markdownlint");
+        const answer = isUnit
+          ? unit(options.cwd)
+          : { code: isMarkdown ? markdownlintExit : 0 };
+        return Promise.resolve({
+          started: true,
+          stdout: "",
+          stderr: "",
+          ...answer,
+        });
+      },
+    });
+    return { outcome, commands, warnings };
+  } finally {
+    console.warn = realWarn;
+  }
+}
+
+Deno.test("an uncommitted new test file that fails blocks, naming the failing command, with no formatter or linter run (#4930)", async () => {
+  await agentClone(
+    (clone) =>
+      Deno.writeTextFile(
+        `${clone}/worker/deno/tests/new_test.ts`,
+        "export {};\n",
+      ),
+    async (clone) => {
+      const { outcome, commands } = await realGate(clone, "main", () => ({
+        code: 1,
+        stderr: "new works => ./tests/new_test.ts:3:6\n",
+      }));
+
+      assertEquals(outcome.kind, "blocked");
+      assertStringIncludes(
+        (outcome as { message: string }).message,
+        "tests/new_test.ts",
+      );
+      assert(
+        commands.some((c) => c.startsWith("deno task test:unit")),
+        `the unit tests ran: ${commands}`,
+      );
+      assertEquals(
+        commands.filter((c) => /deno (fmt|lint)/.test(c)),
+        [],
+      );
+    },
+  );
+});
+
+Deno.test("a test failing identically at the PR base is a warning, not a block (#4930)", async () => {
+  await agentClone(editFoo, async (clone) => {
+    const { outcome, warnings } = await realGate(clone, "main", () => ({
+      code: 1,
+      stderr: FOO_FAILURE,
+    }));
+
+    assertEquals(outcome.kind, "passed");
+    assertEquals(warnings.length, 1);
+    assertStringIncludes(warnings[0]!, "[PRE_PUSH_WARNING] deno test");
+  });
+});
+
+Deno.test("a test that passes at the PR base but fails in the agent's tree blocks (#4930)", async () => {
+  await agentClone(editFoo, async (clone) => {
+    const { outcome, warnings } = await realGate(
+      clone,
+      "main",
+      (cwd) =>
+        Deno.readTextFileSync(`${cwd}/lib/foo.ts`).includes("= 1")
+          ? { code: 0 }
+          : { code: 1, stderr: FOO_FAILURE },
+    );
+
+    assertEquals(outcome.kind, "blocked");
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("without a base branch the same failing test blocks (#4930)", async () => {
+  await agentClone(editFoo, async (clone) => {
+    const { outcome, warnings } = await realGate(clone, undefined, () => ({
+      code: 1,
+      stderr: FOO_FAILURE,
+    }));
+
+    assertEquals(outcome.kind, "blocked");
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("a changed markdown file runs markdownlint and its failure blocks (#4930)", async () => {
+  await agentClone(
+    (clone) => Deno.writeTextFile(`${clone}/NOTES.md`, "#Bad\n"),
+    async (clone) => {
+      const passing = await realGate(clone, "main", () => ({ code: 0 }));
+      assertEquals(passing.outcome.kind, "passed");
+      assert(
+        passing.commands.some((c) => c.includes("/fake/markdownlint")),
+        `markdownlint ran: ${passing.commands}`,
+      );
+
+      const failing = await realGate(clone, "main", () => ({ code: 0 }), 1);
+      assertEquals(failing.outcome.kind, "blocked");
+      assertStringIncludes(
+        (failing.outcome as { message: string }).message,
+        "/fake/markdownlint",
+      );
+    },
+  );
+});
+
+Deno.test("a changed markdown file with no markdownlint binary available is not a pass (#4930)", async () => {
+  await agentClone(
+    (clone) => Deno.writeTextFile(`${clone}/NOTES.md`, "#Bad\n"),
+    async (clone) => {
+      const commands: string[] = [];
+      const outcome = await runBabysitterTreeGate(clone, "main", {
+        findMarkdownlint: () => Promise.resolve(null),
+        runner: (command) => {
+          commands.push(command);
+          return Promise.resolve({
+            started: true,
+            code: 0,
+            stdout: "",
+            stderr: "",
+          });
+        },
+      });
+
+      assertEquals(outcome.kind, "blocked", `commands run: ${commands}`);
+      assertStringIncludes(
+        (outcome as { message: string }).message,
+        "markdownlint",
+      );
+    },
+  );
+});
+
+Deno.test("a module-fetch outage in the unit tests is infrastructure, not blocked (#4930)", async () => {
+  await agentClone(editFoo, async (clone) => {
+    const { outcome } = await realGate(clone, "main", () => ({
+      code: 1,
+      stderr:
+        "error: JSR package manifest for '@std/assert' failed to load. Import 'https://jsr.io/@std/assert/meta.json' failed.\n    at file:///x/tests/foo_test.ts:1:8\n",
+    }));
+
+    assertEquals(outcome.kind, "infrastructure");
+    assertStringIncludes(
+      (outcome as { message: string }).message,
+      "JSR package manifest",
+    );
+  });
+});
+
+Deno.test("files inside a new untracked directory are listed one by one (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.mkdir(`${repo}/sub/dir`, { recursive: true });
+    await Deno.writeTextFile(`${repo}/sub/dir/new.txt`, "new\n");
+    let logged: string[] = [];
+    const { deps } = depsFor(root, async (opts) => {
+      const out = await opts.git!(
+        ["log", "--name-only", "-z", "HEAD", "--not", "--remotes"],
+        opts.cwd,
+      );
+      logged = names(out.stdout);
+      return PASS;
+    });
+
+    await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(logged, ["sub/dir/new.txt"]);
+  });
+});
+
+Deno.test("the default temp root is a real directory the gate hands to the adapter, then removes (#4930)", async () => {
+  await fixture(async (repo) => {
+    await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
+    let common = "";
+    const outcome = await runBabysitterTreeGate(repo, undefined, {
+      gate: async (opts) => {
+        const out = await opts.git!(
+          ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+          opts.cwd,
+        );
+        common = out.stdout.trim();
+        assert((await Deno.stat(common)).isDirectory);
+        return PASS;
+      },
+    });
+
+    assertEquals(outcome.kind, "passed");
+    assertStringIncludes(common, "babysitter-tree-gate-");
+    assertEquals(await exists(common), false);
+  });
+});
+
+Deno.test("a temp root already gone when the gate finishes is not a failure (#4930)", async () => {
   await fixture(async (repo, root) => {
     await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
-    const head = await git(repo, "rev-parse", "HEAD");
-    const withBase = depsFor(root, async () => PASS);
-    await runBabysitterTreeGate(repo, "main", withBase.deps);
-    const withoutBase = depsFor(root, async () => PASS);
-    await runBabysitterTreeGate(repo, undefined, withoutBase.deps);
+    const outcome = await runBabysitterTreeGate(repo, undefined, {
+      makeTempDir: async () => root,
+      gate: async () => {
+        await Deno.remove(root, { recursive: true });
+        return PASS;
+      },
+    });
 
-    const first = withBase.calls[0]!;
-    assertEquals(
-      first.stdin,
-      `refs/heads/babysitter-tree ${head} refs/heads/babysitter-tree ${head}\n`,
+    assertEquals(outcome.kind, "passed");
+  });
+});
+
+Deno.test("a failed git archive of the fork commit reports git's exit code and stderr (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    const dest = `${root}/extract`;
+    await Deno.mkdir(dest);
+
+    const extracted = await defaultExtractTree(repo, "0".repeat(40), dest);
+
+    assert(extracted.code !== 0, "a missing commit does not extract");
+    assert(extracted.stderr.trim() !== "", "git's stderr is carried");
+  });
+});
+
+Deno.test("a tar unpack past its time limit is reported as a timeout, never a success (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    const head = await git(repo, "rev-parse", "HEAD");
+    const dest = `${root}/extract`;
+    await Deno.mkdir(dest);
+
+    const extracted = await defaultExtractTree(
+      repo,
+      head,
+      dest,
+      AbortSignal.abort(),
     );
-    assertEquals(first.cwd, repo);
-    assertEquals(first.preFlightCommands, []);
-    assertEquals(first.shellcheckOnly, true);
-    assertEquals(first.baselineBranch, "main");
-    assertEquals(withoutBase.calls.length, 1);
-    assertEquals("baselineBranch" in withoutBase.calls[0]!, false);
+
+    assertEquals(extracted, { code: 1, stderr: "tar timed out after 300 s" });
+  });
+});
+
+Deno.test("a tar unpack within its time limit extracts the commit (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    const head = await git(repo, "rev-parse", "HEAD");
+    const dest = `${root}/extract`;
+    await Deno.mkdir(dest);
+
+    const extracted = await defaultExtractTree(repo, head, dest);
+
+    assertEquals(extracted, { code: 0, stderr: "" });
+    assertEquals(
+      await Deno.readTextFile(`${dest}/committed.txt`),
+      "committed.txt\n",
+    );
   });
 });
 
@@ -562,4 +868,25 @@ Deno.test("withholdReady adds only the marker to output without READY (#4930)", 
     `${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks failed: markdownlint failed\n\n${output}`,
   );
   assertEquals(isBabysitterReady(result), false);
+});
+
+Deno.test("only a withheld infrastructure response is recognised as a gate outage (#4930)", () => {
+  const infrastructure = withholdReady("done\nBABYSITTER_READY\n", {
+    kind: "infrastructure",
+    message: "module fetch failed",
+  });
+  const blocked = withholdReady("done\nBABYSITTER_READY\n", {
+    kind: "blocked",
+    message: "deno test failed",
+  });
+
+  assertEquals(isGateInfrastructureResponse(infrastructure), true);
+  assertEquals(isGateInfrastructureResponse(blocked), false);
+  assertEquals(isGateInfrastructureResponse("done\nBABYSITTER_READY\n"), false);
+  assertEquals(
+    isGateInfrastructureResponse(
+      `agent text\n${BABYSITTER_GATE_BLOCKED_MARKER} pre-push checks could not run: x`,
+    ),
+    false,
+  );
 });

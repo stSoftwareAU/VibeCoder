@@ -17,6 +17,7 @@ import { isBabysitterReady } from "../lib/babysitter_ready.ts";
 import {
   BABYSITTER_GATE_BLOCKED_MARKER,
   type BabysitterTreeGateOutcome,
+  runBabysitterTreeGate,
 } from "../lib/babysitter_tree_gate.ts";
 import { chooseBabysitterProvider } from "../lib/babysitter_provider_choice.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
@@ -881,6 +882,7 @@ Deno.test("production deps use real files, the real provider choice and runner, 
     exportBabysitterSubscriptionCredentials,
   );
   assertEquals(deps.runClaude, runClaudeWithTimeout);
+  assertEquals(deps.treeGate, runBabysitterTreeGate);
 
   await inWorkspace(async (paths) => {
     const file = `${paths.root}/prod.txt`;

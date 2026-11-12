@@ -428,8 +428,12 @@ extraction into a temporary directory under the container's temp dir, not a git
 worktree. If a check blocks or cannot run, the container removes the
 `BABYSITTER_READY` line and puts a `[BABYSITTER_GATE_BLOCKED]` line with the
 cause first in the response. The host's completion check then refuses to push
-("agent did not report that its fix was ready") and quotes the cause; nothing is
-pushed.
+and quotes the cause; nothing is pushed. A failed check
+(`pre-push checks failed`) is a code failure that spends a repair attempt
+("agent did not report that its fix was ready"). A gate that could not run
+(`pre-push checks could not run`, for example a module-fetch outage) is raised as
+an infrastructure failure: it backs off and retries, and spends no repair
+attempt.
 
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container

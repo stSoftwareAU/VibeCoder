@@ -19,6 +19,7 @@
  * Uses Australian English spelling (behaviour, neutralise, etc.)
  */
 
+import type { PreFlightRunner } from "./pre_flight_gate.ts";
 import {
   defaultPrePushGit,
   PrePushGateInfrastructureError,
@@ -30,6 +31,21 @@ import { redactSecrets } from "./secret_redaction.ts";
 
 /** Written in front of a response whose READY line was withheld. */
 export const BABYSITTER_GATE_BLOCKED_MARKER = "[BABYSITTER_GATE_BLOCKED]";
+
+/** The headline of a withheld response, by the kind of outcome. */
+const BLOCKED_HEADLINE = "pre-push checks failed";
+const INFRASTRUCTURE_HEADLINE = "pre-push checks could not run";
+
+/**
+ * Whether a response was withheld because the gate could not run (a module
+ * fetch or tool download outage), not because a check failed. The host raises
+ * that as an infrastructure failure, so it spends no repair attempt.
+ */
+export function isGateInfrastructureResponse(response: string): boolean {
+  return response.startsWith(
+    `${BABYSITTER_GATE_BLOCKED_MARKER} ${INFRASTRUCTURE_HEADLINE}:`,
+  );
+}
 
 /** The READY line the host looks for; never allowed in a withheld message. */
 const READY_LINE = "BABYSITTER_READY";
@@ -71,6 +87,9 @@ export type BabysitterTreeGateOutcome =
 export interface BabysitterTreeGateDeps {
   git?: PrePushGit;
   gate?: typeof runPrePushGate;
+  /** Command runner and markdownlint lookup handed to the real gate. */
+  runner?: PreFlightRunner;
+  findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   makeTempDir?: () => Promise<string>;
   removeTree?: (path: string) => Promise<void>;
   extractTree?: (
@@ -110,10 +129,11 @@ async function defaultRemoveTree(path: string): Promise<void> {
 const TAR_TIMEOUT_MS = 5 * 60_000;
 
 /** `git archive` the commit into a tar beside `dest`, then unpack it into `dest`. */
-async function defaultExtractTree(
+export async function defaultExtractTree(
   dir: string,
   sha: string,
   dest: string,
+  timeout: AbortSignal = AbortSignal.timeout(TAR_TIMEOUT_MS),
 ): Promise<{ code: number; stderr: string }> {
   const tarPath = `${dest}.tar`;
   const archive = await defaultPrePushGit(
@@ -123,7 +143,6 @@ async function defaultExtractTree(
   if (archive.code !== 0) {
     return { code: archive.code, stderr: archive.stderr };
   }
-  const timeout = AbortSignal.timeout(TAR_TIMEOUT_MS);
   const timedOut = {
     code: 1,
     stderr: `tar timed out after ${TAR_TIMEOUT_MS / 1000} s`,
@@ -350,6 +369,10 @@ export async function runBabysitterTreeGate(
       preFlightCommands: [],
       shellcheckOnly: true,
       git: adapter,
+      ...(deps.runner ? { runner: deps.runner } : {}),
+      ...(deps.findMarkdownlint
+        ? { findMarkdownlint: deps.findMarkdownlint }
+        : {}),
       ...(baseBranch ? { baselineBranch: baseBranch } : {}),
     });
     let verdict: BabysitterTreeGateOutcome;
@@ -415,8 +438,8 @@ export function withholdReady(
   >,
 ): string {
   const headline = outcome.kind === "blocked"
-    ? "pre-push checks failed"
-    : "pre-push checks could not run";
+    ? BLOCKED_HEADLINE
+    : INFRASTRUCTURE_HEADLINE;
   return `${BABYSITTER_GATE_BLOCKED_MARKER} ${headline}: ${
     boundedMessage(outcome.message)
   }\n\n${withoutReadyLines(output)}`;
