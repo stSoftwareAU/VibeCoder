@@ -3924,6 +3924,8 @@ export async function createProductionRunCoreDeps(
             // (protected: waits for checks) and the gated direct
             // merge (unprotected: --auto would merge immediately).
             baseRefName: pr.baseRefName,
+            // The sweep's own gh runner, so an injected one reaches the merge too.
+            ghCommandFn: gh,
             // Issue #1082: lets the gated merge tell a genuine review
             // from a sibling fleet account's approval.
             fleetAuthors: maintenanceAuthors,
