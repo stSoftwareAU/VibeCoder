@@ -1235,7 +1235,7 @@ Deno.test("runPrePushGate: unsupported ShellCheck workflow is an incomplete infr
   }
 });
 
-Deno.test("runPrePushGate: an indirect repository ShellCheck gate is not silently skipped", async () => {
+Deno.test("runPrePushGate: an indirect repository ShellCheck gate is run, not silently skipped (Issue #5046)", async () => {
   const { root, clone } = await makeRepoWithDocCommit();
   try {
     await commitShellcheckFiles(clone, {
@@ -1252,14 +1252,19 @@ Deno.test("runPrePushGate: an indirect repository ShellCheck gate is not silentl
     await git(clone, "add", ".");
     await git(clone, "commit", "-qm", "delegate shellcheck to gate script");
     const tip = await git(clone, "rev-parse", "HEAD");
+    // Issue #5046: the delegated script is run as CI runs it, not refused.
+    const seen: string[] = [];
+    const stepRun = "bash --noprofile --norc -eo pipefail ";
     const result = await runPrePushGate({
       cwd: clone,
       stdin: prePushInput(tip),
       preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: recordingRunner((command) => command.startsWith(stepRun), seen),
     });
+    assert(seen.some((c) => c.startsWith(stepRun)), JSON.stringify(seen));
     assert(!result.ok);
-    assertInstanceOf(result.error, PrePushGateInfrastructureError);
-    assert(result.error.message.includes("delegates ShellCheck"));
+    assert(!(result.error instanceof PrePushGateInfrastructureError));
   } finally {
     await Deno.remove(root, { recursive: true });
   }
