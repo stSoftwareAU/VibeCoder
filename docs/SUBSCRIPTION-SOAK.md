@@ -35,8 +35,8 @@ operator-facing observability surface added by this issue — and asserts:
   after the last refresh — so a long-lived run refreshes rather than reusing an
   unexpired access token forever.
 - **Failover and recovery-after-reset.** A provider exhausted on one work item
-  is routed around; after its reset it is eligible again and wins on the
-  deterministic preference tie-break.
+  is routed around; after its reset it is eligible again and wins on remaining
+  capacity.
 - **Fail-closed billing.** With every fixed-price subscription exhausted the
   selection defers (`chosen=none`) and the billing guard reports it holds; a
   metered candidate can never win.
@@ -93,7 +93,7 @@ codex login --device-auth
 
 ### 2. Baseline Claude regression
 
-With `agent_provider: "claude"` and no `agent_provider_mode`, run a smoke issue
+With `agent_provider: "claude"` and `agent_provider_mode: "pinned"`, run a smoke issue
 and capture the provider/credential selection, token-pool ranking, model/effort
 routing and failure classification. Restart the worker/container at least three
 times and confirm every reading is unchanged. A Claude-only configuration must

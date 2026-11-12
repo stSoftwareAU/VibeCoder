@@ -63,7 +63,7 @@ Deno.test("auto selector prefers more remaining capacity regardless of reset spe
         resetsAt: NOW + 2 * 3_600_000,
       }],
     }),
-  ], { now: NOW, preference: ["claude", "codex"] });
+  ], { now: NOW });
 
   // More remaining capacity wins even when the other subscription resets sooner.
   assertEquals(selected.winner?.provider, "claude");
@@ -119,20 +119,20 @@ Deno.test("stale status loses to fresh status", () => {
   assertEquals(selected.winner?.provider, "codex");
 });
 
-Deno.test("configured provider order is the final deterministic tie-break", () => {
-  const identical = {
-    windows: [{
-      id: "primary",
-      remainingPercent: 50,
-      resetsAt: NOW + 3_600_000,
-    }],
-  };
+Deno.test("equal remaining capacity is not tie-broken: the input order stands (Issue #5089)", () => {
+  // Owner decision 2026-11-12: an exact tie is the <1% case and any pick is
+  // fine — the next run re-decides. Reset time no longer breaks it.
   const selected = selectAutomaticProvider([
-    status("claude", identical),
-    status("codex", identical),
-  ], { now: NOW, preference: ["codex", "claude"] });
+    status("claude", {
+      windows: [{ id: "primary", remainingPercent: 50, resetsAt: NOW + 9e6 }],
+    }),
+    status("codex", {
+      windows: [{ id: "primary", remainingPercent: 50, resetsAt: NOW + 1e6 }],
+    }),
+  ], { now: NOW });
 
-  assertEquals(selected.winner?.provider, "codex");
+  assertEquals(selected.winner?.provider, "claude");
+  assertEquals(selected.ranked.map((c) => c.provider), ["claude", "codex"]);
 });
 
 Deno.test("exhausted and auth-unavailable providers defer to earliest reset", () => {
@@ -177,7 +177,7 @@ Deno.test("auto selector also prefers Codex when it has more remaining capacity"
         resetsAt: NOW + 160 * 3_600_000,
       }],
     }),
-  ], { now: NOW, preference: ["claude", "codex"] });
+  ], { now: NOW });
   assertEquals(selected.winner?.provider, "codex");
   assertEquals(selected.winner?.score, 80);
 });

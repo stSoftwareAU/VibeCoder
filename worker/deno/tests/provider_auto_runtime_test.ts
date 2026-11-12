@@ -74,14 +74,57 @@ async function withProviderState(fn: () => Promise<void>): Promise<void> {
   }
 }
 
-Deno.test("auto config defaults to pinned and environment provider is absolute", () => {
+Deno.test("an absent mode defaults to auto when two subscriptions are enabled (Issue #5089)", () => {
   assertEquals(
     resolveAutomaticProviderConfig({
+      configuredProvider: "claude",
+      configuredProviders: ["claude", "codex"],
+    }),
+    { mode: "auto", preference: [], reason: "default-auto" },
+  );
+  assertEquals(
+    resolveAutomaticProviderConfig({
+      configuredProviders: ["codex", "deepseek", "claude"],
+    }).mode,
+    "auto",
+  );
+});
+
+Deno.test("an absent mode stays pinned without two subscriptions (Issue #5089)", () => {
+  // Auto pauses when no fixed-price subscription is eligible, so a host with
+  // one subscription, or only pay-per-call providers, must stay pinned.
+  for (
+    const providers of [
+      undefined,
+      ["claude"],
+      ["claude", "deepseek"],
+      ["deepseek"],
+      ["claude", "claude"],
+    ]
+  ) {
+    assertEquals(
+      resolveAutomaticProviderConfig({
+        configuredProvider: "claude",
+        configuredProviders: providers,
+      }).mode,
+      "pinned",
+      JSON.stringify(providers),
+    );
+  }
+});
+
+Deno.test("an explicit pinned mode wins over the two-subscription default (Issue #5089)", () => {
+  assertEquals(
+    resolveAutomaticProviderConfig({
+      configuredMode: "pinned",
       configuredProvider: "claude",
       configuredProviders: ["claude", "codex"],
     }).mode,
     "pinned",
   );
+});
+
+Deno.test("the environment provider is an absolute pin", () => {
   assertEquals(
     resolveAutomaticProviderConfig({
       configuredMode: "auto",
@@ -116,6 +159,7 @@ Deno.test("pinned mode makes no automatic status probe", async () => {
       now: NOW,
       readTextFile: async () =>
         JSON.stringify({
+          agent_provider_mode: "pinned",
           agent_provider: "claude",
           agent_providers: ["claude", "codex"],
         }),
@@ -218,6 +262,32 @@ Deno.test("VIBE_AGENT_PROVIDER disables auto mode and preserves explicit provide
   });
 });
 
+Deno.test("a config with two subscriptions and no mode routes automatically by quota (Issue #5089)", async () => {
+  await withProviderState(async () => {
+    const result = await refreshAutomaticProviderRouting({
+      workDir: "/tmp/vibe-auto-default",
+      enabledProviderIds: ["claude", "codex", "deepseek"],
+      now: NOW,
+      readTextFile: async () =>
+        JSON.stringify({
+          agent_provider: "claude",
+          agent_providers: ["claude", "codex", "deepseek"],
+        }),
+      env: CONFIGURED_ENV,
+      resolveStatus: (id) =>
+        id === "claude"
+          ? available("claude", 20, 5)
+          : id === "codex"
+          ? available("codex", 70, 5)
+          : { ...available(id, 100, 5), billingMode: "metered" },
+    });
+
+    assertEquals(result.automatic, true);
+    assertEquals(result.selection?.winner?.provider, "codex");
+    assertEquals(activeAgentProvider({ env: CONFIGURED_ENV }).id, "codex");
+  });
+});
+
 Deno.test("pinned config keeps file precedence over VIBE_AGENT_PROVIDER", async () => {
   await withProviderState(async () => {
     const result = await refreshAutomaticProviderRouting({
@@ -226,6 +296,7 @@ Deno.test("pinned config keeps file precedence over VIBE_AGENT_PROVIDER", async 
       now: NOW,
       readTextFile: async () =>
         JSON.stringify({
+          agent_provider_mode: "pinned",
           agent_provider: "claude",
           agent_providers: ["claude", "codex"],
         }),

@@ -263,7 +263,11 @@ Deno.test("invalid babysitter config shape fails with the config path", async ()
 Deno.test("configured pinned mode returns the configured provider without probing or overflow", async () => {
   await withProviderState(async () => {
     const fixture = baseDeps({
-      config: { agent_provider: "codex", agent_providers: ["claude", "codex"] },
+      config: {
+        agent_provider_mode: "pinned",
+        agent_provider: "codex",
+        agent_providers: ["claude", "codex"],
+      },
     });
     const result = await chooseBabysitterProvider(fixture.deps);
     assertEquals(result.providerId, "codex");
@@ -346,9 +350,12 @@ Deno.test("provider list leaves pinned selection to the environment", async () =
   });
 });
 
-Deno.test("provider list order does not override the default pin", async () => {
+Deno.test("provider list order does not override the pinned default provider", async () => {
   const fixture = baseDeps({
-    config: { agent_providers: ["codex", "claude"] },
+    config: {
+      agent_provider_mode: "pinned",
+      agent_providers: ["codex", "claude"],
+    },
   });
   const result = await chooseBabysitterProvider(fixture.deps);
   assertEquals(result.providerId, "claude");
