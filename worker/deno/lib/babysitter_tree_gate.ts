@@ -106,6 +106,9 @@ async function defaultRemoveTree(path: string): Promise<void> {
   }
 }
 
+/** Longest a `tar` unpack of the fork commit may run (Issue #4930). */
+const TAR_TIMEOUT_MS = 5 * 60_000;
+
 /** `git archive` the commit into a tar beside `dest`, then unpack it into `dest`. */
 async function defaultExtractTree(
   dir: string,
@@ -120,12 +123,27 @@ async function defaultExtractTree(
   if (archive.code !== 0) {
     return { code: archive.code, stderr: archive.stderr };
   }
-  const tar = await new Deno.Command("tar", {
-    args: ["-xf", tarPath, "-C", dest],
-    stdin: "null",
-    stdout: "null",
-    stderr: "piped",
-  }).output();
+  const timeout = AbortSignal.timeout(TAR_TIMEOUT_MS);
+  const timedOut = {
+    code: 1,
+    stderr: `tar timed out after ${TAR_TIMEOUT_MS / 1000} s`,
+  };
+  let tar: Deno.CommandOutput;
+  try {
+    tar = await new Deno.Command("tar", {
+      args: ["-xf", tarPath, "-C", dest],
+      stdin: "null",
+      stdout: "null",
+      stderr: "piped",
+      signal: timeout,
+    }).output();
+  } catch (error) {
+    if (timeout.aborted) return timedOut;
+    throw error;
+  }
+  // Deno resolves an aborted child with a non-zero code rather than rejecting,
+  // so an abort is checked here too: a timed-out unpack is never a success.
+  if (timeout.aborted) return timedOut;
   return { code: tar.code, stderr: new TextDecoder().decode(tar.stderr) };
 }
 
