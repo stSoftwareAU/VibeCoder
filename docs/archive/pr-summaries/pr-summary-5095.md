@@ -12,8 +12,8 @@ coverage carry-over, the runner process teardown and the workflow-text helpers
 used by `ci_cargo_checks.ts`. A failed temporary-directory removal in
 security-fix discrimination now logs a warning and preserves the completed
 verdict. The suspected live-writer race reported in #5078 is not claimed
-repaired. Coverage repair instructions remain available alongside Standards
-code fixes, without the retired mutation instructions. Closes #5095.
+repaired. Coverage repair instructions remain available alongside Standards code
+fixes, without the retired mutation instructions. Closes #5095.
 
 Test fixtures no longer consume live GitHub quota: six maintenance command cases
 stub empty PR listings, and the orphaned-draft wiring test fakes the merge
@@ -62,10 +62,10 @@ helpers it reaches after readiness. Existing assertions are preserved.
   `gh issue view 5095` returned `API rate limit already exceeded`; the
   historical failing host's response was not retained.
 - The independent review verdicts below are retained from the checkpointed
-  review record at `12cebfc74`. No fresh independent review was dispatched:
-  this continuation's executor instruction forbids delegation. Subsequent
-  fixture, prompt and documentation changes were reviewed locally; the
-  validation results below were refreshed in this continuation.
+  review record at `12cebfc74`. No fresh independent review was dispatched: this
+  continuation's executor instruction forbids delegation. Subsequent fixture,
+  prompt and documentation changes were reviewed locally; the validation results
+  below were refreshed in this continuation.
 
 ## Evidence
 
@@ -89,11 +89,10 @@ flowchart LR
   posting mutation feedback. A genuine drift finding still triggers recovery and
   reaches the PR reply.
 - Checkpointed TDD evidence records both successful-progression tests failing
-  against `origin/main`
-  (`065cceb1e`) with the new tests and the base's unchanged production modules
-  and mock dependencies: completion spent one recovery turn, and review-fix
-  invoked the runner trap once. Both pass on this branch. The security and drift
-  controls pass on base too, as expected.
+  against `origin/main` (`065cceb1e`) with the new tests and the base's
+  unchanged production modules and mock dependencies: completion spent one
+  recovery turn, and review-fix invoked the runner trap once. Both pass on this
+  branch. The security and drift controls pass on base too, as expected.
 - The ENOTEMPTY regression was also observed red against that base:
   `discrimination runner failed: ENOTEMPTY` replaced the completed fail/pass
   verdict. The retained test passes here and asserts that the cleanup warning
@@ -265,12 +264,13 @@ flowchart LR
 - Copies of a twinned rule: `pr_summary_check.ts` never ran the mutation gate,
   so no counterpart needed removal. Shared PR-summary validators remain used by
   both completion and the CLI; coverage carry-over stays in completion. The
-  recovery-prompt wording was checked against testing scope, coverage exemptions,
-  Standards code fixes, unmet criteria and pre-PR verifier exceptions. Applying
-  it to this diff found the blanket documentation-only sentence in the combined
-  coverage/Standards case; that contradiction is fixed. The helper comments,
-  both step-2 variants, operator manual, tests and this summary now agree that
-  coverage test fixes remain allowed. No replacement discovery gate was added.
+  recovery-prompt wording was checked against testing scope, coverage
+  exemptions, Standards code fixes, unmet criteria and pre-PR verifier
+  exceptions. Applying it to this diff found the blanket documentation-only
+  sentence in the combined coverage/Standards case; that contradiction is fixed.
+  The helper comments, both step-2 variants, operator manual, tests and this
+  summary now agree that coverage test fixes remain allowed. No replacement
+  discovery gate was added.
 - Callers checked for the removed `runMutationCheck` quality dependency:
   - `completion_phase.ts` and `pr_feedback_processor.ts`, where it was removed
   - `issue_worker_wiring.ts`, where the seam was removed
@@ -289,9 +289,9 @@ flowchart LR
   wiring and draft self-heal tests then passed the unit gate.
 - Final validation observed in this continuation:
   - `timeout 900 ./quality.sh --sequential < /dev/null` exited 0: passed with
-    configured skips. Both unit passes, the test time-budget check, Semgrep, lint, type
-    checking, formatting, manifests, Markdown and Mermaid validation passed
-    after the coverage/Standards recovery-prompt correction.
+    configured skips. Both unit passes, the test time-budget check, Semgrep,
+    lint, type checking, formatting, manifests, Markdown and Mermaid validation
+    passed after the coverage/Standards recovery-prompt correction.
   - `deno task test:unit` over the added/modified test files and retained
     CI-parser, deferred-store, pre-push, coverage-gate and subprocess
     regressions passed in both passes. The prompt and historical-log suites were
