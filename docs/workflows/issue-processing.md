@@ -1519,17 +1519,13 @@ still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).
 
 The summary gates that still run route through it: closure (#518),
 independent review (#663), reproduction status (#521), the placeholder-token
-gate (#3124), the mutation check (#3393), coverage carry-over (#3795), the
-pre-PR verifier (#3395) and unmet criteria (#4146). Each is advice: the first
-report is one in-session note, and whatever remains is one pull-request
-comment (Issue #4234). The mutation invocation is legacy behaviour pending
-[#5095](https://github.com/stSoftwareAU/VibeCoder/issues/5095), not a requirement
-to preserve it. In current code, the mutation check is the exception where the repository's
-CI runs a blocking mutation job (Issue #4617): a survivor that remains after the
-recovery turn holds the pull request as a draft that is not auto-merged, and
-on the secondary-rate-limit deferral path it is parked with `draft: true` and
-opened as a draft by the drain (see
-[Diff-scoped mutation check](../mutation-check.md#repositories-with-a-blocking-ci-mutation-job)).
+gate (#3124), coverage carry-over (#3795), the pre-PR verifier (#3395) and unmet
+criteria (#4146). Each is advice: the first report is one in-session note, and
+whatever remains is one pull-request comment (Issue #4234). The automatic
+mutation check that once ran here (Issue #3393) was retired by
+[#5095](https://github.com/stSoftwareAU/VibeCoder/issues/5095), so no mutation
+survivor holds or comments on a pull request; see
+[Diff-scoped mutation check (retired)](../mutation-check.md).
 The security-fix and changed-workflow gates do not —
 they report defects in the change, so they still stop the run.
 

@@ -362,7 +362,10 @@ Deno.test("summary-rule retry - a coverage carry-over item allows test changes; 
     "org/repo",
     7,
   );
-  assertStringIncludes(withTests, "adding or restoring tests that reach each listed line");
+  assertStringIncludes(
+    withTests,
+    "adding or restoring tests that reach each listed line",
+  );
   assertStringIncludes(
     withTests,
     "A coverage carry-over item (it lists `file:line` lines that an edited or removed test used to reach and no test reaches now)",
@@ -394,7 +397,10 @@ Deno.test("summary-rule retry - a standing violation and a coverage carry-over i
     "0123456789ab",
   );
   assertStringIncludes(prompt, "CODE FIX 1 of 1");
-  assertStringIncludes(prompt, "adding or restoring tests that reach each listed line");
+  assertStringIncludes(
+    prompt,
+    "adding or restoring tests that reach each listed line",
+  );
   assertStringIncludes(prompt, "A CODE FIX item is the one exception");
   assertEquals(prompt.includes("so do not change it"), false);
 });

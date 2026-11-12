@@ -5,7 +5,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertMatch, assertStringIncludes } from "@std/assert";
+import { assertMatch, assertStringIncludes } from "@std/assert";
 import {
   buildUnmetDraftBody,
   convertToDraftContinuation,
