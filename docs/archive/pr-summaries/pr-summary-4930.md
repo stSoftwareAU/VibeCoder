@@ -213,7 +213,9 @@ container runs the unit tests and markdownlint after the agent.
   clean `status` work there) while every path and mtime under the clone's `.git`
   stays unchanged; a missing commit and an unreadable object directory fail with
   git's exit code; a `--separate-git-dir` clone checks out; a configured
-  `post-checkout` hook does not run.
+  `post-checkout` hook does not run (the test hands the hooks path to git as an
+  outer `-c` through the git seam, so it sets no process environment and stays
+  parallel-safe under Issue #880's rule).
 - Marker tests (`babysitter_repair_4738_test.ts`): a non-READY reply, and a READY
   reply, that start with the infrastructure headline are written with the
   marker neutralised, so `isGateInfrastructureResponse` is false; a withheld
