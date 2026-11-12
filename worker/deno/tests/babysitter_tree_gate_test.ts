@@ -1086,6 +1086,64 @@ Deno.test("a check that leaves a new untracked file behind turns a pass into blo
   });
 });
 
+Deno.test("same-path untracked edits made by passing checks block the push (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/fresh.txt`, "agent content\\n");
+    const { deps } = depsFor(root, async () => {
+      await Deno.writeTextFile(`${repo}/fresh.txt`, "check overwrote agent content\\n");
+      return PASS;
+    });
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome, {
+      kind: "blocked",
+      message: "the checks changed the working tree: fresh.txt",
+    });
+  });
+});
+
+Deno.test("same-path tracked edits made by passing checks block the push (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/committed.txt`, "agent edit\\n");
+    const { deps } = depsFor(root, async () => {
+      await Deno.writeTextFile(`${repo}/committed.txt`, "check edit\\n");
+      return PASS;
+    });
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome, {
+      kind: "blocked",
+      message: "the checks changed the working tree: committed.txt",
+    });
+  });
+});
+
+Deno.test("a changed staged blob is blocked even with identical status and worktree bytes (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/committed.txt`, "staged before\\n");
+    await git(repo, "add", "committed.txt");
+    await Deno.writeTextFile(`${repo}/committed.txt`, "working content\\n");
+    const beforeStatus = await git(repo, "status", "--porcelain");
+    const { deps } = depsFor(root, async () => {
+      await Deno.writeTextFile(`${repo}/committed.txt`, "staged by check\\n");
+      await git(repo, "add", "committed.txt");
+      await Deno.writeTextFile(`${repo}/committed.txt`, "working content\\n");
+      return PASS;
+    });
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(await git(repo, "status", "--porcelain"), beforeStatus);
+    assertEquals(await Deno.readTextFile(`${repo}/committed.txt`), "working content\\n");
+    assertEquals(outcome, {
+      kind: "blocked",
+      message: "the checks changed the working tree: committed.txt",
+    });
+  });
+});
+
 Deno.test("checks that change nothing keep a pass (#4930)", async () => {
   await fixture(async (repo, root) => {
     await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
