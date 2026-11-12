@@ -3283,6 +3283,7 @@ export async function fix(
             maxSessionMs: sessionBudget,
             onTokenExpiry: (expiresAt) => tokenExpiresAt = expiresAt,
             signal: abort.signal,
+            baseBranch: pr.baseRefName,
           },
           async () => {
             if (renewalFailed) {

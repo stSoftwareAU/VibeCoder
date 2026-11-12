@@ -17,6 +17,7 @@ import {
 } from "../lib/babysitter_tree_gate.ts";
 import { isBabysitterReady } from "../lib/babysitter_ready.ts";
 import {
+  defaultPrePushGit,
   PrePushGateInfrastructureError,
   type PrePushGit,
   runPrePushGate,
@@ -414,6 +415,90 @@ Deno.test("a blocked message is redacted and capped at 1500 characters, keeping 
     assert(!message.includes(token), "token must be redacted");
     assert(message.startsWith("deno test failed: token "));
     assertEquals(Array.from(message).length, 1500);
+  });
+});
+
+Deno.test("a check that leaves a new untracked file behind turns a pass into blocked (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
+    const { deps } = depsFor(root, async () => {
+      await Deno.writeTextFile(`${repo}/stray.txt`, "left by a check\n");
+      return PASS;
+    });
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome.kind, "blocked");
+    const message = (outcome as { message: string }).message;
+    assertEquals(
+      message,
+      "the checks changed the working tree: stray.txt",
+    );
+  });
+});
+
+Deno.test("checks that change nothing keep a pass (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
+    const { deps } = depsFor(root, async () => PASS);
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(outcome, { kind: "passed", checksRun: [] });
+  });
+});
+
+Deno.test("a check failure with a stray file keeps the gate's own outcome (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
+    const failures: Array<[GateResult, BabysitterTreeGateOutcome]> = [
+      [
+        { ok: false, error: new Error("deno test failed: a_test.ts") },
+        { kind: "blocked", message: "deno test failed: a_test.ts" },
+      ],
+      [
+        {
+          ok: false,
+          error: new PrePushGateInfrastructureError("git ls-files failed"),
+        },
+        { kind: "infrastructure", message: "git ls-files failed" },
+      ],
+    ];
+    for (const [gateResult, expected] of failures) {
+      const { deps } = depsFor(root, async () => {
+        await Deno.writeTextFile(`${repo}/stray.txt`, "left by a check\n");
+        return gateResult;
+      });
+      const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+      assertEquals(outcome, expected);
+      await Deno.remove(`${repo}/stray.txt`);
+    }
+  });
+});
+
+Deno.test("a failed re-read of the tree after the checks is infrastructure (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
+    let statusCalls = 0;
+    const flaky: PrePushGit = async (args, cwd) => {
+      if (args[0] === "--no-optional-locks") {
+        statusCalls++;
+        if (statusCalls === 2) {
+          return { code: 128, stdout: "", stderr: "fatal: index locked" };
+        }
+      }
+      return await defaultPrePushGit(args, cwd);
+    };
+    const { deps } = depsFor(root, async () => PASS, { git: flaky });
+
+    const outcome = await runBabysitterTreeGate(repo, undefined, deps);
+
+    assertEquals(statusCalls, 2);
+    assertEquals(outcome.kind, "infrastructure");
+    assertStringIncludes(
+      (outcome as { message: string }).message,
+      "fatal: index locked",
+    );
   });
 });
 
