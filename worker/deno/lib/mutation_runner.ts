@@ -4,7 +4,7 @@
  * mutants: it holds only the helpers that remain in use.
  *
  * Retained: {@link MutationRunnerSeams} and {@link defaultMutationRunnerSeams}
- * (the process, filesystem, temporary-directory and tree seams), along with
+ * (the process, filesystem and temporary-directory seams), along with
  * {@link findDenoConfigDir}, {@link findCargoPackageDir}, {@link confinePath}
  * and {@link importsModule}.
  *
@@ -330,7 +330,6 @@ async function readWalkedConfig(
     } catch {
       // A broken config in a project the caller never asked about must not
       // fail the whole listing; that project falls back to the suffix rule.
-      // The changed module's own project still fails loud in loadProjectConfig.
       config = EMPTY_PROJECT_CONFIG;
     }
   }
