@@ -94,6 +94,10 @@ regexes = [
   # to generating its own key. Match this fixture's unique base64 prefix only,
   # so other private keys in the same file and commit remain detectable.
   '''MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDGqkt46j7Fr/zi''',
+  # Issue #4930: the tree-gate redaction test first committed this synthetic
+  # PAT as a literal and now assembles it at runtime. Range scans still see
+  # that commit. Exempt only the exact declaration; gh[p] avoids a literal.
+  '''^\s*const token = "gh[p]_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";\s*$''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
