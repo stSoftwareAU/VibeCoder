@@ -338,6 +338,13 @@ Deno.test("completion - a PR-triggered blocking mutants job in CI neither drafts
     1,
     "auto-merge is armed as for any ready PR",
   );
+  assertEquals(
+    outcome.ghCalls.some((args) =>
+      args[0] === "api" && args.includes(".draft")
+    ),
+    false,
+    "a newly created ready PR needs no REST-fallback draft check",
+  );
   assertNoMutationTesting(outcome);
 });
 

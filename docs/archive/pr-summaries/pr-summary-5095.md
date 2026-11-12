@@ -21,6 +21,9 @@ Closes #5095.
 Test fixtures no longer consume live GitHub quota: six maintenance command cases
 stub empty PR listings, and the orphaned-draft wiring test fakes the merge
 helpers it reaches after readiness. Existing assertions are preserved.
+The completion-check follow-up strengthens config, label-cache and PR-finalisation
+tests, and removes unreachable citation bookkeeping from the drift check. The
+reported coverage carry-over gaps remain advisory, as detailed below.
 
 ## Spec
 
@@ -66,7 +69,8 @@ helpers it reaches after readiness. Existing assertions are preserved.
   review record at `12cebfc74`. No fresh independent review was dispatched: this
   continuation's executor instruction forbids delegation. Subsequent fixture,
   prompt and documentation changes were reviewed locally. The results below were
-  refreshed on the final production code in `26741540e`.
+  refreshed on the production code in `26741540e`, before the completion-check
+  follow-up below.
 
 ## Evidence
 
@@ -254,6 +258,12 @@ flowchart LR
 - Added `worker/deno/tests/ci_mutation_contract_helpers_test.ts` (12 tests)
 - Added a retired-key test to `worker/deno/tests/config_unknown_keys_test.ts`
   and replaced the mapping test in `worker/deno/tests/config_test.ts`
+- Completion-check follow-up: added two malformed-config cases to
+  `worker/deno/tests/config_unknown_keys_test.ts`, pinned the retired warning's
+  null suggestion, and strengthened the existing label-filer case to verify
+  invalidation of the caller's cache. Added a malformed-PR-number case to
+  `worker/deno/tests/completion_draft_ready_4952_test.ts` and pinned the absence
+  of a fallback draft read in the normal-create #5095 case.
 - Added to `worker/deno/tests/security_fix_discrimination_test.ts`:
   "discrimination: a cleanup that throws ENOTEMPTY once keeps a completed check
   checked (Issue #5078)". It was observed red before the fix
@@ -291,7 +301,7 @@ flowchart LR
   and profiling exposed a real `gh` call. The existing shared spawn seam now
   routes those calls to the same fake; no assertion or budget changed. The
   wiring and draft self-heal tests then passed the unit gate.
-- Validation on the final production code (`26741540e`):
+- Validation before the completion-check follow-up (`26741540e`):
   - `timeout 1080 ./quality.sh --sequential < /dev/null` exited 0: passed with
     configured skips. Deno tests, their time-budget check, Semgrep, lint, type
     checking, formatting, manifests, Markdown and Mermaid validation passed.
@@ -392,6 +402,73 @@ Removed or replaced assertions:
     retained helpers moved to
     `worker/deno/tests/ci_mutation_contract_helpers_test.ts`
 
+## Completion-check follow-up
+
+### Required item 1: changed-line mutations
+
+Locations below are those reported at gate head `b45bda0cf`. Each of the ten
+reachable mutations was applied individually and observed failing its targeted
+test at runtime (`deno test --no-check`, with the normal test permissions and a
+test-name filter). The original source was restored after every check. No new
+mutation runner, gate or discovery campaign was introduced.
+
+| Reported location / mutation | Evidence and disposition |
+| --- | --- |
+| `worker/deno/lib/config_unknown_keys.ts:518` — omit null block guard | `config_unknown_keys_test.ts::config_unknown_keys - malformed repo_config blocks are ignored (Issue #5095)` fails with a null block. |
+| `worker/deno/lib/config_unknown_keys.ts:519` — omit array block guard | The same test fails when an array is treated as a repository map. |
+| `worker/deno/lib/config_unknown_keys.ts:525` — omit non-object, null or array entry guard (three mutations) | `config_unknown_keys_test.ts::config_unknown_keys - malformed repository entries are ignored without hiding a valid neighbour (Issue #5095)` fails separately for undefined, null and an array carrying a retired key. |
+| `worker/deno/lib/config_unknown_keys.ts:535` — omit suggestion | `config_unknown_keys_test.ts::config_unknown_keys - a retired mutation-check repo_config key is warned about by name (Issue #5095)` fails unless the suggestion is explicitly null. |
+| `worker/deno/lib/merge_fallback_issue.ts:751` — omit cacheDir | `merge_fallback_issue_test.ts::createFallbackFlagFiler - routes the label creation through the caller's gh (Issue #2310)` fails because the caller's seeded stale cache remains valid after label creation. |
+| `worker/deno/lib/phases/completion_phase.ts:3816` — omit positive PR number guard | `completion_draft_ready_4952_test.ts::Issue #5095 - a REST fallback without a positive PR number neither marks ready nor arms auto-merge` fails when completion tries to ready PR 0. |
+| `worker/deno/lib/phases/completion_phase.ts:3816` — omit clearedDuringCreate guard | `completion_phase_no_mutation_5095_test.ts::completion - a PR-triggered blocking mutants job in CI neither drafts the PR nor spends a recovery turn (Issue #5095)` fails on an unnecessary REST draft read after normal creation. |
+| `worker/deno/lib/phases/completion_phase.ts:3835` — omit positive PR number guard | The malformed-PR-number test fails when auto-merge is armed for PR 0. |
+| `worker/deno/lib/pr_feedback_drift_check.ts:1473` — omit stale-citation operand | Removed dead local citation bookkeeping: `initialCitations.stale` was a constant empty array with no writer. The line-citation check was already retired by Issue #4234. |
+| `worker/deno/lib/pr_feedback_drift_check.ts:1593` — omit citation-unavailable operand | Removed the matching dead residual construction and checks: `freshCitations.unchecked` was also always empty, so this local residual could never carry `citationCheckUnavailable`. Public recovery/formatting interfaces are unchanged. |
+
+After restoring the production sources, the four edited test files passed
+96 tests. After removing the dead citation bookkeeping, the targeted unit run
+over those four files, all seven `pr_feedback_drift_check_*` suites and
+`pr_feedback_processor_no_mutation_5095_test.ts` passed 162 tests. Formatting
+and lint checks on all five changed TypeScript files passed. These checks cover
+only the ten listed reachable mutants; the notice's 46 untried candidates (cap
+or long-line limits) have not been checked or claimed passed. No untestable
+exemption is asserted for any of the twelve reported mutations.
+
+Final validation: `timeout 1080 ./quality.sh --sequential < /dev/null` exited 0
+with configured skips. Both unit-test passes, completeness checks, lint, type
+checking, formatting, Markdown, Mermaid and Semgrep passed. Checkov and config
+integration were skipped for the environment limitations recorded below. The
+separate manifest run passed 866 tests with one existing ignored case. This
+quality result does not clear the coverage carry-over advisory in item 2.
+
+### Required item 2: coverage carry-over
+
+The gate reported 46 previously reached lines with no head-test coverage. The
+earlier statements about retaining shared helper tests do not establish that
+every formerly covered branch remains reached. This finding remains unresolved;
+passing the quality gate is not evidence that it has cleared.
+
+Per this continuation's explicit scope, non-mutation required items receive
+summary corrections only. No code or tests were changed for this item, and no
+reachable line is labelled untestable. The notice supplies these 40 locations;
+its other six locations are omitted, so they cannot be identified from this
+notice:
+
+| File | Reported lines |
+| --- | --- |
+| `worker/deno/commands/pr_maintenance.ts` | 286, 330, 363, 364 |
+| `worker/deno/lib/draft_continuation_pr.ts` | 162, 163, 168, 169, 175, 176, 189, 190 |
+| `worker/deno/lib/gh_credential_stage.ts` | 490, 491, 492, 493, 496 |
+| `worker/deno/lib/mutation_gate.ts` | 66, 67, 68 |
+| `worker/deno/lib/mutation_runner.ts` | 211, 633, 634, 635, 636, 637, 638, 639 |
+| `worker/deno/lib/required_branch_checks_4613.ts` | 296, 297, 298, 299, 301, 302, 303, 304, 305, 306, 307, 308 |
+
+The empty-scan fixture changes deliberately remove reliance on live GitHub
+responses; deleting mutation-only suites also removed incidental execution of
+shared helpers. The existing replacement-test inventory above describes the
+retained behaviour, not a claim that these 46 line-coverage gaps were repaired.
+The worker's next check supplies the authoritative remaining findings.
+
 ## Merge verification
 
 Required repository CI and the routine PR review remain pending.
@@ -408,4 +485,5 @@ Required repository CI and the routine PR review remain pending.
   failed cleanup may leave a temporary directory; the security check warns and
   preserves its verdict.
 - Integration suites outside the repository's required local gate were not run.
-  No mutation or fuzzing campaign was run.
+  No broad mutation or fuzzing campaign was run; this follow-up checked only
+  the ten reported reachable mutations, as recorded above.

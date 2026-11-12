@@ -471,10 +471,31 @@ Deno.test("config_unknown_keys - a retired mutation-check repo_config key is war
   for (const warning of warnings) {
     assertEquals(warning.message.includes("Issue #5095"), true);
     assertEquals(warning.message.includes("ignored"), true);
+    assertEquals(warning.suggestion, null, "retired keys have no replacement");
   }
 });
 
 Deno.test("config_unknown_keys - detectRetiredRepoConfigKeys is empty when no repo_config is set (Issue #5095)", () => {
   assertEquals(detectRetiredRepoConfigKeys(undefined), []);
   assertEquals(detectRetiredRepoConfigKeys({}), []);
+});
+
+Deno.test("config_unknown_keys - malformed repo_config blocks are ignored (Issue #5095)", () => {
+  for (const repoConfig of [null, [{ skip_mutation_check: true }]]) {
+    assertEquals(detectRetiredRepoConfigKeys(repoConfig), []);
+  }
+});
+
+Deno.test("config_unknown_keys - malformed repository entries are ignored without hiding a valid neighbour (Issue #5095)", () => {
+  // Arrays remain invalid entries even if a caller attached a retired key.
+  const arrayEntry = Object.assign([], { skip_mutation_check: true });
+  for (const entry of [undefined, null, arrayEntry]) {
+    const warnings = detectRetiredRepoConfigKeys({
+      "org/invalid": entry,
+      "org/valid": { skip_mutation_check: true },
+    });
+    assertEquals(warnings.map((warning) => warning.field), [
+      "repo_config.org/valid.skip_mutation_check",
+    ]);
+  }
 });

@@ -1295,12 +1295,6 @@ export async function runPrFeedbackDriftCheck(
     changeRequestFindings,
   );
 
-  // Deterministic, no-model-needed check: Branch-outcomes `path:line`
-  // citations left at the previous head's line numbers (Issue #3341). Runs
-  // on every non-skipped push, not gated on `changesBehaviour` or the model
-  // pass — a citation can go stale on a docs-only push too.
-  const initialCitations = { stale: [] as string[], unchecked: [] as string[] };
-
   // One constrained, read-only model question — when this push changed a
   // code or test file (Issue #3244) or a manual or prompt Markdown file
   // (Issue #3347), including recognised source under docs/ (Issue #3715).
@@ -1452,8 +1446,6 @@ export async function runPrFeedbackDriftCheck(
     initialChecks.testPlanUnchecked.length === 0 &&
     initialStaleQuotes.stale.length === 0 &&
     initialStaleQuotes.unchecked.length === 0 &&
-    initialCitations.stale.length === 0 &&
-    initialCitations.unchecked.length === 0 &&
     modelPassUnavailable === undefined
   ) {
     return { status: "clean", checked };
@@ -1469,8 +1461,7 @@ export async function runPrFeedbackDriftCheck(
     initialChecks.mismatches.length > 0 ||
     initialChecks.docsSweepProblems.length > 0 ||
     initialChecks.testPlanUnchecked.length > 0 ||
-    initialStaleQuotes.stale.length > 0 ||
-    initialCitations.stale.length > 0
+    initialStaleQuotes.stale.length > 0
   ) {
     logger.warn(
       "Drift check found hits — running one recovery turn (Issue #3143)",
@@ -1482,7 +1473,6 @@ export async function runPrFeedbackDriftCheck(
         docsSweepProblems: initialChecks.docsSweepProblems.length,
         testPlanUnchecked: initialChecks.testPlanUnchecked.length,
         staleQuotes: initialStaleQuotes.stale.length,
-        staleCitations: initialCitations.stale.length,
       },
     );
     const recoveryResult = await deps.runAgent({
@@ -1494,7 +1484,6 @@ export async function runPrFeedbackDriftCheck(
         docsSweepProblems: initialChecks.docsSweepProblems,
         uncheckedFigures: initialChecks.testPlanUnchecked,
         staleQuotes: initialStaleQuotes.stale,
-        staleCitations: initialCitations.stale,
       }),
       readOnly: false,
     });
@@ -1547,7 +1536,6 @@ export async function runPrFeedbackDriftCheck(
     repoPath,
     changeRequestFindings,
   );
-  const freshCitations = { stale: [] as string[], unchecked: [] as string[] };
 
   const residual: DriftResidual = {
     findings: remainingFindings,
@@ -1559,9 +1547,6 @@ export async function runPrFeedbackDriftCheck(
     ...(freshStaleQuotes.stale.length > 0
       ? { staleQuotes: freshStaleQuotes.stale }
       : {}),
-    ...(freshCitations.stale.length > 0
-      ? { staleCitations: freshCitations.stale }
-      : {}),
     ...(modelPassUnavailable !== undefined ? { modelPassUnavailable } : {}),
     ...(freshStaleQuotes.unchecked.length > 0
       ? {
@@ -1572,13 +1557,6 @@ export async function runPrFeedbackDriftCheck(
           "were not checked",
       }
       : {}),
-    ...(freshCitations.unchecked.length > 0
-      ? {
-        citationCheckUnavailable: `the line-citation check could not check: ${
-          freshCitations.unchecked.join("; ")
-        }`,
-      }
-      : {}),
   };
 
   if (
@@ -1587,10 +1565,8 @@ export async function runPrFeedbackDriftCheck(
     residual.docsSweepProblems.length === 0 &&
     (residual.testPlanUnchecked?.length ?? 0) === 0 &&
     (residual.staleQuotes?.length ?? 0) === 0 &&
-    (residual.staleCitations?.length ?? 0) === 0 &&
     residual.modelPassUnavailable === undefined &&
-    residual.quoteCheckUnavailable === undefined &&
-    residual.citationCheckUnavailable === undefined
+    residual.quoteCheckUnavailable === undefined
   ) {
     logger.info(
       "Drift check's recovery turn resolved everything it found",
@@ -1609,10 +1585,8 @@ export async function runPrFeedbackDriftCheck(
       docsSweepProblems: residual.docsSweepProblems.length,
       testPlanUnchecked: residual.testPlanUnchecked?.length ?? 0,
       staleQuotes: residual.staleQuotes?.length ?? 0,
-      staleCitations: residual.staleCitations?.length ?? 0,
       modelPassUnavailable: residual.modelPassUnavailable,
       quoteCheckUnavailable: residual.quoteCheckUnavailable,
-      citationCheckUnavailable: residual.citationCheckUnavailable,
     },
   );
   await appendResidualToResponseMessage(repoPath, residual);
