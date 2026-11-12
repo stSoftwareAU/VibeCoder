@@ -21,11 +21,14 @@
  * The issue lands in a public repository, and the killed run may have been
  * working a private one. So the issue carries only the facts the worker and
  * launcher wrote themselves (host, container, run, signature, trigger, reason,
- * times) and a last step logged, drawn from a fixed label list. The log, transcript,
- * boot and guest text, the last log line, the last tool call and the source
- * repository stay in the archived file on the host (Issue #4315 review;
- * SECURITY.md incident response). Every value that
- * is posted is still redacted, bounded and made safe for an issue body.
+ * times), a last step logged drawn from a fixed label list, and four guest
+ * figures derived from the evidence (the silent time, the probe state, the
+ * guest memory and the guest pressure; see `hard_kill_guest_facts.ts`). The
+ * derived figures are fixed words and digits only, never guest text. The log,
+ * transcript, boot and guest text, the last log line, the last tool call and
+ * the source repository stay in the archived file on the host (Issue #4315
+ * review; SECURITY.md incident response). Every value that is posted is still
+ * redacted, bounded and made safe for an issue body.
  * Every GitHub and file call is wrapped: nothing here throws into the
  * worker's start-up path.
  *
@@ -39,6 +42,12 @@ import {
   HARD_KILL_EVIDENCE_VERSION,
   type HardKillEvidence,
 } from "./hard_kill_evidence.ts";
+import {
+  hardKillGuestMemory,
+  hardKillGuestPressure,
+  hardKillGuestProbe,
+  hardKillSilentFor,
+} from "./hard_kill_guest_facts.ts";
 import {
   DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
   DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
@@ -465,11 +474,13 @@ export function hardKillLastStep(evidence: HardKillEvidence): string {
 }
 
 /**
- * Issue body: marker first, then the facts the worker and launcher wrote. No
- * evidence text, last log line, tool call or source repository: the issue is
- * public and the run may have been working a private repository (see the
- * module comment). The last step logged is a fixed label from {@link STEP_PATTERNS},
- * never log text. The evidence stays in the archived file on the host.
+ * Issue body: marker first, then the facts the worker and launcher wrote and
+ * the guest figures derived from the evidence. No evidence text, last log
+ * line, tool call or source repository: the issue is public and the run may
+ * have been working a private repository (see the module comment). The last
+ * step logged is a fixed label from {@link STEP_PATTERNS}, never log text. The
+ * guest figures are fixed words and digits from `hard_kill_guest_facts.ts`,
+ * never guest text. The evidence stays in the archived file on the host.
  */
 export function formatHardKillBody(
   evidence: HardKillEvidence,
@@ -492,6 +503,10 @@ export function formatHardKillBody(
     `**Reason:** ${publicReason(evidence.trigger)}`,
     `**Captured at:** ${inlineText(evidence.capturedAt, 100)}`,
     `**Last log time:** ${inlineText(evidence.lastLogTimestamp, 100)}`,
+    `**Silent before capture:** ${hardKillSilentFor(evidence)}`,
+    `**Guest probe:** \`${hardKillGuestProbe(evidence)}\``,
+    `**Guest memory:** ${hardKillGuestMemory(evidence)}`,
+    `**Guest pressure:** ${hardKillGuestPressure(evidence)}`,
     "",
     `The evidence (worker log, agent transcript, boot logs and guest probes) is kept on that host in \`~/logs/${HARD_KILL_ARCHIVE_DIR}/\`. It is never posted here, because it can hold private repository content.`,
   ].join("\n");
@@ -536,7 +551,9 @@ function formatHardKillOccurrenceLine(
     inlineText(evidence.host, 200)
   }\` — container \`${inlineText(evidence.container, 200)}\`, run \`${
     inlineText(evidence.runId, 200)
-  }\`, last step logged \`${hardKillLastStep(evidence)}\``;
+  }\`, last step logged \`${hardKillLastStep(evidence)}\`, silent ${
+    hardKillSilentFor(evidence)
+  }, guest probe \`${hardKillGuestProbe(evidence)}\``;
 }
 
 /** The first line of an error, redacted, for the decision's cause. */

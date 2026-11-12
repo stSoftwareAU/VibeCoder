@@ -152,7 +152,7 @@ Deno.test("in-flight park - a merge-only checkout with a cargo project is parked
         assertStringIncludes(parked, "Parked as infrastructure (Issue #4360).");
         assertStringIncludes(
           parked,
-          "ephemeral cargo root over budget (55.3 GB free, floor 46.0 GB + headroom 25.0 GB)",
+          "ephemeral cargo root over budget (55.3 GB free, floor 46.0 GB + headroom 25.0 GB;",
         );
       }),
   );

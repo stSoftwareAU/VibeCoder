@@ -1313,6 +1313,7 @@ reclaim_host_caches() {
     --base-dir "${BASE_DIR}" \
     --free-kb "${avail_kb}" \
     --floor-kb "${floor_kb}" \
+    --disk-path "${disk_gate_path}" \
     --protect "${BASE_DIR}" </dev/null)" || status=$?
   while IFS= read -r line; do
     [[ -n "${line}" ]] || continue
