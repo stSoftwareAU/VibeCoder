@@ -108,3 +108,39 @@ Deno.test("nextFallbackProvider - does not ping-pong", () => {
   assertEquals(nextFallbackProvider(policy, "claude", []), "codex");
   assertEquals(nextFallbackProvider(policy, "codex", ["claude"]), null);
 });
+
+// Issue #5079: subscriptions are "use it or lose it"; DeepSeek is pay per
+// call. Once an operator opts into fallback, every other enabled subscription
+// comes before the listed metered alternatives.
+Deno.test("resolveProviderFallbackPolicy - other subscriptions come before the metered list (Issue #5079)", () => {
+  const policy = resolveProviderFallbackPolicy({
+    preferred: "codex",
+    enabled: ["claude", "codex", "deepseek"],
+    fallback: ["deepseek"],
+    subscriptions: ["claude", "codex"],
+  });
+  assertEquals(policy.mode, "ordered");
+  assertEquals(policy.alternatives, ["claude", "deepseek"]);
+  // A Codex refusal moves to Claude, not DeepSeek.
+  assertEquals(nextFallbackProvider(policy, "codex", []), "claude");
+  // An auto-mode Claude run that fails moves to the preferred Codex first.
+  assertEquals(nextFallbackProvider(policy, "claude", []), "codex");
+  assertEquals(nextFallbackProvider(policy, "claude", ["codex"]), "deepseek");
+});
+
+Deno.test("resolveProviderFallbackPolicy - a listed subscription is not repeated and pinned stays pinned (Issue #5079)", () => {
+  const listed = resolveProviderFallbackPolicy({
+    preferred: "codex",
+    enabled: ["claude", "codex", "deepseek"],
+    fallback: ["deepseek", "claude"],
+    subscriptions: ["claude", "codex"],
+  });
+  assertEquals(listed.alternatives, ["claude", "deepseek"]);
+  const pinned = resolveProviderFallbackPolicy({
+    preferred: "codex",
+    enabled: ["claude", "codex", "deepseek"],
+    subscriptions: ["claude", "codex"],
+  });
+  assertEquals(pinned.mode, "pinned");
+  assertEquals(pinned.alternatives, []);
+});
