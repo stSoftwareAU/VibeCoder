@@ -113,18 +113,19 @@ Deno.test("issue reviewers - the reviewer key is on by default (Issue #2812)", (
   assertEquals(buildDefaultWorkerConfig().issueReviewerAgents, true);
 });
 
-Deno.test("issue reviewers - each reviewer names Opus explicitly, at an effort below the advisor's", () => {
-  // Owner decision 2026-10-22: Opus does the code reviews.
+Deno.test("issue reviewers - each reviewer names Fable explicitly, at an effort below the advisor's", () => {
+  // Owner policy 2026-11-12 (Issue #5081): code review takes the best model
+  // the subscriptions can afford, Fable 5.2.
   const agents = reviewersOnly();
   const spec = agents[SPEC_REVIEWER_AGENT_NAME]!;
   const standards = agents[STANDARDS_REVIEWER_AGENT_NAME]!;
 
-  assertEquals(spec.model, "opus");
+  assertEquals(spec.model, "fable");
   assertEquals(spec.model, SPEC_REVIEWER_MODEL);
   assertEquals(spec.effort, "medium");
   assertEquals(spec.effort, SPEC_REVIEWER_EFFORT);
 
-  assertEquals(standards.model, "opus");
+  assertEquals(standards.model, "fable");
   assertEquals(standards.model, STANDARDS_REVIEWER_MODEL);
   assertEquals(standards.effort, "medium");
   assertEquals(standards.effort, STANDARDS_REVIEWER_EFFORT);
@@ -270,7 +271,7 @@ const SONNET_FIXTURE: Record<string, string> = JSON.parse(
 
 // The executor entry is byte-identical to the pre-#3402 output; the reviewer
 // entries were re-recorded when both reviewers moved to Opus (owner decision
-// 2026-10-22).
+// 2026-10-22), and again when they moved to Fable (Issue #5081).
 Deno.test("issue reviewers - the sonnet tier matches its recorded --agents output", () => {
   assertEquals(
     JSON.stringify(
@@ -325,15 +326,15 @@ Deno.test("issue reviewers - the haiku tier with both switches on carries the ex
   assertEquals(executor.model, "haiku");
   assertEquals(executor.effort, "high");
 
-  // The tier picks the executor, never the reviewers: both stay on Opus and
-  // carry no Haiku guidance (owner decision 2026-10-22).
+  // The tier picks the executor, never the reviewers: both stay on Fable and
+  // carry no Haiku guidance (owner decisions 2026-10-22, #5081).
   for (const name of REVIEWERS) {
     const reviewer = agents[name]!;
-    assertEquals(reviewer.model, "opus", name);
+    assertEquals(reviewer.model, "fable", name);
     assertEquals(reviewer.effort, "medium", name);
     assert(
       !reviewer.prompt.includes(HAIKU_SUB_AGENT_GUIDANCE),
-      `${name} runs on Opus and must not carry Haiku guidance`,
+      `${name} runs on Fable and must not carry Haiku guidance`,
     );
   }
 

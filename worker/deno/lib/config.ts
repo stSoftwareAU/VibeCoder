@@ -88,6 +88,7 @@ import {
   defaultQuorumPlanners,
   LABEL_DEFAULTS,
   OPERATIONAL_DEFAULTS,
+  PHASE_MODEL_DEFAULTS,
   PROVIDER_MODEL_TIERS,
 } from "./config_defaults.ts";
 import type { VerbosityLevel } from "../types.ts";
@@ -1078,9 +1079,19 @@ export async function loadConfig(
     PROVIDER_MODEL_TIERS,
   );
 
+  // Issue #5081: Claude's `issue` manager (Opus) sits above its `standard`
+  // tier (Sonnet), so a regenerated tier map keeps that pin unless the
+  // operator places `issue` on a tier themselves.
+  const claudeTiered = tierModels.claude ?? {};
+  const claudeTierModels: Record<string, string> =
+    Object.keys(claudeTiered).length > 0 &&
+      !Object.hasOwn(file.phase_model_tiers ?? {}, "issue")
+      ? { ...claudeTiered, issue: PHASE_MODEL_DEFAULTS.issue! }
+      : claudeTiered;
+
   // Phase-specific model overrides (Issue #1265)
   const phaseModelOverrides: Record<string, string> = {
-    ...tierModels.claude,
+    ...claudeTierModels,
     ...(file.phase_model_overrides ?? {}),
   };
 

@@ -25,7 +25,7 @@ const ROLES = ["manager", "executor", "reviewer"] as const;
 const SESSION = "44444444-4356-4356-4356-444444444444";
 
 /**
- * Flags `codex exec resume --help` lists (CLI 0.164.0). Written here so the
+ * Flags `codex exec resume --help` lists (CLI 0.164.0; unchanged in 0.167.2). Written here so the
  * test does not spawn Codex. `--sandbox` is not among them (Issue #4333).
  */
 const RESUME_ACCEPTED_FLAGS = new Set([

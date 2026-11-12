@@ -519,7 +519,7 @@ Deno.test("completion - records the resolved sub-agent tier (Issue #3403)", asyn
   assertEquals(snapshot.issuePhaseSonnetRuns, 0);
 });
 
-Deno.test("completion - the default config records a haiku-tier run (Issues #3403, #3473)", async () => {
+Deno.test("completion - the default config records a sonnet-tier run (Issues #3403, #5081)", async () => {
   const ctx = makeContext();
   const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
 
@@ -527,8 +527,8 @@ Deno.test("completion - the default config records a haiku-tier run (Issues #340
   await workOnIssueCompletion(ctx, state, makeDeps([]));
 
   const snapshot = getFleetTelemetry();
-  assertEquals(snapshot.issuePhaseHaikuRuns, 1);
-  assertEquals(snapshot.issuePhaseSonnetRuns, 0);
+  assertEquals(snapshot.issuePhaseSonnetRuns, 1);
+  assertEquals(snapshot.issuePhaseHaikuRuns, 0);
 });
 
 Deno.test("completion - a sonnet-tier config records a sonnet-tier run (Issue #3403)", async () => {
