@@ -5326,7 +5326,12 @@ gates do (see that bullet):
      after cargo fmt. A `cd <dir>` on its own line holds for the rest of that
      step's run block, as in the shell; any `cd` form the scanner cannot follow
      (`pushd`, `popd`, a variable, a `cd ... || true`) makes the later cargo
-     lines of that step unverifiable. For `cargo nextest run` (and `cargo
+     lines of that step unverifiable. `||` is a list operator, not a pipe, so
+     in `cargo clippy ... || status=$?` the clippy run is checked as written
+     and the status capture is ignored; a single `|` still makes the line
+     unverifiable. `cargo llvm-cov report`, `clean` and `show-env` compile
+     nothing, so they are not checks and never block a push (Issue #5074).
+     For `cargo nextest run` (and `cargo
      llvm-cov nextest`), `--profile` and `-P` name a nextest profile and are
      dropped, and `--cargo-profile` becomes cargo's `--profile`. Before any CI
      cargo command runs, a probe checks every distinct toolchain the plan uses
