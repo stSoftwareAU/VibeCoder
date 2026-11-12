@@ -5067,8 +5067,12 @@ flowchart TD
     B -- passes --> C[Push, or raise a sync PR]
     B -- no Deno project --> D["Push, logged UNGATED<br/>(nothing verified the tree)"]
     B -- fails or cannot run --> E[Reset to the pre-merge commit]
-    E --> F["Report the failure loudly<br/>(sync_failed, self-heal event)"]
-    F --> G["Comment on the milestone's<br/>parent planning issue, else its<br/>oldest open child — needs a human"]
+    E --> F["Report the failure loudly<br/>(WARNING log, sync_failed self-heal event)"]
+    F --> G{Did the check run<br/>and reject the tree?}
+    G -- yes --> H["Charge one attempt of the<br/>conflict budget (3)"]
+    G -- "no: timed out, could not run,<br/>tree unreadable, Rust too old" --> I["Not charged: counted in<br/>refusedCycles, re-checked next cycle"]
+    H -- budget spent --> J["Hand-off: rebuild or roll-back,<br/>plus the merge-fallback flag —<br/>no needs-human comment"]
+    I -- fourth refusal in a row --> J
 ```
 
 Three properties matter:
@@ -5100,15 +5104,21 @@ Three properties matter:
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and
   the sync refuses to merge at all without it, since a merge it could not roll
   back is one it must not start.
-- **It escalates on the first occurrence.** A tree the check rejects is not
-  transient, so the needs-human comment (carrying the check output) goes to the
-  milestone's escalation target immediately rather than waiting for the
-  `MILESTONE_SYNC_ESCALATION_THRESHOLD` failure streak. It is posted once, via
-  its own `gateEscalated` flag in the streak file — a branch that already
-  escalated for an ordinary sync failure still reports a refused merge. Without
-  a streak file (the ad hoc `sync-milestone-branches` command) nothing can
-  record that the comment went out, so the refusal stays in the log rather than
-  being re-posted every cycle.
+- **It hands nothing to a human.** A tree the repository's own check rejects is
+  a conflict git could not see (Issue #4304), so `judgeSyncFailure` charges it
+  one attempt of the conflict budget, exactly as it charges a textual conflict,
+  and once the budget is spent `handOffSpentBudget` rebuilds or rolls back the
+  branch and files or appends the one `merge-fallback` flag. A check that could
+  not verify the tree — it timed out, could not be run, could not read the tree,
+  or needed a newer Rust toolchain — is not charged (Issue #4847): it is counted
+  in `refusedCycles` and re-checked next cycle, and once
+  `MILESTONE_REFUSAL_CEILING` (3) refusals in a row are on the ledger the next
+  one is charged and goes to the same hand-off. No needs-human comment is
+  posted, and the `MILESTONE_SYNC_ESCALATION_THRESHOLD` streak comment that an
+  ordinary sync failure earns is skipped for a gate failure; until the hand-off,
+  the WARNING log and the `sync_failed` self-heal event are the report. The
+  streak file's `gateEscalated` flag belonged to the first-occurrence comment
+  this replaced: nothing sets it now, and a landed sync drops it.
 
 A repository with no Deno project is still synced, but the outcome says
 `UNGATED` so an unchecked push never reads like a checked one.

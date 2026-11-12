@@ -142,10 +142,9 @@ export interface SyncStreakEntry {
   /** True once the needs-human comment has been posted for this streak. */
   escalated: boolean;
   /**
-   * True once the merge-gate escalation has been posted for this streak
-   * (Issue #974). Tracked apart from {@link escalated} so a branch that has
-   * already escalated for an ordinary sync failure still reports a merge the
-   * type check refused — the silence this gate exists to end.
+   * Set by the merged-tree comment of Issue #974, which Issue #4304 removed:
+   * nothing sets it now. It is still loaded so an older streak file reads
+   * cleanly, and a landed sync (`recordSuccess`) drops it.
    */
   gateEscalated?: boolean;
   /**
@@ -164,9 +163,8 @@ export interface SyncStreakEntry {
    * automatic attempts had been spent — the conflict budget replaced that
    * outright. What is left is the gate refusal: the worker made the
    * resolution and the verification said no, which no retry clears, so it is
-   * reported once per commit. Tracked apart from {@link gateEscalated} so an
-   * Issue #974 refusal of the *merged tree* cannot suppress it, or the
-   * reverse.
+   * reported once per commit. Tracked apart from {@link gateEscalated}, the
+   * retired flag of the Issue #974 merged-tree comment.
    */
   analysisEscalatedSha?: string;
   /**
