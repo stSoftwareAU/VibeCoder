@@ -1235,6 +1235,19 @@ export function agentProviderIds(): string[] {
  * @param id - Provider id, trimmed before lookup.
  * @returns The descriptor, or undefined when nothing is registered under it.
  */
+/**
+ * Whether a provider can bill as a fixed-price subscription (Issue #5079):
+ * its billing declares a subscription credential or a stored-login probe.
+ * A pay-per-call provider such as DeepSeek declares neither. Unknown ids are
+ * not subscriptions.
+ */
+export function isSubscriptionCapable(providerId: string): boolean {
+  const billing = agentProviderById(providerId.trim())?.billing;
+  return billing !== undefined &&
+    (billing.subscriptionEnvVars.length > 0 ||
+      billing.resolveStoredBilling !== undefined);
+}
+
 export function agentProviderById(
   id: string,
 ): AgentProviderDescriptor | undefined {

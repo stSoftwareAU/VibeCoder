@@ -18,6 +18,7 @@
  */
 
 import type { Result } from "../types.ts";
+import { configuredProviderFallbackPolicy } from "./provider_fallback_policy.ts";
 import {
   type DeferredSweep,
   settleDeferredSweeps,
@@ -6049,7 +6050,19 @@ async function probeHealthGateFallback(
   deps: RunCoreDeps,
   config: RunCoreConfig,
 ): Promise<string | undefined> {
-  for (const id of config.agentProviderFallback) {
+  // Issue #5079: in auto mode the failing provider need not be the preferred
+  // one, so the preferred subscription is probed first when it is not the
+  // provider that just failed. The configured list already puts the other
+  // subscriptions ahead of the pay-per-call alternatives.
+  const active = activeProviderIdOrUndefined();
+  const preferred = configuredProviderFallbackPolicy()?.preferred;
+  const order = [
+    ...new Set([
+      ...(preferred && preferred !== active ? [preferred] : []),
+      ...config.agentProviderFallback,
+    ]),
+  ];
+  for (const id of order) {
     const probe = await deps.checkClaudeHealth(id);
     if (probe.ok && probe.value.healthy) return id;
     deps.logError(

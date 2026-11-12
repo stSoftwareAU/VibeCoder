@@ -195,7 +195,9 @@ Deno.test("config - loadConfig records the provider fallback policy for the agen
         const policy = configuredProviderFallbackPolicy();
         assertEquals(policy?.mode, "ordered");
         assertEquals(policy?.preferred, "codex");
-        assertEquals(policy?.alternatives, ["deepseek"]);
+        // Issue #5079: the enabled Claude subscription comes before the
+        // pay-per-call DeepSeek alternative the operator listed.
+        assertEquals(policy?.alternatives, ["claude", "deepseek"]);
       },
     );
     // A reload without the key must not keep the earlier list alive.
