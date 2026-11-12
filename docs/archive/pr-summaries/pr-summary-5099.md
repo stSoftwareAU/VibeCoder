@@ -123,9 +123,16 @@ flowchart LR
   including the success-path `ORPHANS_COLLECTED` test, run unchanged.
 - `deno test -A tests/orphan_collector_test.ts tests/claude_runner_killed_test.ts`
   from `worker/deno` on the head: 23 passed, 0 failed.
-- `./quality.sh < /dev/null` on the fix commit: passed. Config integration and
-  checkov were skipped by the gate itself. Deno tests, lint, type check, fmt,
-  markdownlint, mermaid and semgrep passed.
+- `./quality.sh < /dev/null` on `3003ef32` (the head before this summary edit):
+  passed in 793 s. Config integration and checkov were skipped by the gate
+  itself. Deno tests, lint, type check, fmt, markdownlint, mermaid and semgrep
+  passed.
+- The pre-push gate's own `deno task test:unit` list for this diff (1,912 files:
+  every test that imports `orphan_collector.ts` directly or transitively,
+  rebuilt with `loadReferencedUnitTests`) on `3003ef32`: exit 0, parallel pass
+  1,864 files passed in 8m05s, serial pass 829 passed and 0 failed. An earlier
+  attempt was blocked by this gate. Its output was cut off before the failing
+  test, and that failure did not recur on the same commit.
 - Branch outcomes of the new catch: a throw before any signal (first collector
   test) and a throw after TERM (second collector test). The no-throw path is
   covered by the existing collector tests.
