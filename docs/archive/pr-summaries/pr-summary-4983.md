@@ -1,23 +1,23 @@
 ## Summary
 
-Rewrote the end of the "🚦 The merged tree is type-checked before it is
-pushed" section in `docs/INTERNALS.md` so it describes what the sync does today
-with a refused merged tree. It does not post a needs-human comment on first
-occurrence. The same commit marks the streak file's `gateEscalated` flag as
-retired in its doc comment. No code line changed. Closes #4983.
+Rewrote the end of the "🚦 The merged tree is type-checked before it is pushed"
+section in `docs/INTERNALS.md` so it describes what the sync does today with a
+refused merged tree. It does not post a needs-human comment on first occurrence.
+The same commit marks the streak file's `gateEscalated` flag as retired in its
+doc comment. No code line changed. Closes #4983.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The section still described the Issue #974 behaviour. Its flowchart ended in
-  a comment that needs a human, and the "It escalates on the first occurrence"
+- The section still described the Issue #974 behaviour. Its flowchart ended in a
+  comment that needs a human, and the "It escalates on the first occurrence"
   bullet named the `gateEscalated` flag. An operator reading it would wait for a
   comment that never comes.
-- In `worker/deno/lib/milestone_branch_sync.ts`, the `isMergeGateFailure`
-  branch of `syncMilestoneBranches` posts nothing. `judgeSyncFailure` charges
-  a rejected tree (`MERGE_GATE_REFUSED_TREE`) one conflict attempt. It returns
-  a not-charged refusal for an unverified tree (`MERGE_GATE_UNVERIFIED_CAUSES`,
+- In `worker/deno/lib/milestone_branch_sync.ts`, the `isMergeGateFailure` branch
+  of `syncMilestoneBranches` posts nothing. `judgeSyncFailure` charges a
+  rejected tree (`MERGE_GATE_REFUSED_TREE`) one conflict attempt. It returns a
+  not-charged refusal for an unverified tree (`MERGE_GATE_UNVERIFIED_CAUSES`,
   Issue #4847). `escalateRepeatedRefusal` charges the next refusal once
   `MILESTONE_REFUSAL_CEILING` (3) are on the ledger. The docs now say this.
 
@@ -28,8 +28,8 @@ retired in its doc comment. No code line changed. Closes #4983.
   reads it, `recordSuccess` drops it, and tests pin both. Removing it would
   change code for a docs issue. Its doc comment now says nothing sets it.
 - The flowchart keeps its first nodes and replaces only the last one with the
-  two paths: charged, or not charged and counted. Both end in the same
-  hand-off: a rebuild or roll-back, plus the `merge-fallback` flag.
+  two paths: charged, or not charged and counted. Both end in the same hand-off:
+  a rebuild or roll-back, plus the `merge-fallback` flag.
 
 ### Undiscoverable Facts
 
@@ -48,8 +48,8 @@ checked against the head code:
 - Fourth refusal in a row: `escalateRepeatedRefusal` with
   `MILESTONE_REFUSAL_CEILING = 3` (`worker/deno/lib/milestone_sync_streak.ts`).
   This matches the ledger-outcome table later in the same file.
-- WARNING log and `sync_failed` self-heal event: the `logAt(log, "warn", …)`
-  and `emitSelfHealEvent` calls in the failure arm of `syncMilestoneBranches`.
+- WARNING log and `sync_failed` self-heal event: the `logAt(log, "warn", …)` and
+  `emitSelfHealEvent` calls in the failure arm of `syncMilestoneBranches`.
 - `gateEscalated` is never set: `graft_find_all` for `gateEscalated` finds only
   the field, the loader's `=== true` normalisation, and the destructure in
   `recordSuccess` that drops it.
