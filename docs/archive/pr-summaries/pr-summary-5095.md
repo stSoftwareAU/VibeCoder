@@ -20,8 +20,8 @@ Closes #5095.
 
 Test fixtures no longer consume live GitHub quota: six maintenance command cases
 stub empty PR listings, and the orphaned-draft wiring test fakes the merge
-helpers it reaches after readiness. Existing assertions are preserved.
-The completion-check follow-up strengthens config, label-cache and PR-finalisation
+helpers it reaches after readiness. Existing assertions are preserved. The
+completion-check follow-up strengthens config, label-cache and PR-finalisation
 tests, and removes unreachable citation bookkeeping from the drift check. The
 reported coverage carry-over gaps remain advisory, as detailed below.
 
@@ -412,22 +412,22 @@ test at runtime (`deno test --no-check`, with the normal test permissions and a
 test-name filter). The original source was restored after every check. No new
 mutation runner, gate or discovery campaign was introduced.
 
-| Reported location / mutation | Evidence and disposition |
-| --- | --- |
-| `worker/deno/lib/config_unknown_keys.ts:518` — omit null block guard | `config_unknown_keys_test.ts::config_unknown_keys - malformed repo_config blocks are ignored (Issue #5095)` fails with a null block. |
-| `worker/deno/lib/config_unknown_keys.ts:519` — omit array block guard | The same test fails when an array is treated as a repository map. |
-| `worker/deno/lib/config_unknown_keys.ts:525` — omit non-object, null or array entry guard (three mutations) | `config_unknown_keys_test.ts::config_unknown_keys - malformed repository entries are ignored without hiding a valid neighbour (Issue #5095)` fails separately for undefined, null and an array carrying a retired key. |
-| `worker/deno/lib/config_unknown_keys.ts:535` — omit suggestion | `config_unknown_keys_test.ts::config_unknown_keys - a retired mutation-check repo_config key is warned about by name (Issue #5095)` fails unless the suggestion is explicitly null. |
-| `worker/deno/lib/merge_fallback_issue.ts:751` — omit cacheDir | `merge_fallback_issue_test.ts::createFallbackFlagFiler - routes the label creation through the caller's gh (Issue #2310)` fails because the caller's seeded stale cache remains valid after label creation. |
-| `worker/deno/lib/phases/completion_phase.ts:3816` — omit positive PR number guard | `completion_draft_ready_4952_test.ts::Issue #5095 - a REST fallback without a positive PR number neither marks ready nor arms auto-merge` fails when completion tries to ready PR 0. |
-| `worker/deno/lib/phases/completion_phase.ts:3816` — omit clearedDuringCreate guard | `completion_phase_no_mutation_5095_test.ts::completion - a PR-triggered blocking mutants job in CI neither drafts the PR nor spends a recovery turn (Issue #5095)` fails on an unnecessary REST draft read after normal creation. |
-| `worker/deno/lib/phases/completion_phase.ts:3835` — omit positive PR number guard | The malformed-PR-number test fails when auto-merge is armed for PR 0. |
-| `worker/deno/lib/pr_feedback_drift_check.ts:1473` — omit stale-citation operand | Removed dead local citation bookkeeping: `initialCitations.stale` was a constant empty array with no writer. The line-citation check was already retired by Issue #4234. |
-| `worker/deno/lib/pr_feedback_drift_check.ts:1593` — omit citation-unavailable operand | Removed the matching dead residual construction and checks: `freshCitations.unchecked` was also always empty, so this local residual could never carry `citationCheckUnavailable`. Public recovery/formatting interfaces are unchanged. |
+| Reported location / mutation                                                                                | Evidence and disposition                                                                                                                                                                                                                |
+| ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worker/deno/lib/config_unknown_keys.ts:518` — omit null block guard                                        | `config_unknown_keys_test.ts::config_unknown_keys - malformed repo_config blocks are ignored (Issue #5095)` fails with a null block.                                                                                                    |
+| `worker/deno/lib/config_unknown_keys.ts:519` — omit array block guard                                       | The same test fails when an array is treated as a repository map.                                                                                                                                                                       |
+| `worker/deno/lib/config_unknown_keys.ts:525` — omit non-object, null or array entry guard (three mutations) | `config_unknown_keys_test.ts::config_unknown_keys - malformed repository entries are ignored without hiding a valid neighbour (Issue #5095)` fails separately for undefined, null and an array carrying a retired key.                  |
+| `worker/deno/lib/config_unknown_keys.ts:535` — omit suggestion                                              | `config_unknown_keys_test.ts::config_unknown_keys - a retired mutation-check repo_config key is warned about by name (Issue #5095)` fails unless the suggestion is explicitly null.                                                     |
+| `worker/deno/lib/merge_fallback_issue.ts:751` — omit cacheDir                                               | `merge_fallback_issue_test.ts::createFallbackFlagFiler - routes the label creation through the caller's gh (Issue #2310)` fails because the caller's seeded stale cache remains valid after label creation.                             |
+| `worker/deno/lib/phases/completion_phase.ts:3816` — omit positive PR number guard                           | `completion_draft_ready_4952_test.ts::Issue #5095 - a REST fallback without a positive PR number neither marks ready nor arms auto-merge` fails when completion tries to ready PR 0.                                                    |
+| `worker/deno/lib/phases/completion_phase.ts:3816` — omit clearedDuringCreate guard                          | `completion_phase_no_mutation_5095_test.ts::completion - a PR-triggered blocking mutants job in CI neither drafts the PR nor spends a recovery turn (Issue #5095)` fails on an unnecessary REST draft read after normal creation.       |
+| `worker/deno/lib/phases/completion_phase.ts:3835` — omit positive PR number guard                           | The malformed-PR-number test fails when auto-merge is armed for PR 0.                                                                                                                                                                   |
+| `worker/deno/lib/pr_feedback_drift_check.ts:1473` — omit stale-citation operand                             | Removed dead local citation bookkeeping: `initialCitations.stale` was a constant empty array with no writer. The line-citation check was already retired by Issue #4234.                                                                |
+| `worker/deno/lib/pr_feedback_drift_check.ts:1593` — omit citation-unavailable operand                       | Removed the matching dead residual construction and checks: `freshCitations.unchecked` was also always empty, so this local residual could never carry `citationCheckUnavailable`. Public recovery/formatting interfaces are unchanged. |
 
-After restoring the production sources, the four edited test files passed
-96 tests. After removing the dead citation bookkeeping, the targeted unit run
-over those four files, all seven `pr_feedback_drift_check_*` suites and
+After restoring the production sources, the four edited test files passed 96
+tests. After removing the dead citation bookkeeping, the targeted unit run over
+those four files, all seven `pr_feedback_drift_check_*` suites and
 `pr_feedback_processor_no_mutation_5095_test.ts` passed 162 tests. Formatting
 and lint checks on all five changed TypeScript files passed. These checks cover
 only the ten listed reachable mutants; the notice's 46 untried candidates (cap
@@ -454,13 +454,13 @@ reachable line is labelled untestable. The notice supplies these 40 locations;
 its other six locations are omitted, so they cannot be identified from this
 notice:
 
-| File | Reported lines |
-| --- | --- |
-| `worker/deno/commands/pr_maintenance.ts` | 286, 330, 363, 364 |
-| `worker/deno/lib/draft_continuation_pr.ts` | 162, 163, 168, 169, 175, 176, 189, 190 |
-| `worker/deno/lib/gh_credential_stage.ts` | 490, 491, 492, 493, 496 |
-| `worker/deno/lib/mutation_gate.ts` | 66, 67, 68 |
-| `worker/deno/lib/mutation_runner.ts` | 211, 633, 634, 635, 636, 637, 638, 639 |
+| File                                             | Reported lines                                             |
+| ------------------------------------------------ | ---------------------------------------------------------- |
+| `worker/deno/commands/pr_maintenance.ts`         | 286, 330, 363, 364                                         |
+| `worker/deno/lib/draft_continuation_pr.ts`       | 162, 163, 168, 169, 175, 176, 189, 190                     |
+| `worker/deno/lib/gh_credential_stage.ts`         | 490, 491, 492, 493, 496                                    |
+| `worker/deno/lib/mutation_gate.ts`               | 66, 67, 68                                                 |
+| `worker/deno/lib/mutation_runner.ts`             | 211, 633, 634, 635, 636, 637, 638, 639                     |
 | `worker/deno/lib/required_branch_checks_4613.ts` | 296, 297, 298, 299, 301, 302, 303, 304, 305, 306, 307, 308 |
 
 The empty-scan fixture changes deliberately remove reliance on live GitHub
@@ -485,5 +485,5 @@ Required repository CI and the routine PR review remain pending.
   failed cleanup may leave a temporary directory; the security check warns and
   preserves its verdict.
 - Integration suites outside the repository's required local gate were not run.
-  No broad mutation or fuzzing campaign was run; this follow-up checked only
-  the ten reported reachable mutations, as recorded above.
+  No broad mutation or fuzzing campaign was run; this follow-up checked only the
+  ten reported reachable mutations, as recorded above.
