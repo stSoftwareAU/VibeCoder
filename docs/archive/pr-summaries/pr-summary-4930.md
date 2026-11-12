@@ -54,8 +54,15 @@ flowchart LR
 
 - The clone's `.git` is mounted read-only, so the gate sees a `PrePushGit`
   adapter: it lists the `git status` paths as the pushed files (new files count
-  as tracked), and emulates the baseline `git worktree add` with `git archive` +
-  `tar` into a temp root. Neither writes to `.git`.
+  as tracked), and emulates the baseline `git worktree add` with a fresh
+  repository under a temp root that borrows the clone's objects
+  (`objects/info/alternates`, plus the clone's `shallow` file), the base commit
+  checked out detached with hooks off. Neither writes to `.git`. The baseline
+  is a real git checkout: an earlier `git archive` + `tar` extraction had no
+  `.git`, so a test that inspects its checkout failed there for that reason
+  alone, and a regression the repair caused passed as base-owned (review of
+  `d16f355`). A shared clone is not used, because git will not clone a shallow
+  repository locally and would fetch only its branches, not the base commit.
 - The PR base reaches the container as optional `--base-branch <name>`
   (`BabysitterContainerInput.baseBranch`, set from `pr.baseRefName`, validated
   with `assertSafeGitRef`). Without it there is no baseline and a failing test
@@ -84,8 +91,7 @@ flowchart LR
 ### Undiscoverable Facts
 
 - Not verified in a real container: the unit tests run against injected seams
-  and real temporary git repositories; `tar` being present in the worker image
-  and the gate's wall-clock inside the 90-minute repair budget were not
+  and real temporary git repositories; the gate's wall-clock inside the 90-minute repair budget were not
   observed.
 - The wedge/delivery history: #5014 was closed, #5034 merged as `Part of #4930`.
 
@@ -166,7 +172,7 @@ container runs the unit tests and markdownlint after the agent.
 - `cd worker/deno && deno task test:unit tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts tests/babysitter_ready_test.ts tests/fleet_babysitter_container_4738_test.ts tests/babysitter_fix_orchestration_test.ts tests/fleet_pr_babysitter_test.ts`:
   each file passed when run by its author on the previous head (37, 42, 7, 55,
   76 and 121 tests). On this head the six files were re-run with `deno test`:
-  40, 42, 7, 55, 77 and 120 passed. That run had no route to jsr.io, so
+  44, 42, 7, 55, 77 and 120 passed. That run had no route to jsr.io, so
   `@std/assert`, `@std/crypto` and `@std/yaml` were local stand-ins
   (`--no-lock`); the one `fleet_pr_babysitter_test.ts` failure, `babysitter
   default heartbeat resolves its checkout revision`, is that subprocess failing
@@ -198,6 +204,16 @@ container runs the unit tests and markdownlint after the agent.
   not; an unreadable `MERGE_HEAD` is `infrastructure` with the gate not called.
   Reverting the gate to the previous code turns the first two red; dropping the
   merge scoping turns the first and the conflict test red.
+- Baseline checkout tests (`babysitter_tree_gate_test.ts`), from the review of
+  `d16f355`: with real nested `deno test` runs and no faked runner, a test that
+  needs its checkout to be a git repository and passes on the base still blocks
+  the repair's regression, and one that fails the same way on the base checkout
+  is still a warning. `defaultCheckoutTree` checks the base commit of a depth-1
+  clone with a read-only `.git` out as a git checkout (`ls-files`, `log` and a
+  clean `status` work there) while every path and mtime under the clone's `.git`
+  stays unchanged; a missing commit and an unreadable object directory fail with
+  git's exit code; a `--separate-git-dir` clone checks out; a configured
+  `post-checkout` hook does not run.
 - Marker tests (`babysitter_repair_4738_test.ts`): a non-READY reply, and a READY
   reply, that start with the infrastructure headline are written with the
   marker neutralised, so `isGateInfrastructureResponse` is false; a withheld
@@ -214,14 +230,15 @@ container runs the unit tests and markdownlint after the agent.
   new untracked directory is listed by path); `defaultMakeTempDir`'s return (the
   default temp root is a real directory, handed to the adapter, then removed);
   `defaultRemoveTree`'s NotFound branch (a root already gone is not a failure);
-  `defaultExtractTree`'s archive-failure return and its timeout result (`code`,
-  `stderr`; driven with an aborted signal). The redundant
+  `defaultCheckoutTree`'s copied `shallow` file (history reads in the
+  baseline), its empty `--template=` (no hooks directory), its
+  `core.hooksPath=/dev/null` (a configured `post-checkout` hook does not run)
+  and its absolute object path branch (a `--separate-git-dir` clone). The redundant
   `!isBabysitterReady(response)` operand in `fix()` that survived mutation is
   gone: the infrastructure check is nested under the missing-READY branch.
   Exempt (untestable):
   `worker/deno/lib/babysitter_tree_gate.ts` `--porcelain=v1` (git's `-z` implies
-  the porcelain v1 format, so removing it changes nothing) and the `tar` call's
-  `stdin: "null"` (`tar -xf <file>` never reads stdin, so no outcome differs);
+  the porcelain v1 format, so removing it changes nothing);
   `pathsBeyondMerge`'s `--no-optional-locks` (it matters only on the container's
   read-only `.git`, where git skips the optional index refresh anyway) and
   `--no-renames` (an agent's move leaves an unstaged deletion and an untracked
@@ -229,7 +246,8 @@ container runs the unit tests and markdownlint after the agent.
 - Behaviour tests (names end `(#4930)`): status parsing (modified, deleted,
   renamed, untracked, scratch files); each git interception (`log`, `ls-files`,
   git-common-dir, `worktree add` really extracting the fork commit via
-  `git archive`+`tar`, `remove`, `prune`, refusal outside the temp root);
+  a real checkout with its own `.git`, `remove`, `prune`, refusal outside the
+  temp root);
   outcome mapping (passed, infrastructure, blocked, a throw); redaction and
   1500-character cap; tree-pollution (a stray untracked file turns a pass into
   blocked, keeps the gate's own failure otherwise); `withholdReady`; the command
@@ -243,8 +261,9 @@ container runs the unit tests and markdownlint after the agent.
   `log --name-only` interception (1 red); drop the tree comparison (1 red); drop
   the `--base-branch` argv append (2 red); drop the forward in
   `startBabysitterAgent` (1 red); drop the call-site
-  `baseBranch: pr.baseRefName` (1 red). The `tar` timeout branch is now driven
-  with an aborted signal.
+  `baseBranch: pr.baseRefName` (1 red). Stripping the baseline's `.git` after
+  checkout, as the archive extraction left it, turns the real-Deno regression
+  test and the two checkout tests red.
 - Removed from existing tests: none from the base. This PR's own two
   mock-argument tests were replaced by the outcome tests above (the PR added
   them in an earlier push). `babysitter_repair_4738_test.ts` changed one harness

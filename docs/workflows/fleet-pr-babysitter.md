@@ -428,9 +428,13 @@ the merge-base with the PR base is a warning, as in the other repair pushes.
 Without `--base-branch`, which the host passes from the PR's base branch, the
 gate has no baseline and a failing test blocks. A check that cannot run, such as a missing
 tool or a module-fetch outage, is an infrastructure fault, not a pass. The
-container's `.git` is mounted read-only, so the baseline is a `git archive`
-extraction into a temporary directory under the container's temp dir, not a git
-worktree. If a check blocks or cannot run, the container removes the
+container's `.git` is mounted read-only, so the baseline is not a git worktree
+of the clone: it is a fresh repository in a temporary directory under the
+container's temp dir that borrows the clone's objects (`objects/info/alternates`
+and the clone's `shallow` file), with the base commit checked out detached and
+hooks off. It is a real git checkout, so a test that inspects its checkout (for
+example with `git ls-files`) behaves as it does on the base, and a failure that
+only a checkout without `.git` would cause is never taken for the base's. If a check blocks or cannot run, the container removes the
 `BABYSITTER_READY` line and puts a `[BABYSITTER_GATE_BLOCKED]` line with the
 cause first in the response. The host's completion check then refuses to push
 and quotes the cause; nothing is pushed. A failed check

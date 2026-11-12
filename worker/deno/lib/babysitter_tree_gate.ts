@@ -6,9 +6,11 @@
  * checks the host's push would otherwise skip: deno test, markdownlint, the
  * ShellCheck policy and cargo-deny. The gate's git calls that would write
  * (`worktree add`, `worktree remove`, `worktree prune`) are emulated through the
- * `git` seam: the fork commit is extracted with `git archive` and `tar` into a
- * temp root, and the working-tree paths are listed as tracked, so new files are
- * checked too. The Deno process writes only under that temp root.
+ * `git` seam: the fork commit is checked out into a fresh repository under a
+ * temp root that borrows the clone's objects (`objects/info/alternates`), so
+ * the baseline is a real git checkout, and the working-tree paths are listed as
+ * tracked, so new files are checked too. The Deno process writes only under
+ * that temp root.
  *
  * The checks run inside the clone, so anything they leave there as an untracked
  * or modified path would be staged by the host's later `git add -A`. After the
@@ -104,7 +106,7 @@ export interface BabysitterTreeGateDeps {
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   makeTempDir?: () => Promise<string>;
   removeTree?: (path: string) => Promise<void>;
-  extractTree?: (
+  checkoutTree?: (
     dir: string,
     sha: string,
     dest: string,
@@ -143,45 +145,79 @@ async function defaultRemoveTree(path: string): Promise<void> {
   }
 }
 
-/** Longest a `tar` unpack of the fork commit may run (Issue #4930). */
-const TAR_TIMEOUT_MS = 5 * 60_000;
+/** A repository path `git rev-parse --git-path` printed, made absolute. */
+function absoluteGitPath(dir: string, printed: string): string {
+  const path = printed.trim();
+  return path.startsWith("/") ? path : `${dir}/${path}`;
+}
 
-/** `git archive` the commit into a tar beside `dest`, then unpack it into `dest`. */
-export async function defaultExtractTree(
+/**
+ * Checks `sha` out into the empty directory `dest` as a real git checkout,
+ * without writing to the clone's read-only `.git` (Issue #4930). `dest` gets
+ * its own repository (`git init` with no template, so no hooks are copied)
+ * whose `objects/info/alternates` names the clone's object directory, plus a
+ * copy of the clone's `shallow` file when there is one, so a depth-1 clone's
+ * history reads as it does in the clone. The commit is then checked out
+ * detached with hooks off. A test that needs its checkout to be a git
+ * repository (`git rev-parse`, `git ls-files`) therefore behaves as it does on
+ * the base, so a failure only an archive extraction would cause can never pass
+ * for a base-owned failure. A shared clone is not used: git refuses a local
+ * clone of a shallow repository and fetches only its branches, so the base
+ * commit, reachable only from a remote-tracking ref, would be missing.
+ */
+export async function defaultCheckoutTree(
   dir: string,
   sha: string,
   dest: string,
-  timeout: AbortSignal = AbortSignal.timeout(TAR_TIMEOUT_MS),
+  git: PrePushGit = defaultPrePushGit,
 ): Promise<{ code: number; stderr: string }> {
-  const tarPath = `${dest}.tar`;
-  const archive = await defaultPrePushGit(
-    ["archive", "--format=tar", "-o", tarPath, sha],
-    dir,
-  );
-  if (archive.code !== 0) {
-    return { code: archive.code, stderr: archive.stderr };
+  const objects = await git(["rev-parse", "--git-path", "objects"], dir);
+  if (objects.code !== 0 || objects.stdout.trim() === "") {
+    return {
+      code: objects.code || 1,
+      stderr: `cannot read the clone's object directory: ${objects.stderr}`,
+    };
   }
-  const timedOut = {
-    code: 1,
-    stderr: `tar timed out after ${TAR_TIMEOUT_MS / 1000} s`,
-  };
-  let tar: Deno.CommandOutput;
+  const shallow = await git(["rev-parse", "--git-path", "shallow"], dir);
+  if (shallow.code !== 0 || shallow.stdout.trim() === "") {
+    return {
+      code: shallow.code || 1,
+      stderr: `cannot read the clone's shallow file path: ${shallow.stderr}`,
+    };
+  }
+  const init = await git(["init", "--quiet", "--template="], dest);
+  if (init.code !== 0) return { code: init.code, stderr: init.stderr };
   try {
-    tar = await new Deno.Command("tar", {
-      args: ["-xf", tarPath, "-C", dest],
-      stdin: "null",
-      stdout: "null",
-      stderr: "piped",
-      signal: timeout,
-    }).output();
+    await Deno.mkdir(`${dest}/.git/objects/info`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dest}/.git/objects/info/alternates`,
+      `${absoluteGitPath(dir, objects.stdout)}\n`,
+    );
+    try {
+      await Deno.copyFile(
+        absoluteGitPath(dir, shallow.stdout),
+        `${dest}/.git/shallow`,
+      );
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
   } catch (error) {
-    if (timeout.aborted) return timedOut;
-    throw error;
+    return {
+      code: 1,
+      stderr: `cannot link ${dest} to the clone's objects: ${
+        errorMessage(error)
+      }`,
+    };
   }
-  // Deno resolves an aborted child with a non-zero code rather than rejecting,
-  // so an abort is checked here too: a timed-out unpack is never a success.
-  if (timeout.aborted) return timedOut;
-  return { code: tar.code, stderr: new TextDecoder().decode(tar.stderr) };
+  const checkout = await git([
+    "-c",
+    "core.hooksPath=/dev/null",
+    "checkout",
+    "--quiet",
+    "--detach",
+    sha,
+  ], dest);
+  return { code: checkout.code, stderr: checkout.stderr };
 }
 
 /**
@@ -243,7 +279,7 @@ function gateGit(opts: {
   paths: readonly string[];
   added: readonly string[];
   removeTree: (path: string) => Promise<void>;
-  extractTree: NonNullable<BabysitterTreeGateDeps["extractTree"]>;
+  checkoutTree: NonNullable<BabysitterTreeGateDeps["checkoutTree"]>;
 }): PrePushGit {
   const refused = (message: string) => ({
     code: 1,
@@ -275,8 +311,8 @@ function gateGit(opts: {
       } catch (error) {
         return refused(`cannot create ${target}: ${errorMessage(error)}`);
       }
-      const extracted = await opts.extractTree(cwd, sha, target);
-      return { code: extracted.code, stdout: "", stderr: extracted.stderr };
+      const checkedOut = await opts.checkoutTree(cwd, sha, target);
+      return { code: checkedOut.code, stdout: "", stderr: checkedOut.stderr };
     }
     if (args[0] === "worktree" && args[1] === "remove") {
       const target = args.at(-1) ?? "";
@@ -409,7 +445,9 @@ export async function runBabysitterTreeGate(
   const gate = deps.gate ?? runPrePushGate;
   const makeTempDir = deps.makeTempDir ?? defaultMakeTempDir;
   const removeTree = deps.removeTree ?? defaultRemoveTree;
-  const extractTree = deps.extractTree ?? defaultExtractTree;
+  const checkoutTree = deps.checkoutTree ??
+    ((dir: string, sha: string, dest: string) =>
+      defaultCheckoutTree(dir, sha, dest, git));
   let root: string | undefined;
 
   const check = async (): Promise<BabysitterTreeGateOutcome> => {
@@ -448,7 +486,7 @@ export async function runBabysitterTreeGate(
       paths: gatePaths,
       added,
       removeTree,
-      extractTree,
+      checkoutTree,
     });
     const result = await gate({
       cwd: dir,

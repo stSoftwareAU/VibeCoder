@@ -1,7 +1,7 @@
 /**
  * Tests for the babysitter tree gate (Issue #4930).
  *
- * Real temp git repositories and real `git archive`/`tar`; the pre-push gate
+ * Real temp git repositories and real git checkouts; the pre-push gate
  * itself is an injected fake that drives the git adapter, so no deno test,
  * markdownlint or ShellCheck run here. Nothing writes to a repository's `.git`
  * except through the temp repositories these tests create.
@@ -12,7 +12,7 @@ import {
   BABYSITTER_GATE_BLOCKED_MARKER,
   type BabysitterTreeGateDeps,
   type BabysitterTreeGateOutcome,
-  defaultExtractTree,
+  defaultCheckoutTree,
   isGateInfrastructureResponse,
   runBabysitterTreeGate,
   withholdReady,
@@ -204,9 +204,10 @@ Deno.test("git-common-dir resolves to the temp root and the repo gets no worktre
   });
 });
 
-Deno.test("worktree add extracts the fork commit into the temp root, then remove and prune clear it (#4930)", async () => {
+Deno.test("worktree add checks the fork commit out into the temp root as a git checkout, then remove and prune clear it (#4930)", async () => {
   await fixture(async (repo, root) => {
     const head = await git(repo, "rev-parse", "HEAD");
+    const realRoot = await Deno.realPath(root);
     await Deno.writeTextFile(`${repo}/committed.txt`, "uncommitted edit\n");
     await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
     const seen: Record<string, unknown> = {};
@@ -219,6 +220,9 @@ Deno.test("worktree add extracts the fork commit into the temp root, then remove
       seen.addCode = add.code;
       seen.committed = await Deno.readTextFile(`${dest}/committed.txt`);
       seen.freshPresent = await exists(`${dest}/fresh.txt`);
+      seen.toplevel = await git(dest, "rev-parse", "--show-toplevel");
+      seen.tracked = (await git(dest, "ls-files")).split("\n");
+      seen.head = await git(dest, "rev-parse", "HEAD");
       const removed = await opts.git!(
         ["worktree", "remove", "--force", dest],
         opts.cwd,
@@ -236,6 +240,12 @@ Deno.test("worktree add extracts the fork commit into the temp root, then remove
     assertEquals(seen.addCode, 0);
     assertEquals(seen.committed, "committed.txt\n");
     assertEquals(seen.freshPresent, false);
+    assertEquals(
+      seen.toplevel,
+      `${realRoot}/vibe-deno-test-base/tree-1`,
+    );
+    assertEquals(seen.tracked, ["committed.txt", "gone.txt", "old.txt"]);
+    assertEquals(seen.head, head);
     assertEquals(seen.removeCode, 0);
     assertEquals(seen.destGone, true);
     assertEquals(seen.pruneCode, 0);
@@ -651,48 +661,305 @@ Deno.test("a temp root already gone when the gate finishes is not a failure (#49
   });
 });
 
-Deno.test("a failed git archive of the fork commit reports git's exit code and stderr (#4930)", async () => {
+Deno.test("a checkout of a missing commit fails, carrying git's exit code and stderr (#4930)", async () => {
   await fixture(async (repo, root) => {
-    const dest = `${root}/extract`;
+    const dest = `${root}/base`;
     await Deno.mkdir(dest);
 
-    const extracted = await defaultExtractTree(repo, "0".repeat(40), dest);
+    const checkedOut = await defaultCheckoutTree(repo, "0".repeat(40), dest);
 
-    assert(extracted.code !== 0, "a missing commit does not extract");
-    assert(extracted.stderr.trim() !== "", "git's stderr is carried");
+    assert(checkedOut.code !== 0, "a missing commit does not check out");
+    assert(checkedOut.stderr.trim() !== "", "git's stderr is carried");
   });
 });
 
-Deno.test("a tar unpack past its time limit is reported as a timeout, never a success (#4930)", async () => {
+Deno.test("an unreadable object directory fails the checkout before any repository is made (#4930)", async () => {
   await fixture(async (repo, root) => {
-    const head = await git(repo, "rev-parse", "HEAD");
-    const dest = `${root}/extract`;
+    const dest = `${root}/base`;
     await Deno.mkdir(dest);
+    const calls: string[][] = [];
 
-    const extracted = await defaultExtractTree(
+    const checkedOut = await defaultCheckoutTree(
       repo,
-      head,
+      await git(repo, "rev-parse", "HEAD"),
       dest,
-      AbortSignal.abort(),
+      (args, cwd) => {
+        calls.push(args);
+        return args.includes("objects")
+          ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: no" })
+          : defaultPrePushGit(args, cwd);
+      },
     );
 
-    assertEquals(extracted, { code: 1, stderr: "tar timed out after 300 s" });
+    assertEquals(checkedOut.code, 128);
+    assertStringIncludes(checkedOut.stderr, "object directory: fatal: no");
+    assertEquals(await exists(`${dest}/.git`), false);
   });
 });
 
-Deno.test("a tar unpack within its time limit extracts the commit (#4930)", async () => {
-  await fixture(async (repo, root) => {
-    const head = await git(repo, "rev-parse", "HEAD");
-    const dest = `${root}/extract`;
+Deno.test("a clone whose git directory lives elsewhere (an absolute object path) checks out too (#4930)", async () => {
+  await fixture(async (_repo, root) => {
+    const work = `${root}/work`;
+    await git(root, "init", "-q", "--separate-git-dir", `${root}/gitdir`, work);
+    await git(work, "config", "user.email", "tree-gate@example.invalid");
+    await git(work, "config", "user.name", "Tree Gate Test");
+    await git(work, "config", "commit.gpgsign", "false");
+    await Deno.writeTextFile(`${work}/kept.txt`, "kept\n");
+    await git(work, "add", "-A");
+    await git(work, "commit", "-q", "-m", "kept");
+    assert(
+      (await git(work, "rev-parse", "--git-path", "objects")).startsWith("/"),
+      "git prints this object directory as an absolute path",
+    );
+    const dest = `${root}/base`;
     await Deno.mkdir(dest);
 
-    const extracted = await defaultExtractTree(repo, head, dest);
-
-    assertEquals(extracted, { code: 0, stderr: "" });
-    assertEquals(
-      await Deno.readTextFile(`${dest}/committed.txt`),
-      "committed.txt\n",
+    const checkedOut = await defaultCheckoutTree(
+      work,
+      await git(work, "rev-parse", "HEAD"),
+      dest,
     );
+
+    assertEquals(checkedOut, { code: 0, stderr: "" });
+    assertEquals(await Deno.readTextFile(`${dest}/kept.txt`), "kept\n");
+  });
+});
+
+Deno.test("a hooks path configured for git runs no hook in the baseline checkout (#4930)", async () => {
+  await fixture(async (repo, root) => {
+    const hooks = `${root}/hooks`;
+    await Deno.mkdir(hooks);
+    const ran = `${root}/hook-ran`;
+    await Deno.writeTextFile(
+      `${hooks}/post-checkout`,
+      `#!/bin/sh\ntouch '${ran}'\n`,
+    );
+    await Deno.chmod(`${hooks}/post-checkout`, 0o755);
+    await Deno.writeTextFile(
+      `${root}/gitconfig`,
+      `[core]\n\thooksPath = ${hooks}\n`,
+    );
+    const dest = `${root}/base`;
+    await Deno.mkdir(dest);
+    const head = await git(repo, "rev-parse", "HEAD");
+    const previous = Deno.env.get("GIT_CONFIG_GLOBAL");
+    Deno.env.set("GIT_CONFIG_GLOBAL", `${root}/gitconfig`);
+    let checkedOut;
+    try {
+      checkedOut = await defaultCheckoutTree(repo, head, dest);
+    } finally {
+      if (previous === undefined) Deno.env.delete("GIT_CONFIG_GLOBAL");
+      else Deno.env.set("GIT_CONFIG_GLOBAL", previous);
+    }
+
+    assertEquals(checkedOut, { code: 0, stderr: "" });
+    assertEquals(
+      await exists(ran),
+      false,
+      "the post-checkout hook did not run",
+    );
+  });
+});
+
+/** Every path under `dir` with its size and mtime, to show nothing was written. */
+async function snapshot(dir: string): Promise<string[]> {
+  const entries: string[] = [];
+  const walk = async (path: string): Promise<void> => {
+    for await (const entry of Deno.readDir(path)) {
+      const full = `${path}/${entry.name}`;
+      const info = await Deno.lstat(full);
+      entries.push(`${full} ${info.size} ${info.mtime?.getTime()}`);
+      if (info.isDirectory) await walk(full);
+    }
+  };
+  await walk(dir);
+  return entries.sort();
+}
+
+Deno.test("the base commit of a depth-1 clone with a read-only .git checks out as a real git checkout, writing nothing to the clone (#4930)", async () => {
+  // The container's clone: depth 1, its base reachable only from a
+  // remote-tracking ref, and its .git mounted read-only.
+  const top = await Deno.makeTempDir({ prefix: "tree-gate-shallow-4930-" });
+  const clone = `${top}/clone`;
+  try {
+    await git(top, "init", "-q", "--bare", "-b", "main", `${top}/remote.git`);
+    await git(top, "clone", "-q", `${top}/remote.git`, `${top}/seed`);
+    const seed = `${top}/seed`;
+    await git(seed, "config", "user.email", "tree-gate@example.invalid");
+    await git(seed, "config", "user.name", "Tree Gate Test");
+    await git(seed, "config", "commit.gpgsign", "false");
+    await Deno.writeTextFile(`${seed}/a.txt`, "one\n");
+    await git(seed, "add", "-A");
+    await git(seed, "commit", "-q", "-m", "one");
+    await Deno.writeTextFile(`${seed}/a.txt`, "base\n");
+    await git(seed, "commit", "-q", "-am", "base");
+    await git(seed, "push", "-q", "--no-verify", "origin", "HEAD:main");
+    await git(seed, "checkout", "-q", "-b", "pr");
+    await Deno.writeTextFile(`${seed}/pr.txt`, "pr\n");
+    await git(seed, "add", "-A");
+    await git(seed, "commit", "-q", "-m", "pr");
+    await git(seed, "push", "-q", "--no-verify", "origin", "HEAD:pr");
+    await git(
+      top,
+      "clone",
+      "-q",
+      "--depth",
+      "1",
+      "--branch",
+      "pr",
+      `file://${top}/remote.git`,
+      clone,
+    );
+    await git(
+      clone,
+      "fetch",
+      "-q",
+      "--depth",
+      "1",
+      "origin",
+      "main:refs/remotes/origin/main",
+    );
+    const base = await git(clone, "rev-parse", "refs/remotes/origin/main");
+    await Deno.writeTextFile(`${clone}/a.txt`, "the agent's edit\n");
+    const statusBefore = await git(clone, "status", "--porcelain");
+    const gitDirBefore = await snapshot(`${clone}/.git`);
+    await Deno.chmod(`${clone}/.git`, 0o555);
+    const dest = `${top}/base`;
+    await Deno.mkdir(dest);
+
+    const checkedOut = await defaultCheckoutTree(clone, base, dest);
+
+    assertEquals(checkedOut, { code: 0, stderr: "" });
+    assertEquals(await Deno.readTextFile(`${dest}/a.txt`), "base\n");
+    assertEquals(await git(dest, "rev-parse", "HEAD"), base);
+    assertEquals(
+      (await git(dest, "ls-files")).split("\n"),
+      ["a.txt"],
+      "the baseline is a git checkout a test can inspect",
+    );
+    assertEquals(await git(dest, "status", "--porcelain"), "");
+    assertEquals(
+      await git(dest, "log", "--format=%s"),
+      "base",
+      "the clone's shallow boundary is kept, so history reads as in the clone",
+    );
+    assertEquals(
+      await snapshot(`${clone}/.git`),
+      gitDirBefore,
+      "the clone's .git is not written, even where the mount would allow it",
+    );
+    assertEquals(await git(clone, "status", "--porcelain"), statusBefore);
+    assertEquals(
+      await exists(`${dest}/.git/hooks`),
+      false,
+      "no template hooks",
+    );
+  } finally {
+    await Deno.chmod(`${clone}/.git`, 0o755).catch(() => {});
+    await Deno.remove(top, { recursive: true }).catch(() => {});
+  }
+});
+
+/**
+ * A clone of a bare remote whose `main` holds a Deno root with a real
+ * `test:unit` task (`deno test`, no lock file) and a test that needs its
+ * checkout to be a git repository and `foo` to be `wanted` (the PR #5091
+ * review's reproduction). The agent's edit sets `foo` to 2, uncommitted.
+ */
+async function realDenoClone(
+  wanted: number,
+  body: (clone: string) => Promise<void>,
+): Promise<void> {
+  const top = await Deno.makeTempDir({ prefix: "tree-gate-deno-4930-" });
+  try {
+    const clone = `${top}/clone`;
+    await git(top, "init", "-q", "--bare", "-b", "main", `${top}/remote.git`);
+    await git(top, "clone", "-q", `${top}/remote.git`, clone);
+    await git(clone, "config", "user.email", "tree-gate@example.invalid");
+    await git(clone, "config", "user.name", "Tree Gate Test");
+    await git(clone, "config", "commit.gpgsign", "false");
+    await Deno.mkdir(`${clone}/worker/deno/lib`, { recursive: true });
+    await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/deno.json`,
+      JSON.stringify({
+        lock: false,
+        tasks: { "test:unit": "deno test --allow-read --allow-run" },
+      }),
+    );
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/lib/foo.ts`,
+      "export const foo = 1;\n",
+    );
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/tests/foo_test.ts`,
+      [
+        'import { foo } from "../lib/foo.ts";',
+        'Deno.test("foo works in this checkout", async () => {',
+        '  const out = await new Deno.Command("git", {',
+        '    args: ["rev-parse", "--show-toplevel"],',
+        '    stdout: "piped",',
+        '    stderr: "piped",',
+        "  }).output();",
+        '  if (out.code !== 0) throw new Error("not a git checkout");',
+        `  if (Number(foo) !== ${wanted}) throw new Error("regression");`,
+        "});",
+        "",
+      ].join("\n"),
+    );
+    await git(clone, "add", "-A");
+    await git(clone, "commit", "-q", "-m", "base");
+    await git(clone, "push", "-q", "--no-verify", "origin", "HEAD:main");
+    await Deno.writeTextFile(
+      `${clone}/worker/deno/lib/foo.ts`,
+      "export const foo = 2;\n",
+    );
+    await body(clone);
+  } finally {
+    await Deno.remove(top, { recursive: true }).catch(() => {});
+  }
+}
+
+/** The real tree gate with real `deno test` runs; no markdown is changed. */
+async function realDenoGate(clone: string) {
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.join(" "));
+  try {
+    const outcome = await runBabysitterTreeGate(clone, "main", {
+      findMarkdownlint: () => Promise.resolve(null),
+    });
+    return { outcome, warnings };
+  } finally {
+    console.warn = realWarn;
+  }
+}
+
+Deno.test("with real deno test runs, a test that needs a git checkout and passes on the base still blocks the repair's regression (#4930)", async () => {
+  // The base passes (foo is 1); the agent's foo = 2 fails with "regression".
+  // An archive baseline has no .git, so it failed the same test at its git
+  // prerequisite and the regression passed as base-owned (PR #5091 review).
+  await realDenoClone(1, async (clone) => {
+    const { outcome, warnings } = await realDenoGate(clone);
+
+    assertEquals(outcome.kind, "blocked", JSON.stringify(outcome));
+    assertStringIncludes(
+      (outcome as { message: string }).message,
+      "foo works in this checkout",
+    );
+    assertEquals(warnings, []);
+  });
+});
+
+Deno.test("with real deno test runs, a test that fails the same way on the base checkout is still a warning (#4930)", async () => {
+  // foo must be 3: the base (1) and the agent's tree (2) both fail with
+  // "regression" in a real git checkout, so the failure is the base's.
+  await realDenoClone(3, async (clone) => {
+    const { outcome, warnings } = await realDenoGate(clone);
+
+    assertEquals(outcome.kind, "passed", JSON.stringify(outcome));
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+    assertStringIncludes(warnings[0]!, "[PRE_PUSH_WARNING] deno test");
   });
 });
 
