@@ -542,7 +542,7 @@ async function readStopFile(workDir: string): Promise<StopFileRead> {
     kind: "ok",
     stop: {
       rule: record.rule,
-      reason: record.reason,
+      reason: storedStopReason(record.reason),
       recordedAt: record.recordedAt,
     },
   };

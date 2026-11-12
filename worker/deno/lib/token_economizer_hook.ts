@@ -4,6 +4,7 @@
  * TE_PYTHON selects this executable; the upstream archive stays unchanged.
  * Distillation stays disabled. Cached facts and judge text are still untrusted.
  */
+import { installConsoleRedaction } from "./console_redaction.ts";
 import {
   captureProcessIdentity,
   terminateDescendants,
@@ -142,7 +143,9 @@ export async function runTokenEconomizerHook(
   ) {
     throw new Error("hook checkout mismatch");
   }
+  const controller = new AbortController();
   const child = new Deno.Command("python3", {
+    signal: controller.signal,
     args: ["-I", ...args],
     stdin: "piped",
     stdout: "piped",
@@ -188,7 +191,7 @@ export async function runTokenEconomizerHook(
   let killing: Promise<void> | undefined;
   const timer = setTimeout(() => {
     timedOut = true;
-    killing = kill();
+    killing = kill().finally(() => controller.abort());
     killing.catch(() =>
       console.error("[TOKEN_ECONOMIZER_FAILURE] hook tree teardown failed")
     );
@@ -211,6 +214,7 @@ export async function runTokenEconomizerHook(
 }
 
 if (import.meta.main) {
+  installConsoleRedaction();
   // Shared process probes must not mix diagnostics into hook JSON stdout.
   console.debug = (...args: unknown[]) => console.error(...args);
   let output: Record<string, unknown> = {};

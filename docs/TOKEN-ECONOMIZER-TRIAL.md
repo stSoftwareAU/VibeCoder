@@ -160,13 +160,13 @@ no new egress permission is granted. The adapter keeps judge/fold jobs
 synchronous rather than allowing the upstream detached launch. The proposer
 remains off. **Not observed:** a paid judge triggered inside an implementation
 run, production egress traffic for it, or inclusion in worker cost totals.
-#4958 is still open and its accounting integration is absent at this head.
+Issue #4958 is still open and its accounting integration is absent at this head.
 
 **Failure isolation.** The launch decision never throws, and a launch is never
 the cause of a failed run. A disabled block is silent. Any other refusal returns
 no plugin, which is the ordinary plugin-off path, and logs a warning naming the
 cause: a stop record in force, a run kind outside the three, a missing plugin
-manifest, a run id outside the allow-list, a state directory that cannot be
+manifest, an unusable audited adapter, a run id outside the allow-list, a state directory that cannot be
 created, lies outside the work directory or lies inside the checkout, or any
 unexpected error.
 

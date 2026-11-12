@@ -214,7 +214,7 @@ Deno.test("microskills is clamped to envfacts for every configured value", async
   });
 });
 
-Deno.test("only the three plugin run kinds launch; reviewer calls are refused", async () => {
+Deno.test("only the three plugin run kinds launch; reviewer and verifier calls are refused", async () => {
   assertEquals(
     [...TOKEN_ECONOMIZER_RUN_KINDS],
     ["implementation", "pr-feedback", "ci-fix"],
@@ -228,14 +228,16 @@ Deno.test("only the three plugin run kinds launch; reviewer calls are refused", 
       assert(launch !== null, `${runKind} must launch`);
     }
 
-    const captured = captureLogger();
-    const refused = await resolveTokenEconomizerLaunch(
-      optionsFor(f, captured, {
-        runKind: "reviewer" as TokenEconomizerRunKind,
-      }),
-    );
-    assertEquals(refused, null);
-    assertSingleWarn(captured, 'run kind "reviewer" is not one of');
+    for (const excluded of ["reviewer", "verifier"]) {
+      const captured = captureLogger();
+      const refused = await resolveTokenEconomizerLaunch(
+        optionsFor(f, captured, {
+          runKind: excluded as TokenEconomizerRunKind,
+        }),
+      );
+      assertEquals(refused, null);
+      assertSingleWarn(captured, `run kind "${excluded}" is not one of`);
+    }
   });
 });
 
@@ -1089,4 +1091,34 @@ Deno.test("hook protocol reads reject excess bytes and invalid UTF-8 instead of 
     () => readTokenEconomizerMessage(stream(new Uint8Array([0xff])), 2),
     TypeError,
   );
+});
+
+Deno.test("a tampered persisted stop reason is redacted before its report receipt is written", async () => {
+  await withFixture(async (f) => {
+    await Deno.mkdir(`${f.work}/.token-economizer`);
+    const token = "ghp_" + "q".repeat(36);
+    await Deno.writeTextFile(
+      tokenEconomizerStatePath(f.work),
+      JSON.stringify({
+        rule: "secret-in-learnings",
+        reason: `detected ${token}`,
+        recordedAt: FIXED_NOW.toISOString(),
+      }),
+    );
+    const stop = await readTokenEconomizerStop(f.work);
+    assert(stop);
+    const reports: string[][] = [];
+    await reportTokenEconomizerStop(f.work, stop, (args) => {
+      reports.push(args);
+      return Promise.resolve("reported");
+    });
+    const receipt = await Deno.readTextFile(
+      `${tokenEconomizerStatePath(f.work)}.reported`,
+    );
+    assert(!receipt.includes(token));
+    assertStringIncludes(receipt, "detected ***REDACTED***");
+    assert(reports[0]);
+    assert(!reports[0].join(" ").includes(token));
+    assertStringIncludes(reports[0].join(" "), "detected ***REDACTED***");
+  });
 });
