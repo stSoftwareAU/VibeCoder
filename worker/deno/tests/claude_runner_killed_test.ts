@@ -346,16 +346,20 @@ function capturingLogger(onWarn?: (message: string) => void): {
   logger: Logger;
   security: Array<{ event: string; details: string }>;
   warns: string[];
+  errors: string[];
 } {
   const security: Array<{ event: string; details: string }> = [];
   const warns: string[] = [];
+  const errors: string[] = [];
   const logger: Logger = {
     info: () => {},
     warn: (message) => {
       warns.push(message);
       onWarn?.(message);
     },
-    error: () => {},
+    error: (message) => {
+      errors.push(message);
+    },
     debug: () => {},
     security: (event, details) => {
       security.push({ event, details });
@@ -365,7 +369,7 @@ function capturingLogger(onWarn?: (message: string) => void): {
     scanSummary: () => {},
     workerSummary: () => {},
   };
-  return { logger, security, warns };
+  return { logger, security, warns, errors };
 }
 
 Deno.test({
@@ -615,6 +619,90 @@ Deno.test({
           stderr: "null",
         }).output().catch(() => {});
       }
+      await stub.dispose();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runClaudeWithRetry - a SIGKILLed agent whose orphan sweep's ps times out still returns its result (Issue #5099)",
+  permissions: { run: true, read: true, write: true, env: true },
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    // On a loaded host the orphan sweep's `ps` timed out, the timeout escaped
+    // `collectOrphans`, and the runner replaced the agent's whole result with
+    // "Failed to execute Claude: ps timed out after 10000ms". Every dependency
+    // here is fake: no real pid is probed or signalled.
+    const fakePid = 999_999;
+    const stub = await createAgentStub(
+      [
+        `printf '%s\\n' '{"type":"result","result":"working"}'`,
+        agentStubGate("snapshot").trimEnd(),
+        `printf '%s\\n' '{"type":"result","result":"still working"}'`,
+        agentStubGate("die").trimEnd(),
+        "kill -9 $$",
+      ].join("\n"),
+      { prefix: "claude_orphan_timeout_stub_" },
+    );
+    try {
+      const { logger, errors } = capturingLogger();
+      const clock = fakeClock();
+      const signals = chunkSignals();
+      const sawSnapshot = Promise.withResolvers<void>();
+      const sent: Array<{ pid: number; signal: string }> = [];
+      const run = runClaudeWithRetry(
+        {
+          ...COMMON_OPTS,
+          clock,
+          agentBinaryPath: stub.path,
+          logger,
+          descendantSnapshotIntervalMs: 200,
+          onActivity: signals.onActivity,
+          orphanCollectorDeps: {
+            getDescendants: () => {
+              sawSnapshot.resolve();
+              return Promise.resolve([fakePid]);
+            },
+            isRunning: () => Promise.resolve(true),
+            getParentPid: () =>
+              Promise.reject(new Error("ps timed out after 10000ms")),
+            getElapsedSeconds: () => Promise.resolve(100_000),
+            sendSignal: (pid, signal) => {
+              sent.push({ pid, signal });
+              return Promise.resolve();
+            },
+            sleep: () => Promise.resolve(),
+          },
+          captureKillDiagnostics: () => Promise.resolve("fake diagnostics"),
+          probeMemoryPressure: () => Promise.resolve({ level: "ok" as const }),
+        },
+        NO_RETRY_WAIT,
+      );
+      await signals.chunk(1);
+      await clock.advance(200);
+      await releaseAgentStub(stub, "snapshot");
+      await signals.chunk(2);
+      await sawSnapshot.promise;
+      await releaseAgentStub(stub, "die");
+      const result = await run;
+
+      assert(
+        result.ok,
+        `expected ok result, got ${!result.ok && result.error}`,
+      );
+      if (!result.ok) return;
+      assertEquals(result.value.killed, true);
+      assert(
+        result.value.output.includes("still working"),
+        `output: ${result.value.output}`,
+      );
+      assertEquals(sent, [], "a timed-out probe signals nothing");
+      assert(
+        errors.some((e) => e.includes("ps timed out after 10000ms")),
+        `the cause is logged: ${JSON.stringify(errors)}`,
+      );
+    } finally {
       await stub.dispose();
     }
   },

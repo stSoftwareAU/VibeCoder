@@ -16,6 +16,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   DescendantTracker,
   type OrphanCollectorDeps,
+  readParentPid,
 } from "../lib/orphan_collector.ts";
 import type { Logger } from "../types.ts";
 
@@ -71,15 +72,19 @@ function capturingLogger(): {
   logger: Logger;
   security: string[];
   warns: string[];
+  errors: string[];
 } {
   const security: string[] = [];
   const warns: string[] = [];
+  const errors: string[] = [];
   const logger: Logger = {
     info: () => {},
     warn: (m) => {
       warns.push(m);
     },
-    error: () => {},
+    error: (m) => {
+      errors.push(m);
+    },
     debug: () => {},
     security: (event, details) => {
       security.push(`[${event}] ${details}`);
@@ -89,7 +94,7 @@ function capturingLogger(): {
     scanSummary: () => {},
     workerSummary: () => {},
   };
-  return { logger, security, warns };
+  return { logger, security, warns, errors };
 }
 
 const CHILD = 100;
@@ -361,4 +366,97 @@ Deno.test("orphan collector - a descendant the kernel has not re-parented yet is
     `the collection is recorded: ${JSON.stringify(security)}`,
   );
   assert(signals.length > 0, "signals were sent");
+});
+
+Deno.test("orphan collector - a ps probe that times out stops the collection without throwing and names the cause (Issue #5099)", async () => {
+  const { table, signals, deps } = fakeTable({
+    100: { ppid: 20, alive: true, elapsedSeconds: 900 },
+    101: { ppid: 100, alive: true, elapsedSeconds: 88 },
+    102: { ppid: 101, alive: true, elapsedSeconds: 87 },
+  });
+  const tracker = new DescendantTracker(CHILD, {
+    ...deps,
+    // The real producer: with a 0 ms budget it throws its own timeout error.
+    getParentPid: (pid) => readParentPid(pid, 0),
+  }, { nowMs: () => 1_000_000 });
+  await tracker.refresh();
+  assertEquals([...tracker.snapshot()].sort(), [101, 102]);
+  table.get(100)!.alive = false;
+  table.get(101)!.ppid = 1;
+
+  const { logger, security, errors } = capturingLogger();
+  const result = await tracker.collectOrphans({
+    reason: "AGENT_KILLED",
+    maxWaitSeconds: 2,
+    logger,
+  });
+  assertEquals(result.collected, []);
+  assertEquals(signals, [], "a timed-out probe is not read as 'gone'");
+  assert(
+    errors.some((e) =>
+      e.includes("ps timed out after 0ms") && e.includes("after AGENT_KILLED")
+    ),
+    `error lines: ${JSON.stringify(errors)}`,
+  );
+  assert(
+    security.some((s) =>
+      s.startsWith("[ORPHANS_UNCOLLECTED]") &&
+      s.includes("after=AGENT_KILLED") && s.includes("ps timed out after 0ms")
+    ),
+    `security lines: ${JSON.stringify(security)}`,
+  );
+  assert(
+    !security.some((s) => s.startsWith("[ORPHANS_COLLECTED]")),
+    `security lines: ${JSON.stringify(security)}`,
+  );
+});
+
+Deno.test("orphan collector - a probe that times out after TERM was sent reports the pids already signalled (Issue #5099)", async () => {
+  const { table, signals, deps } = fakeTable({
+    100: { ppid: 20, alive: true, elapsedSeconds: 900 },
+    101: { ppid: 100, alive: true, elapsedSeconds: 88 },
+    102: { ppid: 101, alive: true, elapsedSeconds: 87 },
+  });
+  let termSent = false;
+  const tracker = new DescendantTracker(CHILD, {
+    ...deps,
+    isRunning: (pid) => {
+      if (termSent) throw new Error("ps timed out after 10000ms");
+      return deps.isRunning(pid);
+    },
+    sendSignal: (pid, signal) => {
+      termSent = true;
+      return deps.sendSignal(pid, signal);
+    },
+  }, { nowMs: () => 1_000_000 });
+  await tracker.refresh();
+  table.get(100)!.alive = false;
+  table.get(101)!.ppid = 1;
+
+  const { logger, security, errors } = capturingLogger();
+  const result = await tracker.collectOrphans({
+    reason: "AGENT_KILLED",
+    maxWaitSeconds: 2,
+    logger,
+  });
+  assertEquals(result.collected, [102, 101], "deepest first");
+  assertEquals(signals.map((s) => s.pid), [102, 101]);
+  assert(
+    errors.some((e) =>
+      e.includes("ps timed out after 10000ms") && e.includes("102,101")
+    ),
+    `error lines: ${JSON.stringify(errors)}`,
+  );
+  assert(
+    security.some((s) =>
+      s.startsWith("[ORPHANS_UNCOLLECTED]") &&
+      s.includes("signalled=102,101") &&
+      s.includes("ps timed out after 10000ms")
+    ),
+    `security lines: ${JSON.stringify(security)}`,
+  );
+  assert(
+    !security.some((s) => s.startsWith("[ORPHANS_COLLECTED]")),
+    `security lines: ${JSON.stringify(security)}`,
+  );
 });
