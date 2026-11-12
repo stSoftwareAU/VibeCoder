@@ -68,13 +68,18 @@ export function fallbackPolicyFromWorkerConfig(config: {
  * Build the policy from raw ids.
  *
  * `fallback` omitted or empty → pinned (no substitution).
- * `fallback` a list → ordered, preferring `preferred` first, then the
- * listed ids that are in `enabled` and installed.
+ * `fallback` a list → ordered, preferring `preferred` first, then every other
+ * enabled subscription in `subscriptions`, then the listed ids that are in
+ * `enabled` and installed. Subscriptions are "use it or lose it" and a metered
+ * provider such as DeepSeek is pay per call, so one subscription never falls
+ * straight through to paid spend while another still has quota (Issue #5079).
  */
 export function resolveProviderFallbackPolicy(input: {
   readonly preferred: string;
   readonly enabled: readonly string[];
   readonly fallback?: readonly string[];
+  /** Enabled fixed-price subscription providers, tried before the list. */
+  readonly subscriptions?: readonly string[];
   readonly maxSwitches?: number;
 }): ProviderFallbackPolicy {
   const preferred = input.preferred.trim();
@@ -88,9 +93,14 @@ export function resolveProviderFallbackPolicy(input: {
     );
   }
   const raw = input.fallback ?? [];
-  const alternatives = raw
+  const listed = raw
     .map((id) => id.trim())
     .filter((id) => id.length > 0 && id !== preferred && enabled.has(id));
+  // The operator's list opts in; the other subscriptions then go first.
+  const subscriptions = listed.length === 0 ? [] : (input.subscriptions ?? [])
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0 && id !== preferred && enabled.has(id));
+  const alternatives = [...new Set([...subscriptions, ...listed])];
   const unknown = raw
     .map((id) => id.trim())
     .filter((id) => id.length > 0 && !enabled.has(id) && id !== preferred);

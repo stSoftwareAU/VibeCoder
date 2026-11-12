@@ -17,6 +17,7 @@ import {
   sleepWithJitter,
 } from "../lib/run_core.ts";
 import { OPERATIONAL_DEFAULTS } from "../lib/config_defaults.ts";
+import { setConfiguredProviderFallbackPolicy } from "../lib/provider_fallback_policy.ts";
 import {
   recordRepoProbe,
   resetRepoAccessState,
@@ -606,6 +607,53 @@ Deno.test("run_core - an exhausted preferred provider falls back to a healthy al
     false,
     "a healthy alternative must not leave the host skipping cycles",
   );
+});
+
+// Issue #5079: with auto mode on Claude and `agent_provider_fallback:
+// [deepseek]`, an exhausted Claude must try the Codex subscription before
+// paid DeepSeek.
+Deno.test("run_core - the health gate tries the other subscription before DeepSeek (Issue #5079)", async () => {
+  const probed: Array<string | undefined> = [];
+  let nowValue = 0;
+  let cycleCount = 0;
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      cycleCount++;
+      if (cycleCount >= 2) nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) => {
+      const id = typeof provider === "string" ? provider : provider?.id;
+      probed.push(id);
+      // An unnamed probe checks the active provider: Claude until the switch.
+      const target = id ?? runProviderOverrideId() ?? "claude";
+      if (target === "claude") {
+        return Promise.resolve({
+          ok: true,
+          value: { healthy: false, exitCode: 3 },
+        });
+      }
+      return Promise.resolve({ ok: true, value: { healthy: true } });
+    },
+  });
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["claude", "deepseek"];
+  setConfiguredProviderFallbackPolicy({
+    mode: "ordered",
+    preferred: "codex",
+    alternatives: ["claude", "deepseek"],
+    maxSwitches: 1,
+  });
+  try {
+    await runCoreLoop(config, deps);
+    assertEquals(probed.includes("deepseek"), false, probed.join(","));
+    assertEquals(runProviderOverrideId(), "codex");
+  } finally {
+    setRunProviderOverride(undefined);
+    setConfiguredProviderFallbackPolicy(undefined);
+  }
 });
 
 Deno.test("run_core - a structured provider outage falls back to a healthy alternative (Issue #4014)", async () => {

@@ -24,6 +24,7 @@ import {
   validateConfigFileJson,
 } from "./validation.ts";
 import {
+  isSubscriptionCapable,
   resolveAgentProviderId,
   resolveEnabledAgentProviderIds,
   setConfiguredAgentProviderId,
@@ -659,6 +660,8 @@ export async function loadConfig(
     preferred: agentProvider,
     enabled: enabledAgentProviderIds,
     fallback: file.agent_provider_fallback,
+    // Issue #5079: subscriptions before the pay-per-call alternatives.
+    subscriptions: enabledAgentProviderIds.filter(isSubscriptionCapable),
   });
   setConfiguredProviderFallbackPolicy(providerFallbackPolicy);
   const agentProviderFallback = providerFallbackPolicy.alternatives;
