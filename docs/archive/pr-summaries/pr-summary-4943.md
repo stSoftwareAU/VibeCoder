@@ -9,7 +9,9 @@ without incorporating an unrelated base advance.
 Behind-only refreshes retain the shared readiness and per-base ownership path.
 Separate reviewer and babysitter processes now compete against one strict base
 in tests. Refusal updates share a file-locked transaction across repair and
-sweep writers; a mergeability reading cannot clear a stale-parent refusal.
+sweep writers; a mergeability reading cannot clear a stale-parent refusal, but
+an `UNKNOWN` reading still counts towards its streak, so the #4831 escalation
+fires.
 
 Closes #4943.
 
@@ -197,6 +199,32 @@ Fixed after the PR #5059 review (tests are under `worker/deno/tests/`):
 - The disposable mutation run recorded earlier on this branch predates the PR
   #5059 review fixes; it was not re-run at this head, and no mutation exemptions
   or repository skip were added.
+
+- PR #5059 review, second round. `recordBranchRefreshRefusal` no longer returns
+  a stale-parent entry unchanged on a mergeability-unknown refusal: it keeps the
+  `test-merge-parents-stale` reason and advances the streak and `lastSeenAtMs`.
+  `trackRepairMergeability` no longer returns early for a stale-parent entry: an
+  `UNKNOWN` read records (and so counts), and only a `MERGEABLE` or
+  `CONFLICTING` read is kept from clearing it. New sweep test in
+  `auto_merge_sweep_test.ts`, "one stale-parent refusal followed by two UNKNOWN
+  refusals escalates once": one fleet-health error and one comment; red with
+  the old `recordBranchRefreshRefusal`. Changed existing test:
+  `repair_base_merge_4943_test.ts` "sweep and repair lanes retain stale-parent
+  escalation ..." pinned that an `UNKNOWN` repair read left the escalated entry
+  unchanged (the freeze); it now checks that no mergeability read clears or
+  re-labels the entry or posts a second comment, and that an `UNKNOWN` read
+  adds one to the streak. New direct-library CI test in
+  `repair_base_merge_wiring_4943_test.ts`, "ci direct library merges the base
+  at publication when the failure is proven fixed on the base": the library
+  path has no initial sync, so only the publication-time `failedCheck` evidence
+  can authorise the merge; it asserts base ancestry on the published head and
+  the `pr-ci-processor-publication` `base-merge-allowed` line with the proof
+  reason. That file's direct-library tests cannot run on the fix host (its git
+  2.43 refuses `checkout -B ... --end-of-options`, and the existing
+  direct-library tests fail there the same way), so the new test and its red
+  check are left to CI. `auto_merge_sweep_test.ts`,
+  `branch_refresh_refusal_streak_test.ts` and `repair_base_merge_4943_test.ts`
+  pass (81 tests).
 
 ## Merge verification
 

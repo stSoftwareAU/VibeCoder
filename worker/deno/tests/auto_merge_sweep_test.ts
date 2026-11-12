@@ -793,6 +793,65 @@ Deno.test("a different or permanent refusal does not advance a transient streak 
   assertEquals(state.size, 0);
 });
 
+Deno.test("one stale-parent refusal followed by two UNKNOWN refusals escalates once (PR #5059 review)", async () => {
+  const state: BranchRefreshRefusalState = new Map();
+  const notifications: boolean[] = [];
+  const errors: string[] = [];
+  const { options } = harness({ [VC]: [{ number: 4833 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+      }),
+  });
+  const tracking = {
+    update: (change: (state: BranchRefreshRefusalState) => Promise<void>) =>
+      change(state),
+    notify: ({ active }: { active: boolean }) => {
+      notifications.push(active);
+      return Promise.resolve();
+    },
+  };
+  const run = (message: string) =>
+    sweepAutoMerge({
+      ...options,
+      repos: [VC],
+      branchRefreshRefusals: tracking,
+      logger: {
+        info: () => {},
+        warn: () => {},
+        error: (message: string) => {
+          errors.push(message);
+        },
+      },
+      updateBranchFn: () =>
+        Promise.resolve({
+          ok: false as const,
+          error: new Error(`required-check read failed: ${message}`),
+        }),
+    });
+
+  assert(
+    (await run("PR test merge parents do not match its head and base")).ok,
+  );
+  assertEquals(notifications, []);
+  for (let pass = 0; pass < 2; pass++) {
+    assert((await run("PR mergeability is still UNKNOWN")).ok);
+  }
+  // The refusal streak kept counting, so the #4831 escalation fired exactly
+  // once: one fleet-health error and one comment.
+  assertEquals(notifications, [true]);
+  assertEquals(
+    errors.filter((e) =>
+      e === "Fleet health: repeated transient branch-refresh refusal"
+    ).length,
+    1,
+  );
+  assertEquals(state.get(`${VC}#4833`)?.reason, "test-merge-parents-stale");
+});
+
 Deno.test("a failed diagnostic comment still raises fleet health and retries the branch refresh (Issue #4831)", async () => {
   const state: BranchRefreshRefusalState = new Map();
   let updates = 0;

@@ -604,7 +604,7 @@ Deno.test("sweep and repair lanes retain stale-parent escalation until the real 
       "the concurrent repair survives the sweep's publication",
     );
     await run();
-    const escalated = await readBranchRefreshRefusals(dir);
+    let escalated = await readBranchRefreshRefusals(dir);
     assertEquals(
       escalated.get(`${REPO}#10`)?.reason,
       "test-merge-parents-stale",
@@ -624,8 +624,21 @@ Deno.test("sweep and repair lanes retain stale-parent escalation until the real 
         tracker,
         log: () => {},
       });
-      assertEquals(await readBranchRefreshRefusals(dir), escalated);
+      const after = await readBranchRefreshRefusals(dir);
+      const entry = after.get(`${REPO}#10`);
+      // No mergeability read clears or re-labels the stale-parent refusal, and
+      // none posts a second comment; an UNKNOWN read still counts towards the
+      // streak, so the #4831 count is not frozen (PR #5059 review).
+      assertEquals(entry?.reason, "test-merge-parents-stale");
+      assertEquals(entry?.notified, true);
+      assertEquals(
+        entry?.streak,
+        escalated.get(`${REPO}#10`)!.streak + (mergeable === "UNKNOWN" ? 1 : 0),
+      );
+      assertEquals(after.get(`${REPO}#12`), escalated.get(`${REPO}#12`));
+      assertEquals(service.comments.length, 1);
       assert(!service.comments[0]!.body.includes("recovered"));
+      escalated = after;
     }
     fleet.prs.get(10)!.reviewDecision = "REVIEW_REQUIRED";
     await run();

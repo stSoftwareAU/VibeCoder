@@ -568,3 +568,26 @@ for (const processor of ["ci", "feedback", "spelling"] as const) {
     }
   });
 }
+
+Deno.test("ci direct library merges the base at publication when the failure is proven fixed on the base (PR #5059 review)", async () => {
+  const { publishedBase, lines } = await runWith(
+    "ci",
+    mergeableJson("MERGEABLE"),
+    undefined,
+    baseFixGh("MERGEABLE", "matching-historical-failure"),
+    { library: true },
+  );
+  // The publication-time recheck of the failed check's history authorises the
+  // base merge, so the published head carries the base's fix.
+  assertEquals(publishedBase, true, lines.join("\n"));
+  const publication = lines.filter((line) =>
+    line.startsWith("[base-refresh] source=pr-ci-processor-publication ")
+  );
+  assertEquals(publication.length, 1, lines.join("\n"));
+  assertDecisionLine(
+    publication[0]!,
+    "pr-ci-processor-publication",
+    "base-merge-allowed",
+    /^check test has the same failure on the PR merge base and passes on the newer base;/,
+  );
+});

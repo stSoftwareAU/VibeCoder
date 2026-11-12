@@ -133,15 +133,18 @@ export function recordBranchRefreshRefusal(
 ): BranchRefreshRefusalEntry {
   const key = branchRefreshRefusalKey(repo, prNumber);
   const previous = state.get(key);
-  // A mergeability read cannot prove that previously stale parents caught up.
-  if (
+  // A mergeability read cannot prove that previously stale parents caught up,
+  // so the stale-parent reason is kept; the refusal still counts towards the
+  // same streak, so a run of transient refusals escalates (PR #5059 review).
+  const recorded: BranchRefreshTransientReason =
     previous?.reason === "test-merge-parents-stale" &&
-    reason === "mergeability-unknown"
-  ) return previous;
-  const consecutive = previous?.reason === reason &&
+      reason === "mergeability-unknown"
+      ? previous.reason
+      : reason;
+  const consecutive = previous?.reason === recorded &&
     nowMs - previous.lastSeenAtMs <= BRANCH_REFRESH_REFUSAL_TTL_MS;
   const entry: BranchRefreshRefusalEntry = {
-    reason,
+    reason: recorded,
     streak: consecutive ? previous.streak + 1 : 1,
     lastSeenAtMs: nowMs,
     notified: consecutive && previous.notified,

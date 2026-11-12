@@ -395,7 +395,8 @@ export function createRepairMergeabilityTracker(input: {
  * An `UNKNOWN` read counts a consecutive refusal; at the threshold one trusted
  * comment says the refresh is waiting. A `MERGEABLE` or `CONFLICTING` read
  * clears only a mergeability-unknown streak and updates its comment to recovered.
- * A stale-parent refusal survives: mergeability alone does not validate parents.
+ * A stale-parent refusal survives: mergeability alone does not validate parents,
+ * but an `UNKNOWN` read still advances its streak, so it escalates as usual.
  * Any other value is an inconclusive read and leaves the streak alone. When the
  * repeated-`UNKNOWN` counter fires it is also persisted to `counterDir`'s
  * `base_refresh_counters.json`, when one is given. The refusal lock covers only
@@ -419,11 +420,10 @@ export async function trackRepairMergeability(
       tracker.update,
       (event) => tracker.notify({ ...event, lane: "repair" }),
       (state, defer) => {
-        // Only the test-merge parent validation can recover a stale-parent refusal.
-        if (
-          state.get(`${repo}#${prNumber}`)?.reason ===
-            "test-merge-parents-stale"
-        ) return Promise.resolve();
+        // Only the test-merge parent validation can recover a stale-parent
+        // refusal, but an UNKNOWN read still counts towards its streak.
+        const staleParents = state.get(`${repo}#${prNumber}`)?.reason ===
+          "test-merge-parents-stale";
         if (mergeable === "UNKNOWN") {
           const entry = recordBranchRefreshRefusal(
             state,
@@ -451,7 +451,10 @@ export async function trackRepairMergeability(
               `[base-refresh] fleet health: repair mergeability of ${repo}#${prNumber} still UNKNOWN after ${entry.streak} consecutive reads`,
             );
           }
-        } else if (mergeable === "MERGEABLE" || mergeable === "CONFLICTING") {
+        } else if (
+          !staleParents &&
+          (mergeable === "MERGEABLE" || mergeable === "CONFLICTING")
+        ) {
           const previous = clearBranchRefreshRefusal(state, repo, prNumber);
           if (previous?.notified) {
             defer({
