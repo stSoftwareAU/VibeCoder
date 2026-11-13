@@ -145,7 +145,11 @@ Deno.test("Issue #5105 - parkInFlightBuild waits out an explained dip that recov
     let i = 0;
     const { wait, sleeps } = fakeWait();
     const result = await withProbe(
-      () => readings[Math.min(i++, readings.length - 1)],
+      () => {
+        const r = readings.at(Math.min(i++, readings.length - 1));
+        if (r === undefined) throw new Error("no reading");
+        return r;
+      },
       () => parkInFlightBuild(checkout, undefined, wait),
     );
     assertEquals(result, null);
@@ -238,7 +242,7 @@ Deno.test("Issue #5105 - the probe helper reads live reservations and survives a
     );
     assertEquals(none, []);
     assertEquals(warnings.length, 1);
-    assertStringIncludes(warnings[0], notADir);
+    assertStringIncludes(warnings[0] ?? "", notADir);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

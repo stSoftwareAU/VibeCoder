@@ -477,7 +477,15 @@ export async function heavyBuildAdmission(
   options: { creditOwnCache?: boolean } = {},
 ): Promise<HeavyBuildAdmission> {
   if (probe === undefined) return { mode: "build" };
-  const reading = await probe();
+  return await admissionFromReading(await probe(), checkoutPath, deps, options);
+}
+
+async function admissionFromReading(
+  reading: HeavyBuildDiskReading,
+  checkoutPath: string,
+  deps: EphemeralRootDeps,
+  options: { creditOwnCache?: boolean },
+): Promise<HeavyBuildAdmission> {
   const low = judgeHostDiskForBuild(reading);
   if (low !== null) return { mode: "defer", reason: low };
   // The budget is about the ephemeral root, which builds use only where the
@@ -611,15 +619,15 @@ export async function parkInFlightBuild(
   wait: BabysitterDipWait = PRODUCTION_BABYSITTER_DIP_WAIT,
 ): Promise<string | null> {
   if (!inFlightGateEnabled) return null;
-  await waitOutBabysitterDip(wait);
+  if (probe === undefined) return null;
+  const reading = await waitOutBabysitterDip(wait, await probe());
   // No cargo project: only the host floor applies, and nothing is pruned (Issue #4413).
   if (!(await holdsCargoProject(checkoutPath))) {
-    if (probe === undefined) return null;
     // Not parkRunningBuild: a dip still explained once the wait bound has
     // passed must park a new step, though a running process rides it out.
-    return inFlightParkReason(judgeHostDiskForBuild(await probe()));
+    return inFlightParkReason(judgeHostDiskForBuild(reading));
   }
-  const admission = await heavyBuildAdmission(checkoutPath, deps, {
+  const admission = await admissionFromReading(reading, checkoutPath, deps, {
     creditOwnCache: true,
   });
   return inFlightParkReason(
@@ -642,16 +650,23 @@ export const PRODUCTION_BABYSITTER_DIP_WAIT: BabysitterDipWait = {
   maxWaitMs: 20 * 60_000,
 };
 
-/** Poll until the dip is no longer babysitter-driven, or the bound passes. */
-async function waitOutBabysitterDip(wait: BabysitterDipWait): Promise<void> {
-  if (probe === undefined) return;
+/**
+ * Poll until the dip is no longer babysitter-driven, or the bound passes.
+ * Takes the first reading and returns the latest; the probe is re-read only
+ * after each sleep.
+ */
+async function waitOutBabysitterDip(
+  wait: BabysitterDipWait,
+  first: HeavyBuildDiskReading,
+): Promise<HeavyBuildDiskReading> {
   const deadline = wait.nowMs() + wait.maxWaitMs;
-  let reading = await probe();
+  let reading = first;
   while (babysitterDrivenDip(reading) && wait.nowMs() < deadline) {
     await wait.sleep(wait.pollMs);
-    if (probe === undefined) return;
+    if (probe === undefined) return reading;
     reading = await probe();
   }
+  return reading;
 }
 
 /**
