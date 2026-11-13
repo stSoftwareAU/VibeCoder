@@ -557,6 +557,11 @@ import {
 import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
 import {
+  measureEphemeralCargoRoot,
+  measureEphemeralCargoRootBytesIfTrimRefused,
+  reportWorkVolumeWithEphemeralRoot,
+} from "./ephemeral_root_telemetry.ts";
+import {
   reclaimWorkVolumeTiers,
   repoDirName,
   summariseWorkVolumeTiers,
@@ -655,6 +660,10 @@ export interface ProductionDepsOptions {
   logger?: Logger;
   /** Optional config override. */
   config?: WorkerConfig;
+  /** Injectable monitor for exercising the registered heavy-build probe. */
+  hostDisk?: HostDiskMonitor;
+  /** Test seam: the launcher's trim verdict; defaults to the launch file's. */
+  trimRefused?: () => boolean;
   /** Test seams for the PR-feedback production callback. */
   setupRepoFn?: typeof setupRepo;
   runGitCommandFn?: typeof runGitCommand;
@@ -1154,8 +1163,10 @@ export async function createProductionRunCoreDeps(
   });
   // Host free-disk monitor (Issue #226): the launcher's df baseline plus
   // the work volume's growth since launch; native mode reads df directly.
-  const hostDisk = new HostDiskMonitor({
+  const trimRefused = options.trimRefused ?? workVolumeTrimRefusedForLaunch;
+  const hostDisk = options.hostDisk ?? new HostDiskMonitor({
     workDir,
+    env,
     log: bindLogger(logger),
     // Issue #1550: the launcher's per-tick reading, written to the worker
     // log directory — mounted read-write at `${HOME}/logs` in the container.
@@ -1171,6 +1182,17 @@ export async function createProductionRunCoreDeps(
         ? {}
         : { hostDiskLowFloorPercent: config.hostDiskLowFloorPercent }),
     },
+    // Issue #5105: below the floor on a trim-refused runtime, the detail
+    // refreshes the ephemeral cargo root in the background, without delaying
+    // the floor verdict. A later probing check names the completed figure.
+    // The root is the missing term only where the runtime refused the trim,
+    // so elsewhere no refresh starts and the detail says nothing about it.
+    ephemeralCargoRootApplies: trimRefused,
+    measureEphemeralCargoRoot: () =>
+      measureEphemeralCargoRootBytesIfTrimRefused({
+        trimRefused,
+        measure: () => measureEphemeralCargoRoot(),
+      }),
   });
   // Work-volume standing totals (Issues #244, #345): one shared reading feeds
   // the log line and the feature report, so a probe
@@ -4877,8 +4899,16 @@ export async function createProductionRunCoreDeps(
     // walk per top-level directory under a single 120 s budget. Logged at
     // cycle start next to `Concurrency:` so growth is visible in the worker
     // log before the disk gate trips, and again at end of run (Issue #345)
-    // where the volume is at its fullest.
-    reportWorkVolumeUsage: (options) => workVolume.report(options),
+    // where the volume is at its fullest. Issue #5105: on a trim-refused
+    // runtime the line also carries the ephemeral cargo root (the container's
+    // own layer, outside the volume), and the host-disk monitor is told its size.
+    reportWorkVolumeUsage: (options) =>
+      reportWorkVolumeWithEphemeralRoot(options, {
+        report: (o) => workVolume.report(o),
+        trimRefused,
+        measure: () => measureEphemeralCargoRoot(),
+        record: (bytes) => hostDisk.recordEphemeralCargoRootBytes(bytes),
+      }),
     // Issue #345: both disk signals blind is a health condition — the state
     // GRQ-23 was in for days before it crashed out of disk.
     checkDiskTelemetry: () => diskTelemetry(),

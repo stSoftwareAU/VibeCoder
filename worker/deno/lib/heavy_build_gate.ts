@@ -54,7 +54,8 @@
  *   removes a checkout's target directories when the maintenance pass that
  *   built in it finishes, rather than leaving them to the relaunch. The
  *   pre-PR verifier's disposable checkout is released the same way when the
- *   verifier finishes (Issue #4743).
+ *   verifier finishes (Issue #4743). A directory a dropped build wrote as
+ *   `agent` is removed as `agent` (Issue #5105).
  *
  * Pruning counts what it removes as room for the next build. That holds even
  * where the runtime refuses the trim: the blocks a guest deletes stay
@@ -93,6 +94,7 @@ import {
   EPHEMERAL_CARGO_TARGET_ROOT,
 } from "./ephemeral_build_cache.ts";
 import { findProjectManifests } from "./project_manifests.ts";
+import { UNTRUSTED_USER } from "./untrusted_command_env.ts";
 
 const GIB = 1_073_741_824;
 
@@ -655,8 +657,9 @@ export interface ReleasedTargetDirs {
  * Remove every account's ephemeral target directory for one checkout, once
  * the pass that built in it has finished.
  *
- * Best-effort: a directory the worker's account cannot remove (another
- * account's, under the sticky root) is reported, not fatal.
+ * The agent account's directory is removed as that account, because the
+ * sticky root forbids the worker removing it (Issue #5105). Best-effort: a
+ * directory that still cannot be removed is reported, not fatal.
  */
 export async function releaseCheckoutTargetDirs(
   checkoutPath: string,
@@ -695,24 +698,93 @@ export async function releaseCheckoutTargetDirs(
 /** `du` of one cargo target. Long enough for a large tree, still bounded. */
 const DU_TIMEOUT_MS = 2 * 60 * 1000;
 
+/** The kB figure at the start of `du -sk` output; undefined when there is none. */
+export function parseDuKilobytes(stdout: string): number | undefined {
+  const kb = /^(\d+)\s/.exec(stdout)?.[1];
+  return kb === undefined ? undefined : Number(kb);
+}
+
+/** One `du -sk` run. A timeout throws. */
+async function runDuSk(
+  path: string,
+  timeoutMs: number,
+): Promise<{ code: number; kb: number | undefined; stderr: string }> {
+  const out = await commandOutputWithTimeout("du", {
+    args: ["-sk", "--", path],
+    stdout: "piped",
+    stderr: "piped",
+    timeoutMs,
+    // Churn classification below relies on the tool's C-locale diagnostics.
+    env: { LC_ALL: "C" },
+  });
+  return {
+    code: out.code,
+    kb: parseDuKilobytes(new TextDecoder().decode(out.stdout)),
+    stderr: new TextDecoder().decode(out.stderr),
+  };
+}
+
 /** `du -sk` of one directory, in bytes; 0 when it cannot be measured. A timeout is a failure. */
 export async function measureDirectoryBytes(
   path: string,
   timeoutMs: number = DU_TIMEOUT_MS,
 ): Promise<number> {
   try {
-    const out = await commandOutputWithTimeout("du", {
-      args: ["-sk", "--", path],
-      stdout: "piped",
-      stderr: "null",
-      timeoutMs,
-    });
-    const kb = Number.parseInt(new TextDecoder().decode(out.stdout), 10);
-    return Number.isFinite(kb) ? kb * 1024 : 0;
+    return ((await runDuSk(path, timeoutMs)).kb ?? 0) * 1024;
   } catch (error) {
     if (isCommandTimeoutError(error)) throw error;
     return 0;
   }
+}
+
+/**
+ * `du -sk` of one directory, in bytes, for a figure that must not be guessed
+ * (Issue #5105). Files vanishing during a build do not invalidate the size.
+ * Other non-zero exits (including unreadable subtrees) and output with no
+ * size throw. A target released before measurement throws NotFound so the
+ * listing can omit it, without losing the remaining targets' figures.
+ */
+export async function measureDirectoryBytesStrictly(
+  path: string,
+  timeoutMs: number = DU_TIMEOUT_MS,
+  run: typeof runDuSk = runDuSk,
+): Promise<number> {
+  const { code, kb, stderr } = await run(path, timeoutMs).catch((error) => {
+    // A missing du executable is not a missing target/root.
+    if (error instanceof Deno.errors.NotFound) {
+      throw new Error(`du -sk ${path} could not run: ${error.message}`);
+    }
+    throw error;
+  });
+  if (code !== 0) {
+    const lines = stderr.split("\n").map((l) => l.trim()).filter(Boolean);
+    // GNU and BSD du diagnostics, under LC_ALL=C. Only ENOENT inside this
+    // measured tree is benign; mixed, external and unknown errors stay loud.
+    const vanished = lines.map((line) => {
+      const match =
+        /^du: (?:cannot access '(.+)'|(.+)): No such file or directory$/
+          .exec(line);
+      return match?.[1] ?? match?.[2];
+    });
+    const onlyVanished = code === 1 && lines.length > 0 &&
+      vanished.every((name) =>
+        name !== undefined &&
+        (name === path || name.startsWith(`${path}/`)) &&
+        !name.split("/").includes("..")
+      );
+    if (!onlyVanished) {
+      throw new Error(
+        `du -sk ${path} exited ${code}: ${lines[0] ?? "no stderr"}`,
+      );
+    }
+    if (vanished.includes(path)) {
+      // Verify the target itself is gone. No-size output for a surviving
+      // directory remains unknown, even if every diagnostic was ENOENT.
+      await Deno.lstat(path);
+    }
+  }
+  if (kb === undefined) throw new Error(`du -sk ${path} printed no size`);
+  return kb * 1024;
 }
 
 /**
@@ -732,22 +804,173 @@ async function lastWriteMs(path: string): Promise<number> {
   return latest;
 }
 
-/** The real filesystem. */
-export const productionEphemeralRootDeps: EphemeralRootDeps = {
-  listTargetDirs: async (root: string) => {
+/**
+ * The account that built into a target dir, when it is not the worker's.
+ *
+ * Keys have the shape `[safeName-]digest[-account]` (`cargoTargetDirForCheckout`
+ * in `ephemeral_build_cache.ts`), so only `agent` after an 8-hex digest counts.
+ * A worker-account directory (`<name>-<digest>`) returns `undefined`.
+ */
+export function targetDirAccount(path: string): string | undefined {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const keyed = new RegExp(`(?:^|-)[0-9a-f]{8}-${UNTRUSTED_USER}$`);
+  return keyed.test(base) ? UNTRUSTED_USER : undefined;
+}
+
+/** How a target directory is removed (Issue #5105). */
+export interface TargetDirRemovalDeps {
+  remove: (path: string) => Promise<void>;
+  removeAsAccount: (account: string, path: string) => Promise<void>;
+}
+
+/**
+ * Remove a target directory, dropping to the account that built it when the
+ * worker's own account is refused (Issue #5105). Any other failure, or a
+ * directory with no other account, rethrows the original error.
+ */
+export async function removeTargetDir(
+  path: string,
+  deps: TargetDirRemovalDeps = productionTargetDirRemoval,
+): Promise<void> {
+  try {
+    await deps.remove(path);
+  } catch (original) {
+    const account = targetDirAccount(path);
+    if (!(original instanceof Deno.errors.PermissionDenied) || !account) {
+      throw original;
+    }
+    try {
+      await deps.removeAsAccount(account, path);
+    } catch (fallback) {
+      const fallbackMessage = fallback instanceof Error
+        ? fallback.message
+        : String(fallback);
+      const tag = fallbackMessage.endsWith("(Issue #5105)")
+        ? ""
+        : " (Issue #5105)";
+      throw new Error(
+        `${original.message}; removing it as ${account} also failed: ` +
+          `${fallbackMessage}${tag}`,
+      );
+    }
+  }
+}
+
+/**
+ * Build the as-account remover: `sudo -n -u <account> -- rm -rf -- <path>`.
+ *
+ * It refuses, before running anything, unless the account is the untrusted
+ * one, the path is a single plain segment directly under `root` (compared as
+ * strings, so `..`, `.` and non-canonical paths fail), and `root` is a real
+ * directory rather than a symlink.
+ */
+export function targetDirRemovalAsAccount(
+  options: {
+    root?: string;
+    run?: (argv: string[]) => Promise<{ code: number; stderr: string }>;
+  } = {},
+): (account: string, path: string) => Promise<void> {
+  const root = options.root ?? EPHEMERAL_CARGO_TARGET_ROOT;
+  const run = options.run ?? (async (argv: string[]) => {
+    const out = await commandOutputWithTimeout("sudo", {
+      args: argv.slice(1),
+      stdout: "null",
+      stderr: "piped",
+      stdin: "null",
+      timeoutMs: 5 * 60_000,
+    });
+    return { code: out.code, stderr: new TextDecoder().decode(out.stderr) };
+  });
+  return async (account: string, path: string) => {
+    const refuse = (reason: string): never => {
+      throw new Error(
+        `refusing to remove ${path} as ${account}: ${reason} (Issue #5105)`,
+      );
+    };
+    if (account !== UNTRUSTED_USER) {
+      refuse(`${account} is not the ${UNTRUSTED_USER} account`);
+    }
+    const slash = path.lastIndexOf("/");
+    if (path.slice(0, slash) !== root) {
+      refuse(`its parent is not exactly ${root}`);
+    }
+    const base = path.slice(slash + 1);
+    if (!/^[A-Za-z0-9._-]+$/.test(base) || base === "." || base === "..") {
+      refuse("its name is not a plain directory name");
+    }
+    let info: Deno.FileInfo;
+    try {
+      info = await Deno.lstat(root);
+    } catch (error) {
+      return refuse(`the root cannot be inspected: ${error}`);
+    }
+    if (info.isSymlink || !info.isDirectory) {
+      refuse(`${root} is not a real directory`);
+    }
+    const argv = ["sudo", "-n", "-u", account, "--", "rm", "-rf", "--", path];
+    const { code, stderr } = await run(argv);
+    if (code !== 0) {
+      const line = stderr.split("\n").map((l) =>
+        l.trim()
+      ).find((l) => l.length > 0) ?? "no stderr";
+      throw new Error(
+        `sudo -n -u ${account} -- rm -rf exited ${code}: ${line}`,
+      );
+    }
+  };
+}
+
+/** The real filesystem removal, with the agent-account fallback. */
+export const productionTargetDirRemoval: TargetDirRemovalDeps = {
+  remove: (path) => Deno.remove(path, { recursive: true }),
+  // Built per call: the import graph is cyclic through `untrusted_command_env.ts`,
+  // so the root constant is not yet initialised when this module loads.
+  removeAsAccount: (account, path) =>
+    targetDirRemovalAsAccount()(account, path),
+};
+
+/**
+ * List the target directories under `root`, each measured by `measure`.
+ * A missing root rejects with `Deno.errors.NotFound`.
+ */
+export function listTargetDirsMeasuredBy(
+  measure: (path: string) => Promise<number>,
+): (root: string) => Promise<EphemeralTargetDir[]> {
+  return async (root: string) => {
     const dirs: EphemeralTargetDir[] = [];
     for await (const entry of Deno.readDir(root)) {
       if (!entry.isDirectory) continue;
       const path = `${root}/${entry.name}`;
-      dirs.push({
-        path,
-        bytes: await measureDirectoryBytes(path),
-        lastWriteMs: await lastWriteMs(path),
-      });
+      try {
+        dirs.push({
+          path,
+          bytes: await measure(path),
+          lastWriteMs: await lastWriteMs(path),
+        });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        // Another pass released this target between readDir and du.
+      }
     }
     return dirs;
-  },
-  removeDir: (path: string) => Deno.remove(path, { recursive: true }),
+  };
+}
+
+/**
+ * The listing the ephemeral-root telemetry reads (Issue #5105): a directory
+ * `du` cannot read rejects, so the root is reported as unknown. Vanished
+ * files keep the measured size and released directories are omitted.
+ */
+export const strictlyMeasuredTargetDirs = listTargetDirsMeasuredBy((path) =>
+  measureDirectoryBytesStrictly(path)
+);
+
+/** The real filesystem. */
+export const productionEphemeralRootDeps: EphemeralRootDeps = {
+  listTargetDirs: listTargetDirsMeasuredBy((path) =>
+    measureDirectoryBytes(path)
+  ),
+  removeDir: (path: string) => removeTargetDir(path),
   nowMs: () => Date.now(),
 };
 
