@@ -20,8 +20,9 @@
  *   Fable 5.2 → Opus 5.5 `xhigh` on the same subscription
  *     → the Claude pool's next subscription with budget
  *     → Codex `gpt-6-astra` at `high` effort, when a Codex credential reaches the
- *       round (an API key, or a login on a shared mount; the agent-state
- *       `CODEX_HOME` does not, see #5127)
+ *       round: the round's own Codex home (`VIBE_REVIEW_CODEX_HOME`) holds a
+ *       login of its own, or an API key / a login on a shared mount reaches
+ *       it (the agent-state `CODEX_HOME` is not mounted in a round)
  *     → DeepSeek, in the worker's own pinned child environment
  *
  * Each link runs only once the one before it is spent. A usage limit is the
@@ -44,6 +45,7 @@ import {
 import {
   applyProviderCredentialEnv,
   heldProviderCredentialLabel,
+  resolveCredentialDir,
   selectFirstProviderToken,
 } from "./credential_preflight.ts";
 import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
@@ -216,7 +218,9 @@ export interface ReviewRoundDeps {
  * 2. a held subscription that hit the limit is retried once on another with
  *    budget;
  * 3. the round runs once on Codex ({@link REVIEW_CODEX_MODEL}) with the same
- *    prompt, when a Codex credential reaches the round (see #5127);
+ *    prompt, when a Codex credential reaches the round: the round's own
+ *    Codex home (`VIBE_REVIEW_CODEX_HOME`) holds a login, or an API key /
+ *    shared-mount login reaches it (Issue #5127);
  * 4. the round runs once on DeepSeek, when the attempt is still usage-limited.
  *
  * A link runs only when the one before it ended on a usage limit. An attempt
@@ -763,6 +767,82 @@ export function codexChildLoginMissing(
 }
 
 /**
+ * The round's own persistent Codex home (Issue #5127): a directory on the log
+ * directory's mount, which the round's container shares, set by the runner
+ * (`.claude/skills/review-fleet-prs/scripts/run.sh`). Its login is the
+ * operator's own, made once for the round; it is never seeded from the
+ * worker's one-time login seed.
+ */
+export const REVIEW_CODEX_HOME_ENV_VAR = "VIBE_REVIEW_CODEX_HOME";
+
+/**
+ * A file's text, or null when the file is absent. Any other read error
+ * propagates, so an unreadable file is never mistaken for an absent one.
+ */
+function readTextOrNull(path: string): string | null {
+  try {
+    return Deno.readTextFileSync(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return null;
+    throw error;
+  }
+}
+
+/** The `tokens.refresh_token` of a login file's text, or "" when absent. */
+function refreshTokenOf(text: string): string {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (typeof parsed !== "object" || parsed === null) return "";
+    const tokens = (parsed as { tokens?: unknown }).tokens;
+    if (typeof tokens !== "object" || tokens === null) return "";
+    const refresh = (tokens as { refresh_token?: unknown }).refresh_token;
+    return typeof refresh === "string" ? refresh : "";
+  } catch {
+    // Unparseable login text carries no refresh token.
+    return "";
+  }
+}
+
+/**
+ * Why the round's own Codex home cannot be used, or null when it can
+ * (Issue #5127). It needs a login of its own: an empty home is unusable, and
+ * so is one holding a copy of the worker's one-time login seed (the same text,
+ * or the same non-empty refresh token). The reason never contains a token.
+ */
+function roundCodexHomeUnusable(
+  home: string,
+  seedPath: string,
+): string | null {
+  const auth = resolveCodexAuthMode(home, () => undefined);
+  if (auth.mode === "unknown") {
+    return `no Codex login in the round's Codex home ${home} (${
+      auth.detail ?? auth.source
+    })`;
+  }
+  let own: string | null;
+  let seed: string | null;
+  try {
+    own = readTextOrNull(`${home}/auth.json`);
+    seed = readTextOrNull(seedPath);
+  } catch (error) {
+    // Fail closed: a login that cannot be compared is not used.
+    return `cannot compare the round's Codex home ${home} with the worker's login seed (${
+      error instanceof Error ? error.name : "unknown error"
+    })`;
+  }
+  if (own !== null && seed !== null) {
+    const refresh = refreshTokenOf(own);
+    if (
+      own.trim() === seed.trim() ||
+      (refresh !== "" && refresh === refreshTokenOf(seed))
+    ) {
+      return `the round's Codex home ${home} holds a copy of the worker's one-time login seed, not a login of its own`;
+    }
+  }
+  return null;
+}
+
+/**
  * An environment lookup over a plain environment object. Only the object's own
  * variables count, so a name such as `constructor` is not reported as set.
  */
@@ -785,7 +865,8 @@ function envLookup(
  *   environment is mutated. Scoped to the fallback exports — the Claude pool
  *   keeps its own resolution.
  * @param options.env - The process environment the fallback exports read
- *   (the "already set" check) and merge into their child environments.
+ *   (the "already set" check, and `VIBE_REVIEW_CODEX_HOME`) and merge into
+ *   their child environments.
  *   Production omits it and gets `Deno.env.toObject()`; a wiring test passes
  *   its own variables here. Scoped to the fallback exports, as
  *   `credentialDir` is.
@@ -849,6 +930,25 @@ export function createReviewRoundDeps(
       // denylist strips the Claude and Anthropic credentials (`codex_env.ts`).
       const codexProvider = resolveAgentProvider(CODEX_PROVIDER_ID);
       const processEnv = options.env ?? Deno.env.toObject();
+      const roundHome = (envLookup(processEnv)(REVIEW_CODEX_HOME_ENV_VAR) ?? "")
+        .trim();
+      if (roundHome !== "") {
+        // Issue #5127: the round's own Codex home, on a mount the round
+        // shares. Used as it is, never written to or seeded.
+        const seed = `${
+          options.credentialDir ?? resolveCredentialDir(envLookup(processEnv))
+        }/${codexProvider.credentials.subdir}/auth.json`;
+        const unusable = roundCodexHomeUnusable(roundHome, seed);
+        if (unusable === null) {
+          return {
+            env: codexProvider.buildChildEnv({
+              ...processEnv,
+              [CODEX_HOME_ENV_VAR]: roundHome,
+            }),
+          };
+        }
+        log(`${unusable}; trying the worker's Codex credential`);
+      }
       const values: Record<string, string> = {};
       let exported: string[];
       try {
