@@ -104,6 +104,9 @@ regexes = [
   # trip generic-api-key on the quoted placeholder values alone.
   '''^\s*CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083",\s*$''',
   '''^\s*ANTHROPIC_API_KEY: "fixture-anthropic-5083",\s*$''',
+  # The PR summary quoted the same two lines in one commit; the range scan
+  # still sees it. Match only the backtick-quoted mention, not the whole file.
+  '''`(CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083"|ANTHROPIC_API_KEY: "fixture-anthropic-5083"),`''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',
