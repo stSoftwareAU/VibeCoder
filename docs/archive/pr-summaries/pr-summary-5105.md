@@ -16,14 +16,14 @@ comment on the issue:
 Closes #5105.
 
 - `worker/deno/lib/host_disk_reservations.ts` (new) is the ledger. While a
-  repair container runs, the babysitter keeps one JSON file per container in
-  `<log dir>/host-disk-reservations/`. That is the mounted log directory that
+  repair container or the Chromium self-check runs, the babysitter keeps one
+  JSON file per container in `<log dir>/host-disk-reservations/`. That is the mounted log directory that
   already carries `host-disk.json`; inside the worker it is
   `${HOME}/logs/host-disk-reservations`. `admitHostDiskLaunch` admits new work
   when `free − outstanding reservations − request ≥ floor`.
   `babysitterDipCreditBytes` tells whether a dip below the floor is fully
-  explained by what live reservations have consumed, after the worker's own
-  measured growth over the same span is taken off the drop. No credit applies
+  explained by what reservations (live, or released within the credit window)
+  have consumed, after the worker's own measured growth over the same span is taken off the drop. No credit applies
   below half the floor (`HOST_DISK_HARD_MINIMUM_FLOOR_FRACTION`), and unknown
   worker growth credits nothing. `ReservationSightings` records the worker's own
   footprint when it first sees each reservation.
@@ -245,8 +245,7 @@ sequenceDiagram
   `runSecurityFixDiscrimination` with the default park and an explained dip
   returns the host-disk park reason at once, not a budget exhaustion. Not
   red-checked: with the old 20-minute default the test would hang, not fail.
-- `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (new, 16
-  tests at head):
+- `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (16 tests at head, new):
   - A refused admission starts no sidecar, Apple helper or spawn.
   - The release runs once, after the sidecar stops, including when the spawn
     fails, and a failing release does not mask the repair's error.
@@ -283,8 +282,7 @@ sequenceDiagram
 - The full gate was not run on this head (run budget). On the head, the seven
   5105 test files (wiring, reservations, footprint, babysitter dip, heavy build
   gate, claude runner dip wait, babysitter admission) pass: 65 passed, 0 failed.
-  `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (16 tests at
-  head) passes. The earlier 60-file `deno test -A` sweep is not restated here:
+  `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (16 tests at head) passes. The earlier 60-file `deno test -A` sweep is not restated here:
   its three failures needed the `codex` coding-agent provider, which this
   container image does not install, and none touches the host-disk code.
   `deno

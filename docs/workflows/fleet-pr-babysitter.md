@@ -131,7 +131,8 @@ Each automatic babysitter pass repeats the Chromium check before PR discovery
 or GitHub App authentication. A failure is reported as a failed pass and the
 existing supervisor or watch loop retries it. `--check-container` runs the
 same bounded check on demand before reading App configuration or authenticating;
-it prints the specific runtime, image, timeout, exit or output cause and exits
+it prints the specific runtime, image, timeout, exit, output or host-disk
+admission cause (`babysitter Chromium check not started: ...`) and exits
 non-zero on failure. The check overrides the image entrypoint with `bash`, runs
 `"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank`, and accepts
 only exit zero with HTML on stdout. It keeps the launch plan's network and

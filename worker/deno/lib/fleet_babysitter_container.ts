@@ -1649,9 +1649,10 @@ async function releaseReservation(
 /**
  * The production host-disk admission (Issue #5105): measures the host as
  * run.sh does, admits against the worker's floor and the live reservations in
- * the shared ledger, and writes this repair's reservation. A refusal throws; an
- * unmeasurable host admits with no reservation, as the worker's build gate
- * does for an unknown reading.
+ * the shared ledger, and writes the reservation for this container: a repair's
+ * (`clone` given), or the Chromium self-check's footprint-only one (no
+ * `clone`). A refusal throws; an unmeasurable host admits with no reservation,
+ * as the worker's build gate does for an unknown reading.
  */
 export async function babysitterHostDiskAdmission(
   input: { containerName: string; clone?: string; timeoutMs: number },
@@ -1664,7 +1665,7 @@ export async function babysitterHostDiskAdmission(
   const reading = await measure();
   if (reading === null) {
     log(
-      "host disk could not be measured; admitting the repair without a reservation (Issue #5105)",
+      "host disk could not be measured; admitting the babysitter container without a reservation (Issue #5105)",
     );
     return { release: () => Promise.resolve() };
   }
