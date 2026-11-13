@@ -957,6 +957,83 @@ Deno.test("with real deno test runs, a test that fails the same way on the base 
   });
 });
 
+for (const config of ["deno.json", "deno.jsonc"]) {
+  Deno.test(`an invalid ${config} blocks repair validation instead of dropping the unit tests (#4930)`, async () => {
+    await agentClone(editFoo, async (clone) => {
+      const path = `${clone}/worker/deno/${config}`;
+      if (config === "deno.jsonc") {
+        await git(clone, "mv", "worker/deno/deno.json", "worker/deno/deno.jsonc");
+      }
+      const deps: BabysitterTreeGateDeps = {
+        runner: async () => ({
+          started: true,
+          code: 0,
+          stdout: "checks passed",
+          stderr: "",
+        }),
+      };
+      const valid = await Deno.readTextFile(path);
+      const allowed = await runBabysitterTreeGate(clone, "main", deps);
+      assertEquals(allowed, {
+        kind: "passed",
+        checksRun: [config === "deno.json"
+          ? "deno task test:unit 'tests/foo_test.ts'"
+          : "deno task test:unit"],
+      });
+
+      await Deno.writeTextFile(path, '{"tasks":');
+      const blocked = await runBabysitterTreeGate(clone, "main", deps);
+      assertEquals(blocked.kind, "blocked", JSON.stringify(blocked));
+      assertStringIncludes(
+        (blocked as { message: string }).message,
+        `cannot parse worker/deno/${config}`,
+      );
+      assertStringIncludes(
+        (blocked as { message: string }).message,
+        "unit tests were not checked",
+      );
+
+      await Deno.writeTextFile(path, valid);
+      assertEquals(await runBabysitterTreeGate(clone, "main", deps), allowed);
+    });
+  });
+}
+
+Deno.test("an unreadable primary Deno config cannot fall through to a secondary config and pass (#4930)", async () => {
+  await agentClone(editFoo, async (clone) => {
+    const path = `${clone}/worker/deno/deno.json`;
+    const valid = await Deno.readTextFile(path);
+    await Deno.writeTextFile(`${clone}/worker/deno/deno.jsonc`, valid);
+    const deps: BabysitterTreeGateDeps = {
+      runner: async () => ({
+        started: true,
+        code: 0,
+        stdout: "checks passed",
+        stderr: "",
+      }),
+    };
+    assertEquals(await runBabysitterTreeGate(clone, "main", deps), {
+      kind: "passed",
+      checksRun: ["deno task test:unit"],
+    });
+
+    await Deno.remove(path);
+    await Deno.mkdir(path);
+    const blocked = await runBabysitterTreeGate(clone, "main", deps);
+    assertEquals(blocked.kind, "blocked", JSON.stringify(blocked));
+    assertStringIncludes(
+      (blocked as { message: string }).message,
+      "cannot read worker/deno/deno.json",
+    );
+    await Deno.remove(path);
+    await Deno.writeTextFile(path, valid);
+    assertEquals(await runBabysitterTreeGate(clone, "main", deps), {
+      kind: "passed",
+      checksRun: ["deno task test:unit"],
+    });
+  });
+});
+
 Deno.test("gate results map to passed, infrastructure and blocked (#4930)", async () => {
   await fixture(async (repo, root) => {
     await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
