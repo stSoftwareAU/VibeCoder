@@ -141,7 +141,11 @@ kill criteria remain outside this PR, so the issue stays open.
   and a `createProductionRunCoreDeps` test, with no `hostDisk` override and no
   launcher reading, asserting the registered probe's park reason and the
   `Host disk: low` log carry no root text. The latter fails with the wiring
-  removed.
+  removed. It passes its launch baseline and `HOME` as injected `env` data and
+  a `trimRefused: () => false` seam (new optional `ProductionDepsOptions`
+  field, defaulting to the launch file's verdict), so it no longer mutates
+  `Deno.env` and stays within the Issue #880 parallel-safety cap. The production
+  monitor now receives the same injected `env`.
 - Run the existing `heavy_build_gate*_test.ts`, `host_disk*_test.ts`,
   `ephemeral*_test.ts`, `*4743*_test.ts`, `claude_runner_host_disk_4390_test.ts`
   and `run_core_production_deps_disk_test.ts` regression suites.
