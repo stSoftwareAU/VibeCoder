@@ -98,6 +98,12 @@ regexes = [
   # PAT as a literal and now assembles it at runtime. Range scans still see
   # that commit. Exempt only the exact declaration; gh[p] avoids a literal.
   '''^\s*const token = "gh[p]_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789";\s*$''',
+  # Issue #5083: the review-round wiring test passes these synthetic,
+  # obviously-fake env values to prove the Codex attempt's env is cleared of
+  # Claude credentials. Match only the exact fixture lines; the key names
+  # trip generic-api-key on the quoted placeholder values alone.
+  '''^\s*CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083",\s*$''',
+  '''^\s*ANTHROPIC_API_KEY: "fixture-anthropic-5083",\s*$''',
 ]
 paths = [
   '''worker/deno/tests/secret_redaction_test\.ts''',

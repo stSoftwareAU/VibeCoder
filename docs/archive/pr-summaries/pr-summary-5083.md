@@ -122,6 +122,14 @@ chain and "What each review cost", both read through),
 said the reviewer stays on Opus), and `docs/audits/release-contract.txt`,
 regenerated to add the two config keys.
 
+CI config updated: `.github/gitleaks.toml` gains two exact-line allowlist
+patterns for the synthetic `CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083",` and
+`ANTHROPIC_API_KEY: "fixture-anthropic-5083",` env fixtures in
+`review_round_wiring_test.ts`. gitleaks scans each commit in the PR range, and
+its `generic-api-key` rule flagged those placeholder values in three commits
+(`gitleaks git --log-opts=origin/main..HEAD` now reports no leaks). They are not
+credentials, and every other value in the file stays scanned.
+
 ## Test Plan
 
 - `worker/deno/tests/review_round_test.ts`, new tests:
