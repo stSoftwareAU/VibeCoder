@@ -501,9 +501,9 @@ creation would fail.
 `pr_reviewer_parallel` sets how many review rounds the unattended
 `review-fleet-prs` runner (`scripts/run.sh`) runs at once, each reviewing one
 PR in its own worker container (Issue #4395). It defaults to `3`; `1` reviews
-one PR at a time. Each round uses a subscription from the worker's Claude
-credential pool, so a higher value spends quota faster and runs more
-containers side by side. A value that is not a whole number above 0 is logged
+one PR at a time. Each round starts on a subscription from the worker's Claude
+credential pool, so a higher value spends quota faster and runs more containers
+side by side. A value that is not a whole number above 0 is logged
 and the default is used. It is read by `run.sh` only, never by the worker.
 
 ```json
@@ -511,6 +511,35 @@ and the default is used. It is read by `run.sh` only, never by the worker.
   "pr_reviewer_parallel": 3
 }
 ```
+
+## 🧠 Reviewer model and effort
+
+`review_model` and `review_effort` set the model and reasoning effort of the
+unattended `review-fleet-prs` review round (`scripts/run.sh`). Both are read by
+`run.sh` only, never by the worker, and no environment variable sets them. The
+defaults are `claude-fable-5-2` at `high`. The round's reviewer agents run on
+the same model and effort, so they follow the configured values, including the
+step-down and fallbacks below.
+
+```json
+{
+  "review_model": "claude-fable-5-2",
+  "review_effort": "high"
+}
+```
+
+`review_model` must be a model id of letters, digits, `.`, `_` and `-`, at most
+100 characters. `review_effort` must be one of `low`, `medium`, `high`, `xhigh`
+or `max`. A value that fails its check is logged and the default is used.
+
+A round that hits a usage limit falls back along a chain: a Fable round steps
+down to `claude-opus-5-5` at `xhigh` on the same subscription, then rotates to
+the next Claude subscription with budget, then runs on Codex `gpt-6-astra` at
+`high` when a Codex credential is provisioned, and last on DeepSeek
+`deepseek-v4-pro`, only when Codex also hit its usage limit or has no
+credential. A failure that is not a usage limit stops the chain. Each switch is
+logged once. The chain and its log lines are described in
+[running-unattended.md](../.claude/skills/review-fleet-prs/references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
 
 ## 🧪 Test-change policy for the fleet reviewer
 

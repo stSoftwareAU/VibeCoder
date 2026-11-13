@@ -1067,6 +1067,59 @@ Deno.test("run.sh asks the gate for as many PRs as pr_reviewer_parallel allows, 
   );
 });
 
+Deno.test("run.sh runs the round on review_model and review_effort from .config.json, Fable 5.2 at high by default", async () => {
+  const home = await fixture(READY);
+  const config = `${home}/config.json`;
+  await Deno.writeTextFile(
+    config,
+    JSON.stringify({ review_model: "claude-opus-5-5", review_effort: "xhigh" }),
+  );
+  await runBash(home, [RUNNER, "--once"], { REVIEW_FLEET_PRS_CONFIG: config });
+  const args = (await claudeArgs(home))!;
+  assertStringIncludes(args, '"--model","claude-opus-5-5","--effort","xhigh"');
+  assert(
+    !args.includes("claude-fable-5-2"),
+    "the default model was still used",
+  );
+});
+
+Deno.test("run.sh refuses an unsafe review_model or review_effort, and falls back to the defaults", async () => {
+  const home = await fixture(READY);
+  const config = `${home}/config.json`;
+  await Deno.writeTextFile(
+    config,
+    JSON.stringify({ review_model: "x; rm -rf /", review_effort: "ultra" }),
+  );
+  await runBash(home, [RUNNER, "--once"], { REVIEW_FLEET_PRS_CONFIG: config });
+  assertStringIncludes(
+    (await claudeArgs(home))!,
+    '"--model","claude-fable-5-2","--effort","high"',
+  );
+  const log = await runnerLog(home);
+  assertStringIncludes(
+    log,
+    "review_model must be a model id (letters, digits, '.', '_' or '-'), not 'x; rm -rf /'; using claude-fable-5-2",
+  );
+  assertStringIncludes(
+    log,
+    "review_effort must be one of low, medium, high, xhigh or max, not 'ultra'; using high",
+  );
+});
+
+Deno.test("run.sh keeps effort high when only review_model is set (independent defaults)", async () => {
+  const home = await fixture(READY);
+  const config = `${home}/config.json`;
+  await Deno.writeTextFile(
+    config,
+    JSON.stringify({ review_model: "claude-opus-5-5" }),
+  );
+  await runBash(home, [RUNNER, "--once"], { REVIEW_FLEET_PRS_CONFIG: config });
+  assertStringIncludes(
+    (await claudeArgs(home))!,
+    '"--model","claude-opus-5-5","--effort","high"',
+  );
+});
+
 Deno.test("run.sh's review round skips learning from recurring findings (Issue #4397)", async () => {
   const home = await fixture(READY);
   const { code, output } = await run(home, "--once");

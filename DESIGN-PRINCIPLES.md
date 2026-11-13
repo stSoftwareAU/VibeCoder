@@ -155,9 +155,10 @@ explicit fallback can also select a metered provider.
   `worker/deno/lib/babysitter_provider_choice.ts`. An operator who names
   DeepSeek explicitly as a provider is making a separate, deliberate choice,
   which is not overflow.
-- **Reviewer-round overflow.** Today the round runs on the Claude credential
-  pool. Once the whole pool is exhausted, it runs once more on DeepSeek
-  (`worker/deno/lib/review_round.ts`, run from
+- **Reviewer-round overflow.** The round runs on the Claude credential pool
+  first. Once the pool is exhausted, it moves to Codex (`gpt-6-astra`) when a
+  Codex credential is provisioned, and only if Codex also hits its usage limit
+  or has no credential, to DeepSeek (`worker/deno/lib/review_round.ts`, run from
   `.claude/skills/review-fleet-prs/scripts/run.sh`).
 - **Fleet PR babysitter overflow.** The babysitter provider chooser prefers
   subscriptions and selects DeepSeek as logged overflow only when no eligible

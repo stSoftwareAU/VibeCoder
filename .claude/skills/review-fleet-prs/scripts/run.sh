@@ -41,6 +41,10 @@ TICK=${REVIEW_FLEET_PRS_TICK:-30}
 LEARN_INTERVAL=${REVIEW_FLEET_PRS_LEARN_INTERVAL:-3600}
 CONFIG=${REVIEW_FLEET_PRS_CONFIG:-$CHECKOUT/.config.json}
 DEFAULT_PARALLEL=3
+# The reviewer model and effort: `review_model` and `review_effort` in
+# .config.json (Owner policy #5081: Fable 5.2 at high).
+DEFAULT_REVIEW_MODEL=claude-fable-5-2
+DEFAULT_REVIEW_EFFORT=high
 # A hung round must not wedge the loop, nor outlive its token. Overridable
 # only so the tests can time a round out without waiting 50 minutes.
 ROUND_TIMEOUT=${REVIEW_FLEET_PRS_ROUND_TIMEOUT:-3000}
@@ -328,7 +332,12 @@ stop_egress() {
 # alarm is the round's only limit; it kills the runtime's client, so the
 # container itself is then killed by name.
 run_round() {
-  local log=$1 tag=$2 rc claude_args
+  local log=$1 tag=$2 rc claude_args model effort
+  # The round's model and effort come from `review_model` and `review_effort`
+  # in .config.json (review_model_setting, review_effort_setting). They reach
+  # the round's argv, so each is checked against an allow-list first.
+  model=$(review_model_setting)
+  effort=$(review_effort_setting)
   # stream-json: the round's own result carries its per-model usage, which
   # price_round turns into each review's cost; the driver keeps the full
   # stream in the round's directory and logs only its readable lines.
@@ -340,8 +349,9 @@ run_round() {
   # scratch, and its own round directory, and accepts writes in them; the rest
   # of the state directory stays out of reach, and /workspace is read-only.
   claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" --arg dir "$C_DIR" \
-    --argjson bash "$(round_bash_rules)" '["--model",
-    "claude-fable-5-2", "--effort", "high", "--output-format", "stream-json",
+    --arg model "$model" --arg effort "$effort" \
+    --argjson bash "$(round_bash_rules)" '["--model", $model,
+    "--effort", $effort, "--output-format", "stream-json",
     "--verbose", "--add-dir", "/tmp", "--add-dir", $dir,
     "--permission-mode", "acceptEdits", "--allowedTools", "Agent",
     "Read", "Grep", "Glob", $edit] + $bash')
@@ -405,6 +415,39 @@ parallel_setting() {
     log "pr_reviewer_parallel must be a whole number above 0, not '$v';" \
       "using $DEFAULT_PARALLEL" >&2
     echo "$DEFAULT_PARALLEL"
+  fi
+}
+
+# The model the review round runs on: `review_model` in .config.json. It
+# reaches the round's argv, so only a plain model id is accepted (at most 100
+# characters); anything else is logged and the default used.
+review_model_setting() {
+  local v
+  v=$(jq -r '.review_model // empty' "$CONFIG" 2>/dev/null)
+  if [[ -z $v ]]; then
+    echo "$DEFAULT_REVIEW_MODEL"
+  elif [[ $v =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && ${#v} -le 100 ]]; then
+    echo "$v"
+  else
+    log "review_model must be a model id (letters, digits, '.', '_' or '-'), not '$v';" \
+      "using $DEFAULT_REVIEW_MODEL" >&2
+    echo "$DEFAULT_REVIEW_MODEL"
+  fi
+}
+
+# The effort the review round runs at: `review_effort` in .config.json, one of
+# the levels the CLI takes; anything else is logged and the default used.
+review_effort_setting() {
+  local v
+  v=$(jq -r '.review_effort // empty' "$CONFIG" 2>/dev/null)
+  if [[ -z $v ]]; then
+    echo "$DEFAULT_REVIEW_EFFORT"
+  elif [[ $v =~ ^(low|medium|high|xhigh|max)$ ]]; then
+    echo "$v"
+  else
+    log "review_effort must be one of low, medium, high, xhigh or max, not '$v';" \
+      "using $DEFAULT_REVIEW_EFFORT" >&2
+    echo "$DEFAULT_REVIEW_EFFORT"
   fi
 }
 
