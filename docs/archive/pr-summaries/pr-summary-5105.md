@@ -251,16 +251,13 @@ sequenceDiagram
 - `worker/deno/tests/claude_runner_host_disk_4390_test.ts` (unchanged) pins one
   probe read per new agent process. The in-flight park now reads the probe once
   outside a babysitter dip, and that test passes.
-- The full gate was not re-run on this head; the worker re-runs it. Related
-  suites run with `deno test -A` over 60 files (claude_runner, discrimination,
-  merge fast checks, heavy build gate, cargo claim, milestone gate, host disk,
-  ephemeral root, babysitter admission, babysitter pass and run-core production
-  deps suites, plus every #5105 file): 887 passed, 3 failed. The 3 failures are
-  `runClaudeWithRetry` (two) and `recheckAgentAuth` tests that need the `codex`
-  provider, which this container image does not install ("did not install the
-  \"codex\" coding-agent provider"); none touches the host-disk code.
-  `deno task test:unit` over the same files: 94 passed, 0 failed. `deno fmt`,
-  `deno lint` and `deno check` pass on the changed files.
+- The full gate was not re-run on this head; the worker re-runs it.
+  `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (13 tests at
+  head) passes. The earlier 60-file `deno test -A` sweep is not restated here:
+  its three failures needed the `codex` coding-agent provider, which this
+  container image does not install, and none touches the host-disk code.
+  `deno
+  fmt`, `deno lint` and `deno check` passed on the changed files.
 - Callers checked: `parkInFlightBuild` has four production callers.
   - `claude_runner.ts` (agent step): opts in to the wait, bounded by the session
     timeout less the minimum session (the finish-deadline clamp, or the caller's

@@ -1359,10 +1359,10 @@ incremental, and a run that was admitted and built is not refused a later
 step for the space its own build used (Issue #4423). Active polling does not
 prune other checkouts.
 
-A dip that live babysitter reservations explain is a wait, not a kill (Issue #5105). The fleet PR
+A dip that babysitter reservations (live, or released and not yet reflected in a fresh launcher reading) explain is a wait, not a kill (Issue #5105). The fleet PR
 babysitter records each running repair container's host footprint in `${HOME}/logs/host-disk-reservations` (one file per container).
-When the host is below the floor and the space the earliest live reservation
-has consumed since its admission, less the worker's own measured growth over
+When the host is below the floor and the space the earliest live or released
+reservation has consumed since its admission, less the worker's own measured growth over
 that span, accounts for the whole shortfall, a running agent, `cargo` or
 `deno` keeps running, a new agent step waits (polling every minute for up to
 20 minutes, never past its finish deadline, or past its own timeout when no run

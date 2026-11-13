@@ -8,8 +8,9 @@
  * `${HOME}/logs/host-disk-reservations`), the same mounted log directory that
  * carries `host-disk.json` (see `HOST_DISK_REFRESH_FILE` in host_disk.ts).
  * Both sides admit new disk-growing work through the same function against the
- * same floor, and the worker credits back what a live babysitter repair has
- * consumed so a babysitter-driven dip is a wait, not a kill.
+ * same floor, and the worker credits back what a babysitter repair has consumed
+ * (while it runs, and after it ends until a later launcher reading arrives) so
+ * a babysitter-driven dip is a wait, not a kill.
  */
 
 export const HOST_DISK_RESERVATIONS_DIR = "host-disk-reservations";
