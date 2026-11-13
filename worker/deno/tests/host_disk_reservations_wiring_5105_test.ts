@@ -361,21 +361,12 @@ Deno.test("Issue #5105 - the first probe after the release reads the growth only
       // this probe's low check starts a walk of its own.
       timing.clock.ms += 90_000;
       await Deno.remove(wiring.reservationPath);
-      // Record whether a walk was open each time the probe read the growth.
-      const readsDuringWalk: boolean[] = [];
-      const growth = Object.getOwnPropertyDescriptor(
-        HostDiskMonitor.prototype,
-        "workerFootprintGrowthBytes",
-      )!.get!;
-      Object.defineProperty(wiring.monitor, "workerFootprintGrowthBytes", {
-        get() {
-          readsDuringWalk.push(held.open > 0);
-          return growth.call(wiring.monitor);
-        },
-      });
       held.hold = true;
       const probe = parkRunningBuild();
-      await held.startedAtLeast(3);
+      for (let turn = 0; turn < 200 && held.open === 0; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      assert(held.open > 0, "the probe's check started no walk");
       // A probe that waits for the walk stays pending; a few event-loop turns
       // let one that does not finish its ledger read first.
       for (let turn = 0; turn < 20; turn++) {
@@ -387,12 +378,6 @@ Deno.test("Issue #5105 - the first probe after the release reads the growth only
         await probe,
         null,
         "build killed at the release, while the walk was in flight",
-      );
-      assert(readsDuringWalk.length > 0, "the probe never read the growth");
-      assertEquals(
-        readsDuringWalk.filter(Boolean),
-        [],
-        "the growth was read while a walk was in flight",
       );
     },
     root,

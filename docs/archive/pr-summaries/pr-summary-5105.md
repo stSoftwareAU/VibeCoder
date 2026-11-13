@@ -228,15 +228,16 @@ sequenceDiagram
   holds the cargo-root walk open with a deferred walk: two probes overlap at
   first sight, and the later explained dip must not park. A seventh uses the
   default quiet interval and a clock past it, removes the reservation file on a
-  probe whose check starts a walk, and asserts the growth is never read while a
-  walk is open and the probe returns null. Red-check (against the head before
-  the earlier round's fix): both fail, the sixth with the park reason and the
-  seventh with "build killed at the release, while the walk was in flight". An
-  eighth holds a walk open on a probe that has taken a stale low status after
-  the release, has another check adopt the launcher's fresh `ok` reading
-  meanwhile, and asserts the probe takes its status again and returns null.
-  Red-check: against the head before this round's fix it fails with "build
-  killed on a stale low status after the host recovered".
+  probe whose check starts a walk, holds that walk open for several event-loop
+  turns, and asserts the probe returns null once it is released (an outcome
+  assertion only; it does not pin when an internal property is read). Red-check
+  (against the head before the earlier round's fix): both fail, the sixth with
+  the park reason and the seventh with "build killed at the release, while the
+  walk was in flight". An eighth holds a walk open on a probe that has taken a
+  stale low status after the release, has another check adopt the launcher's
+  fresh `ok` reading meanwhile, and asserts the probe takes its status again and
+  returns null. Red-check: against the head before this round's fix it fails
+  with "build killed on a stale low status after the host recovered".
 - `worker/deno/tests/host_disk_worker_footprint_5105_test.ts` (new, 5 tests):
   `HostDiskMonitor.workerFootprintGrowthBytes` with non-zero figures: work
   volume growth summed across a launcher re-base plus the ephemeral peak (which
@@ -288,9 +289,13 @@ sequenceDiagram
 - Existing tests: `fleet_babysitter_container_4738_test.ts`,
   `fleet_babysitter_container_egress_4738_test.ts` and
   `tests/fixtures/babysitter_container_fakes_4770.ts` and
-  `fleet_babysitter_chromium_check_4738_test.ts` inject an admitting fake
-  `hostDiskAdmission`, so they do not measure the real host or write to the real
-  log directory. No assertions were removed.
+  `fleet_babysitter_chromium_check_4738_test.ts` (its in-process tests) inject
+  an admitting fake `hostDiskAdmission`, so they do not measure the real host or
+  write to the real log directory. The one subprocess test there ("successful
+  and failed container diagnostics suppress service health") cannot be given a
+  seam, so it puts a `df` stub reporting a roomy host first on its `PATH`; it no
+  longer depends on the free disk of the machine running it. No assertions were
+  removed.
 - `worker/deno/tests/claude_runner_host_disk_4390_test.ts` (unchanged) pins one
   probe read per new agent process. The in-flight park now reads the probe once
   outside a babysitter dip, and that test passes.
