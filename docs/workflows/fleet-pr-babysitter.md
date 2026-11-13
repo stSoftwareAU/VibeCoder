@@ -465,6 +465,21 @@ in-container command replaces it in the agent's own reply on every path, so an
 agent that fails without `BABYSITTER_READY` cannot pass its failure off as an
 infrastructure outage.
 
+The Container Build containment suite also exercises this gate with disposable
+repositories and the image's real Deno and markdownlint. It uses the repair
+launcher's clone and read-only `.git` mounts and sanitised worker snapshot,
+replacing the launched process with a probe that injects the agent services
+while retaining the production repair command and check runners. The probe
+runs as the fixture owner's UID/GID, matching the workflow's other in-image
+checks. Deno assertion failures, Markdown errors and malformed Deno config must
+withhold READY and stop the host publication harness; corrected controls and
+an identical base-only test failure must reach publication. The harness fakes
+GitHub and git publication, so it publishes no live PR. With
+`VIBE_CONTAINMENT_REQUIRED=1`, the existing suite fails if a supported runtime
+or image is unavailable; an ordinary local run reports that integration test
+as skipped. See `worker/deno/tests/container_containment_test.ts` and its
+`support/babysitter_gate_container_probe.ts` fixture.
+
 A repair session's container timeout is the lesser of the remaining 90-minute
 budget and the read token's expiry minus two minutes. On timeout the container
 is killed; see "Token restarts" below. Egress follows the worker's egress
