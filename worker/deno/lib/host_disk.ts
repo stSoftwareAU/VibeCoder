@@ -555,6 +555,12 @@ export interface HostDiskMonitorOptions {
    * feeds the figure.
    */
   measureEphemeralCargoRoot?: () => Promise<number | null>;
+  /**
+   * Does the ephemeral cargo root apply on this runtime (Issue #5105)?
+   * Decided synchronously before a refresh starts, so a runtime where it does
+   * not apply never walks or announces the root. Omitted → it applies.
+   */
+  ephemeralCargoRootApplies?: () => boolean;
 }
 
 /**
@@ -578,6 +584,7 @@ export class HostDiskMonitor {
   private readonly measureEphemeralCargoRoot:
     | (() => Promise<number | null>)
     | undefined;
+  private readonly ephemeralCargoRootApplies: (() => boolean) | undefined;
   /** When the figure the estimate rests on was measured (Issue #1550). */
   private adoptedMeasuredAtMs: number;
   /** Age of the adopted launcher reading at the last check, if any. */
@@ -627,7 +634,10 @@ export class HostDiskMonitor {
   private refreshEphemeralCargoRoot(t: number): void {
     const measure = this.measureEphemeralCargoRoot;
     if (
-      measure === undefined || this.ephemeralCargoRootRefresh !== undefined ||
+      measure === undefined ||
+      (this.ephemeralCargoRootApplies !== undefined &&
+        !this.ephemeralCargoRootApplies()) ||
+      this.ephemeralCargoRootRefresh !== undefined ||
       (this.ephemeralCargoRootSampleAt !== undefined &&
         t - this.ephemeralCargoRootSampleAt < this.sampleIntervalMs)
     ) return;
@@ -685,6 +695,7 @@ export class HostDiskMonitor {
     this.refreshMaxAgeMs = options.refreshMaxAgeMs ??
       DEFAULT_REFRESH_MAX_AGE_MS;
     this.measureEphemeralCargoRoot = options.measureEphemeralCargoRoot;
+    this.ephemeralCargoRootApplies = options.ephemeralCargoRootApplies;
     // The environment baseline was measured by the launch plan BEFORE the
     // image build and the volume heal, and the launcher writes its reading
     // file again after them, seconds before this process starts (Issue

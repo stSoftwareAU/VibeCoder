@@ -9,7 +9,9 @@ fallback is confined to an agent-keyed directory directly under the real
 
 On trim-refused runtimes, work-volume telemetry also reports the ephemeral cargo
 root's size and largest targets. The host-disk monitor refreshes this figure in
-the background below `ok`, without delaying the floor verdict. Forced checks
+the background below `ok` on those runtimes only (production wires
+`ephemeralCargoRootApplies` to `workVolumeTrimRefusedForLaunch`), without
+delaying the floor verdict. Forced checks
 share one scan and cannot bypass its refresh interval. Normal build-time file
 deletion preserves `du`'s size; unreadable subtrees and other measurement
 failures remain `unknown`.
@@ -134,6 +136,13 @@ kill criteria remain outside this PR, so the issue stays open.
   shared scan through the registered production probe, asynchronous result/error
   detail, benign GNU/BSD ENOENT output, mixed and external-path failures,
   missing size, timeout, and a target released between listing and real `du`.
+- PR #5116 review: the same file gains a monitor test where the root does not
+  apply (measure never called, no `ephemeral cargo root` text or log line on
+  three checks a sample interval apart, plus a positive control once it applies)
+  and a `createProductionRunCoreDeps` test, with no `hostDisk` override and no
+  launcher reading, asserting the registered probe's park reason and the
+  `Host disk: low` log carry no root text. The latter fails with the wiring
+  removed.
 - Run the existing `heavy_build_gate*_test.ts`, `host_disk*_test.ts`,
   `ephemeral*_test.ts`, `*4743*_test.ts`, `claude_runner_host_disk_4390_test.ts`
   and `run_core_production_deps_disk_test.ts` regression suites.

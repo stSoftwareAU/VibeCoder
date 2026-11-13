@@ -1181,6 +1181,9 @@ export async function createProductionRunCoreDeps(
     // Issue #5105: below the floor on a trim-refused runtime, the detail
     // refreshes the ephemeral cargo root in the background, without delaying
     // the floor verdict. A later probing check names the completed figure.
+    // The root is the missing term only where the runtime refused the trim,
+    // so elsewhere no refresh starts and the detail says nothing about it.
+    ephemeralCargoRootApplies: workVolumeTrimRefusedForLaunch,
     measureEphemeralCargoRoot: () =>
       measureEphemeralCargoRootBytesIfTrimRefused({
         trimRefused: workVolumeTrimRefusedForLaunch,

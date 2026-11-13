@@ -1905,9 +1905,10 @@ caches 0.6 GB · other 0.2 GB
   retained; a target released before measurement is omitted. This keeps normal
   cargo build churn from hiding the root's size.
   The host-disk estimate's detail names the same figure, because its
-  launch-baseline arithmetic subtracts only the volume's growth. A probing
-  check below `ok` starts a background refresh without delaying the floor
-  verdict. Forced build probes cannot bypass the refresh throttle: there is
+  launch-baseline arithmetic subtracts only the volume's growth. On a
+  trim-refused runtime, a probing check below `ok` starts a background
+  refresh without delaying the floor verdict; where the trim is honoured no
+  refresh starts and the detail and floor-trip log say nothing about the root. Forced build probes cannot bypass the refresh throttle: there is
   one walk in flight, followed by a quiet sample interval (60 s by default).
   While it runs, the detail says `refresh in progress` and labels any earlier
   figure as `last measured`. The next probing check after completion names

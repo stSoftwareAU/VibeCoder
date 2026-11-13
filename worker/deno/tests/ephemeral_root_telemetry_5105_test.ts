@@ -512,3 +512,90 @@ Deno.test("Issue #5105 - a released directory disappears from the measured listi
     await Deno.remove(root, { recursive: true });
   }
 });
+
+Deno.test("Issue #5105 - a root that does not apply is neither walked nor announced", async () => {
+  let calls = 0;
+  let applies = false;
+  const logs: string[] = [];
+  let now = 0;
+  const monitor = new HostDiskMonitor({
+    workDir: "/work",
+    env: (name) =>
+      name === HOST_DISK_AVAIL_ENV
+        ? String(5 * GIB)
+        : name === HOST_DISK_TOTAL_ENV
+        ? String(460 * GIB)
+        : undefined,
+    probe: () =>
+      Promise.resolve({
+        availableBytes: 0,
+        usedBytes: 0,
+        totalBytes: 504 * GIB,
+      }),
+    now: () => now,
+    log: (message) => logs.push(message),
+    ephemeralCargoRootApplies: () => applies,
+    measureEphemeralCargoRoot: () => {
+      calls++;
+      return Promise.resolve(null);
+    },
+  });
+  for (const t of [0, 60_000, 120_000]) {
+    now = t;
+    const status = await monitor.check({ force: true });
+    assertEquals(status.level, "low");
+    assertEquals(status.detail.includes("ephemeral cargo root"), false);
+  }
+  assertEquals(calls, 0);
+  assertEquals(logs.length > 0, true, "the low transition is still logged");
+  assertEquals(logs.some((l) => l.includes("ephemeral cargo root")), false);
+
+  // Positive control: the same monitor announces the refresh once it applies.
+  applies = true;
+  now = 180_000;
+  const applied = await monitor.check({ force: true });
+  assertStringIncludes(applied.detail, "ephemeral cargo root refresh");
+  assertEquals(calls, 1);
+});
+
+Deno.test("Issue #5105 - the production monitor says nothing of the root on a trim-honoured launch", async () => {
+  const saved = [HOST_DISK_AVAIL_ENV, HOST_DISK_TOTAL_ENV, "HOME"].map((n) =>
+    [n, Deno.env.get(n)] as const
+  );
+  Deno.env.set(HOST_DISK_AVAIL_ENV, String(5 * GIB));
+  Deno.env.set(HOST_DISK_TOTAL_ENV, String(460 * GIB));
+  const tmp = await Deno.makeTempDir();
+  // No launcher reading under HOME: the runtime honoured the trim.
+  Deno.env.set("HOME", tmp);
+  const logs: string[] = [];
+  try {
+    const { cleanup } = await createProductionRunCoreDeps({
+      repoDir: tmp,
+      workDir: tmp,
+      githubUser: "test-user",
+      config: buildDefaultWorkerConfig(),
+      env: () => undefined,
+      logger: createLogger({ write: (m) => logs.push(m) }),
+    });
+    enableInFlightHostDiskGate(true);
+    try {
+      for (let i = 0; i < 2; i++) {
+        const parked = await parkRunningBuild();
+        assertStringIncludes(parked ?? "", "host disk below its floor");
+        assertEquals((parked ?? "").includes("ephemeral cargo root"), false);
+      }
+      assertStringIncludes(logs.join("\n"), "Host disk: low");
+      assertEquals(logs.join("\n").includes("ephemeral cargo root"), false);
+    } finally {
+      enableInFlightHostDiskGate(false);
+      registerHeavyBuildDiskProbe(undefined);
+      cleanup();
+    }
+  } finally {
+    for (const [n, v] of saved) {
+      if (v === undefined) Deno.env.delete(n);
+      else Deno.env.set(n, v);
+    }
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
