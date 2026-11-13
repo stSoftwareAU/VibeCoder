@@ -547,10 +547,12 @@ import {
   HostDiskMonitor,
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
+import { HOST_DISK_RESERVATIONS_DIR } from "./host_disk_reservations.ts";
 import {
   cargoClaimDeferredRepos,
   heavyBuildAdmission,
   hostDiskLaunchStopReason,
+  readHostDiskReservationsForProbe,
   registerHeavyBuildDiskProbe,
   releaseCheckoutTargetDirs,
 } from "./heavy_build_gate.ts";
@@ -1164,13 +1166,22 @@ export async function createProductionRunCoreDeps(
   // Host free-disk monitor (Issue #226): the launcher's df baseline plus
   // the work volume's growth since launch; native mode reads df directly.
   const trimRefused = options.trimRefused ?? workVolumeTrimRefusedForLaunch;
+  // Issue #5105: the launcher's log directory also carries the babysitter's
+  // host-disk reservations, one file per running repair container.
+  const workerLogDir = `${env("HOME") ?? "~"}/logs`;
+  const readReservations = () =>
+    readHostDiskReservationsForProbe(
+      `${workerLogDir}/${HOST_DISK_RESERVATIONS_DIR}`,
+      Date.now(),
+      (message) => logger.warn(message),
+    );
   const hostDisk = options.hostDisk ?? new HostDiskMonitor({
     workDir,
     env,
     log: bindLogger(logger),
     // Issue #1550: the launcher's per-tick reading, written to the worker
     // log directory — mounted read-write at `${HOME}/logs` in the container.
-    refreshFile: `${env("HOME") ?? "~"}/logs/${HOST_DISK_REFRESH_FILE}`,
+    refreshFile: `${workerLogDir}/${HOST_DISK_REFRESH_FILE}`,
     // Issue #732: the floor this deployment states, so the worker claims at
     // the floor the launcher heals at — `.config.json` first, then the
     // environment override, then the default.
@@ -2206,6 +2217,7 @@ export async function createProductionRunCoreDeps(
         ? undefined
         : hostDisk.floorBytesFor(status.totalBytes),
       trimRefused: hostDisk.workVolumeTrimRefused,
+      hostDiskReservations: await readReservations(),
     };
   });
   // Built once so a non-fault probe warning is reported once per directory,
@@ -6042,6 +6054,7 @@ export async function createProductionRunCoreDeps(
         recreateDeclined: hostDisk.workVolumeRecreateDeclined,
         recreateUnrecovered: hostDisk.workVolumeRecreateUnrecovered,
         largestHostDirectories: hostDisk.largestHostDirectories,
+        hostDiskReservations: await readReservations(),
       });
       if (!stop) return null;
       return { path: "host disk", detail: stop };

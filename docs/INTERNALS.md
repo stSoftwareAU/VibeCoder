@@ -3596,7 +3596,8 @@ build or test defers that branch until the host recovers (Issue #3178, see
 An agent, quality or discrimination build already in flight is held
 to the same floor (and to the cargo headroom where its checkout holds a cargo
 project, Issue #4413), and a trim-refused host that is below the floor ends the
-launch so the ephemeral layer is discarded (Issue #4360, see
+launch so the ephemeral layer is discarded, unless live babysitter reservations
+explain the dip, which is waited out instead (Issues #4360, #5105, see
 [In-flight builds stop at the same floor](CONTAINER.md#in-flight-builds-stop-at-the-same-floor-issue-4360)).
 
 A build refused by the ephemeral cargo root's budget is a different case: with

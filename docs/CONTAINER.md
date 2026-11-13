@@ -1359,6 +1359,19 @@ incremental, and a run that was admitted and built is not refused a later
 step for the space its own build used (Issue #4423). Active polling does not
 prune other checkouts.
 
+A dip that live babysitter reservations explain is a wait, not a kill (Issue #5105). The fleet PR
+babysitter records each running repair container's host footprint in `${HOME}/logs/host-disk-reservations` (one file per container).
+When the host is below the floor and the space the earliest live reservation
+has consumed since its admission accounts for the whole shortfall, a running
+agent, `cargo` or `deno` keeps running, a new build step waits (polling every
+minute for up to 20 minutes) instead of parking, and the launch is not ended,
+because ending it or recreating the work volume would not return space the
+babysitter's containers hold. A dip that persists past the 20 minutes, or that
+the reservations do not explain, parks or ends the launch as above. Cargo
+admission subtracts the reserved bytes not yet consumed from the free space it
+tests against the floor plus headroom, so the worker and the babysitter admit
+against one budget.
+
 A recognised host-disk failure is released with its original cause and is
 not retried in-process: repeating the agent invocation cannot replenish the
 budget. A later scheduled cycle reads the host again. This does not turn a

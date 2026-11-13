@@ -61,6 +61,25 @@ import { redactSecrets } from "./secret_redaction.ts";
 import { startEgressSidecar, stopEgressSidecar } from "./egress_sidecar.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { assertSafeGitRef } from "./git_ref_args.ts";
+import {
+  admitHostDiskLaunch,
+  BABYSITTER_LAUNCH_FOOTPRINT_BYTES,
+  HOST_DISK_RESERVATIONS_DIR,
+  readLiveHostDiskReservations,
+  removeHostDiskReservation,
+  writeHostDiskReservation,
+} from "./host_disk_reservations.ts";
+import {
+  lowFloorBytes,
+  probeDiskReading,
+  readConfiguredDiskFloors,
+  resolveDiskFloors,
+} from "./host_disk.ts";
+import type { DiskReading } from "./host_disk.ts";
+import { EPHEMERAL_CARGO_HEADROOM_BYTES } from "./heavy_build_gate.ts";
+import { findProjectManifests } from "./project_manifests.ts";
+import { resolveLogDirForCommand } from "../commands/log_dir.ts";
+import { resolveHostConfigPath } from "./host_config_path.ts";
 
 /** A repair may run for 90 minutes before it is killed. */
 export const BABYSITTER_REPAIR_TIMEOUT_MS = 90 * 60_000;
@@ -185,6 +204,16 @@ export interface BabysitterContainerDeps {
    * stopEgressSidecar).
    */
   stopSidecar?: (plan: ContainerLaunchPlan) => Promise<string[]>;
+  /**
+   * Admits the repair against the host's free disk before any egress starts
+   * (Issue #5105). A throw starts nothing and propagates. `release` runs after
+   * the egress teardown. Default: {@link babysitterHostDiskAdmission}.
+   */
+  hostDiskAdmission?: (input: {
+    containerName: string;
+    clone: string;
+    timeoutMs: number;
+  }) => Promise<{ release: () => Promise<void> }>;
   /**
    * Receives progress and teardown problems (default: console.error, prefixed
    * `[babysitter] `).
@@ -1525,6 +1554,113 @@ function defaultBuildPlan(
   return buildLaunchPlanForCommand(baseDir, containerName);
 }
 
+/** Seams {@link babysitterHostDiskAdmission} lets tests replace. */
+export interface BabysitterHostDiskAdmissionDeps {
+  /** Free and total bytes of the host (default: as run.sh's host-disk reading). */
+  measure?: () => Promise<DiskReading | null>;
+  /** The host's low floor in bytes for this total (default: configured floors). */
+  floor?: (totalBytes: number) => Promise<number>;
+  /** The reservation directory (default: `<host log dir>/host-disk-reservations`). */
+  reservationDir?: () => Promise<string>;
+  now?: () => number;
+  /** Does the clone hold a cargo project (default: findProjectManifests). */
+  holdsCargo?: (clone: string) => Promise<boolean>;
+  log?: (message: string) => void;
+}
+
+/** Margin beyond the repair timeout before a stale reservation expires. */
+const RESERVATION_EXPIRY_MARGIN_MS = 10 * 60_000;
+
+async function defaultMeasureHost(): Promise<DiskReading | null> {
+  const home = Deno.env.get("HOME") ?? "";
+  // The same gate path as run.sh's write_host_disk_reading.
+  const store = `${home}/Library/Application Support/com.apple.container`;
+  let gate = home;
+  try {
+    if (Deno.statSync(store).isDirectory) gate = store;
+  } catch {
+    // Not an Apple container host.
+  }
+  return await probeDiskReading(gate);
+}
+
+async function defaultFloor(totalBytes: number): Promise<number> {
+  const configFile = resolveHostConfigPath({
+    baseDir: babysitterCheckoutDir(),
+    env: (name) => Deno.env.get(name),
+  });
+  return lowFloorBytes(
+    totalBytes,
+    resolveDiskFloors(
+      (name) => Deno.env.get(name),
+      await readConfiguredDiskFloors(configFile),
+    ),
+  );
+}
+
+async function defaultReservationDir(): Promise<string> {
+  const configFile = resolveHostConfigPath({
+    baseDir: babysitterCheckoutDir(),
+    env: (name) => Deno.env.get(name),
+  });
+  const { logDir } = await resolveLogDirForCommand({ configFile });
+  return `${logDir}/${HOST_DISK_RESERVATIONS_DIR}`;
+}
+
+async function defaultHoldsCargo(clone: string): Promise<boolean> {
+  return (await findProjectManifests(clone)).some((project) =>
+    project.kind === "cargo"
+  );
+}
+
+/**
+ * The production host-disk admission (Issue #5105): measures the host as
+ * run.sh does, admits against the worker's floor and the live reservations in
+ * the shared ledger, and writes this repair's reservation. A refusal throws; an
+ * unmeasurable host admits with no reservation, as the worker's build gate
+ * does for an unknown reading.
+ */
+export async function babysitterHostDiskAdmission(
+  input: { containerName: string; clone: string; timeoutMs: number },
+  deps: BabysitterHostDiskAdmissionDeps = {},
+): Promise<{ release: () => Promise<void> }> {
+  const measure = deps.measure ?? defaultMeasureHost;
+  const now = deps.now ?? Date.now;
+  const log = deps.log ??
+    ((message: string) => console.error(`[babysitter] ${message}`));
+  const reading = await measure();
+  if (reading === null) {
+    log(
+      "host disk could not be measured; admitting the repair without a reservation (Issue #5105)",
+    );
+    return { release: () => Promise.resolve() };
+  }
+  const floorBytes = await (deps.floor ?? defaultFloor)(reading.totalBytes);
+  const holdsCargo = await (deps.holdsCargo ?? defaultHoldsCargo)(input.clone);
+  const requestBytes = BABYSITTER_LAUNCH_FOOTPRINT_BYTES +
+    (holdsCargo ? EPHEMERAL_CARGO_HEADROOM_BYTES : 0);
+  const dir = await (deps.reservationDir ?? defaultReservationDir)();
+  const admittedAt = now();
+  const verdict = admitHostDiskLaunch({
+    availableBytes: reading.availableBytes,
+    floorBytes,
+    requestBytes,
+    live: await readLiveHostDiskReservations(dir, admittedAt),
+  });
+  if (!verdict.admit) {
+    throw new Error(`babysitter repair not started: ${verdict.reason}`);
+  }
+  const path = await writeHostDiskReservation(dir, {
+    holder: "babysitter",
+    id: input.containerName,
+    bytes: requestBytes,
+    availableAtAdmission: reading.availableBytes,
+    admittedAt,
+    expiresAt: admittedAt + input.timeoutMs + RESERVATION_EXPIRY_MARGIN_MS,
+  });
+  return { release: () => removeHostDiskReservation(path) };
+}
+
 /**
  * Runs one babysitter repair in a container and returns its name (Issue
  * #4767). Mirrors `round_container` in run.sh, the pattern this copies: the
@@ -1576,6 +1712,9 @@ export async function runBabysitterRepairContainer(
     ((plan: ContainerLaunchPlan) => stopEgressSidecar(plan));
   const log = deps.log ??
     ((message: string) => console.error(`[babysitter] ${message}`));
+  const hostDiskAdmission = deps.hostDiskAdmission ??
+    ((admission: { containerName: string; clone: string; timeoutMs: number }) =>
+      babysitterHostDiskAdmission(admission, { log }));
 
   const containerName = throwawayContainerName();
   const plan = await buildPlan(input.baseDir, containerName);
@@ -1599,6 +1738,12 @@ export async function runBabysitterRepairContainer(
     await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
     // Refused before any egress starts; runRepairProcess checks again before the spawn.
     refuseIfAborted(input.signal);
+    // Before any egress starts: a refusal starts no proxy and no container.
+    const reservation = await hostDiskAdmission({
+      containerName,
+      clone: input.clone,
+      timeoutMs,
+    });
 
     const apple = !plan.egressEnforced && plan.proxyName !== "";
     let teardown: Teardown | undefined;
@@ -1638,6 +1783,20 @@ export async function runBabysitterRepairContainer(
       return { containerName };
     } finally {
       await runTeardown(teardown, log, input.token);
+      // After the proxy and container are gone, so the ledger never undercounts.
+      try {
+        await reservation.release();
+      } catch (error) {
+        report(
+          log,
+          `host disk reservation release: ${
+            redactToken(
+              error instanceof Error ? error.message : String(error),
+              input.token,
+            )
+          }`,
+        );
+      }
     }
   } finally {
     if (workspaceSnapshot) {
