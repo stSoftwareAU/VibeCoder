@@ -48,6 +48,13 @@ import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
 import { detectUsageLimit } from "./claude_executor.ts";
 import { DEEPSEEK_PROVIDER_ID } from "./agent_provider.ts";
 import { CODEX_API_KEY_ENV_VARS, CODEX_HOME_ENV_VAR } from "./codex_auth.ts";
+import { resolveCodexAuthMode } from "./codex_auth_mode.ts";
+import { resolveGuardModulePath } from "./guard_module_path.ts";
+import {
+  REVIEW_ROUND_GUARD_MODULE,
+  reviewRoundGuardSettings,
+  reviewRoundToolPolicy,
+} from "./review_round_guard.ts";
 import { buildCodexArgs, composeCodexPrompt } from "./codex_executor.ts";
 import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
 import { DEFAULT_CODEX_MODEL_TOP_TIER } from "./config_defaults.ts";
@@ -99,6 +106,7 @@ export const CODEX_ROUND_NOTE = [
   "Read the skill file .claude/skills/review-fleet-prs/SKILL.md (relative to the working directory, the read-only checkout) and follow it.",
   "Where it says to launch a fleet-pr-reviewer agent, review that PR yourself under .claude/agents/fleet-pr-reviewer.md and the brief it names, and hand post.ts the same review JSON it would have received.",
   "The checkout is read-only, so write files only under /tmp and the round's own directory, and never push, edit or comment on GitHub except through post.ts.",
+  "The round's shell rules are enforced: a command not on its list, or a write outside /tmp and the round's directory, is refused.",
 ].join("\n");
 
 /** Options for {@link runReviewRound}. */
@@ -341,6 +349,13 @@ export async function runReviewRound(
         model: REVIEW_CODEX_MODEL,
         effort: REVIEW_CODEX_EFFORT,
         promptViaStdin: true,
+        // The round's --allowedTools limits, enforced on Codex by a
+        // PreToolUse hook: Codex runs with its own sandbox bypassed.
+        settingsJson: reviewRoundGuardSettings(
+          reviewRoundToolPolicy(args),
+          Deno.execPath(),
+          resolveGuardModulePath(REVIEW_ROUND_GUARD_MODULE, import.meta.url),
+        ),
       });
       const codexStdin = composeCodexPrompt({
         prompt,
@@ -622,9 +637,12 @@ export async function runCodexCli(
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let child: Deno.ChildProcess;
   try {
+    // The env is the whole curated child environment: nothing of this
+    // process's own (its Claude, DeepSeek or metered OpenAI keys) is inherited.
     child = new Deno.Command(binary, {
       args,
       env,
+      clearEnv: true,
       stdin: "piped",
       stdout: "piped",
       stderr: "piped",
@@ -720,6 +738,29 @@ export async function runCodexCli(
 }
 
 /**
+ * Why a Codex child environment cannot authenticate, or null when it can
+ * (Issue #5083). An API key in the child env authenticates on its own. A
+ * selected `CODEX_HOME` must hold a login `auth.json`: the round's container
+ * leaves the worker's named volumes out, so a home on one of them is empty
+ * there, and an unauthenticated Codex attempt would end the round before
+ * DeepSeek.
+ */
+export function codexChildLoginMissing(
+  childEnv: Record<string, string>,
+): string | null {
+  if (CODEX_API_KEY_ENV_VARS.some((name) => Boolean(childEnv[name]))) {
+    return null;
+  }
+  const home = (childEnv[CODEX_HOME_ENV_VAR] ?? "").trim();
+  if (home === "") return "no Codex API key and no CODEX_HOME in the round";
+  const auth = resolveCodexAuthMode(home, () => undefined);
+  if (auth.mode !== "unknown") return null;
+  return `no Codex login at ${home}/auth.json in the round (${
+    auth.detail ?? auth.source
+  })`;
+}
+
+/**
  * An environment lookup over a plain environment object. Only the object's own
  * variables count, so a name such as `constructor` is not reported as set.
  */
@@ -807,15 +848,29 @@ export function createReviewRoundDeps(
       const codexProvider = resolveAgentProvider(CODEX_PROVIDER_ID);
       const processEnv = options.env ?? Deno.env.toObject();
       const values: Record<string, string> = {};
-      const exported = await applyProviderCredentialEnv({
-        dir: options.credentialDir,
-        env: envLookup(processEnv),
-        providers: [codexProvider],
-        selectToken: selectFirstProviderToken,
-        setEnv: (name, value) => {
-          values[name] = value;
-        },
-      });
+      let exported: string[];
+      try {
+        exported = await applyProviderCredentialEnv({
+          dir: options.credentialDir,
+          // The state initialiser reads the CODEX_HOME this call exports.
+          env: (name) => values[name] ?? envLookup(processEnv)(name),
+          providers: [codexProvider],
+          selectToken: selectFirstProviderToken,
+          setEnv: (name, value) => {
+            values[name] = value;
+          },
+        });
+      } catch (error) {
+        // A Codex home that cannot be initialised (no login, a seed that is
+        // not owner-only) is a Codex link that cannot run, not a failed
+        // round: DeepSeek is still tried.
+        log(
+          `Codex credential not usable (${
+            error instanceof Error ? error.message : String(error)
+          }); skipping the codex fallback`,
+        );
+        return null;
+      }
       const env = {
         ...processEnv,
         ...values,
@@ -827,7 +882,13 @@ export function createReviewRoundDeps(
       const ambientCredential = [...CODEX_API_KEY_ENV_VARS, CODEX_HOME_ENV_VAR]
         .some((name) => Boolean(env[name]));
       if (exported.length === 0 && !ambientCredential) return null;
-      return { env: codexProvider.buildChildEnv(env) };
+      const childEnv = codexProvider.buildChildEnv(env);
+      const unusable = codexChildLoginMissing(childEnv);
+      if (unusable !== null) {
+        log(`${unusable}; skipping the codex fallback`);
+        return null;
+      }
+      return { env: childEnv };
     },
     runClaude: runClaudeCli,
     runCodex: runCodexCli,

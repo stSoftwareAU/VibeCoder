@@ -502,6 +502,14 @@ Deno.test("runReviewRound runs the chain Fable, Opus, rotation, then Codex, and 
   const codex = calls[3]!;
   assertEquals(argAfter(codex.args, "--model"), "gpt-6-astra");
   assert(codex.args.includes('model_reasoning_effort="high"'));
+  // The round's tool limits ride along as the guard's PreToolUse hook.
+  assert(codex.args.includes("--dangerously-bypass-hook-trust"));
+  assert(
+    codex.args.some((arg) =>
+      arg.startsWith("hooks.PreToolUse=") &&
+      arg.includes("review_round_guard.ts")
+    ),
+  );
   assertEquals(codex.args.at(-1), "-", "the prompt is read from stdin");
   assertStringIncludes(codex.stdin ?? "", "review ONE round");
   assertStringIncludes(codex.stdin ?? "", CODEX_ROUND_NOTE);
@@ -754,4 +762,41 @@ Deno.test("runCodexCli returns a successful run with its message and no usage li
       );
     },
   );
+});
+
+Deno.test("runCodexCli gives the child only the curated env, not this process's credentials (Issue #5083)", async () => {
+  const names = [
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENAI_API_KEY",
+  ];
+  const saved = names.map((name) => [name, Deno.env.get(name)] as const);
+  for (const name of names) Deno.env.set(name, `parent-${name}`);
+  try {
+    await withStubCodex(
+      (dir) => `env > '${dir}/env.txt'\nexit 0`,
+      async (binary, dir) => {
+        const attempt = await runCodexCli(
+          ["exec", "-"],
+          "",
+          { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin", CODEX_HOME: dir },
+          undefined,
+          undefined,
+          binary,
+        );
+        assertEquals(attempt.code, 0);
+        const seen = await Deno.readTextFile(`${dir}/env.txt`);
+        for (const name of names) {
+          assertEquals(seen.includes(`${name}=`), false, `${name} leaked`);
+        }
+        assertStringIncludes(seen, `CODEX_HOME=${dir}`);
+      },
+    );
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) Deno.env.delete(name);
+      else Deno.env.set(name, value);
+    }
+  }
 });

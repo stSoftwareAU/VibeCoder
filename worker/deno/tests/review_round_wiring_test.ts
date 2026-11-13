@@ -198,3 +198,75 @@ Deno.test(
     });
   },
 );
+
+Deno.test(
+  "review round wiring - a CODEX_HOME provider.env whose login is present offers Codex (Issue #5083)",
+  async () => {
+    const home = await Deno.makeTempDir({ prefix: "review-codex-home-" });
+    try {
+      await Deno.writeTextFile(
+        `${home}/auth.json`,
+        JSON.stringify({ tokens: { access_token: "fixture-5083" } }), // gitleaks:allow fake fixture
+        { mode: 0o600 },
+      );
+      await withCredentialDir(
+        { "codex/provider.env": `export CODEX_HOME=${home}\n` },
+        async (dir) => {
+          const deps = createReviewRoundDeps(() => {}, {
+            credentialDir: dir,
+            env: { DEEPSEEK_API_KEY: "fixture-deepseek-5083" }, // gitleaks:allow fake fixture
+          });
+          const codex = await deps.exportCodexCredential();
+          assert(codex !== null, "a reachable login must offer Codex");
+          assertEquals(codex!.env["CODEX_HOME"], home);
+        },
+      );
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "review round wiring - a CODEX_HOME the round cannot reach skips Codex with a log line, so DeepSeek is still tried (Issue #5083)",
+  async () => {
+    // The documented subscription setup: CODEX_HOME on the agent-state
+    // volume, which the round's container does not mount, so it is empty.
+    const missing = `${await Deno.makeTempDir()}/not-mounted/codex`;
+    await withCredentialDir(
+      { "codex/provider.env": `export CODEX_HOME=${missing}\n` },
+      async (dir) => {
+        const lines: string[] = [];
+        const deps = createReviewRoundDeps((line) => lines.push(line), {
+          credentialDir: dir,
+          env: {},
+        });
+        assertEquals(await deps.exportCodexCredential(), null);
+        assert(
+          lines.some((line) => line.includes("skipping the codex fallback")),
+          `the skip is logged: ${lines.join(" | ")}`,
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "review round wiring - a CODEX_HOME with no auth.json skips Codex even when the state initialiser succeeds (Issue #5083)",
+  async () => {
+    const home = await Deno.makeTempDir({ prefix: "review-codex-empty-" });
+    try {
+      await withCredentialDir({}, async (dir) => {
+        const lines: string[] = [];
+        const deps = createReviewRoundDeps((line) => lines.push(line), {
+          credentialDir: dir,
+          env: { CODEX_HOME: home },
+        });
+        assertEquals(await deps.exportCodexCredential(), null);
+        assert(lines.some((line) => line.includes(`${home}/auth.json`)));
+      });
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
+  },
+);

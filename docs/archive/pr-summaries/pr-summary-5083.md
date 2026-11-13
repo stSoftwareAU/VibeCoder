@@ -18,21 +18,37 @@ provider or model switch logs one `INFO:` line. Closes #5083.
 - Fable 5.2 and the Opus step-down were already on main from #5081/#5082. This
   PR adds what was still missing: config-driven model and effort, the Codex
   runner, the logging, and the tests.
-- Codex runs only when the Claude side is spent and a Codex credential exists.
-  DeepSeek runs only when Codex also hit its usage limit or has no credential.
-  Codex failing for any other reason ends the round there and does not fall back
-  to DeepSeek.
+- Codex runs only when the Claude side is spent and a usable Codex login or key
+  reaches the round. DeepSeek runs only when Codex also hit its usage limit or
+  has no credential. Codex failing for any other reason ends the round there and
+  does not fall back to DeepSeek.
 
 ### Essential Design Decisions
 
-- **Read-only sandbox.** The round container mounts the checkout read-only
-  (`worker/deno/lib/container_launch.ts:1296`). That mount, as for Claude
-  rounds, is the Codex round's read-only sandbox. Codex's own CLI sandbox is not
-  used: it needs bubblewrap and cannot start in the worker container (#4356,
-  `worker/deno/lib/orchestration/read_only_guard.ts`), and a `read-only` sandbox
-  would also block `post.ts` from writing the round's files and posting.
-  `buildCodexArgs` still passes `--dangerously-bypass-approvals-and-sandbox`, as
-  it does for every worker Codex role.
+- **Read-only sandbox, enforced in code.** Codex's own CLI sandbox cannot start
+  in the worker container (it needs bubblewrap, #4356), so `buildCodexArgs`
+  still passes `--dangerously-bypass-approvals-and-sandbox`. Two other things
+  hold the Codex attempt instead. The checkout is mounted read-only
+  (`worker/deno/lib/container_launch.ts:1296`). A `PreToolUse` hook
+  (`worker/deno/lib/review_round_guard.ts`) applies the round's own limits:
+  `reviewRoundToolPolicy` reads them off the round's Claude args (the
+  `Bash(...)` rules, `Edit(<round dir>/**)` and `--add-dir`). The hook refuses
+  any shell command not on that list, command substitution, any redirect,
+  `mkdir`, `apply_patch` or `Edit`/`Write` outside `/tmp` and the round
+  directory, and web fetches. `post.ts` (`deno run ...`) still runs.
+- **Codex child env.** `runCodexCli` spawns with `clearEnv: true`. The child
+  gets only the env `exportCodexCredential` builds, so the Claude, DeepSeek and
+  metered OpenAI variables Codex's env builder strips are not inherited from the
+  process.
+- **Codex only when it can log in.** `exportCodexCredential` returns null (and
+  logs `... skipping the codex fallback`) in three cases: Codex's state
+  initialiser throws, the child env has no API key and no `CODEX_HOME`, or the
+  selected `CODEX_HOME` has no `auth.json`. In each case DeepSeek is still
+  tried. This covers the documented subscription setup: its `CODEX_HOME` is on
+  the agent-state volume, which the round's container does not mount. The state
+  initialiser now sees the `CODEX_HOME` that `provider.env` exports, so it can
+  seed the login from the credential directory's `auth.json` when one is
+  provisioned there.
 - **Same prompt.** Codex has no skills and no Agent tool. The round prompt is
   sent unchanged on stdin, behind `CODEX_ROUND_NOTE`, which tells Codex to read
   `SKILL.md` itself, do each `fleet-pr-reviewer` review itself, and give
@@ -114,11 +130,28 @@ regenerated to add the two config keys.
     and
     `runCodexCli returns a successful run with its message and no usage limit`.
     Both run a stub binary.
+  - `runCodexCli gives the child only the curated env, not this process's credentials`:
+    the parent process has `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+    `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` set, and the stub child sees none of
+    them.
+  - The chain test also checks that the Codex args carry the guard's
+    `hooks.PreToolUse` and `--dangerously-bypass-hook-trust`.
+- `worker/deno/tests/review_round_guard_test.ts` (new): the policy read off
+  run.sh-shaped args; `post.ts`, `gh ... --jq '.a | .b' | head`, a redirect into
+  the round dir and `mkdir -p /tmp/...` are allowed; `rm`, a chained `curl`,
+  `git push`, a redirect or `mkdir` outside the round, `$(...)`, an
+  `apply_patch` or `Write` outside the round, and `WebFetch` are refused. The
+  hook command is also run as a real process: `rm -rf /state` exits 2 with a
+  `deny` decision, and `deno run ... post.ts` exits 0 with no output.
 - `worker/deno/tests/review_round_wiring_test.ts`:
   `a provisioned Codex credential exports a Codex-only child env`,
-  `an ambient Codex credential keeps the Codex fallback`, and
-  `no Codex credential means no Codex fallback`. They use an injected `env`
-  option rather than changing `Deno.env`.
+  `an ambient Codex credential keeps the Codex fallback`,
+  `no Codex credential means no Codex fallback`,
+  `a CODEX_HOME provider.env whose login is present offers Codex`,
+  `a CODEX_HOME the round cannot reach skips Codex with a log line, so DeepSeek is still tried`
+  and
+  `a CODEX_HOME with no auth.json skips Codex even when the state initialiser succeeds`.
+  They use an injected `env` option rather than changing `Deno.env`.
 - `worker/deno/tests/review_fleet_prs_run_cost_test.ts`: three `attemptCost`
   Codex tests (an unpriced `gpt-6-astra` stays unknown, `gpt-5` is priced from
   `turn.completed` usage against a hand-computed $0.0369375, and no usage means
@@ -137,15 +170,20 @@ regenerated to add the two config keys.
   `recordingDeps` helper signatures changed, to add the Codex seams. Their Codex
   default is no credential, so the existing DeepSeek tests still reach DeepSeek.
   Callers of `createReviewRoundDeps` checked: the command's default deps
-  (`worker/deno/commands/review_round.ts`) and the wiring tests. Twinned copies
-  searched for: none found.
+  (`worker/deno/commands/review_round.ts`) and the wiring tests. The command
+  uses the same `exportCodexCredential` and `runCodexCli` the wiring and
+  `clearEnv` tests exercise, so on a host whose `CODEX_HOME` the round cannot
+  reach it skips Codex and still reaches DeepSeek. Twinned copies searched for:
+  none found.
 - `./quality.sh < /dev/null` on the head passed with skipped checks: config
   integration (no `.config.json`) and checkov (not installed). The first run
   failed parallel safety, a stale release contract, and the completeness check
   that wraps them. All three were fixed before the passing run.
 
-Not done: Codex was not run for real (the CLI is not installed here), so the
-Codex round's behaviour against a live PR is not observed. It is also not
-checked whether a sub-agent with no `effort` takes the session's effort. Codex's
-`input_tokens` may already include its cached tokens. The adapter counts both,
-so a priced Codex model could be overstated; the adapter is unchanged.
+Not done: the verifier's fixes above (guard, `clearEnv`, login check) were not
+red-checked against the old code. Codex was not run for real (the CLI is not
+installed here), so the Codex round's behaviour against a live PR is not
+observed. It is also not checked whether a sub-agent with no `effort` takes the
+session's effort. Codex's `input_tokens` may already include its cached tokens.
+The adapter counts both, so a priced Codex model could be overstated; the
+adapter is unchanged.
