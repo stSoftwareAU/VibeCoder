@@ -776,9 +776,12 @@ export async function removeTargetDir(
       const fallbackMessage = fallback instanceof Error
         ? fallback.message
         : String(fallback);
+      const tag = fallbackMessage.endsWith("(Issue #5105)")
+        ? ""
+        : " (Issue #5105)";
       throw new Error(
         `${original.message}; removing it as ${account} also failed: ` +
-          `${fallbackMessage} (Issue #5105)`,
+          `${fallbackMessage}${tag}`,
       );
     }
   }

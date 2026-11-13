@@ -195,6 +195,7 @@ Deno.test({
       assertEquals(released.errors.length, 1);
       assertStringIncludes(released.errors[0]!, "Permission denied");
       assertStringIncludes(released.errors[0]!, "sudo: a password is required");
+      assertEquals(released.errors[0]!.split("(Issue #5105)").length - 1, 1);
       assertEquals(await exists(dir), true);
     } finally {
       await forceRemove(cargoTargetDirForCheckout("/work/GRQ-fail", {
