@@ -537,8 +537,13 @@ down to `claude-opus-5-5` at `xhigh` on the same subscription, then rotates to
 the next Claude subscription with budget, then runs on Codex `gpt-6-astra` at
 `high` when a Codex credential is provisioned, and last on DeepSeek
 `deepseek-v4-pro`, only when Codex also hit its usage limit or has no
-credential. A failure that is not a usage limit stops the chain. Each switch is
-logged once. The chain and its log lines are described in
+credential. Codex runs in a round only with an API key in `codex/provider.env`
+or a `CODEX_HOME` on a mount the round shares that already holds a login. A
+`CODEX_HOME` on the `vibe-agent-state` volume (the documented subscription
+setup) is not mounted in the round, so the round logs
+`no Codex login at <home>/auth.json in the round ...; skipping the codex fallback`
+and goes on to DeepSeek. A failure that is not a usage limit stops the chain.
+Each switch is logged once. The chain and its log lines are described in
 [running-unattended.md](../.claude/skills/review-fleet-prs/references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
 
 ## 🧪 Test-change policy for the fleet reviewer

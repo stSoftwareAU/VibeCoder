@@ -9,7 +9,10 @@ Claude pool rotation, a round still stopped by a usage limit runs once on Codex
 `gpt-6-astra` before DeepSeek is tried. Codex gets the same prompt and the same
 `post.ts` JSON contract. Its attempt is recorded in `review-run.json` as
 provider `codex`, and its cost is priced from Codex's own usage events. Each
-provider or model switch logs one `INFO:` line. Closes #5083.
+provider or model switch logs one `INFO:` line. Codex runs in a round only on
+an API key or on a login in a mount the round shares; the documented
+subscription setup (its `CODEX_HOME` on the agent-state volume) is skipped, and
+reaching it is a follow-up to #5083, so this PR is `Part of #5083`, not `Closes`.
 
 ## Spec
 
@@ -19,7 +22,7 @@ provider or model switch logs one `INFO:` line. Closes #5083.
   PR adds what was still missing: config-driven model and effort, the Codex
   runner, the logging, and the tests.
 - Codex runs only when the Claude side is spent and a usable Codex login or key
-  reaches the round. DeepSeek runs only when Codex also hit its usage limit or
+  reaches the round (not the documented agent-state subscription home). DeepSeek runs only when Codex also hit its usage limit or
   has no credential. Codex failing for any other reason ends the round there and
   does not fall back to DeepSeek.
 
@@ -59,9 +62,16 @@ provider or model switch logs one `INFO:` line. Closes #5083.
   logs `... skipping the codex fallback`) in three cases: Codex's state
   initialiser throws, the child env has no API key and no `CODEX_HOME`, or the
   selected `CODEX_HOME` has no `auth.json`. In each case DeepSeek is still
-  tried. This covers the documented subscription setup: its `CODEX_HOME` is on
+  tried. This is the documented subscription setup: its `CODEX_HOME` is on
   the agent-state volume, which the round's container does not mount, and the
-  one-time `auth.json` seed sits beside it. The state initialiser sees only the
+  one-time `auth.json` seed sits beside it. **Known limit:** so a ChatGPT
+  subscription login is never used by a round, and with quota left the round
+  still goes to DeepSeek. Only an API key in `provider.env` (metered) or a
+  `CODEX_HOME` on a mount the round shares, already holding a login, runs Codex.
+  Making the subscription reachable (a persistent Codex home on a shared mount,
+  with its own login, never a copy of the worker's seed) is left to a follow-up
+  to #5083. The limit is stated in `running-unattended.md`, `CONFIGURATION.md`
+  and `SKILL.md`. The state initialiser sees only the
   process environment, not the `CODEX_HOME` that `provider.env` exports, so the
   round never seeds a login into a throwaway home (a stale seed would fail
   authentication, and a refreshed one could invalidate the worker's durable

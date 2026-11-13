@@ -174,6 +174,22 @@ naming what it switched to. Running out of quota is never logged as an error.
    start inside the worker container (Issue #4356,
    `worker/deno/lib/orchestration/read_only_guard.ts`). With no Codex credential
    the round logs `no Codex credential; skipping the codex fallback`.
+
+   **Which Codex credentials reach a round.** A round's container mounts the
+   checkout and the round directory, not the `vibe-agent-state` named volume.
+   Only two forms therefore run Codex: an API key in `codex/provider.env`
+   (metered), or a `CODEX_HOME` on a path the round's container mounts, whose
+   `auth.json` is already a login. The documented subscription setup
+   ([CODEX-SUBSCRIPTION-AUTH.md](../../../../docs/CODEX-SUBSCRIPTION-AUTH.md))
+   puts `CODEX_HOME` on `vibe-agent-state`, so in a round that home has no
+   `auth.json`. The round then logs
+   `no Codex login at <home>/auth.json in the round (no auth.json); skipping the codex fallback`
+   and goes on to DeepSeek, even when the ChatGPT subscription has quota. The
+   round never seeds a login into a throwaway home: a stale seed would fail
+   authentication, and a refreshed one could invalidate the worker's durable
+   login. Reaching Codex on a subscription login needs a persistent Codex home
+   on a mount the round shares, with its own login. That is not built, and is
+   a follow-up to Issue #5083.
 5. **DeepSeek.** Only when Codex also hit its usage limit or has no credential,
    the round runs once more on the worker's **DeepSeek** provider
    (`deepseek-v4-pro`, in the worker's own pinned child environment: no Claude
