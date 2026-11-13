@@ -43,8 +43,9 @@ export interface EphemeralCargoRootUsage {
  *
  * A missing root means nothing has been built yet and is a true zero. Any
  * other failure is an unknown, never a clean zero: a `du` timeout, and, with
- * the default strict listing, a `du` that exits non-zero (a subtree it could
- * not read) or prints no size.
+ * the default strict listing, an unreadable subtree or output with no size.
+ * Files that vanished during the walk keep the measured figure; a released
+ * target is omitted from the listing.
  */
 export async function measureEphemeralCargoRoot(
   deps: Pick<EphemeralRootDeps, "listTargetDirs"> = {

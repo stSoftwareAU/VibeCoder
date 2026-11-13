@@ -1899,15 +1899,20 @@ caches 0.6 GB · other 0.2 GB
   container's own layer — real host disk, but outside the volume, so it is
   **not** in the total and not in any bucket. The line measures it and appends
   its size and largest target directories. A root that cannot be measured
-  reads `unknown`, never `0.0 GB`: a `du` that times out, exits non-zero (a
-  subtree it could not read) or prints no size makes the whole figure
-  unknown. The host-disk estimate's detail names the same figure, because its
-  launch-baseline arithmetic subtracts only the volume's growth. When a
-  host-disk check that probes (at most once per sample interval) reads the
-  launch-baseline estimate below `ok`, the monitor measures the root again, so
-  a floor trip mid-cycle names the root as it stands then, not its cycle-start
-  size; a re-measure that fails reads `unknown` there, with its cause. Where
-  the trim is honoured the line is unchanged.
+  reads `unknown`, never `0.0 GB`: a timeout, unreadable subtree, unrecognised
+  error or output with no size makes the figure unknown. If every diagnostic
+  names a vanished entry inside the measured directory, the printed size is
+  retained; a target released before measurement is omitted. This keeps normal
+  cargo build churn from hiding the root's size.
+  The host-disk estimate's detail names the same figure, because its
+  launch-baseline arithmetic subtracts only the volume's growth. A probing
+  check below `ok` starts a background refresh without delaying the floor
+  verdict. Forced build probes cannot bypass the refresh throttle: there is
+  one walk in flight, followed by a quiet sample interval (60 s by default).
+  While it runs, the detail says `refresh in progress` and labels any earlier
+  figure as `last measured`. The next probing check after completion names
+  the new figure, or `unknown` with the cause if the refresh failed. Where
+  the trim is honoured the work-volume line is unchanged.
 
   ```text
   Work volume: total 18.4 GB — … · other 0.2 GB — ephemeral cargo root 12.3 GB

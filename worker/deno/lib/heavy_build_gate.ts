@@ -714,6 +714,8 @@ async function runDuSk(
     stdout: "piped",
     stderr: "piped",
     timeoutMs,
+    // Churn classification below relies on the tool's C-locale diagnostics.
+    env: { LC_ALL: "C" },
   });
   return {
     code: out.code,
@@ -737,19 +739,49 @@ export async function measureDirectoryBytes(
 
 /**
  * `du -sk` of one directory, in bytes, for a figure that must not be guessed
- * (Issue #5105). Unlike {@link measureDirectoryBytes}, a non-zero `du` exit
- * (a subtree it could not read) or output with no size throws, so the caller
- * reports the size as unknown rather than as a partial or zero figure.
+ * (Issue #5105). Files vanishing during a build do not invalidate the size.
+ * Other non-zero exits (including unreadable subtrees) and output with no
+ * size throw. A target released before measurement throws NotFound so the
+ * listing can omit it, without losing the remaining targets' figures.
  */
 export async function measureDirectoryBytesStrictly(
   path: string,
   timeoutMs: number = DU_TIMEOUT_MS,
+  run: typeof runDuSk = runDuSk,
 ): Promise<number> {
-  const { code, kb, stderr } = await runDuSk(path, timeoutMs);
+  const { code, kb, stderr } = await run(path, timeoutMs).catch((error) => {
+    // A missing du executable is not a missing target/root.
+    if (error instanceof Deno.errors.NotFound) {
+      throw new Error(`du -sk ${path} could not run: ${error.message}`);
+    }
+    throw error;
+  });
   if (code !== 0) {
-    const line = stderr.split("\n").map((l) => l.trim())
-      .find((l) => l.length > 0) ?? "no stderr";
-    throw new Error(`du -sk ${path} exited ${code}: ${line}`);
+    const lines = stderr.split("\n").map((l) => l.trim()).filter(Boolean);
+    // GNU and BSD du diagnostics, under LC_ALL=C. Only ENOENT inside this
+    // measured tree is benign; mixed, external and unknown errors stay loud.
+    const vanished = lines.map((line) => {
+      const match =
+        /^du: (?:cannot access '(.+)'|(.+)): No such file or directory$/
+          .exec(line);
+      return match?.[1] ?? match?.[2];
+    });
+    const onlyVanished = code === 1 && lines.length > 0 &&
+      vanished.every((name) =>
+        name !== undefined &&
+        (name === path || name.startsWith(`${path}/`)) &&
+        !name.split("/").includes("..")
+      );
+    if (!onlyVanished) {
+      throw new Error(
+        `du -sk ${path} exited ${code}: ${lines[0] ?? "no stderr"}`,
+      );
+    }
+    if (vanished.includes(path)) {
+      // Verify the target itself is gone. No-size output for a surviving
+      // directory remains unknown, even if every diagnostic was ENOENT.
+      await Deno.lstat(path);
+    }
   }
   if (kb === undefined) throw new Error(`du -sk ${path} printed no size`);
   return kb * 1024;
@@ -909,11 +941,16 @@ export function listTargetDirsMeasuredBy(
     for await (const entry of Deno.readDir(root)) {
       if (!entry.isDirectory) continue;
       const path = `${root}/${entry.name}`;
-      dirs.push({
-        path,
-        bytes: await measure(path),
-        lastWriteMs: await lastWriteMs(path),
-      });
+      try {
+        dirs.push({
+          path,
+          bytes: await measure(path),
+          lastWriteMs: await lastWriteMs(path),
+        });
+      } catch (error) {
+        if (!(error instanceof Deno.errors.NotFound)) throw error;
+        // Another pass released this target between readDir and du.
+      }
     }
     return dirs;
   };
@@ -921,7 +958,8 @@ export function listTargetDirsMeasuredBy(
 
 /**
  * The listing the ephemeral-root telemetry reads (Issue #5105): a directory
- * `du` cannot fully read rejects, so the root is reported as unknown.
+ * `du` cannot read rejects, so the root is reported as unknown. Vanished
+ * files keep the measured size and released directories are omitted.
  */
 export const strictlyMeasuredTargetDirs = listTargetDirsMeasuredBy((path) =>
   measureDirectoryBytesStrictly(path)

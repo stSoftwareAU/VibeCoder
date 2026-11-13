@@ -660,6 +660,8 @@ export interface ProductionDepsOptions {
   logger?: Logger;
   /** Optional config override. */
   config?: WorkerConfig;
+  /** Injectable monitor for exercising the registered heavy-build probe. */
+  hostDisk?: HostDiskMonitor;
   /** Test seams for the PR-feedback production callback. */
   setupRepoFn?: typeof setupRepo;
   runGitCommandFn?: typeof runGitCommand;
@@ -1159,7 +1161,7 @@ export async function createProductionRunCoreDeps(
   });
   // Host free-disk monitor (Issue #226): the launcher's df baseline plus
   // the work volume's growth since launch; native mode reads df directly.
-  const hostDisk = new HostDiskMonitor({
+  const hostDisk = options.hostDisk ?? new HostDiskMonitor({
     workDir,
     log: bindLogger(logger),
     // Issue #1550: the launcher's per-tick reading, written to the worker
@@ -1177,7 +1179,8 @@ export async function createProductionRunCoreDeps(
         : { hostDiskLowFloorPercent: config.hostDiskLowFloorPercent }),
     },
     // Issue #5105: below the floor on a trim-refused runtime, the detail
-    // names the ephemeral cargo root as it stands, not its cycle-start size.
+    // refreshes the ephemeral cargo root in the background, without delaying
+    // the floor verdict. A later probing check names the completed figure.
     measureEphemeralCargoRoot: () =>
       measureEphemeralCargoRootBytesIfTrimRefused({
         trimRefused: workVolumeTrimRefusedForLaunch,

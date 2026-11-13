@@ -17,7 +17,17 @@ import {
   HOST_DISK_TOTAL_ENV,
   HostDiskMonitor,
 } from "../lib/host_disk.ts";
-import { parseDuKilobytes } from "../lib/heavy_build_gate.ts";
+import {
+  enableInFlightHostDiskGate,
+  listTargetDirsMeasuredBy,
+  measureDirectoryBytesStrictly,
+  parkRunningBuild,
+  parseDuKilobytes,
+  registerHeavyBuildDiskProbe,
+} from "../lib/heavy_build_gate.ts";
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { createLogger } from "../lib/logger.ts";
 import { canEnforceUnwritableDir } from "./support/environment_capability.ts";
 
 const modesEnforced = await canEnforceUnwritableDir();
@@ -220,7 +230,7 @@ Deno.test("Issue #5105 - the host-disk estimate names the root without changing 
   assertEquals(cleared.detail, without.detail);
 });
 
-Deno.test("Issue #5105 - a mid-cycle floor trip names the root as it stands now", async () => {
+Deno.test("Issue #5105 - a mid-cycle floor trip refreshes the root without waiting", async () => {
   let usedBytes = 30 * GIB;
   let rootBytes = 0;
   const measured: number[] = [];
@@ -253,7 +263,10 @@ Deno.test("Issue #5105 - a mid-cycle floor trip names the root as it stands now"
   t = 10 * 60_000;
   const low = await m.check();
   assertEquals(low.level, "low");
-  assertStringIncludes(low.detail, "ephemeral cargo root 38.5 GB");
+  assertStringIncludes(low.detail, "ephemeral cargo root refresh in progress");
+  const refreshed = await m.check({ force: true });
+  assertEquals(refreshed.level, "low");
+  assertStringIncludes(refreshed.detail, "ephemeral cargo root 38.5 GB");
   assertEquals(measured, [t]);
 
   // A failed measurement drops the stale figure rather than repeating it.
@@ -274,6 +287,7 @@ Deno.test("Issue #5105 - a mid-cycle floor trip names the root as it stands now"
   failing.recordEphemeralCargoRootBytes(9 * GIB);
   await failing.check(); // baselines at the grown volume: ok
   usedBytes = 140 * GIB;
+  assertEquals((await failing.check({ force: true })).level, "low");
   const lowUnknown = await failing.check({ force: true });
   assertEquals(lowUnknown.level, "low");
   assertStringIncludes(
@@ -321,4 +335,180 @@ Deno.test("Issue #5105 - du output with no leading size has no figure", () => {
   assertEquals(parseDuKilobytes(""), undefined);
   assertEquals(parseDuKilobytes("du: cannot access\n"), undefined);
   assertEquals(parseDuKilobytes("12abc /x"), undefined);
+});
+
+function lowMonitor(measure: () => Promise<number | null>, now = () => 0) {
+  return new HostDiskMonitor({
+    workDir: "/work",
+    env: (name) =>
+      name === HOST_DISK_AVAIL_ENV
+        ? String(5 * GIB)
+        : name === HOST_DISK_TOTAL_ENV
+        ? String(460 * GIB)
+        : undefined,
+    probe: () =>
+      Promise.resolve({
+        availableBytes: 0,
+        usedBytes: 0,
+        totalBytes: 504 * GIB,
+      }),
+    now,
+    measureEphemeralCargoRoot: measure,
+  });
+}
+
+Deno.test("Issue #5105 - forced checks cannot bypass the root refresh interval", async () => {
+  let calls = 0;
+  let now = 0;
+  const monitor = lowMonitor(() => Promise.resolve(++calls * GIB), () => now);
+  assertEquals((await monitor.check({ force: true })).level, "low");
+  assertEquals((await monitor.check({ force: true })).level, "low");
+  assertEquals(calls, 1);
+  now = 59_999;
+  await monitor.check({ force: true });
+  assertEquals(calls, 1);
+  now = 60_000;
+  await monitor.check({ force: true });
+  assertEquals(calls, 2);
+});
+
+Deno.test("Issue #5105 - the registered build probe returns low during one slow shared scan", async () => {
+  const scan = Promise.withResolvers<number>();
+  const started = Promise.withResolvers<void>();
+  let calls = 0;
+  let now = 0;
+  const monitor = lowMonitor(() => {
+    calls++;
+    started.resolve();
+    return scan.promise;
+  }, () => now);
+  const tmp = await Deno.makeTempDir();
+  const { cleanup } = await createProductionRunCoreDeps({
+    repoDir: tmp,
+    workDir: tmp,
+    githubUser: "test-user",
+    config: buildDefaultWorkerConfig(),
+    env: () => undefined,
+    logger: createLogger({ write: () => {} }),
+    hostDisk: monitor,
+  });
+  enableInFlightHostDiskGate(true);
+  const first = parkRunningBuild();
+  try {
+    await started.promise;
+    // A task turn lets ready promises settle, without completing the scan.
+    // This tests ordering, not elapsed time on a loaded host.
+    const verdict = await Promise.race([
+      first,
+      new Promise<"blocked on scan">((resolve) =>
+        setTimeout(() => resolve("blocked on scan"), 0)
+      ),
+    ]);
+    assertStringIncludes(verdict ?? "", "host disk below its floor");
+    now = 120_000; // Even a scan longer than the interval must not overlap.
+    assertStringIncludes(
+      await parkRunningBuild() ?? "",
+      "host disk below its floor",
+    );
+    assertEquals(calls, 1);
+    scan.resolve(38.5 * GIB);
+    await scan.promise;
+    const refreshed = await parkRunningBuild();
+    assertStringIncludes(refreshed ?? "", "ephemeral cargo root 38.5 GB");
+  } finally {
+    scan.resolve(38.5 * GIB);
+    await first;
+    enableInFlightHostDiskGate(false);
+    registerHeavyBuildDiskProbe(undefined);
+    cleanup();
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("Issue #5105 - du keeps the measured size when only descendants vanished", async () => {
+  const path = "/var/tmp/vibe-cargo-target/build";
+  for (
+    const stderr of [
+      `du: cannot access '${path}/debug/deps/temp.o': No such file or directory\n`,
+      `du: ${path}/incremental/temp.o: No such file or directory\n`,
+      `du: cannot access '${path}/a': No such file or directory\ndu: cannot access '${path}/b': No such file or directory\n`,
+    ]
+  ) {
+    assertEquals(
+      await measureDirectoryBytesStrictly(path, 100, () =>
+        Promise.resolve({
+          code: 1,
+          kb: 2048,
+          stderr,
+        })),
+      2 * 1024 * 1024,
+    );
+  }
+});
+
+Deno.test("Issue #5105 - strict du still rejects unreadable or unrecognised output", async () => {
+  const path = "/var/tmp/vibe-cargo-target/build";
+  for (
+    const stderr of [
+      `du: cannot read directory '${path}/private': Permission denied`,
+      `du: cannot access '${path}/gone': No such file or directory\ndu: cannot read directory '${path}/private': Permission denied`,
+      `du: cannot access '${path}-other/file': No such file or directory`,
+      `du: cannot access '${path}/../other/file': No such file or directory`,
+      "du: unknown failure",
+      "",
+    ]
+  ) {
+    await assertRejects(
+      () =>
+        measureDirectoryBytesStrictly(path, 100, () =>
+          Promise.resolve({
+            code: 1,
+            kb: 2048,
+            stderr,
+          })),
+      Error,
+      "exited 1",
+    );
+  }
+  await assertRejects(
+    () =>
+      measureDirectoryBytesStrictly(path, 100, () =>
+        Promise.resolve({
+          code: 1,
+          kb: undefined,
+          stderr: `du: cannot access '${path}/gone': No such file or directory`,
+        })),
+    Error,
+    "printed no size",
+  );
+  await assertRejects(
+    () =>
+      measureDirectoryBytesStrictly(
+        path,
+        100,
+        () => Promise.reject(new Error("du timed out")),
+      ),
+    Error,
+    "du timed out",
+  );
+});
+
+Deno.test("Issue #5105 - a released directory disappears from the measured listing", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${root}/gone`);
+    await Deno.mkdir(`${root}/remaining`);
+    await Deno.writeFile(`${root}/remaining/blob`, new Uint8Array(64 * 1024));
+    const usage = await measureEphemeralCargoRoot({
+      listTargetDirs: listTargetDirsMeasuredBy(async (path) => {
+        if (path.endsWith("/gone")) await Deno.remove(path);
+        return await measureDirectoryBytesStrictly(path);
+      }),
+    }, root);
+    assertEquals(usage.error, null);
+    assertEquals(usage.dirs.map((d) => d.path), [`${root}/remaining`]);
+    assertEquals(usage.bytes > 0, true);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
