@@ -6,7 +6,7 @@
 two presentation-only footers, so a check that was already red on the default
 branch is no longer read as `new_output` because of them:
 
-- Maven's `Finished at:` footer (optional `[INFO] ` prefix, ISO-8601 value)
+- Maven's `Finished at:` footer (optional `[INFO]` prefix, ISO-8601 value)
   becomes `Finished at: <timestamp>`.
 - pytest's `=`-padded result summary has its padding reduced to `= … =` and its
   `(H:MM:SS)` clock suffix dropped. This happens after the existing
@@ -24,7 +24,7 @@ into this issue. Closes #5003.
 - The issue asks for bounded, recognised-line fixes, not a global strip of
   punctuation or timestamps. Both new patterns are therefore anchored at the
   start and end of a line that has already been trimmed and single-spaced.
-- The pytest summary rewrite also drops the ` (<clock>)` suffix. pytest adds it
+- The pytest summary rewrite also drops the `(<clock>)` suffix. pytest adds it
   only at 60 s and over, so a `59.87s` / `60.02s (0:01:00)` pair cannot compare
   as `pre_existing` while the suffix remains.
 
@@ -40,7 +40,7 @@ into this issue. Closes #5003.
   new output.
 - The Maven timestamp's offset is optional, and fractional seconds are accepted.
   Maven itself prints a seconds-precision value with `Z` or `±HH:MM`. Trailing
-  text after the timestamp, or a prefix other than `[INFO] `, is not a footer.
+  text after the timestamp, or a prefix other than `[INFO]`, is not a footer.
 - The twin normaliser `normaliseLogExcerpt` (`auto_fix_attempt_tracker.ts`) was
   checked and left alone. Nothing declares it a copy of this rule, and it
   already masks every ISO timestamp for its own fingerprinting purpose.
@@ -52,8 +52,8 @@ into this issue. Closes #5003.
   follow the tools' source instead. pytest's `TerminalReporter.write_sep` pads
   with `(fullwidth - len(title) - 2) // 2` separators on each side, plus one
   extra on the right when the line still fits. Its `format_session_duration`
-  adds ` (H:MM:SS)` only at 60 s and over. Maven's `ExecutionEventLogger`
-  prints `Finished at: ` with `DateTimeFormatter.ISO_OFFSET_DATE_TIME`.
+  adds `(H:MM:SS)` only at 60 s and over. Maven's `ExecutionEventLogger` prints
+  `Finished at:` with `DateTimeFormatter.ISO_OFFSET_DATE_TIME`.
 
 ## Evidence
 
@@ -75,8 +75,8 @@ the host:
 
 - "config integration" was skipped because deno or `.config.json` was not
   available.
-- "checkov" was skipped because no checkov binary or image was available. The
-  CI checkov job stays authoritative.
+- "checkov" was skipped because no checkov binary or image was available. The CI
+  checkov job stays authoritative.
 
 Issue numbers this diff adds as provenance:
 
@@ -102,8 +102,8 @@ Issue numbers this diff adds as provenance:
   `worker/deno/tests/pre_existing_gate_failure_test.ts::decidePreExistingGateFailure - Maven and pytest footer normalisation keeps real differences as new output`
   — reviewer: met
 - **met** — Retain fail-closed behaviour when the baseline or per-check evidence
-  is unavailable, and when a new check or substantive output appears —
-  evidence: `decidePreExistingGateFailure` is unchanged; the existing
+  is unavailable, and when a new check or substantive output appears — evidence:
+  `decidePreExistingGateFailure` is unchanged; the existing
   `worker/deno/tests/pre_existing_gate_failure_test.ts` no-baseline,
   passing-baseline, no-recorded-checks, green-at-baseline and new-line tests
   pass — reviewer: met
@@ -137,12 +137,12 @@ Issue numbers this diff adds as provenance:
   it: the `no tests ran` form of `PYTEST_SUMMARY_RE` had no test, and the docs
   sentence omitted it — evidence: `worker/deno/lib/baseline_gate.ts:370` —
   reason: fixed in this diff (a `no tests ran` pair was added to the pytest
-  pre-existing test, and `docs/INTERNALS.md` now names that form and the
-  outcome words)
+  pre-existing test, and `docs/INTERNALS.md` now names that form and the outcome
+  words)
 - **clean** — one hostile case per new pattern (leading `=` run, trailing `=`
   run, repeated outcome list, Maven digit tail); negative fixtures that hold the
-  forbidden input; no edited existing expectations; insertion points;
-  Australian English; caller list (`normaliseGateOutputLines` is called only by
+  forbidden input; no edited existing expectations; insertion points; Australian
+  English; caller list (`normaliseGateOutputLines` is called only by
   `decidePreExistingGateFailure`); twin-rule check; docs updated. The reviewer
   found no rule worded as enforced by review only; it checked "Check where you
   insert", which no linter catches.
@@ -151,11 +151,11 @@ Issue numbers this diff adds as provenance:
 
 - Added four tests to `worker/deno/tests/pre_existing_gate_failure_test.ts`:
   - `decidePreExistingGateFailure - Maven failure footers differing only in elapsed and finish times are pre-existing`:
-    a full seven-line footer, with and without the `[INFO] ` prefix.
+    a full seven-line footer, with and without the `[INFO]` prefix.
   - `decidePreExistingGateFailure - pytest summaries crossing duration-width and clock boundaries are pre-existing`:
     `9.87s`/`10.02s`, `99.98s`/`100.02s`, `59.87s`/`60.02s (0:01:00)`,
-    `no tests ran`, and a mixed-outcome list. Each pair asserts that the raw
-    `=` counts differ, as a positive control.
+    `no tests ran`, and a mixed-outcome list. Each pair asserts that the raw `=`
+    counts differ, as a positive control.
   - `decidePreExistingGateFailure - Maven and pytest footer normalisation keeps real differences as new output`:
     - changed counts;
     - an added `FAILED` line;
@@ -172,15 +172,15 @@ Issue numbers this diff adds as provenance:
     a long run of the shared character, then a rejected character, for each new
     pattern, asserting the exact output.
 - No existing test or assertion was edited or removed. The existing unpadded
-  pytest fixtures do not match the new `^=+ ` anchor, so they still reach the
+  pytest fixtures do not match the new `^=+` anchor, so they still reach the
   assertions they make.
 - Docs: in `docs/INTERNALS.md`, I read the section "Pre-existing gate failure
-  (Issue #1852)" and updated it. Grepping `README.md`, `docs/*.md` and `prompts/`
-  for `normaliseGateOutputLines`, `Total time` and the pre-existing comparison
-  found no other description.
+  (Issue #1852)" and updated it. Grepping `README.md`, `docs/*.md` and
+  `prompts/` for `normaliseGateOutputLines`, `Total time` and the pre-existing
+  comparison found no other description.
 - `deno task test:unit tests/pre_existing_gate_failure_test.ts` passed (26
   passed, 0 failed). `./quality.sh < /dev/null` passed, with the two host skips
   listed under Evidence.
 
-Not checked: real Maven and pytest runs (neither tool could be installed
-here), and the unpadded `pytest -q` summary, which this change leaves as it was.
+Not checked: real Maven and pytest runs (neither tool could be installed here),
+and the unpadded `pytest -q` summary, which this change leaves as it was.
