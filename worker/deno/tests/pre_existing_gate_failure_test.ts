@@ -352,3 +352,171 @@ Deno.test("decidePreExistingGateFailure - no current failing check decides again
   assertEquals(decision.preExisting, false);
   assertEquals(decision.reason, "no_failing_checks");
 });
+
+// ---------------------------------------------------------------------------
+// Maven finish timestamps and pytest summary padding (Issue #5003)
+// ---------------------------------------------------------------------------
+
+/** Centre a message in `=` padding to 80 columns, as pytest's write_sep does. */
+function pytestSep(msg: string): string {
+  const n = Math.floor((80 - msg.length - 2) / 2);
+  let line = `${"=".repeat(n)} ${msg} ${"=".repeat(n)}`;
+  if (line.length < 80) line += "=";
+  return line;
+}
+
+function mavenFooter(
+  total: string,
+  finished: string,
+  prefix = "[INFO] ",
+): string {
+  return [
+    "[INFO] ------------------------------------------------------------------------",
+    "[INFO] BUILD FAILURE",
+    "[INFO] ------------------------------------------------------------------------",
+    `[INFO] Total time:  ${total}`,
+    `${prefix}Finished at: ${finished}`,
+    "[INFO] ------------------------------------------------------------------------",
+    "[ERROR] Failed to execute goal org.apache.maven.plugins:maven-surefire-plugin:3.2.5:test (default-test) on project demo: There are test failures.",
+  ].join("\n");
+}
+
+function decide(baselineOutput: string, currentOutput: string) {
+  return decidePreExistingGateFailure(
+    { passed: false, failedChecks: [check("tests", baselineOutput)] },
+    [check("tests", currentOutput)],
+  );
+}
+
+Deno.test("decidePreExistingGateFailure - Maven failure footers differing only in elapsed and finish times are pre-existing", () => {
+  const pairs: [string, string][] = [
+    [
+      mavenFooter("12.345 s", "2026-11-13T10:30:45+11:00"),
+      mavenFooter("01:15 min", "2026-11-14T02:03:04Z"),
+    ],
+    [
+      mavenFooter("12.345 s", "2026-11-13T10:30:45+11:00", ""),
+      mavenFooter("01:15 min", "2026-11-14T02:03:04Z", ""),
+    ],
+  ];
+  for (const [baseline, current] of pairs) {
+    const decision = decide(baseline, current);
+    assertEquals(decision.preExisting, true);
+    assertEquals(decision.reason, "pre_existing");
+    assertEquals(decision.newLines, []);
+  }
+});
+
+Deno.test("decidePreExistingGateFailure - pytest summaries crossing duration-width and clock boundaries are pre-existing", () => {
+  const pairs: [string, string][] = [
+    ["1 failed, 2 passed in 9.87s", "1 failed, 2 passed in 10.02s"],
+    [
+      "1 failed, 2 passed in 99.98s (0:01:39)",
+      "1 failed, 2 passed in 100.02s (0:01:40)",
+    ],
+    ["1 failed, 2 passed in 59.87s", "1 failed, 2 passed in 60.02s (0:01:00)"],
+    ["1 failed, 1 warning in 0.12s", "1 failed, 1 warning in 12.34s"],
+    ["no tests ran in 0.01s", "no tests ran in 10.02s"],
+    [
+      "1 failed, 1 skipped, 2 xfailed, 3 errors in 9.99s",
+      "1 failed, 1 skipped, 2 xfailed, 3 errors in 10.01s",
+    ],
+  ];
+  for (const [a, b] of pairs) {
+    const baseline = pytestSep(a);
+    const current = pytestSep(b);
+    assertEquals(
+      baseline.match(/=/g)!.length !== current.match(/=/g)!.length,
+      true,
+      `raw inputs must differ in padding: ${baseline} / ${current}`,
+    );
+    const decision = decide(baseline, current);
+    assertEquals(decision.preExisting, true, `${baseline} vs ${current}`);
+    assertEquals(decision.reason, "pre_existing");
+    assertEquals(decision.newLines, []);
+  }
+});
+
+Deno.test("decidePreExistingGateFailure - Maven and pytest footer normalisation keeps real differences as new output", () => {
+  const summaryA = pytestSep("1 failed, 2 passed in 9.87s");
+  const summaryB = pytestSep("2 failed, 1 passed in 10.02s");
+  const cases: [string, string, string][] = [
+    [summaryA, summaryB, "2 failed, 1 passed"],
+    [
+      summaryA,
+      `FAILED tests/test_x.py::test_b - assert 1 == 2\n${summaryA}`,
+      "FAILED tests/test_x.py::test_b",
+    ],
+    [
+      "2026-11-13T10:30:45Z connection refused",
+      "2026-11-14T02:03:04Z connection refused",
+      "2026-11-14T02:03:04Z connection refused",
+    ],
+    [
+      "[INFO] Finished at: 2026-11-13T10:30:45Z with errors",
+      "[INFO] Finished at: 2026-11-14T02:03:04Z with errors",
+      "2026-11-14T02:03:04Z with errors",
+    ],
+    [
+      "[ERROR] Finished at: 2026-11-13T10:30:45Z",
+      "[ERROR] Finished at: 2026-11-14T02:03:04Z",
+      "[ERROR] Finished at: 2026-11-14T02:03:04Z",
+    ],
+    ["E assert 1 == 2", "E assert 1 === 2", "E assert 1 === 2"],
+    ["== ERRORS ==", "=== ERRORS ===", "=== ERRORS ==="],
+    [
+      "===== short test summary info =====",
+      "====== short test summary info ======",
+      "====== short test summary info ======",
+    ],
+    [
+      "== 1 exploded in 1.00s ==",
+      "=== 1 exploded in 10.00s ===",
+      "=== 1 exploded in <duration> ===",
+    ],
+  ];
+  for (const [baseline, current, named] of cases) {
+    const decision = decide(baseline, current);
+    assertEquals(decision.preExisting, false, `${baseline} vs ${current}`);
+    assertEquals(decision.reason, "new_output");
+    assertEquals(
+      decision.newLines.length > 0 &&
+        decision.newLines.some((l) => l.includes(named)),
+      true,
+      `newLines ${JSON.stringify(decision.newLines)} should name ${named}`,
+    );
+  }
+  assertEquals(
+    normaliseGateOutputLines(pytestSep("1 failed, 2 passed in 9.87s")),
+    ["= 1 failed, 2 passed in <duration> ="],
+  );
+  assertEquals(
+    normaliseGateOutputLines("[INFO] Finished at: 2026-11-13T10:30:45+11:00"),
+    ["[INFO] Finished at: <timestamp>"],
+  );
+});
+
+Deno.test("normaliseGateOutputLines - Maven and pytest footer patterns handle long rejected inputs", () => {
+  assertEquals(
+    normaliseGateOutputLines("=".repeat(50000) + " 1 failed in 1.00s x"),
+    ["=".repeat(50000) + " 1 failed in <duration> x"],
+  );
+  assertEquals(
+    normaliseGateOutputLines("= 1 failed in 1.00s " + "=".repeat(50000) + "x"),
+    ["= 1 failed in <duration> " + "=".repeat(50000) + "x"],
+  );
+  assertEquals(
+    normaliseGateOutputLines("= " + "1 failed, ".repeat(20000) + "x"),
+    ["= " + "1 failed, ".repeat(20000) + "x"],
+  );
+  assertEquals(
+    normaliseGateOutputLines(
+      "[INFO] Finished at: 2026-11-13T10:30:45" + "9".repeat(50000),
+    ),
+    ["[INFO] Finished at: 2026-11-13T10:30:45" + "9".repeat(50000)],
+  );
+  assertEquals(
+    normaliseGateOutputLines("Finished at: " + " ".repeat(50000) + "x"),
+    ["Finished at: x"],
+  );
+});
