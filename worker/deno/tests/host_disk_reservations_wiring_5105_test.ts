@@ -400,3 +400,43 @@ Deno.test("Issue #5105 - the first probe after the release reads the growth only
     timing,
   );
 });
+
+Deno.test("Issue #5105 - a probe waiting on a walk takes its status again when another check adopts a newer launcher reading", async () => {
+  const held = heldWalks();
+  const root = { bytes: 0 as number | null, walk: () => held.walk() };
+  const timing = {
+    sampleIntervalMs: 60_000,
+    clock: { ms: Date.now() },
+  };
+  await withWiring(
+    true,
+    async (_check, wiring) => {
+      assertEquals(await parkRunningBuild(), null);
+      // The repair ends 90 s after the last walk, so the next probe's low
+      // check starts a walk and then waits on it holding a stale low status.
+      timing.clock.ms += 90_000;
+      await Deno.remove(wiring.reservationPath);
+      held.hold = true;
+      const probe = parkRunningBuild();
+      for (let turn = 0; turn < 200 && held.open === 0; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      assert(held.open > 0, "the probe's check started no walk");
+      // Meanwhile another check (a second slot's poll, the claim gate)
+      // adopts the launcher's fresh reading, measured after the release,
+      // and so forgets the released reservation.
+      await wiring.writeLauncherReading(120 * GIB, 5);
+      assertEquals((await wiring.monitor.check({ force: true })).level, "ok");
+      held.hold = false;
+      held.finish();
+      assertEquals(
+        await probe,
+        null,
+        "build killed on a stale low status after the host recovered",
+      );
+    },
+    root,
+    FREE,
+    timing,
+  );
+});

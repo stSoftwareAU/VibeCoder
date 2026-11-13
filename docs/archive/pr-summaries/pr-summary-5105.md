@@ -59,7 +59,11 @@ Closes #5105.
   a fresh measurement of the ephemeral cargo root
   (`HostDiskMonitor.refreshEphemeralCargoRootNow`), whatever the level, so its
   growth baseline is not a stale figure; a failed measurement leaves the growth
-  unknown and credits nothing.
+  unknown and credits nothing. The status and the reservation observation rest
+  on the same launcher reading: the probe and `checkRootFilesystem` note the
+  reading their status was taken at, and if another check adopts a newer one
+  while they wait on a walk, they take the status again (at most three attempts)
+  before recording any release.
   - `parkRunningBuild` and `hostDiskLaunchStopReason` return null for a dip the
     reservations explain.
   - `parkInFlightBuild` waits out such a dip only when the caller opts in. The
@@ -203,7 +207,7 @@ sequenceDiagram
   reservation is ignored; the same reading without the reservation is the
   control. Red-check: with the subtraction at either site changed back to
   `hostFreeBytes: free`, both reservation cases fail and both controls pass.
-- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 7 tests
+- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 8 tests
   at head): `createProductionRunCoreDeps` with a temp `HOME` holding
   `logs/host-disk-reservations/<id>.json`. `parkRunningBuild()` returns null
   with the file and a park reason without it. `checkRootFilesystem` does not
@@ -226,8 +230,13 @@ sequenceDiagram
   default quiet interval and a clock past it, removes the reservation file on a
   probe whose check starts a walk, and asserts the growth is never read while a
   walk is open and the probe returns null. Red-check (against the head before
-  this round's fix): both fail, the sixth with the park reason and the seventh
-  with "build killed at the release, while the walk was in flight".
+  the earlier round's fix): both fail, the sixth with the park reason and the
+  seventh with "build killed at the release, while the walk was in flight". An
+  eighth holds a walk open on a probe that has taken a stale low status after
+  the release, has another check adopt the launcher's fresh `ok` reading
+  meanwhile, and asserts the probe takes its status again and returns null.
+  Red-check: against the head before this round's fix it fails with "build
+  killed on a stale low status after the host recovered".
 - `worker/deno/tests/host_disk_worker_footprint_5105_test.ts` (new, 5 tests):
   `HostDiskMonitor.workerFootprintGrowthBytes` with non-zero figures: work
   volume growth summed across a launcher re-base plus the ephemeral peak (which
@@ -258,7 +267,11 @@ sequenceDiagram
   - With the real `babysitterHostDiskAdmission` (temp ledger, fake host), the
     reservation file is live when the sidecar stops and gone afterwards, both
     when the spawn succeeds and when it fails. Red-check: moving the release
-    before teardown, or removing it, fails 5 tests.
+    before teardown, or removing it, fails 4 tests for the repair
+    (`runBabysitterRepairContainer`) and 5 tests when the repair's release is
+    removed. The Chromium self-check's release moved before its teardown, or
+    removed, fails 2 tests each (its footprint-only test, for the success and
+    the failing spawn).
   - With only the ledger directory injected, the production measure, floor and
     cargo check run. The outcome is pinned for a refusal, an unmeasurable host
     and an admission. This host admitted, and the release removed the file.
@@ -283,7 +296,7 @@ sequenceDiagram
   outside a babysitter dip, and that test passes.
 - The full gate was not run on this head (run budget). On the head, the seven
   5105 test files (wiring, reservations, footprint, babysitter dip, heavy build
-  gate, claude runner dip wait, babysitter admission) pass: 65 passed, 0 failed.
+  gate, claude runner dip wait, babysitter admission) pass: 66 passed, 0 failed.
   `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (16 tests at
   head) passes. The earlier 60-file `deno test -A` sweep is not restated here:
   its three failures needed the `codex` coding-agent provider, which this
