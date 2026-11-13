@@ -131,10 +131,10 @@ regenerated to add the two config keys.
     `runCodexCli returns a successful run with its message and no usage limit`.
     Both run a stub binary.
   - `runCodexCli gives the child only the curated env, not this process's credentials`:
-    a child Deno process holding `CLAUDE_CODE_OAUTH_TOKEN`,
-    `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` runs
-    `runCodexCli`, and the stub Codex it starts sees none of them. The test
-    never changes its own `Deno.env`, so it stays in the parallel pass.
+    a child Deno process holding `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+    `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` runs `runCodexCli`, and the stub
+    Codex it starts sees none of them. The test never changes its own
+    `Deno.env`, so it stays in the parallel pass.
   - The chain test also checks that the Codex args carry the guard's
     `hooks.PreToolUse` and `--dangerously-bypass-hook-trust`.
 - `worker/deno/tests/review_round_guard_test.ts` (new): the policy read off
