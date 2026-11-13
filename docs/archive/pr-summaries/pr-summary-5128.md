@@ -6,10 +6,13 @@ setup phase logs nothing the report's step table recognises. It logs only a 60s
 blocking setup step now logs one fixed line as it starts,
 `[setup-step] <step>: started`. The hard-kill report maps that line to a fixed
 `setup: <step>` label, so the next setup wedge names the step it is in or after.
-The setup phase also runs under a one-hour deadline. A setup still running then
-is abandoned as a `timeout` failure, and the run's failure path releases the
-claim, instead of holding it until the launcher's watchdog reaps the container.
-The cause of the #5128 wedge on `GRQ-25` is not established.
+The setup phase also runs under a deadline of two agent budgets plus 30 minutes.
+A setup still running then is abandoned as a `timeout` failure, and the run's
+failure path releases the claim it holds, instead of holding it until the
+launcher's watchdog reaps the container. The abandoned setup stops at its next
+step boundary. The cause of the #5128 wedge on `GRQ-25` is not established.
+
+Part of #5128
 
 ## Spec
 
@@ -39,12 +42,36 @@ The cause of the #5128 wedge on `GRQ-25` is not established.
 - The claim hold is the fault this change can fix. The worker's 60s setup ticker
   kept logging for 2h10m after the claim, so the event loop was alive while one
   awaited setup step never returned. `runSetupWithDeadline` in `setup_steps.ts`
-  races the setup phase against `SETUP_PHASE_DEADLINE_MS` (one hour) and returns
-  a `timeout` failure if setup is still running. It is wired at the setup
-  `runPhase` in `issue_worker.ts`. A returned setup failure carries no
-  `claimNotHeld`, so `run_core.ts`'s `releaseIssueClaim` unassigns the issue.
-  One hour is far past every bounded setup subprocess (git 60-120s, pre-setup
-  command 300s by default), so only a wedged step reaches it.
+  races the setup phase against a deadline and returns a `timeout` failure if
+  setup is still running. It is wired at the setup `runPhase` in
+  `issue_worker.ts`, with the deadline from
+  `deps.infrastructure.setupDeadlineMs` (production: `setupDeadlineMs` in
+  `setup_steps.ts`).
+- The deadline is `2 × claudeTimeout + 1800s`. Setup is not only bounded
+  subprocesses: for a milestone issue the pre-sync runs the conflict-resolution
+  agent for up to `claudeTimeout` (`milestone_presync.ts`, `agentTimeoutMs`) and
+  may run a repair agent after the gate check, and the clone alone may take 600s
+  (`DEFAULT_GH_CLONE_TIMEOUT`). The 1800s covers the clone, git, gates and the
+  pre-setup command (300s by default). With the default `claude_timeout` of 3600
+  s that is 9000s.
+- A failure from the deadline releases only a claim the run holds. Every fleet
+  host shares one login, so an unassign from a run that never took the claim
+  strips another host's live claim (Issues #1139, #1193). Setup records its
+  claim on `PhaseState.setupClaim` (worker id, and `won` once `claimIssue`
+  returned `claimed`). When the deadline fires, `workOnIssueCore` treats the
+  claim as held if `won` is set or `ownClaimCommentPresent` finds this run's
+  `CLAIM_LOCK:<workerId>` comment; otherwise the result carries `claimNotHeld`,
+  which `run_core.ts`'s `releaseIssueClaim` honours by releasing nothing. A read
+  of the comments that fails counts as not held.
+- The abandoned setup is told to stop. `onAbandon` sets `state.setupAbandoned`,
+  and `workOnIssueSetupBranch` checks it before each of the seven step start
+  lines and right after `claimIssue` and `startHeartbeat` return, so it does no
+  further claim, clone, heartbeat or git work. A heartbeat that starts late is
+  stopped. A claim won late, when the run did not release it, is unassigned by
+  the abandoned setup; one the run already released is not released twice
+  (`state.setupClaimReleasedByRun`). Between two step lines the setup does not
+  check the flag, so the step that is running when the deadline fires finishes
+  its own call (a milestone pre-sync agent run is the longest) before it stops.
 
 ### Undiscoverable Facts
 
@@ -81,22 +108,39 @@ flowchart LR
     `setup: repository setup`;
   - a refused claim logs only `issue claim`;
   - a completed setup logs all seven lines in order.
-- `worker/deno/tests/setup_deadline_5128_test.ts` covers the deadline:
-  - `runSetupWithDeadline` returns the setup result when setup settles first;
-  - it ends a setup that never settles with a `timeout` failure;
-  - it swallows a rejection that arrives after the deadline;
-  - `workOnIssue ends a run whose setup wedges with a setup timeout failure, so the claim is released (Issue #5128)`
-    drives `workOnIssue` with a `claimIssue` that never returns and gets a
-    `setup` / `timeout` failure without `claimNotHeld`.
+- `worker/deno/tests/setup_deadline_5128_test.ts` (11 tests at head) covers the
+  deadline:
+  - `setupDeadlineMs` exceeds one agent budget plus the clone and pre-setup
+    bounds, and grows by two agent budgets per extra `claudeTimeout`;
+  - `runSetupWithDeadline` returns the setup result and never abandons when
+    setup settles first, and abandons a setup that never settles once, with a
+    `timeout` failure;
+  - `ownClaimCommentPresent` is true only for a found own claim comment; a
+    failed read and a worker id that is not a plain id answer false;
+  - through `workOnIssue`: a wedge inside `claimIssue` with no claim of its own
+    returns `claimNotHeld`, and a claim that comes back late is released once
+    and the setup goes no further; a wedge inside `claimIssue` with this run's
+    claim comment present has no `claimNotHeld`, and a late claim is not
+    released a second time; a wedge after a won claim has no `claimNotHeld`, and
+    a clone that returns late starts no heartbeat and releases nothing; a
+    heartbeat that starts after the deadline is stopped; and, for a wedge in
+    `checkClaimChurn`, `getRepoDefaultBranch` or `createFeatureBranchFromBase`,
+    the next step (`repository setup`, `feature branch`, `pre-setup command`)
+    never logs its start line.
+- `worker/deno/tests/run_core_test.ts` already drives the consumers of that
+  result: "failure path releases the claim (unassign + clear) — Issue #2648
+  regression" releases on a failure without `claimNotHeld`, and "a failed run
+  that never held the claim releases nothing (Issue #1139)" releases nothing
+  with it.
 - `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep names each setup step from its start line, past the phase ticker (Issue #5128)`
   covers each of the seven labels behind ticker lines, a later step winning, and
   an unknown step name giving `unknown`.
 - Docs updated: the hard-kill sections of `docs/CALLBACKS.md` ("Filing.") and
   `docs/TROUBLESHOOTING.md` list the setup labels. `docs/TROUBLESHOOTING.md`
-  also describes the one-hour setup deadline and the claim release. A grep for
-  `agent turn` outside `docs/archive/` found no other copy of the label list.
-  The `STEP_PATTERNS`, `hardKillLastStep` and `formatHardKillBody` doc comments
-  describe the setup match.
+  also describes the setup deadline, the claim it releases and the late-step
+  stop. A grep for `agent turn` outside `docs/archive/` found no other copy of
+  the label list. The `STEP_PATTERNS`, `hardKillLastStep` and
+  `formatHardKillBody` doc comments describe the setup match.
 - Issue-number provenance: #5095 and #4254 are cited only by existing text the
   docs change re-wraps.
 
@@ -112,23 +156,29 @@ flowchart LR
   `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep names each setup step from its start line, past the phase ticker (Issue #5128)`
 - **symptom** — a run wedged in setup holds its claim until the launcher's
   watchdog reaps the container, so it never releases the claim
-- **status** — `reproduced` — a `workOnIssue` run whose `claimIssue` never
-  returns did not return. With the deadline unwired it was still running after
-  120s and was stopped; with it wired it returns a `setup` / `timeout` failure
-  in about 64ms.
+- **status** — `partial` — a `workOnIssue` run whose `claimIssue` never returns
+  did not return before the deadline was wired: it was still running after 120s
+  and was stopped. With it wired it returns a `setup` / `timeout` failure. The
+  `GRQ-25` wedge itself was not reproduced.
 - **regression test** —
-  `worker/deno/tests/setup_deadline_5128_test.ts::workOnIssue ends a run whose setup wedges with a setup timeout failure, so the claim is released (Issue #5128)`
+  `worker/deno/tests/setup_deadline_5128_test.ts::workOnIssue: a wedge after a won claim releases the claim and does no later setup work (Issue #5128)`
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — a container wedged and the launcher watchdog reaped it, so the run
-  never released its claim — evidence:
-  `worker/deno/tests/setup_deadline_5128_test.ts::workOnIssue ends a run whose setup wedges with a setup timeout failure, so the claim is released (Issue #5128)`,
-  `worker/deno/lib/setup_steps.ts` (`runSetupWithDeadline`),
-  `worker/deno/lib/issue_worker.ts` (setup `runPhase`),
-  `worker/deno/lib/run_core.ts` (`releaseIssueClaim`) — reviewer: met
+- **partial** — a container wedged and the launcher watchdog reaped it, so the
+  run never released its claim — evidence:
+  `worker/deno/tests/setup_deadline_5128_test.ts` (the four `workOnIssue`
+  tests), `worker/deno/lib/setup_steps.ts` (`runSetupWithDeadline`,
+  `setupDeadlineMs`), `worker/deno/lib/issue_worker.ts` (setup `runPhase`),
+  `worker/deno/tests/run_core_test.ts` (the Issue #2648 and #1139 release tests)
+  — reviewer: partial — reason: a wedge in a live worker now releases the claim
+  the run holds. Not covered: a guest that stops first is still reaped by the
+  watchdog and its claim is freed by the assigned-without-heartbeat recovery; a
+  `claimIssue` that wedges after its assignment with no claim comment of this
+  run's on the issue is left to that recovery; the cause of the `GRQ-25` wedge
+  is not established.
 
 ## Test Plan
 
@@ -141,29 +191,45 @@ flowchart LR
       (`hardKillLastStep` returned `unknown`), and the failed-setup and
       completed-setup cases captured no `[setup-step]` lines. The refused-claim
       case's log assertion was first run after the fix.
-- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (five cases). Red
-      with the deadline unwired from `issue_worker.ts`: the `workOnIssue` case
-      hung for over 120s and was stopped. The helper cases were first run after
-      the fix.
+- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (11 tests at head).
+      With the step-boundary checks in `setup_branch_phase.ts` disabled, the
+      no-own-claim, won-claim and late-heartbeat `workOnIssue` tests failed;
+      with `state.setupClaimReleasedByRun` forced false, the own-claim-comment
+      test failed. The helper tests were first run after the fix. Earlier
+      iterations of this file had a constant-restating test and a late-rejection
+      test that passed without the code they named; both are removed.
 - [x] `deno task test:unit` on `setup_deadline_5128_test.ts`,
-      `setup_step_log_test.ts`, `hard_kill_report_test.ts`,
-      `issue_worker_test.ts`, `setup_branch_presync_test.ts` and
-      `setup_branch_resume_test.ts`: 219 passed, 0 failed.
-- [x] `deno task test:unit` on the two test files plus the existing setup-phase
-      suites (`setup_branch_presync_test.ts`, `setup_branch_resume_test.ts`,
-      `object_store_repair_test.ts`, `setup_broken_ref_repair_test.ts`,
-      `lane_scoped_worktree_test.ts`, all under `worker/deno/tests/`): 104
-      passed, 0 failed.
+      `setup_step_log_test.ts`, `hard_kill_report_test.ts` and the 22 test files
+      that call `workOnIssue` or `workOnIssueSetupBranch`: 400 passed, 0 failed.
+      `deno task check` type-checked 1176 files without error.
 - [x] `./quality.sh < /dev/null` on the final code: Result PASSED (with skipped
       checks). Config integration (no `.config.json`) and Checkov (no binary or
       container runtime) were skipped on this host. The first run failed on
       three things, all fixed in the second commit: the Semgrep non-literal
       RegExp, the unclaimed sweep module and the manifest completeness check.
 - Callers checked: `hardKillLastStep` is called by `formatHardKillBody`, which
-  gets the new labels. `workOnIssueSetupBranch` adds only `logger.info` calls,
-  so its control flow is unchanged. `runSetupWithDeadline` has one caller, the
-  setup `runPhase` in `workOnIssueCore`. The new module is claimed by
+  gets the new labels. `workOnIssueSetupBranch` has one caller,
+  `workOnIssueCore`; its extra return arms are reached only after
+  `state.setupAbandoned`, which only the deadline sets. `runSetupWithDeadline`
+  has one caller, the setup `runPhase`. `InfrastructureDeps.setupDeadlineMs` is
+  built in `issue_worker_wiring.ts` (production and `createMockDeps`), the only
+  two constructors. The new module is claimed by
   `docs/audits/lib-sweep-coverage/top-up-5128.json`.
+- Branch outcomes: deadline fires with claim won
+  (`workOnIssue: a wedge after a
+  won claim …`); with own claim comment present
+  (`… after this run's claim comment
+  landed releases it, once`); with no claim
+  of its own (`… with no claim of its
+  own does not unassign`); setup settles
+  first (`runSetupWithDeadline returns the
+  setup result …`); late claim, late
+  clone and late heartbeat after abandonment (the same four `workOnIssue`
+  tests); unreadable comments and a non-plain worker id
+  (`ownClaimCommentPresent …`); abandonment before `repository setup`,
+  `feature branch` and `pre-setup command` (the three next-step tests). The
+  checkpoint before `default branch sync` is reached only through the
+  post-`startHeartbeat` check the late-heartbeat test covers.
 
 ## Merge verification
 
@@ -174,9 +240,8 @@ CI and code review are pending.
 This does not fix or explain the wedge itself. A setup wedge in a step between
 two start lines is reported as "in or after" the earlier step. The deadline
 needs a live worker: if the guest stops first, the watchdog still reaps it and
-the assigned-without-heartbeat recovery frees the claim, as before. An abandoned
-setup step is not cancelled. If it ever returned after the deadline, the rest of
-setup would run on with no run waiting for it. A late `claimIssue` could
-re-assign the released issue, a late `startHeartbeat` would leave a heartbeat
-running for it, and late git work could clash with the next run on that lane.
-The run_core unassign is read from the code, not driven by a test.
+the assigned-without-heartbeat recovery frees the claim, as before. A
+`claimIssue` that wedges after its assignment, with no claim comment of this
+run's on the issue, is also left to that recovery, because the run cannot prove
+the claim is its own. An abandoned setup stops at its next step boundary, not
+mid-step: the step running when the deadline fires finishes its own call first.

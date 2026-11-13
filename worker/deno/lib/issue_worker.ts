@@ -102,7 +102,7 @@ import type {
 
 import { workOnIssueMergedPrPrecheck } from "./phases/merged_pr_precheck_phase.ts";
 import { workOnIssueSetupBranch } from "./phases/setup_branch_phase.ts";
-import { runSetupWithDeadline } from "./setup_steps.ts";
+import { ownClaimCommentPresent, runSetupWithDeadline } from "./setup_steps.ts";
 import { workOnIssueClarityPhase } from "./phases/clarity_assessment_phase.ts";
 import { workOnIssueBaselineQuality } from "./phases/baseline_quality_phase.ts";
 import { workOnIssueExecuteClaude } from "./phases/execute_phase.ts";
@@ -601,15 +601,40 @@ async function workOnIssueCore(
     const setupResult = await runPhase(
       "setup",
       () =>
-        runSetupWithDeadline(() => workOnIssueSetupBranch(ctx, state, deps)),
+        runSetupWithDeadline(
+          () => workOnIssueSetupBranch(ctx, state, deps),
+          {
+            deadlineMs: deps.infrastructure.setupDeadlineMs(ctx.config),
+            onAbandon: () => {
+              state.setupAbandoned = true;
+            },
+          },
+        ),
     );
     if (setupResult.status === "failure") {
+      // The run releases the claim on a failure, and every fleet host shares
+      // one login, so after a setup deadline it may do so only for a claim it
+      // holds: one `claimIssue` returned, or whose own comment is on the issue.
+      let claimNotHeld = false;
+      if (state.setupAbandoned) {
+        const claim = state.setupClaim;
+        const held = claim !== undefined && (claim.won ||
+          await ownClaimCommentPresent(
+            deps.github.runGhCommand,
+            ctx.repo,
+            ctx.issueNumber,
+            claim.workerId,
+          ));
+        state.setupClaimReleasedByRun = held;
+        claimNotHeld = !held;
+      }
       return {
         category: setupResult.category,
         success: false,
         phase: "setup",
         reason: setupResult.reason,
         timings,
+        ...(claimNotHeld ? { claimNotHeld: true } : {}),
       };
     }
     if (setupResult.status === "early_exit") {

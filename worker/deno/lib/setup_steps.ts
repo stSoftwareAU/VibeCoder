@@ -31,24 +31,24 @@ export function setupStepStartLine(step: SetupStep): string {
   return `[setup-step] ${step}: started`;
 }
 
+/** Seconds setup may spend on work outside the agent runs (Issue #5128). */
+export const SETUP_FIXED_ALLOWANCE_SECONDS = 1800;
+
 /**
  * How long the setup phase may run before the run abandons it (Issue #5128).
  *
- * Every setup subprocess is already bounded (git 60-120s, pre-setup command
- * 300s by default), so a setup that is still running after an hour is wedged
- * on a step that will not return. On `GRQ-25` one sat in setup for over two
- * hours, holding its claim, until the launcher's watchdog reaped the
- * container and the run never released the claim. Abandoning setup at this
- * deadline ends the run with a `timeout` failure, so the normal failure path
- * releases the claim while the worker is still alive.
+ * Setup is not just bounded subprocesses: for a milestone issue the pre-sync
+ * runs the conflict-resolution agent for up to `claudeTimeout`
+ * (`milestone_presync.ts`, `agentTimeoutMs`), then verifies the gates and may
+ * run a repair agent, and the clone alone may take 600s
+ * (`DEFAULT_GH_CLONE_TIMEOUT`). The deadline is therefore two agent budgets
+ * plus a fixed allowance for the clone, git, gates and the pre-setup command,
+ * so a slow-but-progressing setup is never abandoned and only a step that has
+ * wedged reaches it. On `GRQ-25` one sat in setup for over two hours, holding
+ * its claim, until the launcher's watchdog reaped the container.
  */
-export const SETUP_PHASE_DEADLINE_MS = 60 * 60 * 1000;
-
-let setupPhaseDeadlineMs = SETUP_PHASE_DEADLINE_MS;
-
-/** Override the setup deadline; omit to restore the default. Tests only. */
-export function setSetupPhaseDeadlineForTests(ms?: number): void {
-  setupPhaseDeadlineMs = ms ?? SETUP_PHASE_DEADLINE_MS;
+export function setupDeadlineMs(config: { claudeTimeout: number }): number {
+  return (2 * config.claudeTimeout + SETUP_FIXED_ALLOWANCE_SECONDS) * 1000;
 }
 
 /** The setup-phase result a run ends with when setup misses its deadline. */
@@ -58,31 +58,38 @@ export interface SetupDeadlineFailure {
   reason: string;
 }
 
+/** What `runSetupWithDeadline` is told about the deadline. */
+export interface SetupDeadlineOptions {
+  deadlineMs: number;
+  /** Called once, synchronously, when the deadline fires and setup is abandoned. */
+  onAbandon: () => void;
+}
+
 /**
- * Run the setup phase under {@link SETUP_PHASE_DEADLINE_MS} (Issue #5128).
+ * Run the setup phase under a deadline (Issue #5128).
  *
- * Returns the phase's own result when it settles first. Otherwise returns a
- * `timeout` failure and stops waiting: the wedged step is left behind, and the
- * run goes on to release its claim. A rejection after the deadline is
- * swallowed, because nothing is waiting for it.
+ * Returns the phase's own result when it settles first. Otherwise calls
+ * `onAbandon` and returns a `timeout` failure: the abandoned setup keeps
+ * running until its next step boundary, where it checks the flag `onAbandon`
+ * set and returns (see `workOnIssueSetupBranch`). A rejection after the
+ * deadline is not awaited by anything, so it is swallowed here.
  */
 export async function runSetupWithDeadline<T>(
   setup: () => Promise<T>,
+  options: SetupDeadlineOptions,
 ): Promise<T | SetupDeadlineFailure> {
-  const deadlineMs = setupPhaseDeadlineMs;
+  const { deadlineMs, onAbandon } = options;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const pending = setup();
   const expired = new Promise<SetupDeadlineFailure>((resolve) => {
     timer = setTimeout(() => {
-      pending.catch(() => {});
+      onAbandon();
       resolve({
         status: "failure",
         category: "timeout",
-        reason:
-          `Setup did not finish within ${
-            Math.round(deadlineMs / 60000)
-          } minutes, so the run abandoned it to release its claim ` +
-          "(Issue #5128).",
+        reason: `Setup did not finish within ${
+          Math.round(deadlineMs / 60000)
+        } minutes, so the run abandoned it (Issue #5128).`,
       });
     }, deadlineMs);
   });
@@ -90,5 +97,38 @@ export async function runSetupWithDeadline<T>(
     return await Promise.race([pending, expired]);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** Matches the ids a claim worker id can contain; it is built from a login and a timestamp. */
+const SAFE_WORKER_ID = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Whether this run's own claim comment is on the issue (Issue #5128).
+ *
+ * A setup abandoned while `claimIssue` is still pending does not know whether
+ * the claim was taken. Every fleet host shares one login, so the run may
+ * release the claim only when its own `CLAIM_LOCK:<workerId>` comment is
+ * there; otherwise an unassign would strip another host's live claim. Any
+ * failure to read the comments answers `false`, never "held".
+ */
+export async function ownClaimCommentPresent(
+  ghCommand: (args: string[]) => Promise<string>,
+  repo: string,
+  issueNumber: number,
+  workerId: string,
+): Promise<boolean> {
+  if (!SAFE_WORKER_ID.test(workerId)) return false;
+  try {
+    const found = await ghCommand([
+      "api",
+      "--paginate",
+      `repos/${repo}/issues/${issueNumber}/comments`,
+      "--jq",
+      `.[] | select(.body | contains("CLAIM_LOCK:${workerId} -->")) | .id`,
+    ]);
+    return found.trim() !== "";
+  } catch {
+    return false;
   }
 }

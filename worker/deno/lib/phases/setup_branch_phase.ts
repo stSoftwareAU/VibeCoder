@@ -18,7 +18,7 @@ import type {
   PhaseState,
 } from "../issue_worker_types.ts";
 import type { WorkerDeps } from "../issue_worker_wiring.ts";
-import { startHeartbeat } from "../heartbeat.ts";
+import { startHeartbeat, stopHeartbeat } from "../heartbeat.ts";
 import { createMilestoneBranchName } from "../git_branch.ts";
 import {
   resolveFleetAuthors,
@@ -69,6 +69,18 @@ import { releaseHostFaultFailureLabels } from "../host_fault_release.ts";
 import { setupStepStartLine } from "../setup_steps.ts";
 
 /**
+ * What an abandoned setup returns (Issue #5128). Nothing reads it: the run
+ * ended on the setup deadline and moved on, so this only stops the phase.
+ */
+function abandonedSetup(): PhaseResult {
+  return {
+    category: "timeout",
+    status: "failure",
+    reason: "Setup was abandoned after its deadline (Issue #5128).",
+  };
+}
+
+/**
  * Set up the repository and create/checkout the feature branch.
  *
  * Handles cloning, claiming the issue, creating the branch name,
@@ -109,6 +121,8 @@ export async function workOnIssueSetupBranch(
   });
   // Issue #5128: each step logs as it starts so a hard-kill report names the
   // step a wedge is in or after.
+  if (state.setupAbandoned) return abandonedSetup();
+  state.setupClaim = { workerId, won: false };
   logger.info(setupStepStartLine("issue claim"), { repo, issueNumber });
   const claimResult = await deps.issues.claimIssue({
     repo,
@@ -140,6 +154,32 @@ export async function workOnIssueSetupBranch(
       workDir: config.workDir,
     },
   });
+  // Issue #5128: a claim won after the run gave up on setup has no run to
+  // work or release it. Release it here, unless the run already did.
+  if (state.setupAbandoned) {
+    if (
+      claimResult.ok && claimResult.value.claimed &&
+      !state.setupClaimReleasedByRun
+    ) {
+      try {
+        await deps.github.createClient(logger).unassignIssue(
+          repo,
+          issueNumber,
+          [githubUser],
+        );
+      } catch (err) {
+        logger.warn("Failed to release a claim won after the setup deadline", {
+          repo,
+          issueNumber,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return abandonedSetup();
+  }
+  if (state.setupClaim && claimResult.ok && claimResult.value.claimed) {
+    state.setupClaim.won = true;
+  }
   if (!claimResult.ok) {
     return {
       category: "internal_error",
@@ -179,6 +219,7 @@ export async function workOnIssueSetupBranch(
   }
 
   // Check for claim churn (Issue #861, #999)
+  if (state.setupAbandoned) return abandonedSetup();
   logger.info(setupStepStartLine("claim churn check"), { repo, issueNumber });
   const churnResult = await deps.issues.checkClaimChurn({
     repo,
@@ -201,6 +242,7 @@ export async function workOnIssueSetupBranch(
   // (Issue #923) this is the lane's own worktree off that clone, so a
   // sibling slot working the same repository cannot move HEAD underneath
   // this run.
+  if (state.setupAbandoned) return abandonedSetup();
   logger.info(setupStepStartLine("repository setup"), { repo, issueNumber });
   const setupResult = await deps.git.setupRepo(
     repo,
@@ -219,6 +261,7 @@ export async function workOnIssueSetupBranch(
   // Record initial heartbeat (Issue #631). The initial record is awaited
   // (Issue #1888); on failure release the claim and surface the failure
   // so the worker doesn't proceed without a live heartbeat marker.
+  if (state.setupAbandoned) return abandonedSetup();
   logger.info(setupStepStartLine("heartbeat start"), { repo, issueNumber });
   const heartbeatStart = await startHeartbeat({
     repo,
@@ -227,6 +270,13 @@ export async function workOnIssueSetupBranch(
     recordFn: deps.crashHandling.recordHeartbeat,
     clearFn: deps.crashHandling.clearHeartbeat,
   });
+  // Issue #5128: a heartbeat that starts after the run ended has nothing to
+  // stop it, because the run's own cleanup has already passed. A failed start
+  // must not release the claim either: the run did that when it ended.
+  if (state.setupAbandoned) {
+    if (heartbeatStart.ok) await stopHeartbeat(heartbeatStart.value);
+    return abandonedSetup();
+  }
   if (!heartbeatStart.ok) {
     try {
       const ghClient = deps.github.createClient(logger);
@@ -253,6 +303,7 @@ export async function workOnIssueSetupBranch(
   state.branchName = deps.git.createBranchName(issueNumber, issueTitle);
 
   // Determine default branch from GitHub API, then sync it locally
+  if (state.setupAbandoned) return abandonedSetup();
   logger.info(setupStepStartLine("default branch sync"), { repo, issueNumber });
   const detectedBranch = await deps.git.getRepoDefaultBranch(repo);
   if (!detectedBranch.ok) {
@@ -725,6 +776,7 @@ export async function workOnIssueSetupBranch(
 
   // Create feature branch from base (skipped when a checkpoint was resumed)
   if (!state.resumedFromCheckpoint) {
+    if (state.setupAbandoned) return abandonedSetup();
     logger.info(setupStepStartLine("feature branch"), { repo, issueNumber });
     let branchResult = await deps.git.createFeatureBranchFromBase(
       state.branchName,
@@ -949,6 +1001,7 @@ export async function workOnIssueSetupBranch(
   }
 
   // Run repository-specific pre-setup command if configured (Issue #85, #1184)
+  if (state.setupAbandoned) return abandonedSetup();
   logger.info(setupStepStartLine("pre-setup command"), { repo, issueNumber });
   const preSetupResult = await runPreSetupCommand(
     repo,

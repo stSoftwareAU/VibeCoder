@@ -247,9 +247,15 @@ and it is not part of the dedup signature), then moves the file to
 `${LOG_DIR}/hard-kill-archive/`, where it is kept for up to 30 days or 2,000
 files. The archive, not the issue, holds the evidence (see
 [a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)). A
-setup phase still running after one hour is abandoned before the watchdog fires
-(Issue #5128): the run ends as a setup `timeout` failure and releases its claim,
-so a step that wedges while the worker is still alive no longer holds the issue
+setup phase still running after two agent budgets (`claude_timeout`, for the
+milestone pre-sync agent and its repair run) plus 30 minutes for the clone, git,
+gates and pre-setup command is abandoned before the watchdog fires (Issue #5128):
+the run ends as a setup `timeout` failure. It releases the claim only when it
+holds it: a claim `claimIssue` returned, or one whose own claim comment is on
+the issue. A claim never taken is left alone, because every host shares one
+login and an unassign would strip another host's live claim. The abandoned setup
+returns at its next step boundary, and a claim it wins late is released. A step
+that wedges while the worker is still alive therefore no longer holds the issue
 until the launcher reaps the container. Check whether the host is wedging
 repeatedly — a chronic offender needs the runtime itself looked at:
 
