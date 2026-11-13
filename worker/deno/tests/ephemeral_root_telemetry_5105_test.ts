@@ -559,14 +559,14 @@ Deno.test("Issue #5105 - a root that does not apply is neither walked nor announ
 });
 
 Deno.test("Issue #5105 - the production monitor says nothing of the root on a trim-honoured launch", async () => {
-  const saved = [HOST_DISK_AVAIL_ENV, HOST_DISK_TOTAL_ENV, "HOME"].map((n) =>
-    [n, Deno.env.get(n)] as const
-  );
-  Deno.env.set(HOST_DISK_AVAIL_ENV, String(5 * GIB));
-  Deno.env.set(HOST_DISK_TOTAL_ENV, String(460 * GIB));
   const tmp = await Deno.makeTempDir();
-  // No launcher reading under HOME: the runtime honoured the trim.
-  Deno.env.set("HOME", tmp);
+  // The launcher's baseline and HOME reach the monitor through the injected
+  // environment, so no process-wide state is touched.
+  const launchEnv: Record<string, string> = {
+    [HOST_DISK_AVAIL_ENV]: String(5 * GIB),
+    [HOST_DISK_TOTAL_ENV]: String(460 * GIB),
+    HOME: tmp,
+  };
   const logs: string[] = [];
   try {
     const { cleanup } = await createProductionRunCoreDeps({
@@ -574,7 +574,9 @@ Deno.test("Issue #5105 - the production monitor says nothing of the root on a tr
       workDir: tmp,
       githubUser: "test-user",
       config: buildDefaultWorkerConfig(),
-      env: () => undefined,
+      env: (name) => launchEnv[name],
+      // The runtime honoured the trim: no launcher reading says otherwise.
+      trimRefused: () => false,
       logger: createLogger({ write: (m) => logs.push(m) }),
     });
     enableInFlightHostDiskGate(true);
@@ -592,10 +594,6 @@ Deno.test("Issue #5105 - the production monitor says nothing of the root on a tr
       cleanup();
     }
   } finally {
-    for (const [n, v] of saved) {
-      if (v === undefined) Deno.env.delete(n);
-      else Deno.env.set(n, v);
-    }
     await Deno.remove(tmp, { recursive: true });
   }
 });

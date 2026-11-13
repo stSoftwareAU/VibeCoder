@@ -662,6 +662,8 @@ export interface ProductionDepsOptions {
   config?: WorkerConfig;
   /** Injectable monitor for exercising the registered heavy-build probe. */
   hostDisk?: HostDiskMonitor;
+  /** Test seam: the launcher's trim verdict; defaults to the launch file's. */
+  trimRefused?: () => boolean;
   /** Test seams for the PR-feedback production callback. */
   setupRepoFn?: typeof setupRepo;
   runGitCommandFn?: typeof runGitCommand;
@@ -1161,8 +1163,10 @@ export async function createProductionRunCoreDeps(
   });
   // Host free-disk monitor (Issue #226): the launcher's df baseline plus
   // the work volume's growth since launch; native mode reads df directly.
+  const trimRefused = options.trimRefused ?? workVolumeTrimRefusedForLaunch;
   const hostDisk = options.hostDisk ?? new HostDiskMonitor({
     workDir,
+    env,
     log: bindLogger(logger),
     // Issue #1550: the launcher's per-tick reading, written to the worker
     // log directory — mounted read-write at `${HOME}/logs` in the container.
@@ -1183,10 +1187,10 @@ export async function createProductionRunCoreDeps(
     // the floor verdict. A later probing check names the completed figure.
     // The root is the missing term only where the runtime refused the trim,
     // so elsewhere no refresh starts and the detail says nothing about it.
-    ephemeralCargoRootApplies: workVolumeTrimRefusedForLaunch,
+    ephemeralCargoRootApplies: trimRefused,
     measureEphemeralCargoRoot: () =>
       measureEphemeralCargoRootBytesIfTrimRefused({
-        trimRefused: workVolumeTrimRefusedForLaunch,
+        trimRefused,
         measure: () => measureEphemeralCargoRoot(),
       }),
   });
@@ -4901,7 +4905,7 @@ export async function createProductionRunCoreDeps(
     reportWorkVolumeUsage: (options) =>
       reportWorkVolumeWithEphemeralRoot(options, {
         report: (o) => workVolume.report(o),
-        trimRefused: workVolumeTrimRefusedForLaunch,
+        trimRefused,
         measure: () => measureEphemeralCargoRoot(),
         record: (bytes) => hostDisk.recordEphemeralCargoRootBytes(bytes),
       }),
