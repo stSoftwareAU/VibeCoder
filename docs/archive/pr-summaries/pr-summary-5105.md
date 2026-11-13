@@ -91,7 +91,7 @@ kill criteria remain outside this PR, so the issue stays open.
 
 - **symptom** — a forced host-disk probe awaited a full cargo-root scan, and
   normal file deletion made the strict telemetry report `unknown`.
-- **status** — `reproduced` — the focused tests failed before the behaviour fix
+- **status** — `verified` — the focused tests failed before the behaviour fix
   and passed afterwards, using controlled promises, clocks and `du` results.
 - **regression test** —
   `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts::Issue #5105 - the registered build probe returns low during one slow shared scan`
