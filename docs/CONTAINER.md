@@ -1716,6 +1716,9 @@ build artefacts.
 - **One directory per account.** The repository's own commands run as `agent`
   and the worker's as `vibe` (Issue #571); neither can write a directory the
   other created, so the account the command drops to is part of the key.
+  The worker releases the agent's directories by removing them as `agent`
+  (`sudo -n -u agent -- rm -rf`), so a pass's release no longer leaves them to
+  the relaunch (Issue #5105).
 - **Nothing changes where the trim is honoured.** No launcher reading, an
   older launcher that writes no flag, a runtime that trims, or an explicit
   `CARGO_TARGET_DIR` — all leave the environment exactly as it was. The
@@ -1891,6 +1894,21 @@ caches 0.6 GB · other 0.2 GB
   root-only `lost+found` lands here, so a permanent permission denial never
   drowns out a real fault; a work root that cannot be read **at all** is
   reported as an error on the same line rather than as an empty volume.
+- **On a trim-refused runtime the line ends with the ephemeral cargo root**
+  (Issue #5105). Cargo builds there write to `/var/tmp/vibe-cargo-target` on the
+  container's own layer — real host disk, but outside the volume, so it is
+  **not** in the total and not in any bucket. The line measures it and appends
+  its size and largest target directories; a root that cannot be measured
+  reads `unknown`, never `0.0 GB`. The host-disk estimate's detail names the
+  same figure, because its launch-baseline arithmetic subtracts only the
+  volume's growth. Where the trim is honoured the line is unchanged.
+
+  ```text
+  Work volume: total 18.4 GB — … · other 0.2 GB — ephemeral cargo root 12.3 GB
+  on the container's own layer, outside the volume (2 target dirs: GRQ-core-agent
+  9.1 GB, GRQ-core 3.2 GB) (Issue #5105)
+  ```
+
 - `work-volume-prune` prints the breakdown **before** its sweep, and again
   **after** when it actually removed something, so a reclamation's
   before/after is visible. An idle prune pays for one walk, not two.

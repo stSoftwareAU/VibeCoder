@@ -581,6 +581,11 @@ export class HostDiskMonitor {
   private recreateUnrecovered = false;
   /** The launcher's largest-host-directories text, if it wrote one. */
   private largestDirs: string | undefined = undefined;
+  /**
+   * Bytes the ephemeral cargo root holds on the container's own layer, fed by
+   * the work-volume report (Issue #5105); null = not measured.
+   */
+  private ephemeralCargoRootBytes: number | null = null;
   private baselined = false;
   private lastSampleAt: number | undefined;
   private lastStatus: HostDiskStatus = {
@@ -589,6 +594,15 @@ export class HostDiskMonitor {
     detail: "not probed yet",
   };
   private lastLevel: HostDiskStatus["level"] | undefined;
+
+  /**
+   * Record the ephemeral cargo root's size (Issue #5105). It lives outside the
+   * work volume, so the launch-baseline estimate cannot see its growth; the
+   * estimate's detail names it instead. `null` means not measured.
+   */
+  recordEphemeralCargoRootBytes(bytes: number | null): void {
+    this.ephemeralCargoRootBytes = bytes;
+  }
 
   constructor(options: HostDiskMonitorOptions) {
     this.workDir = options.workDir;
@@ -815,6 +829,13 @@ export class HostDiskMonitor {
         source: "launch-baseline",
         detail: `host (${origin}) ${cls.detail}${
           ratchet === "" ? "" : ` — ${ratchet}`
+        }${
+          this.ephemeralCargoRootBytes !== null &&
+            this.ephemeralCargoRootBytes > 0
+            ? ` — ephemeral cargo root ${
+              formatGb(this.ephemeralCargoRootBytes)
+            } on the container's own layer; its growth since the launcher's reading is not in this estimate (Issue #5105)`
+            : ""
         }`,
       };
     } else if (reading !== null) {

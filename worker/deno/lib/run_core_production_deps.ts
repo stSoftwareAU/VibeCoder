@@ -557,6 +557,10 @@ import {
 import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
 import {
+  measureEphemeralCargoRoot,
+  reportWorkVolumeWithEphemeralRoot,
+} from "./ephemeral_root_telemetry.ts";
+import {
   reclaimWorkVolumeTiers,
   repoDirName,
   summariseWorkVolumeTiers,
@@ -4877,8 +4881,16 @@ export async function createProductionRunCoreDeps(
     // walk per top-level directory under a single 120 s budget. Logged at
     // cycle start next to `Concurrency:` so growth is visible in the worker
     // log before the disk gate trips, and again at end of run (Issue #345)
-    // where the volume is at its fullest.
-    reportWorkVolumeUsage: (options) => workVolume.report(options),
+    // where the volume is at its fullest. Issue #5105: on a trim-refused
+    // runtime the line also carries the ephemeral cargo root (the container's
+    // own layer, outside the volume), and the host-disk monitor is told its size.
+    reportWorkVolumeUsage: (options) =>
+      reportWorkVolumeWithEphemeralRoot(options, {
+        report: (o) => workVolume.report(o),
+        trimRefused: workVolumeTrimRefusedForLaunch,
+        measure: () => measureEphemeralCargoRoot(),
+        record: (bytes) => hostDisk.recordEphemeralCargoRootBytes(bytes),
+      }),
     // Issue #345: both disk signals blind is a health condition — the state
     // GRQ-23 was in for days before it crashed out of disk.
     checkDiskTelemetry: () => diskTelemetry(),

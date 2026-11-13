@@ -54,7 +54,8 @@
  *   removes a checkout's target directories when the maintenance pass that
  *   built in it finishes, rather than leaving them to the relaunch. The
  *   pre-PR verifier's disposable checkout is released the same way when the
- *   verifier finishes (Issue #4743).
+ *   verifier finishes (Issue #4743). A directory a dropped build wrote as
+ *   `agent` is removed as `agent` (Issue #5105).
  *
  * Pruning counts what it removes as room for the next build. That holds even
  * where the runtime refuses the trim: the blocks a guest deletes stay
@@ -93,6 +94,7 @@ import {
   EPHEMERAL_CARGO_TARGET_ROOT,
 } from "./ephemeral_build_cache.ts";
 import { findProjectManifests } from "./project_manifests.ts";
+import { UNTRUSTED_USER } from "./untrusted_command_env.ts";
 
 const GIB = 1_073_741_824;
 
@@ -655,8 +657,9 @@ export interface ReleasedTargetDirs {
  * Remove every account's ephemeral target directory for one checkout, once
  * the pass that built in it has finished.
  *
- * Best-effort: a directory the worker's account cannot remove (another
- * account's, under the sticky root) is reported, not fatal.
+ * The agent account's directory is removed as that account, because the
+ * sticky root forbids the worker removing it (Issue #5105). Best-effort: a
+ * directory that still cannot be removed is reported, not fatal.
  */
 export async function releaseCheckoutTargetDirs(
   checkoutPath: string,
@@ -732,6 +735,128 @@ async function lastWriteMs(path: string): Promise<number> {
   return latest;
 }
 
+/**
+ * The account that built into a target dir, when it is not the worker's.
+ *
+ * Keys have the shape `[safeName-]digest[-account]` (`cargoTargetDirForCheckout`
+ * in `ephemeral_build_cache.ts`), so only `agent` after an 8-hex digest counts.
+ * A worker-account directory (`<name>-<digest>`) returns `undefined`.
+ */
+export function targetDirAccount(path: string): string | undefined {
+  const base = path.slice(path.lastIndexOf("/") + 1);
+  const keyed = new RegExp(`(?:^|-)[0-9a-f]{8}-${UNTRUSTED_USER}$`);
+  return keyed.test(base) ? UNTRUSTED_USER : undefined;
+}
+
+/** How a target directory is removed (Issue #5105). */
+export interface TargetDirRemovalDeps {
+  remove: (path: string) => Promise<void>;
+  removeAsAccount: (account: string, path: string) => Promise<void>;
+}
+
+/**
+ * Remove a target directory, dropping to the account that built it when the
+ * worker's own account is refused (Issue #5105). Any other failure, or a
+ * directory with no other account, rethrows the original error.
+ */
+export async function removeTargetDir(
+  path: string,
+  deps: TargetDirRemovalDeps = productionTargetDirRemoval,
+): Promise<void> {
+  try {
+    await deps.remove(path);
+  } catch (original) {
+    const account = targetDirAccount(path);
+    if (!(original instanceof Deno.errors.PermissionDenied) || !account) {
+      throw original;
+    }
+    try {
+      await deps.removeAsAccount(account, path);
+    } catch (fallback) {
+      const fallbackMessage = fallback instanceof Error
+        ? fallback.message
+        : String(fallback);
+      throw new Error(
+        `${original.message}; removing it as ${account} also failed: ` +
+          `${fallbackMessage} (Issue #5105)`,
+      );
+    }
+  }
+}
+
+/**
+ * Build the as-account remover: `sudo -n -u <account> -- rm -rf -- <path>`.
+ *
+ * It refuses, before running anything, unless the account is the untrusted
+ * one, the path is a single plain segment directly under `root` (compared as
+ * strings, so `..`, `.` and non-canonical paths fail), and `root` is a real
+ * directory rather than a symlink.
+ */
+export function targetDirRemovalAsAccount(
+  options: {
+    root?: string;
+    run?: (argv: string[]) => Promise<{ code: number; stderr: string }>;
+  } = {},
+): (account: string, path: string) => Promise<void> {
+  const root = options.root ?? EPHEMERAL_CARGO_TARGET_ROOT;
+  const run = options.run ?? (async (argv: string[]) => {
+    const out = await commandOutputWithTimeout("sudo", {
+      args: argv.slice(1),
+      stdout: "null",
+      stderr: "piped",
+      stdin: "null",
+      timeoutMs: 5 * 60_000,
+    });
+    return { code: out.code, stderr: new TextDecoder().decode(out.stderr) };
+  });
+  return async (account: string, path: string) => {
+    const refuse = (reason: string): never => {
+      throw new Error(
+        `refusing to remove ${path} as ${account}: ${reason} (Issue #5105)`,
+      );
+    };
+    if (account !== UNTRUSTED_USER) {
+      refuse(`${account} is not the ${UNTRUSTED_USER} account`);
+    }
+    const slash = path.lastIndexOf("/");
+    if (path.slice(0, slash) !== root) {
+      refuse(`its parent is not exactly ${root}`);
+    }
+    const base = path.slice(slash + 1);
+    if (!/^[A-Za-z0-9._-]+$/.test(base) || base === "." || base === "..") {
+      refuse("its name is not a plain directory name");
+    }
+    let info: Deno.FileInfo;
+    try {
+      info = await Deno.lstat(root);
+    } catch (error) {
+      return refuse(`the root cannot be inspected: ${error}`);
+    }
+    if (info.isSymlink || !info.isDirectory) {
+      refuse(`${root} is not a real directory`);
+    }
+    const argv = ["sudo", "-n", "-u", account, "--", "rm", "-rf", "--", path];
+    const { code, stderr } = await run(argv);
+    if (code !== 0) {
+      const line = stderr.split("\n").map((l) =>
+        l.trim()
+      ).find((l) => l.length > 0) ?? "no stderr";
+      throw new Error(
+        `sudo -n -u ${account} -- rm -rf exited ${code}: ${line}`,
+      );
+    }
+  };
+}
+
+/** The real filesystem removal, with the agent-account fallback. */
+export const productionTargetDirRemoval: TargetDirRemovalDeps = {
+  remove: (path) => Deno.remove(path, { recursive: true }),
+  // Built per call: the import graph is cyclic through `untrusted_command_env.ts`,
+  // so the root constant is not yet initialised when this module loads.
+  removeAsAccount: (account, path) =>
+    targetDirRemovalAsAccount()(account, path),
+};
+
 /** The real filesystem. */
 export const productionEphemeralRootDeps: EphemeralRootDeps = {
   listTargetDirs: async (root: string) => {
@@ -747,7 +872,7 @@ export const productionEphemeralRootDeps: EphemeralRootDeps = {
     }
     return dirs;
   },
-  removeDir: (path: string) => Deno.remove(path, { recursive: true }),
+  removeDir: (path: string) => removeTargetDir(path),
   nowMs: () => Date.now(),
 };
 
