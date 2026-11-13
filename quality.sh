@@ -3,6 +3,8 @@
 # Quality check script for auto-issue-worker
 # Delegates to the Deno quality gate entry point (Issue #917).
 # Falls back to running checks directly if Deno is not available.
+# The Deno gate's stages include semgrep, checkov and a gitleaks secret scan
+# of the branch's commits (Issue #5121).
 #
 # Usage:
 #   ./quality.sh                      # Normal mode — parallel, skipped checks do not fail
