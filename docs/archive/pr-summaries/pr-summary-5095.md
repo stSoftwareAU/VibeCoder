@@ -173,6 +173,15 @@ flowchart LR
   renamed `deferred_pr_drain_test.ts` case; and the unused
   `mutation_tree_guard.ts`, now deleted. The `draft` plumbing is kept on purpose
   for persisted records, as Essential Design Decisions explains.
+  - **Post-merge correction: partial at merge.** The review after merge found
+    that this PR left code whose only production callers it had removed:
+    `convertToDraftContinuation` and `buildUnmetDraftBody` (still tested),
+    `readRequiredCheckNames` (untested), and `PendingPr.draft`. It also
+    dropped the only assertion on the retained `mdSafe`. A follow-up PR
+    deletes the dead members and adds direct `mdSafe` tests. The self-heal
+    tests for older hold drafts now build their fixture from a literal
+    historical body. The `importsModule` alias branch is the one item left;
+    it needs a decision and is tracked in #5107.
 - **unrequested** — `worker/deno/lib/heavy_build_gate.ts` header claimed extra
   `parkInFlightBuild` callers — reviewer: unrequested — reason: reverted in
   `c4650290` to the base wording minus the mutation mention, so the diff now
