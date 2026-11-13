@@ -4,19 +4,23 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   type EphemeralCargoRootUsage,
   formatEphemeralCargoRootUsage,
   measureEphemeralCargoRoot,
+  measureEphemeralCargoRootBytesIfTrimRefused,
   reportWorkVolumeWithEphemeralRoot,
 } from "../lib/ephemeral_root_telemetry.ts";
-import { productionEphemeralRootDeps } from "../lib/heavy_build_gate.ts";
 import {
   HOST_DISK_AVAIL_ENV,
   HOST_DISK_TOTAL_ENV,
   HostDiskMonitor,
 } from "../lib/host_disk.ts";
+import { parseDuKilobytes } from "../lib/heavy_build_gate.ts";
+import { canEnforceUnwritableDir } from "./support/environment_capability.ts";
+
+const modesEnforced = await canEnforceUnwritableDir();
 
 const GIB = 1_073_741_824;
 
@@ -64,10 +68,7 @@ Deno.test("Issue #5105 - measure with the real listing finds a directory on disk
       `${root}/GRQ-core-agent/blob`,
       new Uint8Array(64 * 1024),
     );
-    const usage = await measureEphemeralCargoRoot(
-      productionEphemeralRootDeps,
-      root,
-    );
+    const usage = await measureEphemeralCargoRoot(undefined, root);
     assertEquals(usage.error, null);
     assertEquals(usage.dirs.length, 1);
     assertEquals(usage.dirs[0]!.path.endsWith("GRQ-core-agent"), true);
@@ -75,6 +76,41 @@ Deno.test("Issue #5105 - measure with the real listing finds a directory on disk
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test({
+  name:
+    "Issue #5105 - measure with the real listing reads unknown when du cannot read a subtree",
+  ignore: !modesEnforced, // a privileged user reads every mode
+  async fn() {
+    const root = await Deno.makeTempDir();
+    const hidden = `${root}/GRQ-core-0123abcd-agent/debug`;
+    try {
+      await Deno.mkdir(hidden, { recursive: true });
+      await Deno.writeFile(`${hidden}/blob`, new Uint8Array(1024 * 1024));
+      await Deno.chmod(hidden, 0o000);
+      const usage = await measureEphemeralCargoRoot(undefined, root);
+      assertEquals(usage.bytes, 0);
+      assertEquals(usage.dirs, []);
+      assertStringIncludes(usage.error ?? "", "du -sk");
+      assertStringIncludes(usage.error ?? "", "exited 1");
+      assertStringIncludes(
+        formatEphemeralCargoRootUsage(usage, root),
+        `ephemeral cargo root unknown — ${root} could not be measured:`,
+      );
+      const recorded: Array<number | null> = [];
+      await reportWorkVolumeWithEphemeralRoot(undefined, {
+        report: () => Promise.resolve("Work volume: 1.0 GB"),
+        trimRefused: () => true,
+        measure: () => measureEphemeralCargoRoot(undefined, root),
+        record: (bytes) => recorded.push(bytes),
+      });
+      assertEquals(recorded, [null]);
+    } finally {
+      await Deno.chmod(hidden, 0o755).catch(() => {});
+      await Deno.remove(root, { recursive: true });
+    }
+  },
 });
 
 Deno.test("Issue #5105 - format names zero, one and many dirs", () => {
@@ -182,4 +218,107 @@ Deno.test("Issue #5105 - the host-disk estimate names the root without changing 
 
   const cleared = await hostStatus(null);
   assertEquals(cleared.detail, without.detail);
+});
+
+Deno.test("Issue #5105 - a mid-cycle floor trip names the root as it stands now", async () => {
+  let usedBytes = 30 * GIB;
+  let rootBytes = 0;
+  const measured: number[] = [];
+  let t = 0;
+  const m = new HostDiskMonitor({
+    workDir: "/work",
+    env: (n) =>
+      n === HOST_DISK_AVAIL_ENV
+        ? String(60 * GIB)
+        : n === HOST_DISK_TOTAL_ENV
+        ? String(460 * GIB)
+        : undefined,
+    probe: () =>
+      Promise.resolve({ availableBytes: 0, usedBytes, totalBytes: 504 * GIB }),
+    now: () => t,
+    measureEphemeralCargoRoot: () => {
+      measured.push(t);
+      return Promise.resolve(rootBytes);
+    },
+  });
+  // Cycle start: the root has just been released, and the report records ~0.
+  m.recordEphemeralCargoRootBytes(0);
+  const start = await m.check();
+  assertEquals(start.level, "ok");
+  assertEquals(measured, [], "an ok level does not walk the root");
+
+  // Mid-cycle: builds grow the root and the volume until the floor trips.
+  rootBytes = 38.5 * GIB;
+  usedBytes = 85 * GIB;
+  t = 10 * 60_000;
+  const low = await m.check();
+  assertEquals(low.level, "low");
+  assertStringIncludes(low.detail, "ephemeral cargo root 38.5 GB");
+  assertEquals(measured, [t]);
+
+  // A failed measurement drops the stale figure rather than repeating it.
+  t = 20 * 60_000;
+  const failing = new HostDiskMonitor({
+    workDir: "/work",
+    env: (n) =>
+      n === HOST_DISK_AVAIL_ENV
+        ? String(60 * GIB)
+        : n === HOST_DISK_TOTAL_ENV
+        ? String(460 * GIB)
+        : undefined,
+    probe: () =>
+      Promise.resolve({ availableBytes: 0, usedBytes, totalBytes: 504 * GIB }),
+    now: () => t,
+    measureEphemeralCargoRoot: () => Promise.reject(new Error("du failed")),
+  });
+  failing.recordEphemeralCargoRootBytes(9 * GIB);
+  await failing.check(); // baselines at the grown volume: ok
+  usedBytes = 140 * GIB;
+  const lowUnknown = await failing.check({ force: true });
+  assertEquals(lowUnknown.level, "low");
+  assertStringIncludes(
+    lowUnknown.detail,
+    "ephemeral cargo root unknown on the container's own layer: du failed",
+  );
+  assertEquals(lowUnknown.detail.includes("9.0 GB"), false);
+});
+
+Deno.test("Issue #5105 - the monitor's refresh measures only on a trim-refused runtime", async () => {
+  let calls = 0;
+  const measure = () => {
+    calls++;
+    return Promise.resolve({ bytes: 7 * GIB, dirs: [], error: null });
+  };
+  assertEquals(
+    await measureEphemeralCargoRootBytesIfTrimRefused({
+      trimRefused: () => false,
+      measure,
+    }),
+    null,
+  );
+  assertEquals(calls, 0);
+  assertEquals(
+    await measureEphemeralCargoRootBytesIfTrimRefused({
+      trimRefused: () => true,
+      measure,
+    }),
+    7 * GIB,
+  );
+  await assertRejects(
+    () =>
+      measureEphemeralCargoRootBytesIfTrimRefused({
+        trimRefused: () => true,
+        measure: () =>
+          Promise.resolve({ bytes: 0, dirs: [], error: "du -sk exited 1" }),
+      }),
+    Error,
+    "du -sk exited 1",
+  );
+});
+
+Deno.test("Issue #5105 - du output with no leading size has no figure", () => {
+  assertEquals(parseDuKilobytes("2048\t/var/tmp/x\n"), 2048);
+  assertEquals(parseDuKilobytes(""), undefined);
+  assertEquals(parseDuKilobytes("du: cannot access\n"), undefined);
+  assertEquals(parseDuKilobytes("12abc /x"), undefined);
 });

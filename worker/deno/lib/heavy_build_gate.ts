@@ -698,24 +698,61 @@ export async function releaseCheckoutTargetDirs(
 /** `du` of one cargo target. Long enough for a large tree, still bounded. */
 const DU_TIMEOUT_MS = 2 * 60 * 1000;
 
+/** The kB figure at the start of `du -sk` output; undefined when there is none. */
+export function parseDuKilobytes(stdout: string): number | undefined {
+  const kb = /^(\d+)\s/.exec(stdout)?.[1];
+  return kb === undefined ? undefined : Number(kb);
+}
+
+/** One `du -sk` run. A timeout throws. */
+async function runDuSk(
+  path: string,
+  timeoutMs: number,
+): Promise<{ code: number; kb: number | undefined; stderr: string }> {
+  const out = await commandOutputWithTimeout("du", {
+    args: ["-sk", "--", path],
+    stdout: "piped",
+    stderr: "piped",
+    timeoutMs,
+  });
+  return {
+    code: out.code,
+    kb: parseDuKilobytes(new TextDecoder().decode(out.stdout)),
+    stderr: new TextDecoder().decode(out.stderr),
+  };
+}
+
 /** `du -sk` of one directory, in bytes; 0 when it cannot be measured. A timeout is a failure. */
 export async function measureDirectoryBytes(
   path: string,
   timeoutMs: number = DU_TIMEOUT_MS,
 ): Promise<number> {
   try {
-    const out = await commandOutputWithTimeout("du", {
-      args: ["-sk", "--", path],
-      stdout: "piped",
-      stderr: "null",
-      timeoutMs,
-    });
-    const kb = Number.parseInt(new TextDecoder().decode(out.stdout), 10);
-    return Number.isFinite(kb) ? kb * 1024 : 0;
+    return ((await runDuSk(path, timeoutMs)).kb ?? 0) * 1024;
   } catch (error) {
     if (isCommandTimeoutError(error)) throw error;
     return 0;
   }
+}
+
+/**
+ * `du -sk` of one directory, in bytes, for a figure that must not be guessed
+ * (Issue #5105). Unlike {@link measureDirectoryBytes}, a non-zero `du` exit
+ * (a subtree it could not read) or output with no size throws, so the caller
+ * reports the size as unknown rather than as a partial or zero figure.
+ */
+export async function measureDirectoryBytesStrictly(
+  path: string,
+  timeoutMs: number = DU_TIMEOUT_MS,
+): Promise<number> {
+  const { code, kb, stderr } = await runDuSk(path, timeoutMs);
+  if (code !== 0) {
+    const line = stderr.split("\n").map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "no stderr";
+    throw new Error(`du -sk ${path} exited ${code}: ${line}`);
+  }
+  if (kb === undefined) throw new Error(`du -sk ${path} printed no size`);
+  return kb * 1024;
 }
 
 /**
@@ -860,21 +897,41 @@ export const productionTargetDirRemoval: TargetDirRemovalDeps = {
     targetDirRemovalAsAccount()(account, path),
 };
 
-/** The real filesystem. */
-export const productionEphemeralRootDeps: EphemeralRootDeps = {
-  listTargetDirs: async (root: string) => {
+/**
+ * List the target directories under `root`, each measured by `measure`.
+ * A missing root rejects with `Deno.errors.NotFound`.
+ */
+export function listTargetDirsMeasuredBy(
+  measure: (path: string) => Promise<number>,
+): (root: string) => Promise<EphemeralTargetDir[]> {
+  return async (root: string) => {
     const dirs: EphemeralTargetDir[] = [];
     for await (const entry of Deno.readDir(root)) {
       if (!entry.isDirectory) continue;
       const path = `${root}/${entry.name}`;
       dirs.push({
         path,
-        bytes: await measureDirectoryBytes(path),
+        bytes: await measure(path),
         lastWriteMs: await lastWriteMs(path),
       });
     }
     return dirs;
-  },
+  };
+}
+
+/**
+ * The listing the ephemeral-root telemetry reads (Issue #5105): a directory
+ * `du` cannot fully read rejects, so the root is reported as unknown.
+ */
+export const strictlyMeasuredTargetDirs = listTargetDirsMeasuredBy((path) =>
+  measureDirectoryBytesStrictly(path)
+);
+
+/** The real filesystem. */
+export const productionEphemeralRootDeps: EphemeralRootDeps = {
+  listTargetDirs: listTargetDirsMeasuredBy((path) =>
+    measureDirectoryBytes(path)
+  ),
   removeDir: (path: string) => removeTargetDir(path),
   nowMs: () => Date.now(),
 };

@@ -22,7 +22,7 @@ import { formatGb } from "./host_disk.ts";
 import {
   type EphemeralRootDeps,
   type EphemeralTargetDir,
-  productionEphemeralRootDeps,
+  strictlyMeasuredTargetDirs,
 } from "./heavy_build_gate.ts";
 import { EPHEMERAL_CARGO_TARGET_ROOT } from "./ephemeral_build_cache.ts";
 
@@ -42,10 +42,14 @@ export interface EphemeralCargoRootUsage {
  * Measure every target directory under the ephemeral cargo root.
  *
  * A missing root means nothing has been built yet and is a true zero. Any
- * other failure (including a `du` timeout) is an unknown, never a clean zero.
+ * other failure is an unknown, never a clean zero: a `du` timeout, and, with
+ * the default strict listing, a `du` that exits non-zero (a subtree it could
+ * not read) or prints no size.
  */
 export async function measureEphemeralCargoRoot(
-  deps: Pick<EphemeralRootDeps, "listTargetDirs"> = productionEphemeralRootDeps,
+  deps: Pick<EphemeralRootDeps, "listTargetDirs"> = {
+    listTargetDirs: strictlyMeasuredTargetDirs,
+  },
   root: string = EPHEMERAL_CARGO_TARGET_ROOT,
 ): Promise<EphemeralCargoRootUsage> {
   try {
@@ -118,4 +122,20 @@ export async function reportWorkVolumeWithEphemeralRoot(
   const usage = await deps.measure();
   deps.record(usage.error === null ? usage.bytes : null);
   return `${line} — ${formatEphemeralCargoRootUsage(usage)}`;
+}
+
+/**
+ * The ephemeral cargo root's bytes for the host-disk monitor's own refresh
+ * (Issue #5105): null on a runtime that honours the trim (the root is not
+ * the term the estimate misses there). A root that cannot be measured
+ * rejects with the cause, so the monitor reports it as unknown.
+ */
+export async function measureEphemeralCargoRootBytesIfTrimRefused(deps: {
+  trimRefused: () => boolean;
+  measure: () => Promise<EphemeralCargoRootUsage>;
+}): Promise<number | null> {
+  if (!deps.trimRefused()) return null;
+  const usage = await deps.measure();
+  if (usage.error !== null) throw new Error(usage.error);
+  return usage.bytes;
 }

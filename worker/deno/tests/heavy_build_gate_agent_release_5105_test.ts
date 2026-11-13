@@ -4,25 +4,22 @@
  * so the removal drops to `agent`.
  */
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { cargoTargetDirForCheckout } from "../lib/ephemeral_build_cache.ts";
 import {
+  cargoTargetDirForCheckout,
+  EPHEMERAL_CARGO_TARGET_ROOT,
+} from "../lib/ephemeral_build_cache.ts";
+import {
+  type EphemeralRootDeps,
+  productionEphemeralRootDeps,
   releaseCheckoutTargetDirs,
   removeTargetDir,
   targetDirAccount,
   targetDirRemovalAsAccount,
   unmeasuredEphemeralRootDeps,
 } from "../lib/heavy_build_gate.ts";
+import { canEnforceUnwritableDir } from "./support/environment_capability.ts";
 
-const isRoot = (() => {
-  try {
-    return new TextDecoder().decode(
-      new Deno.Command("id", { args: ["-u"], stdin: "null" }).outputSync()
-        .stdout,
-    ).trim() === "0";
-  } catch {
-    return false;
-  }
-})();
+const modesEnforced = await canEnforceUnwritableDir();
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -54,7 +51,7 @@ const plainRemove = (q: string) => Deno.remove(q, { recursive: true });
 
 Deno.test({
   name: "a pass whose build ran as agent leaves no target dir behind",
-  ignore: isRoot, // root ignores directory modes, so EACCES cannot be staged
+  ignore: !modesEnforced, // root ignores directory modes, so EACCES cannot be staged
   async fn() {
     const root = await makeRoot();
     try {
@@ -165,7 +162,7 @@ Deno.test({
 
 Deno.test({
   name: "a failed fallback is reported with both causes and keeps the dir",
-  ignore: isRoot,
+  ignore: !modesEnforced,
   async fn() {
     const root = await makeRoot();
     try {
@@ -322,4 +319,89 @@ Deno.test("removeTargetDir only falls back for a refused agent directory", async
 
   await removeTargetDir(agentDir, deps(new Deno.errors.PermissionDenied("d")));
   assertEquals(fallbacks, 1);
+});
+
+// The production bindings themselves (not a test-built remover) reach the
+// agent fallback. Under a temp root the production remover refuses, which is
+// only reported when the fallback is wired, so a revert to a plain
+// `Deno.remove` fails here.
+for (
+  const [label, deps] of [
+    ["productionEphemeralRootDeps", productionEphemeralRootDeps],
+    ["unmeasuredEphemeralRootDeps", unmeasuredEphemeralRootDeps],
+  ] as Array<[string, EphemeralRootDeps]>
+) {
+  Deno.test({
+    name:
+      `${label}.removeDir drops to the agent fallback on a refused agent dir`,
+    ignore: !modesEnforced,
+    async fn() {
+      const root = await makeRoot();
+      try {
+        const checkout = "/work/GRQ-wired";
+        const dir = cargoTargetDirForCheckout(checkout, {
+          root,
+          account: "agent",
+        });
+        await Deno.mkdir(`${dir}/debug/deps`, { recursive: true });
+        await Deno.writeTextFile(`${dir}/debug/deps/a`, "x");
+        await Deno.chmod(`${dir}/debug`, 0o555);
+        const released = await releaseCheckoutTargetDirs(checkout, deps, root);
+        assertEquals(released.errors.length, 1);
+        assertStringIncludes(released.errors[0]!, "Permission denied");
+        assertStringIncludes(
+          released.errors[0]!,
+          `its parent is not exactly ${EPHEMERAL_CARGO_TARGET_ROOT} (Issue #5105)`,
+        );
+        assertEquals(await exists(dir), true);
+      } finally {
+        await forceRemove(root);
+      }
+    },
+  });
+}
+
+const realRootUsable = (() => {
+  try {
+    return Deno.lstatSync(EPHEMERAL_CARGO_TARGET_ROOT).isDirectory;
+  } catch {
+    return false;
+  }
+})();
+
+Deno.test({
+  name:
+    "productionEphemeralRootDeps releases a real agent dir under the real root",
+  ignore: !agentAvailable || !realRootUsable,
+  async fn() {
+    const checkout = `/work/GRQ-wired-${crypto.randomUUID()}`;
+    const dir = cargoTargetDirForCheckout(checkout, { account: "agent" });
+    try {
+      const made = new Deno.Command("sudo", {
+        args: ["-n", "-u", "agent", "--", "mkdir", "-p", `${dir}/debug/deps`],
+        stdout: "null",
+        stderr: "piped",
+        stdin: "null",
+      }).outputSync();
+      assertEquals(made.success, true, new TextDecoder().decode(made.stderr));
+      // Positive control: the worker's account cannot remove it.
+      await assertRejects(
+        () => Deno.remove(dir, { recursive: true }),
+        Deno.errors.PermissionDenied,
+      );
+      const released = await releaseCheckoutTargetDirs(
+        checkout,
+        productionEphemeralRootDeps,
+      );
+      assertEquals(released.errors, []);
+      assertEquals(await exists(dir), false);
+    } finally {
+      new Deno.Command("sudo", {
+        args: ["-n", "-u", "agent", "--", "rm", "-rf", "--", dir],
+        stdout: "null",
+        stderr: "null",
+        stdin: "null",
+      }).outputSync();
+    }
+  },
 });

@@ -558,6 +558,7 @@ import { syncWithMergeOnlyBindings } from "./milestone_merge_only.ts";
 import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
 import {
   measureEphemeralCargoRoot,
+  measureEphemeralCargoRootBytesIfTrimRefused,
   reportWorkVolumeWithEphemeralRoot,
 } from "./ephemeral_root_telemetry.ts";
 import {
@@ -1175,6 +1176,13 @@ export async function createProductionRunCoreDeps(
         ? {}
         : { hostDiskLowFloorPercent: config.hostDiskLowFloorPercent }),
     },
+    // Issue #5105: below the floor on a trim-refused runtime, the detail
+    // names the ephemeral cargo root as it stands, not its cycle-start size.
+    measureEphemeralCargoRoot: () =>
+      measureEphemeralCargoRootBytesIfTrimRefused({
+        trimRefused: workVolumeTrimRefusedForLaunch,
+        measure: () => measureEphemeralCargoRoot(),
+      }),
   });
   // Work-volume standing totals (Issues #244, #345): one shared reading feeds
   // the log line and the feature report, so a probe
