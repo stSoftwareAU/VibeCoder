@@ -40,8 +40,8 @@
  * @module
  */
 
-import { CLAUDE_PROVIDER_ID } from "./agent_provider.ts";
-import { DEFAULT_CLAUDE_MODEL_TOP_TIER } from "./config_defaults.ts";
+import { CLAUDE_PROVIDER_ID, selectAgentProvider } from "./agent_provider.ts";
+import { PROVIDER_MODEL_TIERS } from "./config_defaults.ts";
 import type { Logger, Result } from "../types.ts";
 import type { TestChangeKind, TestChangeNote } from "./fleet_review_log.ts";
 import {
@@ -465,6 +465,11 @@ export interface PrePrVerifierDeps {
    * shared ephemeral root.
    */
   releaseBuildArtefacts: (checkoutPath: string) => Promise<ReleasedTargetDirs>;
+  /**
+   * The provider a non-read-only verifier runs on, so its default model is
+   * that provider's top tier. Defaults to the active provider.
+   */
+  activeProviderId?: () => string;
 }
 
 /** Release the verifier's target directories without measuring the shared root. */
@@ -477,6 +482,12 @@ export function releaseVerifierBuildArtefacts(
     unmeasuredEphemeralRootDeps,
     root,
   );
+}
+
+/** A provider's top-tier model; undefined lets an unknown provider pick its own. */
+function reviewerModelFor(providerId: string): string | undefined {
+  return (PROVIDER_MODEL_TIERS as Record<string, { best: string }>)[providerId]
+    ?.best;
 }
 
 export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
@@ -1165,8 +1176,13 @@ async function verifyInCheckout(
     ),
     killAfterSeconds: input.killAfterSeconds,
     // Issue #5081: a code review takes the reviewer's top-tier model, not the
-    // issue manager's, unless the host pins one.
-    model: input.model ?? DEFAULT_CLAUDE_MODEL_TOP_TIER,
+    // issue manager's, unless the host pins one — the top tier of the provider
+    // that runs it, since Codex refuses a Claude alias.
+    model: input.model ?? reviewerModelFor(
+      input.readOnly
+        ? CLAUDE_PROVIDER_ID
+        : (deps.activeProviderId ?? (() => selectAgentProvider().id))(),
+    ),
     cwd: checkout,
     logger: input.logger,
     disallowedTools: [

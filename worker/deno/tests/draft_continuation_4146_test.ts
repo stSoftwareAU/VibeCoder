@@ -13,8 +13,6 @@
 import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   buildDraftContinuationBody,
-  buildUnmetDraftBody,
-  convertToDraftContinuation,
   DRAFT_CONTINUATION_MARKER,
   ensureDraftContinuationPr,
 } from "../lib/draft_continuation_pr.ts";
@@ -128,54 +126,6 @@ Deno.test("#4146 - a branch that already has an open PR gets no second one", asy
   assertFalse(calls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
-Deno.test("#4146 - an incomplete armed PR is disarmed, made a draft, and stops closing the issue", async () => {
-  const calls: string[][] = [];
-  await convertToDraftContinuation({
-    repo: REPO,
-    issueNumber: 4146,
-    prNumber: 4150,
-    body: "## Summary\n\nHalf done. Closes #4146.\n",
-    gh: (args) => {
-      calls.push(args);
-      if (args[1] === "view") {
-        return Promise.resolve(
-          JSON.stringify({ isDraft: false, autoMergeRequest: { at: "x" } }),
-        );
-      }
-      return Promise.resolve("");
-    },
-    log: () => {},
-  });
-
-  assert(calls.some((a) => a[1] === "merge" && a.includes("--disable-auto")));
-  assert(calls.some((a) => a[1] === "ready" && a.includes("--undo")));
-  const edit = calls.find((a) => a[1] === "edit")!;
-  const body = edit[edit.indexOf("--body") + 1]!;
-  assert(body.includes("Part of #4146"));
-  assertFalse(/\bcloses\s+#4146\b/i.test(body));
-  assertFalse(calls.some((a) => a[1] === "close"), "never closed");
-});
-
-Deno.test("#4146 - an unarmed draft is left a draft and only its body is refreshed", async () => {
-  const calls: string[][] = [];
-  await convertToDraftContinuation({
-    repo: REPO,
-    issueNumber: 4146,
-    prNumber: 4150,
-    body: "Closes #4146",
-    gh: (args) => {
-      calls.push(args);
-      return Promise.resolve(
-        args[1] === "view"
-          ? JSON.stringify({ isDraft: true, autoMergeRequest: null })
-          : "",
-      );
-    },
-    log: () => {},
-  });
-  assertEquals(calls.map((a) => a[1]), ["view", "edit"]);
-});
-
 Deno.test("#4146 - a failed draft creation is reported, never thrown", async () => {
   const result = await ensureDraftContinuationPr({
     repo: REPO,
@@ -202,7 +152,6 @@ const OLD_DRAFT_PROMISE =
 for (
   const [name, body] of [
     ["timed-out draft", buildDraftContinuationBody(4146)],
-    ["unmet-criteria draft", buildUnmetDraftBody(4146, "Closes #4146\n")],
   ] as const
 ) {
   Deno.test(`draft continuation - the ${name} body does not promise ready only once every criterion is met`, () => {
@@ -221,10 +170,6 @@ const TARGET_ISSUE = 42;
 for (
   const [name, text] of [
     ["timed-out draft", buildDraftContinuationBody(TARGET_ISSUE)],
-    [
-      "unmet-criteria draft",
-      buildUnmetDraftBody(TARGET_ISSUE, "Closes #42\n\nWork done.\n"),
-    ],
   ] as const
 ) {
   Deno.test(`draft continuation - the ${name} carries no issue number but the target's own (Issue #4585)`, () => {

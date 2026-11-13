@@ -89,9 +89,9 @@ export interface DeferredPrDrainResult {
 }
 
 /**
- * The REST create options for a parked record. A record held for surviving
- * mutants carries `draft: true`, so the PR opens as a draft and the drain —
- * which never arms auto-merge — does not report it ready (Issue #4617).
+ * The REST create options for a parked record. A record that carries
+ * `draft: true` opens as a draft, so the drain — which never arms auto-merge —
+ * does not report it ready.
  */
 export function restCreateOptions(
   record: DeferredPrRecord,

@@ -3593,7 +3593,7 @@ pass, lane or serial, keeps running because those passes land the PRs already
 open (Issue #226) — but a milestone sync that would run the repository's own
 build or test defers that branch until the host recovers (Issue #3178, see
 [HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
-An agent, quality, mutation or discrimination build already in flight is held
+An agent, quality or discrimination build already in flight is held
 to the same floor (and to the cargo headroom where its checkout holds a cargo
 project, Issue #4413), and a trim-refused host that is below the floor ends the
 launch so the ephemeral layer is discarded (Issue #4360, see
@@ -4233,10 +4233,17 @@ over identical content. This includes compact Deno summaries such as `2m14s`,
 spaced compounds
 such as `2m 14s`, hour compounds such as `1h2m3s`, and standalone units such as
 `12.4s`. Clock-format elapsed times are normalised too: pytest's trailing
-`(0:01:15)` after a duration, and Maven's `01:15 min` or `02:03 h`. Source
-locations such as `file.ts:12:5` and ordinary timestamps are kept. The elapsed
-values are ignored while failure counts and diagnostics remain part of the
-comparison.
+`(0:01:15)` after a duration, and Maven's `01:15 min` or `02:03 h`. Two
+presentation-only footers are normalised as whole lines only (Issue #5003):
+Maven's `Finished at:` line with an ISO-8601 timestamp, with or without its
+`[INFO] ` prefix, and pytest's `=`-padded result summary (for example
+`===== 1 failed, 2 passed in 9.87s =====`), whose padding is reduced to a single
+`=` on each side and whose `(H:MM:SS)` clock suffix is dropped. A summary is
+recognised only when it reads `no tests ran`, or when every outcome is a count
+followed by `failed`, `passed`, `skipped`, `deselected`, `xfailed`, `xpassed`,
+`warning(s)`, `error(s)` or `rerun`. Source locations such as `file.ts:12:5`,
+other timestamps and other `=` separators are kept. The elapsed values are
+ignored while failure counts and diagnostics remain part of the comparison.
 
 When the answer is yes the run stops as an **expected skip**: no PR, no
 `failed`/`failed-once` label, no failure tracking, no repo failure record and no
@@ -6439,7 +6446,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [agent_pr_adoption.ts](../worker/deno/lib/agent_pr_adoption.ts) | Adopts the agent-raised PR on the run's own `issue-<N>` branch at every issue-run completion exit, rebuilding its body with the worker marker and digest (Issue #3804) from the summary committed at the verified pushed head, not the working tree, and skipping if that head moved or the commit has no summary (Issue #4712), and repairing a noncanonical title reference (Issue #4621) |
 |                             | [pr_body_reconcile.ts](../worker/deno/lib/pr_body_reconcile.ts)                                                   | Priority 1.64 sweep: re-syncs an open fleet-authored PR body whose recorded `vibe-pr-summary` digest differs from the summary at its head after a push the worker did not make, rebuilding in a disposable shallow clone (Issue #3760) |
 |                             | [pr_body_sync_follow_up.ts](../worker/deno/lib/pr_body_sync_follow_up.ts)                                         | Files or reuses the parent's `idle-task` follow-up when a PR-body re-sync finds that a fix run newly reports a `partial` or `missing` criterion, after re-verifying the issue's content (Issue #3678)                           |
-|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts) | Post-agent drift check on review-fix runs: model pass, change-request quotes, Test Plan recount and a mutation check, one recovery turn (Issues #3143, #3244, #3750). Docs-sweep and branch-outcome citation checks were removed (Issue #4234). |
+|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts) | Post-agent drift check on review-fix runs: model pass, change-request quotes, Test Plan recount, one recovery turn (Issues #3143, #3244). Its mutation check (Issue #3750) was retired by Issue #5095. Docs-sweep and branch-outcome citation checks were removed (Issue #4234). |
 |                             | [fenced_json.ts](../worker/deno/lib/fenced_json.ts)                              | Fence-tolerant reply unwrapping (`unwrapJsonFence`), used by revision parsing so one json or plain code fence around a JSON reply is tolerated (Issue #4115). The claim-correction caller was removed (Issue #4234). |
 |                             | [doc_prose_claims.ts](../worker/deno/lib/doc_prose_claims.ts)                                                     | Safe manual/source path selection and the prose-against-code question the review-fix drift check asks (Issues #3347, #3715, #3731). The first-run claim check was removed (Issue #4234). |
 |                             | [doc_prose_scope.ts](../worker/deno/lib/doc_prose_scope.ts) | Shared bounded scope of changed comments, attached headers and affected manual sections for the review-fix drift check (Issues #3715, #3731). The first-run claim check was removed (Issue #4234). |
