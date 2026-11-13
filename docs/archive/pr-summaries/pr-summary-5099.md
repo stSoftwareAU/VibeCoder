@@ -4,6 +4,7 @@ Keep orphan-cleanup exceptions from discarding a completed agent invocation's
 output and kill evidence. A throwing probe or signal stops the sweep, records
 its cause and partial progress, and returns the PIDs already signalled. Failed
 subtree discovery also stops cleanup instead of falling back to the root alone.
+
 Closes #5099.
 
 ## Spec
