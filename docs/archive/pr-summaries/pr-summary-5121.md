@@ -105,8 +105,15 @@ flowchart TD
   - The scan gets the range and the absolute config path, or no `--config` when
     the repository has none.
   - A drift test checks that every `GITLEAKS_VERSION` in
-    `.github/workflows/gitleaks.yml` equals the module's pin, and that the CI
-    fallback's flags are all in `gitleaksScanArgs`.
+    `.github/workflows/gitleaks.yml` equals the module's pin. It also reads the
+    `./gitleaks git …` command from the CI fallback step (joining its `\`
+    continuation lines) and asserts its arguments equal `gitleaksScanArgs` minus
+    the two local additions (`--verbose`, `--no-color`), with the `--config`
+    value and the `<base>..<head>` range normalised. It also asserts that the CI
+    `--log-opts` is the `${BASE_SHA}..${HEAD_SHA}` range. Red-checked: adding
+    `--max-decode-depth 3` to the workflow command, removing `--redact` from it,
+    changing its range to `--all`, and deleting `--redact` from
+    `gitleaksScanArgs` each turned the test red.
   - Two real-tool tests run gitleaks 8.30.1 on a temporary repository: a branch
     with a runtime-built fake PAT is FAILED with `github-pat`, and a clean
     branch is PASSED. They are ignored where gitleaks is not installed, and they

@@ -441,16 +441,60 @@ Deno.test("gitleaks.yml - every pinned GITLEAKS_VERSION matches the module, and 
     assertEquals(pin, GITLEAKS_VERSION);
   }
 
-  const args = gitleaksScanArgs(
+  // The pin is read from the CI fallback command itself, so adding, removing
+  // or changing a flag in gitleaks.yml (or in gitleaksScanArgs) turns this red.
+  const ciArgs = ciFallbackScanArgs(workflow);
+  const ciRange = ciArgs.find((arg) => arg.startsWith("--log-opts="));
+  assertEquals(
+    ciRange,
+    "--log-opts=${BASE_SHA}..${HEAD_SHA}",
+    "the CI fallback must scan the <base>..<head> commit range",
+  );
+
+  // The local stage adds only --verbose and --no-color (for readable gate
+  // output); the config path and the range differ by environment.
+  const localArgs = gitleaksScanArgs(
     `${BASE_SHA}..HEAD`,
     `/repo/${GITLEAKS_CONFIG_PATH}`,
-  ).join(" ");
-  assertStringIncludes(workflow, "./gitleaks git --config");
-  for (const flag of ["--redact", "--no-banner", "--exit-code 1", "--config"]) {
-    assertStringIncludes(workflow, flag);
-    assertStringIncludes(args, flag);
-  }
+  ).filter((arg) => arg !== "--verbose" && arg !== "--no-color");
+  assertEquals(normaliseScanArgs(localArgs), normaliseScanArgs(ciArgs));
 });
+
+/**
+ * Extract the `./gitleaks git …` command from the CLI-fallback step of
+ * gitleaks.yml, joining `\` continuation lines, and split it into arguments
+ * with shell-style double quotes removed.
+ */
+function ciFallbackScanArgs(workflow: string): string[] {
+  const lines = workflow.split("\n");
+  const start = lines.findIndex((line) =>
+    line.trim().startsWith("./gitleaks git ")
+  );
+  assert(start >= 0, "gitleaks.yml must run `./gitleaks git` in the fallback");
+  let command = "";
+  for (let i = start; i < lines.length; i++) {
+    const line = (lines[i] ?? "").trim();
+    if (line.endsWith("\\")) {
+      command += line.slice(0, -1) + " ";
+    } else {
+      command += line;
+      break;
+    }
+  }
+  const tokens = command.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  return tokens.slice(1).map((token) => token.replaceAll('"', ""));
+}
+
+/** Replace the environment-specific config path and range with placeholders. */
+function normaliseScanArgs(args: string[]): string[] {
+  return args.map((arg, i) => {
+    if (args[i - 1] === "--config") return "<config>";
+    if (/^--log-opts=[^.\s]+\.\.[^.\s]+$/.test(arg)) {
+      return "--log-opts=<base>..<head>";
+    }
+    return arg;
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Registration in the real quality gate
