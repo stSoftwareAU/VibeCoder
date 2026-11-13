@@ -283,20 +283,22 @@ Deno.test("ReservationSightings holds a vanished reservation until a launcher re
   const now = Date.parse("2026-11-13T00:00:00Z");
   const r = res({ admittedAt: now - 60_000, expiresAt: now + 3_600_000 });
   const s = new ReservationSightings();
+  assertEquals(s.tracking, false);
   assertEquals(s.observe([r], 5 * GB, now, now - 120_000).released, []);
+  assert(s.tracking, "a live, seen reservation is tracked");
   // The file is gone; the adopted launcher reading predates it: still held,
   // with the growth origin of the vanished reservation.
   const gone = s.observe([], 9 * GB, now + 30_000, now - 120_000);
   assertEquals(gone.released, [r]);
   assertEquals(gone.workerGrowthBytes, 4 * GB);
-  assert(s.holdsReleased);
+  assert(s.tracking, "a released reservation is tracked");
   // A reading measured exactly at the moment it went is not after it.
   assertEquals(s.observe([], 9 * GB, now + 60_000, now + 30_000).released, [r]);
   // The fresh reading arrives: forgotten.
   const fresh = s.observe([], 9 * GB, now + 90_000, now + 60_000);
   assertEquals(fresh.released, []);
   assertEquals(fresh.workerGrowthBytes, undefined);
-  assertEquals(s.holdsReleased, false);
+  assertEquals(s.tracking, false);
 });
 
 Deno.test("ReservationSightings stops holding a released reservation once the refresh age passes", () => {

@@ -332,9 +332,14 @@ export class ReservationSightings {
     return live.some((r) => !this.firstSeen.has(r.id));
   }
 
-  /** Whether a vanished reservation is still held as released. */
-  get holdsReleased(): boolean {
-    return this.released.size > 0;
+  /**
+   * Whether any reservation is tracked, whether live and seen or released.
+   * A probe that tracks one needs the worker's growth known, so it waits for
+   * the cargo-root walk; the release is only recorded by the next `observe`,
+   * so a probe cannot tell it is the release moment without this.
+   */
+  get tracking(): boolean {
+    return this.firstSeen.size > 0 || this.released.size > 0;
   }
 
   /**

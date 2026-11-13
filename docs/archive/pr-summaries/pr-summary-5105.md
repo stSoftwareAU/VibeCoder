@@ -35,6 +35,10 @@ Closes #5105.
     cargo project adds the worker's 25 GB cargo headroom.
   - A refusal throws before any proxy or container starts. The reservation is
     removed after the container and its proxy are torn down.
+  - `checkBabysitterContainerChromium` (the self-check run before every pass)
+    goes through the same `hostDiskAdmission`, footprint only (no clone, so no
+    cargo headroom), released after its teardown. A refusal fails that pass and
+    the supervisor retries it.
 - **One repair at a time** (`fleet_pr_babysitter.ts`). The production queue
   passes `BABYSITTER_REPAIR_CONTAINER_LIMIT = 1` instead of `2`; a test drives
   `pass()` with two eligible PRs.
@@ -46,8 +50,11 @@ Closes #5105.
   highest measured size. It only rises. It is undefined on a native `df`, and,
   where the ephemeral root applies, while its latest measurement is missing,
   failed or in progress, so an unmeasured root never reads as zero growth. The
-  production probe waits for the refresh its check started before it reads the
-  growth, but only when a reservation is live or released. A reservation not
+  production probe reads the growth only when no walk of the root is in flight,
+  looping on the walk until none is (so overlapping probes cannot leave a first
+  sighting without a baseline), whenever a reservation is first seen, tracked
+  live or held as released (`ReservationSightings.tracking`), including the
+  first probe after the file goes. A reservation not
   seen before first triggers a fresh measurement of the ephemeral cargo root
   (`HostDiskMonitor.refreshEphemeralCargoRootNow`), whatever the level, so its
   growth baseline is not a stale figure; a failed measurement leaves the growth
@@ -195,7 +202,7 @@ sequenceDiagram
   reservation is ignored; the same reading without the reservation is the
   control. Red-check: with the subtraction at either site changed back to
   `hostFreeBytes: free`, both reservation cases fail and both controls pass.
-- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 5 tests
+- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 7 tests
   at head): `createProductionRunCoreDeps` with a temp `HOME` holding
   `logs/host-disk-reservations/<id>.json`. `parkRunningBuild()` returns null
   with the file and a park reason without it. `checkRootFilesystem` does not
@@ -212,7 +219,14 @@ sequenceDiagram
   from a stale 10 GiB to 30 GiB: the later dip stays explained, growth after
   first sight (60 GiB) stops the credit, and a failed baseline measurement
   credits nothing. Red-check: with the first-sight refresh disabled, the fifth
-  fails ("a stale baseline charged the earlier growth against the dip").
+  fails ("a stale baseline charged the earlier growth against the dip"). A sixth
+  holds the cargo-root walk open with a deferred walk: two probes overlap at
+  first sight, and the later explained dip must not park. A seventh uses the
+  default quiet interval and a clock past it, removes the reservation file on a
+  probe whose check starts a walk, and asserts the growth is never read while a
+  walk is open and the probe returns null. Red-check (against the head before
+  this round's fix): both fail, the sixth with the park reason and the seventh
+  with "build killed at the release, while the walk was in flight".
 - `worker/deno/tests/host_disk_worker_footprint_5105_test.ts` (new, 5 tests):
   `HostDiskMonitor.workerFootprintGrowthBytes` with non-zero figures: work
   volume growth summed across a launcher re-base plus the ephemeral peak (which
@@ -231,8 +245,8 @@ sequenceDiagram
   `runSecurityFixDiscrimination` with the default park and an explained dip
   returns the host-disk park reason at once, not a budget exhaustion. Not
   red-checked: with the old 20-minute default the test would hang, not fail.
-- `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (new, 13
-  tests):
+- `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (new, 16
+  tests at head):
   - A refused admission starts no sidecar, Apple helper or spawn.
   - The release runs once, after the sidecar stops, including when the spawn
     fails, and a failing release does not mask the repair's error.
@@ -247,6 +261,11 @@ sequenceDiagram
   - With only the ledger directory injected, the production measure, floor and
     cargo check run. The outcome is pinned for a refusal, an unmeasurable host
     and an admission. This host admitted, and the release removed the file.
+  - The Chromium self-check: a refused admission (50 GiB free, 46 GiB floor)
+    starts no sidecar and no spawn, writes no file and fails with "Chromium
+    check not started"; with a roomy host its reservation is the 16 GB
+    footprint alone, live while the sidecar stops and gone afterwards, whether
+    the spawn succeeds or fails.
   - A refusal from an outstanding reservation, with a control that admits.
   - An unmeasurable host admits and writes no file.
   - The production `pass()` with two eligible PRs and a blocking repair seam
@@ -254,7 +273,8 @@ sequenceDiagram
     constant changed to 2, it fails. `runRepairs` also honours a limit of 1.
 - Existing tests: `fleet_babysitter_container_4738_test.ts`,
   `fleet_babysitter_container_egress_4738_test.ts` and
-  `tests/fixtures/babysitter_container_fakes_4770.ts` inject an admitting fake
+  `tests/fixtures/babysitter_container_fakes_4770.ts` and
+  `fleet_babysitter_chromium_check_4738_test.ts` inject an admitting fake
   `hostDiskAdmission`, so they do not measure the real host or write to the real
   log directory. No assertions were removed.
 - `worker/deno/tests/claude_runner_host_disk_4390_test.ts` (unchanged) pins one
@@ -262,8 +282,8 @@ sequenceDiagram
   outside a babysitter dip, and that test passes.
 - The full gate was not run on this head (run budget). On the head, the seven
   5105 test files (wiring, reservations, footprint, babysitter dip, heavy build
-  gate, claude runner dip wait, babysitter admission) pass: 60 passed, 0 failed.
-  `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (13 tests at
+  gate, claude runner dip wait, babysitter admission) pass: 65 passed, 0 failed.
+  `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (16 tests at
   head) passes. The earlier 60-file `deno test -A` sweep is not restated here:
   its three failures needed the `codex` coding-agent provider, which this
   container image does not install, and none touches the host-disk code.

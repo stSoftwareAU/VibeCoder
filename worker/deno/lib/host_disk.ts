@@ -800,6 +800,18 @@ export class HostDiskMonitor {
   }
 
   /**
+   * Whether a walk of the ephemeral cargo root is in flight right now
+   * (Issue #5105). While one is, {@link workerFootprintGrowthBytes} is
+   * unknown; a caller that needs the figure loops on this and
+   * {@link ephemeralCargoRootSettled} and reads it with no await between the
+   * last check and the read, since another probe may start a walk the moment
+   * one settles.
+   */
+  get ephemeralCargoRootInFlight(): boolean {
+    return this.ephemeralCargoRootRefresh !== undefined;
+  }
+
+  /**
    * Measures the ephemeral cargo root afresh whatever the level and the quiet
    * interval, and resolves once that measurement has settled; never rejects
    * (Issue #5105). A reservation first seen while the host is still `ok`

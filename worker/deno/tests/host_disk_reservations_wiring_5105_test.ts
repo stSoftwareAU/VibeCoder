@@ -47,9 +47,18 @@ async function withWiring(
     wiring: Wiring,
   ) => Promise<void>,
   /** What the ephemeral cargo root measures: the worker's own growth. */
-  ephemeral: { bytes: number | null } = { bytes: 0 },
+  ephemeral: {
+    bytes: number | null;
+    /** Awaited by each walk before it reports; a test holds it open. */
+    walk?: () => Promise<void>;
+  } = { bytes: 0 },
   /** The launcher's first reading; the host starts low unless this is set. */
   startFree: number = FREE,
+  /** The monitor's quiet interval and clock, for walks the check starts. */
+  timing: { sampleIntervalMs: number; clock: { ms: number } } = {
+    sampleIntervalMs: 0,
+    clock: { ms: 0 },
+  },
 ): Promise<void> {
   const home = await Deno.makeTempDir();
   const work = await Deno.makeTempDir();
@@ -71,8 +80,12 @@ async function withWiring(
         totalBytes: 504 * GIB,
       }),
     refreshFile,
-    sampleIntervalMs: 0,
-    measureEphemeralCargoRoot: () => Promise.resolve(ephemeral.bytes),
+    sampleIntervalMs: timing.sampleIntervalMs,
+    ...(timing.clock.ms === 0 ? {} : { now: () => timing.clock.ms }),
+    measureEphemeralCargoRoot: async () => {
+      await ephemeral.walk?.();
+      return ephemeral.bytes;
+    },
   });
   await Deno.writeTextFile(
     refreshFile,
@@ -261,5 +274,129 @@ Deno.test("Issue #5105 - a reservation first seen at ok takes its baseline from 
     },
     fails,
     120 * GIB,
+  );
+});
+
+/** Walks the test holds open one at a time, so it decides who overlaps. */
+function heldWalks() {
+  const open: Array<() => void> = [];
+  const waiters: Array<{ n: number; wake: () => void }> = [];
+  let started = 0;
+  const walks = {
+    hold: false,
+    /** Walks started and not yet finished. */
+    get open(): number {
+      return open.length;
+    },
+    walk(): Promise<void> {
+      started++;
+      for (const w of waiters) if (started >= w.n) w.wake();
+      if (!walks.hold) return Promise.resolve();
+      return new Promise<void>((resolve) => open.push(resolve));
+    },
+    /** Resolves once `n` walks have started. */
+    startedAtLeast(n: number): Promise<void> {
+      if (started >= n) return Promise.resolve();
+      return new Promise((wake) => waiters.push({ n, wake }));
+    },
+    /** Lets every open walk finish. */
+    finish(): void {
+      for (const resolve of open.splice(0)) resolve();
+    },
+  };
+  return walks;
+}
+
+Deno.test("Issue #5105 - two probes overlapping at first sight both leave the reservation credited", async () => {
+  const held = heldWalks();
+  const root = { bytes: 0 as number | null, walk: () => held.walk() };
+  await withWiring(
+    true,
+    async (_check, wiring) => {
+      // Probe A starts the baseline walk; probe B arrives while it runs.
+      held.hold = true;
+      const enteredB = Promise.withResolvers<void>();
+      const refreshNow = wiring.monitor.refreshEphemeralCargoRootNow.bind(
+        wiring.monitor,
+      );
+      let entered = 0;
+      wiring.monitor.refreshEphemeralCargoRootNow = () => {
+        if (++entered === 2) enteredB.resolve();
+        return refreshNow();
+      };
+      const a = parkRunningBuild();
+      await held.startedAtLeast(1);
+      const b = parkRunningBuild();
+      await enteredB.promise;
+      held.hold = false;
+      held.finish();
+      assertEquals(await a, null);
+      assertEquals(await b, null);
+      // The repair now takes the host below the floor; the worker grew nothing.
+      await wiring.writeLauncherReading(FREE, 5);
+      assertEquals(
+        await parkRunningBuild(),
+        null,
+        "overlapping first-sight probes left the reservation uncredited",
+      );
+      assert((await wiring.checkRootFilesystem())?.path !== "host disk");
+    },
+    root,
+    120 * GIB,
+  );
+});
+
+Deno.test("Issue #5105 - the first probe after the release reads the growth only once the walk its check started has finished", async () => {
+  const held = heldWalks();
+  const root = { bytes: 0 as number | null, walk: () => held.walk() };
+  const timing = {
+    sampleIntervalMs: 60_000,
+    clock: { ms: Date.now() },
+  };
+  await withWiring(
+    true,
+    async (_check, wiring) => {
+      assertEquals(await parkRunningBuild(), null);
+      // The repair ends 90 s after the last walk, past the quiet interval, so
+      // this probe's low check starts a walk of its own.
+      timing.clock.ms += 90_000;
+      await Deno.remove(wiring.reservationPath);
+      // Record whether a walk was open each time the probe read the growth.
+      const readsDuringWalk: boolean[] = [];
+      const growth = Object.getOwnPropertyDescriptor(
+        HostDiskMonitor.prototype,
+        "workerFootprintGrowthBytes",
+      )!.get!;
+      Object.defineProperty(wiring.monitor, "workerFootprintGrowthBytes", {
+        get() {
+          readsDuringWalk.push(held.open > 0);
+          return growth.call(wiring.monitor);
+        },
+      });
+      held.hold = true;
+      const probe = parkRunningBuild();
+      await held.startedAtLeast(3);
+      // A probe that waits for the walk stays pending; a few event-loop turns
+      // let one that does not finish its ledger read first.
+      for (let turn = 0; turn < 20; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      held.hold = false;
+      held.finish();
+      assertEquals(
+        await probe,
+        null,
+        "build killed at the release, while the walk was in flight",
+      );
+      assert(readsDuringWalk.length > 0, "the probe never read the growth");
+      assertEquals(
+        readsDuringWalk.filter(Boolean),
+        [],
+        "the growth was read while a walk was in flight",
+      );
+    },
+    root,
+    FREE,
+    timing,
   );
 });

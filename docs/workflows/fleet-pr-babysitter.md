@@ -483,7 +483,12 @@ host below its floor, counting what live reservations have yet to consume, is
 refused. A refusal is an infrastructure failure: it backs off and retries, and
 spends an infrastructure attempt, not a substantive repair attempt. The
 reservation is removed after the container and its proxy are torn down. A host
-whose disk cannot be measured admits the repair without a reservation.
+whose disk cannot be measured admits the repair without a reservation. The
+Chromium launch check starts the same image and, on the Apple runtime, its own
+egress proxy, so it is admitted the same way before any egress starts, for the
+16 GB footprint alone (it builds nothing). A refusal is reported as a failed
+pass, which the supervisor or watch loop retries, and the reservation is removed
+after its container and proxy are torn down.
 
 **Token restarts.** When a session ends at its read token's expiry, the host
 deletes the response file, mints a fresh repository-scoped read token and starts

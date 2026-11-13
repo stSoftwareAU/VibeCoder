@@ -1185,11 +1185,20 @@ export async function createProductionRunCoreDeps(
     // The growth must include the ephemeral cargo root's refresh that this
     // probe's check just started, or a fresh dip reads as unexplained. Only a
     // probe with a reservation to credit waits; the floor verdict never does.
+    // That covers a reservation first seen now, one already tracked, and one
+    // that has just gone: its release is only recorded by `observe` below.
     // A reservation first seen now takes its growth baseline from a fresh
     // measurement: at `ok` the root is otherwise not measured at all.
+    const needsGrowth = reservationSightings.hasUnseen(live) ||
+      reservationSightings.tracking;
     if (reservationSightings.hasUnseen(live)) {
       await hostDisk.refreshEphemeralCargoRootNow();
-    } else if (live.length > 0 || reservationSightings.holdsReleased) {
+    }
+    // Another probe's walk can begin the moment this one settles, and
+    // `observe` stores no baseline while one is in flight, which leaves the
+    // reservation uncredited for good. So read only with no walk in flight,
+    // and with no await between that check and the read.
+    while (needsGrowth && hostDisk.ephemeralCargoRootInFlight) {
       await hostDisk.ephemeralCargoRootSettled();
     }
     const seen = reservationSightings.observe(

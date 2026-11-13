@@ -136,6 +136,16 @@ function deps(
       return Promise.resolve(options.result ?? OK);
     },
     log: (message) => events.push(`log ${message}`),
+    // The real admission measures the host and writes a ledger file.
+    hostDiskAdmission: () => {
+      events.push("admit");
+      return Promise.resolve({
+        release: () => {
+          events.push("release");
+          return Promise.resolve();
+        },
+      });
+    },
   };
 }
 
@@ -408,7 +418,9 @@ Deno.test("Apple proxy egress wraps the Chromium launch and always stops", async
       events.findIndex((event) => event === "apple egress start 4321") <
         events.indexOf(launch),
     );
-    assertEquals(events.at(-1), "apple egress stop");
+    // Admitted before the proxy starts, released after the proxy stops.
+    assert(events.indexOf("admit") < events.indexOf("apple egress start 4321"));
+    assertEquals(events.slice(-2), ["apple egress stop", "release"]);
   }
 });
 

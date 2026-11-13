@@ -19,6 +19,7 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   type BabysitterContainerDeps,
   babysitterHostDiskAdmission,
+  checkBabysitterContainerChromium,
   runBabysitterRepairContainer,
 } from "../lib/fleet_babysitter_container.ts";
 import { EPHEMERAL_CARGO_HEADROOM_BYTES } from "../lib/heavy_build_gate.ts";
@@ -165,13 +166,15 @@ Deno.test("the reservation is released once, after the sidecar stop, when the sp
 });
 
 /** The real admission against a temp ledger, with a fake roomy host. */
-function realAdmission(dir: string) {
-  return (input: { containerName: string; clone: string; timeoutMs: number }) =>
+function realAdmission(dir: string, availableBytes = 200 * GIB) {
+  return (
+    input: { containerName: string; clone?: string; timeoutMs: number },
+  ) =>
     babysitterHostDiskAdmission(input, {
       measure: () =>
         Promise.resolve({
-          availableBytes: 200 * GIB,
-          usedBytes: 600 * GIB,
+          availableBytes,
+          usedBytes: 800 * GIB - availableBytes,
           totalBytes: 800 * GIB,
         }),
       floor: () => Promise.resolve(46 * GIB),
@@ -527,3 +530,84 @@ Deno.test("runRepairs honours the limit it is given", async () => {
   gates.get("b")!();
   await done;
 });
+
+const CHROMIUM_OK = {
+  success: true,
+  code: 0,
+  stdout: "<!doctype html><html></html>",
+  stderr: "",
+  timedOut: false,
+};
+
+Deno.test("a refused host-disk admission starts no egress and no container for the Chromium self-check", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await withRepair(async ({ events, spawns, deps }) => {
+      // 50 GiB free against the 46 GiB floor cannot take the 16 GiB footprint.
+      await assertRejects(
+        () =>
+          checkBabysitterContainerChromium({ baseDir: "/checkout" }, {
+            ...deps,
+            hostDiskAdmission: realAdmission(dir, 50 * GIB),
+          }),
+        Error,
+        "babysitter Chromium check not started",
+      );
+      assertEquals(events, []);
+      assertEquals(spawns.length, 0);
+      assertEquals(await readLiveHostDiskReservations(dir, Date.now()), []);
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+for (const spawnFails of [false, true]) {
+  Deno.test(
+    `the Chromium self-check's reservation is footprint only, live while the sidecar stops and gone afterwards (spawn ${
+      spawnFails ? "fails" : "succeeds"
+    })`,
+    async () => {
+      const dir = await Deno.makeTempDir();
+      try {
+        await withRepair(async ({ events, deps }) => {
+          const liveAtStop: number[] = [];
+          const bytesAtStop: number[] = [];
+          const run = checkBabysitterContainerChromium(
+            { baseDir: "/checkout" },
+            {
+              ...deps,
+              spawn: spawnFails ? deps.spawn! : () => {
+                events.push("spawn");
+                return Promise.resolve(CHROMIUM_OK);
+              },
+              hostDiskAdmission: realAdmission(dir),
+              stopSidecar: async () => {
+                events.push("stop-sidecar");
+                const live = await readLiveHostDiskReservations(
+                  dir,
+                  Date.now(),
+                );
+                liveAtStop.push(live.length);
+                bytesAtStop.push(...live.map((r) => r.bytes));
+                return [];
+              },
+            },
+          );
+          if (spawnFails) {
+            await assertRejects(() => run, Error, "spawn boom");
+          } else {
+            await run;
+          }
+          assertEquals(events, ["start-sidecar", "spawn", "stop-sidecar"]);
+          assertEquals(liveAtStop, [1]);
+          // No cargo headroom: the self-check builds nothing.
+          assertEquals(bytesAtStop, [BABYSITTER_LAUNCH_FOOTPRINT_BYTES]);
+          assertEquals(await readLiveHostDiskReservations(dir, Date.now()), []);
+        }, { spawnFails });
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    },
+  );
+}

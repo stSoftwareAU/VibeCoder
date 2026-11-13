@@ -1360,7 +1360,7 @@ step for the space its own build used (Issue #4423). Active polling does not
 prune other checkouts.
 
 A dip that babysitter reservations (live, or released and not yet reflected in a fresh launcher reading) explain is a wait, not a kill (Issue #5105). The fleet PR
-babysitter records each running repair container's host footprint in `${HOME}/logs/host-disk-reservations` (one file per container).
+babysitter records each running repair container's, and each Chromium self-check container's, host footprint in `${HOME}/logs/host-disk-reservations` (one file per container).
 When the host is below the floor and the space the earliest live or released
 reservation has consumed since its admission, less the worker's own measured growth over
 that span, accounts for the whole shortfall, a running agent, `cargo` or
@@ -1373,7 +1373,7 @@ fast checks, security-fix discrimination) do not wait. Below half the floor, or
 when the worker's own growth is unknown, nothing is credited. The worker's
 growth is unknown on a native `df`, and, where the ephemeral cargo root
 applies, while its latest measurement is missing, failed or still in progress
-(a probe that holds a reservation waits for the refresh its check started, and a reservation first seen takes its growth baseline from a fresh measurement of the root, even while the host is still above the floor). The
+(a probe that tracks a reservation, whether live, just released or first seen, reads the growth only when no walk of the root is in flight, so overlapping probes cannot leave a reservation without a baseline; and a reservation first seen takes its growth baseline from a fresh measurement of the root, even while the host is still above the floor). The
 babysitter removes its reservation file right after teardown, but the worker's
 low reading comes from `host-disk.json`, which the launcher rewrites every
 300 s; so a reservation the worker saw vanish keeps explaining the dip until

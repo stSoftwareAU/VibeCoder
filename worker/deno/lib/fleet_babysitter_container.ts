@@ -205,13 +205,15 @@ export interface BabysitterContainerDeps {
    */
   stopSidecar?: (plan: ContainerLaunchPlan) => Promise<string[]>;
   /**
-   * Admits the repair against the host's free disk before any egress starts
-   * (Issue #5105). A throw starts nothing and propagates. `release` runs after
-   * the egress teardown. Default: {@link babysitterHostDiskAdmission}.
+   * Admits the repair, and the Chromium self-check, against the host's free
+   * disk before any egress starts (Issue #5105). A throw starts nothing and
+   * propagates. `release` runs after the egress teardown. The self-check
+   * passes no `clone`: it holds no cargo project, so only the launch
+   * footprint is requested. Default: {@link babysitterHostDiskAdmission}.
    */
   hostDiskAdmission?: (input: {
     containerName: string;
-    clone: string;
+    clone?: string;
     timeoutMs: number;
   }) => Promise<{ release: () => Promise<void> }>;
   /**
@@ -1458,11 +1460,19 @@ export async function checkBabysitterContainerChromium(
   const log = deps.log ?? ((message: string) => {
     console.error(`[babysitter] ${redactSecrets(message).slice(0, CAUSE_CAP)}`);
   });
+  const hostDiskAdmission = deps.hostDiskAdmission ??
+    ((
+      admission: { containerName: string; clone?: string; timeoutMs: number },
+    ) => babysitterHostDiskAdmission(admission, { log }));
   const timeoutMs = input.timeoutMs ?? BABYSITTER_CHROMIUM_CHECK_TIMEOUT_MS;
   const containerName = throwawayContainerName();
   const plan = await buildPlan(input.baseDir, containerName);
   const baseEnv = baseEnvironment(env);
   await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
+  // Before any egress starts: a refusal starts no proxy and no container. The
+  // check runs before every babysitter pass and costs the same launch
+  // footprint as a repair, so its dip is credited like a repair's.
+  const reservation = await hostDiskAdmission({ containerName, timeoutMs });
 
   const apple = !plan.egressEnforced && plan.proxyName !== "";
   let teardown: Teardown | undefined;
@@ -1543,6 +1553,8 @@ export async function checkBabysitterContainerChromium(
     }
   } finally {
     await runTeardown(teardown, log, "");
+    // After the proxy and container are gone, so the ledger never undercounts.
+    await releaseReservation(reservation, log, "");
   }
 }
 
@@ -1613,6 +1625,27 @@ async function defaultHoldsCargo(clone: string): Promise<boolean> {
   );
 }
 
+/** Releases a host-disk reservation; a failure is logged redacted, never thrown. */
+async function releaseReservation(
+  reservation: { release: () => Promise<void> },
+  log: (message: string) => void,
+  token: string,
+): Promise<void> {
+  try {
+    await reservation.release();
+  } catch (error) {
+    report(
+      log,
+      `host disk reservation release: ${
+        redactToken(
+          error instanceof Error ? error.message : String(error),
+          token,
+        )
+      }`,
+    );
+  }
+}
+
 /**
  * The production host-disk admission (Issue #5105): measures the host as
  * run.sh does, admits against the worker's floor and the live reservations in
@@ -1621,7 +1654,7 @@ async function defaultHoldsCargo(clone: string): Promise<boolean> {
  * does for an unknown reading.
  */
 export async function babysitterHostDiskAdmission(
-  input: { containerName: string; clone: string; timeoutMs: number },
+  input: { containerName: string; clone?: string; timeoutMs: number },
   deps: BabysitterHostDiskAdmissionDeps = {},
 ): Promise<{ release: () => Promise<void> }> {
   const measure = deps.measure ?? defaultMeasureHost;
@@ -1636,7 +1669,9 @@ export async function babysitterHostDiskAdmission(
     return { release: () => Promise.resolve() };
   }
   const floorBytes = await (deps.floor ?? defaultFloor)(reading.totalBytes);
-  const holdsCargo = await (deps.holdsCargo ?? defaultHoldsCargo)(input.clone);
+  // No clone (the Chromium self-check): no cargo project to build.
+  const holdsCargo = input.clone !== undefined &&
+    await (deps.holdsCargo ?? defaultHoldsCargo)(input.clone);
   const requestBytes = BABYSITTER_LAUNCH_FOOTPRINT_BYTES +
     (holdsCargo ? EPHEMERAL_CARGO_HEADROOM_BYTES : 0);
   const dir = await (deps.reservationDir ?? defaultReservationDir)();
@@ -1648,7 +1683,11 @@ export async function babysitterHostDiskAdmission(
     live: await readLiveHostDiskReservations(dir, admittedAt),
   });
   if (!verdict.admit) {
-    throw new Error(`babysitter repair not started: ${verdict.reason}`);
+    throw new Error(
+      `babysitter ${
+        input.clone === undefined ? "Chromium check" : "repair"
+      } not started: ${verdict.reason}`,
+    );
   }
   const path = await writeHostDiskReservation(dir, {
     holder: "babysitter",
@@ -1784,19 +1823,7 @@ export async function runBabysitterRepairContainer(
     } finally {
       await runTeardown(teardown, log, input.token);
       // After the proxy and container are gone, so the ledger never undercounts.
-      try {
-        await reservation.release();
-      } catch (error) {
-        report(
-          log,
-          `host disk reservation release: ${
-            redactToken(
-              error instanceof Error ? error.message : String(error),
-              input.token,
-            )
-          }`,
-        );
-      }
+      await releaseReservation(reservation, log, input.token);
     }
   } finally {
     if (workspaceSnapshot) {
