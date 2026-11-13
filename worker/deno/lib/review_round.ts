@@ -720,6 +720,16 @@ export async function runCodexCli(
 }
 
 /**
+ * An environment lookup over a plain environment object. Only the object's own
+ * variables count, so a name such as `constructor` is not reported as set.
+ */
+function envLookup(
+  env: Record<string, string>,
+): (name: string) => string | undefined {
+  return (name) => Object.hasOwn(env, name) ? env[name] : undefined;
+}
+
+/**
  * The production seams: one Claude credential pool for the round, built the
  * way the worker builds its own.
  *
@@ -727,13 +737,19 @@ export async function runCodexCli(
  * @param options.credentialDir - Overrides the credential directory the
  *   fallback providers' credentials are read from: DeepSeek's (Issue #3632)
  *   and Codex's (Issue #5083). Production omits it and gets the
- *   environment-resolved directory; a wiring test points it at a fixture so
- *   no process environment is mutated. Scoped to the fallback exports — the
- *   Claude pool keeps its own resolution.
+ *   environment-resolved directory; a wiring test points it at a fixture and
+ *   passes `env` rather than mutating the process environment, so no process
+ *   environment is mutated. Scoped to the fallback exports — the Claude pool
+ *   keeps its own resolution.
+ * @param options.env - The process environment the fallback exports read
+ *   (the "already set" check) and merge into their child environments.
+ *   Production omits it and gets `Deno.env.toObject()`; a wiring test passes
+ *   its own variables here. Scoped to the fallback exports, as
+ *   `credentialDir` is.
  */
 export function createReviewRoundDeps(
   log: (message: string) => void,
-  options: { credentialDir?: string } = {},
+  options: { credentialDir?: string; env?: Record<string, string> } = {},
 ): ReviewRoundDeps {
   const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
   const pool = createClaudeCredentialPool({ log, provider });
@@ -757,9 +773,11 @@ export function createReviewRoundDeps(
       // credential file provisioned under the `deepseek` sub-directory,
       // exported the way the worker's start-up exports every provider's.
       const fallbackProvider = resolveAgentProvider(DEEPSEEK_PROVIDER_ID);
+      const processEnv = options.env ?? Deno.env.toObject();
       const values: Record<string, string> = {};
       const exported = await applyProviderCredentialEnv({
         dir: options.credentialDir,
+        env: envLookup(processEnv),
         providers: [fallbackProvider],
         selectToken: selectFirstProviderToken,
         setEnv: (name, value) => {
@@ -774,7 +792,7 @@ export function createReviewRoundDeps(
       // (`deepseek_env.ts`). The exported values are overlaid on the process
       // environment so the build sees the credential it just exported.
       const env = buildDeepSeekChildEnv({
-        ...Deno.env.toObject(),
+        ...processEnv,
         ...values,
       });
       env["CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] = "0";
@@ -787,9 +805,11 @@ export function createReviewRoundDeps(
       // environment is never touched. The child env is Codex's own: its
       // denylist strips the Claude and Anthropic credentials (`codex_env.ts`).
       const codexProvider = resolveAgentProvider(CODEX_PROVIDER_ID);
+      const processEnv = options.env ?? Deno.env.toObject();
       const values: Record<string, string> = {};
       const exported = await applyProviderCredentialEnv({
         dir: options.credentialDir,
+        env: envLookup(processEnv),
         providers: [codexProvider],
         selectToken: selectFirstProviderToken,
         setEnv: (name, value) => {
@@ -797,7 +817,7 @@ export function createReviewRoundDeps(
         },
       });
       const env = {
-        ...Deno.env.toObject(),
+        ...processEnv,
         ...values,
       };
       // applyProviderCredentialEnv never overwrites a variable already in the

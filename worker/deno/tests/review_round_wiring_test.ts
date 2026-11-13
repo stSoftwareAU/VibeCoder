@@ -42,29 +42,6 @@ async function withCredentialDir(
   }
 }
 
-/**
- * Set process environment variables for one test (`undefined` unsets one),
- * restoring every one of them afterwards.
- */
-async function withEnv(
-  vars: Record<string, string | undefined>,
-  fn: () => Promise<void>,
-): Promise<void> {
-  const saved = Object.fromEntries(
-    Object.keys(vars).map((name) => [name, Deno.env.get(name)]),
-  );
-  const apply = (name: string, value: string | undefined) => {
-    if (value === undefined) Deno.env.delete(name);
-    else Deno.env.set(name, value);
-  };
-  try {
-    for (const [name, value] of Object.entries(vars)) apply(name, value);
-    await fn();
-  } finally {
-    for (const [name, value] of Object.entries(saved)) apply(name, value);
-  }
-}
-
 Deno.test(
   "review round wiring - a provisioned DeepSeek credential exports the pinned child env (Issue #3632)",
   async () => {
@@ -135,43 +112,37 @@ Deno.test(
       async (dir) => {
         // The worker's own Claude subscription token and metered key are in
         // the process environment; neither may reach the Codex child.
-        await withEnv(
-          {
+        const deps = createReviewRoundDeps(() => {}, {
+          credentialDir: dir,
+          env: {
             CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083",
             ANTHROPIC_API_KEY: "fixture-anthropic-5083",
-            OPENAI_API_KEY: undefined,
-            CODEX_HOME: undefined,
           },
-          async () => {
-            const deps = createReviewRoundDeps(() => {}, {
-              credentialDir: dir,
-            });
-            const codex = await deps.exportCodexCredential();
+        });
+        const codex = await deps.exportCodexCredential();
 
-            assert(
-              codex !== null,
-              "a provisioned file must export a credential",
-            );
-            assertEquals(
-              codex!.env["OPENAI_API_KEY"],
-              "fixture-codex-key-5083",
-            );
-            assertEquals(
-              "CLAUDE_CODE_OAUTH_TOKEN" in codex!.env,
-              false,
-              "no Claude subscription token may reach the Codex child",
-            );
-            assertEquals(
-              "ANTHROPIC_API_KEY" in codex!.env,
-              false,
-              "no Anthropic key may reach the Codex child",
-            );
-            assertEquals(
-              "ANTHROPIC_AUTH_TOKEN" in codex!.env,
-              false,
-              "no Anthropic bearer may reach the Codex child",
-            );
-          },
+        assert(
+          codex !== null,
+          "a provisioned file must export a credential",
+        );
+        assertEquals(
+          codex!.env["OPENAI_API_KEY"],
+          "fixture-codex-key-5083",
+        );
+        assertEquals(
+          "CLAUDE_CODE_OAUTH_TOKEN" in codex!.env,
+          false,
+          "no Claude subscription token may reach the Codex child",
+        );
+        assertEquals(
+          "ANTHROPIC_API_KEY" in codex!.env,
+          false,
+          "no Anthropic key may reach the Codex child",
+        );
+        assertEquals(
+          "ANTHROPIC_AUTH_TOKEN" in codex!.env,
+          false,
+          "no Anthropic bearer may reach the Codex child",
         );
       },
     );
@@ -184,33 +155,27 @@ Deno.test(
     await withCredentialDir({}, async (dir) => {
       // The Codex key is already in the process environment, so no file
       // export happens; Codex must still be available with that key.
-      await withEnv(
-        {
+      const deps = createReviewRoundDeps(() => {}, {
+        credentialDir: dir,
+        env: {
           OPENAI_API_KEY: "fixture-ambient-codex-5083", // gitleaks:allow fake fixture, not a real key
-          CODEX_API_KEY: undefined,
-          CODEX_HOME: undefined,
           CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083",
         },
-        async () => {
-          const deps = createReviewRoundDeps(() => {}, {
-            credentialDir: dir,
-          });
-          const codex = await deps.exportCodexCredential();
+      });
+      const codex = await deps.exportCodexCredential();
 
-          assert(
-            codex !== null,
-            "an ambient Codex credential must keep the Codex fallback",
-          );
-          assertEquals(
-            codex!.env["OPENAI_API_KEY"],
-            "fixture-ambient-codex-5083",
-          );
-          assertEquals(
-            "CLAUDE_CODE_OAUTH_TOKEN" in codex!.env,
-            false,
-            "no Claude subscription token may reach the Codex child",
-          );
-        },
+      assert(
+        codex !== null,
+        "an ambient Codex credential must keep the Codex fallback",
+      );
+      assertEquals(
+        codex!.env["OPENAI_API_KEY"],
+        "fixture-ambient-codex-5083",
+      );
+      assertEquals(
+        "CLAUDE_CODE_OAUTH_TOKEN" in codex!.env,
+        false,
+        "no Claude subscription token may reach the Codex child",
       );
     });
   },
@@ -221,22 +186,14 @@ Deno.test(
   async () => {
     await withCredentialDir({}, async (dir) => {
       // No Codex credential anywhere: the API-key and state variables are unset.
-      await withEnv(
-        {
-          OPENAI_API_KEY: undefined,
-          CODEX_API_KEY: undefined,
-          CODEX_HOME: undefined,
-        },
-        async () => {
-          const deps = createReviewRoundDeps(() => {}, {
-            credentialDir: dir,
-          });
-          assertEquals(
-            await deps.exportCodexCredential(),
-            null,
-            "an absent credential file defers nothing to Codex",
-          );
-        },
+      const deps = createReviewRoundDeps(() => {}, {
+        credentialDir: dir,
+        env: {},
+      });
+      assertEquals(
+        await deps.exportCodexCredential(),
+        null,
+        "an absent credential file defers nothing to Codex",
       );
     });
   },
