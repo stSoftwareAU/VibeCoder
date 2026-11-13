@@ -189,7 +189,7 @@ naming what it switched to. Running out of quota is never logged as an error.
    authentication, and a refreshed one could invalidate the worker's durable
    login. Reaching Codex on a subscription login needs a persistent Codex home
    on a mount the round shares, with its own login. That is not built, and is
-   a follow-up to Issue #5083.
+   tracked as Issue #5127, a follow-up to Issue #5083 (which stays open).
 5. **DeepSeek.** Only when Codex also hit its usage limit or has no credential,
    the round runs once more on the worker's **DeepSeek** provider
    (`deepseek-v4-pro`, in the worker's own pinned child environment: no Claude

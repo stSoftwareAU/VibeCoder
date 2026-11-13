@@ -12,7 +12,7 @@ provider `codex`, and its cost is priced from Codex's own usage events. Each
 provider or model switch logs one `INFO:` line. Codex runs in a round only on
 an API key or on a login in a mount the round shares; the documented
 subscription setup (its `CODEX_HOME` on the agent-state volume) is skipped, and
-reaching it is a follow-up to #5083, so this PR is `Part of #5083`, not `Closes`.
+reaching it is tracked as #5127, a follow-up to #5083, so this PR is `Part of #5083`, not `Closes`.
 
 ## Spec
 
@@ -69,8 +69,8 @@ reaching it is a follow-up to #5083, so this PR is `Part of #5083`, not `Closes`
   still goes to DeepSeek. Only an API key in `provider.env` (metered) or a
   `CODEX_HOME` on a mount the round shares, already holding a login, runs Codex.
   Making the subscription reachable (a persistent Codex home on a shared mount,
-  with its own login, never a copy of the worker's seed) is left to a follow-up
-  to #5083. The limit is stated in `running-unattended.md`, `CONFIGURATION.md`
+  with its own login, never a copy of the worker's seed) is tracked as #5127, a
+  follow-up to #5083. The limit is stated in `running-unattended.md`, `CONFIGURATION.md`
   and `SKILL.md`. The state initialiser sees only the
   process environment, not the `CODEX_HOME` that `provider.env` exports, so the
   round never seeds a login into a throwaway home (a stale seed would fail

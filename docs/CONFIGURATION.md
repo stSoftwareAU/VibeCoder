@@ -542,7 +542,8 @@ or a `CODEX_HOME` on a mount the round shares that already holds a login. A
 `CODEX_HOME` on the `vibe-agent-state` volume (the documented subscription
 setup) is not mounted in the round, so the round logs
 `no Codex login at <home>/auth.json in the round ...; skipping the codex fallback`
-and goes on to DeepSeek. A failure that is not a usage limit stops the chain.
+and goes on to DeepSeek (reaching that login is tracked as Issue #5127).
+A failure that is not a usage limit stops the chain.
 Each switch is logged once. The chain and its log lines are described in
 [running-unattended.md](../.claude/skills/review-fleet-prs/references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
 

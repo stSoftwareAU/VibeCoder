@@ -19,7 +19,9 @@
  *
  *   Fable 5.2 → Opus 5.5 `xhigh` on the same subscription
  *     → the Claude pool's next subscription with budget
- *     → Codex `gpt-6-astra` at `high` effort, when a Codex credential is provisioned
+ *     → Codex `gpt-6-astra` at `high` effort, when a Codex credential reaches the
+ *       round (an API key, or a login on a shared mount; the agent-state
+ *       `CODEX_HOME` does not, see #5127)
  *     → DeepSeek, in the worker's own pinned child environment
  *
  * Each link runs only once the one before it is spent. A usage limit is the
@@ -214,7 +216,7 @@ export interface ReviewRoundDeps {
  * 2. a held subscription that hit the limit is retried once on another with
  *    budget;
  * 3. the round runs once on Codex ({@link REVIEW_CODEX_MODEL}) with the same
- *    prompt, when a Codex credential is provisioned;
+ *    prompt, when a Codex credential reaches the round (see #5127);
  * 4. the round runs once on DeepSeek, when the attempt is still usage-limited.
  *
  * A link runs only when the one before it ended on a usage limit. An attempt
