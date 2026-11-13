@@ -1,0 +1,12 @@
+{
+  "issue": 5105,
+  "chunk": "top-up-5105",
+  "title": "top-up: ephemeral cargo root telemetry",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5105",
+  "definition": "Review how the ephemeral cargo root is measured and reported on the Work volume line and the host-disk estimate's detail, and that a failed measurement reads unknown rather than zero.",
+  "status": "claimed",
+  "sweptAt": "c2b806d104296e6a5d2d5190fd0da1153c197333",
+  "paths": [
+    "worker/deno/lib/ephemeral_root_telemetry.ts"
+  ]
+}

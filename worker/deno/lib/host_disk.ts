@@ -544,6 +544,23 @@ export interface HostDiskMonitorOptions {
   readRefresh?: (path: string) => Promise<HostDiskRefresh | null>;
   /** A reading older than this is ignored. */
   refreshMaxAgeMs?: number;
+  /**
+   * Measures the ephemeral cargo root on the container's own layer (Issue
+   * #5105); null = not measured or not applicable. Called by a probing
+   * `check` whose launch-baseline level is not `ok`. Refreshes run in the
+   * background, at most once per sample interval, with no overlapping walk.
+   * `force` does not bypass that throttle. The next probing check names the
+   * completed figure without delaying the disk-floor verdict.
+   * Omitted → only {@link HostDiskMonitor.recordEphemeralCargoRootBytes}
+   * feeds the figure.
+   */
+  measureEphemeralCargoRoot?: () => Promise<number | null>;
+  /**
+   * Does the ephemeral cargo root apply on this runtime (Issue #5105)?
+   * Decided synchronously before a refresh starts, so a runtime where it does
+   * not apply never walks or announces the root. Omitted → it applies.
+   */
+  ephemeralCargoRootApplies?: () => boolean;
 }
 
 /**
@@ -564,6 +581,10 @@ export class HostDiskMonitor {
     path: string,
   ) => Promise<HostDiskRefresh | null>;
   private readonly refreshMaxAgeMs: number;
+  private readonly measureEphemeralCargoRoot:
+    | (() => Promise<number | null>)
+    | undefined;
+  private readonly ephemeralCargoRootApplies: (() => boolean) | undefined;
   /** When the figure the estimate rests on was measured (Issue #1550). */
   private adoptedMeasuredAtMs: number;
   /** Age of the adopted launcher reading at the last check, if any. */
@@ -581,6 +602,15 @@ export class HostDiskMonitor {
   private recreateUnrecovered = false;
   /** The launcher's largest-host-directories text, if it wrote one. */
   private largestDirs: string | undefined = undefined;
+  /**
+   * Bytes the ephemeral cargo root holds on the container's own layer, fed by
+   * the work-volume report (Issue #5105); null = not measured.
+   */
+  private ephemeralCargoRootBytes: number | null = null;
+  /** Why the monitor's own refresh of the root failed; null when it did not. */
+  private ephemeralCargoRootError: string | null = null;
+  private ephemeralCargoRootSampleAt: number | undefined;
+  private ephemeralCargoRootRefresh: Promise<void> | undefined;
   private baselined = false;
   private lastSampleAt: number | undefined;
   private lastStatus: HostDiskStatus = {
@@ -589,6 +619,67 @@ export class HostDiskMonitor {
     detail: "not probed yet",
   };
   private lastLevel: HostDiskStatus["level"] | undefined;
+
+  /**
+   * Record the ephemeral cargo root's size (Issue #5105). It lives outside the
+   * work volume, so the launch-baseline estimate cannot see its growth; the
+   * estimate's detail names it instead. `null` means not measured.
+   */
+  recordEphemeralCargoRootBytes(bytes: number | null): void {
+    this.ephemeralCargoRootBytes = bytes;
+    this.ephemeralCargoRootError = null;
+  }
+
+  /** Diagnostic walks must never delay the floor verdict or overlap (#5105). */
+  private refreshEphemeralCargoRoot(t: number): void {
+    const measure = this.measureEphemeralCargoRoot;
+    if (
+      measure === undefined ||
+      (this.ephemeralCargoRootApplies !== undefined &&
+        !this.ephemeralCargoRootApplies()) ||
+      this.ephemeralCargoRootRefresh !== undefined ||
+      (this.ephemeralCargoRootSampleAt !== undefined &&
+        t - this.ephemeralCargoRootSampleAt < this.sampleIntervalMs)
+    ) return;
+    this.ephemeralCargoRootSampleAt = t;
+    this.ephemeralCargoRootRefresh = Promise.resolve().then(async () => {
+      try {
+        this.recordEphemeralCargoRootBytes(await measure());
+      } catch (error) {
+        this.ephemeralCargoRootBytes = null;
+        this.ephemeralCargoRootError = error instanceof Error
+          ? error.message
+          : String(error);
+        this.log(
+          `Host disk: the ephemeral cargo root could not be measured: ${this.ephemeralCargoRootError} (Issue #5105)`,
+        );
+      } finally {
+        // A slow or failed walk gets the same quiet interval after settling.
+        this.ephemeralCargoRootSampleAt = this.now();
+        this.ephemeralCargoRootRefresh = undefined;
+      }
+    });
+  }
+
+  /** The launch-baseline detail's ephemeral-root suffix (Issue #5105). */
+  private ephemeralCargoRootDetail(): string {
+    if (this.ephemeralCargoRootRefresh !== undefined) {
+      const last = this.ephemeralCargoRootBytes === null
+        ? "no completed measurement"
+        : `last measured ${formatGb(this.ephemeralCargoRootBytes)}`;
+      return ` — ephemeral cargo root refresh in progress (${last}) on the container's own layer; its growth since the launcher's reading is not in this estimate (Issue #5105)`;
+    }
+    if (this.ephemeralCargoRootError !== null) {
+      return ` — ephemeral cargo root unknown on the container's own layer: ${this.ephemeralCargoRootError}; its growth since the launcher's reading is not in this estimate (Issue #5105)`;
+    }
+    if (
+      this.ephemeralCargoRootBytes === null ||
+      this.ephemeralCargoRootBytes <= 0
+    ) return "";
+    return ` — ephemeral cargo root ${
+      formatGb(this.ephemeralCargoRootBytes)
+    } on the container's own layer; its growth since the launcher's reading is not in this estimate (Issue #5105)`;
+  }
 
   constructor(options: HostDiskMonitorOptions) {
     this.workDir = options.workDir;
@@ -603,6 +694,8 @@ export class HostDiskMonitor {
     this.readRefresh = options.readRefresh ?? readHostDiskRefreshFile;
     this.refreshMaxAgeMs = options.refreshMaxAgeMs ??
       DEFAULT_REFRESH_MAX_AGE_MS;
+    this.measureEphemeralCargoRoot = options.measureEphemeralCargoRoot;
+    this.ephemeralCargoRootApplies = options.ephemeralCargoRootApplies;
     // The environment baseline was measured by the launch plan BEFORE the
     // image build and the volume heal, and the launcher writes its reading
     // file again after them, seconds before this process starts (Issue
@@ -802,6 +895,9 @@ export class HostDiskMonitor {
         this.baseline.totalBytes,
         this.floors,
       );
+      // Separate cadence: forced build probes still return immediately and
+      // share at most one background walk per sample interval (Issue #5105).
+      if (cls.level !== "ok") this.refreshEphemeralCargoRoot(t);
       const ratchet = describeWorkVolumeRatchet(this.workVolumeRatchet);
       const origin = this.refreshAgeMs === undefined
         ? "estimated from launch baseline"
@@ -815,7 +911,7 @@ export class HostDiskMonitor {
         source: "launch-baseline",
         detail: `host (${origin}) ${cls.detail}${
           ratchet === "" ? "" : ` — ${ratchet}`
-        }`,
+        }${this.ephemeralCargoRootDetail()}`,
       };
     } else if (reading !== null) {
       const cls = classifyHostDisk(
