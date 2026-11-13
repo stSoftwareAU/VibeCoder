@@ -22,8 +22,8 @@ reaching it is a follow-up to #5083, so this PR is `Part of #5083`, not `Closes`
   PR adds what was still missing: config-driven model and effort, the Codex
   runner, the logging, and the tests.
 - Codex runs only when the Claude side is spent and a usable Codex login or key
-  reaches the round (not the documented agent-state subscription home). DeepSeek runs only when Codex also hit its usage limit or
-  has no credential. Codex failing for any other reason ends the round there and
+  reaches the round (not the documented agent-state subscription home).
+  DeepSeek runs only when Codex also hit its usage limit or has no credential. Codex failing for any other reason ends the round there and
   does not fall back to DeepSeek.
 
 ### Essential Design Decisions
@@ -128,9 +128,12 @@ Issue numbers this diff cites as provenance:
   Fable
 
 Docs updated: `docs/CONFIGURATION.md` (new "Reviewer model and effort" section,
-and a parallel-rounds sentence),
+and a parallel-rounds sentence; its chain says Codex runs when a credential
+"reaches the round", not merely when one is provisioned),
 `.claude/skills/review-fleet-prs/references/running-unattended.md` (the round's
-chain and "What each review cost", both read through),
+chain, whose Codex step now points at "Which Codex credentials reach a round"
+instead of saying a provisioned `codex/provider.env` is enough, and "What each
+review cost", both read through),
 `.claude/skills/review-fleet-prs/SKILL.md` (the review step and the footer),
 `DESIGN-PRINCIPLES.md` (reviewer-round overflow), `docs/MODEL-AND-CACHING.md`
 (the PR reviewer bot paragraph, and the 2026-10-16 decision sentence that still
