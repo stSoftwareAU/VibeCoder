@@ -179,14 +179,64 @@ Deno.test(
 );
 
 Deno.test(
+  "review round wiring - an ambient Codex credential keeps the Codex fallback (Issue #5083)",
+  async () => {
+    await withCredentialDir({}, async (dir) => {
+      // The Codex key is already in the process environment, so no file
+      // export happens; Codex must still be available with that key.
+      await withEnv(
+        {
+          OPENAI_API_KEY: "fixture-ambient-codex-5083", // gitleaks:allow fake fixture, not a real key
+          CODEX_API_KEY: undefined,
+          CODEX_HOME: undefined,
+          CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083",
+        },
+        async () => {
+          const deps = createReviewRoundDeps(() => {}, {
+            credentialDir: dir,
+          });
+          const codex = await deps.exportCodexCredential();
+
+          assert(
+            codex !== null,
+            "an ambient Codex credential must keep the Codex fallback",
+          );
+          assertEquals(
+            codex!.env["OPENAI_API_KEY"],
+            "fixture-ambient-codex-5083",
+          );
+          assertEquals(
+            "CLAUDE_CODE_OAUTH_TOKEN" in codex!.env,
+            false,
+            "no Claude subscription token may reach the Codex child",
+          );
+        },
+      );
+    });
+  },
+);
+
+Deno.test(
   "review round wiring - no Codex credential means no Codex fallback (Issue #5083)",
   async () => {
     await withCredentialDir({}, async (dir) => {
-      const deps = createReviewRoundDeps(() => {}, { credentialDir: dir });
-      assertEquals(
-        await deps.exportCodexCredential(),
-        null,
-        "an absent credential file defers nothing to Codex",
+      // No Codex credential anywhere: the API-key and state variables are unset.
+      await withEnv(
+        {
+          OPENAI_API_KEY: undefined,
+          CODEX_API_KEY: undefined,
+          CODEX_HOME: undefined,
+        },
+        async () => {
+          const deps = createReviewRoundDeps(() => {}, {
+            credentialDir: dir,
+          });
+          assertEquals(
+            await deps.exportCodexCredential(),
+            null,
+            "an absent credential file defers nothing to Codex",
+          );
+        },
       );
     });
   },

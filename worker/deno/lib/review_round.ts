@@ -47,6 +47,7 @@ import {
 import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
 import { detectUsageLimit } from "./claude_executor.ts";
 import { DEEPSEEK_PROVIDER_ID } from "./agent_provider.ts";
+import { CODEX_API_KEY_ENV_VARS, CODEX_HOME_ENV_VAR } from "./codex_auth.ts";
 import { buildCodexArgs, composeCodexPrompt } from "./codex_executor.ts";
 import { CODEX_OUTPUT_ADAPTER } from "./codex_output_adapter.ts";
 import { DEFAULT_CODEX_MODEL_TOP_TIER } from "./config_defaults.ts";
@@ -795,13 +796,18 @@ export function createReviewRoundDeps(
           values[name] = value;
         },
       });
-      if (exported.length === 0) return null;
-      return {
-        env: codexProvider.buildChildEnv({
-          ...Deno.env.toObject(),
-          ...values,
-        }),
+      const env = {
+        ...Deno.env.toObject(),
+        ...values,
       };
+      // applyProviderCredentialEnv never overwrites a variable already in the
+      // process environment, so a Codex credential the operator exported
+      // themselves is not in `exported` yet is still usable. Defer only when
+      // nothing was exported AND no Codex credential variable is set.
+      const ambientCredential = [...CODEX_API_KEY_ENV_VARS, CODEX_HOME_ENV_VAR]
+        .some((name) => Boolean(env[name]));
+      if (exported.length === 0 && !ambientCredential) return null;
+      return { env: codexProvider.buildChildEnv(env) };
     },
     runClaude: runClaudeCli,
     runCodex: runCodexCli,
