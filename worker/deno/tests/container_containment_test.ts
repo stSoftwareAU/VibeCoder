@@ -1037,15 +1037,16 @@ Deno.test({
             const runArgs = args.slice(0, imageIndex + 1);
             // Match the fixture owner, as the workflow's other in-image checks do.
             const userIndex = runArgs.indexOf("--user");
-            assert(userIndex >= 0);
-            runArgs[userIndex + 1] =
-              `${uid.stdout.trim()}:${gid.stdout.trim()}`;
+            const user = `${uid.stdout.trim()}:${gid.stdout.trim()}`;
+            const userFlags = userIndex < 0 ? ["--user", user] : [];
+            if (userIndex >= 0) runArgs[userIndex + 1] = user;
             const probe = await runRuntime(
               context.descriptor.executable,
               runArgsWithProbe(
                 { ...fixture.plan, runArgs },
                 `${fixture.plan.containerName}-${name}`,
                 [
+                  ...userFlags,
                   "--env",
                   "HOME=/tmp/probe",
                   "--env",
