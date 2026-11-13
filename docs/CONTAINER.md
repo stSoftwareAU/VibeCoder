@@ -1365,11 +1365,20 @@ When the host is below the floor and the space the earliest live reservation
 has consumed since its admission, less the worker's own measured growth over
 that span, accounts for the whole shortfall, a running agent, `cargo` or
 `deno` keeps running, a new agent step waits (polling every minute for up to
-20 minutes, never past its finish deadline) instead of parking, and the launch
+20 minutes, never past its finish deadline, or past its own timeout when no run
+timeline is set, less the minimum session) instead of parking, and the launch
 is not ended, because ending it or recreating the work volume would not return
 space the babysitter's containers hold. Other build steps (quality gate, merge
 fast checks, security-fix discrimination) do not wait. Below half the floor, or
-when the worker's own growth is unknown, nothing is credited. A dip that
+when the worker's own growth is unknown, nothing is credited. The worker's
+growth is unknown on a native `df`, and, where the ephemeral cargo root
+applies, while its latest measurement is missing, failed or still in progress
+(a probe that holds a reservation waits for the refresh its check started). The
+babysitter removes its reservation file right after teardown, but the worker's
+low reading comes from `host-disk.json`, which the launcher rewrites every
+300 s; so a reservation the worker saw vanish keeps explaining the dip until
+the launcher reading it has adopted was measured after the release, or 15
+minutes pass. A released reservation is not outstanding for cargo admission. A dip that
 persists past the wait, or that the reservations do not explain, parks or ends
 the launch as above. Cargo
 admission subtracts the reserved bytes not yet consumed from the free space it

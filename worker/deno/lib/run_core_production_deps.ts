@@ -1182,13 +1182,22 @@ export async function createProductionRunCoreDeps(
       nowMs,
       (message) => logger.warn(message),
     );
+    // The growth must include the ephemeral cargo root's refresh that this
+    // probe's check just started, or a fresh dip reads as unexplained. Only a
+    // probe with a reservation to credit waits; the floor verdict never does.
+    if (live.length > 0 || reservationSightings.holdsReleased) {
+      await hostDisk.ephemeralCargoRootSettled();
+    }
+    const seen = reservationSightings.observe(
+      live,
+      hostDisk.workerFootprintGrowthBytes,
+      nowMs,
+      hostDisk.launcherReadingMeasuredAtMs,
+    );
     return {
       hostDiskReservations: live,
-      workerGrowthSinceReservationBytes: reservationSightings.observe(
-        live,
-        hostDisk.workerFootprintGrowthBytes,
-        nowMs,
-      ),
+      releasedHostDiskReservations: seen.released,
+      workerGrowthSinceReservationBytes: seen.workerGrowthBytes,
     };
   };
   const hostDisk = options.hostDisk ?? new HostDiskMonitor({

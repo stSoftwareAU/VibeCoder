@@ -31,11 +31,22 @@ const GIB = 1024 ** 3;
 const TOTAL = 460 * GIB;
 const FREE = 40 * GIB;
 
+interface Wiring {
+  checkRootFilesystem: () => Promise<{ path: string; detail: string } | null>;
+  /** The babysitter's reservation file, for removing it as the repair ends. */
+  reservationPath: string;
+  /** Rewrites the launcher's reading, as `run.sh` does, `seconds` ahead of now. */
+  writeLauncherReading(availableBytes: number, seconds: number): Promise<void>;
+}
+
 async function withWiring(
   reserve: boolean,
   fn: (
-    checkRootFilesystem: () => Promise<{ path: string; detail: string } | null>,
+    checkRootFilesystem: Wiring["checkRootFilesystem"],
+    wiring: Wiring,
   ) => Promise<void>,
+  /** What the ephemeral cargo root measures: the worker's own growth. */
+  ephemeral: { bytes: number | null } = { bytes: 0 },
 ): Promise<void> {
   const home = await Deno.makeTempDir();
   const work = await Deno.makeTempDir();
@@ -57,7 +68,8 @@ async function withWiring(
         totalBytes: 504 * GIB,
       }),
     refreshFile,
-    measureEphemeralCargoRoot: () => Promise.resolve(0),
+    sampleIntervalMs: 0,
+    measureEphemeralCargoRoot: () => Promise.resolve(ephemeral.bytes),
   });
   await Deno.writeTextFile(
     refreshFile,
@@ -68,6 +80,18 @@ async function withWiring(
       workVolumeTrimRefused: true,
     }),
   );
+  const writeLauncherReading = (availableBytes: number, seconds: number) =>
+    Deno.writeTextFile(
+      refreshFile,
+      JSON.stringify({
+        availableBytes,
+        totalBytes: TOTAL,
+        measuredAt: Math.floor(Date.now() / 1000) + seconds,
+        workVolumeTrimRefused: true,
+      }),
+    );
+  const reservationPath =
+    `${home}/logs/${HOST_DISK_RESERVATIONS_DIR}/babysitter-repair-1.json`;
   const floor = monitor.floorBytesFor(TOTAL);
   // The test needs a reading below the floor but above its hard minimum.
   assert(floor > FREE && floor / 2 <= FREE, `floor ${floor}`);
@@ -96,10 +120,15 @@ async function withWiring(
   });
   enableInFlightHostDiskGate(true);
   try {
-    await fn(async () => {
+    const checkRootFilesystem = async () => {
       const check = deps.checkRootFilesystem;
       assert(check !== undefined);
       return await check();
+    };
+    await fn(checkRootFilesystem, {
+      checkRootFilesystem,
+      reservationPath,
+      writeLauncherReading,
     });
   } finally {
     enableInFlightHostDiskGate(false);
@@ -130,4 +159,56 @@ Deno.test("Issue #5105 - production checkRootFilesystem reads the reservation in
   await withWiring(false, async (check) => {
     assertEquals((await check())?.path, "host disk");
   });
+});
+
+Deno.test("Issue #5105 - a released reservation keeps explaining the dip until a launcher reading measured after the release arrives", async () => {
+  await withWiring(true, async (_check, wiring) => {
+    assertEquals(await parkRunningBuild(), null);
+    // The repair ends and the babysitter removes its file; the launcher has
+    // not rewritten host-disk.json, so the worker still holds the low reading.
+    await Deno.remove(wiring.reservationPath);
+    assertEquals(await parkRunningBuild(), null, "build killed at release");
+    assert((await wiring.checkRootFilesystem())?.path !== "host disk");
+    // A fresh reading that is still low: the babysitter no longer explains it.
+    await wiring.writeLauncherReading(FREE, 5);
+    assertStringIncludes(
+      await parkRunningBuild() ?? "",
+      "host disk below its floor",
+    );
+    assertEquals((await wiring.checkRootFilesystem())?.path, "host disk");
+  });
+  await withWiring(true, async (_check, wiring) => {
+    assertEquals(await parkRunningBuild(), null);
+    await Deno.remove(wiring.reservationPath);
+    assertEquals(await parkRunningBuild(), null);
+    // A fresh reading that shows the space back: nothing to park for.
+    await wiring.writeLauncherReading(120 * GIB, 5);
+    assertEquals(await parkRunningBuild(), null);
+  });
+});
+
+Deno.test("Issue #5105 - the worker's own measured growth stops the reservation explaining the dip", async () => {
+  // Growth is measured from when the worker first saw the reservation: 20 GiB
+  // of ephemeral cargo root after that exceeds the whole drop to FREE.
+  const grows = { bytes: 0 as number | null };
+  await withWiring(true, async (check) => {
+    assertEquals(await parkRunningBuild(), null);
+    grows.bytes = 20 * GIB;
+    assertStringIncludes(
+      await parkRunningBuild() ?? "",
+      "host disk below its floor",
+    );
+    assertEquals((await check())?.path, "host disk");
+  }, grows);
+  // A cargo root whose measurement failed credits nothing, whatever it held.
+  const fails = { bytes: 0 as number | null };
+  await withWiring(true, async (check) => {
+    assertEquals(await parkRunningBuild(), null);
+    fails.bytes = null;
+    assertStringIncludes(
+      await parkRunningBuild() ?? "",
+      "host disk below its floor",
+    );
+    assertEquals((await check())?.path, "host disk");
+  }, fails);
 });

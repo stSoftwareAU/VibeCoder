@@ -36,19 +36,26 @@ Closes #5105.
   - A refusal throws before any proxy or container starts. The reservation is
     removed after the container and its proxy are torn down.
 - **One repair at a time** (`fleet_pr_babysitter.ts`). The production queue
-  passes `BABYSITTER_REPAIR_CONTAINER_LIMIT = 1` instead of `2`.
+  passes `BABYSITTER_REPAIR_CONTAINER_LIMIT = 1` instead of `2`; a test drives
+  `pass()` with two eligible PRs.
 - **Worker** (`heavy_build_gate.ts`, `run_core_production_deps.ts`,
   `host_disk.ts`). The host disk probe and the `checkRootFilesystem` stop check
   now also read the live reservations and the worker's own growth since each was
   first seen. `HostDiskMonitor.workerFootprintGrowthBytes` is the work volume's
   growth, summed across launcher re-bases, plus the ephemeral cargo root's
-  highest measured size. It only rises. It is undefined on a native `df`.
+  highest measured size. It only rises. It is undefined on a native `df`, and,
+  where the ephemeral root applies, while its latest measurement is missing,
+  failed or in progress, so an unmeasured root never reads as zero growth. The
+  production probe waits for the refresh its check started before it reads the
+  growth, but only when a reservation is live or released.
   - `parkRunningBuild` and `hostDiskLaunchStopReason` return null for a dip the
     reservations explain.
   - `parkInFlightBuild` waits out such a dip only when the caller opts in. The
     default is no wait. Only the agent step in `claude_runner.ts` opts in,
-    polling every 60 s for at most 20 minutes, and never past its finish
-    deadline less the minimum session (`babysitterDipWaitWithin`).
+    polling every 60 s through the runner's `clock` for at most 20 minutes, and
+    never past its session timeout less the minimum session
+    (`babysitterDipWaitWithin`): the finish-deadline clamp when a run timeline
+    is set, the caller's own `timeoutSeconds` otherwise.
   - `heavyBuildAdmission`, `cargoClaimDeferral` and
     `shouldSkipEphemeralCargoBuild` subtract the reserved bytes not yet consumed
     from the free space they test.
@@ -144,7 +151,7 @@ sequenceDiagram
 
 ## Test Plan
 
-- `worker/deno/tests/host_disk_reservations_5105_test.ts` (new, 13 tests): the
+- `worker/deno/tests/host_disk_reservations_5105_test.ts` (new, 15 tests): the
   parser rejects each malformed field; write and read round-trip; expired,
   malformed and mismatched-name files are not read as live; a missing directory
   reads as empty; consumption accounting, including the cap; admission admits
@@ -152,14 +159,23 @@ sequenceDiagram
   explained dip, an unexplained dip, no dip and no reservations. The dip credit
   takes the worker's own growth off the drop, credits nothing for unknown
   growth, and never applies below half the floor. `ReservationSightings`
-  measures growth from first sight and credits nothing past the grace.
-  Red-check: with the worker-growth term removed, 2 of these tests fail.
-- `worker/deno/tests/host_disk_babysitter_dip_5105_test.ts` (new, 10 tests):
+  measures growth from first sight and credits nothing past the grace, holds a
+  vanished reservation until a launcher reading measured after it went arrives,
+  and stops holding it after 15 minutes. Red-check: with the worker-growth term
+  removed, 2 of these tests fail.
+- `worker/deno/tests/host_disk_babysitter_dip_5105_test.ts` (new, 14 tests):
   - `parkRunningBuild` and `hostDiskLaunchStopReason` do not park or stop for an
     explained dip; the same reading without a reservation does (control).
   - A dip the reservation cannot explain still parks and stops.
-  - `parkInFlightBuild` waits out a dip that recovers (two polls), and parks
-    once the wait bound passes.
+  - `parkInFlightBuild` waits out a dip that recovers (two polls; the repair
+    ends mid-wait, so the recovery reading carries no reservation, as in
+    production), and parks once the wait bound passes.
+  - A released reservation is a wait, not a kill, for `parkRunningBuild`,
+    `hostDiskLaunchStopReason` and `parkInFlightBuild`; the same reading with
+    the release forgotten parks and stops (control); a released reservation is
+    not outstanding for cargo admission.
+  - `babysitterDipWaitWithin` clamps to the remaining budget, gives no wait for
+    zero or negative, and sleeps and reads time through the clock it is given.
   - Cargo admission becomes `merge-only` when an unconsumed reservation leaves
     too little headroom.
   - The probe helper reads a live reservation, and logs and survives an
@@ -175,17 +191,38 @@ sequenceDiagram
   reservation is ignored; the same reading without the reservation is the
   control. Red-check: with the subtraction at either site changed back to
   `hostFreeBytes: free`, both reservation cases fail and both controls pass.
-- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 2 tests):
+- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 4 tests):
   `createProductionRunCoreDeps` with a temp `HOME` holding
   `logs/host-disk-reservations/<id>.json`. `parkRunningBuild()` returns null
   with the file and a park reason without it. `checkRootFilesystem` does not
   stop for host disk with the file, and stops without it. Red-check: with the
-  reservations dropped from the wiring, both fail.
+  reservations dropped from the wiring, both fail. Two more cases remove the
+  reservation file while the launcher's low reading is unchanged (still
+  explained), then deliver a fresh launcher reading: still low parks and ends
+  the launch, recovered does not. Red-check: with the released reservations
+  dropped from the probe, the first fails. Two more show the worker's own
+  growth, measured after the reservation was first seen, stops the reservation
+  explaining the dip: 20 GiB of ephemeral cargo root, and a failed measurement.
+  Red-check: with the unknown-growth guard disabled, the second fails.
+- `worker/deno/tests/host_disk_worker_footprint_5105_test.ts` (new, 5 tests):
+  `HostDiskMonitor.workerFootprintGrowthBytes` with non-zero figures: work
+  volume growth summed across a launcher re-base plus the ephemeral peak (which
+  only rises); an unmeasured or failed root is `undefined` and a real figure
+  restores it; a root that does not apply is not required; a refresh in progress
+  is `undefined` and its completion restores the figure; a native `df` is
+  `undefined`.
+- `worker/deno/tests/claude_runner_babysitter_dip_wait_5105_test.ts` (new, 4
+  tests): `runClaudeWithTimeout` with the gate armed, a stub agent and a fake
+  clock. An explained dip waits one poll and then spawns once the reading
+  recovers; an unexplained dip and a discussion-only run do not wait; the wait
+  is bounded by the session timeout less the minimum session (180 s allows one
+  poll, 120 s none). Red-check: with the wait argument dropped from the call in
+  `claude_runner.ts`, the first and last fail.
 - `worker/deno/tests/security_fix_discrimination_test.ts` (one new test):
   `runSecurityFixDiscrimination` with the default park and an explained dip
   returns the host-disk park reason at once, not a budget exhaustion. Not
   red-checked: with the old 20-minute default the test would hang, not fail.
-- `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (new, 12
+- `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (new, 13
   tests):
   - A refused admission starts no sidecar, Apple helper or spawn.
   - The release runs once, after the sidecar stops, including when the spawn
@@ -203,8 +240,9 @@ sequenceDiagram
     and an admission. This host admitted, and the release removed the file.
   - A refusal from an outstanding reservation, with a control that admits.
   - An unmeasurable host admits and writes no file.
-  - With `BABYSITTER_REPAIR_CONTAINER_LIMIT`, `runRepairs` never overlaps two
-    repairs.
+  - The production `pass()` with two eligible PRs and a blocking repair seam
+    starts the second repair only after the first resolves. Red-check: with the
+    constant changed to 2, it fails. `runRepairs` also honours a limit of 1.
 - Existing tests: `fleet_babysitter_container_4738_test.ts`,
   `fleet_babysitter_container_egress_4738_test.ts` and
   `tests/fixtures/babysitter_container_fakes_4770.ts` inject an admitting fake
@@ -213,14 +251,21 @@ sequenceDiagram
 - `worker/deno/tests/claude_runner_host_disk_4390_test.ts` (unchanged) pins one
   probe read per new agent process. The in-flight park now reads the probe once
   outside a babysitter dip, and that test passes.
-- The full gate was not re-run on this head; the worker re-runs it. The related
-  suites passed, 515 tests with 0 failures: the claude_runner, discrimination,
-  merge fast checks, heavy build gate, cargo claim, milestone gate, host disk
-  and ephemeral root suites, plus every new #5105 file.
+- The full gate was not re-run on this head; the worker re-runs it. Related
+  suites run with `deno test -A` over 60 files (claude_runner, discrimination,
+  merge fast checks, heavy build gate, cargo claim, milestone gate, host disk,
+  ephemeral root, babysitter admission, babysitter pass and run-core production
+  deps suites, plus every #5105 file): 887 passed, 3 failed. The 3 failures are
+  `runClaudeWithRetry` (two) and `recheckAgentAuth` tests that need the `codex`
+  provider, which this container image does not install ("did not install the
+  \"codex\" coding-agent provider"); none touches the host-disk code.
+  `deno task test:unit` over the same files: 94 passed, 0 failed. `deno fmt`,
+  `deno lint` and `deno check` pass on the changed files.
 - Callers checked: `parkInFlightBuild` has four production callers.
-  - `claude_runner.ts` (agent step): opts in to the wait, bounded by the finish
-    deadline less the minimum session. The spawn clamp re-reads the clock after
-    it.
+  - `claude_runner.ts` (agent step): opts in to the wait, bounded by the session
+    timeout less the minimum session (the finish-deadline clamp, or the caller's
+    `timeoutSeconds` with no run timeline). The spawn clamp re-reads the clock
+    after it. `discussionOnly` runs use `parkRunningBuild` and do not wait.
   - `phases/quality_gate_remediation_phase.ts`: default, no wait. A park returns
     at once, as before.
   - `merge_fast_checks.ts` (`opts.park ?? parkInFlightBuild`): default, no wait,
@@ -243,6 +288,9 @@ sequenceDiagram
   a unit test with fakes or a temp ledger.
 - Whether the worker's per-handler watchdogs tolerate a 20-minute wait at the
   start of an agent step was not measured.
+- A probe that holds a reservation waits for the ephemeral-root walk its check
+  started, bounded by that walk's own `du` timeout; that wait was not timed on a
+  real Apple-runtime host.
 - The comment's other candidate levers were not done: pruning the builder near
   the floor, sharing the worker's own proxy, and counting container rootfs
   images in telemetry.

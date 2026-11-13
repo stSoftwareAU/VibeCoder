@@ -6,6 +6,7 @@ import {
   type HostDiskReservation,
   parseHostDiskReservation,
   readLiveHostDiskReservations,
+  RELEASED_RESERVATION_CREDIT_MAX_MS,
   removeHostDiskReservation,
   RESERVATION_SIGHTING_GRACE_MS,
   ReservationSightings,
@@ -236,14 +237,20 @@ Deno.test("ReservationSightings measures worker growth from first sight", () => 
   const now = Date.parse("2026-11-13T00:00:00Z");
   const r = res({ admittedAt: now - 60_000, expiresAt: now + 3_600_000 });
   const s = new ReservationSightings();
-  assertEquals(s.observe([r], 5 * GB, now), 0);
-  assertEquals(s.observe([r], 12 * GB, now + 60_000), 7 * GB);
+  const growth = (
+    live: HostDiskReservation[],
+    footprint: number | undefined,
+    at: number,
+  ) => s.observe(live, footprint, at, 0).workerGrowthBytes;
+  assertEquals(growth([r], 5 * GB, now), 0);
+  assertEquals(growth([r], 12 * GB, now + 60_000), 7 * GB);
   // Unknown footprint is unknown growth.
-  assertEquals(s.observe([r], undefined, now + 120_000), undefined);
-  // A released reservation is forgotten; a new one with the same id restarts.
-  assertEquals(s.observe([], 12 * GB, now + 180_000), undefined);
+  assertEquals(growth([r], undefined, now + 120_000), undefined);
+  // A released reservation is held, so its growth origin stays.
+  assertEquals(growth([], 12 * GB, now + 180_000), 7 * GB);
+  // A new reservation with the same id restarts it.
   const again = { ...r, admittedAt: now + 170_000 };
-  assertEquals(s.observe([again], 20 * GB, now + 190_000), 0);
+  assertEquals(growth([again], 20 * GB, now + 190_000), 0);
 });
 
 Deno.test("ReservationSightings credits nothing for a reservation first seen past the grace", () => {
@@ -253,12 +260,59 @@ Deno.test("ReservationSightings credits nothing for a reservation first seen pas
     expiresAt: now + 3_600_000,
   });
   const s = new ReservationSightings();
-  assertEquals(s.observe([late], 5 * GB, now), undefined);
-  assertEquals(s.observe([late], 5 * GB, now + 60_000), undefined);
+  assertEquals(s.observe([late], 5 * GB, now, 0).workerGrowthBytes, undefined);
+  assertEquals(
+    s.observe([late], 5 * GB, now + 60_000, 0).workerGrowthBytes,
+    undefined,
+  );
+  // A late-seen reservation that vanishes is never held as released.
+  assertEquals(s.observe([], 5 * GB, now + 120_000, 0).released, []);
   // Control: seen within the grace.
   const timely = res({
     admittedAt: now - RESERVATION_SIGHTING_GRACE_MS,
     expiresAt: now + 3_600_000,
   });
-  assertEquals(new ReservationSightings().observe([timely], 5 * GB, now), 0);
+  assertEquals(
+    new ReservationSightings().observe([timely], 5 * GB, now, 0)
+      .workerGrowthBytes,
+    0,
+  );
+});
+
+Deno.test("ReservationSightings holds a vanished reservation until a launcher reading measured after it went", () => {
+  const now = Date.parse("2026-11-13T00:00:00Z");
+  const r = res({ admittedAt: now - 60_000, expiresAt: now + 3_600_000 });
+  const s = new ReservationSightings();
+  assertEquals(s.observe([r], 5 * GB, now, now - 120_000).released, []);
+  // The file is gone; the adopted launcher reading predates it: still held,
+  // with the growth origin of the vanished reservation.
+  const gone = s.observe([], 9 * GB, now + 30_000, now - 120_000);
+  assertEquals(gone.released, [r]);
+  assertEquals(gone.workerGrowthBytes, 4 * GB);
+  assert(s.holdsReleased);
+  // A reading measured exactly at the moment it went is not after it.
+  assertEquals(s.observe([], 9 * GB, now + 60_000, now + 30_000).released, [r]);
+  // The fresh reading arrives: forgotten.
+  const fresh = s.observe([], 9 * GB, now + 90_000, now + 60_000);
+  assertEquals(fresh.released, []);
+  assertEquals(fresh.workerGrowthBytes, undefined);
+  assertEquals(s.holdsReleased, false);
+});
+
+Deno.test("ReservationSightings stops holding a released reservation once the refresh age passes", () => {
+  const now = Date.parse("2026-11-13T00:00:00Z");
+  const r = res({ admittedAt: now - 60_000, expiresAt: now + 3_600_000 });
+  const s = new ReservationSightings();
+  s.observe([r], 5 * GB, now, 0);
+  s.observe([], 5 * GB, now + 1_000, 0);
+  assertEquals(
+    s.observe([], 5 * GB, now + 1_000 + RELEASED_RESERVATION_CREDIT_MAX_MS, 0)
+      .released,
+    [r],
+  );
+  assertEquals(
+    s.observe([], 5 * GB, now + 2_000 + RELEASED_RESERVATION_CREDIT_MAX_MS, 0)
+      .released,
+    [],
+  );
 });

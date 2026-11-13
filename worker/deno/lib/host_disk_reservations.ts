@@ -279,41 +279,115 @@ export function babysitterDipCreditBytes(input: {
 export const RESERVATION_SIGHTING_GRACE_MS = 10 * 60_000;
 
 /**
- * Tracks, per live reservation, the worker's own footprint growth when it
- * first saw the reservation, so the dip credit can take the worker's growth
- * since then off the drop (Issue #5105).
+ * How long a vanished reservation keeps explaining a dip (Issue #5105): the
+ * launcher's reading is refreshed every 300 s and a worker ignores one older
+ * than 15 minutes (`DEFAULT_REFRESH_MAX_AGE_MS` in host_disk.ts), so a reading
+ * measured after the release always arrives inside this bound or is stale.
+ */
+export const RELEASED_RESERVATION_CREDIT_MAX_MS = 15 * 60_000;
+
+/** What {@link ReservationSightings.observe} reports. */
+export interface ReservationObservation {
+  /**
+   * The worker's own growth since the earliest live or released reservation
+   * was first seen; undefined when that is not known.
+   */
+  workerGrowthBytes: number | undefined;
+  /**
+   * Reservations that vanished (the repair ended, or the file expired) but
+   * whose space the worker's launcher reading may not show as returned yet.
+   * They still explain a dip, and are not outstanding for admission.
+   */
+  released: HostDiskReservation[];
+}
+
+interface Sighting {
+  reservation: HostDiskReservation;
+  /** The worker's footprint when first seen; undefined when not timely or unmeasured. */
+  base: number | undefined;
+}
+
+/**
+ * Tracks, per reservation, the worker's own footprint growth when it first
+ * saw the reservation, so the dip credit can take the worker's growth since
+ * then off the drop (Issue #5105).
+ *
+ * A reservation that vanishes is held as released until the launcher's
+ * reading was measured after the worker saw it go (or
+ * {@link RELEASED_RESERVATION_CREDIT_MAX_MS} passes): the babysitter removes
+ * the file right after teardown, but the worker's low reading comes from
+ * `host-disk.json`, which is rewritten only every few minutes. Dropping the
+ * credit at once would kill a build over space the host has just got back.
  */
 export class ReservationSightings {
-  private readonly firstSeen = new Map<string, number | undefined>();
+  private readonly firstSeen = new Map<string, Sighting>();
+  private readonly released = new Map<
+    string,
+    { sighting: Sighting; vanishedAt: number }
+  >();
+
+  /** Whether a vanished reservation is still held as released. */
+  get holdsReleased(): boolean {
+    return this.released.size > 0;
+  }
 
   /**
-   * Records new reservations and returns the worker's growth since the
-   * earliest live one was first seen, or undefined when that is not known
-   * (no footprint measurement, or a reservation first seen past the grace).
+   * Records new reservations and releases, and returns the worker's growth
+   * since the earliest tracked one was first seen (undefined when not known:
+   * no footprint measurement, or a reservation first seen past the grace)
+   * with the reservations held as released.
+   *
+   * `launcherMeasuredAtMs` is when the launcher reading the worker has
+   * adopted was measured; a release is forgotten once that is later than the
+   * moment the worker saw the reservation go.
    */
   observe(
     live: readonly HostDiskReservation[],
     workerFootprintBytes: number | undefined,
     nowMs: number,
-  ): number | undefined {
+    launcherMeasuredAtMs: number,
+  ): ReservationObservation {
     const ids = new Set(live.map((r) => r.id));
-    for (const id of [...this.firstSeen.keys()]) {
-      if (!ids.has(id)) this.firstSeen.delete(id);
+    for (const [id, sighting] of [...this.firstSeen]) {
+      if (ids.has(id)) continue;
+      this.firstSeen.delete(id);
+      // A reservation the worker could not measure from is never credited.
+      if (sighting.base !== undefined) {
+        this.released.set(id, { sighting, vanishedAt: nowMs });
+      }
+    }
+    for (const [id, { vanishedAt }] of [...this.released]) {
+      if (
+        ids.has(id) || launcherMeasuredAtMs > vanishedAt ||
+        nowMs - vanishedAt > RELEASED_RESERVATION_CREDIT_MAX_MS
+      ) this.released.delete(id);
     }
     for (const r of live) {
       if (this.firstSeen.has(r.id)) continue;
       const timely = nowMs - r.admittedAt <= RESERVATION_SIGHTING_GRACE_MS;
-      this.firstSeen.set(r.id, timely ? workerFootprintBytes : undefined);
+      this.firstSeen.set(r.id, {
+        reservation: r,
+        base: timely ? workerFootprintBytes : undefined,
+      });
     }
-    if (live.length === 0 || workerFootprintBytes === undefined) {
-      return undefined;
+    const released = [...this.released.values()].map((h) =>
+      h.sighting.reservation
+    );
+    const tracked = [...live, ...released];
+    if (tracked.length === 0 || workerFootprintBytes === undefined) {
+      return { workerGrowthBytes: undefined, released };
     }
-    const earliest = live.reduce((
+    const earliest = tracked.reduce((
       a,
       b,
     ) => (b.admittedAt < a.admittedAt ? b : a));
-    const base = this.firstSeen.get(earliest.id);
-    if (base === undefined) return undefined;
-    return Math.max(0, workerFootprintBytes - base);
+    const base = (this.firstSeen.get(earliest.id) ??
+      this.released.get(earliest.id)?.sighting)?.base;
+    return {
+      workerGrowthBytes: base === undefined
+        ? undefined
+        : Math.max(0, workerFootprintBytes - base),
+      released,
+    };
   }
 }

@@ -768,14 +768,44 @@ export class HostDiskMonitor {
    * The worker's own host footprint growth so far: the work volume's growth
    * plus the ephemeral cargo root's highest measured size (Issue #5105). It
    * only rises, so the growth between two readings is never understated.
-   * Undefined unless the last status came from the launch baseline, where the
-   * work volume is a separate image whose growth the host loses; on a native
-   * `df` the worker's own share cannot be told apart.
+   *
+   * Undefined, which credits the babysitter with nothing, unless the figure is
+   * known: the last status must have come from the launch baseline, where the
+   * work volume is a separate image whose growth the host loses (on a native
+   * `df` the worker's own share cannot be told apart), and, where the
+   * ephemeral cargo root applies, its latest measurement must have completed
+   * and succeeded. A missing, failed or in-progress measurement leaves the
+   * peak stale, and a stale peak would read build growth as zero.
    */
   get workerFootprintGrowthBytes(): number | undefined {
     if (this.lastStatus.source !== "launch-baseline") return undefined;
     if (this.volumeUsedPeak === null) return undefined;
+    if (
+      (this.ephemeralCargoRootApplies?.() ?? true) &&
+      (this.ephemeralCargoRootRefresh !== undefined ||
+        this.ephemeralCargoRootError !== null ||
+        this.ephemeralCargoRootBytes === null)
+    ) return undefined;
     return this.workVolumeGrowthTotal + this.ephemeralCargoRootPeakBytes;
+  }
+
+  /**
+   * Resolves once any background refresh of the ephemeral cargo root has
+   * settled; never rejects (Issue #5105). The floor verdict never waits on it,
+   * but a caller about to credit a babysitter for a dip needs the worker's
+   * growth to include that refresh's figure.
+   */
+  async ephemeralCargoRootSettled(): Promise<void> {
+    await this.ephemeralCargoRootRefresh;
+  }
+
+  /**
+   * When the launcher reading this monitor last adopted was measured, in
+   * epoch ms (Issue #5105). Before any reading is adopted it is the age bound
+   * before now, so no real reading compares as older.
+   */
+  get launcherReadingMeasuredAtMs(): number {
+    return this.adoptedMeasuredAtMs;
   }
 
   /** The most recent status without probing. */

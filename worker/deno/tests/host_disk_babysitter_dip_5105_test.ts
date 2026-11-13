@@ -10,6 +10,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type BabysitterDipWait,
+  babysitterDipWaitWithin,
   babysitterDrivenDip,
   enableInFlightHostDiskGate,
   type EphemeralRootDeps,
@@ -21,6 +22,7 @@ import {
   readHostDiskReservationsForProbe,
   registerHeavyBuildDiskProbe,
 } from "../lib/heavy_build_gate.ts";
+import { fakeClock } from "./support/fake_clock.ts";
 import {
   type HostDiskReservation,
   writeHostDiskReservation,
@@ -63,6 +65,14 @@ function reading(
     ...(hostDiskReservations === undefined
       ? {}
       : { hostDiskReservations, workerGrowthSinceReservationBytes }),
+  };
+}
+
+/** The reservation has vanished but the launcher's low reading predates it. */
+function released(free: number): HeavyBuildDiskReading {
+  return {
+    ...reading("low", free, []),
+    releasedHostDiskReservations: EXPLAINED,
   };
 }
 
@@ -140,10 +150,13 @@ function fakeWait(over: Partial<BabysitterDipWait> = {}) {
 Deno.test("Issue #5105 - parkInFlightBuild waits out an explained dip that recovers", async () => {
   const checkout = await Deno.makeTempDir({ prefix: "babysitter-dip-5105-" });
   try {
+    // The repair ends mid-wait: the file goes (held as released) while the
+    // launcher's low reading is unchanged, then the fresh reading arrives
+    // with no reservation at all, as production delivers them.
     const readings = [
       reading("low", 40 * GB, EXPLAINED),
-      reading("low", 40 * GB, EXPLAINED),
-      reading("ok", 120 * GB, EXPLAINED),
+      released(40 * GB),
+      reading("ok", 120 * GB, []),
     ];
     let i = 0;
     const { wait, sleeps } = fakeWait();
@@ -312,4 +325,92 @@ Deno.test("Issue #5105 - parkInFlightBuild does not wait by default", async () =
   } finally {
     await Deno.remove(checkout, { recursive: true });
   }
+});
+
+Deno.test("Issue #5105 - a released reservation is a wait, not a kill, until the fresh reading arrives", async () => {
+  const gone = released(40 * GB);
+  assert(babysitterDrivenDip(gone));
+  assertEquals(await withProbe(() => gone, () => parkRunningBuild()), null);
+  assertEquals(
+    hostDiskLaunchStopReason({ ...gone, recreateDeclined: true }),
+    null,
+  );
+  // Control: the same low reading with the release forgotten is unexplained.
+  const forgotten = reading("low", 40 * GB, []);
+  assertEquals(babysitterDrivenDip(forgotten), false);
+  assert(await withProbe(() => forgotten, () => parkRunningBuild()) !== null);
+  assert(hostDiskLaunchStopReason(forgotten) !== null);
+  // A released reservation is nothing more outstanding: it never charges cargo
+  // admission, which a live one that consumed nothing yet does.
+  const checkout = await Deno.makeTempDir({ prefix: "babysitter-dip-5105-" });
+  await Deno.writeTextFile(
+    `${checkout}/Cargo.toml`,
+    '[package]\nname = "fixture"\n',
+  );
+  const deps: EphemeralRootDeps = {
+    listTargetDirs: () => Promise.resolve([]),
+    removeDir: () => Promise.resolve(),
+    nowMs: () => NOW,
+  };
+  try {
+    const free = 80 * GB;
+    const admit = (extra: Partial<HeavyBuildDiskReading>) => {
+      registerHeavyBuildDiskProbe(() =>
+        Promise.resolve({ ...reading("ok", free, []), ...extra })
+      );
+      return heavyBuildAdmission(checkout, deps);
+    };
+    try {
+      const ghost = [reservation({ availableAtAdmission: free })];
+      assertEquals(
+        (await admit({ releasedHostDiskReservations: ghost })).mode,
+        "build",
+      );
+      assertEquals(
+        (await admit({ hostDiskReservations: ghost })).mode,
+        "merge-only",
+      );
+    } finally {
+      registerHeavyBuildDiskProbe(undefined);
+    }
+  } finally {
+    await Deno.remove(checkout, { recursive: true });
+  }
+});
+
+Deno.test("Issue #5105 - parkInFlightBuild keeps waiting through the release and parks if no fresh reading comes", async () => {
+  const checkout = await Deno.makeTempDir({ prefix: "babysitter-dip-5105-" });
+  try {
+    const { wait, sleeps } = fakeWait({ maxWaitMs: 3_000 });
+    const result = await withProbe(
+      () => released(40 * GB),
+      () => parkInFlightBuild(checkout, undefined, wait),
+    );
+    assertEquals(sleeps.length, 3);
+    assertStringIncludes(result ?? "", "Parked as infrastructure");
+  } finally {
+    await Deno.remove(checkout, { recursive: true });
+  }
+});
+
+Deno.test("Issue #5105 - babysitterDipWaitWithin clamps to the remaining budget", () => {
+  const clock = fakeClock();
+  const twentyMinutes = 20 * 60_000;
+  assertEquals(
+    babysitterDipWaitWithin(60 * 60_000, clock).maxWaitMs,
+    twentyMinutes,
+  );
+  assertEquals(babysitterDipWaitWithin(90_000, clock).maxWaitMs, 90_000);
+  assertEquals(babysitterDipWaitWithin(0, clock).maxWaitMs, 0);
+  assertEquals(babysitterDipWaitWithin(-5_000, clock).maxWaitMs, 0);
+});
+
+Deno.test("Issue #5105 - babysitterDipWaitWithin sleeps and reads time through the clock it is given", async () => {
+  const clock = fakeClock();
+  const wait = babysitterDipWaitWithin(10 * 60_000, clock);
+  const before = wait.nowMs();
+  const slept = wait.sleep(wait.pollMs);
+  await clock.advance(wait.pollMs);
+  await slept;
+  assertEquals(wait.nowMs() - before, wait.pollMs);
 });

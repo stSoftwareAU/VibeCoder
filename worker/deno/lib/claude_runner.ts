@@ -1349,6 +1349,8 @@ async function runClaudeWithTimeoutBody(
   // A dip the babysitter's live repairs explain is waited out first (Issue
   // #5105), but never past the session's finish deadline: the wait leaves the
   // minimum session behind, and the spawn clamp below re-reads the clock.
+  // With no run timeline the bound is the caller's own `timeoutSeconds`, so a
+  // call is never held longer than the session it asked for.
   if (cwd) {
     const park = options.discussionOnly
       ? await parkRunningBuild()
@@ -1356,9 +1358,8 @@ async function runClaudeWithTimeoutBody(
         cwd,
         undefined,
         babysitterDipWaitWithin(
-          finishClamp === undefined
-            ? undefined
-            : (finishClamp.timeoutSeconds - MIN_AGENT_SESSION_SECONDS) * 1000,
+          (sessionTimeoutSeconds - MIN_AGENT_SESSION_SECONDS) * 1000,
+          clock,
         ),
       );
     if (park) return { ok: false, error: new Error(park) };

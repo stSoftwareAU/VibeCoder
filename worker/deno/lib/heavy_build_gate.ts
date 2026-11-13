@@ -84,6 +84,7 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import type { Clock } from "./clock.ts";
 import { formatGb, type HostDiskStatus } from "./host_disk.ts";
 import {
   accountHostDiskReservations,
@@ -153,6 +154,16 @@ export interface HeavyBuildDiskReading {
    */
   hostDiskReservations?: readonly HostDiskReservation[];
   /**
+   * Babysitter reservations that vanished (the repair ended) while the
+   * launcher reading the worker holds was measured before they went
+   * (Issue #5105). The babysitter removes its file right after teardown, but
+   * the low reading stays until the launcher rewrites `host-disk.json`, so
+   * these still explain the dip ({@link babysitterDrivenDip}) until that
+   * fresh reading arrives. Nothing more of their space is outstanding, so
+   * admission ignores them. Absent reads as none.
+   */
+  releasedHostDiskReservations?: readonly HostDiskReservation[];
+  /**
    * The worker's own host growth (work volume plus ephemeral cargo root)
    * since the earliest live reservation was first seen (Issue #5105). Taken
    * off the drop before any of it is credited to the babysitter; absent means
@@ -163,7 +174,9 @@ export interface HeavyBuildDiskReading {
 
 /**
  * Whether the host is below its floor only because live babysitter repair
- * containers have consumed their reserved space (Issue #5105).
+ * containers have consumed their reserved space (Issue #5105), or because
+ * such a repair has just ended and the launcher reading the worker holds
+ * predates the release (`releasedHostDiskReservations`).
  *
  * Neither ending the launch nor recreating the work volume returns space the
  * babysitter's containers hold, so the worker waits for it instead.
@@ -176,7 +189,10 @@ export function babysitterDrivenDip(reading: HeavyBuildDiskReading): boolean {
   return babysitterDipCreditBytes({
     availableBytes,
     floorBytes,
-    live: reading.hostDiskReservations ?? [],
+    live: [
+      ...(reading.hostDiskReservations ?? []),
+      ...(reading.releasedHostDiskReservations ?? []),
+    ],
     workerGrowthBytes: reading.workerGrowthSinceReservationBytes,
   }) !== null;
 }
@@ -669,15 +685,18 @@ export const NO_BABYSITTER_DIP_WAIT: BabysitterDipWait = {
 
 /**
  * The production wait, bounded by the caller's remaining budget (Issue
- * #5105): never longer than `remainingMs`, and none when that is unknown to
- * be positive.
+ * #5105): never longer than `remainingMs`, and none when that is zero or
+ * negative. Sleeps and reads the time through `clock`, so a runner given a
+ * test clock waits on it.
  */
 export function babysitterDipWaitWithin(
-  remainingMs: number | undefined,
+  remainingMs: number,
+  clock: Pick<Clock, "now" | "sleep">,
 ): BabysitterDipWait {
-  if (remainingMs === undefined) return PRODUCTION_BABYSITTER_DIP_WAIT;
   return {
-    ...PRODUCTION_BABYSITTER_DIP_WAIT,
+    sleep: (ms) => clock.sleep(ms),
+    nowMs: () => clock.now(),
+    pollMs: PRODUCTION_BABYSITTER_DIP_WAIT.pollMs,
     maxWaitMs: Math.max(
       0,
       Math.min(PRODUCTION_BABYSITTER_DIP_WAIT.maxWaitMs, remainingMs),

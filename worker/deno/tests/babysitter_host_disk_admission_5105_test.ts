@@ -11,10 +11,11 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
-  BABYSITTER_REPAIR_CONTAINER_LIMIT,
+  pass,
   type RepairTask,
   runRepairs,
 } from "../commands/fleet_pr_babysitter.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import {
   type BabysitterContainerDeps,
   babysitterHostDiskAdmission,
@@ -429,8 +430,84 @@ Deno.test("an unmeasurable host admits, writes no reservation and logs it", asyn
   }
 });
 
-Deno.test("the production queue runs one repair container at a time", async () => {
-  assertEquals(BABYSITTER_REPAIR_CONTAINER_LIMIT, 1);
+Deno.test("the production pass runs one repair container at a time", async () => {
+  const root = await Deno.makeTempDir();
+  const conflicting = (number: number) => ({
+    state: "OPEN",
+    mergedAt: null,
+    number,
+    title: `PR ${number}`,
+    author: { login: "fleet-babysitter[bot]" },
+    headRefName: `branch-${number}`,
+    headRefOid: `head-${number}`,
+    baseRefName: "main",
+    isCrossRepository: false,
+    isDraft: false,
+    mergeable: "CONFLICTING",
+    mergeStateStatus: "DIRTY",
+    reviewDecision: null,
+    statusCheckRollup: [],
+    labels: [],
+    autoMergeRequest: null,
+  });
+  let started = 0;
+  let running = 0;
+  let peak = 0;
+  const release: (() => void)[] = [];
+  const settle = async () => {
+    for (let i = 0; i < 50; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  try {
+    const done = pass(
+      true,
+      "fleet-babysitter[bot]",
+      {} as unknown as Parameters<typeof pass>[2],
+      {
+        ...buildDefaultWorkerConfig(),
+        fleetPrAuthors: ["fleet-babysitter[bot]"],
+        serviceAccounts: [],
+        repoConfig: {},
+      } as unknown as Parameters<typeof pass>[3],
+      `${root}/.config.json`,
+      ["org/repo"],
+      undefined,
+      undefined,
+      {
+        gh: (args) =>
+          Promise.resolve(JSON.stringify(
+            args[0] === "pr" && args[1] === "list"
+              ? [conflicting(11), conflicting(12)]
+              : [],
+          )),
+        tempDir: root,
+        stateDir: `${root}/state`,
+        hostId: "queue-host",
+        repair: () => {
+          started++;
+          peak = Math.max(peak, ++running);
+          return new Promise<void>((resolve) =>
+            release.push(() => {
+              running--;
+              resolve();
+            })
+          );
+        },
+      },
+    );
+    await settle();
+    assertEquals(started, 1, "the second repair started beside the first");
+    release[0]!();
+    await settle();
+    assertEquals(started, 2);
+    release[1]!();
+    await done;
+    assertEquals(peak, 1);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runRepairs honours the limit it is given", async () => {
   const started: string[] = [];
   const gates = new Map<string, () => void>();
   const task = (key: string): RepairTask => ({
@@ -441,11 +518,7 @@ Deno.test("the production queue runs one repair container at a time", async () =
       return new Promise<void>((resolve) => gates.set(key, resolve));
     },
   });
-  const done = runRepairs(
-    [task("a"), task("b")],
-    BABYSITTER_REPAIR_CONTAINER_LIMIT,
-  );
-  // Let the queue settle: the second task must not have started.
+  const done = runRepairs([task("a"), task("b")], 1);
   for (let i = 0; i < 20; i++) await Promise.resolve();
   assertEquals(started, ["a"]);
   gates.get("a")!();
