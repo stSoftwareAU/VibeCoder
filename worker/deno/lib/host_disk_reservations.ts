@@ -224,18 +224,96 @@ export function admitHostDiskLaunch(input: {
   };
 }
 
-/** Returns the bytes the babysitter has consumed that explain a dip below the floor, or null if they do not. */
+/**
+ * Below this fraction of the floor no reservation credit applies (Issue
+ * #5105): a running build stops and the launch ends whatever the ledger
+ * says, so a wrong consumption estimate can never take the host to zero.
+ */
+export const HOST_DISK_HARD_MINIMUM_FLOOR_FRACTION = 0.5;
+
+/**
+ * Returns the bytes live babysitter reservations have consumed that explain a
+ * dip below the floor, or null if they do not.
+ *
+ * The drop in free space since the earliest reservation's admission is only
+ * credited after the worker's own measured growth over the same span is
+ * taken off it, and never past the reserved bytes: the babysitter is not
+ * credited with space the worker used. Unknown worker growth credits nothing,
+ * and no credit applies below {@link HOST_DISK_HARD_MINIMUM_FLOOR_FRACTION}
+ * of the floor.
+ */
 export function babysitterDipCreditBytes(input: {
   availableBytes: number;
   floorBytes: number;
   live: readonly HostDiskReservation[];
+  /** The worker's own host growth since the earliest live reservation was admitted; undefined when not measured. */
+  workerGrowthBytes: number | undefined;
 }): number | null {
   if (input.availableBytes >= input.floorBytes) return null;
-  const { consumedBytes } = accountHostDiskReservations(
+  if (
+    input.availableBytes <
+      input.floorBytes * HOST_DISK_HARD_MINIMUM_FLOOR_FRACTION
+  ) {
+    return null;
+  }
+  if (input.workerGrowthBytes === undefined || input.live.length === 0) {
+    return null;
+  }
+  // The drop with the worker's own growth added back, capped at the reserved
+  // bytes: what the babysitter alone can have taken.
+  const { consumedBytes: credit } = accountHostDiskReservations(
     input.live,
-    input.availableBytes,
+    input.availableBytes + Math.max(0, input.workerGrowthBytes),
   );
-  if (consumedBytes <= 0) return null;
-  if (input.availableBytes + consumedBytes < input.floorBytes) return null;
-  return consumedBytes;
+  if (credit <= 0) return null;
+  if (input.availableBytes + credit < input.floorBytes) return null;
+  return credit;
+}
+
+/**
+ * How long after a reservation's admission the worker may first see it and
+ * still measure its own growth from then (Issue #5105). A reservation first
+ * seen later is never credited: the worker's growth before it looked is not
+ * known.
+ */
+export const RESERVATION_SIGHTING_GRACE_MS = 10 * 60_000;
+
+/**
+ * Tracks, per live reservation, the worker's own footprint growth when it
+ * first saw the reservation, so the dip credit can take the worker's growth
+ * since then off the drop (Issue #5105).
+ */
+export class ReservationSightings {
+  private readonly firstSeen = new Map<string, number | undefined>();
+
+  /**
+   * Records new reservations and returns the worker's growth since the
+   * earliest live one was first seen, or undefined when that is not known
+   * (no footprint measurement, or a reservation first seen past the grace).
+   */
+  observe(
+    live: readonly HostDiskReservation[],
+    workerFootprintBytes: number | undefined,
+    nowMs: number,
+  ): number | undefined {
+    const ids = new Set(live.map((r) => r.id));
+    for (const id of [...this.firstSeen.keys()]) {
+      if (!ids.has(id)) this.firstSeen.delete(id);
+    }
+    for (const r of live) {
+      if (this.firstSeen.has(r.id)) continue;
+      const timely = nowMs - r.admittedAt <= RESERVATION_SIGHTING_GRACE_MS;
+      this.firstSeen.set(r.id, timely ? workerFootprintBytes : undefined);
+    }
+    if (live.length === 0 || workerFootprintBytes === undefined) {
+      return undefined;
+    }
+    const earliest = live.reduce((
+      a,
+      b,
+    ) => (b.admittedAt < a.admittedAt ? b : a));
+    const base = this.firstSeen.get(earliest.id);
+    if (base === undefined) return undefined;
+    return Math.max(0, workerFootprintBytes - base);
+  }
 }

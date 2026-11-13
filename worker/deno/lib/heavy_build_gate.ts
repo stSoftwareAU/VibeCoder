@@ -152,6 +152,13 @@ export interface HeavyBuildDiskReading {
    * sees. Absent reads as none.
    */
   hostDiskReservations?: readonly HostDiskReservation[];
+  /**
+   * The worker's own host growth (work volume plus ephemeral cargo root)
+   * since the earliest live reservation was first seen (Issue #5105). Taken
+   * off the drop before any of it is credited to the babysitter; absent means
+   * unknown, and an unknown growth credits nothing.
+   */
+  workerGrowthSinceReservationBytes?: number;
 }
 
 /**
@@ -170,6 +177,7 @@ export function babysitterDrivenDip(reading: HeavyBuildDiskReading): boolean {
     availableBytes,
     floorBytes,
     live: reading.hostDiskReservations ?? [],
+    workerGrowthBytes: reading.workerGrowthSinceReservationBytes,
   }) !== null;
 }
 
@@ -609,14 +617,17 @@ export function inFlightHostDiskGateEnabled(): boolean {
  * Active-process watchers use {@link parkRunningBuild} instead.
  *
  * A dip below the floor that live babysitter reservations explain is waited
- * out first (Issue #5105): the step polls every `wait.pollMs` for up to
- * `wait.maxWaitMs`, and only a dip that persists past that, or that the
- * reservations do not explain, parks.
+ * out first when the caller opts in (Issue #5105): the step polls every
+ * `wait.pollMs` for up to `wait.maxWaitMs`, and only a dip that persists past
+ * that, or that the reservations do not explain, parks. The default waits
+ * not at all, so a caller with its own budget clock (security-fix
+ * discrimination, the merge fast checks, the quality gate) parks at once as
+ * before; only the agent step opts in, bounded by its finish deadline.
  */
 export async function parkInFlightBuild(
   checkoutPath: string,
   deps: EphemeralRootDeps = productionEphemeralRootDeps,
-  wait: BabysitterDipWait = PRODUCTION_BABYSITTER_DIP_WAIT,
+  wait: BabysitterDipWait = NO_BABYSITTER_DIP_WAIT,
 ): Promise<string | null> {
   if (!inFlightGateEnabled) return null;
   if (probe === undefined) return null;
@@ -649,6 +660,30 @@ export const PRODUCTION_BABYSITTER_DIP_WAIT: BabysitterDipWait = {
   pollMs: 60_000,
   maxWaitMs: 20 * 60_000,
 };
+
+/** The default for {@link parkInFlightBuild}: no wait at all. */
+export const NO_BABYSITTER_DIP_WAIT: BabysitterDipWait = {
+  ...PRODUCTION_BABYSITTER_DIP_WAIT,
+  maxWaitMs: 0,
+};
+
+/**
+ * The production wait, bounded by the caller's remaining budget (Issue
+ * #5105): never longer than `remainingMs`, and none when that is unknown to
+ * be positive.
+ */
+export function babysitterDipWaitWithin(
+  remainingMs: number | undefined,
+): BabysitterDipWait {
+  if (remainingMs === undefined) return PRODUCTION_BABYSITTER_DIP_WAIT;
+  return {
+    ...PRODUCTION_BABYSITTER_DIP_WAIT,
+    maxWaitMs: Math.max(
+      0,
+      Math.min(PRODUCTION_BABYSITTER_DIP_WAIT.maxWaitMs, remainingMs),
+    ),
+  };
+}
 
 /**
  * Poll until the dip is no longer babysitter-driven, or the bound passes.

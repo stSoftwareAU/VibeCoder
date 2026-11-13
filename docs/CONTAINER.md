@@ -1362,12 +1362,16 @@ prune other checkouts.
 A dip that live babysitter reservations explain is a wait, not a kill (Issue #5105). The fleet PR
 babysitter records each running repair container's host footprint in `${HOME}/logs/host-disk-reservations` (one file per container).
 When the host is below the floor and the space the earliest live reservation
-has consumed since its admission accounts for the whole shortfall, a running
-agent, `cargo` or `deno` keeps running, a new build step waits (polling every
-minute for up to 20 minutes) instead of parking, and the launch is not ended,
-because ending it or recreating the work volume would not return space the
-babysitter's containers hold. A dip that persists past the 20 minutes, or that
-the reservations do not explain, parks or ends the launch as above. Cargo
+has consumed since its admission, less the worker's own measured growth over
+that span, accounts for the whole shortfall, a running agent, `cargo` or
+`deno` keeps running, a new agent step waits (polling every minute for up to
+20 minutes, never past its finish deadline) instead of parking, and the launch
+is not ended, because ending it or recreating the work volume would not return
+space the babysitter's containers hold. Other build steps (quality gate, merge
+fast checks, security-fix discrimination) do not wait. Below half the floor, or
+when the worker's own growth is unknown, nothing is credited. A dip that
+persists past the wait, or that the reservations do not explain, parks or ends
+the launch as above. Cargo
 admission subtracts the reserved bytes not yet consumed from the free space it
 tests against the floor plus headroom, so the worker and the babysitter admit
 against one budget.

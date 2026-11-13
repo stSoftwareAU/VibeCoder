@@ -547,7 +547,10 @@ import {
   HostDiskMonitor,
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
-import { HOST_DISK_RESERVATIONS_DIR } from "./host_disk_reservations.ts";
+import {
+  HOST_DISK_RESERVATIONS_DIR,
+  ReservationSightings,
+} from "./host_disk_reservations.ts";
 import {
   cargoClaimDeferredRepos,
   heavyBuildAdmission,
@@ -1168,13 +1171,26 @@ export async function createProductionRunCoreDeps(
   const trimRefused = options.trimRefused ?? workVolumeTrimRefusedForLaunch;
   // Issue #5105: the launcher's log directory also carries the babysitter's
   // host-disk reservations, one file per running repair container.
+  // The worker's own growth since each reservation was first seen is taken
+  // off the drop before any of it is credited to the babysitter.
   const workerLogDir = `${env("HOME") ?? "~"}/logs`;
-  const readReservations = () =>
-    readHostDiskReservationsForProbe(
+  const reservationSightings = new ReservationSightings();
+  const readReservations = async () => {
+    const nowMs = Date.now();
+    const live = await readHostDiskReservationsForProbe(
       `${workerLogDir}/${HOST_DISK_RESERVATIONS_DIR}`,
-      Date.now(),
+      nowMs,
       (message) => logger.warn(message),
     );
+    return {
+      hostDiskReservations: live,
+      workerGrowthSinceReservationBytes: reservationSightings.observe(
+        live,
+        hostDisk.workerFootprintGrowthBytes,
+        nowMs,
+      ),
+    };
+  };
   const hostDisk = options.hostDisk ?? new HostDiskMonitor({
     workDir,
     env,
@@ -2217,7 +2233,7 @@ export async function createProductionRunCoreDeps(
         ? undefined
         : hostDisk.floorBytesFor(status.totalBytes),
       trimRefused: hostDisk.workVolumeTrimRefused,
-      hostDiskReservations: await readReservations(),
+      ...(await readReservations()),
     };
   });
   // Built once so a non-fault probe warning is reported once per directory,
@@ -6054,7 +6070,7 @@ export async function createProductionRunCoreDeps(
         recreateDeclined: hostDisk.workVolumeRecreateDeclined,
         recreateUnrecovered: hostDisk.workVolumeRecreateUnrecovered,
         largestHostDirectories: hostDisk.largestHostDirectories,
-        hostDiskReservations: await readReservations(),
+        ...(await readReservations()),
       });
       if (!stop) return null;
       return { path: "host disk", detail: stop };

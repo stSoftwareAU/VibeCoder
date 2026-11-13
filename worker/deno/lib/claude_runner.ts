@@ -29,6 +29,7 @@ import { runGitCommand } from "./git_timeout.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
+  babysitterDipWaitWithin,
   HOST_DISK_PARK_NOTE,
   inFlightHostDiskGateEnabled,
   parkInFlightBuild,
@@ -1344,10 +1345,22 @@ async function runClaudeWithTimeoutBody(
   // An agent in a checkout runs cargo and deno. Below the floor it does not
   // start (Issue #4360). No checkout means there is no build to bound, and
   // the gate is a no-op until production arms it.
+  //
+  // A dip the babysitter's live repairs explain is waited out first (Issue
+  // #5105), but never past the session's finish deadline: the wait leaves the
+  // minimum session behind, and the spawn clamp below re-reads the clock.
   if (cwd) {
     const park = options.discussionOnly
       ? await parkRunningBuild()
-      : await parkInFlightBuild(cwd);
+      : await parkInFlightBuild(
+        cwd,
+        undefined,
+        babysitterDipWaitWithin(
+          finishClamp === undefined
+            ? undefined
+            : (finishClamp.timeoutSeconds - MIN_AGENT_SESSION_SECONDS) * 1000,
+        ),
+      );
     if (park) return { ok: false, error: new Error(park) };
   }
 

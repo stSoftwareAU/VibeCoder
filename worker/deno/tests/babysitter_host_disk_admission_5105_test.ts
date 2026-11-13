@@ -21,6 +21,7 @@ import {
   runBabysitterRepairContainer,
 } from "../lib/fleet_babysitter_container.ts";
 import { EPHEMERAL_CARGO_HEADROOM_BYTES } from "../lib/heavy_build_gate.ts";
+import { probeDiskReading } from "../lib/host_disk.ts";
 import {
   BABYSITTER_LAUNCH_FOOTPRINT_BYTES,
   readLiveHostDiskReservations,
@@ -162,6 +163,59 @@ Deno.test("the reservation is released once, after the sidecar stop, when the sp
   }, { spawnFails: true });
 });
 
+/** The real admission against a temp ledger, with a fake roomy host. */
+function realAdmission(dir: string) {
+  return (input: { containerName: string; clone: string; timeoutMs: number }) =>
+    babysitterHostDiskAdmission(input, {
+      measure: () =>
+        Promise.resolve({
+          availableBytes: 200 * GIB,
+          usedBytes: 600 * GIB,
+          totalBytes: 800 * GIB,
+        }),
+      floor: () => Promise.resolve(46 * GIB),
+      reservationDir: () => Promise.resolve(dir),
+      log: () => {},
+    });
+}
+
+for (const spawnFails of [false, true]) {
+  Deno.test(
+    `the real admission's reservation is live while the sidecar stops and gone afterwards (spawn ${
+      spawnFails ? "fails" : "succeeds"
+    })`,
+    async () => {
+      const dir = await Deno.makeTempDir();
+      try {
+        await withRepair(async ({ events, deps, input }) => {
+          const liveAtStop: number[] = [];
+          const run = runBabysitterRepairContainer(input, {
+            ...deps,
+            hostDiskAdmission: realAdmission(dir),
+            stopSidecar: async () => {
+              events.push("stop-sidecar");
+              liveAtStop.push(
+                (await readLiveHostDiskReservations(dir, Date.now())).length,
+              );
+              return [];
+            },
+          });
+          if (spawnFails) {
+            await assertRejects(() => run, Error, "spawn boom");
+          } else {
+            await run;
+          }
+          assertEquals(events, ["start-sidecar", "spawn", "stop-sidecar"]);
+          assertEquals(liveAtStop, [1]);
+          assertEquals(await readLiveHostDiskReservations(dir, Date.now()), []);
+        }, { spawnFails });
+      } finally {
+        await Deno.remove(dir, { recursive: true });
+      }
+    },
+  );
+}
+
 Deno.test("a failing release is logged and does not mask the repair's error", async () => {
   await withRepair(async ({ deps, input }) => {
     const logged: string[] = [];
@@ -238,33 +292,89 @@ Deno.test("admission writes a footprint reservation for a non-cargo clone and re
   }
 });
 
-Deno.test("admission adds the cargo headroom for a clone with a Cargo.toml", async () => {
+Deno.test("admission adds the cargo headroom for a clone with a Cargo.toml, detected by the production check", async () => {
+  const dir = await Deno.makeTempDir();
+  const cargoClone = await Deno.makeTempDir();
+  const plainClone = await Deno.makeTempDir();
+  try {
+    await Deno.writeTextFile(
+      `${cargoClone}/Cargo.toml`,
+      '[package]\nname = "x"\nversion = "0.1.0"\n',
+    );
+    await Deno.writeTextFile(`${plainClone}/deno.json`, "{}\n");
+    // No `holdsCargo` seam: the default detection reads each clone.
+    const { holdsCargo: _seam, ...deps } = admissionDeps(dir).deps;
+    const cargo = await babysitterHostDiskAdmission(
+      { ...request("vibe-babysitter-b"), clone: cargoClone },
+      deps,
+    );
+    const plain = await babysitterHostDiskAdmission(
+      { ...request("vibe-babysitter-b2"), clone: plainClone },
+      deps,
+    );
+    const bytes = new Map(
+      (await readLiveHostDiskReservations(dir, NOW)).map((
+        r,
+      ) => [r.id, r.bytes]),
+    );
+    assertEquals(
+      bytes.get("vibe-babysitter-b"),
+      BABYSITTER_LAUNCH_FOOTPRINT_BYTES + EPHEMERAL_CARGO_HEADROOM_BYTES,
+    );
+    assertEquals(
+      bytes.get("vibe-babysitter-b2"),
+      BABYSITTER_LAUNCH_FOOTPRINT_BYTES,
+    );
+    await cargo.release();
+    await plain.release();
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(cargoClone, { recursive: true });
+    await Deno.remove(plainClone, { recursive: true });
+  }
+});
+
+Deno.test("admission with only the ledger directory injected runs the production measure, floor and cargo check", async () => {
   const dir = await Deno.makeTempDir();
   const clone = await Deno.makeTempDir();
   try {
-    await Deno.writeTextFile(
-      `${clone}/Cargo.toml`,
-      '[package]\nname = "x"\nversion = "0.1.0"\n',
-    );
-    const { deps } = admissionDeps(dir);
-    // Use the production cargo detection against a real manifest.
-    const { holdsCargo: _unused, ...rest } = deps;
-    const { findProjectManifests } = await import(
-      "../lib/project_manifests.ts"
-    );
-    const detected = (await findProjectManifests(clone)).some((p) =>
-      p.kind === "cargo"
-    );
-    assert(detected);
-    await babysitterHostDiskAdmission(
-      { ...request("vibe-babysitter-b"), clone },
-      { ...rest, holdsCargo: () => Promise.resolve(detected) },
-    );
-    const live = await readLiveHostDiskReservations(dir, NOW);
-    assertEquals(
-      live[0]!.bytes,
-      BABYSITTER_LAUNCH_FOOTPRINT_BYTES + EPHEMERAL_CARGO_HEADROOM_BYTES,
-    );
+    await Deno.writeTextFile(`${clone}/deno.json`, "{}\n");
+    const input = {
+      containerName: "vibe-babysitter-defaults",
+      clone,
+      timeoutMs: 90 * 60_000,
+    };
+    let admitted: { release: () => Promise<void> } | undefined;
+    let refusal: Error | undefined;
+    try {
+      admitted = await babysitterHostDiskAdmission(input, {
+        reservationDir: () => Promise.resolve(dir),
+      });
+    } catch (error) {
+      refusal = error as Error;
+    }
+    const measurable = (await probeDiskReading(Deno.env.get("HOME") ?? "")) !==
+      null;
+    const live = await readLiveHostDiskReservations(dir, Date.now());
+    if (refusal !== undefined) {
+      // A host already near its configured floor refuses; nothing is written.
+      assert(measurable, "an unmeasurable host never refuses");
+      assertStringIncludes(refusal.message, "babysitter repair not started");
+      assertStringIncludes(refusal.message, "GB floor (Issue #5105)");
+      assertEquals(live, []);
+      return;
+    }
+    if (!measurable) {
+      assertEquals(live, [], "an unmeasurable host admits with no file");
+    } else {
+      assertEquals(live.length, 1);
+      assertEquals(live[0]!.id, input.containerName);
+      // The clone holds no Cargo.toml, so the default check adds no headroom.
+      assertEquals(live[0]!.bytes, BABYSITTER_LAUNCH_FOOTPRINT_BYTES);
+      assert(live[0]!.availableAtAdmission > 0);
+    }
+    await admitted!.release();
+    assertEquals(await readLiveHostDiskReservations(dir, Date.now()), []);
   } finally {
     await Deno.remove(dir, { recursive: true });
     await Deno.remove(clone, { recursive: true });

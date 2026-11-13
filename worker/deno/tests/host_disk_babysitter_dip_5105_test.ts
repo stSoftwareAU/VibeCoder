@@ -48,6 +48,7 @@ function reading(
   level: "ok" | "low",
   free: number,
   hostDiskReservations?: readonly HostDiskReservation[],
+  workerGrowthSinceReservationBytes: number | undefined = 0,
 ): HeavyBuildDiskReading {
   return {
     status: {
@@ -59,7 +60,9 @@ function reading(
     },
     floorBytes: FLOOR,
     trimRefused: true,
-    ...(hostDiskReservations === undefined ? {} : { hostDiskReservations }),
+    ...(hostDiskReservations === undefined
+      ? {}
+      : { hostDiskReservations, workerGrowthSinceReservationBytes }),
   };
 }
 
@@ -245,5 +248,68 @@ Deno.test("Issue #5105 - the probe helper reads live reservations and survives a
     assertStringIncludes(warnings[0] ?? "", notADir);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// Finding 1 of the pre-PR verifier: the worker's own growth is not the
+// babysitter's, and below the hard minimum nothing is credited.
+Deno.test("Issue #5105 - a dip the worker's own growth caused still parks and still ends the launch", async () => {
+  // Same 40 GB reading and reservation as EXPLAINED, but the worker grew 12 GB
+  // of the 12 GB drop itself: nothing is left to credit the babysitter with.
+  const own = reading("low", 40 * GB, EXPLAINED, 12 * GB);
+  assertEquals(babysitterDrivenDip(own), false);
+  const parked = await withProbe(() => own, () => parkRunningBuild());
+  assert(parked !== null);
+  assertStringIncludes(parked, "Parked as infrastructure");
+  assert(hostDiskLaunchStopReason(own) !== null);
+  // Unknown worker growth credits nothing either.
+  const unknown = reading("low", 40 * GB, EXPLAINED);
+  delete unknown.workerGrowthSinceReservationBytes;
+  assertEquals(babysitterDrivenDip(unknown), false);
+  // Control: zero worker growth is the explained dip.
+  assert(babysitterDrivenDip(reading("low", 40 * GB, EXPLAINED, 0)));
+});
+
+Deno.test("Issue #5105 - a reservation larger than the floor never credits a host near zero", async () => {
+  // A 41 GB cargo reservation admitted at 50 GB free; the host is now at 1 GB
+  // and the worker grew nothing. The credit would cover the floor, but 1 GB
+  // is below the hard minimum, so the build parks and the launch ends.
+  const big = [
+    reservation({ bytes: 41 * GB, availableAtAdmission: 50 * GB }),
+  ];
+  const nearZero = reading("low", 1 * GB, big, 0);
+  assertEquals(babysitterDrivenDip(nearZero), false);
+  const parked = await withProbe(() => nearZero, () => parkRunningBuild());
+  assert(parked !== null);
+  assert(hostDiskLaunchStopReason(nearZero) !== null);
+  // Control: at 30 GB free (above half the 46 GB floor) the same reservation
+  // explains the 20 GB drop.
+  assert(babysitterDrivenDip(reading("low", 30 * GB, big, 0)));
+});
+
+Deno.test("Issue #5105 - parkInFlightBuild does not wait by default", async () => {
+  const checkout = await Deno.makeTempDir();
+  try {
+    let sleeps = 0;
+    const parked = await withProbe(
+      () => reading("low", 40 * GB, EXPLAINED),
+      async () => {
+        const original = globalThis.setTimeout;
+        globalThis.setTimeout = ((fn: () => void, _ms?: number) => {
+          sleeps++;
+          return original(fn, 0);
+        }) as typeof setTimeout;
+        try {
+          return await parkInFlightBuild(checkout);
+        } finally {
+          globalThis.setTimeout = original;
+        }
+      },
+    );
+    assertEquals(sleeps, 0);
+    assert(parked !== null);
+    assertStringIncludes(parked, "Parked as infrastructure");
+  } finally {
+    await Deno.remove(checkout, { recursive: true });
   }
 });

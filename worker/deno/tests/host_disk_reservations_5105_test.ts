@@ -7,6 +7,8 @@ import {
   parseHostDiskReservation,
   readLiveHostDiskReservations,
   removeHostDiskReservation,
+  RESERVATION_SIGHTING_GRACE_MS,
+  ReservationSightings,
   writeHostDiskReservation,
 } from "../lib/host_disk_reservations.ts";
 
@@ -164,6 +166,7 @@ Deno.test("dip credit", () => {
       availableBytes: 70 * GB,
       floorBytes: floor,
       live: [res()],
+      workerGrowthBytes: 0,
     }),
     16 * GB,
   );
@@ -173,6 +176,7 @@ Deno.test("dip credit", () => {
       availableBytes: 40 * GB,
       floorBytes: floor,
       live: [res()],
+      workerGrowthBytes: 0,
     }),
     null,
   );
@@ -181,6 +185,7 @@ Deno.test("dip credit", () => {
       availableBytes: 85 * GB,
       floorBytes: floor,
       live: [res()],
+      workerGrowthBytes: 0,
     }),
     null,
   );
@@ -189,7 +194,71 @@ Deno.test("dip credit", () => {
       availableBytes: 70 * GB,
       floorBytes: floor,
       live: [],
+      workerGrowthBytes: 0,
     }),
     null,
   );
+});
+
+Deno.test("dip credit takes the worker's own growth off the drop", () => {
+  const floor = 80 * GB;
+  const at = (workerGrowthBytes: number | undefined) =>
+    babysitterDipCreditBytes({
+      availableBytes: 70 * GB,
+      floorBytes: floor,
+      live: [res()],
+      workerGrowthBytes,
+    });
+  // Drop 30, worker 10: the babysitter can have taken 20, capped at 16.
+  assertEquals(at(10 * GB), 16 * GB);
+  // Drop 30, worker 18: 12 left for the babysitter; 70 + 12 >= 80.
+  assertEquals(at(18 * GB), 12 * GB);
+  // Drop 30, worker 25: 5 left; 70 + 5 < 80 -> not explained.
+  assertEquals(at(25 * GB), null);
+  // Unknown worker growth credits nothing.
+  assertEquals(at(undefined), null);
+});
+
+Deno.test("dip credit never applies below half the floor", () => {
+  const big = res({ bytes: 60 * GB });
+  const credit = (availableBytes: number) =>
+    babysitterDipCreditBytes({
+      availableBytes,
+      floorBytes: 80 * GB,
+      live: [big],
+      workerGrowthBytes: 0,
+    });
+  assertEquals(credit(39 * GB), null);
+  assertEquals(credit(40 * GB), 60 * GB);
+});
+
+Deno.test("ReservationSightings measures worker growth from first sight", () => {
+  const now = Date.parse("2026-11-13T00:00:00Z");
+  const r = res({ admittedAt: now - 60_000, expiresAt: now + 3_600_000 });
+  const s = new ReservationSightings();
+  assertEquals(s.observe([r], 5 * GB, now), 0);
+  assertEquals(s.observe([r], 12 * GB, now + 60_000), 7 * GB);
+  // Unknown footprint is unknown growth.
+  assertEquals(s.observe([r], undefined, now + 120_000), undefined);
+  // A released reservation is forgotten; a new one with the same id restarts.
+  assertEquals(s.observe([], 12 * GB, now + 180_000), undefined);
+  const again = { ...r, admittedAt: now + 170_000 };
+  assertEquals(s.observe([again], 20 * GB, now + 190_000), 0);
+});
+
+Deno.test("ReservationSightings credits nothing for a reservation first seen past the grace", () => {
+  const now = Date.parse("2026-11-13T00:00:00Z");
+  const late = res({
+    admittedAt: now - RESERVATION_SIGHTING_GRACE_MS - 1,
+    expiresAt: now + 3_600_000,
+  });
+  const s = new ReservationSightings();
+  assertEquals(s.observe([late], 5 * GB, now), undefined);
+  assertEquals(s.observe([late], 5 * GB, now + 60_000), undefined);
+  // Control: seen within the grace.
+  const timely = res({
+    admittedAt: now - RESERVATION_SIGHTING_GRACE_MS,
+    expiresAt: now + 3_600_000,
+  });
+  assertEquals(new ReservationSightings().observe([timely], 5 * GB, now), 0);
 });

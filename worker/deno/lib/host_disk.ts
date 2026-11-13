@@ -594,6 +594,14 @@ export class HostDiskMonitor {
   private volumeUsedPeak: number | null = null;
   /** Most recent volume usage, for the ratchet split (#384). */
   private volumeUsedNow: number | null = null;
+  /**
+   * Bytes the work volume has grown by, summed across launcher re-bases, so
+   * it only ever rises (Issue #5105). The peak above is re-based to the
+   * current usage on each adopted launcher reading; this total is not.
+   */
+  private workVolumeGrowthTotal = 0;
+  /** Highest ephemeral cargo root size measured (Issue #5105). */
+  private ephemeralCargoRootPeakBytes = 0;
   /** The launcher's word that the runtime refused the trim (#2080). */
   private trimRefused = false;
   /** The launcher's word that it declined to recreate the work volume. */
@@ -627,6 +635,9 @@ export class HostDiskMonitor {
    */
   recordEphemeralCargoRootBytes(bytes: number | null): void {
     this.ephemeralCargoRootBytes = bytes;
+    if (bytes !== null && bytes > this.ephemeralCargoRootPeakBytes) {
+      this.ephemeralCargoRootPeakBytes = bytes;
+    }
     this.ephemeralCargoRootError = null;
   }
 
@@ -753,6 +764,20 @@ export class HostDiskMonitor {
     );
   }
 
+  /**
+   * The worker's own host footprint growth so far: the work volume's growth
+   * plus the ephemeral cargo root's highest measured size (Issue #5105). It
+   * only rises, so the growth between two readings is never understated.
+   * Undefined unless the last status came from the launch baseline, where the
+   * work volume is a separate image whose growth the host loses; on a native
+   * `df` the worker's own share cannot be told apart.
+   */
+  get workerFootprintGrowthBytes(): number | undefined {
+    if (this.lastStatus.source !== "launch-baseline") return undefined;
+    if (this.volumeUsedPeak === null) return undefined;
+    return this.workVolumeGrowthTotal + this.ephemeralCargoRootPeakBytes;
+  }
+
   /** The most recent status without probing. */
   get status(): HostDiskStatus {
     return this.lastStatus;
@@ -870,6 +895,13 @@ export class HostDiskMonitor {
       reading !== null &&
       reading.totalBytes === this.baseline.totalBytes;
     if (this.baseline !== null && !probeIsHostFilesystem) {
+      // Issue #5105: count growth against the peak before a re-base resets it.
+      if (
+        reading?.usedBytes !== undefined && this.volumeUsedPeak !== null &&
+        reading.usedBytes > this.volumeUsedPeak
+      ) {
+        this.workVolumeGrowthTotal += reading.usedBytes - this.volumeUsedPeak;
+      }
       await this.adoptLauncherReading(reading, t);
       if (!this.baselined) {
         this.volumeUsedAtLaunch = reading?.usedBytes ?? null;
