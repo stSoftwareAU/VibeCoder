@@ -37,6 +37,7 @@ interface Wiring {
   reservationPath: string;
   /** Rewrites the launcher's reading, as `run.sh` does, `seconds` ahead of now. */
   writeLauncherReading(availableBytes: number, seconds: number): Promise<void>;
+  monitor: HostDiskMonitor;
 }
 
 async function withWiring(
@@ -47,6 +48,8 @@ async function withWiring(
   ) => Promise<void>,
   /** What the ephemeral cargo root measures: the worker's own growth. */
   ephemeral: { bytes: number | null } = { bytes: 0 },
+  /** The launcher's first reading; the host starts low unless this is set. */
+  startFree: number = FREE,
 ): Promise<void> {
   const home = await Deno.makeTempDir();
   const work = await Deno.makeTempDir();
@@ -74,7 +77,7 @@ async function withWiring(
   await Deno.writeTextFile(
     refreshFile,
     JSON.stringify({
-      availableBytes: FREE,
+      availableBytes: startFree,
       totalBytes: TOTAL,
       measuredAt: Math.floor(Date.now() / 1000),
       workVolumeTrimRefused: true,
@@ -129,6 +132,7 @@ async function withWiring(
       checkRootFilesystem,
       reservationPath,
       writeLauncherReading,
+      monitor,
     });
   } finally {
     enableInFlightHostDiskGate(false);
@@ -211,4 +215,51 @@ Deno.test("Issue #5105 - the worker's own measured growth stops the reservation 
     );
     assertEquals((await check())?.path, "host disk");
   }, fails);
+});
+
+Deno.test("Issue #5105 - a reservation first seen at ok takes its baseline from a fresh cargo root measurement", async () => {
+  // The root last measured 10 GiB, then grew to 30 GiB before the babysitter's
+  // reservation was first seen while the host was still ok. That growth is the
+  // worker's, but it came before the reservation, so it must not be charged
+  // against the dip that follows.
+  const root = { bytes: 30 * GIB as number | null };
+  await withWiring(
+    true,
+    async (_check, wiring) => {
+      wiring.monitor.recordEphemeralCargoRootBytes(10 * GIB);
+      assertEquals(await parkRunningBuild(), null, "ok host parks nothing");
+      // The repair now pushes the host below the floor; the root is unchanged.
+      await wiring.writeLauncherReading(FREE, 5);
+      assertEquals(
+        await parkRunningBuild(),
+        null,
+        "a stale baseline charged the earlier growth against the dip",
+      );
+      assert((await wiring.checkRootFilesystem())?.path !== "host disk");
+      // Growth after the reservation was seen still stops the credit.
+      root.bytes = 60 * GIB;
+      assertStringIncludes(
+        await parkRunningBuild() ?? "",
+        "host disk below its floor",
+      );
+    },
+    root,
+    120 * GIB,
+  );
+  // A baseline measurement that fails leaves the growth unknown: no credit.
+  const fails = { bytes: null as number | null };
+  await withWiring(
+    true,
+    async (_check, wiring) => {
+      wiring.monitor.recordEphemeralCargoRootBytes(10 * GIB);
+      assertEquals(await parkRunningBuild(), null);
+      await wiring.writeLauncherReading(FREE, 5);
+      assertStringIncludes(
+        await parkRunningBuild() ?? "",
+        "host disk below its floor",
+      );
+    },
+    fails,
+    120 * GIB,
+  );
 });

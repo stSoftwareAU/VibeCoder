@@ -327,6 +327,11 @@ export class ReservationSightings {
     { sighting: Sighting; vanishedAt: number }
   >();
 
+  /** Whether any of `live` has not been seen before (it needs a baseline). */
+  hasUnseen(live: readonly HostDiskReservation[]): boolean {
+    return live.some((r) => !this.firstSeen.has(r.id));
+  }
+
   /** Whether a vanished reservation is still held as released. */
   get holdsReleased(): boolean {
     return this.released.size > 0;

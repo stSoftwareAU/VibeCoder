@@ -800,6 +800,23 @@ export class HostDiskMonitor {
   }
 
   /**
+   * Measures the ephemeral cargo root afresh whatever the level and the quiet
+   * interval, and resolves once that measurement has settled; never rejects
+   * (Issue #5105). A reservation first seen while the host is still `ok`
+   * would otherwise take its growth baseline from an old figure, or from
+   * none, and the later dip would read the worker's build growth as the
+   * babysitter's, or as unknown. A failed measurement leaves the growth
+   * unknown, which credits nothing. No-op where the root does not apply.
+   */
+  async refreshEphemeralCargoRootNow(): Promise<void> {
+    // Wait out a walk already in flight: it began before this call.
+    await this.ephemeralCargoRootRefresh;
+    this.ephemeralCargoRootSampleAt = undefined;
+    this.refreshEphemeralCargoRoot(this.now());
+    await this.ephemeralCargoRootRefresh;
+  }
+
+  /**
    * When the launcher reading this monitor last adopted was measured, in
    * epoch ms (Issue #5105). Before any reading is adopted it is the age bound
    * before now, so no real reading compares as older.

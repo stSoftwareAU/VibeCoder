@@ -47,7 +47,11 @@ Closes #5105.
   where the ephemeral root applies, while its latest measurement is missing,
   failed or in progress, so an unmeasured root never reads as zero growth. The
   production probe waits for the refresh its check started before it reads the
-  growth, but only when a reservation is live or released.
+  growth, but only when a reservation is live or released. A reservation not
+  seen before first triggers a fresh measurement of the ephemeral cargo root
+  (`HostDiskMonitor.refreshEphemeralCargoRootNow`), whatever the level, so its
+  growth baseline is not a stale figure; a failed measurement leaves the growth
+  unknown and credits nothing.
   - `parkRunningBuild` and `hostDiskLaunchStopReason` return null for a dip the
     reservations explain.
   - `parkInFlightBuild` waits out such a dip only when the caller opts in. The
@@ -191,8 +195,8 @@ sequenceDiagram
   reservation is ignored; the same reading without the reservation is the
   control. Red-check: with the subtraction at either site changed back to
   `hostFreeBytes: free`, both reservation cases fail and both controls pass.
-- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 4 tests):
-  `createProductionRunCoreDeps` with a temp `HOME` holding
+- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 5 tests
+  at head): `createProductionRunCoreDeps` with a temp `HOME` holding
   `logs/host-disk-reservations/<id>.json`. `parkRunningBuild()` returns null
   with the file and a park reason without it. `checkRootFilesystem` does not
   stop for host disk with the file, and stops without it. Red-check: with the
@@ -203,7 +207,12 @@ sequenceDiagram
   dropped from the probe, the first fails. Two more show the worker's own
   growth, measured after the reservation was first seen, stops the reservation
   explaining the dip: 20 GiB of ephemeral cargo root, and a failed measurement.
-  Red-check: with the unknown-growth guard disabled, the second fails.
+  Red-check: with the unknown-growth guard disabled, the second fails. A fifth
+  case has the reservation first seen while the host is `ok` after the root grew
+  from a stale 10 GiB to 30 GiB: the later dip stays explained, growth after
+  first sight (60 GiB) stops the credit, and a failed baseline measurement
+  credits nothing. Red-check: with the first-sight refresh disabled, the fifth
+  fails ("a stale baseline charged the earlier growth against the dip").
 - `worker/deno/tests/host_disk_worker_footprint_5105_test.ts` (new, 5 tests):
   `HostDiskMonitor.workerFootprintGrowthBytes` with non-zero figures: work
   volume growth summed across a launcher re-base plus the ephemeral peak (which
@@ -251,7 +260,9 @@ sequenceDiagram
 - `worker/deno/tests/claude_runner_host_disk_4390_test.ts` (unchanged) pins one
   probe read per new agent process. The in-flight park now reads the probe once
   outside a babysitter dip, and that test passes.
-- The full gate was not re-run on this head; the worker re-runs it.
+- The full gate was not run on this head (run budget). On the head, the seven
+  5105 test files (wiring, reservations, footprint, babysitter dip, heavy build
+  gate, claude runner dip wait, babysitter admission) pass: 60 passed, 0 failed.
   `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (13 tests at
   head) passes. The earlier 60-file `deno test -A` sweep is not restated here:
   its three failures needed the `codex` coding-agent provider, which this

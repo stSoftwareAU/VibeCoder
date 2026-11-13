@@ -1373,7 +1373,7 @@ fast checks, security-fix discrimination) do not wait. Below half the floor, or
 when the worker's own growth is unknown, nothing is credited. The worker's
 growth is unknown on a native `df`, and, where the ephemeral cargo root
 applies, while its latest measurement is missing, failed or still in progress
-(a probe that holds a reservation waits for the refresh its check started). The
+(a probe that holds a reservation waits for the refresh its check started, and a reservation first seen takes its growth baseline from a fresh measurement of the root, even while the host is still above the floor). The
 babysitter removes its reservation file right after teardown, but the worker's
 low reading comes from `host-disk.json`, which the launcher rewrites every
 300 s; so a reservation the worker saw vanish keeps explaining the dip until
