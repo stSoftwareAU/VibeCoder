@@ -6,7 +6,10 @@ setup phase logs nothing the report's step table recognises. It logs only a 60s
 blocking setup step now logs one fixed line as it starts,
 `[setup-step] <step>: started`. The hard-kill report maps that line to a fixed
 `setup: <step>` label, so the next setup wedge names the step it is in or after.
-The cause of the #5128 wedge on `GRQ-25` is not established. Part of #5128.
+The setup phase also runs under a one-hour deadline. A setup still running then
+is abandoned as a `timeout` failure, and the run's failure path releases the
+claim, instead of holding it until the launcher's watchdog reaps the container.
+The cause of the #5128 wedge on `GRQ-25` is not established.
 
 ## Spec
 
@@ -33,6 +36,15 @@ The cause of the #5128 wedge on `GRQ-25` is not established. Part of #5128.
   the existing regex table, because Semgrep refuses a regex built at run time
   (`detect-non-literal-regexp`). No log text reaches the public issue.
 - The labels are not part of the dedup signature `hard-kill-<handler>-<phase>`.
+- The claim hold is the fault this change can fix. The worker's 60s setup ticker
+  kept logging for 2h10m after the claim, so the event loop was alive while one
+  awaited setup step never returned. `runSetupWithDeadline` in `setup_steps.ts`
+  races the setup phase against `SETUP_PHASE_DEADLINE_MS` (one hour) and returns
+  a `timeout` failure if setup is still running. It is wired at the setup
+  `runPhase` in `issue_worker.ts`. A returned setup failure carries no
+  `claimNotHeld`, so `run_core.ts`'s `releaseIssueClaim` unassigns the issue.
+  One hour is far past every bounded setup subprocess (git 60-120s, pre-setup
+  command 300s by default), so only a wedged step reaches it.
 
 ### Undiscoverable Facts
 
@@ -69,13 +81,21 @@ flowchart LR
     `setup: repository setup`;
   - a refused claim logs only `issue claim`;
   - a completed setup logs all seven lines in order.
+- `worker/deno/tests/setup_deadline_5128_test.ts` covers the deadline:
+  - `runSetupWithDeadline` returns the setup result when setup settles first;
+  - it ends a setup that never settles with a `timeout` failure;
+  - it swallows a rejection that arrives after the deadline;
+  - `workOnIssue ends a run whose setup wedges with a setup timeout failure, so the claim is released (Issue #5128)`
+    drives `workOnIssue` with a `claimIssue` that never returns and gets a
+    `setup` / `timeout` failure without `claimNotHeld`.
 - `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep names each setup step from its start line, past the phase ticker (Issue #5128)`
   covers each of the seven labels behind ticker lines, a later step winning, and
   an unknown step name giving `unknown`.
 - Docs updated: the hard-kill sections of `docs/CALLBACKS.md` ("Filing.") and
-  `docs/TROUBLESHOOTING.md` list the setup labels. A grep for `agent turn`
-  outside `docs/archive/` found no other copy of the label list. The
-  `STEP_PATTERNS`, `hardKillLastStep` and `formatHardKillBody` doc comments
+  `docs/TROUBLESHOOTING.md` list the setup labels. `docs/TROUBLESHOOTING.md`
+  also describes the one-hour setup deadline and the claim release. A grep for
+  `agent turn` outside `docs/archive/` found no other copy of the label list.
+  The `STEP_PATTERNS`, `hardKillLastStep` and `formatHardKillBody` doc comments
   describe the setup match.
 - Issue-number provenance: #5095 and #4254 are cited only by existing text the
   docs change re-wraps.
@@ -90,14 +110,25 @@ flowchart LR
   in that host's private archive.
 - **regression test** —
   `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep names each setup step from its start line, past the phase ticker (Issue #5128)`
+- **symptom** — a run wedged in setup holds its claim until the launcher's
+  watchdog reaps the container, so it never releases the claim
+- **status** — `reproduced` — a `workOnIssue` run whose `claimIssue` never
+  returns did not return. With the deadline unwired it was still running after
+  120s and was stopped; with it wired it returns a `setup` / `timeout` failure
+  in about 64ms.
+- **regression test** —
+  `worker/deno/tests/setup_deadline_5128_test.ts::workOnIssue ends a run whose setup wedges with a setup timeout failure, so the claim is released (Issue #5128)`
 
 ## Acceptance Criteria
 
-- **missing** — a container wedged and the launcher watchdog reaped it, so the
-  run never released its claim — reason: the cause of the setup wedge on
-  `GRQ-25` is not established. Its log tail and guest probes are in that host's
-  `~/logs/hard-kill-archive/`, unreadable from this host, and this change makes
-  the next recurrence name the setup step.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — a container wedged and the launcher watchdog reaped it, so the run
+  never released its claim — evidence:
+  `worker/deno/tests/setup_deadline_5128_test.ts::workOnIssue ends a run whose setup wedges with a setup timeout failure, so the claim is released (Issue #5128)`,
+  `worker/deno/lib/setup_steps.ts` (`runSetupWithDeadline`),
+  `worker/deno/lib/issue_worker.ts` (setup `runPhase`),
+  `worker/deno/lib/run_core.ts` (`releaseIssueClaim`) — reviewer: met
 
 ## Test Plan
 
@@ -110,6 +141,14 @@ flowchart LR
       (`hardKillLastStep` returned `unknown`), and the failed-setup and
       completed-setup cases captured no `[setup-step]` lines. The refused-claim
       case's log assertion was first run after the fix.
+- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (five cases). Red
+      with the deadline unwired from `issue_worker.ts`: the `workOnIssue` case
+      hung for over 120s and was stopped. The helper cases were first run after
+      the fix.
+- [x] `deno task test:unit` on `setup_deadline_5128_test.ts`,
+      `setup_step_log_test.ts`, `hard_kill_report_test.ts`,
+      `issue_worker_test.ts`, `setup_branch_presync_test.ts` and
+      `setup_branch_resume_test.ts`: 219 passed, 0 failed.
 - [x] `deno task test:unit` on the two test files plus the existing setup-phase
       suites (`setup_branch_presync_test.ts`, `setup_branch_resume_test.ts`,
       `object_store_repair_test.ts`, `setup_broken_ref_repair_test.ts`,
@@ -122,7 +161,8 @@ flowchart LR
       RegExp, the unclaimed sweep module and the manifest completeness check.
 - Callers checked: `hardKillLastStep` is called by `formatHardKillBody`, which
   gets the new labels. `workOnIssueSetupBranch` adds only `logger.info` calls,
-  so no control flow changes. The new module is claimed by
+  so its control flow is unchanged. `runSetupWithDeadline` has one caller, the
+  setup `runPhase` in `workOnIssueCore`. The new module is claimed by
   `docs/audits/lib-sweep-coverage/top-up-5128.json`.
 
 ## Merge verification
@@ -131,5 +171,12 @@ CI and code review are pending.
 
 ## Limitations and remaining risk
 
-This does not fix or explain the wedge. A setup wedge in a step between two
-start lines is reported as "in or after" the earlier step.
+This does not fix or explain the wedge itself. A setup wedge in a step between
+two start lines is reported as "in or after" the earlier step. The deadline
+needs a live worker: if the guest stops first, the watchdog still reaps it and
+the assigned-without-heartbeat recovery frees the claim, as before. An abandoned
+setup step is not cancelled. If it ever returned after the deadline, the rest of
+setup would run on with no run waiting for it. A late `claimIssue` could
+re-assign the released issue, a late `startHeartbeat` would leave a heartbeat
+running for it, and late git work could clash with the next run on that lane.
+The run_core unassign is read from the code, not driven by a test.

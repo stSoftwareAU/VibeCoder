@@ -102,6 +102,7 @@ import type {
 
 import { workOnIssueMergedPrPrecheck } from "./phases/merged_pr_precheck_phase.ts";
 import { workOnIssueSetupBranch } from "./phases/setup_branch_phase.ts";
+import { runSetupWithDeadline } from "./setup_steps.ts";
 import { workOnIssueClarityPhase } from "./phases/clarity_assessment_phase.ts";
 import { workOnIssueBaselineQuality } from "./phases/baseline_quality_phase.ts";
 import { workOnIssueExecuteClaude } from "./phases/execute_phase.ts";
@@ -594,9 +595,13 @@ async function workOnIssueCore(
     }
 
     // Phase 1 — Setup Branch
+    // Issue #5128: a wedged setup step used to hold the claim until the
+    // launcher's watchdog reaped the container. The deadline ends the run with
+    // a `timeout` failure instead, so the failure path releases the claim.
     const setupResult = await runPhase(
       "setup",
-      () => workOnIssueSetupBranch(ctx, state, deps),
+      () =>
+        runSetupWithDeadline(() => workOnIssueSetupBranch(ctx, state, deps)),
     );
     if (setupResult.status === "failure") {
       return {
