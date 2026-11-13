@@ -2,159 +2,194 @@
 
 ## Summary
 
-Agent-owned cargo target directories can now be released after a pass using
-`sudo -n -u agent -- rm -rf -- <path>` when the worker's removal is denied. The
-fallback is confined to an agent-keyed directory directly under the real
-(non-symlink) ephemeral cargo root.
+PR #5116 made agent-owned cargo targets releasable and measured the ephemeral
+root. This PR delivers the three asks it left open, all from the babysitter
+comment on the issue:
 
-On trim-refused runtimes, work-volume telemetry also reports the ephemeral cargo
-root's size and largest targets. The host-disk monitor refreshes this figure in
-the background below `ok` on those runtimes only (production wires
-`ephemeralCargoRootApplies` to `workVolumeTrimRefusedForLaunch`), without
-delaying the floor verdict. Forced checks share one scan and cannot bypass its
-refresh interval. Normal build-time file deletion preserves `du`'s size;
-unreadable subtrees and other measurement failures remain `unknown`.
+- **One host-disk admission.** The fleet PR babysitter and the worker now admit
+  against the same floor and one shared reservation ledger.
+- **No second babysitter egress proxy.** The babysitter runs one repair
+  container, so one egress proxy, at a time.
+- **A wait, not a kill.** The worker no longer kills its runs for a dip below
+  the floor that the babysitter's live repairs account for.
 
-Part of #5105. The shared babysitter admission, proxy lifecycle and wait-versus-
-kill criteria remain outside this PR, so the issue stays open.
+Closes #5105.
+
+- `worker/deno/lib/host_disk_reservations.ts` (new) is the ledger. While a
+  repair container runs, the babysitter keeps one JSON file per container in
+  `<log dir>/host-disk-reservations/`. That is the mounted log directory that
+  already carries `host-disk.json`; inside the worker it is
+  `${HOME}/logs/host-disk-reservations`. `admitHostDiskLaunch` admits new work
+  when `free − outstanding reservations − request ≥ floor`.
+  `babysitterDipCreditBytes` tells whether a dip below the floor is fully
+  explained by what live reservations have consumed.
+- **Babysitter admission** (`fleet_babysitter_container.ts`).
+  `runBabysitterRepairContainer` calls `babysitterHostDiskAdmission` before
+  any egress starts.
+  - It measures the host the way `run.sh` does and uses the configured floor.
+  - It asks for 16 GB: the container rootfs plus its proxy's. A clone with a
+    cargo project adds the worker's 25 GB cargo headroom.
+  - A refusal throws before any proxy or container starts. The reservation is
+    removed after the container and its proxy are torn down.
+- **One repair at a time** (`fleet_pr_babysitter.ts`). The production queue
+  passes `BABYSITTER_REPAIR_CONTAINER_LIMIT = 1` instead of `2`.
+- **Worker** (`heavy_build_gate.ts`, `run_core_production_deps.ts`). The host
+  disk probe now also reads the live reservations.
+  - `parkRunningBuild` and `hostDiskLaunchStopReason` return null for a dip the
+    reservations explain.
+  - `parkInFlightBuild` first waits out such a dip, polling every 60 s for up
+    to 20 minutes.
+  - `heavyBuildAdmission`, `cargoClaimDeferral` and
+    `shouldSkipEphemeralCargoBuild` subtract the reserved bytes not yet
+    consumed from the free space they test.
 
 ## Spec
 
 ### Intent and Rationale
 
-- Release as the account that built the directory, using the existing image sudo
-  rule. Group-writable directories would depend on every build's umask.
-- The cargo root is outside the work volume. Its size is a separate diagnostic
-  figure, not another volume bucket or a subtraction from the host estimate.
-- The disk-floor decision takes priority over diagnostic walks. A slow walk must
-  not delay a running build's low-disk response or spawn concurrent walks from
-  multiple worker lanes.
+- On the reporter's laptop, each babysitter repair took about 15–16 GB (its
+  container plus its own egress proxy). Two repairs at once, plus a cargo
+  build, pushed the host below the worker's floor, and the worker killed issue
+  runs that had nothing to do with it. The worker could not see the
+  babysitter's usage, and the two sides used separate checks.
+- A file ledger in the log directory is the one host path both sides already
+  share, and the worker already reads the launcher's `host-disk.json` from it.
+  So no new mount or IPC is needed.
 
 ### Essential Design Decisions
 
-- The monitor permits one background walk, followed by a quiet sample interval
-  (60 seconds by default), including after failure. `force` still refreshes the
-  host reading but cannot bypass this separate throttle. Pending detail labels
-  an earlier figure `last measured`; a later probing check reports the completed
-  result or the failure cause.
-- Strict `du` runs with `LC_ALL=C`. Exit 1 is tolerated only when every
-  diagnostic identifies a vanished path within the measured directory. A printed
-  size is still required. If the target itself vanished, `lstat` confirms its
-  absence and the listing omits only that target.
-- Permission errors, mixed or unrecognised diagnostics, missing output and
-  timeouts remain failures. A missing `du` executable cannot masquerade as a
-  missing root. The pruning path retains its existing lenient measurement.
-- The production remover is built at call time because its import graph is
-  cyclic. Removal still falls back only for `PermissionDenied` on an agent-keyed
-  directory, and reports both causes when sudo fails.
+- **Consumption estimate.** What a reservation has consumed is estimated as the
+  drop in free space since the earliest live reservation was admitted, capped
+  at the reserved bytes. Admission subtracts only the unconsumed rest, so space
+  is not counted twice. The dip credit can never exceed the reservation, so a
+  dip with another cause still parks or ends the launch.
+- **Proxy decision.** "No second babysitter egress proxy" is met by running
+  one repair container at a time, not by sharing one proxy between containers.
+  Proxy names, networks and Apple ownership journals are per container, so
+  sharing would need a new proxy lifecycle. The trade-off: queued repairs wait
+  for the running one (up to 90 minutes each).
+- **Bounds.** A reservation expires at admission plus the repair timeout plus
+  10 minutes. That bounds a crashed babysitter's stale file, since the worker
+  in its container cannot check host PIDs. A new build step waits at most 20
+  minutes, after which the existing park applies.
+- **Unknown readings.** An unmeasurable host admits the repair without a
+  reservation, the same rule as the worker's "unknown never defers". An
+  unreadable ledger is logged by the worker and read as no reservations, which
+  keeps the existing park and stop behaviour.
 
 ### Undiscoverable Facts
 
-- The review identified forced production probes as a path around the original
-  refresh cadence. The new composition test calls `parkRunningBuild` through the
-  probe registered by `createProductionRunCoreDeps`, with a real monitor and a
-  deliberately unresolved measurement.
-- This repair environment cannot fetch JSR manifests. Runtime regression tests
-  used an external import map to an available local Deno standard-library source
-  checkout and `--no-check`; repository dependency pins and quality
-  configuration were not changed. Standard CI remains authoritative.
+- The 16 GB footprint and the "two proxies at once" observation come from the
+  owner's measurements in the issue comments (2026-11-13): worker rootfs
+  7.7 GB, egress proxy rootfs 7.4–7.6 GB, and drops of about 40 GB per
+  babysitter run.
+- Before this change the babysitter had no disk check at all: there are no
+  floor or disk references in `fleet_babysitter_container.ts` on the base
+  branch.
+- The issue body's own items (agent-owned target release, ephemeral-root
+  telemetry, composition test) landed in #5116, which merged on 2026-11-13 and
+  left this issue open.
 
 ## Evidence
 
-- Test-first reproduction on the unfixed PR head, with only dependency seams
-  added: 13 tests passed and five new tests failed. Failures showed repeated
-  forced scans, a floor verdict blocked by a pending scan, rejection of benign
-  ENOENT diagnostics, and loss of the root figure after a target was released.
-- After the fix, 178 related tests passed, zero failed, and two real-agent tests
-  were ignored because their required account/root capability was absent.
-  Coverage includes heavy-build gates, host-disk monitoring, ephemeral caches,
-  verifier release, the running-agent floor response and production disk wiring.
-- The 55 completeness-check files also passed with the local import map: 866
-  tests passed, zero failed, and one host-capability test was ignored.
-- The real unreadable-subtree test passed: permission denial still produces
-  `unknown`. The real released-target test passed while preserving the size of a
-  surviving sibling. The composition test proves that a pending scan neither
-  delays the low verdict nor overlaps another scan after the interval elapses.
-- `./quality.sh < /dev/null` was attempted. Formatting, lint, Markdown, Mermaid,
-  benchmark audit and source/chokepoint checks passed. Completeness, full tests
-  and type checking could not load JSR manifests. Config integration, Semgrep,
-  Checkov and release-tag ruleset checks were skipped for unavailable local
-  configuration, tools or CLI authentication. This is not a full local pass.
-- An additional strict type-check attempt with local source dependencies
-  reported only two `noImplicitReturns` errors in that external standard-library
-  checkout. No repository type errors were reported; CI must verify the pinned
-  packages.
-- Read and updated `docs/CONTAINER.md`, “Standing totals at cycle start and end
-  of run”, and the attached source comments. The original agent-release changes
-  also update `docs/CONTAINMENT.md`. No UI is changed.
+Backend and CLI only, with no UI files.
+
+```mermaid
+sequenceDiagram
+    participant B as Babysitter (host)
+    participant L as log dir/host-disk-reservations
+    participant W as Worker (container)
+    B->>L: read live reservations
+    B->>B: admitHostDiskLaunch(free, floor, 16 GB [+25 GB cargo])
+    alt refused
+        B-->>B: throw, infrastructure backoff, no proxy, no container
+    else admitted
+        B->>L: write <container>.json
+        B->>B: start proxy + repair container
+        W->>L: probe reads live reservations
+        W->>W: dip explained? wait (no kill, no launch end)
+        B->>B: teardown container + proxy
+        B->>L: remove <container>.json
+    end
+```
 
 ## Reproduction
 
-- **symptom** — a forced host-disk probe awaited a full cargo-root scan, and
-  normal file deletion made the strict telemetry report `unknown`.
-- **status** — `verified` — the focused tests failed before the behaviour fix
-  and passed afterwards, using controlled promises, clocks and `du` results.
+- **symptom** — mid-run, a babysitter repair (container plus egress proxy, and
+  a cargo build) pushed the host below the 46 GB floor, and the worker's issue
+  run was killed (`no_pr:internal_error:execute`). The babysitter launched with
+  no disk check.
+- **status** — `partial` — reason: the new tests drive each decision with
+  fake disk readings and a real ledger in a temp directory. The real
+  host-plus-container incident was not reproduced. The new tests call API this
+  PR adds, so they cannot run against the base branch. The base behaviour they
+  replace is shown by each test's control case, which is the same low reading
+  without a reservation and still parks or stops.
 - **regression test** —
-  `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts::Issue #5105 - the registered build probe returns low during one slow shared scan`
-
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — Release an agent-owned target directory using the same account as
-  the build. Existing confined-removal and production-binding tests pass;
-  real-account tests remain conditional on host capabilities.
-- **met** — Measure and name the ephemeral cargo root in work-volume and
-  host-disk telemetry. Forced checks do not block on it, and vanished files no
-  longer invalidate a usable size.
-- **met** — A pass can release its agent target without an EACCES warning. The
-  composition test exercises successful fallback and preserves another
-  checkout's target; rejection tests retain both error causes.
-- **missing** — Shared host-budget admission for worker and babysitter
-  containers/builds; this PR does not change the babysitter launcher.
-- **missing** — Reuse one egress proxy per host or the worker's proxy; this PR
-  does not change proxy lifecycle.
-- **missing** — Treat babysitter-driven floor dips as a wait rather than a kill;
-  the existing park/kill policy is unchanged.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **clean** — Australian English; existing subprocess timeout helper; no new
-  dependency or privilege; original removal confinement retained; errors remain
-  visible; deterministic regression tests exercise production behaviour.
-- **clean** — Updated the existing synchronous-refresh assertion because the
-  supported behaviour is now asynchronous. It still asserts the low verdict, the
-  refreshed size and failure visibility, alongside new ordering and cadence
-  tests. No existing test was removed or newly skipped.
+  `worker/deno/tests/host_disk_babysitter_dip_5105_test.ts::Issue #5105 - parkRunningBuild does not kill a dip the reservations explain`
 
 ## Test Plan
 
-- `ephemeral_root_telemetry_5105_test.ts`: forced-check throttling, a slow
-  shared scan through the registered production probe, asynchronous result/error
-  detail, benign GNU/BSD ENOENT output, mixed and external-path failures,
-  missing size, timeout, and a target released between listing and real `du`.
-- PR #5116 review: the same file gains a monitor test where the root does not
-  apply (measure never called, no `ephemeral cargo root` text or log line on
-  three checks a sample interval apart, plus a positive control once it applies)
-  and a `createProductionRunCoreDeps` test, with no `hostDisk` override and no
-  launcher reading, asserting the registered probe's park reason and the
-  `Host disk: low` log carry no root text. The latter fails with the wiring
-  removed. It passes its launch baseline and `HOME` as injected `env` data and
-  a `trimRefused: () => false` seam (new optional `ProductionDepsOptions`
-  field, defaulting to the launch file's verdict), so it no longer mutates
-  `Deno.env` and stays within the Issue #880 parallel-safety cap. The production
-  monitor now receives the same injected `env`.
-- Run the existing `heavy_build_gate*_test.ts`, `host_disk*_test.ts`,
-  `ephemeral*_test.ts`, `*4743*_test.ts`, `claude_runner_host_disk_4390_test.ts`
-  and `run_core_production_deps_disk_test.ts` regression suites.
-- The changed cadence has one implementation in `HostDiskMonitor`; production
-  forced probes and ordinary checks share it. Strict and lenient sizing share
-  `runDuSk`; only strict sizing classifies the diagnostics. No duplicated rule
-  implementation was found.
+- `worker/deno/tests/host_disk_reservations_5105_test.ts` (new, 9 tests): the
+  parser rejects each malformed field; write and read round-trip; expired,
+  malformed and mismatched-name files are not read as live; a missing directory
+  reads as empty; consumption accounting, including the cap; admission admits
+  and refuses where the inputs differ only by the reservation; dip credit for
+  an explained dip, an unexplained dip, no dip and no reservations.
+- `worker/deno/tests/host_disk_babysitter_dip_5105_test.ts` (new, 7 tests):
+  - `parkRunningBuild` and `hostDiskLaunchStopReason` do not park or stop for
+    an explained dip; the same reading without a reservation does (control).
+  - A dip the reservation cannot explain still parks and stops.
+  - `parkInFlightBuild` waits out a dip that recovers (two polls), and parks
+    once the wait bound passes.
+  - Cargo admission becomes `merge-only` when an unconsumed reservation leaves
+    too little headroom.
+  - The probe helper reads a live reservation, and logs and survives an
+    unreadable directory.
+- `worker/deno/tests/babysitter_host_disk_admission_5105_test.ts` (new, 9
+  tests):
+  - A refused admission starts no sidecar, Apple helper or spawn.
+  - The release runs once, after the sidecar stops, including when the spawn
+    fails, and a failing release does not mask the repair's error.
+  - Reservation sizes: footprint only for a non-cargo clone, plus the headroom
+    for a clone with a Cargo.toml.
+  - A refusal from an outstanding reservation, with a control that admits.
+  - An unmeasurable host admits and writes no file.
+  - With `BABYSITTER_REPAIR_CONTAINER_LIMIT`, `runRepairs` never overlaps two
+    repairs.
+- Existing tests: `fleet_babysitter_container_4738_test.ts`,
+  `fleet_babysitter_container_egress_4738_test.ts` and
+  `tests/fixtures/babysitter_container_fakes_4770.ts` inject an admitting fake
+  `hostDiskAdmission`, so they do not measure the real host or write to the
+  real log directory. No assertions were removed.
+- `worker/deno/tests/claude_runner_host_disk_4390_test.ts` (unchanged) pins
+  one probe read per new agent process. The in-flight park now reads the probe
+  once outside a babysitter dip, and that test passes.
+- Full gate: `./quality.sh < /dev/null` passed on head `23a96dd6` (deno tests,
+  lint, type check, fmt, markdownlint and semgrep all passed). It skipped two
+  checks: config integration (this host has no `.config.json`) and checkov (not
+  installed).
+- Callers checked: `parkInFlightBuild` is called from `claude_runner.ts:1350`
+  and `quality_gate_remediation_phase.ts:494`, both with the default wait.
+  `runBabysitterRepairContainer` is called by `startBabysitterAgent`, which
+  uses the production admission. The production probe and the
+  `checkRootFilesystem` stop check both pass the reservations.
+- Docs updated:
+  - `docs/workflows/fleet-pr-babysitter.md`: the concurrency sentence, the
+    per-repair scope line, and a new "Host-disk admission" paragraph.
+  - `docs/CONTAINER.md`: the "In-flight builds stop at the same floor" section.
+  - `docs/INTERNALS.md`: the launch-end sentence.
+  - `docs/audits/lib-sweep-coverage/top-up-5105.json` now lists the new module.
 
-## Merge verification
+## Not checked
 
-CI and a fresh review of the repaired head are pending. The shared babysitter
-and proxy criteria above remain explicitly unfinished, independently of CI.
+- No real babysitter-plus-worker run on an Apple or docker host. Every check is
+  a unit test with fakes or a temp ledger.
+- Whether the worker's per-handler watchdogs tolerate a 20-minute wait at the
+  start of an agent step was not measured.
+- The worker's own growth during a babysitter repair also counts as the
+  babysitter's consumption, so the dip credit can over-credit by up to the
+  reservation's bytes.
+- The comment's other candidate levers were not done: pruning the builder near
+  the floor, sharing the worker's own proxy, and counting container rootfs
+  images in telemetry.
