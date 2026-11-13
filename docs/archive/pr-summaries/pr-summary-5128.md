@@ -41,14 +41,14 @@ The cause of the #5128 wedge on `GRQ-25` is not established. Part of #5128.
   records `stSoftwareAU/GRQ#5515`, outcome `no_pr`, phase `setup`,
   `failureClass: hard_kill`, and no session log ("agent transcript tee not
   enabled for this run").
-- Run id `vibe-mwey44k4` decodes to a start of 2026-11-13T12:21:10Z. The GRQ#5515
-  timeline shows the assignment at 12:37:43Z and an assigned-without-heartbeat
-  recovery that unassigned it at 15:03:30Z. No release comment was posted. The
-  capture at 15:32:45Z is 3h 11m after the start, which fits the launcher's
-  11400s watchdog.
-- The 256 KiB worker-log tail behind the capture, the guest probes and the
-  boot logs are in `GRQ-25`'s `~/logs/hard-kill-archive/`, which this host
-  cannot read. The guest probe did not answer, so the guest itself had stopped.
+- Run id `vibe-mwey44k4` decodes to a start of 2026-11-13T12:21:10Z. The
+  GRQ#5515 timeline shows the assignment at 12:37:43Z and an
+  assigned-without-heartbeat recovery that unassigned it at 15:03:30Z. No
+  release comment was posted. The capture at 15:32:45Z is 3h 11m after the
+  start, which fits the launcher's 11400s watchdog.
+- The 256 KiB worker-log tail behind the capture, the guest probes and the boot
+  logs are in `GRQ-25`'s `~/logs/hard-kill-archive/`, which this host cannot
+  read. The guest probe did not answer, so the guest itself had stopped.
 
 ## Evidence
 
@@ -85,9 +85,9 @@ flowchart LR
 - **symptom** — a hard kill in setup is filed with `Last step logged: unknown`,
   so the step the guest wedged in is not named
 - **status** — `partial` — reason: the missing label is reproduced: on unfixed
-  main, `hardKillLastStep` returned `unknown` and the setup phase logged no
-  step lines. The `GRQ-25` wedge itself was not reproduced, because its evidence
-  is in that host's private archive.
+  main, `hardKillLastStep` returned `unknown` and the setup phase logged no step
+  lines. The `GRQ-25` wedge itself was not reproduced, because its evidence is
+  in that host's private archive.
 - **regression test** —
   `worker/deno/tests/hard_kill_report_test.ts::hardKillLastStep names each setup step from its start line, past the phase ticker (Issue #5128)`
 
@@ -103,8 +103,9 @@ flowchart LR
 
 - [x] Added `worker/deno/tests/setup_step_log_test.ts` (three cases through
       `workOnIssueSetupBranch`).
-- [x] Added the setup-label test to `worker/deno/tests/hard_kill_report_test.ts`.
-      No existing assertion was removed or edited.
+- [x] Added the setup-label test to
+      `worker/deno/tests/hard_kill_report_test.ts`. No existing assertion was
+      removed or edited.
 - [x] Red on unfixed main: the new report test failed at `issue claim`
       (`hardKillLastStep` returned `unknown`), and the failed-setup and
       completed-setup cases captured no `[setup-step]` lines. The refused-claim
