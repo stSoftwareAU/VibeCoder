@@ -22,8 +22,8 @@ relaunch. This PR fixes the issue body's three Fix items:
   dirs. The host-disk monitor is given the same figure, and its launch-baseline
   detail names it (`worker/deno/lib/ephemeral_root_telemetry.ts`, and
   `HostDiskMonitor.recordEphemeralCargoRootBytes` in
-  `worker/deno/lib/host_disk.ts`). Whenever a host-disk check reads below
-  `ok`, the monitor measures the root again through its new
+  `worker/deno/lib/host_disk.ts`). Whenever a host-disk check reads below `ok`,
+  the monitor measures the root again through its new
   `measureEphemeralCargoRoot` option. So a floor trip mid-cycle names the root
   as it stands then, not the near-zero cycle-start figure.
 - **Composition test.** A pass whose build ran as `agent` leaves no target dir
@@ -66,9 +66,9 @@ so they are recorded as `missing` below. Part of #5105.
   (`measureEphemeralCargoRootBytesIfTrimRefused`). A failed refresh drops the
   stale figure, logs the cause, and the detail reads
   `ephemeral cargo root unknown on the container's own layer: <cause>`.
-- The strict and lenient measurements share one `du -sk` run (`runDuSk`) and
-  one parse (`parseDuKilobytes`). The lenient one still returns `du`'s figure
-  on a non-zero exit, as before.
+- The strict and lenient measurements share one `du -sk` run (`runDuSk`) and one
+  parse (`parseDuKilobytes`). The lenient one still returns `du`'s figure on a
+  non-zero exit, as before.
 - The fallback runs only on `PermissionDenied`. Any other error, or a directory
   keyed to the worker's own account, is rethrown unchanged. A failed fallback
   keeps the original EACCES text and adds the sudo cause.
@@ -114,22 +114,22 @@ flowchart LR
   - **Head, with a temp root:** the production remover refuses with
     `its parent is not exactly /var/tmp/vibe-cargo-target`. That is the
     confinement working as intended.
-- **Unreadable subtree.** An `agent`-keyed dir with a `chmod 000` subdir
-  holding a 1 MB file: `du` exits 1, and `measureEphemeralCargoRoot` returns
+- **Unreadable subtree.** An `agent`-keyed dir with a `chmod 000` subdir holding
+  a 1 MB file: `du` exits 1, and `measureEphemeralCargoRoot` returns
   `error: "du -sk … exited 1: …"` with `null` recorded. With the base's lenient
-  listing the same test fails (red-checked: the default listing was swapped
-  back to `productionEphemeralRootDeps.listTargetDirs`, and the test failed).
-- **Production binding.** With `productionEphemeralRootDeps.removeDir`
-  reverted to `Deno.remove(path, { recursive: true })`, the three new binding
-  tests fail; with the head they pass.
+  listing the same test fails (red-checked: the default listing was swapped back
+  to `productionEphemeralRootDeps.listTargetDirs`, and the test failed).
+- **Production binding.** With `productionEphemeralRootDeps.removeDir` reverted
+  to `Deno.remove(path, { recursive: true })`, the three new binding tests fail;
+  with the head they pass.
 - **Mid-cycle refresh.** With the refresh in `HostDiskMonitor.check` disabled,
   `a mid-cycle floor trip names the root as it stands now` fails; with it, the
   `low` detail names `ephemeral cargo root 38.5 GB`.
-- `./quality.sh < /dev/null` passed on the earlier head `0ac2620e`. "config integration" was
-  skipped because `.config.json` was not available, and "checkov" because no
-  checkov binary was available. The worker re-runs the gate on this head. The
-  167 tests in `tests/heavy_build_gate*_test.ts`, `tests/host_disk*_test.ts`,
-  `tests/ephemeral*_test.ts`, the #4743 tests and
+- `./quality.sh < /dev/null` passed on the earlier head `0ac2620e`. "config
+  integration" was skipped because `.config.json` was not available, and
+  "checkov" because no checkov binary was available. The worker re-runs the gate
+  on this head. The 167 tests in `tests/heavy_build_gate*_test.ts`,
+  `tests/host_disk*_test.ts`, `tests/ephemeral*_test.ts`, the #4743 tests and
   `tests/claude_runner_host_disk_4390_test.ts` pass, and `deno check`,
   `deno lint`, `deno fmt` and `markdownlint-cli2` are clean on the changed
   files.
@@ -164,35 +164,34 @@ flowchart LR
   telemetry, so this growth is no longer "other / unmeasured" — evidence:
   `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts::Issue #5105 - a mid-cycle floor trip names the root as it stands now`
   — reviewer: met
-- **met** — Composition test: a pass whose build ran as `agent` leaves no
-  target dir behind, with no EACCES warning — evidence:
+- **met** — Composition test: a pass whose build ran as `agent` leaves no target
+  dir behind, with no EACCES warning — evidence:
   `worker/deno/tests/heavy_build_gate_agent_release_5105_test.ts::a pass whose build ran as agent leaves no target dir behind`
   — reviewer: met
-- **missing** — the babysitter's container and builds admitted against the
-  same host budget as the worker's, with one admission for both, not two
-  independent checks — reviewer: missing — reason: the babysitter launches its
-  own container through the launcher (`fleet-pr-babysitter/`, `run.sh`), and
-  this PR makes no change there.
+- **missing** — the babysitter's container and builds admitted against the same
+  host budget as the worker's, with one admission for both, not two independent
+  checks — reviewer: missing — reason: the babysitter launches its own container
+  through the launcher (`fleet-pr-babysitter/`, `run.sh`), and this PR makes no
+  change there.
 - **missing** — no second babysitter egress proxy (reuse one per host, or the
   worker's) — reviewer: missing — reason: the egress proxy's lifecycle lives in
   the launcher, and this PR does not change it.
 - **missing** — the worker's floor check treating a babysitter-driven dip as a
-  wait, not a kill (#5077) — reviewer: missing — reason: the park and kill
-  logic is unchanged; it is the open issue #5077.
+  wait, not a kill (#5077) — reviewer: missing — reason: the park and kill logic
+  is unchanged; it is the open issue #5077.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — Never Fail Silently: a failed host-disk refresh of the root
-  was swallowed and read as no root — evidence:
-  `worker/deno/lib/host_disk.ts` (`check`, `ephemeralCargoRootDetail`) —
-  reason: fixed in this diff (logged, and the detail reads `unknown` with the
-  cause)
+  was swallowed and read as no root — evidence: `worker/deno/lib/host_disk.ts`
+  (`check`, `ephemeralCargoRootDetail`) — reason: fixed in this diff (logged,
+  and the detail reads `unknown` with the cause)
 - **violation** — Never Fail Silently:
-  `measureEphemeralCargoRootBytesIfTrimRefused` turned a measurement error
-  into `null` — evidence: `worker/deno/lib/ephemeral_root_telemetry.ts` —
-  reason: fixed in this diff (it rejects with the cause)
+  `measureEphemeralCargoRootBytesIfTrimRefused` turned a measurement error into
+  `null` — evidence: `worker/deno/lib/ephemeral_root_telemetry.ts` — reason:
+  fixed in this diff (it rejects with the cause)
 - **violation** — DRY: the strict `du -sk` call and parse repeated the lenient
   one — evidence: `worker/deno/lib/heavy_build_gate.ts` (`runDuSk`,
   `parseDuKilobytes`) — reason: fixed in this diff
@@ -201,19 +200,18 @@ flowchart LR
   (both use `canEnforceUnwritableDir` from
   `tests/support/environment_capability.ts`)
 - **violation** — TDD: the strict "printed no size" refusal had no test —
-  evidence: `worker/deno/lib/heavy_build_gate.ts` (`parseDuKilobytes`) —
-  reason: fixed in this diff
+  evidence: `worker/deno/lib/heavy_build_gate.ts` (`parseDuKilobytes`) — reason:
+  fixed in this diff
   (`ephemeral_root_telemetry_5105_test.ts::Issue #5105 - du output with no leading size has no figure`)
-- **violation** — Doc accuracy: `docs/CONTAINER.md` said the root is
-  re-measured on any check below `ok`, and did not say a failed re-measure
-  reads `unknown` — evidence: `docs/CONTAINER.md` (`Work volume:` section) —
-  reason: fixed in this diff
-- **clean** — Australian English spelling across the diff; no existing
-  assertion weakened or removed; strict TypeScript and `@std/assert` use; the
-  failure reason quotes the first non-empty stderr line; the
-  `ephemeral_build_cache.ts` comment and the `docs/CONTAINMENT.md` row match
-  the code; the new monitor option and the trim-refused gating each have a
-  test.
+- **violation** — Doc accuracy: `docs/CONTAINER.md` said the root is re-measured
+  on any check below `ok`, and did not say a failed re-measure reads `unknown` —
+  evidence: `docs/CONTAINER.md` (`Work volume:` section) — reason: fixed in this
+  diff
+- **clean** — Australian English spelling across the diff; no existing assertion
+  weakened or removed; strict TypeScript and `@std/assert` use; the failure
+  reason quotes the first non-empty stderr line; the `ephemeral_build_cache.ts`
+  comment and the `docs/CONTAINMENT.md` row match the code; the new monitor
+  option and the trim-refused gating each have a test.
 
 ## Test Plan
 
@@ -241,15 +239,17 @@ flowchart LR
   - `removeTargetDir only falls back for a refused agent directory`: `NotFound`,
     and a refused worker-key dir, are both rethrown without the fallback.
   - `productionEphemeralRootDeps.removeDir drops to the agent fallback on a
-    refused agent dir`, and the same for `unmeasuredEphemeralRootDeps`: the
-    production deps, unmodified, under a temp root. The error carries
-    `Permission denied` and the production remover's
+    refused agent dir`,
+    and the same for `unmeasuredEphemeralRootDeps`: the production deps,
+    unmodified, under a temp root. The error carries `Permission denied` and the
+    production remover's
     `its parent is not exactly /var/tmp/vibe-cargo-target (Issue #5105)`, which
     appears only when the fallback is wired.
   - `productionEphemeralRootDeps releases a real agent dir under the real
-    root`: real `agent`, real root, with a positive control that the worker's
-    plain remove is refused. It ran here, and it is ignored where no `agent`
-    account or root exists.
+    root`:
+    real `agent`, real root, with a positive control that the worker's plain
+    remove is refused. It ran here, and it is ignored where no `agent` account
+    or root exists.
 - Added `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts`:
   - measurement: sums and ordering; a missing root is zero; any other failure is
     `unknown`; a real `du` run against a temp root; a real `du` refused by an
@@ -261,16 +261,16 @@ flowchart LR
     `null` is recorded on a measurement error;
   - `the host-disk estimate names the root without changing the estimate`:
     `availableBytes` and `level` are equal with and without the record.
-  - `a mid-cycle floor trip names the root as it stands now`: an `ok` check
-    does not measure; after growth, the `low` check measures once and its
-    detail names the grown size; a failed refresh drops the figure and reads
-    `unknown` with its cause.
+  - `a mid-cycle floor trip names the root as it stands now`: an `ok` check does
+    not measure; after growth, the `low` check measures once and its detail
+    names the grown size; a failed refresh drops the figure and reads `unknown`
+    with its cause.
   - `du output with no leading size has no figure` (`parseDuKilobytes`).
   - `the monitor's refresh measures only on a trim-refused runtime`.
 - The two closures in `worker/deno/lib/run_core_production_deps.ts` that pass
   `workVolumeTrimRefusedForLaunch` and `measureEphemeralCargoRoot` into the
-  monitor and the report are covered by `deno check`. The tests above cover
-  each function they call.
+  monitor and the report are covered by `deno check`. The tests above cover each
+  function they call.
 - No existing test or assertion was edited or removed.
   `heavy_build_gate_3178_test.ts`, `heavy_build_gate_in_flight_4413_test.ts`,
   `heavy_build_gate_in_flight_4423_test.ts`, `host_disk_test.ts`,
@@ -282,13 +282,13 @@ flowchart LR
   `enforceEphemeralCargoBudget`. All of them reach `removeDir`. A worker-owned
   dir behaves as before.
 - `HostDiskMonitor` is built once, in `run_core_production_deps.ts`, so that is
-  the only monitor with the new option. Every caller of its `check` is
-  unchanged while the level is `ok`. Below `ok`, a probing check also waits for
-  one strict `du` walk of the ephemeral root.
+  the only monitor with the new option. Every caller of its `check` is unchanged
+  while the level is `ok`. Below `ok`, a probing check also waits for one strict
+  `du` walk of the ephemeral root.
 - Docs: updated `docs/CONTAINER.md` ("One directory per account" bullet and the
   `Work volume:` section, which now names the `du` failure classes and the
-  mid-cycle refresh) and the `docs/CONTAINMENT.md` table row. I read "A
-  pass releases what it built", and it is still true.
+  mid-cycle refresh) and the `docs/CONTAINMENT.md` table row. I read "A pass
+  releases what it built", and it is still true.
 - Result: `./quality.sh < /dev/null` passed on head `0ac2620e`, with the two
   host skips listed under Evidence. The worker re-runs it on this head.
 
