@@ -40,7 +40,8 @@ Backend/CLI only; no UI files or screenshot required.
 
 The Docker containment step passed on code commit `2e0c5e299` in
 [Container Build run 43360443672](https://github.com/stSoftwareAU/VibeCoder/actions/runs/43360443672).
-Its existing Podman build was still running when this record was written.
+The workflow passed, including its Podman image build; containment reported
+15 passed tests, 48 passed steps and no failures.
 `worker/deno/tests/container_containment_test.ts` launches
 `worker/deno/tests/support/babysitter_gate_container_probe.ts` using the repair
 builder's clone and read-only `.git` mounts and sanitised worker snapshot.
@@ -115,7 +116,10 @@ flowchart LR
 - `deno task check:manifests`: 866 passed, one existing ignored ancestry check.
   Targeted formatting, lint and type checks passed. The earlier full
   `./quality.sh` passed with config integration and Checkov explicitly skipped;
-  the final full-gate run after adding the container probe is not yet run.
+  the final run after adding the container probe was stopped for the run budget
+  during the Deno suite. Its static checks had passed; that suite and the
+  following lint/type/format stages did not complete.
+  <!-- vibe-quality-gate-skipped reason="budget: final gate interrupted during Deno suite" -->
 - Config corpus: both tracked Deno configs at base and head select only
   `worker/deno`; zero false positives or false negatives (neither corpus has an
   invalid config). Markdown archive/test prose is not this parser's input.
@@ -142,7 +146,10 @@ adding a Node test runner or package manifest.
 
 - Required PR CI, independent review and the existing automatic merge path
   remain required. No workflow or merge policy was changed.
-- Container Build's remaining Podman build and the final local gate are pending.
+- Container Build passed on code commit `2e0c5e299`. Required checks and review
+  on the eventual PR remain pending. Resume the final local gate with
+  `timeout 600 ./quality.sh < /dev/null` from the repository root when the
+  available run budget covers it. The worker also runs its gate before the PR.
 
 ## Remaining risks and checks not performed
 
