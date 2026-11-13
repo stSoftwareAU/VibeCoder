@@ -25,8 +25,8 @@ Closes #5105.
   explained by what live reservations have consumed, after the worker's own
   measured growth over the same span is taken off the drop. No credit applies
   below half the floor (`HOST_DISK_HARD_MINIMUM_FLOOR_FRACTION`), and unknown
-  worker growth credits nothing. `ReservationSightings` records the worker's
-  own footprint when it first sees each reservation.
+  worker growth credits nothing. `ReservationSightings` records the worker's own
+  footprint when it first sees each reservation.
 - **Babysitter admission** (`fleet_babysitter_container.ts`).
   `runBabysitterRepairContainer` calls `babysitterHostDiskAdmission` before any
   egress starts.
@@ -73,12 +73,11 @@ Closes #5105.
   the reserved bytes. Admission subtracts only the unconsumed rest, so space is
   not counted twice.
 - **Dip credit.** The credit is the drop less the worker's own growth since it
-  first saw the earliest reservation, capped at the reserved bytes. The
-  worker's growth only rises, so it is never understated. A reservation first
-  seen more than 10 minutes after its admission (`RESERVATION_SIGHTING_GRACE_MS`)
-  gets no credit, because the worker's earlier growth is unknown. Below half
-  the floor nothing is credited, so a running build always stops and the launch
-  ends.
+  first saw the earliest reservation, capped at the reserved bytes. The worker's
+  growth only rises, so it is never understated. A reservation first seen more
+  than 10 minutes after its admission (`RESERVATION_SIGHTING_GRACE_MS`) gets no
+  credit, because the worker's earlier growth is unknown. Below half the floor
+  nothing is credited, so a running build always stops and the launch ends.
 - **Proxy decision.** "No second babysitter egress proxy" is met by running one
   repair container at a time, not by sharing one proxy between containers. Proxy
   names, networks and Apple ownership journals are per container, so sharing
@@ -151,10 +150,10 @@ sequenceDiagram
   reads as empty; consumption accounting, including the cap; admission admits
   and refuses where the inputs differ only by the reservation; dip credit for an
   explained dip, an unexplained dip, no dip and no reservations. The dip credit
-  takes the worker's own growth off the drop, credits nothing for unknown growth,
-  and never applies below half the floor. `ReservationSightings` measures growth
-  from first sight and credits nothing past the grace. Red-check: with the
-  worker-growth term removed, 2 of these tests fail.
+  takes the worker's own growth off the drop, credits nothing for unknown
+  growth, and never applies below half the floor. `ReservationSightings`
+  measures growth from first sight and credits nothing past the grace.
+  Red-check: with the worker-growth term removed, 2 of these tests fail.
 - `worker/deno/tests/host_disk_babysitter_dip_5105_test.ts` (new, 10 tests):
   - `parkRunningBuild` and `hostDiskLaunchStopReason` do not park or stop for an
     explained dip; the same reading without a reservation does (control).
@@ -170,14 +169,14 @@ sequenceDiagram
   - A 41 GB reservation with 1 GB free still parks and ends the launch; at 30 GB
     free the same reservation is credited (control).
   - `parkInFlightBuild` does not wait by default.
-- `worker/deno/tests/heavy_build_gate_reservations_5105_test.ts` (new, 4
-  tests): `cargoClaimDeferral` defers, and `shouldSkipEphemeralCargoBuild`
-  skips, for a reading that clears the floor and headroom only when the
-  outstanding reservation is ignored; the same reading without the reservation
-  is the control. Red-check: with the subtraction at either site changed back to
+- `worker/deno/tests/heavy_build_gate_reservations_5105_test.ts` (new, 4 tests):
+  `cargoClaimDeferral` defers, and `shouldSkipEphemeralCargoBuild` skips, for a
+  reading that clears the floor and headroom only when the outstanding
+  reservation is ignored; the same reading without the reservation is the
+  control. Red-check: with the subtraction at either site changed back to
   `hostFreeBytes: free`, both reservation cases fail and both controls pass.
-- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 2
-  tests): `createProductionRunCoreDeps` with a temp `HOME` holding
+- `worker/deno/tests/host_disk_reservations_wiring_5105_test.ts` (new, 2 tests):
+  `createProductionRunCoreDeps` with a temp `HOME` holding
   `logs/host-disk-reservations/<id>.json`. `parkRunningBuild()` returns null
   with the file and a park reason without it. `checkRootFilesystem` does not
   stop for host disk with the file, and stops without it. Red-check: with the
@@ -219,19 +218,18 @@ sequenceDiagram
   merge fast checks, heavy build gate, cargo claim, milestone gate, host disk
   and ephemeral root suites, plus every new #5105 file.
 - Callers checked: `parkInFlightBuild` has four production callers.
-  - `claude_runner.ts` (agent step): opts in to the wait, bounded by the
-    finish deadline less the minimum session. The spawn clamp re-reads the
-    clock after it.
-  - `phases/quality_gate_remediation_phase.ts`: default, no wait. A park
-    returns at once, as before.
-  - `merge_fast_checks.ts` (`opts.park ?? parkInFlightBuild`): default, no
-    wait, so the merge lock is not held through a dip.
+  - `claude_runner.ts` (agent step): opts in to the wait, bounded by the finish
+    deadline less the minimum session. The spawn clamp re-reads the clock after
+    it.
+  - `phases/quality_gate_remediation_phase.ts`: default, no wait. A park returns
+    at once, as before.
+  - `merge_fast_checks.ts` (`opts.park ?? parkInFlightBuild`): default, no wait,
+    so the merge lock is not held through a dip.
   - `security_fix_discrimination.ts` (`park = parkInFlightBuild`, and
-    `issue_worker_wiring.ts` passes none): default, no wait, so the 600 s
-    budget is not spent.
-  `runBabysitterRepairContainer` is called by `startBabysitterAgent`, which uses
-  the production admission. The production probe and the `checkRootFilesystem`
-  stop check both pass the reservations.
+    `issue_worker_wiring.ts` passes none): default, no wait, so the 600 s budget
+    is not spent. `runBabysitterRepairContainer` is called by
+    `startBabysitterAgent`, which uses the production admission. The production
+    probe and the `checkRootFilesystem` stop check both pass the reservations.
 - Docs updated:
   - `docs/workflows/fleet-pr-babysitter.md`: the concurrency sentence, the
     per-repair scope line, and a new "Host-disk admission" paragraph.
