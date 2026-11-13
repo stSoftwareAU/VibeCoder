@@ -48,8 +48,11 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // owner-comment hold. Read by that skill's test_change_policy.ts, not by the worker.
   "pr_reviewer_test_hold_repos",
   // How many review rounds the unattended review-fleet-prs runner runs at
-  // once (Issue #4395); read by that skill's run.sh, not by the worker.
+  // once (Issue #4395), and the model and effort each round runs on; read by
+  // that skill's run.sh, not by the worker.
   "pr_reviewer_parallel",
+  "review_model",
+  "review_effort",
   "repos",
   "authorized_commenters",
   "author_source",

@@ -1,11 +1,16 @@
 /**
- * Production wiring for the review round's DeepSeek fallback (Issue #3632).
+ * Production wiring for the review round's provider fallbacks.
  *
- * The fallback export reads the DeepSeek credential the way the worker's
- * start-up reads every provider's — the `deepseek/provider.env` file under
- * the credential directory — and builds the child environment DeepSeek's own
- * policy pins (`deepseek_env.ts`): base URL and auth token pinned, no Claude
- * credential reaching the third-party endpoint, DeepSeek's own config dir.
+ * The DeepSeek fallback export (Issue #3632) reads the DeepSeek credential the
+ * way the worker's start-up reads every provider's — the `deepseek/provider.env`
+ * file under the credential directory — and builds the child environment
+ * DeepSeek's own policy pins (`deepseek_env.ts`): base URL and auth token
+ * pinned, no Claude credential reaching the third-party endpoint, DeepSeek's
+ * own config dir.
+ *
+ * The Codex fallback export (Issue #5083) reads `codex/provider.env` the same
+ * way, and its child environment is Codex's own: no Claude credential, nor any
+ * Anthropic variable, may reach the Codex child.
  *
  * These tests drive the real `createReviewRoundDeps` against a fixture
  * credential directory (the `credentialDir` seam), in both directions: a
@@ -17,7 +22,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { createReviewRoundDeps } from "../lib/review_round.ts";
 
-/** A provisioned DeepSeek credential file, the shape setup writes. */
+/** A provisioned provider credential file, the shape setup writes. */
 async function withCredentialDir(
   files: Record<string, string>,
   fn: (dir: string) => Promise<void>,
@@ -93,5 +98,258 @@ Deno.test(
         "an absent credential file defers nothing — the round stays failed",
       );
     });
+  },
+);
+
+Deno.test(
+  "review round wiring - a provisioned Codex credential exports a Codex-only child env (Issue #5083)",
+  async () => {
+    await withCredentialDir(
+      {
+        // The shape the worker's setup writes: an export line per variable.
+        "codex/provider.env": "export OPENAI_API_KEY=fixture-codex-key-5083\n", // gitleaks:allow fake fixture, not a real key
+      },
+      async (dir) => {
+        // The worker's own Claude subscription token and metered key are in
+        // the process environment; neither may reach the Codex child.
+        const deps = createReviewRoundDeps(() => {}, {
+          credentialDir: dir,
+          env: {
+            CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083",
+            ANTHROPIC_API_KEY: "fixture-anthropic-5083",
+          },
+        });
+        const codex = await deps.exportCodexCredential();
+
+        assert(
+          codex !== null,
+          "a provisioned file must export a credential",
+        );
+        assertEquals(
+          codex!.env["OPENAI_API_KEY"],
+          "fixture-codex-key-5083",
+        );
+        assertEquals(
+          "CLAUDE_CODE_OAUTH_TOKEN" in codex!.env,
+          false,
+          "no Claude subscription token may reach the Codex child",
+        );
+        assertEquals(
+          "ANTHROPIC_API_KEY" in codex!.env,
+          false,
+          "no Anthropic key may reach the Codex child",
+        );
+        assertEquals(
+          "ANTHROPIC_AUTH_TOKEN" in codex!.env,
+          false,
+          "no Anthropic bearer may reach the Codex child",
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "review round wiring - an ambient Codex credential keeps the Codex fallback (Issue #5083)",
+  async () => {
+    await withCredentialDir({}, async (dir) => {
+      // The Codex key is already in the process environment, so no file
+      // export happens; Codex must still be available with that key.
+      const deps = createReviewRoundDeps(() => {}, {
+        credentialDir: dir,
+        env: {
+          OPENAI_API_KEY: "fixture-ambient-codex-5083", // gitleaks:allow fake fixture, not a real key
+          CLAUDE_CODE_OAUTH_TOKEN: "fixture-claude-5083",
+        },
+      });
+      const codex = await deps.exportCodexCredential();
+
+      assert(
+        codex !== null,
+        "an ambient Codex credential must keep the Codex fallback",
+      );
+      assertEquals(
+        codex!.env["OPENAI_API_KEY"],
+        "fixture-ambient-codex-5083",
+      );
+      assertEquals(
+        "CLAUDE_CODE_OAUTH_TOKEN" in codex!.env,
+        false,
+        "no Claude subscription token may reach the Codex child",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "review round wiring - no Codex credential means no Codex fallback (Issue #5083)",
+  async () => {
+    await withCredentialDir({}, async (dir) => {
+      // No Codex credential anywhere: the API-key and state variables are unset.
+      const deps = createReviewRoundDeps(() => {}, {
+        credentialDir: dir,
+        env: {},
+      });
+      assertEquals(
+        await deps.exportCodexCredential(),
+        null,
+        "an absent credential file defers nothing to Codex",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "review round wiring - a CODEX_HOME provider.env whose login is present offers Codex (Issue #5083)",
+  async () => {
+    const home = await Deno.makeTempDir({ prefix: "review-codex-home-" });
+    try {
+      await Deno.writeTextFile(
+        `${home}/auth.json`,
+        JSON.stringify({ tokens: { access_token: "fixture-5083" } }), // gitleaks:allow fake fixture
+        { mode: 0o600 },
+      );
+      await withCredentialDir(
+        { "codex/provider.env": `export CODEX_HOME=${home}\n` },
+        async (dir) => {
+          const deps = createReviewRoundDeps(() => {}, {
+            credentialDir: dir,
+            env: { DEEPSEEK_API_KEY: "fixture-deepseek-5083" }, // gitleaks:allow fake fixture
+          });
+          const codex = await deps.exportCodexCredential();
+          assert(codex !== null, "a reachable login must offer Codex");
+          assertEquals(codex!.env["CODEX_HOME"], home);
+        },
+      );
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "review round wiring - a CODEX_HOME the round cannot reach skips Codex with a log line, so DeepSeek is still tried (Issue #5083)",
+  async () => {
+    // The documented subscription setup: CODEX_HOME on the agent-state
+    // volume, which the round's container does not mount, so it is empty.
+    const missing = `${await Deno.makeTempDir()}/not-mounted/codex`;
+    await withCredentialDir(
+      { "codex/provider.env": `export CODEX_HOME=${missing}\n` },
+      async (dir) => {
+        const lines: string[] = [];
+        const deps = createReviewRoundDeps((line) => lines.push(line), {
+          credentialDir: dir,
+          env: {},
+        });
+        assertEquals(await deps.exportCodexCredential(), null);
+        assert(
+          lines.some((line) => line.includes("skipping the codex fallback")),
+          `the skip is logged: ${lines.join(" | ")}`,
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "review round wiring - a CODEX_HOME whose auth.json is not a login skips Codex at the login check (Issue #5083)",
+  async () => {
+    const home = await Deno.makeTempDir({ prefix: "review-codex-empty-" });
+    try {
+      // `{}` gets past the state initialiser (an auth.json exists) but is not a
+      // login, so only `codexChildLoginMissing` can stop it.
+      await Deno.writeTextFile(`${home}/auth.json`, "{}", { mode: 0o600 });
+      await withCredentialDir({}, async (dir) => {
+        const lines: string[] = [];
+        const deps = createReviewRoundDeps((line) => lines.push(line), {
+          credentialDir: dir,
+          env: { CODEX_HOME: home },
+        });
+        assertEquals(await deps.exportCodexCredential(), null);
+        assert(
+          lines.some((line) =>
+            line.includes(`no Codex login at ${home}/auth.json`) &&
+            line.includes("skipping the codex fallback")
+          ),
+          `the login check's line is logged: ${lines.join(" | ")}`,
+        );
+      });
+    } finally {
+      await Deno.remove(home, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "review round wiring - no Codex API key and no usable CODEX_HOME in the round skips Codex (Issue #5083)",
+  async () => {
+    // A blank CODEX_HOME counts as set to the "already provisioned" check but
+    // names no home, so the child ends with neither a key nor a home.
+    await withCredentialDir({}, async (dir) => {
+      const lines: string[] = [];
+      const deps = createReviewRoundDeps((line) => lines.push(line), {
+        credentialDir: dir,
+        env: { CODEX_HOME: "  " },
+      });
+      assertEquals(await deps.exportCodexCredential(), null);
+      assert(
+        lines.some((line) =>
+          line.includes("no Codex API key and no CODEX_HOME in the round") &&
+          line.includes("skipping the codex fallback")
+        ),
+        `the skip is logged: ${lines.join(" | ")}`,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "review round wiring - a one-time login seed beside an unreachable CODEX_HOME is not copied into the round (Issue #5083)",
+  async () => {
+    // The documented subscription setup: provider.env names a CODEX_HOME on the
+    // agent-state volume, which the round's container does not mount, and the
+    // one-time ChatGPT auth.json seed sits beside it. The round must not seed a
+    // throwaway home from it: Codex is skipped so DeepSeek is still tried.
+    const missing = `${await Deno.makeTempDir()}/not-mounted/codex`;
+    try {
+      await withCredentialDir(
+        { "codex/provider.env": `export CODEX_HOME=${missing}\n` },
+        async (dir) => {
+          await Deno.writeTextFile(
+            `${dir}/codex/auth.json`,
+            JSON.stringify({
+              auth_mode: "chatgpt",
+              tokens: { access_token: "fixture-seed-5083" }, // gitleaks:allow fake fixture
+            }),
+            { mode: 0o600 },
+          );
+          const lines: string[] = [];
+          const deps = createReviewRoundDeps((line) => lines.push(line), {
+            credentialDir: dir,
+            env: {},
+          });
+          assertEquals(await deps.exportCodexCredential(), null);
+          assert(
+            lines.some((line) =>
+              line.includes(`no Codex login at ${missing}/auth.json`) &&
+              line.includes("skipping the codex fallback")
+            ),
+            `the skip is logged: ${lines.join(" | ")}`,
+          );
+          let created = true;
+          try {
+            await Deno.stat(missing);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+            created = false;
+          }
+          assertEquals(created, false, "no Codex home is created in the round");
+        },
+      );
+    } finally {
+      await Deno.remove(missing.replace(/\/not-mounted\/codex$/, ""), {
+        recursive: true,
+      });
+    }
   },
 );

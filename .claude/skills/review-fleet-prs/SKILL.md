@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, a Claude Fable 5.2 reviewer checks each PR at high effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are judged for lost regression protection, and held for the owner only where the intended product contract is unclear or the repo overrides that. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, a Claude Fable 5.2 reviewer checks each PR at high effort by default; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are judged for lost regression protection, and held for the owner only where the intended product contract is unclear or the repo overrides that. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
 ---
 
 # Review fleet PRs
@@ -284,11 +284,22 @@ its `--limit`), so a backlog cannot burn a night's quota in one go, and the
 rest come back on the next gate run. Do not pick among them, re-check their
 CI or look at other PRs. Launch one Agent per PR in a single message so they
 run in parallel, each with
-`subagent_type: "fleet-pr-reviewer"` — the agent definition in
-`.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-fable-5-2`
-at `high` effort (Issue #5081; Opus 5.5 at `xhigh` before it, Issue #2976). An
-unattended round that hits a Fable usage limit steps down to `claude-opus-5-5`
-at `xhigh` on the same subscription before it rotates or falls back — and the brief in
+`subagent_type: "fleet-pr-reviewer"`. The agent definition in
+`.claude/agents/fleet-pr-reviewer.md` sets no model or effort of its own, so
+the reviewer runs on the round's model and effort: `review_model` and
+`review_effort` in `.config.json` (default `claude-fable-5-2` at `high`, per
+Issue #5081; Opus 5.5 at `xhigh` before it, Issue #2976). An unattended round
+that hits a usage limit moves down a fallback chain, each link taken only after
+the previous attempt ended with one: a Fable round steps down to
+`claude-opus-5-5` at `xhigh` on the same subscription; it then rotates to the
+next subscription with budget; then Codex `gpt-6-astra` at `high` runs the
+round, when a Codex credential reaches the round (an API key, or a login on a
+mount the round shares; a subscription login on the agent-state volume does
+not, see running-unattended.md); and DeepSeek `deepseek-v4-pro`
+is the last link, used only when Codex also hit its usage limit or has no
+credential. The chain is in
+[running-unattended.md](references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
+The brief in
 [`prompts/pr_review_brief/prompt.md`](../../../prompts/pr_review_brief/prompt.md),
 shared with the worker's pre-PR verifier
 (`worker/deno/lib/pre_pr_verifier.ts`, Issue #3395), so change the review
@@ -408,7 +419,8 @@ The script does the rest, so do not post anything yourself:
   line naming the provider, the model(s), the effort and the estimated USD,
   and a hidden `<!-- vibe-review-run ... usd="..." -->` marker a report can
   sum. A round's input file sits in its round directory beside the round's
-  attempt log (`review-run.json`), so the footer names the attempt posting;
+  attempt log (`review-run.json`), so the footer names the attempt posting; a
+  Codex fallback names `provider codex · model gpt-6-astra · effort high`, and
   a DeepSeek fallback names `provider deepseek`. Its cost is only known once
   the round ends, so the footer first says `cost unknown` and the runner then
   edits each review to add its share (`scripts/review_cost.ts`, see

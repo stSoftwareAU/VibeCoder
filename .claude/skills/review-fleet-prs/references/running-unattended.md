@@ -147,20 +147,56 @@ differ from the worker's run:
   by name (`--env GH_TOKEN`), so its value is never on a command line, in a
   `bash -x` trace or on disk.
 
-Inside, the entrypoint's `review-round` mode runs `claude -p` on the
-subscription the worker's Claude credential pool ranks first
-(`worker/deno/lib/review_round.ts`). When a round ends with the CLI's
-usage-limit refusal, it logs
-`round hit the usage limit on subscription <label>`, and runs the round once
-more on the next subscription with budget left. When the whole pool is exhausted
-— no subscription has budget, or the rotated retry hits the limit too — the
-round runs once more on the worker's **DeepSeek** provider (`deepseek-v4-pro`,
-in the worker's own pinned child environment: no Claude credential reaches the
-third-party endpoint), and logs `round fell back to provider deepseek` so a
-DeepSeek review is never presented as an Opus one (Issue #3632). With no
-DeepSeek credential the round says
-`no other subscription has budget; the round stays failed`. Subscriptions are
-logged by label (`provider`, `provider-2`, …), never by value.
+Inside, the entrypoint's `review-round` mode runs `claude -p` with the round's
+model and effort (`review_model` and `review_effort` in `.config.json`, see
+[CONFIGURATION.md](../../../../docs/CONFIGURATION.md#-reviewer-model-and-effort)),
+on the subscription the worker's Claude credential pool ranks first
+(`worker/deno/lib/review_round.ts`). Each link below is taken only when the
+previous attempt ended with a usage-limit refusal, and a failure that is not a
+usage limit stops the chain. Each switch is logged once with an `INFO: ` prefix
+naming what it switched to. Running out of quota is never logged as an error.
+
+1. **The configured model.** Fable 5.2 at `high` by default.
+2. **Fable steps down.** A Fable round that hits a usage limit runs once more on
+   `claude-opus-5-5` at `xhigh`, on the same subscription.
+3. **Pool rotation.** When a round ends with the CLI's usage-limit refusal, it
+   logs `round hit the usage limit on subscription <label>` and runs once more
+   on the next subscription with budget left, but only when the token came from
+   a pool file. Subscriptions are logged by label (`provider`, `provider-2`,
+   …), never by value.
+4. **Codex.** When a Codex credential reaches the round (see _Which Codex
+   credentials reach a round_ below), the round runs `codex exec --json` on
+   `gpt-6-astra` at reasoning effort `high`, and logs
+   `INFO: round fell back to provider codex (model gpt-6-astra)`. It gets the same round prompt, plus a short note telling Codex to read the skill
+   file itself and to do each reviewer's review itself, since Codex has no
+   skills or Agent tool. The round container's checkout is mounted read-only, as
+   for Claude rounds. Codex's own CLI sandbox is not used, because it cannot
+   start inside the worker container (Issue #4356,
+   `worker/deno/lib/orchestration/read_only_guard.ts`). With no Codex credential
+   the round logs `no Codex credential; skipping the codex fallback`.
+
+   **Which Codex credentials reach a round.** A round's container mounts the
+   checkout and the round directory, not the `vibe-agent-state` named volume.
+   Only two forms therefore run Codex: an API key in `codex/provider.env`
+   (metered), or a `CODEX_HOME` on a path the round's container mounts, whose
+   `auth.json` is already a login. The documented subscription setup
+   ([CODEX-SUBSCRIPTION-AUTH.md](../../../../docs/CODEX-SUBSCRIPTION-AUTH.md))
+   puts `CODEX_HOME` on `vibe-agent-state`, so in a round that home has no
+   `auth.json`. The round then logs
+   `no Codex login at <home>/auth.json in the round (no auth.json); skipping the codex fallback`
+   and goes on to DeepSeek, even when the ChatGPT subscription has quota. The
+   round never seeds a login into a throwaway home: a stale seed would fail
+   authentication, and a refreshed one could invalidate the worker's durable
+   login. Reaching Codex on a subscription login needs a persistent Codex home
+   on a mount the round shares, with its own login. That is not built, and is
+   tracked as Issue #5127, a follow-up to Issue #5083 (which stays open).
+5. **DeepSeek.** Only when Codex also hit its usage limit or has no credential,
+   the round runs once more on the worker's **DeepSeek** provider
+   (`deepseek-v4-pro`, in the worker's own pinned child environment: no Claude
+   credential reaches the third-party endpoint), and logs
+   `INFO: round fell back to provider deepseek` so a DeepSeek review is never
+   presented as an Opus one (Issue #3632). With no DeepSeek credential the round
+   says `no other subscription has budget; the round stays failed`.
 
 The round is given container paths: the skill at
 `/workspace/.claude/skills/review-fleet-prs`, and this state directory under the
@@ -174,9 +210,10 @@ shows the round's readable output (each result's text); the CLI runs with
 
 Every review names the model run that wrote it, so a DeepSeek review is never
 read as an Opus one on GitHub, and carries its estimated cost, so cost per
-merged PR can include review. The driver records each `claude -p` attempt in the
-round directory's `review-run.json` before it starts (provider, `--model`,
-`--effort`, its stream file) and again with its exit status when it ends.
+merged PR can include review. The driver records each attempt (`claude -p`, or
+`codex exec` for Codex) in the round directory's `review-run.json` before it
+starts (provider, model, effort, its stream file) and again with its exit status
+when it ends.
 `post.ts` reads the attempt still running and ends the review with a footer line
 and a hidden marker:
 
@@ -193,19 +230,23 @@ reviews on GitHub to the figure, e.g.
 only; this PR's 1/3 share of the round)` with
 `usd="0.4100" share="1/3"`, and logs `round cost: {...}` in `runner.log`.
 
-The split rule: one round is one CLI session whose main session starts one
-reviewer sub-agent per ready PR. The CLI's per-message stream usage
-under-reports output tokens, so no exact per-PR figure exists; its result
-`modelUsage` is exact for the whole session, sub-agents included. Each attempt
-is therefore priced from its last result line, with the worker's own pricing
-(`worker/deno/lib/cost_estimate.ts`, `token_usage.ts`), and split equally across
-the PRs the round was given (the gate's `ready` list). A round is never a
+The split rule: for a Claude attempt, one round is one CLI session whose main
+session starts one reviewer sub-agent per ready PR. The CLI's per-message stream
+usage under-reports output tokens, so no exact per-PR figure exists; its result
+`modelUsage` is exact for the whole session, sub-agents included. Each Claude
+attempt is therefore priced from its last result line, with the worker's own
+pricing (`worker/deno/lib/cost_estimate.ts`, `token_usage.ts`). A Codex attempt
+is priced from the usage events in its `codex exec --json` stream, with the same
+pricing table. Each attempt's figure is split equally across the PRs the round
+was given (the gate's `ready` list). A round is never a
 resumed session, so `modelUsage` needs no baseline. The figure is an estimate
 only; a DeepSeek attempt's is labelled `API-equivalent estimate`, and a
-`claude-*` id a DeepSeek attempt reports (the reviewer agent's pinned model,
-answered by DeepSeek's endpoint) is named and priced as `deepseek-v4-pro`. A
-review keeps `cost unknown` (never `$0`) when its attempt never ended (the alarm
-killed it), its stream has no result line, a model has no pricing row, or the
+`claude-*` id a DeepSeek attempt reports (an agent definition still naming a
+Claude model, answered by DeepSeek's endpoint) is named and priced as
+`deepseek-v4-pro`. A review keeps `cost unknown` (never `$0`) when its attempt
+never ended (the alarm killed it), its stream has nothing to price (no result
+line for Claude, no usage events for Codex), a model has no pricing row
+(`gpt-6-astra` has none yet, so a Codex review stays `cost unknown`), or the
 edit failed. When the worker image for the current checkout is not built yet,
 the pass fails with `round not started: the worker image is not built`; the
 worker's next launch builds it.
