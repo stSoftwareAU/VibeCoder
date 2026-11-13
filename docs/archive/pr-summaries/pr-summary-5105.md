@@ -11,10 +11,9 @@ On trim-refused runtimes, work-volume telemetry also reports the ephemeral cargo
 root's size and largest targets. The host-disk monitor refreshes this figure in
 the background below `ok` on those runtimes only (production wires
 `ephemeralCargoRootApplies` to `workVolumeTrimRefusedForLaunch`), without
-delaying the floor verdict. Forced checks
-share one scan and cannot bypass its refresh interval. Normal build-time file
-deletion preserves `du`'s size; unreadable subtrees and other measurement
-failures remain `unknown`.
+delaying the floor verdict. Forced checks share one scan and cannot bypass its
+refresh interval. Normal build-time file deletion preserves `du`'s size;
+unreadable subtrees and other measurement failures remain `unknown`.
 
 Part of #5105. The shared babysitter admission, proxy lifecycle and wait-versus-
 kill criteria remain outside this PR, so the issue stays open.
