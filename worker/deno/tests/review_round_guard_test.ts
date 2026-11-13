@@ -264,3 +264,56 @@ Deno.test("the guard process refuses a disallowed command and lets post.ts throu
   });
   assertEquals(allowed, { code: 0, stdout: "" });
 });
+
+Deno.test("the guard refuses a relative write or mkdir target on a line that changes directory (Issue #5083)", () => {
+  // run.sh's round list carries `cd`, which the guard does not follow, so a
+  // relative target after one would resolve against a directory it never saw.
+  const cdPolicy = reviewRoundToolPolicy([...ROUND_ARGS, "Bash(cd:*)"]);
+  const cdShell = (command: string) =>
+    decideReviewRoundTool(
+      { tool_name: "Bash", tool_input: { command }, cwd: "/workspace" },
+      cdPolicy,
+    );
+  // Bash would write /state/review-fleet-prs/tmp/y, outside /tmp and the round.
+  assertEquals(
+    cdShell("cd /state/review-fleet-prs && cat /tmp/a > ../tmp/y").deny,
+    true,
+  );
+  assertEquals(
+    cdShell("cd /state/review-fleet-prs && mkdir -p ../tmp/q").deny,
+    true,
+  );
+  assertEquals(
+    cdShell("(cd /state/review-fleet-prs; cat /tmp/a >> tmp/y)").deny,
+    true,
+  );
+  assertEquals(
+    cdShell("cd /state/review-fleet-prs && cat /tmp/a 2> y").deny,
+    true,
+  );
+  // An absolute target after `cd` is still checked, and allowed under /tmp.
+  assertEquals(
+    cdShell("cd /state/review-fleet-prs && cat /tmp/a > /tmp/y"),
+    { deny: false },
+  );
+  assertEquals(
+    cdShell("cd /state/review-fleet-prs && mkdir -p /tmp/q"),
+    { deny: false },
+  );
+  assertEquals(
+    cdShell("cd /state/review-fleet-prs && cat /tmp/a > /state/x").deny,
+    true,
+  );
+  // With no `cd` on the line, a relative target still resolves from the cwd.
+  assertEquals(
+    decideReviewRoundTool(
+      {
+        tool_name: "Bash",
+        tool_input: { command: "cat a > out.txt" },
+        cwd: "/tmp",
+      },
+      cdPolicy,
+    ),
+    { deny: false },
+  );
+});

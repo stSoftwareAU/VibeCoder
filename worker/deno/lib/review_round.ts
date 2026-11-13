@@ -852,8 +852,13 @@ export function createReviewRoundDeps(
       try {
         exported = await applyProviderCredentialEnv({
           dir: options.credentialDir,
-          // The state initialiser reads the CODEX_HOME this call exports.
-          env: (name) => values[name] ?? envLookup(processEnv)(name),
+          // The state initialiser sees the process environment only. A
+          // CODEX_HOME that provider.env exports names the worker's durable
+          // home, which the round's container does not mount: seeding a login
+          // into a throwaway home there would run Codex on a stale one-time
+          // seed (or refresh it and invalidate the durable login). That home
+          // is checked for an existing login below, and skipped when absent.
+          env: envLookup(processEnv),
           providers: [codexProvider],
           selectToken: selectFirstProviderToken,
           setEnv: (name, value) => {

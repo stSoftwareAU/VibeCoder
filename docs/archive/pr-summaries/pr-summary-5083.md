@@ -42,7 +42,9 @@ provider or model switch logs one `INFO:` line. Closes #5083.
   refused. `>&file`, `&>file`, `>|file` and `<>file` count as writes (`>&` with
   a digit or `-` is a descriptor). A redirect or `mkdir` target with `$`, `~`,
   braces or a glob is refused, because the guard checks the literal path.
-  Comments are dropped, and an input-redirect target is read by the same
+  `cd` (and `pushd`, `popd`) is on the round's command list and the guard does
+  not follow it, so on a line that has one, a relative redirect or `mkdir`
+  target is refused and only an absolute target is checked. Comments are dropped, and an input-redirect target is read by the same
   quote-aware word reader. A patch inside a shell line is accepted only as a
   bare `apply_patch` call with a quoted here-document. Any other shell text
   around a patch goes through the shell check, and a `patch` or `input` field
@@ -58,10 +60,13 @@ provider or model switch logs one `INFO:` line. Closes #5083.
   initialiser throws, the child env has no API key and no `CODEX_HOME`, or the
   selected `CODEX_HOME` has no `auth.json`. In each case DeepSeek is still
   tried. This covers the documented subscription setup: its `CODEX_HOME` is on
-  the agent-state volume, which the round's container does not mount. The state
-  initialiser now sees the `CODEX_HOME` that `provider.env` exports, so it can
-  seed the login from the credential directory's `auth.json` when one is
-  provisioned there.
+  the agent-state volume, which the round's container does not mount, and the
+  one-time `auth.json` seed sits beside it. The state initialiser sees only the
+  process environment, not the `CODEX_HOME` that `provider.env` exports, so the
+  round never seeds a login into a throwaway home (a stale seed would fail
+  authentication, and a refreshed one could invalidate the worker's durable
+  login). The exported home is checked for an existing login and skipped when
+  it has none.
 - **Same prompt.** Codex has no skills and no Agent tool. The round prompt is
   sent unchanged on stdin, behind `CODEX_ROUND_NOTE`, which tells Codex to read
   `SKILL.md` itself, do each `fleet-pr-reviewer` review itself, and give
@@ -181,6 +186,11 @@ This summary no longer repeats the values.
   the round dir and `mkdir -p /tmp/...` are allowed; `rm`, a chained `curl`,
   `git push`, a redirect or `mkdir` outside the round, `$(...)`, an
   `apply_patch` or `Write` outside the round, and `WebFetch` are refused. The
+  `the guard refuses a relative write or mkdir target on a line that changes directory`
+  refuses `cd <dir> && cat /tmp/a > ../tmp/y`, `cd <dir> && mkdir -p ../tmp/q`,
+  a subshell `(cd <dir>; cat /tmp/a >> tmp/y)` and `2> y`, and allows an
+  absolute `/tmp` target after `cd` and a relative target with no `cd` on the
+  line; it fails against the previous guard (7 pass, 1 fail). The
   hook command is also run as a real process: `rm -rf /state` exits 2 with a
   `deny` decision, and `deno run ... post.ts` exits 0 with no output.
 - `worker/deno/tests/review_round_wiring_test.ts`:
@@ -190,8 +200,18 @@ This summary no longer repeats the values.
   `a CODEX_HOME provider.env whose login is present offers Codex`,
   `a CODEX_HOME the round cannot reach skips Codex with a log line, so DeepSeek is still tried`
   and
-  `a CODEX_HOME with no auth.json skips Codex even when the state initialiser succeeds`.
-  They use an injected `env` option rather than changing `Deno.env`.
+  `a CODEX_HOME whose auth.json is not a login skips Codex at the login check`
+  (an `auth.json` of `{}` gets past the state initialiser, so only the login
+  check can stop it, and the test asserts that check's `no Codex login at ...`
+  line),
+  `no Codex API key and no usable CODEX_HOME in the round skips Codex` (a blank
+  `CODEX_HOME` reaches the `no Codex API key and no CODEX_HOME` line) and
+  `a one-time login seed beside an unreachable CODEX_HOME is not copied into the round`
+  (`provider.env` names a missing home, a 0600 ChatGPT seed sits beside it, and
+  the test asserts null, the skip line, and that the home was not created).
+  Against the previous `review_round.ts`, the seed test fails (9 of 10 pass).
+  With the `codexChildLoginMissing` call removed, 4 of the 10 fail (6 pass):
+  the three login-check tests above and the seed test. They use an injected `env` option rather than changing `Deno.env`.
 - `worker/deno/tests/review_fleet_prs_run_cost_test.ts`: three `attemptCost`
   Codex tests (an unpriced `gpt-6-astra` stays unknown, `gpt-5` is priced from
   `turn.completed` usage against a hand-computed $0.0369375, and no usage means
@@ -221,9 +241,9 @@ This summary no longer repeats the values.
 - `./quality.sh < /dev/null` on the head passed with skipped checks: config
   integration (no `.config.json`) and checkov (not installed).
 
-Not done: the earlier verifier fixes (`clearEnv`, login check) were not
-red-checked against the old code. The guard's fail-closed tests and the Codex
-effort test were. Codex was not run for real (the CLI is not installed here), so
+Not done: the `clearEnv` fix was not red-checked against the old code. The
+guard's fail-closed and `cd` tests, the login-check and seed wiring tests, and
+the Codex effort test were. Codex was not run for real (the CLI is not installed here), so
 the Codex round's behaviour against a live PR is not observed. It is also not
 checked whether a sub-agent with no `effort` takes the session's effort. Codex's
 `input_tokens` may already include its cached tokens. The adapter counts both,

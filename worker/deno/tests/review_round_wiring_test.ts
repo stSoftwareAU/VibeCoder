@@ -252,10 +252,13 @@ Deno.test(
 );
 
 Deno.test(
-  "review round wiring - a CODEX_HOME with no auth.json skips Codex even when the state initialiser succeeds (Issue #5083)",
+  "review round wiring - a CODEX_HOME whose auth.json is not a login skips Codex at the login check (Issue #5083)",
   async () => {
     const home = await Deno.makeTempDir({ prefix: "review-codex-empty-" });
     try {
+      // `{}` gets past the state initialiser (an auth.json exists) but is not a
+      // login, so only `codexChildLoginMissing` can stop it.
+      await Deno.writeTextFile(`${home}/auth.json`, "{}", { mode: 0o600 });
       await withCredentialDir({}, async (dir) => {
         const lines: string[] = [];
         const deps = createReviewRoundDeps((line) => lines.push(line), {
@@ -263,10 +266,90 @@ Deno.test(
           env: { CODEX_HOME: home },
         });
         assertEquals(await deps.exportCodexCredential(), null);
-        assert(lines.some((line) => line.includes(`${home}/auth.json`)));
+        assert(
+          lines.some((line) =>
+            line.includes(`no Codex login at ${home}/auth.json`) &&
+            line.includes("skipping the codex fallback")
+          ),
+          `the login check's line is logged: ${lines.join(" | ")}`,
+        );
       });
     } finally {
       await Deno.remove(home, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "review round wiring - no Codex API key and no usable CODEX_HOME in the round skips Codex (Issue #5083)",
+  async () => {
+    // A blank CODEX_HOME counts as set to the "already provisioned" check but
+    // names no home, so the child ends with neither a key nor a home.
+    await withCredentialDir({}, async (dir) => {
+      const lines: string[] = [];
+      const deps = createReviewRoundDeps((line) => lines.push(line), {
+        credentialDir: dir,
+        env: { CODEX_HOME: "  " },
+      });
+      assertEquals(await deps.exportCodexCredential(), null);
+      assert(
+        lines.some((line) =>
+          line.includes("no Codex API key and no CODEX_HOME in the round") &&
+          line.includes("skipping the codex fallback")
+        ),
+        `the skip is logged: ${lines.join(" | ")}`,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "review round wiring - a one-time login seed beside an unreachable CODEX_HOME is not copied into the round (Issue #5083)",
+  async () => {
+    // The documented subscription setup: provider.env names a CODEX_HOME on the
+    // agent-state volume, which the round's container does not mount, and the
+    // one-time ChatGPT auth.json seed sits beside it. The round must not seed a
+    // throwaway home from it: Codex is skipped so DeepSeek is still tried.
+    const missing = `${await Deno.makeTempDir()}/not-mounted/codex`;
+    try {
+      await withCredentialDir(
+        { "codex/provider.env": `export CODEX_HOME=${missing}\n` },
+        async (dir) => {
+          await Deno.writeTextFile(
+            `${dir}/codex/auth.json`,
+            JSON.stringify({
+              auth_mode: "chatgpt",
+              tokens: { access_token: "fixture-seed-5083" }, // gitleaks:allow fake fixture
+            }),
+            { mode: 0o600 },
+          );
+          const lines: string[] = [];
+          const deps = createReviewRoundDeps((line) => lines.push(line), {
+            credentialDir: dir,
+            env: {},
+          });
+          assertEquals(await deps.exportCodexCredential(), null);
+          assert(
+            lines.some((line) =>
+              line.includes(`no Codex login at ${missing}/auth.json`) &&
+              line.includes("skipping the codex fallback")
+            ),
+            `the skip is logged: ${lines.join(" | ")}`,
+          );
+          let created = true;
+          try {
+            await Deno.stat(missing);
+          } catch (error) {
+            if (!(error instanceof Deno.errors.NotFound)) throw error;
+            created = false;
+          }
+          assertEquals(created, false, "no Codex home is created in the round");
+        },
+      );
+    } finally {
+      await Deno.remove(missing.replace(/\/not-mounted\/codex$/, ""), {
+        recursive: true,
+      });
     }
   },
 );

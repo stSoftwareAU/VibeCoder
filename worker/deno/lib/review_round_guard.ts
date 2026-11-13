@@ -270,6 +270,9 @@ function expands(target: string): boolean {
   return /[$`{}~*?[\]]/.test(target);
 }
 
+/** Shell builtins that move the working directory a relative path resolves from. */
+const CHANGE_DIRECTORY_COMMANDS = ["cd", "pushd", "popd"];
+
 /** Whether one shell line keeps to the round's commands and write paths. */
 export function decideReviewRoundShell(
   line: string,
@@ -286,8 +289,22 @@ export function decideReviewRoundShell(
         "review round",
     };
   }
+  // `cd` is on the round's command list and the guard does not follow it, so
+  // a relative target after one would resolve against a directory the guard
+  // has not seen. On such a line only absolute write targets are checkable.
+  const changesDirectory = segments.some(({ words }) =>
+    CHANGE_DIRECTORY_COMMANDS.includes(words[0] ?? "")
+  );
+  const relativeAfterCd = (target: string): boolean =>
+    changesDirectory && !target.startsWith("/");
+  const relativeDenial = (target: string): ReviewRoundToolDecision => ({
+    deny: true,
+    reason:
+      `a write or mkdir target must be an absolute path on a line that changes directory: ${target}`,
+  });
   for (const { words, redirects } of segments) {
     for (const target of redirects) {
+      if (relativeAfterCd(target)) return relativeDenial(target);
       if (expands(target)) {
         return {
           deny: true,
@@ -318,6 +335,10 @@ export function decideReviewRoundShell(
       };
     }
     if (words[0] === "mkdir") {
+      const relative = words.slice(1).find((w) =>
+        !w.startsWith("-") && relativeAfterCd(w)
+      );
+      if (relative !== undefined) return relativeDenial(relative);
       const outside = words.slice(1).find((w) =>
         !w.startsWith("-") && (expands(w) || !inWriteDirs(w, cwd, policy))
       );
