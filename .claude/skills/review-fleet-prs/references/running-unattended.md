@@ -164,10 +164,10 @@ naming what it switched to. Running out of quota is never logged as an error.
    on the next subscription with budget left, but only when the token came from
    a pool file. Subscriptions are logged by label (`provider`, `provider-2`,
    …), never by value.
-4. **Codex.** When a Codex credential (`codex/provider.env`) is provisioned, the
-   round runs `codex exec --json` on `gpt-6-astra` at reasoning effort `high`,
-   and logs `INFO: round fell back to provider codex (model gpt-6-astra)`. It
-   gets the same round prompt, plus a short note telling Codex to read the skill
+4. **Codex.** When a Codex credential reaches the round (see _Which Codex
+   credentials reach a round_ below), the round runs `codex exec --json` on
+   `gpt-6-astra` at reasoning effort `high`, and logs
+   `INFO: round fell back to provider codex (model gpt-6-astra)`. It gets the same round prompt, plus a short note telling Codex to read the skill
    file itself and to do each reviewer's review itself, since Codex has no
    skills or Agent tool. The round container's checkout is mounted read-only, as
    for Claude rounds. Codex's own CLI sandbox is not used, because it cannot

@@ -535,7 +535,7 @@ or `max`. A value that fails its check is logged and the default is used.
 A round that hits a usage limit falls back along a chain: a Fable round steps
 down to `claude-opus-5-5` at `xhigh` on the same subscription, then rotates to
 the next Claude subscription with budget, then runs on Codex `gpt-6-astra` at
-`high` when a Codex credential is provisioned, and last on DeepSeek
+`high` when a Codex credential reaches the round (see below), and last on DeepSeek
 `deepseek-v4-pro`, only when Codex also hit its usage limit or has no
 credential. Codex runs in a round only with an API key in `codex/provider.env`
 or a `CODEX_HOME` on a mount the round shares that already holds a login. A
