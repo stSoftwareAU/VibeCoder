@@ -223,6 +223,8 @@ function harness(
   };
   const deps: Partial<BabysitterContainerDeps> = {
     env: fakeEnv,
+    hostDiskAdmission: () =>
+      Promise.resolve({ release: () => Promise.resolve() }),
     onPath: () => Promise.resolve(options.onPath ?? true),
     buildPlan: (_baseDir, containerName) => {
       h.built.push(containerName);
@@ -756,6 +758,8 @@ function defaultWiring(
   const w: Wiring = { deps: {}, built: [], spawns: [], logged: [] };
   w.deps = {
     env,
+    hostDiskAdmission: () =>
+      Promise.resolve({ release: () => Promise.resolve() }),
     onPath: () => Promise.resolve(true),
     imageExists: () => Promise.resolve(true),
     buildPlan: (_baseDir, containerName) => {

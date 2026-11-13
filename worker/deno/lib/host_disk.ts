@@ -594,6 +594,14 @@ export class HostDiskMonitor {
   private volumeUsedPeak: number | null = null;
   /** Most recent volume usage, for the ratchet split (#384). */
   private volumeUsedNow: number | null = null;
+  /**
+   * Bytes the work volume has grown by, summed across launcher re-bases, so
+   * it only ever rises (Issue #5105). The peak above is re-based to the
+   * current usage on each adopted launcher reading; this total is not.
+   */
+  private workVolumeGrowthTotal = 0;
+  /** Highest ephemeral cargo root size measured (Issue #5105). */
+  private ephemeralCargoRootPeakBytes = 0;
   /** The launcher's word that the runtime refused the trim (#2080). */
   private trimRefused = false;
   /** The launcher's word that it declined to recreate the work volume. */
@@ -627,6 +635,9 @@ export class HostDiskMonitor {
    */
   recordEphemeralCargoRootBytes(bytes: number | null): void {
     this.ephemeralCargoRootBytes = bytes;
+    if (bytes !== null && bytes > this.ephemeralCargoRootPeakBytes) {
+      this.ephemeralCargoRootPeakBytes = bytes;
+    }
     this.ephemeralCargoRootError = null;
   }
 
@@ -753,6 +764,79 @@ export class HostDiskMonitor {
     );
   }
 
+  /**
+   * The worker's own host footprint growth so far: the work volume's growth
+   * plus the ephemeral cargo root's highest measured size (Issue #5105). It
+   * only rises, so the growth between two readings is never understated.
+   *
+   * Undefined, which credits the babysitter with nothing, unless the figure is
+   * known: the last status must have come from the launch baseline, where the
+   * work volume is a separate image whose growth the host loses (on a native
+   * `df` the worker's own share cannot be told apart), and, where the
+   * ephemeral cargo root applies, its latest measurement must have completed
+   * and succeeded. A missing, failed or in-progress measurement leaves the
+   * peak stale, and a stale peak would read build growth as zero.
+   */
+  get workerFootprintGrowthBytes(): number | undefined {
+    if (this.lastStatus.source !== "launch-baseline") return undefined;
+    if (this.volumeUsedPeak === null) return undefined;
+    if (
+      (this.ephemeralCargoRootApplies?.() ?? true) &&
+      (this.ephemeralCargoRootRefresh !== undefined ||
+        this.ephemeralCargoRootError !== null ||
+        this.ephemeralCargoRootBytes === null)
+    ) return undefined;
+    return this.workVolumeGrowthTotal + this.ephemeralCargoRootPeakBytes;
+  }
+
+  /**
+   * Resolves once any background refresh of the ephemeral cargo root has
+   * settled; never rejects (Issue #5105). The floor verdict never waits on it,
+   * but a caller about to credit a babysitter for a dip needs the worker's
+   * growth to include that refresh's figure.
+   */
+  async ephemeralCargoRootSettled(): Promise<void> {
+    await this.ephemeralCargoRootRefresh;
+  }
+
+  /**
+   * Whether a walk of the ephemeral cargo root is in flight right now
+   * (Issue #5105). While one is, {@link workerFootprintGrowthBytes} is
+   * unknown; a caller that needs the figure loops on this and
+   * {@link ephemeralCargoRootSettled} and reads it with no await between the
+   * last check and the read, since another probe may start a walk the moment
+   * one settles.
+   */
+  get ephemeralCargoRootInFlight(): boolean {
+    return this.ephemeralCargoRootRefresh !== undefined;
+  }
+
+  /**
+   * Measures the ephemeral cargo root afresh whatever the level and the quiet
+   * interval, and resolves once that measurement has settled; never rejects
+   * (Issue #5105). A reservation first seen while the host is still `ok`
+   * would otherwise take its growth baseline from an old figure, or from
+   * none, and the later dip would read the worker's build growth as the
+   * babysitter's, or as unknown. A failed measurement leaves the growth
+   * unknown, which credits nothing. No-op where the root does not apply.
+   */
+  async refreshEphemeralCargoRootNow(): Promise<void> {
+    // Wait out a walk already in flight: it began before this call.
+    await this.ephemeralCargoRootRefresh;
+    this.ephemeralCargoRootSampleAt = undefined;
+    this.refreshEphemeralCargoRoot(this.now());
+    await this.ephemeralCargoRootRefresh;
+  }
+
+  /**
+   * When the launcher reading this monitor last adopted was measured, in
+   * epoch ms (Issue #5105). Before any reading is adopted it is the age bound
+   * before now, so no real reading compares as older.
+   */
+  get launcherReadingMeasuredAtMs(): number {
+    return this.adoptedMeasuredAtMs;
+  }
+
   /** The most recent status without probing. */
   get status(): HostDiskStatus {
     return this.lastStatus;
@@ -870,6 +954,13 @@ export class HostDiskMonitor {
       reading !== null &&
       reading.totalBytes === this.baseline.totalBytes;
     if (this.baseline !== null && !probeIsHostFilesystem) {
+      // Issue #5105: count growth against the peak before a re-base resets it.
+      if (
+        reading?.usedBytes !== undefined && this.volumeUsedPeak !== null &&
+        reading.usedBytes > this.volumeUsedPeak
+      ) {
+        this.workVolumeGrowthTotal += reading.usedBytes - this.volumeUsedPeak;
+      }
       await this.adoptLauncherReading(reading, t);
       if (!this.baselined) {
         this.volumeUsedAtLaunch = reading?.usedBytes ?? null;

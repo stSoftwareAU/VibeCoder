@@ -548,9 +548,14 @@ import {
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
+  HOST_DISK_RESERVATIONS_DIR,
+  ReservationSightings,
+} from "./host_disk_reservations.ts";
+import {
   cargoClaimDeferredRepos,
   heavyBuildAdmission,
   hostDiskLaunchStopReason,
+  readHostDiskReservationsForProbe,
   registerHeavyBuildDiskProbe,
   releaseCheckoutTargetDirs,
 } from "./heavy_build_gate.ts";
@@ -1164,13 +1169,82 @@ export async function createProductionRunCoreDeps(
   // Host free-disk monitor (Issue #226): the launcher's df baseline plus
   // the work volume's growth since launch; native mode reads df directly.
   const trimRefused = options.trimRefused ?? workVolumeTrimRefusedForLaunch;
+  // Issue #5105: the launcher's log directory also carries the babysitter's
+  // host-disk reservations, one file per running repair container.
+  // The worker's own growth since each reservation was first seen is taken
+  // off the drop before any of it is credited to the babysitter.
+  const workerLogDir = `${env("HOME") ?? "~"}/logs`;
+  const reservationSightings = new ReservationSightings();
+  // `takenAtReadingMs` is the launcher reading the caller's status rests on.
+  // When another check adopts a newer one while this probe waits on a walk,
+  // the caller's status is stale against the reservation observation: return
+  // undefined, with no `observe`, so the caller takes its status again.
+  const readReservations = async (takenAtReadingMs?: number) => {
+    const nowMs = Date.now();
+    const live = await readHostDiskReservationsForProbe(
+      `${workerLogDir}/${HOST_DISK_RESERVATIONS_DIR}`,
+      nowMs,
+      (message) => logger.warn(message),
+    );
+    // The growth must include the ephemeral cargo root's refresh that this
+    // probe's check just started, or a fresh dip reads as unexplained. Only a
+    // probe with a reservation to credit waits; the floor verdict never does.
+    // That covers a reservation first seen now, one already tracked, and one
+    // that has just gone: its release is only recorded by `observe` below.
+    // A reservation first seen now takes its growth baseline from a fresh
+    // measurement: at `ok` the root is otherwise not measured at all.
+    const needsGrowth = reservationSightings.hasUnseen(live) ||
+      reservationSightings.tracking;
+    if (reservationSightings.hasUnseen(live)) {
+      await hostDisk.refreshEphemeralCargoRootNow();
+    }
+    // Another probe's walk can begin the moment this one settles, and
+    // `observe` stores no baseline while one is in flight, which leaves the
+    // reservation uncredited for good. So read only with no walk in flight,
+    // and with no await between that check and the read.
+    while (needsGrowth && hostDisk.ephemeralCargoRootInFlight) {
+      await hostDisk.ephemeralCargoRootSettled();
+    }
+    if (
+      takenAtReadingMs !== undefined &&
+      hostDisk.launcherReadingMeasuredAtMs !== takenAtReadingMs
+    ) return undefined;
+    const seen = reservationSightings.observe(
+      live,
+      hostDisk.workerFootprintGrowthBytes,
+      nowMs,
+      hostDisk.launcherReadingMeasuredAtMs,
+    );
+    return {
+      hostDiskReservations: live,
+      releasedHostDiskReservations: seen.released,
+      workerGrowthSinceReservationBytes: seen.workerGrowthBytes,
+    };
+  };
+  // The status and the reservation observation must rest on the same
+  // launcher reading (Issue #5105). A newer reading adopted while the probe
+  // waits would pair a stale low status with a release another check has
+  // just forgotten, and kill a build after the host recovered. Each retry
+  // needs a fresh reading, adopted at most every refresh interval, so three
+  // attempts bound it; the last observes whatever it finds.
+  const checkWithReservations = async () => {
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1;; attempt++) {
+      const status = await hostDisk.check({ force: true });
+      const readingMs = hostDisk.launcherReadingMeasuredAtMs;
+      const reservations = await readReservations(
+        attempt < MAX_ATTEMPTS ? readingMs : undefined,
+      );
+      if (reservations !== undefined) return { status, reservations };
+    }
+  };
   const hostDisk = options.hostDisk ?? new HostDiskMonitor({
     workDir,
     env,
     log: bindLogger(logger),
     // Issue #1550: the launcher's per-tick reading, written to the worker
     // log directory — mounted read-write at `${HOME}/logs` in the container.
-    refreshFile: `${env("HOME") ?? "~"}/logs/${HOST_DISK_REFRESH_FILE}`,
+    refreshFile: `${workerLogDir}/${HOST_DISK_REFRESH_FILE}`,
     // Issue #732: the floor this deployment states, so the worker claims at
     // the floor the launcher heals at — `.config.json` first, then the
     // environment override, then the default.
@@ -2198,7 +2272,7 @@ export async function createProductionRunCoreDeps(
   // file rather than a reading the worker adopted a minute ago (Issue #4360).
   // The file itself is still as fresh as the launcher's refresh interval.
   registerHeavyBuildDiskProbe(async () => {
-    const status = await hostDisk.check({ force: true });
+    const { status, reservations } = await checkWithReservations();
     if (status.level === "low") hostDiskLowSeen = true;
     return {
       status,
@@ -2206,6 +2280,7 @@ export async function createProductionRunCoreDeps(
         ? undefined
         : hostDisk.floorBytesFor(status.totalBytes),
       trimRefused: hostDisk.workVolumeTrimRefused,
+      ...reservations,
     };
   });
   // Built once so a non-fault probe warning is reported once per directory,
@@ -6032,7 +6107,7 @@ export async function createProductionRunCoreDeps(
       // (Issue #4360). The same status as a
       // read-only root, so the launcher relaunches promptly, and the log names
       // the floor.
-      const status = await hostDisk.check({ force: true });
+      const { status, reservations } = await checkWithReservations();
       const stop = hostDiskLaunchStopReason({
         status,
         floorBytes: status.totalBytes === undefined
@@ -6042,6 +6117,7 @@ export async function createProductionRunCoreDeps(
         recreateDeclined: hostDisk.workVolumeRecreateDeclined,
         recreateUnrecovered: hostDisk.workVolumeRecreateUnrecovered,
         largestHostDirectories: hostDisk.largestHostDirectories,
+        ...reservations,
       });
       if (!stop) return null;
       return { path: "host disk", detail: stop };

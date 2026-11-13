@@ -84,7 +84,14 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import type { Clock } from "./clock.ts";
 import { formatGb, type HostDiskStatus } from "./host_disk.ts";
+import {
+  accountHostDiskReservations,
+  babysitterDipCreditBytes,
+  type HostDiskReservation,
+  readLiveHostDiskReservations,
+} from "./host_disk_reservations.ts";
 import {
   commandOutputWithTimeout,
   isCommandTimeoutError,
@@ -138,6 +145,78 @@ export interface HeavyBuildDiskReading {
    * or blank names none.
    */
   largestHostDirectories?: string;
+  /**
+   * The live fleet-babysitter reservations (Issue #5105): host space a running
+   * repair container holds or is still growing into. A dip below the floor
+   * that these explain is a wait, not a kill ({@link babysitterDrivenDip}),
+   * and the unconsumed part is subtracted from the free space cargo admission
+   * sees. Absent reads as none.
+   */
+  hostDiskReservations?: readonly HostDiskReservation[];
+  /**
+   * Babysitter reservations that vanished (the repair ended) while the
+   * launcher reading the worker holds was measured before they went
+   * (Issue #5105). The babysitter removes its file right after teardown, but
+   * the low reading stays until the launcher rewrites `host-disk.json`, so
+   * these still explain the dip ({@link babysitterDrivenDip}) until that
+   * fresh reading arrives. Nothing more of their space is outstanding, so
+   * admission ignores them. Absent reads as none.
+   */
+  releasedHostDiskReservations?: readonly HostDiskReservation[];
+  /**
+   * The worker's own host growth (work volume plus ephemeral cargo root)
+   * since the earliest live reservation was first seen (Issue #5105). Taken
+   * off the drop before any of it is credited to the babysitter; absent means
+   * unknown, and an unknown growth credits nothing.
+   */
+  workerGrowthSinceReservationBytes?: number;
+}
+
+/**
+ * Whether the host is below its floor only because live babysitter repair
+ * containers have consumed their reserved space (Issue #5105), or because
+ * such a repair has just ended and the launcher reading the worker holds
+ * predates the release (`releasedHostDiskReservations`).
+ *
+ * Neither ending the launch nor recreating the work volume returns space the
+ * babysitter's containers hold, so the worker waits for it instead.
+ */
+export function babysitterDrivenDip(reading: HeavyBuildDiskReading): boolean {
+  const availableBytes = reading.status.availableBytes;
+  const floorBytes = reading.floorBytes;
+  if (reading.status.level !== "low") return false;
+  if (availableBytes === undefined || floorBytes === undefined) return false;
+  return babysitterDipCreditBytes({
+    availableBytes,
+    floorBytes,
+    live: [
+      ...(reading.hostDiskReservations ?? []),
+      ...(reading.releasedHostDiskReservations ?? []),
+    ],
+    workerGrowthBytes: reading.workerGrowthSinceReservationBytes,
+  }) !== null;
+}
+
+/**
+ * Read the live babysitter reservations for the host-disk probe (Issue #5105).
+ * A directory that cannot be read is logged and reads as no reservations: the
+ * probe must never fail on the ledger.
+ */
+export async function readHostDiskReservationsForProbe(
+  dir: string,
+  nowMs: number,
+  warn: (message: string) => void,
+): Promise<HostDiskReservation[]> {
+  try {
+    return await readLiveHostDiskReservations(dir, nowMs);
+  } catch (err) {
+    warn(
+      `Could not read host disk reservations in ${dir}: ${
+        err instanceof Error ? err.message : String(err)
+      }; treating as none (Issue #5105)`,
+    );
+    return [];
+  }
 }
 
 /** One directory under the ephemeral cargo root. */
@@ -373,6 +452,15 @@ export async function enforceEphemeralCargoBudget(
   };
 }
 
+/** Babysitter reservation bytes not yet consumed out of `free` (Issue #5105). */
+function outstandingReservationBytes(
+  reading: HeavyBuildDiskReading,
+  free: number,
+): number {
+  return accountHostDiskReservations(reading.hostDiskReservations ?? [], free)
+    .outstandingBytes;
+}
+
 /** The registered source of host-disk readings. */
 let probe: (() => Promise<HeavyBuildDiskReading>) | undefined;
 
@@ -413,7 +501,15 @@ export async function heavyBuildAdmission(
   options: { creditOwnCache?: boolean } = {},
 ): Promise<HeavyBuildAdmission> {
   if (probe === undefined) return { mode: "build" };
-  const reading = await probe();
+  return await admissionFromReading(await probe(), checkoutPath, deps, options);
+}
+
+async function admissionFromReading(
+  reading: HeavyBuildDiskReading,
+  checkoutPath: string,
+  deps: EphemeralRootDeps,
+  options: { creditOwnCache?: boolean },
+): Promise<HeavyBuildAdmission> {
   const low = judgeHostDiskForBuild(reading);
   if (low !== null) return { mode: "defer", reason: low };
   // The budget is about the ephemeral root, which builds use only where the
@@ -426,7 +522,7 @@ export async function heavyBuildAdmission(
   if (reading.floorBytes === undefined) return { mode: "build" };
   const verdict = await enforceEphemeralCargoBudget({
     checkoutPath,
-    hostFreeBytes: free,
+    hostFreeBytes: free - outstandingReservationBytes(reading, free),
     floorBytes: reading.floorBytes,
     creditOwnCache: options.creditOwnCache,
   }, deps);
@@ -464,12 +560,17 @@ export function inFlightParkReason(deferral: string | null): string | null {
  * declined recreate it adds that nothing in the worker will free it). Above the floor, or where the trim is honoured, the build is parked and the launch
  * continues: fstrim can return the blocks, and a recreate would not.
  *
+ * A dip the live babysitter reservations explain ends nothing: ending the
+ * launch or recreating the work volume would not return space held by the
+ * babysitter's containers (Issue #5105).
+ *
  * @returns The reason to end the launch, naming the floor, or null to continue.
  */
 export function hostDiskLaunchStopReason(
   reading: HeavyBuildDiskReading,
 ): string | null {
   if (reading.status.level !== "low" || !reading.trimRefused) return null;
+  if (babysitterDrivenDip(reading)) return null;
   const deferral = judgeHostDiskForBuild(reading);
   if (deferral === null) return null;
   if (reading.recreateDeclined === true) {
@@ -530,20 +631,96 @@ export function inFlightHostDiskGateEnabled(): boolean {
  * Null when the gate
  * is not armed, no probe is registered, or the host has room.
  * Active-process watchers use {@link parkRunningBuild} instead.
+ *
+ * A dip below the floor that live babysitter reservations explain is waited
+ * out first when the caller opts in (Issue #5105): the step polls every
+ * `wait.pollMs` for up to `wait.maxWaitMs`, and only a dip that persists past
+ * that, or that the reservations do not explain, parks. The default waits
+ * not at all, so a caller with its own budget clock (security-fix
+ * discrimination, the merge fast checks, the quality gate) parks at once as
+ * before; only the agent step opts in, bounded by its finish deadline.
  */
 export async function parkInFlightBuild(
   checkoutPath: string,
   deps: EphemeralRootDeps = productionEphemeralRootDeps,
+  wait: BabysitterDipWait = NO_BABYSITTER_DIP_WAIT,
 ): Promise<string | null> {
   if (!inFlightGateEnabled) return null;
+  if (probe === undefined) return null;
+  const reading = await waitOutBabysitterDip(wait, await probe());
   // No cargo project: only the host floor applies, and nothing is pruned (Issue #4413).
-  if (!(await holdsCargoProject(checkoutPath))) return await parkRunningBuild();
-  const admission = await heavyBuildAdmission(checkoutPath, deps, {
+  if (!(await holdsCargoProject(checkoutPath))) {
+    // Not parkRunningBuild: a dip still explained once the wait bound has
+    // passed must park a new step, though a running process rides it out.
+    return inFlightParkReason(judgeHostDiskForBuild(reading));
+  }
+  const admission = await admissionFromReading(reading, checkoutPath, deps, {
     creditOwnCache: true,
   });
   return inFlightParkReason(
     admission.mode === "build" ? null : admission.reason,
   );
+}
+
+/** How {@link parkInFlightBuild} waits out a babysitter-driven dip (Issue #5105). */
+export interface BabysitterDipWait {
+  sleep(ms: number): Promise<void>;
+  nowMs(): number;
+  pollMs: number;
+  maxWaitMs: number;
+}
+
+export const PRODUCTION_BABYSITTER_DIP_WAIT: BabysitterDipWait = {
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  nowMs: () => Date.now(),
+  pollMs: 60_000,
+  maxWaitMs: 20 * 60_000,
+};
+
+/** The default for {@link parkInFlightBuild}: no wait at all. */
+export const NO_BABYSITTER_DIP_WAIT: BabysitterDipWait = {
+  ...PRODUCTION_BABYSITTER_DIP_WAIT,
+  maxWaitMs: 0,
+};
+
+/**
+ * The production wait, bounded by the caller's remaining budget (Issue
+ * #5105): never longer than `remainingMs`, and none when that is zero or
+ * negative. Sleeps and reads the time through `clock`, so a runner given a
+ * test clock waits on it.
+ */
+export function babysitterDipWaitWithin(
+  remainingMs: number,
+  clock: Pick<Clock, "now" | "sleep">,
+): BabysitterDipWait {
+  return {
+    sleep: (ms) => clock.sleep(ms),
+    nowMs: () => clock.now(),
+    pollMs: PRODUCTION_BABYSITTER_DIP_WAIT.pollMs,
+    maxWaitMs: Math.max(
+      0,
+      Math.min(PRODUCTION_BABYSITTER_DIP_WAIT.maxWaitMs, remainingMs),
+    ),
+  };
+}
+
+/**
+ * Poll until the dip is no longer babysitter-driven, or the bound passes.
+ * Takes the first reading and returns the latest; the probe is re-read only
+ * after each sleep.
+ */
+async function waitOutBabysitterDip(
+  wait: BabysitterDipWait,
+  first: HeavyBuildDiskReading,
+): Promise<HeavyBuildDiskReading> {
+  const deadline = wait.nowMs() + wait.maxWaitMs;
+  let reading = first;
+  while (babysitterDrivenDip(reading) && wait.nowMs() < deadline) {
+    await wait.sleep(wait.pollMs);
+    if (probe === undefined) return reading;
+    reading = await probe();
+  }
+  return reading;
 }
 
 /**
@@ -572,7 +749,7 @@ export async function cargoClaimDeferral(
   if (!(await holdsCargoProject(checkoutPath))) return null;
   const verdict = await enforceEphemeralCargoBudget({
     checkoutPath,
-    hostFreeBytes: free,
+    hostFreeBytes: free - outstandingReservationBytes(reading, free),
     floorBytes: reading.floorBytes,
     creditOwnCache: true,
     dryRun: true,
@@ -614,11 +791,15 @@ async function holdsCargoProject(checkoutPath: string): Promise<boolean> {
  * re-applying it while running killed admitted builds after their first few
  * gigabytes. Poll the same live monitor without pruning other checkouts or
  * demanding another complete build's headroom. An unknown reading retains
- * the existing gate policy; a known low reading still stops the process.
+ * the existing gate policy; a known low reading still stops the process,
+ * unless live babysitter reservations explain the dip (Issue #5105): the
+ * process keeps running and waits for the babysitter's space to return.
  */
 export async function parkRunningBuild(): Promise<string | null> {
   if (!inFlightGateEnabled || probe === undefined) return null;
-  return inFlightParkReason(judgeHostDiskForBuild(await probe()));
+  const reading = await probe();
+  if (babysitterDrivenDip(reading)) return null;
+  return inFlightParkReason(judgeHostDiskForBuild(reading));
 }
 
 /**
@@ -641,7 +822,7 @@ export async function shouldSkipEphemeralCargoBuild(
   if (reading.floorBytes === undefined) return false;
   const verdict = await enforceEphemeralCargoBudget({
     checkoutPath,
-    hostFreeBytes: free,
+    hostFreeBytes: free - outstandingReservationBytes(reading, free),
     floorBytes: reading.floorBytes,
   }, deps);
   return verdict.skipCargoBuild;

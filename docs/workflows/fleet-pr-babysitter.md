@@ -4,10 +4,13 @@ The babysitter scans the repositories in `.config.json` for open fleet PRs with
 merge conflicts, outdated branches, failed CI or requested review changes. By
 default it fixes candidates. It takes the same PR branch lock as the fleet's CI
 and conflict workers, rechecks the head, and runs one repair session in a
-temporary clone, inside a worker container. Up to two independent PR repairs run
-at once, each with a 90-minute container limit and its own branch lock. While
-repairs run, it rescans every five minutes and queues newly actionable PRs
-without starting two repairs for the same PR. Before the repair session starts,
+temporary clone, inside a worker container. One repair container runs at a time
+(`BABYSITTER_REPAIR_CONTAINER_LIMIT`), with a 90-minute container limit and its
+own branch lock: each repair container starts its own egress proxy, and two at
+once cost about 31 GB of host disk and crossed the worker's floor (Issue #5105).
+While a repair runs, it rescans every five minutes and queues newly
+actionable PRs, which start when the running one ends, without starting two
+repairs for the same PR. Before the repair session starts,
 the babysitter merges the PR's latest base into the temporary clone without
 committing, for every kind of repair, so the agent works and runs its checks
 against up-to-date code and the fix and the branch update reach GitHub in **one
@@ -128,7 +131,8 @@ Each automatic babysitter pass repeats the Chromium check before PR discovery
 or GitHub App authentication. A failure is reported as a failed pass and the
 existing supervisor or watch loop retries it. `--check-container` runs the
 same bounded check on demand before reading App configuration or authenticating;
-it prints the specific runtime, image, timeout, exit or output cause and exits
+it prints the specific runtime, image, timeout, exit, output or host-disk
+admission cause (`babysitter Chromium check not started: ...`) and exits
 non-zero on failure. The check overrides the image entrypoint with `bash`, runs
 `"$CHROMIUM_PATH" --headless --no-sandbox --dump-dom about:blank`, and accepts
 only exit zero with HTML on stdout. It keeps the launch plan's network and
@@ -206,7 +210,7 @@ repairs. Those workers only trust locks written by known fleet accounts. The MVP
 checks the local configuration; it cannot verify other hosts. Use a dedicated
 account with only the access it needs. Each repair activates the worker-side
 GitHub write allowlist for its target repository, including lock comments,
-branch updates and review dismissals. Concurrent repairs use separate scopes.
+branch updates and review dismissals. Each repair uses its own scope.
 The repair session runs in a container, described under "Container repairs"
 below. Its agent is told that it runs unattended and must not ask questions;
 when a fix needs a human decision, it reports the blocker and stops without a
@@ -469,6 +473,23 @@ A failed egress start fails the repair; the runtime's open network is never used
 instead.
 
 The worker image provides Chromium at `$CHROMIUM_PATH` for browser checks.
+
+**Host-disk admission (Issue #5105).** Before any egress proxy or container
+starts, the repair is admitted against the host's free disk, with the same floor
+and the same reservation ledger (`host-disk-reservations/` in the host log
+directory) the worker uses. The request is 16 GB (the worker container's
+rootfs plus its egress proxy's), plus the worker's 25 GB ephemeral cargo
+headroom when the clone holds a cargo project. A repair that would leave the
+host below its floor, counting what live reservations have yet to consume, is
+refused. A refusal is an infrastructure failure: it backs off and retries, and
+spends an infrastructure attempt, not a substantive repair attempt. The
+reservation is removed after the container and its proxy are torn down. A host
+whose disk cannot be measured admits the repair without a reservation. The
+Chromium launch check starts the same image and, on the Apple runtime, its own
+egress proxy, so it is admitted the same way before any egress starts, for the
+16 GB footprint alone (it builds nothing). A refusal is reported as a failed
+pass, which the supervisor or watch loop retries, and the reservation is removed
+after its container and proxy are torn down.
 
 **Token restarts.** When a session ends at its read token's expiry, the host
 deletes the response file, mints a fresh repository-scoped read token and starts
