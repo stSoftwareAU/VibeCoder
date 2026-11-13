@@ -87,7 +87,8 @@ flowchart LR
 - [x] Preserve checkpoint commits and merge current main without rewriting history.
 - [x] Review source-run records, collector guards, caller and documentation.
 - [x] Observe regressions against unfixed main and passing targeted tests.
-- [ ] Complete quality, summary and pre-push checks; commit and push the result.
+- [ ] Complete the full quality and full-branch pre-push checks.
+- [x] Run the summary validator and preserve the implementation on the issue branch.
 
 - `worker/deno/tests/orphan_collector_test.ts`: added cases for a real
   zero-budget parent probe, timeout after TERM, Error and non-Error signal
@@ -117,13 +118,45 @@ flowchart LR
 - No twinned collector rule was found. No persisted data, credential handling,
   external command construction or path guard changed.
 
+- `deno task check:manifests`: passed, 870 passed, 0 failed, 1 ignored.
+- `deno task pr-summary-check --base main --issue-body-file <saved issue body>
+  --labels bug,top-priority,failed-once <summary>`: passed with zero blocked
+  gates and zero not checked before this hand-off update.
+- The full `./quality.sh` run failed its unit-test timing budget:
+  `FAIL: every test in tests/parallel_safety_cap_test.ts (2, 3.27s) is over the 1.00s unit-test budget`.
+  Both parallel and serial passes passed their behavioural assertions; lint,
+  type check, formatting, Markdown, Mermaid and Semgrep passed. Config
+  integration was skipped because no runtime config was available; Checkov
+  was skipped because neither the binary nor its container runtime was present.
+- Isolated `deno task test:unit tests/parallel_safety_cap_test.ts` passed:
+  2 passed, 0 failed, 0.7 seconds including runner overhead. The test and its
+  graph reader are unchanged from main. No timing threshold or assertion was
+  weakened.
+- A rerun using `DENO_JOBS=2 ./quality.sh` passed the early checks and reached
+  the unit suite. Its final result was not obtained before the worker wrote
+  a zero-second budget. No further wait or gate run is authorised in this run.
+- Full-branch pre-push validation has not run in this attempt. Periodic worker
+  WIP checkpoints already pushed the implementation, but that is not evidence
+  that the whole branch passed the pre-push gate.
+
 ## Merge verification
 
-CI and independent code review are pending.
+The full quality gate, full-branch pre-push checks, CI and independent code
+review remain pending. Resume with `DENO_JOBS=2 ./quality.sh < /dev/null` when
+there is enough budget, then run the pre-push gate over `origin/main` (including
+already-pushed WIP commits), update this summary and rerun `pr-summary-check`.
+Do not raise a PR over the recorded failed check.
+
+The following worker budget note applies to any further full-gate execution:
+
+<!-- vibe-quality-gate-skipped required="1080s" remaining="0s" -->
+
+**Full quality gate skipped — not enough run budget.** The full gate is skipped: it needs 1080s (gate assumed 15m plus 180s to fix, commit and push) and only 0s of run budget remain. The targeted checks (formatter, linter, type check and the tests covering the change) were run instead; the worker runs the full gate again before the PR is raised.
 
 ## Limitations and remaining risk
 
 The original host's complete worker log and ten-second OS stall were not
 reproduced. Cleanup failures can leave descendants running; the error and
-security event report that condition. Full quality and pre-push results are
-not yet recorded.
+security event report that condition. The default-concurrency timing failure
+and incomplete two-worker rerun leave full quality and pre-push validation
+unresolved; no PR was created in this run.
