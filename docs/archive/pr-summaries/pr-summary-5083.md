@@ -131,9 +131,10 @@ regenerated to add the two config keys.
     `runCodexCli returns a successful run with its message and no usage limit`.
     Both run a stub binary.
   - `runCodexCli gives the child only the curated env, not this process's credentials`:
-    the parent process has `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`,
-    `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` set, and the stub child sees none of
-    them.
+    a child Deno process holding `CLAUDE_CODE_OAUTH_TOKEN`,
+    `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` and `OPENAI_API_KEY` runs
+    `runCodexCli`, and the stub Codex it starts sees none of them. The test
+    never changes its own `Deno.env`, so it stays in the parallel pass.
   - The chain test also checks that the Codex args carry the guard's
     `hooks.PreToolUse` and `--dangerously-bypass-hook-trust`.
 - `worker/deno/tests/review_round_guard_test.ts` (new): the policy read off
@@ -175,10 +176,11 @@ regenerated to add the two config keys.
   `clearEnv` tests exercise, so on a host whose `CODEX_HOME` the round cannot
   reach it skips Codex and still reaches DeepSeek. Twinned copies searched for:
   none found.
+- The guard's hook entry point installs console redaction, and
+  `docs/audits/lib-sweep-coverage/top-up-5083.json` claims
+  `worker/deno/lib/review_round_guard.ts` for the security-sweep ledger.
 - `./quality.sh < /dev/null` on the head passed with skipped checks: config
-  integration (no `.config.json`) and checkov (not installed). The first run
-  failed parallel safety, a stale release contract, and the completeness check
-  that wraps them. All three were fixed before the passing run.
+  integration (no `.config.json`) and checkov (not installed).
 
 Not done: the verifier's fixes above (guard, `clearEnv`, login check) were not
 red-checked against the old code. Codex was not run for real (the CLI is not
