@@ -4233,10 +4233,16 @@ over identical content. This includes compact Deno summaries such as `2m14s`,
 spaced compounds
 such as `2m 14s`, hour compounds such as `1h2m3s`, and standalone units such as
 `12.4s`. Clock-format elapsed times are normalised too: pytest's trailing
-`(0:01:15)` after a duration, and Maven's `01:15 min` or `02:03 h`. Source
-locations such as `file.ts:12:5` and ordinary timestamps are kept. The elapsed
-values are ignored while failure counts and diagnostics remain part of the
-comparison.
+`(0:01:15)` after a duration, and Maven's `01:15 min` or `02:03 h`. Two
+presentation-only footers are normalised as whole lines only (Issue #5003):
+Maven's `Finished at:` line with an ISO-8601 timestamp, with or without its
+`[INFO] ` prefix, and pytest's `=`-padded result summary (for example
+`===== 1 failed, 2 passed in 9.87s =====`), whose padding is reduced to a single
+`=` on each side and whose `(H:MM:SS)` clock suffix is dropped. A summary is
+recognised only when every outcome word is one pytest prints. Source locations
+such as `file.ts:12:5`, other timestamps and other `=` separators are kept. The
+elapsed values are ignored while failure counts and diagnostics remain part of
+the comparison.
 
 When the answer is yes the run stops as an **expected skip**: no PR, no
 `failed`/`failed-once` label, no failure tracking, no repo failure record and no

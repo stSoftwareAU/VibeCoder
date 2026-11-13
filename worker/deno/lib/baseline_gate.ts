@@ -358,12 +358,28 @@ const CLOCK_UNIT_RE = /(?<![\w.:])\d{1,3}:\d{2}(?::\d{2})?\s*(?:min|h)\b/g;
 /** pytest-style `(0:01:15)` clock that trails an already-masked duration (Issue #4918). */
 const TRAILING_CLOCK_RE = /(<duration>\s*\()\d{1,3}:\d{2}(?::\d{2})?(\))/g;
 
+/** Maven's `Finished at:` footer, an ISO offset timestamp that differs every run (Issue #5003). */
+const MAVEN_FINISHED_AT_RE =
+  /^((?:\[INFO\] )?Finished at: )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?$/;
+
+const PYTEST_OUTCOME =
+  "(?:failed|passed|skipped|deselected|xfailed|xpassed|warnings?|errors?|rerun)";
+
+/** pytest's `=`-padded result summary, whose padding tracks the printed duration width (Issue #5003). */
+const PYTEST_SUMMARY_RE = new RegExp(
+  `^=+ ((?:\\d+ ${PYTEST_OUTCOME}(?:, \\d+ ${PYTEST_OUTCOME})*|no tests ran)` +
+    ` in <duration>)(?: \\(<clock>\\))? =+$`,
+);
+
 /** The per-check duration line the gate appends (Issue #86). */
 const TIMING_LINE_RE = /⏱/;
 
 /**
  * Reduce gate output to the lines that identify *what failed*, dropping what
  * differs between two runs over identical content.
+ *
+ * The Maven `Finished at:` timestamp and the `=` padding and clock suffix of
+ * pytest's result summary are presentation-only, so both are normalised too.
  *
  * Secrets are masked first, because a cached baseline is stored redacted
  * while the live run's output is raw — comparing the two unmasked would read
@@ -381,6 +397,11 @@ export function normaliseGateOutputLines(output: string): string[] {
         .trim()
     )
     .map((line) => line.replace(/\s+/g, " "))
+    .map((line) =>
+      line
+        .replace(MAVEN_FINISHED_AT_RE, "$1<timestamp>")
+        .replace(PYTEST_SUMMARY_RE, "= $1 =")
+    )
     .filter((line) => line !== "" && !TIMING_LINE_RE.test(line));
 }
 
