@@ -488,7 +488,8 @@ Deno.test("runReviewRound runs the chain Fable, Opus, rotation, then Codex, and 
   assertEquals(
     await runReviewRound(
       "review ONE round",
-      ["--model", "claude-fable-5-2", "--effort", "high"],
+      // The round's effort differs from Codex's, so the test tells them apart.
+      ["--model", "claude-fable-5-2", "--effort", "max"],
       deps,
     ),
     0,
@@ -502,6 +503,10 @@ Deno.test("runReviewRound runs the chain Fable, Opus, rotation, then Codex, and 
   const codex = calls[3]!;
   assertEquals(argAfter(codex.args, "--model"), "gpt-6-astra");
   assert(codex.args.includes('model_reasoning_effort="high"'));
+  assert(
+    !codex.args.some((arg) => arg.includes("max")),
+    "Codex runs at its own effort, not the round's",
+  );
   // The round's tool limits ride along as the guard's PreToolUse hook.
   assert(codex.args.includes("--dangerously-bypass-hook-trust"));
   assert(

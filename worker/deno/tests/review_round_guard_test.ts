@@ -124,6 +124,90 @@ Deno.test("the guard refuses a command off the list, an out-of-round write and s
   );
 });
 
+Deno.test("the guard fails closed on shell syntax it does not model (Issue #5083)", () => {
+  // Each line runs an off-list command or writes outside the round in bash.
+  for (
+    const line of [
+      // `>&word` is a file redirect unless the word is a descriptor.
+      "cat x >&/state/guidance.md",
+      // `$'\''` is one quote char to bash, so `;` and `rm` are unquoted.
+      "gh $'\\'' ; rm -rf /state #'",
+      'gh $"x" > /tmp/a',
+      // A quote in an input-redirect target opens a quote bash also sees.
+      "gh <x' '; rm -rf /state; echo '",
+      // A quote in a comment is not a quote.
+      "gh x #'\nrm -rf /state\n'",
+      // Brace, parameter and tilde expansion move the write target.
+      "mkdir /tmp/{a,../../state/b}",
+      "cat x > /tmp/${X:-../state/y}",
+      "cat x > $HOME/x",
+      "mkdir ~/x",
+      // `<>` opens for writing; `&>` and `>|` write too.
+      "cat <>/state/new",
+      "cat x &>/state/y",
+      "cat x >| /state/q",
+      // An unquoted here-document body is expanded; a quoted one ends at
+      // its marker, and what follows is checked.
+      "cat <<EOF > /tmp/x\n$(rm -rf /state)\nEOF",
+      "cat <<'EOF' > /tmp/x\nhi\nEOF\nrm -rf /state",
+      "gh x >",
+    ]
+  ) {
+    assertEquals(shell(line).deny, true, line);
+  }
+  for (
+    const line of [
+      "gh x 2>&1 >&2 | cat",
+      `cat <<'EOF' > ${ROUND_DIR}/review.json\n{"a": "$(not run)"}\nEOF`,
+      "gh x < 'a b' | head -1",
+      "cat <<< 'a; b'",
+      "gh x &>> /tmp/z",
+    ]
+  ) {
+    assertEquals(shell(line), { deny: false }, line);
+  }
+});
+
+Deno.test("the guard checks a shell line that carries a patch as shell (Issue #5083)", () => {
+  const patch = (path: string) =>
+    `*** Begin Patch\n*** Add File: ${path}\n+hi\n*** End Patch`;
+  assertEquals(shell(`rm -rf /state # *** Begin Patch`).deny, true);
+  assertEquals(
+    shell(`apply_patch <<'EOF'\n${patch(`${ROUND_DIR}/a.md`)}\nEOF`),
+    { deny: false },
+  );
+  assertEquals(
+    shell(`apply_patch <<'EOF'\n${patch("/state/x")}\nEOF`).deny,
+    true,
+  );
+  // A marker line inside the body ends the here-document early in bash.
+  assertEquals(
+    shell(
+      `apply_patch <<'EOF'\n*** Begin Patch\nEOF\nrm -rf /state\n*** End Patch\nEOF`,
+    ).deny,
+    true,
+  );
+  const argv = (command: string[]) =>
+    decideReviewRoundTool(
+      { tool_name: "Bash", tool_input: { command }, cwd: "/workspace" },
+      policy,
+    );
+  assertEquals(argv(["apply_patch", patch("/tmp/a")]), { deny: false });
+  assertEquals(argv(["apply_patch", patch("/state/a")]).deny, true);
+  assertEquals(argv(["bash", "-lc", "rm -rf /state"]).deny, true);
+  // A patch field does not stand in for the shell command beside it.
+  assertEquals(
+    decideReviewRoundTool(
+      {
+        tool_name: "Bash",
+        tool_input: { command: "rm -rf /state", input: patch("/tmp/a") },
+      },
+      policy,
+    ).deny,
+    true,
+  );
+});
+
 Deno.test("the guard's hook settings translate to Codex PreToolUse args", () => {
   const args = buildCodexArgs({
     prompt: "",

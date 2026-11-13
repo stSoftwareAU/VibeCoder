@@ -35,7 +35,20 @@ provider or model switch logs one `INFO:` line. Closes #5083.
   `Bash(...)` rules, `Edit(<round dir>/**)` and `--add-dir`). The hook refuses
   any shell command not on that list, command substitution, any redirect,
   `mkdir`, `apply_patch` or `Edit`/`Write` outside `/tmp` and the round
-  directory, and web fetches. `post.ts` (`deno run ...`) still runs.
+  directory, and web fetches. `post.ts` (`deno run ...`) still runs. The shell
+  parser fails closed on syntax it does not model: command and process
+  substitution, `$'...'` and `$"..."` quoting, a here-document with an unquoted
+  end marker, a redirect with no target and an unterminated quote are all
+  refused. `>&file`, `&>file`, `>|file` and `<>file` count as writes (`>&` with
+  a digit or `-` is a descriptor). A redirect or `mkdir` target with `$`, `~`,
+  braces or a glob is refused, because the guard checks the literal path.
+  Comments are dropped, and an input-redirect target is read by the same
+  quote-aware word reader. A patch inside a shell line is accepted only as a
+  bare `apply_patch` call with a quoted here-document. Any other shell text
+  around a patch goes through the shell check, and a `patch` or `input` field
+  never stands in for the command beside it. The guard holds Codex to the same
+  command list as a Claude round, no tighter: `gh` and `deno run` on that list
+  can still do whatever those tools do.
 - **Codex child env.** `runCodexCli` spawns with `clearEnv: true`. The child
   gets only the env `exportCodexCredential` builds, so the Claude, DeepSeek and
   metered OpenAI variables Codex's env builder strips are not inherited from the
@@ -113,9 +126,10 @@ regenerated to add the two config keys.
 
 - `worker/deno/tests/review_round_test.ts`, new tests:
   - `runReviewRound runs the chain Fable, Opus, rotation, then Codex, and stops before DeepSeek (Issue #5083)`:
-    the Codex args carry `--model gpt-6-astra` and
-    `model_reasoning_effort="high"`, stdin carries the round prompt, and the
-    Codex env has no Claude token.
+    the round runs at `--effort max`, and the Codex args carry
+    `--model gpt-6-astra` and `model_reasoning_effort="high"` with no `max`.
+    Stdin carries the round prompt, and the Codex env has no Claude token.
+    Passing the round's `--effort` to `buildCodexArgs` makes this test fail.
   - Each link is taken only after the previous one is spent:
     `does not step a Fable round down unless it was usage-limited`,
     `does not reach Codex when the rotated retry failed for another reason`,
@@ -137,6 +151,23 @@ regenerated to add the two config keys.
     `Deno.env`, so it stays in the parallel pass.
   - The chain test also checks that the Codex args carry the guard's
     `hooks.PreToolUse` and `--dangerously-bypass-hook-trust`.
+- `worker/deno/tests/review_round_guard_test.ts`:
+  `the guard fails closed on shell syntax it does not model (Issue #5083)`
+  refuses `cat x >&/state/guidance.md`, `gh $'\'' ; rm -rf /state #'`,
+  `gh <x' '; rm -rf /state; echo '`, a quote inside a comment followed by `rm`
+  on the next line, `mkdir /tmp/{a,../../state/b}`,
+  `cat x > /tmp/${X:-../state/y}`, `$HOME` and `~` targets, `<>`, `&>`, `>|`
+  outside the round, an unquoted here-document, and a command after a quoted
+  one. It allows `2>&1 >&2`, a quoted here-document into the round directory, a
+  quoted input file, a here-string and `&>> /tmp/z`.
+  `the guard checks a shell line that carries a patch as shell (Issue #5083)`
+  refuses `rm -rf /state # *** Begin Patch`, a here-document patch outside the
+  round, a body line equal to the marker followed by `rm`, `bash -lc` running
+  `rm`, and a Bash call whose `input` field is a patch. It allows a quoted
+  here-document `apply_patch` and an `["apply_patch", patch]` argv into the
+  round. Both tests fail against the previous guard (5 passed, 2 failed) and
+  pass now. The bypass forms were also run in real bash first, which ran the
+  command after them.
 - `worker/deno/tests/review_round_guard_test.ts` (new): the policy read off
   run.sh-shaped args; `post.ts`, `gh ... --jq '.a | .b' | head`, a redirect into
   the round dir and `mkdir -p /tmp/...` are allowed; `rm`, a chained `curl`,
@@ -182,10 +213,10 @@ regenerated to add the two config keys.
 - `./quality.sh < /dev/null` on the head passed with skipped checks: config
   integration (no `.config.json`) and checkov (not installed).
 
-Not done: the verifier's fixes above (guard, `clearEnv`, login check) were not
-red-checked against the old code. Codex was not run for real (the CLI is not
-installed here), so the Codex round's behaviour against a live PR is not
-observed. It is also not checked whether a sub-agent with no `effort` takes the
-session's effort. Codex's `input_tokens` may already include its cached tokens.
-The adapter counts both, so a priced Codex model could be overstated; the
-adapter is unchanged.
+Not done: the earlier verifier fixes (`clearEnv`, login check) were not
+red-checked against the old code. The guard's fail-closed tests and the Codex
+effort test were. Codex was not run for real (the CLI is not installed here), so
+the Codex round's behaviour against a live PR is not observed. It is also not
+checked whether a sub-agent with no `effort` takes the session's effort. Codex's
+`input_tokens` may already include its cached tokens. The adapter counts both,
+so a priced Codex model could be overstated; the adapter is unchanged.
