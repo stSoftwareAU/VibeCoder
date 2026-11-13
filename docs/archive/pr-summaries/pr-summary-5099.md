@@ -1,138 +1,129 @@
-# PR Summary — Issue #5099
-
 ## Summary
 
-The source run was released with no PR, and its reason read "Claude execution
-failed: Failed to execute Claude: ps timed out after 10000ms". After an external
-or incomplete kill, `runClaudeWithTimeout` (`worker/deno/lib/claude_runner.ts`)
-awaits `DescendantTracker.collectOrphans` without a catch. That method's doc
-says it never throws, but the probes it calls rethrow a command timeout on
-purpose (PR #4289). On a loaded host one `ps` took longer than 10 s. The timeout
-escaped the runner's main `try`, and the outer catch replaced the agent's whole
-result with that error. The result was recorded as `internal_error`, classified
-`worker-crash` and auto-filed.
-
-`collectOrphans` now keeps its contract. A probe or signal that fails stops the
-sweep. The method then logs one error line and an `ORPHANS_UNCOLLECTED` security
-line, each naming the cause and the pids already signalled, and returns what was
-collected so far. The runner's result therefore reaches the execute phase's
-existing handling for a killed or timed-out run. Closes #5099.
+Keep orphan-cleanup exceptions from discarding a completed agent invocation's
+output and kill evidence. A throwing probe or signal stops the sweep, records
+its cause and partial progress, and returns the PIDs already signalled. Failed
+subtree discovery also stops cleanup instead of falling back to the root alone.
+Closes #5099.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The issue body withholds its source. The cause came from the release comment
-  on the source issue in a private fleet repository: host `vibe-coder-46458`,
-  started 11:47 UTC, released 12:52:48 UTC on 2026-11-12, phase `execute`, with
-  the message quoted above.
-- The defect is in the collector, not the runner. Its only caller already relies
-  on "Never throws", so making that true fixes every path that reaches it
-  without a second catch in the runner.
-- An orphan sweep is cleanup after the agent has already exited. It failing is
-  no reason to throw away the agent's output, exit status and kill evidence.
+- `collectOrphans` promised never to throw, but a process-probe timeout escaped
+  into the runner's outer catch and replaced its result with an execution error.
+- Handle cleanup failures in the collector so its existing runner caller can
+  return output, exit status and watchdog evidence without a second catch.
 
 ### Essential Design Decisions
 
-- The probes still rethrow a timeout, so a timed-out `ps` is never read as
-  "process gone" or "no parent". The PR #4289 intent stands: a timeout stops the
-  sweep and nothing more is signalled. It does not let the sweep go on with
-  guessed data.
-- Fail loud without failing the run. The cause appears in a `logger.error` line
-  and in the `ORPHANS_UNCOLLECTED` security event
-  (`after=<reason> cause=<message> signalled=<pids|none>`), and the error line
-  says that any survivor is left running.
-- `collected` is filled as each TERM is sent, so a sweep that fails in its wait
-  loop reports the pids it already signalled. On the success path, `collected`,
-  `skipped` and the `ORPHANS_COLLECTED` lines are unchanged.
+- Stop on a thrown probe or signal; do not continue signalling with incomplete
+  process-table data. Log an error and `ORPHANS_UNCOLLECTED`, including the cause
+  and PIDs whose TERM call completed. Survivors can remain running.
+- Retain snapshot liveness, parentage and PID-age checks, bottom-up TERM/KILL
+  handling, and the successful `ORPHANS_COLLECTED` event.
+- Keep the real timeout producer's zero-budget fixture: it rejects before
+  spawning, so its result depends on neither host load nor a timer race.
 
 ### Undiscoverable Facts
 
-- The release comment does not record which kill (an external kill or an
-  incomplete watchdog kill) led to the sweep. The fix covers both, because both
-  reach the same `collectOrphans` call.
+- The private source-run archive identifies run `vibe-mwdgtb02-e62970`, host
+  `vibe-coder-46458`, started 2026-11-12 11:46:43 UTC, finished 12:52:57 UTC:
+  `no_pr`, phase `execute`, category `internal_error`, class `worker-crash`.
+  This independently corroborates the incident's host, window and classification.
+- That metadata does not contain the exception reason. The archived agent
+  transcript contains no timeout line, and the live source issue no longer
+  retains the release comment quoted by the checkpoint summary. The original
+  `ps timed out after 10000ms` diagnosis is therefore not independently
+  confirmed from source-run logs in this run.
+- The later #5099 attempts stopped at the pre-push gate or the host disk floor
+  (42.9 GB free, 46.0 GB floor). Those are separate recorded failures; this
+  change does not alter their gates.
 
 ## Evidence
 
-Backend-only change. No UI file is touched.
+Backend-only change; no visual surface changed.
 
 ```mermaid
 flowchart LR
-    K[agent killed / kill incomplete] --> C[collectOrphans]
-    C -->|probe ok| S[ORPHANS_COLLECTED]
-    C -->|ps timed out| U["error + ORPHANS_UNCOLLECTED<br/>(new: no throw)"]
-    S --> R[run result returned]
-    U --> R
-    C -. before .-> X["throw → 'Failed to execute Claude: ps timed out…'<br/>→ internal_error → worker-crash"]
+    A[Agent killed or watchdog kill incomplete] --> B[Collect saved descendants]
+    B -->|cleanup succeeds| C[ORPHANS_COLLECTED]
+    B -->|probe or signal throws| D[Error and ORPHANS_UNCOLLECTED]
+    C --> E[Return agent output and exit evidence]
+    D --> E
 ```
 
-- The real producer's timeout message was observed through `readParentPid`. With
-  a 0 ms budget, `commandOutputWithTimeout` throws `ps timed out after 0ms`, the
-  same `${executable} timed out after ${ms}ms` form as the incident's
-  `ps timed out after 10000ms`. The collector test uses that real function.
-- Docs: grep of `README.md`, `docs/` (excluding `docs/archive/`), `SECURITY.md`
-  and `docs/THREAT-MODEL.md` for `collectOrphans`, `ORPHANS_COLLECTED` and
-  "orphan collect" found no manual describing the sweep. The only doc surface is
-  the `collectOrphans` doc comment, and this diff updates it.
-- Issue numbers in the diff: #5099 (fix(worker): worker-crash — runs releasing
-  with no PR). PR #4289 (Give every subprocess an explicit timeout) is cited
-  only in this summary and in the commit message.
+- On current unfixed main (`da7d20c1a`), the runner regression returned
+  `Failed to execute Claude: ps timed out after 10000ms`. With the fix, it
+  retains the agent's output, exit 137 and `timedOut: false`.
+- `readParentPid(pid, 0)` exercises the real
+  `commandOutputWithTimeout` producer and throws `ps timed out after 0ms`.
+  Its immediate rejection is explicit in `worker/deno/lib/subprocess_timeout.ts`;
+  it does not probe or signal the fixture's invented PIDs.
+- The load-bearing fake implements `OrphanCollectorDeps`: its injected timeout
+  matches the producer's error format. `worker/deno/lib/pid_guard.ts` rethrows
+  command timeouts from liveness, age and descendant probes. The runner test
+  drives `runClaudeWithRetry` with a gated agent stub that SIGKILLs itself.
+- Read `docs/INTERNALS.md`'s PID guard section and updated it, the collector
+  method comment and the caller's memory-reclamation comment for partial
+  cleanup. Searches of README files, non-archived docs and source callers found
+  no other manual describing `collectOrphans` or its security events.
+- Provenance checked: #5099: fix(worker): worker-crash — runs releasing with no PR.
 
 ## Reproduction
 
-- **symptom** — a killed agent run on a loaded host ended as
-  `Failed to execute Claude: ps timed out after 10000ms`. Its result was
-  discarded, and the run was released with no PR and filed as `worker-crash`
-- **status** — `verified` — the regression test was observed failing against the
-  unfixed code
-  (`expected ok result, got Error: Failed to execute Claude: ps timed out after 10000ms`)
-  and passing after the fix
+- **symptom** — an orphan probe timeout replaces the killed agent's result with
+  `Failed to execute Claude: ps timed out after 10000ms`, losing output and
+  kill evidence
+- **status** — `partial` — reason: the runner failure was observed against
+  unfixed main using an injected timeout, then passed with the fix; an actual
+  ten-second OS probe stall and the complete historical incident were not
+  recreated
 - **regression test** —
   `worker/deno/tests/claude_runner_killed_test.ts::runClaudeWithRetry - a SIGKILLed agent whose orphan sweep's ps times out still returns its result (Issue #5099)`
 
 ## Test Plan
 
-- Added to `worker/deno/tests/claude_runner_killed_test.ts`: "runClaudeWithRetry
-  - a SIGKILLed agent whose orphan sweep's ps times out still returns its result
-    (Issue #5099)". A real agent stub SIGKILLs itself, and fake collector deps
-    answer `getParentPid` with the incident's timeout. The test asserts `ok`,
-    `killed`, the agent's output and an error line carrying the cause, and that
-    no signal was sent. It drives the runner, the production caller. Red on the
-    unfixed code, green after the fix.
-- Added to `worker/deno/tests/orphan_collector_test.ts`: "orphan collector - a
-  ps probe that times out stops the collection without throwing and names the
-  cause (Issue #5099)". It uses the real `readParentPid(pid, 0)`. It asserts the
-  sweep resolves, that nothing is collected or signalled, that the error and
-  `ORPHANS_UNCOLLECTED` lines name `ps timed out after 0ms` and `AGENT_KILLED`,
-  and that no `ORPHANS_COLLECTED` line is written. Red on the unfixed code (the
-  timeout escaped as a rejection).
-- Added to `worker/deno/tests/orphan_collector_test.ts`: "orphan collector - a
-  probe that times out after TERM was sent reports the pids already signalled
-  (Issue #5099)". It asserts `collected` is `[102, 101]` and that both lines
-  name those pids and the cause. Red on the unfixed code.
-- Added to `worker/deno/tests/orphan_collector_test.ts`: "orphan collector - the
-  logged cause is the error's message, or the thrown value itself when it is not
-  an Error (Issue #5099)". A `sendSignal` that rejects with an `Error` and then
-  with a bare string must give the exact line
-  `[ORPHANS_UNCOLLECTED] after=AGENT_KILLED cause=<message> signalled=none` and
-  a matching error line. This pins the `error instanceof Error` ternary at
-  `orphan_collector.ts:221`. With that condition negated the test fails (the
-  cause becomes `Error: …` or `undefined`); on the head it passes.
-- Edited only the `capturingLogger()` helper in both test files, which now also
-  records `error` lines. No assertion was removed. The existing collector tests,
-  including the success-path `ORPHANS_COLLECTED` test, run unchanged.
-- `deno test -A tests/orphan_collector_test.ts tests/claude_runner_killed_test.ts`
-  from `worker/deno` on the head: 23 passed, 0 failed.
-- `./quality.sh < /dev/null` on `3003ef32` (the head before this summary edit):
-  passed in 793 s. Config integration and checkov were skipped by the gate
-  itself. Deno tests, lint, type check, fmt, markdownlint, mermaid and semgrep
-  passed.
-- The pre-push gate's own `deno task test:unit` list for this diff (1,912 files:
-  every test that imports `orphan_collector.ts` directly or transitively,
-  rebuilt with `loadReferencedUnitTests`) on `3003ef32`: exit 0, parallel pass
-  1,864 files passed in 8m05s, serial pass 829 passed and 0 failed. An earlier
-  attempt was blocked by this gate. Its output was cut off before the failing
-  test, and that failure did not recur on the same commit.
-- Branch outcomes of the new catch: a throw before any signal (first collector
-  test) and a throw after TERM (second collector test). The no-throw path is
-  covered by the existing collector tests.
+- [x] Preserve checkpoint commits and merge current main without rewriting history.
+- [x] Review source-run records, collector guards, caller and documentation.
+- [x] Observe regressions against unfixed main and passing targeted tests.
+- [ ] Complete quality, summary and pre-push checks; commit and push the result.
+
+- `worker/deno/tests/orphan_collector_test.ts`: added cases for a real
+  zero-budget parent probe, timeout after TERM, Error and non-Error signal
+  failures, and failed subtree discovery. They assert specific causes,
+  partial progress, surviving processes and absence of success events/signals
+  where cleanup stopped. Existing successful cleanup, PID reuse, empty
+  snapshot and TERM/KILL escalation tests remain unchanged.
+- `worker/deno/tests/claude_runner_killed_test.ts`: added the runner regression
+  above, asserting output, killed status, raw and reported exit 137,
+  `timedOut: false`, no cleanup signals and the logged cause.
+- No existing assertion was removed. Both capturing loggers now retain error
+  lines. No new production API or dependency was added.
+- Against main's collector with these tests retained:
+  `deno task test:unit tests/orphan_collector_test.ts tests/claude_runner_killed_test.ts`
+  failed with 19 passed and 5 failed. The runner exposed the execution error;
+  parent/wait/signal errors escaped; subtree failure incorrectly collected root
+  101. The subtree regression also failed against the checkpointed fix.
+- With the final production and test changes, that same task passed:
+  24 passed, 0 failed. Targeted `deno fmt --check`, `deno lint` and
+  `deno check --frozen --lock=deno.lock` passed for both production and both
+  test files.
+- Caller checked: `runClaudeWithTimeoutBody` in
+  `worker/deno/lib/claude_runner.ts`, reached through `runClaudeWithRetry`.
+  It uses the same collector for external kills and incomplete watchdog kills;
+  the subtree test exercises the latter reason. Existing empty/no-root returns
+  still bypass signalling; PID ownership and signalling order are unchanged.
+- No twinned collector rule was found. No persisted data, credential handling,
+  external command construction or path guard changed.
+
+## Merge verification
+
+CI and independent code review are pending.
+
+## Limitations and remaining risk
+
+The original host's complete worker log and ten-second OS stall were not
+reproduced. Cleanup failures can leave descendants running; the error and
+security event report that condition. Full quality and pre-push results are
+not yet recorded.
