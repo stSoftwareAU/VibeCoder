@@ -121,11 +121,15 @@ flowchart TD
   module. The first full gate run failed only on
   `tests/lib_sweep_coverage_test.ts` (module claimed by no slice), and the
   `completeness checks` stage failed for the same reason. After the slice was
-  added, `deno task check:manifests` → 870 passed, 0 failed.
-- Full gate: see the result line below.
+  added, `deno task check:manifests` → 870 passed, 0 failed. The ancestry
+  guard (`sweep-drift --default-branch origin/main`) exits 0, with `sweptAt`
+  set to `origin/main`.
+- `./quality.sh < /dev/null` at `69208427` → `Result: PASSED (with skipped
+  checks)`. `gitleaks: PASSED (commit range f67e030e991f..HEAD, gitleaks
+  8.30.1; ...)` and `deno tests: PASSED`. Two stages were skipped for host
+  reasons unrelated to this change: checkov (no pinned checkov or container
+  runtime here) and config integration (no `.config.json`).
 - No assertions were removed from existing tests.
-
-GATE_RESULT_LINE
 
 ## Docs
 
