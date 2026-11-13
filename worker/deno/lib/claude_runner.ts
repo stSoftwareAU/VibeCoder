@@ -2949,8 +2949,8 @@ async function runClaudeWithTimeoutBody(
           maxWaitSeconds: killAfterSeconds,
           logger,
         });
-        // Did the collection give the memory back (Issue #4382)? A VM that
-        // still reads high after its orphans are gone is evidence for the
+        // Did signalling descendants give memory back (Issue #4382)? A VM that
+        // still reads high after a complete or partial sweep is evidence for the
         // operator's restart decision — named, not inferred.
         if (externallyKilled && collection.collected.length > 0) {
           const after = await readMemoryPressureAtKill(

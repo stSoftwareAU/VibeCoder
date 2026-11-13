@@ -206,8 +206,8 @@ export class DescendantTracker {
   /**
    * Terminate every snapshot member that outlived the child and was
    * re-parented, together with its current subtree. Bottom-up, TERM then
-   * KILL after `maxWaitSeconds`. Never throws: a probe that fails or times
-   * out (the deps rethrow a command timeout rather than read it as "gone")
+   * KILL after `maxWaitSeconds`. Never throws: a probe or signal that throws
+   * (the deps rethrow a command timeout rather than read it as "gone")
    * stops the sweep, logs the cause and the pids already signalled, leaves any
    * survivor running, and returns what was collected so far (Issue #5099).
    */
@@ -290,12 +290,7 @@ export class DescendantTracker {
     const targets: number[] = [];
     const seen = new Set<number>();
     for (const root of roots) {
-      let subtree: number[] = [];
-      try {
-        subtree = await deps.getDescendants(root);
-      } catch {
-        // Fall back to the root alone.
-      }
+      const subtree = await deps.getDescendants(root);
       for (const pid of [...subtree, root]) {
         if (!seen.has(pid)) {
           seen.add(pid);

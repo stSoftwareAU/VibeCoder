@@ -501,3 +501,38 @@ Deno.test("orphan collector - the logged cause is the error's message, or the th
     );
   }
 });
+
+Deno.test("orphan collector - a failed subtree probe stops before signalling its root (Issue #5099)", async () => {
+  const { table, signals, deps } = fakeTable({
+    100: { ppid: 20, alive: true, elapsedSeconds: 900 },
+    101: { ppid: 100, alive: true, elapsedSeconds: 88 },
+    102: { ppid: 101, alive: true, elapsedSeconds: 87 },
+  });
+  const tracker = new DescendantTracker(CHILD, {
+    ...deps,
+    getDescendants: (pid) => {
+      if (pid === 101) throw new Error("ps timed out after 10000ms");
+      return deps.getDescendants(pid);
+    },
+  }, { nowMs: () => 1_000_000 });
+  await tracker.refresh();
+  assertEquals([...tracker.snapshot()], [102, 101]);
+  table.get(100)!.alive = false;
+  table.get(101)!.ppid = 1;
+
+  const { logger, security, errors } = capturingLogger();
+  const result = await tracker.collectOrphans({
+    reason: "KILL_INCOMPLETE",
+    maxWaitSeconds: 2,
+    logger,
+  });
+  assertEquals(result, { collected: [], skipped: [] });
+  assertEquals(signals, []);
+  assertEquals(table.get(101)!.alive, true);
+  assertEquals(table.get(102)!.alive, true);
+  assertEquals(security, [
+    "[ORPHANS_UNCOLLECTED] after=KILL_INCOMPLETE cause=ps timed out after 10000ms signalled=none",
+  ]);
+  assertEquals(errors.length, 1);
+  assert(errors[0]!.includes("ps timed out after 10000ms"));
+});

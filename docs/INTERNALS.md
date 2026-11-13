@@ -802,6 +802,14 @@ The PID guard (migrated to Deno TypeScript) provides single-instance locking:
 - **Descendant cleanup** — traverses up to 20 levels of child processes to
   prevent orphans, using process groups where available.
 
+After an external agent kill or an incomplete watchdog kill, the runner uses
+[`DescendantTracker`](../worker/deno/lib/orphan_collector.ts) to collect
+survivors from its saved descendant snapshot. If a cleanup probe or signal
+throws, the sweep stops and logs the cause and the PIDs already signalled in an
+error and an `ORPHANS_UNCOLLECTED` security event. Surviving descendants are left
+running; the agent's output and exit evidence still return to the execute phase.
+Successful sweeps retain the `ORPHANS_COLLECTED` event.
+
 ### 📉 Failure tracking (`worker/deno/commands/failure_tracker.ts`)
 
 The failure tracker (migrated to Deno TypeScript) tracks consecutive failures on

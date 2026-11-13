@@ -693,6 +693,9 @@ Deno.test({
       );
       if (!result.ok) return;
       assertEquals(result.value.killed, true);
+      assertEquals(result.value.rawExitCode, 137);
+      assertEquals(result.value.exitCode, 137);
+      assertEquals(result.value.timedOut, false);
       assert(
         result.value.output.includes("still working"),
         `output: ${result.value.output}`,
