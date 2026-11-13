@@ -416,6 +416,11 @@ Deno.test("decidePreExistingGateFailure - pytest summaries crossing duration-wid
     ],
     ["1 failed, 2 passed in 59.87s", "1 failed, 2 passed in 60.02s (0:01:00)"],
     ["1 failed, 1 warning in 0.12s", "1 failed, 1 warning in 12.34s"],
+    ["no tests ran in 0.01s", "no tests ran in 10.02s"],
+    [
+      "1 failed, 1 skipped, 2 xfailed, 3 errors in 9.99s",
+      "1 failed, 1 skipped, 2 xfailed, 3 errors in 10.01s",
+    ],
   ];
   for (const [a, b] of pairs) {
     const baseline = pytestSep(a);

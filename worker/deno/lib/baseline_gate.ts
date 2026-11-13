@@ -358,7 +358,7 @@ const CLOCK_UNIT_RE = /(?<![\w.:])\d{1,3}:\d{2}(?::\d{2})?\s*(?:min|h)\b/g;
 /** pytest-style `(0:01:15)` clock that trails an already-masked duration (Issue #4918). */
 const TRAILING_CLOCK_RE = /(<duration>\s*\()\d{1,3}:\d{2}(?::\d{2})?(\))/g;
 
-/** Maven's `Finished at:` footer, an ISO offset timestamp that differs every run (Issue #5003). */
+/** Maven's `Finished at:` footer, an ISO-8601 timestamp that differs every run (Issue #5003). */
 const MAVEN_FINISHED_AT_RE =
   /^((?:\[INFO\] )?Finished at: )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:Z|[+-]\d{2}:?\d{2})?$/;
 

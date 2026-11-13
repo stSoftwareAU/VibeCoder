@@ -4239,10 +4239,11 @@ Maven's `Finished at:` line with an ISO-8601 timestamp, with or without its
 `[INFO] ` prefix, and pytest's `=`-padded result summary (for example
 `===== 1 failed, 2 passed in 9.87s =====`), whose padding is reduced to a single
 `=` on each side and whose `(H:MM:SS)` clock suffix is dropped. A summary is
-recognised only when every outcome word is one pytest prints. Source locations
-such as `file.ts:12:5`, other timestamps and other `=` separators are kept. The
-elapsed values are ignored while failure counts and diagnostics remain part of
-the comparison.
+recognised only when it reads `no tests ran`, or when every outcome is a count
+followed by `failed`, `passed`, `skipped`, `deselected`, `xfailed`, `xpassed`,
+`warning(s)`, `error(s)` or `rerun`. Source locations such as `file.ts:12:5`,
+other timestamps and other `=` separators are kept. The elapsed values are
+ignored while failure counts and diagnostics remain part of the comparison.
 
 When the answer is yes the run stops as an **expected skip**: no PR, no
 `failed`/`failed-once` label, no failure tracking, no repo failure record and no
