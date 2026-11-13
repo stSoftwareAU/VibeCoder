@@ -16,6 +16,8 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
+import { installConsoleRedaction } from "./console_redaction.ts";
+
 /** What the round may do, read off its Claude arguments. */
 export interface ReviewRoundToolPolicy {
   /** Allowed command prefixes, e.g. `gh`, `deno run`, `git log`. */
@@ -350,6 +352,7 @@ async function readAll(stream: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 if (import.meta.main) {
+  installConsoleRedaction();
   // A policy or payload it cannot read is refused: this guard is the only
   // limit on the Codex attempt's tools.
   let policy: ReviewRoundToolPolicy = { commands: [], writeDirs: [] };

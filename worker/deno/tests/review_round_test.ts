@@ -771,32 +771,48 @@ Deno.test("runCodexCli gives the child only the curated env, not this process's 
     "DEEPSEEK_API_KEY",
     "OPENAI_API_KEY",
   ];
-  const saved = names.map((name) => [name, Deno.env.get(name)] as const);
-  for (const name of names) Deno.env.set(name, `parent-${name}`);
-  try {
-    await withStubCodex(
-      (dir) => `env > '${dir}/env.txt'\nexit 0`,
-      async (binary, dir) => {
-        const attempt = await runCodexCli(
-          ["exec", "-"],
-          "",
-          { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin", CODEX_HOME: dir },
-          undefined,
-          undefined,
-          binary,
-        );
-        assertEquals(attempt.code, 0);
-        const seen = await Deno.readTextFile(`${dir}/env.txt`);
-        for (const name of names) {
-          assertEquals(seen.includes(`${name}=`), false, `${name} leaked`);
-        }
-        assertStringIncludes(seen, `CODEX_HOME=${dir}`);
-      },
+  // Run in a child process that holds the credentials, so this test never
+  // mutates its own environment.
+  const script = `
+    import { runCodexCli } from ${
+    JSON.stringify(new URL("../lib/review_round.ts", import.meta.url).href)
+  };
+    const [binary, dir] = Deno.args;
+    const attempt = await runCodexCli(
+      ["exec", "-"],
+      "",
+      { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin", CODEX_HOME: dir },
+      undefined,
+      undefined,
+      binary,
     );
-  } finally {
-    for (const [name, value] of saved) {
-      if (value === undefined) Deno.env.delete(name);
-      else Deno.env.set(name, value);
-    }
-  }
+    console.log(JSON.stringify(attempt.code));
+  `;
+  const childEnv: Record<string, string> = {};
+  for (const name of names) childEnv[name] = `parent-${name}`;
+  await withStubCodex(
+    (dir) => `env > '${dir}/env.txt'\nexit 0`,
+    async (binary, dir) => {
+      const result = await new Deno.Command(Deno.execPath(), {
+        args: ["eval", script, binary, dir],
+        cwd: new URL("..", import.meta.url).pathname,
+        env: childEnv,
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const stderr = new TextDecoder().decode(result.stderr);
+      assertEquals(result.code, 0, stderr);
+      assertEquals(
+        new TextDecoder().decode(result.stdout).trim(),
+        "0",
+        stderr,
+      );
+      const seen = await Deno.readTextFile(`${dir}/env.txt`);
+      for (const name of names) {
+        assertEquals(seen.includes(`${name}=`), false, `${name} leaked`);
+      }
+      assertStringIncludes(seen, `CODEX_HOME=${dir}`);
+    },
+  );
 });
