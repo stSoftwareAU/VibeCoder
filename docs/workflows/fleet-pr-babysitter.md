@@ -428,7 +428,14 @@ commit (the gate names it beside the head, so the merge-base is the base tip),
 not the PR's old fork point. A failing unit test that also fails the same way at
 the merge-base with the PR base is a warning, as in the other repair pushes.
 Without `--base-branch`, which the host passes from the PR's base branch, the
-gate has no baseline and a failing test blocks. A check that cannot run is never a pass, and
+gate has no baseline and a failing test blocks. Unit-test discovery also blocks
+when it cannot read or parse a Deno config or its task definitions, naming that
+config and reporting that unit tests were not checked. It does not drop the
+root's tests or fall through from an unreadable `deno.json` to `deno.jsonc`.
+A missing primary config may still use `deno.jsonc`; valid configs without
+`test:unit` remain ineligible. A config refusal is a code failure that withholds
+READY and spends a repair attempt, rather than an infrastructure retry.
+A check that cannot run is never a pass, and
 the kind of failure decides what it costs. A module-fetch outage, a missing
 ShellCheck and a missing or unusable cargo toolchain are infrastructure faults:
 no repair attempt is spent and the repair is retried after a backoff. A

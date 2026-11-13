@@ -15,6 +15,8 @@
  *   over every commit the branch has ahead of the PR base — so
  *   content the execute phase's WIP checkpoints already pushed is checked
  *   before `gh pr create`.
+ * - the babysitter's in-container repair command, via `runBabysitterTreeGate`,
+ *   over its uncommitted tree before its READY response reaches the host.
  *
  * It does four things, in order:
  *
@@ -1553,9 +1555,9 @@ export function planFormatterFixes(
 
 /**
  * Parse each deno root's `deno.json` / `deno.jsonc` scope from the working
- * tree. A root whose config is unreadable or unparseable is left out, so its
- * files are checked unfiltered and deno itself reports the broken config. A
- * symlink anywhere in the path, or a file over the size cap, is unreadable.
+ * tree. An unreadable or unparseable config leaves formatting unfiltered;
+ * unit-test discovery separately refuses such a config before validation.
+ * A symlink anywhere in the path, or a file over the size cap, is unreadable.
  */
 export async function loadDenoScopes(
   repoRoot: string,
@@ -1577,7 +1579,7 @@ export async function loadDenoScopes(
  * A deno root's config: `deno.json`, else `deno.jsonc`. Scope discovery may
  * ignore an unreadable file; unit-test discovery refuses it, so an unreadable
  * primary config cannot silently select the secondary config. Missing files
- * may fall through on both paths; null means neither config was found.
+ * may fall through on both paths; null means neither config could be read.
  */
 async function readDenoConfigText(
   repoRoot: string,
@@ -1625,8 +1627,9 @@ function definesUnitTestTask(text: string, path: string): boolean {
 /**
  * The deno roots whose config defines a `test:unit` task (Issue #4930), so the
  * gate can run the repo's own unit suite for changed tests. Root discovery
- * matches {@link loadDenoScopes}. An unreadable or unparseable config, or
- * invalid task definitions, throws rather than silently dropping its tests.
+ * matches {@link loadDenoScopes}. An unreadable or unparseable config, or a
+ * `tasks` value that is neither an object nor null, throws rather than silently
+ * dropping its tests.
  * Missing configs and valid configs without `test:unit` remain ineligible.
  */
 export async function loadDenoUnitTestRoots(

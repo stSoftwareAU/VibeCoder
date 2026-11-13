@@ -962,7 +962,12 @@ for (const config of ["deno.json", "deno.jsonc"]) {
     await agentClone(editFoo, async (clone) => {
       const path = `${clone}/worker/deno/${config}`;
       if (config === "deno.jsonc") {
-        await git(clone, "mv", "worker/deno/deno.json", "worker/deno/deno.jsonc");
+        await git(
+          clone,
+          "mv",
+          "worker/deno/deno.json",
+          "worker/deno/deno.jsonc",
+        );
       }
       const deps: BabysitterTreeGateDeps = {
         runner: async () => ({
@@ -976,9 +981,11 @@ for (const config of ["deno.json", "deno.jsonc"]) {
       const allowed = await runBabysitterTreeGate(clone, "main", deps);
       assertEquals(allowed, {
         kind: "passed",
-        checksRun: [config === "deno.json"
-          ? "deno task test:unit 'tests/foo_test.ts'"
-          : "deno task test:unit"],
+        checksRun: [
+          config === "deno.json"
+            ? "deno task test:unit 'tests/foo_test.ts'"
+            : "deno task test:unit",
+        ],
       });
 
       await Deno.writeTextFile(path, '{"tasks":');
