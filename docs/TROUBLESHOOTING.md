@@ -237,9 +237,13 @@ The next worker start files that record as a `bug` issue carrying only the run's
 facts, the figures derived from the record (silence before capture, the
 guest-probe state, guest memory and guest pressure) and a last step logged,
 from a fixed list (`pre-PR verifier`,
-`coverage carry-over check`, `quality gate`, `agent turn` or `unknown`, plus
-`mutation check` for logs written before Issue #5095 retired that step; it is the last step the log reported, so the wedge is in or after it,
-and it is not part of the dedup signature), then moves the file to
+`coverage carry-over check`, `quality gate`, `agent turn`, a setup step
+(`setup: issue claim`, `setup: claim churn check`, `setup: repository setup`,
+`setup: heartbeat start`, `setup: default branch sync`,
+`setup: feature branch` or `setup: pre-setup command`, each logged as the step
+starts, Issue #5128) or `unknown`, plus `mutation check` for logs written
+before Issue #5095 retired that step; it is the last step the log reported, so
+the wedge is in or after it, and it is not part of the dedup signature), then moves the file to
 `${LOG_DIR}/hard-kill-archive/`, where it is kept for up to 30 days or 2,000
 files. The archive, not the issue, holds the evidence (see
 [a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).

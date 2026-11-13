@@ -54,6 +54,7 @@ import {
 } from "./worker_log_cleanup.ts";
 import { redactedTail } from "./redacted_text.ts";
 import type { TerminalIssueRun } from "./run_callbacks.ts";
+import { SETUP_STEPS, setupStepStartLine } from "./setup_steps.ts";
 import {
   createRunFailureIssue,
   findOpenRunFailureIssue,
@@ -119,8 +120,11 @@ const AGENT_PROGRESS_LINE = /\[agent-progress\]/;
  * not applicable). The `mutation check` label is kept to classify logs written
  * before the mutation check was retired (Issue #5095). The pre-PR verifier and
  * the coverage check log nothing as they start, so a label names the last step
- * that logged: the wedge is in or after it. An `[agent-progress]` line never reaches this table: {@link hardKillLastStep}
- * labels it `agent turn` first, so the table needs no entry for it.
+ * that logged: the wedge is in or after it. Each setup step does log as it
+ * starts (Issue #5128), so a `setup: ...` label names the step the run had
+ * entered. An `[agent-progress]` line never reaches this table:
+ * {@link hardKillLastStep} labels it `agent turn` first, so the table needs no
+ * entry for it.
  */
 const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
   { label: "pre-PR verifier", pattern: /Pre-PR verifier/ },
@@ -137,6 +141,12 @@ const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
     label: "agent turn",
     pattern: /\bRunning [A-Za-z][A-Za-z ]{0,30} with \d+s timeout\b/,
   },
+  ...SETUP_STEPS.map((step) => ({
+    label: `setup: ${step}`,
+    pattern: new RegExp(
+      setupStepStartLine(step).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    ),
+  })),
 ];
 /**
  * `owner/repo#N`. Owner and repo draw from the same class, so a run of name

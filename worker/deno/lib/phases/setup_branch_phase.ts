@@ -66,6 +66,7 @@ import { releaseMilestoneBranchRefusalLabels } from "../milestone_branch_refusal
 import { isBrokenRefFailure } from "../broken_ref_repair.ts";
 import { CLONE_CORRUPT_MARKER } from "../failure_diagnosis.ts";
 import { releaseHostFaultFailureLabels } from "../host_fault_release.ts";
+import { setupStepStartLine } from "../setup_steps.ts";
 
 /**
  * Set up the repository and create/checkout the feature branch.
@@ -106,6 +107,9 @@ export async function workOnIssueSetupBranch(
     githubUser,
     fleetPrAuthors: config.fleetPrAuthors ?? [],
   });
+  // Issue #5128: each step logs as it starts so a hard-kill report names the
+  // step a wedge is in or after.
+  logger.info(setupStepStartLine("issue claim"), { repo, issueNumber });
   const claimResult = await deps.issues.claimIssue({
     repo,
     issueNumber,
@@ -175,6 +179,7 @@ export async function workOnIssueSetupBranch(
   }
 
   // Check for claim churn (Issue #861, #999)
+  logger.info(setupStepStartLine("claim churn check"), { repo, issueNumber });
   const churnResult = await deps.issues.checkClaimChurn({
     repo,
     issueNumber,
@@ -196,6 +201,7 @@ export async function workOnIssueSetupBranch(
   // (Issue #923) this is the lane's own worktree off that clone, so a
   // sibling slot working the same repository cannot move HEAD underneath
   // this run.
+  logger.info(setupStepStartLine("repository setup"), { repo, issueNumber });
   const setupResult = await deps.git.setupRepo(
     repo,
     config.workDir,
@@ -213,6 +219,7 @@ export async function workOnIssueSetupBranch(
   // Record initial heartbeat (Issue #631). The initial record is awaited
   // (Issue #1888); on failure release the claim and surface the failure
   // so the worker doesn't proceed without a live heartbeat marker.
+  logger.info(setupStepStartLine("heartbeat start"), { repo, issueNumber });
   const heartbeatStart = await startHeartbeat({
     repo,
     issueNumber,
@@ -246,6 +253,7 @@ export async function workOnIssueSetupBranch(
   state.branchName = deps.git.createBranchName(issueNumber, issueTitle);
 
   // Determine default branch from GitHub API, then sync it locally
+  logger.info(setupStepStartLine("default branch sync"), { repo, issueNumber });
   const detectedBranch = await deps.git.getRepoDefaultBranch(repo);
   if (!detectedBranch.ok) {
     return {
@@ -717,6 +725,7 @@ export async function workOnIssueSetupBranch(
 
   // Create feature branch from base (skipped when a checkpoint was resumed)
   if (!state.resumedFromCheckpoint) {
+    logger.info(setupStepStartLine("feature branch"), { repo, issueNumber });
     let branchResult = await deps.git.createFeatureBranchFromBase(
       state.branchName,
       state.baseBranch,
@@ -940,6 +949,7 @@ export async function workOnIssueSetupBranch(
   }
 
   // Run repository-specific pre-setup command if configured (Issue #85, #1184)
+  logger.info(setupStepStartLine("pre-setup command"), { repo, issueNumber });
   const preSetupResult = await runPreSetupCommand(
     repo,
     repoPath,
