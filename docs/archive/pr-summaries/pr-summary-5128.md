@@ -262,14 +262,12 @@ flowchart LR
       late-rejection test that passed without the code they named; both are
       removed.
 - [x] `deno task test:unit` on `setup_deadline_5128_test.ts`,
-      `setup_step_log_test.ts`, `hard_kill_report_test.ts` and the 22 test files
-      that call `workOnIssue` or `workOnIssueSetupBranch`: 400 passed, 0 failed.
-      `deno task check` type-checked 1176 files without error.
-- [x] `./quality.sh < /dev/null` on the final code: Result PASSED (with skipped
-      checks). Config integration (no `.config.json`) and Checkov (no binary or
-      container runtime) were skipped on this host. The first run failed on
-      three things, all fixed in the second commit: the Semgrep non-literal
-      RegExp, the unclaimed sweep module and the manifest completeness check.
+      `setup_step_log_test.ts`, `hard_kill_report_test.ts` and the other test
+      files that call `workOnIssue`, `workOnIssueSetupBranch` or touch
+      `InfrastructureDeps` (26 files): 407 passed, 0 failed.
+- [x] `./quality.sh < /dev/null` on the head after the review round: Result
+      PASSED (with skipped checks). Config integration (no `.config.json`) and
+      Checkov (no binary or container runtime) were skipped on this host.
 - Callers checked: `hardKillLastStep` is called by `formatHardKillBody`, which
   gets the new labels. `workOnIssueSetupBranch` has one caller,
   `workOnIssueCore`; its extra return arms are reached only after
