@@ -3,15 +3,15 @@
 The issue-work agent turn never armed the no-output (silence) watchdog.
 `docs/CONFIGURATION.md` documents `claude_no_output_timeout` (600 s by default)
 as the stuck-process detector that "still kills a silent run however many
-extensions were granted" on issue work. Neither issue-run call site passed it
-to the runner, though: `invokeAgent` in `worker/deno/lib/phases/execute_phase.ts`
+extensions were granted" on issue work. Neither issue-run call site passed it to
+the runner, though: `invokeAgent` in `worker/deno/lib/phases/execute_phase.ts`
 (the main loop) and `runExecuteClaudePhase` in
 `worker/deno/lib/execute_claude_phase.ts` (the `execute-claude-phase` command,
-where the value was used only for diagnostics). The runner's silence watchdog
-is off when `noOutputTimeout` is absent. A silent agent turn therefore ran on
-until the launcher watchdog reaped the container. Both incidents on this issue
-have that shape: last step `agent turn`, with the worker log silent for about
-49 minutes (16:53:16Z to 17:42:07Z) and for 54m 20s. Both call sites now pass
+where the value was used only for diagnostics). The runner's silence watchdog is
+off when `noOutputTimeout` is absent. A silent agent turn therefore ran on until
+the launcher watchdog reaped the container. Both incidents on this issue have
+that shape: last step `agent turn`, with the worker log silent for about 49
+minutes (16:53:16Z to 17:42:07Z) and for 54m 20s. Both call sites now pass
 `claude_no_output_timeout` to the runner. The host's incident archive could not
 be correlated from here, so the issue stays open. Part of #5062.
 
@@ -65,13 +65,13 @@ flowchart TD
   `--claude-no-output-timeout` usage text now says it arms the watchdog.
 - `docs/CONFIGURATION.md`: a paragraph in "Timeout behaviour" says issue work
   arms the watchdog and sets out the long-silent-tool-call trade-off.
-- Docs read: `docs/CONFIGURATION.md` lines 2000, 2051, 2705-2770 and
-  3055-3066. They already described the armed watchdog on issue work, which is
-  true now. `lib/agent_progress.ts` already says a silent agent is the no-output
+- Docs read: `docs/CONFIGURATION.md` lines 2000, 2051, 2705-2770 and 3055-3066.
+  They already described the armed watchdog on issue work, which is true now.
+  `lib/agent_progress.ts` already says a silent agent is the no-output
   watchdog's territory.
 - Callers checked: these are the only two issue-run spawns of
-  `runClaudeWithRetry` with `phase: "issue"`. The other phases (CI fix,
-  PR feedback, spelling, merge conflict, grill-me and custom label) already pass
+  `runClaudeWithRetry` with `phase: "issue"`. The other phases (CI fix, PR
+  feedback, spelling, merge conflict, grill-me and custom label) already pass
   `noOutputTimeout`.
 - Issues cited: #5062 is this issue. #1825 is the silence watchdog the runner
   already implements.
@@ -108,12 +108,14 @@ flowchart TD
   - "execute_phase - claude_no_output_timeout 0 leaves the silence watchdog off
     (Issue #5062)": with 0, every runner call receives 0.
 - `worker/deno/tests/execute_claude_phase_test.ts` adds "runExecuteClaudePhase -
-  arms the configured no-output watchdog on the coding run (Issue #5062)"
-  (437 reaches the runner).
+  arms the configured no-output watchdog on the coding run (Issue #5062)" (437
+  reaches the runner).
 - Red before the fix: against the unmodified `execute_phase.ts`, both routing
-  tests failed (`Actual undefined, Expected 437` and `Actual undefined,
-  Expected 0`). Against the unmodified `execute_claude_phase.ts`, the command
-  path test failed (`Actual undefined, Expected 437`).
+  tests failed (`Actual undefined, Expected 437` and
+  `Actual undefined,
+  Expected 0`). Against the unmodified
+  `execute_claude_phase.ts`, the command path test failed
+  (`Actual undefined, Expected 437`).
 - These tests check that the value reaches the runner. That the runner then
   kills a silent process is covered by existing tests:
   `worker/deno/tests/claude_runner_test.ts::runClaudeWithTimeout - kills silent process via no-output watchdog (Issue #1825)`
