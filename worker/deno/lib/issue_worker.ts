@@ -619,13 +619,16 @@ async function workOnIssueCore(
       let claimNotHeld = false;
       if (state.setupAbandoned) {
         const claim = state.setupClaim;
-        const held = claim !== undefined && (claim.won ||
+        const commentPresent = claim !== undefined && !claim.won &&
           await ownClaimCommentPresent(
             deps.github.runGhCommand,
             ctx.repo,
             ctx.issueNumber,
             claim.workerId,
-          ));
+          );
+        // Re-read `won` after the comment read: a claim that came back
+        // during it is left to this run to release, so it is released once.
+        const held = claim !== undefined && (claim.won || commentPresent);
         state.setupClaimReleasedByRun = held;
         claimNotHeld = !held;
       }

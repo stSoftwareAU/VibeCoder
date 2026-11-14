@@ -164,12 +164,15 @@ export async function workOnIssueSetupBranch(
     },
   });
   // Issue #5128: a claim won after the run gave up on setup has no run to
-  // work or release it. Release it here, unless the run already did.
+  // work or release it. Release it here, unless the run already did. While
+  // the run is still deciding (`setupClaimReleasedByRun` unset), record the
+  // win instead: the run reads it once its comment check returns and
+  // releases the claim itself, so it is released exactly once.
   if (state.setupAbandoned) {
-    if (
-      claimResult.ok && claimResult.value.claimed &&
-      !state.setupClaimReleasedByRun
-    ) {
+    const wonLate = claimResult.ok && claimResult.value.claimed;
+    if (wonLate && state.setupClaimReleasedByRun === undefined) {
+      if (state.setupClaim) state.setupClaim.won = true;
+    } else if (wonLate && !state.setupClaimReleasedByRun) {
       try {
         await deps.github.createClient(logger).unassignIssue(
           repo,

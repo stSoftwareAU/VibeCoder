@@ -1044,3 +1044,48 @@ Deno.test("workOnIssue: a broken-ref sweep that returns late is not followed by 
   await abandonedSetupStopped(h);
   assertEquals(calls, { feature: 1, repair: 0 });
 });
+
+for (const comments of ["4242\n", ""]) {
+  Deno.test(
+    `workOnIssue: a claim won while the run reads its claim comment (${
+      comments === "" ? "not yet posted" : "posted"
+    }) is released once (Issue #5128)`,
+    async () => {
+      const late = gate<Awaited<ReturnType<IssueDeps["claimIssue"]>>>();
+      const read = gate<string>();
+      const reading = gate<void>();
+      const h = harness({
+        issues: {
+          claimIssue: () => {
+            h.entered.open();
+            return late.promise;
+          },
+        },
+        github: {
+          runGhCommand: () => {
+            reading.open();
+            return read.promise;
+          },
+        },
+      });
+
+      const ctx = issueContext(5620);
+      const run = workOnIssue(ctx, h.deps);
+      await h.entered.promise;
+      await h.clock.advance(DEADLINE_MS);
+      // The run is reading the issue's comments to decide whether it holds the
+      // claim; the claim comes back before that read does.
+      await reading.promise;
+      late.open(CLAIMED);
+      await abandonedSetupStopped(h);
+      read.open(comments);
+      const result = await run;
+
+      assertEquals(result.category, "timeout");
+      // One release in all: the abandoned setup's unassign, or run_core's
+      // failure path when the result does not carry `claimNotHeld`.
+      const runReleases = result.claimNotHeld ? 0 : 1;
+      assertEquals(h.unassigns.length + runReleases, 1);
+    },
+  );
+}
