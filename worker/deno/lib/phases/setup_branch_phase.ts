@@ -591,6 +591,7 @@ export async function workOnIssueSetupBranch(
   state.resumedFromCheckpoint = false;
   state.handoverNote = undefined;
   const persisted = await loadResumeState(config.workDir, repo, issueNumber);
+  if (state.setupAbandoned) return abandonedSetup(logger);
   const resumeOutcome = await resumeIssueBranch(
     {
       issueNumber,
@@ -610,7 +611,13 @@ export async function workOnIssueSetupBranch(
     },
     {
       listRemoteIssueBranches: deps.git.listRemoteIssueBranches,
-      orderBranchesByRecency: deps.git.orderBranchesByRecency,
+      // The ordering fetches each candidate into the lane worktree, which
+      // writes its `FETCH_HEAD` and objects to the shared store (Issue
+      // #5128): an abandoned setup keeps the listed order and fetches nothing.
+      orderBranchesByRecency: (branches, gitOptions) =>
+        state.setupAbandoned
+          ? Promise.resolve([...branches])
+          : deps.git.orderBranchesByRecency(branches, gitOptions),
       countCommitsAhead: deps.git.countCommitsAhead,
       // The one call that moves HEAD in the lane worktree (Issue #5128): an
       // abandoned setup declines the checkout rather than start it, because
@@ -766,6 +773,9 @@ export async function workOnIssueSetupBranch(
         : {}),
       logger,
     });
+    // `primeStreamSession` can delete a stored stream session, which the
+    // slot's next run may already have adopted (Issue #5128).
+    if (state.setupAbandoned) return abandonedSetup(logger);
     const adoption = await primeStreamSession({
       workDir: config.workDir,
       repo,

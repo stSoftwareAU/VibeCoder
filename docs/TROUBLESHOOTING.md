@@ -260,21 +260,21 @@ starts late or `claude_timeout` is large. The watchdog is set independently of
 deadline after it. With no supervisor cap published (unset or `0`) there is
 nothing to cap the budget by, and a large `claude_timeout` can push the deadline
 past the watchdog. The run ends as a setup `timeout` failure. It releases the
-claim only when it holds it: a claim `claimIssue` returned, or one whose own
-claim comment is on the issue and is authored by this run's GitHub account.
-Copied or quoted markers do not establish ownership. A claim never taken is
-left alone, because every
-host shares one login and an unassign would strip another host's live claim. The
-abandoned setup returns at its next checkpoint, and a claim it wins late is
-released. The checkpoints sit before most calls that write to the lane worktree,
-the shared clone or GitHub (the default branch sync, milestone branch push and
-pre-sync, milestone session restore, branch repair and the pre-setup command),
-and the resume checkout declines once abandoned. A call already running when the
-deadline fires finishes. The resume-state reads after the milestone session
-restore and the stream-session priming have no checkpoint ahead of them, so a
-deadline that fires during the session restore or the handover read still lets
-them start (priming can reset a stored stream session); the checks after them
-stop everything later. Within the watchdog's reach, a step that wedges while the
+claim only when it still holds it: its own claim comment must be on the issue,
+authored by this run's GitHub account, even for a claim `claimIssue` returned,
+because a host that re-claims after the fleet's recovery freed the issue deletes
+that comment. Copied or quoted markers do not establish ownership, and a read
+of the comments that fails counts as not held. A claim never taken is left
+alone, because every host shares one login and an unassign would strip another
+host's live claim. The abandoned setup returns at its next checkpoint, and a
+claim it wins late is released. The checkpoints sit before the calls that write
+to the lane worktree, the shared clone or GitHub (the default branch sync,
+milestone branch push and pre-sync, milestone session restore, the resume
+lookup, branch repair, the stream-session priming and the pre-setup command),
+and the resume checkout and the candidate ordering fetch decline once
+abandoned. A call already running when the deadline fires finishes. The
+resume-state reads (`loadResumeState`, the handover read) are not checkpoints,
+but they only read. Within the watchdog's reach, a step that wedges while the
 worker is still alive therefore stops holding the issue without waiting for
 the launcher to reap the container. Check whether the host is wedging
 repeatedly — a chronic offender needs the runtime itself looked at:

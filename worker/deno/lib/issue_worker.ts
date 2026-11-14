@@ -615,11 +615,15 @@ async function workOnIssueCore(
     if (setupResult.status === "failure") {
       // The run releases the claim on a failure, and every fleet host shares
       // one login, so after a setup deadline it may do so only for a claim it
-      // holds: one `claimIssue` returned, or whose own comment is on the issue.
+      // still holds: its own comment must be on the issue. A claim that was
+      // won earlier is no exception: a host that re-claims after the fleet's
+      // recovery freed the issue deletes this run's claim comment, so a
+      // missing comment means the assignment is now another host's.
       let claimNotHeld = false;
       if (state.setupAbandoned) {
         const claim = state.setupClaim;
-        const commentPresent = claim !== undefined && !claim.won &&
+        const wonBeforeRead = claim?.won === true;
+        const commentPresent = claim !== undefined &&
           await ownClaimCommentPresent(
             deps.github.runGhCommand,
             ctx.repo,
@@ -627,9 +631,11 @@ async function workOnIssueCore(
             claim.workerId,
             ctx.githubUser,
           );
-        // Re-read `won` after the comment read: a claim that came back
-        // during it is left to this run to release, so it is released once.
-        const held = claim !== undefined && (claim.won || commentPresent);
+        // A claim that was still pending and came back during the read was
+        // taken just now, so this run holds it whether or not the read saw
+        // its comment; it is released once, by the run.
+        const heldNow = claim !== undefined && !wonBeforeRead && claim.won;
+        const held = claim !== undefined && (commentPresent || heldNow);
         state.setupClaimReleasedByRun = held;
         claimNotHeld = !held;
       }

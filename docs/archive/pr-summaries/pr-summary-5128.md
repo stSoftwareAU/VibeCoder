@@ -76,19 +76,27 @@ Part of #5128
 - The deadline is armed on an injected `Clock` (`SetupDeadlineOptions.clock`,
   supplied from `deps.infrastructure.setupClock`, production `systemClock`), the
   `lib/clock.ts` seam, so the tests drive it with `fakeClock()`.
-- A failure from the deadline releases only a claim the run holds. Every fleet
-  host shares one login, so an unassign from a run that never took the claim
-  strips another host's live claim (Issues #1139, #1193). Setup records its
-  claim on `PhaseState.setupClaim` (worker id, and `won` once `claimIssue`
-  returned `claimed`). When the deadline fires, `workOnIssueCore` treats the
-  claim as held if `won` is set or `ownClaimCommentPresent` finds this run's
-  `CLAIM_LOCK:<workerId>` comment; otherwise the result carries `claimNotHeld`,
+- A failure from the deadline releases only a claim the run still holds. Every
+  fleet host shares one login, so an unassign from a run that no longer owns the
+  claim strips another host's live claim (Issues #1139, #1193, #214). Setup
+  records its claim on `PhaseState.setupClaim` (worker id, and `won` once
+  `claimIssue` returned `claimed`). When the deadline fires, `workOnIssueCore`
+  treats the claim as held only if `ownClaimCommentPresent` finds this run's
+  `CLAIM_LOCK:<workerId>` comment, authored by its GitHub account, whether or
+  not `won` is set. A won claim is no exception: the fleet's recovery frees an
+  issue whose setup wedged before the heartbeat (assigned-without-heartbeat
+  1800s, `stuck_issue_timeout` 7200s, both before the 9000s deadline), and a
+  host that then re-claims deletes this run's claim comment
+  (`cleanupStaleClaimComments`), so a missing comment means the assignment is
+  another host's. When the claim is not held the result carries `claimNotHeld`,
   which `run_core.ts`'s `releaseIssueClaim` honours by releasing nothing. A read
-  of the comments that fails counts as not held. `won` is read again after that
-  comment read: a claim that returns while the run is still deciding
-  (`state.setupClaimReleasedByRun` unset) is recorded as won by the abandoned
-  setup instead of being unassigned by it, so the run releases it, and it is
-  released exactly once (a second unassign could strip another host's claim).
+  of the comments that fails counts as not held, so the issue is then left to
+  the fleet's recovery. One case is held without the comment: a claim that was
+  still pending at the deadline and returned `claimed` during the comment read
+  was taken just now (`won` was unset before the read and set after it). It is
+  recorded as won by the abandoned setup instead of being unassigned by it
+  (`state.setupClaimReleasedByRun` unset), so the run releases it, exactly once
+  (a second unassign could strip another host's claim).
 - The abandoned setup is told to stop. `onAbandon` sets `state.setupAbandoned`,
   and `workOnIssueSetupBranch` checks it before each of the seven step start
   lines, right after `claimIssue` and `startHeartbeat` return, and before each
@@ -105,11 +113,14 @@ Part of #5128
   won late, when the run did not release it, is unassigned by the abandoned
   setup; one the run already released is not released twice
   (`state.setupClaimReleasedByRun`). A call already running when the deadline
-  fires finishes (a milestone pre-sync agent run is the longest). The resume
-  lookup after the milestone session restore and the stream-session priming have
-  no check ahead of them, so a deadline that fires during the session restore or
-  the handover read still lets them start; the checks after them stop everything
-  later.
+  fires finishes (a milestone pre-sync agent run is the longest). There is
+  also a check before the resume lookup (`resumeIssueBranch`) and before the
+  stream-session priming (`primeStreamSession`, which can delete a stored stream
+  session), and the lookup's candidate ordering (`orderBranchesByRecency`, which
+  runs `git fetch origin <branch>` per candidate in the lane worktree) is
+  wrapped to decline, keeping the listed order, once abandoned. The reads
+  `loadResumeState`, `readHandoverNote` and `countCommitsAhead` are not
+  checkpoints, because they write nothing.
 
 ### Undiscoverable Facts
 
@@ -146,7 +157,7 @@ flowchart LR
     `setup: repository setup`;
   - a refused claim logs only `issue claim`;
   - a completed setup logs all seven lines in order.
-- `worker/deno/tests/setup_deadline_5128_test.ts` (30 tests at review head)
+- `worker/deno/tests/setup_deadline_5128_test.ts` (33 tests at this head)
   covers the deadline. The `workOnIssue` tests arm it on `fakeClock()` and
   advance it only after the stalled mock has been entered, and wait on the
   abandoned setup's own `SETUP_ABANDONED_LOG_LINE`, so none sleeps or races the
@@ -167,8 +178,10 @@ flowchart LR
     returns `claimNotHeld`, and a claim that comes back late is released once
     and the setup goes no further; a wedge inside `claimIssue` with this run's
     claim comment present has no `claimNotHeld`, and a late claim is not
-    released a second time; a wedge after a won claim has no `claimNotHeld`, and
-    a clone that returns late starts no heartbeat and releases nothing; a
+    released a second time; a wedge after a won claim whose own claim comment is present has no
+    `claimNotHeld`, and one whose comment is gone (a host re-claimed) returns
+    `claimNotHeld`; in both a clone that returns late starts no heartbeat and
+    releases nothing; a
     heartbeat that starts after the deadline is stopped; for a wedge in
     `checkClaimChurn` or `createFeatureBranchFromBase` the named step's start
     line is logged and the next step (`repository setup`, `pre-setup command`)
@@ -180,7 +193,9 @@ flowchart LR
     is not retried; a refusal-label sweep that returns late is followed by no
     pre-sync; a pre-sync that returns late is followed by no resume lookup; a
     resume lookup that returns a checkpoint branch late checks nothing out and
-    creates no feature branch; a stream compaction whose stream was joined just
+    creates no feature branch, and one with two candidates that returns late
+    runs no ordering fetch; a stored stream session is not adopted by a setup
+    whose deadline fell after the resume lookup; a stream compaction whose stream was joined just
     as the deadline fell is not started; a resumed setup whose compaction
     returns late runs no label sweep (no further `gh` command) or pre-setup
     command; a feature-branch failure that arrives late with object-store
@@ -256,7 +271,7 @@ flowchart LR
       (`hardKillLastStep` returned `unknown`), and the failed-setup and
       completed-setup cases captured no `[setup-step]` lines. The refused-claim
       case's log assertion was first run after the fix.
-- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (30 tests at review
+- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (33 tests at this
       head). With the step-boundary checks in `setup_branch_phase.ts` disabled,
       the no-own-claim, won-claim and late-heartbeat `workOnIssue` tests failed;
       with `state.setupClaimReleasedByRun` forced false, the own-claim-comment
@@ -270,18 +285,24 @@ flowchart LR
       re-clone and sweep tests). The `setupDeadlineMs` cap tests and the
       `fakeClock` rewrite were first run after the change. Earlier iterations of
       this file had a constant-restating test and a late-rejection test that
-      passed without the code they named; both are removed.
-- [x] Before the review ownership correction, `deno task test:unit` on
-      `worker/deno/tests/setup_deadline_5128_test.ts` (29 tests then),
-      `worker/deno/tests/setup_step_log_test.ts` (3 tests) and
-      `worker/deno/tests/hard_kill_report_test.ts` (66 tests): 98 passed, 0
-      failed. The other test files that call `workOnIssue`,
-      `workOnIssueSetupBranch` or touch `InfrastructureDeps` were not re-run
-      after this documentation fix, which changes no code.
-- [x] `./quality.sh < /dev/null` on the commit before the claim-release fix:
-      Result PASSED (with skipped checks); it was not re-run on the head, which
-      adds that fix and its test. Config integration (no `.config.json`) and
-      Checkov (no binary or container runtime) were skipped on this host.
+      passed without the code they named; both are removed. After the second
+      review, with the won-claim ownership check, the check before
+      `resumeIssueBranch` plus the ordering wrapper, and the check before
+      `primeStreamSession` each reverted, the won-claim-comment-gone test, the
+      two-candidate late-lookup test and the stream-session test failed
+      (checked together, 30 passed and those 3 failed).
+- [x] `deno test --allow-all tests/setup_deadline_5128_test.ts` from
+      `worker/deno`: 33 passed, 0 failed. The other files that call
+      `workOnIssue`, `workOnIssueSetupBranch` or touch `InfrastructureDeps` are
+      covered by the local gate's test pass and by CI on the pushed head.
+- [x] Full `deno task test:unit` on this head: 34565 passed, 1 failed, 6
+      ignored. The one failure was `tests/fleet_babysitter_app_test.ts` (the
+      non-watch container repair test hit its 25 s wait under the full parallel
+      load); that file passes on its own (17 passed) and does not touch setup.
+- [x] Local gate: the formatter, `deno lint` and `deno check` pass on the
+      changed files. Config integration (no `.config.json`), Checkov, Semgrep
+      and the live release-ruleset check are unavailable on this host and are
+      left to CI.
 - Callers checked: `hardKillLastStep` is called by `formatHardKillBody`, which
   gets the new labels. `workOnIssueSetupBranch` has one caller,
   `workOnIssueCore`; its extra return arms are reached only after
@@ -291,17 +312,17 @@ flowchart LR
   `createMockDeps`), the only two constructors; `setupDeadlineMs` reads
   `resolveRunHardCap`, whose other callers are unchanged. The new module is
   claimed by `docs/audits/lib-sweep-coverage/top-up-5128.json`.
-- Branch outcomes: deadline fires with claim won
-  (`workOnIssue: a wedge after a
-  won claim …`); with own claim comment present
+- Branch outcomes: deadline fires with claim won and its own comment present or
+  gone (`workOnIssue: a wedge after a won claim whose own comment is …`); with
+  own claim comment present
   (`… a wedged claim reads a marker from testbot
   and releases only its own`);
   with no claim of its own (`… with no claim of its
   own does not unassign`);
   setup settles first (`runSetupWithDeadline returns the
   setup result …`);
-  late claim, late clone and late heartbeat after abandonment (the same four
-  `workOnIssue` tests); unreadable comments and a non-plain worker id
+  late claim, late clone and late heartbeat after abandonment (the
+  `workOnIssue` tests above); unreadable comments and a non-plain worker id
   (`ownClaimCommentPresent …`); abandonment before `repository setup`,
   `feature branch` and `pre-setup command` (the next-step tests, each also
   asserting the start line of the step that holds the wedge); a late
@@ -318,33 +339,28 @@ flowchart LR
   `stream_compaction_seam_2642_test.ts` and this file) stage the deadline only
   through an injected mock or a logged line.
 
-## Review correction
+## Review corrections
 
-PR #5130 review found that the timeout ownership lookup accepted a marker
-without authenticating its author. It now reads paginated comment bodies and
-authors, accepts only an exact leading marker from this run's GitHub account,
-and treats missing or malformed evidence as no claim. An outsider-marker
-regression failed before the fix. The tests also exercise the timeout path with
-both the owner and an outsider, retaining exactly-once late-claim release.
-Validation after the fix: 179 tests passed across `setup_deadline_5128_test.ts`,
-`setup_step_log_test.ts`, `hard_kill_report_test.ts` and `run_core_test.ts`,
-using Deno 2.9.8.
-
-The former command-string assertion and canned comment-ID response were replaced
-by ownership outcomes over comment bodies and authors. The positive own-claim,
-missing-claim, failed-read, invalid-worker-ID and exactly-once release
-assertions remain covered; outsider, quoted-marker and paginated-response cases
-are added. This enforces the issue's requirement to release only the claim this
-run holds.
-
-The review-time `./quality.sh` run passed completeness, formatting, lint, type
-checks and the other available static checks. Its parallel unit-test pass exited
-unsuccessfully without a named assertion failure; the serial pass did not run.
-Config integration, markdownlint, Semgrep, Checkov and the live release-ruleset
-check were unavailable locally. This is not a passing full gate; required CI
-must validate the published fix. A standalone full-suite retry with
-`DENO_JOBS=2` reached its 600-second command limit without a completed result;
-it also provides no full-suite pass.
+- The timeout ownership lookup first accepted a marker without authenticating
+  its author. It now reads paginated comment bodies and authors, accepts only an
+  exact leading marker from this run's GitHub account, and treats missing or
+  malformed evidence as no claim. The former command-string assertion and canned
+  comment-ID response were replaced by ownership outcomes over comment bodies
+  and authors. The positive own-claim, missing-claim, failed-read,
+  invalid-worker-ID and exactly-once release assertions remain covered;
+  outsider, quoted-marker and paginated-response cases are added.
+- A won claim is no longer released unchecked. The deadline path used to treat
+  `won` as held, so after the fleet's recovery freed the issue and another host
+  re-claimed it, this run unassigned the shared login from that host's live
+  claim. It now requires this run's own claim comment whatever `won` is; the
+  test that pinned the unchecked release
+  (`… a wedge after a won claim releases the claim …`) was replaced by two
+  cases, comment present (released once, no `claimNotHeld`) and comment gone
+  (`claimNotHeld`, nothing unassigned). The first case keeps the old test's
+  assertions; the second is new.
+- The resume lookup and the stream-session priming gained checks, and the
+  ordering fetch declines once abandoned, as described above. The two-candidate
+  late-lookup and stream-session tests are new.
 
 ## CI fix: gitleaks stub in the #4930 tree-gate tests
 
@@ -354,12 +370,18 @@ Merging `main` brought in the local `gitleaks` stage (#5121). Three
 secret scan, which fails where `gitleaks` is not installed and otherwise adds
 `gitleaks` to `checksRun`. They now inject `PASSING_GITLEAKS` and expect the
 extra `gitleaks` entry. This is a test-only change; it touches no production
-code and removes no assertion. `deno task test:unit
-tests/babysitter_tree_gate_test.ts` passes on the head (parallel pass).
+code and removes no assertion. Obsolete base behaviour: those tests left the
+secret-scan dependency unset and expected `checksRun` to hold only
+`deno task test:unit`. Remaining behaviour: an invalid or unreadable Deno config
+still blocks repair validation instead of dropping the unit tests, and the
+`deno task test:unit` entry is still first. Covering tests:
+`worker/deno/tests/babysitter_tree_gate_test.ts::an invalid deno.json blocks repair validation instead of dropping the unit tests (#4930)`,
+the `deno.jsonc` case of the same loop, and
+`worker/deno/tests/babysitter_tree_gate_test.ts::an unreadable primary Deno config cannot fall through to a secondary config and pass (#4930)`.
 
 ## Merge verification
 
-CI and code review are pending.
+CI and code review are pending on the pushed head.
 
 ## Limitations and remaining risk
 
@@ -369,7 +391,9 @@ needs a live worker: if the guest stops first, the watchdog still reaps it and
 the assigned-without-heartbeat recovery frees the claim, as before. A
 `claimIssue` that wedges after its assignment, with no claim comment of this
 run's on the issue, is also left to that recovery, because the run cannot prove
-the claim is its own. An abandoned setup stops at its next checkpoint, not
+the claim is its own. A won claim whose comment cannot be read at the deadline, or
+whose comment a re-claiming host deleted, is likewise not released by the run;
+the fleet's recovery frees it. An abandoned setup stops at its next checkpoint, not
 mid-call: the call running when the deadline fires finishes first. The deadline
 is capped by the supervisor cap only when `VIBE_RUN_MAX_SECONDS` and
 `VIBE_RUN_STARTED_EPOCH` are published; on a host without them a large

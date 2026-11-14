@@ -452,42 +452,71 @@ for (const author of ["testbot", "outsider"]) {
   });
 }
 
-Deno.test("workOnIssue: a wedge after a won claim releases the claim and does no later setup work (Issue #5128)", async () => {
-  const repoSetup = gate<Awaited<ReturnType<WorkerDeps["git"]["setupRepo"]>>>();
-  let heartbeats = 0;
-  const base = createMockDeps();
-  const h = harness({
-    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
-    git: {
-      setupRepo: () => {
-        h.entered.open();
-        return repoSetup.promise;
-      },
+for (const ownCommentPresent of [true, false]) {
+  Deno.test(
+    `workOnIssue: a wedge after a won claim whose own comment is ${
+      ownCommentPresent ? "present" : "gone"
+    } ${
+      ownCommentPresent ? "releases it once" : "releases nothing"
+    } and does no later setup work (Issue #5128, PR #5130 review)`,
+    async () => {
+      const repoSetup = gate<
+        Awaited<ReturnType<WorkerDeps["git"]["setupRepo"]>>
+      >();
+      let heartbeats = 0;
+      let workerId = "";
+      const base = createMockDeps();
+      const h = harness({
+        issues: {
+          claimIssue: (options) => {
+            workerId = options.workerId;
+            return Promise.resolve(CLAIMED);
+          },
+        },
+        git: {
+          setupRepo: () => {
+            h.entered.open();
+            return repoSetup.promise;
+          },
+        },
+        crashHandling: {
+          recordHeartbeat: (...args) => {
+            heartbeats++;
+            return base.crashHandling.recordHeartbeat(...args);
+          },
+        },
+        // The comments the run reads at the deadline. After the fleet's recovery
+        // freed the issue, a host that re-claims deletes this run's comment.
+        github: {
+          runGhCommand: () =>
+            Promise.resolve(
+              ownCommentPresent
+                ? claimComments(workerId)
+                : JSON.stringify([[]]),
+            ),
+        },
+      });
+
+      const result = await runUntilAbandoned(h, 5603);
+
+      assertEquals(result.phase, "setup");
+      assertEquals(result.category, "timeout");
+      assertEquals(started(h, "repository setup"), true);
+      // The claim was won before the wedge. The run releases it only while its
+      // own comment is still on the issue; otherwise the assignment is another
+      // host's and run_core leaves it alone.
+      assertEquals(result.claimNotHeld, ownCommentPresent ? undefined : true);
+
+      // The clone returns after the run ended: no heartbeat starts and nothing
+      // releases the claim a second time.
+      repoSetup.open({ ok: true, value: "/tmp/repo" });
+      await abandonedSetupStopped(h);
+      assertEquals(started(h, "heartbeat start"), false);
+      assertEquals(heartbeats, 0);
+      assertEquals(h.unassigns.length, 0);
     },
-    crashHandling: {
-      recordHeartbeat: (...args) => {
-        heartbeats++;
-        return base.crashHandling.recordHeartbeat(...args);
-      },
-    },
-  });
-
-  const result = await runUntilAbandoned(h, 5603);
-
-  assertEquals(result.phase, "setup");
-  assertEquals(result.category, "timeout");
-  assertEquals(started(h, "repository setup"), true);
-  // The claim was won before the wedge, so the run's failure path releases it.
-  assertEquals(result.claimNotHeld, undefined);
-
-  // The clone returns after the run ended: no heartbeat starts and nothing
-  // releases the claim a second time.
-  repoSetup.open({ ok: true, value: "/tmp/repo" });
-  await abandonedSetupStopped(h);
-  assertEquals(started(h, "heartbeat start"), false);
-  assertEquals(heartbeats, 0);
-  assertEquals(h.unassigns.length, 0);
-});
+  );
+}
 
 Deno.test("workOnIssue: a heartbeat that starts after the deadline is stopped (Issue #5128)", async () => {
   const recorded = gate<{ ok: true; value: undefined }>();
@@ -709,6 +738,98 @@ Deno.test("workOnIssue: a resume lookup that returns after the deadline checks o
   await abandonedSetupStopped(h);
   assertEquals(calls, { resume: 0, feature: 0 });
   assertEquals(started(h, "pre-setup command"), false);
+});
+
+Deno.test("workOnIssue: a resume lookup with two candidates that returns late fetches and checks out nothing (Issue #5128, PR #5130 review)", async () => {
+  const late = gate<{ ok: true; value: { branch: string; sha: string }[] }>();
+  const calls = { order: 0, resume: 0, feature: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      listRemoteIssueBranches: () => {
+        h.entered.open();
+        return late.promise;
+      },
+      orderBranchesByRecency: (branches) => {
+        calls.order++;
+        return Promise.resolve([...branches]);
+      },
+      resumeFeatureBranchFromRemote: () => {
+        calls.resume++;
+        return Promise.resolve({ ok: true, value: true });
+      },
+      createFeatureBranchFromBase: () => {
+        calls.feature++;
+        return Promise.resolve({ ok: true, value: "b" });
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5617);
+  assertEquals(result.category, "timeout");
+
+  // Ordering two candidates runs `git fetch origin <branch>` in the lane
+  // worktree, which writes its FETCH_HEAD and objects to the shared store.
+  late.open({
+    ok: true,
+    value: [
+      { branch: "issue-5617-a", sha: "abc" },
+      { branch: "issue-5617-b", sha: "def" },
+    ],
+  });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { order: 0, resume: 0, feature: 0 });
+});
+
+Deno.test("workOnIssue: a stored stream session is not adopted by a setup abandoned after the resume lookup (Issue #5128, PR #5130 review)", async () => {
+  const { workDir } = await streamWorkDir();
+  try {
+    let compactions = 0;
+    let fire: () => void = () => {};
+    const h = harness({
+      issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+      git: {
+        listRemoteIssueBranches: () =>
+          Promise.resolve({
+            ok: true,
+            value: [{ branch: "issue-5618-wip", sha: "abc" }],
+          }),
+        resumeFeatureBranchFromRemote: () =>
+          Promise.resolve({ ok: true, value: true }),
+      },
+      claude: {
+        primeStreamCompaction: () => {
+          compactions++;
+          return Promise.resolve(false);
+        },
+      },
+    }, {
+      // The resume lookup is done and the checkpoint branch is in use; the
+      // deadline falls while setup reads its handover file.
+      onLine: (message) => {
+        if (message.startsWith("Resuming prior progress from")) fire();
+      },
+    });
+    fire = () => void h.clock.advance(DEADLINE_MS);
+    const config = {
+      ...buildDefaultWorkerConfig(),
+      workDir,
+      enableSessionResume: true,
+    };
+
+    const result = await workOnIssue(issueContext(5618, { config }), h.deps);
+    assertEquals(result.category, "timeout");
+    await abandonedSetupStopped(h);
+    // `primeStreamSession` logs the stream it adopts, and may delete a stored
+    // session; neither happens once setup is abandoned.
+    assertEquals(
+      h.lines.some((l) => l.startsWith("stream ") && l.includes(" session ")),
+      false,
+    );
+    assertEquals(compactions, 0);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 Deno.test("workOnIssue: a branch repair is not started once setup is abandoned (Issue #5128)", async () => {
