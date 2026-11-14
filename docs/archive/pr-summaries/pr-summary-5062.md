@@ -13,7 +13,9 @@ the launcher watchdog reaped the container. Both incidents on this issue have
 that shape: last step `agent turn`, with the worker log silent for about 49
 minutes (16:53:16Z to 17:42:07Z) and for 54m 20s. Both call sites now pass
 `claude_no_output_timeout` to the runner. The host's incident archive could not
-be correlated from here, so the issue stays open. Part of #5062.
+be correlated from here. A bounded replay of the incident's shape is added
+instead, but it does not cover guest/host health, so the issue stays open. Part
+of #5062.
 
 ## Spec
 
@@ -87,17 +89,38 @@ flowchart TD
   `noOutputTimeout` undefined, so the silence watchdog is off). They were not
   run against the incident itself, because its archive on `GRQ-25` could not be
   reached, so what the agent was doing during the silence was not observed.
+- **replay** — `worker/deno/tests/execute_wedge_replay_5062_test.ts` replays the
+  incident's shape within a fixed bound. It does not reproduce a frozen guest.
 - **regression test** —
   `worker/deno/tests/execute_phase_routing_test.ts::execute_phase - the issue run arms the configured no-output watchdog (Issue #5062)`
 
 ## Acceptance Criteria
 
-- **missing** — "Correlate the worker's last operation, agent activity and
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **partial** — "Correlate the worker's last operation, agent activity and
   guest/host health through the existing authorised diagnostic path, or a
-  bounded replay" — reason: the incident archive is on `GRQ-25`, which does not
-  resolve from this executor, and this host's `~/logs` holds nothing for either
-  run. The guest probe's `did not answer` in the 13 November run is not
-  explained by this fix.
+  bounded replay" — evidence:
+  `worker/deno/tests/execute_wedge_replay_5062_test.ts::replay (Issue #5062) - a silent issue agent turn is killed in-container by the no-output watchdog`
+  — reviewer: partial — reason: the bounded replay ties the last operation (the
+  issue `agent turn`) to the agent's activity (one stream-json line, then
+  silence) and to the outcome through the real runner. Guest/host health is not
+  correlated: the 13 November guest probe `did not answer` is unexplained, and
+  the archive on `GRQ-25` is unreachable from this executor.
+- **partial** — "Completion requires a supported cause, an implemented
+  correction and focused automated regression/recovery evidence" — evidence:
+  `worker/deno/lib/phases/execute_phase.ts`,
+  `worker/deno/lib/execute_claude_phase.ts`,
+  `worker/deno/tests/execute_phase_routing_test.ts`,
+  `worker/deno/tests/execute_wedge_replay_5062_test.ts` — reviewer: partial —
+  reason: the correction and its tests are real. The cause is inferred, though:
+  it explains why the silence was not caught inside the container, not why the
+  agent turn went silent, and it does not explain the guest probe that did not
+  answer.
+- **met** — "Do not require supervised testing, relax containment, guess longer
+  timeouts, or mark the issue complete from instrumentation alone" — evidence:
+  the diff arms the existing `claude_no_output_timeout`, lengthens no timeout
+  and leaves containment unchanged — reviewer: met
 
 ## Test Plan
 
@@ -116,14 +139,28 @@ flowchart TD
   Expected 0`). Against the unmodified
   `execute_claude_phase.ts`, the command path test failed
   (`Actual undefined, Expected 437`).
-- These tests check that the value reaches the runner. That the runner then
-  kills a silent process is covered by existing tests:
+- `worker/deno/tests/execute_wedge_replay_5062_test.ts` replays the incident
+  within a fixed bound, through the real `runClaudeWithTimeout` on a fake clock.
+  It builds the issue run's options through `workOnIssueExecuteClaude`. A stub
+  agent prints one `tool_use` line and then stays silent. The hard budget is
+  3600 s, standing in for the launcher deadline.
+  - "replay (Issue #5062) - a silent issue agent turn is killed in-container by
+    the no-output watchdog": the run ends with `timeoutReason` `no-output` after
+    the 5 s silence budget.
+  - "replay (Issue #5062) - control: without noOutputTimeout the silent turn
+    runs to the hard deadline": with `noOutputTimeout` undefined, as the base
+    code passed it, the run is still going after 50 s. It ends only at the hard
+    deadline, with `hard-timeout`.
+  - Red-check: with the `noOutputTimeout` line removed from `invokeAgent`, the
+    main replay failed (`Actual hard-timeout, Expected no-output`).
+- The routing and command tests check that the value reaches the runner. That
+  the runner then kills a silent process is covered by existing tests:
   `worker/deno/tests/claude_runner_test.ts::runClaudeWithTimeout - kills silent process via no-output watchdog (Issue #1825)`
   and
   `worker/deno/tests/claude_runner_progress_extension_4296_test.ts::runClaudeWithTimeout - the silence watchdog still kills an extended run (Issues #1825, #4296)`.
 - Green on the final head:
-  `deno task test:unit tests/execute_claude_phase_test.ts tests/execute_phase_routing_test.ts`
-  gave 70 passed, 0 failed.
+  `deno task test:unit tests/execute_wedge_replay_5062_test.ts tests/execute_phase_routing_test.ts tests/execute_claude_phase_test.ts`
+  gave 72 passed, 0 failed.
 - Full `./quality.sh` on head `00acb574` PASSED with skipped checks. Config
   integration was skipped (no `.config.json`), and so was checkov (not
   installed).
