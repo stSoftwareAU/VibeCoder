@@ -5270,12 +5270,13 @@ gates do (see that bullet):
      `test:unit` remain ineligible. These refusals apply to the repair modes too
      and are code verdicts, not download outages. It runs the tests the
      dependency scan selects (not the whole suite, except as noted below): each
-     changed `_test.ts` file under
-     that directory's `tests/`; the same-named `tests/<name>_test.ts` of each
-     changed `.ts` source outside `tests/`; and tracked `tests/` files reached
-     by the reference and import rules below, whatever their own names. A `.ts` file under the
-     directory is a seed when it is changed, or when it sits under `tests/` and
-     its text names a changed file: it contains the file's repo-relative path,
+     changed `_test.ts` file under the directory, wherever it lives; for each
+     changed `.ts` source outside `tests/`, its same-named
+     `tests/<name>_test.ts` and its co-located `<name>_test.ts` beside it, when
+     tracked; and the tracked `_test.ts` files reached by the reference and
+     import rules below, whatever their own names. A `.ts` file under the
+     directory is a seed when it is changed, or when it is a `_test.ts` or sits
+     under `tests/` and its text names a changed file: it contains the file's repo-relative path,
      its base name (when no other tracked file shares it, else its last two path
      segments), or, for a doc, prompt or other non-`.ts` file, its directory
      followed by `/` (a test that lists the directory) or one of its ancestor
@@ -5283,9 +5284,17 @@ gates do (see that bullet):
      is also a seed when it calls `loadPrompt` with the changed prompt's literal
      type, including a wrapped call using a separate prompts-directory value.
      Tests importing a seed directly or transitively via relative `.ts`
-     specifiers are selected too. Dynamic loader types, computed paths and
-     import-map aliases can still be missed; this is a dependency heuristic,
-     and a widely imported module can select most of the unit suite. A change
+     specifiers are selected too. A local import-map alias (a target in the
+     directory's `imports` or `scopes` that starts with `./`, `../`, `/` or
+     `file:`) or a computed dynamic `import()` under the directory (an argument
+     that is not a plain string or a template literal without `${`) runs the
+     directory's whole suite, as does a change under `prompts/` below; the check
+     is a text match, so prose or a string that spells such a call does too.
+     Prompt loaders are already covered by the prompts rule. A data file read
+     through a path the scan cannot see (no name, directory or template-literal
+     token) can still be missed, and CI's shards remain the backstop. This is a
+     dependency heuristic, and a widely imported module can select most of the
+     unit suite. A change
      under a `prompts/` directory, or to the directory's own `deno.json`,
      `deno.jsonc` or `deno.lock`, has readers the scan cannot resolve (a test
      reaches a prompt through a prompt builder, and every test depends on the

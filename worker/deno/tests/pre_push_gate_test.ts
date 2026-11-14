@@ -4638,7 +4638,7 @@ Deno.test("runPrePushGate: a changed test runs the repo's test:unit task, and it
   }
 });
 
-Deno.test("planChangedFileChecks: only a tests/ file ending _test.ts is a test, and only a non-test .ts source outside tests/ maps to a sibling (#4930)", () => {
+Deno.test("planChangedFileChecks: a file ending _test.ts is a test wherever it lives, and only a non-test .ts source maps to a sibling (#4930)", () => {
   const tracked = [
     ...UNIT_TRACKED,
     "worker/deno/lib/x_test.ts",
@@ -4647,10 +4647,10 @@ Deno.test("planChangedFileChecks: only a tests/ file ending _test.ts is a test, 
     "worker/deno/tests/helper_test.ts",
   ];
   const roots = ["worker/deno"];
-  // `_test.ts` outside tests/ is not a test to run, nor a source for a sibling.
+  // `_test.ts` outside tests/ is a test to run, though it maps to no sibling.
   assertEquals(
     denoTestCommands(["worker/deno/lib/x_test.ts"], tracked, roots),
-    [],
+    ["deno task test:unit 'lib/x_test.ts'"],
   );
   // A tests/ helper is not a test, and tests/ files map to no sibling.
   assertEquals(
@@ -5046,7 +5046,8 @@ const DYNAMIC_KEYWORD = "import";
 Deno.test("unfollowableImportRoots: a local import-map target in imports or scopes is reported; a jsr-only map is not (#4930)", async () => {
   await withTrackedFiles({
     "alias/deno.json": JSON.stringify({ imports: { "@/": "./lib/" } }),
-    "scoped/deno.jsonc": '// a scoped alias\n{ "scopes": { "./x/": { "@/": "../lib/" } } }\n',
+    "scoped/deno.jsonc":
+      '// a scoped alias\n{ "scopes": { "./x/": { "@/": "../lib/" } } }\n',
     "jsr/deno.json": JSON.stringify({
       imports: { "@std/assert": "jsr:@std/assert@1" },
       scopes: { "./x/": { "@std/x": "npm:x@1" } },
@@ -5072,11 +5073,15 @@ Deno.test("unfollowableImportRoots: a computed dynamic import is reported; a lit
     "ident/deno.json": "{}",
     "ident/load.ts": "await " + DYNAMIC_KEYWORD + "(name);\n",
     "literal/deno.json": "{}",
-    "literal/load.ts": 'await ' + DYNAMIC_KEYWORD + '("./x.ts");\n' +
+    "literal/load.ts": "await " + DYNAMIC_KEYWORD + '("./x.ts");\n' +
       "await " + DYNAMIC_KEYWORD + "(`./plain.ts`);\n",
   }, async (root, tracked) => {
     assertEquals(
-      await unfollowableImportRoots(root, tracked, ["tmpl", "ident", "literal"]),
+      await unfollowableImportRoots(root, tracked, [
+        "tmpl",
+        "ident",
+        "literal",
+      ]),
       ["tmpl", "ident"],
     );
   });

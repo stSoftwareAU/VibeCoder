@@ -1171,7 +1171,9 @@ function plannedUnitTestFiles(
     } else if (file.endsWith(".ts") && !file.startsWith("tests/")) {
       const base = file.slice(file.lastIndexOf("/") + 1, -".ts".length);
       const dir = file.slice(0, file.lastIndexOf("/") + 1);
-      for (const sibling of [`tests/${base}_test.ts`, `${dir}${base}_test.ts`]) {
+      for (
+        const sibling of [`tests/${base}_test.ts`, `${dir}${base}_test.ts`]
+      ) {
         if (isTracked(sibling)) testFiles.add(sibling);
       }
     }
