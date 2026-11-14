@@ -12,8 +12,8 @@ stop, which is reported to #4959. Closes #4956.
 - Reuse the pinned launcher's `TE_PYTHON` interface for an audited Deno adapter,
   so the vendored archive and its pin stay unchanged. The adapter reuses
   `fenceUntrustedIssueText()` rather than adding another prompt boundary.
-- Use the issue's permitted `envfacts` fallback: the uncapped distiller
-  proposer stays disabled, and the protocol doc records why.
+- Use the issue's permitted `envfacts` fallback: the uncapped distiller proposer
+  stays disabled, and the protocol doc records why.
 - A hook fault never fails the run. The trial is latched off before the report
   is attempted, and a pending report is retried without re-enabling the plugin.
 
@@ -62,10 +62,10 @@ flowchart LR
 
 - Real CLI check: the command and its result are recorded in
   `docs/TOKEN-ECONOMIZER-TRIAL.md` §1. It emitted `hook_started` and
-  `hook_response` for `SessionStart:startup` with outcome success. The
-  fixture checkout's staged, modified and untracked files were unchanged.
-- The hook monitor now logs the redacted cause when it cannot start, or when
-  it cannot persist the stop record (`worker/deno/lib/claude_runner.ts`).
+  `hook_response` for `SessionStart:startup` with outcome success. The fixture
+  checkout's staged, modified and untracked files were unchanged.
+- The hook monitor now logs the redacted cause when it cannot start, or when it
+  cannot persist the stop record (`worker/deno/lib/claude_runner.ts`).
 - The five spawn sites take an optional `tokenEconomizerPluginDir` seam
   (`worker/deno/lib/issue_worker_wiring.ts`, `ExecuteClaudePhaseDeps`). The
   enabled-path call-site tests now run against a temporary fixture plugin where
@@ -105,8 +105,8 @@ flowchart LR
   `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts`,
   `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts` and
   `worker/deno/tests/support/pr_branch_lock_stub.ts` — reviewer: unrequested —
-  reason: the worker's pre-push gate reported these tests over the 1 s
-  unit-test budget, blocking this branch. Their assertions are unchanged.
+  reason: the worker's pre-push gate reported these tests over the 1 s unit-test
+  budget, blocking this branch. Their assertions are unchanged.
 - **unrequested** — Test seams `acquireLockFn` in
   `worker/deno/commands/pr_ci_processor.ts` and `phaseDeps` in
   `worker/deno/commands/execute_claude_phase.ts` — reviewer: unrequested —
@@ -152,9 +152,8 @@ flowchart LR
   adding the purge-list row for `worker/deno/lib/issue_worker_wiring.ts`.
 - The full `./quality.sh` before the merge failed only in `deno tests`:
   - the trial-docs purge row, fixed above;
-  - `worker/deno/tests/pr_maintenance_command_test.ts`, which also passed
-    28/28 on `origin/main`, and which `main` fixed. `main` was merged into the
-    branch.
+  - `worker/deno/tests/pr_maintenance_command_test.ts`, which also passed 28/28
+    on `origin/main`, and which `main` fixed. `main` was merged into the branch.
 - Removed assertions: none. The call-site tests now expect the plugin directory
   actually passed, instead of the constant.
 
