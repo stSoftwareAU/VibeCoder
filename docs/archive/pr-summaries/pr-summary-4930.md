@@ -84,4 +84,88 @@ flowchart LR
 
 ## Test Plan
 
-- TEST_PLAN_TBD
+All the following were run on the final code (`1b4dbca5`).
+
+- New tests, each written first and observed red against the unchanged code:
+  - `worker/deno/tests/deno_test_baseline_test.ts`: `judgeDenoTestCheck: a
+    FAIL time budget line in the output blocks a base-only downgrade`, `… a
+    TIME BUDGET NOT CHECKED line blocks …` and `… a FAIL budget line in the
+    serial rerun blocks …`. Before the fix each got `base-only` where
+    `verdict` was expected. The controls `… a NOT ENFORCED line (git guard
+    shim) does not block …` and `… a budget phrase mid-line does not block …`
+    stay `base-only`. The existing base-only tests are the allowed case.
+  - `worker/deno/tests/unit_test_time_budget_test.ts`: `failedRunBudgetLines -
+    a failed pass's all-slow file is a FAIL line naming it`, with a fast-file
+    control, and `… a missing report is one TIME BUDGET NOT CHECKED line, not a
+    pass`.
+  - `worker/deno/tests/pre_push_gate_test.ts`:
+    - `planChangedFileChecks: a changed test anywhere under the root runs, and
+      a source plans its co-located test` (control: an untracked sibling is
+      not planned).
+    - `loadReferencedUnitTests: a co-located test is selected through its
+      imports or the names it reads`.
+    - `loadReferencedUnitTests: a computed dynamic import seeds on a .ts change
+      under the root; a literal or prose form does not`.
+    - `loadReferencedUnitTests: a long run of spaces after the call returns
+      promptly, and spaces before the parenthesis do not match`, the hostile
+      regex input of 200,000 spaces.
+    - `unfollowableImportRoots: a local import-map target in imports or scopes
+      is reported; a jsr-only map is not`.
+    - `runPrePushGate: a local import-map alias in the root runs the whole unit
+      suite`, run end to end through the gate. It planned
+      `deno task test:unit 'tests/foo_test.ts'` before the fix and plain
+      `deno task test:unit` after.
+- Edited existing test, `worker/deno/tests/pre_push_gate_test.ts`
+  (`planChangedFileChecks: only a tests/ file ending _test.ts is a test …`
+  is renamed to `… a file ending _test.ts is a test wherever it lives …`):
+  - Removed from `worker/deno/tests/pre_push_gate_test.ts`:
+    `denoTestCommands(["worker/deno/lib/x_test.ts"], tracked, roots)` expected
+    `[]`.
+    - Obsolete: a changed `_test.ts` outside `tests/` was never run, which was
+      the hole this change closes.
+    - Replaced by: `["deno task test:unit 'lib/x_test.ts'"]` in the same test.
+      The helper, non-`.ts` and `tests/` no-sibling assertions are unchanged.
+- At the head, `unfollowableImportRoots` returns `[]` for `worker/deno`, so
+  this repository keeps its selected lists. For a change to
+  `lib/deno_test_baseline.ts`, the computed-import rule selects no test that
+  the import walk does not already select. The five files with a computed
+  import at the head are all tests.
+- `deno task test:unit tests/deno_test_baseline_test.ts
+  tests/unit_test_time_budget_test.ts`: 46 passed.
+  `deno task test:unit tests/pre_push_gate_test.ts`: 182 passed.
+  `tests/pre_push_gate_cli_test.ts tests/babysitter_tree_gate_test.ts`: 75
+  passed. That run was on the first selection revision, before the
+  computed-import rework; the full gate below covers the final code.
+- `./quality.sh < /dev/null` exited 0 with `Result: PASSED (with skipped
+  checks)`. Deno tests passed in both the parallel (8m23s) and serial (3m38s)
+  passes. Also passed: markdownlint, mermaid, semgrep, gitleaks, lint, type
+  check and fmt. Skipped: config integration (no `.config.json`) and checkov
+  (no binary or container runtime). These skips are not passes.
+- Callers checked: `judgeDenoTestCheck` is called only by `runPrePushGate`.
+  `loadReferencedUnitTests` and `plannedUnitTestFiles` feed the shared
+  `runPrePushGate`. Completion, the agent hook, the CI/PR repair modes and the
+  babysitter all reach it, so each gets the new selection. No second copy of
+  the selection rule was found. The runner change keeps the failed pass's exit
+  code, so CI's shards fail exactly as before.
+
+## Docs
+
+The `deno test` selection and baseline bullets in `docs/CONFIGURATION.md`
+were updated, along with the doc comments in `pre_push_gate.ts`,
+`deno_test_baseline.ts`, `unit_test_time_budget.ts` and `unit_test_runner.ts`.
+The old sentences saying the budget is "not re-run" and that "import-map
+aliases can still be missed" are gone.
+
+## Merge verification
+
+Required PR CI, review and the existing automatic merge path stay unchanged
+and are pending on this PR.
+
+## Not done or not checked
+
+- A data file read through a path the scan cannot see is still a heuristic
+  miss. CI's shards remain the backstop.
+- Under the agent's git guard shim, the budget is still reported as `NOT
+  ENFORCED`, as #2669 already does. The worker's own gate and CI enforce it.
+- Checkov and config integration were skipped locally. Live fleet
+  publication was not exercised.
