@@ -346,6 +346,17 @@ must validate the published fix. A standalone full-suite retry with
 `DENO_JOBS=2` reached its 600-second command limit without a completed result;
 it also provides no full-suite pass.
 
+## CI fix: gitleaks stub in the #4930 tree-gate tests
+
+Merging `main` brought in the local `gitleaks` stage (#5121). Three
+`worker/deno/tests/babysitter_tree_gate_test.ts` tests (the `deno.json` and
+`deno.jsonc` config cases and the unreadable-primary-config case) ran the real
+secret scan, which fails where `gitleaks` is not installed and otherwise adds
+`gitleaks` to `checksRun`. They now inject `PASSING_GITLEAKS` and expect the
+extra `gitleaks` entry. This is a test-only change; it touches no production
+code and removes no assertion. `deno task test:unit
+tests/babysitter_tree_gate_test.ts` passes on the head (parallel pass).
+
 ## Merge verification
 
 CI and code review are pending.
