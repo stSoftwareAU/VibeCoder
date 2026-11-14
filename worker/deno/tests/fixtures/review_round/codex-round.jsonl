@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"0199a5b2-7f31-7c4a-9e08-2b6a4c1d5e77"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","item_type":"agent_message","text":"Reviewed the diff: no blocking findings."}}
+{"type":"turn.completed","usage":{"input_tokens":18342,"cached_input_tokens":16000,"output_tokens":1201}}

@@ -199,6 +199,8 @@ function fakeDeps(f: Fixture, options: FakeOptions = {}): {
   const queue = [...(options.spawnResults ?? [])];
   const deps: Partial<BabysitterContainerDeps> = {
     env: options.env ?? fakeEnv,
+    hostDiskAdmission: () =>
+      Promise.resolve({ release: () => Promise.resolve() }),
     onPath: (runtime) => {
       calls.onPath.push(runtime);
       return Promise.resolve(options.onPath ?? true);

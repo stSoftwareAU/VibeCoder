@@ -138,6 +138,8 @@ config repo_fast_failure_threshold
 config repo_fast_failure_window_hours
 config repos
 config retry_max_delay
+config review_effort
+config review_model
 config rtk_output
 config rtk_output.enabled
 config run_finish_seconds

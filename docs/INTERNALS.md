@@ -802,6 +802,14 @@ The PID guard (migrated to Deno TypeScript) provides single-instance locking:
 - **Descendant cleanup** — traverses up to 20 levels of child processes to
   prevent orphans, using process groups where available.
 
+After an external agent kill or an incomplete watchdog kill, the runner uses
+[`DescendantTracker`](../worker/deno/lib/orphan_collector.ts) to collect
+survivors from its saved descendant snapshot. If a cleanup probe or signal
+throws, the sweep stops and logs the cause and the PIDs already signalled in an
+error and an `ORPHANS_UNCOLLECTED` security event. Surviving descendants are left
+running; the agent's output and exit evidence still return to the execute phase.
+Successful sweeps retain the `ORPHANS_COLLECTED` event.
+
 ### 📉 Failure tracking (`worker/deno/commands/failure_tracker.ts`)
 
 The failure tracker (migrated to Deno TypeScript) tracks consecutive failures on
@@ -3596,7 +3604,8 @@ build or test defers that branch until the host recovers (Issue #3178, see
 An agent, quality or discrimination build already in flight is held
 to the same floor (and to the cargo headroom where its checkout holds a cargo
 project, Issue #4413), and a trim-refused host that is below the floor ends the
-launch so the ephemeral layer is discarded (Issue #4360, see
+launch so the ephemeral layer is discarded, unless live babysitter reservations
+explain the dip, which is waited out instead (Issues #4360, #5105, see
 [In-flight builds stop at the same floor](CONTAINER.md#in-flight-builds-stop-at-the-same-floor-issue-4360)).
 
 A build refused by the ephemeral cargo root's budget is a different case: with

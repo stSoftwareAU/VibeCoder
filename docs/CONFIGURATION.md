@@ -501,9 +501,9 @@ creation would fail.
 `pr_reviewer_parallel` sets how many review rounds the unattended
 `review-fleet-prs` runner (`scripts/run.sh`) runs at once, each reviewing one
 PR in its own worker container (Issue #4395). It defaults to `3`; `1` reviews
-one PR at a time. Each round uses a subscription from the worker's Claude
-credential pool, so a higher value spends quota faster and runs more
-containers side by side. A value that is not a whole number above 0 is logged
+one PR at a time. Each round starts on a subscription from the worker's Claude
+credential pool, so a higher value spends quota faster and runs more containers
+side by side. A value that is not a whole number above 0 is logged
 and the default is used. It is read by `run.sh` only, never by the worker.
 
 ```json
@@ -511,6 +511,44 @@ and the default is used. It is read by `run.sh` only, never by the worker.
   "pr_reviewer_parallel": 3
 }
 ```
+
+## 🧠 Reviewer model and effort
+
+`review_model` and `review_effort` set the model and reasoning effort of the
+unattended `review-fleet-prs` review round (`scripts/run.sh`). Both are read by
+`run.sh` only, never by the worker, and no environment variable sets them. The
+defaults are `claude-fable-5-2` at `high`. The round's reviewer agents run on
+the same model and effort, so they follow the configured values, including the
+step-down and fallbacks below.
+
+```json
+{
+  "review_model": "claude-fable-5-2",
+  "review_effort": "high"
+}
+```
+
+`review_model` must be a model id of letters, digits, `.`, `_` and `-`, at most
+100 characters. `review_effort` must be one of `low`, `medium`, `high`, `xhigh`
+or `max`. A value that fails its check is logged and the default is used.
+
+A round that hits a usage limit falls back along a chain: a Fable round steps
+down to `claude-opus-5-5` at `xhigh` on the same subscription, then rotates to
+the next Claude subscription with budget, then runs on Codex `gpt-6-astra` at
+`high` when a Codex credential reaches the round (see below), and last on DeepSeek
+`deepseek-v4-pro`, only when Codex also hit its usage limit or has no
+credential. Codex runs in a round when the round's own Codex home
+(`~/logs/review-fleet-prs/codex`, created by `run.sh`) holds its own ChatGPT
+login (Issue #5127), or with an API key in `codex/provider.env`, or a
+`CODEX_HOME` on a mount the round shares that already holds a login. A
+`CODEX_HOME` on the `vibe-agent-state` volume (the documented subscription
+setup) is still not mounted in the round, so the round logs
+`no Codex login at <home>/auth.json in the round ...; skipping the codex fallback`
+and goes on to DeepSeek. The one-time login for the round's own home is in
+[CODEX-SUBSCRIPTION-AUTH.md](CODEX-SUBSCRIPTION-AUTH.md#fleet-pr-review-rounds).
+A failure that is not a usage limit stops the chain.
+Each switch is logged once. The chain and its log lines are described in
+[running-unattended.md](../.claude/skills/review-fleet-prs/references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
 
 ## 🧪 Test-change policy for the fleet reviewer
 
@@ -2689,6 +2727,13 @@ cases where Claude produces occasional output but never finishes. Most operators
 only need to adjust `claude_no_output_timeout` — lowering it detects stuck
 processes faster; raising it allows for longer periods of Claude "thinking"
 between outputs.
+
+Issue work arms this watchdog too (Issue #5062); it used to run with it off, so
+a silent agent turn lasted until the launcher watchdog reaped the container. The
+agent's stream is silent while a single tool call runs, so one foreground
+command that runs longer than `claude_no_output_timeout` (a slow test suite or
+build inside one shell call) is killed as stuck: raise the key on a host whose
+repositories have a gate that slow, or set it to `0` to switch the watchdog off.
 
 The reactive phases do not inherit the issue-work budget: `pr_feedback_timeout`
 and `ci_fix_timeout` cap at 1800s (30 minutes), `planning_timeout` at 1800s, and

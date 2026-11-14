@@ -2,33 +2,58 @@
  * One headless review-fleet-prs round, run inside the worker container
  * (Issue #3293): the round's Claude subscription comes from the worker's own
  * credential pool, and a round the usage limit stopped is run once more on
- * the next subscription with budget.
+ * the next subscription with budget. Issue #5083 adds the Codex link to the
+ * chain, between the Claude subscriptions and DeepSeek.
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  CODEX_ROUND_NOTE,
+  renderCodexStreamLine,
   renderStreamLine,
   type ReviewRoundDeps,
   type ReviewRunRecord,
+  runCodexCli,
   runReviewRound,
 } from "../lib/review_round.ts";
 
 const USAGE_LIMIT = "You've hit your usage limit · resets 1:50pm (UTC)";
 
+/** The Codex credential's child env, as `exportCodexCredential` returns it. */
+const CODEX_CREDENTIAL = { env: { OPENAI_API_KEY: "codex-secret" } };
+
+/** One attempt the fake runner was asked to make. */
 interface Call {
+  /** `claude` for every `claude -p` attempt (DeepSeek's included), `codex` for `runCodex`. */
+  runner: "claude" | "codex";
   args: string[];
   env: Record<string, string>;
+  stdin?: string;
+  streamFile?: string;
+}
+
+/** A runner's answer. `usageLimited` is what a Codex runner classifies itself. */
+interface Outcome {
+  code: number;
+  output: string;
+  usageLimited?: boolean;
+}
+
+/** Options for {@link fakeDeps}. */
+interface FakeOptions {
+  held?: string;
+  next?: string | null;
+  fallback?: { providerId: string; env: Record<string, string> } | null;
+  /** The Codex credential's child env, or null when none is provisioned (Issue #5083). */
+  codex?: { env: Record<string, string> } | null;
 }
 
 // A pool of two subscriptions: start-up exports `provider`, and the retry
 // asks for anything but the label it is handed. The fallback provider is
-// `deepseek` unless the test opts it out.
+// `deepseek` unless the test opts it out, and there is no Codex credential
+// unless the test supplies one.
 function fakeDeps(
-  outcomes: { code: number; output: string }[],
-  options: {
-    held?: string;
-    next?: string | null;
-    fallback?: { providerId: string; env: Record<string, string> } | null;
-  } = {},
+  outcomes: Outcome[],
+  options: FakeOptions = {},
 ): { deps: ReviewRoundDeps; calls: Call[]; log: string[]; excluded: string[] } {
   const calls: Call[] = [];
   const log: string[] = [];
@@ -42,6 +67,7 @@ function fakeDeps(
       ANTHROPIC_AUTH_TOKEN: "deepseek-secret",
     },
   };
+  const codex = options.codex ?? null;
   const deps: ReviewRoundDeps = {
     exportStartCredential: (setEnv) => {
       if (held === undefined) return Promise.resolve(undefined);
@@ -55,8 +81,15 @@ function fakeDeps(
       return Promise.resolve(next);
     },
     exportFallbackCredential: () => Promise.resolve(fallback ?? null),
-    runClaude: (args, env) => {
-      calls.push({ args, env: { ...env } });
+    exportCodexCredential: () => Promise.resolve(codex),
+    runClaude: (args, env, streamFile) => {
+      calls.push({ runner: "claude", args, env: { ...env }, streamFile });
+      return Promise.resolve(
+        outcomes[calls.length - 1] ?? { code: 0, output: "" },
+      );
+    },
+    runCodex: (args, stdin, env, streamFile) => {
+      calls.push({ runner: "codex", args, env: { ...env }, stdin, streamFile });
       return Promise.resolve(
         outcomes[calls.length - 1] ?? { code: 0, output: "" },
       );
@@ -64,6 +97,12 @@ function fakeDeps(
     log: (message) => log.push(message),
   };
   return { deps, calls, log, excluded };
+}
+
+/** The value after `flag` in a CLI argument list, or undefined when absent. */
+function argAfter(args: readonly string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx >= 0 ? args[idx + 1] : undefined;
 }
 
 Deno.test("runReviewRound runs claude -p on the pool's subscription and logs only its label", async () => {
@@ -230,10 +269,7 @@ Deno.test("runReviewRound never engages the fallback for a non-usage-limit failu
 // so post.ts names the attempt posting and the runner prices it afterwards.
 // ---------------------------------------------------------------------------
 
-function recordingDeps(
-  outcomes: { code: number; output: string }[],
-  options: { next?: string | null } = {},
-) {
+function recordingDeps(outcomes: Outcome[], options: FakeOptions = {}) {
   const base = fakeDeps(outcomes, options);
   const records: ReviewRunRecord[] = [];
   const streams: (string | undefined)[] = [];
@@ -334,6 +370,29 @@ Deno.test("runReviewRound without a round directory records nothing and streams 
   assertEquals(final().attempts, []);
 });
 
+Deno.test("runReviewRound records the Codex attempt as codex, gpt-6-astra at high effort (Issue #5083)", async () => {
+  const { deps, final, calls } = recordingDeps(
+    [
+      { code: 1, output: USAGE_LIMIT },
+      { code: 0, output: "Round done on Codex" },
+    ],
+    { next: null, codex: CODEX_CREDENTIAL },
+  );
+  assertEquals(
+    await runReviewRound("p", ROUND_ARGS, deps, { roundDir: "/r/x" }),
+    0,
+  );
+  assertEquals(
+    final().attempts.map((a) => [a.provider, a.model, a.effort, a.code]),
+    [
+      ["claude", "claude-opus-5-5", "xhigh", 1],
+      ["codex", "gpt-6-astra", "high", 0],
+    ],
+  );
+  assertEquals(final().attempts[1]!.stream, "stream-2.jsonl");
+  assertEquals(calls[1]!.streamFile, "/r/x/stream-2.jsonl");
+});
+
 Deno.test("renderStreamLine keeps the round's log readable: result text and non-JSON lines only", () => {
   assertEquals(
     renderStreamLine(
@@ -408,4 +467,357 @@ Deno.test("runReviewRound does not step down a round that is not on Fable (Issue
   ]);
   await runReviewRound("p", ["--model", "claude-opus-5-5"], deps);
   assertEquals(calls[1]!.args[3], "claude-opus-5-5");
+});
+
+// ---------------------------------------------------------------------------
+// Issue #5083: the chain Fable -> Opus -> rotation -> Codex -> DeepSeek. Each
+// link runs only once the one before it is exhausted, and a Codex attempt
+// that fails for another reason stops the chain before DeepSeek.
+// ---------------------------------------------------------------------------
+
+Deno.test("runReviewRound runs the chain Fable, Opus, rotation, then Codex, and stops before DeepSeek (Issue #5083)", async () => {
+  const { deps, calls } = fakeDeps(
+    [
+      { code: 1, output: USAGE_LIMIT }, // Fable
+      { code: 1, output: USAGE_LIMIT }, // Opus step-down
+      { code: 1, output: USAGE_LIMIT }, // rotated Fable
+      { code: 0, output: "Round done on Codex" },
+    ],
+    { codex: CODEX_CREDENTIAL },
+  );
+  assertEquals(
+    await runReviewRound(
+      "review ONE round",
+      // The round's effort differs from Codex's, so the test tells them apart.
+      ["--model", "claude-fable-5-2", "--effort", "max"],
+      deps,
+    ),
+    0,
+  );
+  assertEquals(calls.map((c) => c.runner), [
+    "claude",
+    "claude",
+    "claude",
+    "codex",
+  ]);
+  const codex = calls[3]!;
+  assertEquals(argAfter(codex.args, "--model"), "gpt-6-astra");
+  assert(codex.args.includes('model_reasoning_effort="high"'));
+  assert(
+    !codex.args.some((arg) => arg.includes("max")),
+    "Codex runs at its own effort, not the round's",
+  );
+  // The round's tool limits ride along as the guard's PreToolUse hook.
+  assert(codex.args.includes("--dangerously-bypass-hook-trust"));
+  assert(
+    codex.args.some((arg) =>
+      arg.startsWith("hooks.PreToolUse=") &&
+      arg.includes("review_round_guard.ts")
+    ),
+  );
+  assertEquals(codex.args.at(-1), "-", "the prompt is read from stdin");
+  assertStringIncludes(codex.stdin ?? "", "review ONE round");
+  assertStringIncludes(codex.stdin ?? "", CODEX_ROUND_NOTE);
+  // The Codex attempt runs in the Codex credential's own environment: the
+  // Claude subscription token set earlier in the round never reaches it.
+  assertEquals(codex.env, CODEX_CREDENTIAL.env);
+  assertEquals(
+    "CLAUDE_CODE_OAUTH_TOKEN" in codex.env,
+    false,
+  );
+  assertEquals(calls.length, 4, "DeepSeek is not reached once Codex succeeds");
+});
+
+Deno.test("runReviewRound does not step a Fable round down unless it was usage-limited (Issue #5083)", async () => {
+  const { deps, calls, log } = fakeDeps(
+    [{ code: 3, output: "model overloaded" }],
+    { codex: CODEX_CREDENTIAL },
+  );
+  assertEquals(
+    await runReviewRound("p", ["--model", "claude-fable-5-2"], deps),
+    3,
+  );
+  assertEquals(calls.map((c) => c.runner), ["claude"]);
+  assertEquals(log.some((m) => m.includes("stepping down")), false);
+});
+
+Deno.test("runReviewRound does not reach Codex when the rotated retry failed for another reason (Issue #5083)", async () => {
+  const { deps, calls } = fakeDeps(
+    [
+      { code: 1, output: USAGE_LIMIT },
+      { code: 3, output: "model overloaded" },
+    ],
+    { codex: CODEX_CREDENTIAL },
+  );
+  assertEquals(
+    await runReviewRound("p", ["--model", "claude-opus-5-5"], deps),
+    3,
+  );
+  assertEquals(calls.map((c) => c.runner), ["claude", "claude"]);
+});
+
+Deno.test("runReviewRound does not reach DeepSeek when the Codex attempt failed for another reason (Issue #5083)", async () => {
+  const { deps, calls, log } = fakeDeps(
+    [
+      { code: 1, output: USAGE_LIMIT },
+      { code: 1, output: USAGE_LIMIT },
+      // The text reads like a limit, but the runner classified it: not one.
+      { code: 2, output: USAGE_LIMIT, usageLimited: false },
+    ],
+    { codex: CODEX_CREDENTIAL },
+  );
+  assertEquals(
+    await runReviewRound("p", ["--model", "claude-opus-5-5"], deps),
+    2,
+  );
+  assertEquals(calls.map((c) => c.runner), ["claude", "claude", "codex"]);
+  assertEquals(
+    log.some((m) => m.includes("round fell back to provider deepseek")),
+    false,
+  );
+});
+
+Deno.test("runReviewRound runs DeepSeek when the Codex attempt is itself usage-limited (Issue #5083)", async () => {
+  const { deps, calls, log } = fakeDeps(
+    [
+      { code: 1, output: USAGE_LIMIT },
+      { code: 1, output: USAGE_LIMIT },
+      { code: 1, output: "codex refused", usageLimited: true },
+      { code: 0, output: "Round done on the fallback" },
+    ],
+    { codex: CODEX_CREDENTIAL },
+  );
+  assertEquals(
+    await runReviewRound("p", ["--model", "claude-opus-5-5"], deps),
+    0,
+  );
+  assertEquals(calls.map((c) => c.runner), [
+    "claude",
+    "claude",
+    "codex",
+    "claude",
+  ]);
+  assertEquals(calls[3]!.args, ["-p", "p", "--model", "deepseek-v4-pro"]);
+  assertStringIncludes(
+    log.join("\n"),
+    "round fell back to provider deepseek",
+  );
+});
+
+Deno.test("runReviewRound skips Codex with a plain log line and runs DeepSeek when there is no Codex credential (Issue #5083)", async () => {
+  const { deps, calls, log } = fakeDeps([
+    { code: 1, output: USAGE_LIMIT },
+    { code: 1, output: USAGE_LIMIT },
+    { code: 0, output: "Round done on the fallback" },
+  ]);
+  assertEquals(
+    await runReviewRound("p", ["--model", "claude-opus-5-5"], deps),
+    0,
+  );
+  assertEquals(calls.map((c) => c.runner), ["claude", "claude", "claude"]);
+  assertEquals(calls[2]!.args, ["-p", "p", "--model", "deepseek-v4-pro"]);
+  const skipped = log.filter((m) =>
+    m === "no Codex credential; skipping the codex fallback"
+  );
+  assertEquals(skipped.length, 1);
+  assertEquals(
+    log.some((m) => m.startsWith("INFO: ") && m.includes("codex")),
+    false,
+    "a missing credential is not a provider switch",
+  );
+  assertStringIncludes(
+    log.join("\n"),
+    "INFO: round fell back to provider deepseek",
+  );
+});
+
+Deno.test("runReviewRound logs exactly one INFO line per provider or model switch, and no ERROR (Issue #5083)", async () => {
+  const { deps, log } = fakeDeps(
+    [
+      { code: 1, output: USAGE_LIMIT }, // Fable
+      { code: 1, output: USAGE_LIMIT }, // Opus step-down
+      { code: 1, output: USAGE_LIMIT }, // rotated Fable
+      { code: 1, output: "codex refused", usageLimited: true }, // Codex
+      { code: 0, output: "Round done on the fallback" }, // DeepSeek
+    ],
+    { codex: CODEX_CREDENTIAL },
+  );
+  assertEquals(
+    await runReviewRound(
+      "p",
+      ["--model", "claude-fable-5-2", "--effort", "high"],
+      deps,
+    ),
+    0,
+  );
+  const info = log.filter((m) => m.startsWith("INFO: "));
+  assertEquals(info.length, 4, info.join("\n"));
+  assertStringIncludes(info[0]!, "stepping down to claude-opus-5-5");
+  assertStringIncludes(
+    info[1]!,
+    "retrying the round once on subscription provider-2",
+  );
+  assertStringIncludes(info[2]!, "round fell back to provider codex");
+  assertStringIncludes(info[2]!, "gpt-6-astra");
+  assertStringIncludes(info[3]!, "round fell back to provider deepseek");
+  assertEquals(log.some((m) => m.includes("ERROR")), false);
+});
+
+Deno.test("renderCodexStreamLine shows the agent's message or its errors, and leaves out other events (Issue #5083)", () => {
+  assertEquals(
+    renderCodexStreamLine(JSON.stringify({
+      type: "item.completed",
+      item: { id: "i1", type: "agent_message", text: "Approved owner/repo#7" },
+    })),
+    "Approved owner/repo#7",
+  );
+  assertEquals(
+    renderCodexStreamLine(JSON.stringify({
+      type: "turn.failed",
+      error: { message: "You have hit your limit." },
+    })),
+    "You have hit your limit.",
+  );
+  assertEquals(
+    renderCodexStreamLine(JSON.stringify({
+      type: "item.started",
+      item: { id: "i2", type: "command_execution", command: "ls" },
+    })),
+    null,
+  );
+  assertEquals(
+    renderCodexStreamLine("cannot run codex: boom"),
+    "cannot run codex: boom",
+  );
+  assertEquals(renderCodexStreamLine(""), null);
+});
+
+/** A stub `codex` binary in its own directory, running `body` as shell. */
+async function withStubCodex(
+  body: (dir: string) => string,
+  fn: (binary: string, dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "review-codex-stub-" });
+  try {
+    const binary = `${dir}/codex`;
+    await Deno.writeTextFile(binary, `#!/bin/sh\n${body(dir)}\n`);
+    await Deno.chmod(binary, 0o755);
+    await fn(binary, dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("runCodexCli reports a usage-limit refusal as usageLimited and sends the prompt on stdin (Issue #5083)", async () => {
+  await withStubCodex(
+    (dir) =>
+      [
+        `cat > '${dir}/stdin.txt'`,
+        `echo '{"type":"turn.failed","error":{"message":"You have hit your limit."}}'`,
+        "exit 1",
+      ].join("\n"),
+    async (binary, dir) => {
+      const streamFile = `${dir}/stream-1.jsonl`;
+      const attempt = await runCodexCli(
+        ["exec", "-"],
+        "the round prompt",
+        {},
+        streamFile,
+        undefined,
+        binary,
+      );
+      assertEquals(attempt.code, 1);
+      assertEquals(attempt.usageLimited, true);
+      assertStringIncludes(attempt.output, "You have hit your limit.");
+      assertEquals(
+        await Deno.readTextFile(`${dir}/stdin.txt`),
+        "the round prompt",
+      );
+      assertStringIncludes(
+        await Deno.readTextFile(streamFile),
+        "turn.failed",
+      );
+    },
+  );
+});
+
+Deno.test("runCodexCli returns a successful run with its message and no usage limit (Issue #5083)", async () => {
+  await withStubCodex(
+    (dir) =>
+      [
+        `cat > '${dir}/stdin.txt'`,
+        `echo '{"type":"item.completed","item":{"id":"i1","type":"agent_message","text":"Round done"}}'`,
+        "exit 0",
+      ].join("\n"),
+    async (binary, dir) => {
+      const attempt = await runCodexCli(
+        ["exec", "-"],
+        "the round prompt",
+        {},
+        undefined,
+        undefined,
+        binary,
+      );
+      assertEquals(attempt.code, 0);
+      assertEquals(attempt.usageLimited, false);
+      assertStringIncludes(attempt.output, "Round done");
+      assertEquals(
+        await Deno.readTextFile(`${dir}/stdin.txt`),
+        "the round prompt",
+      );
+    },
+  );
+});
+
+Deno.test("runCodexCli gives the child only the curated env, not this process's credentials (Issue #5083)", async () => {
+  const names = [
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENAI_API_KEY",
+  ];
+  // Run in a child process that holds the credentials, so this test never
+  // mutates its own environment.
+  const script = `
+    import { runCodexCli } from ${
+    JSON.stringify(new URL("../lib/review_round.ts", import.meta.url).href)
+  };
+    const [binary, dir] = Deno.args;
+    const attempt = await runCodexCli(
+      ["exec", "-"],
+      "",
+      { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin", CODEX_HOME: dir },
+      undefined,
+      undefined,
+      binary,
+    );
+    console.log(JSON.stringify(attempt.code));
+  `;
+  const childEnv: Record<string, string> = {};
+  for (const name of names) childEnv[name] = `parent-${name}`;
+  await withStubCodex(
+    (dir) => `env > '${dir}/env.txt'\nexit 0`,
+    async (binary, dir) => {
+      const result = await new Deno.Command(Deno.execPath(), {
+        args: ["eval", script, binary, dir],
+        cwd: new URL("..", import.meta.url).pathname,
+        env: childEnv,
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const stderr = new TextDecoder().decode(result.stderr);
+      assertEquals(result.code, 0, stderr);
+      assertEquals(
+        new TextDecoder().decode(result.stdout).trim(),
+        "0",
+        stderr,
+      );
+      const seen = await Deno.readTextFile(`${dir}/env.txt`);
+      for (const name of names) {
+        assertEquals(seen.includes(`${name}=`), false, `${name} leaked`);
+      }
+      assertStringIncludes(seen, `CODEX_HOME=${dir}`);
+    },
+  );
 });

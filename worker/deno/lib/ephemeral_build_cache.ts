@@ -279,7 +279,9 @@ const provisionedRoots = new Map<string, boolean>();
  * and lock the other out of creating its own directory beside it. The mode is
  * `1777` — the same shape as `/tmp`, and the same reasoning as the work
  * root's sticky bit (Issue #1442): either account may create its own
- * directory, neither may remove the other's.
+ * directory, neither may remove the other's. The worker releases the agent's
+ * directories by dropping to `agent` to remove them (`removeTargetDir` in
+ * `heavy_build_gate.ts`, Issue #5105).
  *
  * A root that already carries the mode is left alone, so the second account
  * does not try to chmod a directory it does not own. A root that cannot be

@@ -1,8 +1,7 @@
 ---
 name: fleet-pr-reviewer
 description: Read-only reviewer for one fleet PR at a time (review-fleet-prs skill). Answers with only the review JSON the launching prompt specifies.
-model: claude-fable-5-2
-effort: high
+model: inherit
 tools: Bash, Read, Grep, Glob, WebFetch
 ---
 

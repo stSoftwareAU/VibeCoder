@@ -378,6 +378,11 @@ export const VIBE_ENV_REGISTRY: Readonly<Record<string, VibeEnvEntry>> = {
     role: "launch_plumbing",
     note: "the launcher-generated run identifier",
   },
+  VIBE_REVIEW_CODEX_HOME: {
+    role: "launch_plumbing",
+    note:
+      "the review round's own Codex home, which the review runner hands the round (Issue #5127)",
+  },
   VIBE_APPLE_EGRESS_MODE: {
     role: "switch",
     note:

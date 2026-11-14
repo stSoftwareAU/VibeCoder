@@ -68,6 +68,68 @@ Deno.test("execute_phase - the runner is called with phase 'issue' and the repo 
   assertEquals(seen[0]!.repo, "org/repo");
 });
 
+async function captureIssueRunnerCalls(
+  config: WorkerConfig,
+): Promise<Array<Record<string, unknown>>> {
+  const ctx: IssueContext = {
+    repo: "org/repo",
+    issueNumber: 7,
+    issueTitle: "Route me",
+    issueBody: "Do the thing.",
+    issueLabels: [],
+    issueComments: "",
+    githubUser: "testbot",
+    config,
+  };
+  const state: PhaseState = {
+    branchName: "issue-7-route-me",
+    baseBranch: "main",
+    defaultBranch: "main",
+    repoPath: "/tmp/test-repo",
+    clarityStatus: "assessed_clear",
+    claudeOutput: "",
+    executeStartTime: Date.now(),
+    baselineQualityPassed: true,
+    baselineQualityOutput: "",
+  };
+  const seen: Array<Record<string, unknown>> = [];
+  const deps = createMockDeps({
+    claude: {
+      runClaudeWithRetry: ((options: Record<string, unknown>) => {
+        seen.push(options);
+        return Promise.resolve({
+          ok: true,
+          value: { output: "done", exitCode: 0, timedOut: false },
+        });
+      }) as never,
+    },
+    pr: {
+      findExistingPrForIssue: (() =>
+        Promise.resolve({ ok: true, value: null })) as never,
+    },
+  });
+  await workOnIssueExecuteClaude(ctx, state, deps);
+  return seen;
+}
+
+Deno.test("execute_phase - the issue run arms the configured no-output watchdog (Issue #5062)", async () => {
+  const seen = await captureIssueRunnerCalls({
+    ...buildDefaultWorkerConfig(),
+    claudeNoOutputTimeout: 437,
+  });
+  assertEquals(seen.length >= 1, true, "the runner must be invoked");
+  for (const call of seen) assertEquals(call.noOutputTimeout, 437);
+});
+
+Deno.test("execute_phase - claude_no_output_timeout 0 leaves the silence watchdog off (Issue #5062)", async () => {
+  const seen = await captureIssueRunnerCalls({
+    ...buildDefaultWorkerConfig(),
+    claudeNoOutputTimeout: 0,
+  });
+  assertEquals(seen.length >= 1, true, "the runner must be invoked");
+  for (const call of seen) assertEquals(call.noOutputTimeout, 0);
+});
+
 Deno.test("execute_phase - a Codex thread id is adopted and persisted (Issue #1699)", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "execute-codex-session-" });
   try {

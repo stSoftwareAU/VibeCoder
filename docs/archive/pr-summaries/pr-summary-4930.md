@@ -2,7 +2,9 @@
 
 Refuse unreadable or malformed Deno configurations instead of silently dropping
 unit tests from validation. Add real-tool repair probes to the existing container
-containment suite. Closes #4930.
+containment suite.
+
+Part of #4930.
 
 ## Spec
 
@@ -85,6 +87,32 @@ flowchart LR
     B --> H[Host refuses publication]
     R --> P[Existing host guards and publication]
 ```
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Malformed or unreadable Deno configuration cannot silently omit
+  unit tests from repair validation. Evidence: the positive, refusal and
+  restored-control cases in `pre_push_gate_test.ts` and
+  `babysitter_tree_gate_test.ts`, plus the recorded container probe.
+- **met** — Preserve baseline-only warnings, infrastructure recovery and the
+  contained publication path. Evidence: the baseline, missing-tool and repair
+  regressions, and the six real-container probes recorded above.
+- **partial** — Finish the remaining test-selection/time-budget cases from
+  PR #5034. Current `loadReferencedUnitTests` still follows relative `.ts`
+  imports and name references; computed/import-map dependencies and tests
+  outside `tests/` can be missed when no full-suite trigger applies.
+  `judgeDenoTestCheck` reruns the skipped serial pass after a baseline-only
+  parallel failure, but does not reapply that failed parallel pass's timing
+  budget. These limits are also documented in `docs/CONFIGURATION.md` and
+  `deno_test_baseline.ts`. They remain in #4930; this PR does not close it.
+
+## Review validation
+
+The branch was brought up to date with `main`. With the pinned Deno 2.9.8,
+all 456 tests in the ten targeted gate/repair suites listed below passed.
+No code assertion was weakened. Required CI must validate the refreshed head.
 
 ## Test Plan
 
