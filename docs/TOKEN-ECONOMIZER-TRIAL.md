@@ -370,6 +370,7 @@ State is `present` when the path exists and names the plugin today, and
 | Source | the implementation spawn's launch, in the standalone phase | `worker/deno/lib/execute_claude_phase.ts` | present |
 | Source | the PR-feedback spawn's launch | `worker/deno/lib/pr_feedback_processor.ts` | present |
 | Source | the CI-fix spawns' launch, on both attempts | `worker/deno/lib/pr_ci_processor.ts` | present |
+| Source | the `tokenEconomizerPluginDir` seam on the Claude dependencies, which the spawn sites pass as the plugin directory | `worker/deno/lib/issue_worker_wiring.ts` | present |
 | Source | the production dependencies that pass `config.tokenEconomizer` to the processors | `worker/deno/lib/run_core_production_deps.ts` | present |
 | Command | the standalone implementation command that passes `config.tokenEconomizer` | `worker/deno/commands/execute_claude_phase.ts` | present |
 | Command | the standalone PR-feedback command that passes `config.tokenEconomizer` | `worker/deno/commands/pr_feedback_processor.ts` | present |
