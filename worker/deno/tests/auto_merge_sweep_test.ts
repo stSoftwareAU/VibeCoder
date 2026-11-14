@@ -1201,6 +1201,27 @@ Deno.test("an armed, behind PR with changes requested gets no branch update (Iss
   );
 });
 
+Deno.test("an armed, behind PR awaiting approval waits for its review", async () => {
+  infos.length = 0;
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+        reviewRequired: true,
+      }),
+  });
+  const result = await sweepAutoMerge(options);
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, []);
+  assert(infos.some((line) => line.message.includes("REVIEW_REQUIRED")));
+});
+
 Deno.test("a requested review clears an escalated refusal even while mergeability is unknown", async () => {
   const entry = {
     reason: "mergeability-unknown" as const,

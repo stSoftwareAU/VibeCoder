@@ -516,6 +516,15 @@ export async function sweepAutoMerge(
           );
           continue;
         }
+        if (armedNow && reading.behind === true && reading.reviewRequired) {
+          await clearRefusal(repo, pr.number);
+          logger.info(
+            "Auto-merge sweep: armed PR is behind and awaiting approval " +
+              "(REVIEW_REQUIRED) — review the current head before updating it",
+            { repo, prNumber: pr.number },
+          );
+          continue;
+        }
         if (
           armedNow && reading.behind === true &&
           reading.mergeable !== "CONFLICTING" &&
