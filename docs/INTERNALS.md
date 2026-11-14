@@ -176,8 +176,14 @@ registered only when `.github/workflows/gitleaks.yml` exists in the checkout.
 It scans the branch's commit range, `<merge-base with origin/HEAD>..HEAD`: the
 same commits CI's `base_sha..head_sha` scan covers, with the merge-base
 resolution and history deepening shared with the semgrep stage
-(`resolveDiffBase` in `semgrep_check.ts`). Uncommitted changes are not scanned,
-as in CI. It runs the CI fallback's invocation,
+(`resolveDiffBase` in `semgrep_check.ts`). A base that cannot be resolved
+(`origin/HEAD` unset, a failed history deepen, a failed `merge-base`) is
+`SKIPPED` on a host, where `--strict` promotes it to a failure, but `FAILED`
+inside the fleet container image: the worker runs the gate non-strict, and a
+skipped stage would let the PR through with its commit range never scanned. The
+failure says the history is "not available in the worker environment", so the
+failure classifier reads it as an infrastructure fault (`missing_tools`), not a
+finding. Uncommitted changes are not scanned by this stage, as in CI. It runs the CI fallback's invocation,
 `gitleaks git --config .github/gitleaks.toml --redact --no-banner --exit-code 1 --log-opts=<base>..HEAD .`
 (the `--config` only when `.github/gitleaks.toml` exists), plus `--verbose
 --no-color`, so each finding prints its file, line and rule with the secret
@@ -191,6 +197,24 @@ line, because gitleaks exits 0 with "no leaks found" on an unresolvable
 revision range. Leaks are `FAILED` with the redacted findings; a scanner error
 or a scan past the 300s deadline is also `FAILED`. CI's `gitleaks.yml` stays
 the backstop.
+
+Publication paths and where the scan runs: the issue completion gate and the
+other `./quality.sh` callers run the stage above through `runQualityGate`. A
+fleet babysitter repair does not: `babysitter-repair` gates a `BABYSITTER_READY`
+response with `runBabysitterTreeGate` (`babysitter_tree_gate.ts`), which runs
+the pre-push gate over the repair's uncommitted tree. That gate also runs
+`runGitleaksTreeCheck` (same module, same pinned CLI, config and redaction)
+once the other checks pass: the branch's commit range
+`<merge-base with origin/<base branch>>..HEAD`, resolved read-only because the
+clone's `.git` is mounted read-only, then `gitleaks dir` over each changed file
+as it is on disk, since the host commits and pushes those edits next. A finding
+is `blocked` and spends a repair attempt, with redacted rule, path and line
+metadata. A missing scanner, an unresolvable base, a scanner error or a
+deadline hit is `infrastructure` and spends none. The repository's
+`.github/gitleaks.toml` is read from the working tree, as CI reads it from the
+PR head. The pre-push gate that the worker runs over unpushed commits
+(`gateUnpushedCommits`) does not run gitleaks; the completion gate's
+`./quality.sh` does.
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output

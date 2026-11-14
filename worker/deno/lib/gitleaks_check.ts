@@ -12,8 +12,11 @@
  * Pipeline:
  *   1. Not a git repository → SKIPPED (there is no commit range to scan).
  *   2. Resolve the diff base exactly as `semgrep_check.ts` does
- *      ({@link resolveDiffBase}). An unresolvable base → SKIPPED, never PASSED.
- *      The range is `<base>..HEAD`. Uncommitted changes are not scanned, because
+ *      ({@link resolveDiffBase}). An unresolvable base is never PASSED: it is
+ *      SKIPPED on a host (`--strict` promotes that) but FAILED inside the fleet
+ *      container image, worded as an infrastructure fault, because the worker
+ *      runs the gate non-strict and a skipped stage would let the PR through
+ *      with its commit range never scanned. The range is `<base>..HEAD`. Uncommitted changes are not scanned, because
  *      CI scans commits only, and the PASSED output says so.
  *   3. Probe `gitleaks version`. Absent → SKIPPED on a host, but FAILED inside
  *      the fleet container image, which bakes gitleaks in (the image is broken,
@@ -26,6 +29,12 @@
  *      revision range is bad, so exit 0 alone is not a pass. A non-zero exit
  *      with a `leaks found: N` line is FAILED, with the redacted findings. Any
  *      other outcome is FAILED as a scanner error, quoting the redacted stderr.
+ *
+ * The babysitter repair publishes a clone's uncommitted edits and never runs
+ * `quality.sh`, so {@link runGitleaksTreeCheck} gives that path the same scan
+ * (Issue #5121, PR #5129 review): the branch's commit range plus the repair's
+ * uncommitted files, with a finding `blocked` and a scanner or history fault
+ * `infrastructure`.
  *
  * Australian English spelling used throughout (behaviour, licence, etc.).
  */
@@ -151,15 +160,23 @@ async function gitleaksConfigPath(scriptDir: string): Promise<string | null> {
   }
 }
 
+/** How one finished scan read: clean, a finding, or a scanner fault. */
+type RunVerdict = "clean" | "leaks" | "error";
+
+/** A judged scan: the stage result plus the verdict the tree check maps on. */
+type JudgedRun = GitleaksCheckResult & { verdict: RunVerdict };
+
 /**
- * Judge one finished scan (step 5 of the pipeline). Exit 0 is not enough on
+ * Judge one finished scan (step 5 of the pipeline). `subject` names what was
+ * scanned; `passedNote` is appended to the PASSED line. Exit 0 is not enough on
  * its own: a bad revision range exits 0 with an `ERR` line and `no leaks found`.
  */
 function judgeRun(
   run: SemgrepRunResult,
-  shortRange: string,
+  subject: string,
   description: string,
-): GitleaksCheckResult {
+  passedNote = "",
+): JudgedRun {
   const stderrLines = run.stderr.split("\n");
   const hasErrorLevel = stderrLines.some((line) => ERROR_LEVEL_LINE.test(line));
 
@@ -170,8 +187,8 @@ function judgeRun(
   ) {
     return {
       status: "PASSED",
-      output: `gitleaks: PASSED (commit range ${shortRange}, ${description}; ` +
-        "uncommitted changes are not scanned, as in CI)",
+      verdict: "clean",
+      output: `gitleaks: PASSED (${subject}, ${description}${passedNote})`,
     };
   }
 
@@ -181,8 +198,9 @@ function judgeRun(
     const findings = redactedLineTail(run.stdout, FINDINGS_MAX_LINES).trim();
     return {
       status: "FAILED",
+      verdict: "leaks",
       output: [
-        `gitleaks: FAILED (leaks found in commit range ${shortRange}, ${description})`,
+        `gitleaks: FAILED (leaks found in ${subject}, ${description})`,
         "",
         findings === "" ? "(no finding detail on stdout)" : findings,
         "",
@@ -199,6 +217,7 @@ function judgeRun(
   const stderrTail = redactedLineTail(run.stderr, STDERR_TAIL_LINES).trim();
   return {
     status: "FAILED",
+    verdict: "error",
     output: [
       `gitleaks: FAILED (scanner error, exit ${run.exitCode}, ${description})`,
       "",
@@ -211,8 +230,8 @@ function judgeRun(
  * Run the gitleaks quality check over the branch's commit range.
  *
  * Pipeline (see the module comment): not a repository → SKIPPED; unresolvable
- * diff base → SKIPPED; gitleaks absent → SKIPPED on a host, FAILED in the
- * fleet image; deadline → FAILED; otherwise judged by {@link judgeRun}.
+ * diff base or gitleaks absent → SKIPPED on a host, FAILED in the fleet image;
+ * deadline → FAILED; otherwise judged by {@link judgeRun}.
  */
 export async function runGitleaksCheck(
   scriptDir: string,
@@ -227,7 +246,18 @@ export async function runGitleaksCheck(
   }
 
   const resolved = await resolveDiffBase(git, scriptDir, ensureHistory);
-  if ("skipReason" in resolved) return skipped(resolved.skipReason);
+  if ("skipReason" in resolved) {
+    if (runningInContainerImage(options.env ?? processEnvLookup)) {
+      return {
+        status: "FAILED",
+        output: "gitleaks: FAILED (the git history needed to resolve the " +
+          "diff base is not available in the worker environment: " +
+          `${resolved.skipReason} — an infrastructure fault, not a finding; ` +
+          "the commit range was never scanned)",
+      };
+    }
+    return skipped(resolved.skipReason);
+  }
   const range = `${resolved.base}..HEAD`;
   const shortRange = `${resolved.base.slice(0, 12)}..HEAD`;
 
@@ -270,5 +300,206 @@ export async function runGitleaksCheck(
     };
   }
 
-  return judgeRun(run, shortRange, description);
+  const { status, output } = judgeRun(
+    run,
+    `commit range ${shortRange}`,
+    description,
+    "; uncommitted changes are not scanned, as in CI",
+  );
+  return { status, output };
+}
+
+// ---------------------------------------------------------------------------
+// Babysitter repair: the uncommitted tree (PR #5129 review)
+// ---------------------------------------------------------------------------
+
+/**
+ * What the scan of a babysitter repair's tree found. The shape matches the
+ * tree gate's own outcomes: a finding is `blocked` (a verdict on the tree, so
+ * the repair attempt counts), a missing scanner, unresolvable history or a
+ * scanner fault is `infrastructure` (no attempt is spent), and only a clean
+ * scan of both the commit range and every uncommitted file is `passed`.
+ */
+export type GitleaksTreeOutcome =
+  | { kind: "passed"; summary: string }
+  | { kind: "blocked"; message: string }
+  | { kind: "infrastructure"; message: string };
+
+/** Injection points for {@link runGitleaksTreeCheck} (used by the tests). */
+export interface GitleaksTreeCheckOptions {
+  /** Inject a git runner rooted at the clone. Defaults to {@link makeGitRunner}. */
+  git?: GitRunner;
+  /** Inject a version probe. Returns null when gitleaks cannot run. */
+  probeVersion?: () => Promise<string | null>;
+  /** Inject the scan. Defaults to the deadline-bound spawn of `gitleaks`. */
+  run?: (args: string[]) => Promise<SemgrepRunResult>;
+}
+
+/**
+ * Arguments for the scan of one uncommitted file. The `--` keeps a path that
+ * starts with `-` from being read as a flag; the other flags are
+ * {@link gitleaksScanArgs}'s.
+ */
+export function gitleaksFileScanArgs(
+  path: string,
+  configPath: string | null,
+): string[] {
+  return [
+    "dir",
+    ...(configPath ? ["--config", configPath] : []),
+    "--redact",
+    "--no-banner",
+    "--exit-code",
+    "1",
+    "--verbose",
+    "--no-color",
+    "--",
+    path,
+  ];
+}
+
+/** A changed path the tree scan can hand to gitleaks safely, or null. */
+function unsafeTreePath(path: string): string | null {
+  if (path === "" || path.startsWith("/")) {
+    return `${JSON.stringify(path)} is not a repository-relative path`;
+  }
+  if (path.split("/").includes("..")) {
+    return `${JSON.stringify(path)} leaves the clone`;
+  }
+  return null;
+}
+
+/**
+ * Whether `path` names a regular file or directory to scan. A path the repair
+ * deleted is gone, and a symlink's content is its target's, which is not part
+ * of what the repair added; neither is scanned.
+ */
+async function pathToScan(dir: string, path: string): Promise<boolean> {
+  try {
+    const info = await Deno.lstat(`${dir}/${path}`);
+    return !info.isSymlink;
+  } catch (error) {
+    if (
+      error instanceof Deno.errors.NotFound ||
+      error instanceof Deno.errors.NotADirectory
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Run the gitleaks scan over a babysitter repair's clone before its READY is
+ * honoured. The repair's edits are uncommitted and the clone's `.git` is
+ * read-only, so two scans run, neither writing to `.git`:
+ *
+ *   1. the branch's commit range `<merge-base with origin/<baseBranch>>..HEAD`,
+ *      the range CI scans (the clone is a full clone, so no deepening is
+ *      needed or possible);
+ *   2. each changed file as it is now on disk (`paths`), because the host
+ *      commits and pushes those edits and CI then scans them.
+ *
+ * The repository config is read from the working tree, as CI reads it from the
+ * PR head. `paths` may name files the repair deleted; those are skipped.
+ *
+ * SIMPLE-ON-PURPOSE: each changed file is scanned whole, one process per file,
+ * so a repair that touches a file already holding allowlist-dependent committed
+ * content is held to the config's path allowlist — upgrade when a repair
+ * touches more than a few hundred files in one run or a false block appears.
+ */
+export async function runGitleaksTreeCheck(
+  dir: string,
+  baseBranch: string | undefined,
+  paths: readonly string[],
+  options: GitleaksTreeCheckOptions = {},
+): Promise<GitleaksTreeOutcome> {
+  const git = options.git ?? makeGitRunner(dir);
+  const infra = (message: string): GitleaksTreeOutcome => ({
+    kind: "infrastructure",
+    message: `gitleaks: ${message} — an infrastructure fault, not a finding`,
+  });
+
+  for (const path of paths) {
+    const unsafe = unsafeTreePath(path);
+    if (unsafe !== null) {
+      return {
+        kind: "blocked",
+        message: `gitleaks: cannot scan a changed path: ${unsafe}`,
+      };
+    }
+  }
+
+  const baseRef = baseBranch === undefined
+    ? "refs/remotes/origin/HEAD"
+    : `refs/remotes/origin/${baseBranch}`;
+  const mergeBase = await git(["merge-base", baseRef, "HEAD"]);
+  const base = mergeBase.stdout.trim();
+  if (mergeBase.exitCode !== 0 || base === "") {
+    return infra(
+      `the diff base is not available in the worker environment: ` +
+        `merge-base of ${baseRef} and HEAD failed, so the commit range was ` +
+        "never scanned",
+    );
+  }
+  const shortRange = `${base.slice(0, 12)}..HEAD`;
+
+  const version = await (options.probeVersion ?? defaultProbeVersion)();
+  if (version === null) {
+    return infra(
+      "gitleaks is not installed or not in PATH, so nothing was scanned",
+    );
+  }
+  const reported = version === "" ? "(unknown version)" : version;
+  const description = `gitleaks ${reported}${
+    version === GITLEAKS_VERSION ? "" : ` (CI pins ${GITLEAKS_VERSION})`
+  }`;
+
+  const configPath = await gitleaksConfigPath(dir);
+  const deadlineAt = Date.now() + GITLEAKS_DEADLINE_MS;
+  const scan = options.run ??
+    ((args: string[]) =>
+      spawnWithDeadline(
+        "gitleaks",
+        args,
+        dir,
+        Math.max(deadlineAt - Date.now(), 1),
+      ));
+
+  const scans: { subject: string; args: string[] }[] = [{
+    subject: `commit range ${shortRange}`,
+    args: gitleaksScanArgs(`${base}..HEAD`, configPath),
+  }];
+  for (const path of paths) {
+    if (await pathToScan(dir, path)) {
+      scans.push({
+        subject: `uncommitted file ${path}`,
+        args: gitleaksFileScanArgs(path, configPath),
+      });
+    }
+  }
+
+  for (const { subject, args } of scans) {
+    const run = await scan(args);
+    if (run.timedOut) {
+      return infra(
+        `the scan of ${subject} exceeded the ` +
+          `${GITLEAKS_DEADLINE_MS / 1000}s local deadline — a scan that did ` +
+          "not finish is not clean",
+      );
+    }
+    const judged = judgeRun(run, subject, description);
+    if (judged.verdict === "leaks") {
+      return { kind: "blocked", message: judged.output };
+    }
+    if (judged.verdict === "error") {
+      // The output already names the scanner error and quotes its cause.
+      return { kind: "infrastructure", message: judged.output };
+    }
+  }
+  return {
+    kind: "passed",
+    summary: `gitleaks: PASSED (commit range ${shortRange} and ` +
+      `${scans.length - 1} uncommitted file(s), ${description})`,
+  };
 }

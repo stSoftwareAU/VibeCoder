@@ -9,7 +9,11 @@
  *   - a bad revision range exits 0 yet is FAILED, not PASSED (observed in
  *     gitleaks 8.30.1);
  *   - a missing config and a deadline hit are FAILED;
- *   - loud SKIPPED outside a git repository and with an unresolvable diff base;
+ *   - loud SKIPPED outside a git repository; an unresolvable diff base (origin/HEAD
+ *     unset, a failed history deepen, a failed merge-base) is SKIPPED on a host
+ *     but an infrastructure FAILED inside the fleet image;
+ *   - the babysitter repair's tree scan (`runGitleaksTreeCheck`): a finding is
+ *     `blocked`, a missing scanner or unresolvable history is `infrastructure`;
  *   - gitleaks absent is SKIPPED on a host but FAILED inside the fleet image;
  *   - a version drift is named while the scan still runs;
  *   - the CI pin, flags and fallback command in `gitleaks.yml` match the module;
@@ -20,14 +24,26 @@
  * Australian English spelling used throughout (behaviour, licence, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   GITLEAKS_CONFIG_PATH,
   GITLEAKS_VERSION,
   type GitleaksCheckOptions,
+  gitleaksFileScanArgs,
   gitleaksScanArgs,
+  type GitleaksTreeCheckOptions,
   runGitleaksCheck,
+  runGitleaksTreeCheck,
 } from "../lib/gitleaks_check.ts";
+import {
+  detectFailureCategory,
+  isInfrastructureFailure,
+} from "../lib/failure_diagnosis.ts";
 import {
   type EnsureHistory,
   type GitRunner,
@@ -361,6 +377,63 @@ Deno.test("runGitleaksCheck - SKIPPED with the reason when origin/HEAD is unset"
   assertStringIncludes(result.output, "origin/HEAD is unset");
 });
 
+/** The three ways the diff base fails to resolve, each with its host wording. */
+const UNRESOLVED_BASE_CASES: {
+  name: string;
+  options: Partial<GitleaksCheckOptions>;
+  reason: string;
+}[] = [
+  {
+    name: "origin/HEAD unset",
+    options: {
+      git: fakeGit({
+        "rev-parse --abbrev-ref refs/remotes/origin/HEAD": { exitCode: 128 },
+      }),
+    },
+    reason: "origin/HEAD is unset",
+  },
+  {
+    name: "history deepening failed",
+    options: {
+      ensureHistory: () =>
+        Promise.resolve({ ok: false, error: new Error("fetch refused") }),
+    },
+    reason: "could not deepen history before resolving the diff base",
+  },
+  {
+    name: "merge-base failed",
+    options: {
+      git: fakeGit({ "merge-base origin/main HEAD": { exitCode: 1 } }),
+    },
+    reason: "merge-base with origin/main failed after deepening",
+  },
+];
+
+for (const unresolved of UNRESOLVED_BASE_CASES) {
+  Deno.test(`runGitleaksCheck - ${unresolved.name} is SKIPPED on a host and FAILED, as an infrastructure fault, inside the fleet image`, async () => {
+    const host = await runGitleaksCheck(
+      "/unused-scriptdir",
+      options({ ...unresolved.options, env: hostEnv }),
+    );
+    const image = await runGitleaksCheck(
+      "/unused-scriptdir",
+      options({ ...unresolved.options, env: imageEnv }),
+    );
+
+    assertEquals(host.status, "SKIPPED");
+    assertStringIncludes(host.output, unresolved.reason);
+    assertEquals(image.status, "FAILED");
+    assertStringIncludes(image.output, unresolved.reason);
+    assertStringIncludes(image.output, "never scanned");
+    // The worker's recovery reads the output: this must be a retried fault,
+    // not a failure the remediation agent is asked to fix.
+    assert(
+      isInfrastructureFailure(detectFailureCategory(image.output)),
+      `not classed as infrastructure: ${image.output}`,
+    );
+  });
+}
+
 Deno.test("runGitleaksCheck - gitleaks absent is SKIPPED on a host", async () => {
   const result = await runGitleaksCheck(
     "/unused-scriptdir",
@@ -639,6 +712,320 @@ Deno.test({
       const result = await runGitleaksCheck(repo, { ensureHistory: okHistory });
       assertEquals(result.status, "PASSED");
       assertStringIncludes(result.output, "gitleaks: PASSED");
+    } finally {
+      await Deno.remove(repo, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runGitleaksCheck - real gitleaks FAILED on a fake token an earlier branch commit added and a later commit deleted (skipped where gitleaks is not installed)",
+  ignore: !gitleaksAvailable,
+  fn: async () => {
+    const repo = await repoWithFeatureFile(
+      "leak.ts",
+      `export const token = "${FAKE_TOKEN}";\n`,
+    );
+    try {
+      await runGit(repo, ["rm", "-q", "leak.ts"]);
+      await runGit(repo, ["commit", "-m", "remove the secret"]);
+      // Control: the token is gone from HEAD, so only history still holds it.
+      await assertRejects(
+        () => Deno.stat(`${repo}/leak.ts`),
+        Deno.errors.NotFound,
+      );
+
+      const result = await runGitleaksCheck(repo, { ensureHistory: okHistory });
+
+      assertEquals(result.status, "FAILED");
+      assertStringIncludes(result.output, "github-pat");
+      assert(
+        !result.output.includes(FAKE_TOKEN),
+        "the raw token must not reach the output",
+      );
+    } finally {
+      await Deno.remove(repo, { recursive: true });
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Babysitter repair tree scan (PR #5129 review)
+// ---------------------------------------------------------------------------
+
+/** Fake `git` for the tree scan: only `merge-base` is asked. */
+function treeGit(
+  mergeBase: { exitCode: number; stdout: string } = {
+    exitCode: 0,
+    stdout: `${BASE_SHA}\n`,
+  },
+): { calls: string[][]; git: GitRunner } {
+  const calls: string[][] = [];
+  return {
+    calls,
+    git: (args: string[]) => {
+      calls.push(args);
+      return Promise.resolve(mergeBase);
+    },
+  };
+}
+
+/** A temp clone holding the given files, removed after `body`. */
+async function withTree(
+  files: Record<string, string>,
+  body: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "gitleaks-tree-5129-" });
+  try {
+    for (const [name, text] of Object.entries(files)) {
+      await Deno.mkdir(`${dir}/${name.split("/").slice(0, -1).join("/")}`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(`${dir}/${name}`, text);
+    }
+    await body(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+/** Tree-scan options that reach the scan, with a scripted result per call. */
+function treeOptions(
+  results: SemgrepRunResult[],
+  overrides: GitleaksTreeCheckOptions = {},
+): { calls: string[][]; options: GitleaksTreeCheckOptions } {
+  const calls: string[][] = [];
+  return {
+    calls,
+    options: {
+      git: treeGit().git,
+      probeVersion: () => Promise.resolve(GITLEAKS_VERSION),
+      run: (args) => {
+        calls.push(args);
+        const next = results[calls.length - 1];
+        return next === undefined
+          ? Promise.reject(new Error("an unscripted scan ran"))
+          : Promise.resolve(next);
+      },
+      ...overrides,
+    },
+  };
+}
+
+const CLEAN_RUN: SemgrepRunResult = {
+  exitCode: 0,
+  stdout: "",
+  stderr: CLEAN_STDERR,
+};
+
+Deno.test("runGitleaksTreeCheck - a clean range and clean uncommitted files pass, scanning the range and each file that still exists", async () => {
+  await withTree({ "a/new.ts": "export const n = 1;\n" }, async (dir) => {
+    const { calls, options } = treeOptions([CLEAN_RUN, CLEAN_RUN]);
+
+    const outcome = await runGitleaksTreeCheck(
+      dir,
+      "main",
+      ["a/new.ts", "deleted.ts"],
+      options,
+    );
+
+    assertEquals(outcome.kind, "passed");
+    assertEquals(calls.length, 2, "the range and the one surviving file");
+    assertEquals(calls[0], gitleaksScanArgs(`${BASE_SHA}..HEAD`, null));
+    assertEquals(calls[1], gitleaksFileScanArgs("a/new.ts", null));
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - the base is merged against origin/<baseBranch>, or origin/HEAD with none", async () => {
+  await withTree({}, async (dir) => {
+    for (
+      const [baseBranch, ref] of [
+        ["release/1", "refs/remotes/origin/release/1"],
+        [undefined, "refs/remotes/origin/HEAD"],
+      ] as const
+    ) {
+      const fake = treeGit();
+      const { options } = treeOptions([CLEAN_RUN], { git: fake.git });
+
+      const outcome = await runGitleaksTreeCheck(dir, baseBranch, [], options);
+
+      assertEquals(outcome.kind, "passed");
+      assertEquals(fake.calls, [["merge-base", ref, "HEAD"]]);
+    }
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - a finding in an uncommitted file is blocked with its rule and path, and never prints the secret", async () => {
+  await withTree({ "leak.ts": "x\n" }, async (dir) => {
+    const { options } = treeOptions([
+      CLEAN_RUN,
+      { exitCode: 1, stdout: LEAK_STDOUT, stderr: LEAK_STDERR },
+    ]);
+
+    const outcome = await runGitleaksTreeCheck(
+      dir,
+      "main",
+      ["leak.ts"],
+      options,
+    );
+
+    assertEquals(outcome.kind, "blocked");
+    const message = (outcome as { message: string }).message;
+    assertStringIncludes(message, "github-pat");
+    assertStringIncludes(message, "uncommitted file leak.ts");
+    assert(!message.includes(FAKE_TOKEN), "the raw token must not be quoted");
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - a finding in the commit range is blocked, and no file is scanned after it", async () => {
+  await withTree({ "a.ts": "x\n" }, async (dir) => {
+    const { calls, options } = treeOptions([
+      { exitCode: 1, stdout: LEAK_STDOUT, stderr: LEAK_STDERR },
+    ]);
+
+    const outcome = await runGitleaksTreeCheck(dir, "main", ["a.ts"], options);
+
+    assertEquals(outcome.kind, "blocked");
+    assertStringIncludes(
+      (outcome as { message: string }).message,
+      "leaks found in commit range",
+    );
+    assertEquals(calls.length, 1);
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - a missing scanner is infrastructure and nothing is scanned", async () => {
+  await withTree({ "a.ts": "x\n" }, async (dir) => {
+    const { calls, options } = treeOptions([], {
+      probeVersion: () => Promise.resolve(null),
+    });
+
+    const outcome = await runGitleaksTreeCheck(dir, "main", ["a.ts"], options);
+
+    assertEquals(outcome.kind, "infrastructure");
+    assertStringIncludes(
+      (outcome as { message: string }).message,
+      "not installed or not in PATH",
+    );
+    assertEquals(calls.length, 0);
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - an unresolvable diff base is infrastructure and nothing is scanned", async () => {
+  await withTree({ "a.ts": "x\n" }, async (dir) => {
+    for (
+      const mergeBase of [
+        { exitCode: 128, stdout: "" },
+        { exitCode: 0, stdout: "\n" },
+      ]
+    ) {
+      const { calls, options } = treeOptions([], {
+        git: treeGit(mergeBase).git,
+      });
+
+      const outcome = await runGitleaksTreeCheck(
+        dir,
+        "main",
+        ["a.ts"],
+        options,
+      );
+
+      assertEquals(outcome.kind, "infrastructure");
+      assertStringIncludes(
+        (outcome as { message: string }).message,
+        "refs/remotes/origin/main",
+      );
+      assertEquals(calls.length, 0);
+    }
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - a scanner error and a deadline hit are infrastructure, never a pass", async () => {
+  await withTree({ "a.ts": "x\n" }, async (dir) => {
+    const errored = await runGitleaksTreeCheck(
+      dir,
+      "main",
+      ["a.ts"],
+      treeOptions([
+        CLEAN_RUN,
+        { exitCode: 1, stdout: "", stderr: MISSING_CONFIG_STDERR },
+      ]).options,
+    );
+    const timedOut = await runGitleaksTreeCheck(
+      dir,
+      "main",
+      ["a.ts"],
+      treeOptions([{ exitCode: 143, stdout: "", stderr: "", timedOut: true }])
+        .options,
+    );
+
+    assertEquals(errored.kind, "infrastructure");
+    assertStringIncludes(
+      (errored as { message: string }).message,
+      "unable to load gitleaks config",
+    );
+    assertEquals(timedOut.kind, "infrastructure");
+    assertStringIncludes(
+      (timedOut as { message: string }).message,
+      "local deadline",
+    );
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - a path that is absolute or leaves the clone is blocked before any scan", async () => {
+  await withTree({}, async (dir) => {
+    for (const path of ["/etc/passwd", "../outside.txt", "a/../../b.txt"]) {
+      const { calls, options } = treeOptions([]);
+
+      const outcome = await runGitleaksTreeCheck(dir, "main", [path], options);
+
+      assertEquals(outcome.kind, "blocked");
+      assertEquals(calls.length, 0);
+    }
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - a dash-leading file name is passed after `--` and a symlink is not scanned", async () => {
+  await withTree({ "-flag.ts": "x\n" }, async (dir) => {
+    await Deno.symlink("/etc/hostname", `${dir}/link.txt`);
+    const { calls, options } = treeOptions([CLEAN_RUN, CLEAN_RUN]);
+
+    const outcome = await runGitleaksTreeCheck(
+      dir,
+      "main",
+      ["-flag.ts", "link.txt"],
+      options,
+    );
+
+    assertEquals(outcome.kind, "passed");
+    assertEquals(calls.length, 2);
+    assertEquals(calls[1]!.slice(-2), ["--", "-flag.ts"]);
+  });
+});
+
+Deno.test({
+  name:
+    "runGitleaksTreeCheck - real gitleaks blocks a fake token in an uncommitted new file and passes a clean tree (skipped where gitleaks is not installed)",
+  ignore: !gitleaksAvailable,
+  fn: async () => {
+    const repo = await repoWithFeatureFile("clean.ts", "export const n = 1;\n");
+    try {
+      const clean = await runGitleaksTreeCheck(repo, "main", []);
+      assertEquals(clean.kind, "passed");
+
+      await Deno.writeTextFile(
+        `${repo}/untracked.ts`,
+        `export const token = "${FAKE_TOKEN}";\n`,
+      );
+      const untracked = await runGitleaksTreeCheck(repo, "main", [
+        "untracked.ts",
+      ]);
+      assertEquals(untracked.kind, "blocked");
+      const message = (untracked as { message: string }).message;
+      assertStringIncludes(message, "github-pat");
+      assertStringIncludes(message, "untracked.ts");
+      assert(!message.includes(FAKE_TOKEN), "the raw token must not be quoted");
     } finally {
       await Deno.remove(repo, { recursive: true });
     }

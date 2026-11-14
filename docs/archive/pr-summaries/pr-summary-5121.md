@@ -6,7 +6,18 @@ Adds a `gitleaks` stage to the local quality gate (`./quality.sh` →
 `worker/deno/quality.ts` → `runQualityGate`). The stage runs the same
 `gitleaks git` scan as the CI fallback in `.github/workflows/gitleaks.yml`, over
 the same commit range, so a committed secret fails the local gate before the PR
-is raised. CI stays the backstop. Closes #5121.
+is raised. The same scan also gates a fleet babysitter repair, which does not go
+through `./quality.sh`: `runBabysitterTreeGate` runs it over the branch's commit
+range and the repair's uncommitted files before READY is honoured. CI stays the
+backstop. Closes #5121.
+
+### Publication paths
+
+| Path                                                               | Gate that runs before publication                                                                              | Gitleaks scan                                                      |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Issue completion (`quality_gate_remediation_phase.ts`)             | `./quality.sh` → `runQualityGate`                                                                              | `runGitleaksQualityCheck`, commit range                            |
+| Fleet babysitter repair (`babysitter_repair.ts`)                   | `runBabysitterTreeGate` → `runPrePushGate`; the host never starts `quality.sh` (`fleet_pr_babysitter.ts:2331`) | `runGitleaksTreeCheck`, commit range plus uncommitted files        |
+| Worker pre-push gate over unpushed commits (`gateUnpushedCommits`) | `runPrePushGate`                                                                                               | not run; the completion gate's `./quality.sh` covers those commits |
 
 ## Spec
 
@@ -30,6 +41,28 @@ is raised. CI stays the backstop. Closes #5121.
   printed, with the secret redacted. These two flags do not change the verdict.
   Uncommitted changes are not scanned, which matches CI. The PASSED line says
   so.
+- **A base that cannot be resolved is not a pass in the fleet image.**
+  `resolveDiffBase` failing (`origin/HEAD` unset, a failed history deepen, a
+  failed `merge-base`) is `SKIPPED` on a host, where `--strict` promotes it, and
+  `FAILED` inside the fleet image, because the worker runs the gate with
+  `strict: false` and a skipped stage passes. The output says the history is
+  "not available in the worker environment", which `detectFailureCategory` reads
+  as `missing_tools`, an infrastructure category, so it is not handed to the
+  remediation agent as a finding.
+- **The babysitter tree gate scans the repair's tree.** After the pre-push
+  checks pass, `runGitleaksTreeCheck` runs: `git` over
+  `<merge-base with refs/remotes/origin/<base>>..HEAD` (the merge-base is read
+  without deepening, because the clone's `.git` is read-only and the clone is a
+  full clone), then `gitleaks dir` over each changed file that still exists and
+  is not a symlink, one process per file, because `gitleaks dir` takes one path.
+  A finding is `blocked` (a repair attempt is spent) with the redacted rule,
+  path and line; a missing scanner, unresolvable base, scanner error or deadline
+  hit is `infrastructure`. The scan runs only on a tree the other checks passed,
+  reads without writing, and `gitleaks` is listed in `checksRun`. The repository
+  config is read from the working tree, as CI reads it from the PR head. Each
+  changed file is scanned whole, so a repair that touches a file already holding
+  allowlist-dependent content is held to the config's path allowlist (marked
+  `SIMPLE-ON-PURPOSE` in the code).
 - **Exit 0 alone does not pass.** The stage passes only when the exit code is 0,
   stderr says `no leaks found`, and no stderr line is `ERR` or `FTL`. Anything
   else is `FAILED`: a missing gitleaks inside the fleet image, a scan past the
@@ -72,6 +105,17 @@ scratch repository (gitleaks 8.30.1):
   `FTL unable to load gitleaks config, err: open /nonexistent.toml: no such file or directory`,
   exit 1.
 
+- `gitleaks dir [flags] [path]` takes one path: with two paths it scanned the
+  whole working directory instead, so the tree scan runs one `dir` scan per
+  file. `-- sub/leak.txt` and `-- -x.txt` both worked and printed
+  `File: sub/leak.txt` / `File: -x.txt`; a path that does not exist logs
+  `FTL stat missing.txt: no such file or directory` and exits 1, so deleted
+  paths are skipped before the scan.
+- `gitleaks git --pre-commit` found a leak in an unstaged edit and, with
+  `--staged`, in a staged new file, but not in an untracked file, and on a merge
+  it would include the base's own content; this is why the tree scan reads files
+  instead.
+
 The test fixtures copy those observed lines.
 
 ```mermaid
@@ -79,7 +123,8 @@ flowchart TD
     A[runGitleaksCheck] --> B{git work tree?}
     B -- no --> S1[SKIPPED]
     B -- yes --> C{resolveDiffBase}
-    C -- unresolved --> S2[SKIPPED]
+    C -- unresolved, host --> S2[SKIPPED]
+    C -- unresolved, fleet image --> F0[FAILED, infrastructure wording]
     C -- base --> D{gitleaks on PATH?}
     D -- no, host --> S3[SKIPPED]
     D -- no, fleet image --> F1[FAILED]
@@ -93,12 +138,18 @@ flowchart TD
 
 ## Test Plan
 
-- Added `worker/deno/tests/gitleaks_check_test.ts`, 17 tests:
+- `worker/deno/tests/gitleaks_check_test.ts` (31 tests at head):
   - Each judge outcome, with fixtures from the observed output: PASSED; a
     finding is FAILED, names the rule and file, and never prints the secret; a
     bad range with exit 0 is FAILED and quotes `ambiguous argument`; a missing
     config is FAILED and quotes the cause; a deadline hit is FAILED.
-  - SKIPPED outside a git repository, and SKIPPED when `origin/HEAD` is unset.
+  - SKIPPED outside a git repository.
+  - An unresolvable diff base, for each of `origin/HEAD` unset, a failed
+    `ensureHistory` and a failed `merge-base` (three tests): SKIPPED with the
+    reason on a host and `FAILED` in the fleet image, the two runs differing
+    only in the container stamp. The image output names the reason and "never
+    scanned", and `isInfrastructureFailure(detectFailureCategory(output))`
+    holds.
   - A missing gitleaks is SKIPPED on a host and FAILED in the fleet image. Both
     use the same fixture with only the container stamp changed.
   - A version drift is named in the output and the scan still runs.
@@ -114,16 +165,43 @@ flowchart TD
     `--max-decode-depth 3` to the workflow command, removing `--redact` from it,
     changing its range to `--all`, and deleting `--redact` from
     `gitleaksScanArgs` each turned the test red.
-  - Two real-tool tests run gitleaks 8.30.1 on a temporary repository: a branch
-    with a runtime-built fake PAT is FAILED with `github-pat`, and a clean
-    branch is PASSED. They are ignored where gitleaks is not installed, and they
-    ran here.
+  - Three real-tool tests run gitleaks 8.30.1 on a temporary repository: a
+    branch with a runtime-built fake PAT is FAILED with `github-pat`, a clean
+    branch is PASSED, and a branch whose earlier commit adds the fake PAT and
+    whose later commit deletes the file is still FAILED with `github-pat` and
+    without the token (the issue's "deleted at HEAD still blocks" case; the file
+    is checked to be absent at HEAD, so only history holds the token). They are
+    ignored where gitleaks is not installed, and they ran here.
+  - Ten `runGitleaksTreeCheck` tests: a clean range plus a surviving file passes
+    (the range scan and one file scan, the deleted path skipped); the base is
+    `refs/remotes/origin/<baseBranch>` or `refs/remotes/origin/HEAD`; a finding
+    in an uncommitted file is `blocked` with rule and path and never the token;
+    a finding in the range is `blocked` and stops the file scans; a missing
+    scanner, an unresolvable base (non-zero and empty output), a scanner error
+    and a deadline hit are each `infrastructure`; an absolute or `..` path is
+    `blocked` before any scan; a dash-leading name follows `--` and a symlink is
+    not scanned; and one real-tool test blocks an uncommitted untracked fake PAT
+    and passes a clean tree.
   - `runQualityGate - registers gitleaks only where gitleaks.yml exists` covers
     the production registration.
-- `deno task test:unit tests/gitleaks_check_test.ts tests/semgrep_check_test.ts
-  tests/checkov_check_test.ts < /dev/null`
-  → 71 passed, 0 failed. The existing semgrep tests cover the `resolveDiffBase`
-  and `defaultEnsureHistory` exports, whose behaviour did not change.
+- `worker/deno/tests/babysitter_tree_gate_test.ts` (60 tests at head): the
+  `depsFor` helper and two other tests now pass a stub secret scan, so the
+  existing tests keep reaching the verdicts they pin, and their `passed`
+  assertions now expect `gitleaks` in `checksRun`. Five tests added, through
+  `runBabysitterTreeGate`: a token-shaped uncommitted file is `blocked` with
+  `github-pat` and the path and without the token (real gitleaks, ignored where
+  it is absent); a clean edit is `passed` with `["gitleaks"]` (real gitleaks); a
+  scanner that cannot run is `infrastructure`, and its withheld response is
+  recognised by `isGateInfrastructureResponse`; an unresolvable base
+  (`origin/no-such-base`, real `merge-base`) is `infrastructure`; the scan
+  receives the clone, the base branch and the changed paths (including a deleted
+  one) and is not called when the other checks block.
+- `deno task test:unit tests/gitleaks_check_test.ts
+  tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts <
+  /dev/null`
+  → 134 passed, 0 failed. The semgrep tests cover the `resolveDiffBase` and
+  `defaultEnsureHistory` exports, whose behaviour did not change; they were not
+  re-run in this round.
 - Added `docs/audits/lib-sweep-coverage/top-up-5121.json` to claim the new
   module. The first full gate run failed only on
   `tests/lib_sweep_coverage_test.ts` (module claimed by no slice), and the
@@ -131,7 +209,7 @@ flowchart TD
   added, `deno task check:manifests` → 870 passed, 0 failed. The ancestry guard
   (`sweep-drift --default-branch origin/main`) exits 0, with `sweptAt` set to
   `origin/main`.
-- `./quality.sh < /dev/null` at `69208427` →
+- Earlier iteration: `./quality.sh < /dev/null` at `69208427` →
   `Result: PASSED (with skipped
   checks)`.
   `gitleaks: PASSED (commit range f67e030e991f..HEAD, gitleaks
@@ -144,7 +222,13 @@ flowchart TD
 ## Docs
 
 - `docs/INTERNALS.md` "Quality gate": the stage list now includes gitleaks, and
-  a new gitleaks paragraph follows the checkov one.
+  a new gitleaks paragraph follows the checkov one. It now states the
+  unresolved-base outcomes (host and image) and the publication paths, including
+  the babysitter tree scan.
+- `docs/workflows/fleet-pr-babysitter.md` (the container pre-push gate section
+  and the checks list) and `docs/CONFIGURATION.md` (the babysitter repair gate
+  sentence) now list the gitleaks scan and its blocked or infrastructure
+  outcomes.
 - `CONTRIBUTING.md` "Local quality gate" and `CODING-STANDARDS.md` (the gate
   stage list) now name gitleaks.
 - `docs/CONTAINER.md` (the gitleaks table row and bullet) and the
@@ -157,6 +241,16 @@ flowchart TD
 
 ## Not done
 
-- Uncommitted and untracked files are not scanned, by design, to match CI.
+- The quality-gate stage does not scan uncommitted or untracked files, by
+  design, to match CI. The babysitter tree scan does scan them, because the host
+  commits and pushes them next.
+- The worker's own pre-push gate over unpushed commits (`gateUnpushedCommits`)
+  does not run gitleaks; the completion gate's `./quality.sh` covers those
+  commits.
+- A repair that changes `.github/gitleaks.toml` is scanned with that edited
+  config, as CI scans a PR with its head's config. This is parity with CI, not a
+  guard against a config that allowlists a genuine secret.
+- The red run for the new image-versus-host and tree-scan tests against the
+  previous head was not recorded: they import exports the previous head lacks.
 - The licensed `gitleaks-action` path in CI was not reproduced. It uses upstream
   defaults. The local stage mirrors the CLI fallback instead.

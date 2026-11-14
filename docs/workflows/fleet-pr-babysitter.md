@@ -423,7 +423,16 @@ no check. The gate runs the unit tests selected for the changed files
 (`deno task test:unit` for a Deno root that defines that task, with the same
 selection as the worker's other repair pushes; a change to a prompt, `deno.json`
 or `deno.lock` runs the whole suite), markdownlint when configured, the
-ShellCheck policy and the cargo-deny gate. It does not run the formatters or
+ShellCheck policy and the cargo-deny gate. When those pass it runs the gitleaks
+secret scan (Issue #5121, `runGitleaksTreeCheck` in `gitleaks_check.ts`): the
+branch's commit range, `<merge-base with origin/<base branch>>..HEAD`, which is
+the range the blocking `gitleaks / gitleaks` CI check scans, and each changed
+file as it now is on disk, because the host commits and pushes those edits
+next. The repair does not go through `./quality.sh`, whose gitleaks stage scans
+commits only. A finding blocks and spends a repair attempt, with the rule, path
+and line and the secret redacted. A missing `gitleaks`, a diff base that cannot
+be resolved, a scanner error or a scan past its 300s deadline is an
+infrastructure fault and spends none. The gate does not run the formatters or
 linters. When the repair has merged the PR's base without committing, the gate
 checks only the paths whose working-tree content differs from the merged base
 commit, or that are untracked, so a file the merge merely brings in is the
@@ -434,7 +443,8 @@ the merge-base with the PR base is a warning, as in the other repair pushes.
 Without `--base-branch`, which the host passes from the PR's base branch, the
 gate has no baseline and a failing test blocks. A check that cannot run is never a pass, and
 the kind of failure decides what it costs. A module-fetch outage, a missing
-ShellCheck and a missing or unusable cargo toolchain are infrastructure faults:
+ShellCheck, a missing or unusable cargo toolchain and a missing gitleaks are
+infrastructure faults:
 no repair attempt is spent and the repair is retried after a backoff. A
 markdownlint binary that is not found blocks like a failed check, so it spends
 an attempt. A dirty file the gate cannot compare also blocks: one over the
@@ -792,7 +802,8 @@ passes, and review and conflict repairs run the formatter, linter and type or
 compile check for the code they touched. The container also withholds the
 READY line unless the pre-push gate over the uncommitted changes passes (see
 [Container repairs](#container-repairs)); that gate runs the unit tests,
-markdownlint, ShellCheck and cargo-deny checks, but no formatters or linters.
+markdownlint, ShellCheck, cargo-deny and gitleaks checks, but no formatters or
+linters.
 
 This MVP uses the configured GitHub App and the worker's agent providers; it
 does not handle Dependabot, use per-repository quality commands, or review PRs.
