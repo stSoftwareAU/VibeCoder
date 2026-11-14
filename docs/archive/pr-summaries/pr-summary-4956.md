@@ -159,6 +159,19 @@ flowchart LR
     on `origin/main`, and which `main` fixed. `main` was merged into the branch.
 - `worker/deno/tests/direct_merge_test.ts` (`prTargetsDefaultBranch` filter): 4
   passed, including the new empty-default-branch case.
+- CI type check (`deno check --frozen --lock=deno.lock '**/*.ts'`) failed on
+  the merged head: `worker/deno/tests/token_economizer_reactive_callsites_test.ts`
+  still passed `skipMutationCheck` in `repoConfig`, a key `main` retired
+  (Issue #5095). The two fixtures no longer pass it, because no mutation check
+  runs for them to skip. The type check, `deno fmt --check` and `deno lint` now
+  pass, and the file's 10 tests pass.
+- Three tests fail in this container and fail identically on an unmodified
+  `origin/main` export: `isRateLimitActive` (two cases in
+  `worker/deno/tests/run_core_production_deps_test.ts`) and the
+  `gemini` provider case in
+  `worker/deno/tests/execute_claude_phase_rtk_test.ts`. The container image
+  installs no `gemini` provider and has host rate-limit state. They are
+  environment differences, not part of this change.
 - Removed assertions: none. The call-site tests now expect the plugin directory
   actually passed, instead of the constant.
 

@@ -253,7 +253,6 @@ async function runFeedback(
         workDir: workRoot,
         tokenEconomizer: tokenEconomizer ??
           buildDefaultWorkerConfig().tokenEconomizer,
-        repoConfig: { [REPO]: { skipMutationCheck: true } },
       }),
       deps,
     );
@@ -382,7 +381,6 @@ async function runCiFix(
         workDir: workRoot,
         tokenEconomizer: options.tokenEconomizer ??
           buildDefaultWorkerConfig().tokenEconomizer,
-        repoConfig: { [REPO]: { skipMutationCheck: true } },
       }),
       deps,
       acquireBranchLockWithoutDelay,
