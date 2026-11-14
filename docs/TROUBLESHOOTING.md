@@ -252,22 +252,29 @@ milestone pre-sync agent and its repair run) plus 30 minutes for the clone, git,
 gates and pre-setup command is abandoned (Issue #5128), but never later than the
 run's hard cap allows: the deadline is the smaller of that budget and the runway
 left to the supervisor cap (`VIBE_RUN_MAX_SECONDS`, anchored by
-`VIBE_RUN_STARTED_EPOCH`) less the kill grace and the WIP reserve, so it falls
-before the launcher's watchdog (the cap plus 10 minutes) even when setup starts
-late or `claude_timeout` is large. With no supervisor cap published (unset or
-`0`) there is nothing to cap it by and the budget alone applies, which a large
-`claude_timeout` can push past the watchdog. The run ends as a setup `timeout`
-failure. It releases the claim only when it holds it: a claim `claimIssue`
-returned, or one whose own claim comment is on the issue. A claim never taken is
-left alone, because every host shares one login and an unassign would strip
-another host's live claim. The abandoned setup returns at its next checkpoint,
-and a claim it wins late is released. The checkpoints sit before the calls that
-writes to the lane worktree, the shared clone or GitHub (including the default
-branch sync, milestone branch push and pre-sync, resume checkout, session
-priming, branch repair and the pre-setup command), so a call already running
-when the deadline fires finishes, and nothing after it starts. A step that
-wedges while the worker is still alive therefore no longer holds the issue until
-the launcher reaps the container. Check whether the host is wedging
+`VIBE_RUN_STARTED_EPOCH`) less the kill grace and the WIP reserve. With the
+default cap that falls before the launcher's watchdog (the default 3-hour cap
+plus 10 minutes, or `VIBE_CONTAINER_WATCHDOG_SECONDS` when set), even when setup
+starts late or `claude_timeout` is large. The watchdog is set independently of
+`VIBE_RUN_MAX_SECONDS`, so a cap raised above the default can still leave the
+deadline after it. With no supervisor cap published (unset or `0`) there is
+nothing to cap the budget by, and a large `claude_timeout` can push the deadline
+past the watchdog. The run ends as a setup `timeout` failure. It releases the
+claim only when it holds it: a claim `claimIssue` returned, or one whose own
+claim comment is on the issue. A claim never taken is left alone, because every
+host shares one login and an unassign would strip another host's live claim. The
+abandoned setup returns at its next checkpoint, and a claim it wins late is
+released. The checkpoints sit before most calls that write to the lane worktree,
+the shared clone or GitHub (the default branch sync, milestone branch push and
+pre-sync, milestone session restore, branch repair and the pre-setup command),
+and the resume checkout declines once abandoned. A call already running when the
+deadline fires finishes. The resume-state reads after the milestone session
+restore and the stream-session priming have no checkpoint ahead of them, so a
+deadline that fires during the session restore or the handover read still lets
+them start (priming can reset a stored stream session); the checks after them
+stop everything later. Within the watchdog's reach, a step that wedges while the
+worker is still alive therefore stops holding the issue without waiting for
+the launcher to reap the container. Check whether the host is wedging
 repeatedly — a chronic offender needs the runtime itself looked at:
 
 ```bash

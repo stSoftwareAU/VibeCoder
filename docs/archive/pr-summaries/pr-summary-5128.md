@@ -90,9 +90,8 @@ Part of #5128
   call that writes to the lane worktree, the shared clone or GitHub: the
   default-branch sync, the milestone branch push and its repair, the
   milestone-refusal label sweep, the pre-sync agent run, the milestone session
-  restore, the resume lookup and its checkout (the checkout call itself is
-  wrapped to decline once abandoned), the stream-session priming and
-  compaction, the feature branch step (outside the `resumedFromCheckpoint`
+  restore, the resume checkout (the checkout call itself is wrapped to decline
+  once abandoned), the compaction, the feature branch step (outside the `resumedFromCheckpoint`
   condition, so a resumed setup is stopped too), each repair rung (sweep,
   object-store repair, re-clone, retry), the host-fault label sweep and the
   pre-setup command. When it stops it logs one fixed line
@@ -101,8 +100,11 @@ Part of #5128
   claim won late, when the run did not release it, is unassigned by the
   abandoned setup; one the run already released is not released twice
   (`state.setupClaimReleasedByRun`). A call already running when the deadline
-  fires finishes (a milestone pre-sync agent run is the longest); nothing after
-  it starts.
+  fires finishes (a milestone pre-sync agent run is the longest). The resume
+  lookup after the milestone session restore and the stream-session priming have
+  no check ahead of them, so a deadline that fires during the session restore or
+  the handover read still lets them start; the checks after them stop everything
+  later.
 
 ### Undiscoverable Facts
 
@@ -261,10 +263,12 @@ flowchart LR
       Earlier iterations of this file had a constant-restating test and a
       late-rejection test that passed without the code they named; both are
       removed.
-- [x] `deno task test:unit` on `setup_deadline_5128_test.ts`,
-      `setup_step_log_test.ts`, `hard_kill_report_test.ts` and the other test
-      files that call `workOnIssue`, `workOnIssueSetupBranch` or touch
-      `InfrastructureDeps` (26 files): 407 passed, 0 failed.
+- [x] `deno task test:unit` on `worker/deno/tests/setup_deadline_5128_test.ts`
+      (27 tests at head), `worker/deno/tests/setup_step_log_test.ts` (3 tests at
+      head) and `worker/deno/tests/hard_kill_report_test.ts` (66 tests at head),
+      re-run on the head: 96 passed, 0 failed. The other test files that call
+      `workOnIssue`, `workOnIssueSetupBranch` or touch `InfrastructureDeps` were
+      not re-run after this documentation fix, which changes no code.
 - [x] `./quality.sh < /dev/null` on the head after the review round: Result
       PASSED (with skipped checks). Config integration (no `.config.json`) and
       Checkov (no binary or container runtime) were skipped on this host.
