@@ -5053,9 +5053,9 @@ Deno.test("unfollowableImportRoots: a local import-map target in imports or scop
       scopes: { "./x/": { "@std/x": "npm:x@1" } },
     }),
     "absolute/deno.json": JSON.stringify({ imports: { "@/": "/srv/lib/" } }),
-  }, async (root, tracked) => {
+  }, async (root) => {
     assertEquals(
-      await unfollowableImportRoots(root, tracked, [
+      await unfollowableImportRoots(root, [
         "alias",
         "scoped",
         "jsr",
@@ -5066,38 +5066,40 @@ Deno.test("unfollowableImportRoots: a local import-map target in imports or scop
   });
 });
 
-Deno.test("unfollowableImportRoots: a computed dynamic import is reported; a literal or a template without a substitution is not (#4930)", async () => {
+Deno.test("loadReferencedUnitTests: a computed dynamic import seeds on a .ts change under the root; a literal or prose form does not (#4930)", async () => {
   await withTrackedFiles({
-    "tmpl/deno.json": "{}",
-    "tmpl/mods.ts": "await " + DYNAMIC_KEYWORD + "(`./mods/${name}.ts`);\n",
-    "ident/deno.json": "{}",
-    "ident/load.ts": "await " + DYNAMIC_KEYWORD + "(name);\n",
-    "literal/deno.json": "{}",
-    "literal/load.ts": "await " + DYNAMIC_KEYWORD + '("./x.ts");\n' +
-      "await " + DYNAMIC_KEYWORD + "(`./plain.ts`);\n",
+    "worker/deno/lib/a.ts": "export const a = 1;\n",
+    "worker/deno/tests/x.ts": "export {};\n",
+    "worker/deno/tests/dyn_test.ts": "await " + DYNAMIC_KEYWORD +
+      "(`../lib/${name}.ts`);\n",
+    "worker/deno/tests/literal_test.ts": "await " + DYNAMIC_KEYWORD +
+      '("./x.ts");\nawait ' + DYNAMIC_KEYWORD + "(`./plain.ts`);\n",
+    "worker/deno/tests/prose_test.ts": "// import (Issue #1) is prose.\n",
+    "docs/CONFIG.md": "# Config\n",
   }, async (root, tracked) => {
-    assertEquals(
-      await unfollowableImportRoots(root, tracked, [
-        "tmpl",
-        "ident",
-        "literal",
-      ]),
-      ["tmpl", "ident"],
-    );
+    const load = (changed: string[]) =>
+      loadReferencedUnitTests(root, tracked, changed, ["worker/deno"]);
+    assertEquals(await load(["worker/deno/lib/a.ts"]), {
+      "worker/deno": ["tests/dyn_test.ts"],
+    });
+    // A doc change is no .ts change under the root, so no computed seed.
+    assertEquals(await load(["docs/CONFIG.md"]), { "worker/deno": [] });
   });
 });
 
-Deno.test("unfollowableImportRoots: a hostile run of spaces after the call returns promptly (#4930)", async () => {
+Deno.test("loadReferencedUnitTests: a long run of spaces after the call returns promptly, and spaces before the parenthesis do not match (#4930)", async () => {
   const spaces = " ".repeat(200_000);
   await withTrackedFiles({
-    "rejected/deno.json": "{}",
-    "rejected/load.ts": DYNAMIC_KEYWORD + "(" + spaces + "+name);\n",
-    "literal/deno.json": "{}",
-    "literal/load.ts": DYNAMIC_KEYWORD + "(" + spaces + '"./x.ts");\n',
+    "worker/deno/lib/a.ts": "export const a = 1;\n",
+    "worker/deno/tests/rejected_test.ts": DYNAMIC_KEYWORD + "(" + spaces +
+      "+name);\n",
+    "worker/deno/tests/spaced_test.ts": DYNAMIC_KEYWORD + spaces + "(name);\n",
   }, async (root, tracked) => {
     assertEquals(
-      await unfollowableImportRoots(root, tracked, ["rejected", "literal"]),
-      ["rejected"],
+      await loadReferencedUnitTests(root, tracked, [
+        "worker/deno/lib/a.ts",
+      ], ["worker/deno"]),
+      { "worker/deno": ["tests/rejected_test.ts"] },
     );
   });
 });

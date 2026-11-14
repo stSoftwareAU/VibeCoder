@@ -5286,11 +5286,15 @@ gates do (see that bullet):
      Tests importing a seed directly or transitively via relative `.ts`
      specifiers are selected too. A local import-map alias (a target in the
      directory's `imports` or `scopes` that starts with `./`, `../`, `/` or
-     `file:`) or a computed dynamic `import()` under the directory (an argument
-     that is not a plain string or a template literal without `${`) runs the
-     directory's whole suite, as does a change under `prompts/` below; the check
-     is a text match, so prose or a string that spells such a call does too.
-     Prompt loaders are already covered by the prompts rule. A data file read
+     `file:`) runs the directory's whole suite, as does a change under `prompts/`
+     below. A computed dynamic import under the directory (`import(` with no
+     space before the parenthesis, not a property access, whose argument is not
+     a plain string or a template literal without `${`) makes that file depend
+     on every module: it is a seed whenever the push changes a `.ts` file under
+     the directory, so the tests that import it are selected. A push that changes
+     only tests selects nothing for it. The check is a text match, so a string or
+     code comment that spells such a call does the same. Prompt loaders are
+     already covered by the prompts rule. A data file read
      through a path the scan cannot see (no name, directory or template-literal
      token) can still be missed, and CI's shards remain the backstop. This is a
      dependency heuristic, and a widely imported module can select most of the

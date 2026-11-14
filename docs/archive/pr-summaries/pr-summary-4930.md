@@ -1,187 +1,87 @@
 ## Summary
 
-Refuse unreadable or malformed Deno configurations instead of silently dropping
-unit tests from validation. Add real-tool repair probes to the existing container
-containment suite.
+Closes the last open item from #4930, which merged PR #5117 left `partial`: the
+test-selection and time-budget cases carried over from PR #5034.
 
-Part of #4930.
+- **Time budget over a failed pass.** `deno task test:unit` now applies the
+  unit-test time budget to a failed pass's JUnit report, and to any earlier
+  passing pass, before it stops. The pre-push gate keeps a `base-only` warning
+  only when that output has no budget failure line (`FAIL: every test in …`)
+  and no `TIME BUDGET NOT CHECKED` line.
+- **Affected-test selection.** A changed `_test.ts` outside `tests/` now runs,
+  and so does a source file's `_test.ts` sibling in the same directory. Test
+  files outside `tests/` are also scanned for names and imports. A local
+  import-map alias runs the directory's whole suite. A file with a computed
+  dynamic `import()` is assumed to depend on every changed module.
+
+Closes #4930.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The contained repair could retain `BABYSITTER_READY` after unit-test discovery
-  discarded a malformed config. The shared pre-push gate now reports that fault.
-- Reuse the existing gate, sanitised snapshot and repair mount builder; exercise
-  real Deno and markdownlint inside the supported worker image.
+- Before this change, a branch that added a file whose tests were all over
+  budget could escape the gate. This happened when the failing tests also
+  failed at the fork, because the runner stopped without checking the budget
+  and the gate downgraded the failure to a warning. Real Deno writes the
+  `--junit-path` report even when a test fails, so the runner can check the
+  budget on its way out.
+- Two tests at head live outside `tests/`
+  (`worker/deno/lib/alert_feeds/*_test.ts`). The gate ran neither, even when
+  that test or its source file changed.
 
 ### Essential Design Decisions
 
-- Configuration faults are code verdicts. Existing module-fetch and missing-Deno
-  infrastructure classifications and base-only warnings remain in place.
-- Missing primary configs may use `deno.jsonc`; unreadable primary configs may
-  not. Valid configs without `test:unit` remain ineligible. Formatter scope
-  discovery retains its unfiltered fallback.
-- The container probe substitutes agent services and the existing host
-  publication harness. Check runners and the production tree adapter remain
-  real. The probe uses the fixture owner's UID/GID, as the workflow's other
-  in-image checks do, and asserts that `.git` rejects a write as read-only.
+- A budget line refuses the downgrade only when it starts the trimmed output
+  line. The git guard shim's `NOT ENFORCED` line is not a blocker; that is the
+  existing #2669 rule.
+- An unreadable report becomes a `TIME BUDGET NOT CHECKED` line. That line
+  blocks the downgrade, because a check that was not run is not a pass.
+- An import-map alias makes the graph impossible to follow, so the whole suite
+  runs. A computed `import()` makes only its own file's dependencies unknown.
+  That file therefore becomes a seed whenever the push changes a `.ts` file,
+  and the tests that import it are selected. Running the whole suite for it
+  instead would fire on every push at head: `tests/mod_test.ts` has a real
+  computed import.
+- A data file read through a path that no name, directory or template-literal
+  token reveals can still be missed. Selection stays a heuristic, and CI's
+  shards are the backstop.
 
 ### Undiscoverable Facts
 
-- This executor has no supported container runtime; runtime downloads returned
-  proxy 403 errors. The supported-container verification therefore runs through
-  the repository's existing Container Build workflow.
-- Real `deno task --config <fixture> test:unit` accepts null config/task values
-  as no task, and rejects array configs and array/string task definitions. The
-  discovery checks preserve those observed distinctions.
+- Observed: `deno test --junit-path=j.xml` on a file with one failing test
+  exits 1 and still writes the report (`tests="2" failures="1"` with
+  per-test `time`).
 
 ## Evidence
 
-Backend/CLI only; no UI files or screenshot required.
+Backend/CLI only.
 
-The Docker containment step passed on code commit `2e0c5e299` in
-[Container Build run 43360443672](https://github.com/stSoftwareAU/VibeCoder/actions/runs/43360443672).
-The workflow passed, including its Podman image build; containment reported
-15 passed tests, 48 passed steps and no failures.
-`worker/deno/tests/container_containment_test.ts` launches
-`worker/deno/tests/support/babysitter_gate_container_probe.ts` using the repair
-builder's clone and read-only `.git` mounts and sanitised worker snapshot.
+Real runner probe: a temporary `tests/zz_probe_4930_test.ts` (deleted
+afterwards) had two tests over 1 s, one of them failing. The parallel pass
+failed, then the runner printed:
 
-| Real-container fixture | READY | Host-harness pushes |
-| --- | --- | --- |
-| Failing Deno assertion | withheld | 0 |
-| Invalid Markdown (`MD018`) | withheld | 0 |
-| Malformed Deno config | withheld | 0 |
-| Corrected Deno control | retained | 1 |
-| Corrected Markdown control | retained | 1 |
-| Identical base-only Deno failure | retained | 1 |
+```text
+=== parallel pass: FAILED in 2.3s
+slow unit test (1.11s > 1.00s): tests/zz_probe_4930_test.ts — slow fail
+slow unit test (1.10s > 1.00s): tests/zz_probe_4930_test.ts — slow pass
+NOT ENFORCED: every test in tests/zz_probe_4930_test.ts (2, 2.22s) is over the 1.00s unit-test budget — the git guard shim is on PATH …
+```
 
-The probe executes `runBabysitterRepair` → `runBabysitterTreeGate` →
-`runPrePushGate`, then feeds the resulting response through the real host
-`fix()` orchestration with the existing GitHub/git publication fakes. No live
-fleet PR is published by these tests. `VIBE_CONTAINMENT_REQUIRED=1` already
-makes an unavailable runtime/image fail this CI suite; the ordinary local run
-reports that integration test as ignored.
-
-Additional disposable-repository probes in a Linux mount namespace used real
-read-only `.git` bind mounts, Deno 2.9.8 and markdownlint-cli2 0.24.1. New tests,
-deleted/renamed imports and a prompt-triggered whole suite blocked regressions.
-Missing Deno and a real loopback module-fetch 503 withheld READY as
-infrastructure; missing markdownlint blocked as code. A WIP response without
-READY remained unvalidated and the host refused publication.
-
-The operator sections updated are **Container repairs** in
-`docs/workflows/fleet-pr-babysitter.md` and **Agent pre-push hook and the
-changed-files check** in `docs/CONFIGURATION.md`.
-
-Provenance: #4930 — Shift left: fleet PRs keep failing CI on `deno test,
-markdownlint` that a local gate could catch.
+The `NOT ENFORCED` form appears because this agent's git guard shim was on
+`PATH`. Without the shim, as in CI and the worker's own gate, the same report
+prints a `FAIL: every test in …` line. Before this change the runner returned
+straight after `FAILED` and printed none of these lines.
 
 ```mermaid
 flowchart LR
-    A[READY over a changed tree] --> G[Existing tree and pre-push gate]
-    G -->|config cannot be checked| B[Withhold READY]
-    G -->|new test or Markdown failure| B
-    G -->|checks pass or base-only warning| R[Keep READY]
-    B --> H[Host refuses publication]
-    R --> P[Existing host guards and publication]
+    F[test:unit pass fails] --> B[Budget over the failed and earlier reports]
+    B --> J{judgeDenoTestCheck}
+    J -->|tests also red at fork, no budget blocker| W[base-only warning]
+    J -->|FAIL or NOT CHECKED line| V[verdict: push blocked]
+    J -->|new failure| V
 ```
-
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — Malformed or unreadable Deno configuration cannot silently omit
-  unit tests from repair validation. Evidence: the positive, refusal and
-  restored-control cases in `pre_push_gate_test.ts` and
-  `babysitter_tree_gate_test.ts`, plus the recorded container probe.
-- **met** — Preserve baseline-only warnings, infrastructure recovery and the
-  contained publication path. Evidence: the baseline, missing-tool and repair
-  regressions, and the six real-container probes recorded above.
-- **partial** — Finish the remaining test-selection/time-budget cases from
-  PR #5034. Current `loadReferencedUnitTests` still follows relative `.ts`
-  imports and name references; computed/import-map dependencies and tests
-  outside `tests/` can be missed when no full-suite trigger applies.
-  `judgeDenoTestCheck` reruns the skipped serial pass after a baseline-only
-  parallel failure, but does not reapply that failed parallel pass's timing
-  budget. These limits are also documented in `docs/CONFIGURATION.md` and
-  `deno_test_baseline.ts`. They remain in #4930; this PR does not close it.
-
-## Review validation
-
-The branch was brought up to date with `main`. With the pinned Deno 2.9.8,
-all 456 tests in the ten targeted gate/repair suites listed below passed.
-No code assertion was weakened. Required CI must validate the refreshed head.
 
 ## Test Plan
 
-- Against `origin/main` production code, the new/updated regression tests
-  produced 227 passes and seven expected failures. After the correction, the
-  two files passed all 234 tests. Tests and doubles were unchanged during the
-  base-code run.
-- The final targeted `deno task test:unit` run passed 456 tests across:
-  `worker/deno/tests/pre_push_gate_test.ts`,
-  `worker/deno/tests/babysitter_tree_gate_test.ts`,
-  `worker/deno/tests/babysitter_repair_4738_test.ts`,
-  `worker/deno/tests/babysitter_fix_orchestration_test.ts`,
-  `worker/deno/tests/deno_test_baseline_test.ts`,
-  `worker/deno/tests/pre_push_gate_cli_test.ts`,
-  `worker/deno/tests/pre_push_gate_failure_category_test.ts`,
-  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`,
-  `worker/deno/tests/git_push_preflight_test.ts` and
-  `worker/deno/tests/pr_feedback_processor_pre_flight_4630_test.ts`.
-- New configuration tests cover malformed JSON/JSONC, an unreadable primary
-  config beside a valid secondary, invalid root/task shapes, and restored
-  passing controls. The ordinary, ShellCheck-only and CI-cargo-only gate modes
-  refuse the config as code. Existing `loadDenoScopes` fallback, missing-config,
-  no-task, JSONC comment/trailing-comma and primary-config precedence checks
-  remain protected in `worker/deno/tests/pre_push_gate_test.ts`.
-- The six new integration cases passed in the Docker containment step. The same
-  committed probe also passed locally under real read-only bind mounts. The
-  local containment/repair regression command passed its runnable tests and
-  explicitly ignored the unavailable-runtime integration test.
-- `deno task check:manifests`: 866 passed, one existing ignored ancestry check.
-  Targeted formatting, lint and type checks passed. The earlier full
-  `./quality.sh` passed with config integration and Checkov explicitly skipped;
-  the final run after adding the container probe was stopped for the run budget
-  during the Deno suite. Its static checks had passed; that suite and the
-  following lint/type/format stages did not complete.
-  <!-- vibe-quality-gate-skipped reason="budget: final gate interrupted during Deno suite" -->
-- Config corpus: both tracked Deno configs at base and head select only
-  `worker/deno`; zero false positives or false negatives (neither corpus has an
-  invalid config). Markdown archive/test prose is not this parser's input.
-- Callers checked: `readDenoConfigText` serves permissive scope discovery and
-  strict unit-test discovery; `loadDenoUnitTestRoots` is consumed by the shared
-  `runPrePushGate`. Completion, agent hooks, CI/PR repair modes and the
-  babysitter reach that gate. No second copy of this discovery rule was found.
-  `createRepairWorkspaceSnapshot` remains used by the production container
-  launcher and is now exported for the containment probe.
-- Removed from `worker/deno/tests/pre_push_gate_test.ts`:
-  `assertEquals(ran, ["deno fmt --check --permit-no-files 'README.md'"]);`
-  - Required by: "a skipped or unavailable check is not a pass."
-  - Replaced by: `assertEquals(await loadDenoScopes(clone, ["deno.json"]), {})`,
-    the exact config-refusal message assertion and
-    `assert(!(result.error instanceof PrePushGateInfrastructureError))`, with
-    accepted controls before corruption and after restoration in the same file.
-
-## Deno regression avoided
-
-The integration probe uses Deno and the image's existing markdownlint, without
-adding a Node test runner or package manifest.
-
-## Merge verification
-
-- Required PR CI, independent review and the existing automatic merge path
-  remain required. No workflow or merge policy was changed.
-- Container Build passed on code commit `2e0c5e299`. Required checks and review
-  on the eventual PR remain pending. Resume the final local gate with
-  `timeout 600 ./quality.sh < /dev/null` from the repository root when the
-  available run budget covers it. The worker also runs its gate before the PR.
-
-## Remaining risks and checks not performed
-
-Live fleet PR publication and live Apple/Podman repair execution were not
-performed. GitHub/git publication is represented by the existing host harness.
-Local config integration lacks `.config.json`; local Checkov lacks its binary
-and container runtime. Their skipped results are not passes.
+- TEST_PLAN_TBD

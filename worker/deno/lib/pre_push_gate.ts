@@ -34,8 +34,8 @@
  *    CI's shards are excluded. A change under `prompts/`, or to a root's
  *    `deno.json`, `deno.jsonc` or `deno.lock`, has readers a name scan cannot
  *    find, so it runs that root's whole `test:unit` suite
- *    ({@link needsFullUnitSuite}), as does a root whose module graph the scan
- *    cannot follow ({@link unfollowableImportRoots}). A
+ *    ({@link needsFullUnitSuite}), as does a root whose config maps an import
+ *    alias to a local path ({@link unfollowableImportRoots}). A
  *    failing run is judged by `deno_test_baseline.ts`: a module-fetch failure
  *    is an infrastructure failure, and a test that fails the same way where the
  *    push forked (the merge-base with the base branch, the PR's base or the
@@ -1712,6 +1712,12 @@ function resolveSpecifier(from: string, specifier: string): string {
  * or through other files (relative `.ts` specifiers). Changed tests themselves
  * are left out (they run anyway). A tracked file that cannot be read is
  * skipped.
+ *
+ * A tracked `.ts` under the root with a computed dynamic import call (see
+ * {@link COMPUTED_DYNAMIC_IMPORT}) may load any module, so it is a seed
+ * whenever the push changes a `.ts` file under the root. A push that changes
+ * only tests reaches no such seed: the early return below skips the scan when
+ * no non-test file changed, and the changed tests run anyway.
  */
 export async function loadReferencedUnitTests(
   repoRoot: string,
@@ -1742,6 +1748,11 @@ export async function loadReferencedUnitTests(
     const importers = new Map<string, string[]>();
     const seeds = new Set(changed);
     const testPaths: string[] = [];
+    // A push that changes any .ts file under the root may reach any module
+    // through a computed dynamic import, so such a file is a seed then.
+    const changesTs = changed.some((p) =>
+      p.startsWith(prefix) && p.endsWith(".ts")
+    );
     for (const path of tracked) {
       if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
       let text: string;
@@ -1754,6 +1765,7 @@ export async function loadReferencedUnitTests(
         const target = resolveSpecifier(path, specifier);
         importers.set(target, [...(importers.get(target) ?? []), path]);
       }
+      if (changesTs && COMPUTED_DYNAMIC_IMPORT.test(text)) seeds.add(path);
       const isTest = path.endsWith("_test.ts");
       if (isTest) testPaths.push(path);
       // Only the test tree and the tests are read for names: a source that
@@ -1787,13 +1799,17 @@ export async function loadReferencedUnitTests(
 }
 
 /**
- * A dynamic `import` call whose argument is neither a plain string literal nor
- * a template literal without a substitution, so the module it loads cannot be
- * read from the source. Each alternative starts with a different character,
- * so the match cannot backtrack exponentially on a long run of spaces.
+ * A dynamic import call spelled with no space between the keyword and the
+ * parenthesis, and not a property access, whose argument is neither a plain
+ * string literal nor a template literal without a substitution, so the module
+ * it loads cannot be read from the source. Prose with a space before the
+ * parenthesis does not match. Each alternative starts with a different
+ * character, so the match cannot backtrack exponentially on a long run of
+ * spaces. A comment or string spelling such a call also matches: that
+ * over-selects, which fails closed.
  */
 const COMPUTED_DYNAMIC_IMPORT =
-  /\bimport\s*\((?!\s*(?:"[^"\n]*"|'[^'\n]*'|`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`)\s*[,)])/;
+  /(?:^|[^\w.])import\((?!\s*(?:"[^"\n]*"|'[^'\n]*'|`(?:[^`\\$]|\\[\s\S]|\$(?!\{))*`)\s*[,)])/m;
 
 /**
  * Whether a deno.json(c) maps an import specifier, in `imports` or in a
@@ -1818,41 +1834,22 @@ function declaresLocalImportTarget(text: string): boolean {
 }
 
 /**
- * The roots among `roots` whose module graph the relative-specifier scan of
- * {@link loadReferencedUnitTests} cannot follow, so the root's whole
- * `test:unit` suite must run (Issue #4930). A root is one when its config maps
- * an import specifier to a local path (`./`, `../`, `/` or `file:`) in
- * `imports` or `scopes`, or when a tracked `.ts` under it has a computed
- * dynamic import call (see {@link COMPUTED_DYNAMIC_IMPORT}). This is a text
- * match, so a comment or string that spells such a call also counts: it
- * over-selects the whole suite, which fails closed. A tracked file that cannot
- * be read is skipped, as in {@link loadReferencedUnitTests}.
+ * The roots among `roots` whose config maps an import specifier to a local
+ * path (`./`, `../`, `/` or `file:`) in `imports` or `scopes`, so the module
+ * graph the relative-specifier scan of {@link loadReferencedUnitTests} cannot
+ * follow and the root's whole `test:unit` suite must run (Issue #4930). An
+ * unreadable config is skipped; an unparseable one counts. Computed dynamic
+ * imports are not part of this rule (see {@link loadReferencedUnitTests}).
  */
 export async function unfollowableImportRoots(
   repoRoot: string,
-  tracked: string[],
   roots: string[],
 ): Promise<string[]> {
   const unfollowable: string[] = [];
   for (const root of roots) {
-    const prefix = root === "." ? "" : `${root}/`;
     const config = await readDenoConfigText(repoRoot, root, false);
     if (config !== null && declaresLocalImportTarget(config.text)) {
       unfollowable.push(root);
-      continue;
-    }
-    for (const path of tracked) {
-      if (!path.startsWith(prefix) || !path.endsWith(".ts")) continue;
-      let text: string;
-      try {
-        text = await readRepoFile(repoRoot, path);
-      } catch {
-        continue; // Deleted, a symlink or unreadable: nothing to read.
-      }
-      if (COMPUTED_DYNAMIC_IMPORT.test(text)) {
-        unfollowable.push(root);
-        break;
-      }
     }
   }
   return unfollowable;
@@ -2992,7 +2989,6 @@ export async function runPrePushGate(opts: {
   // Only a root the push touches is checked for a graph the scan cannot follow.
   const unfollowable = await unfollowableImportRoots(
     opts.cwd,
-    tracked,
     denoUnitTestRoots.filter((root) =>
       touched.value.some((p) => root === "." || p.startsWith(`${root}/`))
     ),
