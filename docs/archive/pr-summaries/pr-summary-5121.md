@@ -185,27 +185,30 @@ flowchart TD
   - `runQualityGate - registers gitleaks only where gitleaks.yml exists` covers
     the production registration.
 - `worker/deno/tests/babysitter_tree_gate_test.ts` (60 tests at head): the
-  `depsFor` helper and two other tests now pass a stub secret scan, so the
-  existing tests keep reaching the verdicts they pin, and their `passed`
-  assertions now expect `gitleaks` in `checksRun`. Five tests added, through
-  `runBabysitterTreeGate`: a token-shaped uncommitted file is `blocked` with
-  `github-pat` and the path and without the token (real gitleaks, ignored where
-  it is absent); a clean edit is `passed` with `["gitleaks"]` (real gitleaks); a
-  scanner that cannot run is `infrastructure`, and its withheld response is
-  recognised by `isGateInfrastructureResponse`; an unresolvable base
-  (`origin/no-such-base`, real `merge-base`) is `infrastructure`; the scan
-  receives the clone, the base branch and the changed paths (including a deleted
-  one) and is not called when the other checks block.
+  `depsFor` helper, `realGate`, `realDenoGate` and two other tests now pass a
+  stub secret scan, so the existing tests keep reaching the verdicts they pin on
+  a runner with no scanner (`validate (tests 3/4)` failed six tests there with
+  `gitleaks is not installed`, which the earlier runs on a host with gitleaks
+  hid), and their `passed` assertions now expect `gitleaks` in `checksRun`. Five
+  tests added, through `runBabysitterTreeGate`: a token-shaped uncommitted file
+  is `blocked` with `github-pat` and the path and without the token (real
+  gitleaks, ignored where it is absent); a clean edit is `passed` with
+  `["gitleaks"]` (real gitleaks); a scanner that cannot run is `infrastructure`,
+  and its withheld response is recognised by `isGateInfrastructureResponse`; an
+  unresolvable base (`origin/no-such-base`, real `merge-base`) is
+  `infrastructure`; the scan receives the clone, the base branch and the changed
+  paths (including a deleted one) and is not called when the other checks block.
 - `deno task test:unit tests/gitleaks_check_test.ts
   tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts <
   /dev/null`
   → 134 passed, 0 failed, re-run at head:
   `worker/deno/tests/gitleaks_check_test.ts` (31 tests at head),
   `worker/deno/tests/babysitter_tree_gate_test.ts` (60 tests at head) and
-  `worker/deno/tests/babysitter_repair_4738_test.ts` (43 tests at head,
-  unchanged by this PR). The semgrep tests cover the `resolveDiffBase` and
-  `defaultEnsureHistory` exports, whose behaviour did not change; they were not
-  re-run in this round.
+  `worker/deno/tests/babysitter_repair_4738_test.ts` (43 tests at head; the one
+  test that builds its own real tree gate now passes the same stub secret scan,
+  and nothing else in that file changed). The semgrep tests cover the
+  `resolveDiffBase` and `defaultEnsureHistory` exports, whose behaviour did not
+  change; they were not re-run in this round.
 - Added `docs/audits/lib-sweep-coverage/top-up-5121.json` to claim the new
   module. The first full gate run failed only on
   `worker/deno/tests/lib_sweep_coverage_test.ts` (module claimed by no slice; 39

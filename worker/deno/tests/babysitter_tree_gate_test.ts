@@ -312,6 +312,8 @@ async function realGate(
   try {
     const outcome = await runBabysitterTreeGate(clone, baseBranch, {
       findMarkdownlint: () => Promise.resolve("/fake/markdownlint"),
+      // The secret scan has its own tests; the runner is not a scanner.
+      gitleaks: PASSING_GITLEAKS,
       runner: (command, options) => {
         commands.push(command);
         const isUnit = command.startsWith("deno task test:unit");
@@ -932,6 +934,8 @@ async function realDenoGate(clone: string) {
   try {
     const outcome = await runBabysitterTreeGate(clone, "main", {
       findMarkdownlint: () => Promise.resolve(null),
+      // The secret scan has its own tests; CI has no scanner installed.
+      gitleaks: PASSING_GITLEAKS,
     });
     return { outcome, warnings };
   } finally {
