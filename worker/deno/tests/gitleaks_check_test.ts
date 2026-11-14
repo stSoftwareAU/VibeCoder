@@ -754,20 +754,56 @@ Deno.test({
 // Babysitter repair tree scan (PR #5129 review)
 // ---------------------------------------------------------------------------
 
-/** Fake `git` for the tree scan: only `merge-base` is asked. */
+/**
+ * Fake `git` for the tree scan. `merge-base` answers with `mergeBase`; a path
+ * is in `HEAD` only when `diffs` holds its `git diff -U0 HEAD` output.
+ */
 function treeGit(
   mergeBase: { exitCode: number; stdout: string } = {
     exitCode: 0,
     stdout: `${BASE_SHA}\n`,
   },
+  diffs: Record<string, { exitCode: number; stdout: string }> = {},
 ): { calls: string[][]; git: GitRunner } {
   const calls: string[][] = [];
   return {
     calls,
     git: (args: string[]) => {
       calls.push(args);
-      return Promise.resolve(mergeBase);
+      if (args[0] === "merge-base") return Promise.resolve(mergeBase);
+      const path = args[args.length - 1]!;
+      if (args[0] === "cat-file") {
+        const tracked = Object.keys(diffs).some((p) => `HEAD:${p}` === path);
+        return Promise.resolve({ exitCode: tracked ? 0 : 1, stdout: "" });
+      }
+      const diff = diffs[path];
+      return Promise.resolve(diff ?? { exitCode: 128, stdout: "" });
     },
+  };
+}
+
+/** A JSON report, as `gitleaks dir --report-format json` writes it. */
+function jsonReport(
+  findings: { file: string; start: number; end?: number }[],
+): string {
+  return JSON.stringify(findings.map((finding) => ({
+    RuleID: "github-pat",
+    StartLine: finding.start,
+    EndLine: finding.end ?? finding.start,
+    Match: `const token = "${FAKE_TOKEN}";`,
+    Secret: "REDACTED",
+    File: finding.file,
+  })));
+}
+
+/** `git diff -U0 HEAD` output adding `count` lines at `start`. */
+function diffAdding(start: number, count: number): {
+  exitCode: number;
+  stdout: string;
+} {
+  return {
+    exitCode: 0,
+    stdout: `diff --git a/x b/x\n@@ -${start},0 +${start},${count} @@\n+x\n`,
   };
 }
 
@@ -860,7 +896,11 @@ Deno.test("runGitleaksTreeCheck - a finding in an uncommitted file is blocked wi
   await withTree({ "leak.ts": "x\n" }, async (dir) => {
     const { options } = treeOptions([
       CLEAN_RUN,
-      { exitCode: 1, stdout: LEAK_STDOUT, stderr: LEAK_STDERR },
+      {
+        exitCode: 1,
+        stdout: jsonReport([{ file: "leak.ts", start: 1 }]),
+        stderr: LEAK_STDERR,
+      },
     ]);
 
     const outcome = await runGitleaksTreeCheck(
@@ -874,7 +914,78 @@ Deno.test("runGitleaksTreeCheck - a finding in an uncommitted file is blocked wi
     const message = (outcome as { message: string }).message;
     assertStringIncludes(message, "github-pat");
     assertStringIncludes(message, "uncommitted file leak.ts");
+    assertStringIncludes(message, "Line: 1");
     assert(!message.includes(FAKE_TOKEN), "the raw token must not be quoted");
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - a finding in a tracked file blocks only when it touches a line the repair added, as CI's patch scan does", async () => {
+  await withTree({ "auth.ts": "x\n" }, async (dir) => {
+    // The base already holds a match at lines 10-15 (like the PEM markers in
+    // github_app_auth.ts); CI never re-reads it unless the PR adds those lines.
+    const report = jsonReport([{ file: "auth.ts", start: 10, end: 15 }]);
+    const leak = { exitCode: 1, stdout: report, stderr: LEAK_STDERR };
+    for (
+      const [diff, expected] of [
+        [diffAdding(1, 1), "passed"],
+        [diffAdding(16, 3), "passed"],
+        [diffAdding(12, 1), "blocked"],
+        [diffAdding(9, 2), "blocked"],
+      ] as const
+    ) {
+      const { options } = treeOptions([CLEAN_RUN, leak], {
+        git: treeGit(undefined, { "auth.ts": diff }).git,
+      });
+
+      const outcome = await runGitleaksTreeCheck(
+        dir,
+        "main",
+        ["auth.ts"],
+        options,
+      );
+
+      assertEquals(outcome.kind, expected, diff.stdout);
+    }
+  });
+});
+
+Deno.test("runGitleaksTreeCheck - an unreadable report or a failed diff is infrastructure, never a pass", async () => {
+  await withTree({ "auth.ts": "x\n" }, async (dir) => {
+    const unreadable = await runGitleaksTreeCheck(
+      dir,
+      "main",
+      ["auth.ts"],
+      treeOptions([CLEAN_RUN, {
+        exitCode: 1,
+        stdout: LEAK_STDOUT,
+        stderr: LEAK_STDERR,
+      }]).options,
+    );
+    assertEquals(unreadable.kind, "infrastructure");
+    assert(
+      !(unreadable as { message: string }).message.includes(FAKE_TOKEN),
+      "the raw token must not be quoted",
+    );
+
+    const failedDiff = await runGitleaksTreeCheck(
+      dir,
+      "main",
+      ["auth.ts"],
+      treeOptions([CLEAN_RUN, {
+        exitCode: 1,
+        stdout: jsonReport([{ file: "auth.ts", start: 1 }]),
+        stderr: LEAK_STDERR,
+      }], {
+        git: treeGit(undefined, {
+          "auth.ts": { exitCode: 128, stdout: "" },
+        }).git,
+      }).options,
+    );
+    assertEquals(failedDiff.kind, "infrastructure");
+    assertStringIncludes(
+      (failedDiff as { message: string }).message,
+      "git diff HEAD",
+    );
   });
 });
 
@@ -1025,6 +1136,48 @@ Deno.test({
       const message = (untracked as { message: string }).message;
       assertStringIncludes(message, "github-pat");
       assertStringIncludes(message, "untracked.ts");
+      assert(!message.includes(FAKE_TOKEN), "the raw token must not be quoted");
+    } finally {
+      await Deno.remove(repo, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "runGitleaksTreeCheck - real gitleaks ignores a committed match on an untouched line and blocks an edit that adds one (skipped where gitleaks is not installed)",
+  ignore: !gitleaksAvailable,
+  fn: async () => {
+    // The base branch already holds the token (as the base holds the PEM
+    // markers in github_app_auth.ts), so the PR's own range is clean.
+    const repo = await repoWithFeatureFile("clean.ts", "export const n = 1;\n");
+    try {
+      await Deno.writeTextFile(
+        `${repo}/held.ts`,
+        `export const token = "${FAKE_TOKEN}";\n`,
+      );
+      await runGit(repo, ["add", "held.ts"]);
+      await runGit(repo, ["commit", "-m", "held"]);
+      await runGit(repo, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+      await Deno.writeTextFile(
+        `${repo}/held.ts`,
+        `// a comment\nexport const token = "${FAKE_TOKEN}";\n`,
+      );
+      const untouched = await runGitleaksTreeCheck(repo, "main", ["held.ts"]);
+      assertEquals(untouched.kind, "passed");
+
+      await Deno.writeTextFile(
+        `${repo}/held.ts`,
+        `export const token = "${FAKE_TOKEN}";\n` +
+          `export const again = "${FAKE_TOKEN}";\n`,
+      );
+      const added = await runGitleaksTreeCheck(repo, "main", ["held.ts"]);
+      assertEquals(added.kind, "blocked");
+      const message = (added as { message: string }).message;
+      assertStringIncludes(message, "github-pat");
+      assertStringIncludes(message, "Line: 2");
+      assert(!message.includes("Line: 1"), "the untouched line must not block");
       assert(!message.includes(FAKE_TOKEN), "the raw token must not be quoted");
     } finally {
       await Deno.remove(repo, { recursive: true });

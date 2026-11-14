@@ -337,8 +337,10 @@ export interface GitleaksTreeCheckOptions {
 
 /**
  * Arguments for the scan of one uncommitted file. The `--` keeps a path that
- * starts with `-` from being read as a flag; the other flags are
- * {@link gitleaksScanArgs}'s.
+ * starts with `-` from being read as a flag; the scan flags are
+ * {@link gitleaksScanArgs}'s, except that the findings are written to stdout
+ * as a JSON report (with the secret redacted), so each finding's line span can
+ * be compared with the lines the repair added.
  */
 export function gitleaksFileScanArgs(
   path: string,
@@ -351,11 +353,99 @@ export function gitleaksFileScanArgs(
     "--no-banner",
     "--exit-code",
     "1",
-    "--verbose",
     "--no-color",
+    "--report-format",
+    "json",
+    "--report-path",
+    "-",
     "--",
     path,
   ];
+}
+
+/** An inclusive span of line numbers in a file. */
+interface LineSpan {
+  start: number;
+  end: number;
+}
+
+/** A hunk header of `git diff -U0`: `@@ -a[,b] +c[,d] @@`. */
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
+
+/**
+ * The lines of `path` the uncommitted change added relative to `HEAD`, as CI
+ * sees them: gitleaks scans only the added lines of each commit's patch, so a
+ * pre-existing match on an untouched line never blocks a PR. Returns null when
+ * the file is not in `HEAD` (new or untracked), meaning every line is added.
+ * The diff is read with `--no-optional-locks`, so nothing is written to `.git`.
+ */
+async function addedLineSpans(
+  git: GitRunner,
+  path: string,
+): Promise<LineSpan[] | null | { error: string }> {
+  const inHead = await git(["cat-file", "-e", `HEAD:${path}`]);
+  if (inHead.exitCode !== 0) return null;
+  const diff = await git([
+    "--no-optional-locks",
+    "diff",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "-U0",
+    "HEAD",
+    "--",
+    path,
+  ]);
+  if (diff.exitCode !== 0) {
+    return { error: `git diff HEAD -- ${JSON.stringify(path)} failed` };
+  }
+  const spans: LineSpan[] = [];
+  for (const line of diff.stdout.split("\n")) {
+    const hunk = HUNK_HEADER.exec(line);
+    if (hunk === null) continue;
+    const start = Number(hunk[1]);
+    const count = hunk[2] === undefined ? 1 : Number(hunk[2]);
+    if (count > 0) spans.push({ start, end: start + count - 1 });
+  }
+  return spans;
+}
+
+/** One finding of a JSON report, reduced to its safe metadata. */
+interface ReportFinding {
+  rule: string;
+  file: string;
+  start: number;
+  end: number;
+}
+
+/** Parse a gitleaks JSON report, or null when it is not one. */
+function parseReport(stdout: string): ReportFinding[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const findings: ReportFinding[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== "object" || entry === null) return null;
+    const { RuleID, File, StartLine, EndLine } = entry as Record<
+      string,
+      unknown
+    >;
+    if (typeof StartLine !== "number") return null;
+    findings.push({
+      rule: String(RuleID ?? "(unknown rule)"),
+      file: String(File ?? "(unknown file)"),
+      start: StartLine,
+      end: typeof EndLine === "number" && EndLine >= StartLine
+        ? EndLine
+        : StartLine,
+    });
+  }
+  return findings;
 }
 
 /** A changed path the tree scan can hand to gitleaks safely, or null. */
@@ -403,10 +493,11 @@ async function pathToScan(dir: string, path: string): Promise<boolean> {
  * The repository config is read from the working tree, as CI reads it from the
  * PR head. `paths` may name files the repair deleted; those are skipped.
  *
- * SIMPLE-ON-PURPOSE: each changed file is scanned whole, one process per file,
- * so a repair that touches a file already holding allowlist-dependent committed
- * content is held to the config's path allowlist — upgrade when a repair
- * touches more than a few hundred files in one run or a false block appears.
+ * Each changed file is scanned whole, one process per file, and a finding
+ * blocks only when its line span touches a line the repair added relative to
+ * `HEAD` (every line, for a file not in `HEAD`), because CI scans only the
+ * added lines of each patch. SIMPLE-ON-PURPOSE: one process per file — upgrade
+ * when a repair touches more than a few hundred files in one run.
  */
 export async function runGitleaksTreeCheck(
   dir: string,
@@ -466,7 +557,7 @@ export async function runGitleaksTreeCheck(
         Math.max(deadlineAt - Date.now(), 1),
       ));
 
-  const scans: { subject: string; args: string[] }[] = [{
+  const scans: { subject: string; args: string[]; path?: string }[] = [{
     subject: `commit range ${shortRange}`,
     args: gitleaksScanArgs(`${base}..HEAD`, configPath),
   }];
@@ -475,11 +566,12 @@ export async function runGitleaksTreeCheck(
       scans.push({
         subject: `uncommitted file ${path}`,
         args: gitleaksFileScanArgs(path, configPath),
+        path,
       });
     }
   }
 
-  for (const { subject, args } of scans) {
+  for (const { subject, args, path } of scans) {
     const run = await scan(args);
     if (run.timedOut) {
       return infra(
@@ -489,17 +581,89 @@ export async function runGitleaksTreeCheck(
       );
     }
     const judged = judgeRun(run, subject, description);
-    if (judged.verdict === "leaks") {
-      return { kind: "blocked", message: judged.output };
-    }
     if (judged.verdict === "error") {
       // The output already names the scanner error and quotes its cause.
       return { kind: "infrastructure", message: judged.output };
     }
+    if (judged.verdict === "clean") continue;
+    if (path === undefined) {
+      return { kind: "blocked", message: judged.output };
+    }
+    const fileVerdict = await judgeFileFindings(
+      git,
+      path,
+      run.stdout,
+      subject,
+      description,
+    );
+    if (fileVerdict !== null) return fileVerdict;
   }
   return {
     kind: "passed",
     summary: `gitleaks: PASSED (commit range ${shortRange} and ` +
       `${scans.length - 1} uncommitted file(s), ${description})`,
+  };
+}
+
+/**
+ * Keep only the findings of one file scan that touch a line the repair added,
+ * as CI's patch scan would (Issue #5121, PR #5129 review): a whole-file scan
+ * also matches content already on the base branch, such as the PEM markers in
+ * `github_app_auth.ts`, which CI never re-reads unless the PR adds them.
+ * Returns null when no finding touches an added line, a `blocked` outcome
+ * naming each remaining finding's rule, file and line span (never the secret),
+ * or `infrastructure` when the report or the diff cannot be read.
+ */
+async function judgeFileFindings(
+  git: GitRunner,
+  path: string,
+  stdout: string,
+  subject: string,
+  description: string,
+): Promise<GitleaksTreeOutcome | null> {
+  const findings = parseReport(stdout);
+  if (findings === null) {
+    return {
+      kind: "infrastructure",
+      message: `gitleaks: FAILED (scanner error: the scan of ${subject} ` +
+        `reported leaks but its JSON report could not be read, ${description})` +
+        " — an infrastructure fault, not a finding",
+    };
+  }
+  const added = await addedLineSpans(git, path);
+  if (added !== null && "error" in added) {
+    return {
+      kind: "infrastructure",
+      message: `gitleaks: ${added.error}, so the findings in ${subject} ` +
+        "could not be matched to the repair's lines — an infrastructure " +
+        "fault, not a finding",
+    };
+  }
+  const touching = added === null
+    ? findings
+    : findings.filter((finding) =>
+      added.some((span) =>
+        finding.start <= span.end && span.start <= finding.end
+      )
+    );
+  if (touching.length === 0) return null;
+  const lines = touching.slice(0, FINDINGS_MAX_LINES).map((finding) =>
+    `RuleID: ${finding.rule}  File: ${finding.file}  Line: ${finding.start}` +
+    (finding.end === finding.start ? "" : `-${finding.end}`)
+  );
+  return {
+    kind: "blocked",
+    message: redactedLineTail(
+      [
+        `gitleaks: FAILED (leaks found in ${subject}, ${description})`,
+        "",
+        ...lines,
+        "",
+        "The same lines would block the PR in `.github/workflows/gitleaks.yml`. " +
+        "Remove the secret; for a deliberate fake fixture, add a narrowly " +
+        "scoped allowlist to `.github/gitleaks.toml`.",
+      ].join("\n"),
+      FINDINGS_MAX_LINES + 4,
+    ),
   };
 }

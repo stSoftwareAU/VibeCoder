@@ -60,9 +60,12 @@ backstop. Closes #5121.
   hit is `infrastructure`. The scan runs only on a tree the other checks passed,
   reads without writing, and `gitleaks` is listed in `checksRun`. The repository
   config is read from the working tree, as CI reads it from the PR head. Each
-  changed file is scanned whole, so a repair that touches a file already holding
-  allowlist-dependent content is held to the config's path allowlist (marked
-  `SIMPLE-ON-PURPOSE` in the code).
+  changed file is scanned whole with a JSON report, and a finding blocks only
+  when its line span touches a line the repair added relative to `HEAD` (any
+  line, for a file not in `HEAD`), because CI scans only the added lines of each
+  patch. Without that filter, any repair touching
+  `worker/deno/lib/github_app_auth.ts` was blocked by the `private-key` match on
+  its PEM marker strings, which CI passes.
 - **Exit 0 alone does not pass.** The stage passes only when the exit code is 0,
   stderr says `no leaks found`, and no stderr line is `ERR` or `FTL`. Anything
   else is `FAILED`: a missing gitleaks inside the fleet image, a scan past the

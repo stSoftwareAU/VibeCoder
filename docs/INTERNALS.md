@@ -207,7 +207,11 @@ the pre-push gate over the repair's uncommitted tree. That gate also runs
 once the other checks pass: the branch's commit range
 `<merge-base with origin/<base branch>>..HEAD`, resolved read-only because the
 clone's `.git` is mounted read-only, then `gitleaks dir` over each changed file
-as it is on disk, since the host commits and pushes those edits next. A finding
+as it is on disk, since the host commits and pushes those edits next. A file
+finding counts only when its line span touches a line the repair added relative
+to `HEAD` (any line, for a file not in `HEAD`), because CI scans only the added
+lines of each patch; an existing match on an untouched line, such as the PEM
+markers in `github_app_auth.ts`, does not block. A finding
 is `blocked` and spends a repair attempt, with redacted rule, path and line
 metadata. A missing scanner, an unresolvable base, a scanner error or a
 deadline hit is `infrastructure` and spends none. The repository's
