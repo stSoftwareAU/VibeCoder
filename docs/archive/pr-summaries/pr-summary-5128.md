@@ -11,7 +11,8 @@ capped by the runway left to the run's hard cap. A setup still running then is
 abandoned as a `timeout` failure, and the run's failure path releases the claim
 it holds, instead of holding it until the launcher's watchdog reaps the
 container. The abandoned setup stops at its next checkpoint, which sits before
-each call that writes to the lane worktree, the shared clone or GitHub. The cause of the #5128 wedge on `GRQ-25` is not established.
+each call that writes to the lane worktree, the shared clone or GitHub. The
+cause of the #5128 wedge on `GRQ-25` is not established.
 
 Part of #5128
 
@@ -61,17 +62,17 @@ Part of #5128
   `VIBE_RUN_MAX_SECONDS`) less the kill grace and the 120s WIP reserve, and
   takes the smaller of the budget and the time left to it, floored at 60s. The
   launcher's watchdog is `DEFAULT_MAX_RUN_SECONDS + WATCHDOG_MARGIN_SECONDS` =
-  11400s from launch (`container_launch_plan.ts`, `resolveWatchdogSeconds`),
-  and the supervisor's default cap is 10800s, so the cap falls before it. The
-  budget alone fell after the watchdog in two cases: a setup that starts more
-  than 2400s after launch at the default `claude_timeout`, and any setup with
-  `claude_timeout: 7200` (16200s). On the #5128 timeline (run start 12:21:10Z, claim
-  12:37:43Z) the budget falls at about 15:07:43Z and the cap's ceiling at about
-  15:14:40Z, so the cap does not move it: that wedge would still have been
+  11400s from launch (`container_launch_plan.ts`, `resolveWatchdogSeconds`), and
+  the supervisor's default cap is 10800s, so the cap falls before it. The budget
+  alone fell after the watchdog in two cases: a setup that starts more than
+  2400s after launch at the default `claude_timeout`, and any setup with
+  `claude_timeout: 7200` (16200s). On the #5128 timeline (run start 12:21:10Z,
+  claim 12:37:43Z) the budget falls at about 15:07:43Z and the cap's ceiling at
+  about 15:14:40Z, so the cap does not move it: that wedge would still have been
   abandoned after the log stopped (14:48:26Z) and after the
-  assigned-without-heartbeat recovery freed the claim (15:03:30Z). With no supervisor cap published
-  (`VIBE_RUN_MAX_SECONDS` unset or `0`) there is nothing to cap by and the budget
-  stands.
+  assigned-without-heartbeat recovery freed the claim (15:03:30Z). With no
+  supervisor cap published (`VIBE_RUN_MAX_SECONDS` unset or `0`) there is
+  nothing to cap by and the budget stands.
 - The deadline is armed on an injected `Clock` (`SetupDeadlineOptions.clock`,
   supplied from `deps.infrastructure.setupClock`, production `systemClock`), the
   `lib/clock.ts` seam, so the tests drive it with `fakeClock()`.
@@ -91,14 +92,14 @@ Part of #5128
   default-branch sync, the milestone branch push and its repair, the
   milestone-refusal label sweep, the pre-sync agent run, the milestone session
   restore, the resume checkout (the checkout call itself is wrapped to decline
-  once abandoned), the compaction, the feature branch step (outside the `resumedFromCheckpoint`
-  condition, so a resumed setup is stopped too), each repair rung (sweep,
-  object-store repair, re-clone, retry), the host-fault label sweep and the
-  pre-setup command. When it stops it logs one fixed line
+  once abandoned), the compaction, the feature branch step (outside the
+  `resumedFromCheckpoint` condition, so a resumed setup is stopped too), each
+  repair rung (sweep, object-store repair, re-clone, retry), the host-fault
+  label sweep and the pre-setup command. When it stops it logs one fixed line
   (`SETUP_ABANDONED_LOG_LINE`, without the `[setup-step]` prefix, so the
-  hard-kill report ignores it). A heartbeat that starts late is stopped. A
-  claim won late, when the run did not release it, is unassigned by the
-  abandoned setup; one the run already released is not released twice
+  hard-kill report ignores it). A heartbeat that starts late is stopped. A claim
+  won late, when the run did not release it, is unassigned by the abandoned
+  setup; one the run already released is not released twice
   (`state.setupClaimReleasedByRun`). A call already running when the deadline
   fires finishes (a milestone pre-sync agent run is the longest). The resume
   lookup after the milestone session restore and the stream-session priming have
@@ -148,9 +149,9 @@ flowchart LR
   - `setupDeadlineMs`: the budget exceeds one agent budget plus the clone and
     pre-setup bounds and grows by two agent budgets per extra `claudeTimeout`
     when no cap is published (and for `VIBE_RUN_MAX_SECONDS=0`); it is left
-    alone when it fits the hard cap; it is capped when setup starts 9000s into
-    a 10800s run; it is capped for `claudeTimeout: 7200` and then falls before
-    the 11400s watchdog; it never drops below 60s;
+    alone when it fits the hard cap; it is capped when setup starts 9000s into a
+    10800s run; it is capped for `claudeTimeout: 7200` and then falls before the
+    11400s watchdog; it never drops below 60s;
   - `runSetupWithDeadline` returns the setup result, disarms its timer and never
     abandons when setup settles first, and abandons a setup that never settles
     once, at the deadline and not before, with a `timeout` failure;
@@ -174,12 +175,12 @@ flowchart LR
     pre-sync; a pre-sync that returns late is followed by no resume lookup; a
     resume lookup that returns a checkpoint branch late checks nothing out and
     creates no feature branch; a stream compaction whose stream was joined just
-    as the deadline fell is not started; a resumed setup whose compaction returns
-    late runs no label sweep (no further `gh` command) or pre-setup command; a
-    feature-branch failure that arrives late with object-store corruption
-    starts neither the object-store repair nor the broken-ref sweep; and a
-    repair, re-clone or sweep that returns late is followed by no re-clone or
-    branch retry. The `createFeatureBranchFromBase` and `checkClaimChurn`
+    as the deadline fell is not started; a resumed setup whose compaction
+    returns late runs no label sweep (no further `gh` command) or pre-setup
+    command; a feature-branch failure that arrives late with object-store
+    corruption starts neither the object-store repair nor the broken-ref sweep;
+    and a repair, re-clone or sweep that returns late is followed by no re-clone
+    or branch retry. The `createFeatureBranchFromBase` and `checkClaimChurn`
     wedges also assert that no `gh` command follows the deadline.
 - `worker/deno/tests/run_core_test.ts` already drives the consumers of that
   result: "failure path releases the claim (unassign + clear) — Issue #2648
@@ -231,10 +232,10 @@ flowchart LR
   the run holds. Not covered: a guest that stops first is still reaped by the
   watchdog and its claim is freed by the assigned-without-heartbeat recovery; a
   `claimIssue` that wedges after its assignment with no claim comment of this
-  run's on the issue is left to that recovery; a setup that wedges
-  within a budget's last stretch before the watchdog, as `GRQ-25` did, is still
-  freed by that recovery first; a host with no supervisor cap published keeps
-  the uncapped budget; the cause of the `GRQ-25` wedge is not established.
+  run's on the issue is left to that recovery; a setup that wedges within a
+  budget's last stretch before the watchdog, as `GRQ-25` did, is still freed by
+  that recovery first; a host with no supervisor cap published keeps the
+  uncapped budget; the cause of the `GRQ-25` wedge is not established.
 
 ## Test Plan
 
@@ -259,10 +260,9 @@ flowchart LR
       milestone retry removed, eight of the new checkpoint tests failed (the
       ruleset retry, label sweep, pre-sync, both compaction, object-store,
       re-clone and sweep tests). The `setupDeadlineMs` cap tests and the
-      `fakeClock` rewrite were first run after the change.
-      Earlier iterations of this file had a constant-restating test and a
-      late-rejection test that passed without the code they named; both are
-      removed.
+      `fakeClock` rewrite were first run after the change. Earlier iterations of
+      this file had a constant-restating test and a late-rejection test that
+      passed without the code they named; both are removed.
 - [x] `deno task test:unit` on `worker/deno/tests/setup_deadline_5128_test.ts`
       (27 tests at head), `worker/deno/tests/setup_step_log_test.ts` (3 tests at
       head) and `worker/deno/tests/hard_kill_report_test.ts` (66 tests at head),
@@ -276,11 +276,11 @@ flowchart LR
   gets the new labels. `workOnIssueSetupBranch` has one caller,
   `workOnIssueCore`; its extra return arms are reached only after
   `state.setupAbandoned`, which only the deadline sets. `runSetupWithDeadline`
-  has one caller, the setup `runPhase`. `InfrastructureDeps.setupDeadlineMs` and the new
-  `setupClock` are built in `issue_worker_wiring.ts` (production and
+  has one caller, the setup `runPhase`. `InfrastructureDeps.setupDeadlineMs` and
+  the new `setupClock` are built in `issue_worker_wiring.ts` (production and
   `createMockDeps`), the only two constructors; `setupDeadlineMs` reads
-  `resolveRunHardCap`, whose other callers are unchanged. The new module is claimed by
-  `docs/audits/lib-sweep-coverage/top-up-5128.json`.
+  `resolveRunHardCap`, whose other callers are unchanged. The new module is
+  claimed by `docs/audits/lib-sweep-coverage/top-up-5128.json`.
 - Branch outcomes: deadline fires with claim won
   (`workOnIssue: a wedge after a
   won claim …`); with own claim comment present
@@ -299,13 +299,14 @@ flowchart LR
   `ensureMilestoneBranchExists`, resume lookup and feature-branch failure (the
   checkpoint tests above); `setupDeadlineMs` with no cap, with the cap disabled,
   with the budget inside the cap, with a late start, with a large
-  `claude_timeout` and past the cap (the five `setupDeadlineMs` tests). Exempt (untestable): the
-  one checkpoint between `initialiseMilestoneSession` and `restoreSession`.
-  Both are real filesystem calls that `createMockDeps` does not inject, and
-  neither logs, so a test cannot make the deadline fall between them. Harness
-  search: the tests that call `workOnIssue` or `workOnIssueSetupBranch`
-  (`setup_step_log_test.ts`, `stream_compaction_seam_2642_test.ts` and this
-  file) stage the deadline only through an injected mock or a logged line.
+  `claude_timeout` and past the cap (the five `setupDeadlineMs` tests). Exempt
+  (untestable): the one checkpoint between `initialiseMilestoneSession` and
+  `restoreSession`. Both are real filesystem calls that `createMockDeps` does
+  not inject, and neither logs, so a test cannot make the deadline fall between
+  them. Harness search: the tests that call `workOnIssue` or
+  `workOnIssueSetupBranch` (`setup_step_log_test.ts`,
+  `stream_compaction_seam_2642_test.ts` and this file) stage the deadline only
+  through an injected mock or a logged line.
 
 ## Merge verification
 
