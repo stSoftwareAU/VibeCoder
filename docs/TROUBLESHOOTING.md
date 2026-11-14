@@ -249,14 +249,25 @@ files. The archive, not the issue, holds the evidence (see
 [a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)). A
 setup phase still running after two agent budgets (`claude_timeout`, for the
 milestone pre-sync agent and its repair run) plus 30 minutes for the clone, git,
-gates and pre-setup command is abandoned before the watchdog fires (Issue #5128):
-the run ends as a setup `timeout` failure. It releases the claim only when it
-holds it: a claim `claimIssue` returned, or one whose own claim comment is on
-the issue. A claim never taken is left alone, because every host shares one
-login and an unassign would strip another host's live claim. The abandoned setup
-returns at its next step boundary, and a claim it wins late is released. A step
-that wedges while the worker is still alive therefore no longer holds the issue
-until the launcher reaps the container. Check whether the host is wedging
+gates and pre-setup command is abandoned (Issue #5128), but never later than the
+run's hard cap allows: the deadline is the smaller of that budget and the runway
+left to the supervisor cap (`VIBE_RUN_MAX_SECONDS`, anchored by
+`VIBE_RUN_STARTED_EPOCH`) less the kill grace and the WIP reserve, so it falls
+before the launcher's watchdog (the cap plus 10 minutes) even when setup starts
+late or `claude_timeout` is large. With no supervisor cap published (unset or
+`0`) there is nothing to cap it by and the budget alone applies, which a large
+`claude_timeout` can push past the watchdog. The run ends as a setup `timeout`
+failure. It releases the claim only when it holds it: a claim `claimIssue`
+returned, or one whose own claim comment is on the issue. A claim never taken is
+left alone, because every host shares one login and an unassign would strip
+another host's live claim. The abandoned setup returns at its next checkpoint,
+and a claim it wins late is released. The checkpoints sit before the calls that
+writes to the lane worktree, the shared clone or GitHub (including the default
+branch sync, milestone branch push and pre-sync, resume checkout, session
+priming, branch repair and the pre-setup command), so a call already running
+when the deadline fires finishes, and nothing after it starts. A step that
+wedges while the worker is still alive therefore no longer holds the issue until
+the launcher reaps the container. Check whether the host is wedging
 repeatedly — a chronic offender needs the runtime itself looked at:
 
 ```bash

@@ -66,13 +66,22 @@ import { releaseMilestoneBranchRefusalLabels } from "../milestone_branch_refusal
 import { isBrokenRefFailure } from "../broken_ref_repair.ts";
 import { CLONE_CORRUPT_MARKER } from "../failure_diagnosis.ts";
 import { releaseHostFaultFailureLabels } from "../host_fault_release.ts";
-import { setupStepStartLine } from "../setup_steps.ts";
+import {
+  SETUP_ABANDONED_LOG_LINE,
+  setupStepStartLine,
+} from "../setup_steps.ts";
+
+/** The repair detail an abandoned setup records instead of running a repair. */
+const ABANDONED_REPAIR_DETAIL =
+  "setup was abandoned after its deadline, so the repair was not run";
 
 /**
- * What an abandoned setup returns (Issue #5128). Nothing reads it: the run
- * ended on the setup deadline and moved on, so this only stops the phase.
+ * What an abandoned setup returns (Issue #5128). Nothing reads the result: the
+ * run ended on the setup deadline and moved on, so this only stops the phase.
+ * It logs one fixed line, so the stop is observable.
  */
-function abandonedSetup(): PhaseResult {
+function abandonedSetup(logger: WorkerDeps["logger"]): PhaseResult {
+  logger.info(SETUP_ABANDONED_LOG_LINE);
   return {
     category: "timeout",
     status: "failure",
@@ -121,7 +130,7 @@ export async function workOnIssueSetupBranch(
   });
   // Issue #5128: each step logs as it starts so a hard-kill report names the
   // step a wedge is in or after.
-  if (state.setupAbandoned) return abandonedSetup();
+  if (state.setupAbandoned) return abandonedSetup(logger);
   state.setupClaim = { workerId, won: false };
   logger.info(setupStepStartLine("issue claim"), { repo, issueNumber });
   const claimResult = await deps.issues.claimIssue({
@@ -175,7 +184,7 @@ export async function workOnIssueSetupBranch(
         });
       }
     }
-    return abandonedSetup();
+    return abandonedSetup(logger);
   }
   if (state.setupClaim && claimResult.ok && claimResult.value.claimed) {
     state.setupClaim.won = true;
@@ -219,7 +228,7 @@ export async function workOnIssueSetupBranch(
   }
 
   // Check for claim churn (Issue #861, #999)
-  if (state.setupAbandoned) return abandonedSetup();
+  if (state.setupAbandoned) return abandonedSetup(logger);
   logger.info(setupStepStartLine("claim churn check"), { repo, issueNumber });
   const churnResult = await deps.issues.checkClaimChurn({
     repo,
@@ -242,7 +251,7 @@ export async function workOnIssueSetupBranch(
   // (Issue #923) this is the lane's own worktree off that clone, so a
   // sibling slot working the same repository cannot move HEAD underneath
   // this run.
-  if (state.setupAbandoned) return abandonedSetup();
+  if (state.setupAbandoned) return abandonedSetup(logger);
   logger.info(setupStepStartLine("repository setup"), { repo, issueNumber });
   const setupResult = await deps.git.setupRepo(
     repo,
@@ -261,7 +270,7 @@ export async function workOnIssueSetupBranch(
   // Record initial heartbeat (Issue #631). The initial record is awaited
   // (Issue #1888); on failure release the claim and surface the failure
   // so the worker doesn't proceed without a live heartbeat marker.
-  if (state.setupAbandoned) return abandonedSetup();
+  if (state.setupAbandoned) return abandonedSetup(logger);
   logger.info(setupStepStartLine("heartbeat start"), { repo, issueNumber });
   const heartbeatStart = await startHeartbeat({
     repo,
@@ -275,7 +284,7 @@ export async function workOnIssueSetupBranch(
   // must not release the claim either: the run did that when it ended.
   if (state.setupAbandoned) {
     if (heartbeatStart.ok) await stopHeartbeat(heartbeatStart.value);
-    return abandonedSetup();
+    return abandonedSetup(logger);
   }
   if (!heartbeatStart.ok) {
     try {
@@ -303,9 +312,10 @@ export async function workOnIssueSetupBranch(
   state.branchName = deps.git.createBranchName(issueNumber, issueTitle);
 
   // Determine default branch from GitHub API, then sync it locally
-  if (state.setupAbandoned) return abandonedSetup();
+  if (state.setupAbandoned) return abandonedSetup(logger);
   logger.info(setupStepStartLine("default branch sync"), { repo, issueNumber });
   const detectedBranch = await deps.git.getRepoDefaultBranch(repo);
+  if (state.setupAbandoned) return abandonedSetup(logger);
   if (!detectedBranch.ok) {
     return {
       category: "internal_error",
@@ -324,6 +334,7 @@ export async function workOnIssueSetupBranch(
   if (!defaultBranchResult.ok) {
     logger.warn(`Could not ensure default branch '${defaultBranch}' current`);
   }
+  if (state.setupAbandoned) return abandonedSetup(logger);
   state.defaultBranch = defaultBranch;
 
   // Milestone routing (Issue #423)
@@ -345,6 +356,7 @@ export async function workOnIssueSetupBranch(
         { cwd: repoPath },
       );
     let ensureResult = await ensureMilestoneBranch();
+    if (state.setupAbandoned) return abandonedSetup(logger);
 
     // Issue #2079: a `milestone/**` ruleset enforcing its required checks on
     // branch CREATION refuses the very push that opens the branch, so every
@@ -359,7 +371,15 @@ export async function workOnIssueSetupBranch(
         milestoneBranch,
         detail: ensureResult.error.message,
         repair: (target) => deps.github.repairMilestoneCreateBlock(target),
-        retry: ensureMilestoneBranch,
+        // The retry pushes the milestone branch, so an abandoned setup
+        // declines it (Issue #5128).
+        retry: () =>
+          state.setupAbandoned
+            ? Promise.resolve({
+              ok: false,
+              error: new Error(ABANDONED_REPAIR_DETAIL),
+            })
+            : ensureMilestoneBranch(),
       });
       if (recovery.kind === "recovered") {
         logger.info(
@@ -387,6 +407,7 @@ export async function workOnIssueSetupBranch(
       }
     }
 
+    if (state.setupAbandoned) return abandonedSetup(logger);
     if (!ensureResult.ok) {
       // Issue #3910: never retarget a milestone-assigned issue at the
       // default branch. The milestone branch exists so a milestone lands
@@ -475,6 +496,7 @@ export async function workOnIssueSetupBranch(
     // Through the per-cycle memo (Issue #2388): a milestone gets ONE sync
     // attempt per run, not one per issue, so every issue of a branch this
     // cycle cannot bring level is answered from that single attempt.
+    if (state.setupAbandoned) return abandonedSetup(logger);
     const presync = await presyncMilestoneOnceForArming({
       repo,
       milestoneTitle,
@@ -495,6 +517,7 @@ export async function workOnIssueSetupBranch(
       // reported once, through the sweep's own escalation.
       ghCommandFn: deps.github.runGhCommand,
     });
+    if (state.setupAbandoned) return abandonedSetup(logger);
     if (presync.status === "deferred") {
       // No agent is spent, the issue keeps its pickup label and no human is
       // asked about it: the ledger's deferral paces the branch, the selector
@@ -539,6 +562,7 @@ export async function workOnIssueSetupBranch(
       });
     }
     // Restore the milestone-specific session into .claude/
+    if (state.setupAbandoned) return abandonedSetup(logger);
     const sessionResult = await restoreSession(
       repoPath,
       config.workDir,
@@ -585,9 +609,16 @@ export async function workOnIssueSetupBranch(
       listRemoteIssueBranches: deps.git.listRemoteIssueBranches,
       orderBranchesByRecency: deps.git.orderBranchesByRecency,
       countCommitsAhead: deps.git.countCommitsAhead,
-      resumeFeatureBranchFromRemote: deps.git.resumeFeatureBranchFromRemote,
+      // The one call that moves HEAD in the lane worktree (Issue #5128): an
+      // abandoned setup declines the checkout rather than start it, because
+      // the slot's next run on this repository may share that worktree.
+      resumeFeatureBranchFromRemote: (branch, gitOptions) =>
+        state.setupAbandoned
+          ? Promise.resolve({ ok: true, value: false })
+          : deps.git.resumeFeatureBranchFromRemote(branch, gitOptions),
     },
   );
+  if (state.setupAbandoned) return abandonedSetup(logger);
   // One line on every claim naming the branch resumed, or saying none existed.
   const resumeMessage = describeResumeOutcome(resumeOutcome, issueNumber);
   if (resumeOutcome.reason === "lookup-failed") {
@@ -743,6 +774,7 @@ export async function workOnIssueSetupBranch(
       runKind: resolveStreamRunKind(ctx.issueLabels),
       logger,
     });
+    if (state.setupAbandoned) return abandonedSetup(logger);
     if (adoption) {
       state.sessionResumeState = adoption.state;
       // `holderHost` is what the run records on the milestone's tracking issue
@@ -774,15 +806,20 @@ export async function workOnIssueSetupBranch(
     }
   }
 
-  // Create feature branch from base (skipped when a checkpoint was resumed)
+  // Create feature branch from base (skipped when a checkpoint was resumed).
+  // The abandon check sits outside that condition: a resumed setup runs on to
+  // the host-fault label sweep and the pre-setup command as well.
+  if (state.setupAbandoned) return abandonedSetup(logger);
   if (!state.resumedFromCheckpoint) {
-    if (state.setupAbandoned) return abandonedSetup();
     logger.info(setupStepStartLine("feature branch"), { repo, issueNumber });
     let branchResult = await deps.git.createFeatureBranchFromBase(
       state.branchName,
       state.baseBranch,
       { cwd: repoPath },
     );
+    // No repair ladder for an abandoned setup: it would re-clone the store
+    // every lane of this repository shares (Issue #5128).
+    if (state.setupAbandoned) return abandonedSetup(logger);
     // Whether the failure (if any) belongs to the shared-clone repair ladder
     // below, rather than being an ordinary branch failure — decides whether
     // CLONE_CORRUPT_MARKER goes into the final reason (Issue #2884).
@@ -792,6 +829,7 @@ export async function workOnIssueSetupBranch(
     // (Issue #1093), shared by the object-store rung below and the Issue
     // #2884 broken-ref rung as their common last resort.
     const reCloneAndRetry = async (): Promise<string> => {
+      if (state.setupAbandoned) return ABANDONED_REPAIR_DETAIL;
       const repair = await deps.git.repairObjectStore({
         repo,
         workDir: config.workDir,
@@ -815,6 +853,7 @@ export async function workOnIssueSetupBranch(
       );
       // The lane's worktree went with the clone, so take a fresh one off
       // the new store before retrying.
+      if (state.setupAbandoned) return ABANDONED_REPAIR_DETAIL;
       const reSetup = await deps.git.setupRepo(
         repo,
         config.workDir,
@@ -828,6 +867,7 @@ export async function workOnIssueSetupBranch(
         return `the repaired clone could not be re-opened: ${reSetup.error.message}`;
       }
       repoPath = reSetup.value;
+      if (state.setupAbandoned) return ABANDONED_REPAIR_DETAIL;
       branchResult = await deps.git.createFeatureBranchFromBase(
         state.branchName,
         state.baseBranch,
@@ -908,6 +948,7 @@ export async function workOnIssueSetupBranch(
           { repo, issueNumber, error: brokenRefOutput },
         );
         const sweep = await deps.git.sweepBrokenRefs({ cwd: repoPath });
+        if (state.setupAbandoned) return abandonedSetup(logger);
         if (!sweep.ok) {
           repairDetail = sweep.error.message;
           logger.error("Broken-ref sweep failed (Issue #2884)", {
@@ -951,6 +992,7 @@ export async function workOnIssueSetupBranch(
       }
     }
 
+    if (state.setupAbandoned) return abandonedSetup(logger);
     if (!branchResult.ok) {
       const msg = branchResult.error.message;
       return {
@@ -963,6 +1005,7 @@ export async function workOnIssueSetupBranch(
     }
   }
 
+  if (state.setupAbandoned) return abandonedSetup(logger);
   state.repoPath = repoPath;
 
   // A feature branch just got created off a fresh clone on this host — the
@@ -1001,7 +1044,7 @@ export async function workOnIssueSetupBranch(
   }
 
   // Run repository-specific pre-setup command if configured (Issue #85, #1184)
-  if (state.setupAbandoned) return abandonedSetup();
+  if (state.setupAbandoned) return abandonedSetup(logger);
   logger.info(setupStepStartLine("pre-setup command"), { repo, issueNumber });
   const preSetupResult = await runPreSetupCommand(
     repo,

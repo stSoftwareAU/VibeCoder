@@ -14,8 +14,17 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   ownClaimCommentPresent,
   runSetupWithDeadline,
+  SETUP_ABANDONED_LOG_LINE,
+  SETUP_MIN_DEADLINE_SECONDS,
   setupDeadlineMs,
+  setupStepStartLine,
 } from "../lib/setup_steps.ts";
+import type { SetupStep } from "../lib/setup_steps.ts";
+import { saveStreamSession } from "../lib/resume_state_store.ts";
+import { resolveStreamId } from "../lib/stream_identity.ts";
+import { anticipatedProviderId } from "../lib/stream_session.ts";
+import { fakeClock } from "./support/fake_clock.ts";
+import type { FakeClock } from "./support/fake_clock.ts";
 import { workOnIssue } from "../lib/issue_worker.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { IssueContext } from "../lib/issue_worker_types.ts";
@@ -43,16 +52,10 @@ function gate<T>(): { promise: Promise<T>; open: (value: T) => void } {
   return { promise, open };
 }
 
-/**
- * Lets an abandoned setup run on after a gate opens. The steps are mocks, and
- * the heartbeat start does a little file I/O, so one macrotask is not enough;
- * the assertions after it fail if that setup does any further work.
- */
-function settle(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 50));
-}
-
-function issueContext(issueNumber: number): IssueContext {
+function issueContext(
+  issueNumber: number,
+  overrides: Partial<IssueContext> = {},
+): IssueContext {
   return {
     repo: "org/repo",
     issueNumber,
@@ -62,17 +65,45 @@ function issueContext(issueNumber: number): IssueContext {
     issueComments: "",
     githubUser: "testbot",
     config: buildDefaultWorkerConfig(),
+    ...overrides,
   };
 }
 
-/** Mock deps whose setup deadline is short and whose unassigns are recorded. */
-function deadlineDeps(
-  overrides: Parameters<typeof createMockDeps>[0],
-  unassigns: unknown[][],
-  ghComments = "",
-): WorkerDeps {
+/** The deadline the `workOnIssue` tests arm; the fake clock moves past it. */
+const DEADLINE_MS = 3_600_000;
+
+/** The test's view of one run: its fake clock, log lines and stall points. */
+interface Harness {
+  clock: FakeClock;
+  lines: string[];
+  unassigns: unknown[][];
+  /** How many `gh` commands the run has issued so far. */
+  ghCalls: { count: number };
+  /** Resolves once the abandoned setup logs that it stopped at a boundary. */
+  stopped: Promise<void>;
+  /** Resolves when a stalled mock is entered; open it from inside the mock. */
+  entered: { promise: Promise<void>; open: () => void };
+  deps: WorkerDeps;
+}
+
+/**
+ * Mock deps whose setup deadline is armed on a fake clock and whose unassigns
+ * are recorded. The deadline only moves when the test advances the clock,
+ * after the stalled mock has been entered.
+ */
+function harness(
+  overrides: Parameters<typeof createMockDeps>[0] = {},
+  options: { ghComments?: string; onLine?: (message: string) => void } = {},
+): Harness {
+  const { ghComments = "", onLine } = options;
+  const clock = fakeClock();
+  const lines: string[] = [];
+  const unassigns: unknown[][] = [];
+  const ghCalls = { count: 0 };
+  const stopped = gate<void>();
+  const entered = gate<void>();
   const base = createMockDeps();
-  return createMockDeps({
+  const deps = createMockDeps({
     ...overrides,
     github: {
       createClient: (logger) => ({
@@ -82,15 +113,101 @@ function deadlineDeps(
           return Promise.resolve();
         },
       }),
-      runGhCommand: () => Promise.resolve(ghComments),
-      ...overrides?.github,
+      runGhCommand: () => {
+        ghCalls.count++;
+        return Promise.resolve(ghComments);
+      },
+      ...overrides.github,
     },
-    infrastructure: { setupDeadlineMs: () => 30, ...overrides?.infrastructure },
+    infrastructure: {
+      setupDeadlineMs: () => DEADLINE_MS,
+      setupClock: clock,
+      ...overrides.infrastructure,
+    },
+    logger: {
+      info: (message: string) => {
+        lines.push(message);
+        if (message === SETUP_ABANDONED_LOG_LINE) stopped.open();
+        onLine?.(message);
+      },
+      ...overrides.logger,
+    },
   });
+  return {
+    clock,
+    lines,
+    unassigns,
+    ghCalls,
+    stopped: stopped.promise,
+    entered: { promise: entered.promise, open: () => entered.open() },
+    deps,
+  };
 }
 
-Deno.test("setupDeadlineMs covers two agent budgets plus the clone and pre-setup bounds (Issue #5128)", () => {
-  const hour = setupDeadlineMs({ claudeTimeout: 3600 });
+/**
+ * Run `workOnIssue`, advance the clock past the deadline once the stalled
+ * mock has been entered, and return the run's result. The deadline therefore
+ * falls in the step the test named, never an earlier one.
+ */
+async function runUntilAbandoned(
+  h: Harness,
+  issueNumber: number,
+  ctxOverrides: Partial<IssueContext> = {},
+) {
+  const ctx = issueContext(issueNumber, ctxOverrides);
+  const run = workOnIssue(ctx, h.deps);
+  await h.entered.promise;
+  await h.clock.advance(DEADLINE_MS);
+  return await run;
+}
+
+/**
+ * Wait for the abandoned setup to stop at a boundary. The wait ends on that
+ * setup's own log line; the timer only fails the test if the line never comes.
+ */
+async function abandonedSetupStopped(h: Harness): Promise<void> {
+  let failsafe: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_, reject) => {
+    failsafe = setTimeout(
+      () => reject(new Error("the abandoned setup never stopped")),
+      30_000,
+    );
+  });
+  try {
+    await Promise.race([h.stopped, timedOut]);
+  } finally {
+    clearTimeout(failsafe);
+  }
+}
+
+function started(h: Harness, step: SetupStep): boolean {
+  return h.lines.includes(setupStepStartLine(step));
+}
+
+/** A supervisor cap published `elapsedSeconds` ago, for the cap tests. */
+function cappedEnv(
+  maxSeconds: number,
+  elapsedSeconds: number,
+  nowMs: number,
+): (name: string) => string | undefined {
+  const values: Record<string, string> = {
+    VIBE_RUN_MAX_SECONDS: String(maxSeconds),
+    VIBE_RUN_STARTED_EPOCH: String(Math.floor(nowMs / 1000) - elapsedSeconds),
+  };
+  return (name) => values[name];
+}
+
+const NOW_MS = 1_760_000_000_000;
+const KILL_AFTER = 30;
+/** The hard cap's ceiling sits this far inside the supervisor's deadline. */
+const RESERVE_SECONDS = KILL_AFTER + 120;
+
+Deno.test("setupDeadlineMs covers two agent budgets plus the clone and pre-setup bounds when no cap is published (Issue #5128)", () => {
+  const none = () => undefined;
+  const hour = setupDeadlineMs(
+    { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
+    { env: none, nowMs: NOW_MS },
+  );
   // The milestone pre-sync agent runs for up to `claudeTimeout`, and a repair
   // run may follow, so one agent budget plus the clone and the 300s default
   // pre-setup command must still fit.
@@ -101,27 +218,92 @@ Deno.test("setupDeadlineMs covers two agent budgets plus the clone and pre-setup
   // It tracks the configured agent budget: two more hours of agent time grant
   // exactly two agent budgets more.
   assertEquals(
-    setupDeadlineMs({ claudeTimeout: 7200 }) - hour,
+    setupDeadlineMs(
+      { claudeTimeout: 7200, claudeKillAfter: KILL_AFTER },
+      { env: none, nowMs: NOW_MS },
+    ) - hour,
     2 * 3600 * 1000,
+  );
+  // A supervisor cap of 0 is the documented "disabled": the budget stands.
+  assertEquals(
+    setupDeadlineMs(
+      { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
+      { env: cappedEnv(0, 0, NOW_MS), nowMs: NOW_MS },
+    ),
+    hour,
+  );
+});
+
+Deno.test("setupDeadlineMs leaves the budget alone when it fits inside the run's hard cap (Issue #5128)", () => {
+  // Setup starts at launch with the default 3600s agent budget: 9000s of
+  // budget against 10650s of runway.
+  assertEquals(
+    setupDeadlineMs(
+      { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
+      { env: cappedEnv(10_800, 0, NOW_MS), nowMs: NOW_MS },
+    ),
+    9_000_000,
+  );
+});
+
+Deno.test("setupDeadlineMs is capped by the runway left before the worker's own stop when setup starts late (Issue #5128)", () => {
+  // Setup starts 9000s into a 10800s run, 1650s before the ceiling: the
+  // 9000s budget would have fallen after the watchdog.
+  assertEquals(
+    setupDeadlineMs(
+      { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
+      { env: cappedEnv(10_800, 9_000, NOW_MS), nowMs: NOW_MS },
+    ),
+    (10_800 - RESERVE_SECONDS - 9_000) * 1000,
+  );
+});
+
+Deno.test("setupDeadlineMs is capped for a large claude_timeout, so it falls before the launcher watchdog (Issue #5128)", () => {
+  const deadline = setupDeadlineMs(
+    { claudeTimeout: 7200, claudeKillAfter: KILL_AFTER },
+    { env: cappedEnv(10_800, 0, NOW_MS), nowMs: NOW_MS },
+  );
+  // 16200s of budget, but only 10650s to the ceiling; the launcher's watchdog
+  // is 10800 + 600 = 11400s from launch.
+  assertEquals(deadline, (10_800 - RESERVE_SECONDS) * 1000);
+  assertEquals(deadline < (10_800 + 600) * 1000, true);
+});
+
+Deno.test("setupDeadlineMs never drops below its floor when the cap has already passed (Issue #5128)", () => {
+  assertEquals(
+    setupDeadlineMs(
+      { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
+      { env: cappedEnv(10_800, 12_000, NOW_MS), nowMs: NOW_MS },
+    ),
+    SETUP_MIN_DEADLINE_SECONDS * 1000,
   );
 });
 
 Deno.test("runSetupWithDeadline returns the setup result and never abandons when setup settles first (Issue #5128)", async () => {
+  const clock = fakeClock();
   let abandoned = 0;
   const result = await runSetupWithDeadline(
     () => Promise.resolve({ status: "continue" as const }),
-    { deadlineMs: 5_000, onAbandon: () => abandoned++ },
+    { deadlineMs: 5_000, onAbandon: () => abandoned++, clock },
   );
   assertEquals(result, { status: "continue" });
+  // The deadline timer was disarmed: advancing past it abandons nothing.
+  assertEquals(clock.armed, 0);
+  await clock.advance(10_000);
   assertEquals(abandoned, 0);
 });
 
 Deno.test("runSetupWithDeadline abandons a wedged setup once and returns a timeout failure (Issue #5128)", async () => {
+  const clock = fakeClock();
   let abandoned = 0;
-  const result = await runSetupWithDeadline(
+  const run = runSetupWithDeadline(
     () => never<{ status: "continue" }>(),
-    { deadlineMs: 20, onAbandon: () => abandoned++ },
+    { deadlineMs: 20, onAbandon: () => abandoned++, clock },
   );
+  await clock.advance(19);
+  assertEquals(abandoned, 0);
+  await clock.advance(1);
+  const result = await run;
   assertEquals(result.status, "failure");
   if (result.status !== "failure") return;
   assertEquals(result.category, "timeout");
@@ -169,12 +351,14 @@ Deno.test("ownClaimCommentPresent answers true only for this run's claim comment
 });
 
 Deno.test("workOnIssue: a wedge inside claimIssue with no claim of its own does not unassign (Issue #5128)", async () => {
-  const unassigns: unknown[][] = [];
   const late = gate<Awaited<ReturnType<IssueDeps["claimIssue"]>>>();
   let churnChecks = 0;
-  const deps = deadlineDeps({
+  const h = harness({
     issues: {
-      claimIssue: () => late.promise,
+      claimIssue: () => {
+        h.entered.open();
+        return late.promise;
+      },
       checkClaimChurn: () => {
         churnChecks++;
         return Promise.resolve({
@@ -183,12 +367,12 @@ Deno.test("workOnIssue: a wedge inside claimIssue with no claim of its own does 
         } as Awaited<ReturnType<IssueDeps["checkClaimChurn"]>>);
       },
     },
-  }, unassigns);
-
-  const result = await workOnIssue(issueContext(5601), deps);
+  });
+  const result = await runUntilAbandoned(h, 5601);
 
   assertEquals(result.phase, "setup");
   assertEquals(result.category, "timeout");
+  assertEquals(started(h, "issue claim"), true);
   // A claim never taken is not released: the shared login may now be another
   // host's live claim.
   assertEquals(result.claimNotHeld, true);
@@ -196,126 +380,667 @@ Deno.test("workOnIssue: a wedge inside claimIssue with no claim of its own does 
   // The claim comes back after the run ended: it is released, once, and the
   // abandoned setup goes no further.
   late.open(CLAIMED);
-  await settle();
-  assertEquals(unassigns.length, 1);
+  await abandonedSetupStopped(h);
+  assertEquals(h.unassigns.length, 1);
   assertEquals(churnChecks, 0);
+  assertEquals(started(h, "claim churn check"), false);
 });
 
 Deno.test("workOnIssue: a wedge inside claimIssue after this run's claim comment landed releases it, once (Issue #5128)", async () => {
-  const unassigns: unknown[][] = [];
   const late = gate<Awaited<ReturnType<IssueDeps["claimIssue"]>>>();
-  const deps = deadlineDeps(
-    { issues: { claimIssue: () => late.promise } },
-    unassigns,
-    "4242\n",
+  const h = harness(
+    {
+      issues: {
+        claimIssue: () => {
+          h.entered.open();
+          return late.promise;
+        },
+      },
+    },
+    { ghComments: "4242\n" },
   );
 
-  const result = await workOnIssue(issueContext(5602), deps);
+  const result = await runUntilAbandoned(h, 5602);
 
   assertEquals(result.category, "timeout");
+  assertEquals(started(h, "issue claim"), true);
   // The run's own comment is there, so run_core's failure path releases it.
   assertEquals(result.claimNotHeld, undefined);
   // The late claim must not release a second time: that unassign would strip
   // whichever host claimed the issue in between.
   late.open(CLAIMED);
-  await settle();
-  assertEquals(unassigns.length, 0);
+  await abandonedSetupStopped(h);
+  assertEquals(h.unassigns.length, 0);
 });
 
 Deno.test("workOnIssue: a wedge after a won claim releases the claim and does no later setup work (Issue #5128)", async () => {
-  const unassigns: unknown[][] = [];
-  const late = gate<Awaited<ReturnType<IssueDeps["claimIssue"]>>>();
   const repoSetup = gate<Awaited<ReturnType<WorkerDeps["git"]["setupRepo"]>>>();
   let heartbeats = 0;
   const base = createMockDeps();
-  const deps = deadlineDeps({
-    issues: { claimIssue: () => late.promise },
-    git: { setupRepo: () => repoSetup.promise },
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      setupRepo: () => {
+        h.entered.open();
+        return repoSetup.promise;
+      },
+    },
     crashHandling: {
       recordHeartbeat: (...args) => {
         heartbeats++;
         return base.crashHandling.recordHeartbeat(...args);
       },
     },
-  }, unassigns);
-  late.open(CLAIMED);
+  });
 
-  const result = await workOnIssue(issueContext(5603), deps);
+  const result = await runUntilAbandoned(h, 5603);
 
   assertEquals(result.phase, "setup");
   assertEquals(result.category, "timeout");
-  // The claim is held, so the run's failure path releases it as before.
+  assertEquals(started(h, "repository setup"), true);
+  // The claim was won before the wedge, so the run's failure path releases it.
   assertEquals(result.claimNotHeld, undefined);
 
   // The clone returns after the run ended: no heartbeat starts and nothing
   // releases the claim a second time.
   repoSetup.open({ ok: true, value: "/tmp/repo" });
-  await settle();
+  await abandonedSetupStopped(h);
+  assertEquals(started(h, "heartbeat start"), false);
   assertEquals(heartbeats, 0);
-  assertEquals(unassigns.length, 0);
+  assertEquals(h.unassigns.length, 0);
 });
 
 Deno.test("workOnIssue: a heartbeat that starts after the deadline is stopped (Issue #5128)", async () => {
-  const unassigns: unknown[][] = [];
   const recorded = gate<{ ok: true; value: undefined }>();
-  const deps = deadlineDeps({
+  const h = harness({
     issues: { claimIssue: () => Promise.resolve(CLAIMED) },
-    crashHandling: { recordHeartbeat: () => recorded.promise },
-  }, unassigns);
+    crashHandling: {
+      recordHeartbeat: () => {
+        h.entered.open();
+        return recorded.promise;
+      },
+    },
+  });
 
-  const result = await workOnIssue(issueContext(5604), deps);
+  const result = await runUntilAbandoned(h, 5604);
   assertEquals(result.category, "timeout");
+  assertEquals(started(h, "heartbeat start"), true);
 
   recorded.open({ ok: true, value: undefined });
-  await settle();
+  await abandonedSetupStopped(h);
   assertEquals(isHeartbeatRunning("org/repo", 5604), false);
-  assertEquals(unassigns.length, 0);
+  assertEquals(h.unassigns.length, 0);
+  assertEquals(started(h, "default branch sync"), false);
 });
 
 for (
   const wedge of [
-    { step: "checkClaimChurn", next: "repository setup", issue: 5605 },
-    { step: "getRepoDefaultBranch", next: "feature branch", issue: 5606 },
+    { step: "checkClaimChurn", at: "claim churn check", issue: 5605 },
     {
       step: "createFeatureBranchFromBase",
-      next: "pre-setup command",
+      at: "feature branch",
       issue: 5607,
     },
   ] as const
 ) {
-  Deno.test(`workOnIssue: setup abandoned during ${wedge.step} never starts the ${wedge.next} step (Issue #5128)`, async () => {
-    const lines: string[] = [];
+  const next = wedge.step === "checkClaimChurn"
+    ? "repository setup"
+    : "pre-setup command";
+  Deno.test(`workOnIssue: setup abandoned during ${wedge.step} never starts the ${next} step (Issue #5128)`, async () => {
     const late = gate<unknown>();
-    const stall = (): never => (() => late.promise) as never;
-    const deps = deadlineDeps({
+    const stall = (): never =>
+      (() => {
+        h.entered.open();
+        return late.promise;
+      }) as never;
+    const h = harness({
       issues: {
         claimIssue: () => Promise.resolve(CLAIMED),
         ...(wedge.step === "checkClaimChurn"
           ? { checkClaimChurn: stall() }
           : {}),
       },
-      git: wedge.step === "checkClaimChurn" ? {} : {
-        [wedge.step]: stall(),
-      },
-      logger: { info: (message: string) => void lines.push(message) },
-    }, []);
+      git: wedge.step === "checkClaimChurn" ? {} : { [wedge.step]: stall() },
+    });
 
-    const result = await workOnIssue(issueContext(wedge.issue), deps);
+    const result = await runUntilAbandoned(h, wedge.issue);
     assertEquals(result.category, "timeout");
-    // Positive control: the step before the wedge did start.
-    assertEquals(lines.some((l) => l.startsWith("[setup-step]")), true);
+    // Positive control: the step holding the wedge is the one that started.
+    assertEquals(started(h, wedge.at), true);
+    assertEquals(started(h, next), false);
+    const ghAtDeadline = h.ghCalls.count;
 
     late.open(
       wedge.step === "checkClaimChurn"
         ? { ok: true, value: { escalated: false } }
-        : wedge.step === "getRepoDefaultBranch"
-        ? { ok: true, value: "main" }
         : { ok: true, value: undefined },
     );
-    await settle();
-    assertEquals(
-      lines.some((l) => l.includes(`[setup-step] ${wedge.next}: started`)),
-      false,
-    );
+    await abandonedSetupStopped(h);
+    assertEquals(started(h, next), false);
+    // No GitHub traffic from the abandoned setup either: the host-fault label
+    // sweep after the feature branch reads and writes labels through `gh`.
+    assertEquals(h.ghCalls.count, ghAtDeadline);
   });
 }
+
+Deno.test("workOnIssue: setup abandoned during getRepoDefaultBranch does no default-branch sync, resume checkout or feature branch (Issue #5128)", async () => {
+  const late = gate<{ ok: true; value: string }>();
+  const calls = {
+    sync: 0,
+    list: 0,
+    resume: 0,
+    feature: 0,
+    milestone: 0,
+  };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      getRepoDefaultBranch: () => {
+        h.entered.open();
+        return late.promise;
+      },
+      ensureDefaultBranchCurrent: () => {
+        calls.sync++;
+        return Promise.resolve({ ok: true, value: "main" });
+      },
+      ensureMilestoneBranchExists: () => {
+        calls.milestone++;
+        return Promise.resolve({ ok: true, value: "ensured" });
+      },
+      listRemoteIssueBranches: () => {
+        calls.list++;
+        return Promise.resolve({ ok: true, value: [] });
+      },
+      resumeFeatureBranchFromRemote: () => {
+        calls.resume++;
+        return Promise.resolve({ ok: true, value: true });
+      },
+      createFeatureBranchFromBase: () => {
+        calls.feature++;
+        return Promise.resolve({ ok: true, value: "b" });
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5606, { milestoneTitle: "M1" });
+  assertEquals(result.category, "timeout");
+  assertEquals(started(h, "default branch sync"), true);
+
+  late.open({ ok: true, value: "main" });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, {
+    sync: 0,
+    list: 0,
+    resume: 0,
+    feature: 0,
+    milestone: 0,
+  });
+  assertEquals(started(h, "feature branch"), false);
+});
+
+Deno.test("workOnIssue: setup abandoned during the default-branch sync does no milestone branch push or pre-sync (Issue #5128)", async () => {
+  const late = gate<{ ok: true; value: string }>();
+  const calls = { milestone: 0, presync: 0, list: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      ensureDefaultBranchCurrent: () => {
+        h.entered.open();
+        return late.promise;
+      },
+      ensureMilestoneBranchExists: () => {
+        calls.milestone++;
+        return Promise.resolve({ ok: true, value: "ensured" });
+      },
+      syncMilestoneBranchWithDefault: () => {
+        calls.presync++;
+        return Promise.resolve({ ok: true, value: { message: "synced" } });
+      },
+      listRemoteIssueBranches: () => {
+        calls.list++;
+        return Promise.resolve({ ok: true, value: [] });
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5608, { milestoneTitle: "M1" });
+  assertEquals(result.category, "timeout");
+
+  late.open({ ok: true, value: "main" });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { milestone: 0, presync: 0, list: 0 });
+});
+
+Deno.test("workOnIssue: setup abandoned during the milestone branch push does no pre-sync or resume lookup (Issue #5128)", async () => {
+  const late = gate<{ ok: true; value: string }>();
+  const calls = { presync: 0, list: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      ensureMilestoneBranchExists: () => {
+        h.entered.open();
+        return late.promise;
+      },
+      syncMilestoneBranchWithDefault: () => {
+        calls.presync++;
+        return Promise.resolve({ ok: true, value: { message: "synced" } });
+      },
+      listRemoteIssueBranches: () => {
+        calls.list++;
+        return Promise.resolve({ ok: true, value: [] });
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5609, { milestoneTitle: "M1" });
+  assertEquals(result.category, "timeout");
+
+  late.open({ ok: true, value: "ensured" });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { presync: 0, list: 0 });
+});
+
+Deno.test("workOnIssue: a resume lookup that returns after the deadline checks out nothing (Issue #5128)", async () => {
+  const late = gate<{ ok: true; value: { branch: string; sha: string }[] }>();
+  const calls = { resume: 0, feature: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      listRemoteIssueBranches: () => {
+        h.entered.open();
+        return late.promise;
+      },
+      resumeFeatureBranchFromRemote: () => {
+        calls.resume++;
+        return Promise.resolve({ ok: true, value: true });
+      },
+      createFeatureBranchFromBase: () => {
+        calls.feature++;
+        return Promise.resolve({ ok: true, value: "b" });
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5610);
+  assertEquals(result.category, "timeout");
+
+  // A checkpoint branch comes back after the run ended. Checking it out would
+  // move HEAD in the lane worktree the slot's next run may be using.
+  late.open({ ok: true, value: [{ branch: "issue-5610-wip", sha: "abc" }] });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { resume: 0, feature: 0 });
+  assertEquals(started(h, "pre-setup command"), false);
+});
+
+Deno.test("workOnIssue: a branch repair is not started once setup is abandoned (Issue #5128)", async () => {
+  const late = gate<{ ok: false; error: Error }>();
+  const calls = { repair: 0, sweep: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      createFeatureBranchFromBase: () => {
+        h.entered.open();
+        return late.promise;
+      },
+      repairObjectStore: () => {
+        calls.repair++;
+        return Promise.resolve({
+          ok: true,
+          value: { removed: [], fsck: "ok" },
+        } as never);
+      },
+      sweepBrokenRefs: () => {
+        calls.sweep++;
+        return Promise.resolve({ ok: true, value: { removed: [] } } as never);
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5611);
+  assertEquals(result.category, "timeout");
+
+  // The branch creation fails late with object-store corruption: the repair
+  // ladder would re-clone the store every lane of the repository shares.
+  late.open({
+    ok: false,
+    error: new Error("error: inflate: data stream error (incorrect header)"),
+  });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { repair: 0, sweep: 0 });
+});
+
+/** A git failure naming a ruleset refusal, which the in-run repair answers. */
+const RULESET_REFUSAL =
+  "remote: error: GH013: Repository rule violations found";
+
+Deno.test("workOnIssue: a milestone ruleset repair that returns late is not retried (Issue #5128)", async () => {
+  const late = gate<
+    Awaited<ReturnType<WorkerDeps["github"]["repairMilestoneCreateBlock"]>>
+  >();
+  const calls = { ensure: 0, presync: 0, list: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      ensureMilestoneBranchExists: () => {
+        calls.ensure++;
+        return Promise.resolve({
+          ok: false,
+          error: new Error(RULESET_REFUSAL),
+        });
+      },
+      syncMilestoneBranchWithDefault: () => {
+        calls.presync++;
+        return Promise.resolve({ ok: true, value: { message: "synced" } });
+      },
+      listRemoteIssueBranches: () => {
+        calls.list++;
+        return Promise.resolve({ ok: true, value: [] });
+      },
+    },
+    github: {
+      repairMilestoneCreateBlock: () => {
+        h.entered.open();
+        return late.promise;
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5612, { milestoneTitle: "M1" });
+  assertEquals(result.category, "timeout");
+  assertEquals(calls.ensure, 1);
+
+  // The ruleset is exempted late. Retrying the push now would create the
+  // milestone branch on behalf of a run that no longer exists.
+  late.open({ ok: true, repaired: true, ruleset: "milestone-rules" });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { ensure: 1, presync: 0, list: 0 });
+});
+
+Deno.test("workOnIssue: a milestone refusal-label sweep that returns late is followed by no pre-sync (Issue #5128)", async () => {
+  const late = gate<string>();
+  const calls = { presync: 0, list: 0 };
+  let ensured = false;
+  let swept = false;
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      ensureMilestoneBranchExists: () => {
+        ensured = true;
+        return Promise.resolve({ ok: true, value: "ensured" });
+      },
+      syncMilestoneBranchWithDefault: () => {
+        calls.presync++;
+        return Promise.resolve({ ok: true, value: { message: "synced" } });
+      },
+      listRemoteIssueBranches: () => {
+        calls.list++;
+        return Promise.resolve({ ok: true, value: [] });
+      },
+    },
+    github: {
+      // The first `gh` command after the milestone branch exists is the label
+      // sweep, a GitHub read-then-write the abandoned setup must not follow.
+      runGhCommand: () => {
+        if (!ensured || swept) return Promise.resolve("");
+        swept = true;
+        h.entered.open();
+        return late.promise;
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5613, { milestoneTitle: "M1" });
+  assertEquals(result.category, "timeout");
+  assertEquals(swept, true);
+
+  late.open("");
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { presync: 0, list: 0 });
+});
+
+Deno.test("workOnIssue: a milestone pre-sync that returns late is followed by no session restore or resume lookup (Issue #5128)", async () => {
+  const late = gate<{ ok: true; value: { message: string } }>();
+  let list = 0;
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      syncMilestoneBranchWithDefault: () => {
+        h.entered.open();
+        return late.promise;
+      },
+      listRemoteIssueBranches: () => {
+        list++;
+        return Promise.resolve({ ok: true, value: [] });
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5614, { milestoneTitle: "M2" });
+  assertEquals(result.category, "timeout");
+
+  late.open({ ok: true, value: { message: "synced" } });
+  await abandonedSetupStopped(h);
+  assertEquals(list, 0);
+});
+
+/** A temporary work dir holding the stream record a sibling issue left. */
+async function streamWorkDir(): Promise<{ workDir: string; repo: string }> {
+  const workDir = await Deno.makeTempDir({ prefix: "issue5128-stream-" });
+  const repo = "org/repo";
+  const saved = await saveStreamSession(
+    workDir,
+    resolveStreamId(repo, undefined),
+    {
+      providerId: anticipatedProviderId(),
+      sessionId: "0199fd1e-2a4b-4c3d-8e5f-000000005128",
+      holderHost: "test-host",
+    },
+  );
+  assertEquals(saved, true);
+  return { workDir, repo };
+}
+
+Deno.test("workOnIssue: a stream compaction is not started once setup is abandoned (Issue #5128)", async () => {
+  const { workDir } = await streamWorkDir();
+  try {
+    let compactions = 0;
+    let feature = 0;
+    let fire: () => void = () => {};
+    const h = harness({
+      issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+      git: {
+        createFeatureBranchFromBase: () => {
+          feature++;
+          return Promise.resolve({ ok: true, value: "b" });
+        },
+      },
+      claude: {
+        primeStreamCompaction: () => {
+          compactions++;
+          return Promise.resolve(false);
+        },
+      },
+    }, {
+      // `primeStreamSession` logs the adopted stream just before it returns,
+      // so the deadline falls between joining the stream and compacting it.
+      onLine: (message) => {
+        if (message.startsWith("stream ") && message.includes(" session ")) {
+          fire();
+        }
+      },
+    });
+    fire = () => void h.clock.advance(DEADLINE_MS);
+    const config = {
+      ...buildDefaultWorkerConfig(),
+      workDir,
+      enableSessionResume: true,
+    };
+
+    const result = await workOnIssue(issueContext(5615, { config }), h.deps);
+    assertEquals(result.category, "timeout");
+    await abandonedSetupStopped(h);
+    assertEquals(compactions, 0);
+    assertEquals(feature, 0);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("workOnIssue: a resumed setup whose stream compaction returns late runs no label sweep or pre-setup command (Issue #5128)", async () => {
+  const { workDir } = await streamWorkDir();
+  try {
+    const late = gate<boolean>();
+    let feature = 0;
+    const h = harness({
+      issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+      git: {
+        listRemoteIssueBranches: () =>
+          Promise.resolve({
+            ok: true,
+            value: [{ branch: "issue-5616-wip", sha: "abc" }],
+          }),
+        resumeFeatureBranchFromRemote: () =>
+          Promise.resolve({ ok: true, value: true }),
+        createFeatureBranchFromBase: () => {
+          feature++;
+          return Promise.resolve({ ok: true, value: "b" });
+        },
+      },
+      claude: {
+        primeStreamCompaction: () => {
+          h.entered.open();
+          return late.promise;
+        },
+      },
+    });
+    const config = {
+      ...buildDefaultWorkerConfig(),
+      workDir,
+      enableSessionResume: true,
+    };
+
+    const result = await runUntilAbandoned(h, 5616, { config });
+    assertEquals(result.category, "timeout");
+    // Positive control: the checkpoint was resumed, so the feature branch step
+    // is skipped and only the check outside that condition can stop setup.
+    assertEquals(
+      h.lines.some((l) => l.startsWith("Resuming prior progress from")),
+      true,
+    );
+    const ghAtDeadline = h.ghCalls.count;
+
+    late.open(false);
+    await abandonedSetupStopped(h);
+    assertEquals(feature, 0);
+    assertEquals(started(h, "pre-setup command"), false);
+    assertEquals(h.ghCalls.count, ghAtDeadline);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+const REPAIRED = {
+  ok: true,
+  value: { removed: [], fsck: "ok" },
+} as never;
+
+Deno.test("workOnIssue: an object-store repair that returns late is not followed by a re-clone (Issue #5128)", async () => {
+  const late = gate<unknown>();
+  const calls = { setupRepo: 0, feature: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      setupRepo: () => {
+        calls.setupRepo++;
+        return Promise.resolve({ ok: true, value: "/tmp/repo" });
+      },
+      createFeatureBranchFromBase: () => {
+        calls.feature++;
+        return Promise.resolve({
+          ok: false,
+          error: new Error("error: inflate: data stream error"),
+        });
+      },
+      repairObjectStore: () => {
+        h.entered.open();
+        return late.promise as never;
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5617, { repo: "org/store-repair" });
+  assertEquals(result.category, "timeout");
+  // Positive control: the ladder was entered (the repair is the stalled call).
+  assertEquals(calls, { setupRepo: 1, feature: 1 });
+
+  late.open(REPAIRED);
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { setupRepo: 1, feature: 1 });
+});
+
+Deno.test("workOnIssue: a re-clone that returns late is not followed by a branch retry (Issue #5128)", async () => {
+  const late = gate<unknown>();
+  const calls = { setupRepo: 0, feature: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      setupRepo: () => {
+        calls.setupRepo++;
+        if (calls.setupRepo === 1) {
+          return Promise.resolve({ ok: true, value: "/tmp/repo" });
+        }
+        h.entered.open();
+        return late.promise as never;
+      },
+      createFeatureBranchFromBase: () => {
+        calls.feature++;
+        return Promise.resolve({
+          ok: false,
+          error: new Error("error: inflate: data stream error"),
+        });
+      },
+      repairObjectStore: () => Promise.resolve(REPAIRED),
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5618, { repo: "org/reclone" });
+  assertEquals(result.category, "timeout");
+  assertEquals(calls, { setupRepo: 2, feature: 1 });
+
+  late.open({ ok: true, value: "/tmp/repo" });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { setupRepo: 2, feature: 1 });
+});
+
+Deno.test("workOnIssue: a broken-ref sweep that returns late is not followed by a branch retry or re-clone (Issue #5128)", async () => {
+  const late = gate<unknown>();
+  const calls = { feature: 0, repair: 0 };
+  const h = harness({
+    issues: { claimIssue: () => Promise.resolve(CLAIMED) },
+    git: {
+      createFeatureBranchFromBase: () => {
+        calls.feature++;
+        return Promise.resolve({
+          ok: false,
+          error: new Error("bad object refs/heads/issue-5619-old"),
+        });
+      },
+      sweepBrokenRefs: () => {
+        h.entered.open();
+        return late.promise as never;
+      },
+      repairObjectStore: () => {
+        calls.repair++;
+        return Promise.resolve(REPAIRED);
+      },
+    },
+  });
+
+  const result = await runUntilAbandoned(h, 5619, { repo: "org/sweep" });
+  assertEquals(result.category, "timeout");
+  assertEquals(calls, { feature: 1, repair: 0 });
+
+  late.open({ ok: true, value: { removed: ["refs/heads/issue-5619-old"] } });
+  await abandonedSetupStopped(h);
+  assertEquals(calls, { feature: 1, repair: 0 });
+});

@@ -9,6 +9,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { Clock } from "./clock.ts";
+import { systemClock } from "./clock.ts";
+import { resolveRunHardCap } from "./run_hard_cap.ts";
+
 /**
  * The setup steps, in run order. The names are fixed words, never log or issue
  * text, because the hard-kill report publishes the label on a public issue.
@@ -35,21 +39,69 @@ export function setupStepStartLine(step: SetupStep): string {
 export const SETUP_FIXED_ALLOWANCE_SECONDS = 1800;
 
 /**
+ * The shortest deadline the run's hard cap may leave setup (Issue #5128).
+ *
+ * A setup that starts with almost no runway left is still given this long, so
+ * a healthy step is not abandoned the instant it begins; the hard cap's own
+ * reserve for the kill grace and the WIP push sits past it.
+ */
+export const SETUP_MIN_DEADLINE_SECONDS = 60;
+
+/** What {@link setupDeadlineMs} reads besides the config (injected for tests). */
+export interface SetupDeadlineInput {
+  /** Environment reader for the supervisor's published cap. */
+  env?: (name: string) => string | undefined;
+  /** Current epoch-ms; defaults to the wall clock. */
+  nowMs?: number;
+}
+
+/**
  * How long the setup phase may run before the run abandons it (Issue #5128).
  *
  * Setup is not just bounded subprocesses: for a milestone issue the pre-sync
  * runs the conflict-resolution agent for up to `claudeTimeout`
  * (`milestone_presync.ts`, `agentTimeoutMs`), then verifies the gates and may
  * run a repair agent, and the clone alone may take 600s
- * (`DEFAULT_GH_CLONE_TIMEOUT`). The deadline is therefore two agent budgets
+ * (`DEFAULT_GH_CLONE_TIMEOUT`). The budget is therefore two agent budgets
  * plus a fixed allowance for the clone, git, gates and the pre-setup command,
  * so a slow-but-progressing setup is never abandoned and only a step that has
  * wedged reaches it. On `GRQ-25` one sat in setup for over two hours, holding
  * its claim, until the launcher's watchdog reaped the container.
+ *
+ * That budget is no use if it outlasts the container, so it is capped by the
+ * runway left to the run's hard cap (`run_hard_cap.ts`): the supervisor's
+ * deadline less the kill grace and the WIP reserve, which falls before the
+ * launcher's watchdog (supervisor cap plus `WATCHDOG_MARGIN_SECONDS`). A
+ * setup that starts late, or a large `claude_timeout`, therefore still ends
+ * with time to release the claim. With no supervisor cap published
+ * (`VIBE_RUN_MAX_SECONDS`/`VIBE_RUN_STARTED_EPOCH` unset or disabled) there
+ * is nothing to cap it by and the budget stands.
  */
-export function setupDeadlineMs(config: { claudeTimeout: number }): number {
-  return (2 * config.claudeTimeout + SETUP_FIXED_ALLOWANCE_SECONDS) * 1000;
+export function setupDeadlineMs(
+  config: { claudeTimeout: number; claudeKillAfter: number },
+  input: SetupDeadlineInput = {},
+): number {
+  const budgetMs = (2 * config.claudeTimeout + SETUP_FIXED_ALLOWANCE_SECONDS) *
+    1000;
+  const resolution = resolveRunHardCap({
+    ...(input.env ? { env: input.env } : {}),
+    killAfterSeconds: config.claudeKillAfter,
+  });
+  if (!resolution.capped) return budgetMs;
+  const runwayMs = resolution.cap.ceilingMs - (input.nowMs ?? Date.now());
+  return Math.min(
+    budgetMs,
+    Math.max(SETUP_MIN_DEADLINE_SECONDS * 1000, runwayMs),
+  );
 }
+
+/**
+ * The line an abandoned setup logs as it stops at a step boundary (Issue
+ * #5128). It deliberately lacks the `[setup-step]` prefix, so the hard-kill
+ * report never reads it as a step that started.
+ */
+export const SETUP_ABANDONED_LOG_LINE =
+  "Setup stopped at a step boundary after its deadline (Issue #5128)";
 
 /** The setup-phase result a run ends with when setup misses its deadline. */
 export interface SetupDeadlineFailure {
@@ -63,6 +115,8 @@ export interface SetupDeadlineOptions {
   deadlineMs: number;
   /** Called once, synchronously, when the deadline fires and setup is abandoned. */
   onAbandon: () => void;
+  /** Arms the deadline; defaults to the real clock. A test drives its own. */
+  clock?: Clock;
 }
 
 /**
@@ -78,11 +132,11 @@ export async function runSetupWithDeadline<T>(
   setup: () => Promise<T>,
   options: SetupDeadlineOptions,
 ): Promise<T | SetupDeadlineFailure> {
-  const { deadlineMs, onAbandon } = options;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const { deadlineMs, onAbandon, clock = systemClock } = options;
+  let timer: number | undefined;
   const pending = setup();
   const expired = new Promise<SetupDeadlineFailure>((resolve) => {
-    timer = setTimeout(() => {
+    timer = clock.setTimeout(() => {
       onAbandon();
       resolve({
         status: "failure",
@@ -96,7 +150,7 @@ export async function runSetupWithDeadline<T>(
   try {
     return await Promise.race([pending, expired]);
   } finally {
-    clearTimeout(timer);
+    clock.clearTimeout(timer);
   }
 }
 
