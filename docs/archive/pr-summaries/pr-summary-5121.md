@@ -199,12 +199,17 @@ flowchart TD
 - `deno task test:unit tests/gitleaks_check_test.ts
   tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts <
   /dev/null`
-  → 134 passed, 0 failed. The semgrep tests cover the `resolveDiffBase` and
+  → 134 passed, 0 failed, re-run at head:
+  `worker/deno/tests/gitleaks_check_test.ts` (31 tests at head),
+  `worker/deno/tests/babysitter_tree_gate_test.ts` (60 tests at head) and
+  `worker/deno/tests/babysitter_repair_4738_test.ts` (43 tests at head,
+  unchanged by this PR). The semgrep tests cover the `resolveDiffBase` and
   `defaultEnsureHistory` exports, whose behaviour did not change; they were not
   re-run in this round.
 - Added `docs/audits/lib-sweep-coverage/top-up-5121.json` to claim the new
   module. The first full gate run failed only on
-  `tests/lib_sweep_coverage_test.ts` (module claimed by no slice), and the
+  `worker/deno/tests/lib_sweep_coverage_test.ts` (module claimed by no slice; 39
+  tests at head, all passing, file unchanged by this PR), and the
   `completeness checks` stage failed for the same reason. After the slice was
   added, `deno task check:manifests` → 870 passed, 0 failed. The ancestry guard
   (`sweep-drift --default-branch origin/main`) exits 0, with `sweptAt` set to
