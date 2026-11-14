@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4956",
   "definition": "Decide whether a Claude implementation, PR-feedback or CI-fix run loads the vendored TokenEconomizer plugin and with which environment, failing open for the run and closed for the plugin, and keep the durable stop record that switches the plugin off.",
   "status": "claimed",
-  "sweptAt": "918d8f3e3eee221bc971287ae0364adfad50549c",
+  "sweptAt": "af36a5dfa68382a38c2be126a64b41a5754fb158",
   "paths": [
     "worker/deno/lib/token_economizer_plugin.ts",
     "worker/deno/lib/token_economizer_hook.ts",
