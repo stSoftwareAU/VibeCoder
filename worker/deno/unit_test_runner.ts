@@ -21,6 +21,8 @@
  * Every unit pass is held to the time budget (Issue #2642): a test over one
  * second is reported as a WARNING, and a file whose tests are all over it
  * fails the run unless it is exempt — see `lib/unit_test_time_budget.ts`.
+ * A failed pass is held to it too (Issue #4930): its report is read before the
+ * run stops, so its output says whether a slow file is behind the failure.
  * Under the agent's git guard shim that failure is reported as NOT ENFORCED
  * instead (Issue #2669): the shim's per-call cost is not the test's.
  *
@@ -36,6 +38,7 @@ import {
   unitTestPasses,
 } from "./lib/unit_test_passes.ts";
 import {
+  failedRunBudgetLines,
   gitGuardShimOnPath,
   passesTimeBudget,
 } from "./lib/unit_test_time_budget.ts";
@@ -43,7 +46,10 @@ import {
 /** The runner's own flags; anything else starting with `-` is refused. */
 const KNOWN_FLAGS = ["--", "--integration", "--parallel-only", "--serial-only"];
 
-/** Run the passes, stopping at the first failure, then apply the budget. */
+/**
+ * Run the passes, stopping at the first failure, then apply the budget. A
+ * failed pass's report is held to the budget before the stop (Issue #4930).
+ */
 async function main(): Promise<void> {
   // Issue #1280 (SEC-1217-12): every entry point patches its own console —
   // this one prints pass labels alongside inherited `deno test` output.
@@ -127,9 +133,21 @@ async function runPasses(
     const elapsed = formatPassDuration(Date.now() - startedAt);
     const verdict = status.code === 0 ? "PASSED" : "FAILED";
     console.log(`=== ${pass.label} pass: ${verdict} in ${elapsed}`);
-    // Stop at the first failure: the remaining pass costs minutes and
-    // cannot change the verdict.
-    if (status.code !== 0) return status.code;
+    if (status.code !== 0) {
+      // Stop at the first failure: the remaining pass costs minutes and cannot
+      // change the exit code. A failed pass still wrote its JUnit report, so
+      // its times, and any green pass's, are held to the budget first
+      // (Issue #4930): the gate reads these lines to refuse a base-only
+      // downgrade of a budget failure.
+      if (pass.junitPath) junitPaths.push(pass.junitPath);
+      if (junitPaths.length > 0) {
+        const lines = await failedRunBudgetLines(junitPaths, {
+          gitGuardShim: await gitGuardShimOnPath(Deno.env.get("PATH")),
+        });
+        for (const line of lines) console.log(line);
+      }
+      return status.code;
+    }
     if (pass.junitPath) junitPaths.push(pass.junitPath);
   }
 
