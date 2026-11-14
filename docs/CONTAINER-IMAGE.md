@@ -104,8 +104,20 @@ archive's `plugin/` and `tokeneconomizer/` trees are installed, under
 the PATH answers `--version` with the pinned version and commit and otherwise
 execs the plugin's `te` command line. The package declares
 `requires-python >=3.10`, and the build fails unless the image's `python3`
-meets that floor. It is off by default: nothing reads it until #4956 wires it
-in through the `token_economizer` config block (#4955).
+meets that floor. It is off by default, and the image does not run the plugin.
+The worker loads it only on a host that sets `token_economizer.enabled` in the
+`token_economizer` config block (#4955, #4956), as described below.
+
+### How the worker loads the plugin
+
+On a host that enables it, the worker adds `--plugin-dir /opt/tokeneconomizer/plugin`
+to the Claude argv of the implementation, PR-feedback and CI-fix runs, and to
+nothing else: reviewer and verifier calls, external orchestration and the other
+providers get no plugin. The pinned launcher's `TE_PYTHON` interface selects
+the worker's audited hook adapter, which bounds and fences context without
+modifying the archive. The environment, failure isolation, remaining controller
+protection gap and real-CLI check are in the
+[TokenEconomizer trial protocol](TOKEN-ECONOMIZER-TRIAL.md), section 1.
 
 ## Node and npm
 

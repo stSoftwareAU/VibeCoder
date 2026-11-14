@@ -26,6 +26,7 @@ import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
  */
 
 import { redactSecrets } from "../secret_redaction.ts";
+import { tokenEconomizerSpawnOptions } from "../token_economizer_plugin.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
 import { fingerprintWorkerReviewPolicy } from "../pr_completion_report.ts";
 
@@ -1341,6 +1342,21 @@ async function executeClaudeBody(
   ) => {
     const checkpoints = startCheckpoints();
     try {
+      // The TokenEconomizer plugin for this spawn (Issue #4956). Resolved per
+      // invocation, so a stop recorded between a first and second call takes
+      // effect. Not on an external orchestration: that path hands these
+      // options to every manager and reviewer role call, and the plugin is for
+      // the implementation run only.
+      const tokenEconomizer = externalOrchestration
+        ? {}
+        : await tokenEconomizerSpawnOptions({
+          config: config.tokenEconomizer,
+          pluginDir: deps.claude.tokenEconomizerPluginDir,
+          workDir: config.workDir,
+          repo,
+          runKind: "implementation",
+          logger,
+        });
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
         retryOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[1],
@@ -1421,6 +1437,7 @@ async function executeClaudeBody(
           // path its entry merges into the same object rather than replacing
           // this one.
           ...settingsJsonOption(undefined, rtk.hookSettings()),
+          ...tokenEconomizer,
           logger,
           sessionResumeState: state.sessionResumeState,
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.

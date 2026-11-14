@@ -54,9 +54,9 @@ async function sweepOrphanedDraft(): Promise<string[][]> {
           JSON.stringify({ headRefOid: HEAD_SHA, isDraft: !ready }),
         );
       }
-      // The sweep's live state read, after the draft was readied.
+      // End this wiring test after readiness; merging is a separate contract.
       return Promise.resolve(JSON.stringify({
-        state: "OPEN",
+        state: ready ? "CLOSED" : "OPEN",
         isDraft: !ready,
         baseRefName: "main",
         headRefOid: HEAD_SHA,

@@ -4,8 +4,10 @@
  * The parser is the trust boundary between operator-written JSON and the
  * worker's `tokenEconomizer` setting, so each branch is exercised directly
  * here, and `loadConfig` is exercised on the same inputs through a temp
- * directory. The block is accepted and validated, but not read yet: #4956 will
- * wire it into runs; today a run is the same whatever it is set to.
+ * directory. `learnings_repo` is accepted and validated, but not read yet
+ * (#4957 will persist the learnings to it). `enabled`, `microskills` and
+ * `loopguard` are read by the run launch decision, which acts on what this
+ * parser returns.
  *
  * Every refusal is paired with the same input with only the probed value made
  * legal, so a test cannot pass by refusing everything.

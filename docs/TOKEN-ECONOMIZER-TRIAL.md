@@ -1,15 +1,15 @@
 # 🧮 TokenEconomizer trial — learnings that persist across runs
 
-<!-- cspell:ignore microskills loopguard envfacts TOOLPRUNE REPOMAP tokeneconomizer Containerfile noarch pyproject opencode codegraph worktrees -->
+<!-- cspell:ignore microskills loopguard envfacts TOOLPRUNE REPOMAP tokeneconomizer Containerfile noarch pyproject opencode codegraph worktrees untool selfcheck -->
 
 | | |
 | - | - |
 | **Candidate** | [microsoft/TokenEconomizer](https://github.com/microsoft/TokenEconomizer) at commit `264e7a7f32f0112a06aa83a97b9c2c4681563968` (§1) |
 | **Trial host** | **GRQ-25** — one host, Claude Code only (§2) |
-| **Switch** | `token_economizer.enabled` in a host's `.config.json`, default `false` — accepted and validated, but not read yet: [#4956](https://github.com/stSoftwareAU/VibeCoder/issues/4956) will wire it into runs |
+| **Switch** | `token_economizer.enabled` in a host's `.config.json`, default `false`: when `true`, the implementation, PR-feedback and CI-fix Claude runs load the plugin ([#4956](https://github.com/stSoftwareAU/VibeCoder/issues/4956), §1) |
 | **Bar** | ≥ 10% lower mean cost per completed implementation run, success rate and PR merge rate no worse (§4) |
 | **First judged** | after **7 days** or **60** completed switched-on implementation runs, whichever is later (§3) |
-| **Status** | ⚪ **not started** — this page is written before the window opens, and no run has used the plugin |
+| **Status** | ⚪ **not started** — no eligible persisted and accounted trial completion is recorded |
 
 This page is the protocol the TokenEconomizer trial
 ([#4953](https://github.com/stSoftwareAU/VibeCoder/issues/4953)) is judged by.
@@ -45,10 +45,12 @@ image `python3` below the package's `requires-python` floor (`>=3.10`, read from
 the archive's `pyproject.toml`) at build, and installs only the archive's
 `plugin/` and `tokeneconomizer/` trees under `/opt/tokeneconomizer`. The
 `tokeneconomizer` wrapper at `/usr/local/bin/tokeneconomizer` answers
-`--version` with the pinned version and commit. Nothing in the image invokes the
-plugin yet. The `token_economizer` block that #4955 adds is parsed but not
-read, and #4956 wires it into runs, so the command sits unused until then. The commit named here and the pin in the image are one
-value, changed in one PR, and the drift test fails when they differ.
+`--version` with the pinned version and commit. The image installs the plugin but does not
+run it. The worker's own runs load it, through Claude Code's `--plugin-dir`, on a
+host that sets `token_economizer.enabled` (see **How the plugin is loaded**,
+below). No worker code calls the `tokeneconomizer` wrapper. The commit named
+here and the pin in the image are one value, changed in one PR, and the drift
+test fails when they differ.
 
 **The block.** The switches are one `token_economizer` block in a host's
 `.config.json`, off by default, with four keys: `token_economizer.enabled`,
@@ -58,16 +60,18 @@ when enabled), `token_economizer.microskills` and `token_economizer.loopguard`.
 config load, and a malformed block fails the load with an error naming the key.
 `microskills` takes `off`, `envfacts`, `distiller` or `envfacts+distiller` (the
 default); `loopguard` takes `off` or `nudge` (the default). The error cases and
-the defaults are set out in the [Configuration Reference](CONFIGURATION.md). The
-block is accepted and validated, but not read yet: #4956 will wire it into runs;
-today a run is the same whatever it is set to.
+the defaults are set out in the [Configuration Reference](CONFIGURATION.md).
+`enabled` is read by the run launch decision, `loopguard` is passed to the
+plugin as `TE_LOOPGUARD`, and `microskills` is clamped to `envfacts` (below).
+`learnings_repo` is validated but not read yet: #4957 will persist the learnings
+to it, so it changes no run today.
 
 **The mechanisms.** Two are switched on and three are off:
 
 | Mechanism | Setting | State | Why |
 | --------- | ------- | ----- | --- |
-| Micro-skills | `microskills` = `envfacts+distiller` | **on** | Facts about how a repository works (a build step that must run first, a command spelling that works there), learned from repeated failures and from a model that reviews sessions. A fact is injected at session start once three sessions have confirmed it. This is the mechanism the learnings repository exists for. |
-| Loop guard | `loopguard` = `nudge` | **on** | A judge model redirects a turn that is stuck in a failure loop with a short note. It never stops a turn itself. |
+| Micro-skills | `microskills` clamped to `envfacts`; `off` stays `off` | **on**, `envfacts` only | The distiller's model-written proposals remain disabled because upstream does not independently cap them. The worker sets `TE_MICROSKILLS_MAX_FACTS=4` and `TE_MICROSKILLS_MAX_TOKENS=150`. Its audited adapter also checks cached context at injection: at most four bullet facts and 600 characters, matching upstream's four-characters-per-token estimate. This is a character budget, not an exact tokenizer measurement; fence overhead is additional. Oversized or unsupported output is rejected, never truncated into an apparently valid block. |
+| Loop guard | `loopguard` = `nudge` | **on** | A judge model redirects a stuck turn with a short note. The adapter forces synchronous judge/fold execution and bounds their process tree within the hook deadline. Judge text is untrusted and fenced too, with a separate 4,096-character ceiling for non-fact context and notices; the micro-skills fact cap does not apply to nudges. Worker cost aggregation is not yet delivered: #4958 owns it. |
 | Tool pruning | `TE_TOOLPRUNE=off` | off | The worker already fixes the tool policy with `--disallowed-tools`, isolated runs ignore project settings, and pruning writes a settings file into the issue checkout, a stray file a commit can pick up. |
 | Repository map | `TE_REPOMAP=off` | off | The worker already supplies repository context, the codebase map and, where switched on, Graft and CodeGraph. A third source would confound this trial and the repo-context trial alike. |
 | History import | `TE_HISTORY_IMPORT=false` | off | Importing sessions that predate the trial would put learnings from outside the window into the store, so the first runs could not be told from later ones, and it would persist past transcripts into text that is injected into later runs. |
@@ -94,6 +98,78 @@ The commands above were tested on the oldest and newest version in each range; n
 
 This image's Claude Code: **2.1.322**, newer than upstream's tested range for Claude Code (2.1.300 to 2.1.310): the bump to the Fable 5.2 CLI (Issue #5082) moved past it, so the trial runs on an untested Claude Code version until upstream extends the range. It is the `claude` provider's `version` in `container/tools.json`, and this line changes in the same PR as any Claude Code bump.
 
+**How the plugin is loaded.** The worker loads the plugin for the Claude
+provider only, and only for three run kinds: the implementation run, PR feedback
+and CI fix. The decision is `resolveTokenEconomizerLaunch()` in
+`worker/deno/lib/token_economizer_plugin.ts`. A run that gets a launch adds
+`--plugin-dir /opt/tokeneconomizer/plugin` to its Claude argv (built by
+`buildClaudeCliArgs` in `worker/deno/lib/agent_provider.ts`), and its spawn
+environment receives these plugin settings: `TOKENECONOMIZER_HOME`, the run's
+state directory under `<work>/.token-economizer/runs/<runId>` outside the
+checkout; `TE_TOOLPRUNE=off`, `TE_REPOMAP=off`, `TE_HISTORY_IMPORT=false`;
+`TE_MICROSKILLS`, clamped as above; `TE_LOOPGUARD`, from config; and the two
+fact/token caps. `TE_PYTHON` selects the executable
+`worker/deno/lib/token_economizer_hook.ts` from the trusted worker checkout.
+The upstream `te-hook` launcher invokes this adapter instead of Python directly;
+the adapter invokes the pinned Python dispatcher and reuses
+`fenceUntrustedIssueText()` before returning context to Claude. The vendored
+archive is unchanged. Stray `TE_` and `TOKENECONOMIZER_` parent variables are
+removed before this overlay. The adapter forces `TE_FOLD_SYNC=1` and
+`TE_JUDGE_SYNC=1` in Python's child environment, rejects a checkout mismatch,
+and tears down unfinished descendants within the event's deadline.
+
+Each spawn gets its own `TOKENECONOMIZER_HOME`, a fresh state directory per
+launch, so a fact the plugin learns in one spawn is not in another spawn's home.
+The run id that names it is the caller's, or a fresh UUID when none is given; it
+is never read from the worker's environment. Carrying learnings across runs is
+what the learnings repository (#4957) is for. Until it lands, the cross-run part of the
+trial is not exercised, and a verdict on that part would be a verdict on nothing.
+
+Nothing else loads it. Reviewer and verifier calls are not run kinds, and an
+external orchestration run gets no launch on any of its role calls. The DeepSeek
+descriptor drops the plugin directory from its argv, and `runClaude` passes a
+launch only for the Claude provider. An isolated Claude run carries
+`--setting-sources ""` (Issue #4657), so a repository's own settings are not
+read, and the worker adds the plugin only through `--plugin-dir`.
+
+**Checked on this image.** On 2026-11-12, `claude --version` reported
+`2.1.322`. A complete headless call used `--plugin-dir
+/opt/tokeneconomizer/plugin --setting-sources "" --tools ""
+--strict-mcp-config --mcp-config '{"mcpServers":{}}' --no-session-persistence
+--max-turns 1 --output-format stream-json --verbose`, with the plugin settings
+above and `loopguard=off`. A local Messages API fixture returned `OK`, ten input
+tokens and two output tokens; no production credential or paid endpoint was
+used. Observed results:
+
+- `SessionStart:startup` emitted `hook_started`, then `hook_response` with
+  `exit_code: 0` and `outcome: success`; `system/init` listed the plugin.
+- The CLI returned `result/subtype: success`, `is_error: false`, result `OK`,
+  exit 0. The adapter recorded no failure.
+- Staged, unstaged and untracked changes in the checkout had identical
+  `git status --porcelain` before and after; plugin state stayed outside it.
+- A separate call through the real pinned `sidecall.claude_call` used the same
+  fixture endpoint and dummy credential and returned `OK`, 20 effective-token
+  units. This exercises the real nested CLI adapter, not the judge's trigger
+  inside an implementation run.
+
+This verifies hook loading on the installed CLI with isolated settings and a
+complete fixture-backed session. It is not trial cost evidence. The two fixture
+requests used the same endpoint and credential channel. In production the hook
+and Python child inherit the run's sanitised environment and network namespace;
+no new egress permission is granted. The adapter keeps judge/fold jobs
+synchronous rather than allowing the upstream detached launch. The proposer
+remains off. **Not observed:** a paid judge triggered inside an implementation
+run, production egress traffic for it, or inclusion in worker cost totals.
+Issue #4958 is still open and its accounting integration is absent at this head.
+
+**Failure isolation.** The launch decision never throws, and a launch is never
+the cause of a failed run. A disabled block is silent. Any other refusal returns
+no plugin, which is the ordinary plugin-off path, and logs a warning naming the
+cause: a stop record in force, a run kind outside the three, a missing plugin
+manifest, an unusable audited adapter, a run id outside the allow-list, a state directory that cannot be
+created, lies outside the work directory or lies inside the checkout, or any
+unexpected error.
+
 ## 2. 🏠 The trial host
 
 **Trial host: GRQ-25.** One host carries the trial, and no other trial window
@@ -116,8 +192,10 @@ may be open on it, or neither result means anything.
 
 ## 3. 🪟 The window
 
-The window opens when the **first switched-on run completes**, not on the day
-the key is set. It is first judged at whichever comes later: **7 days**, or
+The agreed window opens when the **first switched-on run completes** with
+persistence and accounting working, not on the day the key is set. An
+unpersisted or unaccounted completion does not open it. It is first judged at
+whichever comes later: **7 days**, or
 **60** completed switched-on implementation runs.
 
 A shorter window measures nothing. Micro-skills needs three sessions to confirm
@@ -135,9 +213,11 @@ flowchart LR
 
 **Window opened:** — (not yet opened).
 
-Both steps are manual. No code schedules the window, nothing watches the clock,
-and no worker flips the switch, to open the window, to close it or to react to a
-figure it read halfway through.
+Initial host opt-in remains within the owner's configuration authority. Once
+enabled, hook-failure monitoring and the shared stop controller below run
+without operator participation. Normal window scheduling and verdict processing
+are not present yet: #4959 owns them. A stop report does not wait for either
+normal threshold.
 
 ## 4. 📏 The bar
 
@@ -197,8 +277,31 @@ rule outranks cost.
 | A fact injected into a run **comes from another repository** | A fact is derived from one repository's content and must never steer another's |
 | The plugin causes a run failure that is **the plugin's fault**, such as a hook error that ends a run | The plugin must never fail a run; it is an accelerator |
 
-A human sets `token_economizer.enabled` to `false` on the trial host the moment
-one is found. Not yet: #4957 adds the gitleaks check before each sync commit.
+The shared controller is `worker/deno/lib/token_economizer_control.ts`.
+`stopTokenEconomizerTrial(workDir, finding)` records the first finding at
+`<work>/.token-economizer/stop.json` before notifying the outcome issue #4959.
+Hook faults are observed while the run is active and scanned again at shutdown;
+rejected context returns `{}` and the underlying implementation continues.
+The local reason is redacted and bounded; report bodies fence it as untrusted
+data. An offline or denied GitHub write leaves a pending report, retried at a
+later enabled launch without widening the worker's permissions. Reporting a stop
+overrides the 7-day/60-run wait, rather than declaring the normal window complete.
+
+Persistence (#4957, still open) must pass its secret/isolation findings to that
+same function and call `tokenEconomizerMaySync(workDir)` before each transfer,
+including retries. No persistence implementation is present at this head, so
+this is its integration contract, not a claim that sync is already wired.
+Unreadable stop records inhibit loading and sync permission. A healthy run does
+not clear a failed experiment: the latch remains until authorised recovery or
+purge through #4959.
+
+**Remaining boundary gap:** the local stop record is mode 0600 under a mode 0700
+directory, but Claude currently runs with the worker's Unix UID. Those modes do
+not prevent a deliberately hostile agent from changing the controller's state.
+No stronger filesystem boundary is claimed. The available `setpriv` Landlock
+probe returned `landlock_create_ruleset failed: Function not implemented` in this
+environment. This head does not enable the trial host or widen container
+permissions; protection of the durable controller remains unfinished.
 
 ## 7. 📥 Where each figure is read from
 
@@ -258,8 +361,27 @@ State is `present` when the path exists and names the plugin today, and
 | Config key | the block's parser and loader tests | `worker/deno/tests/token_economizer_config_test.ts` | present |
 | Config key | the block's off-by-default spawn tests | `worker/deno/tests/token_economizer_off_spawn_test.ts` | present |
 | Doc section | the `token_economizer` row of the configuration reference | `docs/CONFIGURATION.md` | present |
-| Source | the `--plugin-dir` and environment wiring in the Claude spawn | `worker/deno/lib/agent_provider.ts` | planned #4956 |
-| Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | planned #4956 |
+| Source | the `--plugin-dir` argument in the Claude argv, and the drop of the plugin directory in the DeepSeek descriptor | `worker/deno/lib/agent_provider.ts` | present |
+| Source | the launch decision: run kinds, environment, stop record and state-directory confinement | `worker/deno/lib/token_economizer_plugin.ts` | present |
+| Source | the audited executable hook adapter and context bounds | `worker/deno/lib/token_economizer_hook.ts` | present |
+| Source | the shared stop, sync-permission and outcome-reporting controller | `worker/deno/lib/token_economizer_control.ts` | present |
+| Source | the plugin option on `runClaude`, and its environment overlay | `worker/deno/lib/claude_runner.ts` | present |
+| Source | the implementation spawn's launch, in the phase | `worker/deno/lib/phases/execute_phase.ts` | present |
+| Source | the implementation spawn's launch, in the standalone phase | `worker/deno/lib/execute_claude_phase.ts` | present |
+| Source | the PR-feedback spawn's launch | `worker/deno/lib/pr_feedback_processor.ts` | present |
+| Source | the CI-fix spawns' launch, on both attempts | `worker/deno/lib/pr_ci_processor.ts` | present |
+| Source | the `tokenEconomizerPluginDir` seam on the Claude dependencies, which the spawn sites pass as the plugin directory | `worker/deno/lib/issue_worker_wiring.ts` | present |
+| Source | the production dependencies that pass `config.tokenEconomizer` to the processors | `worker/deno/lib/run_core_production_deps.ts` | present |
+| Command | the standalone implementation command that passes `config.tokenEconomizer` | `worker/deno/commands/execute_claude_phase.ts` | present |
+| Command | the standalone PR-feedback command that passes `config.tokenEconomizer` | `worker/deno/commands/pr_feedback_processor.ts` | present |
+| Command | the standalone CI-fix command that passes `config.tokenEconomizer` | `worker/deno/commands/pr_ci_processor.ts` | present |
+| Test | the launch decision's tests | `worker/deno/tests/token_economizer_plugin_test.ts` | present |
+| Test | the spawn-wiring tests | `worker/deno/tests/token_economizer_plugin_wiring_test.ts` | present |
+| Test | the implementation spawn sites' tests | `worker/deno/tests/token_economizer_impl_callsites_test.ts` | present |
+| Test | the PR-feedback and CI-fix spawn sites' tests | `worker/deno/tests/token_economizer_reactive_callsites_test.ts` | present |
+| Test | the production dependency pass-through tests | `worker/deno/tests/token_economizer_production_deps_test.ts` | present |
+| Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | present |
+| Runtime directory | `.token-economizer/` under the work directory, holding the stop record, notification receipt and per-spawn state directories; the launch decision creates it at run time | `worker/deno/lib/token_economizer_plugin.ts` | present |
 | Source | the learnings pull and push, with the gitleaks check | — | planned #4957 |
 | Learnings directory | `token-economizer/` in the repository named by `token_economizer.learnings_repo` | — | planned #4957 |
 | Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | planned #4958 |
@@ -283,5 +405,5 @@ purge leaves alone.
   analysis before its window opened.
 - **[Configuration Reference](CONFIGURATION.md)** — `fleet_run_archive` and every
   other `.config.json` key.
-- **[Threat Model](THREAT-MODEL.md)** — where the plugin is to be recorded as a
-  supply-chain component.
+- **[Threat Model](THREAT-MODEL.md)** — where the plugin is recorded as a
+  supply-chain component, and its learned facts as cross-run context.

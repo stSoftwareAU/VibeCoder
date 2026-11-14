@@ -2776,6 +2776,8 @@ export async function createProductionRunCoreDeps(
             baseRefreshCounterDir: workDir,
             qualityInstructions,
             customInstructions,
+            // The TokenEconomizer block (Issue #4956); off unless the host enables it.
+            tokenEconomizer: config.tokenEconomizer,
             // Issue #213: the dedicated reactive budget, not the issue-work
             // `claude_timeout` this dispatch path used to pass.
             claudeTimeout: reactivePhaseTimeout(config, "pr-feedback"),
@@ -3071,6 +3073,8 @@ export async function createProductionRunCoreDeps(
             // the work root, not the clone `setupRepo` returned above.
             workRoot: workDir,
             baseRefreshCounterDir: workDir,
+            // The TokenEconomizer block (Issue #4956); off unless the host enables it.
+            tokenEconomizer: config.tokenEconomizer,
             // Issue #213: the dedicated reactive budget, not the issue-work
             // `claude_timeout` — this dispatch path passing `claudeTimeout` is
             // why a host with `claude_timeout: 3600` logged "Running Claude

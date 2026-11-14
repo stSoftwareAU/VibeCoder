@@ -57,6 +57,7 @@ import {
 } from "./memory_pressure.ts";
 import type { Logger, Result } from "../types.ts";
 import { createLogger } from "./logger.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
@@ -137,6 +138,11 @@ import {
   UnfinishedIssueExecutorError,
 } from "./issue_executor_enforcement.ts";
 import { settingsJsonOption } from "./rtk_output.ts";
+import { monitorTokenEconomizerRun } from "./token_economizer_control.ts";
+import {
+  overlayTokenEconomizerEnv,
+  type TokenEconomizerLaunch,
+} from "./token_economizer_plugin.ts";
 import { currentAgentRunOwner } from "./handler_watchdog.ts";
 import {
   type AgentActivitySnapshot,
@@ -728,6 +734,16 @@ export interface RunClaudeOptions {
    * and the argv is the one every host spawned before.
    */
   settingsJson?: string;
+  /**
+   * The TokenEconomizer plugin launch for this spawn (Issue #4956): the
+   * directory handed to `--plugin-dir`, and the allow-listed environment
+   * overlaid on the child's. Claude provider only; any other provider (a
+   * fallback such as Codex) is spawned without it. Omitted, the argv and the
+   * environment are the ones every host spawned before.
+   */
+  tokenEconomizer?: TokenEconomizerLaunch;
+  /** Notification transport; production uses the worker's guarded GitHub channel. */
+  tokenEconomizerNotify?: (args: string[]) => Promise<string>;
   /** Effort level override — low, medium, high, xhigh, max (Issue #1403, #2620). */
   effort?: string;
   /**
@@ -1425,6 +1441,12 @@ async function runClaudeWithTimeoutBody(
   // round or a long issue thread exceeds that — "Argument list too long"
   // at spawn, observed live in container mode.
   const promptViaStdin = provider.promptTransport === "stdin";
+  // The TokenEconomizer plugin (Issue #4956) is the Claude CLI's: any other
+  // provider, such as a Codex fallback, is spawned with neither the flag nor
+  // the environment.
+  let tokenEconomizerLaunch = provider.id === CLAUDE_PROVIDER_ID
+    ? options.tokenEconomizer
+    : undefined;
   const invocationRequest = {
     discussionOnly: options.discussionOnly,
     orchestrationRole: options.orchestrationRole,
@@ -1447,6 +1469,9 @@ async function runClaudeWithTimeoutBody(
       ? undefined
       : options.sessionResumeState,
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
+    ...(tokenEconomizerLaunch
+      ? { pluginDir: tokenEconomizerLaunch.pluginDir }
+      : {}),
     // Issue #2344's advisor edit guard, merged with this spawn's own hooks
     // (Issue #2383's RTK settings) rather than one silently replacing the
     // other when a run has both on. The advisor guard remains Claude-only;
@@ -1543,7 +1568,30 @@ async function runClaudeWithTimeoutBody(
   // stranger's process tree.
   let childReaped = false;
 
+  let tokenEconomizerMonitor:
+    | ReturnType<typeof monitorTokenEconomizerRun>
+    | undefined;
   try {
+    if (tokenEconomizerLaunch) {
+      try {
+        tokenEconomizerMonitor = monitorTokenEconomizerRun(
+          tokenEconomizerLaunch,
+          options.tokenEconomizerNotify,
+          logger,
+        );
+      } catch (error) {
+        // Never fail the run on a monitor fault, but keep its redacted cause.
+        logger?.warn(
+          `token-economizer: plugin off, hook failure monitor could not start: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
+        );
+        tokenEconomizerLaunch = undefined;
+        delete invocationRequest.pluginDir;
+      }
+    }
     // Sanitise the child environment (Issue #3203): clear it and pass an
     // explicit copy with the GitHub App private-key material dropped, so a
     // prompt-injected model running unrestricted bash cannot read the PEM.
@@ -1564,6 +1612,15 @@ async function runClaudeWithTimeoutBody(
     // the checkout this run works in. On a runtime that honours the trim, and
     // on a developer host, this adds nothing.
     Object.assign(baseEnv, buildCacheEnvForCheckout(cwd, { source: baseEnv }));
+    // The TokenEconomizer plugin's allow-listed environment (Issue #4956),
+    // overlaid before the gh guard shim and the pre-push hook copy baseEnv, so
+    // both carry it to the agent. The plugin's own hooks and model calls are
+    // child processes of this agent: they inherit the same clear-env child
+    // environment and sit in the same descendant tree the timeout watchdogs
+    // and kill path track (Issue #4382).
+    if (tokenEconomizerLaunch) {
+      overlayTokenEconomizerEnv(baseEnv, tokenEconomizerLaunch);
+    }
     // Interpose the `gh` guard on the child's PATH (Issue #3643): the agent
     // holds GH_TOKEN and runs unrestricted bash, so without this its own `gh`
     // writes bypass the write-repo allowlist and the reserved-label guard the
@@ -3061,6 +3118,20 @@ async function runClaudeWithTimeoutBody(
       ),
     };
   } finally {
+    if (tokenEconomizerMonitor) {
+      try {
+        await tokenEconomizerMonitor.close();
+      } catch (error) {
+        // Never fail the run on a stop-record fault, but keep its redacted cause.
+        logger?.warn(
+          `token-economizer: could not persist the trial stop; plugin failure was not reported as a clean result: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
+        );
+      }
+    }
     // Flush the transcript's trailing partial line, whatever path exits.
     transcript?.close();
     // The shim directory is per-spawn — remove it once the child has exited.

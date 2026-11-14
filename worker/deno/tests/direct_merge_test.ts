@@ -1174,6 +1174,21 @@ Deno.test("direct_merge - prTargetsDefaultBranch errors when base branch lookup 
   }
 });
 
+Deno.test("direct_merge - prTargetsDefaultBranch errors when the default branch is empty", async () => {
+  const result = await prTargetsDefaultBranch(
+    "owner/repo",
+    42,
+    createGuardMock("main", "  "),
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(
+      result.error.message,
+      "Could not determine default branch for owner/repo",
+    );
+  }
+});
+
 // =============================================================================
 // directMergePr — success and failure
 //

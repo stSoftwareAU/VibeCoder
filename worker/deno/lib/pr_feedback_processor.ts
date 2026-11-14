@@ -16,7 +16,13 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 
 import { redactSecrets } from "./secret_redaction.ts";
 
-import type { Logger, RepoConfig, Result } from "../types.ts";
+import type {
+  Logger,
+  RepoConfig,
+  Result,
+  TokenEconomizerConfig,
+} from "../types.ts";
+import { tokenEconomizerSpawnOptions } from "./token_economizer_plugin.ts";
 import {
   fenceUntrustedIssueText,
   generateBoundaryId,
@@ -231,6 +237,12 @@ export interface PrFeedbackProcessorDeps {
    * so `dirname` names the lane, not the root.
    */
   workRoot: string;
+  /**
+   * The `token_economizer` block for this host (Issue #4956). Absent, the
+   * feedback agent is spawned with no plugin, as every host was before. Set by
+   * the production callers from `config.tokenEconomizer`.
+   */
+  tokenEconomizer?: TokenEconomizerConfig;
   /**
    * Directory the base-refresh decision counters are persisted to
    * (`base_refresh_counters.json`): the production callers pass `WORK_DIR`.
@@ -1443,6 +1455,19 @@ async function _processFeedbackWithHeartbeat(
     }
     return invocation;
   };
+  // The TokenEconomizer plugin for this spawn (Issue #4956). The launch lives
+  // under the work root, never the clone (its state must not sit in the
+  // checkout), so the root is passed, not `workDir`.
+  const tokenEconomizer = processorDeps.tokenEconomizer
+    ? await tokenEconomizerSpawnOptions({
+      config: processorDeps.tokenEconomizer,
+      pluginDir: processorDeps.deps.claude.tokenEconomizerPluginDir,
+      workDir: processorDeps.workRoot,
+      repo,
+      runKind: "pr-feedback",
+      logger,
+    })
+    : {};
   const agentRequest = {
     // Appended in code, not in `prompts/pr_feedback/prompt.md`: the line is
     // run-conditional, so the template stays the same on every host.
@@ -1465,6 +1490,7 @@ async function _processFeedbackWithHeartbeat(
     // Issue #2384: absent unless RTK's hook is installed, so every other
     // run spawns the argv it always did.
     ...settingsJsonOption(undefined, rtk.hookSettings()),
+    ...tokenEconomizer,
   };
   const claudeResult = await runAgentTracked(agentRequest, {
     maxRetries: maxRateLimitRetries,
