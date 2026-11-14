@@ -102,6 +102,7 @@ import type {
 
 import { workOnIssueMergedPrPrecheck } from "./phases/merged_pr_precheck_phase.ts";
 import { workOnIssueSetupBranch } from "./phases/setup_branch_phase.ts";
+import { ownClaimCommentPresent, runSetupWithDeadline } from "./setup_steps.ts";
 import { workOnIssueClarityPhase } from "./phases/clarity_assessment_phase.ts";
 import { workOnIssueBaselineQuality } from "./phases/baseline_quality_phase.ts";
 import { workOnIssueExecuteClaude } from "./phases/execute_phase.ts";
@@ -594,17 +595,57 @@ async function workOnIssueCore(
     }
 
     // Phase 1 — Setup Branch
+    // Issue #5128: a wedged setup step used to hold the claim until the
+    // launcher's watchdog reaped the container. The deadline ends the run with
+    // a `timeout` failure instead, so the failure path releases the claim.
     const setupResult = await runPhase(
       "setup",
-      () => workOnIssueSetupBranch(ctx, state, deps),
+      () =>
+        runSetupWithDeadline(
+          () => workOnIssueSetupBranch(ctx, state, deps),
+          {
+            deadlineMs: deps.infrastructure.setupDeadlineMs(ctx.config),
+            clock: deps.infrastructure.setupClock,
+            onAbandon: () => {
+              state.setupAbandoned = true;
+            },
+          },
+        ),
     );
     if (setupResult.status === "failure") {
+      // The run releases the claim on a failure, and every fleet host shares
+      // one login, so after a setup deadline it may do so only for a claim it
+      // still holds: its own comment must be on the issue. A claim that was
+      // won earlier is no exception: a host that re-claims after the fleet's
+      // recovery freed the issue deletes this run's claim comment, so a
+      // missing comment means the assignment is now another host's.
+      let claimNotHeld = false;
+      if (state.setupAbandoned) {
+        const claim = state.setupClaim;
+        const wonBeforeRead = claim?.won === true;
+        const commentPresent = claim !== undefined &&
+          await ownClaimCommentPresent(
+            deps.github.runGhCommand,
+            ctx.repo,
+            ctx.issueNumber,
+            claim.workerId,
+            ctx.githubUser,
+          );
+        // A claim that was still pending and came back during the read was
+        // taken just now, so this run holds it whether or not the read saw
+        // its comment; it is released once, by the run.
+        const heldNow = claim !== undefined && !wonBeforeRead && claim.won;
+        const held = claim !== undefined && (commentPresent || heldNow);
+        state.setupClaimReleasedByRun = held;
+        claimNotHeld = !held;
+      }
       return {
         category: setupResult.category,
         success: false,
         phase: "setup",
         reason: setupResult.reason,
         timings,
+        ...(claimNotHeld ? { claimNotHeld: true } : {}),
       };
     }
     if (setupResult.status === "early_exit") {

@@ -1,0 +1,12 @@
+{
+  "issue": 5128,
+  "chunk": "top-up-5128",
+  "title": "top-up: setup-phase step start lines and setup deadline",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5128",
+  "definition": "Review that each setup-phase step logs one fixed start line before it runs, that the step names are fixed words carrying no log or issue text, and that the hard-kill report maps only those exact lines to its fixed setup labels, and that the setup phase is abandoned with a timeout failure at its deadline so the run releases its claim.",
+  "status": "claimed",
+  "sweptAt": "f67e030e991f956612b7dabe4d27a177c908f6bc",
+  "paths": [
+    "worker/deno/lib/setup_steps.ts"
+  ]
+}

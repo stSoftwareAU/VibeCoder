@@ -150,8 +150,8 @@ itself the thing to look at.
 A run **you** stopped is not reported at all. `run.sh` exits with the runtime
 client's own status — 255 on macOS when the container is stopped under it —
 which reads as a crash, so a `kill`, a launchd stop or a host shutdown used to
-count towards the streak and escalate a host that was working
-(Issues #879, #1072). The signal trap declares the stop in
+count towards the streak and escalate a host that was working (Issues #879, #1072).
+The signal trap declares the stop in
 `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-termination` and the recorder
 consumes it: `self-heal-summary` shows a `terminated` event, the failure count
 is unchanged, and nothing is filed. If you see a `worker_run` escalation for a
@@ -235,16 +235,49 @@ after the container is gone (see
 [Resilience & Concurrency](workflows/resilience-and-concurrency.md#-wedged-container-watchdog)).
 The next worker start files that record as a `bug` issue carrying only the run's
 facts, the figures derived from the record (silence before capture, the
-guest-probe state, guest memory and guest pressure) and a last step logged,
-from a fixed list (`pre-PR verifier`,
-`coverage carry-over check`, `quality gate`, `agent turn` or `unknown`, plus
-`mutation check` for logs written before Issue #5095 retired that step; it is the last step the log reported, so the wedge is in or after it,
+guest-probe state, guest memory and guest pressure) and a last step logged, from
+a fixed list (`pre-PR verifier`, `coverage carry-over check`, `quality gate`,
+`agent turn`, a setup step (`setup: issue claim`, `setup: claim churn check`,
+`setup: repository setup`, `setup: heartbeat start`,
+`setup: default branch sync`, `setup: feature branch` or
+`setup: pre-setup command`, each logged as the step starts, Issue #5128) or
+`unknown`, plus `mutation check` for logs written before Issue #5095 retired
+that step; it is the last step the log reported, so the wedge is in or after it,
 and it is not part of the dedup signature), then moves the file to
 `${LOG_DIR}/hard-kill-archive/`, where it is kept for up to 30 days or 2,000
 files. The archive, not the issue, holds the evidence (see
-[a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)).
-Check whether the host is wedging repeatedly — a chronic offender needs the
-runtime itself looked at:
+[a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)). A
+setup phase still running after two agent budgets (`claude_timeout`, for the
+milestone pre-sync agent and its repair run) plus 30 minutes for the clone, git,
+gates and pre-setup command is abandoned (Issue #5128), but never later than the
+run's hard cap allows: the deadline is the smaller of that budget and the runway
+left to the supervisor cap (`VIBE_RUN_MAX_SECONDS`, anchored by
+`VIBE_RUN_STARTED_EPOCH`) less the kill grace and the WIP reserve. With the
+default cap that falls before the launcher's watchdog (the default 3-hour cap
+plus 10 minutes, or `VIBE_CONTAINER_WATCHDOG_SECONDS` when set), even when setup
+starts late or `claude_timeout` is large. The watchdog is set independently of
+`VIBE_RUN_MAX_SECONDS`, so a cap raised above the default can still leave the
+deadline after it. With no supervisor cap published (unset or `0`) there is
+nothing to cap the budget by, and a large `claude_timeout` can push the deadline
+past the watchdog. The run ends as a setup `timeout` failure. It releases the
+claim only when it still holds it: its own claim comment must be on the issue,
+authored by this run's GitHub account, even for a claim `claimIssue` returned,
+because a host that re-claims after the fleet's recovery freed the issue deletes
+that comment. Copied or quoted markers do not establish ownership, and a read
+of the comments that fails counts as not held. A claim never taken is left
+alone, because every host shares one login and an unassign would strip another
+host's live claim. The abandoned setup returns at its next checkpoint, and a
+claim it wins late is released. The checkpoints sit before the calls that write
+to the lane worktree, the shared clone or GitHub (the default branch sync,
+milestone branch push and pre-sync, milestone session restore, the resume
+lookup, branch repair, the stream-session priming and the pre-setup command),
+and the resume checkout and the candidate ordering fetch decline once
+abandoned. A call already running when the deadline fires finishes. The
+resume-state reads (`loadResumeState`, the handover read) are not checkpoints,
+but they only read. Within the watchdog's reach, a step that wedges while the
+worker is still alive therefore stops holding the issue without waiting for
+the launcher to reap the container. Check whether the host is wedging
+repeatedly — a chronic offender needs the runtime itself looked at:
 
 ```bash
 deno run worker/deno/mod.ts self-heal-summary | grep container_wedged
@@ -1000,8 +1033,7 @@ and are retried as before, and the host-state ones are filed against the worker
 rather than the issue. A coding run that dies in the `setup` phase, or on a
 recognised host fault (`clone-corrupt`, `clone-failed`, `disk-full`,
 `container-build-failed`), is also exempt: it is released unlabelled, with no
-`failed-once`/`failed`, no escalating cooldown, and no attempt consumed
-(Issue #2954).
+`failed-once`/`failed`, no escalating cooldown, and no attempt consumed (Issue #2954).
 
 **An issue labelled `failed-once` or `failed` for a host fault releases itself**
 once the host recovers — no action needed. Since Issue #2954 a coding run is no
@@ -1103,8 +1135,8 @@ you can tell whether an operation hung or genuinely failed.
 ## ⏳ Why did this run take three hours?
 
 Nothing is wrong. The cycle deadline stops _new_ claims; it does not kill work
-already in flight, and `progress_extension_enabled` is **on by default**
-(Issue #422), so a claim that keeps progressing keeps running. The whole model — soft
+already in flight, and `progress_extension_enabled` is **on by default** (Issue #422),
+so a claim that keeps progressing keeps running. The whole model — soft
 claim gate, untruncated budget, extensions, hard-cap kill with the work in
 progress preserved — is on one page:
 [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model).
@@ -1216,8 +1248,8 @@ The notice itself is `.vibe-run-budget.md` in the agent's checkout, refreshed on
 every later check and cleared at the start of the next run. It is hidden, so the
 enforced `.gitignore` keeps it out of every commit.
 
-It is written over a **wider** band than the ten-minute wind-down window
-(Issue #1138): the full quality gate needs closer to twenty minutes, so the notice
+It is written over a **wider** band than the ten-minute wind-down window (Issue #1138):
+the full quality gate needs closer to twenty minutes, so the notice
 starts refusing the gate while there is still more than ten minutes of runway.
 Above the window it says only that — the run continues, and the log line is
 `run-budget notice written` rather than `wind-down notice written`:
@@ -1236,13 +1268,14 @@ then runs configured pre-flight commands, and may run nothing. PR feedback and
 spelling fixes run no full gate (changed-file checks only where pre-flight
 commands are configured, plus the PR-review fix verifier for review feedback),
 and a custom PR prompt relies on the agent's pre-push hook. The agent's prompt
-names that path's checks and asks the agent to name, in the note, the
-checks it ran; see
+names that path's checks and asks the agent to name, in the note, the checks it
+ran; see
 [docs/CONFIGURATION.md → The full gate is conditional on the budget left](CONFIGURATION.md#the-full-gate-is-conditional-on-the-budget-left-issue-1138).
 CI covers only the jobs the target repository actually runs, so some of the
 skipped checks may have no other copy; treat any coverage you cannot find as
 unverified. Because the file now means two things, "was this run warned?" is
-answered by its contents: the handover note reports `Wind-down notice:
+answered by its contents: the handover note reports
+`Wind-down notice:
 delivered` only for a notice that actually ordered one.
 
 If the `Run hard cap:` line instead says the cap is not set, the run was
@@ -1277,8 +1310,8 @@ work in progress; the next claim resumes from it. Handover:
 The branch named is always the branch the push targeted — the resumed branch
 when a re-claim adopted one, never a name derived from the current title, so
 retitling an issue mid-flight cannot send you to a ref that does not exist. The
-handover link appears only when that file is committed on the branch
-(Issue #769); without it the line still names the branch. A run that preserved nothing
+handover link appears only when that file is committed on the branch (Issue #769);
+without it the line still names the branch. A run that preserved nothing
 names no branch at all.
 
 The **next** claim reads that same file out of the resumed working tree and

@@ -151,6 +151,24 @@ export interface PhaseState {
    */
   failureLadderApplied?: boolean;
   /**
+   * The claim the setup phase is taking (Issue #5128): its worker id, and
+   * whether `claimIssue` has returned `claimed`. Lets a run whose setup missed
+   * its deadline tell a claim it holds from one it never took.
+   */
+  setupClaim?: { workerId: string; won: boolean };
+  /**
+   * The setup phase missed its deadline and was abandoned (Issue #5128).
+   * Setup checks it at each step boundary and returns without a further side
+   * effect.
+   */
+  setupAbandoned?: boolean;
+  /**
+   * The run itself released (or will release) the claim when it ended on the
+   * setup deadline (Issue #5128), so a late `claimIssue` must not release it
+   * a second time.
+   */
+  setupClaimReleasedByRun?: boolean;
+  /**
    * Check-agnostic diffable findings captured during the baseline quality
    * check (Issue #2604). Populated by `workOnIssueBaselineQuality` and
    * consumed by the post-Claude quality gate to compute a generic
