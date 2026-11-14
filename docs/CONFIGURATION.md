@@ -2728,6 +2728,13 @@ only need to adjust `claude_no_output_timeout` — lowering it detects stuck
 processes faster; raising it allows for longer periods of Claude "thinking"
 between outputs.
 
+Issue work arms this watchdog too (Issue #5062); it used to run with it off, so
+a silent agent turn lasted until the launcher watchdog reaped the container. The
+agent's stream is silent while a single tool call runs, so one foreground
+command that runs longer than `claude_no_output_timeout` (a slow test suite or
+build inside one shell call) is killed as stuck: raise the key on a host whose
+repositories have a gate that slow, or set it to `0` to switch the watchdog off.
+
 The reactive phases do not inherit the issue-work budget: `pr_feedback_timeout`
 and `ci_fix_timeout` cap at 1800s (30 minutes), `planning_timeout` at 1800s, and
 a grill-me round at `grill_me_timeout` (3600s). Each has its own

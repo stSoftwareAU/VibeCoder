@@ -301,7 +301,10 @@ export interface ExecuteClaudePhaseOptions {
   maxRateLimitRetries?: number;
   /** Maximum total rate-limit wait in seconds. */
   maxRateLimitWait?: number;
-  /** Claude no-output timeout for diagnostics. */
+  /**
+   * Claude no-output (silence) timeout in seconds. Arms the runner's silence
+   * watchdog on the coding run (0 disables); also reported in diagnostics.
+   */
   claudeNoOutputTimeout?: number;
   /** Needs-screenshot label name. */
   needsScreenshotLabel?: string;
@@ -1725,6 +1728,10 @@ async function executeClaudePhaseBody(
       // rather than silently landing on the CLI default.
       phase: "issue",
       timeoutSeconds: claudeTimeout,
+      // The documented stuck-process detector must reach issue work, or a
+      // silent agent turn runs until the launcher watchdog reaps the container
+      // (Issue #5062).
+      noOutputTimeout: claudeNoOutputTimeout,
       killAfterSeconds: claudeKillAfter,
       logger,
       creditLogDir,
