@@ -5,7 +5,12 @@
  * result, run in the worker container (Issue #3293), nothing when nothing is
  * ready, and one runner per machine.
  */
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 const fromFileUrl = (u: URL) => decodeURIComponent(u.pathname);
 
 const RUNNER = fromFileUrl(
@@ -1383,4 +1388,67 @@ Deno.test("run.sh releases the claim of a round it leaves running when it stops 
     (await recorded(home, "release-args"))!,
     "--repo=owner/repo --number=7 --host=fleet-host",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #5127: the round's own Codex home, on the log directory's mount.
+// ---------------------------------------------------------------------------
+
+const CODEX_ENV =
+  "--env\nVIBE_REVIEW_CODEX_HOME=/home/vibe/logs/review-fleet-prs/codex\n";
+
+Deno.test("run.sh gives the round its own Codex home on the log directory's mount, owner-only (Issue #5127)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = (await claudeArgs(home))!;
+  assert(args, "the round was not started");
+  assertStringIncludes(args, CODEX_ENV);
+  assert(
+    args.indexOf(CODEX_ENV) < args.indexOf("vibe-coder:test\nreview-round\n"),
+    args,
+  );
+  const codexHome = `${home}/logs/review-fleet-prs/codex`;
+  const info = await Deno.stat(codexHome);
+  assert(info.isDirectory);
+  assertEquals(info.mode! & 0o777, 0o700);
+  // run.sh writes no login: it is the operator's own.
+  await assertRejects(() => Deno.stat(`${codexHome}/auth.json`));
+});
+
+Deno.test("run.sh keeps the round Codex home's login across passes (Issue #5127)", async () => {
+  const home = await fixture(READY);
+  const codexHome = `${home}/logs/review-fleet-prs/codex`;
+  await Deno.mkdir(`${home}/logs/review-fleet-prs/rounds/stale`, {
+    recursive: true,
+  });
+  await Deno.mkdir(codexHome, { recursive: true });
+  await Deno.writeTextFile(`${codexHome}/auth.json`, '{"fake":"login"}');
+  await Deno.chmod(`${codexHome}/auth.json`, 0o600);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals(
+    await Deno.readTextFile(`${codexHome}/auth.json`),
+    '{"fake":"login"}',
+  );
+});
+
+Deno.test("run.sh passes the round's Codex home on an Apple round too (Issue #5127)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/plan-egress`, APPLE_EGRESS);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = (await claudeArgs(home))!;
+  assertStringIncludes(args, "--network\nvibe-egress-owned-1-abc\n");
+  assertStringIncludes(args, CODEX_ENV);
+});
+
+Deno.test("run.sh fails a round whose Codex home cannot be created, without starting it (Issue #5127)", async () => {
+  const home = await fixture(READY);
+  await Deno.mkdir(`${home}/logs/review-fleet-prs`, { recursive: true });
+  await Deno.writeTextFile(`${home}/logs/review-fleet-prs/codex`, "");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await claudeArgs(home), null);
+  assertStringIncludes(await runnerLog(home), "Codex home");
 });

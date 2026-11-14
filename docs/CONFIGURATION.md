@@ -537,12 +537,15 @@ down to `claude-opus-5-5` at `xhigh` on the same subscription, then rotates to
 the next Claude subscription with budget, then runs on Codex `gpt-6-astra` at
 `high` when a Codex credential reaches the round (see below), and last on DeepSeek
 `deepseek-v4-pro`, only when Codex also hit its usage limit or has no
-credential. Codex runs in a round only with an API key in `codex/provider.env`
-or a `CODEX_HOME` on a mount the round shares that already holds a login. A
+credential. Codex runs in a round when the round's own Codex home
+(`~/logs/review-fleet-prs/codex`, created by `run.sh`) holds its own ChatGPT
+login (Issue #5127), or with an API key in `codex/provider.env`, or a
+`CODEX_HOME` on a mount the round shares that already holds a login. A
 `CODEX_HOME` on the `vibe-agent-state` volume (the documented subscription
-setup) is not mounted in the round, so the round logs
+setup) is still not mounted in the round, so the round logs
 `no Codex login at <home>/auth.json in the round ...; skipping the codex fallback`
-and goes on to DeepSeek (reaching that login is tracked as Issue #5127).
+and goes on to DeepSeek. The one-time login for the round's own home is in
+[CODEX-SUBSCRIPTION-AUTH.md](CODEX-SUBSCRIPTION-AUTH.md#fleet-pr-review-rounds).
 A failure that is not a usage limit stops the chain.
 Each switch is logged once. The chain and its log lines are described in
 [running-unattended.md](../.claude/skills/review-fleet-prs/references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).

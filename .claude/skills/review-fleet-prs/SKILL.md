@@ -293,9 +293,10 @@ that hits a usage limit moves down a fallback chain, each link taken only after
 the previous attempt ended with one: a Fable round steps down to
 `claude-opus-5-5` at `xhigh` on the same subscription; it then rotates to the
 next subscription with budget; then Codex `gpt-6-astra` at `high` runs the
-round, when a Codex credential reaches the round (an API key, or a login on a
-mount the round shares; a subscription login on the agent-state volume does
-not, see running-unattended.md); and DeepSeek `deepseek-v4-pro`
+round, when a Codex credential reaches the round (the round's own Codex home
+holds its own login (Issue #5127), or an API key or a login on a mount the
+round shares reaches it; the agent-state volume itself is not mounted, see
+running-unattended.md); and DeepSeek `deepseek-v4-pro`
 is the last link, used only when Codex also hit its usage limit or has no
 credential. The chain is in
 [running-unattended.md](references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
