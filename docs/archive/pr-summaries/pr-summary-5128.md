@@ -113,8 +113,8 @@ Part of #5128
   won late, when the run did not release it, is unassigned by the abandoned
   setup; one the run already released is not released twice
   (`state.setupClaimReleasedByRun`). A call already running when the deadline
-  fires finishes (a milestone pre-sync agent run is the longest). There is
-  also a check before the resume lookup (`resumeIssueBranch`) and before the
+  fires finishes (a milestone pre-sync agent run is the longest). There is also
+  a check before the resume lookup (`resumeIssueBranch`) and before the
   stream-session priming (`primeStreamSession`, which can delete a stored stream
   session), and the lookup's candidate ordering (`orderBranchesByRecency`, which
   runs `git fetch origin <branch>` per candidate in the lane worktree) is
@@ -157,11 +157,11 @@ flowchart LR
     `setup: repository setup`;
   - a refused claim logs only `issue claim`;
   - a completed setup logs all seven lines in order.
-- `worker/deno/tests/setup_deadline_5128_test.ts` (33 tests at this head)
-  covers the deadline. The `workOnIssue` tests arm it on `fakeClock()` and
-  advance it only after the stalled mock has been entered, and wait on the
-  abandoned setup's own `SETUP_ABANDONED_LOG_LINE`, so none sleeps or races the
-  real clock:
+- `worker/deno/tests/setup_deadline_5128_test.ts` (33 tests at this head) covers
+  the deadline. The `workOnIssue` tests arm it on `fakeClock()` and advance it
+  only after the stalled mock has been entered, and wait on the abandoned
+  setup's own `SETUP_ABANDONED_LOG_LINE`, so none sleeps or races the real
+  clock:
   - `setupDeadlineMs`: the budget exceeds one agent budget plus the clone and
     pre-setup bounds and grows by two agent budgets per extra `claudeTimeout`
     when no cap is published (and for `VIBE_RUN_MAX_SECONDS=0`); it is left
@@ -178,15 +178,15 @@ flowchart LR
     returns `claimNotHeld`, and a claim that comes back late is released once
     and the setup goes no further; a wedge inside `claimIssue` with this run's
     claim comment present has no `claimNotHeld`, and a late claim is not
-    released a second time; a wedge after a won claim whose own claim comment is present has no
-    `claimNotHeld`, and one whose comment is gone (a host re-claimed) returns
-    `claimNotHeld`; in both a clone that returns late starts no heartbeat and
-    releases nothing; a
-    heartbeat that starts after the deadline is stopped; for a wedge in
-    `checkClaimChurn` or `createFeatureBranchFromBase` the named step's start
-    line is logged and the next step (`repository setup`, `pre-setup command`)
-    never logs its start line; a `getRepoDefaultBranch` that returns late runs
-    no default-branch sync, milestone push, resume lookup or feature branch; an
+    released a second time; a wedge after a won claim whose own claim comment is
+    present has no `claimNotHeld`, and one whose comment is gone (a host
+    re-claimed) returns `claimNotHeld`; in both a clone that returns late starts
+    no heartbeat and releases nothing; a heartbeat that starts after the
+    deadline is stopped; for a wedge in `checkClaimChurn` or
+    `createFeatureBranchFromBase` the named step's start line is logged and the
+    next step (`repository setup`, `pre-setup command`) never logs its start
+    line; a `getRepoDefaultBranch` that returns late runs no default-branch
+    sync, milestone push, resume lookup or feature branch; an
     `ensureDefaultBranchCurrent` that returns late runs no milestone push,
     pre-sync or resume lookup; an `ensureMilestoneBranchExists` that returns
     late runs no pre-sync or resume lookup; a ruleset repair that returns late
@@ -195,16 +195,16 @@ flowchart LR
     resume lookup that returns a checkpoint branch late checks nothing out and
     creates no feature branch, and one with two candidates that returns late
     runs no ordering fetch; a stored stream session is not adopted by a setup
-    whose deadline fell after the resume lookup; a stream compaction whose stream was joined just
-    as the deadline fell is not started; a resumed setup whose compaction
-    returns late runs no label sweep (no further `gh` command) or pre-setup
-    command; a feature-branch failure that arrives late with object-store
-    corruption starts neither the object-store repair nor the broken-ref sweep;
-    and a repair, re-clone or sweep that returns late is followed by no re-clone
-    or branch retry; and a claim won while the run reads its claim comment
-    (comment posted or not yet posted) is released exactly once in all. The
-    `createFeatureBranchFromBase` and `checkClaimChurn` wedges also assert that
-    no `gh` command follows the deadline.
+    whose deadline fell after the resume lookup; a stream compaction whose
+    stream was joined just as the deadline fell is not started; a resumed setup
+    whose compaction returns late runs no label sweep (no further `gh` command)
+    or pre-setup command; a feature-branch failure that arrives late with
+    object-store corruption starts neither the object-store repair nor the
+    broken-ref sweep; and a repair, re-clone or sweep that returns late is
+    followed by no re-clone or branch retry; and a claim won while the run reads
+    its claim comment (comment posted or not yet posted) is released exactly
+    once in all. The `createFeatureBranchFromBase` and `checkClaimChurn` wedges
+    also assert that no `gh` command follows the deadline.
 - `worker/deno/tests/run_core_test.ts` already drives the consumers of that
   result: "failure path releases the claim (unassign + clear) — Issue #2648
   regression" releases on a failure without `claimNotHeld`, and "a failed run
@@ -239,7 +239,7 @@ flowchart LR
   and was stopped. With it wired it returns a `setup` / `timeout` failure. The
   `GRQ-25` wedge itself was not reproduced.
 - **regression test** —
-  `worker/deno/tests/setup_deadline_5128_test.ts::workOnIssue: a wedge after a won claim releases the claim and does no later setup work (Issue #5128)`
+  `worker/deno/tests/setup_deadline_5128_test.ts::workOnIssue: a wedge after a won claim whose own comment is present releases it once and does no later setup work (Issue #5128, PR #5130 review)`
 
 ## Acceptance Criteria
 
@@ -247,9 +247,12 @@ flowchart LR
 
 - **partial** — a container wedged and the launcher watchdog reaped it, so the
   run never released its claim — evidence:
-  `worker/deno/tests/setup_deadline_5128_test.ts` (the four `workOnIssue`
-  tests), `worker/deno/lib/setup_steps.ts` (`runSetupWithDeadline`,
-  `setupDeadlineMs`), `worker/deno/lib/issue_worker.ts` (setup `runPhase`),
+  `worker/deno/tests/setup_deadline_5128_test.ts` (the claim-release
+  `workOnIssue` tests: a wedge inside `claimIssue` with no claim of its own, a
+  wedged claim reading a marker from each non-owner author, and a wedge after a
+  won claim whose own comment is present or gone),
+  `worker/deno/lib/setup_steps.ts` (`runSetupWithDeadline`, `setupDeadlineMs`),
+  `worker/deno/lib/issue_worker.ts` (setup `runPhase`),
   `worker/deno/tests/run_core_test.ts` (the Issue #2648 and #1139 release tests)
   — reviewer: partial — reason: a wedge in a live worker now releases the claim
   the run holds. Not covered: a guest that stops first is still reaped by the
@@ -289,8 +292,8 @@ flowchart LR
       review, with the won-claim ownership check, the check before
       `resumeIssueBranch` plus the ordering wrapper, and the check before
       `primeStreamSession` each reverted, the won-claim-comment-gone test, the
-      two-candidate late-lookup test and the stream-session test failed
-      (checked together, 30 passed and those 3 failed).
+      two-candidate late-lookup test and the stream-session test failed (checked
+      together, 30 passed and those 3 failed).
 - [x] `deno test --allow-all tests/setup_deadline_5128_test.ts` from
       `worker/deno`: 33 passed, 0 failed. The other files that call
       `workOnIssue`, `workOnIssueSetupBranch` or touch `InfrastructureDeps` are
@@ -321,8 +324,8 @@ flowchart LR
   own does not unassign`);
   setup settles first (`runSetupWithDeadline returns the
   setup result …`);
-  late claim, late clone and late heartbeat after abandonment (the
-  `workOnIssue` tests above); unreadable comments and a non-plain worker id
+  late claim, late clone and late heartbeat after abandonment (the `workOnIssue`
+  tests above); unreadable comments and a non-plain worker id
   (`ownClaimCommentPresent …`); abandonment before `repository setup`,
   `feature branch` and `pre-setup command` (the next-step tests, each also
   asserting the start line of the step that holds the wedge); a late
@@ -391,11 +394,12 @@ needs a live worker: if the guest stops first, the watchdog still reaps it and
 the assigned-without-heartbeat recovery frees the claim, as before. A
 `claimIssue` that wedges after its assignment, with no claim comment of this
 run's on the issue, is also left to that recovery, because the run cannot prove
-the claim is its own. A won claim whose comment cannot be read at the deadline, or
-whose comment a re-claiming host deleted, is likewise not released by the run;
-the fleet's recovery frees it. An abandoned setup stops at its next checkpoint, not
-mid-call: the call running when the deadline fires finishes first. The deadline
-is capped by the supervisor cap only when `VIBE_RUN_MAX_SECONDS` and
-`VIBE_RUN_STARTED_EPOCH` are published; on a host without them a large
-`claude_timeout` can still put it past the launcher's watchdog. On the #5128
-timeline the deadline would not have fired before the recovery freed the claim.
+the claim is its own. A won claim whose comment cannot be read at the deadline,
+or whose comment a re-claiming host deleted, is likewise not released by the
+run; the fleet's recovery frees it. An abandoned setup stops at its next
+checkpoint, not mid-call: the call running when the deadline fires finishes
+first. The deadline is capped by the supervisor cap only when
+`VIBE_RUN_MAX_SECONDS` and `VIBE_RUN_STARTED_EPOCH` are published; on a host
+without them a large `claude_timeout` can still put it past the launcher's
+watchdog. On the #5128 timeline the deadline would not have fired before the
+recovery freed the claim.
