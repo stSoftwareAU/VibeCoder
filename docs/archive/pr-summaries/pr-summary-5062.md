@@ -1,138 +1,135 @@
 ## Summary
 
-The hard-kill issue the worker files now carries four figures derived from the
-evidence record, so a recurrence can be classified without reading the host's
-archive: the silence before capture, the state of the guest exec probe, guest
-memory and guest pressure. They are in the issue body and in the one-line
-follow-up comment on a recurrence (silence and probe state). The cause of the
-#5062 wedge on `GRQ-25` is not established; its evidence is in that host's
-`~/logs/hard-kill-archive/`, which this host cannot read. Part of #5062.
+The issue-work agent turn never armed the no-output (silence) watchdog.
+`docs/CONFIGURATION.md` documents `claude_no_output_timeout` (600 s by default)
+as the stuck-process detector that "still kills a silent run however many
+extensions were granted" on issue work. Neither issue-run call site passed it
+to the runner, though: `invokeAgent` in `worker/deno/lib/phases/execute_phase.ts`
+(the main loop) and `runExecuteClaudePhase` in
+`worker/deno/lib/execute_claude_phase.ts` (the `execute-claude-phase` command,
+where the value was used only for diagnostics). The runner's silence watchdog
+is off when `noOutputTimeout` is absent. A silent agent turn therefore ran on
+until the launcher watchdog reaped the container. Both incidents on this issue
+have that shape: last step `agent turn`, with the worker log silent for about
+49 minutes (16:53:16Z to 17:42:07Z) and for 54m 20s. Both call sites now pass
+`claude_no_output_timeout` to the runner. The host's incident archive could not
+be correlated from here, so the issue stays open. Part of #5062.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The report said only "agent turn" and a last-log time. It could not tell a
-  frozen guest VM (the exec probe does not answer, the log stops dead) from an
-  agent hung in a live VM. For #5062 the capture came 48m 51s after the last log
-  line, and the run id `vibe-mwc7uss5` decodes to a start of
-  2026-11-11T14:30:33Z, 3h 11m before the capture: consistent with the launcher
-  watchdog's default `11400s` (3h 10m) deadline expiring on a run whose log had
-  already gone quiet. The next recurrence needs the distinction in the public
-  issue, because the archive stays private.
-- The same gap held up #4815, which was deferred because its evidence was on
-  another host. This does not diagnose #5062; it makes the next one diagnosable.
+- The fix uses the control already documented for issue work, so it guesses no
+  new timeout and loosens no containment. A silent turn is killed inside the
+  container after `claude_no_output_timeout`. The ordinary timeout path then
+  checkpoints the work and releases the claim, so the container is not wedged
+  until the launcher reaps it.
 
 ### Essential Design Decisions
 
-- The public issue stays free of evidence text. Each figure is a fixed word or
-  digits captured by a strict, bounded pattern (`hard_kill_guest_facts.ts`); no
-  `ps`, meminfo or log text is returned. The figures are not part of the dedup
-  signature `hard-kill-<handler>-<phase>`.
-- The probe state is read with the same cause constants the capture writes
-  (`GUEST_EXEC_NO_ANSWER_CAUSE`, `NOT_COLLECTED_CAUSE` in
-  `hard_kill_evidence.ts`), so the two cannot drift. A `Z`-less or later-than-
-  capture timestamp gives `unknown` rather than a guessed time.
+- The configured value is passed through unchanged, so `0` still switches the
+  watchdog off, as it does in every other phase.
+- Trade-off: the agent's stream is silent while one tool call runs. So a single
+  foreground command running longer than `claude_no_output_timeout` is now
+  killed on issue work, as it already was on CI-fix and PR-feedback runs.
+  `docs/CONFIGURATION.md` tells operators to raise the key on a host whose gate
+  is that slow.
 
 ### Undiscoverable Facts
 
-- `/proc/pressure/*` does not exist in the worker container, so the pressure
-  fixtures use the kernel's documented `some|full avg10=… total=…` shape; the
-  meminfo fixture is real `cat /proc/meminfo` output.
-- The deno test
-  `createFallbackFlagFiler - routes the label creation through the
-  caller's gh (Issue #2310)`
-  in `tests/merge_fallback_issue_test.ts` fails on this host on the base commit
-  `4462521e` too (checked in a detached worktree), so the full gate's parallel
-  pass reports it. It is unrelated to this change.
+- `~/logs/hard-kill-archive/` does not exist on this host (`vibe-coder-57749`),
+  and `~/logs` holds no line for run `vibe-mwemw9zw-65c352` or
+  `vibe-mwc7uss5-1071e3`. The archive lives on `GRQ-25`, which earlier runs
+  found does not resolve from the executor.
 
 ## Evidence
 
-Backend-only change; no UI files.
+Purely backend changes, with no UI files.
 
 ```mermaid
-flowchart LR
-    R["hard-kill-*.json record (host, private)"] --> F["hard_kill_guest_facts.ts<br/>strict patterns, fixed words and digits"]
-    F --> B["issue body: silent, probe, memory, pressure"]
-    F --> C["recurrence comment: silent, probe"]
-    R -. "ps, meminfo, log text stay in the archive" .-> A["~/logs/hard-kill-archive/"]
+flowchart TD
+    A[issue agent turn] --> S{agent stdout silent for<br/>claude_no_output_timeout?}
+    S -->|before: watchdog never armed| L[runs on until the launcher<br/>watchdog reaps the container<br/>claim never released]
+    S -->|after: noOutputTimeout passed| K[runner kills the process tree<br/>timeoutReason no-output]
+    K --> T[existing timeout path:<br/>WIP checkpoint, claim released]
 ```
 
-Real tool observed: `cat /proc/meminfo` in the worker container gave the
-`MemTotal:` / `MemAvailable:` line shapes the meminfo fixture copies.
-
-Issue-number provenance: #4815: "Hard kill: container wedged in completion
-(watchdog)" (the same gap, deferred); #4253 and #4254 are cited by the existing
-doc text the change edits.
+- `worker/deno/lib/phases/execute_phase.ts`: `invokeAgent` passes
+  `noOutputTimeout: config.claudeNoOutputTimeout`. This covers the subscription
+  switch's second call and the external-orchestration route, because both take
+  the same options.
+- `worker/deno/lib/execute_claude_phase.ts`: `claudeRunOptions` passes
+  `noOutputTimeout: claudeNoOutputTimeout`. The doc comment on that option no
+  longer says the value is only for diagnostics.
+- `worker/deno/commands/execute_claude_phase.ts`: the
+  `--claude-no-output-timeout` usage text now says it arms the watchdog.
+- `docs/CONFIGURATION.md`: a paragraph in "Timeout behaviour" says issue work
+  arms the watchdog and sets out the long-silent-tool-call trade-off.
+- Docs read: `docs/CONFIGURATION.md` lines 2000, 2051, 2705-2770 and
+  3055-3066. They already described the armed watchdog on issue work, which is
+  true now. `lib/agent_progress.ts` already says a silent agent is the no-output
+  watchdog's territory.
+- Callers checked: these are the only two issue-run spawns of
+  `runClaudeWithRetry` with `phase: "issue"`. The other phases (CI fix,
+  PR feedback, spelling, merge conflict, grill-me and custom label) already pass
+  `noOutputTimeout`.
+- Issues cited: #5062 is this issue. #1825 is the silence watchdog the runner
+  already implements.
 
 ## Reproduction
 
-- **symptom** — a hard-kill issue names only "agent turn" and a log time, so a
-  frozen guest and a hung agent look the same
-- **status** — `partial` — the missing distinction is reproduced; the wedge on
-  `GRQ-25` itself is not
-- **reason** — the evidence of run `vibe-mwc7uss5-1071e3` is in the archive of
-  `GRQ-25`, unreadable here; the tests drive the real `captureHardKillEvidence`
-  with a failing exec to produce the records, not a real frozen VM
+- **symptom** — a container wedged in `execute` after the `agent turn` step: the
+  worker log was silent for about 49 minutes in the first incident and 54m 20s
+  in the second, until the launcher watchdog reaped it. The claim was never
+  released.
+- **status** — `partial` — reason: the regression tests reproduce the wiring
+  defect against the unfixed base code (the issue run reaches the runner with
+  `noOutputTimeout` undefined, so the silence watchdog is off). They were not
+  run against the incident itself, because its archive on `GRQ-25` could not be
+  reached, so what the agent was doing during the silence was not observed.
 - **regression test** —
-  `worker/deno/tests/hard_kill_report_test.ts::the body carries the four guest figures under the last log time (Issue #5062)`
+  `worker/deno/tests/execute_phase_routing_test.ts::execute_phase - the issue run arms the configured no-output watchdog (Issue #5062)`
 
 ## Acceptance Criteria
 
-- **missing** — Hard kill: container wedged in execute (watchdog) — the cause of
-  the wedge in run `vibe-mwc7uss5-1071e3` — reviewer: missing — reason: its
-  evidence is on `GRQ-25`; this change adds the figures that classify the next
-  recurrence, and a later run acts on the first recurrence that carries them
+- **missing** — "Correlate the worker's last operation, agent activity and
+  guest/host health through the existing authorised diagnostic path, or a
+  bounded replay" — reason: the incident archive is on `GRQ-25`, which does not
+  resolve from this executor, and this host's `~/logs` holds nothing for either
+  run. The guest probe's `did not answer` in the 13 November run is not
+  explained by this fix.
 
 ## Test Plan
 
-- `worker/deno/tests/hard_kill_guest_facts_test.ts` (new, 28 tests): silent time
-  (the incident's `48m 51s`, hours, mtime note, no `Z`, `unknown`,
-  after-capture, unparseable, unparseable capture time), the four probe states
-  driven by the real `captureHardKillEvidence`, memory, pressure (partial,
-  `some`/`full`, malformed), privacy (a private title and a token in
-  `ps`/meminfo never appear), and 64 KiB hostile fields.
-- `worker/deno/tests/hard_kill_report_test.ts`: 4 new tests: the body's four
-  lines for the incident's values, an answered guest's numbers, guest free text
-  never reaching the body, and the recurrence follow-up line. No existing
-  assertion changed.
-- `worker/deno/tests/run_failure_issue_test.ts`: the fixture of
-  `runFailureNamesReadableSource - a hard-kill body stays schedulable (Issue #4462)`
-  gains `evidence.guest` (all empty strings) because `formatHardKillBody` now
-  reads it; no assertion changed or removed.
-- Red checks (mutation applied, tests run, restored): `hardKillGuestProbe`
-  always `answered` → 8 tests red (the four producer-driven probe tests,
-  privacy, 64 KiB ps, and the body and follow-up tests); `Z` requirement dropped
-  → the no-`Z` test red; the four lines removed from `formatHardKillBody` → 3
-  red; the follow-up suffix removed → the follow-up test red.
-- Mutation check (2 survivors, both addressed): `hard_kill_guest_facts.ts:88`
-  dropped `Number.isNaN(captured)`: new test
-  `hardKillSilentFor is unknown when
-  the capture time does not parse` goes red
-  under that mutation (checked; it would otherwise print `NaNs`).
-  `hard_kill_guest_facts.ts:157` dropped `value !== undefined`: the operand was
-  dead, since `RegExp.test(undefined)` tests the string `"undefined"` and never
-  matches, so no test could tell. The production line now reads
-  `token?.slice(...) ?? ""` and tests the regex alone; behaviour is unchanged.
-- Other callers of the changed function: `hardKillTerminalRun` and
-  `reportPendingHardKills` do not read the new figures; the only other builder
-  of a truncated evidence object was the `run_failure_issue_test.ts` fixture
-  above.
-- Docs read and updated: `docs/workflows/resilience-and-concurrency.md`
-  (hard-kill evidence paragraphs), `docs/TROUBLESHOOTING.md` (exit 87 section),
-  `docs/CALLBACKS.md` (the Filing bullet); the header and `formatHardKillBody`
-  doc comments in `hard_kill_report.ts`. The new module is claimed in
-  `docs/audits/lib-sweep-coverage/top-up-5062.json`.
-- `deno task test:unit` on `hard_kill_guest_facts_test.ts`,
-  `hard_kill_report_test.ts`, `hard_kill_evidence_test.ts`,
-  `run_failure_issue_test.ts`: passed (124 and 118 tests across the two runs).
-- `./quality.sh < /dev/null` (first run, before the fixture fix): every stage
-  passed except `deno tests`, whose parallel pass reported 2 failures: the
-  `run_failure_issue_test.ts` fixture (fixed in the second commit; the file
-  passes now) and the pre-existing `merge_fallback_issue_test.ts` failure above.
-  The serial pass did not run because the parallel pass failed. The gate was not
-  re-run after the fixture fix: it takes about 9 minutes here and would stop on
-  the same pre-existing failure.
+- `worker/deno/tests/execute_phase_routing_test.ts` adds two tests:
+  - "execute_phase - the issue run arms the configured no-output watchdog (Issue
+    #5062)": with `claudeNoOutputTimeout` 437, every runner call receives
+    `noOutputTimeout` 437.
+  - "execute_phase - claude_no_output_timeout 0 leaves the silence watchdog off
+    (Issue #5062)": with 0, every runner call receives 0.
+- `worker/deno/tests/execute_claude_phase_test.ts` adds "runExecuteClaudePhase -
+  arms the configured no-output watchdog on the coding run (Issue #5062)"
+  (437 reaches the runner).
+- Red before the fix: against the unmodified `execute_phase.ts`, both routing
+  tests failed (`Actual undefined, Expected 437` and `Actual undefined,
+  Expected 0`). Against the unmodified `execute_claude_phase.ts`, the command
+  path test failed (`Actual undefined, Expected 437`).
+- These tests check that the value reaches the runner. That the runner then
+  kills a silent process is covered by existing tests:
+  `worker/deno/tests/claude_runner_test.ts::runClaudeWithTimeout - kills silent process via no-output watchdog (Issue #1825)`
+  and
+  `worker/deno/tests/claude_runner_progress_extension_4296_test.ts::runClaudeWithTimeout - the silence watchdog still kills an extended run (Issues #1825, #4296)`.
+- Green on the final head:
+  `deno task test:unit tests/execute_claude_phase_test.ts tests/execute_phase_routing_test.ts`
+  gave 70 passed, 0 failed.
+- Full `./quality.sh` on head `00acb574` PASSED with skipped checks. Config
+  integration was skipped (no `.config.json`), and so was checkov (not
+  installed).
+- No existing assertion was removed or edited.
 
-Not done or not checked: the wedge on `GRQ-25` is undiagnosed; no real frozen VM
-was available; the full gate's serial pass has not run on this head.
+## Not checked
+
+- The incident archive (worker log, agent transcript, boot logs, guest probes)
+  for either run was not read. If the guest itself froze, an in-guest watchdog
+  cannot fire either, and the launcher watchdog stays the backstop.
+- No live issue run was observed being killed by the newly armed watchdog.
