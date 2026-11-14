@@ -209,6 +209,12 @@ flowchart TD
   added, `deno task check:manifests` → 870 passed, 0 failed. The ancestry guard
   (`sweep-drift --default-branch origin/main`) exits 0, with `sweptAt` set to
   `origin/main`.
+- `./quality.sh < /dev/null` at `70695a6e` →
+  `Result: PASSED (with skipped
+  checks)`, with `gitleaks`, `deno tests`,
+  `deno lint`, `deno type check` and `deno fmt` PASSED; `config integration` and
+  `checkov` SKIPPED for host reasons as before. `deno task pr-summary-check`
+  reported 0 blocked gates.
 - Earlier iteration: `./quality.sh < /dev/null` at `69208427` →
   `Result: PASSED (with skipped
   checks)`.
