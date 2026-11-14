@@ -1390,6 +1390,10 @@ async function executeClaudeBody(
           phase: "issue",
           repo,
           timeoutSeconds,
+          // The documented stuck-process detector (claude_no_output_timeout) must
+          // reach issue work too, or a silent agent turn runs until the launcher
+          // watchdog reaps the container (Issue #5062).
+          noOutputTimeout: config.claudeNoOutputTimeout,
           killAfterSeconds: config.claudeKillAfter,
           model: allocation && !allocation.external
             ? "sonnet"

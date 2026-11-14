@@ -151,6 +151,24 @@ export interface PhaseState {
    */
   failureLadderApplied?: boolean;
   /**
+   * The claim the setup phase is taking (Issue #5128): its worker id, and
+   * whether `claimIssue` has returned `claimed`. Lets a run whose setup missed
+   * its deadline tell a claim it holds from one it never took.
+   */
+  setupClaim?: { workerId: string; won: boolean };
+  /**
+   * The setup phase missed its deadline and was abandoned (Issue #5128).
+   * Setup checks it at each step boundary and returns without a further side
+   * effect.
+   */
+  setupAbandoned?: boolean;
+  /**
+   * The run itself released (or will release) the claim when it ended on the
+   * setup deadline (Issue #5128), so a late `claimIssue` must not release it
+   * a second time.
+   */
+  setupClaimReleasedByRun?: boolean;
+  /**
    * Check-agnostic diffable findings captured during the baseline quality
    * check (Issue #2604). Populated by `workOnIssueBaselineQuality` and
    * consumed by the post-Claude quality gate to compute a generic
@@ -372,21 +390,6 @@ export interface PhaseState {
    * {@link completionAdvisoryComment} into the one reviewer comment.
    */
   screenshotAdvisoryComment?: string;
-  /**
-   * The repository's CI job blocks on mutation survivors and the mutation
-   * check still reports them after the one in-session recovery turn (Issue
-   * #4617). The pull request is then raised as a draft `Part of #N`, is not
-   * marked ready and does not arm auto-merge. Cleared on any pass where the
-   * condition does not hold, because the state is reused across passes.
-   */
-  mutationHold?: {
-    /** The blocking CI job, sanitised by the mutation gate. */
-    job: string;
-    /** The workflow file that holds the job, sanitised by the mutation gate. */
-    workflow: string;
-    /** The mutation gate's comment, carried into the draft body. */
-    comment: string;
-  };
   /**
    * Review-style findings from the pre-PR verifier that
    * survived the in-run recovery (Issue #4236). The summary claim check

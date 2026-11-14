@@ -15,6 +15,8 @@
  *   over every commit the branch has ahead of the PR base — so
  *   content the execute phase's WIP checkpoints already pushed is checked
  *   before `gh pr create`.
+ * - the babysitter's in-container repair command, via `runBabysitterTreeGate`,
+ *   over its uncommitted tree before its READY response reaches the host.
  *
  * It does four things, in order:
  *
@@ -1553,9 +1555,9 @@ export function planFormatterFixes(
 
 /**
  * Parse each deno root's `deno.json` / `deno.jsonc` scope from the working
- * tree. A root whose config is unreadable or unparseable is left out, so its
- * files are checked unfiltered and deno itself reports the broken config. A
- * symlink anywhere in the path, or a file over the size cap, is unreadable.
+ * tree. An unreadable or unparseable config leaves formatting unfiltered;
+ * unit-test discovery separately refuses such a config before validation.
+ * A symlink anywhere in the path, or a file over the size cap, is unreadable.
  */
 export async function loadDenoScopes(
   repoRoot: string,
@@ -1565,56 +1567,70 @@ export async function loadDenoScopes(
   for (
     const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
   ) {
-    const text = await readDenoConfigText(repoRoot, root);
-    if (text === null) continue;
-    const parsed = parseDenoScope(text);
+    const config = await readDenoConfigText(repoRoot, root, false);
+    if (config === null) continue;
+    const parsed = parseDenoScope(config.text);
     if (parsed !== null) scopes[root] = parsed;
   }
   return scopes;
 }
 
 /**
- * A deno root's config text: `deno.json`, else `deno.jsonc` when `deno.json` is
- * absent or unreadable (a symlink, a non-regular file or one over the size cap
- * is unreadable); null when neither can be read. Deno prefers `deno.json`, so
- * the two are never both used.
+ * A deno root's config: `deno.json`, else `deno.jsonc`. Scope discovery may
+ * ignore an unreadable file; unit-test discovery refuses it, so an unreadable
+ * primary config cannot silently select the secondary config. Missing files
+ * may fall through on both paths; null means neither config could be read.
  */
 async function readDenoConfigText(
   repoRoot: string,
   root: string,
-): Promise<string | null> {
+  refuseUnreadable: boolean,
+): Promise<{ path: string; text: string } | null> {
   for (const name of ["deno.json", "deno.jsonc"]) {
+    const path = root === "." ? name : `${root}/${name}`;
     try {
-      return await readRepoFile(
-        repoRoot,
-        root === "." ? name : `${root}/${name}`,
-      );
-    } catch {
-      // This config name is absent or unreadable; try the other.
+      return { path, text: await readRepoFile(repoRoot, path) };
+    } catch (error) {
+      if (refuseUnreadable && !(error instanceof Deno.errors.NotFound)) {
+        throw new Error(`cannot read ${path}; unit tests were not checked`, {
+          cause: error,
+        });
+      }
     }
   }
   return null;
 }
 
 /** Whether a deno.json(c) document's `tasks` object defines `test:unit`. */
-function definesUnitTestTask(text: string): boolean {
+function definesUnitTestTask(text: string, path: string): boolean {
   const stripped = stripJsonc(text);
-  let parsed: { tasks?: unknown } | null;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(stripped);
   } catch {
-    return false;
+    throw new Error(`cannot parse ${path}; unit tests were not checked`);
   }
-  const tasks = parsed?.tasks;
-  return typeof tasks === "object" && tasks !== null &&
-    Object.hasOwn(tasks, "test:unit");
+  if (parsed === null) return false;
+  if (typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`cannot parse ${path}; unit tests were not checked`);
+  }
+  const tasks = (parsed as { tasks?: unknown }).tasks;
+  if (tasks === undefined || tasks === null) return false;
+  if (typeof tasks !== "object" || Array.isArray(tasks)) {
+    throw new Error(
+      `cannot read task definitions in ${path}; unit tests were not checked`,
+    );
+  }
+  return Object.hasOwn(tasks, "test:unit");
 }
 
 /**
  * The deno roots whose config defines a `test:unit` task (Issue #4930), so the
  * gate can run the repo's own unit suite for changed tests. Root discovery
- * matches {@link loadDenoScopes}; a root whose config is unreadable or
- * unparseable is left out.
+ * matches {@link loadDenoScopes}. An unreadable or unparseable config, or a
+ * `tasks` value that is neither an object nor null, throws rather than silently
+ * dropping its tests.
+ * Missing configs and valid configs without `test:unit` remain ineligible.
  */
 export async function loadDenoUnitTestRoots(
   repoRoot: string,
@@ -1624,9 +1640,9 @@ export async function loadDenoUnitTestRoots(
   for (
     const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
   ) {
-    const text = await readDenoConfigText(repoRoot, root);
-    if (text === null) continue;
-    if (definesUnitTestTask(text)) roots.push(root);
+    const config = await readDenoConfigText(repoRoot, root, true);
+    if (config === null) continue;
+    if (definesUnitTestTask(config.text, config.path)) roots.push(root);
   }
   return roots;
 }
@@ -2887,7 +2903,12 @@ export async function runPrePushGate(opts: {
   });
   if (!shellcheck.ok) return shellcheck;
 
-  const denoUnitTestRoots = await loadDenoUnitTestRoots(opts.cwd, tracked);
+  let denoUnitTestRoots: string[];
+  try {
+    denoUnitTestRoots = await loadDenoUnitTestRoots(opts.cwd, tracked);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
   const plan = planChangedFileChecks(considered, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,

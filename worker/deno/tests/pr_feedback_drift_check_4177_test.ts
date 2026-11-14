@@ -68,10 +68,6 @@ Deno.test("a 20-range overflow logs one warning, not one line per range (Issue #
       {
         runGit: (args) => git(dir, args),
         runGh: async () => "main\n",
-        runMutationCheck: async () => ({
-          kind: "not_applicable",
-          reason: "not under test",
-        }),
         logger: {
           info: () => {},
           error: () => {},

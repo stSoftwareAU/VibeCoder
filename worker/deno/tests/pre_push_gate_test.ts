@@ -1409,12 +1409,37 @@ async function denoCommandsRun(
   }
 }
 
-Deno.test("runPrePushGate: an unparseable deno.json leaves the push unfiltered", async () => {
-  const ran = await denoCommandsRun((clone) =>
-    Deno.writeTextFile(`${clone}/deno.json`, "{ not json")
-  );
-  assertEquals(ran, ["deno fmt --check --permit-no-files 'README.md'"]);
-});
+for (const mode of [{}, { shellcheckOnly: true }, { ciCargoOnly: true }]) {
+  Deno.test(`runPrePushGate: an unparseable deno.json blocks validation in mode ${JSON.stringify(mode)}`, async () => {
+    const { root, clone, stdin } = await makeRepoWithDocCommit();
+    try {
+      const runGate = () =>
+        runPrePushGate({
+          cwd: clone,
+          stdin,
+          preFlightCommands: [],
+          runner: recordingRunner(() => false, []),
+          findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+          ...mode,
+        });
+      assert((await runGate()).ok);
+      await Deno.writeTextFile(`${clone}/deno.json`, "{ not json");
+      // Scope discovery keeps its unfiltered fallback; validation cannot.
+      assertEquals(await loadDenoScopes(clone, ["deno.json"]), {});
+      const result = await runGate();
+      assert(!result.ok);
+      assertEquals(
+        result.error.message,
+        "cannot parse deno.json; unit tests were not checked",
+      );
+      assert(!(result.error instanceof PrePushGateInfrastructureError));
+      await Deno.writeTextFile(`${clone}/deno.json`, "{}");
+      assert((await runGate()).ok);
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  });
+}
 
 Deno.test("runPrePushGate: a deno.jsonc alone supplies the scope", async () => {
   const ran = await denoCommandsRun(async (clone) => {
@@ -4432,6 +4457,7 @@ Deno.test("loadDenoUnitTestRoots: a root counts only when its config defines tes
     // Valid JSON that is not a config object with a `tasks` object holding it.
     await write("null-doc", "deno.json", "null");
     await write("array-doc", "deno.json", "[]");
+    await write("string-doc", "deno.json", '"test:unit"');
     await write("no-tasks", "deno.json", "{}");
     await write("null-tasks", "deno.json", '{ "tasks": null }');
     await write("array-tasks", "deno.json", '{ "tasks": [] }');
@@ -4439,7 +4465,7 @@ Deno.test("loadDenoUnitTestRoots: a root counts only when its config defines tes
     await write(
       "jsonc",
       "deno.jsonc",
-      '{\n  // JSONC comment\n  "tasks": { "test:unit": "x" }\n}\n',
+      '{\n  // JSONC comment\n  "tasks": {\n    "test:unit": "x",\n  },\n}\n',
     );
     // deno.json is preferred, so a test:unit only in deno.jsonc does not count.
     await write("prefers-json", "deno.json", JSON.stringify({ tasks: {} }));
@@ -4451,19 +4477,42 @@ Deno.test("loadDenoUnitTestRoots: a root counts only when its config defines tes
     const tracked = [
       "runs/deno.json",
       "no-task/deno.json",
-      "broken/deno.json",
       "null-doc/deno.json",
-      "array-doc/deno.json",
       "no-tasks/deno.json",
       "null-tasks/deno.json",
-      "array-tasks/deno.json",
-      "string-tasks/deno.json",
       "jsonc/deno.jsonc",
       "prefers-json/deno.json",
       "prefers-json/deno.jsonc",
       "unreadable/deno.json",
     ];
     assertEquals(await loadDenoUnitTestRoots(root, tracked), ["jsonc", "runs"]);
+    for (
+      const dir of [
+        "broken",
+        "array-doc",
+        "string-doc",
+        "array-tasks",
+        "string-tasks",
+      ]
+    ) {
+      const path = `${root}/${dir}/deno.json`;
+      const invalid = await Deno.readTextFile(path);
+      await Deno.writeTextFile(
+        path,
+        JSON.stringify({ tasks: { "test:unit": "x" } }),
+      );
+      assertEquals(await loadDenoUnitTestRoots(root, [`${dir}/deno.json`]), [
+        dir,
+      ]);
+      await Deno.writeTextFile(path, invalid);
+      await assertRejects(
+        () => loadDenoUnitTestRoots(root, [`${dir}/deno.json`]),
+        Error,
+        dir.endsWith("tasks")
+          ? `cannot read task definitions in ${dir}/deno.json; unit tests were not checked`
+          : `cannot parse ${dir}/deno.json; unit tests were not checked`,
+      );
+    }
   } finally {
     await Deno.remove(root, { recursive: true });
   }

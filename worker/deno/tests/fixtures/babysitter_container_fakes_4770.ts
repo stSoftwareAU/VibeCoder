@@ -244,6 +244,8 @@ export function fakeContainer(
   const host = options.host ?? repairHost();
   return {
     env: options.env ?? (() => undefined),
+    hostDiskAdmission: () =>
+      Promise.resolve({ release: () => Promise.resolve() }),
     onPath: () => Promise.resolve(true),
     checkoutDir: () => host.baseDir,
     buildPlan: (_baseDir, containerName) =>

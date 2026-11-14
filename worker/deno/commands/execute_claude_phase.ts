@@ -22,7 +22,9 @@
  *   --claude-kill-after         Grace period in seconds (default: 30)
  *   --max-rate-limit-retries    Max rate-limit retries (default: 2)
  *   --max-rate-limit-wait       Max rate-limit wait in seconds (default: 600)
- *   --claude-no-output-timeout  No-output timeout for diagnostics (default: 900)
+ *   --claude-no-output-timeout  Seconds of silence before the agent run is killed
+ *                              (0 turns it off; also reported in diagnostics;
+ *                              default: config value, else 900)
  *   --needs-screenshot-label    Screenshot label name (default: "needs-screenshot")
  *   --credit-log-dir            Credit log directory (optional)
  *   --worker-name               Worker name for credit tracking (optional)

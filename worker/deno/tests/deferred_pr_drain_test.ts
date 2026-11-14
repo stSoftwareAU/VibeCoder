@@ -402,7 +402,9 @@ Deno.test("deferred drain - a record with no advisory posts only the PR-raised n
   }
 });
 
-Deno.test("deferred drain - a record held for mutation survivors is raised as a draft (Issue #4617)", async () => {
+// The `draft` field is kept so records persisted before Issue #5095 still open
+// as drafts.
+Deno.test("deferred drain - a record persisted with draft: true before Issue #5095 is still raised as a draft (Issue #4617)", async () => {
   const workDir = await Deno.makeTempDir();
   try {
     await recordDeferredPr(workDir, record({ draft: true }));

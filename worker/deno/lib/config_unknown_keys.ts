@@ -48,8 +48,11 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // owner-comment hold. Read by that skill's test_change_policy.ts, not by the worker.
   "pr_reviewer_test_hold_repos",
   // How many review rounds the unattended review-fleet-prs runner runs at
-  // once (Issue #4395); read by that skill's run.sh, not by the worker.
+  // once (Issue #4395), and the model and effort each round runs on; read by
+  // that skill's run.sh, not by the worker.
   "pr_reviewer_parallel",
+  "review_model",
+  "review_effort",
   "repos",
   "authorized_commenters",
   "author_source",
@@ -482,6 +485,58 @@ export function detectUnknownConfigKeys(
     for (const nested of Object.keys(block)) {
       if (nestedKeys.has(nested)) continue;
       warnings.push(unknownKeyWarning(nested, nestedKeys, key));
+    }
+  }
+
+  return warnings;
+}
+
+/**
+ * `repo_config` keys a repository used to set and the worker no longer reads
+ * (Issue #5095). Both spellings are listed because the loader accepts either.
+ * They are tolerated, not refused: the config still loads, the key is dropped
+ * from the repository's config, and one warning names it.
+ */
+export const RETIRED_REPO_CONFIG_KEYS: ReadonlySet<string> = new Set([
+  "skip_mutation_check",
+  "mutation_check_budget_seconds",
+  "skipMutationCheck",
+  "mutationCheckBudgetSeconds",
+]);
+
+/**
+ * Warn about retired keys inside each `repo_config` entry (Issue #5095).
+ *
+ * `repo_config` is free-form, so {@link detectUnknownConfigKeys} never looks
+ * inside it; this is the check a stale repository key gets.
+ *
+ * @param repoConfig - The parsed `repo_config` block, or undefined when absent
+ * @returns One warning per retired key, naming the repository and the key
+ */
+export function detectRetiredRepoConfigKeys(
+  repoConfig: unknown,
+): UnknownKeyWarning[] {
+  const warnings: UnknownKeyWarning[] = [];
+  if (
+    typeof repoConfig !== "object" || repoConfig === null ||
+    Array.isArray(repoConfig)
+  ) {
+    return warnings;
+  }
+
+  for (const [repo, entry] of Object.entries(repoConfig)) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      continue;
+    }
+    for (const key of Object.keys(entry)) {
+      if (!RETIRED_REPO_CONFIG_KEYS.has(key)) continue;
+      const field = `repo_config.${repo}.${key}`;
+      warnings.push({
+        field,
+        message:
+          `Config key "${field}" in .config.json is retired by Issue #5095 and ignored. Remove it.`,
+        suggestion: null,
+      });
     }
   }
 
