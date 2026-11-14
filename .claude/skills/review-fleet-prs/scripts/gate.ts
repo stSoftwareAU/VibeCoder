@@ -1528,12 +1528,21 @@ export async function loadPullRequestDiff(
   number: number,
 ): Promise<{ ok: true; diff: string } | { ok: false; reason: string }> {
   try {
-    const diff = await gh([
+    const args = [
       "api",
       "--header",
       "Accept: application/vnd.github.diff",
       `repos/${repo}/pulls/${number}`,
-    ]);
+    ];
+    // Preserve control bytes in source data for the checks; do not print it.
+    let diff: string;
+    try {
+      diff = await gh(["api", "--allow-escape-sequences", ...args.slice(1)]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/unknown flag.*allow-escape-sequences/i.test(message)) throw error;
+      diff = await gh(args);
+    }
     return { ok: true, diff };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

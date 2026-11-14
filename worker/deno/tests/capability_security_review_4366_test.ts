@@ -5,9 +5,43 @@
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  loadPullRequestDiff,
   pass,
   type SearchPr,
 } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+
+Deno.test("review gate reads a diff containing terminal escapes without losing its content", async () => {
+  const diff = "diff --git a/test b/test\n+const escape = '\x1b[31m';\n";
+  const result = await loadPullRequestDiff(
+    (args) => {
+      if (!args.includes("--allow-escape-sequences")) {
+        return Promise.reject(
+          new Error("pass --allow-escape-sequences to output it anyway"),
+        );
+      }
+      return Promise.resolve(diff);
+    },
+    "acme/app",
+    7,
+  );
+  assertEquals(result, { ok: true, diff });
+});
+
+Deno.test("review gate supports gh versions without the escape flag", async () => {
+  const calls: string[][] = [];
+  const result = await loadPullRequestDiff(
+    (args) => {
+      calls.push(args);
+      return args.includes("--allow-escape-sequences")
+        ? Promise.reject(new Error("unknown flag: --allow-escape-sequences"))
+        : Promise.resolve("ordinary diff");
+    },
+    "acme/app",
+    7,
+  );
+  assertEquals(result, { ok: true, diff: "ordinary diff" });
+  assertEquals(calls.length, 2);
+});
 import { reviewForPost } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
 import { withChecklistGaps } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 import { parseFableReview } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
