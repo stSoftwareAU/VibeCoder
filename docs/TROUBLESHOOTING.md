@@ -261,7 +261,9 @@ deadline after it. With no supervisor cap published (unset or `0`) there is
 nothing to cap the budget by, and a large `claude_timeout` can push the deadline
 past the watchdog. The run ends as a setup `timeout` failure. It releases the
 claim only when it holds it: a claim `claimIssue` returned, or one whose own
-claim comment is on the issue. A claim never taken is left alone, because every
+claim comment is on the issue and is authored by this run's GitHub account.
+Copied or quoted markers do not establish ownership. A claim never taken is
+left alone, because every
 host shares one login and an unassign would strip another host's live claim. The
 abandoned setup returns at its next checkpoint, and a claim it wins late is
 released. The checkpoints sit before most calls that write to the lane worktree,

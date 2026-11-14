@@ -84,8 +84,8 @@ Part of #5128
   claim as held if `won` is set or `ownClaimCommentPresent` finds this run's
   `CLAIM_LOCK:<workerId>` comment; otherwise the result carries `claimNotHeld`,
   which `run_core.ts`'s `releaseIssueClaim` honours by releasing nothing. A read
-  of the comments that fails counts as not held. `won` is read again after
-  that comment read: a claim that returns while the run is still deciding
+  of the comments that fails counts as not held. `won` is read again after that
+  comment read: a claim that returns while the run is still deciding
   (`state.setupClaimReleasedByRun` unset) is recorded as won by the abandoned
   setup instead of being unassigned by it, so the run releases it, and it is
   released exactly once (a second unassign could strip another host's claim).
@@ -186,8 +186,8 @@ flowchart LR
     and a repair, re-clone or sweep that returns late is followed by no re-clone
     or branch retry; and a claim won while the run reads its claim comment
     (comment posted or not yet posted) is released exactly once in all. The
-    `createFeatureBranchFromBase` and `checkClaimChurn`
-    wedges also assert that no `gh` command follows the deadline.
+    `createFeatureBranchFromBase` and `checkClaimChurn` wedges also assert that
+    no `gh` command follows the deadline.
 - `worker/deno/tests/run_core_test.ts` already drives the consumers of that
   result: "failure path releases the claim (unassign + clear) — Issue #2648
   regression" releases on a failure without `claimNotHeld`, and "a failed run
@@ -314,6 +314,32 @@ flowchart LR
   `workOnIssueSetupBranch` (`setup_step_log_test.ts`,
   `stream_compaction_seam_2642_test.ts` and this file) stage the deadline only
   through an injected mock or a logged line.
+
+## Review correction
+
+PR #5130 review found that the timeout ownership lookup accepted a marker
+without authenticating its author. It now reads paginated comment bodies and
+authors, accepts only an exact leading marker from this run's GitHub account,
+and treats missing or malformed evidence as no claim. An outsider-marker
+regression failed before the fix. The tests also exercise the timeout path with
+both the owner and an outsider, retaining exactly-once late-claim release.
+Validation after the fix: 179 tests passed across `setup_deadline_5128_test.ts`,
+`setup_step_log_test.ts`, `hard_kill_report_test.ts` and `run_core_test.ts`,
+using Deno 2.9.8.
+
+The former command-string assertion and canned comment-ID response were replaced
+by ownership outcomes over comment bodies and authors. The positive own-claim,
+missing-claim, failed-read, invalid-worker-ID and exactly-once release
+assertions remain covered; outsider, quoted-marker and paginated-response cases
+are added. This enforces the issue's requirement to release only the claim this
+run holds.
+
+The review-time `./quality.sh` run passed completeness, formatting, lint, type
+checks and the other available static checks. Its parallel unit-test pass exited
+unsuccessfully without a named assertion failure; the serial pass did not run.
+Config integration, markdownlint, Semgrep, Checkov and the live release-ruleset
+check were unavailable locally. This is not a passing full gate; required CI
+must validate the published fix.
 
 ## Merge verification
 

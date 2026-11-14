@@ -311,40 +311,76 @@ Deno.test("runSetupWithDeadline abandons a wedged setup once and returns a timeo
   assertEquals(abandoned, 1);
 });
 
-Deno.test("ownClaimCommentPresent answers true only for this run's claim comment (Issue #5128)", async () => {
-  const seen: string[][] = [];
-  const present = await ownClaimCommentPresent(
-    (args) => {
-      seen.push(args);
-      return Promise.resolve("987\n");
-    },
-    "org/repo",
-    5,
-    "testbot-123",
-  );
-  assertEquals(present, true);
-  assertStringIncludes(seen[0]!.join(" "), "CLAIM_LOCK:testbot-123 -->");
-  assertEquals(
-    await ownClaimCommentPresent(() => Promise.resolve(""), "o/r", 5, "w-1"),
-    false,
-  );
-  // A read that fails is never taken as "held".
+/** The pages returned by `gh api --paginate --slurp`. */
+function claimComments(workerId: string, author = "testbot"): string {
+  return JSON.stringify([[{
+    body: `<!-- CLAIM_LOCK:${workerId} -->\nClaimed`,
+    user: { login: author },
+  }]]);
+}
+
+Deno.test("ownClaimCommentPresent requires this run's marker and authenticated author (PR #5130 review)", async () => {
+  const marker = "<!-- CLAIM_LOCK:testbot-123 -->";
+  for (
+    const [response, expected] of [
+      [claimComments("testbot-123"), true],
+      [claimComments("testbot-123", "TestBot"), true],
+      [claimComments("testbot-123", "outsider"), false],
+      [claimComments("testbot-other"), false],
+      [JSON.stringify([[{ body: marker }]]), false],
+      [
+        JSON.stringify([[{
+          body: `Quoted: ${marker}`,
+          user: { login: "testbot" },
+        }]]),
+        false,
+      ],
+      [
+        JSON.stringify([[{
+          body: `${marker}-extra`,
+          user: { login: "testbot" },
+        }]]),
+        false,
+      ],
+      ["[]", false],
+      [JSON.stringify([[], JSON.parse(claimComments("testbot-123"))[0]]), true],
+      [
+        JSON.stringify([{}, JSON.parse(claimComments("testbot-123"))[0]]),
+        false,
+      ],
+      ["null", false],
+      ["not JSON", false],
+    ] as const
+  ) {
+    assertEquals(
+      await ownClaimCommentPresent(
+        () => Promise.resolve(response),
+        "org/repo",
+        5,
+        "testbot-123",
+        "testbot",
+      ),
+      expected,
+      response,
+    );
+  }
   assertEquals(
     await ownClaimCommentPresent(
       () => Promise.reject(new Error("rate limited")),
-      "o/r",
+      "org/repo",
       5,
-      "w-1",
+      "testbot-123",
+      "testbot",
     ),
     false,
   );
-  // A worker id that is not a plain id never reaches the query.
   assertEquals(
     await ownClaimCommentPresent(
-      () => Promise.resolve("1"),
-      "o/r",
+      () => Promise.resolve(claimComments('x") | .id #')),
+      "org/repo",
       5,
       'x") | .id #',
+      "testbot",
     ),
     false,
   );
@@ -386,32 +422,35 @@ Deno.test("workOnIssue: a wedge inside claimIssue with no claim of its own does 
   assertEquals(started(h, "claim churn check"), false);
 });
 
-Deno.test("workOnIssue: a wedge inside claimIssue after this run's claim comment landed releases it, once (Issue #5128)", async () => {
-  const late = gate<Awaited<ReturnType<IssueDeps["claimIssue"]>>>();
-  const h = harness(
-    {
+for (const author of ["testbot", "outsider"]) {
+  Deno.test(`workOnIssue: a wedged claim reads a marker from ${author} and releases only its own (PR #5130 review)`, async () => {
+    const late = gate<Awaited<ReturnType<IssueDeps["claimIssue"]>>>();
+    let workerId = "";
+    const h = harness({
       issues: {
-        claimIssue: () => {
+        claimIssue: (options) => {
+          workerId = options.workerId;
           h.entered.open();
           return late.promise;
         },
       },
-    },
-    { ghComments: "4242\n" },
-  );
+      github: {
+        runGhCommand: () => Promise.resolve(claimComments(workerId, author)),
+      },
+    });
 
-  const result = await runUntilAbandoned(h, 5602);
+    const result = await runUntilAbandoned(h, 5602);
 
-  assertEquals(result.category, "timeout");
-  assertEquals(started(h, "issue claim"), true);
-  // The run's own comment is there, so run_core's failure path releases it.
-  assertEquals(result.claimNotHeld, undefined);
-  // The late claim must not release a second time: that unassign would strip
-  // whichever host claimed the issue in between.
-  late.open(CLAIMED);
-  await abandonedSetupStopped(h);
-  assertEquals(h.unassigns.length, 0);
-});
+    assertEquals(result.category, "timeout");
+    assertEquals(started(h, "issue claim"), true);
+    // Only the authenticated own comment lets run_core release now.
+    assertEquals(result.claimNotHeld, author === "testbot" ? undefined : true);
+    // Otherwise release only after claimIssue confirms a win; never twice.
+    late.open(CLAIMED);
+    await abandonedSetupStopped(h);
+    assertEquals(h.unassigns.length, author === "testbot" ? 0 : 1);
+  });
+}
 
 Deno.test("workOnIssue: a wedge after a won claim releases the claim and does no later setup work (Issue #5128)", async () => {
   const repoSetup = gate<Awaited<ReturnType<WorkerDeps["git"]["setupRepo"]>>>();
@@ -1045,18 +1084,20 @@ Deno.test("workOnIssue: a broken-ref sweep that returns late is not followed by 
   assertEquals(calls, { feature: 1, repair: 0 });
 });
 
-for (const comments of ["4242\n", ""]) {
+for (const posted of [true, false]) {
   Deno.test(
     `workOnIssue: a claim won while the run reads its claim comment (${
-      comments === "" ? "not yet posted" : "posted"
+      posted ? "posted" : "not yet posted"
     }) is released once (Issue #5128)`,
     async () => {
       const late = gate<Awaited<ReturnType<IssueDeps["claimIssue"]>>>();
       const read = gate<string>();
       const reading = gate<void>();
+      let workerId = "";
       const h = harness({
         issues: {
-          claimIssue: () => {
+          claimIssue: (options) => {
+            workerId = options.workerId;
             h.entered.open();
             return late.promise;
           },
@@ -1078,7 +1119,7 @@ for (const comments of ["4242\n", ""]) {
       await reading.promise;
       late.open(CLAIMED);
       await abandonedSetupStopped(h);
-      read.open(comments);
+      read.open(posted ? claimComments(workerId) : "[]");
       const result = await run;
 
       assertEquals(result.category, "timeout");

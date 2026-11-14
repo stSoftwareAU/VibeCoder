@@ -12,6 +12,7 @@
 import type { Clock } from "./clock.ts";
 import { systemClock } from "./clock.ts";
 import { resolveRunHardCap } from "./run_hard_cap.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 
 /**
  * The setup steps, in run order. The names are fixed words, never log or issue
@@ -163,25 +164,35 @@ const SAFE_WORKER_ID = /^[A-Za-z0-9._-]+$/;
  * A setup abandoned while `claimIssue` is still pending does not know whether
  * the claim was taken. Every fleet host shares one login, so the run may
  * release the claim only when its own `CLAIM_LOCK:<workerId>` comment is
- * there; otherwise an unassign would strip another host's live claim. Any
- * failure to read the comments answers `false`, never "held".
+ * there, authored by this run's GitHub account. A marker copied into someone
+ * else's comment is not ownership; otherwise an unassign could strip another
+ * host's live claim. Any failure to read the comments answers `false`, never
+ * "held".
  */
 export async function ownClaimCommentPresent(
   ghCommand: (args: string[]) => Promise<string>,
   repo: string,
   issueNumber: number,
   workerId: string,
+  githubUser: string,
 ): Promise<boolean> {
   if (!SAFE_WORKER_ID.test(workerId)) return false;
   try {
     const found = await ghCommand([
       "api",
       "--paginate",
+      "--slurp",
       `repos/${repo}/issues/${issueNumber}/comments`,
-      "--jq",
-      `.[] | select(.body | contains("CLAIM_LOCK:${workerId} -->")) | .id`,
     ]);
-    return found.trim() !== "";
+    const pages: unknown = JSON.parse(found);
+    const marker = `<!-- CLAIM_LOCK:${workerId} -->`;
+    return Array.isArray(pages) && pages.every(Array.isArray) &&
+      pages.flat().some((comment) =>
+        comment !== null && typeof comment === "object" &&
+        isFleetAuthor(comment.user?.login, [githubUser]) &&
+        typeof comment.body === "string" &&
+        (comment.body === marker || comment.body.startsWith(`${marker}\n`))
+      );
   } catch {
     return false;
   }

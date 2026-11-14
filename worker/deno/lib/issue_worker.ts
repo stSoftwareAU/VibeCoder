@@ -625,6 +625,7 @@ async function workOnIssueCore(
             ctx.repo,
             ctx.issueNumber,
             claim.workerId,
+            ctx.githubUser,
           );
         // Re-read `won` after the comment read: a claim that came back
         // during it is left to this run to release, so it is released once.
