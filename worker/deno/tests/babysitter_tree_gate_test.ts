@@ -20,6 +20,8 @@ import {
   withholdReady,
 } from "../lib/babysitter_tree_gate.ts";
 import { isBabysitterReady } from "../lib/babysitter_ready.ts";
+import { runGitleaksTreeCheck } from "../lib/gitleaks_check.ts";
+import { probe } from "../lib/semgrep_check.ts";
 import {
   agentClone,
   BAR_FAILURE,
@@ -85,6 +87,8 @@ function depsFor(
     calls,
     deps: {
       makeTempDir: async () => root,
+      // The secret scan has its own tests below; these fixtures have no scanner.
+      gitleaks: PASSING_GITLEAKS,
       gate: async (opts) => {
         calls.push(opts);
         return await gate(opts);
@@ -95,6 +99,10 @@ function depsFor(
 }
 
 const PASS: GateResult = { ok: true, value: { checksRun: [] } };
+
+/** A secret scan that finds nothing, for the tests that are not about it. */
+const PASSING_GITLEAKS: NonNullable<BabysitterTreeGateDeps["gitleaks"]> =
+  async () => ({ kind: "passed", summary: "gitleaks: stubbed" });
 
 /** Split the NUL-joined output of an adapter call into names. */
 function names(stdout: string): string[] {
@@ -304,6 +312,8 @@ async function realGate(
   try {
     const outcome = await runBabysitterTreeGate(clone, baseBranch, {
       findMarkdownlint: () => Promise.resolve("/fake/markdownlint"),
+      // The secret scan has its own tests; the runner is not a scanner.
+      gitleaks: PASSING_GITLEAKS,
       runner: (command, options) => {
         commands.push(command);
         const isUnit = command.startsWith("deno task test:unit");
@@ -631,6 +641,7 @@ Deno.test("the default temp root is a real directory the gate hands to the adapt
     await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
     let common = "";
     const outcome = await runBabysitterTreeGate(repo, undefined, {
+      gitleaks: PASSING_GITLEAKS,
       gate: async (opts) => {
         const out = await opts.git!(
           ["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -653,6 +664,7 @@ Deno.test("a temp root already gone when the gate finishes is not a failure (#49
     await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
     const outcome = await runBabysitterTreeGate(repo, undefined, {
       makeTempDir: async () => root,
+      gitleaks: PASSING_GITLEAKS,
       gate: async () => {
         await Deno.remove(root, { recursive: true });
         return PASS;
@@ -922,6 +934,8 @@ async function realDenoGate(clone: string) {
   try {
     const outcome = await runBabysitterTreeGate(clone, "main", {
       findMarkdownlint: () => Promise.resolve(null),
+      // The secret scan has its own tests; CI has no scanner installed.
+      gitleaks: PASSING_GITLEAKS,
     });
     return { outcome, warnings };
   } finally {
@@ -1067,7 +1081,10 @@ Deno.test("gate results map to passed, infrastructure and blocked (#4930)", asyn
       outcomes.push(await runBabysitterTreeGate(repo, undefined, deps));
     }
 
-    assertEquals(outcomes[0], { kind: "passed", checksRun: ["deno test a"] });
+    assertEquals(outcomes[0], {
+      kind: "passed",
+      checksRun: ["deno test a", "gitleaks"],
+    });
     assertEquals(outcomes[1], {
       kind: "infrastructure",
       message: "git ls-files failed",
@@ -1243,7 +1260,7 @@ Deno.test("checks that change nothing keep a pass (#4930)", async () => {
 
     const outcome = await runBabysitterTreeGate(repo, undefined, deps);
 
-    assertEquals(outcome, { kind: "passed", checksRun: [] });
+    assertEquals(outcome, { kind: "passed", checksRun: ["gitleaks"] });
   });
 });
 
@@ -1274,7 +1291,7 @@ Deno.test("a file replaced by a directory at the same path is not an outage and 
 
     const outcome = await runBabysitterTreeGate(repo, undefined, deps);
 
-    assertEquals(outcome, { kind: "passed", checksRun: [] });
+    assertEquals(outcome, { kind: "passed", checksRun: ["gitleaks"] });
   });
 });
 
@@ -1287,7 +1304,7 @@ Deno.test("a directory replaced by a file at the same path is not an outage (#49
 
     const outcome = await runBabysitterTreeGate(repo, undefined, deps);
 
-    assertEquals(outcome, { kind: "passed", checksRun: [] });
+    assertEquals(outcome, { kind: "passed", checksRun: ["gitleaks"] });
   });
 });
 
@@ -1327,7 +1344,7 @@ Deno.test("a submodule pointer in the tree and a nested repository are not an ou
 
     const outcome = await runBabysitterTreeGate(repo, undefined, deps);
 
-    assertEquals(outcome, { kind: "passed", checksRun: [] });
+    assertEquals(outcome, { kind: "passed", checksRun: ["gitleaks"] });
   });
 });
 
@@ -1570,4 +1587,167 @@ Deno.test("only a withheld infrastructure response is recognised as a gate outag
     ),
     false,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The secret scan over the repair's tree (Issue #5121, PR #5129 review)
+// ---------------------------------------------------------------------------
+
+/** Built at runtime so this file holds no matchable token. */
+const FAKE_TOKEN = ["ghp", "_", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"].join(
+  "",
+);
+
+const gitleaksAvailable = (await probe("gitleaks", ["version"])) !== null;
+
+/** Deps whose pre-push checks pass and whose secret scan is the real one. */
+function realScanDeps(
+  root: string,
+  extra: Partial<BabysitterTreeGateDeps> = {},
+): BabysitterTreeGateDeps {
+  const { deps } = depsFor(root, async () => PASS);
+  delete deps.gitleaks;
+  return { ...deps, ...extra };
+}
+
+const leakingEdit = async (clone: string) => {
+  await Deno.writeTextFile(
+    `${clone}/worker/deno/lib/leak.ts`,
+    `export const token = "${FAKE_TOKEN}";\n`,
+  );
+};
+
+Deno.test({
+  name:
+    "a repair that adds a token-shaped file is blocked by the secret scan, with the rule and path but never the token (#5121; skipped where gitleaks is not installed)",
+  ignore: !gitleaksAvailable,
+  fn: async () => {
+    await agentClone(leakingEdit, async (clone) => {
+      const root = await Deno.makeTempDir({ prefix: "tree-gate-root-5121-" });
+      try {
+        const outcome = await runBabysitterTreeGate(
+          clone,
+          "main",
+          realScanDeps(root),
+        );
+
+        assertEquals(outcome.kind, "blocked");
+        const message = (outcome as { message: string }).message;
+        assertStringIncludes(message, "github-pat");
+        assertStringIncludes(message, "worker/deno/lib/leak.ts");
+        assert(!message.includes(FAKE_TOKEN), "the token must not be quoted");
+      } finally {
+        await Deno.remove(root, { recursive: true }).catch(() => {});
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "a repair with no secret passes the secret scan and reports gitleaks among the checks run (#5121; skipped where gitleaks is not installed)",
+  ignore: !gitleaksAvailable,
+  fn: async () => {
+    await agentClone(editFoo, async (clone) => {
+      const root = await Deno.makeTempDir({ prefix: "tree-gate-root-5121-" });
+      try {
+        const outcome = await runBabysitterTreeGate(
+          clone,
+          "main",
+          realScanDeps(root),
+        );
+
+        assertEquals(outcome, { kind: "passed", checksRun: ["gitleaks"] });
+      } finally {
+        await Deno.remove(root, { recursive: true }).catch(() => {});
+      }
+    });
+  },
+});
+
+Deno.test("a scanner that cannot run is infrastructure, so the host spends no repair attempt (#5121)", async () => {
+  await agentClone(leakingEdit, async (clone) => {
+    const root = await Deno.makeTempDir({ prefix: "tree-gate-root-5121-" });
+    try {
+      const outcome = await runBabysitterTreeGate(
+        clone,
+        "main",
+        realScanDeps(root, {
+          gitleaks: (dir, base, paths) =>
+            runGitleaksTreeCheck(dir, base, paths, {
+              probeVersion: () => Promise.resolve(null),
+            }),
+        }),
+      );
+
+      assertEquals(outcome.kind, "infrastructure", JSON.stringify(outcome));
+      const message = (outcome as { message: string }).message;
+      assertStringIncludes(message, "not installed or not in PATH");
+      assertEquals(
+        isGateInfrastructureResponse(
+          withholdReady("done\nBABYSITTER_READY\n", {
+            kind: "infrastructure",
+            message,
+          }),
+        ),
+        true,
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("history the secret scan cannot resolve is infrastructure, not a pass (#5121)", async () => {
+  await agentClone(leakingEdit, async (clone) => {
+    const root = await Deno.makeTempDir({ prefix: "tree-gate-root-5121-" });
+    try {
+      // The clone has no origin/no-such-base, so the commit range has no base.
+      const outcome = await runBabysitterTreeGate(
+        clone,
+        "no-such-base",
+        realScanDeps(root),
+      );
+
+      assertEquals(outcome.kind, "infrastructure");
+      assertStringIncludes(
+        (outcome as { message: string }).message,
+        "refs/remotes/origin/no-such-base",
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("the secret scan gets the clone, the base branch and the repair's paths, and runs only after the other checks pass (#5121)", async () => {
+  await fixture(async (repo, root) => {
+    await Deno.writeTextFile(`${repo}/fresh.txt`, "new\n");
+    await Deno.remove(`${repo}/gone.txt`);
+    const seen: Array<[string, string | undefined, readonly string[]]> = [];
+    const spy: BabysitterTreeGateDeps["gitleaks"] = async (
+      dir,
+      base,
+      paths,
+    ) => {
+      seen.push([dir, base, paths]);
+      return { kind: "passed", summary: "spy" };
+    };
+
+    const failing = depsFor(
+      root,
+      async () => ({ ok: false, error: new Error("deno test failed") }),
+      { gitleaks: spy },
+    );
+    const blocked = await runBabysitterTreeGate(repo, "main", failing.deps);
+    const passing = depsFor(root, async () => PASS, { gitleaks: spy });
+    const passed = await runBabysitterTreeGate(repo, "main", passing.deps);
+
+    assertEquals(blocked.kind, "blocked");
+    assertEquals(passed.kind, "passed");
+    assertEquals(seen.length, 1, "only the passing run reaches the scan");
+    assertEquals(seen[0]![0], repo);
+    assertEquals(seen[0]![1], "main");
+    assertEquals([...seen[0]![2]].sort(), ["fresh.txt", "gone.txt"]);
+  });
 });

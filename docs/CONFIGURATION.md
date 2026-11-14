@@ -2969,8 +2969,8 @@ the full set of changed-file checks. PR-review feedback runs its independent fix
 without pre-flight configuration; persistent findings can block the push.
 A fleet babysitter repair is gated inside its container before it reports
 ready: the unit tests selected for its uncommitted changes, markdownlint when
-configured, the ShellCheck policy and the cargo-deny gate run there, but not
-the formatters or linters (Issue #4930; see
+configured, the ShellCheck policy, the cargo-deny gate and the gitleaks secret
+scan (Issue #5121) run there, but not the formatters or linters (Issue #4930; see
 [babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
