@@ -15,6 +15,7 @@ import {
   ownClaimCommentPresent,
   runSetupWithDeadline,
   SETUP_ABANDONED_LOG_LINE,
+  SETUP_FIXED_ALLOWANCE_SECONDS,
   SETUP_MIN_DEADLINE_SECONDS,
   setupDeadlineMs,
   setupStepStartLine,
@@ -202,11 +203,11 @@ const KILL_AFTER = 30;
 /** The hard cap's ceiling sits this far inside the supervisor's deadline. */
 const RESERVE_SECONDS = KILL_AFTER + 120;
 
-Deno.test("setupDeadlineMs covers two agent budgets plus the clone and pre-setup bounds when no cap is published (Issue #5128)", () => {
+Deno.test("setupDeadlineMs covers two agent budgets plus the clone and pre-setup bounds for a milestone when no cap is published (Issue #5128)", () => {
   const none = () => undefined;
   const hour = setupDeadlineMs(
     { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
-    { env: none, nowMs: NOW_MS },
+    { env: none, nowMs: NOW_MS, milestone: true },
   );
   // The milestone pre-sync agent runs for up to `claudeTimeout`, and a repair
   // run may follow, so one agent budget plus the clone and the 300s default
@@ -220,7 +221,7 @@ Deno.test("setupDeadlineMs covers two agent budgets plus the clone and pre-setup
   assertEquals(
     setupDeadlineMs(
       { claudeTimeout: 7200, claudeKillAfter: KILL_AFTER },
-      { env: none, nowMs: NOW_MS },
+      { env: none, nowMs: NOW_MS, milestone: true },
     ) - hour,
     2 * 3600 * 1000,
   );
@@ -228,7 +229,7 @@ Deno.test("setupDeadlineMs covers two agent budgets plus the clone and pre-setup
   assertEquals(
     setupDeadlineMs(
       { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
-      { env: cappedEnv(0, 0, NOW_MS), nowMs: NOW_MS },
+      { env: cappedEnv(0, 0, NOW_MS), nowMs: NOW_MS, milestone: true },
     ),
     hour,
   );
@@ -240,7 +241,7 @@ Deno.test("setupDeadlineMs leaves the budget alone when it fits inside the run's
   assertEquals(
     setupDeadlineMs(
       { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
-      { env: cappedEnv(10_800, 0, NOW_MS), nowMs: NOW_MS },
+      { env: cappedEnv(10_800, 0, NOW_MS), nowMs: NOW_MS, milestone: true },
     ),
     9_000_000,
   );
@@ -252,7 +253,7 @@ Deno.test("setupDeadlineMs is capped by the runway left before the worker's own 
   assertEquals(
     setupDeadlineMs(
       { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
-      { env: cappedEnv(10_800, 9_000, NOW_MS), nowMs: NOW_MS },
+      { env: cappedEnv(10_800, 9_000, NOW_MS), nowMs: NOW_MS, milestone: true },
     ),
     (10_800 - RESERVE_SECONDS - 9_000) * 1000,
   );
@@ -261,7 +262,7 @@ Deno.test("setupDeadlineMs is capped by the runway left before the worker's own 
 Deno.test("setupDeadlineMs is capped for a large claude_timeout, so it falls before the launcher watchdog (Issue #5128)", () => {
   const deadline = setupDeadlineMs(
     { claudeTimeout: 7200, claudeKillAfter: KILL_AFTER },
-    { env: cappedEnv(10_800, 0, NOW_MS), nowMs: NOW_MS },
+    { env: cappedEnv(10_800, 0, NOW_MS), nowMs: NOW_MS, milestone: true },
   );
   // 16200s of budget, but only 10650s to the ceiling; the launcher's watchdog
   // is 10800 + 600 = 11400s from launch.
@@ -273,10 +274,46 @@ Deno.test("setupDeadlineMs never drops below its floor when the cap has already 
   assertEquals(
     setupDeadlineMs(
       { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER },
-      { env: cappedEnv(10_800, 12_000, NOW_MS), nowMs: NOW_MS },
+      {
+        env: cappedEnv(10_800, 12_000, NOW_MS),
+        nowMs: NOW_MS,
+        milestone: true,
+      },
     ),
     SETUP_MIN_DEADLINE_SECONDS * 1000,
   );
+});
+
+Deno.test("setupDeadlineMs grants a non-milestone setup the fixed allowance alone, so the GRQ-25 wedge is abandoned before its guest stopped (Issue #5128)", () => {
+  const config = { claudeTimeout: 3600, claudeKillAfter: KILL_AFTER };
+  const env = cappedEnv(10_800, 993, NOW_MS);
+  const guestLastLogMs = 7843 * 1000;
+  const plain = setupDeadlineMs(config, {
+    env,
+    nowMs: NOW_MS,
+    milestone: false,
+  });
+  assertEquals(plain, 1_800_000);
+  assertEquals(plain < guestLastLogMs, true);
+  // The milestone budget with the same input is the one that held the claim.
+  const milestone = setupDeadlineMs(config, {
+    env,
+    nowMs: NOW_MS,
+    milestone: true,
+  });
+  assertEquals(milestone, 9_000_000);
+  assertEquals(milestone > guestLastLogMs, true);
+  // With no cap the agent budget still does not touch a non-milestone setup.
+  const none = () => undefined;
+  for (const claudeTimeout of [3600, 7200]) {
+    assertEquals(
+      setupDeadlineMs(
+        { claudeTimeout, claudeKillAfter: KILL_AFTER },
+        { env: none, nowMs: NOW_MS, milestone: false },
+      ),
+      1_800_000,
+    );
+  }
 });
 
 Deno.test("runSetupWithDeadline returns the setup result and never abandons when setup settles first (Issue #5128)", async () => {
@@ -420,6 +457,66 @@ Deno.test("workOnIssue: a wedge inside claimIssue with no claim of its own does 
   assertEquals(h.unassigns.length, 1);
   assertEquals(churnChecks, 0);
   assertEquals(started(h, "claim churn check"), false);
+});
+
+Deno.test("workOnIssue: a non-milestone setup is abandoned at the fixed allowance, a milestone setup keeps its agent budgets (Issue #5128)", async () => {
+  const fixedMs = SETUP_FIXED_ALLOWANCE_SECONDS * 1000;
+  const agentMs = 2 * buildDefaultWorkerConfig().claudeTimeout * 1000;
+  const flush = async () => {
+    for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  const start = (issueNumber: number, ctxOverrides: Partial<IssueContext>) => {
+    const late = gate<Awaited<ReturnType<IssueDeps["claimIssue"]>>>();
+    const h = harness({
+      issues: {
+        claimIssue: () => {
+          h.entered.open();
+          return late.promise;
+        },
+      },
+      infrastructure: {
+        setupDeadlineMs: (config, input) =>
+          setupDeadlineMs(config, {
+            ...input,
+            env: () => undefined,
+            nowMs: NOW_MS,
+          }),
+      },
+    });
+    const run = workOnIssue(issueContext(issueNumber, ctxOverrides), h.deps);
+    const state = { settled: false };
+    run.then(() => {
+      state.settled = true;
+    });
+    return { h, late, run, state };
+  };
+
+  // Positive control: no milestone, abandoned at the fixed allowance.
+  const plain = start(5701, {});
+  await plain.h.entered.promise;
+  await plain.h.clock.advance(fixedMs);
+  await flush();
+  assertEquals(plain.state.settled, true);
+  const plainResult = await plain.run;
+  assertEquals(plainResult.phase, "setup");
+  assertEquals(plainResult.category, "timeout");
+  plain.late.open(CLAIMED);
+  await abandonedSetupStopped(plain.h);
+
+  // A milestone setup is still running after the same advance and flush.
+  const milestone = start(5702, { milestoneTitle: "M1" });
+  await milestone.h.entered.promise;
+  await milestone.h.clock.advance(fixedMs);
+  await flush();
+  assertEquals(milestone.state.settled, false);
+  await milestone.h.clock.advance(agentMs);
+  await flush();
+  assertEquals(milestone.state.settled, true);
+  const milestoneResult = await milestone.run;
+  assertEquals(milestoneResult.phase, "setup");
+  assertEquals(milestoneResult.category, "timeout");
+  milestone.late.open(CLAIMED);
+  await abandonedSetupStopped(milestone.h);
 });
 
 for (const author of ["testbot", "outsider"]) {

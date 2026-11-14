@@ -604,7 +604,9 @@ async function workOnIssueCore(
         runSetupWithDeadline(
           () => workOnIssueSetupBranch(ctx, state, deps),
           {
-            deadlineMs: deps.infrastructure.setupDeadlineMs(ctx.config),
+            deadlineMs: deps.infrastructure.setupDeadlineMs(ctx.config, {
+              milestone: Boolean(ctx.milestoneTitle),
+            }),
             clock: deps.infrastructure.setupClock,
             onAbandon: () => {
               state.setupAbandoned = true;
