@@ -783,7 +783,9 @@ usage-limit refusal:
 2. a Fable round that hits a usage limit steps down to `claude-opus-5-5` at
    `xhigh` on the same subscription;
 3. the Claude pool's next subscription with budget;
-4. Codex `gpt-6-astra` at `high`, when a Codex API key or a login on a mount the round shares reaches the round (a subscription login on the agent-state volume does not);
+4. Codex `gpt-6-astra` at `high`, when the round's own Codex home holds its
+   own login (Issue #5127), or a Codex API key or a login on a mount the round
+   shares reaches the round (the agent-state volume itself is not mounted);
 5. DeepSeek `deepseek-v4-pro`, only when Codex has also hit its usage limit or
    has no credential.
 

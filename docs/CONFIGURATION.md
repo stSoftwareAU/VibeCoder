@@ -537,12 +537,15 @@ down to `claude-opus-5-5` at `xhigh` on the same subscription, then rotates to
 the next Claude subscription with budget, then runs on Codex `gpt-6-astra` at
 `high` when a Codex credential reaches the round (see below), and last on DeepSeek
 `deepseek-v4-pro`, only when Codex also hit its usage limit or has no
-credential. Codex runs in a round only with an API key in `codex/provider.env`
-or a `CODEX_HOME` on a mount the round shares that already holds a login. A
+credential. Codex runs in a round when the round's own Codex home
+(`~/logs/review-fleet-prs/codex`, created by `run.sh`) holds its own ChatGPT
+login (Issue #5127), or with an API key in `codex/provider.env`, or a
+`CODEX_HOME` on a mount the round shares that already holds a login. A
 `CODEX_HOME` on the `vibe-agent-state` volume (the documented subscription
-setup) is not mounted in the round, so the round logs
+setup) is still not mounted in the round, so the round logs
 `no Codex login at <home>/auth.json in the round ...; skipping the codex fallback`
-and goes on to DeepSeek (reaching that login is tracked as Issue #5127).
+and goes on to DeepSeek. The one-time login for the round's own home is in
+[CODEX-SUBSCRIPTION-AUTH.md](CODEX-SUBSCRIPTION-AUTH.md#fleet-pr-review-rounds).
 A failure that is not a usage limit stops the chain.
 Each switch is logged once. The chain and its log lines are described in
 [running-unattended.md](../.claude/skills/review-fleet-prs/references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
@@ -2725,6 +2728,13 @@ only need to adjust `claude_no_output_timeout` — lowering it detects stuck
 processes faster; raising it allows for longer periods of Claude "thinking"
 between outputs.
 
+Issue work arms this watchdog too (Issue #5062); it used to run with it off, so
+a silent agent turn lasted until the launcher watchdog reaped the container. The
+agent's stream is silent while a single tool call runs, so one foreground
+command that runs longer than `claude_no_output_timeout` (a slow test suite or
+build inside one shell call) is killed as stuck: raise the key on a host whose
+repositories have a gate that slow, or set it to `0` to switch the watchdog off.
+
 The reactive phases do not inherit the issue-work budget: `pr_feedback_timeout`
 and `ci_fix_timeout` cap at 1800s (30 minutes), `planning_timeout` at 1800s, and
 a grill-me round at `grill_me_timeout` (3600s). Each has its own
@@ -2959,8 +2969,8 @@ the full set of changed-file checks. PR-review feedback runs its independent fix
 without pre-flight configuration; persistent findings can block the push.
 A fleet babysitter repair is gated inside its container before it reports
 ready: the unit tests selected for its uncommitted changes, markdownlint when
-configured, the ShellCheck policy and the cargo-deny gate run there, but not
-the formatters or linters (Issue #4930; see
+configured, the ShellCheck policy, the cargo-deny gate and the gitleaks secret
+scan (Issue #5121) run there, but not the formatters or linters (Issue #4930; see
 [babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
@@ -5249,10 +5259,16 @@ gates do (see that bullet):
      `.` or `./` names the whole config directory, as it does for deno, so
      `"include": ["."]` keeps every file in scope. An `include` the hook cannot
      represent (such as one with a `..` segment) leaves the file in scope for
-     deno to judge, and an unparseable `deno.json` is left unfiltered;
+     deno to judge. Scope discovery leaves an unparseable config unfiltered
+     for formatting; unit-test discovery below refuses it before validation;
    - `deno test` (Issue #4930), per outermost `deno.json` / `deno.jsonc`
-     directory whose config defines a `test:unit` task (`deno.json` is preferred;
-     an unreadable or unparseable config is left out). It runs the tests the
+     directory whose config defines a `test:unit` task (`deno.json` is preferred).
+     A config that cannot be read or parsed for unit-test discovery, including
+     an unrecognised `tasks` shape, blocks validation and names the config; its
+     tests are not silently omitted. A missing `deno.json` may fall through to
+     `deno.jsonc`, but an unreadable primary config cannot. Valid configs without
+     `test:unit` remain ineligible. These refusals apply to the repair modes too
+     and are code verdicts, not download outages. It runs the tests the
      dependency scan selects (not the whole suite, except as noted below): each
      changed `_test.ts` file under
      that directory's `tests/`; the same-named `tests/<name>_test.ts` of each

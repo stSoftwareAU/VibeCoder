@@ -116,7 +116,7 @@ The quality gate is implemented in Deno TypeScript (`worker/deno/quality.ts` and
 `worker/deno/lib/quality_gate.ts`). The shell wrapper `quality.sh` is a thin
 launcher that locates Deno and delegates. The gate runs: benchmark audit,
 `deno test`, `deno lint`, `deno check`, `deno fmt --check`, plus mermaid,
-markdownlint, semgrep, and Checkov.
+markdownlint, semgrep, Checkov, and gitleaks.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
@@ -170,6 +170,55 @@ pinned route the stage is `SKIPPED` with the missing item named; `--strict`
 promotes that to a failure, and a scan past its 300s deadline is `FAILED`. The
 fleet worker image has no pip and no container runtime, so fleet runs show
 `checkov` as `SKIPPED`, unlike semgrep, which the image bakes.
+
+The **gitleaks** stage (`worker/deno/lib/gitleaks_check.ts`, Issue #5121) is
+registered only when `.github/workflows/gitleaks.yml` exists in the checkout.
+It scans the branch's commit range, `<merge-base with origin/HEAD>..HEAD`: the
+same commits CI's `base_sha..head_sha` scan covers, with the merge-base
+resolution and history deepening shared with the semgrep stage
+(`resolveDiffBase` in `semgrep_check.ts`). A base that cannot be resolved
+(`origin/HEAD` unset, a failed history deepen, a failed `merge-base`) is
+`SKIPPED` on a host, where `--strict` promotes it to a failure, but `FAILED`
+inside the fleet container image: the worker runs the gate non-strict, and a
+skipped stage would let the PR through with its commit range never scanned. The
+failure says the history is "not available in the worker environment", so the
+failure classifier reads it as an infrastructure fault (`missing_tools`), not a
+finding. Uncommitted changes are not scanned by this stage, as in CI. It runs the CI fallback's invocation,
+`gitleaks git --config .github/gitleaks.toml --redact --no-banner --exit-code 1 --log-opts=<base>..HEAD .`
+(the `--config` only when `.github/gitleaks.toml` exists), plus `--verbose
+--no-color`, so each finding prints its file, line and rule with the secret
+redacted. It uses the `gitleaks` on PATH. `GITLEAKS_VERSION` pins 8.30.1, the
+version the workflow runs; a different version still runs, with the drift
+named. With no `gitleaks` on PATH the stage is `SKIPPED` on a host, with the
+reason named, and `--strict` promotes that to a failure; inside the fleet
+container image, which bakes gitleaks in, it is `FAILED`. The stage passes only
+when gitleaks exits 0, reports `no leaks found`, and logs no `ERR` or `FTL`
+line, because gitleaks exits 0 with "no leaks found" on an unresolvable
+revision range. Leaks are `FAILED` with the redacted findings; a scanner error
+or a scan past the 300s deadline is also `FAILED`. CI's `gitleaks.yml` stays
+the backstop.
+
+Publication paths and where the scan runs: the issue completion gate and the
+other `./quality.sh` callers run the stage above through `runQualityGate`. A
+fleet babysitter repair does not: `babysitter-repair` gates a `BABYSITTER_READY`
+response with `runBabysitterTreeGate` (`babysitter_tree_gate.ts`), which runs
+the pre-push gate over the repair's uncommitted tree. That gate also runs
+`runGitleaksTreeCheck` (same module, same pinned CLI, config and redaction)
+once the other checks pass: the branch's commit range
+`<merge-base with origin/<base branch>>..HEAD`, resolved read-only because the
+clone's `.git` is mounted read-only, then `gitleaks dir` over each changed file
+as it is on disk, since the host commits and pushes those edits next. A file
+finding counts only when its line span touches a line the repair added relative
+to `HEAD` (any line, for a file not in `HEAD`), because CI scans only the added
+lines of each patch; an existing match on an untouched line, such as the PEM
+markers in `github_app_auth.ts`, does not block. A finding
+is `blocked` and spends a repair attempt, with redacted rule, path and line
+metadata. A missing scanner, an unresolvable base, a scanner error or a
+deadline hit is `infrastructure` and spends none. The repository's
+`.github/gitleaks.toml` is read from the working tree, as CI reads it from the
+PR head. The pre-push gate that the worker runs over unpushed commits
+(`gateUnpushedCommits`) does not run gitleaks; the completion gate's
+`./quality.sh` does.
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output

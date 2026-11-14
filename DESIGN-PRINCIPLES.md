@@ -157,9 +157,10 @@ explicit fallback can also select a metered provider.
   which is not overflow.
 - **Reviewer-round overflow.** The round runs on the Claude credential pool
   first. Once the pool is exhausted, it moves to Codex (`gpt-6-astra`) when a
-  Codex API key or a login on a mount the round shares reaches it (a
-  subscription login on the agent-state volume does not), and only if Codex also hits its usage limit
-  or has no credential, to DeepSeek (`worker/deno/lib/review_round.ts`, run from
+  round's own Codex home holds its own login (Issue #5127), or a Codex API key
+  or a login on a mount the round shares reaches it (the agent-state volume
+  itself is not mounted), and only if Codex also hits its usage limit or has no
+  credential, to DeepSeek (`worker/deno/lib/review_round.ts`, run from
   `.claude/skills/review-fleet-prs/scripts/run.sh`).
 - **Fleet PR babysitter overflow.** The babysitter provider chooser prefers
   subscriptions and selects DeepSeek as logged overflow only when no eligible

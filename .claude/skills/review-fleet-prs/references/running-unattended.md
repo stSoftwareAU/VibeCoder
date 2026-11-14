@@ -176,20 +176,42 @@ naming what it switched to. Running out of quota is never logged as an error.
    the round logs `no Codex credential; skipping the codex fallback`.
 
    **Which Codex credentials reach a round.** A round's container mounts the
-   checkout and the round directory, not the `vibe-agent-state` named volume.
-   Only two forms therefore run Codex: an API key in `codex/provider.env`
-   (metered), or a `CODEX_HOME` on a path the round's container mounts, whose
-   `auth.json` is already a login. The documented subscription setup
+   checkout, the round directory and the log directory, not the
+   `vibe-agent-state` named volume. The round tries its own Codex home first:
+   `<log_dir>/review-fleet-prs/codex` (`~/logs/review-fleet-prs/codex` with the
+   fleet's config), which `run.sh` creates owner-only (0700) on the log
+   directory's mount and passes to the round as `VIBE_REVIEW_CODEX_HOME`. It is
+   shared by every round's container, outlives each round, and `run.sh`
+   neither writes a login into it nor prunes it. When its `auth.json` is a
+   login, Codex runs with `CODEX_HOME` set to it (so, under the billing
+   fail-closed rule, no `OPENAI_API_KEY` or `CODEX_API_KEY` reaches that
+   Codex child), and Codex refreshes the login there, so it persists across
+   rounds. The round never seeds or copies a login into that home. With no
+   login there it logs
+   `no Codex login in the round's Codex home <home> (no auth.json); trying the worker's Codex credential`
+   and the worker's credential applies: an API key in `codex/provider.env`
+   (metered), or a `CODEX_HOME` on a mount the round shares whose `auth.json`
+   is already a login. The documented subscription setup
    ([CODEX-SUBSCRIPTION-AUTH.md](../../../../docs/CODEX-SUBSCRIPTION-AUTH.md))
-   puts `CODEX_HOME` on `vibe-agent-state`, so in a round that home has no
-   `auth.json`. The round then logs
+   puts `CODEX_HOME` on `vibe-agent-state`, which is still not mounted in a
+   round, so that case logs
    `no Codex login at <home>/auth.json in the round (no auth.json); skipping the codex fallback`
-   and goes on to DeepSeek, even when the ChatGPT subscription has quota. The
-   round never seeds a login into a throwaway home: a stale seed would fail
-   authentication, and a refreshed one could invalidate the worker's durable
-   login. Reaching Codex on a subscription login needs a persistent Codex home
-   on a mount the round shares, with its own login. That is not built, and is
-   tracked as Issue #5127, a follow-up to Issue #5083 (which stays open).
+   and goes on to DeepSeek.
+
+   The login in the round's Codex home must be its own. If its `auth.json` is
+   a copy of the worker's one-time login seed
+   (`~/.vibe-coder/credentials/codex/auth.json`: identical text, or the same
+   refresh token), the round refuses it and logs
+   `the round's Codex home <home> holds a copy of the worker's one-time login seed, not a login of its own; trying the worker's Codex credential`.
+   ChatGPT login refresh tokens rotate, so a copy shares its refresh token with
+   the worker's and whichever refreshes first can sign the other out. To
+   enable it, log in to that directory once with its own ChatGPT login, for
+   example on the host with the Codex CLI:
+   `CODEX_HOME=~/logs/review-fleet-prs/codex codex login --device-auth`, with a
+   `config.toml` in that directory holding
+   `cli_auth_credentials_store = "file"` and `forced_login_method = "chatgpt"`.
+   Do not copy the worker's seed or the worker's agent-state `auth.json` there.
+   Issue #5127 (a follow-up to Issue #5083) added this.
 5. **DeepSeek.** Only when Codex also hit its usage limit or has no credential,
    the round runs once more on the worker's **DeepSeek** provider
    (`deepseek-v4-pro`, in the worker's own pinned child environment: no Claude

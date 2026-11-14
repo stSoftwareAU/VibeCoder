@@ -194,8 +194,11 @@ EOF
 # its named volumes are left out, because the worker's container may hold
 # them and a round needs none of its durable state; and the reviewer App token
 # is passed by name alone (`--env GH_TOKEN`), so its value is never on a
-# command line, in a trace or on disk. The plan is written to the round's
-# directory $2, where the round's egress helper reads it (round_egress).
+# command line, in a trace or on disk. The round also gets its own Codex home,
+# $STATE_DIR/codex (VIBE_REVIEW_CODEX_HOME), on the log directory's mount,
+# since the worker's agent-state volume is left out. The plan is written to the
+# round's directory $2, where the round's egress helper reads it
+# (round_egress).
 # Sets RUNTIME, ROUND_ARGS (everything up to and including the image), C_BASE
 # (the checkout inside the container), C_STATE_DIR (this state directory
 # inside it) and ROUND_EGRESS. Returns non-zero, with LAST_ERROR set, when the
@@ -252,11 +255,19 @@ round_container() {
     return 1
   fi
   for arg in ${ensure_dirs[@]+"${ensure_dirs[@]}"}; do mkdir -p "$arg"; done
+  # The round's own Codex home (Issue #5127), on the log directory's mount so
+  # the round reaches it and it outlives the round. Its login is the
+  # operator's own; nothing here writes one.
+  if ! { mkdir -p "$STATE_DIR/codex" && chmod 700 "$STATE_DIR/codex"; }; then
+    LAST_ERROR="cannot create the round's Codex home $STATE_DIR/codex"
+    return 1
+  fi
   round_args "${run_args[@]}"
 }
 
 # The round's container arguments from a plan's run arguments ($@): sets
-# ROUND_ARGS, C_BASE and C_STATE_DIR, leaving out ROUND_VOLUMES. Returns
+# ROUND_ARGS, C_BASE and C_STATE_DIR, leaving out ROUND_VOLUMES and adding
+# the round's Codex home (also for an egress helper's run). Returns
 # non-zero, with LAST_ERROR set, when the state directory is not mounted.
 round_args() {
   local run_args=("$@") i arg src value
@@ -283,6 +294,8 @@ round_args() {
     LAST_ERROR="the worker container does not mount $STATE_DIR"
     return 1
   fi
+  # The round's own Codex home, a path and not a secret (Issue #5127).
+  ROUND_ARGS+=(--env "VIBE_REVIEW_CODEX_HOME=$C_STATE_DIR/codex")
   # Tested by name, not value: `bash -x` would print the value.
   [[ -n ${GH_TOKEN+set} ]] && ROUND_ARGS+=(--env GH_TOKEN)
   ROUND_ARGS+=("${run_args[${#run_args[@]} - 1]}")

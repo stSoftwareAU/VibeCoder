@@ -1,325 +1,187 @@
 ## Summary
 
-PR #5034 put `deno test` (through `deno task test:unit`) and configured
-markdownlint into the worker's push paths. The fleet PR babysitter's repair path
-was not one of them: its container agent is only asked to run checks, and the
-host then stages, commits and pushes after nothing stricter than
-`git diff --check` (`validateAndCommit`, `finishBabysitterRepair`). This PR
-closes that path inside the container, with no host execution beside the App
-credentials.
+Refuse unreadable or malformed Deno configurations instead of silently dropping
+unit tests from validation. Add real-tool repair probes to the existing container
+containment suite.
 
-After the repair agent finishes and ends its final message with the
-`BABYSITTER_READY` line, the in-container `babysitter-repair` command runs the
-existing `runPrePushGate` over the agent's uncommitted tree
-(`worker/deno/lib/babysitter_tree_gate.ts`). The gate is the one the worker's
-other repair pushes use: dependency-selected unit tests (or the whole suite for
-a prompt, `deno.json` or lock change), configured markdownlint, the ShellCheck
-policy and cargo-deny; not the formatters or linters. A failing test that fails
-the same way at the merge-base with the PR base is a warning, a module-fetch
-outage is an infrastructure fault, and anything else blocks. When the gate
-blocks or cannot run, the container removes the `BABYSITTER_READY` line and puts
-a `[BABYSITTER_GATE_BLOCKED]` line with the cause first, so the host's existing
-completion check refuses to push and quotes the cause. A check that failed is a
-`code` failure that spends a repair attempt; a gate that could not run
-(`pre-push checks could not run`, for example a module-fetch outage) is raised
-on the host as an `infrastructure` failure, which backs off and spends no repair
-attempt. A check that leaves stray files in the clone (which the host's
-`git add -A` would push) also blocks. Part of #4930.
-
-```mermaid
-flowchart LR
-    A[Agent finishes in container] --> R{Final line is BABYSITTER_READY?}
-    R -- no --> W[Write response, host refuses to push]
-    R -- yes --> D{Tree changed?}
-    D -- no --> P[Write response unchanged]
-    D -- yes --> G[runPrePushGate over the uncommitted tree vs PR base]
-    G -- passed --> P
-    G -- blocked or infrastructure --> X[Drop READY, add BABYSITTER_GATE_BLOCKED cause]
-    X --> W
-```
+Part of #4930.
 
 ## Spec
 
 ### Intent and Rationale
 
-- The shift-left report is raised by the babysitter itself, and its repairs were
-  the one push path that ran no deterministic test or markdown check. The
-  container is the only place the repair may run checks, so the check runs
-  there.
-- The check reuses `runPrePushGate` rather than a second framework, as the issue
-  asks.
+- The contained repair could retain `BABYSITTER_READY` after unit-test discovery
+  discarded a malformed config. The shared pre-push gate now reports that fault.
+- Reuse the existing gate, sanitised snapshot and repair mount builder; exercise
+  real Deno and markdownlint inside the supported worker image.
 
 ### Essential Design Decisions
 
-- The clone's `.git` is mounted read-only, so the gate sees a `PrePushGit`
-  adapter: it lists the `git status` paths as the pushed files (new files count
-  as tracked), and emulates the baseline `git worktree add` with a fresh
-  repository under a temp root that borrows the clone's objects
-  (`objects/info/alternates`, plus the clone's `shallow` file), the base commit
-  checked out detached with hooks off. Neither writes to `.git`. The baseline is
-  a real git checkout: an earlier `git archive` + `tar` extraction had no
-  `.git`, so a test that inspects its checkout failed there for that reason
-  alone, and a regression the repair caused passed as base-owned (review of
-  `d16f355`). A shared clone is not used, because git will not clone a shallow
-  repository locally and would fetch only its branches, not the base commit.
-- The PR base reaches the container as optional `--base-branch refs/heads/<name>`
-  (`BabysitterContainerInput.baseBranch`, set from `pr.baseRefName`). The worker's
-  argument parser runs `JSON.parse` on every flag value, so a bare `7.0` or `1.10`
-  would arrive as the number 7 or 1.1; the fixed `refs/heads/` prefix
-  (`BABYSITTER_BASE_BRANCH_PREFIX`) is not valid JSON, so the value stays a string.
-  `babysitter-repair` requires a string with that prefix, strips it, and validates
-  the name with `assertSafeGitRef`; a non-string, an unprefixed or an empty name
-  fails the command before the agent runs. Without the flag there is no baseline
-  and a failing test blocks (fail closed). `BABYSITTER_REPAIR_COMMAND` itself is unchanged.
-- The gate's kind reaches the host in the headline of the withheld response:
-  `isGateInfrastructureResponse` (`lib/babysitter_tree_gate.ts`) recognises
-  `[BABYSITTER_GATE_BLOCKED] pre-push checks could not run:` at the start of the
-  response, and `fix()` raises it before the generic missing-READY failure. Only
-  the gate may write that text: `babysitter-repair` replaces
-  `[BABYSITTER_GATE_BLOCKED]` in the agent's own output on every path
-  (`neutraliseGateMarker`), so an agent that fails without READY cannot make its
-  failure count as infrastructure and dodge the repair cap.
-- While the repair holds an uncommitted `git merge --no-commit` of the PR base,
-  `git status` lists every file the merge brings in. The gate then keeps only
-  the paths that are untracked or differ from `MERGE_HEAD` (the base's content
-  is the base's, as the host's `checkBaseline` reads the merged tree), and its
-  stdin also names `MERGE_HEAD`, so the merge-base with `origin/<base>` is the
-  base tip the merge brings in, not the PR's old fork point. Markdownlint has no
-  baseline, so dropping the base-owned paths is also what keeps a base markdown
-  error from blocking.
-- The gate compares the tree before and after its checks by content, not by path
-  list. Before the checks it snapshots each dirty path (status state, mode,
-  SHA-256 of the bytes, or the symlink target) and Git's staged entries
-  (read-only `git ls-files --stage -z` with literal pathspecs); after them it
-  snapshots again. Any difference blocks a passing verdict, so a check that
-  overwrites an already-dirty file, or replaces a staged blob, cannot slip into
-  the host's `git add -A`. A path that is a directory (a submodule pointer or a
-  nested repository) is recorded by its kind, and a path that is missing or sits
-  under a file where a directory was counts as missing, so those legitimate tree
-  shapes are not outages. A file is hashed through a stream with a 64 MiB cap
-  and a path whose parent resolves outside the clone is refused; both are
-  `blocked` (naming the path), so the attempt is counted and the repair cap is
-  reachable. So is any other dirty path the gate cannot read (a mode-000 file,
-  a looping symlink): `fingerprintPath` turns every per-path error into the same
-  `blocked` outcome naming the path, so no tree shape is an uncapped
-  infrastructure retry. Only a failure of the gate's own machinery (an index that
-  cannot be read, the clone's real path) is `infrastructure` (fail closed).
-- Withholding the READY line, not failing the container, is the verdict channel:
-  the host already refuses a response without it and quotes the response.
-  `isBabysitterReady` (`lib/babysitter_ready.ts`) is now the one rule for both
-  the host and the container.
+- Configuration faults are code verdicts. Existing module-fetch and missing-Deno
+  infrastructure classifications and base-only warnings remain in place.
+- Missing primary configs may use `deno.jsonc`; unreadable primary configs may
+  not. Valid configs without `test:unit` remain ineligible. Formatter scope
+  discovery retains its unfiltered fallback.
+- The container probe substitutes agent services and the existing host
+  publication harness. Check runners and the production tree adapter remain
+  real. The probe uses the fixture owner's UID/GID, as the workflow's other
+  in-image checks do, and asserts that `.git` rejects a write as read-only.
 
 ### Undiscoverable Facts
 
-- Not verified in a real container: the unit tests run against injected seams
-  and real temporary git repositories; the gate's wall-clock inside the
-  90-minute repair budget were not observed.
-- The wedge/delivery history: #5014 was closed, #5034 merged as `Part of #4930`.
+- This executor has no supported container runtime; runtime downloads returned
+  proxy 403 errors. The supported-container verification therefore runs through
+  the repository's existing Container Build workflow.
+- Real `deno task --config <fixture> test:unit` accepts null config/task values
+  as no task, and rejects array configs and array/string task definitions. The
+  discovery checks preserve those observed distinctions.
 
 ## Evidence
 
-Backend-only; no UI files. Tests:
-`worker/deno/tests/babysitter_tree_gate_test.ts`,
-`worker/deno/tests/babysitter_repair_4738_test.ts`,
-`worker/deno/tests/babysitter_ready_test.ts`,
-`worker/deno/tests/fleet_babysitter_container_4738_test.ts`,
-`worker/deno/tests/babysitter_fix_orchestration_test.ts`,
-`worker/deno/tests/fleet_pr_babysitter_test.ts`,
-`worker/deno/tests/support/babysitter_tree_fixture.ts` (the shared real-git
-clone fixture and the uncommitted-merge fixture). Docs:
-`docs/workflows/fleet-pr-babysitter.md` (repair flow, diagram step, new
-"Pre-push gate" paragraph, merge-in-progress and marker-neutralisation text,
-READY and missing-marker paragraphs, shift-left paragraph; the "Pre-push gate"
-paragraph now says which unavailable checks are infrastructure and which block),
-`docs/CONFIGURATION.md` (push-guarantee paragraph; the cargo-deny and ShellCheck
-items no longer say babysitter repairs are unchecked). Ledger:
-`docs/audits/lib-sweep-coverage/top-up-4930.json` claims the two new modules
-(`sweptAt` moved to `96824f40`, so drift for the two older modules is measured
-from there).
+Backend/CLI only; no UI files or screenshot required.
 
-New non-test members have production readers: `runBabysitterTreeGate` and
-`withholdReady` are called by `commands/babysitter_repair.ts`;
-`isBabysitterReady` by `babysitter_repair.ts`, `babysitter_tree_gate.ts` and
-`fleet_pr_babysitter.ts`; `baseBranch` is set at `fix()` in
-`fleet_pr_babysitter.ts` and read by `buildBabysitterRunArgs`.
+The Docker containment step passed on code commit `2e0c5e299` in
+[Container Build run 43360443672](https://github.com/stSoftwareAU/VibeCoder/actions/runs/43360443672).
+The workflow passed, including its Podman image build; containment reported
+15 passed tests, 48 passed steps and no failures.
+`worker/deno/tests/container_containment_test.ts` launches
+`worker/deno/tests/support/babysitter_gate_container_probe.ts` using the repair
+builder's clone and read-only `.git` mounts and sanitised worker snapshot.
 
-Related rules checked: the repair prompt sentences about checks that do not
-withhold `BABYSITTER_READY` (unrelated or base-owned failures) still hold, since
-a base-only failing test is a warning; one sentence was added saying the
-container runs the unit tests and markdownlint after the agent.
+| Real-container fixture | READY | Host-harness pushes |
+| --- | --- | --- |
+| Failing Deno assertion | withheld | 0 |
+| Invalid Markdown (`MD018`) | withheld | 0 |
+| Malformed Deno config | withheld | 0 |
+| Corrected Deno control | retained | 1 |
+| Corrected Markdown control | retained | 1 |
+| Identical base-only Deno failure | retained | 1 |
+
+The probe executes `runBabysitterRepair` → `runBabysitterTreeGate` →
+`runPrePushGate`, then feeds the resulting response through the real host
+`fix()` orchestration with the existing GitHub/git publication fakes. No live
+fleet PR is published by these tests. `VIBE_CONTAINMENT_REQUIRED=1` already
+makes an unavailable runtime/image fail this CI suite; the ordinary local run
+reports that integration test as ignored.
+
+Additional disposable-repository probes in a Linux mount namespace used real
+read-only `.git` bind mounts, Deno 2.9.8 and markdownlint-cli2 0.24.1. New tests,
+deleted/renamed imports and a prompt-triggered whole suite blocked regressions.
+Missing Deno and a real loopback module-fetch 503 withheld READY as
+infrastructure; missing markdownlint blocked as code. A WIP response without
+READY remained unvalidated and the host refused publication.
+
+The operator sections updated are **Container repairs** in
+`docs/workflows/fleet-pr-babysitter.md` and **Agent pre-push hook and the
+changed-files check** in `docs/CONFIGURATION.md`.
+
+Provenance: #4930 — Shift left: fleet PRs keep failing CI on `deno test,
+markdownlint` that a local gate could catch.
+
+```mermaid
+flowchart LR
+    A[READY over a changed tree] --> G[Existing tree and pre-push gate]
+    G -->|config cannot be checked| B[Withhold READY]
+    G -->|new test or Markdown failure| B
+    G -->|checks pass or base-only warning| R[Keep READY]
+    B --> H[Host refuses publication]
+    R --> P[Existing host guards and publication]
+```
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — "Any affected-test selection must retain the checks needed to catch
-  the reported regression classes" — evidence:
-  `worker/deno/tests/babysitter_tree_gate_test.ts::an uncommitted new test file that fails blocks, naming the failing command, with no formatter or linter run (#4930)`,
-  `::a changed markdown file runs markdownlint and its failure blocks (#4930)`,
-  `::a changed markdown file with no markdownlint binary available is not a pass (#4930)`
-  — reviewer: met — reason: the babysitter calls the unchanged `runPrePushGate`
-  selection, so the deno test and markdownlint checks are kept for the agent's
-  uncommitted tree (new files included) and an unavailable check is not a pass;
-  the selection stays dependency-based, as in #5034.
-- **met** — "Use the supported contained pre-push/completion path to run the
-  repository's applicable Deno tests and markdown checks before claiming a PR or
-  repair is validated" — evidence:
-  `worker/deno/tests/babysitter_repair_4738_test.ts` (READY withheld on blocked,
-  infrastructure and a throw),
-  `worker/deno/tests/babysitter_fix_orchestration_test.ts::a response withheld because the pre-push gate could not run is an infrastructure attempt with backoff, not a substantive one (Issue #4930)`
-  — reviewer: met — reason: the gate runs in the container with no host
-  execution, preserves the base comparison and infrastructure recovery; a real
-  container run was not observed (see the Test Plan).
-- **missing** — "Keep this issue open until its requirements are actually
-  delivered": a repair run of the fleet PR babysitter in its real container
-  showing the gate blocking a failing test and a markdown error before a push —
-  reviewer: missing — reason: this needs the deployed babysitter image and a
-  live fleet PR, so it can only be observed after merge; the closest evidence is
-  the tests above, which drive the real `runPrePushGate` and the real completion
-  path with only the command runner faked.
+- **met** — Malformed or unreadable Deno configuration cannot silently omit
+  unit tests from repair validation. Evidence: the positive, refusal and
+  restored-control cases in `pre_push_gate_test.ts` and
+  `babysitter_tree_gate_test.ts`, plus the recorded container probe.
+- **met** — Preserve baseline-only warnings, infrastructure recovery and the
+  contained publication path. Evidence: the baseline, missing-tool and repair
+  regressions, and the six real-container probes recorded above.
+- **partial** — Finish the remaining test-selection/time-budget cases from
+  PR #5034. Current `loadReferencedUnitTests` still follows relative `.ts`
+  imports and name references; computed/import-map dependencies and tests
+  outside `tests/` can be missed when no full-suite trigger applies.
+  `judgeDenoTestCheck` reruns the skipped serial pass after a baseline-only
+  parallel failure, but does not reapply that failed parallel pass's timing
+  budget. These limits are also documented in `docs/CONFIGURATION.md` and
+  `deno_test_baseline.ts`. They remain in #4930; this PR does not close it.
 
-## Standards Review
+## Review validation
 
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **clean** — the new tests drive the real `runPrePushGate` with only the
-  command runner faked; no test asserts only a mock's arguments. The two tests
-  that did (the `--base-branch` forwarding in `babysitter_repair_4738_test.ts`
-  and the `startAgent` options in `babysitter_fix_orchestration_test.ts`) now
-  assert outcomes: READY is kept with `--base-branch refs/heads/main` over the real gate
-  and withheld without it, and the container argv built by the real
-  `startBabysitterAgent` ends with `--base-branch refs/heads/<pr.baseRefName>`.
+The branch was brought up to date with `main`. With the pinned Deno 2.9.8,
+all 456 tests in the ten targeted gate/repair suites listed below passed.
+No code assertion was weakened. Required CI must validate the refreshed head.
 
 ## Test Plan
 
-- `cd worker/deno && deno task test:unit tests/babysitter_tree_gate_test.ts tests/babysitter_repair_4738_test.ts tests/babysitter_ready_test.ts tests/fleet_babysitter_container_4738_test.ts tests/babysitter_fix_orchestration_test.ts tests/fleet_pr_babysitter_test.ts`:
-  all 358 tests across the six files passed on this head, with the repository's
-  locked dependencies.
-- `deno fmt --check`, `deno lint` and `deno check` of the changed source and
-  test files passed on the working tree, and `deno fmt` was applied to this
-  summary. The full `./quality.sh` was not run here; CI runs it on the pushed
-  head.
-- Real-gate tests (`babysitter_tree_gate_test.ts`): `runBabysitterTreeGate`
-  drives the real `runPrePushGate` over a clone of a bare remote, with only the
-  command runner and the markdownlint lookup faked. An uncommitted new test file
-  that fails is `blocked` and names its command, with no `deno fmt` or
-  `deno lint` run; a test failing identically at the PR base is a warning
-  (`passed`); one that passes at the base but fails in the tree blocks; without
-  a base branch the same failure blocks; a changed `.md` runs markdownlint and
-  its failure blocks; no markdownlint binary is not a pass; a module-fetch
-  outage is `infrastructure`. The earlier test that asserted the arguments
-  handed to a fake gate was removed (its stdin, `shellcheckOnly` and base-branch
-  behaviour is now shown by those outcomes).
-- Uncommitted-merge tests (`babysitter_tree_gate_test.ts`, real git and the real
-  gate over `git merge --no-commit` of a base holding a red test and a markdown
-  error): the base-owned test and markdown error do not block (`clean`, no check
-  run); an edit on top of the merge to a base file whose test fails the same way
-  at the base tip is a warning (`passed`); a failure the repair adds (a test
-  failing only in the tree, a markdown error in a new file) still blocks; a
-  conflict on `docs/SHARED.md` that the agent resolves (an unmerged index entry
-  under `merge --no-commit`) is linted while the base's own broken `BASE.md` is
-  not; an unreadable `MERGE_HEAD` is `infrastructure` with the gate not called.
-  Reverting the gate to the previous code turns the first two red; dropping the
-  merge scoping turns the first and the conflict test red.
-- Baseline checkout tests (`babysitter_tree_gate_test.ts`), from the review of
-  `d16f355`: with real nested `deno test` runs and no faked runner, a test that
-  needs its checkout to be a git repository and passes on the base still blocks
-  the repair's regression, and one that fails the same way on the base checkout
-  is still a warning. `defaultCheckoutTree` checks the base commit of a depth-1
-  clone with a read-only `.git` out as a git checkout (`ls-files`, `log` and a
-  clean `status` work there) while every path and mtime under the clone's `.git`
-  stays unchanged; a missing commit and an unreadable object directory fail with
-  git's exit code; a `--separate-git-dir` clone checks out; a configured
-  `post-checkout` hook does not run (the test hands the hooks path to git as an
-  outer `-c` through the git seam, so it sets no process environment and stays
-  parallel-safe under Issue #880's rule).
-- Marker tests (`babysitter_repair_4738_test.ts`): a non-READY reply, and a
-  READY reply, that start with the infrastructure headline are written with the
-  marker neutralised, so `isGateInfrastructureResponse` is false; a withheld
-  response carries the gate's marker once, also when a check's message quotes
-  the marker (`babysitter_tree_gate_test.ts`).
-- Host test (`babysitter_fix_orchestration_test.ts`): a response withheld
-  because the gate could not run records an `infrastructure` attempt with
-  backoff and no substantive attempt; one withheld because a check failed stays
-  a substantive `code` attempt; an agent reply that forges the could-not-run
-  headline, written by the real `runBabysitterRepair`, is a substantive `code`
-  attempt (red when the command writes the agent's output unneutralised).
-- Mutation survivors killed: `treeGate` in the production deps
-  (`babysitter_repair_4738_test.ts`); `--untracked-files=all` (a file inside a
-  new untracked directory is listed by path); `defaultMakeTempDir`'s return (the
-  default temp root is a real directory, handed to the adapter, then removed);
-  `defaultRemoveTree`'s NotFound branch (a root already gone is not a failure);
-  `defaultCheckoutTree`'s copied `shallow` file (history reads in the baseline),
-  its empty `--template=` (no hooks directory), its `core.hooksPath=/dev/null`
-  (a configured `post-checkout` hook does not run) and its absolute object path
-  branch (a `--separate-git-dir` clone). The redundant
-  `!isBabysitterReady(response)` operand in `fix()` that survived mutation is
-  gone: the infrastructure check is nested under the missing-READY branch.
-  Exempt (untestable): `worker/deno/lib/babysitter_tree_gate.ts`
-  `--porcelain=v1` (git's `-z` implies the porcelain v1 format, so removing it
-  changes nothing); `pathsBeyondMerge`'s `--no-optional-locks` (it matters only
-  on the container's read-only `.git`, where git skips the optional index
-  refresh anyway) and `--no-renames` (an agent's move leaves an unstaged
-  deletion and an untracked file, which `git diff <commit>` never pairs as a
-  rename).
-- Behaviour tests (names end `(#4930)`): status parsing (modified, deleted,
-  renamed, untracked, scratch files); each git interception (`log`, `ls-files`,
-  git-common-dir, `worktree add` really extracting the fork commit via a real
-  checkout with its own `.git`, `remove`, `prune`, refusal outside the temp
-  root); outcome mapping (passed, infrastructure, blocked, a throw); redaction
-  and 1500-character cap; tree-pollution (a stray untracked file turns a pass
-  into blocked, keeps the gate's own failure otherwise; same-path edits to an
-  already-untracked or already-modified file by a passing check block, and so
-  does a staged blob replaced with identical status and worktree bytes:
-  `same-path untracked edits made by passing checks block the push (#4930)`,
-  `same-path tracked edits made by passing checks block the push (#4930)`,
-  `a changed staged blob is blocked even with identical status and worktree bytes (#4930)`);
-  tree shapes and bounds: a file swapped for a directory, a directory swapped
-  for a file and a submodule pointer with a nested repository all pass a clean
-  check; a check rewriting the file at a swapped path still blocks; a dirty file
-  over the size limit blocks naming it; hashing stops at the byte limit; a
-  tracked directory replaced by a symlink out of the clone blocks without being
-  read
-  (`a file replaced by a directory at the same path is not an outage and a clean check passes (#4930)`,
-  `a directory replaced by a file at the same path is not an outage (#4930)`,
-  `a check that rewrites the file now at a swapped path still blocks (#4930)`,
-  `a submodule pointer in the tree and a nested repository are not an outage (#4930)`,
-  `a dirty file over the size limit blocks, naming it (#4930)`,
-  `hashing stops at the byte limit even when the file grew after its size was read (#4930)`,
-  `a tracked directory replaced by a symlink out of the clone blocks without reading through it (#4930)`);
-  an untracked file the gate cannot open blocks, naming it, rather than being an
-  outage
-  (`an untracked file the gate cannot open blocks, it is not an infrastructure outage (#4930)`;
-  it returns early when run as a superuser, who can read any file);
-  `withholdReady`; the command withholds READY on blocked, infrastructure and a
-  throw, leaves passed/clean unchanged, never calls the gate for a not-ready
-  response, forwards and validates `--base-branch`, refusing a value without the
-  `refs/heads/` prefix or that the parser coerced to a number; container argv
-  gains `--base-branch refs/heads/<name>` only when given and refuses an unsafe
-  name; the argv built for the base branches `7.0`, `1.10`, `2.0`, `true`, `null`
-  and `1e3` goes through `parseArgs` from `mod.ts` into `runBabysitterRepair`
-  and the gate receives the exact name
-  (`a base branch named like a JSON number reaches the gate exactly, through the real argument parser (#4930)`);
-  `startBabysitterAgent` and the repair flow forward `pr.baseRefName`.
-- Red checks run by hand and restored: skip the READY check (1 test red); ignore
-  the gate outcome (3 red); drop the `ls-files` interception (1 red); drop the
-  `log --name-only` interception (1 red); drop the tree comparison (1 red); drop
-  the `--base-branch` argv append (2 red); drop the forward in
-  `startBabysitterAgent` (1 red); drop the call-site
-  `baseBranch: pr.baseRefName` (1 red). Stripping the baseline's `.git` after
-  checkout, as the archive extraction left it, turns the real-Deno regression
-  test and the two checkout tests red.
-  Sending the bare branch name instead of `refs/heads/<name>` turns 5 tests red
-  (the repair, container argv and orchestration files); letting a per-path
-  inspection error escape `fingerprintPath` unconverted turns the unreadable
-  file test red (1).
-- Removed from existing tests: none from the base. This PR's own two
-  mock-argument tests were replaced by the outcome tests above (the PR added
-  them in an earlier push). `babysitter_repair_4738_test.ts` changed one harness
-  `return` line to also return `treeCalls`; no base assertion was edited.
-- Callers checked for the new `baseBranch`: `fix()` in `fleet_pr_babysitter.ts`
-  (the one production caller of `startBabysitterAgent`) passes it; the
-  Apple-helper and plain argv builds in `runBabysitterRepairContainer` both pass
-  it.
-- Skipped / not checked: a real container run, which is why issue #4930 must
-  stay open; the sweep-drift baseline move noted above.
+- Against `origin/main` production code, the new/updated regression tests
+  produced 227 passes and seven expected failures. After the correction, the
+  two files passed all 234 tests. Tests and doubles were unchanged during the
+  base-code run.
+- The final targeted `deno task test:unit` run passed 456 tests across:
+  `worker/deno/tests/pre_push_gate_test.ts`,
+  `worker/deno/tests/babysitter_tree_gate_test.ts`,
+  `worker/deno/tests/babysitter_repair_4738_test.ts`,
+  `worker/deno/tests/babysitter_fix_orchestration_test.ts`,
+  `worker/deno/tests/deno_test_baseline_test.ts`,
+  `worker/deno/tests/pre_push_gate_cli_test.ts`,
+  `worker/deno/tests/pre_push_gate_failure_category_test.ts`,
+  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`,
+  `worker/deno/tests/git_push_preflight_test.ts` and
+  `worker/deno/tests/pr_feedback_processor_pre_flight_4630_test.ts`.
+- New configuration tests cover malformed JSON/JSONC, an unreadable primary
+  config beside a valid secondary, invalid root/task shapes, and restored
+  passing controls. The ordinary, ShellCheck-only and CI-cargo-only gate modes
+  refuse the config as code. Existing `loadDenoScopes` fallback, missing-config,
+  no-task, JSONC comment/trailing-comma and primary-config precedence checks
+  remain protected in `worker/deno/tests/pre_push_gate_test.ts`.
+- The six new integration cases passed in the Docker containment step. The same
+  committed probe also passed locally under real read-only bind mounts. The
+  local containment/repair regression command passed its runnable tests and
+  explicitly ignored the unavailable-runtime integration test.
+- `deno task check:manifests`: 866 passed, one existing ignored ancestry check.
+  Targeted formatting, lint and type checks passed. The earlier full
+  `./quality.sh` passed with config integration and Checkov explicitly skipped;
+  the final run after adding the container probe was stopped for the run budget
+  during the Deno suite. Its static checks had passed; that suite and the
+  following lint/type/format stages did not complete.
+  <!-- vibe-quality-gate-skipped reason="budget: final gate interrupted during Deno suite" -->
+- Config corpus: both tracked Deno configs at base and head select only
+  `worker/deno`; zero false positives or false negatives (neither corpus has an
+  invalid config). Markdown archive/test prose is not this parser's input.
+- Callers checked: `readDenoConfigText` serves permissive scope discovery and
+  strict unit-test discovery; `loadDenoUnitTestRoots` is consumed by the shared
+  `runPrePushGate`. Completion, agent hooks, CI/PR repair modes and the
+  babysitter reach that gate. No second copy of this discovery rule was found.
+  `createRepairWorkspaceSnapshot` remains used by the production container
+  launcher and is now exported for the containment probe.
+- Removed from `worker/deno/tests/pre_push_gate_test.ts`:
+  `assertEquals(ran, ["deno fmt --check --permit-no-files 'README.md'"]);`
+  - Required by: "a skipped or unavailable check is not a pass."
+  - Replaced by: `assertEquals(await loadDenoScopes(clone, ["deno.json"]), {})`,
+    the exact config-refusal message assertion and
+    `assert(!(result.error instanceof PrePushGateInfrastructureError))`, with
+    accepted controls before corruption and after restoration in the same file.
+
+## Deno regression avoided
+
+The integration probe uses Deno and the image's existing markdownlint, without
+adding a Node test runner or package manifest.
+
+## Merge verification
+
+- Required PR CI, independent review and the existing automatic merge path
+  remain required. No workflow or merge policy was changed.
+- Container Build passed on code commit `2e0c5e299`. Required checks and review
+  on the eventual PR remain pending. Resume the final local gate with
+  `timeout 600 ./quality.sh < /dev/null` from the repository root when the
+  available run budget covers it. The worker also runs its gate before the PR.
+
+## Remaining risks and checks not performed
+
+Live fleet PR publication and live Apple/Podman repair execution were not
+performed. GitHub/git publication is represented by the existing host harness.
+Local config integration lacks `.config.json`; local Checkov lacks its binary
+and container runtime. Their skipped results are not passes.

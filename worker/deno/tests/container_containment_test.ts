@@ -37,7 +37,12 @@ import { appleWorkerArgs } from "../lib/apple_egress_launch.ts";
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import { assert, assertEquals, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import {
   buildContainerLaunchPlan,
   type ContainerLaunchPlan,
@@ -61,6 +66,14 @@ import {
 } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import { activeAgentProvider } from "../lib/agent_provider.ts";
+import {
+  buildBabysitterRunArgs,
+  createRepairWorkspaceSnapshot,
+} from "../lib/fleet_babysitter_container.ts";
+import {
+  BABYSITTER_GATE_PROBE_CASES,
+  prepareBabysitterGateProbe,
+} from "./support/babysitter_gate_container_probe.ts";
 import { GH_CREDENTIAL_SUBDIR } from "../lib/credential_preflight.ts";
 import { isAtOrAbove } from "../lib/host_path_style.ts";
 import {
@@ -994,6 +1007,78 @@ Deno.test({
           https_proxy: proxy,
         });
       }
+
+      await t.step(
+        "babysitter repairs run real checks before READY and publication",
+        async () => {
+          const scratch = `${fixture.root}/repair-scratch`;
+          await makeSharedDir(scratch);
+          const snapshot = await createRepairWorkspaceSnapshot(
+            REPO_ROOT,
+            scratch,
+            fixture.plan,
+          );
+          const uid = await runRuntime("id", ["-u"], QUERY_TIMEOUT_MS);
+          const gid = await runRuntime("id", ["-g"], QUERY_TIMEOUT_MS);
+          assertEquals(uid.code, 0, uid.stderr);
+          assertEquals(gid.code, 0, gid.stderr);
+          assert(Number.isSafeInteger(Number(uid.stdout.trim())));
+          assert(Number.isSafeInteger(Number(gid.stdout.trim())));
+          for (const name of BABYSITTER_GATE_PROBE_CASES) {
+            const clone = `${fixture.root}/repair-${name}`;
+            await prepareBabysitterGateProbe(clone, name);
+            const args = buildBabysitterRunArgs(fixture.plan, {
+              clone,
+              scratch,
+              workspaceSnapshot: snapshot,
+              baseBranch: "main",
+            });
+            const imageIndex = args.indexOf(fixture.plan.image);
+            const runArgs = args.slice(0, imageIndex + 1);
+            // Match the fixture owner, as the workflow's other in-image checks do.
+            const userIndex = runArgs.indexOf("--user");
+            const user = `${uid.stdout.trim()}:${gid.stdout.trim()}`;
+            const userFlags = userIndex < 0 ? ["--user", user] : [];
+            if (userIndex >= 0) runArgs[userIndex + 1] = user;
+            const probe = await runRuntime(
+              context.descriptor.executable,
+              runArgsWithProbe(
+                { ...fixture.plan, runArgs },
+                `${fixture.plan.containerName}-${name}`,
+                [
+                  ...userFlags,
+                  "--env",
+                  "HOME=/tmp/probe",
+                  "--env",
+                  "DENO_DIR=/tmp/probe/deno",
+                ],
+                [
+                  "-c",
+                  'set -euo pipefail\nmkdir -p "$DENO_DIR"\n' +
+                  'cp -R "$VIBE_DENO_SEED_DIR/." "$DENO_DIR/"\n' +
+                  "exec deno run --frozen --lock=/workspace/worker/deno/deno.lock " +
+                  "--config=/workspace/worker/deno/deno.json --allow-read --allow-write " +
+                  "--allow-env --allow-run --allow-sys=hostname " +
+                  "/workspace/worker/deno/tests/support/babysitter_gate_container_probe.ts " +
+                  '/babysitter/clone "$1"',
+                  "probe",
+                  name,
+                ],
+              ),
+            );
+            assertEquals(
+              probe.code,
+              0,
+              `${name}:\n${probe.stderr}\n${probe.stdout}`,
+            );
+            assertStringIncludes(
+              probe.stdout,
+              `babysitter gate probe ${name}: passed;`,
+            );
+            console.log(probe.stdout.trim());
+          }
+        },
+      );
 
       const probeRun = await runRuntime(
         context.descriptor.executable,

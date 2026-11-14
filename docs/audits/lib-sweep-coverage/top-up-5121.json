@@ -1,0 +1,12 @@
+{
+  "issue": 5121,
+  "chunk": "top-up-5121",
+  "title": "top-up: the quality gate's local gitleaks stage",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5121",
+  "definition": "Review how the quality gate's gitleaks stage resolves the branch's commit range, runs the CI fallback's gitleaks invocation, and passes only on a clean exit that reports no leaks and logs no ERR or FTL line.",
+  "status": "claimed",
+  "sweptAt": "f67e030e991f956612b7dabe4d27a177c908f6bc",
+  "paths": [
+    "worker/deno/lib/gitleaks_check.ts"
+  ]
+}

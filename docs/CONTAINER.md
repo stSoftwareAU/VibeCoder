@@ -90,7 +90,7 @@ calls it. Its row says so, and it is deliberately absent from
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
-| `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
+| `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR; this repo's own `quality.sh` gate (gitleaks stage, Issue #5121) |
 | `pwsh` 7.6.8 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites — the gate runs the `run.ps1` ones and fails loud without it  |
 | `bats-core` 1.14.0                                  | `bats`                                    | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it       |
 | `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
@@ -142,11 +142,13 @@ Nine consequences worth knowing:
   into a `/opt/semgrep` virtualenv rather than a single binary, and at roughly
   350 MB it is the image's largest toolchain — see
   [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
-- **`gitleaks` is enforced in CI, not by a `quality.sh`.** Neither
-  GRQ-AutoTrader (which has no `quality.sh`) nor NEAT-AI-Explore runs the
-  scanner from its local gate, so it is here for the agent's benefit: with the
-  binary in the image the same scan an agent's PR will face can be run before
-  the PR exists. The amd64 checksum is deliberately the digest the gitleaks
+- **`gitleaks` is enforced in CI for GRQ-AutoTrader and NEAT-AI-Explore; this
+  repository's own `quality.sh` gate runs it too.** Neither GRQ-AutoTrader
+  (which has no `quality.sh`) nor NEAT-AI-Explore runs the scanner from its
+  local gate. VibeCoder's gate does (the gitleaks stage, Issue #5121), so a
+  fleet run on VibeCoder scans its branch's commits before the PR exists. The
+  binary in the image is what lets the agent run that same scan itself, before
+  its PR exists. The amd64 checksum is deliberately the digest the gitleaks
   CLI fallback pins in both that scan and this repository's own
   `.github/workflows/gitleaks.yml`; the local half of that claim is enforced —
   `container_manifest_test.ts` fails the gate when the manifest pin and that
