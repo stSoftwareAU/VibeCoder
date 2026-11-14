@@ -146,10 +146,11 @@ flowchart LR
     `setup: repository setup`;
   - a refused claim logs only `issue claim`;
   - a completed setup logs all seven lines in order.
-- `worker/deno/tests/setup_deadline_5128_test.ts` (29 tests at head) covers the
-  deadline. The `workOnIssue` tests arm it on `fakeClock()` and advance it only
-  after the stalled mock has been entered, and wait on the abandoned setup's own
-  `SETUP_ABANDONED_LOG_LINE`, so none sleeps or races the real clock:
+- `worker/deno/tests/setup_deadline_5128_test.ts` (30 tests at review head)
+  covers the deadline. The `workOnIssue` tests arm it on `fakeClock()` and
+  advance it only after the stalled mock has been entered, and wait on the
+  abandoned setup's own `SETUP_ABANDONED_LOG_LINE`, so none sleeps or races the
+  real clock:
   - `setupDeadlineMs`: the budget exceeds one agent budget plus the clone and
     pre-setup bounds and grows by two agent budgets per extra `claudeTimeout`
     when no cap is published (and for `VIBE_RUN_MAX_SECONDS=0`); it is left
@@ -159,8 +160,9 @@ flowchart LR
   - `runSetupWithDeadline` returns the setup result, disarms its timer and never
     abandons when setup settles first, and abandons a setup that never settles
     once, at the deadline and not before, with a `timeout` failure;
-  - `ownClaimCommentPresent` is true only for a found own claim comment; a
-    failed read and a worker id that is not a plain id answer false;
+  - `ownClaimCommentPresent` is true only for this run's exact leading claim
+    marker authored by its GitHub account, across all pages; outsider or quoted
+    markers, a failed read and a worker id that is not a plain id answer false;
   - through `workOnIssue`: a wedge inside `claimIssue` with no claim of its own
     returns `claimNotHeld`, and a claim that comes back late is released once
     and the setup goes no further; a wedge inside `claimIssue` with this run's
@@ -254,9 +256,9 @@ flowchart LR
       (`hardKillLastStep` returned `unknown`), and the failed-setup and
       completed-setup cases captured no `[setup-step]` lines. The refused-claim
       case's log assertion was first run after the fix.
-- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (29 tests at head).
-      With the step-boundary checks in `setup_branch_phase.ts` disabled, the
-      no-own-claim, won-claim and late-heartbeat `workOnIssue` tests failed;
+- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (30 tests at review
+      head). With the step-boundary checks in `setup_branch_phase.ts` disabled,
+      the no-own-claim, won-claim and late-heartbeat `workOnIssue` tests failed;
       with `state.setupClaimReleasedByRun` forced false, the own-claim-comment
       test failed. After the review round, with the check after
       `getRepoDefaultBranch` removed, the `getRepoDefaultBranch` test failed on
@@ -269,12 +271,13 @@ flowchart LR
       `fakeClock` rewrite were first run after the change. Earlier iterations of
       this file had a constant-restating test and a late-rejection test that
       passed without the code they named; both are removed.
-- [x] `deno task test:unit` on `worker/deno/tests/setup_deadline_5128_test.ts`
-      (29 tests at head), `worker/deno/tests/setup_step_log_test.ts` (3 tests at
-      head) and `worker/deno/tests/hard_kill_report_test.ts` (66 tests at head),
-      re-run on the head: 98 passed, 0 failed. The other test files that call
-      `workOnIssue`, `workOnIssueSetupBranch` or touch `InfrastructureDeps` were
-      not re-run after this documentation fix, which changes no code.
+- [x] Before the review ownership correction, `deno task test:unit` on
+      `worker/deno/tests/setup_deadline_5128_test.ts` (29 tests then),
+      `worker/deno/tests/setup_step_log_test.ts` (3 tests) and
+      `worker/deno/tests/hard_kill_report_test.ts` (66 tests): 98 passed, 0
+      failed. The other test files that call `workOnIssue`,
+      `workOnIssueSetupBranch` or touch `InfrastructureDeps` were not re-run
+      after this documentation fix, which changes no code.
 - [x] `./quality.sh < /dev/null` on the commit before the claim-release fix:
       Result PASSED (with skipped checks); it was not re-run on the head, which
       adds that fix and its test. Config integration (no `.config.json`) and
@@ -291,14 +294,14 @@ flowchart LR
 - Branch outcomes: deadline fires with claim won
   (`workOnIssue: a wedge after a
   won claim …`); with own claim comment present
-  (`… after this run's claim comment
-  landed releases it, once`); with no claim
-  of its own (`… with no claim of its
-  own does not unassign`); setup settles
-  first (`runSetupWithDeadline returns the
-  setup result …`); late claim, late
-  clone and late heartbeat after abandonment (the same four `workOnIssue`
-  tests); unreadable comments and a non-plain worker id
+  (`… a wedged claim reads a marker from testbot
+  and releases only its own`);
+  with no claim of its own (`… with no claim of its
+  own does not unassign`);
+  setup settles first (`runSetupWithDeadline returns the
+  setup result …`);
+  late claim, late clone and late heartbeat after abandonment (the same four
+  `workOnIssue` tests); unreadable comments and a non-plain worker id
   (`ownClaimCommentPresent …`); abandonment before `repository setup`,
   `feature branch` and `pre-setup command` (the next-step tests, each also
   asserting the start line of the step that holds the wedge); a late
@@ -339,7 +342,9 @@ checks and the other available static checks. Its parallel unit-test pass exited
 unsuccessfully without a named assertion failure; the serial pass did not run.
 Config integration, markdownlint, Semgrep, Checkov and the live release-ruleset
 check were unavailable locally. This is not a passing full gate; required CI
-must validate the published fix.
+must validate the published fix. A standalone full-suite retry with
+`DENO_JOBS=2` reached its 600-second command limit without a completed result;
+it also provides no full-suite pass.
 
 ## Merge verification
 
