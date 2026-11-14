@@ -12,7 +12,10 @@
 
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
+  BUDGET_FAILURE_PREFIX,
+  BUDGET_NOT_CHECKED_PREFIX,
   budgetProvedPass,
+  failedRunBudgetLines,
   gitGuardShimOnPath,
   normaliseTestPath,
   parseJunitTestTimes,
@@ -381,4 +384,49 @@ Deno.test("normaliseTestPath - spells a path the way the manifests do", () => {
   );
   assertEquals(normaliseTestPath("tests\\a_test.ts"), "tests/a_test.ts");
   assertEquals(normaliseTestPath("tests/a_test.ts"), "tests/a_test.ts");
+});
+
+Deno.test("failedRunBudgetLines - a failed pass's all-slow file is a FAIL line naming it (Issue #4930)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue4930-" });
+  try {
+    const slow = `${dir}/slow.xml`;
+    const fast = `${dir}/fast.xml`;
+    await Deno.writeTextFile(
+      slow,
+      junit([
+        { file: "tests/slow_test.ts", name: "one", seconds: 1.5 },
+        { file: "tests/slow_test.ts", name: "two", seconds: 2 },
+      ]),
+    );
+    await Deno.writeTextFile(
+      fast,
+      junit([{ file: "tests/fast_test.ts", name: "quick", seconds: 0.01 }]),
+    );
+
+    assertEquals(BUDGET_FAILURE_PREFIX, "FAIL: every test in ");
+    const lines = await failedRunBudgetLines([slow], NO_EXEMPTIONS);
+    const failLines = lines.filter((line) =>
+      line.startsWith(BUDGET_FAILURE_PREFIX)
+    );
+    assertEquals(failLines.length, 1);
+    assert(failLines[0]!.includes("tests/slow_test.ts"));
+
+    // Control: a fast file's report prints no FAIL line.
+    const fastLines = await failedRunBudgetLines([fast], NO_EXEMPTIONS);
+    assertEquals(
+      fastLines.filter((line) => line.startsWith(BUDGET_FAILURE_PREFIX)),
+      [],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("failedRunBudgetLines - a missing report is one TIME BUDGET NOT CHECKED line, not a pass (Issue #4930)", async () => {
+  const missing = "/nonexistent/issue4930/report.xml";
+  const lines = await failedRunBudgetLines([missing], NO_EXEMPTIONS);
+  assertEquals(lines.length, 1);
+  assert(lines[0]!.startsWith(BUDGET_NOT_CHECKED_PREFIX));
+  assertEquals(BUDGET_NOT_CHECKED_PREFIX, "TIME BUDGET NOT CHECKED: ");
+  assert(lines[0]!.includes(missing));
 });

@@ -5328,9 +5328,11 @@ gates do (see that bullet):
      or a missing named export) names no test to compare and blocks. The
      `test:unit` runner stops after a failed parallel pass, so when a
      downgraded run never reached its serial pass the gate runs it
-     (`--serial-only`) and judges that result the same way. The time budget the
-     runner applies after both passes succeed is not re-run for a failed
-     parallel pass. A test file the
+     (`--serial-only`) and judges that result the same way. The runner also
+     holds a failed pass's (and any earlier green pass's) JUnit timings to the
+     unit-test time budget, and a downgrade stands only when that output reports
+     no budget failure (`FAIL: every test in …`) and no `TIME BUDGET NOT
+     CHECKED` line. A test file the
      push added, a base run that passes, a base the gate cannot check out (for
      example a deepen that failed, so no merge-base is found), or an output that
      names no failed test stays a block. Repair specs called `shellcheckOnly`,
