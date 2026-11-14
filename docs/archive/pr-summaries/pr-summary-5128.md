@@ -1,8 +1,8 @@
 ## Summary
 
 PR #5130 put the setup phase under a deadline, so a wedged setup ends as a
-`timeout` failure and the run releases the claim it holds. On the #5128
-timeline that deadline would still have fallen too late. The wedged issue,
+`timeout` failure and the run releases the claim it holds. On the #5128 timeline
+that deadline would still have fallen too late. The wedged issue,
 `stSoftwareAU/GRQ#5515`, has no milestone, but its setup was given two agent
 budgets plus 30 minutes: 9000s at the default `claude_timeout`, falling at about
 15:07:43Z. The guest's log stopped at 14:48:26Z, so the deadline would never
@@ -19,8 +19,8 @@ Closes #5128
 
 - PR #5130 left a gap: "a setup that wedges within a budget's last stretch
   before the watchdog, as `GRQ-25` did, is still freed by that recovery first".
-  The budget for a setup without a milestone was sized for agent runs that
-  setup never makes, so that stretch covered most of the run.
+  The budget for a setup without a milestone was sized for agent runs that setup
+  never makes, so that stretch covered most of the run.
 - The fix narrows the budget to the work this setup actually does. It does not
   change the step checkpoints, the claim-ownership check or the hard-cap
   capping.
@@ -30,8 +30,8 @@ Closes #5128
 - `setupDeadlineMs` now requires `input.milestone`, and the
   `InfrastructureDeps.setupDeadlineMs` type has the same required argument. A
   caller cannot leave the milestone out and silently get either budget.
-- The single caller passes `Boolean(ctx.milestoneTitle)`. This matches the
-  setup phase's own `if (milestoneTitle)` test (`setup_branch_phase.ts`), which
+- The single caller passes `Boolean(ctx.milestoneTitle)`. This matches the setup
+  phase's own `if (milestoneTitle)` test (`setup_branch_phase.ts`), which
   decides whether the milestone pre-sync (`presyncMilestoneOnceForArming`, the
   agent run and its repair run) happens at all.
 - The 1800s allowance (`SETUP_FIXED_ALLOWANCE_SECONDS`) is unchanged. It covers
@@ -69,17 +69,17 @@ flowchart LR
   silence. With a milestone the same input still gives 9,000,000 ms. Without a
   cap, a setup with no milestone stays at 1800s whatever `claude_timeout` is.
 - `worker/deno/tests/setup_deadline_5128_test.ts::workOnIssue: a non-milestone setup is abandoned at the fixed allowance, a milestone setup keeps its agent budgets (Issue #5128)`
-  drives the real `workOnIssue` call site, with the real `setupDeadlineMs` and
-  a fake clock. A setup with no milestone, wedged in `claimIssue`, ends as a
+  drives the real `workOnIssue` call site, with the real `setupDeadlineMs` and a
+  fake clock. A setup with no milestone, wedged in `claimIssue`, ends as a
   `setup` / `timeout` failure once 1800s pass. A setup with `milestoneTitle` is
   still running after the same advance and flush, and ends once its agent
   budgets pass. The first case is the positive control for the flush.
 - Docs: the setup-deadline paragraph in `docs/TROUBLESHOOTING.md` (the hard-kill
   section). I re-read the whole paragraph. The no-cap sentence now applies only
-  to milestone setups. The `setupDeadlineMs` and
-  `SETUP_FIXED_ALLOWANCE_SECONDS` doc comments are updated too. A grep for
-  `agent budgets`, `setupDeadlineMs` and `SETUP_FIXED_ALLOWANCE` outside
-  `docs/archive/` finds no other copy of the budget.
+  to milestone setups. The `setupDeadlineMs` and `SETUP_FIXED_ALLOWANCE_SECONDS`
+  doc comments are updated too. A grep for `agent budgets`, `setupDeadlineMs`
+  and `SETUP_FIXED_ALLOWANCE` outside `docs/archive/` finds no other copy of the
+  budget.
 - Issue numbers cited: #5128 (this issue) and PR #5130 (the earlier delivery for
   this issue).
 
@@ -88,9 +88,9 @@ flowchart LR
 - **symptom** — on the GRQ-25 timeline the setup deadline fell after the guest
   stopped, so the run never released its claim
 - **status** — `partial` — reason: the deadline arithmetic is reproduced from
-  the issue's timestamps. With the budget line made to ignore `milestone`
-  (base behaviour), both new tests failed (36 passed, 2 failed). With the fix
-  they pass. The guest stop and the wedged step themselves were not reproduced,
+  the issue's timestamps. With the budget line made to ignore `milestone` (base
+  behaviour), both new tests failed (36 passed, 2 failed). With the fix they
+  pass. The guest stop and the wedged step themselves were not reproduced,
   because their evidence is in `GRQ-25`'s private archive.
 - **regression test** —
   `worker/deno/tests/setup_deadline_5128_test.ts::setupDeadlineMs grants a non-milestone setup the fixed allowance alone, so the GRQ-25 wedge is abandoned before its guest stopped (Issue #5128)`
@@ -111,8 +111,8 @@ flowchart LR
 - Callers checked: `setupDeadlineMs` has one production caller, the setup
   `runPhase` in `issue_worker.ts`, which passes the milestone flag. The
   production and mock wiring in `issue_worker_wiring.ts` pass the function
-  reference. The test harness override `() => DEADLINE_MS` ignores the input,
-  as before.
+  reference. The test harness override `() => DEADLINE_MS` ignores the input, as
+  before.
 - Branch outcomes: `milestone: false` (the fixed allowance alone; both new
   tests) and `milestone: true` (agent budgets kept; the five existing tests and
   both new tests).
