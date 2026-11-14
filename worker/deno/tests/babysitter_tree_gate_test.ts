@@ -990,6 +990,7 @@ for (const config of ["deno.json", "deno.jsonc"]) {
           stdout: "checks passed",
           stderr: "",
         }),
+        gitleaks: PASSING_GITLEAKS,
       };
       const valid = await Deno.readTextFile(path);
       const allowed = await runBabysitterTreeGate(clone, "main", deps);
@@ -999,6 +1000,7 @@ for (const config of ["deno.json", "deno.jsonc"]) {
           config === "deno.json"
             ? "deno task test:unit 'tests/foo_test.ts'"
             : "deno task test:unit",
+          "gitleaks",
         ],
       });
 
@@ -1032,10 +1034,11 @@ Deno.test("an unreadable primary Deno config cannot fall through to a secondary 
         stdout: "checks passed",
         stderr: "",
       }),
+      gitleaks: PASSING_GITLEAKS,
     };
     assertEquals(await runBabysitterTreeGate(clone, "main", deps), {
       kind: "passed",
-      checksRun: ["deno task test:unit"],
+      checksRun: ["deno task test:unit", "gitleaks"],
     });
 
     await Deno.remove(path);
@@ -1050,7 +1053,7 @@ Deno.test("an unreadable primary Deno config cannot fall through to a secondary 
     await Deno.writeTextFile(path, valid);
     assertEquals(await runBabysitterTreeGate(clone, "main", deps), {
       kind: "passed",
-      checksRun: ["deno task test:unit"],
+      checksRun: ["deno task test:unit", "gitleaks"],
     });
   });
 });
