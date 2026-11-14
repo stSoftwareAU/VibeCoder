@@ -84,7 +84,11 @@ Part of #5128
   claim as held if `won` is set or `ownClaimCommentPresent` finds this run's
   `CLAIM_LOCK:<workerId>` comment; otherwise the result carries `claimNotHeld`,
   which `run_core.ts`'s `releaseIssueClaim` honours by releasing nothing. A read
-  of the comments that fails counts as not held.
+  of the comments that fails counts as not held. `won` is read again after
+  that comment read: a claim that returns while the run is still deciding
+  (`state.setupClaimReleasedByRun` unset) is recorded as won by the abandoned
+  setup instead of being unassigned by it, so the run releases it, and it is
+  released exactly once (a second unassign could strip another host's claim).
 - The abandoned setup is told to stop. `onAbandon` sets `state.setupAbandoned`,
   and `workOnIssueSetupBranch` checks it before each of the seven step start
   lines, right after `claimIssue` and `startHeartbeat` return, and before each
@@ -142,7 +146,7 @@ flowchart LR
     `setup: repository setup`;
   - a refused claim logs only `issue claim`;
   - a completed setup logs all seven lines in order.
-- `worker/deno/tests/setup_deadline_5128_test.ts` (27 tests at head) covers the
+- `worker/deno/tests/setup_deadline_5128_test.ts` (29 tests at head) covers the
   deadline. The `workOnIssue` tests arm it on `fakeClock()` and advance it only
   after the stalled mock has been entered, and wait on the abandoned setup's own
   `SETUP_ABANDONED_LOG_LINE`, so none sleeps or races the real clock:
@@ -180,7 +184,9 @@ flowchart LR
     command; a feature-branch failure that arrives late with object-store
     corruption starts neither the object-store repair nor the broken-ref sweep;
     and a repair, re-clone or sweep that returns late is followed by no re-clone
-    or branch retry. The `createFeatureBranchFromBase` and `checkClaimChurn`
+    or branch retry; and a claim won while the run reads its claim comment
+    (comment posted or not yet posted) is released exactly once in all. The
+    `createFeatureBranchFromBase` and `checkClaimChurn`
     wedges also assert that no `gh` command follows the deadline.
 - `worker/deno/tests/run_core_test.ts` already drives the consumers of that
   result: "failure path releases the claim (unassign + clear) — Issue #2648
@@ -248,7 +254,7 @@ flowchart LR
       (`hardKillLastStep` returned `unknown`), and the failed-setup and
       completed-setup cases captured no `[setup-step]` lines. The refused-claim
       case's log assertion was first run after the fix.
-- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (27 tests at head).
+- [x] Added `worker/deno/tests/setup_deadline_5128_test.ts` (29 tests at head).
       With the step-boundary checks in `setup_branch_phase.ts` disabled, the
       no-own-claim, won-claim and late-heartbeat `workOnIssue` tests failed;
       with `state.setupClaimReleasedByRun` forced false, the own-claim-comment
@@ -264,13 +270,14 @@ flowchart LR
       this file had a constant-restating test and a late-rejection test that
       passed without the code they named; both are removed.
 - [x] `deno task test:unit` on `worker/deno/tests/setup_deadline_5128_test.ts`
-      (27 tests at head), `worker/deno/tests/setup_step_log_test.ts` (3 tests at
+      (29 tests at head), `worker/deno/tests/setup_step_log_test.ts` (3 tests at
       head) and `worker/deno/tests/hard_kill_report_test.ts` (66 tests at head),
-      re-run on the head: 96 passed, 0 failed. The other test files that call
+      re-run on the head: 98 passed, 0 failed. The other test files that call
       `workOnIssue`, `workOnIssueSetupBranch` or touch `InfrastructureDeps` were
       not re-run after this documentation fix, which changes no code.
-- [x] `./quality.sh < /dev/null` on the head after the review round: Result
-      PASSED (with skipped checks). Config integration (no `.config.json`) and
+- [x] `./quality.sh < /dev/null` on the commit before the claim-release fix:
+      Result PASSED (with skipped checks); it was not re-run on the head, which
+      adds that fix and its test. Config integration (no `.config.json`) and
       Checkov (no binary or container runtime) were skipped on this host.
 - Callers checked: `hardKillLastStep` is called by `formatHardKillBody`, which
   gets the new labels. `workOnIssueSetupBranch` has one caller,
