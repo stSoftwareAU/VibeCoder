@@ -101,6 +101,14 @@ Deno.test("authorKind: Dependabot and the fleet accounts only", () => {
   assertEquals(authorKind("nleck", fleet), null);
 });
 
+Deno.test("authorKind: GraphQL bot authors match the configured REST bot login", () => {
+  const fleet = new Set(["fleet-pr-babysitter[bot]"]);
+  assertEquals(authorKind("fleet-pr-babysitter", fleet, "Bot"), "fleet");
+  assertEquals(authorKind("fleet-pr-babysitter", fleet, "User"), null);
+  assertEquals(authorKind("fleet-pr-babysitter", fleet), null);
+  assertEquals(authorKind("other", fleet, "Bot"), null);
+});
+
 const searchPr = (
   overrides: Partial<SearchPr> = {},
   rollup: string | null = "SUCCESS",
