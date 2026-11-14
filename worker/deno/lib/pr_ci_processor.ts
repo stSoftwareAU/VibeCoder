@@ -2060,6 +2060,7 @@ async function _processCiWithHeartbeat(
   const tokenEconomizer = processorDeps.tokenEconomizer
     ? await tokenEconomizerSpawnOptions({
       config: processorDeps.tokenEconomizer,
+      pluginDir: processorDeps.deps.claude.tokenEconomizerPluginDir,
       workDir: processorDeps.workRoot,
       repo,
       runKind: "ci-fix",
@@ -3440,6 +3441,7 @@ async function _runPostClaudeQualityCheck(
     const tokenEconomizer = processorDeps.tokenEconomizer
       ? await tokenEconomizerSpawnOptions({
         config: processorDeps.tokenEconomizer,
+        pluginDir: processorDeps.deps.claude.tokenEconomizerPluginDir,
         workDir: processorDeps.workRoot,
         repo: input.repo,
         runKind: "ci-fix",

@@ -56,6 +56,7 @@ import {
 } from "./memory_pressure.ts";
 import type { Logger, Result } from "../types.ts";
 import { createLogger } from "./logger.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
@@ -1564,9 +1565,14 @@ async function runClaudeWithTimeoutBody(
           options.tokenEconomizerNotify,
           logger,
         );
-      } catch {
+      } catch (error) {
+        // Never fail the run on a monitor fault, but keep its redacted cause.
         logger?.warn(
-          "token-economizer: plugin off, hook failure monitor could not start",
+          `token-economizer: plugin off, hook failure monitor could not start: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
         );
         tokenEconomizerLaunch = undefined;
         delete invocationRequest.pluginDir;
@@ -3101,9 +3107,14 @@ async function runClaudeWithTimeoutBody(
     if (tokenEconomizerMonitor) {
       try {
         await tokenEconomizerMonitor.close();
-      } catch {
+      } catch (error) {
+        // Never fail the run on a stop-record fault, but keep its redacted cause.
         logger?.warn(
-          "token-economizer: could not persist the trial stop; plugin failure was not reported as a clean result",
+          `token-economizer: could not persist the trial stop; plugin failure was not reported as a clean result: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
         );
       }
     }

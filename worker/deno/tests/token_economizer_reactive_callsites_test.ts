@@ -10,16 +10,15 @@
  * suites use, capture the options handed to `runClaudeWithRetry`, and assert:
  *
  * a. An enabled host block gives the spawn a `tokenEconomizer` launch whose
- *    `pluginDir` is the vendored plugin, whose `TE_TOOLPRUNE` is `off`, and
+ *    `pluginDir` is the directory handed in, whose `TE_TOOLPRUNE` is `off`, and
  *    whose `TOKENECONOMIZER_HOME` sits under `<workRoot>/.token-economizer/runs/`.
  * b. No `tokenEconomizer` in the processor deps leaves no `tokenEconomizer`
  *    key in the spawn options.
  *
- * The launch resolves the plugin manifest at the fixed path
- * `/opt/tokeneconomizer/plugin`, and the processors take no seam for it. So the
- * enabled-block tests run only where that manifest is installed (the container
- * image), following `token_economizer_plugin_wiring_test.ts`. The absent-block
- * tests run everywhere.
+ * The enabled-block tests hand the launch a plugin directory through the
+ * `claude.tokenEconomizerPluginDir` seam: the vendored plugin where it is
+ * installed, else a temporary fixture holding only the manifest. So every test
+ * runs everywhere, CI included.
  *
  * Every test uses a temporary work root from `Deno.makeTempDir`, removed
  * afterwards. The RTK preparer is a scripted seam with no replies, so no
@@ -70,10 +69,7 @@ const ANNOTATIONS: CheckAnnotation[] = [
   { path: "tests/main_test.ts", start_line: 42, message: "Assertion failed" },
 ];
 
-/**
- * Whether the vendored plugin manifest is installed here. The launch checks
- * this exact file, so the enabled-block tests are ignored where it is absent.
- */
+/** Whether the vendored plugin manifest is installed here. */
 const REAL_PLUGIN_PRESENT = ((): boolean => {
   try {
     return Deno.statSync(
@@ -97,6 +93,27 @@ function makeSilentLogger(): Logger {
     scanSummary: noop,
     workerSummary: noop,
   };
+}
+
+/**
+ * Runs `fn` with a plugin directory: the vendored plugin when installed, else a
+ * temporary fixture holding a minimal manifest, removed afterwards.
+ */
+async function withPluginDir<T>(
+  fn: (pluginDir: string) => Promise<T>,
+): Promise<T> {
+  if (REAL_PLUGIN_PRESENT) return await fn(TOKEN_ECONOMIZER_PLUGIN_DIR);
+  const pluginDir = await Deno.makeTempDir({ prefix: "te_plugin_fixture_" });
+  try {
+    await Deno.mkdir(join(pluginDir, ".claude-plugin"));
+    await Deno.writeTextFile(
+      join(pluginDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "tokeneconomizer-fixture" }),
+    );
+    return await fn(pluginDir);
+  } finally {
+    await Deno.remove(pluginDir, { recursive: true }).catch(() => {});
+  }
 }
 
 /** A host block that is switched on, from the shipped defaults. */
@@ -128,6 +145,7 @@ async function withTempWorkRoot<T>(
 async function assertLaunchWired(
   spawn: SpawnOptions | undefined,
   workRoot: string,
+  pluginDir: string,
   label: string,
 ): Promise<void> {
   assert(spawn, `${label}: expected a captured agent invocation`);
@@ -136,7 +154,7 @@ async function assertLaunchWired(
     launch !== undefined,
     `${label}: expected a tokenEconomizer launch in the spawn options`,
   );
-  assertEquals(launch.pluginDir, TOKEN_ECONOMIZER_PLUGIN_DIR, label);
+  assertEquals(launch.pluginDir, pluginDir, label);
   assertEquals(launch.env.TE_TOOLPRUNE, "off", label);
   // The launch canonicalises the state path, so compare against the real root.
   const realWork = await Deno.realPath(workRoot);
@@ -166,9 +184,11 @@ async function runFeedback(
   workRoot: string,
   tokenEconomizer: TokenEconomizerConfig | undefined,
   throughCommand = false,
+  pluginDir?: string,
 ): Promise<SpawnOptions[]> {
   const spawns: SpawnOptions[] = [];
   const mockClaude: Partial<ClaudeDeps> = {
+    ...(pluginDir === undefined ? {} : { tokenEconomizerPluginDir: pluginDir }),
     runClaudeWithRetry: ((options: SpawnOptions) => {
       spawns.push(options);
       return Promise.resolve({
@@ -265,10 +285,13 @@ async function runCiFix(
     tokenEconomizer: TokenEconomizerConfig | undefined;
     qualityRetry: boolean;
     throughCommand?: boolean;
+    pluginDir?: string;
   },
 ): Promise<SpawnOptions[]> {
   const spawns: SpawnOptions[] = [];
+  const pluginDir = options.pluginDir;
   const mockClaude: Partial<ClaudeDeps> = {
+    ...(pluginDir === undefined ? {} : { tokenEconomizerPluginDir: pluginDir }),
     runClaudeWithRetry: ((runOptions: SpawnOptions) => {
       spawns.push(runOptions);
       return Promise.resolve({
@@ -384,13 +407,24 @@ async function runCiFix(
 Deno.test({
   name:
     "pr_feedback_processor - an enabled host block gives the feedback spawn the TokenEconomizer launch (Issue #4956)",
-  ignore: !REAL_PLUGIN_PRESENT,
   fn: () =>
-    withTempWorkRoot(async (workRoot) => {
-      const spawns = await runFeedback(workRoot, enabledBlock());
-      assertEquals(spawns.length, 1, "the feedback run must spawn once");
-      await assertLaunchWired(spawns[0], workRoot, "feedback spawn");
-    }),
+    withPluginDir((pluginDir) =>
+      withTempWorkRoot(async (workRoot) => {
+        const spawns = await runFeedback(
+          workRoot,
+          enabledBlock(),
+          false,
+          pluginDir,
+        );
+        assertEquals(spawns.length, 1, "the feedback run must spawn once");
+        await assertLaunchWired(
+          spawns[0],
+          workRoot,
+          pluginDir,
+          "feedback spawn",
+        );
+      })
+    ),
 });
 
 Deno.test("pr_feedback_processor - with no tokenEconomizer in the deps the feedback spawn has no tokenEconomizer key (Issue #4956)", () =>
@@ -403,16 +437,23 @@ Deno.test("pr_feedback_processor - with no tokenEconomizer in the deps the feedb
 Deno.test({
   name:
     "pr_ci_processor - an enabled host block gives the first CI-fix spawn the TokenEconomizer launch (Issue #4956)",
-  ignore: !REAL_PLUGIN_PRESENT,
   fn: () =>
-    withTempWorkRoot(async (workRoot) => {
-      const spawns = await runCiFix(workRoot, {
-        tokenEconomizer: enabledBlock(),
-        qualityRetry: false,
-      });
-      assertEquals(spawns.length, 1, "the CI-fix run must spawn once");
-      await assertLaunchWired(spawns[0], workRoot, "CI-fix first spawn");
-    }),
+    withPluginDir((pluginDir) =>
+      withTempWorkRoot(async (workRoot) => {
+        const spawns = await runCiFix(workRoot, {
+          tokenEconomizer: enabledBlock(),
+          qualityRetry: false,
+          pluginDir,
+        });
+        assertEquals(spawns.length, 1, "the CI-fix run must spawn once");
+        await assertLaunchWired(
+          spawns[0],
+          workRoot,
+          pluginDir,
+          "CI-fix first spawn",
+        );
+      })
+    ),
 });
 
 Deno.test("pr_ci_processor - with no tokenEconomizer in the deps the first CI-fix spawn has no tokenEconomizer key (Issue #4956)", () =>
@@ -428,16 +469,23 @@ Deno.test("pr_ci_processor - with no tokenEconomizer in the deps the first CI-fi
 Deno.test({
   name:
     "pr_ci_processor - an enabled host block gives the post-quality CI-fix retry the TokenEconomizer launch (Issue #4956)",
-  ignore: !REAL_PLUGIN_PRESENT,
   fn: () =>
-    withTempWorkRoot(async (workRoot) => {
-      const spawns = await runCiFix(workRoot, {
-        tokenEconomizer: enabledBlock(),
-        qualityRetry: true,
-      });
-      assertEquals(spawns.length, 2, "the quality retry must have spawned");
-      await assertLaunchWired(spawns[1], workRoot, "CI-fix retry spawn");
-    }),
+    withPluginDir((pluginDir) =>
+      withTempWorkRoot(async (workRoot) => {
+        const spawns = await runCiFix(workRoot, {
+          tokenEconomizer: enabledBlock(),
+          qualityRetry: true,
+          pluginDir,
+        });
+        assertEquals(spawns.length, 2, "the quality retry must have spawned");
+        await assertLaunchWired(
+          spawns[1],
+          workRoot,
+          pluginDir,
+          "CI-fix retry spawn",
+        );
+      })
+    ),
 });
 
 Deno.test("pr_ci_processor - with no tokenEconomizer in the deps the post-quality retry has no tokenEconomizer key (Issue #4956)", () =>
@@ -456,28 +504,31 @@ for (const enabled of [false, true]) {
       name: `${kind} command carries the ${
         enabled ? "enabled" : "disabled"
       } host block to the agent (Issue #4956)`,
-      ignore: enabled && !REAL_PLUGIN_PRESENT,
       fn: () =>
-        withTempWorkRoot(async (workRoot) => {
-          const block = { ...enabledBlock(), enabled };
-          const spawns = kind === "pr-feedback"
-            ? await runFeedback(workRoot, block, true)
-            : await runCiFix(workRoot, {
-              tokenEconomizer: block,
-              qualityRetry: false,
-              throughCommand: true,
-            });
-          assert(spawns.length > 0, "the command must reach the agent");
-          for (const spawn of spawns) {
-            if (enabled) {
-              await assertLaunchWired(
-                spawn,
-                workRoot,
-                `${kind} command enabled`,
-              );
-            } else assertNoLaunch(spawn, `${kind} command disabled`);
-          }
-        }),
+        withPluginDir((pluginDir) =>
+          withTempWorkRoot(async (workRoot) => {
+            const block = { ...enabledBlock(), enabled };
+            const spawns = kind === "pr-feedback"
+              ? await runFeedback(workRoot, block, true, pluginDir)
+              : await runCiFix(workRoot, {
+                tokenEconomizer: block,
+                qualityRetry: false,
+                throughCommand: true,
+                pluginDir,
+              });
+            assert(spawns.length > 0, "the command must reach the agent");
+            for (const spawn of spawns) {
+              if (enabled) {
+                await assertLaunchWired(
+                  spawn,
+                  workRoot,
+                  pluginDir,
+                  `${kind} command enabled`,
+                );
+              } else assertNoLaunch(spawn, `${kind} command disabled`);
+            }
+          })
+        ),
     });
   }
 }

@@ -1466,6 +1466,7 @@ async function _processFeedbackWithHeartbeat(
   const tokenEconomizer = processorDeps.tokenEconomizer
     ? await tokenEconomizerSpawnOptions({
       config: processorDeps.tokenEconomizer,
+      pluginDir: processorDeps.deps.claude.tokenEconomizerPluginDir,
       workDir: processorDeps.workRoot,
       repo,
       runKind: "pr-feedback",

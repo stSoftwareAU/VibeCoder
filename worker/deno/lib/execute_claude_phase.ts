@@ -460,6 +460,8 @@ export interface ExternalIssueRunInput {
 
 /** Injectable dependencies for testing. */
 export interface ExecuteClaudePhaseDeps {
+  /** TokenEconomizer plugin directory (Issue #4956). Absent uses the installed plugin; tests point it at a fixture. */
+  tokenEconomizerPluginDir?: string;
   /** Run Claude with retry and timeout. */
   runClaudeWithRetry: (
     options: RunClaudeOptions,
@@ -1731,6 +1733,7 @@ async function executeClaudePhaseBody(
       ? {}
       : await tokenEconomizerSpawnOptions({
         config: options.tokenEconomizer,
+        pluginDir: deps.tokenEconomizerPluginDir,
         workDir,
         repo,
         runKind: "implementation",

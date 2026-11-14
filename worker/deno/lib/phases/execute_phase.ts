@@ -1351,6 +1351,7 @@ async function executeClaudeBody(
         ? {}
         : await tokenEconomizerSpawnOptions({
           config: config.tokenEconomizer,
+          pluginDir: deps.claude.tokenEconomizerPluginDir,
           workDir: config.workDir,
           repo,
           runKind: "implementation",

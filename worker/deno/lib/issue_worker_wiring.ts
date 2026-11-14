@@ -370,6 +370,8 @@ export interface ClaudeDeps {
    * no change; absent, the process environment is read.
    */
   env?: (name: string) => string | undefined;
+  /** TokenEconomizer plugin directory (Issue #4956). Absent uses the installed plugin; tests point it at a fixture. */
+  tokenEconomizerPluginDir?: string;
   runOrchestratedIssueRun: typeof runOrchestratedIssueRun;
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**

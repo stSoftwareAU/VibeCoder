@@ -17,10 +17,10 @@
  * records the options it was called with, so reverting the spread or either
  * guard turns the matching test red.
  *
- * The launch resolves against TOKEN_ECONOMIZER_PLUGIN_DIR, and neither entry
- * point offers a plugin-directory seam. The enabled-path assertions therefore
- * need the vendored plugin on this host. They are ignored where the manifest is
- * absent (the container image carries it). The disabled cases run everywhere.
+ * The enabled-path tests hand the launch a plugin directory through the
+ * `tokenEconomizerPluginDir` seam: the vendored plugin where it is installed,
+ * else a temporary fixture holding only the manifest. So every test runs
+ * everywhere, CI included.
  *
  * Australian English throughout (behaviour, recognised, organisation).
  */
@@ -43,11 +43,7 @@ import { TOKEN_ECONOMIZER_PLUGIN_DIR } from "../lib/token_economizer_plugin.ts";
 import type { TokenEconomizerConfig, WorkerConfig } from "../types.ts";
 import { rtkSeam } from "./support/rtk_seam.ts";
 
-/**
- * Whether the vendored plugin's manifest is installed here. The launch checks
- * this file before it resolves, so without it every enabled-path assertion
- * would pass for the wrong reason.
- */
+/** Whether the vendored plugin's manifest is installed here. */
 const REAL_PLUGIN_PRESENT = ((): boolean => {
   try {
     return Deno.statSync(
@@ -57,6 +53,27 @@ const REAL_PLUGIN_PRESENT = ((): boolean => {
     return false;
   }
 })();
+
+/**
+ * Runs `fn` with a plugin directory: the vendored plugin when installed, else a
+ * temporary fixture holding a minimal manifest, removed afterwards.
+ */
+async function withPluginDir<T>(
+  fn: (pluginDir: string) => Promise<T>,
+): Promise<T> {
+  if (REAL_PLUGIN_PRESENT) return await fn(TOKEN_ECONOMIZER_PLUGIN_DIR);
+  const pluginDir = await Deno.makeTempDir({ prefix: "te_plugin_fixture_" });
+  try {
+    await Deno.mkdir(join(pluginDir, ".claude-plugin"));
+    await Deno.writeTextFile(
+      join(pluginDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "tokeneconomizer-fixture" }),
+    );
+    return await fn(pluginDir);
+  } finally {
+    await Deno.remove(pluginDir, { recursive: true }).catch(() => {});
+  }
+}
 
 /** A host block that is switched on. */
 function enabledBlock(): TokenEconomizerConfig {
@@ -84,6 +101,7 @@ async function withWorkDir<T>(fn: (workDir: string) => Promise<T>): Promise<T> {
  */
 function assertEveryCallLaunched(
   calls: RunClaudeOptions[],
+  pluginDir: string,
   label: string,
 ): void {
   assert(calls.length > 0, `${label}: runClaudeWithRetry was never called`);
@@ -95,7 +113,7 @@ function assertEveryCallLaunched(
     );
     assertEquals(
       launch.pluginDir,
-      TOKEN_ECONOMIZER_PLUGIN_DIR,
+      pluginDir,
       `${label}: call ${index} pluginDir`,
     );
     assertEquals(
@@ -127,8 +145,12 @@ function assertNoCallLaunched(calls: RunClaudeOptions[], label: string): void {
  * `calls`, and so does the external orchestrator, which receives the same
  * implementation options as `claudeOptions`.
  */
-function standaloneDeps(calls: RunClaudeOptions[]): ExecuteClaudePhaseDeps {
+function standaloneDeps(
+  calls: RunClaudeOptions[],
+  pluginDir?: string,
+): ExecuteClaudePhaseDeps {
   return {
+    ...(pluginDir === undefined ? {} : { tokenEconomizerPluginDir: pluginDir }),
     runClaudeWithRetry: (options: RunClaudeOptions) => {
       calls.push(options);
       return Promise.resolve({
@@ -212,11 +234,12 @@ function standaloneOptions(
 async function runStandalone(
   workDir: string,
   overrides: Partial<ExecuteClaudePhaseOptions>,
+  pluginDir?: string,
 ): Promise<RunClaudeOptions[]> {
   const calls: RunClaudeOptions[] = [];
   await runExecuteClaudePhase(
     standaloneOptions(workDir, overrides),
-    standaloneDeps(calls),
+    standaloneDeps(calls, pluginDir),
   );
   return calls;
 }
@@ -224,14 +247,15 @@ async function runStandalone(
 Deno.test({
   name:
     "standalone implementation - an enabled host hands runClaudeWithRetry the plugin directory and TE_TOOLPRUNE=off (Issue #4956)",
-  ignore: !REAL_PLUGIN_PRESENT,
   async fn() {
-    await withWorkDir(async (workDir) => {
-      const calls = await runStandalone(workDir, {
-        tokenEconomizer: enabledBlock(),
-      });
-      assertEveryCallLaunched(calls, "standalone enabled");
-    });
+    await withPluginDir((pluginDir) =>
+      withWorkDir(async (workDir) => {
+        const calls = await runStandalone(workDir, {
+          tokenEconomizer: enabledBlock(),
+        }, pluginDir);
+        assertEveryCallLaunched(calls, pluginDir, "standalone enabled");
+      })
+    );
   },
 });
 
@@ -254,23 +278,24 @@ Deno.test("standalone implementation - a disabled tokenEconomizer block passes n
 Deno.test({
   name:
     "standalone implementation - external orchestration passes no tokenEconomizer key, though the same enabled host launches off it (Issue #4956)",
-  ignore: !REAL_PLUGIN_PRESENT,
   async fn() {
-    await withWorkDir(async (workDir) => {
-      // Positive control: the same enabled host, not orchestrated, does launch.
-      // Without it the absence below could come from a launch that never resolved.
-      const control = await runStandalone(workDir, {
-        tokenEconomizer: enabledBlock(),
-        externalOrchestration: false,
-      });
-      assertEveryCallLaunched(control, "standalone control");
+    await withPluginDir((pluginDir) =>
+      withWorkDir(async (workDir) => {
+        // Positive control: the same enabled host, not orchestrated, does launch.
+        // Without it the absence below could come from a launch that never resolved.
+        const control = await runStandalone(workDir, {
+          tokenEconomizer: enabledBlock(),
+          externalOrchestration: false,
+        }, pluginDir);
+        assertEveryCallLaunched(control, pluginDir, "standalone control");
 
-      const calls = await runStandalone(workDir, {
-        tokenEconomizer: enabledBlock(),
-        externalOrchestration: true,
-      });
-      assertNoCallLaunched(calls, "standalone external orchestration");
-    });
+        const calls = await runStandalone(workDir, {
+          tokenEconomizer: enabledBlock(),
+          externalOrchestration: true,
+        }, pluginDir);
+        assertNoCallLaunched(calls, "standalone external orchestration");
+      })
+    );
   },
 });
 
@@ -286,6 +311,7 @@ async function runFleet(
   workDir: string,
   block: TokenEconomizerConfig,
   externalOrchestration: boolean,
+  pluginDir?: string,
 ): Promise<RunClaudeOptions[]> {
   const config: WorkerConfig = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -315,6 +341,9 @@ async function runFleet(
   const calls: RunClaudeOptions[] = [];
   const deps = createMockDeps({
     claude: {
+      ...(pluginDir === undefined
+        ? {}
+        : { tokenEconomizerPluginDir: pluginDir }),
       runClaudeWithRetry: ((options: RunClaudeOptions) => {
         calls.push(options);
         return Promise.resolve({
@@ -346,12 +375,13 @@ async function runFleet(
 Deno.test({
   name:
     "fleet implementation - an enabled host hands runClaudeWithRetry the plugin directory and TE_TOOLPRUNE=off (Issue #4956)",
-  ignore: !REAL_PLUGIN_PRESENT,
   async fn() {
-    await withWorkDir(async (workDir) => {
-      const calls = await runFleet(workDir, enabledBlock(), false);
-      assertEveryCallLaunched(calls, "fleet enabled");
-    });
+    await withPluginDir((pluginDir) =>
+      withWorkDir(async (workDir) => {
+        const calls = await runFleet(workDir, enabledBlock(), false, pluginDir);
+        assertEveryCallLaunched(calls, pluginDir, "fleet enabled");
+      })
+    );
   },
 });
 
@@ -365,16 +395,22 @@ Deno.test("fleet implementation - a disabled tokenEconomizer block passes no tok
 Deno.test({
   name:
     "fleet implementation - external orchestration passes no tokenEconomizer key, though the same enabled host launches off it (Issue #4956)",
-  ignore: !REAL_PLUGIN_PRESENT,
   async fn() {
-    await withWorkDir(async (workDir) => {
-      // Positive control: the same enabled host, not orchestrated, does launch.
-      const control = await runFleet(workDir, enabledBlock(), false);
-      assertEveryCallLaunched(control, "fleet control");
+    await withPluginDir((pluginDir) =>
+      withWorkDir(async (workDir) => {
+        // Positive control: the same enabled host, not orchestrated, does launch.
+        const control = await runFleet(
+          workDir,
+          enabledBlock(),
+          false,
+          pluginDir,
+        );
+        assertEveryCallLaunched(control, pluginDir, "fleet control");
 
-      const calls = await runFleet(workDir, enabledBlock(), true);
-      assertNoCallLaunched(calls, "fleet external orchestration");
-    });
+        const calls = await runFleet(workDir, enabledBlock(), true, pluginDir);
+        assertNoCallLaunched(calls, "fleet external orchestration");
+      })
+    );
   },
 });
 
@@ -383,28 +419,30 @@ for (const enabled of [false, true]) {
     name: `execute-claude-phase command carries the ${
       enabled ? "enabled" : "disabled"
     } host block to the agent (Issue #4956)`,
-    ignore: enabled && !REAL_PLUGIN_PRESENT,
     async fn() {
-      await withWorkDir(async (workDir) => {
-        const calls: RunClaudeOptions[] = [];
-        await executeClaudePhaseCommand.execute(
-          {
-            repo: "owner/repo",
-            "issue-number": 4956,
-            "branch-name": "issue-4956",
-            "base-branch": "main",
-          },
-          buildDefaultWorkerConfig({
-            workDir,
-            includeRecentActivity: false,
-            includeCodebaseMap: false,
-            tokenEconomizer: { ...enabledBlock(), enabled },
-          }),
-          standaloneDeps(calls),
-        );
-        if (enabled) assertEveryCallLaunched(calls, "command enabled");
-        else assertNoCallLaunched(calls, "command disabled");
-      });
+      await withPluginDir((pluginDir) =>
+        withWorkDir(async (workDir) => {
+          const calls: RunClaudeOptions[] = [];
+          await executeClaudePhaseCommand.execute(
+            {
+              repo: "owner/repo",
+              "issue-number": 4956,
+              "branch-name": "issue-4956",
+              "base-branch": "main",
+            },
+            buildDefaultWorkerConfig({
+              workDir,
+              includeRecentActivity: false,
+              includeCodebaseMap: false,
+              tokenEconomizer: { ...enabledBlock(), enabled },
+            }),
+            standaloneDeps(calls, pluginDir),
+          );
+          if (enabled) {
+            assertEveryCallLaunched(calls, pluginDir, "command enabled");
+          } else assertNoCallLaunched(calls, "command disabled");
+        })
+      );
     },
   });
 }
