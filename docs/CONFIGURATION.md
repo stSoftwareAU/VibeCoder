@@ -5259,10 +5259,16 @@ gates do (see that bullet):
      `.` or `./` names the whole config directory, as it does for deno, so
      `"include": ["."]` keeps every file in scope. An `include` the hook cannot
      represent (such as one with a `..` segment) leaves the file in scope for
-     deno to judge, and an unparseable `deno.json` is left unfiltered;
+     deno to judge. Scope discovery leaves an unparseable config unfiltered
+     for formatting; unit-test discovery below refuses it before validation;
    - `deno test` (Issue #4930), per outermost `deno.json` / `deno.jsonc`
-     directory whose config defines a `test:unit` task (`deno.json` is preferred;
-     an unreadable or unparseable config is left out). It runs the tests the
+     directory whose config defines a `test:unit` task (`deno.json` is preferred).
+     A config that cannot be read or parsed for unit-test discovery, including
+     an unrecognised `tasks` shape, blocks validation and names the config; its
+     tests are not silently omitted. A missing `deno.json` may fall through to
+     `deno.jsonc`, but an unreadable primary config cannot. Valid configs without
+     `test:unit` remain ineligible. These refusals apply to the repair modes too
+     and are code verdicts, not download outages. It runs the tests the
      dependency scan selects (not the whole suite, except as noted below): each
      changed `_test.ts` file under
      that directory's `tests/`; the same-named `tests/<name>_test.ts` of each

@@ -688,7 +688,7 @@ async function removeRepairWorkspaceSnapshot(
 }
 
 /** Create a checkout snapshot containing tracked regular files and scrubbed config. */
-async function createRepairWorkspaceSnapshot(
+export async function createRepairWorkspaceSnapshot(
   baseDir: string,
   scratch: string,
   plan: ContainerLaunchPlan,
