@@ -405,14 +405,30 @@ export async function raiseMilestoneSyncPr(
       "origin",
       `refs/heads/${branch}:refs/remotes/origin/${branch}`,
     ]);
+  let confirmedAbsent = false;
+  const confirmAbsence = async (fetchCode: number) => {
+    if (fetchCode === 0) return false;
+    const remote = await deps.git([
+      "ls-remote",
+      "--exit-code",
+      "--heads",
+      "origin",
+      `refs/heads/${branch}`,
+    ]);
+    // Exit 2 proves no matching ref; authentication and network errors do not.
+    return remote.code === 2;
+  };
   const pushBranch = () =>
     deps.git([
       "push",
-      "--force-with-lease",
+      confirmedAbsent
+        ? `--force-with-lease=refs/heads/${branch}:`
+        : "--force-with-lease",
       "origin",
       `HEAD:refs/heads/${branch}`,
     ]);
   const baseline = await fetchBaseline();
+  confirmedAbsent = await confirmAbsence(baseline.code);
 
   // Issue #3690: the remote sync branch is the fleet-wide record of what was
   // synced. If it already holds this merge, re-pushing only restarts checks.
@@ -448,7 +464,8 @@ export async function raiseMilestoneSyncPr(
     let staleRetried = false;
     if (pushWasStale()) {
       staleRetried = true;
-      await fetchBaseline();
+      const refreshed = await fetchBaseline();
+      confirmedAbsent = await confirmAbsence(refreshed.code);
       push = await pushBranch();
     }
     if (push.code !== 0) {

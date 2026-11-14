@@ -207,6 +207,51 @@ Deno.test("raiseMilestoneSyncPr - establishes the lease baseline before pushing 
   );
 });
 
+Deno.test("raiseMilestoneSyncPr - recreates a deleted sync branch with an absence lease", async () => {
+  const { deps: base, git } = fakeDeps();
+  const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+    ...base,
+    git: (args) => {
+      if (args[0] === "fetch") {
+        git.push(args);
+        return Promise.resolve({
+          code: 128,
+          stderr: "fatal: couldn't find remote ref",
+        });
+      }
+      if (args[0] === "ls-remote") {
+        git.push(args);
+        return Promise.resolve({ code: 2, stderr: "", stdout: "" });
+      }
+      return base.git(args);
+    },
+  });
+  assert(result.ok);
+  const push = git.find((args) => args[0] === "push");
+  assert(push);
+  assert(
+    push.includes(`--force-with-lease=refs/heads/${syncBranchFor(MILESTONE)}:`),
+  );
+});
+
+Deno.test("raiseMilestoneSyncPr - a failed remote lookup never assumes the branch is absent", async () => {
+  const { deps: base, git } = fakeDeps();
+  await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+    ...base,
+    git: (args) => {
+      if (args[0] === "fetch" || args[0] === "ls-remote") {
+        git.push(args);
+        return Promise.resolve({ code: 128, stderr: "network failure" });
+      }
+      return base.git(args);
+    },
+  });
+  const push = git.find((args) => args[0] === "push");
+  assert(push);
+  assert(push.includes("--force-with-lease"));
+  assert(!push.some((arg) => arg.startsWith("--force-with-lease=")));
+});
+
 // ---------------------------------------------------------------------------
 // CODEOWNERS auto-requests on the sync PR (Issue #2438)
 //
