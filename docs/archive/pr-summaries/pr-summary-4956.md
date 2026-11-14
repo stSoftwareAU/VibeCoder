@@ -106,7 +106,10 @@ flowchart LR
   `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts` and
   `worker/deno/tests/support/pr_branch_lock_stub.ts` — reviewer: unrequested —
   reason: the worker's pre-push gate reported these tests over the 1 s unit-test
-  budget, blocking this branch. Their assertions are unchanged.
+  budget, blocking this branch. Their assertions are unchanged. The 4952 wiring
+  test now stops after readiness, so it no longer reaches the
+  empty-default-branch guard in `worker/deno/lib/direct_merge.ts:805-809`; a
+  direct unit test in `worker/deno/tests/direct_merge_test.ts` covers it.
 - **unrequested** — Test seams `acquireLockFn` in
   `worker/deno/commands/pr_ci_processor.ts` and `phaseDeps` in
   `worker/deno/commands/execute_claude_phase.ts` — reviewer: unrequested —
@@ -154,6 +157,8 @@ flowchart LR
   - the trial-docs purge row, fixed above;
   - `worker/deno/tests/pr_maintenance_command_test.ts`, which also passed 28/28
     on `origin/main`, and which `main` fixed. `main` was merged into the branch.
+- `worker/deno/tests/direct_merge_test.ts` (`prTargetsDefaultBranch` filter): 4
+  passed, including the new empty-default-branch case.
 - Removed assertions: none. The call-site tests now expect the plugin directory
   actually passed, instead of the constant.
 
