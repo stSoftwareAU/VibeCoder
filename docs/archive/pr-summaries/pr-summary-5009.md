@@ -72,12 +72,17 @@ This is a backend/CLI-only change: no UI file is touched.
   `setup_workflow_sync_test.ts`, `purge_stale_workflow_issues_test.ts`,
   `workflow_sync_actions_test.ts` and `spawn_timeout_bounds_1228_test.ts`
   (200 passed, 0 failed).
-- `./quality.sh < /dev/null` passed on the fix commit `7739545a`, including the
-  full Deno test, lint, type-check and fmt stages. Two checks were skipped by the
-  host: "config integration" (`deno or .config.json not available`) and
-  "checkov" (no checkov binary or image; the CI checkov job stays
-  authoritative). The later commit adds only the workflow-sync test. That file
-  passed on its own, and `deno fmt`, `deno lint` and `deno check` were clean.
+- `./quality.sh < /dev/null` passed at the head `624d0b15`, after the last
+  code and test commit. That run included the whole Deno unit suite (parallel
+  pass 4m49s, serial pass 3m25s), lint, type-check and fmt. Two checks were
+  skipped by the host: "config integration" (`deno or .config.json not
+  available`) and "checkov" (no checkov binary or image; the CI checkov job
+  stays authoritative).
+- The tests that reference the auditor, the sync or the purge step outside the
+  files above also pass: `gh_spawn_chokepoint_check_test.ts`,
+  `required_status_check_guidance_test.ts`,
+  `untrusted_marker_action_verification_test.ts` and the rest of that set (70
+  passed, 0 failed).
 
 Callers of `auditRepoWorkflows` checked:
 
@@ -136,5 +141,4 @@ not describe audit-failure handling. The doc comments updated are the ones on
 comment.
 
 Not checked: checkov and config integration were skipped by the host, as listed
-under Evidence. The full gate was not re-run after the commit that only adds
-the workflow-sync test.
+under Evidence.
