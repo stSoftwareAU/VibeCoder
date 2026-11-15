@@ -5,7 +5,7 @@
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4958",
   "definition": "Read what the TokenEconomizer plugin did and what its own model calls cost after a run, carry that as a run-stats line and an additive callback block, and report the trial host's runs against the before and concurrent comparison sets without rendering a verdict.",
   "status": "claimed",
-  "sweptAt": "da3cfb9a68ca2f189c7eb3c7cb5d287b9b39f88b",
+  "sweptAt": "fccd1182c22609b9d7558d0dd16b3e64dd516dd4",
   "paths": [
     "worker/deno/commands/token_economizer_report.ts",
     "worker/deno/lib/token_economizer_run_stats.ts",
