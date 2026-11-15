@@ -274,7 +274,7 @@ export interface SearchPr {
     squashMergeAllowed?: boolean;
     mergeCommitAllowed?: boolean;
   };
-  author: { login: string } | null;
+  author: { login: string; __typename?: string } | null;
   commits: {
     nodes: {
       commit: {
@@ -943,9 +943,13 @@ export function failedActionsSuiteConclusions(
 export function authorKind(
   login: string,
   fleet: ReadonlySet<string>,
+  actorType: string | undefined,
 ): ReadyPr["kind"] | null {
   if (DEPENDABOT_LOGINS.has(login)) return "dependabot";
-  return fleet.has(login) ? "fleet" : null;
+  return fleet.has(login) ||
+      (actorType === "Bot" && fleet.has(`${login}[bot]`))
+    ? "fleet"
+    : null;
 }
 
 function arg(name: string): string | undefined {
@@ -1050,7 +1054,7 @@ query($q: String!, $after: String) {
         nameWithOwner defaultBranchRef { name }
         autoMergeAllowed squashMergeAllowed mergeCommitAllowed
       }
-      author { login }
+      author { login __typename }
       commits(last: 1) { nodes { commit {
         statusCheckRollup { state
           contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } }
@@ -1194,7 +1198,11 @@ export async function pass(
     : await fleetActiveRepos(owners, [...fleet], callGh);
   for (const pr of await searchOpenPrs(owners, logins, callGh)) {
     const repo = pr.repository.nameWithOwner;
-    const kind = authorKind(pr.author?.login ?? "", fleet);
+    const kind = authorKind(
+      pr.author?.login ?? "",
+      fleet,
+      pr.author?.__typename,
+    );
     // Fleet PRs only exist in repos some host monitors; Dependabot PRs are
     // taken from this host's repos plus any repo the fleet is active in.
     if (!kind) continue;
