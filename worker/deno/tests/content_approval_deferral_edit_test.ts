@@ -132,6 +132,7 @@ async function approveThenDefer(
     TITLE,
     body,
     AUTHOR,
+    Math.floor(Date.now() / 1000),
     deps,
   );
   assertEquals(captured.ok, true);
@@ -233,6 +234,7 @@ Deno.test("content approval - prose smuggled inside the delimiters is still repo
     TITLE,
     BODY,
     AUTHOR,
+    Math.floor(Date.now() / 1000),
     deps,
   );
   assertEquals(captured.ok, true);
@@ -264,6 +266,7 @@ Deno.test("content approval - an unterminated block is not exempt (Issue #1631)"
     TITLE,
     BODY,
     AUTHOR,
+    Math.floor(Date.now() / 1000),
     deps,
   );
   assertEquals(captured.ok, true);

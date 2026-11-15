@@ -58,11 +58,19 @@ export interface IssueData {
   milestoneTitle: string;
   /** Milestone number (API ID), if assigned (Issue #1322) */
   milestoneNumber?: number;
+  /**
+   * GitHub `updatedAt` (ISO-8601) from this same read (Issue #5018).
+   *
+   * The pickup content-integrity gate uses it as the snapshot's edit
+   * boundary for the title and body above. Keep `updatedAt` in the `--json`
+   * field list below or the boundary becomes unknown.
+   */
+  updatedAt?: string;
 }
 
 /**
  * Raw JSON shape from
- * `gh issue view --json author,title,body,labels,comments,state,milestone`.
+ * `gh issue view --json author,title,body,labels,comments,state,milestone,updatedAt`.
  */
 interface GhIssueViewJson {
   author?: { login?: string } | null;
@@ -74,6 +82,7 @@ interface GhIssueViewJson {
   >;
   state?: string;
   milestone?: { title: string; number?: number } | null;
+  updatedAt?: string;
 }
 
 /**
@@ -115,7 +124,7 @@ export async function fetchIssueData(
       "--repo",
       repo,
       "--json",
-      "author,title,body,labels,comments,state,milestone",
+      "author,title,body,labels,comments,state,milestone,updatedAt",
     ]);
 
     return parseIssueDataJson(output);
@@ -166,6 +175,9 @@ export function parseIssueDataJson(jsonStr: string): IssueData {
       state: json.state ?? "",
       milestoneTitle: json.milestone?.title ?? "",
       milestoneNumber: json.milestone?.number,
+      ...(typeof json.updatedAt === "string"
+        ? { updatedAt: json.updatedAt }
+        : {}),
     };
   } catch (err) {
     console.warn(
