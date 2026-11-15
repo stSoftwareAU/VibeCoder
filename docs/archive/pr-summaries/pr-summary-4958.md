@@ -206,18 +206,18 @@ flowchart LR
 
 ## Test Plan
 
-- Added `worker/deno/tests/token_economizer_run_stats_test.ts` (14 tests at head). They
-  cover the reader over fixture state, including imported-record exclusion, the
-  sum over two populated homes, a ledger-only home, a malformed ledger, the stop
-  record and missing homes. They also cover every stats-line shape, the comment
-  placement, the combined `run incl. plugin` cost through the comment (with and
-  without a parseable cost line), and the callback document both off (byte-identical) and on
-  (`schemaVersion` 2).
-- Added `worker/deno/tests/token_economizer_trial_report_test.ts` (13 tests at head).
-  They cover populations, the intention-to-treat switched-on set, the cost rule,
-  unavailable cost with a lower bound, the merge-rate denominator, the absence
-  of verdict wording, and command failures on a missing or empty archive and bad
-  options.
+- Added `worker/deno/tests/token_economizer_run_stats_test.ts` (14 tests at
+  head). They cover the reader over fixture state, including imported-record
+  exclusion, the sum over two populated homes, a ledger-only home, a malformed
+  ledger, the stop record and missing homes. They also cover every stats-line
+  shape, the comment placement, the combined `run incl. plugin` cost through the
+  comment (with and without a parseable cost line), and the callback document
+  both off (byte-identical) and on (`schemaVersion` 2).
+- Added `worker/deno/tests/token_economizer_trial_report_test.ts` (13 tests at
+  head). They cover populations, the intention-to-treat switched-on set, the
+  cost rule, unavailable cost with a lower bound, the merge-rate denominator,
+  the absence of verdict wording, and command failures on a missing or empty
+  archive and bad options.
 - Extended existing tests with TokenEconomizer analogues next to the RTK ones.
   No existing assertion was removed or changed:
   - `worker/deno/tests/token_economizer_impl_callsites_test.ts`: fallback, on,
@@ -263,7 +263,6 @@ flowchart LR
     `worker/deno/tests/token_economizer_run_stats_test.ts` (14 tests at head),
     `worker/deno/tests/token_economizer_trial_report_test.ts` (13 tests at head)
     and `worker/deno/tests/token_economizer_trial_docs_test.ts` (31 tests at
-    head), all passing.
-    The report adds a "Not checked" line: a control run served by another
-    provider cannot be excluded from the archive (the record's `provider` is the
-    host's configured one).
+    head), all passing. The report adds a "Not checked" line: a control run
+    served by another provider cannot be excluded from the archive (the record's
+    `provider` is the host's configured one).
