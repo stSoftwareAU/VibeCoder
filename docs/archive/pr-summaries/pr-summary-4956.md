@@ -19,6 +19,10 @@ stop, which is reported to #4959. Closes #4956.
 
 ### Essential Design Decisions
 
+- External orchestration forwards the implementation launch to role dispatch.
+  The runner uses `orchestrationRole` to load it only for a Claude executor;
+  managers and reviewers remain plugin-off, and every executor spawn still
+  re-checks the durable stop.
 - Each launch gets a fresh state directory outside the checkout. Paths are
   resolved and confined before anything is created, so a symlink alias cannot
   redirect state into the checkout. The controller directory
@@ -94,7 +98,8 @@ flowchart LR
   neither is present (both directions tested) — evidence:
   `worker/deno/tests/token_economizer_impl_callsites_test.ts`,
   `worker/deno/tests/token_economizer_reactive_callsites_test.ts`,
-  `worker/deno/tests/token_economizer_plugin_wiring_test.ts` — reviewer: met
+  `worker/deno/tests/token_economizer_plugin_wiring_test.ts`, including the
+  external executor positive case and manager/reviewer negative cases — reviewer: met
 - **met** — A recorded real-CLI check shows the hooks firing on the image's
   Claude Code version — evidence: `docs/TOKEN-ECONOMIZER-TRIAL.md` §1 (2.1.322)
   — reviewer: met
@@ -152,10 +157,26 @@ flowchart LR
 
 ## Test Plan
 
-- PR #5139 review round, on the final head:
-  `worker/deno/tests/token_economizer_plugin_test.ts` (44 tests at head, 44
+- Review follow-up: both implementation entry points now forward enabled
+  launches to external orchestration. A real runner/subprocess regression
+  checks the Claude executor flag and environment, excludes manager/reviewer
+  flags and environment, and checks a latched stop before a later executor.
+  The run-core tests now invoke the real reactive processors and assert their
+  public result and agent invocation, for enabled and disabled hosts, instead
+  of inspecting an internal processor dependency. Focused validation: 162 passed, 0 failed, 11 ignored across the eight
+  plugin, wiring, implementation/reactive call-site, production-deps, trial-docs
+  and external-orchestration suites. The two external-entrypoint regressions
+  fail against the original implementation and pass with this correction.
+  The 11 real-plugin cases were ignored because this host has no plugin at
+  `/opt/tokeneconomizer`; the attempted isolated pinned-plugin setup could
+  not spawn subprocesses (EACCES). No new real-hook execution is claimed.
+  Targeted format, lint and type checks passed. The full local quality gate
+  was not rerun; current-head CI must pass before approval.
+
+- Earlier PR #5139 review round, before the external-executor correction:
+  `worker/deno/tests/token_economizer_plugin_test.ts` (44 tests then, 44
   passed) and `worker/deno/tests/token_economizer_plugin_wiring_test.ts` (29
-  tests at head, 29 passed, 0 failed). The new tests are the
+  tests then, 29 passed, 0 failed). The new tests are the
   alias-with-`stop.json` case (launch and reporter, target unchanged), the
   oversized receipt (covers the re-send and replace outcome; it does not go red
   without the cap, and passes on the base too, since an oversized receipt never
@@ -200,8 +221,13 @@ flowchart LR
   provider case in `worker/deno/tests/execute_claude_phase_rtk_test.ts`. The
   container image installs no `gemini` provider and has host rate-limit state.
   They are environment differences, not part of this change.
-- Removed assertions: none. The call-site tests now expect the plugin directory
-  actually passed, instead of the constant.
+- Changed expectations: the two external-orchestration call-site tests now
+  require the implementation launch, as #4956 requires loading for implementation
+  runs. The subprocess role regression preserves manager/reviewer exclusion.
+  The two internal processor-config capture assertions were replaced by four
+  real-processor on/off cases asserting the public outcome and agent invocation.
+  The earlier plugin-directory fixture change still expects the passed directory
+  instead of a constant.
 
 <!-- vibe-quality-gate-skipped reason="the full gate took 520s; the rerun after merging main did not fit in the remaining run budget, so only the affected test files were rerun" -->
 

@@ -111,9 +111,9 @@ The worker loads it only on a host that sets `token_economizer.enabled` in the
 ### How the worker loads the plugin
 
 On a host that enables it, the worker adds `--plugin-dir /opt/tokeneconomizer/plugin`
-to the Claude argv of the implementation, PR-feedback and CI-fix runs, and to
-nothing else: reviewer and verifier calls, external orchestration and the other
-providers get no plugin. The pinned launcher's `TE_PYTHON` interface selects
+to the Claude argv of the implementation, PR-feedback and CI-fix runs, including
+Claude executors under external orchestration. Manager, reviewer and verifier
+calls and the other providers get no plugin. The pinned launcher's `TE_PYTHON` interface selects
 the worker's audited hook adapter, which bounds and fences context without
 modifying the archive. The environment, failure isolation, remaining controller
 protection gap and real-CLI check are in the

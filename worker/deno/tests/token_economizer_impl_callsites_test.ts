@@ -10,8 +10,8 @@
  *
  * Each calls `tokenEconomizerSpawnOptions` with `runKind: "implementation"`,
  * spreads the result into the options it hands to `runClaudeWithRetry`, and
- * skips the launch on an external orchestration. The standalone path also
- * skips it when no `tokenEconomizer` option is given.
+ * forwards it to external orchestration for executor-only loading. The
+ * standalone path skips it when no `tokenEconomizer` option is given.
  *
  * Every test drives the real entry point with a fake `runClaudeWithRetry` that
  * records the options it was called with, so reverting the spread or either
@@ -277,12 +277,11 @@ Deno.test("standalone implementation - a disabled tokenEconomizer block passes n
 
 Deno.test({
   name:
-    "standalone implementation - external orchestration passes no tokenEconomizer key, though the same enabled host launches off it (Issue #4956)",
+    "standalone implementation - an enabled external orchestration forwards the launch for its Claude executor (Issue #4956)",
   async fn() {
     await withPluginDir((pluginDir) =>
       withWorkDir(async (workDir) => {
-        // Positive control: the same enabled host, not orchestrated, does launch.
-        // Without it the absence below could come from a launch that never resolved.
+        // Both implementation routes must carry the enabled host launch.
         const control = await runStandalone(workDir, {
           tokenEconomizer: enabledBlock(),
           externalOrchestration: false,
@@ -293,7 +292,11 @@ Deno.test({
           tokenEconomizer: enabledBlock(),
           externalOrchestration: true,
         }, pluginDir);
-        assertNoCallLaunched(calls, "standalone external orchestration");
+        assertEveryCallLaunched(
+          calls,
+          pluginDir,
+          "standalone external orchestration",
+        );
       })
     );
   },
@@ -394,11 +397,11 @@ Deno.test("fleet implementation - a disabled tokenEconomizer block passes no tok
 
 Deno.test({
   name:
-    "fleet implementation - external orchestration passes no tokenEconomizer key, though the same enabled host launches off it (Issue #4956)",
+    "fleet implementation - an enabled external orchestration forwards the launch for its Claude executor (Issue #4956)",
   async fn() {
     await withPluginDir((pluginDir) =>
       withWorkDir(async (workDir) => {
-        // Positive control: the same enabled host, not orchestrated, does launch.
+        // Both implementation routes must carry the enabled host launch.
         const control = await runFleet(
           workDir,
           enabledBlock(),
@@ -408,7 +411,11 @@ Deno.test({
         assertEveryCallLaunched(control, pluginDir, "fleet control");
 
         const calls = await runFleet(workDir, enabledBlock(), true, pluginDir);
-        assertNoCallLaunched(calls, "fleet external orchestration");
+        assertEveryCallLaunched(
+          calls,
+          pluginDir,
+          "fleet external orchestration",
+        );
       })
     );
   },

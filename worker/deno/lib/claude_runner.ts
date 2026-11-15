@@ -1446,8 +1446,11 @@ async function runClaudeWithTimeoutBody(
   const promptViaStdin = provider.promptTransport === "stdin";
   // The TokenEconomizer plugin (Issue #4956) is the Claude CLI's: any other
   // provider, such as a Codex fallback, is spawned with neither the flag nor
-  // the environment.
-  let tokenEconomizerLaunch = provider.id === CLAUDE_PROVIDER_ID
+  // the environment. External orchestration shares the implementation options
+  // across roles: learned facts may reach only its executor.
+  let tokenEconomizerLaunch = provider.id === CLAUDE_PROVIDER_ID &&
+      (options.orchestrationRole === undefined ||
+        options.orchestrationRole === "executor")
     ? options.tokenEconomizer
     : undefined;
   // A launch resolved before a stop (a re-run, a recovery run or a rate-limit

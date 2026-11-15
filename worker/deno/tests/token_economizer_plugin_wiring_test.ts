@@ -44,7 +44,10 @@ import {
   IMAGE_AGENT_PROVIDERS_ENV,
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
-import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import {
+  type RunClaudeOptions,
+  runClaudeWithTimeout,
+} from "../lib/claude_runner.ts";
 import { finishTokenEconomizerRun } from "../lib/token_economizer_control.ts";
 import { runningInContainerImage } from "../lib/container_stamp.ts";
 import {
@@ -281,6 +284,7 @@ async function spawnWithStub(
   layout: Layout,
   extra: {
     agentProvider?: string;
+    orchestrationRole?: RunClaudeOptions["orchestrationRole"];
     tokenEconomizer?: TokenEconomizerLaunch;
     env?: (key: string) => string | undefined;
     parentEnv?: Record<string, string>;
@@ -1034,6 +1038,59 @@ Deno.test("a launch resolved before a stop is dropped by the runner: no --plugin
     for (const key of LAUNCH_ONLY_KEYS) {
       assertEquals(after.env.get(key), undefined, `child env ${key}`);
     }
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("an external Claude executor loads the plugin while manager and reviewer spawns stay plugin-off", async () => {
+  const layout = await makeLayout();
+  try {
+    const options = await enabledSpawnOptions(layout, "implementation");
+    assert(options.tokenEconomizer);
+    const executor = await spawnWithStub(layout, {
+      ...options,
+      orchestrationRole: "executor",
+    });
+    assertAdjacent(
+      executor.argv,
+      "--plugin-dir",
+      options.tokenEconomizer.pluginDir,
+    );
+    for (
+      const [key, value] of Object.entries(
+        expectedLaunchEnv(
+          options.tokenEconomizer.env.TOKENECONOMIZER_HOME,
+          "off",
+        ),
+      )
+    ) assertEquals(executor.env.get(key), value, `executor env ${key}`);
+
+    for (const orchestrationRole of ["manager", "reviewer"] as const) {
+      const excluded = await spawnWithStub(layout, {
+        ...options,
+        orchestrationRole,
+      });
+      assert(!excluded.argv.includes("--plugin-dir"), orchestrationRole);
+      for (const key of [...LAUNCH_ONLY_KEYS, "TE_PYTHON"]) {
+        assertEquals(
+          excluded.env.get(key),
+          undefined,
+          `${orchestrationRole}: ${key}`,
+        );
+      }
+    }
+
+    await recordTokenEconomizerStop(layout.workDir, {
+      rule: "plugin-run-failure",
+      reason: "executor hook fault",
+    });
+    const stopped = await spawnWithStub(layout, {
+      ...options,
+      orchestrationRole: "executor",
+    });
+    assert(!stopped.argv.includes("--plugin-dir"));
+    assertEquals(stopped.env.get("TOKENECONOMIZER_HOME"), undefined);
   } finally {
     await Deno.remove(layout.root, { recursive: true });
   }

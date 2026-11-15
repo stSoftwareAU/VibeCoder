@@ -1344,19 +1344,17 @@ async function executeClaudeBody(
     try {
       // The TokenEconomizer plugin for this spawn (Issue #4956). Resolved per
       // invocation, so a stop recorded between a first and second call takes
-      // effect. Not on an external orchestration: that path hands these
-      // options to every manager and reviewer role call, and the plugin is for
-      // the implementation run only.
-      const tokenEconomizer = externalOrchestration
-        ? {}
-        : await tokenEconomizerSpawnOptions({
-          config: config.tokenEconomizer,
-          pluginDir: deps.claude.tokenEconomizerPluginDir,
-          workDir: config.workDir,
-          repo,
-          runKind: "implementation",
-          logger,
-        });
+      // effect. External orchestration forwards the launch too: the runner's
+      // role guard loads it only for a Claude executor, never its reviewers
+      // or manager.
+      const tokenEconomizer = await tokenEconomizerSpawnOptions({
+        config: config.tokenEconomizer,
+        pluginDir: deps.claude.tokenEconomizerPluginDir,
+        workDir: config.workDir,
+        repo,
+        runKind: "implementation",
+        logger,
+      });
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
         retryOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[1],

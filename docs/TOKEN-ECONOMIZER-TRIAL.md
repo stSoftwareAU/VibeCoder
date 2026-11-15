@@ -128,10 +128,13 @@ is never read from the worker's environment. Carrying learnings across runs is
 what the learnings repository (#4957) is for. Until it lands, the cross-run part of the
 trial is not exercised, and a verdict on that part would be a verdict on nothing.
 
-Nothing else loads it. Reviewer and verifier calls are not run kinds, and an
-external orchestration run gets no launch on any of its role calls. The DeepSeek
-descriptor drops the plugin directory from its argv, and `runClaude` passes a
-launch only for the Claude provider. An isolated Claude run carries
+Nothing else loads it. Reviewer and verifier calls are not run kinds. External
+orchestration forwards the implementation launch to role dispatch, and the
+runner reads its existing `orchestrationRole`: only a Claude executor may load
+the plugin; manager and reviewer spawns get neither the flag nor the launch
+environment. The same stop re-check applies to every executor spawn. The
+DeepSeek descriptor drops the plugin directory from its argv, and `runClaude`
+passes a launch only for the Claude provider. An isolated Claude run carries
 `--setting-sources ""` (Issue #4657), so a repository's own settings are not
 read, and the worker adds the plugin only through `--plugin-dir`.
 

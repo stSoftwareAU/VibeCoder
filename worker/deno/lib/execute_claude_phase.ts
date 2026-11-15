@@ -1729,10 +1729,9 @@ async function executeClaudePhaseBody(
   let claudeResult: Result<ClaudeRunResult>;
   try {
     // The TokenEconomizer plugin for this implementation spawn (Issue #4956).
-    // Not on an external orchestration: that path hands these options to every
-    // manager and reviewer role call, and the plugin is for the implementation
-    // run only.
-    const tokenEconomizer = externalOrchestration || !options.tokenEconomizer
+    // External orchestration forwards it to role dispatch; the runner permits
+    // only a Claude executor to load it, excluding managers and reviewers.
+    const tokenEconomizer = !options.tokenEconomizer
       ? {}
       : await tokenEconomizerSpawnOptions({
         config: options.tokenEconomizer,
