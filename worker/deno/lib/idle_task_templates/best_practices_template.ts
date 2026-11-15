@@ -469,8 +469,9 @@ const COMPILE_GATE_COMMANDS: Partial<
   Record<SupportedLanguage, readonly string[]>
 > = {
   rust: ["cargo check --all-targets", "cargo build"],
-  typescript: ["deno check **/*.ts", "npx tsc --noEmit"],
-  react: ["deno check **/*.ts", "npx tsc --noEmit"],
+  // No shell glob: an unquoted `**` in a bash `run:` step reaches only one directory deep (Issue #4997).
+  typescript: ["deno check .", "npx tsc --noEmit"],
+  react: ["deno check .", "npx tsc --noEmit"],
   java: ["mvn compile", "./gradlew compileJava"],
 };
 

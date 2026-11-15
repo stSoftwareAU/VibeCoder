@@ -189,8 +189,7 @@ async function fetchWorkflowFiles(
     // / 404 as legitimately empty; propagate other failures so the
     // audit fails loudly and no spurious issues are raised.
     const stderr = result.stderr;
-    const isNotFound = /\b(?:not found|404)\b/i.test(stderr);
-    if (isNotFound) {
+    if (isGhNotFound(stderr)) {
       return { ok: true, value: [] };
     }
     return {
@@ -209,8 +208,19 @@ async function fetchWorkflowFiles(
   }
 }
 
+/** True when `gh api` stderr reports the resource as absent (Not Found / 404). */
+function isGhNotFound(stderr: string): boolean {
+  return /\b(?:not found|404)\b/i.test(stderr);
+}
+
 /**
  * Fetch the raw content of a single workflow file.
+ *
+ * A 404 means the file is absent (for example deleted between the listing and
+ * this fetch) and resolves to `undefined`. Any other failure is an error, so a
+ * transient fault (rate limit, 5xx) cannot drop the file and raise a spurious
+ * "Add … workflow" issue (Issue #5009; the same rationale as Issue #1829 in
+ * `fetchWorkflowFiles`).
  *
  * When `localRepoPath` is provided AND the file exists on disk, the
  * content is read from the local working tree. Otherwise — including
@@ -235,7 +245,7 @@ async function fetchWorkflowContent(
   filename: string,
   runner: (cmd: string[]) => Promise<CommandOutput>,
   localRepoPath?: string,
-): Promise<Result<string, string>> {
+): Promise<Result<string | undefined, string>> {
   if (localRepoPath !== undefined) {
     try {
       const content = await Deno.readTextFile(
@@ -258,9 +268,14 @@ async function fetchWorkflowContent(
   ]);
 
   if (!result.success) {
+    if (isGhNotFound(result.stderr)) {
+      return { ok: true, value: undefined };
+    }
     return {
       ok: false,
-      error: `Failed to fetch workflow ${filename}: ${result.stderr}`,
+      error: `Failed to fetch workflow ${filename} for ${repo}: ${
+        result.stderr || "unknown error"
+      }`,
     };
   }
 
@@ -312,7 +327,7 @@ async function fetchDependabotConfig(
     if (result.success) {
       return { ok: true, value: { path, content: result.stdout } };
     }
-    if (!/\b(?:not found|404)\b/i.test(result.stderr)) {
+    if (!isGhNotFound(result.stderr)) {
       return {
         ok: false,
         error: `Failed to fetch ${path} for ${repo}: ${
@@ -357,7 +372,8 @@ function findMissingGroups(
  * @param repo - Repository in "owner/repo" format.
  * @param languages - Detected languages for the repository.
  * @param options - Optional configuration for command execution and gh identity.
- * @returns Result containing the audit analysis or an error message.
+ * @returns Result containing the audit analysis, or an error when listing or
+ *   reading any workflow file fails other than with a 404.
  */
 export async function auditRepoWorkflows(
   repo: string,
@@ -425,7 +441,9 @@ export async function auditRepoWorkflows(
     return { ok: false, error: `Failed to list workflow files: ${message}` };
   }
 
-  // Fetch content for each workflow file.
+  // Fetch content for each workflow file. A failed fetch fails the audit so a
+  // transient fault cannot drop a file and report its spec as missing
+  // (Issue #5009); only a 404 means the file is absent.
   const fileContents: Map<string, string> = new Map();
   for (const file of workflowFiles) {
     if (!file.name.endsWith(".yml") && !file.name.endsWith(".yaml")) {
@@ -438,11 +456,18 @@ export async function auditRepoWorkflows(
         runner,
         options.localRepoPath,
       );
-      if (contentResult.ok) {
+      if (!contentResult.ok) {
+        return { ok: false, error: contentResult.error };
+      }
+      if (contentResult.value !== undefined) {
         fileContents.set(file.name, contentResult.value);
       }
-    } catch {
-      // Skip files that cannot be fetched — do not fail the entire audit.
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        error: `Failed to fetch workflow ${file.name} for ${repo}: ${message}`,
+      };
     }
   }
 
