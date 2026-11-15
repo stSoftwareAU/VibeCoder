@@ -361,9 +361,10 @@ export interface AgentInvocationRequest {
   /**
    * Marks an orchestrator-owned role call. On Codex it turns off approvals and
    * multi-agent delegation, but Codex's CLI sandbox is bypassed (the container
-   * is the boundary): a read-only Codex role (manager, reviewer) is held only
-   * by the worker restoring checkout changes (`orchestration/read_only_guard.ts`),
-   * which does not deny Bash or confine commands to the checkout.
+   * is the boundary): on the issue-run gate a read-only Codex role (manager,
+   * reviewer) is held only by the worker restoring checkout changes
+   * (`orchestration/read_only_guard.ts`), which does not deny Bash or confine
+   * commands to the checkout. The option itself adds no read-only control.
    */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** The user prompt. */

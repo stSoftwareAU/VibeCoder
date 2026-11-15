@@ -377,8 +377,12 @@ export interface CodexInvocation extends CodexPromptParts {
    * Marks an orchestrator-owned role call. `buildCodexArgs` still pushes
    * STANDARD_FLAGS (including `--dangerously-bypass-approvals-and-sandbox`,
    * Issue #4356) and only adds `approval_policy="never"` and
-   * `features.multi_agent=false`. The container is the boundary; read-only
-   * roles rely on checkout restoration, which does not deny Bash.
+   * `features.multi_agent=false`. The container is the boundary. The option
+   * adds no read-only control itself: the issue-run gate
+   * (`orchestration/issue_run_gate.ts`, via `read_only_guard.ts`) restores
+   * checkout changes for a Codex manager or reviewer only, and does not deny
+   * Bash. Any other caller supplies its own control (the review round uses
+   * its PreToolUse guard hook and a read-only checkout).
    */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Explicit model id; omitted leaves Codex on its configured default. */
@@ -540,9 +544,10 @@ function codexHookArgs(settingsJson: string): string[] {
  * not used: concurrent slots share a working directory and would resume
  * each other's sessions.
  *
- * `codex exec resume` does not accept `--sandbox` (Issue #4333). A resumed
- * orchestrated run sets the same mode through `sandbox_mode` (`-c`). A fresh
- * `codex exec` still passes `--sandbox`.
+ * Since Issue #4356 no role call, fresh or resumed, passes `--sandbox` or
+ * `sandbox_mode`: STANDARD_FLAGS bypass the CLI sandbox for every call, and
+ * the container is the boundary. (`codex exec resume` does not accept
+ * `--sandbox` anyway, Issue #4333.)
  *
  * @param invocation - Prompt, model/effort selection and resume state.
  * @returns The argument list, prompt last (or `-` when stdin carries it).
