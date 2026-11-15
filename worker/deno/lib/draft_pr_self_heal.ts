@@ -15,8 +15,9 @@
  * - it is a draft, and its head branch names an issue (`issue-<N>-…`);
  * - its body does not open with `DRAFT_CONTINUATION_MARKER`. The check is
  *   anchored, not a substring match: every hold body the worker writes puts the
- *   marker on its first line (`buildDraftContinuationBody` and
- *   `buildUnmetDraftBody` in `draft_continuation_pr.ts`), and the PR-body sync
+ *   marker on its first line (`buildDraftContinuationBody` in
+ *   `draft_continuation_pr.ts`, and the hold bodies written before Issue #5095
+ *   retired the mutation hold), and the PR-body sync
  *   keeps a leading marker when it rebuilds a body
  *   (`buildSyncedPrBodyCandidate`), so a held draft
  *   stays held after a merge-conflict repair or a completion exit. A body that

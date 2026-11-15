@@ -617,8 +617,9 @@ export interface WorkerConfig {
    * The TokenEconomizer block, read from the `.config.json` `token_economizer`
    * block (Issue #4955, part of #4953) and validated by
    * `parseTokenEconomizer()` in `lib/token_economizer_config.ts`. Off unless
-   * the host sets `enabled: true`. Accepted and validated, but not read yet:
-   * #4956 will wire it into runs; today a run is the same whatever it is set to.
+   * the host sets `enabled: true`. `enabled`, `microskills` and `loopguard` are
+   * read by the run launch decision; `learnings_repo` is accepted and validated,
+   * but not read yet: #4957 will persist the learnings to it.
    */
   tokenEconomizer: TokenEconomizerConfig;
   /**
@@ -855,8 +856,8 @@ export type TokenEconomizerLoopguard = "off" | "nudge";
  *
  * Parsed from the `.config.json` `token_economizer` block by
  * `parseTokenEconomizer()` in `lib/token_economizer_config.ts`. Accepted and
- * validated, but not read yet: #4956 will wire it into runs; today a run is the
- * same whatever it is set to.
+ * validated; `learnings_repo` is not read yet (#4957 will persist the learnings
+ * to it).
  */
 export interface TokenEconomizerConfig {
   /** Whether the plugin is switched on for this host (default: false). */

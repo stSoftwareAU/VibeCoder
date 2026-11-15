@@ -1310,8 +1310,9 @@ export async function loadConfig(
   const rtkOutput = parsedRtkOutput.value;
 
   // TokenEconomizer (Issue #4955, part of #4953). Off unless the host sets
-  // `enabled: true`. Accepted and validated, but not read yet: #4956 will wire
-  // it into runs; today a run is the same whatever it is set to. A malformed
+  // `enabled: true`. `enabled`, `microskills` and `loopguard` are read by the
+  // run launch decision; `learnings_repo` is accepted and validated, but not read
+  // yet (#4957). A malformed
   // block fails the load loudly here rather than reading as the default.
   const parsedTokenEconomizer = parseTokenEconomizer(file.token_economizer);
   if (!parsedTokenEconomizer.ok) {

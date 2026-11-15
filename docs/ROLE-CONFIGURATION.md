@@ -87,16 +87,18 @@ commands and builds outside the checkout. Codex's own `--sandbox` is not used:
 it needs bubblewrap and a fresh procfs mount, which the agent container cannot
 provide. Gemini receives tool restrictions as prompt text, not an enforced
 CLI denial; DeepSeek has no proved fixed-price subscription. Those combinations
-fail closed. Explicit provider selection does not disable model-refusal
-fallbacks or provide filesystem/network isolation. A host without the requested
+fail closed. A role call never moves to `agent_provider_fallback` after a
+model refusal: the gate pins the role's provider through the retry ladder
+(Issue #4986). Explicit provider selection still does not provide
+filesystem/network isolation. A host without the requested
 CLI or subscription fails before paid work. Observed exhausted or unavailable
 quota also refuses; unknown quota remains unknown and the runner handles a
 provider's actual quota response.
 
 Each role invokes the existing provider adapter and its credential-isolation
-path. No session transcript is resumed across roles, model fallback is disabled,
-and role invocations are labelled for lifecycle cost attribution. Effective
-selections are logged. Checkpoints are stored beside the work volume, scoped by
+path. No session transcript is resumed across roles, model and provider fallback
+are disabled, and role invocations are labelled for lifecycle cost attribution.
+Effective selections are logged. Checkpoints are stored beside the work volume, scoped by
 repository and issue; the lease identity includes branch and role configuration
 so changed settings cannot replay another configuration's completed calls.
 Retries, call count and optional estimated-cost limits bound orchestration; the

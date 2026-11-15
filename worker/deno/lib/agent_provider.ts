@@ -358,7 +358,14 @@ export interface AgentDefinition {
 export interface AgentInvocationRequest {
   /** Built-in tool allowlist for a discussion that cannot execute commands. */
   discussionOnly?: boolean;
-  /** Enforced sandbox for orchestrator-owned Codex role calls. */
+  /**
+   * Marks an orchestrator-owned role call. On Codex it turns off approvals and
+   * multi-agent delegation, but Codex's CLI sandbox is bypassed (the container
+   * is the boundary): on the issue-run gate a read-only Codex role (manager,
+   * reviewer) is held only by the worker restoring checkout changes
+   * (`orchestration/read_only_guard.ts`), which does not deny Bash or confine
+   * commands to the checkout. The option itself adds no read-only control.
+   */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** The user prompt. */
   prompt: string;
@@ -436,6 +443,15 @@ export interface AgentInvocationRequest {
    * so that descriptor strips the field; Gemini does not consume it.
    */
   settingsJson?: string;
+  /**
+   * Directory handed to the Claude CLI as `--plugin-dir` (Issue #4956): the
+   * vendored TokenEconomizer plugin for an implementation, PR-feedback or
+   * CI-fix run. Absent emits nothing, so the argv is byte-for-byte the one
+   * every host spawned before. Only the Claude CLI takes it; the DeepSeek
+   * descriptor strips it, since its endpoint is not the trial's and the
+   * plugin's hooks are not wanted there.
+   */
+  pluginDir?: string;
   /**
    * The prompt will be written to the child's stdin (Issue #4385): build
    * the argv so the CLI reads it from there, and put no prompt text in
@@ -675,6 +691,10 @@ function buildClaudeCliArgs(
   // Absent pushes nothing.
   if (request.settingsJson) {
     args.push("--settings", request.settingsJson);
+  }
+  // The TokenEconomizer plugin directory (Issue #4956). Absent pushes nothing.
+  if (request.pluginDir) {
+    args.push("--plugin-dir", request.pluginDir);
   }
   args.push("--verbose");
   args.push("--output-format", "stream-json");
@@ -1187,6 +1207,10 @@ const DEEPSEEK_PROVIDER: AgentProviderDescriptor = {
         // binary would forward `--settings` to an endpoint that runs nothing,
         // so the payload is dropped here rather than in the caller.
         settingsJson: undefined,
+        // The TokenEconomizer plugin (Issue #4956) is an Anthropic-endpoint
+        // feature too: DeepSeek's endpoint is not the trial's, so the plugin
+        // directory is dropped here as the settings payload is.
+        pluginDir: undefined,
       },
       { model: routing.model },
     );

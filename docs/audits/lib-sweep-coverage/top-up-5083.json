@@ -1,0 +1,12 @@
+{
+  "issue": 5083,
+  "chunk": "top-up-5083",
+  "title": "top-up: the review round's Codex tool guard",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5083",
+  "definition": "Review how the review round's PreToolUse guard reads its policy from the round's own Claude args and refuses shell commands, redirects, writes and fetches outside the round's limits for the Codex attempt.",
+  "status": "claimed",
+  "sweptAt": "da7d20c1a1f6e1261b59d9a9a206e8529373b0f8",
+  "paths": [
+    "worker/deno/lib/review_round_guard.ts"
+  ]
+}

@@ -206,15 +206,43 @@ export class DescendantTracker {
   /**
    * Terminate every snapshot member that outlived the child and was
    * re-parented, together with its current subtree. Bottom-up, TERM then
-   * KILL after `maxWaitSeconds`. Never throws.
+   * KILL after `maxWaitSeconds`. Never throws: a probe or signal that throws
+   * (the deps rethrow a command timeout rather than read it as "gone")
+   * stops the sweep, logs the cause and the pids already signalled, leaves any
+   * survivor running, and returns what was collected so far (Issue #5099).
    */
   async collectOrphans(
     options: CollectOrphansOptions,
   ): Promise<OrphanCollection> {
+    const progress: OrphanCollection = { collected: [], skipped: [] };
+    try {
+      await this.#sweep(options, progress);
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      const signalled = progress.collected.length > 0
+        ? progress.collected.join(",")
+        : "none";
+      options.logger?.error(
+        `Orphan collection for the killed agent (pid ${this.#childPid}) ` +
+          `stopped after ${options.reason}: ${cause}; signalled: ${signalled}; ` +
+          "any surviving descendant is left running (Issue #5099)",
+      );
+      options.logger?.security?.(
+        "ORPHANS_UNCOLLECTED",
+        `after=${options.reason} cause=${cause} signalled=${signalled}`,
+      );
+    }
+    return progress;
+  }
+
+  async #sweep(
+    options: CollectOrphansOptions,
+    progress: OrphanCollection,
+  ): Promise<void> {
     await this.settle();
     const deps = this.#deps;
-    const skipped: number[] = [];
-    if (this.#snapshot.length === 0) return { collected: [], skipped };
+    const skipped = progress.skipped;
+    if (this.#snapshot.length === 0) return;
 
     const snapshotAgeSeconds = this.#snapshotAtMs === undefined
       ? 0
@@ -256,18 +284,13 @@ export class DescendantTracker {
       }
       roots.push(pid);
     }
-    if (roots.length === 0) return { collected: [], skipped };
+    if (roots.length === 0) return;
 
     // Each root's current subtree first (deepest first), then the root.
     const targets: number[] = [];
     const seen = new Set<number>();
     for (const root of roots) {
-      let subtree: number[] = [];
-      try {
-        subtree = await deps.getDescendants(root);
-      } catch {
-        // Fall back to the root alone.
-      }
+      const subtree = await deps.getDescendants(root);
       for (const pid of [...subtree, root]) {
         if (!seen.has(pid)) {
           seen.add(pid);
@@ -276,7 +299,10 @@ export class DescendantTracker {
       }
     }
 
-    for (const pid of targets) await deps.sendSignal(pid, "TERM");
+    for (const pid of targets) {
+      await deps.sendSignal(pid, "TERM");
+      progress.collected.push(pid);
+    }
     for (let i = 0; i < options.maxWaitSeconds; i++) {
       let anyRunning = false;
       for (const pid of targets) {
@@ -309,6 +335,5 @@ export class DescendantTracker {
         (killed.length > 0 ? ` sigkilled=${killed.join(",")}` : "") +
         (skipped.length > 0 ? ` skipped=${skipped.join(",")}` : ""),
     );
-    return { collected: targets, skipped };
   }
 }

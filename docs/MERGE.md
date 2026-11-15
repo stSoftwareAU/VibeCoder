@@ -870,6 +870,12 @@ the owner's review. Both read the decision from a call they already make — the
 sweep's live `gh pr view`, the branch-update pass's batched GraphQL state — and
 log the skip at info.
 
+An armed PR that is behind and has `REVIEW_REQUIRED` also waits for a review
+of its current head before the shared strict-base refresh. The auto-merge sweep
+logs that wait at info, and the babysitter leaves it for review rather than
+repeatedly acquiring a branch lock for a refresh the shared policy refuses.
+Conflicts, failing CI and requested changes remain actionable.
+
 Every fleet PR is armed for auto-merge and stays armed (Issue #4291). PRs do
 not merge until they have a review approval and CI is green, and GitHub
 enforces both. No review, finding or label withholds arming or disarms a PR;

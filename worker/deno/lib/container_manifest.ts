@@ -220,10 +220,12 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * run and findings are met only in CI). Each must be supplied by a manifest
  * toolchain, so the image never falls back to a host-installed equivalent.
  *
- * One entry is enforced in CI rather than by a `quality.sh` (Issue #1596):
+ * One entry was listed for CI rather than for a `quality.sh` (Issue #1596):
  * `gitleaks`, the secret scanner GRQ-AutoTrader and NEAT-AI-Explore both run
- * on every PR. `pwsh` was the second until Issue #1598: with the interpreter
- * in the image the local gate runs the `run.ps1` launcher suites itself, and
+ * on every PR, neither from a local gate. VibeCoder's own gate now runs it as
+ * its gitleaks stage (Issue #5121). `pwsh` was the second CI-only entry until
+ * Issue #1598: with the interpreter in the image the local gate runs the
+ * `run.ps1` launcher suites itself, and
  * `.github/workflows/validate-scripts.yml` still fails loud without it for
  * the `setup.ps1` suites.
  *

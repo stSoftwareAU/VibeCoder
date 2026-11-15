@@ -22,7 +22,9 @@
  *   --claude-kill-after         Grace period in seconds (default: 30)
  *   --max-rate-limit-retries    Max rate-limit retries (default: 2)
  *   --max-rate-limit-wait       Max rate-limit wait in seconds (default: 600)
- *   --claude-no-output-timeout  No-output timeout for diagnostics (default: 900)
+ *   --claude-no-output-timeout  Seconds of silence before the agent run is killed
+ *                              (0 turns it off; also reported in diagnostics;
+ *                              default: config value, else 900)
  *   --needs-screenshot-label    Screenshot label name (default: "needs-screenshot")
  *   --credit-log-dir            Credit log directory (optional)
  *   --worker-name               Worker name for credit tracking (optional)
@@ -38,6 +40,7 @@
 
 import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
+  type ExecuteClaudePhaseDeps,
   type ExecuteClaudePhaseResult,
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
@@ -48,7 +51,7 @@ import { resolveRunHardCap } from "../lib/run_hard_cap.ts";
 import { extensionCeiling } from "../lib/run_timeline.ts";
 import { promptOverrideMappings } from "../lib/custom_label_prompts_config.ts";
 
-export const executeClaudePhaseCommand: Command = {
+export const executeClaudePhaseCommand = {
   name: "execute-claude-phase",
   description:
     "Execute Claude phase — prompt building, Claude invocation, timeout/error handling, self-healing (Issue #1227)",
@@ -56,6 +59,7 @@ export const executeClaudePhaseCommand: Command = {
   async execute(
     args: Record<string, unknown>,
     config: WorkerConfig,
+    phaseDeps?: ExecuteClaudePhaseDeps,
   ): Promise<CommandResult<ExecuteClaudePhaseResult>> {
     const repo = String(args["repo"] ?? "");
     const issueNumber = Number(args["issue-number"] ?? 0);
@@ -155,6 +159,8 @@ export const executeClaudePhaseCommand: Command = {
       clarityStatus,
       workDir,
       repoConfigs: config.repoConfig,
+      // The TokenEconomizer block (Issue #4956); off unless the host enables it.
+      tokenEconomizer: config.tokenEconomizer,
       // Issue #849: the operator's built-in-phase prompt overrides.
       promptOverrides: promptOverrideMappings(config),
       claudeTimeout,
@@ -197,7 +203,7 @@ export const executeClaudePhaseCommand: Command = {
       contextBudgetErrorPercent: config.contextBudgetErrorPercent,
       contextBudgetBlockPercent: config.contextBudgetBlockPercent,
       ...(progressExtension ? { progressExtension } : {}),
-    });
+    }, phaseDeps);
 
     // Save Claude session state to per-repo store after execution (Issue #1321, #1322)
     await saveSession(repoPath, workDir, repo, undefined, milestoneId);
@@ -213,4 +219,4 @@ export const executeClaudePhaseCommand: Command = {
       data: result,
     };
   },
-};
+} satisfies Command;

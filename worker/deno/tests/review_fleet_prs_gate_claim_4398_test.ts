@@ -105,11 +105,23 @@ function makeGh(prs: SearchPr[], store: Row[], failComments = false) {
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
     if (args[0] === "api" && args[1] === "graphql") {
+      const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+      const selectsActorType = /\bauthor\s*\{[^}]*\b__typename\b/.test(query);
       return Promise.resolve(JSON.stringify({
         data: {
           search: {
             pageInfo: { hasNextPage: false, endCursor: null },
-            nodes: prs,
+            // GraphQL returns only requested author fields. This makes the
+            // ready-PR result depend on the production search projection.
+            nodes: prs.map((pr) => ({
+              ...pr,
+              author: pr.author === null ? null : {
+                login: pr.author.login,
+                ...(selectsActorType
+                  ? { __typename: pr.author.__typename }
+                  : {}),
+              },
+            })),
           },
         },
       }));
@@ -427,5 +439,41 @@ Deno.test("claim (Issue #4398): gate.ts --host=<name> reaches pass(), so this ho
     assertEquals(noHost.skipped, { "claimed-elsewhere": 1 });
   } finally {
     await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("pass: a GraphQL Bot author matches the configured [bot] fleet login, and a User of the same login does not", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const fleet = new Set(["fleet-pr-babysitter[bot]"]);
+    const bot = makeGh([
+      fleetPr(21, {
+        author: { login: "fleet-pr-babysitter", __typename: "Bot" },
+      }),
+    ], []);
+    const asBot = await pass(REPOS, fleet, REVIEWER, {
+      gh: bot.gh,
+      dir,
+      host: "laptop",
+      now: () => NOW,
+    });
+    assertEquals(asBot.ready.map((p) => [p.number, p.kind]), [[21, "fleet"]]);
+
+    const user = makeGh([
+      fleetPr(22, {
+        author: { login: "fleet-pr-babysitter", __typename: "User" },
+      }),
+    ], []);
+    const asUser = await pass(REPOS, fleet, REVIEWER, {
+      gh: user.gh,
+      dir,
+      host: "laptop",
+      now: () => NOW,
+    });
+    assertEquals(asUser.ready, []);
+    assertEquals(asUser.auditBlocked, []);
+    assertEquals(asUser.skipped, {});
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });

@@ -1516,3 +1516,50 @@ Deno.test("archive symlinks are refused and cleanup failures are reported", asyn
     await Deno.remove(root, { recursive: true });
   }
 });
+
+Deno.test("hardKillLastStep names each setup step from its start line, past the phase ticker (Issue #5128)", () => {
+  const logged = (message: string) =>
+    `[2026-11-03 05:15:07Z] INFO: [s1 stSoftwareAU/VibeCoder#4737] ${message} host=vibe-coder-11556:74`;
+  const ticker = logged(
+    "[phase] setup (stSoftwareAU/GRQ#5515): still running · 2h 10m elapsed",
+  );
+  const steps = [
+    "issue claim",
+    "claim churn check",
+    "repository setup",
+    "heartbeat start",
+    "default branch sync",
+    "feature branch",
+    "pre-setup command",
+  ];
+  const evidenceFor = (lines: string[]) =>
+    makeEvidence({ lastLogLine: lines[lines.length - 1] }, {
+      workerLogTail: lines.join("\n"),
+    });
+  for (const step of steps) {
+    const ev = evidenceFor([
+      logged(`[setup-step] ${step}: started`),
+      ticker,
+      ticker,
+      ticker,
+    ]);
+    assertEquals(hardKillLastStep(ev), `setup: ${step}`, step);
+  }
+  // A later step wins over an earlier one.
+  assertEquals(
+    hardKillLastStep(evidenceFor([
+      logged("[setup-step] issue claim: started"),
+      logged("[setup-step] repository setup: started"),
+      ticker,
+    ])),
+    "setup: repository setup",
+  );
+  // A name outside the fixed list is not a label.
+  assertEquals(
+    hardKillLastStep(evidenceFor([
+      logged("[setup-step] something else: started"),
+      ticker,
+    ])),
+    "unknown",
+  );
+});

@@ -12,6 +12,8 @@ import { resolveIssueAllocation } from "./subscription_allocation_runtime.ts";
  */
 
 import { recordPrFollowOnFromGithub } from "./lifecycle_follow_on.ts";
+import { setupDeadlineMs } from "./setup_steps.ts";
+import { type Clock, systemClock } from "./clock.ts";
 
 import {
   createMissingScopeWarner,
@@ -365,6 +367,8 @@ export interface ClaudeDeps {
    * no change; absent, the process environment is read.
    */
   env?: (name: string) => string | undefined;
+  /** TokenEconomizer plugin directory (Issue #4956). Absent uses the installed plugin; tests point it at a fixture. */
+  tokenEconomizerPluginDir?: string;
   runOrchestratedIssueRun: typeof runOrchestratedIssueRun;
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**
@@ -507,6 +511,13 @@ export interface InfrastructureDeps {
   recordIssueAssignment: (
     request: IssueAssignmentInput & { workDir: string },
   ) => Promise<IssueAssignmentRecord>;
+  /** How long the setup phase may run before the run abandons it (Issue #5128). */
+  setupDeadlineMs: (
+    config: WorkerConfig,
+    input: { milestone: boolean },
+  ) => number;
+  /** Arms the setup deadline (Issue #5128); a test drives its own clock. */
+  setupClock: Clock;
   loadPrompt: typeof loadPrompt;
   shuffleArray: typeof shuffleArray;
   evaluateRunGuard: typeof evaluateRunGuard;
@@ -846,6 +857,8 @@ export function createDefaultDeps(
           input,
           productionIssueAssignmentSeams(workDir, runGhCommand),
         ),
+      setupDeadlineMs,
+      setupClock: systemClock,
       loadPrompt,
       shuffleArray,
       evaluateRunGuard,
@@ -1519,6 +1532,8 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
       Promise.resolve()
     ),
     resolveIssueAllocation: async () => undefined,
+    setupDeadlineMs,
+    setupClock: systemClock,
     // Issue #3718: a mocked run posts no assignment marker and writes no ledger.
     recordIssueAssignment: mockFn<InfrastructureDeps["recordIssueAssignment"]>(
       () =>

@@ -116,7 +116,7 @@ The quality gate is implemented in Deno TypeScript (`worker/deno/quality.ts` and
 `worker/deno/lib/quality_gate.ts`). The shell wrapper `quality.sh` is a thin
 launcher that locates Deno and delegates. The gate runs: benchmark audit,
 `deno test`, `deno lint`, `deno check`, `deno fmt --check`, plus mermaid,
-markdownlint, semgrep, and Checkov.
+markdownlint, semgrep, Checkov, and gitleaks.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
@@ -170,6 +170,55 @@ pinned route the stage is `SKIPPED` with the missing item named; `--strict`
 promotes that to a failure, and a scan past its 300s deadline is `FAILED`. The
 fleet worker image has no pip and no container runtime, so fleet runs show
 `checkov` as `SKIPPED`, unlike semgrep, which the image bakes.
+
+The **gitleaks** stage (`worker/deno/lib/gitleaks_check.ts`, Issue #5121) is
+registered only when `.github/workflows/gitleaks.yml` exists in the checkout.
+It scans the branch's commit range, `<merge-base with origin/HEAD>..HEAD`: the
+same commits CI's `base_sha..head_sha` scan covers, with the merge-base
+resolution and history deepening shared with the semgrep stage
+(`resolveDiffBase` in `semgrep_check.ts`). A base that cannot be resolved
+(`origin/HEAD` unset, a failed history deepen, a failed `merge-base`) is
+`SKIPPED` on a host, where `--strict` promotes it to a failure, but `FAILED`
+inside the fleet container image: the worker runs the gate non-strict, and a
+skipped stage would let the PR through with its commit range never scanned. The
+failure says the history is "not available in the worker environment", so the
+failure classifier reads it as an infrastructure fault (`missing_tools`), not a
+finding. Uncommitted changes are not scanned by this stage, as in CI. It runs the CI fallback's invocation,
+`gitleaks git --config .github/gitleaks.toml --redact --no-banner --exit-code 1 --log-opts=<base>..HEAD .`
+(the `--config` only when `.github/gitleaks.toml` exists), plus `--verbose
+--no-color`, so each finding prints its file, line and rule with the secret
+redacted. It uses the `gitleaks` on PATH. `GITLEAKS_VERSION` pins 8.30.1, the
+version the workflow runs; a different version still runs, with the drift
+named. With no `gitleaks` on PATH the stage is `SKIPPED` on a host, with the
+reason named, and `--strict` promotes that to a failure; inside the fleet
+container image, which bakes gitleaks in, it is `FAILED`. The stage passes only
+when gitleaks exits 0, reports `no leaks found`, and logs no `ERR` or `FTL`
+line, because gitleaks exits 0 with "no leaks found" on an unresolvable
+revision range. Leaks are `FAILED` with the redacted findings; a scanner error
+or a scan past the 300s deadline is also `FAILED`. CI's `gitleaks.yml` stays
+the backstop.
+
+Publication paths and where the scan runs: the issue completion gate and the
+other `./quality.sh` callers run the stage above through `runQualityGate`. A
+fleet babysitter repair does not: `babysitter-repair` gates a `BABYSITTER_READY`
+response with `runBabysitterTreeGate` (`babysitter_tree_gate.ts`), which runs
+the pre-push gate over the repair's uncommitted tree. That gate also runs
+`runGitleaksTreeCheck` (same module, same pinned CLI, config and redaction)
+once the other checks pass: the branch's commit range
+`<merge-base with origin/<base branch>>..HEAD`, resolved read-only because the
+clone's `.git` is mounted read-only, then `gitleaks dir` over each changed file
+as it is on disk, since the host commits and pushes those edits next. A file
+finding counts only when its line span touches a line the repair added relative
+to `HEAD` (any line, for a file not in `HEAD`), because CI scans only the added
+lines of each patch; an existing match on an untouched line, such as the PEM
+markers in `github_app_auth.ts`, does not block. A finding
+is `blocked` and spends a repair attempt, with redacted rule, path and line
+metadata. A missing scanner, an unresolvable base, a scanner error or a
+deadline hit is `infrastructure` and spends none. The repository's
+`.github/gitleaks.toml` is read from the working tree, as CI reads it from the
+PR head. The pre-push gate that the worker runs over unpushed commits
+(`gateUnpushedCommits`) does not run gitleaks; the completion gate's
+`./quality.sh` does.
 
 Progress is **streamed**: every check emits one `✓ / ✗ / - name: STATUS (1.2s)`
 line to stdout the moment it settles (Issue #399), ahead of the detailed output
@@ -801,6 +850,14 @@ The PID guard (migrated to Deno TypeScript) provides single-instance locking:
   period (default 30 seconds), then escalates to SIGKILL.
 - **Descendant cleanup** — traverses up to 20 levels of child processes to
   prevent orphans, using process groups where available.
+
+After an external agent kill or an incomplete watchdog kill, the runner uses
+[`DescendantTracker`](../worker/deno/lib/orphan_collector.ts) to collect
+survivors from its saved descendant snapshot. If a cleanup probe or signal
+throws, the sweep stops and logs the cause and the PIDs already signalled in an
+error and an `ORPHANS_UNCOLLECTED` security event. Surviving descendants are left
+running; the agent's output and exit evidence still return to the execute phase.
+Successful sweeps retain the `ORPHANS_COLLECTED` event.
 
 ### 📉 Failure tracking (`worker/deno/commands/failure_tracker.ts`)
 
@@ -3596,7 +3653,8 @@ build or test defers that branch until the host recovers (Issue #3178, see
 An agent, quality or discrimination build already in flight is held
 to the same floor (and to the cargo headroom where its checkout holds a cargo
 project, Issue #4413), and a trim-refused host that is below the floor ends the
-launch so the ephemeral layer is discarded (Issue #4360, see
+launch so the ephemeral layer is discarded, unless live babysitter reservations
+explain the dip, which is waited out instead (Issues #4360, #5105, see
 [In-flight builds stop at the same floor](CONTAINER.md#in-flight-builds-stop-at-the-same-floor-issue-4360)).
 
 A build refused by the ephemeral cargo root's budget is a different case: with
@@ -4233,10 +4291,17 @@ over identical content. This includes compact Deno summaries such as `2m14s`,
 spaced compounds
 such as `2m 14s`, hour compounds such as `1h2m3s`, and standalone units such as
 `12.4s`. Clock-format elapsed times are normalised too: pytest's trailing
-`(0:01:15)` after a duration, and Maven's `01:15 min` or `02:03 h`. Source
-locations such as `file.ts:12:5` and ordinary timestamps are kept. The elapsed
-values are ignored while failure counts and diagnostics remain part of the
-comparison.
+`(0:01:15)` after a duration, and Maven's `01:15 min` or `02:03 h`. Two
+presentation-only footers are normalised as whole lines only (Issue #5003):
+Maven's `Finished at:` line with an ISO-8601 timestamp, with or without its
+`[INFO] ` prefix, and pytest's `=`-padded result summary (for example
+`===== 1 failed, 2 passed in 9.87s =====`), whose padding is reduced to a single
+`=` on each side and whose `(H:MM:SS)` clock suffix is dropped. A summary is
+recognised only when it reads `no tests ran`, or when every outcome is a count
+followed by `failed`, `passed`, `skipped`, `deselected`, `xfailed`, `xpassed`,
+`warning(s)`, `error(s)` or `rerun`. Source locations such as `file.ts:12:5`,
+other timestamps and other `=` separators are kept. The elapsed values are
+ignored while failure counts and diagnostics remain part of the comparison.
 
 When the answer is yes the run stops as an **expected skip**: no PR, no
 `failed`/`failed-once` label, no failure tracking, no repo failure record and no
@@ -5067,8 +5132,12 @@ flowchart TD
     B -- passes --> C[Push, or raise a sync PR]
     B -- no Deno project --> D["Push, logged UNGATED<br/>(nothing verified the tree)"]
     B -- fails or cannot run --> E[Reset to the pre-merge commit]
-    E --> F["Report the failure loudly<br/>(sync_failed, self-heal event)"]
-    F --> G["Comment on the milestone's<br/>parent planning issue, else its<br/>oldest open child — needs a human"]
+    E --> F["Report the failure loudly<br/>(WARNING log, sync_failed self-heal event)"]
+    F --> G{Did the check run<br/>and reject the tree?}
+    G -- yes --> H["Charge one attempt of the<br/>conflict budget (3)"]
+    G -- "no: timed out, could not run,<br/>tree unreadable, Rust too old" --> I["Not charged: counted in<br/>refusedCycles, re-checked next cycle"]
+    H -- budget spent --> J["Hand-off: rebuild or roll-back,<br/>plus the merge-fallback flag —<br/>no needs-human comment"]
+    I -- fourth refusal in a row --> J
 ```
 
 Three properties matter:
@@ -5100,15 +5169,21 @@ Three properties matter:
   rather than a half-merged tree. The pre-merge SHA is read *before* merging and
   the sync refuses to merge at all without it, since a merge it could not roll
   back is one it must not start.
-- **It escalates on the first occurrence.** A tree the check rejects is not
-  transient, so the needs-human comment (carrying the check output) goes to the
-  milestone's escalation target immediately rather than waiting for the
-  `MILESTONE_SYNC_ESCALATION_THRESHOLD` failure streak. It is posted once, via
-  its own `gateEscalated` flag in the streak file — a branch that already
-  escalated for an ordinary sync failure still reports a refused merge. Without
-  a streak file (the ad hoc `sync-milestone-branches` command) nothing can
-  record that the comment went out, so the refusal stays in the log rather than
-  being re-posted every cycle.
+- **It hands nothing to a human.** A tree the repository's own check rejects is
+  a conflict git could not see (Issue #4304), so `judgeSyncFailure` charges it
+  one attempt of the conflict budget, exactly as it charges a textual conflict,
+  and once the budget is spent `handOffSpentBudget` rebuilds or rolls back the
+  branch and files or appends the one `merge-fallback` flag. A check that could
+  not verify the tree — it timed out, could not be run, could not read the tree,
+  or needed a newer Rust toolchain — is not charged (Issue #4847): it is counted
+  in `refusedCycles` and re-checked next cycle, and once
+  `MILESTONE_REFUSAL_CEILING` (3) refusals in a row are on the ledger the next
+  one is charged and goes to the same hand-off. No needs-human comment is
+  posted, and the `MILESTONE_SYNC_ESCALATION_THRESHOLD` streak comment that an
+  ordinary sync failure earns is skipped for a gate failure; until the hand-off,
+  the WARNING log and the `sync_failed` self-heal event are the report. The
+  streak file's `gateEscalated` flag belonged to the first-occurrence comment
+  this replaced: nothing sets it now, and a landed sync drops it.
 
 A repository with no Deno project is still synced, but the outcome says
 `UNGATED` so an unchecked push never reads like a checked one.

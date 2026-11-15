@@ -826,6 +826,14 @@ export interface RepairTask {
   run: () => Promise<void>;
 }
 
+/**
+ * How many repair containers the production queue runs at once. Each repair
+ * container starts its own egress proxy; two at once cost about 31 GB of host
+ * disk and crossed the worker's floor (Issue #5105). The queue keeps scanning
+ * and queues newly actionable PRs; they start when the running one ends.
+ */
+export const BABYSITTER_REPAIR_CONTAINER_LIMIT = 1;
+
 /** Keep scanning while bounded, independent repairs are running. */
 export async function runRepairs(
   tasks: RepairTask[],
@@ -1329,6 +1337,11 @@ export function reason(pr: Pr): string | null {
   if (pr.reviewDecision === "CHANGES_REQUESTED") {
     return "requested review changes";
   }
+  // Review the current head before updating it: the shared updater refuses
+  // REVIEW_REQUIRED, so retrying cannot unblock the PR and moves no branch.
+  if (
+    pr.reviewDecision === "REVIEW_REQUIRED" && pr.autoMergeRequest != null
+  ) return null;
   // The shared updater evaluates the effective required-check contract.
   // An optional pending job must not hide a ready PR from that policy.
   if (pr.mergeStateStatus === "BEHIND") return "branch behind base";
@@ -3933,7 +3946,7 @@ export async function pass(
   };
   await runRepairs(
     await discover(),
-    2,
+    BABYSITTER_REPAIR_CONTAINER_LIMIT,
     execute && prFilter === undefined ? discover : undefined,
   );
 }
