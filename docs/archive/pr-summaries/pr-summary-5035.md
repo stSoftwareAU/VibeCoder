@@ -2,13 +2,13 @@
 
 ## Summary
 
-The two repair pre-push gate modes had names that no longer said what they
-run. This PR renames them and the path lists they filter. Behaviour is
-unchanged. Closes #5035.
+The two repair pre-push gate modes had names that no longer said what they run.
+This PR renames them and the path lists they filter. Behaviour is unchanged.
+Closes #5035.
 
 - `shellcheckOnly` → `repairChecksOnly`: the shared repair checks only.
-- `ciCargoOnly` → `repairChecksWithCiCargo`: the shared repair checks plus
-  the repo CI's cargo clippy and test-target compile.
+- `ciCargoOnly` → `repairChecksWithCiCargo`: the shared repair checks plus the
+  repo CI's cargo clippy and test-target compile.
 - `CI_CARGO_ONLY_PRE_FLIGHT` → `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`.
 - In `runPrePushGate`:
   - `changed` → `formatterCandidates`, now a plain array instead of a
@@ -31,9 +31,9 @@ flowchart LR
 ### Intent and Rationale
 
 - Earlier PRs dropped or skipped checks because their authors took
-  `shellcheckOnly` and `ciCargoOnly` literally. The new names say what each
-  mode runs, and both start with `repairChecks`, so the two modes are still
-  told apart.
+  `shellcheckOnly` and `ciCargoOnly` literally. The new names say what each mode
+  runs, and both start with `repairChecks`, so the two modes are still told
+  apart.
 
 ### Essential Design Decisions
 
@@ -43,8 +43,8 @@ flowchart LR
   deny. The issue says not to collapse the modes.
 - The planner's own option keys (`cargoChanged`, `validationChanged`) and the
   raw lists (`touched`, `contained`, `uncontained`) keep their names. Only the
-  locals that the mode filters were renamed. Every condition is unchanged,
-  token for token, apart from the renamed identifiers.
+  locals that the mode filters were renamed. Every condition is unchanged, token
+  for token, apart from the renamed identifiers.
 - No persisted shape changes. `PreFlightGateSpec` is built and used inside one
   process. Its only reader is `gateUnpushedCommits` in
   `worker/deno/lib/git_push.ts`, and the agent hook's spec file does not carry
@@ -72,14 +72,13 @@ This is a backend rename.
   "plans no changed-file check at all". It actually plans the unit tests and
   markdownlint from the pushed paths. The sentence now says that.
 - Docs: `docs/CONFIGURATION.md`. I read the pre-flight section and the
-  changed-file check bullets (`deno test`, CI cargo, `cargo deny`), and
-  updated:
+  changed-file check bullets (`deno test`, CI cargo, `cargo deny`), and updated:
   - the no-`pre-flight` paragraph and the Step 1b paragraph, which now name
     `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`;
   - the `deno test` bullet, which names both modes;
   - the CI cargo bullet;
-  - the `cargo deny` bullet. It used to say only "ShellCheck-only repair
-    checks" run it on changed cargo inputs, but `runCargoDenyGate`'s
+  - the `cargo deny` bullet. It used to say only "ShellCheck-only repair checks"
+    run it on changed cargo inputs, but `runCargoDenyGate`'s
     `always: !opts.repairChecksOnly && !opts.repairChecksWithCiCargo && …`
     treats both repair modes that way, so it now names both.
 - Grep on the final head:
@@ -89,15 +88,15 @@ This is a backend rename.
     "shellcheck-only hole" hits (quality-gate remediation) are different
     concepts and were left alone.
   - `README.md` and the other `*/README.md` files have no hit.
-- No issue number is newly cited as provenance. The diff cites only the
-  existing #4626, #4630, #4631 and #4930.
+- No issue number is newly cited as provenance. The diff cites only the existing
+  #4626, #4630, #4631 and #4930.
 
 ## Test Plan
 
-- No new test: the change is a rename, and the existing repair-path suites
-  drive the real gate under both modes. I updated them for the new keys and
-  kept every behavioural assertion. They show the same checks still run and
-  the same failures still block:
+- No new test: the change is a rename, and the existing repair-path suites drive
+  the real gate under both modes. I updated them for the new keys and kept every
+  behavioural assertion. They show the same checks still run and the same
+  failures still block:
   - `worker/deno/tests/pre_push_gate_test.ts` (each mode in the loop at the
     renamed `for (const mode of …)`, CI-cargo-only checks, markdownlint
     blocking, pre-flight skipping);
@@ -126,8 +125,7 @@ This is a backend rename.
     `assertEquals(spec, CI_CARGO_ONLY_PRE_FLIGHT);`
     - Required by: "rename the internal modes and filtered path variables to
       describe their actual purpose"
-    - Replaced by:
-      `assertEquals(spec, REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT);`
+    - Replaced by: `assertEquals(spec, REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT);`
   - Removed from `worker/deno/tests/pr_ci_processor_test.ts`:
     `assertEquals(spec?.ciCargoOnly === true, false);`
     - Required by: "rename the internal modes and filtered path variables to
