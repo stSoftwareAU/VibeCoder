@@ -113,6 +113,7 @@ async function seedV1Snapshot(
         "owner/repo|42": {
           contentHash: await legacyV1Hash(TITLE, BODY),
           capturedAt: SNAPSHOT_AT_UNIX,
+          contentRevisionAt: SNAPSHOT_AT_UNIX,
           issueAuthor: "alice",
           ...(stamped ? { encoding: CONTENT_HASH_ENCODING_V1 } : {}),
         },
@@ -175,10 +176,12 @@ Deno.test(
     const snapshot = await readSnapshot(config, deps);
     assert(snapshot, "The baseline must survive the migration");
     assertEquals(snapshot.encoding, CURRENT_CONTENT_HASH_ENCODING);
+    // Issue #5018: the migration rewrites the digest only; the original
+    // trust boundary is kept, never restamped to now.
     assertEquals(
-      snapshot.capturedAt > SNAPSHOT_AT_UNIX,
-      true,
-      "The baseline must be refreshed under the current encoding",
+      snapshot.capturedAt,
+      SNAPSHOT_AT_UNIX,
+      "The migration must keep the original capture time",
     );
   },
 );
