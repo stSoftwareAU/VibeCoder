@@ -63,8 +63,10 @@ default); `loopguard` takes `off` or `nudge` (the default). The error cases and
 the defaults are set out in the [Configuration Reference](CONFIGURATION.md).
 `enabled` is read by the run launch decision, `loopguard` is passed to the
 plugin as `TE_LOOPGUARD`, and `microskills` is clamped to `envfacts` (below).
-`learnings_repo` is validated but not read yet: #4957 will persist the learnings
-to it, so it changes no run today.
+`learnings_repo` is read by the learnings persistence in
+`lib/token_economizer_learnings.ts`: it pulls the learnings at launch and pushes
+them after each spawn that loaded the plugin. The checks are set out in the
+[Configuration Reference](CONFIGURATION.md#tokeneconomizer-learnings).
 
 **The mechanisms.** Two are switched on and three are off:
 
@@ -120,13 +122,16 @@ and tears down unfinished descendants within the event's deadline.
 
 Each launch gets its own `TOKENECONOMIZER_HOME`, a fresh state directory per
 launch, so a fact the plugin learns in one launch is not in another launch's
-home. A re-run or retry of the same agent call reuses its launch, but the runner
+home except through the learnings repository, described below. A re-run or retry of the same agent call reuses its launch, but the runner
 re-checks the stop latch before every spawn: once a stop is latched, or the
 controller directory cannot be verified, that spawn gets neither `--plugin-dir`
 nor a launch variable. The run id that names it is the caller's, or a fresh UUID when none is given; it
-is never read from the worker's environment. Carrying learnings across runs is
-what the learnings repository (#4957) is for. Until it lands, the cross-run part of the
-trial is not exercised, and a verdict on that part would be a verdict on nothing.
+is never read from the worker's environment. Learnings carry across runs only
+through the learnings repository. Each launch pulls the key's learnings before the
+plugin loads, and each spawn that loaded the plugin pushes them back once the
+plugin has folded the session. A pull that cannot be verified does not refuse the
+launch: the plugin still loads, the launch records persistence as unavailable, and
+that launch does not count as cross-run learning (#4958 will report it).
 
 Nothing else loads it. Reviewer and verifier calls are not run kinds. External
 orchestration forwards the implementation launch to role dispatch, and the
@@ -282,7 +287,7 @@ rule outranks cost.
 
 | Stop rule | What it protects |
 | --------- | ---------------- |
-| A learned fact carrying a **secret** is found in the learnings repository, or the gitleaks check before a sync commit catches one | A learned fact is injected into every later run, so a secret in one is retained and repeated |
+| The gitleaks check over the staged learnings catches a learned fact carrying a **secret** before a learnings commit | A learned fact is injected into every later run, so a secret in one is retained and repeated |
 | A fact injected into a run **comes from another repository** | A fact is derived from one repository's content and must never steer another's |
 | The plugin causes a run failure that is **the plugin's fault**, such as a hook error that ends a run | The plugin must never fail a run; it is an accelerator |
 
@@ -296,10 +301,10 @@ data. An offline or denied GitHub write leaves a pending report, retried at a
 later enabled launch without widening the worker's permissions. Reporting a stop
 overrides the 7-day/60-run wait, rather than declaring the normal window complete.
 
-Persistence (#4957, still open) must pass its secret/isolation findings to that
-same function and call `tokenEconomizerMaySync(workDir)` before each transfer,
-including retries. No persistence implementation is present at this head, so
-this is its integration contract, not a claim that sync is already wired.
+Persistence passes its secret and isolation findings to that same function, and
+calls `tokenEconomizerMaySync(workDir)` before the pull and before each push
+attempt, including retries. The learnings persistence, described in the
+[Configuration Reference](CONFIGURATION.md#tokeneconomizer-learnings), does both.
 Unreadable stop records inhibit loading and sync permission. A healthy run does
 not clear a failed experiment: the latch remains until authorised recovery or
 purge through #4959.
@@ -346,7 +351,10 @@ and an operator's `.config.json`, are not repository files and are not read.
 
 State is `present` when the path exists and names the plugin today, and
 `planned #N` when issue #N is to add it. A row with no path (`—`) is
-`planned #N`, because nothing in the repository can show that it exists yet.
+`planned #N`, because nothing in the repository can show that it exists yet. The
+learnings directory is in the learnings repository, not this one, so its purge is
+run there, with the steps in the
+[Configuration Reference](CONFIGURATION.md#tokeneconomizer-learnings).
 
 | Kind | What | Path | State |
 | ---- | ---- | ---- | ----- |
@@ -391,8 +399,9 @@ State is `present` when the path exists and names the plugin today, and
 | Test | the production dependency pass-through tests | `worker/deno/tests/token_economizer_production_deps_test.ts` | present |
 | Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | present |
 | Runtime directory | `.token-economizer/` under the work directory, holding the stop record, notification receipt and per-spawn state directories; the launch decision creates it at run time | `worker/deno/lib/token_economizer_plugin.ts` | present |
-| Source | the learnings pull and push, with the gitleaks check | — | planned #4957 |
-| Learnings directory | `token-economizer/` in the repository named by `token_economizer.learnings_repo` | — | planned #4957 |
+| Source | the learnings pull and push, with the visibility and gitleaks checks | `worker/deno/lib/token_economizer_learnings.ts` | present |
+| Test | the learnings persistence tests | `worker/deno/tests/token_economizer_learnings_test.ts` | present |
+| Learnings directory | `token-economizer/` in the repository named by `token_economizer.learnings_repo`, and its purge | `docs/CONFIGURATION.md` | present |
 | Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | planned #4958 |
 | Callback field | the new optional fields on the run callback | `docs/CALLBACKS.md` | planned #4958 |
 | Report section | the weekly report's comparison section | — | planned #4958 |

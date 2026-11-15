@@ -2098,10 +2098,77 @@ unless explicitly overridden.
 | Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment, posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:` lines too, above the cumulative PR total ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)). Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. Codex receives the same worker-authored hook through per-spawn `-c hooks.PreToolUse` configuration with `features.hooks=true` and `--dangerously-bypass-hook-trust`, without writing the operator's `~/.codex`. Codex normalises shell input to `Bash` with a string `command`, so RTK needs no shim. Support is declared by the provider seam's `supportsPreToolUseHooks` capability: Claude and Codex can report `ok` and a saved-token delta; **Gemini and DeepSeek** record `unsupported` and proceed without it. When the switch is off, Codex receives no RTK hook configuration or hook-trust flag. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
-| TokenEconomizer | `token_economizer.enabled` | `false` | Whether this host switches on the TokenEconomizer plugin trial (Issue #4955, part of #4953). The `token_economizer` block has four keys: `enabled`, off by default, so an unset block means a run is unchanged; `learnings_repo`, the private `owner/name` repository that holds the learnings, required when `enabled` is `true`; `microskills`, one of `off`, `envfacts`, `distiller` or `envfacts+distiller` (default `envfacts+distiller`); and `loopguard`, one of `off` or `nudge` (default `nudge`). A non-object block, a non-boolean `enabled`, a `learnings_repo` that is not `owner/name` (checked even when disabled), a missing `learnings_repo` when enabled, or a `microskills` or `loopguard` value outside its list fails the config load naming the key, and an unknown key inside the block warns. `enabled` is read by the run launch decision: when `true`, the implementation, PR-feedback and CI-fix Claude runs load the plugin, and a disabled host's runs are unchanged. `microskills` is clamped to `envfacts` whatever is set (`distiller` and `envfacts+distiller` launch as `envfacts`, and `off` stays `off`). `loopguard` maps to `TE_LOOPGUARD`. The worker selects an audited hook adapter through `TE_PYTHON`; cached context is fenced as untrusted data and rejected above four bullet facts or the upstream 600-character estimate for 150 tokens. A hook failure latches the trial off and reports to #4959; the local stop file does not protect against a deliberately hostile same-UID agent. `learnings_repo` is validated but not read yet: #4957 will persist the learnings to it, so it changes no run today. The protocol it is judged by is [TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md). |
+| TokenEconomizer | `token_economizer.enabled` | `false` | Whether this host switches on the TokenEconomizer plugin trial (Issue #4955, part of #4953). The `token_economizer` block has four keys: `enabled`, off by default, so an unset block means a run is unchanged; `learnings_repo`, the private `owner/name` repository that holds the learnings, required when `enabled` is `true`; `microskills`, one of `off`, `envfacts`, `distiller` or `envfacts+distiller` (default `envfacts+distiller`); and `loopguard`, one of `off` or `nudge` (default `nudge`). A non-object block, a non-boolean `enabled`, a `learnings_repo` that is not `owner/name` (checked even when disabled), a missing `learnings_repo` when enabled, or a `microskills` or `loopguard` value outside its list fails the config load naming the key, and an unknown key inside the block warns. `enabled` is read by the run launch decision: when `true`, the implementation, PR-feedback and CI-fix Claude runs load the plugin, and a disabled host's runs are unchanged. `microskills` is clamped to `envfacts` whatever is set (`distiller` and `envfacts+distiller` launch as `envfacts`, and `off` stays `off`). `loopguard` maps to `TE_LOOPGUARD`. The worker selects an audited hook adapter through `TE_PYTHON`; cached context is fenced as untrusted data and rejected above four bullet facts or the upstream 600-character estimate for 150 tokens. A hook failure latches the trial off and reports to #4959; the local stop file does not protect against a deliberately hostile same-UID agent. `learnings_repo` is read by the learnings persistence: the learnings are pulled from it at launch and pushed back after each spawn that loaded the plugin, under the checks in [TokenEconomizer learnings](#tokeneconomizer-learnings). The protocol it is judged by is [TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker closes the PR and redoes its issue (Issue #4304). See [Auto-fix attempt cap](#-auto-fix-attempt-cap). |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog repairs it (sync and rerun once, then abandon and redo), or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
+
+### TokenEconomizer learnings
+
+When `token_economizer.learnings_repo` is set, the plugin's learnings carry
+across runs in that private repository. The learnings persistence in
+`worker/deno/lib/token_economizer_learnings.ts` pulls them at each launch, before
+the plugin loads, and pushes them after each spawn that loaded the plugin, once
+the plugin has folded the session.
+
+**Store layout.** Each repository's state is kept under
+`token-economizer/<repo-key>/` in the learnings repository. That directory
+mirrors `$TOKENECONOMIZER_HOME/repos/<repo-key>/` on the trial host. The
+`<repo-key>` is the upstream plugin's key for the checkout's `origin` remote: a
+slug of the repository name, a hyphen and the first ten hex digits of the SHA-1
+of the normalised remote, with any credentials and user removed (for example
+`vibecoder-9dcdf6cc4d`). The plugin's settings file, `token-economizer/config.json`,
+is pulled into `$TOKENECONOMIZER_HOME/config.json` and is never pushed.
+
+Only regular `.json` files are synced. Symbolic links are not followed, and the
+`bin/te` launcher, `errors.log`, `*.jsonl` transcripts and `sessions/` are never
+synced. The files of one key total at most 1 MiB (1,048,576 bytes). A key over
+the cap is neither loaded nor pushed.
+
+**Pull.** The pull checks the shared stop latch first. It then reads the
+visibility of the learnings repository fresh with `gh api repos/<owner>/<name>`,
+and the repository must report `"private": true` and `"visibility": "private"`.
+A public or unverifiable repository is refused, the refusal is logged, and
+nothing is transferred. A pull that fails is a warning. The run continues and
+the plugin still loads, but the launch records persistence as unavailable. That
+launch does not count as cross-run learning, and #4958 will report it.
+
+**Push.** Before each push attempt the worker re-checks the stop latch and the
+visibility of the repository. Then:
+
+- the staged learnings are scanned with gitleaks before each commit. A finding
+  drops the commit, logs the rule id without the value, and latches the shared
+  stop, which is reported to #4959;
+- a scanner that times out, is missing or cannot be read skips the push;
+- another repository key under the run's home latches the same stop, with the
+  rule `cross-repo-fact`, and nothing is committed;
+- the commit message names the issue or PR and the run id:
+  `token-economizer: learnings for <key> from <subject>`, with a
+  `Vibe-Coder-Run-Id` trailer;
+- a non-fast-forward rejection is retried once, by replaying this run's commit
+  onto the new tip. A conflict or a second failure drops this run's update and
+  logs it.
+
+The enabled trial host is the only writer.
+
+**Purging the trial's learnings.** To remove the trial's namespace and nothing
+else, clone the learnings repository and delete the directory:
+
+```sh
+git clone https://github.com/<owner>/<learnings-repo>.git
+cd <learnings-repo>
+git rm -r token-economizer/
+git commit -m "Purge TokenEconomizer trial learnings"
+git push origin HEAD
+```
+
+Use `token-economizer/<repo-key>/` in place of `token-economizer/` to purge one
+repository only. The push stops every later pull from restoring the files.
+History still holds the old commits. To remove a leaked value from history as
+well, rewrite only that path, for example with
+`git filter-repo --path token-economizer/ --invert-paths`, and force-push the
+learnings repository. That repository is a separate private store, not a fleet
+repository. Deleting the learnings repository has the same effect.
 
 ### 🌱 Graft repo-context injection
 
