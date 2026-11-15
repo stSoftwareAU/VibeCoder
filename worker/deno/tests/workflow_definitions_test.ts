@@ -537,20 +537,63 @@ Deno.test("workflow_definitions - Java dependency update specs are split by ecos
     "build.gradle.kts",
   ]);
 
-  // Detection is ecosystem-specific, so a Gradle-only dependabot.yml cannot
-  // satisfy the Maven spec and vice versa.
+  // Ecosystem-specific detection lives in the Dependabot config groups, so a
+  // Gradle-only dependabot.yml cannot satisfy the Maven spec and vice versa.
+  // Workflow-file groups hold only real update tooling (Issue #5026).
   assertEquals(maven!.detectionPatternGroups, [[
-    "package-ecosystem: maven",
-    'package-ecosystem: "maven"',
     "renovate",
     "versions-maven-plugin",
   ]]);
   assertEquals(gradle!.detectionPatternGroups, [[
-    "package-ecosystem: gradle",
-    'package-ecosystem: "gradle"',
     "renovate",
     "gradle-versions-plugin",
   ]]);
+  assertEquals(maven!.dependabotConfigPatternGroups, [[
+    "package-ecosystem: maven",
+    'package-ecosystem: "maven"',
+    "package-ecosystem: 'maven'",
+  ]]);
+  assertEquals(gradle!.dependabotConfigPatternGroups, [[
+    "package-ecosystem: gradle",
+    'package-ecosystem: "gradle"',
+    "package-ecosystem: 'gradle'",
+  ]]);
+});
+
+Deno.test("workflow_definitions - no dependabotConfig spec matches a workflow file on a package-ecosystem entry (Issue #5026)", () => {
+  const configSpecs = WORKFLOW_SPECS.filter((s) => s.dependabotConfig === true);
+  const ids = configSpecs.map((s) => s.id);
+  // Positive control: the filter really selects the three Dependabot specs.
+  for (
+    const id of [
+      "npm-dependency-updates",
+      "java-dependency-updates",
+      "java-gradle-dependency-updates",
+    ]
+  ) {
+    assertEquals(ids.includes(id), true, `Missing ${id}`);
+  }
+
+  for (const spec of configSpecs) {
+    // Dependabot never reads .github/workflows/, so no workflow-file pattern
+    // may name a package-ecosystem entry.
+    for (const pattern of spec.detectionPatternGroups.flat()) {
+      assertEquals(
+        pattern.toLowerCase().includes("package-ecosystem"),
+        false,
+        `${spec.id} workflow pattern "${pattern}" names package-ecosystem`,
+      );
+    }
+    // The Dependabot config groups hold the package-ecosystem entries.
+    assertEquals(spec.dependabotConfigPatternGroups !== undefined, true);
+    for (const pattern of spec.dependabotConfigPatternGroups!.flat()) {
+      assertEquals(
+        pattern.toLowerCase().includes("package-ecosystem"),
+        true,
+        `${spec.id} config pattern "${pattern}" lacks package-ecosystem`,
+      );
+    }
+  }
 });
 
 Deno.test("workflow_definitions - includes Bash workflow specs", () => {
