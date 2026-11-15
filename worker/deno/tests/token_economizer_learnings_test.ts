@@ -1209,7 +1209,8 @@ Deno.test("refused: a latched trial neither pulls nor pushes", () =>
 
 Deno.test("refused: a store that turns public, or a stop that latches, between the first push and its replay uploads nothing", () =>
   withRoot(async (root) => {
-    for (const change of ["public", "latch"] as const) {
+    // "control" changes nothing: it proves the fixture reaches the replay and pushes.
+    for (const change of ["control", "public", "latch"] as const) {
       const store = await newStore(root, `${change}-store`);
       await commitToStore(root, store.url, {
         [`token-economizer/${KEY_A}/claude/a.json`]: '{"a":1}\n',
@@ -1222,30 +1223,34 @@ Deno.test("refused: a store that turns public, or a stop that latches, between t
         pullOpts(root, x, KEY_A, store.url, logX.logger),
       );
 
-      // Y's checks, in order: the pull, the first push attempt, the replayed push.
-      let yChecks = 0;
-      let yLatchChecks = 0;
-      const yVisibility = () => {
-        yChecks++;
-        return Promise.resolve<VisibilityVerdict>(
-          change === "public" && yChecks >= 3
-            ? {
-              private: false,
-              reason: `learnings repository ${REPO} is public`,
-            }
-            : { private: true },
-        );
-      };
-      const yMayTransfer = () => {
-        yLatchChecks++;
-        return Promise.resolve(change !== "latch" || yLatchChecks < 3);
-      };
+      // The change is driven by the world, not by how often Y checks: it takes
+      // effect once X's commit has reached Y's clone, which only the replay's fetch does.
+      let xTip = "";
+      const yClone: { dir?: string } = {};
+      const changed = async () =>
+        xTip !== "" && yClone.dir !== undefined &&
+        await runs("git", [
+          "-C",
+          yClone.dir,
+          "cat-file",
+          "-e",
+          `${xTip}^{commit}`,
+        ]);
+      const yVisibility = async () =>
+        await changed() && change === "public"
+          ? {
+            private: false,
+            reason: `learnings repository ${REPO} is public`,
+          } as VisibilityVerdict
+          : { private: true } as VisibilityVerdict;
+      const yMayTransfer = async () => !(await changed() && change === "latch");
       const py = await pullLearnings(
         pullOpts(root, y, KEY_A, store.url, logY.logger, {
           checkVisibility: yVisibility,
           mayTransfer: yMayTransfer,
         }),
       );
+      yClone.dir = py.storeDir;
       assertEquals(py.status, "restored", change);
 
       await plant(join(root, `${x}-home`), KEY_A, "claude/a.json", '{"x":2}\n');
@@ -1253,6 +1258,7 @@ Deno.test("refused: a store that turns public, or a stop that latches, between t
         pushOpts(root, x, px, logX.logger, recorder().stop),
       );
       assertEquals(outX.kind, "pushed", change);
+      xTip = (await git(["-C", store.dir, "rev-parse", "main"])).trim();
       const afterX = await commitCount(store.dir);
       assertEquals(afterX, 2, change);
 
@@ -1264,26 +1270,34 @@ Deno.test("refused: a store that turns public, or a stop that latches, between t
           mayTransfer: yMayTransfer,
         }),
       );
-      // The pull, the first push attempt and the replayed push each checked.
-      assertEquals(
-        change === "public" ? yChecks : yLatchChecks,
-        3,
-        `${change}: the retry re-checked`,
-      );
       assertEquals(
         outY.kind,
-        change === "public" ? "refused" : "skipped",
+        { control: "pushed", public: "refused", latch: "skipped" }[change],
         change,
       );
       if (outY.kind === "refused") {
         assertStringIncludes(outY.reason, "is public");
       }
       if (outY.kind === "skipped") assertStringIncludes(outY.reason, "latched");
-      assertEquals(await commitCount(store.dir), afterX, change);
-      assertEquals(await storeFiles(store.dir), [
-        `token-economizer/${KEY_A}/claude/a.json`,
-      ], change);
-      assertEquals(await exists(join(root, `${y}-scratch`)), false, change);
+      if (change === "control") {
+        // Positive control: the replay ran and added Y's file on top of X's commit.
+        assertEquals(await commitCount(store.dir), afterX + 1, change);
+        assertEquals(await storeFiles(store.dir), [
+          `token-economizer/${KEY_A}/claude/a.json`,
+          `token-economizer/${KEY_A}/claude/b.json`,
+        ], change);
+      } else {
+        assertEquals(await commitCount(store.dir), afterX, change);
+        assertEquals(await storeFiles(store.dir), [
+          `token-economizer/${KEY_A}/claude/a.json`,
+        ], change);
+        assertEquals(
+          await git(["-C", store.dir, "rev-parse", "main"]),
+          `${xTip}\n`,
+          change,
+        );
+        assertEquals(await exists(join(root, `${y}-scratch`)), false, change);
+      }
     }
   }));
 

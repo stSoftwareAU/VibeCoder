@@ -208,7 +208,10 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   keys, scanner faults and the repository-key goldens with upstream parity. PR
   #5158 review round 2 added three: the retry push re-checking visibility and
   the latch
-  (`refused: a store that turns public, or a stop that latches, between the first push and its replay uploads nothing`),
+  (`refused: a store that turns public, or a stop that latches, between the first push and its replay uploads nothing`;
+  its change takes effect once the other run's commit reaches the clone, not
+  after a number of checks, and an unchanged control case proves the replay
+  pushes),
   the default visibility check reading under a token-scope grant that is
   released afterwards
   (`default visibility check: the learnings repository is in the token scope while it reads, and is released afterwards`),
@@ -306,7 +309,24 @@ deletion and preservation of a local session. A new test covers file and
 directory symlink destinations, asserting outside content remains unchanged
 and the unsafe clone is discarded. No previous assertions were removed.
 
+## Retry test decoupled from call counts
+
+The retry visibility/latch test turned the store public, or latched the stop,
+on the third callback and asserted exactly three calls. That tied it to the
+internal check sequence. The transition now follows an external event: the
+fake flips once the other run's commit exists in the retrying run's scratch
+clone, which only the replay's fetch causes. The call-count assertion is gone.
+A third, unchanged case acts as the positive control: the replay runs and the
+store gains one commit with both runs' files. The `public` and `latch` cases
+assert the `refused` ("is public") or `skipped` ("latched") outcome and that
+the remote tip, commit count and files are unchanged. The test was added in
+this PR, so no base behaviour changed.
+
 Validation in this repair environment:
+
+- After the retry-test rewrite, the learnings suite
+  (`deno test -A tests/token_economizer_learnings_test.ts`) passed 23, failed 0.
+  Format, lint and type check of the test file passed.
 
 - Learnings and plugin-wiring suites, run again on the merged head with
   `deno test -A`: 60 passed, 0 failed, none ignored. An earlier run without the
