@@ -705,7 +705,7 @@ export async function runBabysitterTreeGate(
           ? ""
           : `${MERGE_REF} ${mergeHead} ${TREE_REF} ${sha}\n`),
       preFlightCommands: [],
-      shellcheckOnly: true,
+      repairChecksOnly: true,
       git: adapter,
       ...(deps.runner ? { runner: deps.runner } : {}),
       ...(deps.findMarkdownlint

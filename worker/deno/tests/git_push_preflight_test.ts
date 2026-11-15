@@ -16,12 +16,12 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
-  CI_CARGO_ONLY_PRE_FLIGHT,
   commitAndPushPending,
   gateUnpushedCommits,
   issueRunCompareRef,
   prBaseCompareRef,
   PrePushGateBlockedError,
+  REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
 } from "../lib/git_push.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
@@ -491,7 +491,7 @@ Deno.test("commitAndPushPending - no preFlight spec: WIP checkpoint with a Shell
   }
 });
 
-// Issue #4630: the repair processors pass CI_CARGO_ONLY_PRE_FLIGHT for a repo
+// Issue #4630: the repair processors pass REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT for a repo
 // with no pre-flight commands, so their repairs run the repo CI's cargo clippy
 // (and test-target compile) and nothing else.
 
@@ -581,7 +581,7 @@ async function commitUnpushed(
   assertEquals(c.code, 0, c.stderr);
 }
 
-Deno.test("commitAndPushPending - ciCargoOnly: failing CI clippy refuses the push (#4630)", async () => {
+Deno.test("commitAndPushPending - repairChecksWithCiCargo: failing CI clippy refuses the push (#4630)", async () => {
   const branch = "issue-4630-clippy-fail";
   const { tmp, downstream } = await makeRepo("preflight_4630_fail_", branch);
   try {
@@ -595,7 +595,7 @@ Deno.test("commitAndPushPending - ciCargoOnly: failing CI clippy refuses the pus
       "unused",
       { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
-      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+      { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
     );
 
     assert(!result.ok, "failing CI clippy must refuse the push");
@@ -660,7 +660,7 @@ Deno.test("commitAndPushPending - a CI clippy failure the PR base already has do
       "unused",
       { cwd: downstream, env: NO_HOST_GIT_CONFIG, syncBaseBranch: "main" },
       false,
-      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+      { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
     );
 
     assert(result.ok, result.ok ? "" : result.error.message);
@@ -719,7 +719,7 @@ Deno.test("commitAndPushPending - a fix branch compares the PR base without merg
       "unused",
       { cwd: downstream, env: NO_HOST_GIT_CONFIG, compareBaseBranch: "main" },
       false,
-      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+      { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
     );
     assert(result.ok, result.ok ? "" : result.error.message);
     assertEquals(clippyTrees, ["head", "base"]);
@@ -745,7 +745,7 @@ Deno.test("commitAndPushPending - requireCargoBaseComparison with no readable ba
         requireCargoBaseComparison: true,
       },
       false,
-      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+      { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
     );
 
     assert(!result.ok, "an unreadable base comparison must refuse the push");
@@ -777,7 +777,7 @@ Deno.test("commitAndPushPending - a CI clippy failure the PR base does not have 
       "unused",
       { cwd: downstream, env: NO_HOST_GIT_CONFIG, syncBaseBranch: "main" },
       false,
-      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+      { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
     );
 
     assert(!result.ok, "a new clippy failure must refuse the push");
@@ -791,7 +791,7 @@ Deno.test("commitAndPushPending - a CI clippy failure the PR base does not have 
   }
 });
 
-Deno.test("commitAndPushPending - ciCargoOnly: passing CI clippy pushes (#4630)", async () => {
+Deno.test("commitAndPushPending - repairChecksWithCiCargo: passing CI clippy pushes (#4630)", async () => {
   const branch = "issue-4630-clippy-pass";
   const { tmp, downstream } = await makeRepo("preflight_4630_pass_", branch);
   try {
@@ -809,7 +809,7 @@ Deno.test("commitAndPushPending - ciCargoOnly: passing CI clippy pushes (#4630)"
       "unused",
       { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
-      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+      { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
     );
 
     assert(result.ok, result.ok ? "" : result.error.message);
@@ -826,7 +826,7 @@ Deno.test("commitAndPushPending - ciCargoOnly: passing CI clippy pushes (#4630)"
   }
 });
 
-Deno.test("commitAndPushPending - ciCargoOnly: a bad .ts file is not checked by deno (#4630)", async () => {
+Deno.test("commitAndPushPending - repairChecksWithCiCargo: a bad .ts file is not checked by deno (#4630)", async () => {
   const branch = "issue-4630-ts-ignored";
   const { tmp, downstream } = await makeRepo("preflight_4630_ts_", branch);
   try {
@@ -847,13 +847,13 @@ Deno.test("commitAndPushPending - ciCargoOnly: a bad .ts file is not checked by 
       "unused",
       { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
-      { ...CI_CARGO_ONLY_PRE_FLIGHT, runner },
+      { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
     );
 
     assert(result.ok, result.ok ? "" : result.error.message);
     assert(
       calls.every((c) => !c.startsWith("deno")),
-      `deno must not run in cargo-only mode: ${calls.join(" | ")}`,
+      `deno must not run in repairChecksWithCiCargo mode: ${calls.join(" | ")}`,
     );
     assert(calls.includes(CI_CLIPPY_COMMAND), calls.join(" | "));
     const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
@@ -1304,7 +1304,7 @@ Deno.test("commitAndPushPending - a repair push compares a failing unit test at 
           ...(baseOption ? { [baseOption]: "main" } : {}),
         },
         false,
-        { commands: [], shellcheckOnly: true, runner },
+        { commands: [], repairChecksOnly: true, runner },
       );
 
     // The repair leaves the test red. Told the PR's base, the gate blocks it.
