@@ -6,6 +6,7 @@ Claude quota. Build and select a reviewer image containing Claude and Codex,
 permit both providers through egress, and skip an absent Codex executable so
 Opus can run. Try the Claude pool afresh for Opus before paid DeepSeek overflow.
 Closes #5164.
+Part of #5081 (owner-authored subscription-first policy).
 
 ## Spec
 
@@ -120,9 +121,10 @@ Validation:
 - `review_round_wiring_test.ts` (production-wiring fixture): the base expected
   Opus to be attempted once on one subscription before DeepSeek, and the
   fixture refused Opus only on the third subscription. That behaviour is
-  obsolete: the issue's policy is "Opus across the available Claude
-  subscriptions" before paid DeepSeek, so a Fable-specific cap no longer
-  excludes Opus on any subscription. The fixture now refuses Opus on every
+  obsolete under the governing requirement in the body of owner-authored
+  #5081: "DeepSeek is used only when every subscription is out of quota."
+  A Fable-specific cap therefore cannot exclude an otherwise eligible Opus
+  subscription before paid DeepSeek. The fixture now refuses Opus on every
   provisioned subscription and the persisted attempt record expects three Opus
   attempts before DeepSeek. Remaining behaviour: Fable rotation, Astra
   isolation and DeepSeek completion assertions are unchanged. Covering path:
@@ -131,3 +133,11 @@ Validation:
   Claude subscriptions before paid DeepSeek (Issue #5164)`.
 - `review_fleet_prs_runner_test.ts`: a diagnostic string rename; failure and
   escalation behaviour are unchanged.
+
+## Review follow-up verification
+
+- Rechecked the stateful image and model/credential-driven provider fakes.
+- Command launch-plan, review-round and production-wiring suites: 56 passed, 0
+  failed on the repaired tests in `adc739f3`.
+- Linked the owner-authored policy separately from the bot-generated incident
+  and quoted its requirement verbatim for the changed Opus expectation.
