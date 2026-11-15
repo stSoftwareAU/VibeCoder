@@ -104,8 +104,13 @@ Deno.test("review launch plan installs Claude and Codex without mounting worker 
     );
     assertEquals(review.mounts, worker.mounts);
     assert(!review.mounts.some((m) => m.source.endsWith("/codex")));
+    const allowedHosts = review.proxyRunArgs
+      .filter((arg) => arg.startsWith("VIBE_EGRESS_ALLOW_HOSTS="))
+      .flatMap((arg) =>
+        arg.slice("VIBE_EGRESS_ALLOW_HOSTS=".length).split(",")
+      );
     assert(
-      review.proxyRunArgs.some((arg) => arg.includes("chatgpt.com")),
+      allowedHosts.includes("chatgpt.com"),
       "Astra subscription endpoints must be allowed",
     );
   } finally {
