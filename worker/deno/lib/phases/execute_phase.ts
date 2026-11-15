@@ -1353,6 +1353,7 @@ async function executeClaudeBody(
         workDir: config.workDir,
         repo,
         runKind: "implementation",
+        subject: `${repo}#${issueNumber}`,
         logger,
       });
       const run = async (

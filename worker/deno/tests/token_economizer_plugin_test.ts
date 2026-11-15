@@ -125,6 +125,7 @@ function optionsFor(
     workDir: f.work,
     repo: "owner/VibeCoder",
     runKind: "implementation",
+    subject: "owner/VibeCoder#1",
     runId: "run-1",
     pluginDir: f.plugin,
     logger: captured.logger,
@@ -676,6 +677,8 @@ Deno.test("the overlay copies only the allow-listed keys", () => {
   const launch: TokenEconomizerLaunch = {
     pluginDir: TOKEN_ECONOMIZER_PLUGIN_DIR,
     workDir: "/state",
+    runId: "run-1",
+    subject: "owner/VibeCoder#1",
     env: {
       TOKENECONOMIZER_HOME: "/state/run-1",
       TE_TOOLPRUNE: "off",
@@ -721,6 +724,8 @@ Deno.test("the overlay drops stray TE_ and TOKENECONOMIZER_ keys from the base e
   const launch: TokenEconomizerLaunch = {
     pluginDir: TOKEN_ECONOMIZER_PLUGIN_DIR,
     workDir: "/state",
+    runId: "run-2",
+    subject: "owner/VibeCoder#2",
     env: {
       TOKENECONOMIZER_HOME: "/state/run-2",
       TE_TOOLPRUNE: "off",

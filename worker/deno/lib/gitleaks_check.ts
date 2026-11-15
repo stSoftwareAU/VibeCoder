@@ -412,7 +412,7 @@ async function addedLineSpans(
 }
 
 /** One finding of a JSON report, reduced to its safe metadata. */
-interface ReportFinding {
+export interface ReportFinding {
   rule: string;
   file: string;
   start: number;
@@ -420,7 +420,7 @@ interface ReportFinding {
 }
 
 /** Parse a gitleaks JSON report, or null when it is not one. */
-function parseReport(stdout: string): ReportFinding[] | null {
+export function parseReport(stdout: string): ReportFinding[] | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);

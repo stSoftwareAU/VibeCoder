@@ -140,6 +140,7 @@ import {
 import { settingsJsonOption } from "./rtk_output.ts";
 import {
   monitorTokenEconomizerRun,
+  syncTokenEconomizerLearnings,
   tokenEconomizerMaySync,
 } from "./token_economizer_control.ts";
 import {
@@ -3149,6 +3150,25 @@ async function runClaudeWithTimeoutBody(
         // Never fail the run on a stop-record fault, but keep its redacted cause.
         logger?.warn(
           `token-economizer: could not persist the trial stop; plugin failure was not reported as a clean result: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
+        );
+      }
+    }
+    // Push what this spawn learned, after any hook-failure stop has latched
+    // (Issue #4957). A fault is a WARNING; the run's result is unchanged.
+    if (tokenEconomizerLaunch) {
+      try {
+        await syncTokenEconomizerLearnings(
+          tokenEconomizerLaunch,
+          options.tokenEconomizerNotify,
+          logger,
+        );
+      } catch (error) {
+        logger?.warn(
+          `token-economizer learnings: sync failed, run result unchanged: ${
             redactSecrets(
               error instanceof Error ? error.message : String(error),
             )

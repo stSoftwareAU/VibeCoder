@@ -2,6 +2,12 @@
 import { fenceUntrustedIssueText } from "./prompt_delimiter.ts";
 import { join } from "node:path";
 import { runGhCommandRaw } from "./github.ts";
+import { redactSecrets } from "./secret_redaction.ts";
+import {
+  type LearningsLogger,
+  type PushLearningsOutcome,
+  pushLearnings,
+} from "./token_economizer_learnings.ts";
 import { TOKEN_ECONOMIZER_HOOK_FAILURE } from "./token_economizer_hook.ts";
 import {
   readTokenEconomizerStop,
@@ -156,6 +162,39 @@ export async function tokenEconomizerMaySync(
   } catch {
     // An unverified controller location never authorises a transfer.
     return false;
+  }
+}
+
+/**
+ * Push what this launch learned to the private learnings store (Issue #4957).
+ * Null when learnings persistence is not configured. Never throws: a fault is
+ * a WARNING and a `skipped` outcome, so it never changes the run's result.
+ */
+export async function syncTokenEconomizerLearnings(
+  launch: TokenEconomizerLaunch,
+  notify?: Notify,
+  logger?: LearningsLogger,
+): Promise<PushLearningsOutcome | null> {
+  if (!launch.learnings) return null;
+  try {
+    return await pushLearnings({
+      learningsRepo: launch.learnings.repo,
+      persistence: launch.learnings.persistence,
+      home: launch.env.TOKENECONOMIZER_HOME,
+      subject: launch.subject,
+      runId: launch.runId,
+      checkVisibility: launch.learnings.checkVisibility,
+      mayTransfer: () => tokenEconomizerMaySync(launch.workDir),
+      stop: (finding) =>
+        stopTokenEconomizerTrial(launch.workDir, finding, notify, logger),
+      logger,
+    });
+  } catch (error) {
+    const reason = redactSecrets(
+      error instanceof Error ? error.message : String(error),
+    );
+    logger?.warn(`token-economizer learnings: sync failed: ${reason}`);
+    return { kind: "skipped", reason };
   }
 }
 

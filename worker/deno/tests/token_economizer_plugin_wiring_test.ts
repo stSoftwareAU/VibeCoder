@@ -322,6 +322,7 @@ async function enabledSpawnOptions(
     workDir: layout.workDir,
     repo: REPO,
     runKind,
+    subject: `${REPO}#1`,
     runId: `wiring-${runKind}`,
     pluginDir: layout.fakePluginDir,
   });
@@ -455,6 +456,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
         runId: "wiring-disabled",
         pluginDir: layout.fakePluginDir,
       });
@@ -693,6 +695,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
         runId: "wiring-real-clean",
       });
       assert(launch !== null, "the real plugin's launch must resolve");
@@ -738,6 +741,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
         runId: "wiring-real-nopy",
       });
       assert(launch !== null, "the real plugin's launch must resolve");
@@ -771,6 +775,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
       });
       assert(launch);
       const noPython = join(layout.root, "no-python");
@@ -807,6 +812,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
         notifyStop: () => {
           throw new Error("receipt must suppress a duplicate report");
         },
@@ -849,6 +855,7 @@ for (
           workDir: layout.workDir,
           repo: REPO,
           runKind: "implementation",
+          subject: `${REPO}#1`,
         });
         assert(launch);
         const env = {
@@ -951,6 +958,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
       });
       assert(launch);
       const env = {
@@ -1150,6 +1158,7 @@ Deno.test("the checkout guard preserves a real dirty checkout at the controller 
       workDir: layout.workDir,
       repo: "owner/.token-economizer",
       runKind: "implementation",
+      subject: `${REPO}#1`,
       pluginDir: layout.fakePluginDir,
     });
     assertEquals(launch, null);
@@ -1215,6 +1224,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
       });
       assert(launch);
       const env = {
@@ -1286,6 +1296,7 @@ for (const event of [["SessionStart"], "UnknownHook"]) {
           workDir: layout.workDir,
           repo: REPO,
           runKind: "implementation",
+          subject: `${REPO}#1`,
         });
         assert(launch);
         const env = {
