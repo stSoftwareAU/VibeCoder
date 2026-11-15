@@ -684,8 +684,9 @@ export function buildCallbackContextDocument(
   // figures, and a host that never ran CodeGraph has to say so rather than
   // leave the reader to infer it from an absent key.
   document.codegraph = codegraphBlock(context.codegraph);
-  // Emitted on every run (Issue #2386), and last, so every key a deployed
-  // hook already reads stays exactly where it was.
+  // Emitted on every run (Issue #2386), after every key a deployed hook
+  // already reads, so those keys stay exactly where they were; only the
+  // optional additive `tokenEconomizer` block follows it.
   document.rtk = rtkBlock(context.rtk);
   // Issue #4958: an additive optional block with no schemaVersion bump (a bump
   // for an addition took out the fleet on 2026-09-11). Absent on a host that

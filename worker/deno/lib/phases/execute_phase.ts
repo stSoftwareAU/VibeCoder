@@ -1332,21 +1332,17 @@ async function executeClaudeBody(
       })
       : undefined;
 
+  // Every `TOKENECONOMIZER_HOME` this phase's launches used (Issue #4958),
+  // deduplicated: the plugin's own state under them is read once the agent
+  // invocations are over.
+  const tokenEconomizerHomes = new Set<string>();
+
   // Execute Claude with timeout and retry.
   //
   // One invocation, with the periodic WIP checkpoints (#4170) running for its
   // duration and the phase-end checkpoint taken before it returns. Called
   // again — once — when the first invocation's subscription window ran out
   // and another credential is worth trying (Issue #1670).
-  // Every `TOKENECONOMIZER_HOME` this phase's launches used (Issue #4958),
-  // deduplicated: the plugin's own state under them is read once the agent
-  // invocations are over.
-  const tokenEconomizerHomes = new Set<string>();
-  // The model the implementation spawn is started with, so the plugin's own
-  // judge calls are priced at the agent's model; absent, that cost is unavailable.
-  const implementationModel = allocation && !allocation.external
-    ? "sonnet"
-    : config.claudeModel || undefined;
   const invokeAgent = async (
     timeoutSeconds: number,
     maxTotalInvocations?: number,
@@ -1409,7 +1405,9 @@ async function executeClaudeBody(
           // watchdog reaps the container (Issue #5062).
           noOutputTimeout: config.claudeNoOutputTimeout,
           killAfterSeconds: config.claudeKillAfter,
-          model: implementationModel,
+          model: allocation && !allocation.external
+            ? "sonnet"
+            : config.claudeModel || undefined,
           ...(allocation && !allocation.external
             ? {
               agentProvider: "claude",
@@ -1589,18 +1587,12 @@ async function executeClaudeBody(
   // every outcome. Eligible when the provider that serves the spawn is Claude,
   // resolved from the same selector `claude_runner.ts` resolves its provider
   // from (`provider.id === CLAUDE_PROVIDER_ID`).
-  // Price at the spawn's model, else the one the agent was actually served
-  // (a default host sets none), else leave the cost unavailable.
-  const servedRun = claudeResult.ok ? claudeResult.value.runStats : undefined;
-  const pluginPricingModel = implementationModel ||
-    servedRun?.servedModels?.[0] || servedRun?.requestedModel || undefined;
   state.tokenEconomizerRun = await summariseTokenEconomizerRun({
     enabled: config.tokenEconomizer.enabled,
     eligible: deps.claude.rtkProviderId(effectiveAgentProvider, logger) ===
       CLAUDE_PROVIDER_ID,
     workDir: config.workDir,
     stateHomes: [...tokenEconomizerHomes],
-    ...(pluginPricingModel ? { model: pluginPricingModel } : {}),
     logger,
   });
 

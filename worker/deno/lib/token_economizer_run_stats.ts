@@ -61,6 +61,15 @@ export interface TokenEconomizerRunStats {
 }
 
 /**
+ * The model the plugin's own paid (side) calls run on. Upstream
+ * `tokeneconomizer/plugin/sidecall.py` runs Claude side calls on `paid_model`,
+ * default `haiku` (module doc and `claude_call(prompt, model="haiku", ...)`),
+ * and the worker never sets `TE_PAID_MODEL` (see `TOKEN_ECONOMIZER_ENV_KEYS`),
+ * so these calls are not on the agent's model.
+ */
+export const TOKEN_ECONOMIZER_SIDE_CALL_MODEL = "haiku";
+
+/**
  * The ledger overhead keys, mirroring upstream `ledger.py` `OVERHEAD_KEYS`
  * (the keys `accounting.summarize` sums into `overhead_tokens`).
  */
@@ -99,8 +108,6 @@ export interface SummariseTokenEconomizerRunOptions {
   workDir: string;
   /** Every `TOKENECONOMIZER_HOME` the run's launches used. */
   stateHomes: readonly string[];
-  /** The model to price the plugin's own calls at. */
-  model?: string;
   logger?: { warn(m: string): void };
 }
 
@@ -212,6 +219,7 @@ async function readFigures(
   logger: SummariseTokenEconomizerRunOptions["logger"],
 ): Promise<Figures> {
   let evidence = false;
+  let sessionRead = false;
   let facts: number | undefined = 0;
   let redirects: number | undefined = 0;
   let stuck: number | undefined = 0;
@@ -249,6 +257,7 @@ async function readFigures(
           )
         ) {
           evidence = true;
+          sessionRead = true;
           const loaded = await readJson(
             join(base, "sessions", file.name),
             logger,
@@ -301,6 +310,9 @@ async function readFigures(
       }
     }
   }
+  // Ledger-only evidence: no session file was read, so the session figures
+  // are unavailable, not 0.
+  if (!sessionRead) facts = redirects = stuck = undefined;
   return {
     evidence,
     factsInjected: facts,
@@ -351,9 +363,9 @@ export async function summariseTokenEconomizerRun(
       stats.pluginEffectiveTokens = figures.pluginEffectiveTokens;
       // The plugin's judge runs as a separate CLI process, so these calls are
       // not in the agent's own stream totals: adding them double counts nothing.
-      const pricing = opts.model === undefined
-        ? null
-        : lookupModelPricing(opts.model);
+      // Effective tokens are fresh-input-token equivalents on the Claude
+      // curve, so the side-call model's input rate prices them.
+      const pricing = lookupModelPricing(TOKEN_ECONOMIZER_SIDE_CALL_MODEL);
       if (pricing !== null) {
         stats.pluginCostUsd = figures.pluginEffectiveTokens *
           pricing.inputPerMillion / 1e6;

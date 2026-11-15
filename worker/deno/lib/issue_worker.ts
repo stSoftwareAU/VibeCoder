@@ -78,6 +78,7 @@ import {
   seedClaimedIssueGuard,
 } from "./claimed_issue_guard.ts";
 import { listTemplates } from "./idle_task_template.ts";
+import { tokenEconomizerNotRun } from "./token_economizer_run_stats.ts";
 // Importing the security-scan template ensures it is registered when
 // the idle-task pre-flight check below consults the registry. Issue
 // #2398 added the supply-chain-readiness side-effect import alongside
@@ -85,7 +86,6 @@ import { listTemplates } from "./idle_task_template.ts";
 // handler has not been imported first. Issue #2930 added the four Boy
 // Scout templates so the pre-flight check sees them too.
 import "./idle_task_templates/security_scan_template.ts";
-import { tokenEconomizerNotRun } from "./token_economizer_run_stats.ts";
 import "./idle_task_templates/supply_chain_readiness_template.ts";
 import "./idle_task_templates/orphan_deps_template.ts";
 import "./idle_task_templates/dead_code_template.ts";
