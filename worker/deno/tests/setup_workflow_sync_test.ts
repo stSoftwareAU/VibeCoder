@@ -4,7 +4,7 @@
  * Issue #1395: Add workflow-sync subcommand to setup CLI.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   type CommandOutput,
   COPY_PINS_AS_GIVEN_RULE,
@@ -95,6 +95,8 @@ function buildMockRunner(config: {
   workflowFiles?: string[];
   /** Map of workflow filename → YAML content. */
   workflowContents?: Record<string, string>;
+  /** Map of workflow filename → gh stderr returned for its content fetch (Issue #5009). */
+  workflowContentFailures?: Record<string, string>;
   /** Set of spec IDs for which a missing-workflow issue already exists. */
   existingIssues?: Set<string>;
   /** Set of spec IDs for which a partial-workflow issue already exists. */
@@ -165,6 +167,10 @@ function buildMockRunner(config: {
       );
       if (filename) {
         const name = filename.split("/").pop()!;
+        const failure = config.workflowContentFailures?.[name];
+        if (failure !== undefined) {
+          return Promise.resolve(fail(failure));
+        }
         const content = config.workflowContents?.[name];
         if (content) {
           return Promise.resolve(ok(content));
@@ -376,6 +382,45 @@ Deno.test("syncWorkflowsForRepo - all workflows present raises no issues", async
   assertEquals(result.issuesRaised, 0);
   assertEquals(result.issuesSkipped, 0);
   assertEquals(state.issuesCreated.length, 0);
+});
+
+Deno.test("syncWorkflowsForRepo - a transient workflow content fetch failure files no issue (Issue #5009)", async () => {
+  const fixture = (gitleaksStderr: string) =>
+    buildMockRunner({
+      rootFiles: ["README.md"],
+      languagesApi: {},
+      workflowFiles: ["gitleaks.yml", "semgrep.yml", "markdown-lint.yml"],
+      workflowContents: {
+        "semgrep.yml": semgrepYaml,
+        "markdown-lint.yml": markdownLintYaml,
+      },
+      workflowContentFailures: { "gitleaks.yml": gitleaksStderr },
+    });
+
+  // Transient 502: the audit fails and no spurious "Add Gitleaks" issue is filed.
+  const transient = fixture("gh: HTTP 502: Bad Gateway");
+  const failed = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: transient.runner,
+    resolvePins: cataloguePins,
+  });
+  assertEquals(failed.ok, false);
+  assertEquals(transient.state.issuesCreated.length, 0);
+  assertEquals(failed.issuesRaised, 0);
+  assertStringIncludes(failed.error ?? "", "gitleaks.yml");
+  assertStringIncludes(failed.error ?? "", "HTTP 502: Bad Gateway");
+
+  // Control: a 404 means the file is absent, so the same fixture files the issue.
+  const absent = fixture("gh: Not Found (HTTP 404)");
+  const control = await syncWorkflowsForRepo("owner/repo", {
+    fleetAuthors: [FLEET_AUTHOR],
+    runCommand: absent.runner,
+    resolvePins: cataloguePins,
+  });
+  assertEquals(control.ok, true);
+  assertEquals(absent.state.issuesCreated.length, 1);
+  const created = absent.state.issuesCreated[0]!;
+  assertEquals(/gitleaks/i.test(`${created.title}\n${created.body}`), true);
 });
 
 Deno.test("syncWorkflowsForRepo - reconciles obsolete Cargo issue with no workflow gaps", async () => {
