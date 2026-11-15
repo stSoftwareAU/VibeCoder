@@ -10,12 +10,6 @@ provider, so agent_provider_fallback is not consulted (Issue #4986).` and gives
 up on the role's own provider through the existing give-up path. Every other
 caller keeps the Issue #4034 switch.
 
-A separate test-only commit makes `pr_maintenance_command_test.ts` clear the
-process-wide primary-quota latch before its fake-`gh` tests. Without it, an
-earlier test's real `gh` call on a rate-limited host latched GraphQL calls,
-and five tests failed. They failed on `origin/main` too, and the failure
-blocked this branch's pre-push gate.
-
 Closes #4986.
 
 ```mermaid
@@ -57,6 +51,11 @@ flowchart LR
   fallback"). It may overlap textually with #4981's edits in the same
   paragraphs of `docs/ROLE-CONFIGURATION.md` and
   `docs/MANAGER-WORKER-CONTRACT.md`.
+- Two earlier attempts were stopped by the pre-push gate on
+  `worker/deno/tests/pr_maintenance_command_test.ts`, a quota-latch flake.
+  This branch had patched it, but `origin/main` fixed the same flake
+  (a42f06807), so the merge took main's copy and this PR no longer touches
+  that file.
 
 ## Evidence
 
@@ -93,7 +92,6 @@ Backend only; no UI files.
 - **met** — A read-only role cannot lose its existing guard through provider switching. Required quality/review checks and automatic recovery remain intact. — evidence: the manager and reviewer tests in `worker/deno/tests/orchestration_provider_pin_4986_test.ts` show no Codex invocation, so `call.envelope.provider` is the provider that runs; the same-provider retry (`worker/deno/tests/codex_model_adaptation_test.ts`) and gate tests (`worker/deno/tests/orchestration_3642_gate_test.ts`) pass unchanged; `./quality.sh` passed on the head — reviewer: partial — reason: the reviewer judged the first sentence met and found "no evidence in the diff either way" for the second; the diff leaves that code untouched, and its existing tests and the full gate pass at the head
 - **met** — #4981 owns the inaccurate sandbox/tool-denial comments; coordinate terminology without duplicating that documentation task. — evidence: `docs/ROLE-CONFIGURATION.md`, `docs/MANAGER-WORKER-CONTRACT.md` (only the fallback clause changed; the sandbox wording was left alone) — reviewer: met
 - **unrequested** — `docs/MODEL-AND-CACHING.md` and `docs/PROVIDER-PARITY.md` each gain a sentence naming role calls as the exception to the provider switch — reviewer: unrequested — reason: these manuals describe the Issue #4034 switch, and the coding standards require them to stay true after this change
-- **unrequested** — `clearPrimaryQuotaLatch()` added to two fake-`gh` set-ups in `worker/deno/tests/pr_maintenance_command_test.ts` — reviewer: unrequested — reason: a test-isolation fix needed for the pre-push gate, which runs that file because it imports `claude_runner.ts` transitively; five of its tests failed on `origin/main` too
 - **unrequested** — refreshed `claude_runner.ts` line citations in `docs/MANAGER-WORKER-CONTRACT.md` — reviewer: unrequested — reason: the citations sit in contract sentences this diff edits, and the standards require a cited `path:line` to match the head
 - **unrequested** — the new `[provider-fallback] … the caller pinned the provider` warn line in `claude_runner.ts` — reviewer: unrequested — reason: it makes the pinned give-up visible to operators, and the tests use it to prove the refusal branch was reached
 
@@ -101,7 +99,7 @@ Backend only; no UI files.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — no violation found. Checked: the `path:line` citations in `docs/MANAGER-WORKER-CONTRACT.md` match the head; the absolute doc claims are backed by the single gated switch in `runRetryLadder`; `SECURITY.md` and `docs/THREAT-MODEL.md` agree; fail-loud WARNING then ERROR give-up; the new option has a production setter; the insertion points are correct; the new tests go red without the change, with a forbidden-input fixture (configured Codex fallback) and positive controls; each existing `pr_maintenance_command_test.ts` assertion is unchanged and still discriminating, since the reset clears a module-global latch, not host state; Australian English. The standards hold no rule worded as enforced by review only. Optional notes not taken: a reason comment on the `ignore: Deno.build.os === "windows"` guards (the suite uses the same uncommented form), sharing `readCalls`/`recordingLogger` with the #4034 test, and making `enableProviderFallback` required.
+- **clean** — no violation found. Checked: the `path:line` citations in `docs/MANAGER-WORKER-CONTRACT.md` match the head; the absolute doc claims are backed by the single gated switch in `runRetryLadder`; `SECURITY.md` and `docs/THREAT-MODEL.md` agree; fail-loud WARNING then ERROR give-up; the new option has a production setter; the insertion points are correct; the new tests go red without the change, with a forbidden-input fixture (configured Codex fallback) and positive controls; Australian English. The standards hold no rule worded as enforced by review only. Optional notes not taken: a reason comment on the `ignore: Deno.build.os === "windows"` guards (the suite uses the same uncommented form), sharing `readCalls`/`recordingLogger` with the #4034 test, and making `enableProviderFallback` required.
 
 ## Test Plan
 
@@ -119,21 +117,17 @@ Backend only; no UI files.
   `origin/main`, `deno task test:unit tests/orchestration_provider_pin_4986_test.ts`
   gave `FAILED | 1 passed | 3 failed` (the three role tests; a Codex `exec`
   ran in each).
-- Green on head:
-  `deno task test:unit tests/orchestration_provider_pin_4986_test.ts tests/claude_runner_provider_fallback_4034_test.ts tests/orchestration_3642_gate_test.ts tests/codex_model_adaptation_test.ts`
-  passed. `deno check`, `deno fmt --check` and `deno lint` of the changed
-  source files were clean. `deno task check:manifests` passed.
-- `worker/deno/tests/pr_maintenance_command_test.ts`: no assertion removed or
-  changed. Before the latch reset, `deno task test:unit
-  tests/pr_maintenance_command_test.ts` gave `FAILED | 23 passed | 5 failed`
-  on both this branch and `origin/main`. The earlier real `gh` call logged
-  `Primary GraphQL quota exhausted — latching all GraphQL-backed gh calls`. After
-  the reset it gave `ok | 28 passed | 0 failed`. The `update-open-pr-branches`
-  subset gave `ok | 10 passed | 0 failed` while the earlier test still logged
-  a latch (`a secondary (burst) limit … Pausing GraphQL-backed gh calls for
-  60s`).
-- `./quality.sh < /dev/null` on the head gave `Result: PASSED (with skipped
-  checks)`, with `deno tests` PASSED. The gate skipped config integration (no
-  `.config.json`) and checkov (no binary).
+- Green on head: `deno task test:unit
+  tests/orchestration_provider_pin_4986_test.ts
+  tests/claude_runner_provider_fallback_4034_test.ts
+  tests/provider_fallback_policy_test.ts` gave `ok | 18 passed | 0 failed`,
+  and `deno task test:unit tests/orchestration_3642_gate_test.ts
+  tests/orchestration_3642_orchestrator_test.ts
+  tests/external_orchestration_3642_phase_test.ts` gave
+  `ok | 83 passed | 0 failed`.
+- No existing test is edited.
+- `./quality.sh < /dev/null` on the head, after merging `origin/main`, gave
+  `Result: PASSED (with skipped checks)`, with `deno tests` PASSED. The gate
+  skipped config integration (no `.config.json`) and checkov (no binary).
 - Not checked: a live external-orchestration run on a host with
   `agent_provider_fallback` configured.
