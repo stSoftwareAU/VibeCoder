@@ -36,6 +36,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { TOKEN_ECONOMIZER_KEYS } from "../lib/token_economizer_config.ts";
 import {
   type DocSection,
   flat,
@@ -61,9 +62,13 @@ const PLUGIN_ID = "tokeneconomizer";
 /** The provider id whose version the page states for the image. */
 const CLAUDE_ID = "claude";
 const BLOCK_NOT_YET = "Not yet: #4955 adds the block";
-/** The sentence the page says once #4955 has landed the block. */
-const BLOCK_LANDED =
-  "The block is accepted and validated, but not read yet: #4956 will wire it into runs; today a run is the same whatever it is set to.";
+/**
+ * The sentence the page says while code reads the block: every key but
+ * `learnings_repo` is read, and that one stays unread until #4957.
+ */
+const BLOCK_LANDED = `\`${
+  [...TOKEN_ECONOMIZER_KEYS].find((key) => key.startsWith("learnings_"))
+}\` is validated but not read yet: #4957 will persist the learnings to it, so it changes no run today.`;
 const BLOCK_KEYS = ["enabled", "learnings_repo", "microskills", "loopguard"];
 const PURGE_KINDS = [
   "Drift test",

@@ -13,8 +13,10 @@
  * - `loopguard` — the loop-guard mechanism: `off` or `nudge` (default
  *   `nudge`).
  *
- * The block is accepted and validated, but not read yet: #4956 will wire it
- * into runs; today a run is the same whatever it is set to.
+ * `enabled`, `microskills` and `loopguard` are read by the run launch decision in
+ * `lib/token_economizer_plugin.ts`. `learnings_repo` is accepted and validated,
+ * but not read yet: #4957 will persist the learnings to it, so it changes no run
+ * today.
  *
  * ## Validation posture — fail loud
  *
@@ -78,8 +80,9 @@ const ECHO_MAX_LENGTH = 40;
  *
  * The values live in `OPERATIONAL_DEFAULTS` — the one place config defaults are
  * written — and a fresh object is returned each call so no caller can mutate
- * the shared default. The block is accepted and validated, but not read yet:
- * #4956 will wire it into runs; today a run is the same whatever it is set to.
+ * the shared default. `enabled`, `microskills` and `loopguard` are read by the
+ * run launch decision; `learnings_repo` is accepted and validated, but not read
+ * yet: #4957 will persist the learnings to it.
  */
 export function defaultTokenEconomizer(): TokenEconomizerConfig {
   return {
@@ -92,8 +95,8 @@ export function defaultTokenEconomizer(): TokenEconomizerConfig {
 
 /**
  * Parse the raw `token_economizer` block from `.config.json`. Accepted and
- * validated, but not read yet: #4956 will wire it into runs; today a run is the
- * same whatever it is set to.
+ * validated; `learnings_repo` is not read yet (#4957 will persist the learnings
+ * to it).
  *
  * @param raw - The block as it appeared in the file, or `undefined`.
  * @returns The parsed block, or the first fault naming the offending key.
