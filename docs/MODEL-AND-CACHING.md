@@ -780,14 +780,13 @@ usage-limit refusal:
 
 1. the configured model (`review_model` and `review_effort` in `.config.json`,
    default `claude-fable-5-2` at `high`);
-2. a Fable round that hits a usage limit steps down to `claude-opus-5-5` at
-   `xhigh` on the same subscription;
-3. the Claude pool's next subscription with budget;
-4. Codex `gpt-6-astra` at `high`, when the round's own Codex home holds its
-   own login (Issue #5127), or a Codex API key or a login on a mount the round
-   shares reaches the round (the agent-state volume itself is not mounted);
-5. DeepSeek `deepseek-v4-pro`, only when Codex has also hit its usage limit or
-   has no credential.
+2. every other available Claude subscription, once each, on the configured
+   model; a Fable-specific cap also triggers this rotation;
+3. Codex `gpt-6-astra` at `high`, when a credential reaches the round;
+4. for a configured Fable round, `claude-opus-5-5` at `xhigh` on the current
+   Claude subscription, if Astra has no credential or quota;
+5. DeepSeek `deepseek-v4-pro`, only after those eligible attempts exhaust quota.
+
 
 The in-run reviewers are Claude `--agents` definitions, so a native Codex run
 cannot carry them yet (Issue #4109); the Codex column is what that work and
