@@ -198,7 +198,7 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
 
 ## Test Plan
 
-- New `worker/deno/tests/token_economizer_learnings_test.ts` (22 tests at head,
+- New `worker/deno/tests/token_economizer_learnings_test.ts` (23 tests at head,
   real git with local bare stores). It covers the acceptance round trip and
   isolation, clone reuse, a removed clone inside a parent repository, public and
   unverifiable refusals, and the planted secret, with both the real binary and
@@ -238,7 +238,7 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   ignored (the real-binary secret test).
 - Gitleaks absent from `PATH` is not repeated for the round-2 tests: they use
   the injected clean scan.
-  `deno task test:unit tests/token_economizer_learnings_test.ts` on the head ran
+  `deno task test:unit tests/token_economizer_learnings_test.ts` before this repair ran
   22 passed, 0 failed (gitleaks present).
 - `./quality.sh < /dev/null` after the round-2 fixes (code commit `f9520caa`)
   exited 0 with `Result: PASSED (with skipped checks)`; config integration and

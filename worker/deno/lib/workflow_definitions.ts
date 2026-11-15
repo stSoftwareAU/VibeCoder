@@ -177,14 +177,18 @@ export interface WorkflowSpec {
   dependabotConfig?: boolean;
   /**
    * Detection-pattern groups evaluated against `.github/dependabot.yml`
-   * for a `dependabotConfig` spec, in place of `detectionPatternGroups`
-   * (which still apply to workflow files). Tool-name patterns such as
-   * `dependabot` or `renovate` appear in almost any Dependabot config
-   * (header comments, docs URLs), so the config is matched only on its
-   * `package-ecosystem` entry. Falls back to `detectionPatternGroups`
-   * when omitted.
+   * for a `dependabotConfig` spec, in place of `detectionPatternGroups`.
+   * Tool-name patterns such as `dependabot` or `renovate` appear in almost
+   * any Dependabot config (header comments, docs URLs), so the config is
+   * matched only on its `package-ecosystem` entry. Falls back to
+   * `detectionPatternGroups` when omitted.
    *
-   * Issue #4904.
+   * For a `dependabotConfig` spec the `package-ecosystem` entries belong only
+   * here: `detectionPatternGroups` hold only patterns that mean real update
+   * tooling in a workflow file (e.g. Renovate), because a Dependabot config
+   * under `.github/workflows/` is never read.
+   *
+   * Issues #4904, #5026.
    */
   dependabotConfigPatternGroups?: string[][];
 }
@@ -734,10 +738,8 @@ const npmDependencyUpdates: WorkflowSpec = {
   rootProjectMarkers: ["package.json"],
   triggers: ["schedule"],
   // Bare `dependabot`/`ncu` removed: they match `concurrency:` and fleet-template comments (Issue #4903).
+  // `package-ecosystem` entries are matched only in the Dependabot config, because Dependabot never reads a file under .github/workflows/ (Issue #5026).
   detectionPatternGroups: [[
-    "package-ecosystem: npm",
-    'package-ecosystem: "npm"',
-    "package-ecosystem: 'npm'",
     "renovate",
     "npm-check-updates",
     "npx ncu",
@@ -858,9 +860,11 @@ ${CHECKOUT_NO_CREDENTIALS}
 };
 
 // Maven and Gradle are split into separate specs so each one is keyed to its
-// own root build file and detects only its own Dependabot ecosystem entry. A
+// own root build file and matches only its own Dependabot ecosystem entry. A
 // repo with both build files needs both `updates` entries in the one
-// .github/dependabot.yml.
+// .github/dependabot.yml. Their `package-ecosystem` entries are matched only in
+// that config, never in a workflow file, because Dependabot never reads one
+// under .github/workflows/ (Issue #5026).
 const javaDependencyUpdates: WorkflowSpec = {
   id: "java-dependency-updates",
   name: "Java Maven Dependency Updates",
@@ -868,8 +872,6 @@ const javaDependencyUpdates: WorkflowSpec = {
   rootProjectMarkers: ["pom.xml"],
   triggers: ["schedule"],
   detectionPatternGroups: [[
-    "package-ecosystem: maven",
-    'package-ecosystem: "maven"',
     "renovate",
     "versions-maven-plugin",
   ]],
@@ -903,8 +905,6 @@ const javaGradleDependencyUpdates: WorkflowSpec = {
   rootProjectMarkers: ["build.gradle", "build.gradle.kts"],
   triggers: ["schedule"],
   detectionPatternGroups: [[
-    "package-ecosystem: gradle",
-    'package-ecosystem: "gradle"',
     "renovate",
     "gradle-versions-plugin",
   ]],
