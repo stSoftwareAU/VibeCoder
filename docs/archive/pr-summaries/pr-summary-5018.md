@@ -11,8 +11,8 @@ re-baselined it without checking the editor.
 Each snapshot now records `contentRevisionAt`: GitHub's `updatedAt` from the
 same read that produced the hashed title and body. The gate judges every edit
 stamped at or after that value. The #3963 encoding migration now keeps the
-snapshot's original boundary. A snapshot with no revision judges every
-recorded edit. Closes #5018.
+snapshot's original boundary. A snapshot with no revision judges every recorded
+edit. Closes #5018.
 
 ```mermaid
 flowchart LR
@@ -32,8 +32,8 @@ flowchart LR
 - An edit missing from the hashed bytes happened after the read that produced
   them, so GitHub stamps it at or after that read's `updatedAt`, on GitHub's own
   clock. Using that value as the boundary ties the boundary to the bytes. The
-  cache age of the listing and the worker clock no longer affect it, and no
-  skew margin is needed.
+  cache age of the listing and the worker clock no longer affect it, and no skew
+  margin is needed.
 - `updatedAt` is already in the repository listing (`fetchAllIssues`), so the
   scan pays no extra call. The pickup read (`fetchIssueData`) and the scan's
   live fallback (`gh issue view`) now request `updatedAt` too.
@@ -41,10 +41,10 @@ flowchart LR
 ### Essential Design Decisions
 
 - The filter is `editedAt >= contentRevisionAt`. An edit stamped in the same
-  second as the read is judged again, which errs towards blocking.
-  `updatedAt` also moves on comments and labels. That only makes the boundary
-  later than the last edit reflected in the bytes, never earlier than an edit
-  the bytes are missing.
+  second as the read is judged again, which errs towards blocking. `updatedAt`
+  also moves on comments and labels. That only makes the boundary later than the
+  last edit reflected in the bytes, never earlier than an edit the bytes are
+  missing.
 - `capturedAt` is kept, but only as the write time for the 7-day age cleanup.
   The encoding migration (`reEncodeContentSnapshot`) rewrites only the digest,
   the encoding stamp and `dependsOn`. It keeps `capturedAt`, `issueAuthor` and
@@ -52,8 +52,8 @@ flowchart LR
 - Persisted shape: `contentRevisionAt` is a new optional field, and old-shape
   snapshots are read as they are (no key bump). A snapshot without it, or one
   captured from a read with no usable `updatedAt`, has an unknown boundary. The
-  gate then logs `[SECURITY] [CONTENT_REVISION_UNKNOWN]` and uses boundary 0,
-  so every recorded edit is judged. Any truncated history window then stays
+  gate then logs `[SECURITY] [CONTENT_REVISION_UNKNOWN]` and uses boundary 0, so
+  every recorded edit is judged. Any truncated history window then stays
   unsettled and blocks. `SNAPSHOT_SELF_MISMATCH` applies only when GitHub
   records no edit at all.
 - A listing row without a usable `updatedAt` is read live rather than hashed
@@ -65,9 +65,9 @@ flowchart LR
 - `gh issue view 5018 --repo stSoftwareAU/VibeCoder --json updatedAt,title`
   returned `"updatedAt":"2026-11-15T16:49:40Z"`. That was the time of the most
   recent comment edit, so `updatedAt` moves on comment activity as well as
-  content edits. The code relies only on `updatedAt` never being earlier than
-  an edit the read reflects. I did not edit an issue to watch a rename or body
-  edit bump `updatedAt` live, because that would change shared state. GitHub's
+  content edits. The code relies only on `updatedAt` never being earlier than an
+  edit the read reflects. I did not edit an issue to watch a rename or body edit
+  bump `updatedAt` live, because that would change shared state. GitHub's
   GraphQL `Issue.updatedAt` is documented as the time the object was last
   updated.
 - Legacy snapshots age out under the existing 7-day cleanup. Until then, a
@@ -121,7 +121,8 @@ This is a backend change.
 
 ## Test Plan
 
-- Added `worker/deno/tests/work_on_content_integrity_revision_boundary_5018_test.ts`,
+- Added
+  `worker/deno/tests/work_on_content_integrity_revision_boundary_5018_test.ts`,
   with 8 tests:
   - (a) a cached listing older than the snapshot write cannot hide a later
     untrusted edit;
@@ -143,8 +144,8 @@ This is a backend change.
   previous boundary:
   - the `captureContentSnapshot` calls pass `Math.floor(Date.now() / 1000)`;
   - the `setCapturedAt`-style helpers also set `contentRevisionAt`;
-  - raw-seeded snapshots in the encoding, label-candidate and low-priority
-    tests gain `contentRevisionAt`;
+  - raw-seeded snapshots in the encoding, label-candidate and low-priority tests
+    gain `contentRevisionAt`;
   - the pickup tests pass `issueUpdatedAt`;
   - `worker/deno/tests/work_on_content_integrity_listed_content_test.ts` gives
     its listed content an `updatedAt`.
