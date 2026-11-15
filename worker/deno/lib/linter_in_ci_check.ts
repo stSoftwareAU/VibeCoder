@@ -398,11 +398,13 @@ function checkEslint(
     compileInvoked,
     bothPresentDetail,
     linterMissingPhrase,
+    // Suggest `deno check .`, not a `**` glob: unquoted in a bash `run:` step
+    // it reaches only one directory deep (Issue #4997).
     compileMissingPhrase:
       "no compile gate (issue #2175: a simple syntax error reached main " +
       "because no `deno check`/`tsc --noEmit` step ran in CI; ESLint " +
       "alone does not catch all syntax errors — add a step such as " +
-      "`deno check **/*.ts` or `npx tsc --noEmit` so syntax errors fail " +
+      "`deno check .` or `npx tsc --noEmit` so syntax errors fail " +
       "the build)",
   });
 }
