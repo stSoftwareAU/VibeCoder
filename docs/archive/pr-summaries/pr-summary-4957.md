@@ -308,8 +308,10 @@ and the unsafe clone is discarded. No previous assertions were removed.
 
 Validation in this repair environment:
 
-- Learnings and plugin-wiring suites: 47 passed, 0 failed, 13 ignored by their
-  existing optional-tool/plugin guards (gitleaks and vendored plugin absent).
+- Learnings and plugin-wiring suites, run again on the merged head with
+  `deno test -A`: 60 passed, 0 failed, none ignored. An earlier run without the
+  gitleaks binary and vendored plugin passed 47 and ignored 13 behind their
+  existing optional-tool guards.
 - Formatting, lint and `git diff --check` passed.
 - Deno's direct JSR downloads failed here. Tests used a temporary local import
   map to the locked published dependency versions, downloaded with curl and
