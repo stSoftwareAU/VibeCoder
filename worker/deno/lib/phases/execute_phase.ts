@@ -27,6 +27,8 @@ import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
 
 import { redactSecrets } from "../secret_redaction.ts";
 import { tokenEconomizerSpawnOptions } from "../token_economizer_plugin.ts";
+import { summariseTokenEconomizerRun } from "../token_economizer_run_stats.ts";
+import { CLAUDE_PROVIDER_ID } from "../agent_provider.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
 import { fingerprintWorkerReviewPolicy } from "../pr_completion_report.ts";
 
@@ -1336,6 +1338,15 @@ async function executeClaudeBody(
   // duration and the phase-end checkpoint taken before it returns. Called
   // again — once — when the first invocation's subscription window ran out
   // and another credential is worth trying (Issue #1670).
+  // Every `TOKENECONOMIZER_HOME` this phase's launches used (Issue #4958),
+  // deduplicated: the plugin's own state under them is read once the agent
+  // invocations are over.
+  const tokenEconomizerHomes = new Set<string>();
+  // The model the implementation spawn is started with, so the plugin's own
+  // judge calls are priced at the agent's model; absent, that cost is unavailable.
+  const implementationModel = allocation && !allocation.external
+    ? "sonnet"
+    : config.claudeModel || undefined;
   const invokeAgent = async (
     timeoutSeconds: number,
     maxTotalInvocations?: number,
@@ -1355,6 +1366,11 @@ async function executeClaudeBody(
         runKind: "implementation",
         logger,
       });
+      if (tokenEconomizer.tokenEconomizer) {
+        tokenEconomizerHomes.add(
+          tokenEconomizer.tokenEconomizer.env.TOKENECONOMIZER_HOME,
+        );
+      }
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
         retryOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[1],
@@ -1393,9 +1409,7 @@ async function executeClaudeBody(
           // watchdog reaps the container (Issue #5062).
           noOutputTimeout: config.claudeNoOutputTimeout,
           killAfterSeconds: config.claudeKillAfter,
-          model: allocation && !allocation.external
-            ? "sonnet"
-            : config.claudeModel || undefined,
+          model: implementationModel,
           ...(allocation && !allocation.external
             ? {
               agentProvider: "claude",
@@ -1569,6 +1583,21 @@ async function executeClaudeBody(
   // it is read on every outcome — a run that failed still filtered output.
   // The result object on the phase state is the one this updates.
   await rtk.record();
+
+  // Issue #4958: what the plugin did and cost, read from its own state after
+  // every invocation (including a second-credential call) has finished, on
+  // every outcome. Eligible when the provider that serves the spawn is Claude,
+  // resolved from the same selector `claude_runner.ts` resolves its provider
+  // from (`provider.id === CLAUDE_PROVIDER_ID`).
+  state.tokenEconomizerRun = await summariseTokenEconomizerRun({
+    enabled: config.tokenEconomizer.enabled,
+    eligible: deps.claude.rtkProviderId(effectiveAgentProvider, logger) ===
+      CLAUDE_PROVIDER_ID,
+    workDir: config.workDir,
+    stateHomes: [...tokenEconomizerHomes],
+    ...(implementationModel ? { model: implementationModel } : {}),
+    logger,
+  });
 
   if (!claudeResult.ok) {
     // Issues #4949 and #5048 release interrupted work the same way: the work

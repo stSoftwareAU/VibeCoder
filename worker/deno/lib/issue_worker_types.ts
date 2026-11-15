@@ -24,6 +24,7 @@ import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
+import type { TokenEconomizerRunStats } from "./token_economizer_run_stats.ts";
 import type { AgentRefusalOutcome } from "./haiku_refusal_retry.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
@@ -330,6 +331,15 @@ export interface PhaseState {
    */
   rtkOutput?: RtkOutputResult;
   /**
+   * What TokenEconomizer did in this run and what it cost (Issue #4958, part
+   * of #4953).
+   *
+   * Set by the execute phase once its agent invocations have finished, from
+   * the plugin's own state; absent when the run ended before the agent spawned.
+   * The run-stats comment and the post-run callback read it after the run.
+   */
+  tokenEconomizerRun?: TokenEconomizerRunStats;
+  /**
    * A safety refusal the execute phase saw and what the one sonnet retry did
    * (Issue #3406). Once set, every later execute attempt in this run resolves
    * its sub-agent tier to `REFUSAL_RETRY_TIER`. Absent on a run with no
@@ -621,6 +631,12 @@ interface WorkOnIssueResultBase {
    * context; absent on a run that ended before the preparation.
    */
   rtk?: RtkOutputResult;
+  /**
+   * What TokenEconomizer did in this run (Issue #4958), read from
+   * {@link PhaseState.tokenEconomizerRun} once the run is over. Carried to the
+   * post-run callback context.
+   */
+  tokenEconomizer?: TokenEconomizerRunStats;
 }
 
 /**
