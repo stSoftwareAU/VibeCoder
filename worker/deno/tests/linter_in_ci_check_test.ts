@@ -907,6 +907,34 @@ Deno.test("typescript #2177 — only linter present (no compile) is not configur
   );
 });
 
+Deno.test("typescript/react #4997 — compile-missing suggestion uses no shell glob", async () => {
+  for (const flavour of ["typescript", "react"] as const) {
+    await withTempRepo(
+      {
+        "package.json": flavour === "react"
+          ? '{"name":"x","dependencies":{"react":"^18"}}'
+          : '{"name":"x"}',
+        "eslint.config.js": "export default [];\n",
+        ".github/workflows/ci.yml": [
+          "name: CI",
+          "on: [push]",
+          "jobs:",
+          "  lint:",
+          "    runs-on: ubuntu-latest",
+          "    steps:",
+          "      - run: npx eslint .",
+        ].join("\n"),
+      },
+      async (tmp) => {
+        const r = await checkLinterInCI(tmp, flavour);
+        assertEquals(r.gates?.compile, false);
+        assertStringIncludes(r.details, "`deno check .`");
+        assertEquals(r.details.includes("**"), false);
+      },
+    );
+  }
+});
+
 Deno.test("typescript #2177 — only compile present (no eslint) is not configured", async () => {
   await withTempRepo(
     {
