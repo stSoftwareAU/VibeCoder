@@ -126,14 +126,10 @@ Documentation and prompt change only. No runtime code changes.
   - Required by: "Delete the third test, because the paragraph it pins is gone."
 - I ran the docs tests that read the edited prompts together in one
   `deno test -A` call: every `tests/*.ts` that names
-  `prompts/pr_feedback/prompt.md`, plus
+  `prompts/pr_feedback/prompt.md` or "Choosing assertions", plus
   `worker/deno/tests/ui_assertion_closed_state_3250_test.ts`,
   `worker/deno/tests/stylesheet_regex_layout_3247_docs_test.ts` and
-  `worker/deno/tests/coding_guidelines_twin_drift_test.ts`. Result: 157 passed,
+  `worker/deno/tests/coding_guidelines_twin_drift_test.ts`. Result: 181 passed,
   0 failed.
-- After reverting an earlier runtime edit, `run_core_production_deps.ts` and
-  `milestone_sync_after_target_wiring_test.ts` match the base branch.
-  `deno test -A` from `worker/deno` over
-  `tests/milestone_sync_after_target_wiring_test.ts`,
-  `tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts` and
-  `tests/style_literal_assertions_3444_docs_test.ts`: 4 passed, 0 failed.
+- Full gate: `./quality.sh < /dev/null` on the final head: `Result: PASSED (with
+  skipped checks)` (config integration and checkov skipped by the gate itself).
