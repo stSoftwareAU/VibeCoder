@@ -42,6 +42,7 @@ import { runGhCommandRaw } from "./github.ts";
 import { defaultLogger } from "./logger.ts";
 import { parseReport, type ReportFinding } from "./gitleaks_check.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { withTokenScopedRepo } from "./write_repo_allowlist.ts";
 import { spawnWithDeadline } from "./semgrep_check.ts";
 import type { TokenEconomizerFinding } from "./token_economizer_control.ts";
 
@@ -50,6 +51,9 @@ export const LEARNINGS_STORE_ROOT = "token-economizer";
 
 /** Total size of the allow-listed state of one repository key, in bytes. */
 export const LEARNINGS_KEY_CAP_BYTES = 1_048_576;
+
+/** Size cap of the shared `config.json`, checked from `lstat` before it is read. */
+export const LEARNINGS_CONFIG_CAP_BYTES = 262_144;
 
 /** Timeout for each git call that talks to the store (clone, fetch, push). */
 export const LEARNINGS_GIT_TIMEOUT_SECONDS = 120;
@@ -292,7 +296,12 @@ export function githubVisibilityCheck(
   return async (repo) => {
     let raw: string;
     try {
-      raw = await runGh(["api", `repos/${repo}`]);
+      // A scoped installation token 404s on a repo outside the run's scope, so
+      // grant read reach (never write authority) for this one read (Issue #1391).
+      raw = await withTokenScopedRepo(
+        repo,
+        () => runGh(["api", `repos/${repo}`]),
+      );
     } catch (error) {
       return unverifiable(errorText(error));
     }
@@ -619,6 +628,11 @@ export async function pullLearnings(
       const info = await Deno.lstat(configPath);
       if (!info.isFile) {
         throw new LearningsFault(`${CONFIG_FILE} is not a regular file`);
+      }
+      if (info.size > LEARNINGS_CONFIG_CAP_BYTES) {
+        throw new LearningsFault(
+          `${CONFIG_FILE} of ${info.size} bytes exceeds the ${LEARNINGS_CONFIG_CAP_BYTES}-byte cap`,
+        );
       }
       hasConfig = true;
     } catch (error) {

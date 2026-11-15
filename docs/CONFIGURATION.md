@@ -2118,7 +2118,8 @@ mirrors `$TOKENECONOMIZER_HOME/repos/<repo-key>/` on the trial host. The
 slug of the repository name, a hyphen and the first ten hex digits of the SHA-1
 of the normalised remote, with any credentials and user removed (for example
 `vibecoder-9dcdf6cc4d`). The plugin's settings file, `token-economizer/config.json`,
-is pulled into `$TOKENECONOMIZER_HOME/config.json` and is never pushed.
+is pulled into `$TOKENECONOMIZER_HOME/config.json` and is never pushed. It is
+read only when it is a regular file of at most 256 KiB (262,144 bytes).
 
 Only regular `.json` files are synced. Symbolic links are not followed, and the
 `bin/te` launcher, `errors.log`, `*.jsonl` transcripts and `sessions/` are never
@@ -2128,11 +2129,15 @@ the cap is neither loaded nor pushed.
 **Pull.** The pull checks the shared stop latch first, and a latched stop is
 `refused`. It then reads the visibility of the learnings repository fresh with
 `gh api repos/<owner>/<name>`, and the repository must report
-`"private": true` and `"visibility": "private"`. A public or unverifiable
+`"private": true` and `"visibility": "private"`. On a host that uses GitHub App
+authentication the read runs under a read-only grant of the learnings repository
+to the run's installation token, because that token is otherwise scoped to the
+claim repository and would answer 404; the write allowlist is unchanged. The same
+read, and grant, is made before each push attempt. A public or unverifiable
 repository is `refused`, the refusal is logged, and nothing is transferred. A
 fault is `unavailable` and logged as a warning: a clone or checkout that fails,
 a store that is unreadable or untrusted (an entry outside the allow-list, a key
-over the cap, or a `config.json` that is not a regular file), or a checkout with
+over the cap, or a `config.json` that is not a regular file or is over its cap), or a checkout with
 no `origin` remote to key the learnings by. Either way the run continues and the
 plugin still loads, but the launch records persistence as `refused` or
 `unavailable`. That launch does not count as cross-run learning, and #4958 will

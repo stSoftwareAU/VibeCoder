@@ -23,6 +23,7 @@ import { pathToFileURL } from "node:url";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import {
   githubVisibilityCheck,
+  LEARNINGS_CONFIG_CAP_BYTES,
   LEARNINGS_KEY_CAP_BYTES,
   type LearningsLogger,
   type LearningsPersistence,
@@ -42,6 +43,15 @@ import {
   tokenEconomizerMaySync,
 } from "../lib/token_economizer_control.ts";
 import { readTokenEconomizerStop } from "../lib/token_economizer_plugin.ts";
+import {
+  _resetWriteRepoAllowlistSinks,
+  _resetWriteRepoPins,
+  _setWriteRepoAllowlistSinks,
+  installationTokenRepoScope,
+  isWriteRepoAllowed,
+  resetWriteRepoAllowlist,
+  seedWriteRepoAllowlist,
+} from "../lib/write_repo_allowlist.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
 const SUBJECT = "stSoftwareAU/VibeCoder#4957";
@@ -963,6 +973,9 @@ Deno.test("unavailable: a store key holding a symlink, a non-JSON file or too mu
       symlink: "outside the allow-list: claude/link.json",
       "non-json": "outside the allow-list: errors.log",
       "over-cap": `exceeds the ${LEARNINGS_KEY_CAP_BYTES}-byte cap`,
+      "config-over-cap": `config.json of ${
+        LEARNINGS_CONFIG_CAP_BYTES + 1
+      } bytes exceeds the ${LEARNINGS_CONFIG_CAP_BYTES}-byte cap`,
     };
     const cases: Record<string, Record<string, Content>> = {
       symlink: {
@@ -973,6 +986,13 @@ Deno.test("unavailable: a store key holding a symlink, a non-JSON file or too mu
       "over-cap": {
         [`token-economizer/${KEY_A}/claude/big.json`]: "x".repeat(
           LEARNINGS_KEY_CAP_BYTES + 1,
+        ),
+      },
+      // The key's own state is valid, so only the shared config can refuse it.
+      "config-over-cap": {
+        [`token-economizer/${KEY_A}/claude/a.json`]: "{}\n",
+        "token-economizer/config.json": "x".repeat(
+          LEARNINGS_CONFIG_CAP_BYTES + 1,
         ),
       },
     };
@@ -991,11 +1011,34 @@ Deno.test("unavailable: a store key holding a symlink, a non-JSON file or too mu
         name,
       );
       assertEquals(await exists(join(root, `${name}-scratch`)), false, name);
+      assertEquals(
+        await exists(join(root, `${name}-home`, "config.json")),
+        false,
+        name,
+      );
       const expected = reasons[name];
       assert(expected !== undefined, name);
       assertStringIncludes(p.reason, expected, name);
       assert(log.warnings.some((w) => w.includes(expected)), name);
     }
+  }));
+
+Deno.test("restored: a config.json exactly at the cap is copied into the home", () =>
+  withRoot(async (root) => {
+    const store = await newStore(root, "store");
+    const config = "x".repeat(LEARNINGS_CONFIG_CAP_BYTES);
+    await commitToStore(root, store.url, {
+      [`token-economizer/${KEY_A}/claude/a.json`]: "{}\n",
+      "token-economizer/config.json": config,
+    });
+    const p = await pullLearnings(
+      pullOpts(root, "edge", KEY_A, store.url, capture().logger),
+    );
+    assertEquals(p.status, "restored");
+    assertEquals(
+      await Deno.readTextFile(join(root, "edge-home", "config.json")),
+      config,
+    );
   }));
 
 Deno.test("refused: a latched trial neither pulls nor pushes", () =>
@@ -1052,6 +1095,126 @@ Deno.test("refused: a latched trial neither pulls nor pushes", () =>
     );
     assertEquals(none.kind, "skipped");
   }));
+
+Deno.test("refused: a store that turns public, or a stop that latches, between the first push and its replay uploads nothing", () =>
+  withRoot(async (root) => {
+    for (const change of ["public", "latch"] as const) {
+      const store = await newStore(root, `${change}-store`);
+      await commitToStore(root, store.url, {
+        [`token-economizer/${KEY_A}/claude/a.json`]: '{"a":1}\n',
+      });
+      const x = `${change}x`;
+      const y = `${change}y`;
+      const logX = capture();
+      const logY = capture();
+      const px = await pullLearnings(
+        pullOpts(root, x, KEY_A, store.url, logX.logger),
+      );
+
+      // Y's checks, in order: the pull, the first push attempt, the replayed push.
+      let yChecks = 0;
+      let yLatchChecks = 0;
+      const yVisibility = () => {
+        yChecks++;
+        return Promise.resolve<VisibilityVerdict>(
+          change === "public" && yChecks >= 3
+            ? {
+              private: false,
+              reason: `learnings repository ${REPO} is public`,
+            }
+            : { private: true },
+        );
+      };
+      const yMayTransfer = () => {
+        yLatchChecks++;
+        return Promise.resolve(change !== "latch" || yLatchChecks < 3);
+      };
+      const py = await pullLearnings(
+        pullOpts(root, y, KEY_A, store.url, logY.logger, {
+          checkVisibility: yVisibility,
+          mayTransfer: yMayTransfer,
+        }),
+      );
+      assertEquals(py.status, "restored", change);
+
+      await plant(join(root, `${x}-home`), KEY_A, "claude/a.json", '{"x":2}\n');
+      const outX = await pushLearnings(
+        pushOpts(root, x, px, logX.logger, recorder().stop),
+      );
+      assertEquals(outX.kind, "pushed", change);
+      const afterX = await commitCount(store.dir);
+      assertEquals(afterX, 2, change);
+
+      // Y adds a different file from the old tip: the first push is rejected, then replayed.
+      await plant(join(root, `${y}-home`), KEY_A, "claude/b.json", '{"b":1}\n');
+      const outY = await pushLearnings(
+        pushOpts(root, y, py, logY.logger, recorder().stop, {
+          checkVisibility: yVisibility,
+          mayTransfer: yMayTransfer,
+        }),
+      );
+      // The pull, the first push attempt and the replayed push each checked.
+      assertEquals(
+        change === "public" ? yChecks : yLatchChecks,
+        3,
+        `${change}: the retry re-checked`,
+      );
+      assertEquals(
+        outY.kind,
+        change === "public" ? "refused" : "skipped",
+        change,
+      );
+      if (outY.kind === "refused") {
+        assertStringIncludes(outY.reason, "is public");
+      }
+      if (outY.kind === "skipped") assertStringIncludes(outY.reason, "latched");
+      assertEquals(await commitCount(store.dir), afterX, change);
+      assertEquals(await storeFiles(store.dir), [
+        `token-economizer/${KEY_A}/claude/a.json`,
+      ], change);
+      assertEquals(await exists(join(root, `${y}-scratch`)), false, change);
+    }
+  }));
+
+Deno.test("default visibility check: the learnings repository is in the token scope while it reads, and is released afterwards", async () => {
+  _setWriteRepoAllowlistSinks({ log: () => {} });
+  try {
+    // The run seeds its allowlist with the claim repo only, so the token is scoped to it.
+    seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
+    assertEquals(installationTokenRepoScope(), ["stSoftwareAU/VibeCoder"]);
+
+    let scopeDuringRead: string[] | null = null;
+    let writableDuringRead = true;
+    const verdict = await githubVisibilityCheck((args) => {
+      assertEquals(args, ["api", "repos/stSoftwareAU/LearningsStore"]);
+      scopeDuringRead = installationTokenRepoScope();
+      writableDuringRead = isWriteRepoAllowed("stSoftwareAU/LearningsStore");
+      return Promise.resolve('{"private": true, "visibility": "private"}');
+    })("stSoftwareAU/LearningsStore");
+    assertEquals(verdict, { private: true });
+    assertEquals(scopeDuringRead, [
+      "stSoftwareAU/LearningsStore",
+      "stSoftwareAU/VibeCoder",
+    ]);
+    assertEquals(
+      writableDuringRead,
+      false,
+      "a read grant must not permit writes",
+    );
+    assertEquals(installationTokenRepoScope(), ["stSoftwareAU/VibeCoder"]);
+
+    // A failing read releases the grant too, and stays unverifiable.
+    const failed = await githubVisibilityCheck(() =>
+      Promise.reject(new Error("HTTP 404"))
+    )("stSoftwareAU/LearningsStore");
+    assertEquals(failed.private, false);
+    assertEquals(installationTokenRepoScope(), ["stSoftwareAU/VibeCoder"]);
+  } finally {
+    _resetWriteRepoAllowlistSinks();
+    resetWriteRepoAllowlist();
+    _resetWriteRepoPins();
+  }
+});
 
 Deno.test("repo keys: the upstream goldens, and the origin of a checkout", () =>
   withRoot(async (root) => {

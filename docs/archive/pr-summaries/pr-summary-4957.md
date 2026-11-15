@@ -23,15 +23,23 @@ are WARNINGs and never change the run's result. Closes #4957.
 
 ### Essential Design Decisions
 
+- **Shared `config.json` cap.** The pulled `token-economizer/config.json` is
+  checked from its `lstat` size against `LEARNINGS_CONFIG_CAP_BYTES` (256 KiB)
+  before it is read. An over-cap file makes the pull `unavailable` with nothing
+  copied, as an over-cap key does.
+
 - **Repository key.** `<repo-key>` is the upstream plugin's own key
   (`<slug(name)>-<sha1(normalised origin)[:10]>`). The normalised origin remote
   has its scheme, user and credential removed. A test checks it against the
   pinned plugin's `paths.py` for seven URL shapes.
 - **Visibility.** It is checked before the pull and again before every push
-  attempt, including the retry. The store counts as private only when it is
-  `private: true` with `visibility: "private"`. A public or unverifiable store
-  is `refused`. A clone or validation fault is `unavailable`, never an empty
-  store, and nothing is pushed from either state. The plugin still loads.
+  attempt, including the retry (the retry has its own test). The read runs
+  inside `withTokenScopedRepo`, so an App-authenticated host's installation
+  token can reach the store (read reach only, as `cross_repo_pr_handoff.ts`
+  does); the write allowlist is unchanged. The store counts as private only when
+  it is `private: true` with `visibility: "private"`. A public or unverifiable
+  store is `refused`. A clone or validation fault is `unavailable`, never an
+  empty store, and nothing is pushed from either state. The plugin still loads.
 - **The "rebase" retry.** On a non-fast-forward push, the run fetches the new
   tip and replays its own commit onto it with `cherry-pick --no-commit`. A
   shallow clone has no merge-base for `git rebase`. A conflict drops the later
@@ -149,14 +157,14 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — Unit tests self-contained: push tests needed a host `gitleaks`
-  binary — evidence: `worker/deno/tests/token_economizer_learnings_test.ts:256`
-  — reason: fixed in this diff. Clean scans now inject the observed clean
-  output, and only the real-binary secret test is ignored when gitleaks is
-  absent (18 passed, 1 ignored with gitleaks hidden from `PATH`).
+  binary — evidence: `worker/deno/tests/token_economizer_learnings_test.ts`
+  (`CLEAN_SCAN`, `cleanScan`) — reason: fixed in this diff. Clean scans now
+  inject the observed clean output, and only the real-binary secret test is
+  ignored when gitleaks is absent (18 passed, 1 ignored with gitleaks hidden
+  from `PATH`).
 - **violation** — Every outcome of a branch needs a test: the scanner-fault
-  outcomes had none — evidence:
-  `worker/deno/lib/token_economizer_learnings.ts:763` — reason: fixed in this
-  diff
+  outcomes had none — evidence: `worker/deno/lib/token_economizer_learnings.ts`
+  (`parseReport` and the scan faults) — reason: fixed in this diff
   (`skipped: a scanner fault fails closed (timeout, unreadable report, unexpected exit, a throw), with nothing committed`).
 - **violation** — Path Confinement negative tests: `isSafeKey` and the
   scratch-directory guard had none — evidence:
@@ -167,8 +175,9 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   with its control).
 - **violation** — A refusal test must be refused by the rule it names: the
   store-validation test asserted only the status — evidence:
-  `worker/deno/tests/token_economizer_learnings_test.ts:826` — reason: fixed in
-  this diff. Each case now asserts its allow-list or cap reason.
+  `worker/deno/tests/token_economizer_learnings_test.ts` (the store-validation
+  test) — reason: fixed in this diff. Each case now asserts its allow-list or
+  cap reason.
 - **violation** — Prose about the PR's own change: C42's "Only allow-listed …
   files are synced" ignored the pulled `config.json` — evidence:
   `docs/THREAT-MODEL.md:220` — reason: fixed in this diff. C42 now says the
@@ -176,8 +185,8 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   pushed.
 - **violation** — Change every copy of a twinned rule: the key derivation copies
   upstream with no disagreement test — evidence:
-  `worker/deno/lib/token_economizer_learnings.ts:219` — reason: fixed in this
-  diff
+  `worker/deno/lib/token_economizer_learnings.ts` (`learningsRepoKey`) — reason:
+  fixed in this diff
   (`repo keys: learningsRepoKey matches the upstream plugin for seven URL shapes`
   runs the pinned plugin).
 - **clean** — The reviewer checked fail-loud failure reasons (the first
@@ -189,14 +198,25 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
 
 ## Test Plan
 
-- New `worker/deno/tests/token_economizer_learnings_test.ts` (19 tests, real git
-  with local bare stores). It covers the acceptance round trip and isolation,
-  clone reuse, a removed clone inside a parent repository, public and
+- New `worker/deno/tests/token_economizer_learnings_test.ts` (22 tests at head,
+  real git with local bare stores). It covers the acceptance round trip and
+  isolation, clone reuse, a removed clone inside a parent repository, public and
   unverifiable refusals, and the planted secret, with both the real binary and
   an injected observed report. It also covers the real stop latch (notifying
   4959), the cross-repository stop, a missing store, a failed push, the replay
   (clean and conflicting), the cap, an untrusted store key, the latch, unsafe
-  keys, scanner faults and the repository-key goldens with upstream parity.
+  keys, scanner faults and the repository-key goldens with upstream parity. PR
+  #5158 review round 2 added three: the retry push re-checking visibility and
+  the latch
+  (`refused: a store that turns public, or a stop that latches, between the first push and its replay uploads nothing`),
+  the default visibility check reading under a token-scope grant that is
+  released afterwards
+  (`default visibility check: the learnings repository is in the token scope while it reads, and is released afterwards`),
+  and a `config.json` exactly at its cap restoring
+  (`restored: a config.json exactly at the cap is copied into the home`). The
+  store-validation test also gained an over-cap `config.json` case, which
+  asserts the reason and that no `config.json` reaches the home. Each of the
+  three fixes was removed in turn and its test failed.
 - `worker/deno/tests/token_economizer_plugin_wiring_test.ts`: seven new tests
   covering the round trip through `resolveTokenEconomizerLaunch` and
   `syncTokenEconomizerLearnings`, and a public store. They also cover an
@@ -216,12 +236,17 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   `deno test -A
   tests/token_economizer_learnings_test.ts` ran 18 passed and 1
   ignored (the real-binary secret test).
-- `./quality.sh < /dev/null` on the final code (`f504ca77`) exited 0 with
-  `Result: PASSED (with skipped checks)`. Deno tests passed in both the parallel
-  (8m33s) and serial (3m43s) passes. Completeness, markdownlint, mermaid,
-  semgrep, gitleaks, lint, type check and fmt also passed. Config integration
-  (no `.config.json`) and checkov (no binary) were skipped, and these skips are
-  not passes. The first run failed only on the unregistered sweep slice, now
+- Gitleaks absent from `PATH` is not repeated for the round-2 tests: they use
+  the injected clean scan.
+  `deno task test:unit tests/token_economizer_learnings_test.ts` on the head ran
+  22 passed, 0 failed (gitleaks present).
+- `./quality.sh < /dev/null` on the earlier code (`f504ca77`, before the round-2
+  fixes) exited 0 with `Result: PASSED (with skipped checks)`. Deno tests passed
+  in both the parallel (8m33s) and serial (3m43s) passes. Completeness,
+  markdownlint, mermaid, semgrep, gitleaks, lint, type check and fmt also
+  passed. Config integration (no `.config.json`) and checkov (no binary) were
+  skipped, and these skips are not passes. The first run failed only on the
+  unregistered sweep slice, now
   `docs/audits/lib-sweep-coverage/top-up-4957.json`, whose `sweptAt` is the
   merge base with `origin/main` (`fccd1182c`), so it stays reachable after the
   squash merge. `deno run mod.ts sweep-drift` against `origin/main` exits 0.
