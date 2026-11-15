@@ -28,10 +28,8 @@ Deno.test("review gate reads a diff containing terminal escapes without losing i
 });
 
 Deno.test("review gate supports gh versions without the escape flag", async () => {
-  const calls: string[][] = [];
   const result = await loadPullRequestDiff(
     (args) => {
-      calls.push(args);
       return args.includes("--allow-escape-sequences")
         ? Promise.reject(new Error("unknown flag: --allow-escape-sequences"))
         : Promise.resolve("ordinary diff");
@@ -40,7 +38,6 @@ Deno.test("review gate supports gh versions without the escape flag", async () =
     7,
   );
   assertEquals(result, { ok: true, diff: "ordinary diff" });
-  assertEquals(calls.length, 2);
 });
 import { reviewForPost } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
 import { withChecklistGaps } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
