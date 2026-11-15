@@ -4,6 +4,7 @@
 
 The two repair pre-push gate modes had names that no longer said what they run.
 This PR renames them and the path lists they filter. Behaviour is unchanged.
+
 Closes #5035.
 
 - `shellcheckOnly` → `repairChecksOnly`: the shared repair checks only.
