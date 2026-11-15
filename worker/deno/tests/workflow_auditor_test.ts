@@ -1918,7 +1918,7 @@ jobs:
 }
 
 for (const ecosystem of ["npm", `"npm"`, `'npm'`]) {
-  Deno.test(`workflow_auditor - a workflow file carrying package-ecosystem: ${ecosystem} makes npm-dependency-updates present, foundIn the workflow (Issue #4903)`, async () => {
+  Deno.test(`workflow_auditor - a workflow file carrying package-ecosystem: ${ecosystem} leaves npm-dependency-updates missing (Issue #5026)`, async () => {
     const status = await auditNpmUpdates(
       workflowFilesRunner({
         "deps.yml": `name: deps
@@ -1931,8 +1931,9 @@ jobs:
 `,
       }),
     );
-    assertEquals(status?.foundIn, ".github/workflows/deps.yml");
-    assertEquals(status?.missing, false);
+    assertEquals(status?.foundIn, undefined);
+    assertEquals(status?.missing, true);
+    assertEquals(status?.partial, false);
   });
 }
 
@@ -2129,4 +2130,66 @@ for (const quoted of [`"gradle"`, `'gradle'`]) {
       );
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Dependabot templates saved as workflow files (Issue #5026)
+// ---------------------------------------------------------------------------
+
+/** The RepoLanguages each Dependabot-config spec is audited under. */
+const DEPENDABOT_SPEC_LANGUAGES: { id: string; languages: RepoLanguages }[] = [
+  { id: "npm-dependency-updates", languages: makeLanguages(["Node"]) },
+  {
+    id: "java-dependency-updates",
+    languages: {
+      detected: [{ language: "Java", confidence: "api" }],
+      primary: "Java",
+      raw: { Java: 200 },
+      rootFiles: ["pom.xml"],
+    },
+  },
+  {
+    id: "java-gradle-dependency-updates",
+    languages: {
+      detected: [{ language: "Java", confidence: "api" }],
+      primary: "Java",
+      raw: { Java: 200 },
+      rootFiles: ["build.gradle"],
+    },
+  },
+];
+
+for (const { id, languages } of DEPENDABOT_SPEC_LANGUAGES) {
+  Deno.test(`workflow_auditor - ${id}'s own template saved as .github/workflows/<suggestedFilename> leaves the spec missing (Issue #5026)`, async () => {
+    const suggestedFilename = WORKFLOW_SPECS.find((s) => s.id === id)
+      ?.suggestedFilename;
+    assertEquals(typeof suggestedFilename, "string");
+    const template = templateOf(id);
+    // Positive control: the fixture really carries the forbidden line.
+    assertEquals(template.includes("package-ecosystem:"), true);
+
+    const result = await auditRepoWorkflows("owner/repo", languages, {
+      runCommand: workflowFilesRunner({ [suggestedFilename!]: template }),
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.missing.some((s) => s.id === id), true);
+    assertEquals(result.value.present.some((m) => m.spec.id === id), false);
+    assertEquals(result.value.partial.some((p) => p.spec.id === id), false);
+
+    // Positive control: the same template saved as .github/dependabot.yml
+    // satisfies the spec.
+    const control = await auditRepoWorkflows("owner/repo", languages, {
+      runCommand: workflowFilesRunner(
+        {},
+        { [DEPENDABOT_YML_API_PATH]: ok(template) },
+      ),
+    });
+    assertEquals(control.ok, true);
+    if (!control.ok) return;
+    assertEquals(
+      control.value.present.find((m) => m.spec.id === id)?.foundIn,
+      ".github/dependabot.yml",
+    );
+  });
 }
