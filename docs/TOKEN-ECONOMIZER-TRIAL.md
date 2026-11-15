@@ -130,8 +130,10 @@ is never read from the worker's environment. Learnings carry across runs only
 through the learnings repository. Each launch pulls the key's learnings before the
 plugin loads, and each spawn that loaded the plugin pushes them back once the
 plugin has folded the session. A pull that cannot be verified does not refuse the
-launch: the plugin still loads, the launch records persistence as unavailable, and
-that launch does not count as cross-run learning (#4958 will report it).
+launch: the plugin still loads, the launch records persistence as `refused` (a
+public or unverifiable learnings repository, or a latched stop) or `unavailable`
+(a fault, such as a failed clone or an untrusted store), and that launch does not
+count as cross-run learning (#4958 will report it).
 
 Nothing else loads it. Reviewer and verifier calls are not run kinds. External
 orchestration forwards the implementation launch to role dispatch, and the
@@ -287,7 +289,7 @@ rule outranks cost.
 
 | Stop rule | What it protects |
 | --------- | ---------------- |
-| The gitleaks check over the staged learnings catches a learned fact carrying a **secret** before a learnings commit | A learned fact is injected into every later run, so a secret in one is retained and repeated |
+| A learned fact carrying a **secret** is found in the learnings repository, or the gitleaks check before a sync commit catches one | A learned fact is injected into every later run, so a secret in one is retained and repeated |
 | A fact injected into a run **comes from another repository** | A fact is derived from one repository's content and must never steer another's |
 | The plugin causes a run failure that is **the plugin's fault**, such as a hook error that ends a run | The plugin must never fail a run; it is an accelerator |
 

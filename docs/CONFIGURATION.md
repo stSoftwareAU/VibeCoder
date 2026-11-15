@@ -2125,31 +2125,51 @@ Only regular `.json` files are synced. Symbolic links are not followed, and the
 synced. The files of one key total at most 1 MiB (1,048,576 bytes). A key over
 the cap is neither loaded nor pushed.
 
-**Pull.** The pull checks the shared stop latch first. It then reads the
-visibility of the learnings repository fresh with `gh api repos/<owner>/<name>`,
-and the repository must report `"private": true` and `"visibility": "private"`.
-A public or unverifiable repository is refused, the refusal is logged, and
-nothing is transferred. A pull that fails is a warning. The run continues and
-the plugin still loads, but the launch records persistence as unavailable. That
-launch does not count as cross-run learning, and #4958 will report it.
+**Pull.** The pull checks the shared stop latch first, and a latched stop is
+`refused`. It then reads the visibility of the learnings repository fresh with
+`gh api repos/<owner>/<name>`, and the repository must report
+`"private": true` and `"visibility": "private"`. A public or unverifiable
+repository is `refused`, the refusal is logged, and nothing is transferred. A
+fault is `unavailable` and logged as a warning: a clone or checkout that fails,
+a store that is unreadable or untrusted (an entry outside the allow-list, a key
+over the cap, or a `config.json` that is not a regular file), or a checkout with
+no `origin` remote to key the learnings by. Either way the run continues and the
+plugin still loads, but the launch records persistence as `refused` or
+`unavailable`. That launch does not count as cross-run learning, and #4958 will
+report it. A store with no commits yet reports `empty`, and so does a non-empty
+store with nothing for this key. A store that holds state for the key reports
+`restored`.
 
-**Push.** Before each push attempt the worker re-checks the stop latch and the
-visibility of the repository. Then:
+The pull clones into a scratch directory at `<work>/.token-economizer/store/<runId>`,
+outside the home and the checkout.
 
-- the staged learnings are scanned with gitleaks before each commit. A finding
-  drops the commit, logs the rule id without the value, and latches the shared
-  stop, which is reported to #4959;
+**Push.** The push mirrors this key's allow-listed state from the home into the
+scratch clone, stages it, scans the staged files with gitleaks, and commits.
+Then it re-checks the stop latch and the visibility of the repository
+immediately before each push attempt. The first attempt is one of these checks;
+a non-fast-forward rejection is retried once, and the retry replays this run's
+commit onto the new tip, scans and commits again, and re-checks before its own
+push. Along the way:
+
+- a staged finding drops the commit, logs the rule id without the value, and
+  latches the shared stop, which is reported to #4959;
 - a scanner that times out, is missing or cannot be read skips the push;
 - another repository key under the run's home latches the same stop, with the
   rule `cross-repo-fact`, and nothing is committed;
 - the commit message names the issue or PR and the run id:
   `token-economizer: learnings for <key> from <subject>`, with a
   `Vibe-Coder-Run-Id` trailer;
-- a non-fast-forward rejection is retried once, by replaying this run's commit
-  onto the new tip. A conflict or a second failure drops this run's update and
-  logs it.
+- a conflicting replay, or a second failure, drops this run's update and logs
+  it.
 
-The enabled trial host is the only writer.
+**Scratch clone.** The clone at `<work>/.token-economizer/store/<runId>` is kept
+after a successful (`pushed`) or unchanged push, because it is clean and at the
+store tip. Later spawns of the same run, such as a PR-feedback re-run or a
+rate-limit retry, can then push again from it. Every other outcome removes it.
+A clone that is gone means that spawn's learnings are discarded.
+
+Only a host with `token_economizer.enabled` set pushes, so enable it on one host
+for the trial.
 
 **Purging the trial's learnings.** To remove the trial's namespace and nothing
 else, clone the learnings repository and delete the directory:

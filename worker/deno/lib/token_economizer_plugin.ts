@@ -79,6 +79,7 @@ import {
   type LearningsPersistence,
   pullLearnings,
   repoKeyForCheckout,
+  type StagedScan,
   type VisibilityCheck,
 } from "./token_economizer_learnings.ts";
 import { confinePath } from "./mutation_runner.ts";
@@ -123,6 +124,8 @@ export interface TokenEconomizerLaunch {
     readonly repo: string;
     readonly persistence: LearningsPersistence;
     readonly checkVisibility?: VisibilityCheck;
+    /** Test seam for the push's staged scan. Absent: the gitleaks scan (Issue #4957). */
+    readonly scanStaged?: (cwd: string) => Promise<StagedScan>;
   };
 }
 
@@ -172,6 +175,8 @@ export interface ResolveTokenEconomizerLaunchOptions {
   learningsStoreUrl?: string;
   /** Test seam: the learnings visibility check. Absent: the GitHub check (Issue #4957). */
   checkLearningsVisibility?: VisibilityCheck;
+  /** Test seam: the push's staged secret scan. Absent: the gitleaks scan (Issue #4957). */
+  scanLearnings?: (cwd: string) => Promise<StagedScan>;
   pluginDir?: string;
   /** Audited worker executable; override only for isolated launch validation. */
   hookAdapterPath?: string;
@@ -503,6 +508,7 @@ export async function resolveTokenEconomizerLaunch(
         runId,
         storeUrl: opts.learningsStoreUrl,
         checkVisibility: opts.checkLearningsVisibility,
+        scanStaged: opts.scanLearnings,
         logger,
       })
       : undefined;
@@ -564,16 +570,19 @@ async function pullRunLearnings(args: {
   runId: string;
   storeUrl?: string;
   checkVisibility?: VisibilityCheck;
+  scanStaged?: (cwd: string) => Promise<StagedScan>;
   logger?: LearningsLogger;
 }): Promise<NonNullable<TokenEconomizerLaunch["learnings"]>> {
   const { learningsRepo, checkout, workRoot, runId, logger } = args;
   const checkVisibility = args.checkVisibility;
+  const scanStaged = args.scanStaged;
   const unavailable = (reason: string) => {
     logger?.warn(`token-economizer learnings: unavailable: ${reason}`);
     return {
       repo: learningsRepo,
       persistence: { status: "unavailable" as const, reason },
       checkVisibility,
+      scanStaged,
     };
   };
   try {
@@ -606,7 +615,7 @@ async function pullRunLearnings(args: {
       mayTransfer: () => tokenEconomizerMaySync(workRoot),
       logger,
     });
-    return { repo: learningsRepo, persistence, checkVisibility };
+    return { repo: learningsRepo, persistence, checkVisibility, scanStaged };
   } catch (err) {
     return unavailable(redactSecrets(errorMessage(err)));
   }

@@ -637,6 +637,15 @@ export async function pullLearnings(
         await Deno.readFile(configPath),
       );
     }
+    if (state.files.length === 0) {
+      logger.info(`token-economizer learnings: store is empty for ${repoKey}`);
+      return {
+        status: "empty",
+        reason: "store holds no state for this key",
+        repoKey,
+        storeDir: scratchDir,
+      };
+    }
     logger.info(
       `token-economizer learnings: restored ${state.files.length} file(s) for ${repoKey}`,
     );

@@ -1365,6 +1365,17 @@ const PRIVATE_STORE = () => Promise.resolve({ private: true as const });
 /** A stub channel for stop reports: nothing is sent to GitHub. */
 const notifyNothing = () => Promise.resolve("");
 
+/**
+ * The staged scan of an empty diff, as gitleaks really reports it. Injected so
+ * the push tests need no gitleaks binary on CI (Issue #4957).
+ */
+const CLEAN_SCAN = () =>
+  Promise.resolve({
+    exitCode: 0,
+    stdout: "[]",
+    stderr: "INF no leaks found",
+  });
+
 /** A logger that keeps every warning line, for assertions (Issue #4957). */
 function recordingLogger(): { logger: Logger; warnings: string[] } {
   const warnings: string[] = [];
@@ -1463,6 +1474,7 @@ Deno.test("a learnings round trip pulls an empty store, pushes a learned state f
         pluginDir: layout.fakePluginDir,
         learningsStoreUrl: store,
         checkLearningsVisibility: PRIVATE_STORE,
+        scanLearnings: CLEAN_SCAN,
         logger,
       });
 
@@ -1630,6 +1642,7 @@ Deno.test("a failed learnings push leaves the run's result unchanged and is logg
       pluginDir: layout.fakePluginDir,
       learningsStoreUrl: store,
       checkLearningsVisibility: PRIVATE_STORE,
+      scanLearnings: CLEAN_SCAN,
       logger,
     });
     assert(failing !== null);
@@ -1674,6 +1687,91 @@ Deno.test("a launch without a learnings repository carries no learnings and sync
     assertEquals(launch.subject, `${REPO}#1`);
     assertEquals(launch.runId, "no-learnings-1");
     assertEquals(await syncTokenEconomizerLearnings(launch), null);
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The scratch-directory guard of the learnings pull (Issue #4957). A scratch
+// path that resolves outside the work root is refused: the launch stays, the
+// pull is unavailable with the guard's reason, and nothing is written outside.
+// ---------------------------------------------------------------------------
+
+/** The reason the scratch-directory guard reports (Issue #4957). */
+const SCRATCH_GUARD_REASON =
+  "the scratch directory lies outside the work directory, is aliased or is inside the repo checkout";
+
+Deno.test("a learnings scratch directory symlinked outside the work root is refused: the launch stays, the pull is unavailable and nothing is written outside (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const outside = join(layout.root, "outside");
+    await Deno.mkdir(outside);
+    await Deno.mkdir(join(layout.workDir, ".token-economizer"));
+    await Deno.symlink(
+      outside,
+      join(layout.workDir, ".token-economizer", "store"),
+    );
+    const { logger, warnings } = recordingLogger();
+    const launch = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "alias-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: store,
+      checkLearningsVisibility: PRIVATE_STORE,
+      logger,
+    });
+    assert(
+      launch !== null,
+      "an aliased scratch directory must not refuse the launch",
+    );
+    assertEquals(launch.learnings?.persistence.status, "unavailable");
+    assertEquals(launch.learnings?.persistence.reason, SCRATCH_GUARD_REASON);
+    assert(
+      warnings.includes(
+        `token-economizer learnings: unavailable: ${SCRATCH_GUARD_REASON}`,
+      ),
+      JSON.stringify(warnings),
+    );
+    assertEquals(
+      Array.from(Deno.readDirSync(outside)).map((entry) => entry.name),
+      [],
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a learnings scratch directory at its normal place reaches the pull and is empty against an empty store (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const { logger, warnings } = recordingLogger();
+    const launch = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "normal-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: store,
+      checkLearningsVisibility: PRIVATE_STORE,
+      logger,
+    });
+    assert(launch !== null, "the plugin must load with a normal scratch path");
+    assertEquals(launch.learnings?.persistence.status, "empty");
+    assert(
+      !warnings.some((m) => m.includes("unavailable")),
+      JSON.stringify(warnings),
+    );
   } finally {
     await Deno.remove(layout.root, { recursive: true });
   }

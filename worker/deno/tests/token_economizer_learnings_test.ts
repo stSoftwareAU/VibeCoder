@@ -2,7 +2,8 @@
  * Tests for token_economizer_learnings.ts (Issue #4957).
  *
  * Every transfer runs against a real local bare repository in a temp directory,
- * with real git, and the secret case runs the real gitleaks. Visibility and the
+ * with real git. The planted-secret case runs the real gitleaks when it is
+ * installed, and an injected gitleaks report otherwise. Visibility and the
  * latch are injected. Nothing is written outside the temp roots, which are removed.
  *
  * Covers: the two-run acceptance flow and an isolated key; the visibility
@@ -32,6 +33,7 @@ import {
   pushLearnings,
   type PushLearningsOptions,
   repoKeyForCheckout,
+  type StagedScan,
   type VisibilityVerdict,
 } from "../lib/token_economizer_learnings.ts";
 import type { TokenEconomizerFinding } from "../lib/token_economizer_control.ts";
@@ -61,6 +63,73 @@ const FAKE_PAT = "ghp_" +
 const PRIVATE = () => Promise.resolve<VisibilityVerdict>({ private: true });
 const ALWAYS = () => Promise.resolve(true);
 const NEVER = () => Promise.resolve(false);
+
+/** What gitleaks 8.30.1 prints for a clean staged scan (observed). */
+const CLEAN_SCAN: StagedScan = {
+  exitCode: 0,
+  stdout: "[]",
+  stderr: "INF no leaks found",
+};
+const cleanScan = () => Promise.resolve(CLEAN_SCAN);
+
+/** The report gitleaks 8.30.1 prints for the planted PAT (observed), injected where the binary is absent. */
+function leakScan(key: string): StagedScan {
+  const report = [{
+    RuleID: "github-pat",
+    Description:
+      "Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.",
+    StartLine: 1,
+    EndLine: 1,
+    StartColumn: 24,
+    EndColumn: 63,
+    Match: "REDACTED",
+    Secret: "REDACTED",
+    File: `token-economizer/${key}/claude/injection.json`,
+    SymlinkFile: "",
+    Commit: "",
+    Entropy: 5.321928,
+    Author: "",
+    Email: "",
+    Date: "0001-01-01T00:00:00Z",
+    Message: "",
+    Tags: [],
+    Fingerprint: `token-economizer/${key}/claude/injection.json:github-pat:1`,
+  }];
+  return { exitCode: 1, stdout: JSON.stringify(report, null, 1), stderr: "" };
+}
+
+/** Whether a command runs and exits 0. A missing binary is false, never an error. */
+async function runs(cmd: string, args: string[]): Promise<boolean> {
+  try {
+    const run = await new Deno.Command(cmd, {
+      args,
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    return run.success;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the real gitleaks binary is installed. CI unit shards may not have it. */
+const hasGitleaks = await runs("gitleaks", ["version"]);
+
+/**
+ * Whether git finds `object` in `dir` without lazily fetching it from the
+ * promisor remote. `GIT_NO_LAZY_FETCH` makes a missing blob a plain miss.
+ */
+async function hasObjectLocally(dir: string, object: string): Promise<boolean> {
+  const run = await new Deno.Command("git", {
+    args: ["-C", dir, "cat-file", "-e", object],
+    env: { GIT_NO_LAZY_FETCH: "1" },
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+  }).output();
+  return run.success;
+}
 
 /** A logger that keeps every line for assertions. */
 function capture(): {
@@ -249,6 +318,7 @@ function pushOpts(
     mayTransfer: ALWAYS,
     stop,
     logger,
+    scanStaged: cleanScan,
     ...extra,
   };
 }
@@ -256,6 +326,15 @@ function pushOpts(
 Deno.test("acceptance: a run pushes its state, a later run restores it, and another key stays isolated", () =>
   withRoot(async (root) => {
     const store = await newStore(root, "store");
+    // The store serves partial clones, so the isolation proof below can inspect blobs.
+    await git(["-C", store.dir, "config", "uploadpack.allowFilter", "true"]);
+    await git([
+      "-C",
+      store.dir,
+      "config",
+      "uploadpack.allowAnySHA1InWant",
+      "true",
+    ]);
     const run1 = capture();
     const stops1 = recorder();
 
@@ -329,7 +408,8 @@ Deno.test("acceptance: a run pushes its state, a later run restores it, and anot
     const pB = await pullLearnings(
       pullOpts(root, "runB", KEY_B, store.url, runB.logger),
     );
-    assertEquals(pB.status, "restored");
+    // Key B has no state in the store (only the shared settings file), so it is empty, not restored.
+    assertEquals(pB.status, "empty");
     assertEquals(
       await exists(join(root, "runB-home", "repos", KEY_A)),
       false,
@@ -338,6 +418,32 @@ Deno.test("acceptance: a run pushes its state, a later run restores it, and anot
       await exists(join(root, "runB-scratch", "token-economizer", KEY_A)),
       false,
     );
+
+    // Isolation proof: key A's blob is absent from run B's clone. Run 2's clone,
+    // which pulled key A, holds it (the positive control).
+    const blobA = (await git([
+      "-C",
+      store.dir,
+      "rev-parse",
+      `HEAD:token-economizer/${KEY_A}/claude/injection.json`,
+    ])).trim();
+    assertEquals(await hasObjectLocally(store.dir, blobA), true);
+    assertEquals(
+      await hasObjectLocally(join(root, "run2-scratch"), blobA),
+      true,
+    );
+    assertEquals(
+      await hasObjectLocally(join(root, "runB-scratch"), blobA),
+      false,
+    );
+    const objectsB = await git([
+      "-C",
+      join(root, "runB-scratch"),
+      "cat-file",
+      "--batch-all-objects",
+      "--batch-check=%(objectname)",
+    ]);
+    assertEquals(objectsB.split("\n").includes(blobA), false);
   }));
 
 Deno.test("reuse: the same persistence pushed twice pushes both states, and the clean clone is kept after unchanged", () =>
@@ -514,39 +620,87 @@ Deno.test("refused: a public or unverifiable learnings repository is never trans
     assertEquals(await exists(join(root, "unv-scratch")), false);
   }));
 
-Deno.test("stopped: a planted GitHub PAT stops the trial, is not committed and is never recorded", () =>
+// Needs the real gitleaks binary, which CI's unit shards may not have (only the
+// container does), so it is guarded. The injected-report sibling below covers
+// the same stop path in CI.
+Deno.test({
+  name:
+    "stopped: a planted GitHub PAT, scanned by the real gitleaks, stops the trial and is never recorded",
+  ignore: !hasGitleaks,
+  fn: () =>
+    withRoot(async (root) => {
+      const store = await newStore(root, "store");
+      const log = capture();
+      const stops = recorder();
+      const p = await pullLearnings(
+        pullOpts(root, "secret", KEY_A, store.url, log.logger),
+      );
+      assertEquals(p.status, "empty");
+      await plant(
+        join(root, "secret-home"),
+        KEY_A,
+        "claude/injection.json",
+        JSON.stringify({ facts: [`deploy with ${FAKE_PAT}`] }) + "\n",
+      );
+
+      const out = await pushLearnings(
+        pushOpts(root, "secret", p, log.logger, stops.stop, {
+          scanStaged: undefined,
+        }),
+      );
+      assertEquals(out.kind, "stopped");
+      if (out.kind === "stopped") {
+        assertEquals(out.rule, "secret-in-learnings");
+        assertStringIncludes(out.reason, "github-pat");
+        assertEquals(out.reason.includes(FAKE_PAT), false);
+      }
+
+      assertEquals(stops.stops.length, 1);
+      const [stop] = stops.stops;
+      assert(stop !== undefined);
+      assertEquals(stop.rule, "secret-in-learnings");
+      assertStringIncludes(stop.reason, "github-pat");
+      assertEquals(stop.reason.includes(FAKE_PAT), false);
+      assertEquals(await commitCount(store.dir), 0);
+      const logged = [...log.warnings, ...log.infos].join("\n");
+      assertEquals(logged.includes(FAKE_PAT), false);
+      assert(log.warnings.some((w) => w.includes("secret-in-learnings")));
+    }),
+});
+
+Deno.test("stopped: an injected gitleaks report of the planted PAT stops the trial, is not committed and keeps the token out", () =>
   withRoot(async (root) => {
     const store = await newStore(root, "store");
     const log = capture();
     const stops = recorder();
     const p = await pullLearnings(
-      pullOpts(root, "secret", KEY_A, store.url, log.logger),
+      pullOpts(root, "injected", KEY_A, store.url, log.logger),
     );
     assertEquals(p.status, "empty");
     await plant(
-      join(root, "secret-home"),
+      join(root, "injected-home"),
       KEY_A,
       "claude/injection.json",
       JSON.stringify({ facts: [`deploy with ${FAKE_PAT}`] }) + "\n",
     );
 
     const out = await pushLearnings(
-      pushOpts(root, "secret", p, log.logger, stops.stop),
+      pushOpts(root, "injected", p, log.logger, stops.stop, {
+        scanStaged: () => Promise.resolve(leakScan(KEY_A)),
+      }),
     );
     assertEquals(out.kind, "stopped");
     if (out.kind === "stopped") {
       assertEquals(out.rule, "secret-in-learnings");
-      assertStringIncludes(out.reason, "github-pat");
+      assertEquals(
+        out.reason,
+        `gitleaks rule github-pat in token-economizer/${KEY_A}/claude/injection.json`,
+      );
       assertEquals(out.reason.includes(FAKE_PAT), false);
     }
-
-    assertEquals(stops.stops.length, 1);
-    const [stop] = stops.stops;
-    assert(stop !== undefined);
-    assertEquals(stop.rule, "secret-in-learnings");
-    assertStringIncludes(stop.reason, "github-pat");
-    assertEquals(stop.reason.includes(FAKE_PAT), false);
+    assertEquals(stops.stops.map((s) => s.rule), ["secret-in-learnings"]);
     assertEquals(await commitCount(store.dir), 0);
+    assertEquals(await exists(join(root, "injected-scratch")), false);
     const logged = [...log.warnings, ...log.infos].join("\n");
     assertEquals(logged.includes(FAKE_PAT), false);
     assert(log.warnings.some((w) => w.includes("secret-in-learnings")));
@@ -582,6 +736,7 @@ Deno.test("stopped: the real stop record latches, notifies issue 4959 and keeps 
         log.logger,
         (finding) =>
           stopTokenEconomizerTrial(workDir, finding, notify, log.logger),
+        { scanStaged: () => Promise.resolve(leakScan(KEY_A)) },
       ),
     );
     assertEquals(out.kind, "stopped");
@@ -804,6 +959,11 @@ Deno.test("skipped: state over the key cap is never pushed", () =>
 
 Deno.test("unavailable: a store key holding a symlink, a non-JSON file or too much state is not restored", () =>
   withRoot(async (root) => {
+    const reasons: Record<string, string> = {
+      symlink: "outside the allow-list: claude/link.json",
+      "non-json": "outside the allow-list: errors.log",
+      "over-cap": `exceeds the ${LEARNINGS_KEY_CAP_BYTES}-byte cap`,
+    };
     const cases: Record<string, Record<string, Content>> = {
       symlink: {
         [`token-economizer/${KEY_A}/claude/a.json`]: "{}\n",
@@ -831,7 +991,10 @@ Deno.test("unavailable: a store key holding a symlink, a non-JSON file or too mu
         name,
       );
       assertEquals(await exists(join(root, `${name}-scratch`)), false, name);
-      assert(log.warnings.length > 0, name);
+      const expected = reasons[name];
+      assert(expected !== undefined, name);
+      assertStringIncludes(p.reason, expected, name);
+      assert(log.warnings.some((w) => w.includes(expected)), name);
     }
   }));
 
@@ -936,3 +1099,203 @@ Deno.test("repo keys: the upstream goldens, and the origin of a checkout", () =>
     assertEquals(await repoKeyForCheckout(plain), null);
     assertEquals(await repoKeyForCheckout(join(root, "absent")), null);
   }));
+
+/** The HEAD commit of a clone, or null when it has none. */
+async function headOf(dir: string): Promise<string | null> {
+  const run = await runGitCommand([
+    "-C",
+    dir,
+    "rev-parse",
+    "--verify",
+    "-q",
+    "HEAD",
+  ]);
+  return run.ok && run.value.code === 0 ? run.value.stdout.trim() : null;
+}
+
+Deno.test("skipped: a scanner fault fails closed (timeout, unreadable report, unexpected exit, a throw), with nothing committed", () =>
+  withRoot(async (root) => {
+    const faults: [
+      string,
+      (cwd: string) => Promise<StagedScan>,
+      string,
+    ][] = [
+      [
+        "timeout",
+        () =>
+          Promise.resolve({
+            exitCode: -1,
+            stdout: "",
+            stderr: "",
+            timedOut: true,
+          }),
+        "exceeded its deadline",
+      ],
+      [
+        "unreadable",
+        () => Promise.resolve({ exitCode: 1, stdout: "not json", stderr: "" }),
+        "without a readable report",
+      ],
+      [
+        "exit-2",
+        () =>
+          Promise.resolve({
+            exitCode: 2,
+            stdout: "[]",
+            stderr: "fatal: bad config",
+          }),
+        "gitleaks exited 2",
+      ],
+      [
+        "throws",
+        () => Promise.reject(new Error("spawn gitleaks ENOENT")),
+        "ENOENT",
+      ],
+    ];
+    for (const [name, fault, cause] of faults) {
+      const store = await newStore(root, `fault-${name}`);
+      const log = capture();
+      const stops = recorder();
+      const p = await pullLearnings(
+        pullOpts(root, `fault-${name}`, KEY_A, store.url, log.logger),
+      );
+      assertEquals(p.status, "empty", name);
+      await plant(
+        join(root, `fault-${name}-home`),
+        KEY_A,
+        "claude/injection.json",
+        "{}\n",
+      );
+
+      let headAtScan: string | null | undefined;
+      const out = await pushLearnings(
+        pushOpts(root, `fault-${name}`, p, log.logger, stops.stop, {
+          scanStaged: async (cwd) => {
+            headAtScan = await headOf(cwd);
+            return await fault(cwd);
+          },
+        }),
+      );
+      assertEquals(out.kind, "skipped", name);
+      if (out.kind === "skipped") {
+        assertStringIncludes(out.reason, "scanner fault", name);
+        assertStringIncludes(out.reason, cause, name);
+      }
+      // The scan runs before the commit: the clone had no commit at that point,
+      // and the clone is removed, so nothing is committed or kept.
+      assertEquals(headAtScan, null, name);
+      assertEquals(await commitCount(store.dir), 0, name);
+      assertEquals(
+        await exists(join(root, `fault-${name}-scratch`)),
+        false,
+        name,
+      );
+      assertEquals(stops.stops, [], name);
+      assert(log.warnings.some((w) => w.includes("scanner fault")), name);
+    }
+  }));
+
+Deno.test("refused: an unsafe repository key is refused on pull and push, with nothing cloned or written", () =>
+  withRoot(async (root) => {
+    const store = await newStore(root, "store");
+    const unsafe = ["..", "a/b", "/abs"];
+    for (const [index, key] of unsafe.entries()) {
+      const log = capture();
+      const stops = recorder();
+      const name = `unsafe${index}`;
+      const pulled = await pullLearnings(
+        pullOpts(root, name, key, store.url, log.logger),
+      );
+      assertEquals(pulled.status, "unavailable", key);
+      assertStringIncludes(pulled.reason, "invalid repository key", key);
+      assert(
+        log.warnings.some((w) => w.includes("invalid repository key")),
+        key,
+      );
+      assertEquals(pulled.storeDir, undefined, key);
+      assertEquals(await exists(join(root, `${name}-scratch`)), false, key);
+      assertEquals(await exists(join(root, `${name}-home`)), false, key);
+
+      // Push: a verified pull for a safe key, whose persistence names the unsafe key.
+      const valid = `valid${index}`;
+      const p = await pullLearnings(
+        pullOpts(root, valid, KEY_A, store.url, log.logger),
+      );
+      assertEquals(p.status, "empty", key);
+      const forged: LearningsPersistence = { ...p, repoKey: key };
+      const out = await pushLearnings(
+        pushOpts(root, valid, forged, log.logger, stops.stop),
+      );
+      assertEquals(out.kind, "skipped", key);
+      if (out.kind === "skipped") {
+        assertStringIncludes(out.reason, "invalid repository key", key);
+      }
+      assertEquals(await commitCount(store.dir), 0, key);
+      assertEquals(
+        await exists(join(root, `${valid}-home`, "repos")),
+        false,
+        key,
+      );
+      assertEquals(stops.stops, [], key);
+    }
+
+    // Control: a safe key proceeds.
+    const control = await pullLearnings(
+      pullOpts(root, "control", KEY_A, store.url, capture().logger),
+    );
+    assertEquals(control.status, "empty");
+    assertEquals(await exists(join(root, "control-scratch")), true);
+  }));
+
+/** Prints the key the upstream plugin derives for each URL in argv[1] (a JSON array). */
+const UPSTREAM_KEYS_SCRIPT = [
+  "import json, sys",
+  'sys.path.insert(0, "/opt/tokeneconomizer")',
+  "from tokeneconomizer.plugin.paths import normalize_remote, _slug, digest",
+  "keys = []",
+  "for url in json.loads(sys.argv[1]):",
+  "    canon = normalize_remote(url)",
+  "    name = canon.rstrip('/').rsplit('/', 1)[-1]",
+  "    keys.append(f'{_slug(name)}-{digest(canon)}')",
+  "print(json.dumps(keys))",
+].join("\n");
+
+/** The vendored upstream plugin is needed for the parity test. */
+const hasUpstream = (await exists(
+  "/opt/tokeneconomizer/tokeneconomizer/plugin/paths.py",
+)) && (await runs("python3", ["--version"]));
+
+// Ignored when the vendored plugin at /opt/tokeneconomizer is absent: the key
+// must match the upstream's, and there is no upstream to compare with.
+Deno.test({
+  name:
+    "repo keys: learningsRepoKey matches the upstream plugin for seven URL shapes",
+  ignore: !hasUpstream,
+  fn: async () => {
+    const urls = [
+      "https://x-access-token:ghs_abc@github.com/stSoftwareAU/VibeCoder.git",
+      "git@github.com:stSoftwareAU/VibeCoder.git",
+      "https://github.com/stsoftwareau/vibecoder/",
+      "https://github.com/Owner/My.Repo_X.git/",
+      "https://github.com/Owner/My.Repo_X",
+      "ssh://git@github.com/Owner/My.Repo_X.git",
+      "https://github.com/stSoftwareAU/VibeCoder",
+    ];
+    // -I ignores PYTHONPATH and the current directory, so nothing local is imported.
+    const run = await new Deno.Command("python3", {
+      args: ["-I", "-c", UPSTREAM_KEYS_SCRIPT, JSON.stringify(urls)],
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    const decoder = new TextDecoder();
+    assert(run.success, decoder.decode(run.stderr));
+    const upstream: string[] = JSON.parse(decoder.decode(run.stdout));
+    assertEquals(upstream.length, urls.length);
+    for (const [index, url] of urls.entries()) {
+      assertEquals(await learningsRepoKey(url), upstream[index], url);
+    }
+    assertEquals(upstream[0], KEY_A);
+    assertEquals(upstream[3], KEY_B);
+  },
+});

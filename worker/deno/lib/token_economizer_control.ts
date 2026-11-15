@@ -184,6 +184,7 @@ export async function syncTokenEconomizerLearnings(
       subject: launch.subject,
       runId: launch.runId,
       checkVisibility: launch.learnings.checkVisibility,
+      scanStaged: launch.learnings.scanStaged,
       mayTransfer: () => tokenEconomizerMaySync(launch.workDir),
       stop: (finding) =>
         stopTokenEconomizerTrial(launch.workDir, finding, notify, logger),
