@@ -4,7 +4,7 @@
  * Issue #1393: Create workflow auditor to check repos for required GitHub Actions.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import {
   auditRepoWorkflows,
@@ -993,6 +993,100 @@ Deno.test(
   },
 );
 
+// ---------------------------------------------------------------------------
+// Issue #5009 — a failed per-file content fetch fails the audit
+// ---------------------------------------------------------------------------
+
+const GITLEAKS_CONTENT_PATH =
+  "repos/owner/repo/contents/.github/workflows/gitleaks.yml";
+
+Deno.test(
+  "workflow_auditor - returns error when a listed workflow's content fetch fails with non-404 (Issue #5009)",
+  async () => {
+    const languages = makeLanguages(["Rust"]);
+    const listing = workflowDirResponse(["gitleaks.yml"]);
+
+    const failing = await auditRepoWorkflows("owner/repo", languages, {
+      runCommand: mockRunner({
+        [GITLEAKS_CONTENT_PATH]: fail(
+          "gh: HTTP 502: Bad Gateway (https://api.github.com/repos/owner/repo/contents/.github/workflows/gitleaks.yml)",
+        ),
+        "repos/owner/repo/contents/.github/workflows": listing,
+      }),
+    });
+    assertEquals(failing.ok, false);
+    if (failing.ok) return;
+    assertStringIncludes(failing.error, "gitleaks.yml");
+    assertStringIncludes(failing.error, "HTTP 502: Bad Gateway");
+
+    // Positive control: the same fixture with a readable file succeeds.
+    const healthy = await auditRepoWorkflows("owner/repo", languages, {
+      runCommand: mockRunner({
+        [GITLEAKS_CONTENT_PATH]: ok(gitleaksYaml),
+        "repos/owner/repo/contents/.github/workflows": listing,
+      }),
+    });
+    assertEquals(healthy.ok, true);
+    if (!healthy.ok) return;
+    assertEquals(
+      healthy.value.present.map((m) => m.spec.id).includes("gitleaks"),
+      true,
+    );
+  },
+);
+
+Deno.test(
+  "workflow_auditor - returns error when a workflow content fetch throws (Issue #5009)",
+  async () => {
+    const delegate = mockRunner({
+      "repos/owner/repo/contents/.github/workflows": workflowDirResponse([
+        "gitleaks.yml",
+      ]),
+    });
+    const result = await auditRepoWorkflows(
+      "owner/repo",
+      makeLanguages(["Rust"]),
+      {
+        runCommand: (cmd: string[]) => {
+          if (cmd.includes(GITLEAKS_CONTENT_PATH)) {
+            throw new Error("connection reset");
+          }
+          return delegate(cmd);
+        },
+      },
+    );
+    assertEquals(result.ok, false);
+    if (result.ok) return;
+    assertStringIncludes(result.error, "gitleaks.yml");
+    assertStringIncludes(result.error, "connection reset");
+  },
+);
+
+Deno.test(
+  "workflow_auditor - a listed workflow that 404s on fetch is treated as absent (Issue #5009)",
+  async () => {
+    // Deleted between the listing and the fetch: mirrors the listing's 404 rule.
+    const result = await auditRepoWorkflows(
+      "owner/repo",
+      makeLanguages(["Rust"]),
+      {
+        runCommand: mockRunner({
+          [GITLEAKS_CONTENT_PATH]: fail("gh: Not Found (HTTP 404)"),
+          "repos/owner/repo/contents/.github/workflows": workflowDirResponse([
+            "gitleaks.yml",
+          ]),
+        }),
+      },
+    );
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(
+      result.value.missing.map((s) => s.id).includes("gitleaks"),
+      true,
+    );
+  },
+);
+
 Deno.test("workflow_auditor - API-only Rust does not require root Cargo workflows", async () => {
   const languages: RepoLanguages = {
     detected: [{ language: "Rust", confidence: "api" }],
@@ -1918,7 +2012,7 @@ jobs:
 }
 
 for (const ecosystem of ["npm", `"npm"`, `'npm'`]) {
-  Deno.test(`workflow_auditor - a workflow file carrying package-ecosystem: ${ecosystem} makes npm-dependency-updates present, foundIn the workflow (Issue #4903)`, async () => {
+  Deno.test(`workflow_auditor - a workflow file carrying package-ecosystem: ${ecosystem} leaves npm-dependency-updates missing (Issue #5026)`, async () => {
     const status = await auditNpmUpdates(
       workflowFilesRunner({
         "deps.yml": `name: deps
@@ -1931,8 +2025,9 @@ jobs:
 `,
       }),
     );
-    assertEquals(status?.foundIn, ".github/workflows/deps.yml");
-    assertEquals(status?.missing, false);
+    assertEquals(status?.foundIn, undefined);
+    assertEquals(status?.missing, true);
+    assertEquals(status?.partial, false);
   });
 }
 
@@ -2129,4 +2224,66 @@ for (const quoted of [`"gradle"`, `'gradle'`]) {
       );
     },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Dependabot templates saved as workflow files (Issue #5026)
+// ---------------------------------------------------------------------------
+
+/** The RepoLanguages each Dependabot-config spec is audited under. */
+const DEPENDABOT_SPEC_LANGUAGES: { id: string; languages: RepoLanguages }[] = [
+  { id: "npm-dependency-updates", languages: makeLanguages(["Node"]) },
+  {
+    id: "java-dependency-updates",
+    languages: {
+      detected: [{ language: "Java", confidence: "api" }],
+      primary: "Java",
+      raw: { Java: 200 },
+      rootFiles: ["pom.xml"],
+    },
+  },
+  {
+    id: "java-gradle-dependency-updates",
+    languages: {
+      detected: [{ language: "Java", confidence: "api" }],
+      primary: "Java",
+      raw: { Java: 200 },
+      rootFiles: ["build.gradle"],
+    },
+  },
+];
+
+for (const { id, languages } of DEPENDABOT_SPEC_LANGUAGES) {
+  Deno.test(`workflow_auditor - ${id}'s own template saved as .github/workflows/<suggestedFilename> leaves the spec missing (Issue #5026)`, async () => {
+    const suggestedFilename = WORKFLOW_SPECS.find((s) => s.id === id)
+      ?.suggestedFilename;
+    assertEquals(typeof suggestedFilename, "string");
+    const template = templateOf(id);
+    // Positive control: the fixture really carries the forbidden line.
+    assertEquals(template.includes("package-ecosystem:"), true);
+
+    const result = await auditRepoWorkflows("owner/repo", languages, {
+      runCommand: workflowFilesRunner({ [suggestedFilename!]: template }),
+    });
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(result.value.missing.some((s) => s.id === id), true);
+    assertEquals(result.value.present.some((m) => m.spec.id === id), false);
+    assertEquals(result.value.partial.some((p) => p.spec.id === id), false);
+
+    // Positive control: the same template saved as .github/dependabot.yml
+    // satisfies the spec.
+    const control = await auditRepoWorkflows("owner/repo", languages, {
+      runCommand: workflowFilesRunner(
+        {},
+        { [DEPENDABOT_YML_API_PATH]: ok(template) },
+      ),
+    });
+    assertEquals(control.ok, true);
+    if (!control.ok) return;
+    assertEquals(
+      control.value.present.find((m) => m.spec.id === id)?.foundIn,
+      ".github/dependabot.yml",
+    );
+  });
 }
