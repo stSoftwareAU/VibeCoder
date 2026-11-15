@@ -18,6 +18,52 @@ import {
 
 const USAGE_LIMIT = "You've hit your usage limit · resets 1:50pm (UTC)";
 
+const FABLE_LIMIT =
+  "You've reached your Fable limit. Switch to another model to continue.";
+
+Deno.test("reviewer tries Fable on three subscriptions, Astra, Opus, then DeepSeek", async () => {
+  const { deps, calls } = fakeDeps([
+    { code: 1, output: FABLE_LIMIT },
+    { code: 1, output: FABLE_LIMIT },
+    { code: 1, output: FABLE_LIMIT },
+    { code: 1, output: "quota exhausted", usageLimited: true },
+    { code: 1, output: USAGE_LIMIT },
+    { code: 0, output: "Reviewed on DeepSeek" },
+  ], { codex: CODEX_CREDENTIAL });
+  const excluded: string[] = [];
+  deps.switchCredential = (held, setEnv) => {
+    excluded.push(held);
+    const next = held === "provider"
+      ? "provider-2"
+      : held === "provider-2"
+      ? "provider-3"
+      : null;
+    if (next) setEnv("CLAUDE_CODE_OAUTH_TOKEN", `${next}-secret`);
+    return Promise.resolve(next);
+  };
+  assertEquals(
+    await runReviewRound("p", ["--model", "claude-fable-5-2"], deps),
+    0,
+  );
+  assertEquals(excluded, ["provider", "provider-2", "provider-3"]);
+  assertEquals(calls.map((call) => argAfter(call.args, "--model")), [
+    "claude-fable-5-2",
+    "claude-fable-5-2",
+    "claude-fable-5-2",
+    "gpt-6-astra",
+    "claude-opus-5-5",
+    "deepseek-v4-pro",
+  ]);
+  assertEquals(
+    calls.slice(0, 3).map((call) => call.env.CLAUDE_CODE_OAUTH_TOKEN),
+    [
+      "provider-secret",
+      "provider-2-secret",
+      "provider-3-secret",
+    ],
+  );
+});
+
 /** The Codex credential's child env, as `exportCodexCredential` returns it. */
 const CODEX_CREDENTIAL = { env: { OPENAI_API_KEY: "codex-secret" } };
 
@@ -138,7 +184,7 @@ Deno.test("runReviewRound retries a usage-limit round once on the next subscript
   );
   assertStringIncludes(
     text,
-    "retrying the round once on subscription provider-2",
+    "retrying the round on subscription provider-2",
   );
 });
 
@@ -223,7 +269,7 @@ Deno.test("runReviewRound falls back after the rotated retry also hit the limit 
   const text = log.join("\n");
   assertStringIncludes(
     text,
-    "retrying the round once on subscription provider-2",
+    "retrying the round on subscription provider-2",
   );
   assertStringIncludes(text, "round fell back to provider deepseek");
 });
@@ -413,13 +459,12 @@ Deno.test("renderStreamLine keeps the round's log readable: result text and non-
 
 // Issue #5081: the reviewer runs on Fable 5.2, whose limit can be capped apart
 // from the rest of the subscription. A Fable round that hits a usage limit
-// steps down to Opus on the same subscription before any rotation or provider
-// switch; only when Opus is spent too does the chain move on.
-Deno.test("runReviewRound steps a Fable round down to Opus xhigh on the same subscription first (Issue #5081)", async () => {
+// tries every available subscription, then Astra, before Opus.
+Deno.test("runReviewRound uses Opus when Fable is spent and Astra unavailable (Issue #5081)", async () => {
   const { deps, calls, excluded, log } = fakeDeps([
     { code: 1, output: USAGE_LIMIT },
     { code: 0, output: "Round done on Opus" },
-  ]);
+  ], { next: null });
   assertEquals(
     await runReviewRound(
       "p",
@@ -437,11 +482,11 @@ Deno.test("runReviewRound steps a Fable round down to Opus xhigh on the same sub
     "--effort",
     "xhigh",
   ]);
-  assertEquals(excluded, [], "no rotation while Opus has budget");
+  assertEquals(excluded, ["provider"]);
   assertStringIncludes(log.join("\n"), "stepping down to claude-opus-5-5");
 });
 
-Deno.test("runReviewRound rotates once the Opus step-down hits the limit too (Issue #5081)", async () => {
+Deno.test("runReviewRound tries Opus after all available Fable subscriptions (Issue #5081)", async () => {
   const { deps, calls } = fakeDeps([
     { code: 1, output: USAGE_LIMIT },
     { code: 1, output: USAGE_LIMIT },
@@ -456,8 +501,8 @@ Deno.test("runReviewRound rotates once the Opus step-down hits the limit too (Is
     0,
   );
   assertEquals(calls.length, 3);
-  // The rotated subscription gets the configured Fable round again.
-  assertEquals(calls[2]!.args[3], "claude-fable-5-2");
+  assertEquals(calls[1]!.args[3], "claude-fable-5-2");
+  assertEquals(calls[2]!.args[3], "claude-opus-5-5");
 });
 
 Deno.test("runReviewRound does not step down a round that is not on Fable (Issue #5081)", async () => {
@@ -470,16 +515,15 @@ Deno.test("runReviewRound does not step down a round that is not on Fable (Issue
 });
 
 // ---------------------------------------------------------------------------
-// Issue #5083: the chain Fable -> Opus -> rotation -> Codex -> DeepSeek. Each
+// Issue #5083: the chain Fable -> rotation -> Astra -> Opus -> DeepSeek. Each
 // link runs only once the one before it is exhausted, and a Codex attempt
 // that fails for another reason stops the chain before DeepSeek.
 // ---------------------------------------------------------------------------
 
-Deno.test("runReviewRound runs the chain Fable, Opus, rotation, then Codex, and stops before DeepSeek (Issue #5083)", async () => {
+Deno.test("runReviewRound runs the chain Fable, rotation, then Astra, and stops before DeepSeek (Issue #5083)", async () => {
   const { deps, calls } = fakeDeps(
     [
       { code: 1, output: USAGE_LIMIT }, // Fable
-      { code: 1, output: USAGE_LIMIT }, // Opus step-down
       { code: 1, output: USAGE_LIMIT }, // rotated Fable
       { code: 0, output: "Round done on Codex" },
     ],
@@ -497,10 +541,9 @@ Deno.test("runReviewRound runs the chain Fable, Opus, rotation, then Codex, and 
   assertEquals(calls.map((c) => c.runner), [
     "claude",
     "claude",
-    "claude",
     "codex",
   ]);
-  const codex = calls[3]!;
+  const codex = calls[2]!;
   assertEquals(argAfter(codex.args, "--model"), "gpt-6-astra");
   assert(codex.args.includes('model_reasoning_effort="high"'));
   assert(
@@ -525,7 +568,7 @@ Deno.test("runReviewRound runs the chain Fable, Opus, rotation, then Codex, and 
     "CLAUDE_CODE_OAUTH_TOKEN" in codex.env,
     false,
   );
-  assertEquals(calls.length, 4, "DeepSeek is not reached once Codex succeeds");
+  assertEquals(calls.length, 3, "DeepSeek is not reached once Codex succeeds");
 });
 
 Deno.test("runReviewRound does not step a Fable round down unless it was usage-limited (Issue #5083)", async () => {
@@ -635,9 +678,9 @@ Deno.test("runReviewRound logs exactly one INFO line per provider or model switc
   const { deps, log } = fakeDeps(
     [
       { code: 1, output: USAGE_LIMIT }, // Fable
-      { code: 1, output: USAGE_LIMIT }, // Opus step-down
       { code: 1, output: USAGE_LIMIT }, // rotated Fable
-      { code: 1, output: "codex refused", usageLimited: true }, // Codex
+      { code: 1, output: USAGE_LIMIT }, // Astra
+      { code: 1, output: "codex refused", usageLimited: true }, // Opus
       { code: 0, output: "Round done on the fallback" }, // DeepSeek
     ],
     { codex: CODEX_CREDENTIAL },
@@ -652,13 +695,13 @@ Deno.test("runReviewRound logs exactly one INFO line per provider or model switc
   );
   const info = log.filter((m) => m.startsWith("INFO: "));
   assertEquals(info.length, 4, info.join("\n"));
-  assertStringIncludes(info[0]!, "stepping down to claude-opus-5-5");
+  assertStringIncludes(info[2]!, "stepping down to claude-opus-5-5");
   assertStringIncludes(
-    info[1]!,
-    "retrying the round once on subscription provider-2",
+    info[0]!,
+    "retrying the round on subscription provider-2",
   );
-  assertStringIncludes(info[2]!, "round fell back to provider codex");
-  assertStringIncludes(info[2]!, "gpt-6-astra");
+  assertStringIncludes(info[1]!, "round fell back to provider codex");
+  assertStringIncludes(info[1]!, "gpt-6-astra");
   assertStringIncludes(info[3]!, "round fell back to provider deepseek");
   assertEquals(log.some((m) => m.includes("ERROR")), false);
 });
