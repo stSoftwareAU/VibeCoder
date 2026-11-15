@@ -471,7 +471,8 @@ RUN set -eu; \
 # The entrypoint seeds the durable volume cache from it — no round trip mid-run.
 ARG PLAYWRIGHT_MCP_VERSION="0.0.75"
 ENV VIBE_DENO_SEED_DIR="/opt/deno-seed"
-COPY deno-seed/ /opt/deno-seed-src/
+# Apple container materialises directory COPY sources as empty; use the glob.
+COPY deno-seed/* /opt/deno-seed-src/
 RUN set -eu; s=/opt/deno-seed-src; m="npm:@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}"; \
     grep -q "\"$m\"" $s/deno.json; cp $s/deno.lock /tmp/seed.lock; \
     export DENO_DIR="${VIBE_DENO_SEED_DIR}"; \

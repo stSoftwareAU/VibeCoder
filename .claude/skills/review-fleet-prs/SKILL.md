@@ -292,9 +292,9 @@ Issue #5081; Opus 5.5 at `xhigh` before it, Issue #2976). An unattended round
 that hits a usage limit moves down a fallback chain, each link taken only after
 the previous attempt ended with one: try every available Claude subscription
 once on the configured model; then Codex `gpt-6-astra` at `high`; then, for a
-configured Fable round, `claude-opus-5-5` at `xhigh` on the current Claude
-subscription; then DeepSeek `deepseek-v4-pro`. A Fable model cap also triggers
-this chain. Codex is skipped when no credential reaches the round; its own
+configured Fable round, `claude-opus-5-5` at `xhigh` across the available Claude
+subscriptions; then DeepSeek `deepseek-v4-pro`. A Fable model cap also triggers
+this chain. Codex is skipped when its executable is absent or no credential reaches the round; its own
 persistent home can hold a separate login (Issue #5127).
 The chain is in
 [running-unattended.md](references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).

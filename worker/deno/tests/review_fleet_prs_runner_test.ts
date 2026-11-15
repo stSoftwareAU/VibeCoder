@@ -206,6 +206,7 @@ Deno.test("run.sh --once reviews the gate's ready PRs in one headless round in t
   assertEquals(code, 0, output);
   const args = await claudeArgs(home);
   assert(args, "the round was not started");
+  assertStringIncludes((await recorded(home, "plan-args"))!, "--review-round");
   // The worker image, run in the entrypoint's review-round mode.
   assertStringIncludes(args, "vibe-coder:test\nreview-round\n--prompt-file\n");
   assertStringIncludes(args, "--claude-args");
@@ -665,7 +666,7 @@ Deno.test("run.sh fails a pass whose worker image is not built, naming the fix (
   const { code } = await run(home, "--once");
   assertEquals(code, 1);
   assertEquals(await claudeArgs(home), null);
-  assertStringIncludes(await runnerLog(home), "the worker image is not built");
+  assertStringIncludes(await runnerLog(home), "the review image is missing");
   assertStringIncludes(
     (await recorded(home, "escalate-args"))!,
     "--result=fail",

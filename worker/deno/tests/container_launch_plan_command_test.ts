@@ -11,8 +11,11 @@
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
-import { assertEquals } from "@std/assert";
-import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
+import { assert, assertEquals, assertRejects } from "@std/assert";
+import {
+  buildLaunchPlanForCommand,
+  ensureReviewImage,
+} from "../commands/container_launch_plan.ts";
 import { DEFAULT_MAX_RUN_SECONDS } from "../lib/run_entrypoint.ts";
 import { resolveWatchdogSeconds } from "../lib/container_watchdog.ts";
 import { REPO_ROOT } from "./fixtures/launcher_harness.ts";
@@ -57,4 +60,107 @@ Deno.test("buildLaunchPlanForCommand - the run carries the plan clock plus the w
   } finally {
     await Deno.remove(home, { recursive: true });
   }
+});
+
+Deno.test("review launch plan installs Claude and Codex without mounting worker Codex credentials (Issue #5164)", async () => {
+  const home = await Deno.makeTempDir({ prefix: "review-image-" });
+  try {
+    const credentialDir = `${home}/credentials`;
+    for (const sub of ["gh", "claude"]) {
+      await Deno.mkdir(`${credentialDir}/${sub}`, { recursive: true });
+    }
+    const configFile = `${home}/config.json`;
+    await Deno.writeTextFile(
+      configFile,
+      JSON.stringify({ agent_providers: ["claude"] }),
+    );
+    const environment: Record<string, string> = {
+      HOME: home,
+      VIBE_CREDENTIAL_DIR: credentialDir,
+      CONFIG_PATH: configFile,
+      WORK_DIR: `${home}/work`,
+    };
+    const options = {
+      env: (name: string) => environment[name],
+      probe: (candidate: { executable: string }) =>
+        Promise.resolve({
+          available: true,
+          path: `/usr/bin/${candidate.executable}`,
+        }),
+    };
+    const worker = await buildLaunchPlanForCommand(
+      REPO_ROOT,
+      "worker",
+      options,
+    );
+    const review = await buildLaunchPlanForCommand(REPO_ROOT, "review", {
+      ...options,
+      reviewRound: true,
+    });
+    assert(review.buildArgs.includes("AGENT_PROVIDERS=claude,codex"));
+    assert(
+      review.image !== worker.image,
+      "a Claude-only cache must not satisfy a review image",
+    );
+    assertEquals(review.mounts, worker.mounts);
+    assert(!review.mounts.some((m) => m.source.endsWith("/codex")));
+    assert(
+      review.proxyRunArgs.some((arg) => arg.includes("chatgpt.com")),
+      "Astra subscription endpoints must be allowed",
+    );
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("review image preparation builds base and extension once and checks the resulting image (Issue #5164)", async () => {
+  const plan = {
+    runtime: "fixture",
+    image: "review:abc",
+    imageInspectArgs: ["image", "inspect", "review:abc"],
+    buildArgs: ["build", "base"],
+    extensionBuildArgs: ["build", "extension"],
+  };
+  const calls: string[][] = [];
+  await ensureReviewImage(plan, (args) => {
+    calls.push(args);
+    return Promise.resolve({
+      success: calls.length !== 1,
+      code: calls.length === 1 ? 1 : 0,
+      stdout: new Uint8Array(),
+      stderr: new Uint8Array(),
+      signal: null,
+    });
+  });
+  assertEquals(calls, [
+    plan.imageInspectArgs,
+    plan.buildArgs,
+    plan.extensionBuildArgs,
+    plan.imageInspectArgs,
+  ]);
+  calls.length = 0;
+  await ensureReviewImage(plan, (args) => {
+    calls.push(args);
+    return Promise.resolve({
+      success: true,
+      code: 0,
+      stdout: new Uint8Array(),
+      stderr: new Uint8Array(),
+      signal: null,
+    });
+  });
+  assertEquals(calls, [plan.imageInspectArgs]);
+  await assertRejects(
+    () =>
+      ensureReviewImage(plan, () =>
+        Promise.resolve({
+          success: false,
+          code: 17,
+          stdout: new Uint8Array(),
+          stderr: new TextEncoder().encode("download checksum mismatch"),
+          signal: null,
+        })),
+    Error,
+    "download checksum mismatch",
+  );
 });

@@ -36,6 +36,7 @@ interface Outcome {
   code: number;
   output: string;
   usageLimited?: boolean;
+  unavailable?: boolean;
 }
 
 /** Options for {@link fakeDeps}. */
@@ -817,4 +818,77 @@ Deno.test("runCodexCli gives the child only the curated env, not this process's 
       assertStringIncludes(seen, `CODEX_HOME=${dir}`);
     },
   );
+});
+
+Deno.test("a missing Codex executable still permits Opus with remaining Claude quota (Issue #5164)", async () => {
+  const { deps, calls } = fakeDeps([
+    { code: 1, output: USAGE_LIMIT },
+    {
+      code: 127,
+      output: "missing codex",
+      unavailable: true,
+      usageLimited: false,
+    },
+    { code: 0, output: "Reviewed on Opus" },
+  ], { next: null, codex: CODEX_CREDENTIAL });
+  assertEquals(
+    await runReviewRound("p", ["--model", "claude-fable-5-2"], deps),
+    0,
+  );
+  assertEquals(calls.map((c) => argAfter(c.args, "--model")), [
+    "claude-fable-5-2",
+    "gpt-6-astra",
+    "claude-opus-5-5",
+  ]);
+});
+
+Deno.test("runCodexCli declares a missing executable unavailable (Issue #5164)", async () => {
+  const home = await Deno.makeTempDir();
+  try {
+    const result = await runCodexCli(
+      [],
+      "p",
+      {},
+      undefined,
+      1000,
+      `${home}/missing-codex`,
+    );
+    assertEquals(result.code, 127);
+    assertEquals(result.unavailable, true);
+    assertEquals(result.usageLimited, false);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("Opus tries other Claude subscriptions before paid DeepSeek (Issue #5164)", async () => {
+  const { deps, calls } = fakeDeps([
+    { code: 1, output: USAGE_LIMIT }, // Fable provider
+    { code: 1, output: USAGE_LIMIT }, // Fable provider-2
+    { code: 1, output: USAGE_LIMIT }, // Fable provider-3
+    { code: 1, output: "Codex quota exhausted", usageLimited: true },
+    { code: 1, output: USAGE_LIMIT }, // Opus provider-3
+    { code: 0, output: "Reviewed on Opus provider" },
+  ], { codex: CODEX_CREDENTIAL });
+  deps.switchCredential = (_held, setEnv, tried) => {
+    const next =
+      ["provider", "provider-2", "provider-3"].find((label) =>
+        !tried?.includes(label)
+      ) ?? null;
+    if (next) setEnv("CLAUDE_CODE_OAUTH_TOKEN", `${next}-secret`);
+    return Promise.resolve(next);
+  };
+  assertEquals(
+    await runReviewRound("p", ["--model", "claude-fable-5-2"], deps),
+    0,
+  );
+  assertEquals(calls.map((c) => argAfter(c.args, "--model")), [
+    "claude-fable-5-2",
+    "claude-fable-5-2",
+    "claude-fable-5-2",
+    "gpt-6-astra",
+    "claude-opus-5-5",
+    "claude-opus-5-5",
+  ]);
+  assertEquals(calls.at(-1)?.env.CLAUDE_CODE_OAUTH_TOKEN, "provider-secret");
 });

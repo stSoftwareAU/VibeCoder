@@ -52,6 +52,10 @@ import {
 import { emitSelfHealEventAuto } from "../lib/self_heal_events.ts";
 import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
+import {
+  agentProvidersBuildValue,
+  resolveAgentProvider,
+} from "../lib/agent_provider.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import { resolveEgressAllowlist } from "../lib/egress_allowlist.ts";
 import { readImgbbApiKeyFromEnv } from "../lib/imgbb_upload.ts";
@@ -111,6 +115,8 @@ export async function buildLaunchPlanForCommand(
      * the plan builds from the committed file.
      */
     strippedContainerfile?: string;
+    /** Install the review fallback CLIs without adding credential mounts. */
+    reviewRound?: boolean;
     /** Environment reader. Defaults to the process environment. */
     env?: (name: string) => string | undefined;
     /** Clock in epoch-ms. Defaults to `Date.now`. */
@@ -163,12 +169,30 @@ export async function buildLaunchPlanForCommand(
   // credential mounts, the build argument and the image tag all come from this
   // value, so a `.config.json` selection cannot mean one provider set to the
   // mounts and another to the build — which is exactly the reported defect.
-  const { providers, buildValue: agentProviders } =
-    await readConfiguredAgentProviderSet(
-      hostPaths.configFile,
-      manifest.installedProviders,
-      env,
-    );
+  const { providers } = await readConfiguredAgentProviderSet(
+    hostPaths.configFile,
+    manifest.installedProviders,
+    env,
+  );
+
+  // Review fallbacks need both executables, but use their own credential
+  // plumbing. Installing Codex must not expose the worker's Codex secrets.
+  const imageProviders = options.reviewRound
+    ? [
+      ...new Map(
+        [
+          ...providers,
+          resolveAgentProvider("claude"),
+          resolveAgentProvider("codex"),
+        ]
+          .map((provider) => [provider.id, provider]),
+      ).values(),
+    ]
+    : providers;
+  const agentProviders = agentProvidersBuildValue(
+    imageProviders.map((provider) => provider.id),
+    manifest.installedProviders,
+  );
 
   // The launcher runs on the host, before the worker loads its configuration,
   // so the tool selection is read here (Issue #72). Validation is fail-loud at
@@ -365,7 +389,7 @@ export async function buildLaunchPlanForCommand(
     ? configRecord.imgbb_api_key.trim()
     : "";
   const egressAllowHosts = resolveEgressAllowlist({
-    enabledProviderIds: providers.map((provider) => provider.id),
+    enabledProviderIds: imageProviders.map((provider) => provider.id),
     imgbbConfigured: imgbbKey !== "" || readImgbbApiKeyFromEnv(env) !== "",
     anthropicBaseUrl: env("ANTHROPIC_BASE_URL"),
     extraHosts: configRecord.egress_allow_hosts,
@@ -401,6 +425,7 @@ export async function buildLaunchPlanForCommand(
     watchdogSeconds,
     hostPaths,
     agentProviders: providers,
+    imageAgentProviders: imageProviders,
     buildCommit,
     ...(customPromptPaths.length > 0 ? { customPromptPaths } : {}),
     ...(containerToolsSpecJson ? { containerToolsSpecJson } : {}),
@@ -434,6 +459,48 @@ export async function buildLaunchPlanForCommand(
   return plan;
 }
 
+/** Build a missing review image using the launcher's exact pinned build plan. */
+export async function ensureReviewImage(
+  plan: Pick<
+    ContainerLaunchPlan,
+    | "runtime"
+    | "image"
+    | "imageInspectArgs"
+    | "buildArgs"
+    | "extensionBuildArgs"
+  >,
+  run = (args: string[], timeoutMs: number) =>
+    commandOutputWithTimeout(plan.runtime, {
+      args,
+      timeoutMs,
+      stdout: args === plan.imageInspectArgs ? "null" : "inherit",
+      stderr: "piped",
+    }),
+): Promise<void> {
+  if (
+    (await run(plan.imageInspectArgs, DEFAULT_SUBPROCESS_TIMEOUT_MS)).success
+  ) return;
+  console.error(`Building review image ${plan.image} with Claude and Codex`);
+  for (const args of [plan.buildArgs, plan.extensionBuildArgs]) {
+    if (args.length === 0) continue;
+    const result = await run(args, 30 * 60 * 1000);
+    if (!result.success) {
+      throw new Error(
+        `Review image build failed (exit ${result.code}): ${
+          new TextDecoder().decode(result.stderr).trim()
+        }`,
+      );
+    }
+  }
+  if (
+    !(await run(plan.imageInspectArgs, DEFAULT_SUBPROCESS_TIMEOUT_MS)).success
+  ) {
+    throw new Error(
+      `Review image ${plan.image} is still missing after its build`,
+    );
+  }
+}
+
 export const containerLaunchPlanCommand: Command = {
   name: "container-launch-plan",
   description:
@@ -462,7 +529,9 @@ export const containerLaunchPlanCommand: Command = {
 
       const plan = await buildLaunchPlanForCommand(baseDir, containerName, {
         strippedContainerfile: `${out}${STRIPPED_CONTAINERFILE_SUFFIX}`,
+        reviewRound: args["review-round"] === true,
       });
+      if (args["review-round"] === true) await ensureReviewImage(plan);
       await Deno.writeTextFile(out, renderContainerLaunchPlan(plan));
 
       return {
