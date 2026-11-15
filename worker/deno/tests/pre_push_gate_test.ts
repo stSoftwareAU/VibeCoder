@@ -32,6 +32,7 @@ import {
   repoShellcheckPolicy,
   runAffectedShellcheckChecks,
   runPrePushGate,
+  unfollowableImportRoots,
   workflowRunsCspell,
 } from "../lib/pre_push_gate.ts";
 import {
@@ -4386,6 +4387,52 @@ Deno.test("planChangedFileChecks: a full-suite root runs test:unit with no file 
   );
 });
 
+Deno.test("planChangedFileChecks: a changed test anywhere under the root runs, and a source plans its co-located test (#4930)", () => {
+  const tracked = [
+    "worker/deno/deno.json",
+    "worker/deno/lib/alert_feeds/dependabot_alerts.ts",
+    "worker/deno/lib/alert_feeds/dependabot_alerts_test.ts",
+    "worker/deno/tests/support/helper.ts",
+    "worker/deno/tests/support/helper_test.ts",
+  ];
+  // A changed _test.ts outside tests/ runs itself.
+  assertEquals(
+    denoTestCommands(
+      ["worker/deno/lib/alert_feeds/dependabot_alerts_test.ts"],
+      tracked,
+      ["worker/deno"],
+    ),
+    ["deno task test:unit 'lib/alert_feeds/dependabot_alerts_test.ts'"],
+  );
+  // A changed source plans its tracked co-located sibling.
+  assertEquals(
+    denoTestCommands(
+      ["worker/deno/lib/alert_feeds/dependabot_alerts.ts"],
+      tracked,
+      ["worker/deno"],
+    ),
+    ["deno task test:unit 'lib/alert_feeds/dependabot_alerts_test.ts'"],
+  );
+  // Control: a source whose sibling is not tracked plans no test.
+  assertEquals(
+    denoTestCommands(
+      ["worker/deno/lib/alert_feeds/untracked.ts"],
+      tracked,
+      ["worker/deno"],
+    ),
+    [],
+  );
+  // A support helper under tests/ keeps today's behaviour: no sibling.
+  assertEquals(
+    denoTestCommands(
+      ["worker/deno/tests/support/helper.ts"],
+      tracked,
+      ["worker/deno"],
+    ),
+    [],
+  );
+});
+
 Deno.test("planChangedFileChecks: changed tests and sources map to one sorted, deduplicated test:unit list (#4930)", () => {
   const tracked = [...UNIT_TRACKED, "worker/deno/tests/bar_test.ts"];
   assertEquals(
@@ -4591,7 +4638,7 @@ Deno.test("runPrePushGate: a changed test runs the repo's test:unit task, and it
   }
 });
 
-Deno.test("planChangedFileChecks: only a tests/ file ending _test.ts is a test, and only a non-test .ts source outside tests/ maps to a sibling (#4930)", () => {
+Deno.test("planChangedFileChecks: a file ending _test.ts is a test wherever it lives, and only a non-test .ts source maps to a sibling (#4930)", () => {
   const tracked = [
     ...UNIT_TRACKED,
     "worker/deno/lib/x_test.ts",
@@ -4600,10 +4647,10 @@ Deno.test("planChangedFileChecks: only a tests/ file ending _test.ts is a test, 
     "worker/deno/tests/helper_test.ts",
   ];
   const roots = ["worker/deno"];
-  // `_test.ts` outside tests/ is not a test to run, nor a source for a sibling.
+  // `_test.ts` outside tests/ is a test to run, though it maps to no sibling.
   assertEquals(
     denoTestCommands(["worker/deno/lib/x_test.ts"], tracked, roots),
-    [],
+    ["deno task test:unit 'lib/x_test.ts'"],
   );
   // A tests/ helper is not a test, and tests/ files map to no sibling.
   assertEquals(
@@ -4935,6 +4982,128 @@ Deno.test("loadReferencedUnitTests: literal prompt loaders select their tests (P
   }
 });
 
+Deno.test("loadReferencedUnitTests: a co-located test is selected through its imports or the names it reads (#4930)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "vibe-colocated-refs-" });
+  try {
+    const files: Record<string, string> = {
+      "worker/deno/lib/z.ts": "export const z = 1;\n",
+      "worker/deno/lib/feeds/y_helper.ts": 'import "../z.ts";\n',
+      "worker/deno/lib/feeds/y_test.ts": 'import "./y_helper.ts";\n',
+      "worker/deno/lib/feeds/y_doc_test.ts":
+        'await readRepoDoc("docs/CONFIG.md");\n',
+      "worker/deno/lib/feeds/unrelated_test.ts": 'import "./other.ts";\n',
+      "worker/deno/lib/feeds/other.ts": "export {};\n",
+      "docs/CONFIG.md": "# Config\n",
+    };
+    for (const [path, text] of Object.entries(files)) {
+      await Deno.mkdir(`${root}/${path.slice(0, path.lastIndexOf("/"))}`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(`${root}/${path}`, text);
+    }
+    const tracked = ["worker/deno/deno.json", ...Object.keys(files)];
+    const load = (changed: string[]) =>
+      loadReferencedUnitTests(root, tracked, changed, ["worker/deno"]);
+    // Imports a changed source through a helper: y_test.ts is selected.
+    assertEquals(await load(["worker/deno/lib/z.ts"]), {
+      "worker/deno": ["lib/feeds/y_test.ts"],
+    });
+    // Names a changed doc: y_doc_test.ts is selected, unrelated_test.ts is not.
+    assertEquals(await load(["docs/CONFIG.md"]), {
+      "worker/deno": ["lib/feeds/y_doc_test.ts"],
+    });
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+/**
+ * Write `files` (repo-relative path to text) under a fresh temp root and run
+ * `fn` on it. Every written file is tracked.
+ */
+async function withTrackedFiles<T>(
+  files: Record<string, string>,
+  fn: (root: string, tracked: string[]) => Promise<T>,
+): Promise<T> {
+  const root = await Deno.makeTempDir({ prefix: "vibe-unfollowable-" });
+  try {
+    for (const [path, text] of Object.entries(files)) {
+      await Deno.mkdir(`${root}/${path.slice(0, path.lastIndexOf("/"))}`, {
+        recursive: true,
+      });
+      await Deno.writeTextFile(`${root}/${path}`, text);
+    }
+    return await fn(root, Object.keys(files));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+// The keyword is spelled apart so this file holds no computed call of its own:
+// the repo's own roots must not read as unfollowable because of their tests.
+const DYNAMIC_KEYWORD = "import";
+
+Deno.test("unfollowableImportRoots: a local import-map target in imports or scopes is reported; a jsr-only map is not (#4930)", async () => {
+  await withTrackedFiles({
+    "alias/deno.json": JSON.stringify({ imports: { "@/": "./lib/" } }),
+    "scoped/deno.jsonc":
+      '// a scoped alias\n{ "scopes": { "./x/": { "@/": "../lib/" } } }\n',
+    "jsr/deno.json": JSON.stringify({
+      imports: { "@std/assert": "jsr:@std/assert@1" },
+      scopes: { "./x/": { "@std/x": "npm:x@1" } },
+    }),
+    "absolute/deno.json": JSON.stringify({ imports: { "@/": "/srv/lib/" } }),
+  }, async (root) => {
+    assertEquals(
+      await unfollowableImportRoots(root, [
+        "alias",
+        "scoped",
+        "jsr",
+        "absolute",
+      ]),
+      ["alias", "scoped", "absolute"],
+    );
+  });
+});
+
+Deno.test("loadReferencedUnitTests: a computed dynamic import seeds on a .ts change under the root; a literal or prose form does not (#4930)", async () => {
+  await withTrackedFiles({
+    "worker/deno/lib/a.ts": "export const a = 1;\n",
+    "worker/deno/tests/x.ts": "export {};\n",
+    "worker/deno/tests/dyn_test.ts": "await " + DYNAMIC_KEYWORD +
+      "(`../lib/${name}.ts`);\n",
+    "worker/deno/tests/literal_test.ts": "await " + DYNAMIC_KEYWORD +
+      '("./x.ts");\nawait ' + DYNAMIC_KEYWORD + "(`./plain.ts`);\n",
+    "worker/deno/tests/prose_test.ts": "// import (Issue #1) is prose.\n",
+    "docs/CONFIG.md": "# Config\n",
+  }, async (root, tracked) => {
+    const load = (changed: string[]) =>
+      loadReferencedUnitTests(root, tracked, changed, ["worker/deno"]);
+    assertEquals(await load(["worker/deno/lib/a.ts"]), {
+      "worker/deno": ["tests/dyn_test.ts"],
+    });
+    // A doc change is no .ts change under the root, so no computed seed.
+    assertEquals(await load(["docs/CONFIG.md"]), { "worker/deno": [] });
+  });
+});
+
+Deno.test("loadReferencedUnitTests: a long run of spaces after the call returns promptly, and spaces before the parenthesis do not match (#4930)", async () => {
+  const spaces = " ".repeat(200_000);
+  await withTrackedFiles({
+    "worker/deno/lib/a.ts": "export const a = 1;\n",
+    "worker/deno/tests/rejected_test.ts": DYNAMIC_KEYWORD + "(" + spaces +
+      "+name);\n",
+    "worker/deno/tests/spaced_test.ts": DYNAMIC_KEYWORD + spaces + "(name);\n",
+  }, async (root, tracked) => {
+    assertEquals(
+      await loadReferencedUnitTests(root, tracked, [
+        "worker/deno/lib/a.ts",
+      ], ["worker/deno"]),
+      { "worker/deno": ["tests/rejected_test.ts"] },
+    );
+  });
+});
+
 Deno.test("runPrePushGate: repair pushes enforce unit tests and markdownlint (PR #5034 review)", async () => {
   const { root, clone } = await makeRepoWithDocCommit();
   try {
@@ -5023,6 +5192,7 @@ const FOO_FAILURE =
  */
 async function makeUnitTestRepo(
   edit: (clone: string) => Promise<void>,
+  denoJson: Record<string, unknown> = { tasks: { "test:unit": "x" } },
 ): Promise<{ root: string; clone: string; stdin: string }> {
   const { root, clone } = await makeRepoWithDocCommit();
   await git(clone, "rm", "-q", "deno.json");
@@ -5030,7 +5200,7 @@ async function makeUnitTestRepo(
   await Deno.mkdir(`${clone}/worker/deno/tests`, { recursive: true });
   await Deno.writeTextFile(
     `${clone}/worker/deno/deno.json`,
-    JSON.stringify({ tasks: { "test:unit": "x" } }),
+    JSON.stringify(denoJson),
   );
   await Deno.writeTextFile(
     `${clone}/worker/deno/lib/foo.ts`,
@@ -5436,6 +5606,57 @@ Deno.test("needsFullUnitSuite: prompts, deno.json, deno.jsonc and deno.lock of t
   );
   assertEquals(needsFullUnitSuite(["docs/prompts.md"], "worker/deno"), false);
   assertEquals(needsFullUnitSuite([], "worker/deno"), false);
+});
+
+/** The `test:unit` commands a push editing `lib/foo.ts` runs under `denoJson`. */
+async function unitCommandsForFooEdit(
+  denoJson: Record<string, unknown>,
+): Promise<string[]> {
+  const { root, clone, stdin } = await makeUnitTestRepo(
+    (c) =>
+      Deno.writeTextFile(
+        `${c}/worker/deno/lib/foo.ts`,
+        "export const foo = 2;\n",
+      ),
+    denoJson,
+  );
+  try {
+    const ran: string[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      ...stubShellcheck(),
+      runner: (command) => {
+        ran.push(command);
+        return Promise.resolve({
+          started: true,
+          code: 0,
+          stdout: "",
+          stderr: "",
+        });
+      },
+    });
+    assert(result.ok, result.ok ? "" : result.error.message);
+    return ran.filter((c) => c.startsWith("deno task test:unit"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("runPrePushGate: a local import-map alias in the root runs the whole unit suite (#4930)", async () => {
+  assertEquals(
+    await unitCommandsForFooEdit({
+      tasks: { "test:unit": "x" },
+      imports: { "@/": "./lib/" },
+    }),
+    ["deno task test:unit"],
+  );
+  // Control: the same edit with no local alias keeps the selected list.
+  assertEquals(
+    await unitCommandsForFooEdit({ tasks: { "test:unit": "x" } }),
+    ["deno task test:unit 'tests/foo_test.ts'"],
+  );
 });
 
 Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, reaching a builder-based reader (PR #5034 review)", async () => {
