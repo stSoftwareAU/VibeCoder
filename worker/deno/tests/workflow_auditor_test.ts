@@ -4,7 +4,7 @@
  * Issue #1393: Create workflow auditor to check repos for required GitHub Actions.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 import {
   auditRepoWorkflows,
@@ -990,6 +990,100 @@ Deno.test(
     assertEquals(result.value.missing.length, 6);
     assertEquals(result.value.present.length, 0);
     assertEquals(result.value.partial.length, 0);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #5009 — a failed per-file content fetch fails the audit
+// ---------------------------------------------------------------------------
+
+const GITLEAKS_CONTENT_PATH =
+  "repos/owner/repo/contents/.github/workflows/gitleaks.yml";
+
+Deno.test(
+  "workflow_auditor - returns error when a listed workflow's content fetch fails with non-404 (Issue #5009)",
+  async () => {
+    const languages = makeLanguages(["Rust"]);
+    const listing = workflowDirResponse(["gitleaks.yml"]);
+
+    const failing = await auditRepoWorkflows("owner/repo", languages, {
+      runCommand: mockRunner({
+        [GITLEAKS_CONTENT_PATH]: fail(
+          "gh: HTTP 502: Bad Gateway (https://api.github.com/repos/owner/repo/contents/.github/workflows/gitleaks.yml)",
+        ),
+        "repos/owner/repo/contents/.github/workflows": listing,
+      }),
+    });
+    assertEquals(failing.ok, false);
+    if (failing.ok) return;
+    assertStringIncludes(failing.error, "gitleaks.yml");
+    assertStringIncludes(failing.error, "HTTP 502: Bad Gateway");
+
+    // Positive control: the same fixture with a readable file succeeds.
+    const healthy = await auditRepoWorkflows("owner/repo", languages, {
+      runCommand: mockRunner({
+        [GITLEAKS_CONTENT_PATH]: ok(gitleaksYaml),
+        "repos/owner/repo/contents/.github/workflows": listing,
+      }),
+    });
+    assertEquals(healthy.ok, true);
+    if (!healthy.ok) return;
+    assertEquals(
+      healthy.value.present.map((m) => m.spec.id).includes("gitleaks"),
+      true,
+    );
+  },
+);
+
+Deno.test(
+  "workflow_auditor - returns error when a workflow content fetch throws (Issue #5009)",
+  async () => {
+    const delegate = mockRunner({
+      "repos/owner/repo/contents/.github/workflows": workflowDirResponse([
+        "gitleaks.yml",
+      ]),
+    });
+    const result = await auditRepoWorkflows(
+      "owner/repo",
+      makeLanguages(["Rust"]),
+      {
+        runCommand: (cmd: string[]) => {
+          if (cmd.includes(GITLEAKS_CONTENT_PATH)) {
+            throw new Error("connection reset");
+          }
+          return delegate(cmd);
+        },
+      },
+    );
+    assertEquals(result.ok, false);
+    if (result.ok) return;
+    assertStringIncludes(result.error, "gitleaks.yml");
+    assertStringIncludes(result.error, "connection reset");
+  },
+);
+
+Deno.test(
+  "workflow_auditor - a listed workflow that 404s on fetch is treated as absent (Issue #5009)",
+  async () => {
+    // Deleted between the listing and the fetch: mirrors the listing's 404 rule.
+    const result = await auditRepoWorkflows(
+      "owner/repo",
+      makeLanguages(["Rust"]),
+      {
+        runCommand: mockRunner({
+          [GITLEAKS_CONTENT_PATH]: fail("gh: Not Found (HTTP 404)"),
+          "repos/owner/repo/contents/.github/workflows": workflowDirResponse([
+            "gitleaks.yml",
+          ]),
+        }),
+      },
+    );
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(
+      result.value.missing.map((s) => s.id).includes("gitleaks"),
+      true,
+    );
   },
 );
 
