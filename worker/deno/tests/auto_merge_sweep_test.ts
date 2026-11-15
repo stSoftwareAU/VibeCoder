@@ -31,6 +31,16 @@ import {
   updateBranchRefreshRefusals,
 } from "../lib/branch_refresh_refusal_streak.ts";
 import { FileLockTimeoutError } from "../lib/file_lock.ts";
+import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { createLogger } from "../lib/logger.ts";
+import {
+  AUTHOR,
+  BASE,
+  FakeFleet,
+  readyPr,
+  REPO,
+} from "./support/base_refresh_fleet.ts";
 
 const REPOS = [
   "stSoftwareAU/VibeCoder",
@@ -1202,24 +1212,76 @@ Deno.test("an armed, behind PR with changes requested gets no branch update (Iss
 });
 
 Deno.test("an armed, behind PR awaiting approval waits for its review", async () => {
-  infos.length = 0;
-  const { state, options } = harness({
-    "stSoftwareAU/VibeCoder": [{ number: 42 }],
-  }, {
-    prLiveState: () =>
-      Promise.resolve({
-        open: true,
-        mergeable: "MERGEABLE",
-        armed: true,
-        behind: true,
-        reviewRequired: true,
+  const autoMergeRequest = { enabledAt: "2026-01-01T00:00:00Z" };
+  const fleet = new FakeFleet([readyPr(42, {
+    reviewDecision: "REVIEW_REQUIRED",
+    autoMergeRequest,
+  })]);
+  const lines: string[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    if (args[0] === "pr" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify([{
+        number: 42,
+        headRefName: "feature-42",
+        baseRefName: BASE,
+        isDraft: false,
+      }]));
+    }
+    if (args[0] === "api" && args[1] === "graphql") {
+      return Promise.resolve(JSON.stringify({
+        data: {
+          repository: {
+            defaultBranchRef: { name: BASE },
+            pullRequest: {
+              headRefName: "feature-42",
+              baseRefName: BASE,
+              autoMergeRequest: fleet.prs.get(42)!.autoMergeRequest,
+              timelineItems: { nodes: [] },
+            },
+          },
+        },
+      }));
+    }
+    return fleet.gh(args);
+  };
+  const workDir = await Deno.makeTempDir({ prefix: "review-wait-sweep-" });
+  try {
+    const { deps } = await createProductionRunCoreDeps({
+      repoDir: workDir,
+      workDir,
+      githubUser: AUTHOR,
+      logger: createLogger({ write: (line) => lines.push(line) }),
+      config: {
+        ...buildDefaultWorkerConfig(),
+        workDir,
+        repos: [REPO],
+        allowedAuthors: [AUTHOR],
+        fleetPrAuthors: [AUTHOR],
+      },
+      autoMergeGhCommandFn: gh,
+    });
+    assertEquals(await deps.ensureAutoMerge!(), { ok: true, value: undefined });
+    assertEquals(
+      fleet.prs.get(42),
+      readyPr(42, {
+        reviewDecision: "REVIEW_REQUIRED",
+        autoMergeRequest,
       }),
-  });
-  const result = await sweepAutoMerge(options);
-  assert(result.ok);
-  assertEquals(state.updated, []);
-  assertEquals(state.attempted, []);
-  assert(infos.some((line) => line.message.includes("REVIEW_REQUIRED")));
+    );
+    assertEquals(
+      lines.filter((line) => /\b(?:WARNING|ERROR):/.test(line)),
+      [],
+      "waiting for approval must not report a failed branch update",
+    );
+    assert(
+      lines.some((line) =>
+        line.includes("INFO:") && line.includes("REVIEW_REQUIRED")
+      ),
+      "the sweep explains that the current head awaits approval",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
 });
 
 Deno.test("a requested review clears an escalated refusal even while mergeability is unknown", async () => {
