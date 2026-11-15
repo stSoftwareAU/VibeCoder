@@ -1232,6 +1232,7 @@ Deno.test("production coding dispatch defers actual heartbeat publication throug
       title,
       body,
       "test-user",
+      Math.floor(Date.now() / 1000),
     );
     assertEquals(snapshot.ok, true);
     const production = await createProductionRunCoreDeps(
@@ -1474,6 +1475,7 @@ Deno.test("production forwards genuine failures and only exact landed skip outco
       title,
       body,
       "test-user",
+      Math.floor(Date.now() / 1000),
     );
     assertEquals(snapshot.ok, true);
     const worker = createMockDeps({

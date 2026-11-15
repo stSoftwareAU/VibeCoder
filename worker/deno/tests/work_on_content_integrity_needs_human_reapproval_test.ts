@@ -246,6 +246,7 @@ async function setCapturedAt(
   const state = await loadContentApprovalState(stateDir, deps);
   const snapshot = state.snapshots["owner/repo|42"];
   if (snapshot) snapshot.capturedAt = Math.floor(Date.parse(iso) / 1000);
+  if (snapshot) snapshot.contentRevisionAt = snapshot.capturedAt;
   await deps.writeFile!(`${stateDir}/${STATE_FILE}`, JSON.stringify(state));
 }
 
@@ -260,6 +261,7 @@ async function seedSnapshot(
     APPROVED_TITLE,
     APPROVED_BODY,
     "alice",
+    Math.floor(Date.now() / 1000),
     deps,
   );
   await setCapturedAt(config, deps, SNAPSHOT_AT);
