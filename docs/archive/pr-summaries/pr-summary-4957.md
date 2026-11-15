@@ -160,7 +160,7 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   binary — evidence: `worker/deno/tests/token_economizer_learnings_test.ts`
   (`CLEAN_SCAN`, `cleanScan`) — reason: fixed in this diff. Clean scans now
   inject the observed clean output, and only the real-binary secret test is
-  ignored when gitleaks is absent (18 passed, 1 ignored with gitleaks hidden
+  ignored when gitleaks is absent (21 passed, 1 ignored with gitleaks hidden
   from `PATH`).
 - **violation** — Every outcome of a branch needs a test: the scanner-fault
   outcomes had none — evidence: `worker/deno/lib/token_economizer_learnings.ts`
@@ -234,7 +234,7 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   page sentence. No assertion was removed.
 - Gitleaks hidden from `PATH`:
   `deno test -A
-  tests/token_economizer_learnings_test.ts` ran 18 passed and 1
+  tests/token_economizer_learnings_test.ts` ran 21 passed and 1
   ignored (the real-binary secret test).
 - Gitleaks absent from `PATH` is not repeated for the round-2 tests: they use
   the injected clean scan.
