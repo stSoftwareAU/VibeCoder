@@ -340,6 +340,13 @@ export interface PhaseState {
    */
   tokenEconomizerRun?: TokenEconomizerRunStats;
   /**
+   * Every `TOKENECONOMIZER_HOME` a launch in this run used (Issue #4958),
+   * deduplicated, in launch order. Held for the whole run, not per execute
+   * body: an in-process retry re-runs the body, and
+   * {@link tokenEconomizerRun} must sum every attempt's plugin state.
+   */
+  tokenEconomizerHomes?: string[];
+  /**
    * A safety refusal the execute phase saw and what the one sonnet retry did
    * (Issue #3406). Once set, every later execute attempt in this run resolves
    * its sub-agent tier to `REFUSAL_RETRY_TIER`. Absent on a run with no

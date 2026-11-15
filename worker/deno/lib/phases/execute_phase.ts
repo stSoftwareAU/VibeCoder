@@ -1332,11 +1332,6 @@ async function executeClaudeBody(
       })
       : undefined;
 
-  // Every `TOKENECONOMIZER_HOME` this phase's launches used (Issue #4958),
-  // deduplicated: the plugin's own state under them is read once the agent
-  // invocations are over.
-  const tokenEconomizerHomes = new Set<string>();
-
   // Execute Claude with timeout and retry.
   //
   // One invocation, with the periodic WIP checkpoints (#4170) running for its
@@ -1362,10 +1357,15 @@ async function executeClaudeBody(
         runKind: "implementation",
         logger,
       });
+      // Every `TOKENECONOMIZER_HOME` this run's launches used (Issue #4958),
+      // kept on the phase state rather than per body: the infrastructure
+      // retry, the sonnet refusal retry and the prompt-too-long fallback all
+      // re-run this body in the same run, and each earlier attempt's plugin
+      // calls were billed too.
       if (tokenEconomizer.tokenEconomizer) {
-        tokenEconomizerHomes.add(
-          tokenEconomizer.tokenEconomizer.env.TOKENECONOMIZER_HOME,
-        );
+        const home = tokenEconomizer.tokenEconomizer.env.TOKENECONOMIZER_HOME;
+        const homes = state.tokenEconomizerHomes ??= [];
+        if (!homes.includes(home)) homes.push(home);
       }
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
@@ -1584,7 +1584,8 @@ async function executeClaudeBody(
 
   // Issue #4958: what the plugin did and cost, read from its own state after
   // every invocation (including a second-credential call) has finished, on
-  // every outcome. Eligible when the provider that serves the spawn is Claude,
+  // every outcome. It sums every home any attempt in this run used, so a
+  // re-run of this body never drops an earlier attempt's figures. Eligible when the provider that serves the spawn is Claude,
   // resolved from the same selector `claude_runner.ts` resolves its provider
   // from (`provider.id === CLAUDE_PROVIDER_ID`).
   state.tokenEconomizerRun = await summariseTokenEconomizerRun({
@@ -1592,7 +1593,7 @@ async function executeClaudeBody(
     eligible: deps.claude.rtkProviderId(effectiveAgentProvider, logger) ===
       CLAUDE_PROVIDER_ID,
     workDir: config.workDir,
-    stateHomes: [...tokenEconomizerHomes],
+    stateHomes: state.tokenEconomizerHomes ?? [],
     logger,
   });
 

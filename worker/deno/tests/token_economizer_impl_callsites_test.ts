@@ -314,6 +314,11 @@ interface FleetExtra {
   beforeReturn?: (options: RunClaudeOptions) => Promise<void> | void;
   /** The provider id `rtkProviderId` resolves the spawn to. */
   providerId?: string;
+  /**
+   * What each `runClaudeWithRetry` call returns, in order (the last repeats).
+   * Absent returns one clean result for every call.
+   */
+  results?: readonly Record<string, unknown>[];
 }
 
 /**
@@ -331,6 +336,8 @@ async function runFleet(
   config.workDir = workDir;
   config.tokenEconomizer = block;
   config.externalOrchestration = externalOrchestration;
+  // An in-process infrastructure retry waits this long before re-running.
+  config.infraRetryBackoffMs = 10;
   const ctx: IssueContext = {
     repo: "org/repo",
     issueNumber: 4956,
@@ -361,9 +368,12 @@ async function runFleet(
       runClaudeWithRetry: (async (options: RunClaudeOptions) => {
         calls.push(options);
         await extra.beforeReturn?.(options);
+        const results = extra.results;
         return {
           ok: true,
-          value: { output: "done", exitCode: 0, timedOut: false },
+          value: results === undefined
+            ? { output: "done", exitCode: 0, timedOut: false }
+            : results[Math.min(calls.length - 1, results.length - 1)],
         };
       }) as never,
       prepareRtkRun: rtkSeam([]).prepare as never,
@@ -547,5 +557,130 @@ Deno.test({
         });
       })
     );
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Fleet path: more than one plugin launch in one run (Issue #4958)
+// ---------------------------------------------------------------------------
+
+/**
+ * Writes one launch's plugin state under its `TOKENECONOMIZER_HOME`: one
+ * session (two facts, one redirect) and one paid judge job of `judgeTokens`.
+ */
+async function writeLaunchState(
+  options: RunClaudeOptions,
+  judgeTokens: number,
+): Promise<string> {
+  const home = options.tokenEconomizer?.env.TOKENECONOMIZER_HOME;
+  assert(home !== undefined, "the launch carried no home");
+  const base = join(home, "repos", "k", "claude");
+  await Deno.mkdir(join(base, "sessions"), { recursive: true });
+  await Deno.writeTextFile(
+    join(base, "sessions", "s.json"),
+    JSON.stringify({ injected_ids: ["a", "b"], nudges: 1, aborts: 0 }),
+  );
+  await Deno.writeTextFile(
+    join(base, "ledger.jsonl"),
+    JSON.stringify({
+      kind: "overhead",
+      overhead: { spiral_judge_tokens: judgeTokens },
+    }) + "\n",
+  );
+  return home;
+}
+
+/** A clean agent result. */
+const CLEAN_RESULT = { output: "done", exitCode: 0, timedOut: false };
+
+/** A SIGKILL at ok memory pressure: retried once in-process (#1550, #4374). */
+const KILLED_RESULT = {
+  output: "Running the full quality gate",
+  exitCode: 137,
+  rawExitCode: 137,
+  killed: true,
+  timedOut: false,
+  memoryPressureAtKill: {
+    level: "ok",
+    totalBytes: 16 * 1024 ** 3,
+    availableBytes: 8 * 1024 ** 3,
+  },
+};
+
+/** A spent subscription window: the phase switches credential once (#1670). */
+const USAGE_LIMIT_RESULT = {
+  output: "edited the parser",
+  exitCode: 2,
+  timedOut: false,
+  usageLimit: { waitSeconds: 3600, resetEpochMs: 1_800_000_000_000 },
+};
+
+/**
+ * Drives the fleet phase with `results` and a launch state per call, and
+ * returns the homes the launches used with the stats the phase recorded.
+ */
+async function runTwoLaunches(
+  results: readonly Record<string, unknown>[],
+  judgeTokens: readonly number[],
+): Promise<{ homes: string[]; state: PhaseState | undefined }> {
+  return await withPluginDir((pluginDir) =>
+    withWorkDir(async (workDir) => {
+      const homes: string[] = [];
+      let recorded: PhaseState | undefined;
+      await runFleet(workDir, enabledBlock(), false, pluginDir, {
+        results,
+        onState: (s) => recorded = s,
+        beforeReturn: async (options) => {
+          homes.push(
+            await writeLaunchState(options, judgeTokens[homes.length] ?? 0),
+          );
+        },
+      });
+      return { homes, state: recorded };
+    })
+  );
+}
+
+Deno.test({
+  name:
+    "fleet implementation - an in-process infrastructure retry keeps the first attempt's plugin figures (Issue #4958)",
+  async fn() {
+    const { homes, state } = await runTwoLaunches(
+      [KILLED_RESULT, CLEAN_RESULT],
+      [5000, 700],
+    );
+    // The retry re-ran the phase body: two launches, each with its own home.
+    assertEquals(homes.length, 2);
+    assert(homes[0] !== homes[1], "each launch has its own home");
+    assertEquals(state?.tokenEconomizerHomes, homes);
+    const stats = state?.tokenEconomizerRun;
+    assertEquals(stats?.status, "on");
+    assertEquals(stats?.judgeCalls, 2);
+    assertEquals(stats?.redirects, 2);
+    assertEquals(stats?.factsInjected, 4);
+    assertEquals(stats?.pluginEffectiveTokens, 5700);
+    // 5,700 effective tokens at haiku's 1 USD per million input.
+    assertEquals(stats?.pluginCostUsd, 0.0057);
+  },
+});
+
+Deno.test({
+  name:
+    "fleet implementation - a credential switch sums both launches' plugin figures (Issue #4958)",
+  async fn() {
+    const { homes, state } = await runTwoLaunches(
+      [USAGE_LIMIT_RESULT, CLEAN_RESULT],
+      [5000, 700],
+    );
+    // The usage limit switched credential inside one body: a second launch.
+    assertEquals(homes.length, 2);
+    assert(homes[0] !== homes[1], "each launch has its own home");
+    const stats = state?.tokenEconomizerRun;
+    assertEquals(stats?.status, "on");
+    assertEquals(stats?.judgeCalls, 2);
+    assertEquals(stats?.redirects, 2);
+    assertEquals(stats?.factsInjected, 4);
+    assertEquals(stats?.pluginEffectiveTokens, 5700);
+    assertEquals(stats?.pluginCostUsd, 0.0057);
   },
 });

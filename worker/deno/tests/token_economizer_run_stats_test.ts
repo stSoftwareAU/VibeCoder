@@ -93,6 +93,35 @@ Deno.test("summarise - reads session and ledger figures, excluding imported reco
   });
 });
 
+Deno.test("summarise - sums the figures of every populated home (Issue #4958)", async () => {
+  await withTemp(async (dir) => {
+    const first = join(dir, "first");
+    const second = join(dir, "second");
+    await fixtureHome(first);
+    await fixtureHome(
+      second,
+      jsonl([{ kind: "overhead", overhead: { spiral_judge_tokens: 5000 } }]),
+    );
+    const stats = await summariseTokenEconomizerRun({
+      enabled: true,
+      eligible: true,
+      workDir: join(dir, "work"),
+      stateHomes: [first, second],
+    });
+    assertEquals(stats, {
+      enabled: true,
+      status: "on",
+      persistence: "unavailable",
+      factsInjected: 6,
+      redirects: 2,
+      stillStuckNotices: 2,
+      judgeCalls: 3,
+      pluginEffectiveTokens: 6150,
+      pluginCostUsd: 0.00615, // 6150 effective tokens at haiku's 1 USD per million input
+    });
+  });
+});
+
 Deno.test("summarise - a ledger-only home leaves the session figures absent, not 0", async () => {
   await withTemp(async (dir) => {
     const home = join(dir, "home");

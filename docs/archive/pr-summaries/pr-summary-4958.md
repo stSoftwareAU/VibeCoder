@@ -45,6 +45,12 @@ Closes #4958.
   separate `claude -p` processes, so they are not in the agent's stream totals
   and nothing is counted twice. The cost is priced as effective tokens ×
   `haiku`'s input price.
+- **Every launch in the run is summed:** the launch homes are kept on
+  `PhaseState.tokenEconomizerHomes` for the whole run, not per execute body. The
+  infrastructure retry, the sonnet refusal retry and the prompt-too-long
+  fallback re-run the body in the same run, and a credential switch launches a
+  second agent inside one body. Every attempt's plugin calls were billed, so the
+  recorded stats sum every home any of them used.
 - **Absent figures and the off-host callback:** a figure that cannot be read is
   absent ("unavailable"), never 0. A switched-off host's callback document is
   byte-identical to today's.
@@ -79,7 +85,7 @@ Backend/CLI change; no UI files touched.
 
 ```mermaid
 flowchart LR
-    E["execute phase<br/>collects each launch's TOKENECONOMIZER_HOME"] --> S["summariseTokenEconomizerRun<br/>(ledger.jsonl + sessions/*.json + stop record)"]
+    E["execute phase<br/>collects every launch's TOKENECONOMIZER_HOME<br/>on PhaseState, across retries"] --> S["summariseTokenEconomizerRun<br/>(ledger.jsonl + sessions/*.json + stop record)"]
     S --> ST["PhaseState.tokenEconomizerRun"]
     ST --> C["completion / no-changes phase<br/>TokenEconomizer: line"]
     ST --> W["issue worker result"] --> RC["run core terminal run"] --> CB["runIssueCallbacks<br/>optional tokenEconomizer block"]
@@ -196,11 +202,12 @@ flowchart LR
 
 ## Test Plan
 
-- Added `worker/deno/tests/token_economizer_run_stats_test.ts` (11 tests). They
-  cover the reader over fixture state, including imported-record exclusion, a
-  ledger-only home, a malformed ledger, the stop record and missing homes. They
-  also cover every stats-line shape, the comment placement, and the callback
-  document both off (byte-identical) and on (`schemaVersion` 2).
+- Added `worker/deno/tests/token_economizer_run_stats_test.ts` (12 tests). They
+  cover the reader over fixture state, including imported-record exclusion, the
+  sum over two populated homes, a ledger-only home, a malformed ledger, the stop
+  record and missing homes. They also cover every stats-line shape, the comment
+  placement, and the callback document both off (byte-identical) and on
+  (`schemaVersion` 2).
 - Added `worker/deno/tests/token_economizer_trial_report_test.ts` (13 tests).
   They cover populations, the intention-to-treat switched-on set, the cost rule,
   unavailable cost with a lower bound, the merge-rate denominator, the absence
@@ -209,7 +216,16 @@ flowchart LR
 - Extended existing tests with TokenEconomizer analogues next to the RTK ones.
   No existing assertion was removed or changed:
   - `worker/deno/tests/token_economizer_impl_callsites_test.ts`: fallback, on,
-    and the non-Claude off case through the real execute phase.
+    and the non-Claude off case through the real execute phase. Two multi-launch
+    tests drive `workOnIssueExecuteClaude` with each launch writing ledger
+    overhead and a session under its own `TOKENECONOMIZER_HOME`:
+    - an in-process infrastructure retry (a SIGKILL, then a clean run);
+    - a credential switch (exit 2 with `usageLimit`, then a clean run).
+
+    Each asserts the summed `judgeCalls`, `redirects`, `factsInjected`,
+    `pluginEffectiveTokens` and `pluginCostUsd`. Red-checked:
+    - resetting the homes at the start of each body fails the retry test;
+    - reading only the first launch's home fails both tests.
   - `worker/deno/tests/rtk_callback_2386_test.ts`
   - `worker/deno/tests/run_core_callbacks_test.ts`
   - `worker/deno/tests/token_economizer_production_deps_test.ts`
@@ -229,6 +245,12 @@ flowchart LR
   cost lines only, as the trial doc states.
 - Results:
   - The touched and related unit tests passed: 444 passed, 0 failed.
+  - After the multi-launch fix, the TokenEconomizer, execute-phase, refusal
+    retry, infra retry, completion and no-changes suites gave 455 passed and 1
+    failed. The failure is
+    `execute_phase_assignment_3718_test.ts::automatic Codex worker dispatch uses Codex role models`.
+    It fails identically at the unfixed head, because this container image
+    installs no `codex` provider.
   - `./quality.sh < /dev/null` PASSED (with skipped checks: config integration,
     checkov) on `eee814ae`.
   - `worker/deno/tests/token_economizer_production_deps_test.ts` passed (9
