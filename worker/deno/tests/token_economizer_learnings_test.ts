@@ -844,6 +844,7 @@ Deno.test("replay: a rejected push is replayed on the new tip when the files dif
     const store = await newStore(root, "store");
     await commitToStore(root, store.url, {
       [`token-economizer/${KEY_A}/claude/a.json`]: '{"a":1}\n',
+      [`token-economizer/${KEY_A}/claude/removed.json`]: "{}\n",
     });
     const logX = capture();
     const logY = capture();
@@ -855,8 +856,23 @@ Deno.test("replay: a rejected push is replayed on the new tip when the files dif
     );
     assertEquals([px.status, py.status], ["restored", "restored"]);
 
+    // Transcripts are local-only and must survive refreshing the replayed state.
+    const transcript = join(
+      root,
+      "y-home",
+      "repos",
+      KEY_A,
+      "sessions",
+      "kept.json",
+    );
+    await Deno.mkdir(dirname(transcript), { recursive: true });
+    await Deno.writeTextFile(transcript, "local transcript");
+
     // Run X changes a.json and pushes first.
     await plant(join(root, "x-home"), KEY_A, "claude/a.json", '{"x":2}\n');
+    await Deno.remove(
+      join(root, "x-home", "repos", KEY_A, "claude/removed.json"),
+    );
     const outX = await pushLearnings(
       pushOpts(root, "x", px, logX.logger, recorder().stop),
     );
@@ -892,6 +908,101 @@ Deno.test("replay: a rejected push is replayed on the new tip when the files dif
       '{"b":1}\n',
     );
     assertEquals(await commitCount(store.dir), 3);
+
+    assertEquals(await Deno.readTextFile(transcript), "local transcript");
+    assertEquals(
+      await exists(join(root, "y-home", "repos", KEY_A, "claude/removed.json")),
+      false,
+    );
+    // Reusing Y must not restore its stale copy of X's learning.
+    assertEquals(
+      (await pushLearnings(
+        pushOpts(root, "y", py, logY.logger, recorder().stop),
+      )).kind,
+      "unchanged",
+    );
+    assertEquals(await commitCount(store.dir), 3);
+    await plant(join(root, "y-home"), KEY_A, "claude/c.json", '{"c":3}\n');
+    assertEquals(
+      (await pushLearnings(
+        pushOpts(root, "y", py, logY.logger, recorder().stop),
+      )).kind,
+      "pushed",
+    );
+    for (
+      const [name, expected] of [
+        ["a", '{"x":2}\n'],
+        ["b", '{"b":1}\n'],
+        ["c", '{"c":3}\n'],
+      ]
+    ) {
+      assertEquals(
+        await git([
+          "-C",
+          store.dir,
+          "show",
+          `main:token-economizer/${KEY_A}/claude/${name}.json`,
+        ]),
+        expected,
+      );
+    }
+  }));
+
+Deno.test("replay: refreshing the home refuses symlink destinations and keeps outside files unchanged", () =>
+  withRoot(async (root) => {
+    for (const directory of [false, true]) {
+      const prefix = directory ? "directory" : "file";
+      const store = await newStore(root, `${prefix}-store`);
+      await commitToStore(root, store.url, {
+        [`token-economizer/${KEY_A}/claude/a.json`]: "{}\n",
+      });
+      const x = `${prefix}-x`;
+      const y = `${prefix}-y`;
+      const log = capture();
+      const px = await pullLearnings(
+        pullOpts(root, x, KEY_A, store.url, log.logger),
+      );
+      const py = await pullLearnings(
+        pullOpts(root, y, KEY_A, store.url, log.logger),
+      );
+      const outside = join(root, `${prefix}-outside`);
+      await Deno.mkdir(outside);
+      const outsideFile = join(outside, "new.json");
+      await Deno.writeTextFile(outsideFile, "unchanged outside");
+      const relative = directory ? "remote/new.json" : "new.json";
+      const destination = join(
+        root,
+        `${y}-home`,
+        "repos",
+        KEY_A,
+        directory ? "remote" : "new.json",
+      );
+      await Deno.symlink(directory ? outside : outsideFile, destination);
+      await plant(join(root, `${x}-home`), KEY_A, relative, '{"remote":1}\n');
+      assertEquals(
+        (await pushLearnings(
+          pushOpts(root, x, px, log.logger, recorder().stop),
+        )).kind,
+        "pushed",
+      );
+      await plant(
+        join(root, `${y}-home`),
+        KEY_A,
+        "claude/b.json",
+        '{"local":1}\n',
+      );
+      const result = await pushLearnings(
+        pushOpts(root, y, py, log.logger, recorder().stop),
+      );
+      assertEquals(result.kind, "skipped");
+      assert(result.kind === "skipped");
+      assertStringIncludes(
+        result.reason,
+        directory ? "not a plain directory" : "not a regular file",
+      );
+      assertEquals(await Deno.readTextFile(outsideFile), "unchanged outside");
+      assertEquals(await exists(py.storeDir!), false);
+    }
   }));
 
 Deno.test("dropped: a replay that conflicts is logged, and the earlier run's content stays on the store", () =>

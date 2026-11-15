@@ -288,3 +288,32 @@ are pending on this PR.
   them.
 - A live push to a real private GitHub store was not exercised. The tests use
   local bare repositories and stubbed visibility.
+
+## Replay reuse repair
+
+A replay previously advanced only the retained scratch clone. A later spawn
+mirrored its stale home over that clone and could undo another run's changes.
+After a successful or unchanged replay, admitted home state now follows the
+replayed baseline, including remote deletions. Logs and sessions stay local.
+Destinations are checked before replacement so a symlink cannot redirect a
+restored file; a refresh fault discards the clone and warns.
+
+The real-git replay regression was extended before the fix. Its second push
+failed with `pushed` instead of `unchanged`, reproducing the overwrite. With the
+fix, the unchanged push creates no commit; a subsequent local edit preserves
+both runs' files and the other run's content. The fixture also checks remote
+deletion and preservation of a local session. A new test covers file and
+directory symlink destinations, asserting outside content remains unchanged
+and the unsafe clone is discarded. No previous assertions were removed.
+
+Validation in this repair environment:
+
+- Learnings and plugin-wiring suites: 47 passed, 0 failed, 13 ignored by their
+  existing optional-tool/plugin guards (gitleaks and vendored plugin absent).
+- Formatting, lint and `git diff --check` passed.
+- Deno's direct JSR downloads failed here. Tests used a temporary local import
+  map to the locked published dependency versions, downloaded with curl and
+  verified against their manifest SHA-256 checksums. Repository dependency
+  files and lockfile are unchanged.
+- Full quality was attempted; this environment cannot establish a full pass.
+  Required CI and independent review remain authoritative.

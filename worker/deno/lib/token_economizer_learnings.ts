@@ -28,7 +28,9 @@
  * A launch is shared by later spawns of the same run (a PR-feedback re-run or a
  * rate-limit retry), and each spawn pushes again with the same persistence. The
  * scratch clone is therefore kept after `pushed` and `unchanged`, because it is
- * clean and at the store tip. Every other outcome removes it. Before anything is
+ * clean and at the store tip. A replay refreshes admitted home state to that
+ * same baseline before reuse, preserving local logs and sessions. Every other
+ * outcome removes it. Before anything is
  * written under the clone, the push checks that it is its own repository, so a
  * removed clone is skipped and never resolved to an enclosing repository.
  *
@@ -907,6 +909,53 @@ async function transferBlocked(
 }
 
 /**
+ * Refresh admitted home state after a replay while the plugin is stopped.
+ * Logs and sessions stay local. Validate destinations before changing anything;
+ * a symlink or non-directory must not redirect a restored state file.
+ */
+async function refreshReplayedHome(ctx: PushContext): Promise<void> {
+  const { opts, storeDir, repoKey } = ctx;
+  const storeKey = join(storeDir, LEARNINGS_STORE_ROOT, repoKey);
+  const homeKey = join(opts.home, "repos", repoKey);
+  const state = await walkKeyRoot(storeKey);
+  if (
+    state.rejected.length > 0 ||
+    totalBytes(state.files) > LEARNINGS_KEY_CAP_BYTES
+  ) {
+    throw new LearningsFault(
+      "replayed state is outside the allow-list or size cap",
+    );
+  }
+  await assertRealDirOrAbsent(opts.home);
+  await assertRealDirOrAbsent(join(opts.home, "repos"));
+  const local = await walkKeyRoot(homeKey);
+  for (const file of state.files) {
+    for (let depth = 1; depth < file.segments.length; depth++) {
+      await assertRealDirOrAbsent(
+        join(homeKey, ...file.segments.slice(0, depth)),
+      );
+    }
+    try {
+      const info = await Deno.lstat(join(homeKey, ...file.segments));
+      if (!info.isFile) {
+        throw new LearningsFault("replayed destination is not a regular file");
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+  }
+  for (const file of local.files) {
+    await Deno.remove(join(homeKey, ...file.segments));
+  }
+  for (const file of state.files) {
+    await writeState(
+      join(homeKey, ...file.segments),
+      await Deno.readFile(join(storeKey, ...file.segments)),
+    );
+  }
+}
+
+/**
  * Retry a rejected push once: fetch the tip, reset to it, and replay our commit
  * with cherry-pick. A conflict drops this run's update, which keeps the other
  * run's content on the store.
@@ -957,7 +1006,10 @@ async function replayOnTip(
     );
   }
   const committed = await commitStaged(ctx);
-  if (committed.kind !== "committed") return committed;
+  if (committed.kind !== "committed") {
+    if (committed.kind === "unchanged") await refreshReplayedHome(ctx);
+    return committed;
+  }
 
   const blocked = await transferBlocked(opts, logger);
   if (blocked !== null) return blocked;
@@ -965,7 +1017,10 @@ async function replayOnTip(
     ["-C", storeDir, "push", "origin", `HEAD:refs/heads/${branch}`],
     LEARNINGS_GIT_TIMEOUT_SECONDS,
   );
-  if (second.code === 0) return { kind: "pushed", commit: committed.commit };
+  if (second.code === 0) {
+    await refreshReplayedHome(ctx);
+    return { kind: "pushed", commit: committed.commit };
+  }
   return drop(logger, `push failed after the replay: ${causeOf(second)}`);
 }
 
@@ -1079,7 +1134,9 @@ async function pushVerified(
  * Push this run's learnings to the store. Never throws. The scratch clone the
  * caller passed is kept after `pushed` and `unchanged`, because it is clean and
  * at the store tip, so a later spawn of the same run can push again with the
- * same persistence. Every other outcome removes it: local state is discarded.
+ * same persistence. A replay also refreshes admitted home state, preventing a
+ * later spawn from restoring stale files over another run's changes. Every
+ * other outcome removes it: local state is discarded.
  */
 export async function pushLearnings(
   opts: PushLearningsOptions,

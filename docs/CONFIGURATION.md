@@ -2170,7 +2170,10 @@ push. Along the way:
 **Scratch clone.** The clone at `<work>/.token-economizer/store/<runId>` is kept
 after a successful (`pushed`) or unchanged push, because it is clean and at the
 store tip. Later spawns of the same run, such as a PR-feedback re-run or a
-rate-limit retry, can then push again from it. Every other outcome removes it.
+rate-limit retry, can then push again from it. After a successful replay, the
+allow-listed home state is refreshed to the replayed baseline, so a later spawn
+cannot overwrite another run's changes with stale files. Local logs and sessions
+are preserved. Every other outcome removes the clone.
 A clone that is gone means that spawn's learnings are discarded.
 
 Only a host with `token_economizer.enabled` set pushes, so enable it on one host
