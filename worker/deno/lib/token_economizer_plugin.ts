@@ -412,17 +412,9 @@ export async function resolveTokenEconomizerLaunch(
     // Check the canonical destination before mkdir: a refusal must not write
     // through a symlink into the checkout or another repository.
     const work = resolve(workDir);
-    let realWork: string;
-    try {
-      realWork = await Deno.realPath(work);
-    } catch (err) {
-      logger?.warn(
-        `token-economizer: plugin off, per-run state directory cannot be created: ${
-          errorMessage(err)
-        }`,
-      );
-      return null;
-    }
+    // The controller check above already resolved this path, so a failure here
+    // is an unexpected fault that the outer catch turns into plugin off.
+    const realWork = await Deno.realPath(work);
     const stateDir = await confinePath(
       realWork,
       join(STATE_DIR_NAME, "runs", runId),

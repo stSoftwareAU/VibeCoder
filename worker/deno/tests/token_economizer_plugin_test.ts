@@ -384,10 +384,10 @@ Deno.test("a .. after a missing component is normalised before anything is creat
   });
 });
 
-Deno.test("a state directory that cannot be created is refused, not thrown", async () => {
+Deno.test("a dangling work directory is refused at the controller check, not thrown", async () => {
   await withFixture(async (f) => {
-    // A dangling symlink as the work directory: no state directory can be
-    // made beneath it.
+    // A dangling symlink as the work directory: nothing can be verified or
+    // created beneath it.
     const dangling = `${f.root}/dangling`;
     await Deno.symlink(`${f.root}/nowhere/deeper`, dangling);
 
@@ -397,6 +397,89 @@ Deno.test("a state directory that cannot be created is refused, not thrown", asy
     );
     assertEquals(launch, null);
     assertSingleWarn(captured, "controller directory cannot be verified");
+  });
+});
+
+/** The names inside `dir`, sorted. */
+function namesIn(dir: string): string[] {
+  return Array.from(Deno.readDirSync(dir)).map((entry) => entry.name).sort();
+}
+
+Deno.test("a runs symlink outside the work root is refused before anything is created (PR #5139 verifier)", async () => {
+  await withFixture(async (f) => {
+    await Deno.mkdir(`${f.work}/.token-economizer`);
+    const outside = `${f.root}/outside`;
+    await Deno.mkdir(outside);
+    await Deno.writeTextFile(`${outside}/keep.txt`, "keep\n");
+    await Deno.symlink(outside, `${f.work}/.token-economizer/runs`);
+
+    const captured = captureLogger();
+    const launch = await resolveTokenEconomizerLaunch(optionsFor(f, captured));
+    assertEquals(launch, null);
+    assertSingleWarn(
+      captured,
+      "per-run state directory lies outside the work directory",
+    );
+    assertEquals(namesIn(outside), ["keep.txt"]);
+
+    // Positive control: the same fixture with a real runs directory launches.
+    await Deno.remove(`${f.work}/.token-economizer/runs`);
+    const ok = await resolveTokenEconomizerLaunch(
+      optionsFor(f, captureLogger()),
+    );
+    assert(ok !== null, "a real runs directory must launch");
+  });
+});
+
+Deno.test("a runs symlink to another directory inside the work root is refused as aliased (PR #5139 verifier)", async () => {
+  await withFixture(async (f) => {
+    await Deno.mkdir(`${f.work}/.token-economizer`);
+    const elsewhere = `${f.work}/elsewhere`;
+    await Deno.mkdir(elsewhere);
+    await Deno.writeTextFile(`${elsewhere}/keep.txt`, "keep\n");
+    await Deno.symlink(elsewhere, `${f.work}/.token-economizer/runs`);
+
+    const captured = captureLogger();
+    const launch = await resolveTokenEconomizerLaunch(optionsFor(f, captured));
+    assertEquals(launch, null);
+    assertSingleWarn(captured, "per-run state directory is aliased");
+    assertEquals(namesIn(elsewhere), ["keep.txt"]);
+  });
+});
+
+Deno.test("a runs symlink into the repo checkout is refused and the checkout is untouched (PR #5139 verifier)", async () => {
+  await withFixture(async (f) => {
+    await Deno.mkdir(`${f.work}/.token-economizer`);
+    const checkout = `${f.work}/VibeCoder`;
+    await Deno.mkdir(checkout);
+    await Deno.writeTextFile(`${checkout}/existing.txt`, "dirty\n");
+    await Deno.symlink(checkout, `${f.work}/.token-economizer/runs`);
+
+    const captured = captureLogger();
+    const launch = await resolveTokenEconomizerLaunch(optionsFor(f, captured));
+    assertEquals(launch, null);
+    assertSingleWarn(captured, "lies inside the repo checkout");
+    assertEquals(namesIn(checkout), ["existing.txt"]);
+    assertEquals(
+      await Deno.readTextFile(`${checkout}/existing.txt`),
+      "dirty\n",
+    );
+  });
+});
+
+Deno.test("a runs path that is a regular file cannot hold a state directory, so the launch is refused, not thrown (PR #5139 verifier)", async () => {
+  await withFixture(async (f) => {
+    await Deno.mkdir(`${f.work}/.token-economizer`);
+    await Deno.writeTextFile(`${f.work}/.token-economizer/runs`, "not a dir\n");
+
+    const captured = captureLogger();
+    const launch = await resolveTokenEconomizerLaunch(optionsFor(f, captured));
+    assertEquals(launch, null);
+    assertSingleWarn(captured, "per-run state directory cannot be created");
+    assertEquals(
+      await Deno.readTextFile(`${f.work}/.token-economizer/runs`),
+      "not a dir\n",
+    );
   });
 });
 

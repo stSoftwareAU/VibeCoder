@@ -35,9 +35,9 @@ stop, which is reported to #4959. Closes #4956.
   output is rejected, never injected on a best-effort basis.
 - `stopTokenEconomizerTrial()` and `tokenEconomizerMaySync()` are the one shared
   finding and sync-permission contract the issue asks #4957 to consume.
-  `tokenEconomizerMaySync` therefore has no production reader yet: it is the
-  public API the issue requires, which the "nothing exists only for a test"
-  standard exempts.
+  `tokenEconomizerMaySync` has a production reader: the runner calls it before
+  every spawn (`worker/deno/lib/claude_runner.ts`). #4957 is the second
+  consumer.
 - Any hook fault, including a correct rejection of oversized facts, latches the
   trial off. This fails safe, and is broader than "a hook error that ends a
   run". A same-UID agent can still modify the local stop record. That is
@@ -144,11 +144,6 @@ flowchart LR
   `worker/deno/tests/token_economizer_reactive_callsites_test.ts` — reason:
   fixed in this diff (fixture plugin through the `tokenEconomizerPluginDir`
   seam; zero ignores remain)
-- **violation** — Nothing exists only for a test to read: the
-  `tokenEconomizerMaySync` export — evidence:
-  `worker/deno/lib/token_economizer_control.ts` — reason: required by #4956,
-  whose stop-handling scope asks for one shared mechanism that persistence
-  (#4957) consumes; this is the standard's public-API exemption
 - **clean** — Path confinement with `..`/symlink negative tests, secret
   redaction, fail-closed stop reads, named tests exist, no workflow change, and
   edited existing tests still go red without their code. The reviewer checked
@@ -158,21 +153,27 @@ flowchart LR
 ## Test Plan
 
 - PR #5139 review round, on the final head:
-  `worker/deno/tests/token_economizer_plugin_test.ts` (40 tests at head, 40
+  `worker/deno/tests/token_economizer_plugin_test.ts` (44 tests at head, 44
   passed) and `worker/deno/tests/token_economizer_plugin_wiring_test.ts` (29
   tests at head, 29 passed, 0 failed). The new tests are the
   alias-with-`stop.json` case (launch and reporter, target unchanged), the
-  oversized receipt (pins the cap; it passes on the base too, since an oversized
-  receipt never equalled the fingerprint), and the launch-before-stop runner
-  case (red without the runner's re-check: the spawn kept `--plugin-dir`). The
-  two real-hook tests now take `sessions/claude/s1.json` as the positive control
-  and assert that `worker-hook-failure.json` and `errors.log` are absent and
-  that `finishTokenEconomizerRun` reports nothing. Four existing launch refusal
-  tests now expect the controller-directory refusal, which runs first. The later
-  "inside the repo checkout" refusal is still reached by the dirty
-  controller-path checkout test in the wiring file. Two `runClaudeWithRetry`
-  refused-model tests in the claude_runner test files fail here and on the base:
-  this container has no `codex` provider.
+  oversized receipt (covers the re-send and replace outcome; it does not go red
+  without the cap, and passes on the base too, since an oversized receipt never
+  equalled the fingerprint), and the launch-before-stop runner case (red without
+  the runner's re-check: the spawn kept `--plugin-dir`). The two real-hook tests
+  now take `sessions/claude/s1.json` as the positive control and assert that
+  `worker-hook-failure.json` and `errors.log` are absent and that
+  `finishTokenEconomizerRun` reports nothing. Four existing launch refusal tests
+  now expect the controller-directory refusal, which runs first. The per-run
+  state-directory refusals that come after it are covered by four tests in
+  `token_economizer_plugin_test.ts` whose fixtures pass the controller check (a
+  real `.token-economizer` with `runs` symlinked outside the work root, to
+  another directory inside it, or into the repo checkout, and with `runs` a
+  regular file): each asserts the specific warning, a null launch and an
+  unchanged target. The `Deno.realPath(work)` catch that the controller check
+  made unreachable was removed. Two `runClaudeWithRetry` refused-model tests in
+  the claude_runner test files fail here and on the base: this container has no
+  `codex` provider.
 - Targeted run on the pre-merge head: 221 passed, 0 failed across the 12
   TokenEconomizer, threat-model, sweep-coverage and repaired test files.
 - After the seam change: call-site, production-deps and wiring files passed (49
