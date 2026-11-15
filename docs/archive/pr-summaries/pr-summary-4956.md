@@ -27,9 +27,9 @@ stop, which is reported to #4959. Closes #4956.
   caps its receipt read at 4096 bytes: an aliased controller fails closed to
   plugin-off with nothing read or written through the alias.
 - The runner re-checks the stop latch (`tokenEconomizerMaySync`) before every
-  spawn, so a launch resolved before a stop, then reused by a re-run, a
-  recovery run or a rate-limit retry, loads no plugin once a stop is latched or
-  the controller directory is unverified.
+  spawn, so a launch resolved before a stop, then reused by a re-run, a recovery
+  run or a rate-limit retry, loads no plugin once a stop is latched or the
+  controller directory is unverified.
 - Cached facts are capped at four bullets and 600 characters. Notices are capped
   at 4,096 characters and the output protocol at 64 KiB. Malformed or oversized
   output is rejected, never injected on a best-effort basis.
@@ -105,9 +105,10 @@ flowchart LR
 - **met** — `docs/THREAT-MODEL.md` updated — evidence: `docs/THREAT-MODEL.md`
   learned-facts row, AP-19/AP-20, C37–C41, R16/R17 — reviewer: met
 - **met** — Hook failure falls back safely; a stop-rule finding stops later
-  plugin launches and later spawns of a reused launch, across restart, without weakening the container boundary
-  or requiring a human. #4959 owns the verdict and purge, and #4958 owns
-  accounting — evidence: `worker/deno/lib/token_economizer_control.ts`,
+  plugin launches and later spawns of a reused launch, across restart, without
+  weakening the container boundary or requiring a human. #4959 owns the verdict
+  and purge, and #4958 owns accounting — evidence:
+  `worker/deno/lib/token_economizer_control.ts`,
   `worker/deno/tests/token_economizer_plugin_test.ts`,
   `worker/deno/tests/token_economizer_plugin_wiring_test.ts` (a launch resolved
   before a stop is dropped by the runner) — reviewer: met
@@ -159,19 +160,19 @@ flowchart LR
 - PR #5139 review round, on the final head:
   `worker/deno/tests/token_economizer_plugin_test.ts` (40 tests at head, 40
   passed) and `worker/deno/tests/token_economizer_plugin_wiring_test.ts` (29
-  tests at head, 29 passed, 0 failed). The new tests are the alias-with-`stop.json` case
-  (launch and reporter, target unchanged), the oversized receipt (pins the cap;
-  it passes on the base too, since an oversized receipt never equalled the
-  fingerprint), and the launch-before-stop runner case (red without the
-  runner's re-check: the spawn kept `--plugin-dir`). The two real-hook tests
-  now take `sessions/claude/s1.json` as the positive control and assert that
-  `worker-hook-failure.json` and `errors.log` are absent and that
-  `finishTokenEconomizerRun` reports nothing. Four existing launch refusal
-  tests now expect the controller-directory refusal, which runs first. The
-  later "inside the repo checkout" refusal is still reached by the dirty
-  controller-path checkout test in the wiring file. Two
-  `runClaudeWithRetry` refused-model tests in the claude_runner test files fail
-  here and on the base: this container has no `codex` provider.
+  tests at head, 29 passed, 0 failed). The new tests are the
+  alias-with-`stop.json` case (launch and reporter, target unchanged), the
+  oversized receipt (pins the cap; it passes on the base too, since an oversized
+  receipt never equalled the fingerprint), and the launch-before-stop runner
+  case (red without the runner's re-check: the spawn kept `--plugin-dir`). The
+  two real-hook tests now take `sessions/claude/s1.json` as the positive control
+  and assert that `worker-hook-failure.json` and `errors.log` are absent and
+  that `finishTokenEconomizerRun` reports nothing. Four existing launch refusal
+  tests now expect the controller-directory refusal, which runs first. The later
+  "inside the repo checkout" refusal is still reached by the dirty
+  controller-path checkout test in the wiring file. Two `runClaudeWithRetry`
+  refused-model tests in the claude_runner test files fail here and on the base:
+  this container has no `codex` provider.
 - Targeted run on the pre-merge head: 221 passed, 0 failed across the 12
   TokenEconomizer, threat-model, sweep-coverage and repaired test files.
 - After the seam change: call-site, production-deps and wiring files passed (49
@@ -185,20 +186,19 @@ flowchart LR
     on `origin/main`, and which `main` fixed. `main` was merged into the branch.
 - `worker/deno/tests/direct_merge_test.ts` (91 tests at head, 91 passed),
   including the new empty-default-branch case.
-- CI type check (`deno check --frozen --lock=deno.lock '**/*.ts'`) failed on
-  the merged head: `worker/deno/tests/token_economizer_reactive_callsites_test.ts`
-  still passed `skipMutationCheck` in `repoConfig`, a key `main` retired
-  (Issue #5095). The two fixtures no longer pass it, because no mutation check
-  runs for them to skip. The type check, `deno fmt --check` and `deno lint` now
-  pass, and `worker/deno/tests/token_economizer_reactive_callsites_test.ts` (10
-  tests at head, 10 passed).
+- CI type check (`deno check --frozen --lock=deno.lock '**/*.ts'`) failed on the
+  merged head: `worker/deno/tests/token_economizer_reactive_callsites_test.ts`
+  still passed `skipMutationCheck` in `repoConfig`, a key `main` retired (Issue
+  #5095). The two fixtures no longer pass it, because no mutation check runs for
+  them to skip. The type check, `deno fmt --check` and `deno lint` now pass, and
+  `worker/deno/tests/token_economizer_reactive_callsites_test.ts` (10 tests at
+  head, 10 passed).
 - Three tests fail in this container and fail identically on an unmodified
   `origin/main` export: `isRateLimitActive` (two cases in
-  `worker/deno/tests/run_core_production_deps_test.ts`) and the
-  `gemini` provider case in
-  `worker/deno/tests/execute_claude_phase_rtk_test.ts`. The container image
-  installs no `gemini` provider and has host rate-limit state. They are
-  environment differences, not part of this change.
+  `worker/deno/tests/run_core_production_deps_test.ts`) and the `gemini`
+  provider case in `worker/deno/tests/execute_claude_phase_rtk_test.ts`. The
+  container image installs no `gemini` provider and has host rate-limit state.
+  They are environment differences, not part of this change.
 - Removed assertions: none. The call-site tests now expect the plugin directory
   actually passed, instead of the constant.
 
