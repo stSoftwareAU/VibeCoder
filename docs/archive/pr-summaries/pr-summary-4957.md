@@ -222,7 +222,9 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   semgrep, gitleaks, lint, type check and fmt also passed. Config integration
   (no `.config.json`) and checkov (no binary) were skipped, and these skips are
   not passes. The first run failed only on the unregistered sweep slice, now
-  `docs/audits/lib-sweep-coverage/top-up-4957.json`.
+  `docs/audits/lib-sweep-coverage/top-up-4957.json`, whose `sweptAt` is the
+  merge base with `origin/main` (`fccd1182c`), so it stays reachable after the
+  squash merge. `deno run mod.ts sweep-drift` against `origin/main` exits 0.
 - Callers checked: every production caller of `tokenEconomizerSpawnOptions`
   passes `subject`. Those are `execute_claude_phase.ts`,
   `phases/execute_phase.ts`, `pr_feedback_processor.ts` and `pr_ci_processor.ts`
