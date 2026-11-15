@@ -103,6 +103,7 @@ async function setCapturedAt(
   const snapshot = state.snapshots["owner/repo|42"];
   if (snapshot) {
     snapshot.capturedAt = Math.floor(Date.parse(iso) / 1000);
+    snapshot.contentRevisionAt = snapshot.capturedAt;
   }
   await deps.writeFile!(`${stateDir}/${STATE_FILE}`, JSON.stringify(state));
 }
@@ -212,6 +213,7 @@ async function seedSnapshot(
     "Fix the bug",
     "Approved specification",
     "alice",
+    Math.floor(Date.now() / 1000),
     deps,
   );
   await setCapturedAt(config, deps, SNAPSHOT_AT);

@@ -164,6 +164,7 @@ Deno.test("content_approval_tracker - captureContentSnapshot stores hash on disk
     "Issue title",
     "Issue body",
     "untrusted-user",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
@@ -192,6 +193,7 @@ Deno.test("content_approval_tracker - captureContentSnapshot overwrites existing
     "Title v1",
     "Body v1",
     "user1",
+    Math.floor(Date.now() / 1000),
     deps,
   );
   await captureContentSnapshot(
@@ -201,6 +203,7 @@ Deno.test("content_approval_tracker - captureContentSnapshot overwrites existing
     "Title v2",
     "Body v2",
     "user1",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
@@ -225,6 +228,7 @@ Deno.test("content_approval_tracker - verifyContentUnchanged returns 'unchanged'
     "Title",
     "Body",
     "user",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
@@ -250,6 +254,7 @@ Deno.test("content_approval_tracker - verifyContentUnchanged returns 'changed' w
     "Original",
     "Body",
     "evil-user",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
@@ -278,6 +283,7 @@ Deno.test("content_approval_tracker - verifyContentUnchanged returns 'changed' w
     "Title",
     "Original body",
     "evil-user",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
@@ -361,6 +367,7 @@ Deno.test("content_approval_tracker - removeContentSnapshot removes existing sna
     "Title",
     "Body",
     "user",
+    Math.floor(Date.now() / 1000),
     deps,
   );
   await removeContentSnapshot(workDir, "owner/repo", 42, deps);
@@ -571,6 +578,7 @@ Deno.test("content_approval_tracker - full workflow: capture, verify unchanged, 
     "Original title",
     "Original body",
     "untrusted-author",
+    Math.floor(Date.now() / 1000),
     deps,
   );
   assertEquals(captureResult.ok, true);
@@ -612,6 +620,7 @@ Deno.test("content_approval_tracker - multiple issues tracked independently", as
     "Title 1",
     "Body 1",
     "user-a",
+    Math.floor(Date.now() / 1000),
     deps,
   );
   await captureContentSnapshot(
@@ -621,6 +630,7 @@ Deno.test("content_approval_tracker - multiple issues tracked independently", as
     "Title 2",
     "Body 2",
     "user-b",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 

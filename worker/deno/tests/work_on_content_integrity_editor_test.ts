@@ -204,6 +204,7 @@ Deno.test(
       "Fix the bug",
       "Original body",
       "alice",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 
@@ -256,6 +257,7 @@ Deno.test(
       "Fix the bug",
       "Original body",
       "reporter",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 
@@ -301,6 +303,7 @@ Deno.test(
       "Fix the bug",
       "Original body",
       "alice",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 
@@ -347,6 +350,7 @@ Deno.test(
       "Fix the bug",
       "Original body",
       "alice",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 

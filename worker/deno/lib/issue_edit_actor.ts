@@ -189,7 +189,7 @@ function splitRepo(repo: string): { owner: string; name: string } | null {
 }
 
 /** Parse an ISO-8601 timestamp to unix seconds, or null when unusable. */
-function toUnixSeconds(iso: string | null | undefined): number | null {
+export function toUnixSeconds(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const ms = Date.parse(iso);
   return Number.isNaN(ms) ? null : Math.floor(ms / 1000);

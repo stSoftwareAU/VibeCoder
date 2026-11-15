@@ -142,6 +142,7 @@ Deno.test("content_approval_encoding - captured snapshots record the encoding th
     "Fix the bug",
     "Approved specification",
     "alice",
+    Math.floor(Date.now() / 1000),
     deps,
   );
   assertEquals(captured.ok, true);
@@ -261,6 +262,7 @@ Deno.test("content_approval_encoding - a current-encoding snapshot needs no re-b
     "Fix the bug",
     "Approved specification",
     "alice",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
@@ -287,6 +289,7 @@ Deno.test("content_approval_encoding - a v1 snapshot over edited content is stil
   seedState(files, {
     contentHash: await legacyV1Hash("Fix the bug", "Approved specification"),
     capturedAt: 1_760_000_000,
+    contentRevisionAt: 1_760_000_000,
     issueAuthor: "alice",
     encoding: CONTENT_HASH_ENCODING_V1,
   });
@@ -302,7 +305,7 @@ Deno.test("content_approval_encoding - a v1 snapshot over edited content is stil
 
   assert(result.status === "changed", `got ${result.status}`);
   assertEquals(result.issueAuthor, "alice");
-  assertEquals(result.capturedAt, 1_760_000_000);
+  assertEquals(result.contentRevisionAt, 1_760_000_000);
 });
 
 Deno.test("content_approval_encoding - an unknown encoding tag fails closed as an error (Issue #3963)", async () => {

@@ -339,6 +339,7 @@ Deno.test(
       "Fix the bug",
       "Body text",
       "alice",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 
@@ -390,6 +391,7 @@ Deno.test(
         "Fix the bug",
         "Body text",
         "alice",
+        Math.floor(Date.now() / 1000),
       );
 
       assert(

@@ -171,6 +171,7 @@ export async function runWorkOnIssueCommand(
     issueBody: issueData.body,
     issueLabels: issueData.labels,
     issueAuthor: issueData.author,
+    issueUpdatedAt: issueData.updatedAt ?? null,
     config,
     githubUser,
   });

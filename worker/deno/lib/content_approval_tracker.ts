@@ -29,8 +29,19 @@ import { stripWorkerRecordBlocks } from "./worker_record_block.ts";
 export interface ContentSnapshot {
   /** SHA-256 hex digest of the length-prefixed title and body (Issue #3878). */
   contentHash: string;
-  /** Unix timestamp when the snapshot was captured. */
+  /**
+   * Unix timestamp (worker clock) when the snapshot was written. Used for
+   * age-based cleanup only, never as the edit boundary (Issue #5018).
+   */
   capturedAt: number;
+  /**
+   * GitHub `updatedAt` (unix seconds) of the read that produced the hashed
+   * title and body (Issue #5018). Every title or body edit absent from the
+   * digest is stamped at or after it on GitHub's clock. Absent on snapshots
+   * written before #5018 or when the read carried no usable `updatedAt`, in
+   * which case the boundary is unknown.
+   */
+  contentRevisionAt?: number;
   /** The issue author at capture time (for trusted/untrusted classification). */
   issueAuthor: string;
   /**
@@ -73,7 +84,15 @@ export type ContentVerificationResult =
      */
     staleEncoding?: string;
   }
-  | { status: "changed"; issueAuthor: string; capturedAt: number }
+  | {
+    status: "changed";
+    issueAuthor: string;
+    /**
+     * The stored snapshot's GitHub content revision (Issue #5018); null when
+     * the snapshot carries no finite `contentRevisionAt`.
+     */
+    contentRevisionAt: number | null;
+  }
   | { status: "no_snapshot" }
   | { status: "error"; message: string };
 
@@ -899,6 +918,10 @@ async function divertSnapshotToRecovery(
  * @param title - Issue title at time of approval
  * @param body - Issue body at time of approval
  * @param issueAuthor - Issue author's GitHub username
+ * @param contentRevisionAt - GitHub `updatedAt` (unix seconds) of the read
+ *   that produced `title` and `body` (Issue #5018), or null when that read
+ *   carried none. It is the edit boundary the integrity gate judges against;
+ *   it is stored only when finite, and the worker clock is never substituted.
  * @param deps - Optional dependency overrides for testing
  * @returns Result indicating success or failure
  */
@@ -909,6 +932,7 @@ export async function captureContentSnapshot(
   title: string,
   body: string,
   issueAuthor: string,
+  contentRevisionAt: number | null,
   deps: ContentApprovalDeps = {},
 ): Promise<Result<void>> {
   // Issue #1631: the baseline covers the body with the worker's machine-owned
@@ -924,6 +948,9 @@ export async function captureContentSnapshot(
     contentHash,
     capturedAt: nowSeconds(),
     issueAuthor,
+    ...(contentRevisionAt !== null && Number.isFinite(contentRevisionAt)
+      ? { contentRevisionAt }
+      : {}),
     // Issue #3963: stamp the encoding so a later bump can re-verify this
     // digest instead of writing it off as a content change.
     encoding: CURRENT_CONTENT_HASH_ENCODING,
@@ -947,6 +974,55 @@ export async function captureContentSnapshot(
   }
 
   loaded.state.snapshots[key] = snapshot;
+  return await saveContentApprovalState(stateDir, loaded.state, deps);
+}
+
+/**
+ * Re-encode an existing snapshot's digest under the current encoding
+ * (Issue #3963 migration).
+ *
+ * The migration must keep the original trust boundary (Issue #5018): only the
+ * digest, encoding stamp and dependency refs are rewritten, while
+ * `capturedAt`, `issueAuthor` and `contentRevisionAt` (including its absence)
+ * are preserved exactly. Fails, without writing or diverting, when the state
+ * is unusable or no snapshot exists for the issue.
+ */
+export async function reEncodeContentSnapshot(
+  stateDir: string,
+  repo: string,
+  issueNumber: number,
+  title: string,
+  body: string,
+  deps: ContentApprovalDeps = {},
+): Promise<Result<void>> {
+  const key = snapshotKey(repo, issueNumber);
+  const loaded = await loadStateForWrite(stateDir, deps);
+  if (loaded.unusable) {
+    return {
+      ok: false,
+      error: new Error(
+        `Content approval state is unusable (${loaded.unusable.message}); ` +
+          `cannot re-encode the snapshot for ${key}.`,
+      ),
+    };
+  }
+  const existing = loaded.state.snapshots[key];
+  if (!existing) {
+    return {
+      ok: false,
+      error: new Error(`No content snapshot exists for ${key} to re-encode.`),
+    };
+  }
+  const contentHash = await computeContentHash(
+    title,
+    stripWorkerRecordBlocks(body),
+  );
+  loaded.state.snapshots[key] = {
+    ...existing,
+    contentHash,
+    encoding: CURRENT_CONTENT_HASH_ENCODING,
+    dependsOn: extractApprovalDependsOnRefs(body),
+  };
   return await saveContentApprovalState(stateDir, loaded.state, deps);
 }
 
@@ -1074,7 +1150,9 @@ export async function verifyContentUnchanged(
     return {
       status: "changed",
       issueAuthor: snapshot.issueAuthor,
-      capturedAt: snapshot.capturedAt,
+      contentRevisionAt: Number.isFinite(snapshot.contentRevisionAt)
+        ? snapshot.contentRevisionAt as number
+        : null,
     };
   } catch (err) {
     return {
