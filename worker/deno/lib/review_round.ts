@@ -42,6 +42,7 @@ import {
   selectFirstProviderToken,
 } from "./credential_preflight.ts";
 import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
+import type { ClaudeBudgetFetch } from "./claude_token_budget.ts";
 import { detectUsageLimit } from "./claude_executor.ts";
 import { DEEPSEEK_PROVIDER_ID } from "./agent_provider.ts";
 import { CODEX_API_KEY_ENV_VARS, CODEX_HOME_ENV_VAR } from "./codex_auth.ts";
@@ -851,30 +852,43 @@ function envLookup(
  * way the worker builds its own.
  *
  * @param log - Where the pool's decision log and the round's lines go.
- * @param options.credentialDir - Overrides the credential directory the
- *   fallback providers' credentials are read from: DeepSeek's (Issue #3632)
- *   and Codex's (Issue #5083). Production omits it and gets the
- *   environment-resolved directory; a wiring test points it at a fixture and
- *   passes `env` rather than mutating the process environment, so no process
- *   environment is mutated. Scoped to the fallback exports — the Claude pool
- *   keeps its own resolution.
- * @param options.env - The process environment the fallback exports read
+ * @param options.credentialDir - Overrides the credential directory all
+ *   providers read. Production omits it and gets the environment-resolved
+ *   directory; a wiring test points it at a fixture and passes `env` rather
+ *   than mutating the process environment.
+ * @param options.env - The process environment the credential exports read
  *   (the "already set" check, and `VIBE_REVIEW_CODEX_HOME`) and merge into
  *   their child environments.
  *   Production omits it and gets `Deno.env.toObject()`; a wiring test passes
- *   its own variables here. Scoped to the fallback exports, as
- *   `credentialDir` is.
+ *   its own variables here.
+ * @param options.fetchClaudeBudget - The Claude pool's budget service fetch;
+ *   production leaves it unset to use the normal network boundary.
  */
 export function createReviewRoundDeps(
   log: (message: string) => void,
-  options: { credentialDir?: string; env?: Record<string, string> } = {},
+  options: {
+    credentialDir?: string;
+    env?: Record<string, string>;
+    fetchClaudeBudget?: ClaudeBudgetFetch;
+  } = {},
 ): ReviewRoundDeps {
   const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
-  const pool = createClaudeCredentialPool({ log, provider });
+  const claudeEnv = options.env === undefined
+    ? undefined
+    : envLookup(options.env);
+  const pool = createClaudeCredentialPool({
+    log,
+    provider,
+    dir: options.credentialDir,
+    env: claudeEnv,
+    fetchFn: options.fetchClaudeBudget,
+  });
   const exhausted = new Set<string>();
   return {
     exportStartCredential: async (setEnv) => {
       await applyProviderCredentialEnv({
+        dir: options.credentialDir,
+        env: claudeEnv,
         providers: [provider],
         selectToken: pool.selectToken,
         setEnv,

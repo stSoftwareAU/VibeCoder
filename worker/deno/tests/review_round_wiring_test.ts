@@ -27,8 +27,11 @@ import { assert, assertEquals } from "@std/assert";
 import {
   createReviewRoundDeps,
   REVIEW_CODEX_HOME_ENV_VAR,
+  REVIEW_RUN_FILE,
+  type ReviewRunRecord,
   runReviewRound,
 } from "../lib/review_round.ts";
+import { resetHeldProviderCredentials } from "../lib/credential_preflight.ts";
 
 /** A provisioned provider credential file, the shape setup writes. */
 async function withCredentialDir(
@@ -49,6 +52,134 @@ async function withCredentialDir(
     await Deno.remove(dir, { recursive: true });
   }
 }
+
+Deno.test(
+  "reviewer tries Fable on three subscriptions, Astra, Opus, then DeepSeek",
+  async () => {
+    await withCredentialDir(
+      {
+        "claude/provider.env": "CLAUDE_CODE_OAUTH_TOKEN=fixture-claude-one\n", // gitleaks:allow fake fixture
+        "claude/provider-2.env": "CLAUDE_CODE_OAUTH_TOKEN=fixture-claude-two\n", // gitleaks:allow fake fixture
+        "claude/provider-3.env":
+          "CLAUDE_CODE_OAUTH_TOKEN=fixture-claude-three\n", // gitleaks:allow fake fixture
+        "codex/provider.env": "OPENAI_API_KEY=fixture-codex\n", // gitleaks:allow fake fixture
+        "deepseek/provider.env": "DEEPSEEK_API_KEY=fixture-deepseek\n", // gitleaks:allow fake fixture
+      },
+      async (credentialDir) => {
+        const roundDir = `${credentialDir}/round`;
+        await Deno.mkdir(roundDir);
+        // All subscriptions retain general quota, with a stable ranking.
+        // Fable's separate cap must exclude every refused label itself.
+        const utilisation: Record<string, number> = {
+          "fixture-claude-one": 0.1,
+          "fixture-claude-two": 0.2,
+          "fixture-claude-three": 0.3,
+        };
+        const reset = String(Math.ceil(Date.now() / 1000) + 86_400);
+        const real = createReviewRoundDeps(() => {}, {
+          credentialDir,
+          env: {},
+          fetchClaudeBudget: (_url, init) => {
+            const token = new Headers(init.headers).get("authorization")
+              ?.replace(/^Bearer /, "") ?? "";
+            const used = utilisation[token];
+            return Promise.resolve(
+              used === undefined
+                ? new Response("unknown subscription", { status: 401 })
+                : new Response("{}", {
+                  headers: {
+                    "anthropic-ratelimit-unified-5h-utilization": String(used),
+                    "anthropic-ratelimit-unified-5h-reset": reset,
+                    "anthropic-ratelimit-unified-7d-utilization": String(used),
+                    "anthropic-ratelimit-unified-7d-reset": reset,
+                  },
+                }),
+            );
+          },
+        });
+        resetHeldProviderCredentials();
+        try {
+          const code = await runReviewRound(
+            "review the fixture PR",
+            ["--model", "claude-fable-5-2", "--effort", "high"],
+            {
+              ...real,
+              runClaude: (args, env) => {
+                const model = args[args.indexOf("--model") + 1];
+                const token = env["CLAUDE_CODE_OAUTH_TOKEN"] ?? "";
+                if (
+                  model === "claude-fable-5-2" &&
+                  Object.hasOwn(utilisation, token)
+                ) {
+                  return Promise.resolve({
+                    code: 1,
+                    output:
+                      "You've reached your Fable limit. Switch to another model to continue.",
+                  });
+                }
+                if (
+                  model === "claude-opus-5-5" &&
+                  token === "fixture-claude-three"
+                ) {
+                  return Promise.resolve({
+                    code: 1,
+                    output: "You've hit your usage limit · resets 1:50pm (UTC)",
+                  });
+                }
+                if (
+                  model === "deepseek-v4-pro" && token === "" &&
+                  env["ANTHROPIC_AUTH_TOKEN"] === "fixture-deepseek" &&
+                  env["ANTHROPIC_BASE_URL"] ===
+                    "https://api.deepseek.com/anthropic"
+                ) {
+                  return Promise.resolve({
+                    code: 0,
+                    output: "Review complete",
+                  });
+                }
+                return Promise.resolve({
+                  code: 2,
+                  output: "The selected model cannot use these credentials",
+                });
+              },
+              runCodex: (_args, _stdin, env) =>
+                Promise.resolve({
+                  code: 1,
+                  output: "Codex quota exhausted",
+                  usageLimited: env["OPENAI_API_KEY"] === "fixture-codex" &&
+                    !("CLAUDE_CODE_OAUTH_TOKEN" in env) &&
+                    !("ANTHROPIC_AUTH_TOKEN" in env),
+                }),
+            },
+            { roundDir },
+          );
+          assertEquals(code, 0);
+          const record: ReviewRunRecord = JSON.parse(
+            await Deno.readTextFile(`${roundDir}/${REVIEW_RUN_FILE}`),
+          );
+          assertEquals(
+            record.attempts.map((attempt) => [
+              attempt.provider,
+              attempt.model,
+              attempt.effort,
+              attempt.code,
+            ]),
+            [
+              ["claude", "claude-fable-5-2", "high", 1],
+              ["claude", "claude-fable-5-2", "high", 1],
+              ["claude", "claude-fable-5-2", "high", 1],
+              ["codex", "gpt-6-astra", "high", 1],
+              ["claude", "claude-opus-5-5", "xhigh", 1],
+              ["deepseek", "deepseek-v4-pro", "high", 0],
+            ],
+          );
+        } finally {
+          resetHeldProviderCredentials();
+        }
+      },
+    );
+  },
+);
 
 Deno.test(
   "review round wiring - a provisioned DeepSeek credential exports the pinned child env (Issue #3632)",
