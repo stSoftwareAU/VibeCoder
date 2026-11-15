@@ -59,10 +59,10 @@ checked against the head code:
   the merge gate refused the merged tree".
 - Docs sweep: I grepped `*.md` outside `docs/archive/` for `gateEscalated`,
   "escalates on the first occurrence" and "oldest open child". At the head the
-  two stale phrases no longer appear anywhere. `gateEscalated` appears once in `docs/INTERNALS.md`,
-  in the closing sentence of the rewritten "It hands nothing to a human"
-  bullet, which describes the flag as retired: nothing sets it, and a landed sync drops
-  it.
+  two stale phrases no longer appear anywhere. `gateEscalated` appears once in
+  `docs/INTERNALS.md`, in the closing sentence of the rewritten "It hands
+  nothing to a human" bullet, which describes the flag as retired: nothing sets
+  it, and a landed sync drops it.
 
 ## Test Plan
 
