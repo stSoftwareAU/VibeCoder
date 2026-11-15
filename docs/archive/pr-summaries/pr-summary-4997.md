@@ -58,7 +58,9 @@ observed failing against the unfixed text, then passing after the fix.
 - `best_practices_template_test.ts` was red with `FAILED | 67 passed | 2
   failed`, because the filed body read `(\`deno check **/*.ts\` OR
   \`npx tsc --noEmit\`)`. It then passed (69 passed, 0 failed).
-- `./quality.sh < /dev/null` passed on the head commit, with two checks
+- After merging the latest `main` into the branch, the three test files above
+  passed together (`deno task test:unit`, 141 passed, 0 failed).
+- `./quality.sh < /dev/null` passed on the merged head, with two checks
   skipped by the host environment. "config integration" was skipped because
   deno or `.config.json` was not available. "checkov" was skipped because no
   checkov binary or image was available; the CI checkov job stays
