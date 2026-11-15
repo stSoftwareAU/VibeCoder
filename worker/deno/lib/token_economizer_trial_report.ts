@@ -132,8 +132,10 @@ export interface TrialExclusions {
   trialHostOff: number;
   /** Size of the switched-on population (intention to treat). */
   onRuns: number;
-  /** The switched-on population by plugin status. */
-  onByStatus: Record<TrialStatus, number>;
+  /** Trial host window runs the switch was on for but another provider served (plugin off; in no comparison). */
+  otherProviderOff: number;
+  /** The switched-on population by plugin status (`off` is excluded above). */
+  onByStatus: Record<Exclude<TrialStatus, "off">, number>;
   onPersisted: number;
   /** Trial host runs in the before period that were not switched off. */
   beforeNotOff: number;
@@ -415,8 +417,9 @@ export async function buildTokenEconomizerTrialReport(
     nonClaude: 0,
     unflagged: 0,
     trialHostOff: 0,
+    otherProviderOff: 0,
     onRuns: 0,
-    onByStatus: { on: 0, fallback: 0, stopped: 0, "not-run": 0, off: 0 },
+    onByStatus: { on: 0, fallback: 0, stopped: 0, "not-run": 0 },
     onPersisted: 0,
     beforeNotOff: 0,
     otherHostNotOff: 0,
@@ -462,11 +465,17 @@ export async function buildTokenEconomizerTrialReport(
     if (r.host === options.trialHost) {
       if (inWindow) {
         trialWindow.push(r);
-        if (switchedOn && r.block !== undefined) {
+        const block = r.block;
+        if (switchedOn && block?.status === "off") {
+          // Switch on but served by a non-Claude provider: plugin off, in
+          // neither comparison (trial doc sections 2 and 5).
+          ex.otherProviderOff++;
+        } else if (switchedOn && block !== undefined) {
           on.push(r);
           ex.onRuns++;
-          ex.onByStatus[r.block.status]++;
-          if (r.block.persisted) ex.onPersisted++;
+          // `off` is handled above, so the status is an on-population one.
+          ex.onByStatus[block.status as keyof typeof ex.onByStatus]++;
+          if (block.persisted) ex.onPersisted++;
         } else ex.trialHostOff++;
       } else if (!switchedOn) before.push(r);
       else ex.beforeNotOff++;
@@ -663,9 +672,10 @@ export function formatTokenEconomizerTrialSection(
     "",
     "### Populations and exclusions",
     "",
-    `- Switched-on population (intention to treat: every trial host window run with the switch on, whatever the plugin status): ${e.onRuns} runs, by status ${e.onByStatus.on} on, ${e.onByStatus.fallback} fallback, ${e.onByStatus.stopped} stopped, ${
+    `- Switched-on population (intention to treat: every trial host window run with the switch on that the plugin was eligible for, whatever the plugin status): ${e.onRuns} runs, by status ${e.onByStatus.on} on, ${e.onByStatus.fallback} fallback, ${e.onByStatus.stopped} stopped, ${
       e.onByStatus["not-run"]
-    } not-run, ${e.onByStatus.off} off; persisted ${e.onPersisted} of ${e.onRuns}`,
+    } not-run; persisted ${e.onPersisted} of ${e.onRuns}`,
+    `- Trial host runs served by another provider (plugin off; in no comparison): ${e.otherProviderOff}`,
     `- Trial host window runs with the switch off (in no comparison): ${e.trialHostOff}`,
     `- Malformed records excluded: ${e.malformed}`,
     `- Unflagged records excluded (no flag, before ${report.recordedSince}): ${e.unflagged}`,
@@ -687,6 +697,7 @@ export function formatTokenEconomizerTrialSection(
         : ""
     }`,
     "- Not checked: the run record carries no advisor/executor-split setting, so that section 5 exclusion cannot be applied from the archive; the reader must check it (#4959).",
+    "- Not checked: the run record's provider is the host's configured provider, not the one that served the run, so a switch-off control run served by another provider cannot be excluded from the archive; the reader must check it (#4959).",
     "- Not checked: the run record carries no other-trial-window flag, so that section 5 exclusion cannot be applied from the archive; the reader must check it (#4959).",
   ];
   return lines.join("\n");

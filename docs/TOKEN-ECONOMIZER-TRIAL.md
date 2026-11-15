@@ -386,9 +386,13 @@ before the window, switch off) and Concurrent (other hosts, same window, same
 repositories only, matching RTK setting). The switched-on population is
 intention to treat: every Claude implementation run on the trial host in the
 window whose `tokenEconomizer` block has `enabled: true`, whatever its status,
-so failed, stopped and early-exit attempts stay in. The report shows a
-per-status breakdown of it (on, fallback, stopped, not-run, off; a block with
-status `off` and the switch on still counts here) and the persisted count.
+so failed, stopped and early-exit attempts stay in. A block with `enabled: true`
+and status `off` is a run another provider served on the switched-on host: it is
+plugin-off (sections 2 and 5), so it is left out of the population and counted on
+its own exclusion line. The report shows a per-status breakdown of the population
+(on, fallback, stopped, not-run) and the persisted count. The record's
+`provider` is the host's configured provider, so a switch-off control run served
+by another provider cannot be excluded from the archive; the report says so.
 
 The cost per completed implementation run is the total cost of all runs,
 failures included, divided by the completed runs. A run whose

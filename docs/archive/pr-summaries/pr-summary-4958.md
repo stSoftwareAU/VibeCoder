@@ -57,8 +57,12 @@ Closes #4958.
 - **The report:** there is no weekly-report generator in the repository to
   extend, so the "weekly report section" is a new on-demand command. Its
   populations are as follows:
-  - The switched-on population is intention-to-treat: every status on an enabled
-    Claude run, so failed and stopped attempts stay in.
+  - The switched-on population is intention-to-treat: every enabled trial host
+    run the plugin was eligible for, so failed, stopped, fallback and not-run
+    attempts stay in. A block with `enabled: true` and status `off` (another
+    provider served the run) is plugin-off per trial doc sections 2 and 5: it is
+    counted on its own "Trial host runs served by another provider" line and is
+    in neither comparison.
   - Merge rate is merged over PRs with a final state.
   - It renders no verdict: not yet: #4959 will apply the bar.
   - Accounting for billed capped and unfinished-executor invocations belongs to
@@ -139,7 +143,7 @@ flowchart LR
   verdict; this issue does not add another verdict or trial controller. —
   evidence:
   `worker/deno/tests/token_economizer_trial_report_test.ts::rendered section shows explicit populations and no verdict`,
-  `worker/deno/tests/token_economizer_trial_report_test.ts::switched-on population keeps failed, stopped and plugin-off attempts`,
+  `worker/deno/tests/token_economizer_trial_report_test.ts::switched-on population keeps failed and not-run attempts but not another provider's plugin-off run`,
   `worker/deno/tests/token_economizer_trial_report_test.ts::runs with no pull request are outside the merge-rate denominator`
   — reviewer: met — reason: the reviewer's population findings (asymmetric
   switched-on set, no-PR runs in the merge denominator, unchecked §5 exclusions)
@@ -202,13 +206,14 @@ flowchart LR
 
 ## Test Plan
 
-- Added `worker/deno/tests/token_economizer_run_stats_test.ts` (12 tests). They
+- Added `worker/deno/tests/token_economizer_run_stats_test.ts` (14 tests at head). They
   cover the reader over fixture state, including imported-record exclusion, the
   sum over two populated homes, a ledger-only home, a malformed ledger, the stop
   record and missing homes. They also cover every stats-line shape, the comment
-  placement, and the callback document both off (byte-identical) and on
+  placement, the combined `run incl. plugin` cost through the comment (with and
+  without a parseable cost line), and the callback document both off (byte-identical) and on
   (`schemaVersion` 2).
-- Added `worker/deno/tests/token_economizer_trial_report_test.ts` (13 tests).
+- Added `worker/deno/tests/token_economizer_trial_report_test.ts` (13 tests at head).
   They cover populations, the intention-to-treat switched-on set, the cost rule,
   unavailable cost with a lower bound, the merge-rate denominator, the absence
   of verdict wording, and command failures on a missing or empty archive and bad
@@ -255,3 +260,8 @@ flowchart LR
     checkov) on `eee814ae`.
   - `worker/deno/tests/token_economizer_production_deps_test.ts` passed (9
     passed, 0 failed) after the final test commit.
+  - After the PR #5159 review round, `deno test -A` over the run-stats,
+    trial-report, trial-docs and `mod_test.ts` files gave 78 passed, 0 failed.
+    The report adds a "Not checked" line: a control run served by another
+    provider cannot be excluded from the archive (the record's `provider` is the
+    host's configured one).

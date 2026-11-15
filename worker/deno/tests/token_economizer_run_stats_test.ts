@@ -365,6 +365,57 @@ Deno.test("run-stats comment - the line follows the RTK line; omitted is unchang
   );
 });
 
+Deno.test("run-stats comment - the combined cost is the comment's own cost line plus the plugin cost", () => {
+  const comment = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [claudeResult()],
+    runId: "vibe-te-combined",
+    tokenEconomizer: ON,
+  });
+  const lines = comment.split("\n");
+  const costLine = lines.find((l) => l.includes("Estimated cost (USD"));
+  const agent = Number(costLine?.match(/~\$([0-9.,]+)\s*$/)?.[1]);
+  const pluginCost = 0.0123;
+  assertEquals(Number.isFinite(agent) && agent > 0, true);
+  // Distinct values, so a swapped or dropped term cannot pass.
+  assertEquals(agent === pluginCost, false);
+  const line = lines.find((l) => l.startsWith("- **TokenEconomizer:**"));
+  assertEquals(
+    line,
+    `- **TokenEconomizer:** on — learnings not persisted; 3 facts injected; 2 judge calls; 1 redirect; 0 still-stuck notices; plugin model calls ~$0.0123 (run incl. plugin ~$${
+      (agent + pluginCost).toFixed(4)
+    })`,
+  );
+});
+
+Deno.test("run-stats comment - no parseable cost line leaves the combined figure out", () => {
+  // Zero token usage: the comment carries no Estimated cost line.
+  const comment = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults: [{
+      runStats: {
+        ...claudeResult().runStats!,
+        tokenUsage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheCreationTokens: 0,
+          cacheReadTokens: 0,
+        },
+      },
+    }],
+    runId: "vibe-te-nocost",
+    tokenEconomizer: ON,
+  });
+  assertEquals(comment.includes("Estimated cost (USD"), false);
+  const line = comment.split("\n").find((l) =>
+    l.startsWith("- **TokenEconomizer:**")
+  );
+  assertEquals(
+    line,
+    "- **TokenEconomizer:** on — learnings not persisted; 3 facts injected; 2 judge calls; 1 redirect; 0 still-stuck notices; plugin model calls ~$0.0123",
+  );
+});
+
 function context(
   overrides: Partial<IssueRunCallbackContext> = {},
 ): IssueRunCallbackContext {

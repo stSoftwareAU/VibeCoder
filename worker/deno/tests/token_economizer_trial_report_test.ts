@@ -203,7 +203,6 @@ Deno.test("report computes populations and metrics for both comparisons", async 
     fallback: 1,
     stopped: 1,
     "not-run": 0,
-    off: 0,
   });
   assertEquals(ex.trialHostOff, 0);
   assertEquals(ex.trialHostRtk, "disabled");
@@ -240,7 +239,7 @@ Deno.test("rendered section shows explicit populations and no verdict", async ()
   assertStringIncludes(text, "persisted 2 of 6");
   assertStringIncludes(
     text,
-    "6 runs, by status 4 on, 1 fallback, 1 stopped, 0 not-run, 0 off",
+    "6 runs, by status 4 on, 1 fallback, 1 stopped, 0 not-run",
   );
   assertStringIncludes(
     text,
@@ -298,7 +297,7 @@ Deno.test("a run with no cost makes cost unavailable with a lower bound", async 
   assertStringIncludes(text, "| Runs | 3 | 0 |");
 });
 
-Deno.test("switched-on population keeps failed, stopped and plugin-off attempts", async () => {
+Deno.test("switched-on population keeps failed and not-run attempts but not another provider's plugin-off run", async () => {
   const W = "2026-11-10T00:00:00Z";
   const report = await buildTokenEconomizerTrialReport(
     [
@@ -325,20 +324,29 @@ Deno.test("switched-on population keeps failed, stopped and plugin-off attempts"
     OPTIONS,
     lookup,
   );
-  assertEquals(report.exclusions.onRuns, 3);
+  assertEquals(report.exclusions.onRuns, 2);
   assertEquals(report.exclusions.onByStatus, {
     on: 1,
     fallback: 0,
     stopped: 0,
     "not-run": 1,
-    off: 1,
   });
+  assertEquals(report.exclusions.otherProviderOff, 1);
   assertEquals(report.exclusions.trialHostOff, 1);
   assertEquals(report.exclusions.onPersisted, 1);
   assert(report.switchedOn.cost.available);
-  assertEquals(report.switchedOn.cost.totalUsd, 7);
+  // The other provider's run (cost 2) is not summed in: 1 + 4 only.
+  assertEquals(report.switchedOn.cost.totalUsd, 5);
+  assertEquals(report.switchedOn.runs, 2);
   assertEquals(report.switchedOn.completed, 1);
-  assertEquals(report.switchedOn.successRate, 1 / 3);
+  assertEquals(report.switchedOn.successRate, 1 / 2);
+  assertEquals(report.concurrentOn.runs, 0);
+  const text = formatTokenEconomizerTrialSection(report);
+  assertStringIncludes(
+    text,
+    "Trial host runs served by another provider (plugin off; in no comparison): 1",
+  );
+  assertStringIncludes(text, "cannot be excluded from the archive");
 });
 
 Deno.test("run cost rule: agent_not_invoked is 0, plugin spend without a run cost is unavailable", async () => {
