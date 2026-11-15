@@ -357,24 +357,24 @@ the owner is separately scoped work; do not attach it to ordinary PR runs.
    exception, and it carries its own conditions — see **Documentation-drift
    tests** below.
 
-**Nothing exists only for a test to read.** A field, prop, parameter, type or
-export that only a test reads or sets does not belong in production code: the
-test checks the member instead of what a user or caller sees, so it stays
-green while that output is wrong. Assert on what production does with it
-instead — the returned value, the error message, the rendered text — or
-inject through a seam the code already has. Before raising the PR, run
-`git grep -n -w <name>` for each field, prop, parameter, type or export the
-diff adds to non-test code, and find one hit outside test code (a test file,
-a `#[cfg(test)]` module, a fixture or a test double) that reads or sets it. A
-production default that passes the real dependency through an injected seam
-(a clock, a scheduler, a process runner) counts as its setter. Do not filter
-with `':!*test*'`: that pathspec also drops production files whose path
-contains `test`, such as `latest.ts` or `attestation.ts`. If there is no
-production reader or setter, remove the member and move the assertion onto
-the observable output. A member the issue explicitly asks for as public API
-(for example, a library export) is exempt, and the PR summary says so. A new
-member with no production reader or setter is a blocking self-review finding
-(Issue #3455).
+**Nothing exists only for a test to read.** A field, prop, parameter, method,
+component, type or export that only a test uses does not belong in production
+code: the test checks the member instead of what a user or caller sees, so it
+stays green while that output is wrong. Only production code that consumes the
+member counts as a use: code that reads the field or the result, that calls the
+function, method or component, or that passes the prop or parameter. The code
+that declares, fills or defaults the member is not a use, so a field production
+writes but only a test reads, or a prop a component reads but only a test
+passes, is test-only. Run `git grep -n -w <name>` for each member the diff adds,
+and for each one whose production caller the diff removes or replaces. Do not
+filter with `':!*test*'`: that pathspec also drops production files whose path
+contains `test`, such as `latest.ts` or `attestation.ts`. A production default
+that passes the real dependency through an injected seam (a clock, a scheduler,
+a process runner) counts as a production caller. Remove a test-only member and
+move the assertion onto what production does with it (the returned value, the
+error message, the rendered text), or inject through a seam the code already
+has. A member the issue explicitly asks for as public API (for example, a
+library export) is exempt (Issue #3455).
 
 ### Examples
 
@@ -1617,7 +1617,8 @@ Never background it behind a `sleep`/`pgrep` poll loop
 check as each settles, so a slow run is visibly alive rather than
 indistinguishable from a hung one. The quality gate is implemented in Deno
 TypeScript (`worker/deno/quality.ts`) and runs benchmark-audit, markdownlint,
-semgrep, Checkov (where `checkov.yml` exists), the release-tag ruleset
+semgrep, Checkov (where `checkov.yml` exists), gitleaks (where `gitleaks.yml`
+exists), the release-tag ruleset
 reconciliation, `deno test`, `deno lint`, `deno check`, and
 `deno fmt --check`. The semgrep stage runs the same
 `p/default` ruleset as the blocking `semgrep.yml` PR check, over the branch's

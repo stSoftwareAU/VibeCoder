@@ -28,6 +28,16 @@ Deno.test("run_stats - collects distinct served models from assistant lines", ()
   assertEquals(stats.servedModels, ["claude-fable-5"]);
 });
 
+Deno.test("run_stats - synthetic CLI authentication errors are not served models", async () => {
+  const stream = await Deno.readTextFile(
+    new URL(
+      "./fixtures/agent_output/claude-2.1.261-auth-failure.jsonl",
+      import.meta.url,
+    ),
+  );
+  assertEquals(extractRunStats(stream).servedModels, []);
+});
+
 Deno.test("run_stats - records a served model different from the requested one", () => {
   // A run where the API served a downgraded model versus what was requested.
   const stream = [

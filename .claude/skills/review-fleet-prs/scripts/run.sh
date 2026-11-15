@@ -41,6 +41,10 @@ TICK=${REVIEW_FLEET_PRS_TICK:-30}
 LEARN_INTERVAL=${REVIEW_FLEET_PRS_LEARN_INTERVAL:-3600}
 CONFIG=${REVIEW_FLEET_PRS_CONFIG:-$CHECKOUT/.config.json}
 DEFAULT_PARALLEL=3
+# The reviewer model and effort: `review_model` and `review_effort` in
+# .config.json (Owner policy #5081: Fable 5.2 at high).
+DEFAULT_REVIEW_MODEL=claude-fable-5-2
+DEFAULT_REVIEW_EFFORT=high
 # A hung round must not wedge the loop, nor outlive its token. Overridable
 # only so the tests can time a round out without waiting 50 minutes.
 ROUND_TIMEOUT=${REVIEW_FLEET_PRS_ROUND_TIMEOUT:-3000}
@@ -190,8 +194,11 @@ EOF
 # its named volumes are left out, because the worker's container may hold
 # them and a round needs none of its durable state; and the reviewer App token
 # is passed by name alone (`--env GH_TOKEN`), so its value is never on a
-# command line, in a trace or on disk. The plan is written to the round's
-# directory $2, where the round's egress helper reads it (round_egress).
+# command line, in a trace or on disk. The round also gets its own Codex home,
+# $STATE_DIR/codex (VIBE_REVIEW_CODEX_HOME), on the log directory's mount,
+# since the worker's agent-state volume is left out. The plan is written to the
+# round's directory $2, where the round's egress helper reads it
+# (round_egress).
 # Sets RUNTIME, ROUND_ARGS (everything up to and including the image), C_BASE
 # (the checkout inside the container), C_STATE_DIR (this state directory
 # inside it) and ROUND_EGRESS. Returns non-zero, with LAST_ERROR set, when the
@@ -248,11 +255,19 @@ round_container() {
     return 1
   fi
   for arg in ${ensure_dirs[@]+"${ensure_dirs[@]}"}; do mkdir -p "$arg"; done
+  # The round's own Codex home (Issue #5127), on the log directory's mount so
+  # the round reaches it and it outlives the round. Its login is the
+  # operator's own; nothing here writes one.
+  if ! { mkdir -p "$STATE_DIR/codex" && chmod 700 "$STATE_DIR/codex"; }; then
+    LAST_ERROR="cannot create the round's Codex home $STATE_DIR/codex"
+    return 1
+  fi
   round_args "${run_args[@]}"
 }
 
 # The round's container arguments from a plan's run arguments ($@): sets
-# ROUND_ARGS, C_BASE and C_STATE_DIR, leaving out ROUND_VOLUMES. Returns
+# ROUND_ARGS, C_BASE and C_STATE_DIR, leaving out ROUND_VOLUMES and adding
+# the round's Codex home (also for an egress helper's run). Returns
 # non-zero, with LAST_ERROR set, when the state directory is not mounted.
 round_args() {
   local run_args=("$@") i arg src value
@@ -279,6 +294,8 @@ round_args() {
     LAST_ERROR="the worker container does not mount $STATE_DIR"
     return 1
   fi
+  # The round's own Codex home, a path and not a secret (Issue #5127).
+  ROUND_ARGS+=(--env "VIBE_REVIEW_CODEX_HOME=$C_STATE_DIR/codex")
   # Tested by name, not value: `bash -x` would print the value.
   [[ -n ${GH_TOKEN+set} ]] && ROUND_ARGS+=(--env GH_TOKEN)
   ROUND_ARGS+=("${run_args[${#run_args[@]} - 1]}")
@@ -328,7 +345,12 @@ stop_egress() {
 # alarm is the round's only limit; it kills the runtime's client, so the
 # container itself is then killed by name.
 run_round() {
-  local log=$1 tag=$2 rc claude_args
+  local log=$1 tag=$2 rc claude_args model effort
+  # The round's model and effort come from `review_model` and `review_effort`
+  # in .config.json (review_model_setting, review_effort_setting). They reach
+  # the round's argv, so each is checked against an allow-list first.
+  model=$(review_model_setting)
+  effort=$(review_effort_setting)
   # stream-json: the round's own result carries its per-model usage, which
   # price_round turns into each review's cost; the driver keeps the full
   # stream in the round's directory and logs only its readable lines.
@@ -340,8 +362,9 @@ run_round() {
   # scratch, and its own round directory, and accepts writes in them; the rest
   # of the state directory stays out of reach, and /workspace is read-only.
   claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" --arg dir "$C_DIR" \
-    --argjson bash "$(round_bash_rules)" '["--model",
-    "claude-fable-5-2", "--effort", "high", "--output-format", "stream-json",
+    --arg model "$model" --arg effort "$effort" \
+    --argjson bash "$(round_bash_rules)" '["--model", $model,
+    "--effort", $effort, "--output-format", "stream-json",
     "--verbose", "--add-dir", "/tmp", "--add-dir", $dir,
     "--permission-mode", "acceptEdits", "--allowedTools", "Agent",
     "Read", "Grep", "Glob", $edit] + $bash')
@@ -405,6 +428,39 @@ parallel_setting() {
     log "pr_reviewer_parallel must be a whole number above 0, not '$v';" \
       "using $DEFAULT_PARALLEL" >&2
     echo "$DEFAULT_PARALLEL"
+  fi
+}
+
+# The model the review round runs on: `review_model` in .config.json. It
+# reaches the round's argv, so only a plain model id is accepted (at most 100
+# characters); anything else is logged and the default used.
+review_model_setting() {
+  local v
+  v=$(jq -r '.review_model // empty' "$CONFIG" 2>/dev/null)
+  if [[ -z $v ]]; then
+    echo "$DEFAULT_REVIEW_MODEL"
+  elif [[ $v =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && ${#v} -le 100 ]]; then
+    echo "$v"
+  else
+    log "review_model must be a model id (letters, digits, '.', '_' or '-'), not '$v';" \
+      "using $DEFAULT_REVIEW_MODEL" >&2
+    echo "$DEFAULT_REVIEW_MODEL"
+  fi
+}
+
+# The effort the review round runs at: `review_effort` in .config.json, one of
+# the levels the CLI takes; anything else is logged and the default used.
+review_effort_setting() {
+  local v
+  v=$(jq -r '.review_effort // empty' "$CONFIG" 2>/dev/null)
+  if [[ -z $v ]]; then
+    echo "$DEFAULT_REVIEW_EFFORT"
+  elif [[ $v =~ ^(low|medium|high|xhigh|max)$ ]]; then
+    echo "$v"
+  else
+    log "review_effort must be one of low, medium, high, xhigh or max, not '$v';" \
+      "using $DEFAULT_REVIEW_EFFORT" >&2
+    echo "$DEFAULT_REVIEW_EFFORT"
   fi
 }
 

@@ -1261,6 +1261,23 @@ Deno.test("runExecuteClaudePhase - routes the coding run through phase 'issue'",
   assertEquals(capturedPhase, "issue");
 });
 
+Deno.test("runExecuteClaudePhase - arms the configured no-output watchdog on the coding run (Issue #5062)", async () => {
+  let capturedNoOutputTimeout: number | undefined = undefined;
+  await runExecuteClaudePhase(
+    createTestOptions({ claudeNoOutputTimeout: 437 }),
+    createMockDeps({
+      runClaudeWithRetry: async (options) => {
+        capturedNoOutputTimeout = options.noOutputTimeout;
+        return {
+          ok: true,
+          value: { exitCode: 0, output: "Done.", timedOut: false },
+        };
+      },
+    }),
+  );
+  assertEquals(capturedNoOutputTimeout, 437);
+});
+
 // --- Per-repo agent_provider pin tests (Issue #2048) ---
 
 Deno.test("runExecuteClaudePhase - a repo provider pin reaches the runner when nothing is explicit", async () => {

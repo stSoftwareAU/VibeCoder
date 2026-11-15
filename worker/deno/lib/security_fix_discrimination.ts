@@ -25,7 +25,7 @@
  * Counting a broken run as red would let any test pass the gate by failing to
  * start (the #3615 shape).
  *
- * Children run under the mutation runner's allowlisted environment
+ * Children run under the shared runner's allowlisted environment
  * (`buildUntrustedCommandEnv`, applied by the {@link MutationRunnerSeams}
  * `runProcess`); the repository's declared credentials reach the `deno` and
  * `cargo` runs only, never git.
@@ -535,7 +535,16 @@ async function discriminate(
       postFix: head.outcome,
     };
   } finally {
-    await seams.removeDir(tmp);
+    // Best-effort cleanup: a removal error (Issue #5078) must not replace a
+    // completed verdict. Warn with the cause if the temporary clone remains.
+    try {
+      await seams.removeDir(tmp);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[security-fix] could not remove temp dir ${tmp}: ${message} (Issue #5078)`,
+      );
+    }
   }
 }
 

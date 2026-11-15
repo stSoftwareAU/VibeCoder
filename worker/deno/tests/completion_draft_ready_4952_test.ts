@@ -605,6 +605,8 @@ async function runRestFallback(
     draft: boolean | "unreadable";
     latched: boolean;
     readyFails?: boolean;
+    /** A malformed REST response must never send ready/merge requests to PR 0. */
+    prUrl?: string;
   },
 ) {
   const { draft, latched, readyFails = false } = options;
@@ -651,7 +653,7 @@ async function runRestFallback(
     if (
       args[0] === "api" && args.some((a) => a.includes(`repos/${REPO}/pulls`))
     ) {
-      return Promise.resolve(`${PR_URL}\n`);
+      return Promise.resolve(`${options.prUrl ?? PR_URL}\n`);
     }
     if (latched && args[0] !== "api") {
       return Promise.reject(new Error(LATCH_SKIP));
@@ -753,6 +755,25 @@ async function runRestFallback(
   await Deno.remove(repoPath, { recursive: true });
   return { result, calls, armed, comments, verifierCalls, linkCalls };
 }
+
+Deno.test(
+  "Issue #5095 - a REST fallback without a positive PR number neither marks ready nor arms auto-merge",
+  async () => {
+    for (
+      const prUrl of ["https://github.com/org/repo/pull/0", "unreadable URL"]
+    ) {
+      const run = await runRestFallback({
+        draft: true,
+        latched: true,
+        prUrl,
+      });
+
+      assertEquals(run.result, { status: "continue" });
+      assertEquals(readyCalls(run.calls), [], "there is no PR to mark ready");
+      assertEquals(run.armed, [], "there is no PR to arm");
+    }
+  },
+);
 
 Deno.test(
   "Issue #4952 - latched quota + REST-confirmed draft: the run fails interrupted, is not released as raised, and is not armed",

@@ -655,3 +655,88 @@ Deno.test("worktreeBaseline: the checkout the run used is removed after the run"
     await Deno.remove(repo, { recursive: true });
   }
 });
+
+// The budget lines the runner prints after a failed pass (Issue #4930).
+const BUDGET_FAIL_LINE =
+  "FAIL: every test in ./tests/slow_test.ts (2, 3.00s) is over the 1.00s unit-test budget — find what the mocks miss";
+
+/** Judge a failed parallel run whose serial rerun (if any) is `serial`. */
+function judgeWithSerial(output: string, serial: string | null = null) {
+  const calls: string[] = [];
+  const outcome = judgeDenoTestCheck({
+    error: failure(output),
+    command: "deno task test:unit",
+    baseline: redAtBase,
+    baseCommand: command,
+    run: (cmd) => {
+      calls.push(cmd);
+      return Promise.resolve(
+        serial === null
+          ? { ok: true as const, value: undefined }
+          : { ok: false as const, error: failure(serial) },
+      );
+    },
+  });
+  return { outcome, calls };
+}
+
+Deno.test("judgeDenoTestCheck: a FAIL time budget line in the output blocks a base-only downgrade (Issue #4930)", async () => {
+  // Control: the same failed parallel pass without the budget line is base-only.
+  assertEquals(
+    (await judgeWithSerial(OBSERVED + PARALLEL_FAILED).outcome).kind,
+    "base-only",
+  );
+  // The budget failed over the failed pass: a verdict, and the serial rerun is
+  // not run at all.
+  const blocked = judgeWithSerial(
+    OBSERVED + PARALLEL_FAILED + BUDGET_FAIL_LINE + "\n",
+  );
+  const verdict = await blocked.outcome;
+  assertEquals(verdict.kind, "verdict");
+  assertStringIncludes(
+    (verdict as { message: string }).message,
+    BUDGET_FAIL_LINE,
+  );
+  assertEquals(blocked.calls, []);
+});
+
+Deno.test("judgeDenoTestCheck: a TIME BUDGET NOT CHECKED line blocks a base-only downgrade (Issue #4930)", async () => {
+  const unchecked = judgeWithSerial(
+    OBSERVED + PARALLEL_FAILED +
+      "TIME BUDGET NOT CHECKED: the unit pass wrote no JUnit report at /tmp/x.xml\n",
+  );
+  assertEquals((await unchecked.outcome).kind, "verdict");
+  assertEquals(unchecked.calls, []);
+});
+
+Deno.test("judgeDenoTestCheck: a FAIL budget line in the serial rerun blocks its base-only downgrade (Issue #4930)", async () => {
+  const rerun = judgeWithSerial(
+    OBSERVED + PARALLEL_FAILED,
+    "boom one => ./a_test.ts:1:6\n=== serial pass: FAILED in 1s\n" +
+      BUDGET_FAIL_LINE + "\n",
+  );
+  const verdict = await rerun.outcome;
+  assertEquals(verdict.kind, "verdict");
+  assertStringIncludes(
+    (verdict as { message: string }).message,
+    BUDGET_FAIL_LINE,
+  );
+  // The serial rerun did run: its output is what blocks.
+  assertEquals(rerun.calls, ["deno task test:unit --serial-only"]);
+});
+
+Deno.test("judgeDenoTestCheck: a NOT ENFORCED line (git guard shim) does not block a base-only downgrade (Issue #4930)", async () => {
+  const waived = await judgeWithSerial(
+    OBSERVED + PARALLEL_FAILED +
+      "NOT ENFORCED: every test in tests/slow_test.ts (2, 3.00s) is over the 1.00s unit-test budget — the git guard shim is on PATH\n",
+  ).outcome;
+  assertEquals(waived.kind, "base-only");
+});
+
+Deno.test("judgeDenoTestCheck: a budget phrase mid-line does not block a base-only downgrade (Issue #4930)", async () => {
+  const midLine = await judgeWithSerial(
+    OBSERVED + PARALLEL_FAILED +
+      "console.log: x " + BUDGET_FAIL_LINE + "\n",
+  ).outcome;
+  assertEquals(midLine.kind, "base-only");
+});

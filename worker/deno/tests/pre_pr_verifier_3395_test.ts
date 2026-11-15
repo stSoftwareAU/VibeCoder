@@ -946,8 +946,42 @@ Deno.test("runPrePrVerifier defaults to the Fable reviewer model when no model i
       seen.push(options.model);
       return Promise.resolve(okRun({ output: REPLY_CLEAN }));
     }, []);
-    await runPrePrVerifier(inputFor(f, { model: undefined }), deps);
+    await runPrePrVerifier(inputFor(f, { model: undefined }), {
+      ...deps,
+      activeProviderId: () => "claude",
+    });
     assertEquals(seen, ["fable"]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// A Claude alias handed to Codex is refused ("codex refused model fable"),
+// which costs a Codex attempt on every issue and moves the review to Claude
+// at the issue manager's model. The default is the running provider's own
+// top tier.
+Deno.test("runPrePrVerifier defaults to the running provider's top-tier model, never a Claude alias on Codex", async () => {
+  const f = await makeRepo();
+  try {
+    const seen: Array<string | undefined> = [];
+    const deps = makeDeps((options) => {
+      seen.push(options.model);
+      return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+    }, []);
+    await runPrePrVerifier(inputFor(f, { model: undefined }), {
+      ...deps,
+      activeProviderId: () => "codex",
+    });
+    await runPrePrVerifier(inputFor(f, { model: undefined }), {
+      ...deps,
+      activeProviderId: () => "deepseek",
+    });
+    // A read-only verifier always runs on Claude, whatever is active.
+    await runPrePrVerifier(inputFor(f, { model: undefined, readOnly: true }), {
+      ...deps,
+      activeProviderId: () => "codex",
+    });
+    assertEquals(seen, ["gpt-6-astra", "deepseek-v4-pro", "fable"]);
   } finally {
     await f.cleanup();
   }

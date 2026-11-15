@@ -18,6 +18,13 @@
  * the set read before the checks: a change overrides a pass with a blocked
  * outcome, and a failed re-read is an infrastructure outcome.
  *
+ * Once those checks pass, the gitleaks secret scan runs over the branch's
+ * commit range and the repair's uncommitted files (Issue #5121, PR #5129
+ * review). The repair does not go through `runQualityGate`, and its edits are
+ * uncommitted, so this is the only scan before the host commits and pushes. A
+ * finding is `blocked`; a missing scanner, unresolvable history or a scanner
+ * fault is `infrastructure`, so no repair attempt is spent on it.
+ *
  * Uses Australian English spelling (behaviour, neutralise, etc.)
  */
 
@@ -31,6 +38,7 @@ import {
   runPrePushGate,
 } from "./pre_push_gate.ts";
 import { isBabysitterReady } from "./babysitter_ready.ts";
+import { runGitleaksTreeCheck } from "./gitleaks_check.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 
 /** Written in front of a response whose READY line was withheld. */
@@ -106,6 +114,8 @@ export interface BabysitterTreeGateDeps {
   /** Command runner and markdownlint lookup handed to the real gate. */
   runner?: PreFlightRunner;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
+  /** The secret scan; defaults to {@link runGitleaksTreeCheck} (Issue #5121). */
+  gitleaks?: typeof runGitleaksTreeCheck;
   makeTempDir?: () => Promise<string>;
   removeTree?: (path: string) => Promise<void>;
   checkoutTree?: (
@@ -626,7 +636,9 @@ async function settleAfterChecks(
  * Runs the pre-push gate over the uncommitted tree at `dir`. A clean tree is
  * `clean` and the gate is not called. Any failure to read the tree, to make
  * the temp root, or to run the gate is `infrastructure`; a failed check is
- * `blocked`; only a gate that passed is `passed`. After the gate returns, the
+ * `blocked`; only a gate that passed is `passed`. A passed gate is followed by
+ * the gitleaks scan, whose finding is `blocked` and whose fault is
+ * `infrastructure`. After the gate returns, the
  * tree is read again and compared with the set read before the checks: a
  * change the checks left behind turns a pass into `blocked`, and a failed
  * re-read is `infrastructure` (Issue #4930). The temp root is always removed.
@@ -640,6 +652,7 @@ export async function runBabysitterTreeGate(
   const gate = deps.gate ?? runPrePushGate;
   const makeTempDir = deps.makeTempDir ?? defaultMakeTempDir;
   const removeTree = deps.removeTree ?? defaultRemoveTree;
+  const gitleaks = deps.gitleaks ?? runGitleaksTreeCheck;
   const checkoutTree = deps.checkoutTree ??
     ((dir: string, sha: string, dest: string) =>
       defaultCheckoutTree(dir, sha, dest, git));
@@ -703,6 +716,16 @@ export async function runBabysitterTreeGate(
     let verdict: BabysitterTreeGateOutcome;
     if (result.ok) {
       verdict = { kind: "passed", checksRun: result.value.checksRun };
+      // The scan runs only on a tree the other checks passed, and reads
+      // without writing to `.git` or the tree, so the snapshot below still holds.
+      const secrets = await gitleaks(dir, baseBranch, gatePaths);
+      if (secrets.kind === "passed") {
+        verdict.checksRun = [...verdict.checksRun, "gitleaks"];
+      } else if (secrets.kind === "blocked") {
+        verdict = { kind: "blocked", message: boundedMessage(secrets.message) };
+      } else {
+        verdict = infrastructure(secrets.message);
+      }
     } else if (result.error instanceof PrePushGateInfrastructureError) {
       verdict = infrastructure(result.error.message);
     } else {

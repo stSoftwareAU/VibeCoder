@@ -146,7 +146,8 @@ function extractServedModels(rawStreamOutput: string): string[] {
       const parsed = JSON.parse(trimmed);
       const served = parsed?.message?.model;
       if (
-        parsed?.type === "assistant" && typeof served === "string" && served
+        parsed?.type === "assistant" && typeof served === "string" && served &&
+        served !== "<synthetic>"
       ) {
         if (!seen.has(served)) {
           seen.add(served);

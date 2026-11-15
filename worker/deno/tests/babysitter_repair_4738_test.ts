@@ -712,6 +712,9 @@ Deno.test("a test failing the same way at the PR base keeps READY only when --ba
         h.deps.treeGate = (dir, baseBranch) =>
           runBabysitterTreeGate(dir, baseBranch, {
             findMarkdownlint: () => Promise.resolve("/fake/markdownlint"),
+            // The secret scan has its own tests; CI has no scanner installed.
+            gitleaks: () =>
+              Promise.resolve({ kind: "passed", summary: "gitleaks: stubbed" }),
             runner: () =>
               Promise.resolve({
                 started: true,

@@ -4,8 +4,9 @@
  * only tests read or set, so the tests checked the member instead of what a
  * user or caller sees. The "nothing exists only for a test to read" paragraph
  * must be on both CODING-STANDARDS.md and the coding_guidelines prompt, in
- * their testing sections, word for word once wrapping is ignored, and the
- * issue prompt's PR Summary File step must restate it.
+ * their testing sections, word for word once wrapping is ignored. Issue #4992
+ * rewrote the check so the code that declares or fills a member is not a use,
+ * and members whose last production caller the diff removes are checked too.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -42,16 +43,16 @@ Deno.test("both surfaces carry the production-reader rule, identical, in their t
   for (const text of [standards, guidelines]) {
     assertPins(text, [LEAD]);
     assertPins(ruleParagraph(text), [
-      "only a test reads or sets does not belong in production code",
+      "only a test uses does not belong in production code",
       "the returned value, the error message, the rendered text",
       "inject through a seam the code already has",
+      "The code that declares, fills or defaults the member is not a use",
       "`git grep -n -w <name>`",
-      "find one hit outside test code",
-      "counts as its setter",
+      "whose production caller the diff removes or replaces",
+      "counts as a production caller",
       "Do not filter with `':!*test*'`",
-      "remove the member and move the assertion onto the observable output",
+      "Remove a test-only member and move the assertion onto what production does with it",
       "explicitly asks for as public API",
-      "A new member with no production reader or setter is a blocking self-review finding",
     ]);
   }
 
@@ -74,16 +75,5 @@ Deno.test("both surfaces carry the production-reader rule, identical, in their t
     flat(ruleParagraph(standards)).trim(),
     flat(ruleParagraph(guidelines)).trim(),
     "the production-reader rule must be identical on both surfaces",
-  );
-});
-
-Deno.test("issue prompt PR Summary File step restates the production-reader rule (Issue #3455)", async () => {
-  assertPins(
-    section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-    [
-      "**Nothing exists only for a test to read**",
-      "has a production reader or setter",
-      "a new member only a test reads or sets is a blocking self-review finding",
-    ],
   );
 });

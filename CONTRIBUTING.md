@@ -96,7 +96,9 @@ runs:
 
 This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
 Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, semgrep,
-and Checkov (registered only where `.github/workflows/checkov.yml` exists).
+Checkov (registered only where `.github/workflows/checkov.yml` exists), and
+gitleaks over the branch's commits (registered only where
+`.github/workflows/gitleaks.yml` exists; Issue #5121).
 CI additionally runs shellcheck over the repo's shell scripts — the gate
 itself does not. Always redirect stdin from `/dev/null` so
 unattended runs cannot hang waiting for input.

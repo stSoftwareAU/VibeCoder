@@ -29,6 +29,7 @@ import { runGitCommand } from "./git_timeout.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
+  babysitterDipWaitWithin,
   HOST_DISK_PARK_NOTE,
   inFlightHostDiskGateEnabled,
   parkInFlightBuild,
@@ -506,7 +507,13 @@ export interface ClaudeRunResult {
 export interface RunClaudeOptions {
   /** Enforced read/research-only CLI; caller publishes the returned discussion. */
   discussionOnly?: boolean;
-  /** Enforced CLI sandbox for a provider-neutral role invocation. */
+  /**
+   * Marks a provider-neutral orchestrator role call, passed through to the
+   * provider request. It does not by itself provide a sandbox: Claude roles get
+   * tool denials through `disallowedTools`; Codex roles run unsandboxed in the
+   * container, and a read-only Codex role on the issue-run gate is held only
+   * by checkout restoration (`orchestration/issue_run_gate.ts`).
+   */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
   captureInvocationStats?: boolean;
@@ -1354,10 +1361,23 @@ async function runClaudeWithTimeoutBody(
   // An agent in a checkout runs cargo and deno. Below the floor it does not
   // start (Issue #4360). No checkout means there is no build to bound, and
   // the gate is a no-op until production arms it.
+  //
+  // A dip the babysitter's live repairs explain is waited out first (Issue
+  // #5105), but never past the session's finish deadline: the wait leaves the
+  // minimum session behind, and the spawn clamp below re-reads the clock.
+  // With no run timeline the bound is the caller's own `timeoutSeconds`, so a
+  // call is never held longer than the session it asked for.
   if (cwd) {
     const park = options.discussionOnly
       ? await parkRunningBuild()
-      : await parkInFlightBuild(cwd);
+      : await parkInFlightBuild(
+        cwd,
+        undefined,
+        babysitterDipWaitWithin(
+          (sessionTimeoutSeconds - MIN_AGENT_SESSION_SECONDS) * 1000,
+          clock,
+        ),
+      );
     if (park) return { ok: false, error: new Error(park) };
   }
 
@@ -2959,8 +2979,8 @@ async function runClaudeWithTimeoutBody(
           maxWaitSeconds: killAfterSeconds,
           logger,
         });
-        // Did the collection give the memory back (Issue #4382)? A VM that
-        // still reads high after its orphans are gone is evidence for the
+        // Did signalling descendants give memory back (Issue #4382)? A VM that
+        // still reads high after a complete or partial sweep is evidence for the
         // operator's restart decision — named, not inferred.
         if (externallyKilled && collection.collected.length > 0) {
           const after = await readMemoryPressureAtKill(

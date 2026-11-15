@@ -380,10 +380,13 @@ every other phase are unchanged.
 **`issue` manager on Sonnet, sub-agents on Haiku (Issue #3473, owner decision,
 2026-10-16).** The owner made both the defaults without waiting for the trial
 rule: `DEFAULT_CLAUDE_MODEL_ISSUE` is `sonnet` (at `high`) and
-`issue_sub_agent_tier` defaults to `"haiku"`. The PR reviewer stays on Opus. An
-Opus manager cost about as much as a whole pre-split solo Opus run, so the
-subscription ran out and the fleet fell back to DeepSeek, which the owner
-judges worse than Haiku; the Opus review is what keeps merged quality high.
+`issue_sub_agent_tier` defaults to `"haiku"`. The PR reviewer was on Opus when
+this was decided; since the owner policy of 2026-11-12 (Issue #5081) the
+review-fleet-prs round runs `claude-fable-5-2` at `high` (see the role-model
+table below). An Opus manager cost about as much as a whole pre-split solo Opus
+run, so the subscription ran out and the fleet fell back to DeepSeek, which the
+owner judges worse than Haiku; the Opus review was what kept merged quality
+high.
 Restore either half with `phase_model_overrides.issue: "opus"` or
 `issue_sub_agent_tier: "sonnet"`. The trial's figures are still collected and
 compared against the merged-quality signals.
@@ -771,9 +774,19 @@ default for that role rather than no model.
 
 The PR reviewer bot runs `claude-fable-5-2` at `high` effort: per the
 release, Fable 5.2 at `high` scores about as Opus 5.5 at `max` on
-FrontierCode 2.0 at roughly half the cost per task. A round that hits a
-usage limit steps down to `claude-opus-5-5` at `xhigh` on the same
-subscription before it rotates subscriptions or falls back to DeepSeek.
+FrontierCode 2.0 at roughly half the cost per task. The review-fleet-prs round
+then falls back through this chain, and each link is taken only after a
+usage-limit refusal:
+
+1. the configured model (`review_model` and `review_effort` in `.config.json`,
+   default `claude-fable-5-2` at `high`);
+2. every other available Claude subscription, once each, on the configured
+   model; a Fable-specific cap also triggers this rotation;
+3. Codex `gpt-6-astra` at `high`, when a credential reaches the round;
+4. for a configured Fable round, `claude-opus-5-5` at `xhigh` on the current
+   Claude subscription, if Astra has no credential or quota;
+5. DeepSeek `deepseek-v4-pro`, only after those eligible attempts exhaust quota.
+
 
 The in-run reviewers are Claude `--agents` definitions, so a native Codex run
 cannot carry them yet (Issue #4109); the Codex column is what that work and

@@ -58,6 +58,7 @@ import {
 import { sanitiseIssueText } from "./conflict_intent_context.ts";
 import { spawnGh } from "./gh_spawn.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
+import { defaultLabelCacheDir } from "./label_cache.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "./label_operations.ts";
 
 /** Content label marking an issue filed by a conflict fallback. */
@@ -729,6 +730,8 @@ export function createFallbackFlagFiler(deps: {
   gh: (args: string[]) => Promise<string>;
   logger?: Logger;
   fleetAuthors?: readonly string[];
+  /** Label cache directory, defaulting to the per-account `defaultLabelCacheDir()`; a test points it at its own directory so it never reads the host's live cache. */
+  labelCacheDir?: string;
 }): (filing: MergeFallbackFiling) => Promise<Result<MergeFallbackOutcome>> {
   return (filing: MergeFallbackFiling) =>
     fileMergeFallbackIssue(filing, {
@@ -745,6 +748,7 @@ export function createFallbackFlagFiler(deps: {
       ) =>
         defaultEnsureLabelExists(repo, labelName, colour, description, {
           ghCommandFn: deps.gh,
+          cacheDir: deps.labelCacheDir ?? defaultLabelCacheDir(),
         }),
     });
 }

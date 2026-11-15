@@ -3,11 +3,10 @@
   "chunk": "top-up-4617",
   "title": "top-up: CI mutation contract detector",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4617",
-  "definition": "CI mutation contract detection and GitHub lookups: ci_mutation_contract.ts reads workflow YAML and ci_mutation_lookup.ts reads required checks and remote workflow text via the injected gh runner (#4617); neither runs repository code",
+  "definition": "CI mutation contract detection: ci_mutation_contract.ts reads workflow YAML and runs no repository code (#4617); its lookup module was removed with the automatic mutation check (Issue #5095)",
   "status": "claimed",
   "paths": [
-    "worker/deno/lib/ci_mutation_contract.ts",
-    "worker/deno/lib/ci_mutation_lookup.ts"
+    "worker/deno/lib/ci_mutation_contract.ts"
   ],
-  "sweptAt": "a9dcdc3792313a96b714bf09083aafa839511053"
+  "sweptAt": "378cb4f0a575996b637902055c0d95752f252a26"
 }

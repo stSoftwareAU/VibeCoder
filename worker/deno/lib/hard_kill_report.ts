@@ -54,6 +54,7 @@ import {
 } from "./worker_log_cleanup.ts";
 import { redactedTail } from "./redacted_text.ts";
 import type { TerminalIssueRun } from "./run_callbacks.ts";
+import { SETUP_STEPS, setupStepStartLine } from "./setup_steps.ts";
 import {
   createRunFailureIssue,
   findOpenRunFailureIssue,
@@ -115,12 +116,17 @@ const AGENT_PROGRESS_LINE = /\[agent-progress\]/;
  * from this table, so no log text (the run may be on a private repository) is
  * published. It does not feed the dedup key `hard-kill-<handler>-<phase>`.
  * Each pattern matches what its step logs when it ends, including the notes
- * `evaluateMutationGate` and `evaluateCoverageCarryOverGate` return on every
- * path (clean, capped, budget, not applicable). The pre-PR verifier, the
- * mutation check and the coverage check log nothing as they start, so a label
- * names the last step that logged: the wedge is in or after it. An
- * `[agent-progress]` line never reaches this table: {@link hardKillLastStep}
- * labels it `agent turn` first, so the table needs no entry for it.
+ * `evaluateCoverageCarryOverGate` returns on every path (clean, capped, budget,
+ * not applicable). The `mutation check` label is kept to classify logs written
+ * before the mutation check was retired (Issue #5095). The pre-PR verifier and
+ * the coverage check log nothing as they start, so a label names the last step
+ * that logged: the wedge is in or after it. The setup steps' start lines
+ * (`setupStepStartLine` in setup_steps.ts) are not in this table:
+ * {@link hardKillLastStep} matches them as literal text after it and labels
+ * them `setup: <step>`. Each setup step logs as it starts (Issue #5128), so
+ * such a label names the step the run had entered. An `[agent-progress]` line never reaches this table:
+ * {@link hardKillLastStep} labels it `agent turn` first, so the table needs no
+ * entry for it.
  */
 const STEP_PATTERNS: readonly { label: string; pattern: RegExp }[] = [
   { label: "pre-PR verifier", pattern: /Pre-PR verifier/ },
@@ -448,11 +454,12 @@ export function formatHardKillTitle(sig: HardKillSignature): string {
 }
 
 /**
- * The last step the killed run logged, from {@link STEP_PATTERNS}. It is the
+ * The last step the killed run logged, from {@link STEP_PATTERNS} or the setup
+ * steps' start lines (`setup: <step>`). It is the
  * step the run had last reported, not necessarily the one it was in: the wedge
  * is in that step or a later one that logs nothing as it starts. The label is
  * that of the first candidate line (the last log line, then the log tail from its end)
- * that is not ticker noise and matches a table entry; `unknown` when
+ * that is not ticker noise and matches a table entry or a setup start line; `unknown` when
  * none does. Each line is capped at {@link STEP_SCAN_CHARS} before matching.
  * The label is never log text, so the public issue cannot carry it.
  */
@@ -469,6 +476,10 @@ export function hardKillLastStep(evidence: HardKillEvidence): string {
     for (const step of STEP_PATTERNS) {
       if (step.pattern.test(line)) return step.label;
     }
+    const setupStep = SETUP_STEPS.find((step) =>
+      line.includes(setupStepStartLine(step))
+    );
+    if (setupStep !== undefined) return `setup: ${setupStep}`;
   }
   return "unknown";
 }
@@ -478,7 +489,7 @@ export function hardKillLastStep(evidence: HardKillEvidence): string {
  * the guest figures derived from the evidence. No evidence text, last log
  * line, tool call or source repository: the issue is public and the run may
  * have been working a private repository (see the module comment). The last
- * step logged is a fixed label from {@link STEP_PATTERNS}, never log text. The
+ * step logged is a fixed label from {@link STEP_PATTERNS} or a setup step, never log text. The
  * guest figures are fixed words and digits from `hard_kill_guest_facts.ts`,
  * never guest text. The evidence stays in the archived file on the host.
  */

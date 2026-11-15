@@ -53,9 +53,9 @@ export interface DeferredPrRecord {
    */
   advisoryComment?: string;
   /**
-   * Raise the PR as a draft (Issue #4617): the run held it because the
-   * repository's CI blocks on mutation survivors the run left unresolved. The
-   * drain must not open it ready for review.
+   * Raise the PR as a draft. Kept so a record persisted before Issue #5095
+   * retired the mutation hold (Issue #4617) still opens as a draft; nothing
+   * new sets it. The drain must not open it ready for review.
    */
   draft?: boolean;
 }

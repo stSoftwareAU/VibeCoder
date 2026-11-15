@@ -19,7 +19,10 @@
 // and split equally across the PRs the round was given (the gate's `ready`
 // list): every review an attempt posts carries 1/N of that attempt's
 // estimate. A round is a fresh session, never resumed, so `modelUsage` is the
-// attempt's own and needs no baseline (model_usage_scope.ts).
+// attempt's own and needs no baseline (model_usage_scope.ts). A Codex attempt
+// (Issue #5083) has no such result line: it is priced from its own
+// `codex exec --json` usage events, the `turn.completed` usage the Codex
+// output adapter decodes.
 //
 // The cost is only known once the attempt ends, after its reviews are posted,
 // so post.ts posts the footer with "cost unknown" and the runner amends each
@@ -41,7 +44,11 @@ import {
   type ModelUsageEntry,
 } from "../../../../worker/deno/lib/cost_estimate.ts";
 import { extractRunStats } from "../../../../worker/deno/lib/run_stats.ts";
-import { CLAUDE_PROVIDER_ID } from "../../../../worker/deno/lib/agent_provider.ts";
+import {
+  CLAUDE_PROVIDER_ID,
+  CODEX_PROVIDER_ID,
+} from "../../../../worker/deno/lib/agent_provider.ts";
+import { CODEX_OUTPUT_ADAPTER } from "../../../../worker/deno/lib/codex_output_adapter.ts";
 import {
   REVIEW_RUN_FILE,
   type ReviewRunAttempt,
@@ -207,19 +214,26 @@ export interface AttemptCost {
 const isClaudeModel = (model: string) => /^claude-/i.test(model);
 
 /**
- * Price one attempt from its stream-json, with the worker's own pricing.
+ * Price one attempt with the worker's own pricing.
  *
- * The last result line's `modelUsage` is the session's running total, so it
- * covers the whole attempt, sub-agents included; `attributeUsageByModel`
- * adds any shortfall against the result's `usage` on the first served model.
- * On a non-Claude provider, a `claude-*` id is the requested alias (the
- * reviewer agent's pinned model) answered by that provider's own endpoint:
- * it is named and priced as the attempt's model, never at Claude's rate.
+ * A Claude (or DeepSeek) attempt is priced from its stream-json: the last
+ * result line's `modelUsage` is the session's running total, so it covers the
+ * whole attempt, sub-agents included; `attributeUsageByModel` adds any
+ * shortfall against the result's `usage` on the first served model. A Codex
+ * attempt (Issue #5083) is priced from its own `codex exec --json` usage
+ * events, the `turn.completed` usage the Codex output adapter decodes.
+ *
+ * On a non-Claude provider, a `claude-*` id reported by the attempt is a
+ * Claude alias answered by that provider's endpoint: it is named and priced
+ * as the attempt's model, never at Claude's rate.
  */
 export function attemptCost(
   stream: string,
   attempt: ReviewRunAttempt,
 ): AttemptCost {
+  if (attempt.provider === CODEX_PROVIDER_ID) {
+    return codexAttemptCost(stream, attempt);
+  }
   const stats = extractRunStats(stream);
   const thirdParty = attempt.provider !== CLAUDE_PROVIDER_ID;
   const requested = attempt.model ?? stats.servedModels[0] ?? "";
@@ -239,13 +253,41 @@ export function attemptCost(
     stats.modelUsage,
     stats.servedModels[0] ?? requested,
   ).map((e) => ({ model: rename(e.model), usage: e.usage }));
+  return priceEntries(entries);
+}
+
+/**
+ * Price a Codex attempt from the usage its `codex exec --json` events report
+ * (Issue #5083). With no usage at all the cost is unknown; otherwise the
+ * usage is priced as the attempt's own model, through {@link priceEntries}.
+ */
+function codexAttemptCost(
+  stream: string,
+  attempt: ReviewRunAttempt,
+): AttemptCost {
+  const usage = CODEX_OUTPUT_ADAPTER.decode(stream).usage;
+  if (!usage) {
+    return {
+      models: attempt.model ? [attempt.model] : [],
+      usd: null,
+      apiEquivalent: true,
+    };
+  }
+  return priceEntries([{ model: attempt.model ?? "unknown", usage }]);
+}
+
+/**
+ * Estimate the USD of some usage entries with the worker's pricing. An
+ * unpriced model that carries usage makes the total unknown (null), never $0.
+ */
+function priceEntries(entries: ModelUsageEntry[]): AttemptCost {
   const estimate = estimateRunCost(entries);
   const priced = estimate.perModel.filter((m) =>
     m.usage.inputTokens + m.usage.outputTokens + m.usage.cacheCreationTokens +
         m.usage.cacheReadTokens > 0
   );
   return {
-    models: distinct(priced.map((m) => m.model)),
+    models: [...new Set(priced.map((m) => m.model))],
     usd: estimate.hasUnknownPricing || priced.length === 0
       ? null
       : estimate.totalCost,

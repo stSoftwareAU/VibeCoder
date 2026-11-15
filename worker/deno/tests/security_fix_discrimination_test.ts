@@ -26,6 +26,10 @@ import {
   type MutationRunnerSeams,
   type ProcessResult,
 } from "../lib/mutation_runner.ts";
+import {
+  enableInFlightHostDiskGate,
+  registerHeavyBuildDiskProbe,
+} from "../lib/heavy_build_gate.ts";
 
 const PASS_OUT = `running 1 test from ./a_test.ts
 rejects injection attempt ... ok (228µs)
@@ -661,6 +665,70 @@ Deno.test("discrimination: an unexpected throw is wrapped as a runner failure", 
   });
 });
 
+Deno.test("discrimination: a cleanup that throws ENOTEMPTY once keeps a completed check checked (Issue #5078)", async () => {
+  await withRepo(
+    { "src/sanitise.ts": VULN },
+    {
+      "src/sanitise.ts": FIXED,
+      "src/added.ts": "export const added = 1;\n",
+      "tests/sanitise_test.ts": TEST_SRC,
+    },
+    async (root) => {
+      const rec = recordingSeams(markerDeno);
+      const realRemoveDir = rec.seams.removeDir.bind(rec.seams);
+      let thrown = false;
+      const seams: MutationRunnerSeams = {
+        ...rec.seams,
+        removeDir(path) {
+          if (!thrown) {
+            thrown = true;
+            return Promise.reject(
+              Object.assign(
+                new Error(`ENOTEMPTY: directory not empty, rmdir '${path}'`),
+                {
+                  code: "ENOTEMPTY",
+                },
+              ),
+            );
+          }
+          return realRemoveDir(path);
+        },
+      };
+      const warnings: string[] = [];
+      const realWarn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        warnings.push(args.map(String).join(" "));
+      };
+      try {
+        const r = await runSecurityFixDiscrimination(
+          input(root, {
+            productionFiles: ["src/sanitise.ts", "src/added.ts"],
+          }),
+          seams,
+        );
+        assertEquals(r, {
+          kind: "checked",
+          test: CITED,
+          preFix: "fail",
+          postFix: "pass",
+        });
+        assertEquals(thrown, true);
+        assert(
+          warnings.some((w) => w.includes("ENOTEMPTY")),
+          `expected a warning naming ENOTEMPTY, got ${
+            JSON.stringify(warnings)
+          }`,
+        );
+      } finally {
+        console.warn = realWarn;
+        for (const d of rec.tempDirs) {
+          await realRemoveDir(d);
+        }
+      }
+    },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // End to end with real deno
 // ---------------------------------------------------------------------------
@@ -1209,4 +1277,49 @@ Deno.test("discrimination: red-green records an unsupported citation without exe
     assertStringIncludes(JSON.stringify(r), unsupported.name);
     assertStringIncludes(JSON.stringify(r), "language");
   });
+});
+
+Deno.test("Issue #5105 - discrimination parks at once on a babysitter-explained dip, without spending its budget", async () => {
+  const GB = 1024 ** 3;
+  const floor = 46 * GB;
+  enableInFlightHostDiskGate(true);
+  registerHeavyBuildDiskProbe(() =>
+    Promise.resolve({
+      status: {
+        level: "low",
+        availableBytes: 40 * GB,
+        totalBytes: 460 * GB,
+        source: "launch-baseline",
+        detail: "host 40 GB free — below the floor",
+      },
+      floorBytes: floor,
+      trimRefused: true,
+      // The reservation explains the 12 GB drop; the worker grew nothing.
+      hostDiskReservations: [{
+        holder: "babysitter",
+        id: "repair-1",
+        bytes: 16 * GB,
+        availableAtAdmission: 52 * GB,
+        admittedAt: Date.now() - 60_000,
+        expiresAt: Date.now() + 3_600_000,
+      }],
+      workerGrowthSinceReservationBytes: 0,
+    })
+  );
+  const root = await Deno.makeTempDir({ prefix: "vibe-disc-park-" });
+  try {
+    const started = Date.now();
+    // The default park, as production passes none.
+    const r = await runSecurityFixDiscrimination(
+      input(root),
+      defaultMutationRunnerSeams(),
+    );
+    assertStringIncludes(reasonOf(r), "Parked as infrastructure");
+    assert(!reasonOf(r).includes("budget"), reasonOf(r));
+    assert(Date.now() - started < 30_000, "the default park must not wait");
+  } finally {
+    enableInFlightHostDiskGate(false);
+    registerHeavyBuildDiskProbe(undefined);
+    await Deno.remove(root, { recursive: true });
+  }
 });
