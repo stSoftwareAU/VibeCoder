@@ -5,8 +5,8 @@ import { runGhCommandRaw } from "./github.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
   type LearningsLogger,
-  type PushLearningsOutcome,
   pushLearnings,
+  type PushLearningsOutcome,
 } from "./token_economizer_learnings.ts";
 import { TOKEN_ECONOMIZER_HOOK_FAILURE } from "./token_economizer_hook.ts";
 import {

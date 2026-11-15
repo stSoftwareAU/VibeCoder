@@ -35,7 +35,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
@@ -48,7 +48,11 @@ import {
   type RunClaudeOptions,
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
-import { finishTokenEconomizerRun } from "../lib/token_economizer_control.ts";
+import {
+  finishTokenEconomizerRun,
+  syncTokenEconomizerLearnings,
+} from "../lib/token_economizer_control.ts";
+import { defaultLogger } from "../lib/logger.ts";
 import { runningInContainerImage } from "../lib/container_stamp.ts";
 import {
   guardTokenEconomizerOutput,
@@ -67,7 +71,7 @@ import {
   type TokenEconomizerRunKind,
   tokenEconomizerSpawnOptions,
 } from "../lib/token_economizer_plugin.ts";
-import type { TokenEconomizerConfig } from "../types.ts";
+import type { Logger, TokenEconomizerConfig } from "../types.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
@@ -1345,3 +1349,332 @@ for (const event of [["SessionStart"], "UnknownHook"]) {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Learnings persistence wiring (Issue #4957): the pull at launch, the push
+// after the spawn, and the run's result untouched by either. The store is a
+// local bare repository, so the real pull and push run against it.
+// ---------------------------------------------------------------------------
+
+/** The private learnings repository the config names. Its store is a local bare repository. */
+const LEARNINGS_REPO = "owner/learnings";
+
+/** A visibility check that verifies the store as private. */
+const PRIVATE_STORE = () => Promise.resolve({ private: true as const });
+
+/** A stub channel for stop reports: nothing is sent to GitHub. */
+const notifyNothing = () => Promise.resolve("");
+
+/** A logger that keeps every warning line, for assertions (Issue #4957). */
+function recordingLogger(): { logger: Logger; warnings: string[] } {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    logger: {
+      ...defaultLogger,
+      info: () => {},
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+    },
+  };
+}
+
+/** Adds an origin remote, so the checkout has a learnings repository key (Issue #4957). */
+async function addOrigin(layout: Layout): Promise<void> {
+  await git(layout.checkout, [
+    "remote",
+    "add",
+    "origin",
+    `https://github.com/${REPO}.git`,
+  ]);
+}
+
+/** An empty bare repository standing in for the learnings store (Issue #4957). */
+async function makeStore(layout: Layout, name: string): Promise<string> {
+  const store = join(layout.root, name);
+  await Deno.mkdir(store);
+  await git(store, ["init", "--bare", "-q"]);
+  return store;
+}
+
+/** The Claude block with a learnings repository set (Issue #4957). */
+function learningsBlock(): TokenEconomizerConfig {
+  return { ...enabledBlock("off"), learningsRepo: LEARNINGS_REPO };
+}
+
+/** Writes one learned state file under a home's repository key, as the plugin would (Issue #4957). */
+async function writeLearned(
+  home: string,
+  key: string,
+  text: string,
+): Promise<void> {
+  const file = join(home, "repos", key, "claude", "injection.json");
+  await Deno.mkdir(dirname(file), { recursive: true });
+  await Deno.writeTextFile(file, text);
+}
+
+/** Runs one Claude spawn against the dump stub and returns the parts a caller compares (Issue #4957). */
+async function runClaudeOutcome(
+  layout: Layout,
+  tokenEconomizer: TokenEconomizerLaunch | undefined,
+  logger: Logger,
+): Promise<
+  { ok: boolean; exitCode?: number; output?: string; error?: string }
+> {
+  return await withAgentStub(DUMP_STUB, async (stub) => {
+    const result = await runClaudeWithTimeout({
+      clock: fakeClock(),
+      prompt: "wiring test",
+      timeoutSeconds: 30,
+      killAfterSeconds: 2,
+      agentBinaryPath: stub.path,
+      cwd: layout.checkout,
+      repo: REPO,
+      parentEnv: parentEnvFor(layout),
+      tokenEconomizer,
+      tokenEconomizerNotify: notifyNothing,
+      logger,
+    });
+    return result.ok
+      ? {
+        ok: true,
+        exitCode: result.value.exitCode,
+        output: result.value.output,
+      }
+      : { ok: false, error: result.error.message };
+  });
+}
+
+Deno.test("a learnings round trip pulls an empty store, pushes a learned state file and restores it on the next launch (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const { logger } = recordingLogger();
+    const launchFor = (runId: string) =>
+      resolveTokenEconomizerLaunch({
+        config: learningsBlock(),
+        workDir: layout.workDir,
+        repo: REPO,
+        runKind: "implementation",
+        subject: `${REPO}#1`,
+        runId,
+        pluginDir: layout.fakePluginDir,
+        learningsStoreUrl: store,
+        checkLearningsVisibility: PRIVATE_STORE,
+        logger,
+      });
+
+    const first = await launchFor("learn-1");
+    assert(first !== null, "the plugin must load for an empty store");
+    assertEquals(first.learnings?.persistence.status, "empty");
+    const key = first.learnings?.persistence.repoKey;
+    assert(key !== undefined, "the pull must name the repository key");
+    const text = '{"facts":["run deno task test:unit"]}\n';
+    await writeLearned(first.env.TOKENECONOMIZER_HOME, key, text);
+
+    const pushed = await syncTokenEconomizerLearnings(
+      first,
+      notifyNothing,
+      logger,
+    );
+    assertEquals(pushed?.kind, "pushed", JSON.stringify(pushed));
+    assertEquals(
+      await git(store, [
+        "show",
+        `HEAD:token-economizer/${key}/claude/injection.json`,
+      ]),
+      text,
+    );
+
+    const second = await launchFor("learn-2");
+    assert(second !== null, "the plugin must load on the second launch");
+    assertEquals(second.learnings?.persistence.status, "restored");
+    assertEquals(
+      await Deno.readTextFile(
+        join(
+          second.env.TOKENECONOMIZER_HOME,
+          "repos",
+          key,
+          "claude",
+          "injection.json",
+        ),
+      ),
+      text,
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a public learnings store is refused: the plugin still loads, the refusal is logged and nothing is pushed (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const { logger, warnings } = recordingLogger();
+    const launch = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "public-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: store,
+      checkLearningsVisibility: () =>
+        Promise.resolve({ private: false, reason: "repository is public" }),
+      logger,
+    });
+    assert(launch !== null, "a refused store must not refuse the launch");
+    assertEquals(launch.learnings?.persistence.status, "refused");
+    assert(
+      warnings.some((m) =>
+        m.includes("refused") && m.includes("repository is public")
+      ),
+      JSON.stringify(warnings),
+    );
+
+    const key = launch.learnings?.persistence.repoKey;
+    assert(key !== undefined, "the refusal must name the repository key");
+    await writeLearned(launch.env.TOKENECONOMIZER_HOME, key, '{"facts":[]}\n');
+    const outcome = await syncTokenEconomizerLearnings(
+      launch,
+      notifyNothing,
+      logger,
+    );
+    assert(
+      outcome !== null && outcome.kind !== "pushed",
+      JSON.stringify(outcome),
+    );
+    assertEquals(await git(store, ["for-each-ref"]), "");
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("an unreachable learnings store is unavailable, logged as a WARNING, and nothing is pushed (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const { logger, warnings } = recordingLogger();
+    const launch = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "missing-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: join(layout.root, "missing.git"),
+      checkLearningsVisibility: PRIVATE_STORE,
+      logger,
+    });
+    assert(launch !== null, "an unreachable store must not refuse the launch");
+    assertEquals(launch.learnings?.persistence.status, "unavailable");
+    assert(
+      warnings.some((m) =>
+        m.startsWith("token-economizer learnings: unavailable")
+      ),
+      JSON.stringify(warnings),
+    );
+
+    const key = launch.learnings?.persistence.repoKey;
+    assert(key !== undefined, "the pull must name the repository key");
+    await writeLearned(launch.env.TOKENECONOMIZER_HOME, key, '{"facts":[]}\n');
+    const outcome = await syncTokenEconomizerLearnings(
+      launch,
+      notifyNothing,
+      logger,
+    );
+    assert(
+      outcome !== null && outcome.kind !== "pushed",
+      JSON.stringify(outcome),
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a failed learnings push leaves the run's result unchanged and is logged as a WARNING (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const plain = await resolveTokenEconomizerLaunch({
+      config: { ...enabledBlock("off"), learningsRepo: undefined },
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "plain-1",
+      pluginDir: layout.fakePluginDir,
+    });
+    assert(plain !== null && plain.learnings === undefined);
+    const baseline = await runClaudeOutcome(
+      layout,
+      plain,
+      recordingLogger().logger,
+    );
+    assert(baseline.ok, JSON.stringify(baseline));
+
+    const store = await makeStore(layout, "store.git");
+    const { logger, warnings } = recordingLogger();
+    const failing = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "fail-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: store,
+      checkLearningsVisibility: PRIVATE_STORE,
+      logger,
+    });
+    assert(failing !== null);
+    assertEquals(failing.learnings?.persistence.status, "empty");
+    const key = failing.learnings?.persistence.repoKey;
+    assert(key !== undefined, "the pull must name the repository key");
+    await writeLearned(
+      failing.env.TOKENECONOMIZER_HOME,
+      key,
+      '{"facts":["will not land"]}\n',
+    );
+    // The store vanishes after the pull, so the push after the spawn fails.
+    await Deno.remove(store, { recursive: true });
+
+    const outcome = await runClaudeOutcome(layout, failing, logger);
+    assertEquals(outcome, baseline);
+    assert(
+      warnings.some((m) =>
+        m.startsWith("token-economizer learnings: dropped: push failed")
+      ),
+      JSON.stringify(warnings),
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a launch without a learnings repository carries no learnings and syncs to null (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    const launch = await resolveTokenEconomizerLaunch({
+      config: { ...enabledBlock("off"), learningsRepo: undefined },
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "no-learnings-1",
+      pluginDir: layout.fakePluginDir,
+    });
+    assert(launch !== null, "the plugin must load without a learnings repo");
+    assertEquals(launch.learnings, undefined);
+    assertEquals(launch.subject, `${REPO}#1`);
+    assertEquals(launch.runId, "no-learnings-1");
+    assertEquals(await syncTokenEconomizerLearnings(launch), null);
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});

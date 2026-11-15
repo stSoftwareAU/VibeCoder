@@ -23,6 +23,15 @@
  * trial. The record names the rule, never the value. A rejected push is
  * replayed once on the new tip, and a conflicting replay is dropped and logged.
  *
+ * ## Local state is discarded, except a clean clone
+ *
+ * A launch is shared by later spawns of the same run (a PR-feedback re-run or a
+ * rate-limit retry), and each spawn pushes again with the same persistence. The
+ * scratch clone is therefore kept after `pushed` and `unchanged`, because it is
+ * clean and at the store tip. Every other outcome removes it. Before anything is
+ * written under the clone, the push checks that it is its own repository, so a
+ * removed clone is skipped and never resolved to an enclosing repository.
+ *
  * Nothing here throws. Each outcome is a value, and each fault is a WARNING.
  * Australian English spelling used throughout.
  */
@@ -697,6 +706,32 @@ async function foreignRepos(home: string, key: string): Promise<string[]> {
   return names.sort();
 }
 
+/**
+ * Whether `storeDir` is its own clone: its `.git` is a real directory (not a
+ * symlink), and git's top level for it is `storeDir` itself. Without this a
+ * removed clone would resolve to an enclosing repository. Anything that cannot
+ * be verified is not a clone.
+ */
+async function isOwnClone(storeDir: string): Promise<boolean> {
+  try {
+    const info = await Deno.lstat(join(storeDir, ".git"));
+    if (info.isSymlink || !info.isDirectory) return false;
+  } catch {
+    return false;
+  }
+  const top = await git(["-C", storeDir, "rev-parse", "--show-toplevel"]);
+  if (top.code !== 0) return false;
+  try {
+    const [fromGit, own] = await Promise.all([
+      Deno.realPath(top.stdout.trim()),
+      Deno.realPath(storeDir),
+    ]);
+    return fromGit === own;
+  } catch {
+    return false;
+  }
+}
+
 /** The default scan: gitleaks over the staged files, bounded by a deadline. */
 function defaultScanStaged(cwd: string): Promise<StagedScan> {
   return spawnWithDeadline(
@@ -958,6 +993,14 @@ async function pushVerified(
     );
   }
 
+  // The clone must be its own repository before anything is written under it.
+  if (!(await isOwnClone(storeDir))) {
+    return skip(
+      logger,
+      "store clone is gone; this spawn's learnings are discarded",
+    );
+  }
+
   // Mirror: the store's copy of this key becomes exactly the local allow-listed state.
   const storeKey = join(storeDir, LEARNINGS_STORE_ROOT, repoKey);
   await removeIfPresent(storeKey);
@@ -1010,8 +1053,10 @@ async function pushVerified(
 }
 
 /**
- * Push this run's learnings to the store. Never throws, and the scratch clone
- * the caller passed is removed whatever the outcome.
+ * Push this run's learnings to the store. Never throws. The scratch clone the
+ * caller passed is kept after `pushed` and `unchanged`, because it is clean and
+ * at the store tip, so a later spawn of the same run can push again with the
+ * same persistence. Every other outcome removes it: local state is discarded.
  */
 export async function pushLearnings(
   opts: PushLearningsOptions,
@@ -1025,8 +1070,8 @@ export async function pushLearnings(
     outcome = error instanceof LearningsFault
       ? skip(logger, error.message)
       : drop(logger, `unexpected error: ${errorText(error)}`);
-  } finally {
-    if (storeDir !== undefined) await removeScratch(storeDir, logger);
   }
+  const keep = outcome.kind === "pushed" || outcome.kind === "unchanged";
+  if (storeDir !== undefined && !keep) await removeScratch(storeDir, logger);
   return outcome;
 }

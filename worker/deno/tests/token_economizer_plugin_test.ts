@@ -172,7 +172,12 @@ Deno.test("an enabled launch carries exactly the env the worker sets, for both l
       const captured = captureLogger();
       const launch = await resolveTokenEconomizerLaunch(
         optionsFor(f, captured, {
-          config: config({ microskills: "distiller", loopguard }),
+          // Learnings off: the fixture checkout has no origin, so a pull would warn (Issue #4957).
+          config: config({
+            microskills: "distiller",
+            loopguard,
+            learningsRepo: undefined,
+          }),
         }),
       );
       assert(launch !== null);

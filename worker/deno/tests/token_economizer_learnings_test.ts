@@ -9,7 +9,9 @@
  * refusals (pull, the stale check at push, and an unverifiable check); a planted
  * fake PAT, with the real stop record; cross-repo isolation; pull and push
  * failures; the non-fast-forward replay (clean and conflicting); the size cap and
- * the allow-list; the latch; and the repository key goldens.
+ * the allow-list; the latch; the scratch clone kept for a later push of the same
+ * persistence and a removed clone inside a parent repository; and the repository
+ * key goldens.
  *
  * Australian English spelling used throughout.
  */
@@ -293,7 +295,8 @@ Deno.test("acceptance: a run pushes its state, a later run restores it, and anot
     assertStringIncludes(message, "Vibe-Coder-Run-Id: run1");
     assertEquals(stops1.stops, []);
     assertEquals(run1.warnings, []);
-    assertEquals(await exists(join(root, "run1-scratch")), false);
+    // A pushed clone is clean and at the store tip, so it is kept for a later push.
+    assertEquals(await exists(join(root, "run1-scratch")), true);
 
     // The shared settings file is pulled into the home, and never pushed.
     await commitToStore(root, store.url, {
@@ -335,6 +338,97 @@ Deno.test("acceptance: a run pushes its state, a later run restores it, and anot
       await exists(join(root, "runB-scratch", "token-economizer", KEY_A)),
       false,
     );
+  }));
+
+Deno.test("reuse: the same persistence pushed twice pushes both states, and the clean clone is kept after unchanged", () =>
+  withRoot(async (root) => {
+    const store = await newStore(root, "store");
+    const log = capture();
+    const stops = recorder();
+    const p = await pullLearnings(
+      pullOpts(root, "reuse", KEY_A, store.url, log.logger),
+    );
+    assertEquals(p.status, "empty");
+    const home = join(root, "reuse-home");
+    const scratch = join(root, "reuse-scratch");
+    await plant(home, KEY_A, "claude/a.json", '{"a":1}\n');
+
+    const first = await pushLearnings(
+      pushOpts(root, "reuse", p, log.logger, stops.stop),
+    );
+    assertEquals(first.kind, "pushed");
+    assertEquals(await exists(scratch), true);
+
+    // A later spawn of the same run pushes again with the same persistence.
+    await plant(home, KEY_A, "claude/a.json", '{"a":2}\n');
+    const second = await pushLearnings(
+      pushOpts(root, "reuse", p, log.logger, stops.stop),
+    );
+    assertEquals(second.kind, "pushed");
+    assertEquals(await commitCount(store.dir), 2);
+    assertEquals(
+      await git([
+        "-C",
+        store.dir,
+        "show",
+        `main:token-economizer/${KEY_A}/claude/a.json`,
+      ]),
+      '{"a":2}\n',
+    );
+
+    // Nothing new to push: unchanged, and the clean clone is still kept.
+    const third = await pushLearnings(
+      pushOpts(root, "reuse", p, log.logger, stops.stop),
+    );
+    assertEquals(third.kind, "unchanged");
+    assertEquals(await exists(scratch), true);
+    assertEquals(await commitCount(store.dir), 2);
+    assertEquals(log.warnings, []);
+    assertEquals(stops.stops, []);
+  }));
+
+Deno.test("skipped: a removed clone inside a parent repository is skipped, and the parent is untouched", () =>
+  withRoot(async (root) => {
+    const store = await newStore(root, "store");
+    const parent = join(root, "parent");
+    await git(["init", "--quiet", parent]);
+    const scratch = join(parent, "scratch");
+    const log = capture();
+    const stops = recorder();
+    const p = await pullLearnings(
+      pullOpts(root, "removed", KEY_A, store.url, log.logger, {
+        scratchDir: scratch,
+      }),
+    );
+    assertEquals(p.status, "empty");
+    assertEquals(p.storeDir, scratch);
+    await Deno.remove(scratch, { recursive: true });
+    await plant(
+      join(root, "removed-home"),
+      KEY_A,
+      "claude/a.json",
+      '{"a":1}\n',
+    );
+
+    const out = await pushLearnings(
+      pushOpts(root, "removed", p, log.logger, stops.stop),
+    );
+    assertEquals(out.kind, "skipped");
+    if (out.kind === "skipped") {
+      assertStringIncludes(out.reason, "store clone is gone");
+    }
+    assertEquals(await exists(scratch), false);
+    assertEquals(stops.stops, []);
+    const parentHead = await runGitCommand([
+      "-C",
+      parent,
+      "rev-parse",
+      "--verify",
+      "-q",
+      "HEAD",
+    ]);
+    assert(!parentHead.ok || parentHead.value.code !== 0);
+    assertEquals(await git(["-C", parent, "status", "--porcelain"]), "");
   }));
 
 Deno.test("refused: a public or unverifiable learnings repository is never transferred", () =>
