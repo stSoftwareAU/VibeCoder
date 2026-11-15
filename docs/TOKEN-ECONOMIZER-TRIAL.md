@@ -505,6 +505,7 @@ State is `present` when the path exists and names the plugin today, and
 | Command | the command's registration | `worker/deno/mod.ts` | present |
 | Test | the run stats reader, line and block tests | `worker/deno/tests/token_economizer_run_stats_test.ts` | present |
 | Test | the trial report tests | `worker/deno/tests/token_economizer_trial_report_test.ts` | present |
+| Test | the command registry's count and the report command's registration | `worker/deno/tests/mod_test.ts` | present |
 | Host config | the `token_economizer` block in the trial host's gitignored `.config.json`, with `enabled` set to `false` first; a purge removes the block there | — | planned #4956 |
 
 **What stays.** This page, with its Status changed to *purged* and the measured

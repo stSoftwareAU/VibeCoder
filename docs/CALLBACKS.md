@@ -764,8 +764,8 @@ measured `0` is published as `0`. Nothing else in the contract moved:
 `schemaVersion` stays at 2, and a hook that knows nothing about RTK ignores the
 block.
 
-`tokenEconomizer` is an **additive, optional** block (Issue #4958, part of
-#4953) for the [TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md). Unlike
+`tokenEconomizer` is an **additive, optional** block (Issue #4958, under the
+parent #4953) for the [TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md). Unlike
 `graft`, `codegraph` and `rtk`, it is **not** on every run document: it is
 emitted only on a host whose `token_economizer.enabled` is `true`, and it is
 emitted last, after `rtk`. A host with the switch off produces a document
@@ -792,7 +792,7 @@ only, because the judge runs as a separate CLI process and is not in the agent's
 stream totals; `runCostUsd` is the figure that includes the plugin. Nothing else
 in the contract moved: `schemaVersion` stays at 2, and a hook that knows nothing
 about TokenEconomizer ignores the block. The same outcome appears as one line in
-the run-stats comment and in the weekly `token-economizer-report` section.
+the run-stats comment and in the `token-economizer-report` section.
 
 The `brief` block and `VIBECODER_BRIEF_ENABLED` (Issue #2603) were removed with
 the brief toolchain (Issue #2699) before any host switched it on; no deployed
