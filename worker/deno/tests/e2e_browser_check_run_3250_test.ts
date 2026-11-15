@@ -17,7 +17,7 @@ import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 const ISSUE_PHRASES = [
   "A browser check you did not run is not a safety net",
   "$CHROMIUM_PATH",
-  "failing run with the fix reverted",
+  "failing regression before its fix",
   "do not present it as the regression guard",
   "$PLAYWRIGHT_BROWSERS_PATH",
 ];
@@ -38,7 +38,7 @@ Deno.test("issue prompt's Error Recovery section requires running e2e checks aga
 const PR_FEEDBACK_PHRASES = [
   "A browser check you did not run is not a safety net",
   "run the `e2e/` script against the baked Chromium",
-  "failing with the fix reverted",
+  "failing regression before the fix",
   "do not present it as the regression guard",
 ];
 

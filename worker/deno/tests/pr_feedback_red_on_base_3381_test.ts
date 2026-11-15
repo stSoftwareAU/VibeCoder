@@ -23,8 +23,8 @@ Deno.test("pr_feedback prompt recounts the red-on-base result after a review fix
   );
 
   const phrases = [
-    "re-run the head test file against the base branch's production code",
-    "rather than appending a second block beside the stale one",
+    "refresh its relevant before/after evidence where feasible and remove stale figures",
+    "Do not rerun a base-code or mutation campaign for unrelated test edits",
     'A run against this PR\'s own earlier commit is not "red on base"',
     "is checked as N + M against the head test file's runnable count",
   ];
@@ -42,7 +42,7 @@ Deno.test("pr-feedback workflow doc mirrors the red-on-base recount rule (Issue 
 
   const expectations: Record<string, string[]> = {
     "Recount the Test Plan after a review fix": [
-      "the head test file is re-run against the base branch's production code",
+      "refresh its relevant before/after evidence where feasible",
       'A run against the PR\'s own earlier commit is not "red on base"',
     ],
     "The worker's drift check": [

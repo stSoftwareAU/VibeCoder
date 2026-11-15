@@ -1,13 +1,15 @@
 {
   "issue": 4930,
   "chunk": "top-up-4930",
-  "title": "top-up: pre-push deno test baseline gate",
+  "title": "top-up: pre-push deno test baseline gate and babysitter tree gate",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4930",
-  "definition": "module added for the pre-push gate's deno test check: classify a module-fetch failure as infrastructure, downgrade a failure already red at the fork point to a warning, and fail closed on every other failed run (#4930)",
+  "definition": "module added for the pre-push gate's deno test check: classify a module-fetch failure as infrastructure, downgrade a failure already red at the fork point to a warning, and fail closed on every other failed run (#4930). babysitter_ready.ts is the shared BABYSITTER_READY rule; babysitter_tree_gate.ts is the pre-push gate over a babysitter repair's uncommitted tree with a read-only .git, the git-seam emulation of the baseline worktree as a real git checkout under a temp root that borrows the clone's objects through alternates, the path scoping and merged-base baseline over an uncommitted base merge, the tree-pollution check, gate-marker neutralisation and redaction (#4930).",
   "status": "claimed",
   "paths": [
     "worker/deno/lib/deno_test_baseline.ts",
-    "worker/deno/lib/local_default_branch.ts"
+    "worker/deno/lib/local_default_branch.ts",
+    "worker/deno/lib/babysitter_ready.ts",
+    "worker/deno/lib/babysitter_tree_gate.ts"
   ],
-  "sweptAt": "b1562178fe465d921a5e533a82b7a5994e91c766"
+  "sweptAt": "96824f400ce36114208afee2991ed7c87130d73e"
 }

@@ -6,13 +6,20 @@
  * is written to --response-file for the babysitter to act on.
  *
  * Usage (inside the container):
- *   babysitter-repair --dir <clone> --prompt-file <path> --response-file <path>
+ *   babysitter-repair --dir <clone> --prompt-file <path> --response-file <path> [--base-branch <branch>]
  *
  * `ClaudeExecutionResult.output` is the agent's FINAL message for every
  * provider: each provider's output adapter (lib/claude_output_adapter.ts for
  * Claude and DeepSeek, lib/codex_output_adapter.ts for Codex) sets the text
  * from the final result. Success requires exitCode 0 and no timeout, so partial
  * text is never written to the response file.
+ *
+ * A response that reports READY is first checked by the pre-push gate over the
+ * agent's uncommitted tree (lib/babysitter_tree_gate.ts, Issue #4930), the checks
+ * the host's push would otherwise skip. When the gate blocks or cannot run, the
+ * READY line is withheld and the response says why, so the host refuses to push
+ * it. That is still a success (exit 0): the response is the verdict. --base-branch
+ * names the PR's base, so a deno test failure is compared with it.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -28,6 +35,7 @@ import {
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
 import {
+  BABYSITTER_BASE_BRANCH_PREFIX,
   BABYSITTER_QUOTA_PARK_EXIT_CODE,
   BABYSITTER_REPAIR_TIMEOUT_MS,
   BABYSITTER_TASK_FAILURE_EXIT_CODE,
@@ -39,7 +47,15 @@ import {
 } from "../lib/agent_provider.ts";
 import { createClaudeCredentialPool } from "../lib/claude_credential_pool.ts";
 import { applyProviderCredentialEnv } from "../lib/credential_preflight.ts";
+import { isBabysitterReady } from "../lib/babysitter_ready.ts";
 import type { EnvLookup } from "../lib/env_lookup.ts";
+import { assertSafeGitRef } from "../lib/git_ref_args.ts";
+import {
+  type BabysitterTreeGateOutcome,
+  neutraliseGateMarker,
+  runBabysitterTreeGate,
+  withholdReady,
+} from "../lib/babysitter_tree_gate.ts";
 import { redactSecrets } from "../lib/secret_redaction.ts";
 
 /** Redacted stderr up to this length is quoted whole in a failure message. */
@@ -97,6 +113,11 @@ export interface BabysitterRepairDeps {
   ) => Promise<string[]>;
   chooseProvider: typeof chooseBabysitterProvider;
   runClaude: typeof runClaudeWithTimeout;
+  /** The pre-push gate over the agent's uncommitted tree (Issue #4930). */
+  treeGate: (
+    dir: string,
+    baseBranch: string | undefined,
+  ) => Promise<BabysitterTreeGateOutcome>;
   log: (message: string) => void;
 }
 
@@ -108,6 +129,7 @@ export const productionBabysitterRepairDeps: BabysitterRepairDeps = {
   exportSubscriptionCredentials: exportBabysitterSubscriptionCredentials,
   chooseProvider: chooseBabysitterProvider,
   runClaude: runClaudeWithTimeout,
+  treeGate: runBabysitterTreeGate,
   log: (message) => console.error(message),
 };
 
@@ -139,6 +161,22 @@ async function clearResponse(
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return undefined;
     return errorMessage(error);
+  }
+}
+
+/**
+ * The pre-push gate over the agent's tree. A throw from the gate becomes an
+ * infrastructure outcome, so a READY response is never written unchecked.
+ */
+async function runTreeGate(
+  dir: string,
+  baseBranch: string | undefined,
+  deps: BabysitterRepairDeps,
+): Promise<BabysitterTreeGateOutcome> {
+  try {
+    return await deps.treeGate(dir, baseBranch);
+  } catch (error) {
+    return { kind: "infrastructure", message: errorMessage(error) };
   }
 }
 
@@ -222,12 +260,33 @@ async function repairResponse(
   responseFile: string,
   deps: BabysitterRepairDeps,
 ): Promise<CommandResult> {
-  // d. Validate the other two required flags.
+  // d. Validate the other two required flags, and the optional base branch.
   for (const name of ["dir", "prompt-file"]) {
     if (!hasValue(args[name])) return fail(`--${name} <value> is required`);
   }
   const dir = String(args["dir"]);
   const promptFile = String(args["prompt-file"]);
+  const baseFlag = args["base-branch"];
+  let baseBranch: string | undefined;
+  if (baseFlag !== undefined) {
+    // The host sends `refs/heads/<name>` because the argument parser would
+    // coerce a branch named like a JSON number (`7.0`) before it arrived.
+    if (
+      typeof baseFlag !== "string" ||
+      !baseFlag.startsWith(BABYSITTER_BASE_BRANCH_PREFIX) ||
+      baseFlag.slice(BABYSITTER_BASE_BRANCH_PREFIX.length).trim() === ""
+    ) {
+      return fail(
+        `--base-branch must be a string of the form ${BABYSITTER_BASE_BRANCH_PREFIX}<name>`,
+      );
+    }
+    baseBranch = baseFlag.slice(BABYSITTER_BASE_BRANCH_PREFIX.length);
+    try {
+      assertSafeGitRef(baseBranch, "--base-branch");
+    } catch (error) {
+      return fail(`invalid --base-branch: ${errorMessage(error)}`);
+    }
+  }
 
   // e. Read the prompt; an unreadable or blank prompt never reaches the agent.
   let prompt: string;
@@ -314,10 +373,34 @@ async function repairResponse(
     return fail("agent returned an empty final message");
   }
 
-  // i. Only a complete, successful run writes the response file. A partial
+  // i. A response that reports READY must pass the pre-push gate over the
+  // agent's uncommitted tree (Issue #4930). A blocked or unrunnable gate
+  // withholds the READY line; a response that is not ready never reaches it.
+  // The gate's marker is the gate's alone, so agent text carries it on no path.
+  let response = neutraliseGateMarker(run.output);
+  if (isBabysitterReady(run.output)) {
+    const outcome = await runTreeGate(dir, baseBranch, deps);
+    if (outcome.kind === "passed") {
+      deps.log(
+        `[babysitter-repair] pre-push checks passed: ${
+          outcome.checksRun.join(", ") || "(none)"
+        }`,
+      );
+    }
+    if (outcome.kind === "blocked" || outcome.kind === "infrastructure") {
+      deps.log(
+        redactSecrets(
+          `[babysitter-repair] pre-push gate ${outcome.kind}: ${outcome.message}`,
+        ),
+      );
+      response = withholdReady(run.output, outcome);
+    }
+  }
+
+  // j. Only a complete, successful run writes the response file. A partial
   // write is cleared by the caller's failure path.
   try {
-    await deps.writeTextFile(responseFile, run.output);
+    await deps.writeTextFile(responseFile, response);
   } catch (error) {
     return fail(
       `cannot write response file ${responseFile}: ${errorMessage(error)}`,

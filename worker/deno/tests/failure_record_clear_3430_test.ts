@@ -1,15 +1,8 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3430 — two private fleet PRs wrote a degraded streak and an
- * ineligible ledger entry on the failure path and never cleared it on a later
- * healthy run, and their tests stubbed the ledger helper so the missing clear
- * was invisible. The "state recorded on a failure path is cleared on the path
- * that recovers" paragraph must be on both CODING-STANDARDS.md and the
- * coding_guidelines prompt, inside the test-coverage section right after the
- * destructive-state rule, word for word once wrapping is ignored, and the
- * issue prompt's PR Summary File step must restate it.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -61,7 +54,6 @@ Deno.test("both surfaces carry the failure-record-clear rule, identical, right a
       "existing set/clear pair on a sibling path",
       "real record helper against a temporary store, not a stub",
       "drive the failure, then a healthy run, and assert the record is gone",
-      "delete the clear and confirm the test goes red",
       "List the set/clear pairs checked in the PR summary",
       "A record with no clear on a healthy path is a blocking self-review finding",
     ]);

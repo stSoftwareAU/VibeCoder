@@ -10,8 +10,10 @@
  * Only workflows that trigger on `pull_request` count. Within each job, every
  * step with a string `run:` is read by logical line (`logicalLines`), skipping
  * comment lines and lines that `isNonFailing` (so `|| true` lines do not count),
- * and steps marked `continue-on-error`. Each `&&` or `;` segment that is a cargo
- * command becomes a check. The working directory comes from the step, job or
+ * and steps marked `continue-on-error`. Each `&&`, `||` or `;` segment that is a
+ * cargo command becomes a check: `||` is a list operator, not a pipe, so in
+ * `cargo clippy || status=$?` the clippy run is the check and the right-hand
+ * side only captures its status (Issue #5074). The working directory comes from the step, job or
  * workflow `working-directory`, or a preceding `cd <dir>` (in an earlier segment
  * or on an earlier line of the same step), and must be a plain relative path
  * inside the repository. The environment keeps only
@@ -30,8 +32,10 @@
  * - Only single and double quotes are read. `2>&1` is removed only at the end of
  *   a line. Command forms other than those above (for example `cargo hack`) are
  *   not recognised.
- * - A `cd` is honoured only as `cd <one plain word>` in its own `&&` or `;`
- *   segment, and holds for the rest of the step's run block, as in the shell.
+ * - `cargo llvm-cov report`, `clean` and `show-env` compile nothing, so they are
+ *   not checks and never make a workflow unverifiable (Issue #5074).
+ * - A `cd` is honoured only as `cd <one plain word>` in its own `&&`, `||` or
+ *   `;` segment, and holds for the rest of the step's run block, as in the shell.
  *   Any other `cd` form (and `pushd`, `popd`, a `cd` after `then`, `do`,
  *   `else` or `{`, or a `cd` on a line that `isNonFailing` skips) makes the following cargo commands in that step
  *   unverifiable.
@@ -92,6 +96,10 @@ const CARGO_CLIPPY_TEXT = /\bcargo(?:\s+\+\S+)?\s+clippy\b/;
 const TOOLCHAIN_NAME = /^[\w.+-]+$/;
 const SNIPPET_LENGTH = 200;
 const CI_REDIRECT = "2>&1";
+/** A `|` (or `|&`) pipe that is not half of the `||` list operator (Issue #5074). */
+const LONE_PIPE = /(?<!\|)\|(?!\|)/;
+/** `cargo llvm-cov` subcommands that compile nothing (Issue #5074). */
+const LLVM_COV_NON_BUILD = new Set(["report", "clean", "show-env"]);
 const WORKFLOWS_PREFIX = ".github/workflows/";
 
 /** Env keys kept for the cargo commands; all others are ignored. */
@@ -193,14 +201,14 @@ function closeWord(builder: WordBuilder, words: Word[]): void {
 }
 
 interface LexedLine {
-  /** The words of each `&&` or `;` separated command. */
+  /** The words of each `&&`, `||` or `;` separated command. */
   segments: Word[][];
   /** A quote is never closed, so the shell would not parse the line. */
   unterminated: boolean;
 }
 
 /**
- * Splits one logical line into commands on `&&` and `;`, and into words on
+ * Splits one logical line into commands on `&&`, `||` and `;`, and into words on
  * unquoted whitespace, reading single and double quotes. An unquoted `#` that
  * starts a word begins a comment. Linear in the line length.
  */
@@ -226,11 +234,14 @@ function lexLine(line: string): LexedLine {
       closeWord(builder, words);
     } else if (ch === "#" && !builder.open) {
       break;
-    } else if (ch === ";" || (ch === "&" && line.charAt(i + 1) === "&")) {
+    } else if (
+      ch === ";" ||
+      ((ch === "&" || ch === "|") && line.charAt(i + 1) === ch)
+    ) {
       closeWord(builder, words);
       if (words.length > 0) segments.push(words);
       words = [];
-      if (ch === "&") i++;
+      if (ch !== ";") i++;
     } else {
       builder.open = true;
       builder.text += ch;
@@ -290,6 +301,8 @@ function cargoCommand(words: readonly Word[]): CargoCommand | null {
   }
   if (sub === "llvm-cov") {
     const next = words[i + 1]?.text;
+    // Issue #5074: these subcommands compile nothing, so there is no check.
+    if (next !== undefined && LLVM_COV_NON_BUILD.has(next)) return null;
     const skip = next === "nextest" || next === "test" ? 2 : 1;
     return {
       kind: "test-build",
@@ -365,7 +378,7 @@ function lineHazard(
   words: readonly Word[],
 ): string | null {
   if (unterminated) return "it has an unterminated quote";
-  if (line.includes("|")) return "it contains a pipe";
+  if (LONE_PIPE.test(line)) return "it contains a pipe";
   if (line.includes("${{")) return "it holds a GitHub expression";
   if (words.some((word) => word.risky)) {
     return "it uses shell syntax the scanner does not reproduce";

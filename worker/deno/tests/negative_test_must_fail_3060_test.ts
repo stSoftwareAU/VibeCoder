@@ -1,21 +1,13 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3060 — fleet PRs were sent back for negative tests whose fixture
- * never held the forbidden value, so the test passed with or without the
- * guard it was meant to protect. CODING-STANDARDS.md and the
- * coding_guidelines prompt must both carry the same rule, inside the
- * test-coverage section, word for word once wrapping is ignored. The rule is
- * now named "A test must be able to fail on the wrong input" (renamed by
- * Issue #3851; it was "A negative test must be able to fail"). The
- * "Choosing assertions" section must point back to it; and the issue prompt's
- * Test Plan step must require seeing the guard's red run before counting a
- * negative test.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  assertPins,
   type DocSection,
   excerpt,
   flat,
@@ -34,10 +26,11 @@ function negativeTestParagraph(sectionText: DocSection, what: string): string {
 }
 
 const KEY_PHRASES = [
-  "fixture that contains the forbidden thing",
-  "break the guard on purpose",
-  "confirm it goes red",
+  "fixture containing the forbidden thing",
+  "Pair it with an allowed case",
+  "actual result or specific refusal",
   "blocking self-review finding",
+  "do not require inverting guards",
 ];
 
 Deno.test("both surfaces carry the negative-test-must-fail rule (Issue #3060)", async () => {
@@ -87,19 +80,12 @@ Deno.test("Choosing assertions points back at the negative-test rule (Issue #306
   );
 });
 
-Deno.test("issue prompt Test Plan step requires seeing the guard go red (Issue #3060)", async () => {
-  const text = flat(
+Deno.test("issue prompt asks for discriminating negative-test inputs", async () => {
+  assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-  );
-
-  assert(
-    text.includes("go red with its guard broken on purpose"),
-    `PR Summary File section is missing the red-run requirement: ${text}`,
-  );
-  assert(
-    text.includes(
-      "stays green without its guard is a blocking self-review finding",
-    ),
-    `PR Summary File section is missing the green-without-guard finding: ${text}`,
+    [
+      "negative test must contain the forbidden input",
+      "Do not require deliberate code breaks",
+    ],
   );
 });

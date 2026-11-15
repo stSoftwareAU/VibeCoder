@@ -187,6 +187,19 @@ Deno.test("twin pair - both surfaces reject tests added only for coverage (Issue
       /not every\s+change needs a new test/i.test(text),
       `${surface} must allow changes with no new test`,
     );
+    for (
+      const rule of [
+        "When developing feature Y, run feature X's existing deterministic regression tests",
+        "first write and observe a failing regression test against the unfixed code",
+        "seed randomness and control clocks, external responses and shared state",
+        "moving a button does not require a test-suite audit",
+        "only when the owner explicitly requests that investigation",
+        "Do not add or invoke them as an automatic feature, review-fix, repair or PR/CI step",
+        "do not attach it to ordinary PR runs",
+      ]
+    ) {
+      assert(text.includes(rule), `${surface} has lost testing scope: ${rule}`);
+    }
   }
 
   // The test-count-target rejection — standards hold it under Test coverage

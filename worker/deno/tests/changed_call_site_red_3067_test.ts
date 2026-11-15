@@ -1,19 +1,13 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3067 — fleet PRs threaded a new argument through several production
- * callers and tested only one, so reverting an untested caller's change left
- * the suite green. CODING-STANDARDS.md and the coding_guidelines prompt must
- * both carry the same "every changed call site needs a test that goes red
- * without it" rule, inside the test-coverage section, word for word once
- * wrapping is ignored; the "Choosing assertions" section's Units bullet must
- * point back to it; and the issue prompt's Test Plan step must require
- * reverting each changed call site and seeing a test go red.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  assertPins,
   type DocSection,
   excerpt,
   flat,
@@ -36,10 +30,10 @@ function changedCallSiteParagraph(
 }
 
 const KEY_PHRASES = [
-  "revert only that caller's change",
-  "confirm at least one test goes red",
-  "does not count for that path",
-  "blocking self-review finding",
+  "real production entry points affected by the change",
+  "Existing direct or indirect coverage counts",
+  "fake replacing the production default",
+  "Do not revert every caller or run automatic mutation checks",
 ];
 
 Deno.test("both surfaces carry the changed-call-site-must-go-red rule (Issue #3067)", async () => {
@@ -85,19 +79,13 @@ Deno.test("Choosing assertions' Units bullet points back at the changed-call-sit
   );
 });
 
-Deno.test("issue prompt Test Plan step requires reverting each changed call site (Issue #3067)", async () => {
-  const text = flat(
+Deno.test("issue prompt reviews actual affected entry-point coverage", async () => {
+  assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-  );
-
-  assert(
-    text.includes("goes red when only that caller's change is reverted"),
-    `PR Summary File section is missing the red-run requirement: ${text}`,
-  );
-  assert(
-    text.includes(
-      "a changed call site whose revert leaves the suite green is a blocking self-review finding",
-    ),
-    `PR Summary File section is missing the green-without-revert finding: ${text}`,
+    [
+      "actual affected entry points",
+      "existing coverage and a visual check may suffice for a presentation change",
+      "Do not require deliberate code breaks",
+    ],
   );
 });

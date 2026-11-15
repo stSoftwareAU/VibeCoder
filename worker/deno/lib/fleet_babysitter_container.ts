@@ -31,6 +31,13 @@
  * what a run reaches. This module is the only way `fix()` in
  * `commands/fleet_pr_babysitter.ts` runs a repair (Issue #4770), with no host
  * fallback.
+ *
+ * Pre-push gate (Issue #4930): before the READY line stands, the in-container
+ * `babysitter-repair` runs the repo's unit tests for the agent's changed files
+ * and markdownlint over the uncommitted tree. It compares failing tests
+ * against the PR's base branch, which this module passes as an optional
+ * trailing `--base-branch refs/heads/<name>` (see {@link BabysitterContainerInput}).
+ * A failing gate removes the READY line, and the host then refuses to push.
  */
 
 import { buildLaunchPlanForCommand } from "../commands/container_launch_plan.ts";
@@ -53,6 +60,26 @@ import {
 import { redactSecrets } from "./secret_redaction.ts";
 import { startEgressSidecar, stopEgressSidecar } from "./egress_sidecar.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import { assertSafeGitRef } from "./git_ref_args.ts";
+import {
+  admitHostDiskLaunch,
+  BABYSITTER_LAUNCH_FOOTPRINT_BYTES,
+  HOST_DISK_RESERVATIONS_DIR,
+  readLiveHostDiskReservations,
+  removeHostDiskReservation,
+  writeHostDiskReservation,
+} from "./host_disk_reservations.ts";
+import {
+  lowFloorBytes,
+  probeDiskReading,
+  readConfiguredDiskFloors,
+  resolveDiskFloors,
+} from "./host_disk.ts";
+import type { DiskReading } from "./host_disk.ts";
+import { EPHEMERAL_CARGO_HEADROOM_BYTES } from "./heavy_build_gate.ts";
+import { findProjectManifests } from "./project_manifests.ts";
+import { resolveLogDirForCommand } from "../commands/log_dir.ts";
+import { resolveHostConfigPath } from "./host_config_path.ts";
 
 /** A repair may run for 90 minutes before it is killed. */
 export const BABYSITTER_REPAIR_TIMEOUT_MS = 90 * 60_000;
@@ -61,8 +88,21 @@ export const BABYSITTER_CLONE_MOUNT = "/babysitter/clone";
 /** Where the scratch directory (the prompt file) is mounted inside it. */
 export const BABYSITTER_SCRATCH_MOUNT = "/babysitter/scratch";
 /**
+ * Prefix carried on the `--base-branch` value. The worker's argument parser
+ * runs `JSON.parse` on every flag value, so a branch named `7.0` or `1.10`
+ * would reach the command as the number 7 or 1.1. A value that is not valid
+ * JSON on its own is passed through as the string it is (Issue #4930).
+ */
+export const BABYSITTER_BASE_BRANCH_PREFIX = "refs/heads/";
+
+/**
  * The fixed command line after the image. The in-container `babysitter-repair`
- * command (Issue #4768) is routed by container/entrypoint.sh and runs it.
+ * command (Issue #4768) is routed by container/entrypoint.sh and runs it. An
+ * optional trailing `--base-branch refs/heads/<name>` (appended by
+ * {@link buildBabysitterRunArgs}) lets its pre-push check (Issue #4930) compare
+ * failing tests against the PR's base branch; the check runs the repo's unit
+ * tests and markdownlint over the agent's changes and withholds the READY line
+ * when they fail.
  */
 export const BABYSITTER_REPAIR_COMMAND: readonly string[] = [
   "babysitter-repair",
@@ -165,6 +205,18 @@ export interface BabysitterContainerDeps {
    */
   stopSidecar?: (plan: ContainerLaunchPlan) => Promise<string[]>;
   /**
+   * Admits the repair, and the Chromium self-check, against the host's free
+   * disk before any egress starts (Issue #5105). A throw starts nothing and
+   * propagates. `release` runs after the egress teardown. The self-check
+   * passes no `clone`: it holds no cargo project, so only the launch
+   * footprint is requested. Default: {@link babysitterHostDiskAdmission}.
+   */
+  hostDiskAdmission?: (input: {
+    containerName: string;
+    clone?: string;
+    timeoutMs: number;
+  }) => Promise<{ release: () => Promise<void> }>;
+  /**
    * Receives progress and teardown problems (default: console.error, prefixed
    * `[babysitter] `).
    */
@@ -183,6 +235,12 @@ export interface BabysitterContainerInput {
   privateKeyPath: string;
   /** The agent's read-only GH_TOKEN. Passed in the env only. */
   token: string;
+  /**
+   * The PR's base branch. The in-container pre-push gate (Issue #4930)
+   * compares failing tests against it. Absent: no argument is passed and the
+   * gate has no baseline, so a failing test blocks.
+   */
+  baseBranch?: string;
   /** Default {@link BABYSITTER_REPAIR_TIMEOUT_MS}. */
   timeoutMs?: number;
   /**
@@ -406,13 +464,21 @@ function isCustomPromptEnvSpec(spec: string): boolean {
  * custom prompt target (`…/.vibe-coder/custom-prompts`), and the plan's
  * `VIBE_CUSTOM_PROMPT_PATHS` env spec. The provider credential sub-directories
  * are kept. Then appends the clone mount, the clone's `.git` mounted
- * read-only over it, the scratch mount, `--env GH_TOKEN`, the image and the repair command. Refuses any plan flag that could mount a
+ * read-only over it, the scratch mount, `--env GH_TOKEN`, the image, the repair
+ * command and, when a base branch is given, `--base-branch refs/heads/<name>` (Issue
+ * #4930). Refuses any plan flag that could mount a
  * path or load an env file by another spelling, and any plan env spec that
- * sets GH_TOKEN. Pure; exported for tests.
+ * sets GH_TOKEN. A base branch that git would read as an option is refused.
+ * Pure; exported for tests.
  */
 export function buildBabysitterRunArgs(
   plan: ContainerLaunchPlan,
-  input: { clone: string; scratch: string; workspaceSnapshot?: string },
+  input: {
+    clone: string;
+    scratch: string;
+    workspaceSnapshot?: string;
+    baseBranch?: string;
+  },
 ): string[] {
   const runArgs = plan.runArgs;
   if (runArgs.length === 0 || runArgs[runArgs.length - 1] !== plan.image) {
@@ -533,6 +599,9 @@ export function buildBabysitterRunArgs(
       );
     }
   }
+  if (input.baseBranch !== undefined) {
+    assertSafeGitRef(input.baseBranch, "babysitter base branch");
+  }
   return [
     ...body,
     "--volume",
@@ -547,6 +616,9 @@ export function buildBabysitterRunArgs(
     "GH_TOKEN",
     plan.image,
     ...BABYSITTER_REPAIR_COMMAND,
+    ...(input.baseBranch !== undefined
+      ? ["--base-branch", `${BABYSITTER_BASE_BRANCH_PREFIX}${input.baseBranch}`]
+      : []),
   ];
 }
 
@@ -616,7 +688,7 @@ async function removeRepairWorkspaceSnapshot(
 }
 
 /** Create a checkout snapshot containing tracked regular files and scrubbed config. */
-async function createRepairWorkspaceSnapshot(
+export async function createRepairWorkspaceSnapshot(
   baseDir: string,
   scratch: string,
   plan: ContainerLaunchPlan,
@@ -1388,11 +1460,19 @@ export async function checkBabysitterContainerChromium(
   const log = deps.log ?? ((message: string) => {
     console.error(`[babysitter] ${redactSecrets(message).slice(0, CAUSE_CAP)}`);
   });
+  const hostDiskAdmission = deps.hostDiskAdmission ??
+    ((
+      admission: { containerName: string; clone?: string; timeoutMs: number },
+    ) => babysitterHostDiskAdmission(admission, { log }));
   const timeoutMs = input.timeoutMs ?? BABYSITTER_CHROMIUM_CHECK_TIMEOUT_MS;
   const containerName = throwawayContainerName();
   const plan = await buildPlan(input.baseDir, containerName);
   const baseEnv = baseEnvironment(env);
   await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
+  // Before any egress starts: a refusal starts no proxy and no container. The
+  // check runs before every babysitter pass and costs the same launch
+  // footprint as a repair, so its dip is credited like a repair's.
+  const reservation = await hostDiskAdmission({ containerName, timeoutMs });
 
   const apple = !plan.egressEnforced && plan.proxyName !== "";
   let teardown: Teardown | undefined;
@@ -1473,6 +1553,8 @@ export async function checkBabysitterContainerChromium(
     }
   } finally {
     await runTeardown(teardown, log, "");
+    // After the proxy and container are gone, so the ledger never undercounts.
+    await releaseReservation(reservation, log, "");
   }
 }
 
@@ -1482,6 +1564,141 @@ function defaultBuildPlan(
   containerName: string,
 ): Promise<ContainerLaunchPlan> {
   return buildLaunchPlanForCommand(baseDir, containerName);
+}
+
+/** Seams {@link babysitterHostDiskAdmission} lets tests replace. */
+export interface BabysitterHostDiskAdmissionDeps {
+  /** Free and total bytes of the host (default: as run.sh's host-disk reading). */
+  measure?: () => Promise<DiskReading | null>;
+  /** The host's low floor in bytes for this total (default: configured floors). */
+  floor?: (totalBytes: number) => Promise<number>;
+  /** The reservation directory (default: `<host log dir>/host-disk-reservations`). */
+  reservationDir?: () => Promise<string>;
+  now?: () => number;
+  /** Does the clone hold a cargo project (default: findProjectManifests). */
+  holdsCargo?: (clone: string) => Promise<boolean>;
+  log?: (message: string) => void;
+}
+
+/** Margin beyond the repair timeout before a stale reservation expires. */
+const RESERVATION_EXPIRY_MARGIN_MS = 10 * 60_000;
+
+async function defaultMeasureHost(): Promise<DiskReading | null> {
+  const home = Deno.env.get("HOME") ?? "";
+  // The same gate path as run.sh's write_host_disk_reading.
+  const store = `${home}/Library/Application Support/com.apple.container`;
+  let gate = home;
+  try {
+    if (Deno.statSync(store).isDirectory) gate = store;
+  } catch {
+    // Not an Apple container host.
+  }
+  return await probeDiskReading(gate);
+}
+
+async function defaultFloor(totalBytes: number): Promise<number> {
+  const configFile = resolveHostConfigPath({
+    baseDir: babysitterCheckoutDir(),
+    env: (name) => Deno.env.get(name),
+  });
+  return lowFloorBytes(
+    totalBytes,
+    resolveDiskFloors(
+      (name) => Deno.env.get(name),
+      await readConfiguredDiskFloors(configFile),
+    ),
+  );
+}
+
+async function defaultReservationDir(): Promise<string> {
+  const configFile = resolveHostConfigPath({
+    baseDir: babysitterCheckoutDir(),
+    env: (name) => Deno.env.get(name),
+  });
+  const { logDir } = await resolveLogDirForCommand({ configFile });
+  return `${logDir}/${HOST_DISK_RESERVATIONS_DIR}`;
+}
+
+async function defaultHoldsCargo(clone: string): Promise<boolean> {
+  return (await findProjectManifests(clone)).some((project) =>
+    project.kind === "cargo"
+  );
+}
+
+/** Releases a host-disk reservation; a failure is logged redacted, never thrown. */
+async function releaseReservation(
+  reservation: { release: () => Promise<void> },
+  log: (message: string) => void,
+  token: string,
+): Promise<void> {
+  try {
+    await reservation.release();
+  } catch (error) {
+    report(
+      log,
+      `host disk reservation release: ${
+        redactToken(
+          error instanceof Error ? error.message : String(error),
+          token,
+        )
+      }`,
+    );
+  }
+}
+
+/**
+ * The production host-disk admission (Issue #5105): measures the host as
+ * run.sh does, admits against the worker's floor and the live reservations in
+ * the shared ledger, and writes the reservation for this container: a repair's
+ * (`clone` given), or the Chromium self-check's footprint-only one (no
+ * `clone`). A refusal throws; an unmeasurable host admits with no reservation,
+ * as the worker's build gate does for an unknown reading.
+ */
+export async function babysitterHostDiskAdmission(
+  input: { containerName: string; clone?: string; timeoutMs: number },
+  deps: BabysitterHostDiskAdmissionDeps = {},
+): Promise<{ release: () => Promise<void> }> {
+  const measure = deps.measure ?? defaultMeasureHost;
+  const now = deps.now ?? Date.now;
+  const log = deps.log ??
+    ((message: string) => console.error(`[babysitter] ${message}`));
+  const reading = await measure();
+  if (reading === null) {
+    log(
+      "host disk could not be measured; admitting the babysitter container without a reservation (Issue #5105)",
+    );
+    return { release: () => Promise.resolve() };
+  }
+  const floorBytes = await (deps.floor ?? defaultFloor)(reading.totalBytes);
+  // No clone (the Chromium self-check): no cargo project to build.
+  const holdsCargo = input.clone !== undefined &&
+    await (deps.holdsCargo ?? defaultHoldsCargo)(input.clone);
+  const requestBytes = BABYSITTER_LAUNCH_FOOTPRINT_BYTES +
+    (holdsCargo ? EPHEMERAL_CARGO_HEADROOM_BYTES : 0);
+  const dir = await (deps.reservationDir ?? defaultReservationDir)();
+  const admittedAt = now();
+  const verdict = admitHostDiskLaunch({
+    availableBytes: reading.availableBytes,
+    floorBytes,
+    requestBytes,
+    live: await readLiveHostDiskReservations(dir, admittedAt),
+  });
+  if (!verdict.admit) {
+    throw new Error(
+      `babysitter ${
+        input.clone === undefined ? "Chromium check" : "repair"
+      } not started: ${verdict.reason}`,
+    );
+  }
+  const path = await writeHostDiskReservation(dir, {
+    holder: "babysitter",
+    id: input.containerName,
+    bytes: requestBytes,
+    availableAtAdmission: reading.availableBytes,
+    admittedAt,
+    expiresAt: admittedAt + input.timeoutMs + RESERVATION_EXPIRY_MARGIN_MS,
+  });
+  return { release: () => removeHostDiskReservation(path) };
 }
 
 /**
@@ -1535,6 +1752,9 @@ export async function runBabysitterRepairContainer(
     ((plan: ContainerLaunchPlan) => stopEgressSidecar(plan));
   const log = deps.log ??
     ((message: string) => console.error(`[babysitter] ${message}`));
+  const hostDiskAdmission = deps.hostDiskAdmission ??
+    ((admission: { containerName: string; clone: string; timeoutMs: number }) =>
+      babysitterHostDiskAdmission(admission, { log }));
 
   const containerName = throwawayContainerName();
   const plan = await buildPlan(input.baseDir, containerName);
@@ -1548,6 +1768,9 @@ export async function runBabysitterRepairContainer(
       clone: input.clone,
       scratch: input.scratch,
       ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
+      ...(input.baseBranch !== undefined
+        ? { baseBranch: input.baseBranch }
+        : {}),
     });
     await assertBabysitterKeyOutOfRunArgs(planArgs, input.privateKeyPath);
 
@@ -1555,6 +1778,12 @@ export async function runBabysitterRepairContainer(
     await checkRuntimeAndImage(plan, { onPath, imageExists, baseEnv });
     // Refused before any egress starts; runRepairProcess checks again before the spawn.
     refuseIfAborted(input.signal);
+    // Before any egress starts: a refusal starts no proxy and no container.
+    const reservation = await hostDiskAdmission({
+      containerName,
+      clone: input.clone,
+      timeoutMs,
+    });
 
     const apple = !plan.egressEnforced && plan.proxyName !== "";
     let teardown: Teardown | undefined;
@@ -1570,6 +1799,9 @@ export async function runBabysitterRepairContainer(
           clone: input.clone,
           scratch: input.scratch,
           ...(workspaceSnapshot ? { workspaceSnapshot } : {}),
+          ...(input.baseBranch !== undefined
+            ? { baseBranch: input.baseBranch }
+            : {}),
         });
         await assertBabysitterKeyOutOfRunArgs(args, input.privateKeyPath);
       } else if (plan.egressEnforced) {
@@ -1591,6 +1823,8 @@ export async function runBabysitterRepairContainer(
       return { containerName };
     } finally {
       await runTeardown(teardown, log, input.token);
+      // After the proxy and container are gone, so the ledger never undercounts.
+      await releaseReservation(reservation, log, input.token);
     }
   } finally {
     if (workspaceSnapshot) {

@@ -5,6 +5,12 @@ test suite. Use
 Australian English spelling (behaviour, colour, organisation, analyse,
 favour) in all human-readable output.
 
+This is a **separately scoped investigation**. Use this prompt only for a
+specific test audit the owner requested or explicitly configured. An ordinary
+feature, review fix, CI run or idle worker is not a request to discover missing
+tests in older features. Keep findings within the requested audit scope and
+budget; do not turn them into extra acceptance gates for unrelated PRs.
+
 This audit is **static and evidence-backed**: it reads and reviews test
 source and cross-references public symbols. It does **not** execute the
 tests, so it reports what static inspection can support — never

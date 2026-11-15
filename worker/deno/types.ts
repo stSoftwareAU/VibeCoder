@@ -1105,10 +1105,6 @@ export interface RepoConfig {
    * close a `security`-labelled finding (Issue #3540).
    */
   skipSecurityFixCheck?: boolean;
-  /** When true, skips the diff-scoped mutation gate on PR completion (Issue #3393). */
-  skipMutationCheck?: boolean;
-  /** Wall-clock budget in seconds for the mutation gate; positive integer, default 300, max 3600 (Issue #3393). */
-  mutationCheckBudgetSeconds?: number;
   /** When true, skips the coverage carry-over gate on PR completion (Issue #3795). */
   skipCoverageCarryOverCheck?: boolean;
   /**

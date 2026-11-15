@@ -5,12 +5,15 @@
  * the provider, the model(s) and the effort of the round that wrote it, plus a
  * hidden `vibe-review-run` marker a report can sum. The round's cost comes from
  * the CLI's own stream-json result (`modelUsage`, priced by the worker's own
- * table) and is split equally across the PRs the round was given; a review
- * whose cost is not known says "cost unknown", never $0.
+ * table) and is split equally across the PRs the round was given; a Codex
+ * attempt is priced from its own `codex exec --json` usage events (Issue
+ * #5083). A review whose cost is not known says "cost unknown", never $0.
  *
  * The fixtures are a real `claude -p --output-format stream-json --verbose`
  * transcript of a main session launching two background sub-agents (CLI
- * 2.1.301), with the model ids and prompts renamed to a review round's.
+ * 2.1.301), with the model ids and prompts renamed to a review round's. The
+ * Codex fixture is built from the event shapes `codex_output_adapter_1695_test.ts`
+ * already uses, not from a recording.
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
@@ -50,6 +53,19 @@ const DEEPSEEK_ATTEMPT = {
   stream: "stream-2.jsonl",
   code: 0,
 };
+const CODEX_ATTEMPT = {
+  attempt: 3,
+  provider: "codex",
+  model: "gpt-6-astra",
+  effort: "high",
+  stream: "stream-3.jsonl",
+  code: 0,
+};
+// A Codex run that started but never reported a turn's usage.
+const CODEX_NO_USAGE = [
+  '{"type":"thread.started","thread_id":"t-9"}',
+  '{"type":"item.completed","item":{"id":"item_0","item_type":"agent_message","text":"Started the review."}}',
+].join("\n") + "\n";
 
 const review = (over: Partial<FableReview> = {}): FableReview => ({
   summary: "Looks right.",
@@ -89,6 +105,37 @@ Deno.test("attemptCost prices a DeepSeek fallback round at DeepSeek's rate, neve
   assert(cost.usd !== null);
   assertEquals(cost.usd.toFixed(9), "0.012955008");
   assertEquals(cost.apiEquivalent, true);
+});
+
+Deno.test("attemptCost prices a Codex attempt on gpt-6-astra from its usage events, and keeps an unpriced model's cost unknown", async () => {
+  const cost = attemptCost(await fixture("codex-round.jsonl"), CODEX_ATTEMPT);
+  assertEquals(cost.models, ["gpt-6-astra"]);
+  // token_usage.ts has no pricing row for gpt-6-astra (no published price):
+  // the cost is unknown, never $0 and never the upper bound.
+  assertEquals(cost.usd, null);
+  assertEquals(cost.apiEquivalent, false);
+});
+
+Deno.test("attemptCost prices a Codex attempt on gpt-5 from its turn.completed usage, not the Claude result path", async () => {
+  const cost = attemptCost(await fixture("codex-round.jsonl"), {
+    ...CODEX_ATTEMPT,
+    model: "gpt-5",
+  });
+  assertEquals(cost.models, ["gpt-5"]);
+  assert(cost.usd !== null);
+  // GPT_5_PRICING in token_usage.ts, per million tokens: $1.25 input,
+  // $10.00 output, $0.125 cached input. Usage: 18,342 input, 1,201 output,
+  // 16,000 cached. 18,342 × 1.25 + 1,201 × 10 + 16,000 × 0.125, per million.
+  assertEquals(cost.usd.toFixed(7), "0.0369375");
+  assertEquals(cost.apiEquivalent, true);
+});
+
+Deno.test("attemptCost reports a Codex attempt with no usage events as cost unknown", () => {
+  assertEquals(attemptCost(CODEX_NO_USAGE, CODEX_ATTEMPT), {
+    models: ["gpt-6-astra"],
+    usd: null,
+    apiEquivalent: true,
+  });
 });
 
 Deno.test("attemptCost reports no cost when the stream has no result line", () => {
@@ -363,6 +410,37 @@ Deno.test("amendRound names deepseek on a fallback round's reviews", async () =>
   assertEquals(attr(m, "models"), "deepseek-v4-pro");
   assertEquals(attr(m, "usd"), "0.0065");
   assertStringIncludes(puts[0]!.body, "API-equivalent");
+});
+
+Deno.test("amendRound leaves a Codex attempt on an unpriced model at cost unknown under the codex footer", async () => {
+  const dir = await roundDir("codex-round.jsonl", [CODEX_ATTEMPT]);
+  await recordPosted(dir, { repo: "owner/repo", number: 7, attempt: 3 });
+  const body = reviewBody("approved", review(), [], [], {
+    run: {
+      kind: "round",
+      round: "20261016-101500",
+      attempt: 3,
+      provider: "codex",
+      models: ["gpt-6-astra"],
+      effort: "high",
+      usd: null,
+      apiEquivalent: false,
+    },
+  });
+  assertStringIncludes(
+    body,
+    "_Review run: provider codex · model gpt-6-astra · effort high · cost unknown._",
+  );
+  const { gh, puts } = fakeGh({ "owner/repo/pulls/7": [{ id: 11, body }] });
+  const summary = await amendRound(dir, gh);
+  assertEquals(summary.attempts, [{
+    attempt: 3,
+    provider: "codex",
+    models: ["gpt-6-astra"],
+    usd: null,
+  }]);
+  assertEquals(summary.amended, 0);
+  assertEquals(puts, []);
 });
 
 Deno.test("amendRound leaves an unfinished attempt's reviews at cost unknown", async () => {

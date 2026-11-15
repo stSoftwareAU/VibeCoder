@@ -96,7 +96,9 @@ runs:
 
 This delegates to `worker/deno/quality.ts` and runs Deno type-check, the
 Deno test suite, `deno lint`, `deno fmt --check`, markdownlint, semgrep,
-and Checkov (registered only where `.github/workflows/checkov.yml` exists).
+Checkov (registered only where `.github/workflows/checkov.yml` exists), and
+gitleaks over the branch's commits (registered only where
+`.github/workflows/gitleaks.yml` exists; Issue #5121).
 CI additionally runs shellcheck over the repo's shell scripts — the gate
 itself does not. Always redirect stdin from `/dev/null` so
 unattended runs cannot hang waiting for input.
@@ -223,22 +225,16 @@ themselves:
   result. Tests that grep source files for patterns or function names
   are rejected; see [CODING-STANDARDS.md](CODING-STANDARDS.md#test-driven-development-tdd)
   for the rationale.
-- **Documentation-drift pins are checked one phrase at a time** — before
-  raising a PR that adds or changes a drift test, run
-  `cd worker/deno && deno task drift-pins-on-base origin/main <doc> <section> <phrase>...`
-  for each section it reads, with `<doc>` relative to the repo root. It lists
-  every pinned phrase the base section already held and exits 1 when there is
-  one; such a pin can never fail. An unresolvable `<doc>` exits 2 naming the
-  path, and a doc the base never had prints one `doc not on base` line (see
-  [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests),
-  condition 4). A pin that names a value a module or checked-in config file
-  already holds (a flag, function name, key, version or tag) is built from
-  that source, never typed in, and is red-checked by changing the value at
-  its source and seeing the test fail (condition 3). A pin moved by
-  converting an existing whole-file drift test to `section()` is meant to be
-  on base; red-check it in its own section
-  instead (see **Re-scoping an existing drift test** in
-  [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests)).
+- **Documentation-drift pins identify their own rule** — review each assertion
+  in the rule's scoped section. Generic phrases from another rule are not
+  protection. Values held by a module or checked-in config file come from
+  that live source, never a typed-in copy. See conditions 3 and 4 of
+  [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests).
+  A pin moved by converting an existing whole-file drift test to `section()`
+  is meant to be on base; review its section scope and run the existing drift
+  tests. Keep whole-file absence checks whole-file. The optional
+  `deno task drift-pins-on-base` helper can investigate a specific drift-test
+  defect; do not run a baseline or source-mutation exercise for every pin.
 - **Speed budget** — a unit test finishes within 10 seconds. It is a
   target, not a kill: nothing times a unit test at run time, so it is
   enforced by shape (see

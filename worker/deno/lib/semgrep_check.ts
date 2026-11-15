@@ -192,7 +192,8 @@ export type EnsureHistory = (
   options: { cwd?: string },
 ) => Promise<Result<void, Error>>;
 
-function defaultEnsureHistory(
+/** Default ensure-history, shared with `gitleaks_check.ts` (Issue #5121). */
+export function defaultEnsureHistory(
   refs: string[],
   options: { cwd?: string },
 ): Promise<Result<void, Error>> {
@@ -265,8 +266,11 @@ export function makeGitRunner(scriptDir: string): GitRunner {
  * uncommitted files and a clean branch would be reported PASSED without a
  * scan (Issue #4181). Never a hardcoded branch name — the remote's own HEAD
  * is the source of truth.
+ *
+ * Shared with `gitleaks_check.ts` (Issue #5121), which scans the same
+ * `base..HEAD` commit range CI scans.
  */
-async function resolveDiffBase(
+export async function resolveDiffBase(
   git: GitRunner,
   scriptDir: string | undefined,
   ensureHistory: EnsureHistory,

@@ -1,19 +1,13 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3222 — the changed-call-site rule only named "more than one
- * production caller", so a single entry point (a CLI command or task, an
- * HTTP route, a scheduled job, a UI control's event handler) threaded with
- * new behaviour and tested nowhere slipped past it. CODING-STANDARDS.md and
- * the coding_guidelines prompt must both widen the rule to cover a single
- * caller and UI controls, word for word once wrapping is ignored, and the
- * issue prompt's PR Summary File section must require a UI control test to
- * invoke the handler and list each entry point checked.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert } from "@std/assert";
 import {
+  assertPins,
   type DocSection,
   excerpt,
   flat,
@@ -36,12 +30,15 @@ function changedCallSiteParagraph(
 }
 
 const KEY_PHRASES = [
-  "including a single caller",
-  "a UI control's event handler",
-  "a scheduled job",
-  "invoke the control's handler",
-  "pressing X requests Y",
-  "List each entry point checked in the PR summary",
+  "CLI command",
+  "HTTP route",
+  "scheduled job",
+  "UI control's handler",
+  "default-dependencies factory",
+  "registered dispatch spec",
+  "invoke that action or its real handler",
+  "presentation-only button move",
+  "incorrect caller outcome",
 ];
 
 Deno.test("both surfaces widen the changed-call-site rule to a single entry point and UI controls (Issue #3222)", async () => {
@@ -74,17 +71,12 @@ Deno.test("both surfaces widen the changed-call-site rule to a single entry poin
   }
 });
 
-Deno.test("issue prompt PR Summary File section requires invoking UI control handlers and listing entry points (Issue #3222)", async () => {
-  const text = flat(
+Deno.test("issue prompt scopes UI-handler coverage to the requirement", async () => {
+  assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-  );
-
-  assert(
-    text.includes("for a UI control that test invokes the handler"),
-    `PR Summary File section is missing the UI-control invocation requirement: ${text}`,
-  );
-  assert(
-    text.includes("lists each entry point checked"),
-    `PR Summary File section is missing the entry-point enumeration requirement: ${text}`,
+    [
+      "including a UI handler when the requirement is a user action",
+      "existing coverage and a visual check may suffice for a presentation change",
+    ],
   );
 });

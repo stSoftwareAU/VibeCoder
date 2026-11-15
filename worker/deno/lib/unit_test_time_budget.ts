@@ -48,6 +48,19 @@ import { resolveExecutable } from "./gh_guard_shim.ts";
 export const UNIT_TEST_BUDGET_MS = 1000;
 
 /**
+ * The start of every failure line the budget prints (Issue #4930): `FAIL: `
+ * then `every test in <file>`. The pre-push gate reads it to refuse a base-only
+ * downgrade of a run whose output reports a budget failure.
+ */
+export const BUDGET_FAILURE_PREFIX = "FAIL: every test in ";
+
+/**
+ * The start of the line printed when a pass's report could not be read, so the
+ * budget was not checked (Issue #4930). Never read as a pass.
+ */
+export const BUDGET_NOT_CHECKED_PREFIX = "TIME BUDGET NOT CHECKED: ";
+
+/**
  * Files kept in the unit gate although every test in them is slow, and why.
  *
  * A named exception with a reason, exactly like `IN_GATE_SCRIPT_SUITES` and
@@ -218,6 +231,8 @@ export function unitTestTimeBudget(
     );
     return { warnings, exemptNotes, failedFiles: [], failures: [], unenforced };
   }
+  // `everyTestOver` begins `every test in`, so each line starts with
+  // BUDGET_FAILURE_PREFIX.
   const failures = slowFiles.map((file) =>
     `FAIL: ${everyTestOver(file)} — find what the mocks miss and ` +
     `make it fast, or list the file in INTEGRATION_TEST_FILES or ` +
@@ -278,6 +293,40 @@ export async function passesTimeBudget(
     timings.push(...await readPassTimings(path, options.readText));
   }
   return unitTestTimeBudget(timings, options);
+}
+
+/**
+ * The lines to print after a failed unit pass (Issue #4930).
+ *
+ * A failed `deno test --junit-path` run still writes its JUnit report, so the
+ * failed pass's per-test times, and any earlier green pass's, are held to the
+ * budget too. `junitPaths` are the reports of every pass run so far, failed
+ * one included. On success the lines are those the runner prints after every
+ * pass succeeds, in the same order. A report that cannot be read yields one
+ * {@link BUDGET_NOT_CHECKED_PREFIX} line: the budget was not checked, so the
+ * failure is not to be read as base-only.
+ */
+export async function failedRunBudgetLines(
+  junitPaths: readonly string[],
+  options: TimeBudgetOptions & {
+    readText?: (path: string) => Promise<string>;
+  } = {},
+): Promise<string[]> {
+  try {
+    const budget = await passesTimeBudget(junitPaths, options);
+    return [
+      ...budget.exemptNotes,
+      ...budget.warnings,
+      ...budget.unenforced,
+      ...budget.failures,
+    ];
+  } catch (error) {
+    return [
+      `${BUDGET_NOT_CHECKED_PREFIX}${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    ];
+  }
 }
 
 /** Bytes read from the resolved `git` — the shim's header is in its first lines. */

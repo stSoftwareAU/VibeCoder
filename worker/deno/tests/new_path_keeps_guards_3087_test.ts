@@ -1,24 +1,13 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3087 — fleet PRs added a second route to an outcome the code
- * already reached, and the new route skipped a guard the old one applied:
- * VibeCoder#3085 ran `reportSummaryRuleBlock` before the degraded-delivery
- * guard; VibeCoder#2909 added an early return after `claimPrComment` that
- * neither replied nor released the claim; VibeCoder#3065's milestone sync
- * skipped `isConflictAttemptDue`; and GRQ-AutoTrader#2279's `publishBusy`
- * skipped the freshness tracker's ticket check. CODING-STANDARDS.md and the
- * coding_guidelines prompt must both carry the same "a new path to an
- * existing outcome keeps that outcome's guards" rule, inside the
- * test-coverage section, word for word once wrapping is ignored; the
- * "Choosing assertions" section must point back to it; and the issue prompt's
- * Test Plan step and the pr_feedback prompt must both require a new path to
- * keep the existing path's guards.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  assertPins,
   type DocSection,
   excerpt,
   flat,
@@ -43,7 +32,7 @@ const KEY_PHRASES = [
   "degraded-run guard",
   "releasing a claim",
   "state in the PR summary why it does not apply",
-  "ahead of the guard",
+  "an allowed case that reaches the intended outcome",
   "blocking self-review finding",
 ];
 
@@ -109,22 +98,15 @@ Deno.test("issue prompt Test Plan step requires a new path keep its guards (Issu
   );
 });
 
-Deno.test("PR-feedback prompt points at the new-path guard rule (Issue #3087)", async () => {
-  const text = flat(
+Deno.test("feedback tests kept guards with allowed and refused cases", async () => {
+  assertPins(
     section(
       await readRepoDoc("prompts/pr_feedback/prompt.md"),
       "Making Changes",
     ),
-  );
-
-  assert(
-    text.includes(
-      "A new path to an existing outcome keeps that outcome's guards",
-    ),
-    `Making Changes section is missing the new-path guard reference: ${text}`,
-  );
-  assert(
-    text.includes("goes red when the new branch is moved ahead of the guard"),
-    `Making Changes section is missing the red-run requirement: ${text}`,
+    [
+      "guard",
+      "allowed case",
+    ],
   );
 });

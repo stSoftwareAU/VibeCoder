@@ -1,20 +1,13 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3374 — fleet PRs changed an expected value in an existing test
- * because the issue required it, and the test then passed whether or not the
- * code its name says it guards still worked (VibeCoder#3372,
- * GRQ-AutoTrader#2408). CODING-STANDARDS.md and the coding_guidelines prompt
- * must both carry the same "an edited expectation must still go red without
- * its guard" rule, between the new-test rule and the negative-test rule, word
- * for word once wrapping is ignored; TDD rule 3 must point at the red-check;
- * and the issue prompt's Change-only rule, Test Plan step and Standards
- * reviewer brief must each ask for it.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  assertPins,
   type DocSection,
   excerpt,
   flat,
@@ -49,11 +42,11 @@ function editedParagraph(sectionText: DocSection, what: string): string {
 }
 
 const KEY_PHRASES = [
-  "the code its name says it guards is broken",
-  "a de-duplicated list",
+  "A de-duplicated list",
   "move the lost check to a test that still covers it",
-  "Record the red-check result per edited expectation",
-  "An edited test that stays green without its guard",
+  "Record the remaining coverage",
+  "Losing meaningful regression protection",
+  "a synthetic break of each edited expectation is not required",
 ];
 
 Deno.test("both surfaces carry the edited-expectation rule (Issue #3374)", async () => {
@@ -88,17 +81,16 @@ Deno.test("both surfaces carry the edited-expectation rule (Issue #3374)", async
   );
 });
 
-Deno.test("rule 3 points edited expectations at the red-check (Issue #3374)", async () => {
-  const text = flat(
+Deno.test("TDD preserves meaningful coverage when expectations change", async () => {
+  assertPins(
     section(
       await readRepoDoc("CODING-STANDARDS.md"),
       "Test-Driven Development (TDD)",
     ),
-  );
-  const phrase = "each edited expectation also owes the red-check";
-  assert(
-    text.includes(phrase),
-    `TDD section is missing "${phrase}": ${text}`,
+    [
+      "remaining coverage",
+      "An edited expectation must still go red without its guard",
+    ],
   );
 });
 
@@ -113,14 +105,13 @@ Deno.test("issue prompt Change-only rule asks for the red-check (Issue #3374)", 
   );
 });
 
-Deno.test("issue prompt Test Plan step records a red-check per edited expectation (Issue #3374)", async () => {
-  const text = flat(
+Deno.test("issue prompt records changed requirements and remaining coverage", async () => {
+  assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-  );
-  const phrase = "record one red-check line per edited expectation";
-  assert(
-    text.includes(phrase),
-    `PR Summary File section is missing "${phrase}": ${text}`,
+    [
+      "edited expectation",
+      "remaining coverage",
+    ],
   );
 });
 

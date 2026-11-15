@@ -1,22 +1,13 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3069 — fleet PRs were sent back for a new branch with one outcome no
- * test reached: a stale-remote guard whose stubs all returned `ls-remote`
- * exit 0, so simplifying the condition to `code !== 0` left the suite green;
- * and a trait default promised to return an error whose every test used an
- * implementation that overrode it. CODING-STANDARDS.md and the
- * coding_guidelines prompt must both carry the same "every outcome of a
- * branch you add needs a test that reaches it" rule, inside the
- * test-coverage section, word for word once wrapping is ignored; the
- * "Choosing assertions" section must point back to it; and the issue
- * prompt's Test Plan step must require a named test reaching each branch
- * outcome.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  assertPins,
   type DocSection,
   excerpt,
   flat,
@@ -39,8 +30,9 @@ const KEY_PHRASES = [
   "match arm",
   "trait/interface default",
   "stub that always returns the same code",
-  "Flip each outcome on purpose",
+  "Existing tests count",
   "blocking self-review finding",
+  "not an automatic campaign of flipping branches or operands",
 ];
 
 Deno.test("both surfaces carry the branch-outcome rule (Issue #3069)", async () => {
@@ -90,19 +82,13 @@ Deno.test("Units bullet points back at the branch-outcome rule (Issue #3069)", a
   );
 });
 
-Deno.test("issue prompt Test Plan step requires every branch outcome be reached (Issue #3069)", async () => {
-  const text = flat(
+Deno.test("issue prompt assesses meaningful branch outcomes", async () => {
+  assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
-  );
-
-  assert(
-    text.includes("every outcome of a branch the diff adds"),
-    `PR Summary File section is missing the branch-outcome requirement: ${text}`,
-  );
-  assert(
-    text.includes(
-      "an outcome no test reaches is a blocking self-review finding",
-    ),
-    `PR Summary File section is missing the no-test finding: ${text}`,
+    [
+      "independent acceptance and refusal cases of compound conditions",
+      "Existing tests count",
+      "No mutation campaign or per-operand flip is required",
+    ],
   );
 });

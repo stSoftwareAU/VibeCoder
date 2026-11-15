@@ -1,13 +1,8 @@
 /**
- * Issue #3307 — converting an existing whole-file drift test to `section()`
- * can drop coverage while every pinned string survives. Review rounds sent
- * two fleet PRs back for it: one of VibeCoder#3297 had moved the pin "In an
- * issue run" into a list where a longer pin already contained it, and one of
- * VibeCoder#3240 had narrowed absence checks to one section. `assertPins`
- * refuses a subsumed pin; the docs cases pin the re-scoping rule in the
- * standard and in each surface that points to it.
- *
- * Uses Australian English spelling (behaviour, colour, organisation).
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { AssertionError, assertThrows } from "@std/assert";
@@ -108,58 +103,56 @@ Deno.test("CODING-STANDARDS - re-scoping an existing drift test keeps every chec
       "A pin that is a substring of another pin in the same scoped list checks nothing",
       `\`${assertPins.name}(section, pins)\` from`,
       "that read the whole file stays on `flatWholeFile`",
-      "Red-check each moved check, not the test.",
-      "one line per moved check",
+      "Review each moved check's scope.",
+      "do not mutate every rule merely to produce a proof log",
     ],
   );
 });
 
-Deno.test("issue prompt - the Test Plan points a moved pin at the re-scoping rule", async () => {
+Deno.test("issue prompt keeps whole-file absence checks whole-file", async () => {
   assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
     [
-      "A pin the diff only moves, while converting an existing whole-file drift test to `section()`",
-      "keep each whole-file absence check on `flatWholeFile`",
-      "record here one line per moved check",
+      "keep whole-file absence checks whole-file",
+      "section-scoping",
     ],
   );
 });
 
-Deno.test("pr_feedback prompt - a moved pin follows the re-scoping rule", async () => {
+Deno.test("feedback applies documentation section-scoping rules", async () => {
   assertPins(
     section(
       await readRepoDoc("prompts/pr_feedback/prompt.md"),
       "Making Changes",
     ),
     [
-      "A pin you only moved while converting an existing whole-file drift test",
-      "keeps every whole-file absence check whole-file",
+      "section-scoping and live-source rules",
     ],
   );
 });
 
-Deno.test("coding guidelines - a moved pin is red-checked under the re-scoping rule", async () => {
+Deno.test("guidelines refer moved checks to canonical scoping rules", async () => {
   assertPins(
     section(
       await readRepoDoc("prompts/coding_guidelines/prompt.md"),
       "Test Coverage Expectations",
     ),
     [
-      "A pin a change only moves, while converting an existing whole-file drift test to `section()`",
-      "red-checks each moved check in its own section instead",
+      "section-scoping and live-value rules",
+      "Documentation-drift tests",
     ],
   );
 });
 
-Deno.test("CODING-STANDARDS - a new test's base check points a moved pin at the re-scoping rule", async () => {
+Deno.test("new-test rule refers moved checks to canonical scoping rules", async () => {
   assertPins(
     section(
       await readRepoDoc("CODING-STANDARDS.md"),
       "Test coverage expectations",
     ),
     [
-      "A pin a change only moves, while converting an existing whole-file drift test to `section()`",
-      "red-checks each moved check in its own section instead",
+      "section-scoping and live-value rules",
+      "Documentation-drift tests",
     ],
   );
 });
@@ -176,11 +169,9 @@ Deno.test("test_audit prompt - a whole-file absence check is not a finding", asy
   );
 });
 
-Deno.test("CONTRIBUTING - a moved pin is red-checked in its own section", async () => {
-  assertPins(
-    section(await readRepoDoc("CONTRIBUTING.md"), "Test layout"),
-    [
-      "A pin moved by converting an existing whole-file drift test to `section()` is meant to be on base",
-    ],
-  );
+Deno.test("contributor guide preserves scope of moved checks", async () => {
+  assertPins(section(await readRepoDoc("CONTRIBUTING.md"), "Test layout"), [
+    "review its section scope and run the existing drift tests",
+    "Keep whole-file absence checks whole-file",
+  ]);
 });

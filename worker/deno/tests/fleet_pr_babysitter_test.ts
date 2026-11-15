@@ -4059,3 +4059,13 @@ Deno.test("temporaryCloneRoot - an unset or empty TMPDIR falls back to /tmp", ()
   assertEquals(temporaryCloneRoot(undefined), "/tmp");
   assertEquals(temporaryCloneRoot(""), "/tmp");
 });
+
+// Issue #4930: the in-container pre-push gate runs the repo's unit tests and
+// markdownlint, and removes the READY line when they fail, so the agent is told.
+Deno.test("the repair prompt says the container runs unit tests and markdownlint before the ready line stands (Issue #4930)", () => {
+  const prompt = buildRepairPrompt("failed CI", 1, "owner/repo", null, "");
+  assertStringIncludes(
+    prompt,
+    "the container runs the repository's unit tests for your changed files and markdownlint; if they fail, your ready line is removed, so run them yourself first.",
+  );
+});

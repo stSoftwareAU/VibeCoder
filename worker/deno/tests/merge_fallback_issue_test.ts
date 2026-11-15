@@ -24,6 +24,7 @@ import {
   mergeFallbackTitle,
 } from "../lib/merge_fallback_issue.ts";
 import { isWorkerAppliableLabel } from "../lib/worker_label_guard.ts";
+import { getCachedLabels, labelCacheIsValid } from "../lib/label_cache.ts";
 import type { Logger } from "../types.ts";
 
 /** The fleet login every fixture issue is authored by. */
@@ -498,23 +499,49 @@ Deno.test("createFallbackFlagFiler - routes the label creation through the calle
   // real CLI, so both fallback routes have to bind it to their own `gh` — and
   // one definition of that wiring is what keeps them from drifting.
   const { gh, calls } = fakeGh();
-  const filer = createFallbackFlagFiler({ gh, fleetAuthors: [FLEET_AUTHOR] });
+  // A private directory keeps the host's live label cache from answering first.
+  const cacheDir = await Deno.makeTempDir();
+  try {
+    // A valid cache missing the label must be invalidated after creation, in
+    // the directory the caller supplied, so the next read sees the new label.
+    assertEquals(
+      await getCachedLabels(
+        cacheDir,
+        MERGE_FALLBACK_TARGET_REPO,
+        3600,
+        () => Promise.resolve("unrelated-label\n"),
+      ),
+      { ok: true, value: ["unrelated-label"] },
+    );
+    const filer = createFallbackFlagFiler({
+      gh,
+      fleetAuthors: [FLEET_AUTHOR],
+      labelCacheDir: cacheDir,
+    });
 
-  const result = await filer(PR_FILING);
+    const result = await filer(PR_FILING);
 
-  assert(result.ok);
-  assertEquals(result.value.issueNumber, 900);
-  const labelCreate = calls.find((c) =>
-    c[0] === "api" && c.includes("POST") &&
-    c.some((arg) => arg.endsWith("/labels"))
-  );
-  assert(
-    labelCreate,
-    `the label creation did not go through the given gh: ${
-      JSON.stringify(calls)
-    }`,
-  );
-  assert(labelCreate.includes(`name=${MERGE_FALLBACK_LABEL}`));
+    assert(result.ok);
+    assertEquals(result.value.issueNumber, 900);
+    const labelCreate = calls.find((c) =>
+      c[0] === "api" && c.includes("POST") &&
+      c.some((arg) => arg.endsWith("/labels"))
+    );
+    assert(
+      labelCreate,
+      `the label creation did not go through the given gh: ${
+        JSON.stringify(calls)
+      }`,
+    );
+    assert(labelCreate.includes(`name=${MERGE_FALLBACK_LABEL}`));
+    assertEquals(
+      await labelCacheIsValid(cacheDir, MERGE_FALLBACK_TARGET_REPO, 3600),
+      false,
+      "creating the label invalidates the caller's stale cache",
+    );
+  } finally {
+    await Deno.remove(cacheDir, { recursive: true });
+  }
 });
 
 Deno.test("mergeFallbackMarker - a quote in a cause cannot close the attribute", () => {

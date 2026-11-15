@@ -25,9 +25,8 @@
  * Confinement: test and module paths are repo-relative and resolved through
  * {@link findDenoConfigDir}, which confines them to the repository (symlinks
  * resolved). Coverage records are kept only when their path sits under the
- * canonical worktree or repository root. Child processes get the same
- * allowlisted environment as the mutation runner (see
- * `defaultMutationRunnerSeams`).
+ * canonical worktree or repository root. Child processes get the shared
+ * runner's allowlisted environment (see `defaultMutationRunnerSeams`).
  *
  * Australian English spelling used throughout.
  */
@@ -57,8 +56,8 @@ export interface CoverageCarryOverInput {
   diff: string;
   budgetSeconds: number;
   /**
-   * Credentials the repository declared (as in the mutation runner). They reach
-   * the `deno test` children only.
+   * Credentials the repository declared. They reach the `deno test` children
+   * only.
    */
   credentialEnv?: Record<string, string>;
 }
@@ -78,7 +77,7 @@ const ANSI_SGR = /\x1b\[[0-9;]*m/g;
 /** Repo-relative file -> line -> hit count. */
 type Coverage = Map<string, Map<number, number>>;
 
-/** Throws nothing: any failure becomes an `error` result, as runMutationCheck does. */
+/** Throws nothing: any failure becomes an `error` result. */
 export async function runCoverageCarryOverCheck(
   input: CoverageCarryOverInput,
   seams: MutationRunnerSeams,

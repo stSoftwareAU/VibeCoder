@@ -1,19 +1,13 @@
 /**
- * Documentation-drift test (CODING-STANDARDS.md § Documentation-drift tests):
- * Issue #3376 — fleet PRs flipped a compound condition (`a || b`, `a && b`, a
- * chained `?:`) as one outcome, by reverting the whole change or deleting the
- * whole condition, so one operand went untested or was cited with a test that
- * reached only the other (VibeCoder#3079, VibeCoder#3372). CODING-STANDARDS.md
- * and the coding_guidelines prompt must both carry the same per-operand rule
- * word for word once wrapping is ignored; the issue prompt's Test Plan step,
- * the pr_feedback re-enumeration rule and the issue-processing manual must
- * each carry it too.
- *
- * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ * Documentation regression checks. Issue #5019 replaces routine mutation-proof
+ * requirements with current-change coverage review and deterministic regressions.
+ * These cases retain the relevant rule, scope and twin-document guarantees.
+ * Behavioural tests in this file remain unchanged.
  */
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  assertPins,
   type DocSection,
   excerpt,
   flat,
@@ -32,10 +26,10 @@ function branchParagraph(sectionText: DocSection, what: string): string {
 }
 
 const KEY_PHRASES = [
-  "one outcome per operand",
-  "flip each operand on its own",
-  "does not show which operand a test reaches",
-  "names the operand it covers",
+  "compound conditions",
+  "each independent reason for acceptance or refusal",
+  "Existing tests count",
+  "not an automatic campaign of flipping branches or operands",
 ];
 
 Deno.test("both surfaces carry the compound-condition rule (Issue #3376)", async () => {
@@ -70,34 +64,25 @@ Deno.test("both surfaces carry the compound-condition rule (Issue #3376)", async
   );
 });
 
-Deno.test("issue prompt Test Plan step flips each operand on its own (Issue #3376)", async () => {
-  const text = flat(
+Deno.test("issue prompt checks independent input conditions without flips", async () => {
+  assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
+    [
+      "independent acceptance and refusal cases of compound conditions",
+      "No mutation campaign or per-operand flip is required",
+    ],
   );
-  for (
-    const phrase of [
-      "Each operand of a compound condition",
-      "its flip deletes that operand alone",
-    ]
-  ) {
-    assert(
-      text.includes(phrase),
-      `PR Summary File section is missing "${phrase}": ${text}`,
-    );
-  }
 });
 
-Deno.test("pr_feedback re-enumeration names each operand (Issue #3376)", async () => {
-  const text = flat(
+Deno.test("feedback reviews compound conditions without mutation results", async () => {
+  assertPins(
     section(
       await readRepoDoc("prompts/pr_feedback/prompt.md"),
       "Making Changes",
     ),
-  );
-  const phrase = "with that operand alone deleted";
-  assert(
-    text.includes(phrase),
-    `Making Changes section is missing "${phrase}": ${text}`,
+    [
+      "Do not flip each operand or require mutation results",
+    ],
   );
 });
 

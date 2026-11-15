@@ -38,7 +38,6 @@ import {
   inFlightParkReason,
 } from "../lib/heavy_build_gate.ts";
 import { formatRootFilesystemFault } from "../lib/root_filesystem_fault.ts";
-import { invokeMutationCheck } from "../lib/mutation_check_invocation.ts";
 import {
   defaultMutationRunnerSeams,
   mutationChildEnv,
@@ -226,39 +225,6 @@ Deno.test("Issue #4360 - discrimination does not start cargo when the host is be
   assertEquals(
     classifyRunFailure("internal_error", result.reason, true).failureClass,
     "disk-full",
-  );
-});
-
-Deno.test("Issue #4360 - mutation check does not start the runner when the host is below the floor", async () => {
-  let ran = false;
-  const result = await invokeMutationCheck({
-    repo: "acme/widgets",
-    repoPath: "/checkout",
-    repoConfigs: undefined,
-    runner: () => {
-      ran = true;
-      throw new Error("runner must not start");
-    },
-    collectDiff: () => {
-      throw new Error("diff must not run");
-    },
-    logger: { info: () => {}, warn: () => {} },
-    parkBuild: () =>
-      Promise.resolve(
-        "host disk below its floor — floor 46.0 GB. Parked as infrastructure (Issue #4360).",
-      ),
-  });
-  assertEquals(ran, false);
-  assertEquals(result.kind, "error");
-  if (result.kind !== "error") return;
-  assertEquals(
-    planCodingFailure({
-      success: false,
-      expectedSkip: false,
-      reason: result.reason,
-      category: "internal_error",
-    }).applyLadder,
-    false,
   );
 });
 

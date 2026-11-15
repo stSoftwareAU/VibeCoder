@@ -49,7 +49,6 @@ const recovery = {
   staleQuote: makeCanary("RecoveryStaleQuote"),
   staleCitation: makeCanary("RecoveryStaleCitation"),
   uncheckedFigure: makeCanary("RecoveryUncheckedFigure"),
-  mutationComment: makeCanary("RecoveryMutationComment"),
 };
 const rebase = {
   branch: makeCanary("RebaseBranch"),
@@ -127,7 +126,6 @@ const rows: FenceCoverageRow[] = [
         staleQuotes: [recovery.staleQuote],
         staleCitations: [recovery.staleCitation],
         uncheckedFigures: [recovery.uncheckedFigure],
-        mutationGateComment: recovery.mutationComment,
         boundaryId: BOUNDARY_ID,
       }),
   },
