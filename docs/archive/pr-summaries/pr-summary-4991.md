@@ -131,5 +131,7 @@ Documentation and prompt change only. No runtime code changes.
   `worker/deno/tests/stylesheet_regex_layout_3247_docs_test.ts` and
   `worker/deno/tests/coding_guidelines_twin_drift_test.ts`. Result: 181 passed,
   0 failed.
-- Full gate: `./quality.sh < /dev/null` on the final head: `Result: PASSED (with
-  skipped checks)` (config integration and checkov skipped by the gate itself).
+- Full gate: `./quality.sh < /dev/null` on the final head:
+  `Result: PASSED (with
+  skipped checks)` (config integration and checkov
+  skipped by the gate itself).
