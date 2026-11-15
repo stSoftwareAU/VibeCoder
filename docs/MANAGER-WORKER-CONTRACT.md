@@ -395,8 +395,8 @@ the descriptor's `buildInvocation`. On the native split path the issue-run
 planner (`planIssueRunProvider`,
 `worker/deno/lib/issue_run_provider_agents.ts:77-136`) reroutes or strips such
 an `issue` run before spawn (Issue #4109); the runner
-(`runClaudeWithTimeoutBody`, `worker/deno/lib/claude_runner.ts:1263-1275`) only
-refuses, as a backstop (Issue #4010).
+(`runClaudeWithTimeoutBody` in `worker/deno/lib/claude_runner.ts`) only refuses,
+as a backstop (Issue #4010).
 
 | Provider   | Prompt transport                | `--agents`                               | `--settings` (edit guard)                                                                                                                                                  | `supportsCompaction`               | Behaviour with split on                                                                                                                                                                                                                                                                                 |
 | ---------- | ------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -483,12 +483,12 @@ does not provide filesystem/network isolation. See
   (`worker/deno/lib/orchestration/preflight.ts:11`) refuses a missing CLI,
   unproved entitlement or exhausted quota. The gate never falls back to
   `--agents` or a metered API
-  (`worker/deno/lib/orchestration/issue_run_gate.ts:120`), and it never moves
-  a role call to `agent_provider_fallback`: role calls pass
+  (`worker/deno/lib/orchestration/issue_run_gate.ts:120`), and it never moves a
+  role call to `agent_provider_fallback`: role calls pass
   `enableProviderFallback: false`
-  (`worker/deno/lib/orchestration/issue_run_gate.ts:118`), so after a
-  model refusal the retry ladder gives up on the role's own provider instead
-  (Issue #4986).
+  (`worker/deno/lib/orchestration/issue_run_gate.ts:118`), so after a model
+  refusal the retry ladder gives up on the role's own provider instead (Issue
+  #4986).
 - **Native split, current state.** The native `issue_executor_split` path runs
   only when external orchestration is off
   (`worker/deno/lib/execute_claude_phase.ts:1298-1307`,
@@ -496,17 +496,17 @@ does not provide filesystem/network isolation. See
   now delivered on this path too: the issue-run planner
   (`worker/deno/lib/issue_run_provider_agents.ts:77-136`) reroutes or strips
   such a run before spawn (Issue #4109), and `runClaudeWithTimeoutBody`
-  (`worker/deno/lib/claude_runner.ts:1263-1275`) refuses loudly as a backstop
-  when a run carries `agents` but the provider's argv lacks `--agents` (Issue
-  #4010). The retry ladder (`runRetryLadder`,
-  `worker/deno/lib/claude_runner.ts:3280`) can also move a non-role run to
-  another provider: after a model refusal with no cheaper model, it switches
-  `agentProvider` to `agent_provider_fallback`
-  (`worker/deno/lib/claude_runner.ts:3855-3878`, Issue #4034) and keeps
-  `agents`, so the #4010 refusal can still fire for a fallback provider such as
-  Codex. Codex, Gemini and DeepSeek no longer silently drop `agents` on the
-  native split. The `settingsJson` drop at the descriptor layer (section 3) is
-  out of scope for #4010; the edit-guard hook is already gated to Claude.
+  (`worker/deno/lib/claude_runner.ts`) refuses loudly as a backstop when a run
+  carries `agents` but the provider's argv lacks `--agents` (Issue #4010). The
+  retry ladder (`runRetryLadder` in `worker/deno/lib/claude_runner.ts`) can also
+  move a non-role run to another provider: after a model refusal with no cheaper
+  model, it switches `agentProvider` to `agent_provider_fallback` (the
+  `providerAfterModelRefusal` call gated on `enableProviderFallback`, Issue
+  #4034) and keeps `agents`, so the #4010 refusal can still fire for a fallback
+  provider such as Codex. Codex, Gemini and DeepSeek no longer silently drop
+  `agents` on the native split. The `settingsJson` drop at the descriptor layer
+  (section 3) is out of scope for #4010; the edit-guard hook is already gated to
+  Claude.
 - **No default change.** `issue_executor_split` stays `true`,
   `issue_sub_agent_tier` stays `"haiku"` and `issue_reviewer_agents` stays
   `true`. `external_orchestration` stays `false` until a host opts in. Nothing

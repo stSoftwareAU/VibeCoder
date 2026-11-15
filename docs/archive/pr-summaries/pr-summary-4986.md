@@ -73,8 +73,11 @@ Backend only; no UI files.
   section 8 "gate never falls back" bullet and the native-split retry-ladder
   bullet (now "non-role run"), `docs/MODEL-AND-CACHING.md` (Issue #4034 bullet),
   `docs/PROVIDER-PARITY.md`, `SECURITY.md` and `docs/THREAT-MODEL.md` (the
-  provider-selection sentence now adds the pin). Stale `path:line` citations in
-  the edited contract sentences now point at the head lines.
+  provider-selection sentence now adds the pin). In the contract, the
+  `issue_run_gate.ts` citations point at the head lines, and the
+  `claude_runner.ts` citations (`runClaudeWithTimeoutBody`, `runRetryLadder` and
+  its provider switch) now name the symbol without a line number, because that
+  file's line numbers shift with every base merge.
 - Cited issues (looked up this run): #4034: Fall back to agent_provider_fallback
   when a phase run's model is refused; #4981: Codex `orchestrationRole` comments
   still claim a sandbox that role calls bypass.
@@ -119,10 +122,11 @@ Backend only; no UI files.
   each gain a sentence naming role calls as the exception to the provider switch
   — reviewer: unrequested — reason: these manuals describe the Issue #4034
   switch, and the coding standards require them to stay true after this change
-- **unrequested** — refreshed `claude_runner.ts` line citations in
-  `docs/MANAGER-WORKER-CONTRACT.md` — reviewer: unrequested — reason: the
-  citations sit in contract sentences this diff edits, and the standards require
-  a cited `path:line` to match the head
+- **unrequested** — `claude_runner.ts` citations in
+  `docs/MANAGER-WORKER-CONTRACT.md` changed from stale line numbers to symbol
+  names — reviewer: unrequested — reason: the citations sit in contract
+  sentences this diff edits, and the standards require a cited `path:line` to
+  match the head
 - **unrequested** — the new
   `[provider-fallback] … the caller pinned the provider` warn line in
   `claude_runner.ts` — reviewer: unrequested — reason: it makes the pinned
@@ -133,17 +137,19 @@ Backend only; no UI files.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — no violation found. Checked: the `path:line` citations in
-  `docs/MANAGER-WORKER-CONTRACT.md` match the head; the absolute doc claims are
-  backed by the single gated switch in `runRetryLadder`; `SECURITY.md` and
-  `docs/THREAT-MODEL.md` agree; fail-loud WARNING then ERROR give-up; the new
-  option has a production setter; the insertion points are correct; the new
-  tests go red without the change, with a forbidden-input fixture (configured
-  Codex fallback) and positive controls; Australian English. The standards hold
-  no rule worded as enforced by review only. Optional notes not taken: a reason
-  comment on the `ignore: Deno.build.os === "windows"` guards (the suite uses
-  the same uncommented form), sharing `readCalls`/`recordingLogger` with the
-  #4034 test, and making `enableProviderFallback` required.
+- **clean** — no violation found. Checked: the `issue_run_gate.ts` `path:line`
+  citations this diff edits in `docs/MANAGER-WORKER-CONTRACT.md` match the head
+  (lines 118 and 120), and its `claude_runner.ts` citations name symbols that
+  exist at the head; the absolute doc claims are backed by the single gated
+  switch in `runRetryLadder`; `SECURITY.md` and `docs/THREAT-MODEL.md` agree;
+  fail-loud WARNING then ERROR give-up; the new option has a production setter;
+  the insertion points are correct; the new tests go red without the change,
+  with a forbidden-input fixture (configured Codex fallback) and positive
+  controls; Australian English. The standards hold no rule worded as enforced by
+  review only. Optional notes not taken: a reason comment on the
+  `ignore: Deno.build.os === "windows"` guards (the suite uses the same
+  uncommented form), sharing `readCalls`/`recordingLogger` with the #4034 test,
+  and making `enableProviderFallback` required.
 
 ## Test Plan
 
