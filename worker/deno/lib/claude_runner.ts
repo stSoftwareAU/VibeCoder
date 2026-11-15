@@ -721,6 +721,14 @@ export interface RunClaudeOptions {
   /** Whether to attempt cheaper model fallback on rate limit (Issue #1113, default: true). */
   enableModelFallback?: boolean;
   /**
+   * Whether a model refusal with no cheaper model may move the invocation to
+   * the next provider in `agent_provider_fallback` (Issue #4034); default true.
+   * External orchestration role calls set it false: the role's provider passed
+   * the role-support, billing and read-only checks and another provider did
+   * not (Issue #4986).
+   */
+  enableProviderFallback?: boolean;
+  /**
    * Original model this invocation was downgraded *from* (Issue #2707).
    *
    * Set by `runClaudeWithRetry()` when a rate-limit or model-unavailable
@@ -767,6 +775,8 @@ export interface RunClaudeOptions {
    * Naming a provider the running image did not install fails loudly, naming
    * the installed set (Issue #3234). Selection alone does not disable the
    * model-refusal provider fallback or provide filesystem/network isolation.
+   * A caller pins the provider with `enableProviderFallback: false`
+   * (Issue #4986).
    * Callers relying on a provider-specific tool restriction must check the
    * selected adapter and every permitted fallback.
    */
@@ -3411,6 +3421,7 @@ async function runRetryLadder(
   const errorScanTailLines = options.errorScanTailLines ??
     DEFAULT_ERROR_SCAN_TAIL_LINES;
   const enableFallback = options.enableModelFallback ?? true;
+  const enableProviderFallback = options.enableProviderFallback ?? true;
   // The same seam the timeout path takes (Issue #1170 follow-up): the
   // backoff ladder sleeps in-process, and a test driving the ladder should
   // not have to spend five real minutes to see the second rung.
@@ -3960,11 +3971,23 @@ async function runRetryLadder(
           continue;
         }
         const refusingProvider = refusingDescriptor.id;
-        const nextProvider = providerAfterModelRefusal(
-          configuredProviderFallbackPolicy(),
-          refusingProvider,
-          providersRefusedModel,
-        );
+        // A caller that pinned the provider (an orchestration role call,
+        // Issue #4986) never consults agent_provider_fallback: the pinned
+        // provider passed the caller's checks and another one did not.
+        if (!enableProviderFallback) {
+          currentOptions.logger?.warn(
+            `[provider-fallback] ${refusingProvider} refused model ` +
+              `"${currentModel}" — the caller pinned the provider, so ` +
+              `agent_provider_fallback is not consulted (Issue #4986).`,
+          );
+        }
+        const nextProvider = enableProviderFallback
+          ? providerAfterModelRefusal(
+            configuredProviderFallbackPolicy(),
+            refusingProvider,
+            providersRefusedModel,
+          )
+          : undefined;
         if (nextProvider) {
           providersRefusedModel.push(refusingProvider);
           currentOptions.logger?.warn(
