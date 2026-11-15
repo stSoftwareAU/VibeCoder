@@ -385,9 +385,10 @@ It compares the switched-on population with Before (trial host, the 14 days
 before the window, switch off) and Concurrent (other hosts, same window, same
 repositories only, matching RTK setting). The switched-on population is
 intention to treat: every Claude implementation run on the trial host in the
-window whose `tokenEconomizer` block has `enabled: true`, whatever its status,
-so failed, stopped and early-exit attempts stay in. A block with `enabled: true`
-and status `off` is a run another provider served on the switched-on host: it is
+window whose `tokenEconomizer` block has `enabled: true`, whatever the plugin
+status other than `off`, so failed, stopped and early-exit attempts stay in. A
+block with `enabled: true` and status `off` is a run another provider served on
+the switched-on host: it is
 plugin-off (sections 2 and 5), so it is left out of the population and counted on
 its own exclusion line. The report shows a per-status breakdown of the population
 (on, fallback, stopped, not-run) and the persisted count. The record's
@@ -411,11 +412,12 @@ merged, closed, open and unknown, and runs with no pull request.
 
 The report also states its populations and exclusions: malformed records,
 unflagged records (no block and finished before `--recorded-since`), non-Claude
-runs, concurrent hosts with a different RTK setting and one-sided repositories.
-It prints two explicit "not checked" lines: the run record carries no
-advisor/executor-split setting and no other-trial-window flag, so those §5
-exclusions cannot be applied from the archive and are left to the reader
-(#4959). It renders no verdict; not yet: #4959 will apply the bar.
+runs, trial host runs served by another provider (plugin off), concurrent hosts
+with a different RTK setting and one-sided repositories. It prints three
+explicit "not checked" lines: the run record carries no advisor/executor-split
+setting, no other-trial-window flag, and the provider of a switch-off control
+run is the host's configured one, so those §5 exclusions cannot be applied from
+the archive and are left to the reader (#4959). It renders no verdict; not yet: #4959 will apply the bar.
 
 Not yet: #5029 will account for billed capped and unfinished executor
 invocations in a run's totals. Until it lands, a run's cost total can omit those

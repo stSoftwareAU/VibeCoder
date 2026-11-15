@@ -251,17 +251,19 @@ flowchart LR
 - Results:
   - The touched and related unit tests passed: 444 passed, 0 failed.
   - After the multi-launch fix, the TokenEconomizer, execute-phase, refusal
-    retry, infra retry, completion and no-changes suites gave 455 passed and 1
-    failed. The failure is
-    `execute_phase_assignment_3718_test.ts::automatic Codex worker dispatch uses Codex role models`.
-    It fails identically at the unfixed head, because this container image
-    installs no `codex` provider.
+    retry, infra retry, completion and no-changes suites passed apart from one
+    failure that is not in this PR's changed files: a Codex role-model dispatch
+    test, which fails identically at the unfixed head because this container
+    image installs no `codex` provider.
   - `./quality.sh < /dev/null` PASSED (with skipped checks: config integration,
     checkov) on `eee814ae`.
-  - `worker/deno/tests/token_economizer_production_deps_test.ts` passed (9
-    passed, 0 failed) after the final test commit.
-  - After the PR #5159 review round, `deno test -A` over the run-stats,
-    trial-report, trial-docs and `mod_test.ts` files gave 78 passed, 0 failed.
+  - At the head after the PR #5159 review round, `deno test -A` gave:
+    `worker/deno/tests/token_economizer_production_deps_test.ts` (9 tests at
+    head), `worker/deno/tests/mod_test.ts` (20 tests at head),
+    `worker/deno/tests/token_economizer_run_stats_test.ts` (14 tests at head),
+    `worker/deno/tests/token_economizer_trial_report_test.ts` (13 tests at head)
+    and `worker/deno/tests/token_economizer_trial_docs_test.ts` (31 tests at
+    head), all passing.
     The report adds a "Not checked" line: a control run served by another
     provider cannot be excluded from the archive (the record's `provider` is the
     host's configured one).
