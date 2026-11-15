@@ -830,6 +830,54 @@ Deno.test(
   },
 );
 
+/** Stub for a TS/React check where only the compile gate is missing. */
+function stubTsCompileMissing(linter: string) {
+  return (): Promise<LinterCheckResult> =>
+    Promise.resolve({
+      configured: false,
+      linter,
+      details: "CI is missing a compile gate (issue #4997 regression stub).",
+      gates: { linter: true, compile: false },
+    });
+}
+
+for (const bucket of ["typescript", "react"]) {
+  Deno.test(
+    `runTask - #4997 ${bucket} compile gate suggestion uses no shell glob`,
+    async () => {
+      const wrapperBody =
+        `**Bucket:** \`${bucket}\`\n\n# Best-Practices Review`;
+      const { gh, calls } = makeGhStub({
+        beforeSnapshot: [],
+        afterSnapshot: [300],
+        knownOpen: [],
+        issueView: { number: 50, body: wrapperBody },
+        fileMissingLinterReturnsNumber: 300,
+      });
+      const tpl = createBestPracticesTemplate({
+        checkAwsEmulatorFn: stubNoAws,
+        dedupAuthors: DEDUP_AUTHORS,
+        ghCommandFn: gh,
+        checkLinterInCIFn: stubTsCompileMissing("eslint"),
+        runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      });
+
+      const result = await tpl.runTask({
+        repo: "org/repo",
+        workDir: "/tmp/repo",
+        idleTaskIssueNumber: 50,
+      });
+      assert(result.ok);
+
+      const created = readIssueCreate(calls);
+      assert(created !== null);
+      assertStringIncludes(created!.body, "`deno check .`");
+      assertStringIncludes(created!.body, "`npx tsc --noEmit`");
+      assertEquals(created!.body.includes("**/*"), false);
+    },
+  );
+}
+
 Deno.test(
   "runTask - both gates missing: title and body call out lint + compile gates",
   async () => {
