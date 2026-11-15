@@ -1337,6 +1337,11 @@ export function reason(pr: Pr): string | null {
   if (pr.reviewDecision === "CHANGES_REQUESTED") {
     return "requested review changes";
   }
+  // Review the current head before updating it: the shared updater refuses
+  // REVIEW_REQUIRED, so retrying cannot unblock the PR and moves no branch.
+  if (
+    pr.reviewDecision === "REVIEW_REQUIRED" && pr.autoMergeRequest != null
+  ) return null;
   // The shared updater evaluates the effective required-check contract.
   // An optional pending job must not hide a ready PR from that policy.
   if (pr.mergeStateStatus === "BEHIND") return "branch behind base";
