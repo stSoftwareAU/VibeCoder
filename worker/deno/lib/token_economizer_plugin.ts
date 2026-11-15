@@ -39,8 +39,9 @@
  *
  * ## Path confinement
  *
- * The per-spawn state directory is `${workDir}/.token-economizer/runs/<runId>`,
- * where `<runId>` is the caller's run id or a fresh UUID. The path is normalised
+ * The per-launch state directory is `${workDir}/.token-economizer/runs/<runId>`,
+ * where `<runId>` is the caller's run id or a fresh UUID. Every spawn that reuses
+ * the launch (a PR-feedback re-run, a recovery run, a rate-limit retry) shares it. The path is normalised
  * and its existing prefix canonicalised before creation. It must lie under the
  * real work directory and outside the repo checkout; the created path is checked
  * again before being used.
@@ -338,7 +339,7 @@ export async function readTokenEconomizerStop(
  *
  * @param opts - The block, the work directory, the repo, the run kind and the
  *   optional run id, plugin directory and logger. With no run id, each launch
- *   gets a fresh UUID, so every spawn has its own state directory.
+ *   gets a fresh UUID, so every launch has its own state directory.
  * @returns The launch to hand to `--plugin-dir`, or `null` for plugin off.
  */
 export async function resolveTokenEconomizerLaunch(

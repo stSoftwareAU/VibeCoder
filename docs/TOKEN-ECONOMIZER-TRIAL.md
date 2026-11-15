@@ -168,10 +168,13 @@ Issue #4958 is still open and its accounting integration is absent at this head.
 **Failure isolation.** The launch decision never throws, and a launch is never
 the cause of a failed run. A disabled block is silent. Any other refusal returns
 no plugin, which is the ordinary plugin-off path, and logs a warning naming the
-cause: a stop record in force, a run kind outside the three, a missing plugin
-manifest, an unusable audited adapter, a run id outside the allow-list, a state directory that cannot be
+cause: a controller directory that is aliased, outside the work directory or
+unresolvable (checked first, before the stop record is read), a stop record in
+force, a run kind outside the three, a missing plugin manifest, an unusable audited adapter, a run id outside the allow-list, a state directory that cannot be
 created, lies outside the work directory or lies inside the checkout, or any
-unexpected error.
+unexpected error. The runner applies the first two of these checks again
+before every spawn of a reused launch and drops the plugin for that spawn when a
+stop is latched or the controller directory is unverified.
 
 ## 2. 🏠 The trial host
 

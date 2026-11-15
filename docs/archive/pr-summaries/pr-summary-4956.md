@@ -104,8 +104,8 @@ flowchart LR
   `worker/deno/tests/token_economizer_plugin_wiring_test.ts` — reviewer: met
 - **met** — `docs/THREAT-MODEL.md` updated — evidence: `docs/THREAT-MODEL.md`
   learned-facts row, AP-19/AP-20, C37–C41, R16/R17 — reviewer: met
-- **met** — Hook failure falls back safely; a stop-rule finding inhibits
-  subsequent plugin use across restart without weakening the container boundary
+- **met** — Hook failure falls back safely; a stop-rule finding stops later
+  plugin launches and later spawns of a reused launch, across restart, without weakening the container boundary
   or requiring a human. #4959 owns the verdict and purge, and #4958 owns
   accounting — evidence: `worker/deno/lib/token_economizer_control.ts`,
   `worker/deno/tests/token_economizer_plugin_test.ts`,
@@ -159,7 +159,7 @@ flowchart LR
 - PR #5139 review round, on the final head:
   `worker/deno/tests/token_economizer_plugin_test.ts` (40 tests at head, 40
   passed) and `worker/deno/tests/token_economizer_plugin_wiring_test.ts` (29
-  passed, 0 failed). The new tests are the alias-with-`stop.json` case
+  tests at head, 29 passed, 0 failed). The new tests are the alias-with-`stop.json` case
   (launch and reporter, target unchanged), the oversized receipt (pins the cap;
   it passes on the base too, since an oversized receipt never equalled the
   fingerprint), and the launch-before-stop runner case (red without the
@@ -183,7 +183,7 @@ flowchart LR
   - the trial-docs purge row, fixed above;
   - `worker/deno/tests/pr_maintenance_command_test.ts`, which also passed 28/28
     on `origin/main`, and which `main` fixed. `main` was merged into the branch.
-- `worker/deno/tests/direct_merge_test.ts` (91 tests at head, all passing),
+- `worker/deno/tests/direct_merge_test.ts` (91 tests at head, 91 passed),
   including the new empty-default-branch case.
 - CI type check (`deno check --frozen --lock=deno.lock '**/*.ts'`) failed on
   the merged head: `worker/deno/tests/token_economizer_reactive_callsites_test.ts`
@@ -191,7 +191,7 @@ flowchart LR
   (Issue #5095). The two fixtures no longer pass it, because no mutation check
   runs for them to skip. The type check, `deno fmt --check` and `deno lint` now
   pass, and `worker/deno/tests/token_economizer_reactive_callsites_test.ts` (10
-  tests at head) passes.
+  tests at head, 10 passed).
 - Three tests fail in this container and fail identically on an unmodified
   `origin/main` export: `isRateLimitActive` (two cases in
   `worker/deno/tests/run_core_production_deps_test.ts`) and the
