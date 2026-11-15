@@ -451,18 +451,20 @@ flowchart TD
   logged, the trigger, the fixed reason for that trigger, the capture and
   last-log times, the silence before capture, the guest-probe state and the
   guest memory and pressure figures. The last step logged is the last one the
-  log reported, so the wedge is in or after it; it is one of `pre-PR verifier`,
+  log reported, so the
+  wedge is in or after it; it is one of `pre-PR verifier`,
   `coverage carry-over check`, `quality gate`, `agent turn`, a setup step
   (`setup: issue claim`, `setup: claim churn check`, `setup: repository setup`,
   `setup: heartbeat start`, `setup: default branch sync`,
-  `setup: feature branch` or `setup: pre-setup command`, each logged as the step
-  starts, Issue #5128) or `unknown` (`mutation check` appears only for logs
-  written before Issue #5095 retired that step), matched from a fixed table of
-  log patterns; no log text is posted with it. It is not part of the dedup
-  signature. Posted facts must match the launcher shapes: hostname,
-  `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run id (or
-  `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the silence,
-  guest-probe, guest-memory and guest-pressure figures in their fixed shapes.
+  `setup: feature branch` or `setup: pre-setup command`, each logged as the
+  step starts, Issue #5128) or `unknown` (`mutation check` appears only for
+  logs written before Issue #5095 retired that step), matched from a fixed
+  table of log patterns; no log text is posted with it. It
+  is not part of the dedup signature. Posted facts must match the launcher
+  shapes: hostname, `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run
+  id (or `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the
+  silence, guest-probe, guest-memory and guest-pressure figures in their fixed
+  shapes.
   Free-text reasons or malformed facts are kept and logged as errors without
   filing, commenting or attesting. That repository is public and the killed run
   may have been working a private one, so no evidence text, last log line, tool
@@ -780,7 +782,7 @@ byte-identical to before. No environment variable is added for it.
 | `redirects`             | no                          | Times the plugin redirected a stuck turn                                                                                                                  |
 | `stillStuckNotices`     | no                          | Still-stuck notices the plugin raised                                                                                                                     |
 | `pluginEffectiveTokens` | no                          | The plugin's own overhead, in effective (fresh-input-equivalent) tokens                                                                                   |
-| `pluginCostUsd`         | no                          | Estimated USD cost of the plugin's own model calls, at the run model's input price                                                                        |
+| `pluginCostUsd`         | no                          | Estimated USD cost of the plugin's own model calls, at the side-call model's (`haiku`) input price                                                        |
 | `runCostUsd`            | no                          | `telemetry.estimatedCostUsd` plus `pluginCostUsd`; present only when both are known                                                                       |
 
 Every figure is **omitted** when it could not be read, never emitted as `0`: an

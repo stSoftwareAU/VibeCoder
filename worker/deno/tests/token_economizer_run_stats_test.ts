@@ -69,8 +69,6 @@ async function fixtureHome(home: string, ledger?: string): Promise<void> {
   );
 }
 
-const MODEL = "claude-sonnet-4-5"; // input 3 USD per million tokens
-
 Deno.test("summarise - reads session and ledger figures, excluding imported records", async () => {
   await withTemp(async (dir) => {
     const home = join(dir, "home");
@@ -80,7 +78,6 @@ Deno.test("summarise - reads session and ledger figures, excluding imported reco
       eligible: true,
       workDir: join(dir, "work"),
       stateHomes: [home],
-      model: MODEL,
     });
     assertEquals(stats, {
       enabled: true,
@@ -91,29 +88,35 @@ Deno.test("summarise - reads session and ledger figures, excluding imported reco
       stillStuckNotices: 1,
       judgeCalls: 2,
       pluginEffectiveTokens: 1150,
-      pluginCostUsd: 0.00345,
+      pluginCostUsd: 0.00115, // 1150 effective tokens at haiku's 1 USD per million input
     });
   });
 });
 
-Deno.test("summarise - an unpriceable model leaves the cost absent", async () => {
+Deno.test("summarise - a ledger-only home leaves the session figures absent, not 0", async () => {
   await withTemp(async (dir) => {
     const home = join(dir, "home");
-    await fixtureHome(home);
-    const base = {
+    const base = join(home, "repos", "k", "claude");
+    await Deno.mkdir(base, { recursive: true });
+    await Deno.writeTextFile(
+      join(base, "ledger.jsonl"),
+      JSON.stringify({ kind: "session", overhead: { optimizer_tokens: 200 } }) +
+        "\n",
+    );
+    const stats = await summariseTokenEconomizerRun({
       enabled: true,
       eligible: true,
       workDir: join(dir, "work"),
       stateHomes: [home],
-    };
-    for (const model of ["not-a-model", undefined]) {
-      const stats = await summariseTokenEconomizerRun({
-        ...base,
-        ...(model ? { model } : {}),
-      });
-      assertEquals(stats.pluginEffectiveTokens, 1150);
-      assertEquals("pluginCostUsd" in stats, false);
-    }
+    });
+    assertEquals(stats, {
+      enabled: true,
+      status: "on",
+      persistence: "unavailable",
+      judgeCalls: 0,
+      pluginEffectiveTokens: 200,
+      pluginCostUsd: 0.0002,
+    });
   });
 });
 
@@ -148,7 +151,6 @@ Deno.test("summarise - an empty or missing home is fallback with no figures", as
           eligible: true,
           workDir: join(dir, "work"),
           stateHomes: homes,
-          model: MODEL,
         }),
         {
           enabled: true,
@@ -170,7 +172,6 @@ Deno.test("summarise - a malformed ledger line makes ledger figures absent, not 
       eligible: true,
       workDir: join(dir, "work"),
       stateHomes: [home],
-      model: MODEL,
       logger: { warn: (m) => warnings.push(m) },
     });
     assertEquals(stats, {
@@ -221,7 +222,6 @@ Deno.test("summarise - a stop record with no session state carries no figures", 
       eligible: true,
       workDir: work,
       stateHomes: [join(dir, "missing")],
-      model: MODEL,
     });
     assertEquals(stats, {
       enabled: true,

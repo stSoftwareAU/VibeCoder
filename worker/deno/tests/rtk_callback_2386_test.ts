@@ -205,3 +205,77 @@ Deno.test("#2386 - a run that recorded no RTK outcome still states the host's re
   // The fallback is only ever a fallback: it carries no figure.
   assertEquals("savedTokens" in rtkNotRun(true), false);
 });
+
+// Issue #4958: the TokenEconomizer stats take the same road as the RTK outcome,
+// off the issue worker's phase state and into its result.
+Deno.test({
+  name:
+    "#4958 - an issue run's result carries the host's TokenEconomizer switch, and the stats the state holds",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    for (const enabled of [true, false]) {
+      const config = buildDefaultWorkerConfig();
+      config.tokenEconomizer = { ...config.tokenEconomizer, enabled };
+      const deps = createMockDeps({
+        issues: {
+          claimIssue: () =>
+            Promise.resolve({
+              ok: true,
+              value: { claimed: false, reason: "already_assigned" as const },
+            }),
+        },
+      });
+      const result = await workOnIssue({
+        repo: "stSoftwareAU/VibeCoder",
+        issueNumber: 4958,
+        issueTitle: "Carry a tokenEconomizer block",
+        issueBody: "The claim was refused, so the agent never spawned.",
+        issueLabels: [],
+        issueComments: "",
+        githubUser: "testbot",
+        config,
+      }, deps);
+      assertEquals(result.tokenEconomizer, {
+        enabled,
+        status: enabled ? "not-run" : "off",
+        persistence: "unavailable",
+      });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "#4958 - a run that reached the agent returns the stats the execute phase recorded, not the not-run fallback",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const config = buildDefaultWorkerConfig();
+    config.tokenEconomizer = { ...config.tokenEconomizer, enabled: true };
+    const deps = createMockDeps({
+      claude: { prepareRtkRun: healthyRtkSeam(100, 140).prepare as never },
+      github: {
+        runGhCommand: () =>
+          Promise.resolve("https://github.com/org/repo/pull/1"),
+      },
+      pr: {
+        findExistingPrForIssue: () =>
+          Promise.resolve({ ok: false, error: new Error("No PR found") }),
+      },
+    });
+    const result = await workOnIssue({
+      repo: "stSoftwareAU/VibeCoder",
+      issueNumber: 4958,
+      issueTitle: "Carry a tokenEconomizer block",
+      issueBody: "Fix the bug in `src/auth/login.ts:45`",
+      issueLabels: [],
+      issueComments: "",
+      githubUser: "testbot",
+      config,
+    }, deps);
+    assertEquals(result.tokenEconomizer?.enabled, true);
+    // The agent spawned but wrote no plugin state: the phase's own verdict.
+    assertEquals(result.tokenEconomizer?.status, "fallback");
+  },
+});

@@ -306,6 +306,16 @@ Deno.test({
 // Fleet path: executeClaudeBody (lib/phases/execute_phase.ts)
 // ---------------------------------------------------------------------------
 
+/** Optional hooks for {@link runFleet}. */
+interface FleetExtra {
+  /** Captures the phase state, to read what the phase recorded on it. */
+  onState?: (state: PhaseState) => void;
+  /** Runs inside the fake agent, before it returns (e.g. to write plugin state). */
+  beforeReturn?: (options: RunClaudeOptions) => Promise<void> | void;
+  /** The provider id `rtkProviderId` resolves the spawn to. */
+  providerId?: string;
+}
+
 /**
  * Runs the fleet implementation phase for `config` in `workDir` and returns
  * what `runClaudeWithRetry` saw.
@@ -315,6 +325,7 @@ async function runFleet(
   block: TokenEconomizerConfig,
   externalOrchestration: boolean,
   pluginDir?: string,
+  extra: FleetExtra = {},
 ): Promise<RunClaudeOptions[]> {
   const config: WorkerConfig = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -347,14 +358,18 @@ async function runFleet(
       ...(pluginDir === undefined
         ? {}
         : { tokenEconomizerPluginDir: pluginDir }),
-      runClaudeWithRetry: ((options: RunClaudeOptions) => {
+      runClaudeWithRetry: (async (options: RunClaudeOptions) => {
         calls.push(options);
-        return Promise.resolve({
+        await extra.beforeReturn?.(options);
+        return {
           ok: true,
           value: { output: "done", exitCode: 0, timedOut: false },
-        });
+        };
       }) as never,
       prepareRtkRun: rtkSeam([]).prepare as never,
+      ...(extra.providerId === undefined
+        ? {}
+        : { rtkProviderId: (() => extra.providerId) as never }),
       // The external path hands the same implementation options to the
       // orchestrator as `claudeOptions`, so the recorder reads them from there.
       runOrchestratedIssueRun:
@@ -372,6 +387,7 @@ async function runFleet(
     },
   });
   await workOnIssueExecuteClaude(ctx, state, deps);
+  extra.onState?.(state);
   return calls;
 }
 
@@ -453,3 +469,83 @@ for (const enabled of [false, true]) {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Fleet path: the run stats the phase records on its state (Issue #4958)
+// ---------------------------------------------------------------------------
+
+Deno.test({
+  name:
+    "fleet implementation - an enabled host whose agent wrote no plugin state records fallback with no figures (Issue #4958)",
+  async fn() {
+    await withPluginDir((pluginDir) =>
+      withWorkDir(async (workDir) => {
+        let recorded: PhaseState | undefined;
+        await runFleet(workDir, enabledBlock(), false, pluginDir, {
+          onState: (s) => recorded = s,
+        });
+        assertEquals(recorded?.tokenEconomizerRun, {
+          enabled: true,
+          status: "fallback",
+          persistence: "unavailable",
+        });
+      })
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "fleet implementation - the plugin state the agent wrote under its launch home reaches the recorded stats (Issue #4958)",
+  async fn() {
+    await withPluginDir((pluginDir) =>
+      withWorkDir(async (workDir) => {
+        let recorded: PhaseState | undefined;
+        await runFleet(workDir, enabledBlock(), false, pluginDir, {
+          onState: (s) => recorded = s,
+          beforeReturn: async (options) => {
+            const home = options.tokenEconomizer?.env.TOKENECONOMIZER_HOME;
+            assert(home !== undefined, "the launch carried no home");
+            const dir = join(home, "repos", "k", "claude", "sessions");
+            await Deno.mkdir(dir, { recursive: true });
+            await Deno.writeTextFile(
+              join(dir, "s1.json"),
+              JSON.stringify({
+                injected_ids: ["a", "b"],
+                nudges: 1,
+                aborts: 0,
+              }),
+            );
+          },
+        });
+        const stats = recorded?.tokenEconomizerRun;
+        assertEquals(stats?.enabled, true);
+        assertEquals(stats?.status, "on");
+        assertEquals(stats?.factsInjected, 2);
+        assertEquals(stats?.redirects, 1);
+        assertEquals(stats?.stillStuckNotices, 0);
+      })
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "fleet implementation - a non-Claude provider records off with the switch still on (Issue #4958)",
+  async fn() {
+    await withPluginDir((pluginDir) =>
+      withWorkDir(async (workDir) => {
+        let recorded: PhaseState | undefined;
+        await runFleet(workDir, enabledBlock(), false, pluginDir, {
+          onState: (s) => recorded = s,
+          providerId: "codex",
+        });
+        assertEquals(recorded?.tokenEconomizerRun, {
+          enabled: true,
+          status: "off",
+          persistence: "unavailable",
+        });
+      })
+    );
+  },
+});

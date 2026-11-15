@@ -8,7 +8,7 @@
  * Reads every `*.json` run record under `--archive` (recursive, bounded,
  * symlinks skipped) and prints the weekly TokenEconomizer comparison section.
  * It is read-only: the only outside call is `gh pr view`, once per pull
- * request. It applies no verdict; issue #4959 does.
+ * request. It renders no verdict; not yet: #4959 will apply the bar.
  *
  * Missing data fails loud: an unreadable archive, an archive with no records
  * or a missing option is a failure, never an empty report.

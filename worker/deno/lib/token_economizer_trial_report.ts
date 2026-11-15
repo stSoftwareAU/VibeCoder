@@ -6,9 +6,9 @@
  * on cost per completed implementation run, success rate and merge rate.
  *
  * The module is pure: run records and a pull request state lookup go in, a
- * report comes out. It applies NO verdict. Issue #4959 applies the predeclared
- * bar; this module only shows the populations, the exclusions and the figures,
- * and says `unavailable` rather than guessing a missing one.
+ * report comes out. It renders no verdict; not yet: #4959 will apply the
+ * predeclared bar. This module only shows the populations, the exclusions and
+ * the figures, and says `unavailable` rather than guessing a missing one.
  *
  * Uses Australian English spelling throughout.
  */
@@ -51,8 +51,18 @@ interface RunRecord {
   telemetryCostUsd?: number;
   prNumber?: number;
   rtkEnabled?: boolean;
-  /** The block's status, absent when the record carries no block. */
-  block?: { status: TrialStatus; persisted: boolean; runCostUsd?: number };
+  /** The document's `telemetryAbsentReason`, when a string. */
+  absentReason?: string;
+  /** The block, absent when the record carries no block. */
+  block?: {
+    /** `enabled === true`: the switch was on, whatever the plugin did. */
+    enabled: boolean;
+    status: TrialStatus;
+    persisted: boolean;
+    runCostUsd?: number;
+    pluginCostUsd?: number;
+    pluginEffectiveTokens?: number;
+  };
 }
 
 /** Report options. */
@@ -84,10 +94,13 @@ export type CostFigure =
 /** The merge figure for one population. */
 export interface MergeFigure {
   merged: number;
-  /** Runs whose pull request state is known and final. */
+  closed: number;
+  /** Pull requests with a final state: `merged + closed`. */
   known: number;
   open: number;
   unknown: number;
+  /** Runs that raised no pull request; not in the denominator. */
+  noPr: number;
   /** `merged / known`, or undefined when `known` is 0. */
   rate?: number;
 }
@@ -115,11 +128,12 @@ export interface TrialExclusions {
   nonClaude: number;
   /** No block and recorded before `recordedSince`. */
   unflagged: number;
-  trialHostFallback: number;
-  trialHostStopped: number;
-  trialHostNotRun: number;
+  /** Trial host window runs with the switch off (in no comparison). */
   trialHostOff: number;
+  /** Size of the switched-on population (intention to treat). */
   onRuns: number;
+  /** The switched-on population by plugin status. */
+  onByStatus: Record<TrialStatus, number>;
   onPersisted: number;
   /** Trial host runs in the before period that were not switched off. */
   beforeNotOff: number;
@@ -201,6 +215,9 @@ function parseRecord(raw: unknown): RunRecord | undefined {
   };
   if (typeof raw.mode === "string") record.mode = raw.mode;
   if (typeof raw.provider === "string") record.provider = raw.provider;
+  if (typeof raw.telemetryAbsentReason === "string") {
+    record.absentReason = raw.telemetryAbsentReason;
+  }
   if (isObject(raw.telemetry)) {
     record.telemetryCostUsd = validCost(raw.telemetry.estimatedCostUsd);
   }
@@ -221,9 +238,12 @@ function parseRecord(raw: unknown): RunRecord | undefined {
       : TRIAL_STATUSES.find((s) => s === block.status);
     if (status === undefined) return undefined;
     record.block = {
+      enabled: block.enabled === true,
       status,
       persisted: block.persistence === "available",
       runCostUsd: validCost(block.runCostUsd),
+      pluginCostUsd: validCost(block.pluginCostUsd),
+      pluginEffectiveTokens: validCost(block.pluginEffectiveTokens),
     };
   }
   return record;
@@ -237,11 +257,29 @@ interface Sample {
   prNumber?: number;
 }
 
+/**
+ * Cost of a switched-on run. No agent run means nothing billed (0). Otherwise
+ * the block's run cost; failing that, the telemetry cost only when the plugin
+ * recorded no spend (no plugin cost or tokens and not `on`); else unavailable.
+ */
+function onCost(r: RunRecord): number | undefined {
+  if (r.absentReason === "agent_not_invoked") return 0;
+  const b = r.block;
+  if (b?.runCostUsd !== undefined) return b.runCostUsd;
+  if (
+    b !== undefined && b.pluginCostUsd === undefined &&
+    b.pluginEffectiveTokens === undefined && b.status !== "on"
+  ) {
+    return r.telemetryCostUsd;
+  }
+  return undefined;
+}
+
 function onSample(r: RunRecord): Sample {
   return {
     repository: r.repository,
     completed: r.completed,
-    costUsd: r.block?.runCostUsd,
+    costUsd: onCost(r),
     prNumber: r.prNumber,
   };
 }
@@ -250,7 +288,7 @@ function offSample(r: RunRecord): Sample {
   return {
     repository: r.repository,
     completed: r.completed,
-    costUsd: r.telemetryCostUsd,
+    costUsd: r.absentReason === "agent_not_invoked" ? 0 : r.telemetryCostUsd,
     prNumber: r.prNumber,
   };
 }
@@ -294,22 +332,22 @@ function computeMetrics(
   }
 
   let merged = 0;
-  let known = 0;
+  let closed = 0;
   let open = 0;
   let unknown = 0;
+  let noPr = 0;
   for (const s of samples) {
     if (s.prNumber === undefined) {
-      known++;
+      noPr++;
       continue;
     }
     const state = states.get(prKey(s.repository, s.prNumber));
-    if (state === "merged") {
-      merged++;
-      known++;
-    } else if (state === "closed") known++;
+    if (state === "merged") merged++;
+    else if (state === "closed") closed++;
     else if (state === "open") open++;
     else unknown++;
   }
+  const known = merged + closed;
   return {
     runs,
     completed,
@@ -317,9 +355,11 @@ function computeMetrics(
     cost,
     merge: {
       merged,
+      closed,
       known,
       open,
       unknown,
+      noPr,
       rate: known > 0 ? merged / known : undefined,
     },
   };
@@ -374,11 +414,9 @@ export async function buildTokenEconomizerTrialReport(
     otherMode: 0,
     nonClaude: 0,
     unflagged: 0,
-    trialHostFallback: 0,
-    trialHostStopped: 0,
-    trialHostNotRun: 0,
     trialHostOff: 0,
     onRuns: 0,
+    onByStatus: { on: 0, fallback: 0, stopped: 0, "not-run": 0, off: 0 },
     onPersisted: 0,
     beforeNotOff: 0,
     otherHostNotOff: 0,
@@ -418,22 +456,22 @@ export async function buildTokenEconomizerTrialReport(
       ex.unflagged++;
       continue;
     }
-    const status: TrialStatus = r.block?.status ?? "off";
+    // Switched on means the switch was on, whatever the plugin then did:
+    // failed, stopped and early-exit attempts stay in (intention to treat).
+    const switchedOn = r.block?.enabled === true;
     if (r.host === options.trialHost) {
       if (inWindow) {
         trialWindow.push(r);
-        if (status === "on") {
+        if (switchedOn && r.block !== undefined) {
           on.push(r);
           ex.onRuns++;
-          if (r.block?.persisted) ex.onPersisted++;
-        } else if (status === "fallback") ex.trialHostFallback++;
-        else if (status === "stopped") ex.trialHostStopped++;
-        else if (status === "not-run") ex.trialHostNotRun++;
-        else ex.trialHostOff++;
-      } else if (status === "off") before.push(r);
+          ex.onByStatus[r.block.status]++;
+          if (r.block.persisted) ex.onPersisted++;
+        } else ex.trialHostOff++;
+      } else if (!switchedOn) before.push(r);
       else ex.beforeNotOff++;
     } else if (inWindow) {
-      if (status === "off") otherOff.push(r);
+      if (!switchedOn) otherOff.push(r);
       else ex.otherHostNotOff++;
     }
   }
@@ -549,7 +587,8 @@ function costCell(m: PopulationMetrics): string {
 
 function mergeCell(m: PopulationMetrics): string {
   const g = m.merge;
-  const detail = `${g.open} open, ${g.unknown} unknown`;
+  const detail =
+    `${g.merged} merged, ${g.closed} closed, ${g.open} open, ${g.unknown} unknown; ${g.noPr} runs with no PR`;
   return g.rate === undefined
     ? `unavailable — no final pull request states (${detail})`
     : `${pct(g.rate)} (${g.merged} of ${g.known} final; ${detail})`;
@@ -589,7 +628,7 @@ export function formatTokenEconomizerTrialSection(
     `Trial host \`${report.trialHost}\`, mode \`${report.mode}\`, window ` +
     `${report.windowStart} to ${report.windowEnd}.`,
     "",
-    "This section reports figures only. It applies no verdict; that is issue #4959's.",
+    "This section reports figures only. It renders no verdict; not yet: #4959 will apply the bar.",
     "",
     "### Before vs switched-on",
     "",
@@ -624,8 +663,10 @@ export function formatTokenEconomizerTrialSection(
     "",
     "### Populations and exclusions",
     "",
-    `- Switched-on runs: ${e.onRuns}; persisted ${e.onPersisted} of ${e.onRuns}`,
-    `- Trial host runs in the window not switched on (in no comparison): ${e.trialHostFallback} fallback, ${e.trialHostStopped} stopped, ${e.trialHostNotRun} not-run, ${e.trialHostOff} off`,
+    `- Switched-on population (intention to treat: every trial host window run with the switch on, whatever the plugin status): ${e.onRuns} runs, by status ${e.onByStatus.on} on, ${e.onByStatus.fallback} fallback, ${e.onByStatus.stopped} stopped, ${
+      e.onByStatus["not-run"]
+    } not-run, ${e.onByStatus.off} off; persisted ${e.onPersisted} of ${e.onRuns}`,
+    `- Trial host window runs with the switch off (in no comparison): ${e.trialHostOff}`,
     `- Malformed records excluded: ${e.malformed}`,
     `- Unflagged records excluded (no flag, before ${report.recordedSince}): ${e.unflagged}`,
     `- Non-claude or no-provider runs excluded: ${e.nonClaude}`,
@@ -645,6 +686,8 @@ export function formatTokenEconomizerTrialSection(
         ? ` (${e.oneSidedRepositoryNames.join(", ")})`
         : ""
     }`,
+    "- Not checked: the run record carries no advisor/executor-split setting, so that section 5 exclusion cannot be applied from the archive; the reader must check it (#4959).",
+    "- Not checked: the run record carries no other-trial-window flag, so that section 5 exclusion cannot be applied from the archive; the reader must check it (#4959).",
   ];
   return lines.join("\n");
 }

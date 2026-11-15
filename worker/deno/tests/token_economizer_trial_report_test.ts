@@ -35,6 +35,7 @@ interface Spec {
   cost?: number;
   pr?: number;
   rtk?: boolean;
+  absent?: string;
   block?: Record<string, unknown>;
 }
 
@@ -51,6 +52,7 @@ function rec(spec: Spec): Record<string, unknown> {
   if (spec.cost !== undefined) {
     record.telemetry = { estimatedCostUsd: spec.cost };
   }
+  if (spec.absent !== undefined) record.telemetryAbsentReason = spec.absent;
   if (spec.pr !== undefined) record.outcome = { prNumber: spec.pr };
   if (spec.block !== undefined) record.tokenEconomizer = spec.block;
   return record;
@@ -77,7 +79,7 @@ const lookup: PrStateLookup = (repo, pr) =>
 function fixture(): unknown[] {
   const W = "2026-11-10T00:00:00Z";
   return [
-    // Switched on: 4 runs, 3 completed, costs 1 + 3 + 2 + 1 = 7.
+    // Switched on: 6 runs, 5 completed, costs 1 + 3 + 2 + 1 + 1 + 2 = 10.
     rec({ finishedAt: W, cost: 99, pr: 1, block: onBlock(1, "available") }),
     rec({
       finishedAt: W,
@@ -89,10 +91,12 @@ function fixture(): unknown[] {
     // Trial host window runs that are counted but in no comparison.
     rec({
       finishedAt: W,
+      cost: 1,
       block: { enabled: true, status: "fallback", persistence: "unavailable" },
     }),
     rec({
       finishedAt: W,
+      cost: 2,
       block: { enabled: true, status: "stopped", persistence: "unavailable" },
     }),
     // Before: trial host, switch off, 14 days before the window.
@@ -134,36 +138,48 @@ Deno.test("report computes populations and metrics for both comparisons", async 
   );
 
   const on = report.switchedOn;
-  assertEquals([on.runs, on.completed, on.successRate], [4, 3, 0.75]);
+  assertEquals([on.runs, on.completed, on.successRate], [6, 5, 5 / 6]);
   assert(on.cost.available);
-  assertEquals(on.cost.totalUsd, 7);
+  assertEquals(on.cost.totalUsd, 10);
   assertEquals(on.merge, {
     merged: 1,
-    known: 3,
+    closed: 1,
+    known: 2,
     open: 1,
     unknown: 0,
-    rate: 1 / 3,
+    noPr: 3,
+    rate: 0.5,
   });
 
   assertEquals([report.before.runs, report.before.completed], [2, 1]);
   assert(report.before.cost.available);
   assertEquals(report.before.cost.perCompletedUsd, 6);
-  assertEquals(report.before.merge.rate, 0.5);
+  assertEquals(report.before.merge, {
+    merged: 1,
+    closed: 0,
+    known: 1,
+    open: 0,
+    unknown: 0,
+    noPr: 1,
+    rate: 1,
+  });
 
   assertEquals(
     [report.concurrentOn.runs, report.concurrentOn.completed],
-    [3, 2],
+    [5, 4],
   );
   assert(report.concurrentOn.cost.available);
-  assertEquals(report.concurrentOn.cost.perCompletedUsd, 3);
+  assertEquals(report.concurrentOn.cost.perCompletedUsd, 2.25);
   assertEquals(report.concurrent.runs, 2);
   assert(report.concurrent.cost.available);
   assertEquals(report.concurrent.cost.perCompletedUsd, 4);
   assertEquals(report.concurrent.merge, {
     merged: 1,
+    closed: 0,
     known: 1,
     open: 0,
     unknown: 1,
+    noPr: 0,
     rate: 1,
   });
   assertEquals(report.concurrentHosts, ["other"]);
@@ -171,21 +187,25 @@ Deno.test("report computes populations and metrics for both comparisons", async 
   assert(report.beforeDifference.available);
   assertEquals(
     Math.round(report.beforeDifference.percent * 10) / 10,
-    -61.1,
+    -66.7,
   );
   assert(report.concurrentDifference.available);
-  assertEquals(report.concurrentDifference.percent, -25);
+  assertEquals(report.concurrentDifference.percent, -43.75);
 
   const ex = report.exclusions;
   assertEquals(ex.malformed, 2);
   assertEquals(ex.unflagged, 1);
   assertEquals(ex.nonClaude, 2);
   assertEquals(ex.otherMode, 1);
-  assertEquals([ex.onRuns, ex.onPersisted], [4, 2]);
-  assertEquals(
-    [ex.trialHostFallback, ex.trialHostStopped, ex.trialHostNotRun],
-    [1, 1, 0],
-  );
+  assertEquals([ex.onRuns, ex.onPersisted], [6, 2]);
+  assertEquals(ex.onByStatus, {
+    on: 4,
+    fallback: 1,
+    stopped: 1,
+    "not-run": 0,
+    off: 0,
+  });
+  assertEquals(ex.trialHostOff, 0);
   assertEquals(ex.trialHostRtk, "disabled");
   assertEquals(ex.rtkMismatchHosts, ["rtkhost"]);
   assertEquals(ex.rtkMismatchRecords, 1);
@@ -201,30 +221,44 @@ Deno.test("rendered section shows explicit populations and no verdict", async ()
   );
   const text = formatTokenEconomizerTrialSection(report);
   assert(text.startsWith("## TokenEconomizer trial comparison"));
-  assertStringIncludes(text, "| Runs | 4 | 2 |");
+  assertStringIncludes(text, "| Runs | 6 | 2 |");
   assertStringIncludes(
     text,
-    "| Success rate | 75.0% (3 of 4) | 50.0% (1 of 2) |",
+    "| Success rate | 83.3% (5 of 6) | 50.0% (1 of 2) |",
   );
-  assertStringIncludes(text, "$2.33 ($7.00 over 3 completed)");
+  assertStringIncludes(text, "$2.00 ($10.00 over 5 completed)");
   assertStringIncludes(
     text,
-    "33.3% (1 of 3 final; 1 open, 0 unknown)",
+    "50.0% (1 of 2 final; 1 merged, 1 closed, 1 open, 0 unknown; 3 runs with no PR)",
   );
   assertStringIncludes(
     text,
-    "100.0% (1 of 1 final; 0 open, 1 unknown)",
+    "100.0% (1 of 1 final; 1 merged, 0 closed, 0 open, 1 unknown; 0 runs with no PR)",
   );
-  assertStringIncludes(text, "on vs before): -61.1%");
-  assertStringIncludes(text, "on vs concurrent): -25.0%");
-  assertStringIncludes(text, "persisted 2 of 4");
-  assertStringIncludes(text, "1 fallback, 1 stopped, 0 not-run, 0 off");
+  assertStringIncludes(text, "on vs before): -66.7%");
+  assertStringIncludes(text, "on vs concurrent): -43.8%");
+  assertStringIncludes(text, "persisted 2 of 6");
+  assertStringIncludes(
+    text,
+    "6 runs, by status 4 on, 1 fallback, 1 stopped, 0 not-run, 0 off",
+  );
+  assertStringIncludes(
+    text,
+    "no advisor/executor-split setting, so that section 5 exclusion cannot be applied",
+  );
+  assertStringIncludes(
+    text,
+    "no other-trial-window flag, so that section 5 exclusion cannot be applied",
+  );
   assertStringIncludes(text, "Malformed records excluded: 2");
   assertStringIncludes(text, "(no flag, before 2026-10-30T00:00:00.000Z): 1");
   assertStringIncludes(text, "Non-claude or no-provider runs excluded: 2");
   assertStringIncludes(text, "different RTK setting: rtkhost (1 records)");
   assertStringIncludes(text, "one side only): 2 (org/only-other, org/solo)");
-  assertStringIncludes(text, "applies no verdict");
+  assertStringIncludes(
+    text,
+    "It renders no verdict; not yet: #4959 will apply the bar.",
+  );
   for (
     const word of [
       /\bkeep\b/i,
@@ -262,6 +296,126 @@ Deno.test("a run with no cost makes cost unavailable with a lower bound", async 
   assertStringIncludes(text, "unavailable — 1 of 3 runs have no cost; ≥ $1.50");
   assertStringIncludes(text, "unavailable (switched-on cost is unavailable)");
   assertStringIncludes(text, "| Runs | 3 | 0 |");
+});
+
+Deno.test("switched-on population keeps failed, stopped and plugin-off attempts", async () => {
+  const W = "2026-11-10T00:00:00Z";
+  const report = await buildTokenEconomizerTrialReport(
+    [
+      rec({ finishedAt: W, block: onBlock(1, "available") }),
+      rec({
+        finishedAt: W,
+        result: "failure",
+        cost: 4,
+        block: { enabled: true, status: "not-run", persistence: "unavailable" },
+      }),
+      rec({
+        finishedAt: W,
+        result: "failure",
+        cost: 2,
+        block: { enabled: true, status: "off", persistence: "unavailable" },
+      }),
+      // Switch off: not in the population.
+      rec({
+        finishedAt: W,
+        cost: 9,
+        block: { enabled: false, status: "off", persistence: "unavailable" },
+      }),
+    ],
+    OPTIONS,
+    lookup,
+  );
+  assertEquals(report.exclusions.onRuns, 3);
+  assertEquals(report.exclusions.onByStatus, {
+    on: 1,
+    fallback: 0,
+    stopped: 0,
+    "not-run": 1,
+    off: 1,
+  });
+  assertEquals(report.exclusions.trialHostOff, 1);
+  assertEquals(report.exclusions.onPersisted, 1);
+  assert(report.switchedOn.cost.available);
+  assertEquals(report.switchedOn.cost.totalUsd, 7);
+  assertEquals(report.switchedOn.completed, 1);
+  assertEquals(report.switchedOn.successRate, 1 / 3);
+});
+
+Deno.test("run cost rule: agent_not_invoked is 0, plugin spend without a run cost is unavailable", async () => {
+  const W = "2026-11-10T00:00:00Z";
+  const report = await buildTokenEconomizerTrialReport(
+    [
+      // No agent ran: 0 even though the block has no cost.
+      rec({ finishedAt: W, absent: "agent_not_invoked", block: onBlock() }),
+      // Plugin recorded no spend and is not on: telemetry cost.
+      rec({
+        finishedAt: W,
+        cost: 5,
+        block: {
+          enabled: true,
+          status: "fallback",
+          persistence: "unavailable",
+        },
+      }),
+      // Plugin recorded spend but no run cost: unavailable.
+      rec({
+        finishedAt: W,
+        cost: 6,
+        block: {
+          enabled: true,
+          status: "stopped",
+          persistence: "unavailable",
+          pluginCostUsd: 0.5,
+        },
+      }),
+      // Status on with no run cost: unavailable.
+      rec({ finishedAt: W, cost: 7, block: onBlock() }),
+      // Off side: agent_not_invoked is 0 as well.
+      rec({
+        finishedAt: "2026-11-01T00:00:00Z",
+        absent: "agent_not_invoked",
+      }),
+      rec({ finishedAt: "2026-11-01T00:00:00Z", cost: 3 }),
+    ],
+    OPTIONS,
+    lookup,
+  );
+  assertEquals(report.switchedOn.cost, {
+    available: false,
+    reason: "2 of 4 runs have no cost",
+    missingCostRuns: 2,
+    lowerBoundPerCompletedUsd: 1.25,
+  });
+  assert(report.before.cost.available);
+  assertEquals(report.before.cost.totalUsd, 3);
+  assertEquals(report.before.cost.perCompletedUsd, 1.5);
+  assertStringIncludes(
+    formatTokenEconomizerTrialSection(report),
+    "unavailable — 2 of 4 runs have no cost; ≥ $1.25",
+  );
+});
+
+Deno.test("runs with no pull request are outside the merge-rate denominator", async () => {
+  const W = "2026-11-10T00:00:00Z";
+  const report = await buildTokenEconomizerTrialReport(
+    [
+      rec({ finishedAt: W, pr: 1, block: onBlock(1) }),
+      rec({ finishedAt: W, block: onBlock(1) }),
+      rec({ finishedAt: W, block: onBlock(1) }),
+      rec({ finishedAt: W, repository: "org/solo", pr: 3, block: onBlock(1) }),
+    ],
+    OPTIONS,
+    lookup,
+  );
+  assertEquals(report.switchedOn.merge, {
+    merged: 1,
+    closed: 0,
+    known: 1,
+    open: 1,
+    unknown: 0,
+    noPr: 2,
+    rate: 1,
+  });
 });
 
 Deno.test("no completed runs makes cost unavailable, never zero", async () => {
@@ -425,7 +579,7 @@ Deno.test("command reads a temp archive recursively and renders the section", as
     );
     assertEquals(result.success, true);
     assert(result.message.startsWith("## TokenEconomizer trial comparison"));
-    assertStringIncludes(result.message, "| Runs | 4 | 2 |");
+    assertStringIncludes(result.message, "| Runs | 6 | 2 |");
     // Two malformed fixtures plus the unparsable file.
     assertStringIncludes(result.message, "Malformed records excluded: 3");
 
@@ -434,6 +588,6 @@ Deno.test("command reads a temp archive recursively and renders the section", as
       config(),
     );
     assertEquals(json.success, true);
-    assertEquals(JSON.parse(json.message).switchedOn.runs, 4);
+    assertEquals(JSON.parse(json.message).switchedOn.runs, 6);
   });
 });

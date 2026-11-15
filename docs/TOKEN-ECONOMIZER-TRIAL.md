@@ -345,7 +345,9 @@ is one of:
 figures are `factsInjected` (the `injected_ids` across session files),
 `judgeCalls` (ledger overhead records with a paid judge cost), `redirects`
 (session nudges) and `stillStuckNotices` (session aborts). `pluginCostUsd` is
-the plugin's effective overhead tokens at the run model's input price per token.
+the plugin's effective overhead tokens at the upstream side-call model's input
+price per token: `haiku`, upstream `sidecall.py`'s `paid_model` default (the
+worker sets no `TE_PAID_MODEL`), not the run's model.
 A figure that cannot be read is absent and reads `unavailable`, never `0`; when
 no session evidence exists every figure is absent. The judge is a separate CLI
 process, so its cost is not in the agent's stream totals and nothing is counted
@@ -354,9 +356,9 @@ stays 2: the block is an addition. A host with the switch off emits a document
 identical to before.
 
 An implementation run's run-stats comment renders exactly one such line, placed
-after the `RTK:` line, from the completion phase, the no-changes phase and the
-degraded-run comment. PR-feedback and CI-fix rounds do not render it and fire no post-run
-callback at all. The shapes it can take are:
+after the `RTK:` line when the comment has one, from the completion phase and
+the no-changes phase. PR-feedback and CI-fix rounds do not render it and fire no
+post-run callback at all. The shapes it can take are:
 
 ```text
 - **TokenEconomizer:** off
@@ -379,18 +381,37 @@ deno run mod.ts token-economizer-report --archive <dir> --trial-host <name> \
   [--mode work-on] [--format markdown|json]
 ```
 
-It compares the switched-on population (trial host, window, Claude
-implementation runs, status `on`) with Before (trial host, the 14 days before
-the window, switch off) and Concurrent (other hosts, same window, same
-repositories only, matching RTK setting). The cost per completed implementation
-run is the total cost of all runs, failures included, divided by the completed
-runs. The success rate is completed over all runs. The merge rate is merged over
-the runs with a known final PR state; open and unknown are shown and excluded. A
-missing cost renders as unavailable with a lower bound. The report states its
-populations and exclusions: malformed records, unflagged records (no block and
-finished before `--recorded-since`), non-Claude runs, concurrent hosts with a
-different RTK setting, one-sided repositories, the fallback, stopped and not-run
-counts, and the persisted count. It renders no verdict: #4959 applies the bar.
+It compares the switched-on population with Before (trial host, the 14 days
+before the window, switch off) and Concurrent (other hosts, same window, same
+repositories only, matching RTK setting). The switched-on population is
+intention to treat: every Claude implementation run on the trial host in the
+window whose `tokenEconomizer` block has `enabled: true`, whatever its status,
+so failed, stopped and early-exit attempts stay in. The report shows a
+per-status breakdown of it (on, fallback, stopped, not-run, off; a block with
+status `off` and the switch on still counts here) and the persisted count.
+
+The cost per completed implementation run is the total cost of all runs,
+failures included, divided by the completed runs. A run whose
+`telemetryAbsentReason` is `agent_not_invoked` costs 0 on both sides, as no agent
+ran and nothing was billed. On the switched-on side a run's cost is the block's
+`runCostUsd`; when that is absent and the block carries neither `pluginCostUsd`
+nor `pluginEffectiveTokens` and its status is not `on` (the plugin recorded no
+spend), it is `telemetry.estimatedCostUsd`; otherwise it is unavailable. On the
+off side it is `telemetry.estimatedCostUsd`, else unavailable. An unavailable
+cost renders as `unavailable — K of N runs have no cost` with a lower bound.
+
+The success rate is completed over all runs. The merge rate is merged over the
+pull requests with a final state (merged or closed); runs that raised no pull
+request are not in the denominator. The report shows the counts: pull requests
+merged, closed, open and unknown, and runs with no pull request.
+
+The report also states its populations and exclusions: malformed records,
+unflagged records (no block and finished before `--recorded-since`), non-Claude
+runs, concurrent hosts with a different RTK setting and one-sided repositories.
+It prints two explicit "not checked" lines: the run record carries no
+advisor/executor-split setting and no other-trial-window flag, so those §5
+exclusions cannot be applied from the archive and are left to the reader
+(#4959). It renders no verdict; not yet: #4959 will apply the bar.
 
 Not yet: #5029 will account for billed capped and unfinished executor
 invocations in a run's totals. Until it lands, a run's cost total can omit those
@@ -455,7 +476,7 @@ State is `present` when the path exists and names the plugin today, and
 | Command | the standalone CI-fix command that passes `config.tokenEconomizer` | `worker/deno/commands/pr_ci_processor.ts` | present |
 | Test | the launch decision's tests | `worker/deno/tests/token_economizer_plugin_test.ts` | present |
 | Test | the spawn-wiring tests | `worker/deno/tests/token_economizer_plugin_wiring_test.ts` | present |
-| Test | the implementation spawn sites' tests | `worker/deno/tests/token_economizer_impl_callsites_test.ts` | present |
+| Test | the implementation spawn sites' tests and the run-stats slot | `worker/deno/tests/token_economizer_impl_callsites_test.ts` | present |
 | Test | the PR-feedback and CI-fix spawn sites' tests | `worker/deno/tests/token_economizer_reactive_callsites_test.ts` | present |
 | Test | the production dependency pass-through tests | `worker/deno/tests/token_economizer_production_deps_test.ts` | present |
 | Doc section | the plugin as a supply-chain component, and learned facts as cross-run context | `docs/THREAT-MODEL.md` | present |
@@ -464,7 +485,6 @@ State is `present` when the path exists and names the plugin today, and
 | Learnings directory | `token-economizer/` in the repository named by `token_economizer.learnings_repo` | — | planned #4957 |
 | Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | present |
 | Run stats | the plugin state reader, the stats line and the callback block builder | `worker/deno/lib/token_economizer_run_stats.ts` | present |
-| Run stats | the run's plugin stats carried through the phase run stats | `worker/deno/lib/phase_run_stats.ts` | present |
 | Run stats | the stats collection in the completion phase | `worker/deno/lib/phases/completion_phase.ts` | present |
 | Run stats | the stats collection when the agent made no changes | `worker/deno/lib/phases/handle_no_changes_phase.ts` | present |
 | Run stats | the plugin stats on the issue worker's result type | `worker/deno/lib/issue_worker_types.ts` | present |
@@ -474,7 +494,9 @@ State is `present` when the path exists and names the plugin today, and
 | Callback field | the block on the run callback context | `worker/deno/lib/run_callback_context.ts` | present |
 | Callback field | the block's documentation | `docs/CALLBACKS.md` | present |
 | Test | the completion phase's run stats tests | `worker/deno/tests/completion_phase_run_stats_test.ts` | present |
-| Test | the implementation phase's launch and run stats tests | `worker/deno/tests/execute_phase_rtk_test.ts` | present |
+| Test | the implementation phase's disabled-switch stats slot test | `worker/deno/tests/execute_phase_rtk_test.ts` | present |
+| Test | the issue worker's run result carrying the TokenEconomizer stats (not-run on a refused claim, the execute phase's stats on a full run) | `worker/deno/tests/rtk_callback_2386_test.ts` | present |
+| Test | the run core carrying the TokenEconomizer stats into the post-run callbacks | `worker/deno/tests/run_core_callbacks_test.ts` | present |
 | Test | the run-stats comment line tests | `worker/deno/tests/issue_run_stats_comment_test.ts` | present |
 | Test | the run callback context block tests | `worker/deno/tests/run_callback_context_test.ts` | present |
 | Test | the no-changes phase's run stats tests | `worker/deno/tests/handle_no_changes_phase_test.ts` | present |
