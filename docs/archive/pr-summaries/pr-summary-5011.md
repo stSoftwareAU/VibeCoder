@@ -100,8 +100,8 @@ No existing test was edited. None asserts the exact argv of a dropped
 quality-gate spawn.
 
 Callers checked: `spawnRepositoryCommand` is reached through
-`createDefaultDeps().runCommand` (dropped) and the formatter spawn (not
-dropped). Only the dropped path gains the entry.
+`createDefaultDeps().runCommand` (dropped) and `runCommandAsWorker`, which
+`repo_formatters.ts` uses (not dropped). Only the dropped path gains the entry.
 
 Not checked: the config integration and checkov checks were skipped by the host,
 as listed under Evidence. Otherwise none.
