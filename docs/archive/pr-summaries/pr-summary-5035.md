@@ -112,6 +112,27 @@ This is a backend rename.
   - `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts`;
   - `worker/deno/tests/pr_spelling_processor_test.ts`.
 - `deno task test:unit` over those 11 files: 482 passed, 0 failed.
+- Coverage carry-over: the check could not run because the base tests failed
+  at merge base `23f21aff`. I reran the same 11 files at that commit in a
+  throwaway worktree. The failures come from the agent sandbox, not from code
+  at either commit:
+  - The agent session sets `core.hooksPath` through
+    `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`. The fixtures'
+    real `git push` inherits it, so the session's own pre-push gate blocks it
+    (for example `runPrePushGate: deleted scripts are not passed to
+    ShellCheck`, blocked by markdownlint on the fixture's `#Bad` README).
+  - With those three variables unset, the merge base gives 487 passed, 2
+    failed. The two failures are the `pre-push CLI` tests in
+    `worker/deno/tests/shellcheck_publication_test.ts`. Their child `deno`
+    process cannot fetch `https://jsr.io/@std/yaml/meta.json` behind the
+    sandbox egress filter.
+  - The branch head gives the same result: those same two tests fail the same
+    way, and every other test in `shellcheck_publication_test.ts` and
+    `pre_push_gate_test.ts` passes.
+  - This branch cannot change the merge base, so no commit here can make the
+    check run. Every edited test changes only identifiers and message strings
+    (listed below). Each test still calls the same code with the same
+    arguments, so it reaches the same lines as before.
 - `./quality.sh < /dev/null` on the code commit: passed. Every stage passed,
   including deno tests, semgrep, gitleaks and markdownlint, except
   `config integration` and `checkov`, which the host skipped.
