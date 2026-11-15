@@ -34,15 +34,21 @@ operators provision its login separately from the desktop login.
 ## Evidence
 
 The focused regression reproduced the missing fallback and the two-subscription
-limit before the fix during development. The final isolated worktree passes
-81 tests across review rounds, Claude credential selection and Codex wiring.
+limit before the fix during development. Focused validation passed 81 tests across review rounds, Claude credential
+selection and Codex wiring, including the replacement production-wiring
+regression. Restoring the old single-label exclusion makes that regression
+fail before successful fallback; the current implementation passes. Targeted
+format, lint and type checks passed. The full local quality gate was not rerun;
+current-head CI must pass before approval.
 Live recovery through Astra has not been verified by this PR.
 
 ## Test Plan
 
 - Added a full sequence test: three Fable subscriptions, Astra quota refusal,
-  Opus quota refusal, then successful DeepSeek. It asserts selected models
-  and the three distinct Claude credential environments.
+  Opus quota refusal, then successful DeepSeek. It drives the production
+  credential discovery, ranking and rotation against three credential files
+  and a fake budget service, then checks the persisted attempt record and
+  successful result. Provider fakes reject mismatched credentials.
 - Added a real credential-pool test excluding multiple previously tried
   subscriptions even while general quota remains positive.
 - Updated prior order assertions because Opus before Astra is obsolete.

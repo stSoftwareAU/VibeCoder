@@ -18,52 +18,6 @@ import {
 
 const USAGE_LIMIT = "You've hit your usage limit · resets 1:50pm (UTC)";
 
-const FABLE_LIMIT =
-  "You've reached your Fable limit. Switch to another model to continue.";
-
-Deno.test("reviewer tries Fable on three subscriptions, Astra, Opus, then DeepSeek", async () => {
-  const { deps, calls } = fakeDeps([
-    { code: 1, output: FABLE_LIMIT },
-    { code: 1, output: FABLE_LIMIT },
-    { code: 1, output: FABLE_LIMIT },
-    { code: 1, output: "quota exhausted", usageLimited: true },
-    { code: 1, output: USAGE_LIMIT },
-    { code: 0, output: "Reviewed on DeepSeek" },
-  ], { codex: CODEX_CREDENTIAL });
-  const excluded: string[] = [];
-  deps.switchCredential = (held, setEnv) => {
-    excluded.push(held);
-    const next = held === "provider"
-      ? "provider-2"
-      : held === "provider-2"
-      ? "provider-3"
-      : null;
-    if (next) setEnv("CLAUDE_CODE_OAUTH_TOKEN", `${next}-secret`);
-    return Promise.resolve(next);
-  };
-  assertEquals(
-    await runReviewRound("p", ["--model", "claude-fable-5-2"], deps),
-    0,
-  );
-  assertEquals(excluded, ["provider", "provider-2", "provider-3"]);
-  assertEquals(calls.map((call) => argAfter(call.args, "--model")), [
-    "claude-fable-5-2",
-    "claude-fable-5-2",
-    "claude-fable-5-2",
-    "gpt-6-astra",
-    "claude-opus-5-5",
-    "deepseek-v4-pro",
-  ]);
-  assertEquals(
-    calls.slice(0, 3).map((call) => call.env.CLAUDE_CODE_OAUTH_TOKEN),
-    [
-      "provider-secret",
-      "provider-2-secret",
-      "provider-3-secret",
-    ],
-  );
-});
-
 /** The Codex credential's child env, as `exportCodexCredential` returns it. */
 const CODEX_CREDENTIAL = { env: { OPENAI_API_KEY: "codex-secret" } };
 
