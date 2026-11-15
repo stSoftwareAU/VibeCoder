@@ -110,7 +110,7 @@ Deno.test("review launch plan installs Claude and Codex without mounting worker 
         arg.slice("VIBE_EGRESS_ALLOW_HOSTS=".length).split(",")
       );
     assert(
-      allowedHosts.includes("chatgpt.com"),
+      allowedHosts.some((host) => host === "chatgpt.com"),
       "Astra subscription endpoints must be allowed",
     );
   } finally {

@@ -65,7 +65,9 @@ Backend/container changes only, with no UI changes.
 
 - `container_launch_plan_command_test.ts`: drive the real plan builder with
   a Claude-only configuration; require a different image containing both
-  CLIs, Astra egress, and unchanged credential mounts. Exercise preparation
+  CLIs, Astra egress (`chatgpt.com` must be an exact entry in the parsed
+  `VIBE_EGRESS_ALLOW_HOSTS` list, compared by equality, never as a substring), and
+  unchanged credential mounts. Exercise preparation
   ordering, cached reuse and a failed build's cause.
 - `review_round_test.ts`: exercise an actual missing executable, missing
   Codex followed by successful Opus, and another Claude subscription's Opus
