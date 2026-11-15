@@ -2919,6 +2919,40 @@ Deno.test("babysitter selects only conflicts and failed CI", () => {
   );
 });
 
+Deno.test("a behind PR awaiting approval waits for review before branch refresh", () => {
+  assertEquals(
+    reason({
+      ...pr,
+      mergeStateStatus: "BEHIND",
+      reviewDecision: "REVIEW_REQUIRED",
+      autoMergeRequest: {},
+    }),
+    null,
+  );
+  assertEquals(
+    reason({
+      ...pr,
+      mergeStateStatus: "BEHIND",
+      reviewDecision: "REVIEW_REQUIRED",
+      autoMergeRequest: null,
+    }),
+    "branch behind base",
+  );
+  assertEquals(
+    reason({ ...pr, mergeStateStatus: "BEHIND", reviewDecision: "APPROVED" }),
+    "branch behind base",
+  );
+  assertEquals(
+    reason({
+      ...pr,
+      mergeStateStatus: "BEHIND",
+      reviewDecision: "REVIEW_REQUIRED",
+      statusCheckRollup: [{ conclusion: "FAILURE" }],
+    }),
+    "failed CI",
+  );
+});
+
 Deno.test("cleanup removes abandoned clones but preserves live and unrelated directories", async () => {
   const root = await Deno.makeTempDir();
   try {

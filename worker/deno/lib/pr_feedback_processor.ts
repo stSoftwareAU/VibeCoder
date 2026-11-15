@@ -16,7 +16,13 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 
 import { redactSecrets } from "./secret_redaction.ts";
 
-import type { Logger, RepoConfig, Result } from "../types.ts";
+import type {
+  Logger,
+  RepoConfig,
+  Result,
+  TokenEconomizerConfig,
+} from "../types.ts";
+import { tokenEconomizerSpawnOptions } from "./token_economizer_plugin.ts";
 import {
   fenceUntrustedIssueText,
   generateBoundaryId,
@@ -98,9 +104,6 @@ import {
   DRIFT_CHECK_DISALLOWED_TOOLS,
   runPrFeedbackDriftCheck,
 } from "./pr_feedback_drift_check.ts";
-import { runReviewFixMutationCheck } from "./pr_feedback_mutation_check.ts";
-import type { FindBlockingMutationJobOptions } from "./ci_mutation_contract.ts";
-import { ciMutationLookupOptions } from "./ci_mutation_lookup.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import { findCommitsAheadOnRemote } from "./pr_feedback_fix_branch_remote.ts";
 import {
@@ -235,6 +238,12 @@ export interface PrFeedbackProcessorDeps {
    */
   workRoot: string;
   /**
+   * The `token_economizer` block for this host (Issue #4956). Absent, the
+   * feedback agent is spawned with no plugin, as every host was before. Set by
+   * the production callers from `config.tokenEconomizer`.
+   */
+  tokenEconomizer?: TokenEconomizerConfig;
+  /**
    * Directory the base-refresh decision counters are persisted to
    * (`base_refresh_counters.json`): the production callers pass `WORK_DIR`.
    * Unset (as in tests), a publication-time decision is counted in memory only,
@@ -333,9 +342,7 @@ export interface PrFeedbackProcessorDeps {
   fetchOwnerDirectionFn?: typeof fetchPrOwnerDirection;
   /**
    * Per-repo configuration map, used to resolve the pre-flight enforcement
-   * gate (Issue #3577) and the review-fix mutation check's
-   * `skip_mutation_check`, `mutation_check_budget_seconds` and
-   * `quality_credentials` (Issue #3750). Omitted → no gate.
+   * gate (Issue #3577). Omitted → no gate.
    */
   repoConfigs?: Record<string, RepoConfig>;
   /**
@@ -1448,6 +1455,19 @@ async function _processFeedbackWithHeartbeat(
     }
     return invocation;
   };
+  // The TokenEconomizer plugin for this spawn (Issue #4956). The launch lives
+  // under the work root, never the clone (its state must not sit in the
+  // checkout), so the root is passed, not `workDir`.
+  const tokenEconomizer = processorDeps.tokenEconomizer
+    ? await tokenEconomizerSpawnOptions({
+      config: processorDeps.tokenEconomizer,
+      pluginDir: processorDeps.deps.claude.tokenEconomizerPluginDir,
+      workDir: processorDeps.workRoot,
+      repo,
+      runKind: "pr-feedback",
+      logger,
+    })
+    : {};
   const agentRequest = {
     // Appended in code, not in `prompts/pr_feedback/prompt.md`: the line is
     // run-conditional, so the template stays the same on every host.
@@ -1470,6 +1490,7 @@ async function _processFeedbackWithHeartbeat(
     // Issue #2384: absent unless RTK's hook is installed, so every other
     // run spawns the argv it always did.
     ...settingsJsonOption(undefined, rtk.hookSettings()),
+    ...tokenEconomizer,
   };
   const claudeResult = await runAgentTracked(agentRequest, {
     maxRetries: maxRateLimitRetries,
@@ -1676,10 +1697,8 @@ async function _processFeedbackWithHeartbeat(
   // #3120) go unchecked on this path. Run it here, before the commit-and-
   // push below, so a recovery-turn edit rides the same push and a residual
   // hit reaches the reply through `.pr_response_message`, read later by
-  // `readPrResponseMessage`. The drift check also runs the diff-scoped
-  // mutation check over this run's own lines (Issue #3750), so survivors ride
-  // the same recovery turn and reply. Wrapped so an unexpected throw never
-  // aborts an otherwise-successful run — the check is a backstop, not a gate.
+  // `readPrResponseMessage`. Wrapped so an unexpected throw never aborts an
+  // otherwise-successful run — the check is a backstop, not a gate.
   // The change request body is passed through so the check can confirm a
   // sentence the reviewer quoted was rewritten or removed rather than left
   // sitting under an appended correction (Issue #3244).
@@ -1691,30 +1710,6 @@ async function _processFeedbackWithHeartbeat(
       });
       return r.ok ? r.value : null;
     };
-    // Issue #4617: the PR's base branch gives the required checks that decide
-    // which mutation job in CI blocks. A failure leaves the local files alone.
-    let ciLookup: Promise<FindBlockingMutationJobOptions> | undefined;
-    const ciLookupOptions = (): Promise<FindBlockingMutationJobOptions> =>
-      ciLookup ??= (async () => {
-        try {
-          return await ciMutationLookupOptions({
-            repo,
-            base: await resolvePrBaseBranch({ repo, prNumber }, deps),
-            runGh: (args: string[]) => deps.github.runGhCommand(args),
-            logger,
-          });
-        } catch (error) {
-          logger.warn(
-            "Could not resolve the PR base branch for the CI mutation contract (Issue #4617)",
-            {
-              repo,
-              prNumber,
-              error: error instanceof Error ? error.message : String(error),
-            },
-          );
-          return {};
-        }
-      })();
     const driftOutcome = await driftCheck(
       {
         repo,
@@ -1726,22 +1721,6 @@ async function _processFeedbackWithHeartbeat(
       {
         runGit,
         runGh: (args: string[]) => deps.github.runGhCommand(args),
-        runMutationCheck: (sha: string) =>
-          runReviewFixMutationCheck(
-            {
-              repo,
-              repoPath: processorDeps.workDir,
-              beforeSha: sha,
-              repoConfigs: processorDeps.repoConfigs,
-            },
-            {
-              runGit,
-              runner: deps.quality.runMutationCheck,
-              logger,
-              ciLookupOptions,
-            },
-          ),
-        ciLookupOptions,
         runAgent: async (req: { prompt: string; readOnly: boolean }) => {
           const r = await runAgentTracked(
             {

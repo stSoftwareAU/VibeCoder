@@ -1,5 +1,6 @@
 import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { breakdownInvocationTelemetry } from "../lib/run_callback_telemetry.ts";
+import { buildRunStats } from "../lib/run_stats.ts";
 import {
   buildLifecycleEvent,
   LifecycleEventSchemaError,
@@ -27,6 +28,47 @@ const stats = {
   wallClockMs: 2000,
   effort: "high",
 };
+
+Deno.test("a synthetic rate-limit response records the failed invocation without a served model", async () => {
+  const dir = await Deno.makeTempDir();
+  const ledgerPath = `${dir}/ledger.jsonl`;
+  try {
+    const stream =
+      '{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"You have reached your Fable limit"}]},"error":"rate_limit","is_api_error_message":true}';
+    const runStats = buildRunStats(stream, {
+      requestedModel: "fable",
+      wallClockMs: 100,
+    });
+    await withLifecycleRecording({
+      ledgerPath,
+      runId: "run-1",
+      host: "host-a",
+      repo: "org/repo",
+    }, async () => {
+      activateLifecycleAssignment(assignmentId);
+      await withLifecycleInvocation({ phase: "issue" }, () =>
+        Promise.resolve({
+          ok: true as const,
+          value: {
+            exitCode: 1,
+            timedOut: false,
+            provider: "claude",
+            usageLimit: true,
+            runStats,
+          },
+        }));
+    });
+    const events = await readLifecycleLedger(ledgerPath);
+    assertEquals(events.length, 1);
+    const event = events[0];
+    assert(event?.kind === "invocation");
+    assertEquals(event.servedModel, undefined);
+    assertEquals(event.quotaStatus, "limited");
+    assertEquals(event.result, "failure");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
 
 Deno.test("Issue #3719: nested telemetry rejects private fields and false zero estimates", () => {
   const telemetry = breakdownInvocationTelemetry(

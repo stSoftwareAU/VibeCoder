@@ -787,7 +787,7 @@ Two changes close that window:
   author asking for eyes — marking it ready is what puts it back in the sweep.
 - **Orphaned fleet drafts are readied and armed** (Issue #4952). A fleet draft
   that nothing else will ever mark ready — its issue has no live claim and its
-  body does not open with the draft-continuation or the mutation-hold marker —
+  body does not open with the draft-continuation marker —
   is the one draft the sweep does not skip. Its `readyOrphanedDraft` hook
   ([`draft_pr_self_heal.ts`](../worker/deno/lib/draft_pr_self_heal.ts)) readies
   it only when the head branch names an open issue (`issue-<N>-…`) with no
@@ -869,6 +869,12 @@ so the update unblocks nothing, and on GRQ#5032 it moved the head underneath
 the owner's review. Both read the decision from a call they already make — the
 sweep's live `gh pr view`, the branch-update pass's batched GraphQL state — and
 log the skip at info.
+
+An armed PR that is behind and has `REVIEW_REQUIRED` also waits for a review
+of its current head before the shared strict-base refresh. The auto-merge sweep
+logs that wait at info, and the babysitter leaves it for review rather than
+repeatedly acquiring a branch lock for a refresh the shared policy refuses.
+Conflicts, failing CI and requested changes remain actionable.
 
 Every fleet PR is armed for auto-merge and stays armed (Issue #4291). PRs do
 not merge until they have a review approval and CI is green, and GitHub

@@ -1683,7 +1683,7 @@ Deno.test("config - loadConfig normalises repo_config snake_case keys to camelCa
   });
 });
 
-Deno.test("config - loadConfig maps the mutation gate repo_config keys (Issue #3393)", async () => {
+Deno.test("config - loadConfig tolerates retired mutation-check repo_config keys (Issue #5095)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
     repos: ["org/repo"],
@@ -1691,15 +1691,53 @@ Deno.test("config - loadConfig maps the mutation gate repo_config keys (Issue #3
       "org/test-repo": {
         skip_mutation_check: true,
         mutation_check_budget_seconds: 120,
+        skipMutationCheck: true,
+        mutationCheckBudgetSeconds: 120,
+        skipScreenshotCheck: true,
       } as unknown as import("../types.ts").RepoConfig,
     },
   };
 
   await withTempConfig(testConfig, async (configPath) => {
-    const config = await loadConfig(configPath);
-    const repoConf = config.repoConfig?.["org/test-repo"];
-    assertEquals(repoConf?.skipMutationCheck, true);
-    assertEquals(repoConf?.mutationCheckBudgetSeconds, 120);
+    let config: Awaited<ReturnType<typeof loadConfig>> | undefined;
+    const errors = await capturingConfigErrors(async () => {
+      config = await loadConfig(configPath);
+    });
+    const repoConf = config?.repoConfig?.["org/test-repo"] as
+      | Record<string, unknown>
+      | undefined;
+
+    // The config still loads and the live key still applies.
+    assertEquals(config?.allowedAuthor, "testuser");
+    assertEquals(repoConf?.skipScreenshotCheck, true);
+    // The retired keys, in either spelling, are not surfaced on RepoConfig.
+    for (
+      const retired of [
+        "skip_mutation_check",
+        "mutation_check_budget_seconds",
+        "skipMutationCheck",
+        "mutationCheckBudgetSeconds",
+      ]
+    ) {
+      assertEquals(retired in (repoConf ?? {}), false, retired);
+    }
+    // Each retired key earns a warning that names it.
+    const output = errors.join("\n");
+    for (
+      const retired of [
+        "skip_mutation_check",
+        "mutation_check_budget_seconds",
+        "skipMutationCheck",
+        "mutationCheckBudgetSeconds",
+      ]
+    ) {
+      assertEquals(
+        output.includes(`repo_config.org/test-repo.${retired}`),
+        true,
+        `Expected a warning naming ${retired}`,
+      );
+    }
+    assertEquals(output.includes("Issue #5095"), true);
   });
 });
 

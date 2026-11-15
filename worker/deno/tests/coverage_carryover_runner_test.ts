@@ -198,8 +198,6 @@ function fake(opts: FakeOptions = {}): Fake {
           .filter((k) => k.startsWith(`${repoPath}/`) && k.endsWith("_test.ts"))
           .map((k) => k.slice(repoPath.length + 1)),
       ),
-    snapshotTree: () => Promise.resolve(null),
-    restoreTree: () => Promise.resolve(),
   };
   return { seams, calls, removed };
 }

@@ -67,8 +67,10 @@ import {
   validateUpdateModeSettings,
 } from "./config_validator.ts";
 import {
+  detectRetiredRepoConfigKeys,
   detectUnknownConfigKeys,
   formatUnknownKeyWarnings,
+  RETIRED_REPO_CONFIG_KEYS,
 } from "./config_unknown_keys.ts";
 import { resolveEgressAllowlist } from "./egress_allowlist.ts";
 import { readImgbbApiKeyFromEnv } from "./imgbb_upload.ts";
@@ -218,9 +220,6 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   skip_reviewer_request: "skipReviewerRequest",
   skip_screenshot_check: "skipScreenshotCheck",
   skip_security_fix_check: "skipSecurityFixCheck",
-  // Diff-scoped mutation gate (Issue #3393).
-  skip_mutation_check: "skipMutationCheck",
-  mutation_check_budget_seconds: "mutationCheckBudgetSeconds",
   // Coverage carry-over gate (Issue #3795).
   skip_coverage_carryover_check: "skipCoverageCarryOverCheck",
   // Credentials this repository's checks need (Issues #573, #574).
@@ -283,6 +282,8 @@ function normaliseRepoConfig(raw: Record<string, unknown>): RepoConfig {
   const normalised: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(raw)) {
+    // Issue #5095: retired keys still load but are not surfaced on RepoConfig.
+    if (RETIRED_REPO_CONFIG_KEYS.has(key)) continue;
     const mappedKey = REPO_CONFIG_KEY_MAP[key];
     if (mappedKey) {
       // Snake_case key — map to camelCase
@@ -376,6 +377,15 @@ async function loadConfigFile(
     if (warnings.length > 0) {
       const formatted = formatUnknownKeyWarnings(warnings);
       console.error(formatted);
+    }
+    // Issue #5095: keys inside repo_config are not checked above; a retired
+    // mutation-check key there is warned about by name, then ignored.
+    for (
+      const retired of detectRetiredRepoConfigKeys(
+        (parsed as Record<string, unknown>).repo_config,
+      )
+    ) {
+      console.error(`⚠️  ${retired.message}`);
     }
   }
 
@@ -1300,8 +1310,9 @@ export async function loadConfig(
   const rtkOutput = parsedRtkOutput.value;
 
   // TokenEconomizer (Issue #4955, part of #4953). Off unless the host sets
-  // `enabled: true`. Accepted and validated, but not read yet: #4956 will wire
-  // it into runs; today a run is the same whatever it is set to. A malformed
+  // `enabled: true`. `enabled`, `microskills` and `loopguard` are read by the
+  // run launch decision; `learnings_repo` is accepted and validated, but not read
+  // yet (#4957). A malformed
   // block fails the load loudly here rather than reading as the default.
   const parsedTokenEconomizer = parseTokenEconomizer(file.token_economizer);
   if (!parsedTokenEconomizer.ok) {

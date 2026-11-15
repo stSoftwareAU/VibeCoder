@@ -34,7 +34,7 @@
  *    item 5 has marked it ready.
  * 5. **An orphaned fleet draft is readied, then armed** (Issue #4952) — a
  *    draft whose issue has no live claim and whose body does not open with a
- *    draft-continuation or mutation-hold marker is marked ready by the
+ *    draft-continuation marker is marked ready by the
  *    `readyOrphanedDraft` hook, and armed in the same pass once its
  *    ready-for-review CI has started. Every other draft is skipped (Issue
  *    #1800), so a held or claimed draft is never published by the sweep.
@@ -512,6 +512,15 @@ export async function sweepAutoMerge(
             "Auto-merge sweep: armed PR has a reviewer who " +
               "requested changes (CHANGES_REQUESTED) — no branch update " +
               "until the review is answered (Issue #2702)",
+            { repo, prNumber: pr.number },
+          );
+          continue;
+        }
+        if (armedNow && reading.behind === true && reading.reviewRequired) {
+          await clearRefusal(repo, pr.number);
+          logger.info(
+            "Auto-merge sweep: armed PR is behind and awaiting approval " +
+              "(REVIEW_REQUIRED) — review the current head before updating it",
             { repo, prNumber: pr.number },
           );
           continue;

@@ -25,10 +25,12 @@ import {
   type ClaudeDeps,
   createMockDeps,
   type GitDeps,
-  type GitHubDeps,
 } from "../lib/issue_worker_wiring.ts";
 import type { Logger } from "../types.ts";
-import { openPrGh } from "./support/pr_live_state_stub.ts";
+import {
+  acquireBranchLockWithoutDelay,
+  openPrWithBranchLockGh as makeGh,
+} from "./support/pr_branch_lock_stub.ts";
 
 const PRE_FLIGHT_SENTENCE = "does not run the full gate before this push";
 const FULL_GATE_SENTENCE = "worker runs the gate again before the PR is raised";
@@ -129,40 +131,6 @@ function makeGit(): GitDeps["runGitCommand"] {
   }) as unknown as GitDeps["runGitCommand"];
 }
 
-/** A `gh` stub serving base-ref reads and the CI command's branch-lock timeline. */
-function makeGh(): GitHubDeps["runGhCommand"] {
-  let lockBody = "";
-  return openPrGh((args: string[]) => {
-    if (args[0] === "issue" && args[1] === "comment") {
-      lockBody = args[args.indexOf("--body") + 1] ?? "";
-      return Promise.resolve(
-        "https://github.com/org/repo/issues/42#issuecomment-123",
-      );
-    }
-    if (
-      args.includes("--paginate") &&
-      args.some((arg) => arg.includes("BRANCH_UPDATE_LOCK"))
-    ) {
-      return Promise.resolve(JSON.stringify(
-        lockBody
-          ? [{
-            id: 123,
-            body: lockBody,
-            created_at: new Date().toISOString(),
-            author: "worker",
-          }]
-          : [],
-      ));
-    }
-    if (
-      args[0] === "pr" && args[1] === "view" && args.includes("baseRefName")
-    ) {
-      return Promise.resolve("main");
-    }
-    return Promise.resolve("");
-  });
-}
-
 /**
  * A `runClaudeWithRetry` stub that records each call's options and answers
  * from `outputs` in call order.
@@ -212,7 +180,7 @@ for (const commentType of ["review", "issue", "pr_review"]) {
       const config = buildDefaultWorkerConfig({
         workDir,
         repoConfig: {
-          "org/repo": { skipMutationCheck: true },
+          "org/repo": {},
         },
       });
 
@@ -299,7 +267,6 @@ for (const preFlight of [undefined, ["deno fmt --check"]]) {
         claudeTimeout: 600,
         repoConfig: {
           "org/repo": {
-            skipMutationCheck: true,
             ...(preFlight ? { preFlight } : {}),
           },
         },
@@ -374,9 +341,10 @@ Deno.test("prCiProcessorCommand - agent receives the CI push guarantee and dedic
         workDir,
         ciFixTimeout: 600,
         claudeTimeout: 3600,
-        repoConfig: { "org/repo": { skipMutationCheck: true } },
+        repoConfig: { "org/repo": {} },
       }),
       deps,
+      acquireBranchLockWithoutDelay,
     );
     assertEquals(result.success, true, result.message);
     assertEquals(

@@ -136,6 +136,16 @@ function deps(
       return Promise.resolve(options.result ?? OK);
     },
     log: (message) => events.push(`log ${message}`),
+    // The real admission measures the host and writes a ledger file.
+    hostDiskAdmission: () => {
+      events.push("admit");
+      return Promise.resolve({
+        release: () => {
+          events.push("release");
+          return Promise.resolve();
+        },
+      });
+    },
   };
 }
 
@@ -408,7 +418,9 @@ Deno.test("Apple proxy egress wraps the Chromium launch and always stops", async
       events.findIndex((event) => event === "apple egress start 4321") <
         events.indexOf(launch),
     );
-    assertEquals(events.at(-1), "apple egress stop");
+    // Admitted before the proxy starts, released after the proxy stops.
+    assert(events.indexOf("admit") < events.indexOf("apple egress start 4321"));
+    assertEquals(events.slice(-2), ["apple egress stop", "release"]);
   }
 });
 
@@ -564,6 +576,17 @@ Deno.test("successful and failed container diagnostics suppress service health",
       `${state}/health-hook`,
       `#!/bin/sh\nprintf '%s' "$1" > '${root}/health-result'\n`,
       { mode: 0o700 },
+    );
+    // The child runs the production host-disk admission (Issue #5105), which
+    // reads `df -kP`; a stub first on PATH reports a roomy host so the result
+    // does not depend on the free disk of the machine running the test.
+    await Deno.writeTextFile(
+      `${bin}/df`,
+      `#!/bin/sh
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
+printf 'fixture 1000000000 1 999999999 1%% /\\n'
+`,
+      { mode: 0o755 },
     );
     const cacheDir = await denoCacheDir();
     for (const fails of [false, true]) {

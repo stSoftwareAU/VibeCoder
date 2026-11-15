@@ -123,8 +123,7 @@ Where the credentials go depends on the account the command runs as:
 - **The worker account** (`vibe`) runs the gate commands above only where the
   image has no `agent` account at all, with the same restricted environment,
   and the declared values are placed in that environment. It also runs the
-  repository formatters, the mutation check and the coverage carry-over, which
-  never drop to `agent` and keep the environment route. A declared credential
+  repository formatters and the coverage carry-over, which never drop to `agent` and keep the environment route. A declared credential
   never changes the account a gate command runs as.
 
 The `agent` account can only run a gate command in a checkout it can reach. The
@@ -178,13 +177,11 @@ that line, the merge fast check reports the merge as `unverified`, and the
 milestone gates report `GateAccountUnavailable` and leave the check to CI. A
 credential that cannot be minted is never a pass either: the quality gate fails the phase with the mint error, and the merge conflict gate parks the merge with it.
 
-The same credentials reach the diff-scoped mutation check, which reruns the
-repository's tests; there a failed `mint` makes the check not applicable, with
-a warning, instead of failing the phase. The check also runs on review-fix
-pushes, where survivors are reported in the PR reply rather than blocking the
-push (see [Diff-scoped mutation check](mutation-check.md)).
-The [coverage carry-over check](coverage-carryover-check.md) passes the
-repository's resolved `quality_credentials` to its test runs in the same way.
+The same credentials reach the [coverage carry-over check](coverage-carryover-check.md),
+which reruns the repository's tests; there a failed `mint` makes the check not
+applicable, with a warning, instead of failing the phase. The automatic mutation
+check that once received them is retired (see
+[Diff-scoped mutation check (retired)](mutation-check.md)).
 
 
 ## Two axes of trust
@@ -504,9 +501,9 @@ creation would fail.
 `pr_reviewer_parallel` sets how many review rounds the unattended
 `review-fleet-prs` runner (`scripts/run.sh`) runs at once, each reviewing one
 PR in its own worker container (Issue #4395). It defaults to `3`; `1` reviews
-one PR at a time. Each round uses a subscription from the worker's Claude
-credential pool, so a higher value spends quota faster and runs more
-containers side by side. A value that is not a whole number above 0 is logged
+one PR at a time. Each round starts on a subscription from the worker's Claude
+credential pool, so a higher value spends quota faster and runs more containers
+side by side. A value that is not a whole number above 0 is logged
 and the default is used. It is read by `run.sh` only, never by the worker.
 
 ```json
@@ -514,6 +511,44 @@ and the default is used. It is read by `run.sh` only, never by the worker.
   "pr_reviewer_parallel": 3
 }
 ```
+
+## 🧠 Reviewer model and effort
+
+`review_model` and `review_effort` set the model and reasoning effort of the
+unattended `review-fleet-prs` review round (`scripts/run.sh`). Both are read by
+`run.sh` only, never by the worker, and no environment variable sets them. The
+defaults are `claude-fable-5-2` at `high`. The round's reviewer agents run on
+the same model and effort, so they follow the configured values, including the
+step-down and fallbacks below.
+
+```json
+{
+  "review_model": "claude-fable-5-2",
+  "review_effort": "high"
+}
+```
+
+`review_model` must be a model id of letters, digits, `.`, `_` and `-`, at most
+100 characters. `review_effort` must be one of `low`, `medium`, `high`, `xhigh`
+or `max`. A value that fails its check is logged and the default is used.
+
+A round that hits a usage limit tries every available Claude subscription
+once on the configured model, then Codex `gpt-6-astra` at `high`, then (for
+a configured Fable round) `claude-opus-5-5` at `xhigh` on the current Claude
+subscription, then DeepSeek `deepseek-v4-pro`. Astra is skipped when no
+credential reaches the round. A Fable-specific model cap triggers this chain
+without treating the entire Claude subscription as exhausted. Codex runs in a round when the round's own Codex home
+(`~/logs/review-fleet-prs/codex`, created by `run.sh`) holds its own ChatGPT
+login (Issue #5127), or with an API key in `codex/provider.env`, or a
+`CODEX_HOME` on a mount the round shares that already holds a login. A
+`CODEX_HOME` on the `vibe-agent-state` volume (the documented subscription
+setup) is still not mounted in the round, so the round logs
+`no Codex login at <home>/auth.json in the round ...; skipping the codex fallback`
+and goes on to Opus, then DeepSeek. The one-time login for the round's own home is in
+[CODEX-SUBSCRIPTION-AUTH.md](CODEX-SUBSCRIPTION-AUTH.md#fleet-pr-review-rounds).
+A failure that is not a usage limit stops the chain.
+Each switch is logged once. The chain and its log lines are described in
+[running-unattended.md](../.claude/skills/review-fleet-prs/references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
 
 ## 🧪 Test-change policy for the fleet reviewer
 
@@ -2063,7 +2098,7 @@ unless explicitly overridden.
 | Graft repo context | `graft_context.enabled` | `false` | Whether this host builds a Graft code graph of each checkout and injects the resulting bundle beside the repo-context docs. Off unless the host opts in. See [Graft repo-context injection](#-graft-repo-context-injection). |
 | CodeGraph repo context | `codegraph_context.enabled` | `false` | Whether a run offers the agent a CodeGraph index of the repository (Issue #2154, trial #2145). Off unless a host asks for it: an unset block behaves exactly as today. Turning it on adds a CodeGraph index step at run start — capped at **300 s**, after which the run carries on without an index — a `codegraph` MCP entry for the agent to query, and one line in the prompt saying the index is there. The index is written to `.codegraph/` on the **persistent checkout** and reused across runs; switching the key back off stops the index being built or offered but does not delete `.codegraph/`, which is removed by hand. A run routed to Gemini records the context as `unsupported` (that CLI takes no MCP entry) and proceeds without it. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `codegraph_context.enabled` rather than reading as off. It is independent of the Graft trial's `graft_context.enabled` (a separate block from milestone #2060, not present on every build) — a host may turn both on, and neither reads the other. The steps it describes run on the **issue, planning, question, PR-feedback, CI-fix, grill-me, clarity-assessment, refinement, revision and quorum** paths (Issues #2159, #2160, #2561, #2569) — the index is prepared once per run and the `codegraph` MCP entry and the prompt line are added together or not at all, so a run whose index did not build gets neither and proceeds without one. The trial protocol both repo-context switches are judged by — the bar, the sequential windows, the exclusions and the figure sources — is [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
 | RTK output | `rtk_output.enabled` | `true` | Whether this host runs the agent's Bash commands through RTK, the output filter trialled by Issue #2328. On by default since Issue #2432 — the owner's decision once it was seen to function in a live run, not a verdict on the trial's token bar: an unset or empty block filters, and a host that wants the raw output back sets `"rtk_output": {"enabled": false}`. **Reached by ten paths — issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum** (Issue #2380 added the key, Issue #2382 the module `worker/deno/lib/rtk_output.ts`, Issue #2383 the wiring into both implementation phases, Issue #2384 the wiring into the planning, question, PR-feedback and CI-fix paths, Issue #2561 the wiring into grill-me, and Issue #2569 the wiring into the clarification-family phases through `worker/deno/lib/phase_accelerators.ts`): while it is on, all ten are filtered alike. A path that spawns the agent more than once in a run — planning's draft, publish, retry and self-repair turns, a quorum plan-off's two drafts and judge, and the CI fix's post-quality retry — prepares RTK once and hands every spawn the same hook and prompt line, so the saved-token figure covers the whole run from one baseline. An **issue** run's run-stats comment reports it (Issue #2385) on one `RTK:` line beneath the `CodeGraph:` line and above the cumulative issue total — `- **RTK:** ok — 12,340 tokens saved` (the bare `ok` when the saved-token figure could not be read), `- **RTK:** failed`, `- **RTK:** off` on a host that opted out, or `- **RTK:** unsupported (gemini)` naming the provider. It is a status line, never a cost line, so it never moves the published issue total. A **question** round's run-stats comment, a **planning** round's published stats — on its failure path too — and a **grill-me** round's stats comment carry the same line, and since Issue #2561 the planning and grill-me comments carry the `Graft:` and `CodeGraph:` lines above it as well. The clarity-assessment, refinement, revision and quorum stats comments carry all three lines too (Issue #2569) — though clarity assessment and quorum post theirs only on a degraded run. A **PR-feedback** or **CI-fix** round's run-stats comment, posted on the PR it worked on, carries the `Graft:`, `CodeGraph:` and `RTK:` lines too, above the cumulative PR total ([One cost/model stats comment per run](MODEL-AND-CACHING.md#one-costmodel-stats-comment-per-run)). Every issue run also publishes it to the post-run callbacks as the additive `rtk` block and the `VIBECODER_RTK_*` scalars (Issue #2386) — see [Callbacks](CALLBACKS.md). While on, it adds RTK's `PreToolUse` Bash rewrite hook to the `--settings` payload of every Claude spawn on the ten wired paths (issue, planning, question, PR-feedback, CI-fix, grill-me, clarity assessment, refinement, revision and quorum), so `git status` runs as `rtk git status`, and one line in the prompt telling the agent its Bash output is filtered and that `rtk recall` shows a failed command's full output. Codex receives the same worker-authored hook through per-spawn `-c hooks.PreToolUse` configuration with `features.hooks=true` and `--dangerously-bypass-hook-trust`, without writing the operator's `~/.codex`. Codex normalises shell input to `Bash` with a string `command`, so RTK needs no shim. Support is declared by the provider seam's `supportsPreToolUseHooks` capability: Claude and Codex can report `ok` and a saved-token delta; **Gemini and DeepSeek** record `unsupported` and proceed without it. When the switch is off, Codex receives no RTK hook configuration or hook-trust flag. RTK never fails a run: a missing `rtk` binary, a preflight that times out or exits non-zero, or a gain read that returns no usable figure, is logged as `[RTK_UNAVAILABLE]`, recorded as status `failed`, and the run carries on unfiltered — the fault is surfaced, never swallowed as a clean pass. The block accepts only `enabled`; a non-object block, or a non-boolean `enabled`, fails the config load naming `rtk_output.enabled` rather than reading as the default. It is independent of the repo-context switches `graft_context.enabled` and `codegraph_context.enabled` — a host may turn any combination on, and none reads another. The trial protocol it is judged by — the bar, the window, the comparison rule and the verdict template — is [RTK output trial](RTK-OUTPUT-TRIAL.md), a sibling of [Repo-context Trial](REPO-CONTEXT-TRIAL.md). |
-| TokenEconomizer | `token_economizer.enabled` | `false` | Whether this host switches on the TokenEconomizer plugin trial (Issue #4955, part of #4953). The `token_economizer` block has four keys: `enabled`, off by default, so an unset block means a run is unchanged; `learnings_repo`, the private `owner/name` repository that holds the learnings, required when `enabled` is `true`; `microskills`, one of `off`, `envfacts`, `distiller` or `envfacts+distiller` (default `envfacts+distiller`); and `loopguard`, one of `off` or `nudge` (default `nudge`). A non-object block, a non-boolean `enabled`, a `learnings_repo` that is not `owner/name` (checked even when disabled), a missing `learnings_repo` when enabled, or a `microskills` or `loopguard` value outside its list fails the config load naming the key, and an unknown key inside the block warns. Accepted and validated, but not read yet: #4956 will wire it into runs; today a run is the same whatever it is set to. The protocol it is judged by is [TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md). |
+| TokenEconomizer | `token_economizer.enabled` | `false` | Whether this host switches on the TokenEconomizer plugin trial (Issue #4955, part of #4953). The `token_economizer` block has four keys: `enabled`, off by default, so an unset block means a run is unchanged; `learnings_repo`, the private `owner/name` repository that holds the learnings, required when `enabled` is `true`; `microskills`, one of `off`, `envfacts`, `distiller` or `envfacts+distiller` (default `envfacts+distiller`); and `loopguard`, one of `off` or `nudge` (default `nudge`). A non-object block, a non-boolean `enabled`, a `learnings_repo` that is not `owner/name` (checked even when disabled), a missing `learnings_repo` when enabled, or a `microskills` or `loopguard` value outside its list fails the config load naming the key, and an unknown key inside the block warns. `enabled` is read by the run launch decision: when `true`, the implementation, PR-feedback and CI-fix Claude runs load the plugin, and a disabled host's runs are unchanged. `microskills` is clamped to `envfacts` whatever is set (`distiller` and `envfacts+distiller` launch as `envfacts`, and `off` stays `off`). `loopguard` maps to `TE_LOOPGUARD`. The worker selects an audited hook adapter through `TE_PYTHON`; cached context is fenced as untrusted data and rejected above four bullet facts or the upstream 600-character estimate for 150 tokens. A hook failure latches the trial off and reports to #4959; the local stop file does not protect against a deliberately hostile same-UID agent. `learnings_repo` is validated but not read yet: #4957 will persist the learnings to it, so it changes no run today. The protocol it is judged by is [TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md). |
 | Max auto-fix attempts          | `max_auto_fix_attempts`          | `3`        | Automatic fix attempts per **failure signature** before the worker closes the PR and redoes its issue (Issue #4304). See [Auto-fix attempt cap](#-auto-fix-attempt-cap). |
 | Blocking-PR stall threshold    | `blocking_pr_stall_threshold_seconds` | `7200` | Seconds a PR blocking a `work-on` issue may sit red or carry an unanswered authorised comment before the watchdog repairs it (sync and rerun once, then abandon and redo), or sit green and unmerged before the watchdog tries to merge it. See [Blocking-PR stall watchdog](#-blocking-pr-stall-watchdog). |
 | Fleet PR slots                 | `fleet_pr_slots`                 | `8`        | How many fleet PRs may be open at once on a repository's **default branch** before a non-milestone issue is held — the owner's rule is one fleet PR per slot (Issue #2663). Set it to the fleet's total slot count: the sum of every host's `max_concurrent_issues`. No host's config carries the fleet's size, so the default cannot be derived; `8` is the ceiling of `max_concurrent_issues`, so one host at its maximum never holds itself and four hosts at the default two slots fill it exactly. Only fleet PRs count — `github_user` plus `fleet_pr_authors` ∪ `service_accounts` — never a human's. Milestone issues are unaffected: each `milestone/*` branch still holds one PR, so several milestones run several PRs at once. A non-positive or non-integer value falls back to `8`. Per repository via `repo_config.<repo>.fleet_pr_slots`. See [Open PR blocking](workflows/issue-processing.md). |
@@ -2693,6 +2728,13 @@ only need to adjust `claude_no_output_timeout` — lowering it detects stuck
 processes faster; raising it allows for longer periods of Claude "thinking"
 between outputs.
 
+Issue work arms this watchdog too (Issue #5062); it used to run with it off, so
+a silent agent turn lasted until the launcher watchdog reaped the container. The
+agent's stream is silent while a single tool call runs, so one foreground
+command that runs longer than `claude_no_output_timeout` (a slow test suite or
+build inside one shell call) is killed as stuck: raise the key on a host whose
+repositories have a gate that slow, or set it to `0` to switch the watchdog off.
+
 The reactive phases do not inherit the issue-work budget: `pr_feedback_timeout`
 and `ci_fix_timeout` cap at 1800s (30 minutes), `planning_timeout` at 1800s, and
 a grill-me round at `grill_me_timeout` (3600s). Each has its own
@@ -2927,8 +2969,8 @@ the full set of changed-file checks. PR-review feedback runs its independent fix
 without pre-flight configuration; persistent findings can block the push.
 A fleet babysitter repair is gated inside its container before it reports
 ready: the unit tests selected for its uncommitted changes, markdownlint when
-configured, the ShellCheck policy and the cargo-deny gate run there, but not
-the formatters or linters (Issue #4930; see
+configured, the ShellCheck policy, the cargo-deny gate and the gitleaks secret
+scan (Issue #5121) run there, but not the formatters or linters (Issue #4930; see
 [babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
 Custom PR prompts use the agent's pre-push hook, which runs changed-file checks
 and configured pre-flight commands when the agent pushes; the worker verifies
@@ -4935,8 +4977,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `requires_screenshots`  | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
 | `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives. |
 | `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, that the named test, run by the worker in a disposable checkout, passes at the head and fails with the merge-base versions of the changed non-test files restored (only Deno and Rust tests can be executed today, so a security fix whose cited test is in another language blocks as not checked), and additionally that the summary states the original trigger is closed with no trivial bypass. A diff that cannot be computed, or a discrimination run that cannot execute, blocks the PR rather than passing it. Opting out also skips the executed check. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
-| `skip_mutation_check` | boolean | When `true`, skips the diff-scoped mutation check that runs before the PR is raised. The check mutates only the lines the PR adds or changes and blocks the PR when a mutation survives the covering tests. Defaults to `false`. See [Diff-scoped mutation check](mutation-check.md). |
-| `mutation_check_budget_seconds` | integer | Time budget in seconds for one mutation-check run: a positive integer, default `300`, maximum `3600`. On exhaustion the gate warns that the remaining mutants are untested (never a pass); survivors found earlier still block. See [Diff-scoped mutation check](mutation-check.md). |
+| `skip_mutation_check`, `mutation_check_budget_seconds` | — | Retired by Issue #5095 and no longer read (the camelCase spellings `skipMutationCheck` and `mutationCheckBudgetSeconds` too). A config that still sets them loads and logs one warning naming the key; remove them. See [Diff-scoped mutation check (retired)](mutation-check.md). |
 | `skip_coverage_carryover_check` | boolean | When `true`, skips the coverage carry-over check that runs before the PR is raised. It always collects the PR diff, and blocks the PR when it cannot (including an unresolvable base ref). It runs tests only when the PR deletes or removes lines from a Deno test file, and then blocks the PR when a production line those tests used to execute is no longer executed at head, or when the runner fails (merge-base, worktree, a failing base or head test, or coverage export). Defaults to `false`. See [Coverage carry-over check](coverage-carryover-check.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
@@ -5218,17 +5259,24 @@ gates do (see that bullet):
      `.` or `./` names the whole config directory, as it does for deno, so
      `"include": ["."]` keeps every file in scope. An `include` the hook cannot
      represent (such as one with a `..` segment) leaves the file in scope for
-     deno to judge, and an unparseable `deno.json` is left unfiltered;
+     deno to judge. Scope discovery leaves an unparseable config unfiltered
+     for formatting; unit-test discovery below refuses it before validation;
    - `deno test` (Issue #4930), per outermost `deno.json` / `deno.jsonc`
-     directory whose config defines a `test:unit` task (`deno.json` is preferred;
-     an unreadable or unparseable config is left out). It runs the tests the
+     directory whose config defines a `test:unit` task (`deno.json` is preferred).
+     A config that cannot be read or parsed for unit-test discovery, including
+     an unrecognised `tasks` shape, blocks validation and names the config; its
+     tests are not silently omitted. A missing `deno.json` may fall through to
+     `deno.jsonc`, but an unreadable primary config cannot. Valid configs without
+     `test:unit` remain ineligible. These refusals apply to the repair modes too
+     and are code verdicts, not download outages. It runs the tests the
      dependency scan selects (not the whole suite, except as noted below): each
-     changed `_test.ts` file under
-     that directory's `tests/`; the same-named `tests/<name>_test.ts` of each
-     changed `.ts` source outside `tests/`; and tracked `tests/` files reached
-     by the reference and import rules below, whatever their own names. A `.ts` file under the
-     directory is a seed when it is changed, or when it sits under `tests/` and
-     its text names a changed file: it contains the file's repo-relative path,
+     changed `_test.ts` file under the directory, wherever it lives; for each
+     changed `.ts` source outside `tests/`, its same-named
+     `tests/<name>_test.ts` and its co-located `<name>_test.ts` beside it, when
+     tracked; and the tracked `_test.ts` files reached by the reference and
+     import rules below, whatever their own names. A `.ts` file under the
+     directory is a seed when it is changed, or when it is a `_test.ts` or sits
+     under `tests/` and its text names a changed file: it contains the file's repo-relative path,
      its base name (when no other tracked file shares it, else its last two path
      segments), or, for a doc, prompt or other non-`.ts` file, its directory
      followed by `/` (a test that lists the directory) or one of its ancestor
@@ -5236,9 +5284,21 @@ gates do (see that bullet):
      is also a seed when it calls `loadPrompt` with the changed prompt's literal
      type, including a wrapped call using a separate prompts-directory value.
      Tests importing a seed directly or transitively via relative `.ts`
-     specifiers are selected too. Dynamic loader types, computed paths and
-     import-map aliases can still be missed; this is a dependency heuristic,
-     and a widely imported module can select most of the unit suite. A change
+     specifiers are selected too. A local import-map alias (a target in the
+     directory's `imports` or `scopes` that starts with `./`, `../`, `/` or
+     `file:`) runs the directory's whole suite, as does a change under `prompts/`
+     below. A computed dynamic import under the directory (`import(` with no
+     space before the parenthesis, not a property access, whose argument is not
+     a plain string or a template literal without `${`) makes that file depend
+     on every module: it is a seed whenever the push changes a `.ts` file under
+     the directory, so the tests that import it are selected. A push that changes
+     only tests selects nothing for it. The check is a text match, so a string or
+     code comment that spells such a call does the same. Prompt loaders are
+     already covered by the prompts rule. A data file read
+     through a path the scan cannot see (no name, directory or template-literal
+     token) can still be missed, and CI's shards remain the backstop. This is a
+     dependency heuristic, and a widely imported module can select most of the
+     unit suite. A change
      under a `prompts/` directory, or to the directory's own `deno.json`,
      `deno.jsonc` or `deno.lock`, has readers the scan cannot resolve (a test
      reaches a prompt through a prompt builder, and every test depends on the
@@ -5281,9 +5341,11 @@ gates do (see that bullet):
      or a missing named export) names no test to compare and blocks. The
      `test:unit` runner stops after a failed parallel pass, so when a
      downgraded run never reached its serial pass the gate runs it
-     (`--serial-only`) and judges that result the same way. The time budget the
-     runner applies after both passes succeed is not re-run for a failed
-     parallel pass. A test file the
+     (`--serial-only`) and judges that result the same way. The runner also
+     holds a failed pass's (and any earlier green pass's) JUnit timings to the
+     unit-test time budget, and a downgrade stands only when that output reports
+     no budget failure (`FAIL: every test in …`) and no `TIME BUDGET NOT
+     CHECKED` line. A test file the
      push added, a base run that passes, a base the gate cannot check out (for
      example a deepen that failed, so no merge-base is found), or an output that
      names no failed test stays a block. Repair specs called `shellcheckOnly`,

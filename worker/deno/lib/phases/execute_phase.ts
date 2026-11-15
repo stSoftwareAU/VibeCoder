@@ -26,6 +26,7 @@ import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
  */
 
 import { redactSecrets } from "../secret_redaction.ts";
+import { tokenEconomizerSpawnOptions } from "../token_economizer_plugin.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
 import { fingerprintWorkerReviewPolicy } from "../pr_completion_report.ts";
 
@@ -1341,6 +1342,19 @@ async function executeClaudeBody(
   ) => {
     const checkpoints = startCheckpoints();
     try {
+      // The TokenEconomizer plugin for this spawn (Issue #4956). Resolved per
+      // invocation, so a stop recorded between a first and second call takes
+      // effect. External orchestration forwards the launch too: the runner's
+      // role guard loads it only for a Claude executor, never its reviewers
+      // or manager.
+      const tokenEconomizer = await tokenEconomizerSpawnOptions({
+        config: config.tokenEconomizer,
+        pluginDir: deps.claude.tokenEconomizerPluginDir,
+        workDir: config.workDir,
+        repo,
+        runKind: "implementation",
+        logger,
+      });
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
         retryOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[1],
@@ -1374,6 +1388,10 @@ async function executeClaudeBody(
           phase: "issue",
           repo,
           timeoutSeconds,
+          // The documented stuck-process detector (claude_no_output_timeout) must
+          // reach issue work too, or a silent agent turn runs until the launcher
+          // watchdog reaps the container (Issue #5062).
+          noOutputTimeout: config.claudeNoOutputTimeout,
           killAfterSeconds: config.claudeKillAfter,
           model: allocation && !allocation.external
             ? "sonnet"
@@ -1417,6 +1435,7 @@ async function executeClaudeBody(
           // path its entry merges into the same object rather than replacing
           // this one.
           ...settingsJsonOption(undefined, rtk.hookSettings()),
+          ...tokenEconomizer,
           logger,
           sessionResumeState: state.sessionResumeState,
           // Transcript tee file name (Issue #4169): agent-<runid>-<issue>.jsonl.

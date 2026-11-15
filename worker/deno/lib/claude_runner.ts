@@ -29,6 +29,7 @@ import { runGitCommand } from "./git_timeout.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
+  babysitterDipWaitWithin,
   HOST_DISK_PARK_NOTE,
   inFlightHostDiskGateEnabled,
   parkInFlightBuild,
@@ -56,6 +57,7 @@ import {
 } from "./memory_pressure.ts";
 import type { Logger, Result } from "../types.ts";
 import { createLogger } from "./logger.ts";
+import { redactSecrets } from "./secret_redaction.ts";
 import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
@@ -136,6 +138,14 @@ import {
   UnfinishedIssueExecutorError,
 } from "./issue_executor_enforcement.ts";
 import { settingsJsonOption } from "./rtk_output.ts";
+import {
+  monitorTokenEconomizerRun,
+  tokenEconomizerMaySync,
+} from "./token_economizer_control.ts";
+import {
+  overlayTokenEconomizerEnv,
+  type TokenEconomizerLaunch,
+} from "./token_economizer_plugin.ts";
 import { currentAgentRunOwner } from "./handler_watchdog.ts";
 import {
   type AgentActivitySnapshot,
@@ -506,7 +516,13 @@ export interface ClaudeRunResult {
 export interface RunClaudeOptions {
   /** Enforced read/research-only CLI; caller publishes the returned discussion. */
   discussionOnly?: boolean;
-  /** Enforced CLI sandbox for a provider-neutral role invocation. */
+  /**
+   * Marks a provider-neutral orchestrator role call, passed through to the
+   * provider request. It does not by itself provide a sandbox: Claude roles get
+   * tool denials through `disallowedTools`; Codex roles run unsandboxed in the
+   * container, and a read-only Codex role on the issue-run gate is held only
+   * by checkout restoration (`orchestration/issue_run_gate.ts`).
+   */
   orchestrationRole?: "manager" | "executor" | "reviewer";
   /** Retain each retry's usage for lifecycle follow-on attribution (Issue #3720). */
   captureInvocationStats?: boolean;
@@ -704,6 +720,14 @@ export interface RunClaudeOptions {
   /** Whether to attempt cheaper model fallback on rate limit (Issue #1113, default: true). */
   enableModelFallback?: boolean;
   /**
+   * Whether a model refusal with no cheaper model may move the invocation to
+   * the next provider in `agent_provider_fallback` (Issue #4034); default true.
+   * External orchestration role calls set it false: the role's provider passed
+   * the role-support, billing and read-only checks and another provider did
+   * not (Issue #4986).
+   */
+  enableProviderFallback?: boolean;
+  /**
    * Original model this invocation was downgraded *from* (Issue #2707).
    *
    * Set by `runClaudeWithRetry()` when a rate-limit or model-unavailable
@@ -727,6 +751,16 @@ export interface RunClaudeOptions {
    * and the argv is the one every host spawned before.
    */
   settingsJson?: string;
+  /**
+   * The TokenEconomizer plugin launch for this spawn (Issue #4956): the
+   * directory handed to `--plugin-dir`, and the allow-listed environment
+   * overlaid on the child's. Claude provider only; any other provider (a
+   * fallback such as Codex) is spawned without it. Omitted, the argv and the
+   * environment are the ones every host spawned before.
+   */
+  tokenEconomizer?: TokenEconomizerLaunch;
+  /** Notification transport; production uses the worker's guarded GitHub channel. */
+  tokenEconomizerNotify?: (args: string[]) => Promise<string>;
   /** Effort level override — low, medium, high, xhigh, max (Issue #1403, #2620). */
   effort?: string;
   /**
@@ -740,6 +774,8 @@ export interface RunClaudeOptions {
    * Naming a provider the running image did not install fails loudly, naming
    * the installed set (Issue #3234). Selection alone does not disable the
    * model-refusal provider fallback or provide filesystem/network isolation.
+   * A caller pins the provider with `enableProviderFallback: false`
+   * (Issue #4986).
    * Callers relying on a provider-specific tool restriction must check the
    * selected adapter and every permitted fallback.
    */
@@ -1344,10 +1380,23 @@ async function runClaudeWithTimeoutBody(
   // An agent in a checkout runs cargo and deno. Below the floor it does not
   // start (Issue #4360). No checkout means there is no build to bound, and
   // the gate is a no-op until production arms it.
+  //
+  // A dip the babysitter's live repairs explain is waited out first (Issue
+  // #5105), but never past the session's finish deadline: the wait leaves the
+  // minimum session behind, and the spawn clamp below re-reads the clock.
+  // With no run timeline the bound is the caller's own `timeoutSeconds`, so a
+  // call is never held longer than the session it asked for.
   if (cwd) {
     const park = options.discussionOnly
       ? await parkRunningBuild()
-      : await parkInFlightBuild(cwd);
+      : await parkInFlightBuild(
+        cwd,
+        undefined,
+        babysitterDipWaitWithin(
+          (sessionTimeoutSeconds - MIN_AGENT_SESSION_SECONDS) * 1000,
+          clock,
+        ),
+      );
     if (park) return { ok: false, error: new Error(park) };
   }
 
@@ -1411,6 +1460,27 @@ async function runClaudeWithTimeoutBody(
   // round or a long issue thread exceeds that — "Argument list too long"
   // at spawn, observed live in container mode.
   const promptViaStdin = provider.promptTransport === "stdin";
+  // The TokenEconomizer plugin (Issue #4956) is the Claude CLI's: any other
+  // provider, such as a Codex fallback, is spawned with neither the flag nor
+  // the environment. External orchestration shares the implementation options
+  // across roles: learned facts may reach only its executor.
+  let tokenEconomizerLaunch = provider.id === CLAUDE_PROVIDER_ID &&
+      (options.orchestrationRole === undefined ||
+        options.orchestrationRole === "executor")
+    ? options.tokenEconomizer
+    : undefined;
+  // A launch resolved before a stop (a re-run, a recovery run or a rate-limit
+  // retry reuses it) must not outlive that stop: re-check the latch for every
+  // spawn, failing closed on an unreadable or aliased controller directory.
+  if (
+    tokenEconomizerLaunch &&
+    !(await tokenEconomizerMaySync(tokenEconomizerLaunch.workDir))
+  ) {
+    logger?.warn(
+      "token-economizer: plugin off for this spawn, a stop is latched or the controller directory is unverified",
+    );
+    tokenEconomizerLaunch = undefined;
+  }
   const invocationRequest = {
     discussionOnly: options.discussionOnly,
     orchestrationRole: options.orchestrationRole,
@@ -1433,6 +1503,9 @@ async function runClaudeWithTimeoutBody(
       ? undefined
       : options.sessionResumeState,
     ...(mcpConfigPath ? { mcpConfigPath } : {}),
+    ...(tokenEconomizerLaunch
+      ? { pluginDir: tokenEconomizerLaunch.pluginDir }
+      : {}),
     // Issue #2344's advisor edit guard, merged with this spawn's own hooks
     // (Issue #2383's RTK settings) rather than one silently replacing the
     // other when a run has both on. The advisor guard remains Claude-only;
@@ -1529,7 +1602,30 @@ async function runClaudeWithTimeoutBody(
   // stranger's process tree.
   let childReaped = false;
 
+  let tokenEconomizerMonitor:
+    | ReturnType<typeof monitorTokenEconomizerRun>
+    | undefined;
   try {
+    if (tokenEconomizerLaunch) {
+      try {
+        tokenEconomizerMonitor = monitorTokenEconomizerRun(
+          tokenEconomizerLaunch,
+          options.tokenEconomizerNotify,
+          logger,
+        );
+      } catch (error) {
+        // Never fail the run on a monitor fault, but keep its redacted cause.
+        logger?.warn(
+          `token-economizer: plugin off, hook failure monitor could not start: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
+        );
+        tokenEconomizerLaunch = undefined;
+        delete invocationRequest.pluginDir;
+      }
+    }
     // Sanitise the child environment (Issue #3203): clear it and pass an
     // explicit copy with the GitHub App private-key material dropped, so a
     // prompt-injected model running unrestricted bash cannot read the PEM.
@@ -1550,6 +1646,15 @@ async function runClaudeWithTimeoutBody(
     // the checkout this run works in. On a runtime that honours the trim, and
     // on a developer host, this adds nothing.
     Object.assign(baseEnv, buildCacheEnvForCheckout(cwd, { source: baseEnv }));
+    // The TokenEconomizer plugin's allow-listed environment (Issue #4956),
+    // overlaid before the gh guard shim and the pre-push hook copy baseEnv, so
+    // both carry it to the agent. The plugin's own hooks and model calls are
+    // child processes of this agent: they inherit the same clear-env child
+    // environment and sit in the same descendant tree the timeout watchdogs
+    // and kill path track (Issue #4382).
+    if (tokenEconomizerLaunch) {
+      overlayTokenEconomizerEnv(baseEnv, tokenEconomizerLaunch);
+    }
     // Interpose the `gh` guard on the child's PATH (Issue #3643): the agent
     // holds GH_TOKEN and runs unrestricted bash, so without this its own `gh`
     // writes bypass the write-repo allowlist and the reserved-label guard the
@@ -2949,8 +3054,8 @@ async function runClaudeWithTimeoutBody(
           maxWaitSeconds: killAfterSeconds,
           logger,
         });
-        // Did the collection give the memory back (Issue #4382)? A VM that
-        // still reads high after its orphans are gone is evidence for the
+        // Did signalling descendants give memory back (Issue #4382)? A VM that
+        // still reads high after a complete or partial sweep is evidence for the
         // operator's restart decision — named, not inferred.
         if (externallyKilled && collection.collected.length > 0) {
           const after = await readMemoryPressureAtKill(
@@ -3047,6 +3152,20 @@ async function runClaudeWithTimeoutBody(
       ),
     };
   } finally {
+    if (tokenEconomizerMonitor) {
+      try {
+        await tokenEconomizerMonitor.close();
+      } catch (error) {
+        // Never fail the run on a stop-record fault, but keep its redacted cause.
+        logger?.warn(
+          `token-economizer: could not persist the trial stop; plugin failure was not reported as a clean result: ${
+            redactSecrets(
+              error instanceof Error ? error.message : String(error),
+            )
+          }`,
+        );
+      }
+    }
     // Flush the transcript's trailing partial line, whatever path exits.
     transcript?.close();
     // The shim directory is per-spawn — remove it once the child has exited.
@@ -3282,6 +3401,7 @@ async function runRetryLadder(
   const errorScanTailLines = options.errorScanTailLines ??
     DEFAULT_ERROR_SCAN_TAIL_LINES;
   const enableFallback = options.enableModelFallback ?? true;
+  const enableProviderFallback = options.enableProviderFallback ?? true;
   // The same seam the timeout path takes (Issue #1170 follow-up): the
   // backoff ladder sleeps in-process, and a test driving the ladder should
   // not have to spend five real minutes to see the second rung.
@@ -3831,11 +3951,23 @@ async function runRetryLadder(
           continue;
         }
         const refusingProvider = refusingDescriptor.id;
-        const nextProvider = providerAfterModelRefusal(
-          configuredProviderFallbackPolicy(),
-          refusingProvider,
-          providersRefusedModel,
-        );
+        // A caller that pinned the provider (an orchestration role call,
+        // Issue #4986) never consults agent_provider_fallback: the pinned
+        // provider passed the caller's checks and another one did not.
+        if (!enableProviderFallback) {
+          currentOptions.logger?.warn(
+            `[provider-fallback] ${refusingProvider} refused model ` +
+              `"${currentModel}" — the caller pinned the provider, so ` +
+              `agent_provider_fallback is not consulted (Issue #4986).`,
+          );
+        }
+        const nextProvider = enableProviderFallback
+          ? providerAfterModelRefusal(
+            configuredProviderFallbackPolicy(),
+            refusingProvider,
+            providersRefusedModel,
+          )
+          : undefined;
         if (nextProvider) {
           providersRefusedModel.push(refusingProvider);
           currentOptions.logger?.warn(

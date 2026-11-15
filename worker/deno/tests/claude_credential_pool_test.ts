@@ -912,6 +912,28 @@ function threeTokenPool(byToken: Record<string, FakeBudget>, now = NOW) {
   return { pool, probe };
 }
 
+Deno.test("selectAvailable excludes every subscription already tried by a round", async () => {
+  const { pool } = threeTokenPool({
+    "token-provider": healthy({ sevenDayRemaining: 0.9 }),
+    "token-provider-2": healthy({ sevenDayRemaining: 0.8 }),
+    "token-provider-3": healthy({ sevenDayRemaining: 0.7 }),
+  });
+  assertEquals(
+    (await pool.selectAvailable({
+      excludeLabels: ["provider", "provider-2"],
+      now: NOW,
+    }))?.label,
+    "provider-3",
+  );
+  assertEquals(
+    await pool.selectAvailable({
+      excludeLabels: ["provider", "provider-2", "provider-3"],
+      now: NOW,
+    }),
+    null,
+  );
+});
+
 Deno.test("selectAvailable - two of three credentials exhausted: the third is chosen, so the run stays on Claude (Issue #2637)", async () => {
   const { pool } = threeTokenPool({
     "token-provider-3": healthy({ fiveHourRemaining: 0.1 }),

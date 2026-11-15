@@ -84,6 +84,8 @@ export type PrLiveStateReading =
      * (Issue #2702) — the auto-merge sweep then never updates the branch.
      */
     changesRequested?: true;
+    /** The current head still needs a required approval. */
+    reviewRequired?: true;
     unknown?: undefined;
   }
   | PrNotOpenReading;
@@ -146,7 +148,7 @@ export async function readPrLiveState(
     };
   }
 
-  const { state, mergeable, armed, behind, changesRequested } =
+  const { state, mergeable, armed, behind, changesRequested, reviewRequired } =
     parsePrLiveFields(raw);
   if (state === "OPEN") {
     return {
@@ -155,6 +157,7 @@ export async function readPrLiveState(
       armed,
       behind,
       ...(changesRequested ? { changesRequested } : {}),
+      ...(reviewRequired ? { reviewRequired } : {}),
     };
   }
   if (state === "CLOSED" || state === "MERGED") return { open: false, state };

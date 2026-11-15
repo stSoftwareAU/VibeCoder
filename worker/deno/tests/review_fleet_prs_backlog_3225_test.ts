@@ -423,6 +423,7 @@ Deno.test("pass: approved behind PRs reach the shared readiness policy, while an
       calls.push(args);
       if (
         args[1] === "graphql" || args[1] === "--header" ||
+        args[1] === "--allow-escape-sequences" ||
         args[1]?.endsWith("/files") || args[1]?.endsWith("/comments") ||
         args[1]?.includes("/contents/")
       ) return await search.gh(args);

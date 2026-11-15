@@ -238,7 +238,8 @@ named test (up to ten, in turn under one budget) twice in a disposable checkout
 detached at the head commit, no remote, deleted afterwards). It runs once at
 the head (expect pass) and once with the merge-base versions of the branch's
 changed non-test files restored (expect fail); files the branch added stay at
-head. It uses the mutation gate's runner seams and runs
+head. It uses the runner seams the mutation gate had (Issue #5095 retired the
+mutation gate) and runs
 `deno test --no-check -A --filter <name> <file>` from the test's nearest
 `deno.json`, `deno.jsonc` or `deno.lock` directory, counting an outcome only
 when deno reports the named test's own `<name> ... ok` or `<name> ... FAILED`

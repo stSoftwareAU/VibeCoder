@@ -371,3 +371,21 @@ Deno.test("readPrLiveState - a CHANGES_REQUESTED review decision rides the same 
     );
   }
 });
+
+Deno.test("readPrLiveState reports when a required review is outstanding", async () => {
+  const reading = await readPrLiveState(
+    "owner/repo",
+    12,
+    () =>
+      Promise.resolve(
+        '{"state":"OPEN","mergeable":"MERGEABLE","autoMergeRequest":{},"mergeStateStatus":"BEHIND","reviewDecision":"REVIEW_REQUIRED"}',
+      ),
+  );
+  assertEquals(reading, {
+    open: true,
+    mergeable: "MERGEABLE",
+    armed: true,
+    behind: true,
+    reviewRequired: true,
+  });
+});
