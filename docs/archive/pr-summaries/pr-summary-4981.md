@@ -22,27 +22,26 @@ changed. Closes #4981.
 
 ### Essential Design Decisions
 
-- The comments say the container is the boundary, and that
-  `orchestrationRole` itself adds no read-only control. Checkout restoration
+- The comments say the container is the boundary, and that `orchestrationRole`
+  itself adds no read-only control. Checkout restoration
   (`worker/deno/lib/orchestration/read_only_guard.ts`) is applied by the
-  issue-run gate (`worker/deno/lib/orchestration/issue_run_gate.ts`) for a
-  Codex manager or reviewer only, and does not deny Bash. Any other caller
-  supplies its own control: the review round (`worker/deno/lib/review_round.ts`,
+  issue-run gate (`worker/deno/lib/orchestration/issue_run_gate.ts`) for a Codex
+  manager or reviewer only, and does not deny Bash. Any other caller supplies
+  its own control: the review round (`worker/deno/lib/review_round.ts`,
   `orchestrationRole: "reviewer"`) uses its PreToolUse guard hook and a
   read-only checkout. The comments never call restoration an OS sandbox.
 - The `AgentInvocationRequest.orchestrationRole` and
-  `RunClaudeOptions.orchestrationRole` comments scope the "held only by
-  checkout restoration" claim to read-only Codex roles on the issue-run gate,
-  because a Claude role also gets enforced tool denials.
+  `RunClaudeOptions.orchestrationRole` comments scope the "held only by checkout
+  restoration" claim to read-only Codex roles on the issue-run gate, because a
+  Claude role also gets enforced tool denials.
 - The `buildCodexArgs` JSDoc said a resumed role run sets `sandbox_mode` and a
   fresh one passes `--sandbox`. Neither is true since Issue #4356, so it now
   says that no role call, fresh or resumed, passes either, and that
   STANDARD_FLAGS bypass the CLI sandbox.
 - Two comments beyond the issue's three are fixed too. The first,
   `RunClaudeOptions.orchestrationRole` in `worker/deno/lib/claude_runner.ts`,
-  made the same "Enforced CLI sandbox" claim. The second is the
-  `buildCodexArgs` JSDoc in `worker/deno/lib/codex_executor.ts`, described
-  above.
+  made the same "Enforced CLI sandbox" claim. The second is the `buildCodexArgs`
+  JSDoc in `worker/deno/lib/codex_executor.ts`, described above.
 - Preventing an orchestration call from switching to an unvetted provider is
   left to #4986, as the issue says.
 
@@ -92,8 +91,8 @@ scan' test races a setTimeout(0) and fails under parallel load (filed this run).
 - No test added or changed. The diff edits only comments.
 - `deno fmt`, `deno check` on the three edited `lib/` files, and
   `deno test -A tests/agent_provider_codex_test.ts
-  tests/codex_role_read_only_guard_4356_test.ts` (under `worker/deno/`) on the
-  final head passed: `ok | 29 passed | 0 failed`.
+  tests/codex_role_read_only_guard_4356_test.ts`
+  (under `worker/deno/`) on the final head passed: `ok | 29 passed | 0 failed`.
 - `./quality.sh` on head `9bc77bcbd`: every stage passed except `deno tests`.
   Its parallel pass gave `FAILED | 34581 passed | 1 failed`. The one failure was
   `worker/deno/tests/ephemeral_root_telemetry_5105_test.ts` "the registered
