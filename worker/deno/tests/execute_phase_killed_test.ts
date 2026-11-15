@@ -16,6 +16,7 @@
 import { assert, assertEquals } from "@std/assert";
 import {
   TURN_LIMIT_HEADING,
+  USAGE_LIMIT_HEADING,
   workOnIssueExecuteClaude,
 } from "../lib/phases/execute_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -301,6 +302,36 @@ Deno.test("execute_phase - a killed run whose output quotes the turn-limit headi
     result.runnerCalls,
     2,
     "a kill is still retried once, whatever its output quotes",
+  );
+});
+
+Deno.test("execute_phase - a killed run whose output quotes the usage-limit heading keeps its single retry (Issue #5037)", async () => {
+  // The agent's own output, quoted in the killed reason, names the usage-limit
+  // heading. Only the worker-written usage-limit reason may skip the retry.
+  const result = await runPhaseSequence([
+    {
+      ...KILLED_OK_PRESSURE,
+      output: `Running the full quality gate\n${USAGE_LIMIT_HEADING}`,
+    },
+  ]);
+  assertEquals(result.status, "failure");
+  assert(
+    (result.reason ?? "").includes(USAGE_LIMIT_HEADING),
+    `the quoted heading reaches the killed reason: ${result.reason}`,
+  );
+  assertEquals(detectFailureCategory(result.reason ?? ""), "killed");
+  assertEquals(
+    result.runnerCalls,
+    2,
+    "a kill is still retried once, whatever its output quotes",
+  );
+  assert(
+    result.warns.some((w) => w.includes("Retrying infrastructure failure")),
+    `the retry is logged: ${result.warns.join(" | ")}`,
+  );
+  assert(
+    !result.warns.some((w) => w.includes("subscription window is spent")),
+    "the usage-limit skip must not fire on a quoted heading",
   );
 });
 
