@@ -452,9 +452,14 @@ flowchart TD
   last-log times, the silence before capture, the guest-probe state and the
   guest memory and pressure figures. The last step logged is the last one the
   log reported, so the
-  wedge is in or after it; it is one of `pre-PR verifier`, `mutation check`,
-  `coverage carry-over check`, `quality gate`, `agent turn` or `unknown`,
-  matched from a fixed table of log patterns; no log text is posted with it. It
+  wedge is in or after it; it is one of `pre-PR verifier`,
+  `coverage carry-over check`, `quality gate`, `agent turn`, a setup step
+  (`setup: issue claim`, `setup: claim churn check`, `setup: repository setup`,
+  `setup: heartbeat start`, `setup: default branch sync`,
+  `setup: feature branch` or `setup: pre-setup command`, each logged as the
+  step starts, Issue #5128) or `unknown` (`mutation check` appears only for
+  logs written before Issue #5095 retired that step), matched from a fixed
+  table of log patterns; no log text is posted with it. It
   is not part of the dedup signature. Posted facts must match the launcher
   shapes: hostname, `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run
   id (or `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the

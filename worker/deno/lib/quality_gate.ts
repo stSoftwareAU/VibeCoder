@@ -61,6 +61,7 @@ import { runMermaidCheck } from "./mermaid_check.ts";
 import { runMarkdownlintCheck } from "./markdownlint_check.ts";
 import { runSemgrepCheck } from "./semgrep_check.ts";
 import { runCheckovCheck } from "./checkov_check.ts";
+import { runGitleaksCheck } from "./gitleaks_check.ts";
 import { checkReleaseTagRuleset } from "./release_tag_ruleset_check.ts";
 import {
   RELEASE_TAG_RULESET_PATH,
@@ -1294,6 +1295,20 @@ async function runCheckovQualityCheck(
 }
 
 /**
+ * Local gitleaks scan (Issue #5121) — the same commit-range scan the blocking
+ * `gitleaks / gitleaks` PR check runs, so a committed secret is met before the
+ * push rather than after it. SKIPPED loudly, with the reason, when no pinned
+ * gitleaks is reachable on a host; FAILED inside the fleet image, which bakes
+ * it in.
+ */
+async function runGitleaksQualityCheck(
+  config: QualityGateConfig,
+): Promise<CheckExecutionResult> {
+  const result = await runGitleaksCheck(config.scriptDir);
+  return { name: "gitleaks", status: result.status, output: result.output };
+}
+
+/**
  * Whether a committed ruleset payload is present in this checkout.
  *
  * Only a genuine absence answers `false` — the worker's gate runs over
@@ -1882,6 +1897,14 @@ export async function runQualityGate(
     await payloadExists(`${config.scriptDir}/.github/workflows/checkov.yml`)
   ) {
     mainChecks.push(() => runCheckovQualityCheck(config));
+  }
+
+  // Local gitleaks scan (Issue #5121) — only where the blocking `gitleaks.yml`
+  // workflow exists, so the stage mirrors a check the repo actually runs.
+  if (
+    await payloadExists(`${config.scriptDir}/.github/workflows/gitleaks.yml`)
+  ) {
+    mainChecks.push(() => runGitleaksQualityCheck(config));
   }
 
   // Release-tag ruleset reconciliation (Issue #1049) — only in a checkout that

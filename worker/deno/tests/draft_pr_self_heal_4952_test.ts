@@ -2,9 +2,8 @@
  * Tests for the orphaned fleet draft self-heal (Issue #4952).
  *
  * A fleet draft whose issue has no live claim and whose body does not open
- * with a draft-continuation or mutation-hold marker is marked ready, and its CI
- * is awaited, so the auto-merge sweep can arm it. Every other draft stays a
- * draft.
+ * with a draft-continuation marker is marked ready, and its CI is awaited, so
+ * the auto-merge sweep can arm it. Every other draft stays a draft.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -12,13 +11,29 @@
 import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   buildDraftContinuationBody,
-  buildMutationHoldDraftBody,
-  buildUnmetDraftBody,
   DRAFT_CONTINUATION_MARKER,
 } from "../lib/draft_continuation_pr.ts";
 import { syncPrBodyFromSummary } from "../lib/pr_body_sync.ts";
 import type { Logger } from "../types.ts";
 import { readyOrphanedDraftPr } from "../lib/draft_pr_self_heal.ts";
+
+/**
+ * A hold body as the worker wrote it for unmet criteria before Issue #5095
+ * retired that conversion. Drafts held then still carry it, so the self-heal
+ * must keep leaving them alone.
+ */
+function legacyUnmetHoldBody(issueNumber: number, body: string): string {
+  return [
+    DRAFT_CONTINUATION_MARKER,
+    "",
+    `> **Draft — not every acceptance criterion is met yet.** Part of #${issueNumber}. ` +
+    "The next run continues this branch; when it completes, the PR is " +
+    "marked ready and auto-merge armed, even with a criterion still unmet, " +
+    "and it says `Closes #N` unless an entry is `missing`.",
+    "",
+    body,
+  ].join("\n");
+}
 
 const REPO = "stSoftwareAU/VibeCoder";
 const SHA = "abc123";
@@ -156,14 +171,10 @@ Deno.test("#4952 - a draft carrying the draft-continuation marker is held and ne
   assertEquals(run.readyCalls, []);
 });
 
-Deno.test("#4952 - a mutation-hold draft carrying the marker is held and never readied", async () => {
+Deno.test("#4952 - a legacy unmet-criteria hold draft carrying the marker is held and never readied", async () => {
   const run = await heal({
     pr: healthyDraft({
-      body: buildMutationHoldDraftBody(7, "Closes #7", {
-        job: "mutation",
-        workflow: "ci.yml",
-        comment: "survivors remain",
-      }),
+      body: legacyUnmetHoldBody(7, "Part of #7"),
     }),
     issue: OPEN_UNCLAIMED,
   });
@@ -498,7 +509,7 @@ Deno.test("#4952 - a continuation draft stays held after the body sync adopts it
 
 Deno.test("#4952 - a worker-marked hold draft stays held after the body sync refreshes it", async () => {
   const workerBody = "## Summary\n\nOld.\n\n<!-- vibe-worker-issue-7 -->";
-  const body = await syncedBody(buildUnmetDraftBody(7, workerBody));
+  const body = await syncedBody(legacyUnmetHoldBody(7, workerBody));
   assertEquals(body.startsWith(`${DRAFT_CONTINUATION_MARKER}\n\n`), true);
   const run = await heal({
     pr: healthyDraft({ body }),

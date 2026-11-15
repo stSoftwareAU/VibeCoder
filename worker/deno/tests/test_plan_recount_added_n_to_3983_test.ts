@@ -17,7 +17,6 @@ import {
   makeRunGh,
   makeRunGit,
   noopLogger,
-  notMutationChecked,
   verdictBlock,
   writeFile,
 } from "./support/drift_check_fixture.ts";
@@ -257,7 +256,6 @@ Deno.test("runPrFeedbackDriftCheck - a single-figure 'Added 5 tests to' line at 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },

@@ -123,6 +123,37 @@ The longer restart/token-refresh qualification belongs to #1927 and is recorded
 in [Subscription soak](SUBSCRIPTION-SOAK.md); this issue establishes the
 persistent authentication and billing boundary that qualification exercises.
 
+## Fleet PR review rounds
+
+A fleet PR review round runs in a container that does not mount the
+`vibe-agent-state` volume, so the worker's login on that volume is not
+reachable there. The round instead tries its own Codex home first:
+`<log_dir>/review-fleet-prs/codex` (`~/logs/review-fleet-prs/codex` with the
+fleet's config). `run.sh` creates it owner-only (0700) on the log directory's
+mount, which every round's container shares and which outlives the round, and
+passes its in-container path as `VIBE_REVIEW_CODEX_HOME`. `run.sh` writes no
+login into it and does not prune it.
+
+Log in to that directory once, with its own ChatGPT login, for example on the
+host with the Codex CLI:
+
+```bash
+CODEX_HOME=~/logs/review-fleet-prs/codex codex login --device-auth
+```
+
+with a `config.toml` in that directory holding
+`cli_auth_credentials_store = "file"` and `forced_login_method = "chatgpt"`
+(as above). When its `auth.json` is a login, the round runs Codex with
+`CODEX_HOME` set to it, and Codex refreshes the login there so it persists
+across rounds.
+
+It must be its own login. Do not copy the worker's seed or the worker's
+agent-state `auth.json` there. ChatGPT login refresh tokens rotate, so a copy
+shares its refresh token with the worker's and whichever refreshes first can
+sign the other out. The round refuses a copy of the seed. See
+[running-unattended.md](../.claude/skills/review-fleet-prs/references/running-unattended.md)
+for the log lines and the other credentials a round can use.
+
 ## Upstream reference
 
 OpenAI Codex authentication documentation:

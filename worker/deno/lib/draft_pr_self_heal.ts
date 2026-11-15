@@ -2,23 +2,24 @@
  * Ready an orphaned fleet draft PR so the auto-merge sweep can arm it
  * (Issue #4952).
  *
- * A fleet draft is normally a draft continuation (Issue #4146) or a mutation
- * hold (Issue #4617), and the completion path marks it ready when its issue
- * finishes. A draft whose issue has no live claim and whose body carries
- * neither marker is different: nothing will ever mark it ready, the sweep
- * skips every draft (Issue #1800), and it sits as a draft forever. This module
- * is the narrow self-heal for that case. It marks such a PR ready, waits for
- * the ready-for-review CI to start (Issue #4160), and reports whether the
- * sweep may arm it straight away.
+ * A fleet draft is normally a draft continuation (Issue #4146), and the
+ * completion path marks it ready when its issue finishes. A draft whose issue
+ * has no live claim and whose body lacks the draft-continuation marker is
+ * different:
+ * nothing will ever mark it ready, the sweep skips every draft (Issue #1800),
+ * and it sits as a draft forever. This module is the narrow self-heal for
+ * that case. It marks such a PR ready, waits for the ready-for-review CI to
+ * start (Issue #4160), and reports whether the sweep may arm it straight away.
  *
  * A PR is healed only when every rule below holds; any doubt leaves it a draft:
  * - it is a draft, and its head branch names an issue (`issue-<N>-…`);
  * - its body does not open with `DRAFT_CONTINUATION_MARKER`. The check is
  *   anchored, not a substring match: every hold body the worker writes puts the
- *   marker on its first line (`buildDraftContinuationBody`,
- *   `buildUnmetDraftBody` and `buildMutationHoldDraftBody` in
- *   `draft_continuation_pr.ts`), and the PR-body sync keeps a leading marker
- *   when it rebuilds a body (`buildSyncedPrBodyCandidate`), so a held draft
+ *   marker on its first line (`buildDraftContinuationBody` in
+ *   `draft_continuation_pr.ts`, and the hold bodies written before Issue #5095
+ *   retired the mutation hold), and the PR-body sync
+ *   keeps a leading marker when it rebuilds a body
+ *   (`buildSyncedPrBodyCandidate`), so a held draft
  *   stays held after a merge-conflict repair or a completion exit. A body that
  *   merely quotes the marker mid-body, in a code span or in prose, is not a
  *   hold and may be healed. A body that opens with it, after any leading

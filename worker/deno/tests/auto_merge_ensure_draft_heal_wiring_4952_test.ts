@@ -15,6 +15,7 @@ import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts"
 import { createLogger } from "../lib/logger.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { resetAnnouncedDraftsForTest } from "../lib/auto_merge_sweep.ts";
+import { _resetGhSpawnRunner, _setGhSpawnRunner } from "../lib/gh_spawn.ts";
 
 const REPO = "org/repo-a";
 const WORKER_USER = "worker-bot";
@@ -106,6 +107,13 @@ async function sweepOrphanedDraft(): Promise<string[][]> {
   const workDir = await Deno.makeTempDir({
     prefix: "auto-merge-draft-heal-wiring-",
   });
+  // The sweep continues into merge helpers whose defaults also spawn gh.
+  _setGhSpawnRunner(async (args) => ({
+    code: 0,
+    success: true,
+    stdout: await gh([...args]),
+    stderr: "",
+  }));
   try {
     const { deps } = await createProductionRunCoreDeps({
       repoDir: workDir,
@@ -124,6 +132,7 @@ async function sweepOrphanedDraft(): Promise<string[][]> {
     const result = await deps.ensureAutoMerge!();
     assert(result.ok, "the sweep itself must succeed");
   } finally {
+    _resetGhSpawnRunner();
     await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
   }
   return calls;

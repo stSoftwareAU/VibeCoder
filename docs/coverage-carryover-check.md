@@ -9,14 +9,14 @@ request, which is still raised.
 ## Why
 
 A fleet PR that rewrites or deletes a test the linked issue retires sometimes
-leaves a branch whose only test was that test. The mutation check mutates only
-the lines a PR adds or changes. The orphaned lines are unchanged, so that check
-does not look at them, and the branch can ship with no test reaching them. The target
-pattern is `rewritten-test-drops-live-branch`.
+leaves a branch whose only test was that test. A check limited to the lines a PR
+adds or changes, such as the diff-scoped mutation check that Issue #5095 retired,
+does not look at the orphaned lines, which are unchanged, so the branch can ship
+with no test reaching them. The target pattern is `rewritten-test-drops-live-branch`.
 
 ## When it runs
 
-The gate runs in the issue-run completion phase, beside the mutation check:
+The gate runs in the issue-run completion phase:
 after the PR summary is final and before the PR is raised. It joins the late
 summary gates and feeds the same single in-session note, which may change tests.
 
@@ -109,8 +109,8 @@ logs `the diff removes no lines from an existing Deno test file`.
 ## Exemption
 
 A carried line that no test can reasonably reach may be exempted by a PR-summary
-line naming the location and giving a reason, in the same convention as the
-mutation check:
+line naming the location and giving a reason, in the PR-summary exemption syntax that
+`parseMutationExemptions` (`worker/deno/lib/mutation_gate.ts`) reads:
 
 ```text
 - `worker/deno/lib/example.ts:42` — exempt (untestable): <reason>
@@ -123,8 +123,8 @@ Set `skip_coverage_carryover_check` (boolean, default `false`) under
 repository. There is no budget setting; the budget is fixed at 600 seconds
 (`DEFAULT_COVERAGE_CARRYOVER_BUDGET_SECONDS`).
 
-The test runs receive the repository's resolved `quality_credentials`, the same
-credentials the mutation check passes (see [Configuration](CONFIGURATION.md)).
+The test runs receive the repository's resolved `quality_credentials` (see
+[Configuration](CONFIGURATION.md)).
 
 ## Known limits
 

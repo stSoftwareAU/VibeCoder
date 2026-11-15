@@ -104,12 +104,6 @@ function makeRunGit(dir: string): DriftCheckDeps["runGit"] {
   return async (args: string[]) => await git(dir, args);
 }
 
-/** Fake `runMutationCheck` for tests not about the mutation gate (Issue #3750). */
-const notMutationChecked: DriftCheckDeps["runMutationCheck"] = async () => ({
-  kind: "not_applicable",
-  reason: "not under test",
-});
-
 /** Fake `runGh` that always answers the `baseRefName` read with `main`. */
 function makeRunGh(): DriftCheckDeps["runGh"] {
   return async () => "main\n";
@@ -266,7 +260,6 @@ Deno.test("runPrFeedbackDriftCheck - finding and mismatch trigger exactly one re
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -341,7 +334,6 @@ Subjectless entries are now rejected.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent: fixedRunAgent,
         logger: noopLogger(),
       },
@@ -387,7 +379,6 @@ Deno.test("runPrFeedbackDriftCheck - recovery that does nothing reports, writing
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -434,7 +425,6 @@ Deno.test("runPrFeedbackDriftCheck - an existing .pr_response_message is appende
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -488,7 +478,6 @@ Deno.test("runPrFeedbackDriftCheck - a misquoted finding is reported even when t
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -544,7 +533,6 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push that edits no Markdown mak
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -580,7 +568,6 @@ No tests changed.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -618,7 +605,6 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push that also drops .pr_respon
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -647,7 +633,6 @@ Deno.test("runPrFeedbackDriftCheck - a push whose only file is .pr_response_mess
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -677,7 +662,6 @@ Deno.test("runPrFeedbackDriftCheck - undefined beforeSha is skipped with no agen
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -701,7 +685,6 @@ Deno.test("runPrFeedbackDriftCheck - nothing changed since beforeSha is skipped 
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -724,7 +707,6 @@ Deno.test("runPrFeedbackDriftCheck - a push that changed nothing is logged at in
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent([], calls),
         logger: {
           info: (message) => lines.push({ level: "info", message }),
@@ -795,7 +777,6 @@ Subjectless entries are now rejected.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -927,25 +908,6 @@ Deno.test("formatDriftResidual - carries no issue number in its output (Issue #4
   assertEquals(text.match(/#\d+/g) ?? [], [], text);
 });
 
-Deno.test("formatDriftResidual - the mutation check section carries no issue number (Issue #4585)", () => {
-  for (
-    const residual of [
-      { mutationSurvivors: ["lib/rule.ts:2: flipped `>` to `<`"] },
-      { mutationNote: "a mutation note" },
-      { mutationCheckUnavailable: "mutation check failed to run" },
-    ]
-  ) {
-    const text = formatDriftResidual({
-      findings: [],
-      mismatches: [],
-      docsSweepProblems: [],
-      ...residual,
-    });
-    assertStringIncludes(text, "#### Mutation check");
-    assertEquals(text.match(/#\d+/g) ?? [], [], text);
-  }
-});
-
 // ---------------------------------------------------------------------------
 // Sanity-check note (not an executable test): the two breakages below were
 // applied by hand and the named tests confirmed red, then reverted.
@@ -1058,7 +1020,6 @@ Subjectless entries are now rejected.
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -1148,7 +1109,6 @@ Deno.test("runPrFeedbackDriftCheck - a finding naming a path outside the checkou
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent,
         logger: noopLogger(),
       },
@@ -1190,7 +1150,6 @@ Deno.test("runPrFeedbackDriftCheck - a red run result the recount cannot check i
       {
         runGit: makeRunGit(dir),
         runGh: makeRunGh(),
-        runMutationCheck: notMutationChecked,
         runAgent: makeRunAgent(
           [
             { ok: true, output: verdictBlock([]) },

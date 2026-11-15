@@ -88,10 +88,9 @@ calls it. Its row says so, and it is deliberately absent from
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `rust` 1.99.1 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
-| `cargo-mutants` 27.1.0 (arm64 built from source)    | `cargo-mutants`                           | The Rust crates' diff-scoped mutation check (`cargo mutants --in-diff`, Issue #3393)              |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
-| `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
+| `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR; this repo's own `quality.sh` gate (gitleaks stage, Issue #5121) |
 | `pwsh` 7.6.8 (PowerShell 7, tarball in `/opt/microsoft/powershell/7`) | `pwsh`                  | This repo's `.ps1` launcher suites — the gate runs the `run.ps1` ones and fails loud without it  |
 | `bats-core` 1.14.0                                  | `bats`                                    | NEAT-AI-core and NEAT-AI-scorer, whose gates run `bats tests/scripts` — skipped without it       |
 | `codespell` 2.4.3 (wheel in a `/opt/codespell` venv) | `codespell`                              | NEAT-AI-core's spelling check, and NEAT-AI-scorer's `scripts/spell-check.sh`, which exits 1 without it |
@@ -105,7 +104,9 @@ calls it. Its row says so, and it is deliberately absent from
 | `semgrep` 1.182.1 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 | `graft` 0.25.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
-`rust`, `cargo-deny`, `cargo-mutants`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
+`cargo-mutants` is no longer installed: the automatic mutation check it backed was retired from the completion and review-fix workflows (Issue #5095).
+
+`rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
 `bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci`, `tokeneconomizer` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
@@ -141,11 +142,13 @@ Nine consequences worth knowing:
   into a `/opt/semgrep` virtualenv rather than a single binary, and at roughly
   350 MB it is the image's largest toolchain — see
   [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
-- **`gitleaks` is enforced in CI, not by a `quality.sh`.** Neither
-  GRQ-AutoTrader (which has no `quality.sh`) nor NEAT-AI-Explore runs the
-  scanner from its local gate, so it is here for the agent's benefit: with the
-  binary in the image the same scan an agent's PR will face can be run before
-  the PR exists. The amd64 checksum is deliberately the digest the gitleaks
+- **`gitleaks` is enforced in CI for GRQ-AutoTrader and NEAT-AI-Explore; this
+  repository's own `quality.sh` gate runs it too.** Neither GRQ-AutoTrader
+  (which has no `quality.sh`) nor NEAT-AI-Explore runs the scanner from its
+  local gate. VibeCoder's gate does (the gitleaks stage, Issue #5121), so a
+  fleet run on VibeCoder scans its branch's commits before the PR exists. The
+  binary in the image is what lets the agent run that same scan itself, before
+  its PR exists. The amd64 checksum is deliberately the digest the gitleaks
   CLI fallback pins in both that scan and this repository's own
   `.github/workflows/gitleaks.yml`; the local half of that claim is enforced —
   `container_manifest_test.ts` fails the gate when the manifest pin and that
@@ -1327,15 +1330,15 @@ reading of `host-disk.json` can be minutes old (the launcher refreshes it on
 `HOST_DISK_REFRESH_SECONDS`, default five minutes), so the claim gate did not
 drain the pool until after the filesystem had gone read-only.
 
-Before an agent invocation in a checkout, a quality-gate run, a mutation
-check or a discrimination `cargo`/`deno`, the worker reads the same monitor
+Before an agent invocation in a checkout, a quality-gate run or a
+discrimination `cargo`/`deno`, the worker reads the same monitor
 with the cache skipped (`check({ force: true })`) and parks the step when the
 host is below the floor or, where the trim is refused, short of the floor
 plus the 25 GB headroom. The headroom park applies only to a checkout that
 holds a cargo project, because only cargo writes to the ephemeral cargo root;
 a Deno-only checkout is parked only below the floor (Issue #4413). The park is
 infrastructure: the reason carries
-`Parked as infrastructure (Issue #4360)`, it is not a security-fix or mutation
+`Parked as infrastructure (Issue #4360)`, it is not a security-fix
 gate verdict, and it does not earn `failed-once`. It keeps the `disk-full`
 diagnostic class but is not code-fixable, so the worker does not auto-file a
 worker-fault issue for a protective release; an actual ENOSPC or read-only
@@ -1357,6 +1360,32 @@ hold (capped at the 25 GB, so the floor is never relaxed): its build is
 incremental, and a run that was admitted and built is not refused a later
 step for the space its own build used (Issue #4423). Active polling does not
 prune other checkouts.
+
+A dip that babysitter reservations (live, or released and not yet reflected in a fresh launcher reading) explain is a wait, not a kill (Issue #5105). The fleet PR
+babysitter records each running repair container's, and each Chromium self-check container's, host footprint in `${HOME}/logs/host-disk-reservations` (one file per container).
+When the host is below the floor and the space the earliest live or released
+reservation has consumed since its admission, less the worker's own measured growth over
+that span, accounts for the whole shortfall, a running agent, `cargo` or
+`deno` keeps running, a new agent step waits (polling every minute for up to
+20 minutes, never past its finish deadline, or past its own timeout when no run
+timeline is set, less the minimum session) instead of parking, and the launch
+is not ended, because ending it or recreating the work volume would not return
+space the babysitter's containers hold. Other build steps (quality gate, merge
+fast checks, security-fix discrimination) do not wait. Below half the floor, or
+when the worker's own growth is unknown, nothing is credited. The worker's
+growth is unknown on a native `df`, and, where the ephemeral cargo root
+applies, while its latest measurement is missing, failed or still in progress
+(a probe that tracks a reservation, whether live, just released or first seen, reads the growth only when no walk of the root is in flight, so overlapping probes cannot leave a reservation without a baseline; and a reservation first seen takes its growth baseline from a fresh measurement of the root, even while the host is still above the floor). The
+babysitter removes its reservation file right after teardown, but the worker's
+low reading comes from `host-disk.json`, which the launcher rewrites every
+300 s; so a reservation the worker saw vanish keeps explaining the dip until
+the launcher reading it has adopted was measured after the release, or 15
+minutes pass. A released reservation is not outstanding for cargo admission. A dip that
+persists past the wait, or that the reservations do not explain, parks or ends
+the launch as above. Cargo
+admission subtracts the reserved bytes not yet consumed from the free space it
+tests against the floor plus headroom, so the worker and the babysitter admit
+against one budget.
 
 A recognised host-disk failure is released with its original cause and is
 not retried in-process: repeating the agent invocation cannot replenish the
@@ -1715,6 +1744,9 @@ build artefacts.
 - **One directory per account.** The repository's own commands run as `agent`
   and the worker's as `vibe` (Issue #571); neither can write a directory the
   other created, so the account the command drops to is part of the key.
+  The worker releases the agent's directories by removing them as `agent`
+  (`sudo -n -u agent -- rm -rf`), so a pass's release no longer leaves them to
+  the relaunch (Issue #5105).
 - **Nothing changes where the trim is honoured.** No launcher reading, an
   older launcher that writes no flag, a runtime that trims, or an explicit
   `CARGO_TARGET_DIR` — all leave the environment exactly as it was. The
@@ -1793,7 +1825,7 @@ build artefacts.
   released at every relaunch, but **within** a launch every byte written there
   is real host disk. Before a maintenance build, the host must have its floor
   **plus 25 GB of headroom** free where the trim is refused. Before each new
-  agent, quality, mutation or discrimination step, the same holds in a
+  agent, quality or discrimination step, the same holds in a
   checkout that holds a cargo project; a checkout with no cargo project is
   held to the floor only, and nothing is pruned for its step (Issue #4413).
   The cargo checkout's own target directories count towards the headroom for
@@ -1890,6 +1922,33 @@ caches 0.6 GB · other 0.2 GB
   root-only `lost+found` lands here, so a permanent permission denial never
   drowns out a real fault; a work root that cannot be read **at all** is
   reported as an error on the same line rather than as an empty volume.
+- **On a trim-refused runtime the line ends with the ephemeral cargo root**
+  (Issue #5105). Cargo builds there write to `/var/tmp/vibe-cargo-target` on the
+  container's own layer — real host disk, but outside the volume, so it is
+  **not** in the total and not in any bucket. The line measures it and appends
+  its size and largest target directories. A root that cannot be measured
+  reads `unknown`, never `0.0 GB`: a timeout, unreadable subtree, unrecognised
+  error or output with no size makes the figure unknown. If every diagnostic
+  names a vanished entry inside the measured directory, the printed size is
+  retained; a target released before measurement is omitted. This keeps normal
+  cargo build churn from hiding the root's size.
+  The host-disk estimate's detail names the same figure, because its
+  launch-baseline arithmetic subtracts only the volume's growth. On a
+  trim-refused runtime, a probing check below `ok` starts a background
+  refresh without delaying the floor verdict; where the trim is honoured no
+  refresh starts and the detail and floor-trip log say nothing about the root. Forced build probes cannot bypass the refresh throttle: there is
+  one walk in flight, followed by a quiet sample interval (60 s by default).
+  While it runs, the detail says `refresh in progress` and labels any earlier
+  figure as `last measured`. The next probing check after completion names
+  the new figure, or `unknown` with the cause if the refresh failed. Where
+  the trim is honoured the work-volume line is unchanged.
+
+  ```text
+  Work volume: total 18.4 GB — … · other 0.2 GB — ephemeral cargo root 12.3 GB
+  on the container's own layer, outside the volume (2 target dirs: GRQ-core-agent
+  9.1 GB, GRQ-core 3.2 GB) (Issue #5105)
+  ```
+
 - `work-volume-prune` prints the breakdown **before** its sweep, and again
   **after** when it actually removed something, so a reclamation's
   before/after is visible. An idle prune pays for one walk, not two.

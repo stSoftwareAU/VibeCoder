@@ -516,7 +516,7 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Six checks run, each only when it applies:
+The drift-check stages are listed below; removed and retired checks are marked:
 
 1. **Model drift pass** — only when the push changes a code file, a test
    file, a recognised source file (`isProseSourcePath`, including source under
@@ -620,50 +620,27 @@ Six checks run, each only when it applies:
    checked rather than given a recovery turn on its own — the same as a
    model pass that returns no verdict.
 5. **Line-citation check** — removed with the branch-outcomes facts file (Issue #4234). A test the summary names must still exist at the head.
-6. **Diff-scoped mutation check (Issue #3750)** — legacy implementation;
-   [#5095](https://github.com/stSoftwareAU/VibeCoder/issues/5095) tracks removal
-   from routine review fixes under the owner's testing-scope decision. The
-   following describes current code, not the desired workflow.
-
-   **Current behaviour** — in every review-fix run the
-   mutation check runs over the lines this run itself added: the working tree,
-   uncommitted edits and untracked files included, against the before-run head.
-   Lines that a base-branch merge brought in are excluded, and a conflict
-   resolution counts as the run's own. It uses the PR-raise gate's runner,
-   mutator, 40-mutant cap, `skip_mutation_check`,
-   `mutation_check_budget_seconds`, `quality_credentials` handling and
-   `exempt (untestable)` exemptions read from the PR summary. On a repository
-   with a blocking CI mutation job, summary exemptions are ignored here too;
-   the push is still not blocked. An unexempted
-   survivor is a hit for the recovery turn, which kills each survivor with a
-   test and may remove or fix a line a survivor shows is dead or wrong. A
-   budget, cap or runner error is reported, not a hit. Survivors still left are
-   reported in the PR reply; they do not block the push. The standalone
-   `pr-feedback-processor process` command passes the loaded repository
-   configuration to this check as the run loop does.
-   Details: [Diff-scoped mutation check](../mutation-check.md#review-fix-runs-issue-3750).
+6. **Mutation check** — retired by [#5095](https://github.com/stSoftwareAU/VibeCoder/issues/5095).
+   A review-fix run no longer runs a mutation check, so it reports no mutation
+   survivors and no `#### Mutation check` residual. See
+   [Diff-scoped mutation check (retired)](../mutation-check.md).
 
 Any hit gets **one** recovery turn — a Test Plan figure the recount could not
 check is a hit too (Issue #3740) — and the agent, with full tools, is asked
 to rewrite the listed sentences, recount the Test Plan, restate each unchecked
 figure as "`<file>` (N tests at head)" or remove it, and rewrite or remove
-each stale quoted sentence, without changing code, except that a mutation
-survivor (item 6) is answered with tests or docs, and production code only
-where the survivor shows a line is dead or wrong. The checks are then re-run, and
-the mutation check runs once more when survivors were found and the turn ran;
+each stale quoted sentence, without changing code. The checks are then re-run;
 a prose finding counts
 as fixed only when its quoted sentence was present before the recovery turn
 and is gone after it — a finding whose file was not one of the files the
 question was asked about is never read back, so it stays reported
 regardless of the recovery turn. A stale quoted sentence counts as fixed
 only when it is actually gone after the recovery turn — a correction
-appended below it leaves it standing, so it stays reported. A line-citation
-hit counts as fixed only when the re-run check no longer reports it. A
-model pass that returns no verdict is not a hit and does not trigger a
-recovery turn on its own; it goes straight to the reply note, and a named
-summary the quoted-sentence or line-citation check could not read at the
-head goes there too, along with any not-checked citation case the
-line-citation check reported. Whatever remains after the recovery turn —
+appended below it leaves it standing, so it stays reported. A model pass
+that returns no verdict is not a hit and does not trigger a recovery turn
+on its own; it goes straight to the reply note, and a named summary the
+quoted-sentence check could not read at the head goes there too.
+Whatever remains after the recovery turn —
 plus a model pass that returned no verdict and a summary that could not be
 checked — is appended to `.pr_response_message` under `### Drift check`, so it
 reaches the PR reply instead of being pushed silently.
@@ -672,15 +649,11 @@ and Test Plan counts still standing, a model pass that returned
 no verdict, a named summary the quote check could not read, and — under the heading "Test Plan
 figures the drift check could not verify" (Issue #3740) — each Test Plan figure
 still unchecked after the recovery turn, with its reason. A push whose only
-drift is an unchecked figure is therefore not reported clean. Surviving mutants
-go in the same residual under their own heading,
-`#### Mutation check`, and so do any budget, cap or runner-error
-reports from the mutation check; those reports never trigger a recovery turn
-by themselves.
+drift is an unchecked figure is therefore not reported clean.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount,<br/>quoted-sentence check,<br/>mutation check"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount,<br/>quoted-sentence check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]

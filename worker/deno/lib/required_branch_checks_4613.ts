@@ -288,25 +288,6 @@ async function readBranchContract(
   };
 }
 
-/**
- * The check contexts the base branch requires, from its effective rules and
- * classic branch protection (Issue #4617). Throws on a read or parse failure,
- * so a caller can tell "unknown" from "none required" (an empty list).
- */
-export async function readRequiredCheckNames(
-  repo: string,
-  base: string,
-  gh: (args: string[]) => Promise<string>,
-): Promise<string[]> {
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !base) {
-    throw new Error("Invalid repository or base for required-check read");
-  }
-  const { flatRules, protection } = await readBranchContract(repo, base, gh);
-  return [
-    ...new Set(requiredChecks(flatRules, protection).map((c) => c.context)),
-  ];
-}
-
 /** Read both effective rules and classic branch protection for a particular head. */
 export async function readRequiredChecksPassed(
   repo: string,
