@@ -78,3 +78,11 @@ No test was added or edited.
 - `deno fmt --check CODING-STANDARDS.md` fails both on this branch and on the
   unmodified base copy. The file was already unformatted before this change,
   and I did not reformat it.
+- `./quality.sh < /dev/null` with a 1500 s bound, run on commit `e23490db`
+  with this summary already written: every stage it reported passed, including
+  `markdownlint`, `mermaid`, `semgrep`, `gitleaks` and `deno tests` (1403.3 s).
+  Config integration and checkov were skipped by the host. The bound stopped
+  the gate after `deno tests`, so any stage after it did not run. That run
+  used up the budget for a re-run.
+
+<!-- vibe-quality-gate-skipped reason="the 1500 s bound stopped ./quality.sh after its deno tests stage passed; stages after it did not run, and the run budget could not cover a re-run" -->
