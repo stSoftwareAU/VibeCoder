@@ -105,11 +105,23 @@ function makeGh(prs: SearchPr[], store: Row[], failComments = false) {
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
     if (args[0] === "api" && args[1] === "graphql") {
+      const query = args.find((arg) => arg.startsWith("query=")) ?? "";
+      const selectsActorType = /\bauthor\s*\{[^}]*\b__typename\b/.test(query);
       return Promise.resolve(JSON.stringify({
         data: {
           search: {
             pageInfo: { hasNextPage: false, endCursor: null },
-            nodes: prs,
+            // GraphQL returns only requested author fields. This makes the
+            // ready-PR result depend on the production search projection.
+            nodes: prs.map((pr) => ({
+              ...pr,
+              author: pr.author === null ? null : {
+                login: pr.author.login,
+                ...(selectsActorType
+                  ? { __typename: pr.author.__typename }
+                  : {}),
+              },
+            })),
           },
         },
       }));
@@ -446,10 +458,6 @@ Deno.test("pass: a GraphQL Bot author matches the configured [bot] fleet login, 
       now: () => NOW,
     });
     assertEquals(asBot.ready.map((p) => [p.number, p.kind]), [[21, "fleet"]]);
-    // The search asks GraphQL for the author's type, or the gate never sees it.
-    const search = bot.calls.find((c) => c[0] === "api" && c[1] === "graphql")!
-      .join("\n");
-    assertEquals(/author \{ login __typename \}/.test(search), true);
 
     const user = makeGh([
       fleetPr(22, {
