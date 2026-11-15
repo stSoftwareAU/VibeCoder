@@ -55,10 +55,10 @@
  *    `repoCiCargoChecks` directly: `git_push.ts` `gateUnpushedCommits`
  *    (`commitAndPushPending` Step 1b and the completion phase).
  * 3. Then runs the repo's `cargo deny check` (Issue #4626) for eligible
- *    workflows when intermediate pushes, ShellCheck-only repairs or
- *    `ciCargoOnly` repairs change a cargo input (a Cargo manifest, lock file,
+ *    workflows when intermediate pushes, `repairChecksOnly` repairs or
+ *    `repairChecksWithCiCargo` repairs change a cargo input (a Cargo manifest, lock file,
  *    deny config or `.cargo/config.toml`). The whole-branch completion check
- *    (with a baseRef, and neither ShellCheck-only nor `ciCargoOnly`) runs it on
+ *    (with a baseRef, and neither `repairChecksOnly` nor `repairChecksWithCiCargo`) runs it on
  *    every branch for eligible workflows, regardless of changed cargo inputs.
  *    Missing tools or an unreachable advisory database are infrastructure
  *    failures, except for an invocation CI allows to fail, whose failures of
@@ -2809,8 +2809,8 @@ async function failsOnBaseToo(args: {
  * infrastructure fault, not a verdict. The agent's own hook sets `compareRef`
  * only for a run handed the PR base; with none, a failing check is a verdict.
  *
- * `ciCargoOnly` (repair pushes of repos with no pre-flight configuration, where
- * only the CI cargo checks should gate) runs nothing but those CI cargo checks,
+ * `repairChecksWithCiCargo` (CI-fix and PR-feedback repair pushes of repos with no
+ * pre-flight configuration, where only the CI cargo checks should gate) runs nothing but those CI cargo checks,
  * the repository's ShellCheck policy (Issue #4631), the cargo-deny gate
  * (Issue #4626), which every gate run applies, and, as every repair push does,
  * the `deno test` check and markdownlint for the pushed paths (Issue #4930):
@@ -2819,14 +2819,15 @@ async function failsOnBaseToo(args: {
  * and the repo's pre-flight commands are skipped. Only the Rust-relevant changed
  * files are planned for those, so no other checker's planning error can block
  * the push. With no
- * `findCiCargo`, `ciCargoOnly` plans and runs no cargo check. `shellcheckOnly`
- * plans no changed-file check at all, so it reads no CI cargo scan either.
+ * `findCiCargo`, `repairChecksWithCiCargo` plans and runs no cargo check. `repairChecksOnly`
+ * plans no formatter, lint, cspell, Floci or CI cargo check (its unit tests and
+ * markdownlint come from the pushed paths), so it reads no CI cargo scan.
  *
  * The cargo-deny gate runs for eligible workflows when the pushed paths include
  * a cargo input (a Cargo manifest, lock file, deny config or
- * `.cargo/config.toml`); intermediate pushes, ShellCheck-only repairs and
- * `ciCargoOnly` repairs all work this way. The whole-branch completion check
- * (with a baseRef, and neither ShellCheck-only nor `ciCargoOnly`) runs it on
+ * `.cargo/config.toml`); intermediate pushes, `repairChecksOnly` repairs and
+ * `repairChecksWithCiCargo` repairs all work this way. The whole-branch completion check
+ * (with a baseRef, and neither `repairChecksOnly` nor `repairChecksWithCiCargo`) runs it on
  * every branch for eligible workflows, regardless of changed cargo inputs. A
  * cargo-deny failure that shows the tool or advisory database could not be
  * reached is a {@link PrePushGateInfrastructureError}.
@@ -2835,15 +2836,26 @@ export async function runPrePushGate(opts: {
   cwd: string;
   stdin: string;
   preFlightCommands: readonly string[];
-  /** Repairs without configured pre-flight retain their existing formatter policy. */
-  shellcheckOnly?: boolean;
+  /**
+   * Repair gate for a repo with no pre-flight commands (spelling and
+   * merge-conflict repairs): runs only the shared repair checks (ShellCheck
+   * policy, cargo deny for pushed cargo inputs, and the pushed paths' unit
+   * tests and markdownlint) and no formatter, lint, cspell, Floci or CI cargo
+   * check.
+   */
+  repairChecksOnly?: boolean;
   timeoutSeconds?: number;
   runner?: PreFlightRunner;
   git?: PrePushGit;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   findCspell?: (repoRoot: string) => Promise<string | null>;
-  /** Run only the CI cargo checks (see the doc comment above). */
-  ciCargoOnly?: boolean;
+  /**
+   * Repair gate for CI-fix and PR-feedback repairs of a repo with no
+   * pre-flight commands: the shared repair checks plus the repo CI's cargo
+   * clippy and test-target compile; skips the pre-flight commands (see the doc
+   * comment above).
+   */
+  repairChecksWithCiCargo?: boolean;
   /**
    * Reads the repo's CI cargo checks (the worker passes `repoCiCargoChecks`).
    * Opt-in with no default: absent, no CI cargo check is planned or run. Only
@@ -2911,12 +2923,15 @@ export async function runPrePushGate(opts: {
     false,
   );
   if (!uncontained.ok) return infrastructureFail(uncontained.error);
-  // A shellcheck-only gate plans no changed-file check; the CI cargo checks
-  // need the changed files, so `ciCargoOnly` keeps them.
-  const changed = {
-    value: opts.shellcheckOnly && !opts.ciCargoOnly ? [] : contained.value,
-  };
-  const cargoChanged = opts.shellcheckOnly && !opts.ciCargoOnly
+  // A `repairChecksOnly` gate offers the formatter, lint, cspell and Floci
+  // planner no candidate files (its unit tests and markdownlint come from the
+  // pushed paths); the CI cargo checks need the changed files, so
+  // `repairChecksWithCiCargo` keeps them.
+  const formatterCandidates =
+    opts.repairChecksOnly && !opts.repairChecksWithCiCargo
+      ? []
+      : contained.value;
+  const ciCargoPaths = opts.repairChecksOnly && !opts.repairChecksWithCiCargo
     ? []
     : uncontained.value;
 
@@ -2927,11 +2942,14 @@ export async function runPrePushGate(opts: {
     );
   }
   const tracked = lsFiles.stdout.split("\0").filter((p) => p !== "");
-  // In CI-cargo-only mode just the Rust-relevant files are considered, so no
-  // other checker is looked up or planned.
-  const considered = opts.ciCargoOnly
-    ? changed.value.filter(isRustRelevant)
-    : changed.value;
+  // The selection the formatter, lint, cspell and Floci planner sees. In
+  // `repairChecksWithCiCargo` mode just the Rust-relevant files are selected,
+  // so no other checker is looked up or planned. An empty selection is not an
+  // empty change set: the pushed paths are still read for the unit tests,
+  // markdownlint and cargo deny.
+  const formatterSelection = opts.repairChecksWithCiCargo
+    ? formatterCandidates.filter(isRustRelevant)
+    : formatterCandidates;
 
   const needsMarkdownlint = contained.value.some((p) =>
     hasExtension(p, MARKDOWN_EXTENSIONS)
@@ -2946,7 +2964,7 @@ export async function runPrePushGate(opts: {
 
   const cspellInCi = await repoCiRunsCspell(opts.cwd, tracked);
   const needsCspell = cspellInCi &&
-    considered.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
+    formatterSelection.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
     [...CSPELL_ROOT_CONFIGS, ...CSPELL_NESTED_CONFIGS].some((n) =>
       tracked.includes(n)
     );
@@ -2961,7 +2979,7 @@ export async function runPrePushGate(opts: {
   // the scan cannot reproduce fails the push before anything runs, so it is
   // never dropped from the checked set without a word.
   let ciCargo: CiCargoScan | undefined;
-  if (opts.findCiCargo && cargoChanged.some(isRustRelevant)) {
+  if (opts.findCiCargo && ciCargoPaths.some(isRustRelevant)) {
     const scan = await opts.findCiCargo(opts.cwd, tracked);
     if (scan.unverifiable.length > 0) {
       return infrastructureFail(
@@ -2993,7 +3011,7 @@ export async function runPrePushGate(opts: {
       touched.value.some((p) => root === "." || p.startsWith(`${root}/`))
     ),
   );
-  const plan = planChangedFileChecks(considered, tracked, {
+  const plan = planChangedFileChecks(formatterSelection, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
@@ -3012,13 +3030,13 @@ export async function runPrePushGate(opts: {
       denoUnitTestRoots,
     ),
     ciCargo,
-    cargoChanged,
+    cargoChanged: ciCargoPaths,
   });
   if (!plan.ok) return fail(plan.error);
 
-  // CI-cargo-only mode keeps the CI cargo checks and, as every repair push
+  // `repairChecksWithCiCargo` mode keeps the CI cargo checks and, as every repair push
   // does, the pushed paths' unit tests and markdownlint (Issue #4930).
-  const checks = opts.ciCargoOnly
+  const checks = opts.repairChecksWithCiCargo
     ? plan.value.filter((c) =>
       c.cargo !== undefined || c.denoTestRoot !== undefined ||
       c.label === "markdownlint"
@@ -3150,7 +3168,7 @@ export async function runPrePushGate(opts: {
   const cargoDeny = await runCargoDenyGate({
     cwd: opts.cwd,
     changed: contained.value,
-    always: !opts.shellcheckOnly && !opts.ciCargoOnly &&
+    always: !opts.repairChecksOnly && !opts.repairChecksWithCiCargo &&
       opts.baseRef !== undefined,
     // The touched paths decide a workflow's `paths` filter only over the whole
     // branch; a push of the newest commits alone would miss earlier ones.
@@ -3174,7 +3192,7 @@ export async function runPrePushGate(opts: {
   }
 
   const preFlight = await runPreFlightGate(
-    opts.ciCargoOnly ? [] : opts.preFlightCommands,
+    opts.repairChecksWithCiCargo ? [] : opts.preFlightCommands,
     {
       cwd: opts.cwd,
       runner: opts.runner,
