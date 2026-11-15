@@ -22,9 +22,9 @@ import type {
 } from "./issue_finder_logger.ts";
 import {
   captureContentSnapshot,
-  reEncodeContentSnapshot,
   type ContentApprovalDeps,
   isAuthorTrusted,
+  reEncodeContentSnapshot,
   verifyContentUnchanged,
 } from "./content_approval_tracker.ts";
 import { resolveContentApprovalStateDir } from "./content_approval_state_dir.ts";
