@@ -11,7 +11,8 @@
  * review or a CI retry refreshes the summary instead of leaving it stale.
  *
  * The assertions run against the current templates, so a later edit that
- * drops the rule fails in CI.
+ * drops the rule fails in CI. Issue #5023 dropped "known defect" from the
+ * `ci_fix` rule, so only `pr_feedback` pins it.
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
@@ -46,7 +47,16 @@ Deno.test("issue - requires the PR summary to describe the final state of the br
   }
 });
 
-for (const type of ["pr_feedback", "ci_fix"]) {
+const TRUE_TO_HEAD_EXTRA_PINS: readonly [
+  type: string,
+  extra: readonly string[],
+][] = [
+  ["pr_feedback", ["known defect"]],
+  // Issue #5023 dropped the ci_fix trigger list that named "known defect".
+  ["ci_fix", []],
+];
+
+for (const [type, extra] of TRUE_TO_HEAD_EXTRA_PINS) {
   Deno.test(`${type} - keeps the PR summary true to the head`, async () => {
     const body = lower(await load(type));
 
@@ -55,7 +65,7 @@ for (const type of ["pr_feedback", "ci_fix"]) {
         "keep the pr summary true to the head",
         "docs/archive/pr-summaries/pr-summary-<issue>.md",
         "same push",
-        "known defect",
+        ...extra,
       ]
     ) {
       assertStringIncludes(body, required);

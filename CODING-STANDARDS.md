@@ -2100,7 +2100,9 @@ branch is red. A PR-feedback or CI-fix hand-off in `.pr_response_message`
 that names a follow-up issue is still recognised on a committed PR branch,
 although `prompts/pr_feedback/prompt.md` no longer offers one (Issue #4304). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
-in the same push when it changes what the summary says.
+in the same push when it changes what the summary says. A CI-fix run also
+records what its fix changed, even when the fix makes no existing claim false
+(`prompts/ci_fix/prompt.md`, "Keep the PR summary true to the head").
 
 **Prose about the PR's own change** is where that rule breaks most often: a
 sentence states the new behaviour more simply than the code implements it —
