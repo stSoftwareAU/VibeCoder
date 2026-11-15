@@ -110,7 +110,7 @@ Deno.test("review launch plan installs Claude and Codex without mounting worker 
         arg.slice("VIBE_EGRESS_ALLOW_HOSTS=".length).split(",")
       );
     assert(
-      allowedHosts.some((host) => host === "chatgpt.com"),
+      new Set(allowedHosts).has("chatgpt.com"),
       "Astra subscription endpoints must be allowed",
     );
   } finally {
@@ -118,54 +118,89 @@ Deno.test("review launch plan installs Claude and Codex without mounting worker 
   }
 });
 
-Deno.test("review image preparation builds base and extension once and checks the resulting image (Issue #5164)", async () => {
-  const plan = {
-    runtime: "fixture",
-    image: "review:abc",
-    imageInspectArgs: ["image", "inspect", "review:abc"],
-    buildArgs: ["build", "base"],
-    extensionBuildArgs: ["build", "extension"],
+/** A container runtime that models image state, not a scripted call order. */
+function fakeImageRuntime(
+  plan: {
+    image: string;
+    imageInspectArgs: string[];
+    buildArgs: string[];
+    extensionBuildArgs: string[];
+  },
+  options: {
+    present?: boolean;
+    baseBuildExit?: number;
+    extensionLeavesImage?: boolean;
+    stderr?: string;
+  } = {},
+) {
+  const state = { images: new Set<string>(), baseBuilt: false, builds: 0 };
+  if (options.present) state.images.add(plan.image);
+  const result = (code: number, stderr = "") =>
+    Promise.resolve({
+      success: code === 0,
+      code,
+      stdout: new Uint8Array(),
+      stderr: new TextEncoder().encode(stderr),
+      signal: null,
+    });
+  const run = (args: string[]) => {
+    if (args === plan.imageInspectArgs) {
+      return result(state.images.has(plan.image) ? 0 : 1);
+    }
+    state.builds++;
+    if (args === plan.buildArgs) {
+      if ((options.baseBuildExit ?? 0) !== 0) {
+        return result(options.baseBuildExit!, options.stderr);
+      }
+      state.baseBuilt = true;
+      return result(0);
+    }
+    // The extension can only be built from an existing base.
+    if (!state.baseBuilt) return result(1, "base image missing");
+    if (options.extensionLeavesImage !== false) state.images.add(plan.image);
+    return result(0);
   };
-  const calls: string[][] = [];
-  await ensureReviewImage(plan, (args) => {
-    calls.push(args);
-    return Promise.resolve({
-      success: calls.length !== 1,
-      code: calls.length === 1 ? 1 : 0,
-      stdout: new Uint8Array(),
-      stderr: new Uint8Array(),
-      signal: null,
-    });
+  return { state, run };
+}
+
+const REVIEW_IMAGE_PLAN = {
+  runtime: "fixture",
+  image: "review:abc",
+  imageInspectArgs: ["image", "inspect", "review:abc"],
+  buildArgs: ["build", "base"],
+  extensionBuildArgs: ["build", "extension"],
+};
+
+Deno.test("ensureReviewImage leaves a missing review image present and reuses an existing one (Issue #5164)", async () => {
+  const missing = fakeImageRuntime(REVIEW_IMAGE_PLAN);
+  await ensureReviewImage(REVIEW_IMAGE_PLAN, missing.run);
+  assert(missing.state.images.has(REVIEW_IMAGE_PLAN.image));
+
+  const cached = fakeImageRuntime(REVIEW_IMAGE_PLAN, { present: true });
+  await ensureReviewImage(REVIEW_IMAGE_PLAN, cached.run);
+  assertEquals(cached.state.builds, 0);
+  assert(cached.state.images.has(REVIEW_IMAGE_PLAN.image));
+});
+
+Deno.test("ensureReviewImage reports a failed build and a build that leaves the image absent (Issue #5164)", async () => {
+  const failing = fakeImageRuntime(REVIEW_IMAGE_PLAN, {
+    baseBuildExit: 17,
+    stderr: "download checksum mismatch",
   });
-  assertEquals(calls, [
-    plan.imageInspectArgs,
-    plan.buildArgs,
-    plan.extensionBuildArgs,
-    plan.imageInspectArgs,
-  ]);
-  calls.length = 0;
-  await ensureReviewImage(plan, (args) => {
-    calls.push(args);
-    return Promise.resolve({
-      success: true,
-      code: 0,
-      stdout: new Uint8Array(),
-      stderr: new Uint8Array(),
-      signal: null,
-    });
-  });
-  assertEquals(calls, [plan.imageInspectArgs]);
   await assertRejects(
-    () =>
-      ensureReviewImage(plan, () =>
-        Promise.resolve({
-          success: false,
-          code: 17,
-          stdout: new Uint8Array(),
-          stderr: new TextEncoder().encode("download checksum mismatch"),
-          signal: null,
-        })),
+    () => ensureReviewImage(REVIEW_IMAGE_PLAN, failing.run),
     Error,
     "download checksum mismatch",
   );
+  assertEquals(failing.state.images.size, 0);
+
+  const hollow = fakeImageRuntime(REVIEW_IMAGE_PLAN, {
+    extensionLeavesImage: false,
+  });
+  await assertRejects(
+    () => ensureReviewImage(REVIEW_IMAGE_PLAN, hollow.run),
+    Error,
+    "still missing",
+  );
+  assertEquals(hollow.state.images.size, 0);
 });

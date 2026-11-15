@@ -66,16 +66,24 @@ Backend/container changes only, with no UI changes.
 - `container_launch_plan_command_test.ts`: drive the real plan builder with
   a Claude-only configuration; require a different image containing both
   CLIs, Astra egress (`chatgpt.com` must be an exact entry in the parsed
-  `VIBE_EGRESS_ALLOW_HOSTS` list, compared by equality, never as a substring), and
-  unchanged credential mounts. Exercise preparation
-  ordering, cached reuse and a failed build's cause.
-- `review_round_test.ts`: exercise an actual missing executable, missing
-  Codex followed by successful Opus, and another Claude subscription's Opus
-  success before DeepSeek. Existing ordinary-failure tests still block
-  fallback and retain Codex environment isolation.
+  `VIBE_EGRESS_ALLOW_HOSTS` list, matched as a whole entry, never as a
+  substring), and unchanged credential mounts. Image preparation runs against
+  a stateful runtime fake that models image presence and the base-before-
+  extension build prerequisite. It asserts the resulting image state: a missing
+  image is built and present, a cached image triggers no build, a failed build
+  surfaces its stderr, and a build that leaves the image absent fails as
+  "still missing". No assertion inspects the order of runner calls.
+- `review_round_test.ts`: a provider fake decides each attempt from the model
+  and credential requested (per-model, per-subscription Claude quota; Codex
+  missing, out of quota or usable) and the tests assert the exit status and the
+  persisted review-run record. Cases: missing Codex followed by successful
+  Opus; missing Codex with no Opus quota reaching DeepSeek; an ordinary Fable
+  failure ending the round before any fallback; Opus finding the one
+  subscription with quota after earlier subscriptions refuse it; and a real
+  missing executable classified unavailable by `runCodexCli`. Existing tests
+  keep Codex environment isolation and the usage-limit-only fallback rules.
 - `review_round_wiring_test.ts`: extend the real three-subscription credential
   fixture through quota refusal on all three Opus candidates before DeepSeek.
-  The prior expectation of one Opus attempt is obsolete under the owner policy.
 - `review_fleet_prs_runner_test.ts`: assert that the runner requests the
   review-specific plan and reports a missing prepared image; retain claim
   release, escalation, token isolation and scheduling coverage.
@@ -98,13 +106,28 @@ exactly the same behaviour. No tests or assertions were removed or weakened.
 Validation:
 
 - Reproduced the existing architecture test failure before the refactor.
-- Provider, command launch-plan, review-round, wiring and runner suites:
-  168 passed, 0 failed.
-- Provider, command launch-plan and container-launch suites after merging
-  current `main`: 114 passed, 0 failed (overlaps the suite above).
+- Provider, command launch-plan, container-launch, review-round, wiring and
+  runner suites at the current head: 244 passed, 0 failed.
 - Changed modules passed type checking, formatting, lint and diff checks.
 - Direct JSR downloads are unavailable to Deno in this environment. The tests
   used a temporary import map to the locked published dependencies downloaded
   through curl; repository imports, dependency versions and lockfile remain
   unchanged. Full local quality is not claimed; hosted CI remains authoritative.
 - Merged current `main` without conflicts, preserving incoming changes.
+
+## Test changes against the base
+
+- `review_round_wiring_test.ts` (production-wiring fixture): the base expected
+  Opus to be attempted once on one subscription before DeepSeek, and the
+  fixture refused Opus only on the third subscription. That behaviour is
+  obsolete: the issue's policy is "Opus across the available Claude
+  subscriptions" before paid DeepSeek, so a Fable-specific cap no longer
+  excludes Opus on any subscription. The fixture now refuses Opus on every
+  provisioned subscription and the persisted attempt record expects three Opus
+  attempts before DeepSeek. Remaining behaviour: Fable rotation, Astra
+  isolation and DeepSeek completion assertions are unchanged. Covering path:
+  `worker/deno/tests/review_round_wiring_test.ts` (the edited production-
+  wiring test), plus `worker/deno/tests/review_round_test.ts::Opus tries other
+  Claude subscriptions before paid DeepSeek (Issue #5164)`.
+- `review_fleet_prs_runner_test.ts`: a diagnostic string rename; failure and
+  escalation behaviour are unchanged.
