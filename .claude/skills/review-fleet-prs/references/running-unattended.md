@@ -157,14 +157,11 @@ usage limit stops the chain. Each switch is logged once with an `INFO: ` prefix
 naming what it switched to. Running out of quota is never logged as an error.
 
 1. **The configured model.** Fable 5.2 at `high` by default.
-2. **Fable steps down.** A Fable round that hits a usage limit runs once more on
-   `claude-opus-5-5` at `xhigh`, on the same subscription.
-3. **Pool rotation.** When a round ends with the CLI's usage-limit refusal, it
-   logs `round hit the usage limit on subscription <label>` and runs once more
-   on the next subscription with budget left, but only when the token came from
-   a pool file. Subscriptions are logged by label (`provider`, `provider-2`,
-   …), never by value.
-4. **Codex.** When a Codex credential reaches the round (see _Which Codex
+2. **Pool rotation.** Try every other available Claude subscription once
+   before switching models. Labels are logged, never tokens. The observed
+   `You've reached your Fable limit. Switch to another model to continue.`
+   refusal counts as a model cap, even when the subscription has other quota.
+3. **Astra via Codex.** When a Codex credential reaches the round (see _Which Codex
    credentials reach a round_ below), the round runs `codex exec --json` on
    `gpt-6-astra` at reasoning effort `high`, and logs
    `INFO: round fell back to provider codex (model gpt-6-astra)`. It gets the same round prompt, plus a short note telling Codex to read the skill
@@ -196,7 +193,7 @@ naming what it switched to. Running out of quota is never logged as an error.
    puts `CODEX_HOME` on `vibe-agent-state`, which is still not mounted in a
    round, so that case logs
    `no Codex login at <home>/auth.json in the round (no auth.json); skipping the codex fallback`
-   and goes on to DeepSeek.
+   and goes on to Opus, then DeepSeek.
 
    The login in the round's Codex home must be its own. If its `auth.json` is
    a copy of the worker's one-time login seed
@@ -212,7 +209,10 @@ naming what it switched to. Running out of quota is never logged as an error.
    `cli_auth_credentials_store = "file"` and `forced_login_method = "chatgpt"`.
    Do not copy the worker's seed or the worker's agent-state `auth.json` there.
    Issue #5127 (a follow-up to Issue #5083) added this.
-5. **DeepSeek.** Only when Codex also hit its usage limit or has no credential,
+4. **Opus.** When Astra is unavailable or usage-limited, a configured Fable
+   round tries `claude-opus-5-5` at `xhigh` on the current Claude subscription.
+5. **DeepSeek.** Only after the eligible Fable, Astra and Opus attempts have
+   exhausted quota (or Astra has no credential),
    the round runs once more on the worker's **DeepSeek** provider
    (`deepseek-v4-pro`, in the worker's own pinned child environment: no Claude
    credential reaches the third-party endpoint), and logs

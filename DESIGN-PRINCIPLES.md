@@ -155,13 +155,15 @@ explicit fallback can also select a metered provider.
   `worker/deno/lib/babysitter_provider_choice.ts`. An operator who names
   DeepSeek explicitly as a provider is making a separate, deliberate choice,
   which is not overflow.
-- **Reviewer-round overflow.** The round runs on the Claude credential pool
-  first. Once the pool is exhausted, it moves to Codex (`gpt-6-astra`) when a
-  round's own Codex home holds its own login (Issue #5127), or a Codex API key
-  or a login on a mount the round shares reaches it (the agent-state volume
-  itself is not mounted), and only if Codex also hits its usage limit or has no
-  credential, to DeepSeek (`worker/deno/lib/review_round.ts`, run from
-  `.claude/skills/review-fleet-prs/scripts/run.sh`).
+- **Reviewer-round overflow.** Prefer **Fable → Astra → Opus → DeepSeek**.
+  Try Fable on every available Claude subscription once before Astra
+  (`gpt-6-astra`). A model-specific Fable cap triggers the chain without
+  marking the whole Claude subscription spent. Astra needs a credential
+  reachable inside the round, such as its own persistent Codex login
+  (Issue #5127). If Astra has no credential or no quota, try Opus on the
+  current Claude subscription, then DeepSeek as paid overflow. Other failures
+  stop the round. Implementation: `worker/deno/lib/review_round.ts`, launched
+  by `.claude/skills/review-fleet-prs/scripts/run.sh`.
 - **Fleet PR babysitter overflow.** The babysitter provider chooser prefers
   subscriptions and selects DeepSeek as logged overflow only when no eligible
   subscription has budget. The chooser fails loudly when no DeepSeek

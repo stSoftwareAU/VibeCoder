@@ -10,20 +10,13 @@
  * mode lands here: the round's subscription is chosen by the same Claude
  * credential pool the worker uses at start-up
  * ({@link createClaudeCredentialPool}), and a round the usage limit stopped
- * is run once more on the next subscription that still has budget
+ * is tried on each remaining subscription that still has budget
  * ({@link ClaudeCredentialPool.selectAvailable}), so one exhausted window
  * does not stop the fleet review while the pool holds another.
  *
- * When the whole Claude side is spent the round moves on along a fixed chain
- * (Issues #3632, #5081, #5083):
- *
- *   Fable 5.2 → Opus 5.5 `xhigh` on the same subscription
- *     → the Claude pool's next subscription with budget
- *     → Codex `gpt-6-astra` at `high` effort, when a Codex credential reaches the
- *       round: the round's own Codex home (`VIBE_REVIEW_CODEX_HOME`) holds a
- *       login of its own, or an API key / a login on a shared mount reaches
- *       it (the agent-state `CODEX_HOME` is not mounted in a round)
- *     → DeepSeek, in the worker's own pinned child environment
+ * Review preference: Fable across every available Claude subscription,
+ * then Codex Astra, then Opus on the current Claude subscription,
+ * then DeepSeek. Codex requires a credential reachable inside the round.
  *
  * Each link runs only once the one before it is spent. A usage limit is the
  * only thing that moves the round on: an attempt that fails for any other
@@ -160,7 +153,8 @@ export interface ReviewRoundDeps {
   ): Promise<string | undefined>;
   /**
    * Switch the round's environment to the best other subscription that still
-   * has budget, returning its label, or null when none has.
+   * has budget, excluding labels refused earlier in this round. Returns its
+   * label, or null when none has.
    */
   switchCredential(
     exclude: string,
@@ -213,15 +207,10 @@ export interface ReviewRoundDeps {
  * subscription, then the fallback chain when the subscription runs out
  * (Issues #3293, #5081, #3632, #5083):
  *
- * 1. a Fable round that hit a usage limit steps down to Opus on the same
- *    subscription;
- * 2. a held subscription that hit the limit is retried once on another with
- *    budget;
- * 3. the round runs once on Codex ({@link REVIEW_CODEX_MODEL}) with the same
- *    prompt, when a Codex credential reaches the round: the round's own
- *    Codex home (`VIBE_REVIEW_CODEX_HOME`) holds a login, or an API key /
- *    shared-mount login reaches it (Issue #5127);
- * 4. the round runs once on DeepSeek, when the attempt is still usage-limited.
+ * 1. try the configured model on every available Claude subscription;
+ * 2. try Codex Astra when its credential reaches the round;
+ * 3. for a configured Fable round, try Opus on the current subscription;
+ * 4. try DeepSeek last.
  *
  * A link runs only when the one before it ended on a usage limit. An attempt
  * that fails for any other reason ends the round at that point.
@@ -291,7 +280,7 @@ export async function runReviewRound(
     return result;
   };
 
-  const held = await deps.exportStartCredential(setEnv);
+  let held = await deps.exportStartCredential(setEnv);
   if (held !== undefined) {
     deps.log(`round on Claude subscription ${held}`);
   }
@@ -299,46 +288,26 @@ export async function runReviewRound(
     claudeIdentity(args),
     (stream) => deps.runClaude(args, env, stream),
   );
-  // Issue #5081: a Fable round that hit a usage limit first tries Opus on the
-  // same subscription — Fable's own cap is not the whole plan's.
-  const requested = argValue(args, "--model") ?? "";
-  if (
-    attempt.code !== 0 && /^(claude-)?fable/.test(requested) &&
-    usageLimited(attempt)
-  ) {
-    deps.log(
-      `INFO: round hit a usage limit on ${requested}; stepping down to ` +
-        `${REVIEW_STEP_DOWN_MODEL} on the same subscription`,
-    );
-    const stepDownArgs = withEffort(
-      withModel(args, REVIEW_STEP_DOWN_MODEL),
-      REVIEW_STEP_DOWN_EFFORT,
-    );
-    attempt = await runAttempt(
-      claudeIdentity(stepDownArgs),
-      (stream) => deps.runClaude(stepDownArgs, env, stream),
-    );
-  }
-  // A token that came from no pool file cannot say which one ran out, so
-  // rotating could hand it straight back: only a held label is rotated.
-  if (
-    attempt.code !== 0 && held !== undefined && usageLimited(attempt)
-  ) {
+  // Try every available subscription once before moving to Astra.
+  const tried = new Set<string>();
+  while (attempt.code !== 0 && held !== undefined && usageLimited(attempt)) {
+    tried.add(held);
     deps.log(
       `round hit the usage limit on subscription ${held}; selecting another`,
     );
     const next = await deps.switchCredential(held, setEnv);
-    if (next !== null && next !== held) {
-      deps.log(`INFO: retrying the round once on subscription ${next}`);
-      attempt = await runAttempt(
-        claudeIdentity(args),
-        (stream) => deps.runClaude(args, env, stream),
-      );
-    } else {
+    if (next === null || tried.has(next)) {
       deps.log("no other subscription has budget");
+      break;
     }
+    held = next;
+    deps.log(`INFO: retrying the round on subscription ${next}`);
+    attempt = await runAttempt(
+      claudeIdentity(args),
+      (stream) => deps.runClaude(args, env, stream),
+    );
   }
-  // Issue #5083: when every Claude path is spent the round runs once on Codex
+  // Prefer Astra before the Opus step-down when Fable is spent. Run Codex
   // with the same prompt. Codex is another vendor's subscription, so a refusal
   // from it that is not a usage limit ends the round here, before DeepSeek.
   if (attempt.code !== 0 && usageLimited(attempt)) {
@@ -379,6 +348,26 @@ export async function runReviewRound(
       deps.log("no Codex credential; skipping the codex fallback");
     }
   }
+  // Issue #5081: a Fable round that hit a usage limit tries Opus after Astra on the
+  // same subscription — Fable's own cap is not the whole plan's.
+  const requested = argValue(args, "--model") ?? "";
+  if (
+    attempt.code !== 0 && /^(claude-)?fable/.test(requested) &&
+    usageLimited(attempt)
+  ) {
+    deps.log(
+      `INFO: round hit a usage limit on ${requested}; stepping down to ` +
+        `${REVIEW_STEP_DOWN_MODEL} on the same subscription`,
+    );
+    const stepDownArgs = withEffort(
+      withModel(args, REVIEW_STEP_DOWN_MODEL),
+      REVIEW_STEP_DOWN_EFFORT,
+    );
+    attempt = await runAttempt(
+      claudeIdentity(stepDownArgs),
+      (stream) => deps.runClaude(stepDownArgs, env, stream),
+    );
+  }
   // Issue #3632: when every link above is spent — no held label to rotate, no
   // subscription with budget, the rotated retry hit the limit too, or there is
   // no Codex credential — or Codex itself hit its limit, the round runs once
@@ -406,7 +395,12 @@ export async function runReviewRound(
  * classified its own output says so; otherwise the Claude output is read.
  */
 function usageLimited(attempt: ReviewRoundAttempt): boolean {
-  return attempt.usageLimited ?? detectUsageLimit(attempt.output);
+  // A model cap leaves other models on the subscription available.
+  return attempt.usageLimited ?? (detectUsageLimit(attempt.output) ||
+    attempt.output.split("\n").slice(-30).some((line) =>
+      /^You've reached your Fable limit\. Switch to another model to continue\.$/i
+        .test(line.trim())
+    ));
 }
 
 /**
@@ -877,6 +871,7 @@ export function createReviewRoundDeps(
 ): ReviewRoundDeps {
   const provider = resolveAgentProvider(CLAUDE_PROVIDER_ID);
   const pool = createClaudeCredentialPool({ log, provider });
+  const exhausted = new Set<string>();
   return {
     exportStartCredential: async (setEnv) => {
       await applyProviderCredentialEnv({
@@ -887,7 +882,10 @@ export function createReviewRoundDeps(
       return heldProviderCredentialLabel(CLAUDE_PROVIDER_ID);
     },
     switchCredential: async (exclude, setEnv) => {
-      const token = await pool.selectAvailable({ exclude });
+      exhausted.add(exclude);
+      const token = await pool.selectAvailable({
+        excludeLabels: [...exhausted],
+      });
       if (token === null) return null;
       pool.applySelection(token, setEnv);
       return token.label;

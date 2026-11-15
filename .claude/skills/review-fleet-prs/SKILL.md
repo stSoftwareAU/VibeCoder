@@ -290,15 +290,13 @@ the reviewer runs on the round's model and effort: `review_model` and
 `review_effort` in `.config.json` (default `claude-fable-5-2` at `high`, per
 Issue #5081; Opus 5.5 at `xhigh` before it, Issue #2976). An unattended round
 that hits a usage limit moves down a fallback chain, each link taken only after
-the previous attempt ended with one: a Fable round steps down to
-`claude-opus-5-5` at `xhigh` on the same subscription; it then rotates to the
-next subscription with budget; then Codex `gpt-6-astra` at `high` runs the
-round, when a Codex credential reaches the round (the round's own Codex home
-holds its own login (Issue #5127), or an API key or a login on a mount the
-round shares reaches it; the agent-state volume itself is not mounted, see
-running-unattended.md); and DeepSeek `deepseek-v4-pro`
-is the last link, used only when Codex also hit its usage limit or has no
-credential. The chain is in
+the previous attempt ended with one: try every available Claude subscription
+once on the configured model; then Codex `gpt-6-astra` at `high`; then, for a
+configured Fable round, `claude-opus-5-5` at `xhigh` on the current Claude
+subscription; then DeepSeek `deepseek-v4-pro`. A Fable model cap also triggers
+this chain. Codex is skipped when no credential reaches the round; its own
+persistent home can hold a separate login (Issue #5127).
+The chain is in
 [running-unattended.md](references/running-unattended.md#where-a-round-runs-and-on-which-claude-subscription).
 The brief in
 [`prompts/pr_review_brief/prompt.md`](../../../prompts/pr_review_brief/prompt.md),

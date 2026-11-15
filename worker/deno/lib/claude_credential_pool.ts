@@ -204,11 +204,16 @@ export interface ClaudeCredentialPool {
    * the run between two spent tokens.
    *
    * @param options.exclude - A label never to choose (the token just refused).
+   * @param options.excludeLabels - All subscription labels already tried.
    * @param options.now - Current time in epoch milliseconds.
    * @returns The token to switch to, or null when none has budget left.
    */
   selectAvailable(
-    options?: { exclude?: string; now?: number },
+    options?: {
+      exclude?: string;
+      excludeLabels?: readonly string[];
+      now?: number;
+    },
   ): Promise<ProviderTokenFile | null>;
 
   /**
@@ -386,7 +391,8 @@ export function createClaudeCredentialPool(
       const now = selection.now ?? clock();
       const exclude = selection.exclude?.trim();
       const pool = (await candidates()).filter((token) =>
-        token.label !== exclude
+        token.label !== exclude &&
+        !selection.excludeLabels?.includes(token.label)
       );
       if (pool.length === 0) return null;
       const ranking = await rankPool(pool, now);
