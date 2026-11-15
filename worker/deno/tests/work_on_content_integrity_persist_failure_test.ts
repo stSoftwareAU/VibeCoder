@@ -194,6 +194,7 @@ Deno.test(
         issueBody: state.body,
         issueLabels: ["work-on"],
         issueAuthor: "mallory",
+        issueUpdatedAt: new Date().toISOString(),
         config,
         githubUser: "worker-bot",
       }, { ghFn: gh, contentDeps });

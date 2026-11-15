@@ -106,7 +106,11 @@ Deno.test("content integrity #1818 - with the listing's title and body no live i
     createMemoryFs(),
     undefined,
     undefined,
-    { title: "Fix the bug", body: "Body from the listing" },
+    {
+      title: "Fix the bug",
+      body: "Body from the listing",
+      updatedAt: "2026-04-23T00:00:00Z",
+    },
   );
   assertEquals(views, [], "the scan must not view an issue it already holds");
   assertNotEquals(

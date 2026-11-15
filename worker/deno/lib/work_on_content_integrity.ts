@@ -22,6 +22,7 @@ import type {
 } from "./issue_finder_logger.ts";
 import {
   captureContentSnapshot,
+  reEncodeContentSnapshot,
   type ContentApprovalDeps,
   isAuthorTrusted,
   verifyContentUnchanged,
@@ -35,6 +36,7 @@ import {
 import {
   type IssueEditActor,
   resolveLastIssueEditor,
+  toUnixSeconds,
   unsettledHistoryWindows,
 } from "./issue_edit_actor.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
@@ -63,7 +65,10 @@ async function fetchIssueTitleAndBody(
   issueNumber: number,
   ghFn: (args: string[]) => Promise<string>,
 ): Promise<
-  | { ok: true; value: { title: string; body: string } }
+  | {
+    ok: true;
+    value: { title: string; body: string; contentRevisionAt: number | null };
+  }
   | { ok: false; error: Error }
 > {
   try {
@@ -74,14 +79,20 @@ async function fetchIssueTitleAndBody(
       "--repo",
       repo,
       "--json",
-      "title,body",
+      "title,body,updatedAt",
     ]);
-    const parsed = JSON.parse(output) as { title?: string; body?: string };
+    const parsed = JSON.parse(output) as {
+      title?: string;
+      body?: string;
+      updatedAt?: string;
+    };
     return {
       ok: true,
       value: {
         title: parsed.title ?? "",
         body: parsed.body ?? "",
+        // Issue #5018: the revision of this very read is the edit boundary.
+        contentRevisionAt: toUnixSeconds(parsed.updatedAt),
       },
     };
   } catch (err) {
@@ -198,6 +209,8 @@ async function captureBaselineOrBlock(args: {
   title: string;
   body: string;
   author: string;
+  /** GitHub `updatedAt` of the read the title/body came from (Issue #5018). */
+  contentRevisionAt: number | null;
   contentDeps?: ContentApprovalDeps;
   diag?: IssueFinderDiagnostics;
 }): Promise<ContentIntegrityVerdict> {
@@ -208,6 +221,7 @@ async function captureBaselineOrBlock(args: {
     args.title,
     args.body,
     args.author,
+    args.contentRevisionAt,
     args.contentDeps,
   );
   if (captured.ok) return PROCEED;
@@ -241,17 +255,17 @@ async function reBaselineAfterEncodingChange(args: {
   issueNumber: number;
   title: string;
   body: string;
-  author: string;
   storedEncoding: string;
   contentDeps?: ContentApprovalDeps;
 }): Promise<ContentIntegrityVerdict> {
-  const captured = await captureContentSnapshot(
+  // Issue #5018: the migration keeps the original trust boundary, so it
+  // rewrites only the digest and never restamps the boundary or the author.
+  const captured = await reEncodeContentSnapshot(
     args.stateDir,
     args.repo,
     args.issueNumber,
     args.title,
     args.body,
-    args.author,
     args.contentDeps,
   );
   if (!captured.ok) {
@@ -368,8 +382,11 @@ async function findTrustedReapproval(args: {
   fleetAuthors: string[];
   ghFn: (args: string[]) => Promise<string>;
   timelineCache?: TimelineCache;
-  /** When the approval baseline being verified was captured (unix seconds). */
-  capturedAt: number;
+  /**
+   * The stored baseline's GitHub content revision (unix seconds), or 0 when
+   * it is unknown (Issue #5018). A re-approval must post-date it.
+   */
+  boundaryAt: number;
   /** Newest recorded edit (unix seconds), or null when GitHub records none. */
   newestEditAt: number | null;
   warnOnStale: boolean;
@@ -386,7 +403,7 @@ async function findTrustedReapproval(args: {
 
   const addInfo = lastAddInfoFromTimeline(timeline, args.approvalLabel);
   if (
-    addInfo !== null && addInfo.addedAt > args.capturedAt &&
+    addInfo !== null && addInfo.addedAt > args.boundaryAt &&
     isAuthorTrusted(
       addInfo.addedBy,
       trustedAuthorsFor(args.config, args.repo),
@@ -404,7 +421,7 @@ async function findTrustedReapproval(args: {
     args.config.needsHumanLabel,
   );
   if (
-    removeInfo !== null && removeInfo.removedAt > args.capturedAt &&
+    removeInfo !== null && removeInfo.removedAt > args.boundaryAt &&
     isAuthorTrusted(
       removeInfo.removedBy,
       trustedAuthorsFor(args.config, args.repo),
@@ -468,6 +485,12 @@ export interface ContentIntegrityDecisionInput {
   /** Approval label removed and named in the escalation when blocking. */
   approvalLabel: string;
   /**
+   * GitHub `updatedAt` in unix seconds from the same read as `currentTitle`
+   * and `currentBody` (Issue #5018); null when that read carried none, in
+   * which case a baseline captured from it has an unknown boundary.
+   */
+  contentRevisionAt: number | null;
+  /**
    * Whether a missing snapshot should be captured.
    *
    * True at scan time (the collector establishes the approval baseline);
@@ -491,7 +514,8 @@ export interface ContentIntegrityDecisionInput {
  * - Unchanged: proceeds.
  * - Unchanged, but the digest verified under a superseded or unstamped hash
  *   encoding (Issue #3963): logs `[CONTENT_HASH_ENCODING_MIGRATED]`, rewrites
- *   the baseline under the current encoding, and proceeds. A failed rewrite is
+ *   the digest under the current encoding keeping the original boundary and
+ *   author (Issue #5018), and proceeds. A failed rewrite is
  *   logged but does not block — the content was verified unchanged.
  * - Changed, but a trusted author re-applied the approval label after both the
  *   snapshot and the edit (Issue #3868), or *every* actor who edited since the
@@ -505,12 +529,16 @@ export interface ContentIntegrityDecisionInput {
  *   of the same field or another, is **not** a re-approval: the only way to
  *   bless an untrusted edit is an explicit approval-label re-add by a trusted
  *   author that post-dates it.
- * - Changed, but the editor lookup succeeds with **zero edits since the
- *   snapshot** (Issue #3964): treats the mismatch as self-inflicted
+ * - Changed, but the editor lookup succeeds with **zero edits at or after the
+ *   snapshot's content revision** (Issues #3964, #5018; the GitHub `updatedAt`
+ *   of the read the digest came from): treats the mismatch as self-inflicted
  *   (encoding change, store corruption, capture bug), subject to the bounded
  *   rename history. Logs the
  *   `[SNAPSHOT_SELF_MISMATCH]` marker, re-baselines from the
  *   verified-unchanged live content, and proceeds without mutating the issue.
+ * - Changed, and the snapshot has no content revision (written before Issue
+ *   #5018, or read without `updatedAt`): logs `[CONTENT_REVISION_UNKNOWN]` and
+ *   judges every recorded edit; a truncated window is then always unsettled.
  * - Changed, but the editor cannot be resolved: blocks without mutating the
  *   issue, so a transient lookup failure cannot mutate labels.
  * - Changed, and a truncated edit window (body edits, Issue #4804, or title
@@ -539,6 +567,7 @@ export async function resolveContentIntegrity(
     config,
     ghFn,
     approvalLabel,
+    contentRevisionAt,
     captureWhenMissing,
     diag,
     contentDeps,
@@ -593,7 +622,6 @@ export async function resolveContentIntegrity(
           issueNumber,
           title: currentTitle,
           body: currentBody,
-          author: issueAuthor,
           storedEncoding: verification.staleEncoding,
           contentDeps,
         });
@@ -615,6 +643,7 @@ export async function resolveContentIntegrity(
           title: currentTitle,
           body: currentBody,
           author: issueAuthor,
+          contentRevisionAt,
           contentDeps,
           diag,
         });
@@ -676,6 +705,19 @@ export async function resolveContentIntegrity(
       // question this gate asks is "has anyone untrusted touched this since the
       // approval?", which is a property of the set, not of its maximum.
       const editor = editorLookup.actor;
+      // Issue #5018: the boundary is GitHub's own `updatedAt` for the read the
+      // digest was taken from, never the worker clock. With none recorded
+      // (0), every recorded edit is judged and a truncated window is always
+      // unsettled, so the gate fails closed.
+      const boundaryAt = verification.contentRevisionAt ?? 0;
+      if (verification.contentRevisionAt === null) {
+        console.warn(
+          `[SECURITY] [CONTENT_REVISION_UNKNOWN] Approval baseline for ` +
+            `${repo}#${issueNumber} carries no GitHub revision boundary ` +
+            `(written before Issue #5018, or read without updatedAt) — ` +
+            `judging every recorded edit`,
+        );
+      }
       const editorLogin = editor?.login ?? "";
 
       // Issue #1561: If a trusted author re-added the work-on label AFTER
@@ -685,9 +727,9 @@ export async function resolveContentIntegrity(
       // After Approval" alarm.
       //
       // Issue #3868: an approval can only bless content it could have seen,
-      // so it must post-date the *edit* as well as the snapshot. Comparing
-      // against `capturedAt` alone was durable rather than racy — `capturedAt`
-      // is refreshed only by a capture, so one trusted label-add that
+      // so it must post-date the *edit* as well as the snapshot's content
+      // revision (Issue #5018). Comparing against the revision alone was
+      // durable rather than racy — it is refreshed only by a capture, so one trusted label-add that
       // post-dated the stored snapshot (a `low-priority` → `work-on`
       // promotion, a requeue, or the re-approval this module's own escalation
       // asks for) auto-blessed every later untrusted edit indefinitely.
@@ -715,7 +757,7 @@ export async function resolveContentIntegrity(
         fleetAuthors,
         ghFn,
         timelineCache,
-        capturedAt: verification.capturedAt,
+        boundaryAt,
         newestEditAt,
       };
 
@@ -737,6 +779,7 @@ export async function resolveContentIntegrity(
           title: currentTitle,
           body: currentBody,
           author: issueAuthor,
+          contentRevisionAt,
           contentDeps,
           diag,
         });
@@ -754,7 +797,7 @@ export async function resolveContentIntegrity(
       // to a human (PR #4944 review).
       const unsettled = unsettledHistoryWindows(
         editorLookup,
-        verification.capturedAt,
+        boundaryAt,
       );
       if (unsettled.length > 0) {
         const what = unsettled
@@ -857,14 +900,17 @@ export async function resolveContentIntegrity(
         return blockedBy("content-edit-history-truncated");
       }
 
-      // Edits that post-date the baseline are the ones that could have produced
-      // the current content.
+      // Edits stamped at or after the baseline's content revision (Issue #5018)
+      // are the ones that could have produced the current content: any edit
+      // absent from the hashed bytes was made after the read that produced
+      // them, so GitHub stamps it at or after that read's `updatedAt`.
       const sinceSnapshot = editorLookup.actors.filter(
-        (e) => e.editedAt >= verification.capturedAt,
+        (e) => e.editedAt >= boundaryAt,
       );
 
       // Issue #3964: GitHub records every title rename and every body edit.
-      // When the lookup succeeds and records nothing since the snapshot, the
+      // When the lookup succeeds and records nothing at or after the
+      // snapshot's content revision (Issue #5018), the
       // content provably did not change, so the mismatch can only be
       // self-inflicted — an encoding change, store corruption, or a
       // capture-side bug (the #3963 hash migration is the canonical case).
@@ -878,7 +924,8 @@ export async function resolveContentIntegrity(
         console.error(
           `[SECURITY] [SNAPSHOT_SELF_MISMATCH] Snapshot hash for ` +
             `${repo}#${issueNumber} mismatches but GitHub records no edit ` +
-            `since the snapshot (recorded history: ` +
+            `at or after the snapshot's content revision (the updatedAt of ` +
+            `the read the digest was taken from; recorded history: ` +
             `[${describeEditors(editorLookup.actors)}]) — the content is ` +
             `provably unchanged, so this is a worker-side snapshot defect. ` +
             `Re-baselining and proceeding.`,
@@ -890,6 +937,7 @@ export async function resolveContentIntegrity(
           title: currentTitle,
           body: currentBody,
           author: issueAuthor,
+          contentRevisionAt,
           contentDeps,
           diag,
         });
@@ -929,6 +977,7 @@ export async function resolveContentIntegrity(
           title: currentTitle,
           body: currentBody,
           author: editorLogin,
+          contentRevisionAt,
           contentDeps,
           diag,
         });
@@ -1104,8 +1153,11 @@ export async function verifyWorkOnContentIntegrityDetailed(
    * every idle re-scan — ~700 GraphQL calls a cycle — for issues it then
    * skipped, while the pickup path re-verifies the one issue it claims
    * against a live read anyway (`verifyPickupContentIntegrity`, #3647).
+   *
+   * Issue #5018: it must carry the listing's `updatedAt`, the edit boundary
+   * for the bytes hashed. Without a usable one the gate reads live instead.
    */
-  listedContent?: { title: string; body: string },
+  listedContent?: { title: string; body: string; updatedAt?: string },
 ): Promise<WorkOnContentIntegrityOutcome> {
   // Issue #2662: every collector's candidate comes from the same listing
   // (`fetchAllIssues` asks for `body`), so the listed title and body are used
@@ -1113,15 +1165,32 @@ export async function verifyWorkOnContentIntegrityDetailed(
   // low-priority and idle-task tiers re-ran `gh issue view --json title,body`
   // per candidate per scan (46% of all GraphQL calls on GRQ-23 on
   // 2026-09-25). The bytes hashed are the listing's `body` field, the same
-  // GraphQL field the view returned. Only a listing row without a body (an
-  // older cached payload) is still read live, and the claimed issue is
-  // re-verified against a live read at pickup (#3647).
-  const inHand = listedContent ??
+  // GraphQL field the view returned.
+  //
+  // Issue #5018: in-hand content is trusted only with the `updatedAt` of the
+  // same listing row, since that is the edit boundary the baseline records. A
+  // row without a body (an older cached payload) or without a usable
+  // `updatedAt` is read live, and the claimed issue is re-verified against a
+  // live read at pickup (#3647).
+  const listed = listedContent ??
     (typeof issue.body === "string"
-      ? { title: issue.title, body: issue.body }
+      ? {
+        title: issue.title,
+        body: issue.body,
+        updatedAt: issue.updatedAt,
+      }
       : undefined);
-  const fetched = inHand
-    ? { ok: true as const, value: inHand }
+  const listedRevisionAt = listed ? toUnixSeconds(listed.updatedAt) : null;
+  const fetched = listed && typeof listed.body === "string" &&
+      listedRevisionAt !== null
+    ? {
+      ok: true as const,
+      value: {
+        title: listed.title,
+        body: listed.body,
+        contentRevisionAt: listedRevisionAt as number | null,
+      },
+    }
     : await fetchIssueTitleAndBody(repo, issue.number, ghFn);
   if (!fetched.ok) {
     // Issue #2534: a gh failure or malformed JSON for a single issue must not
@@ -1144,6 +1213,7 @@ export async function verifyWorkOnContentIntegrityDetailed(
     config,
     ghFn,
     approvalLabel: labelName ?? config.workOnLabel,
+    contentRevisionAt: fetched.value.contentRevisionAt,
     captureWhenMissing: true,
     diag,
     contentDeps,

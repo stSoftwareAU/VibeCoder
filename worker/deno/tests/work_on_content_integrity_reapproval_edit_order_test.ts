@@ -96,6 +96,7 @@ async function setCapturedAt(
   const snapshot = state.snapshots["owner/repo|42"];
   if (snapshot) {
     snapshot.capturedAt = Math.floor(Date.parse(iso) / 1000);
+    snapshot.contentRevisionAt = snapshot.capturedAt;
   }
   await deps.writeFile!(`${stateDir}/${STATE_FILE}`, JSON.stringify(state));
 }
@@ -212,6 +213,7 @@ Deno.test(
       "Fix the bug",
       "Approved specification",
       "attacker",
+      Math.floor(Date.now() / 1000),
       deps,
     );
     await setCapturedAt(config, deps, "2026-05-01T09:00:00Z");
@@ -281,6 +283,7 @@ Deno.test(
       "Fix the bug",
       "Original body",
       "reporter",
+      Math.floor(Date.now() / 1000),
       deps,
     );
     await setCapturedAt(config, deps, "2026-05-01T09:00:00Z");
@@ -338,6 +341,7 @@ Deno.test(
       "Fix the bug",
       "Original body",
       "reporter",
+      Math.floor(Date.now() / 1000),
       deps,
     );
     await setCapturedAt(config, deps, "2026-05-01T09:00:00Z");

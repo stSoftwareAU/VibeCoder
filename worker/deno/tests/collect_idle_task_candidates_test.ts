@@ -624,6 +624,7 @@ Deno.test(
       SECURITY_SCAN_ISSUE_TITLE,
       "original wrapper body",
       "mallory",
+      Math.floor(Date.now() / 1000),
       contentApprovalDeps,
     );
 

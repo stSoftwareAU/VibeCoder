@@ -164,6 +164,7 @@ Deno.test(
       TITLE,
       APPROVED_BODY,
       "alice",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 
@@ -185,6 +186,7 @@ Deno.test(
         config,
         ghFn: createGhMock(actions),
         approvalLabel: config.workOnLabel,
+        contentRevisionAt: Math.floor(Date.now() / 1000),
         captureWhenMissing: false,
         contentDeps: deps,
       });
