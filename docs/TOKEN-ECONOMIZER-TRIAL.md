@@ -71,7 +71,7 @@ to it, so it changes no run today.
 | Mechanism | Setting | State | Why |
 | --------- | ------- | ----- | --- |
 | Micro-skills | `microskills` clamped to `envfacts`; `off` stays `off` | **on**, `envfacts` only | The distiller's model-written proposals remain disabled because upstream does not independently cap them. The worker sets `TE_MICROSKILLS_MAX_FACTS=4` and `TE_MICROSKILLS_MAX_TOKENS=150`. Its audited adapter also checks cached context at injection: at most four bullet facts and 600 characters, matching upstream's four-characters-per-token estimate. This is a character budget, not an exact tokenizer measurement; fence overhead is additional. Oversized or unsupported output is rejected, never truncated into an apparently valid block. |
-| Loop guard | `loopguard` = `nudge` | **on** | A judge model redirects a stuck turn with a short note. The adapter forces synchronous judge/fold execution and bounds their process tree within the hook deadline. Judge text is untrusted and fenced too, with a separate 4,096-character ceiling for non-fact context and notices; the micro-skills fact cap does not apply to nudges. Worker cost aggregation is not yet delivered: #4958 owns it. |
+| Loop guard | `loopguard` = `nudge` | **on** | A judge model redirects a stuck turn with a short note. The adapter forces synchronous judge/fold execution and bounds their process tree within the hook deadline. Judge text is untrusted and fenced too, with a separate 4,096-character ceiling for non-fact context and notices; the micro-skills fact cap does not apply to nudges. The judge runs as a separate CLI process, so its cost is not in the agent's stream totals: the worker reads it from the plugin's own ledger after the run and prices it into the run's cost (§7). |
 | Tool pruning | `TE_TOOLPRUNE=off` | off | The worker already fixes the tool policy with `--disallowed-tools`, isolated runs ignore project settings, and pruning writes a settings file into the issue checkout, a stray file a commit can pick up. |
 | Repository map | `TE_REPOMAP=off` | off | The worker already supplies repository context, the codebase map and, where switched on, Graft and CodeGraph. A third source would confound this trial and the repo-context trial alike. |
 | History import | `TE_HISTORY_IMPORT=false` | off | Importing sessions that predate the trial would put learnings from outside the window into the store, so the first runs could not be told from later ones, and it would persist past transcripts into text that is injected into later runs. |
@@ -165,8 +165,10 @@ and Python child inherit the run's sanitised environment and network namespace;
 no new egress permission is granted. The adapter keeps judge/fold jobs
 synchronous rather than allowing the upstream detached launch. The proposer
 remains off. **Not observed:** a paid judge triggered inside an implementation
-run, production egress traffic for it, or inclusion in worker cost totals.
-Issue #4958 is still open and its accounting integration is absent at this head.
+run, or production egress traffic for it. The accounting integration (#4958) is
+present: the worker reads the plugin's ledger and prices its judge calls into
+the run's cost (§7), but that path has only been exercised against fixtures, not
+against a paid judge in a production run.
 
 **Failure isolation.** The launch decision never throws, and a launch is never
 the cause of a failed run. A disabled block is silent. Any other refusal returns
@@ -320,12 +322,79 @@ total in the run-stats comment and the run's own completion outcome, never a
 reading of a host log.
 
 | Figure | Read from |
-| ------ | --------- |
-| Which side a run belongs to | the `TokenEconomizer:` line in the run-stats comment, or the new optional fields on the run callback. Not yet: #4958 adds both |
-| Cost per run, plugin's own model calls included | the cost total in the run-stats comment and the run archive record. Not yet: #4958 adds the plugin's cost to the total |
-| Success rate | the run's own completion outcome, as the run-stats comment and the run archive record it |
+| ------ | ------ |
+| Which side a run belongs to | the `- **TokenEconomizer:**` line in the run-stats comment, or the optional `tokenEconomizer` block on the run callback (`enabled`, `status`, `persistence`, `stopRule`, `factsInjected`, `judgeCalls`, `redirects`, `stillStuckNotices`, `pluginEffectiveTokens`, `pluginCostUsd`, `runCostUsd`), emitted only on a host whose `token_economizer.enabled` is `true` |
+| Cost per run, plugin's own model calls included | the line's `run incl. plugin` figure and the block's `runCostUsd`: the agent's `telemetry.estimatedCostUsd` plus `pluginCostUsd`, present only when both are known. The issue's cumulative total line is unchanged and sums the agent's estimated cost lines only |
+| Success rate | the run's own completion outcome, as the run-stats comment and the run archive record it. Failed runs stay in the denominator |
 | PR merge rate | the final state of each run's pull request |
-| Both comparisons | the weekly report section. Not yet: #4958 adds it |
+| Both comparisons | the `## TokenEconomizer trial comparison` section that `deno run mod.ts token-economizer-report` renders from the run archive |
+
+The plugin keeps its own state under each launch's `TOKENECONOMIZER_HOME`
+(`repos/<key>/<host>/ledger.jsonl` and `sessions/*.json`), and the worker reads
+it after the run (`worker/deno/lib/token_economizer_run_stats.ts`). The status
+is one of:
+
+- `on`: the state shows the plugin ran a session.
+- `fallback`: switched on, with no evidence the plugin ran (the launch was
+  refused or dropped).
+- `stopped`: a stop record is in force, and the rule is named.
+- `not-run`: switched on, but the run ended before the agent spawned.
+- `off`: the switch is off, or a non-Claude provider served the run.
+
+`persistence` is `"unavailable"` until #4957 lands the learnings store. The
+figures are `factsInjected` (the `injected_ids` across session files),
+`judgeCalls` (ledger overhead records with a paid judge cost), `redirects`
+(session nudges) and `stillStuckNotices` (session aborts). `pluginCostUsd` is
+the plugin's effective overhead tokens at the run model's input price per token.
+A figure that cannot be read is absent and reads `unavailable`, never `0`; when
+no session evidence exists every figure is absent. The judge is a separate CLI
+process, so its cost is not in the agent's stream totals and nothing is counted
+twice. No environment variable is added, and the callback's `schemaVersion`
+stays 2: the block is an addition. A host with the switch off emits a document
+identical to before.
+
+An implementation run's run-stats comment renders exactly one such line, placed
+after the `RTK:` line, from the completion phase, the no-changes phase and the
+degraded-run comment. PR-feedback and CI-fix rounds do not render it and fire no post-run
+callback at all. The shapes it can take are:
+
+```text
+- **TokenEconomizer:** off
+- **TokenEconomizer:** not-run — switched on, the run ended before the agent spawned
+- **TokenEconomizer:** fallback — switched on, plugin not loaded
+- **TokenEconomizer:** on — learnings not persisted; 3 facts injected; 2 judge calls; 1 redirect; 0 still-stuck notices; plugin model calls ~$0.0123 (run incl. plugin ~$1.3623)
+- **TokenEconomizer:** stopped (<rule>) — learnings not persisted; facts injected unavailable; judge calls unavailable; redirects unavailable; still-stuck notices unavailable; plugin model calls unavailable
+```
+
+`stopped (<rule>)` replaces `on` in the fourth shape (the fifth shows it with
+every figure absent), and an absent figure reads `<figure> unavailable`. The
+`(run incl. plugin …)` part appears only when both the agent's estimated cost
+and the plugin cost are known.
+
+The report command is read-only:
+
+```text
+deno run mod.ts token-economizer-report --archive <dir> --trial-host <name> \
+  --window-start <iso> [--window-end <iso>] --recorded-since <iso> \
+  [--mode work-on] [--format markdown|json]
+```
+
+It compares the switched-on population (trial host, window, Claude
+implementation runs, status `on`) with Before (trial host, the 14 days before
+the window, switch off) and Concurrent (other hosts, same window, same
+repositories only, matching RTK setting). The cost per completed implementation
+run is the total cost of all runs, failures included, divided by the completed
+runs. The success rate is completed over all runs. The merge rate is merged over
+the runs with a known final PR state; open and unknown are shown and excluded. A
+missing cost renders as unavailable with a lower bound. The report states its
+populations and exclusions: malformed records, unflagged records (no block and
+finished before `--recorded-since`), non-Claude runs, concurrent hosts with a
+different RTK setting, one-sided repositories, the fallback, stopped and not-run
+counts, and the persisted count. It renders no verdict: #4959 applies the bar.
+
+Not yet: #5029 will account for billed capped and unfinished executor
+invocations in a run's totals. Until it lands, a run's cost total can omit those
+attempts, so the measured trial must not be started or judged on those totals.
 
 The run archive is the operator's private repository named by
 `fleet_run_archive` in the [Configuration Reference](CONFIGURATION.md). A verdict
@@ -375,12 +444,12 @@ State is `present` when the path exists and names the plugin today, and
 | Source | the audited executable hook adapter and context bounds | `worker/deno/lib/token_economizer_hook.ts` | present |
 | Source | the shared stop, sync-permission and outcome-reporting controller | `worker/deno/lib/token_economizer_control.ts` | present |
 | Source | the plugin option on `runClaude`, and its environment overlay | `worker/deno/lib/claude_runner.ts` | present |
-| Source | the implementation spawn's launch, in the phase | `worker/deno/lib/phases/execute_phase.ts` | present |
+| Source | the implementation spawn's launch, in the phase; it also collects each launch's `TOKENECONOMIZER_HOME` and reads the plugin's state into the run's stats after the agent invocations | `worker/deno/lib/phases/execute_phase.ts` | present |
 | Source | the implementation spawn's launch, in the standalone phase | `worker/deno/lib/execute_claude_phase.ts` | present |
 | Source | the PR-feedback spawn's launch | `worker/deno/lib/pr_feedback_processor.ts` | present |
 | Source | the CI-fix spawns' launch, on both attempts | `worker/deno/lib/pr_ci_processor.ts` | present |
 | Source | the `tokenEconomizerPluginDir` seam on the Claude dependencies, which the spawn sites pass as the plugin directory | `worker/deno/lib/issue_worker_wiring.ts` | present |
-| Source | the production dependencies that pass `config.tokenEconomizer` to the processors | `worker/deno/lib/run_core_production_deps.ts` | present |
+| Source | the production dependencies that pass `config.tokenEconomizer` to the processors; they also carry the run's plugin stats to the post-run callbacks | `worker/deno/lib/run_core_production_deps.ts` | present |
 | Command | the standalone implementation command that passes `config.tokenEconomizer` | `worker/deno/commands/execute_claude_phase.ts` | present |
 | Command | the standalone PR-feedback command that passes `config.tokenEconomizer` | `worker/deno/commands/pr_feedback_processor.ts` | present |
 | Command | the standalone CI-fix command that passes `config.tokenEconomizer` | `worker/deno/commands/pr_ci_processor.ts` | present |
@@ -393,9 +462,27 @@ State is `present` when the path exists and names the plugin today, and
 | Runtime directory | `.token-economizer/` under the work directory, holding the stop record, notification receipt and per-spawn state directories; the launch decision creates it at run time | `worker/deno/lib/token_economizer_plugin.ts` | present |
 | Source | the learnings pull and push, with the gitleaks check | — | planned #4957 |
 | Learnings directory | `token-economizer/` in the repository named by `token_economizer.learnings_repo` | — | planned #4957 |
-| Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | planned #4958 |
-| Callback field | the new optional fields on the run callback | `docs/CALLBACKS.md` | planned #4958 |
-| Report section | the weekly report's comparison section | — | planned #4958 |
+| Run stats | the `TokenEconomizer:` line | `worker/deno/lib/issue_run_stats_comment.ts` | present |
+| Run stats | the plugin state reader, the stats line and the callback block builder | `worker/deno/lib/token_economizer_run_stats.ts` | present |
+| Run stats | the run's plugin stats carried through the phase run stats | `worker/deno/lib/phase_run_stats.ts` | present |
+| Run stats | the stats collection in the completion phase | `worker/deno/lib/phases/completion_phase.ts` | present |
+| Run stats | the stats collection when the agent made no changes | `worker/deno/lib/phases/handle_no_changes_phase.ts` | present |
+| Run stats | the plugin stats on the issue worker's result type | `worker/deno/lib/issue_worker_types.ts` | present |
+| Run stats | the plugin stats passed through the issue worker | `worker/deno/lib/issue_worker.ts` | present |
+| Run stats | the plugin stats passed through the run core | `worker/deno/lib/run_core.ts` | present |
+| Callback field | the optional `tokenEconomizer` block on the run document | `worker/deno/lib/run_callbacks.ts` | present |
+| Callback field | the block on the run callback context | `worker/deno/lib/run_callback_context.ts` | present |
+| Callback field | the block's documentation | `docs/CALLBACKS.md` | present |
+| Test | the completion phase's run stats tests | `worker/deno/tests/completion_phase_run_stats_test.ts` | present |
+| Test | the implementation phase's launch and run stats tests | `worker/deno/tests/execute_phase_rtk_test.ts` | present |
+| Test | the run-stats comment line tests | `worker/deno/tests/issue_run_stats_comment_test.ts` | present |
+| Test | the run callback context block tests | `worker/deno/tests/run_callback_context_test.ts` | present |
+| Test | the no-changes phase's run stats tests | `worker/deno/tests/handle_no_changes_phase_test.ts` | present |
+| Report section | the weekly report's comparison section | `worker/deno/lib/token_economizer_trial_report.ts` | present |
+| Command | the read-only `token-economizer-report` command | `worker/deno/commands/token_economizer_report.ts` | present |
+| Command | the command's registration | `worker/deno/mod.ts` | present |
+| Test | the run stats reader, line and block tests | `worker/deno/tests/token_economizer_run_stats_test.ts` | present |
+| Test | the trial report tests | `worker/deno/tests/token_economizer_trial_report_test.ts` | present |
 | Host config | the `token_economizer` block in the trial host's gitignored `.config.json`, with `enabled` set to `false` first; a purge removes the block there | — | planned #4956 |
 
 **What stays.** This page, with its Status changed to *purged* and the measured

@@ -71,6 +71,7 @@ import {
 } from "../git_push.ts";
 import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
+import { tokenEconomizerNotRun } from "../token_economizer_run_stats.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import type { Logger, Result, WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
@@ -1392,6 +1393,10 @@ export async function postWorkOnRunStats(
       : {}),
     // …and so does its RTK status, `off` included (Issue #2385).
     ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+    // Issue #4958: what TokenEconomizer did and cost; a switched-off host
+    // reads `off`, an on host whose run ended before the agent reads `not-run`.
+    tokenEconomizer: state.tokenEconomizerRun ??
+      tokenEconomizerNotRun(ctx.config.tokenEconomizer.enabled),
     ...(subAgentDegradation ? { subAgentDegradation } : {}),
     ...(state.agentRefusal ? { agentRefusal: state.agentRefusal } : {}),
   });

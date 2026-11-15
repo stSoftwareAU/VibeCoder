@@ -40,6 +40,7 @@ import type { Logger } from "../types.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
+import type { TokenEconomizerRunStats } from "./token_economizer_run_stats.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { RunStats } from "./run_stats.ts";
@@ -205,6 +206,11 @@ export async function reportPhaseDegradation(args: {
    * `RTK:` line is on every run the phase completes.
    */
   rtk?: RtkOutputResult;
+  /**
+   * What TokenEconomizer did and cost in this run (Issue #4958). Carried onto
+   * both the healthy and the degraded stats comment, as `rtk` is.
+   */
+  tokenEconomizer?: TokenEconomizerRunStats;
 }): Promise<DegradationVerdict> {
   const {
     phase,
@@ -222,6 +228,9 @@ export async function reportPhaseDegradation(args: {
     : [claudeResult];
   const graft = args.graft ? { graft: args.graft } : {};
   const rtk = args.rtk ? { rtk: args.rtk } : {};
+  const tokenEconomizer = args.tokenEconomizer
+    ? { tokenEconomizer: args.tokenEconomizer }
+    : {};
   const invocations = claudeResults.flatMap((result) =>
     buildPhaseInvocations(phase, result)
   );
@@ -251,6 +260,7 @@ export async function reportPhaseDegradation(args: {
       ...graft,
       ...(args.codegraph ? { codegraph: args.codegraph } : {}),
       ...rtk,
+      ...tokenEconomizer,
     });
     return verdict;
   }
@@ -281,6 +291,7 @@ export async function reportPhaseDegradation(args: {
     ...graft,
     ...(args.codegraph ? { codegraph: args.codegraph } : {}),
     ...rtk,
+    ...tokenEconomizer,
   });
   if (body) {
     try {
@@ -338,6 +349,7 @@ export async function postPrRoundRunStats(args: {
   graft?: GraftContextResult;
   codegraph?: CodegraphContextResult;
   rtk?: RtkOutputResult;
+  tokenEconomizer?: TokenEconomizerRunStats;
   /** Run the round belongs to; defaults to the canonical {@link getRunId}. */
   runId?: string;
 }): Promise<IssueRunStatsPostResult> {
@@ -360,6 +372,9 @@ export async function postPrRoundRunStats(args: {
       ...(args.graft ? { graft: args.graft } : {}),
       ...(args.codegraph ? { codegraph: args.codegraph } : {}),
       ...(args.rtk ? { rtk: args.rtk } : {}),
+      ...(args.tokenEconomizer
+        ? { tokenEconomizer: args.tokenEconomizer }
+        : {}),
     });
   } catch (err) {
     // The poster already catches its GitHub calls; this covers the render, so

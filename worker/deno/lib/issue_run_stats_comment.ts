@@ -962,6 +962,8 @@ export async function postIssueRunStatsComment(args: {
   qualityGateStages?: readonly GateStageOutcome[];
   /** What this run's RTK preparation produced (Issue #2385). */
   rtk?: RtkOutputResult;
+  /** What TokenEconomizer did and cost (Issue #4958); omitted renders no line. */
+  tokenEconomizer?: TokenEconomizerRunStats;
   /** A haiku-tier run served a previous-generation Haiku (Issue #3405); omitted renders no line. */
   subAgentDegradation?: IssueSubAgentDegradation;
   /** A safety refusal and what its retry did (Issue #3406); omitted renders no line. */
@@ -996,6 +998,9 @@ export async function postIssueRunStatsComment(args: {
     ? { qualityGateStages: args.qualityGateStages }
     : {};
   const rtk = args.rtk ? { rtk: args.rtk } : {};
+  const tokenEconomizer = args.tokenEconomizer
+    ? { tokenEconomizer: args.tokenEconomizer }
+    : {};
 
   // Built without the issue's comments first, purely to answer "is there
   // anything to report?" — so a stats-free wrap-up costs no GitHub call. The
@@ -1061,6 +1066,7 @@ export async function postIssueRunStatsComment(args: {
         ...qualityGate,
         ...qualityGateStages,
         ...rtk,
+        ...tokenEconomizer,
         ...(args.subAgentDegradation
           ? { subAgentDegradation: args.subAgentDegradation }
           : {}),

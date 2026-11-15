@@ -451,20 +451,18 @@ flowchart TD
   logged, the trigger, the fixed reason for that trigger, the capture and
   last-log times, the silence before capture, the guest-probe state and the
   guest memory and pressure figures. The last step logged is the last one the
-  log reported, so the
-  wedge is in or after it; it is one of `pre-PR verifier`,
+  log reported, so the wedge is in or after it; it is one of `pre-PR verifier`,
   `coverage carry-over check`, `quality gate`, `agent turn`, a setup step
   (`setup: issue claim`, `setup: claim churn check`, `setup: repository setup`,
   `setup: heartbeat start`, `setup: default branch sync`,
-  `setup: feature branch` or `setup: pre-setup command`, each logged as the
-  step starts, Issue #5128) or `unknown` (`mutation check` appears only for
-  logs written before Issue #5095 retired that step), matched from a fixed
-  table of log patterns; no log text is posted with it. It
-  is not part of the dedup signature. Posted facts must match the launcher
-  shapes: hostname, `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run
-  id (or `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the
-  silence, guest-probe, guest-memory and guest-pressure figures in their fixed
-  shapes.
+  `setup: feature branch` or `setup: pre-setup command`, each logged as the step
+  starts, Issue #5128) or `unknown` (`mutation check` appears only for logs
+  written before Issue #5095 retired that step), matched from a fixed table of
+  log patterns; no log text is posted with it. It is not part of the dedup
+  signature. Posted facts must match the launcher shapes: hostname,
+  `vibe-coder-*` container name, `vibe-<base36>-<six-hex>` run id (or
+  `unknown`), `watchdog` or `pre_launch` trigger, timestamps, and the silence,
+  guest-probe, guest-memory and guest-pressure figures in their fixed shapes.
   Free-text reasons or malformed facts are kept and logged as errors without
   filing, commenting or attesting. That repository is public and the killed run
   may have been working a private one, so no evidence text, last log line, tool
@@ -763,6 +761,36 @@ from this number. It is **omitted** — never blank, and never `0` standing in f
 measured `0` is published as `0`. Nothing else in the contract moved:
 `schemaVersion` stays at 2, and a hook that knows nothing about RTK ignores the
 block.
+
+`tokenEconomizer` is an **additive, optional** block (Issue #4958, part of
+#4953) for the [TokenEconomizer trial](TOKEN-ECONOMIZER-TRIAL.md). Unlike
+`graft`, `codegraph` and `rtk`, it is **not** on every run document: it is
+emitted only on a host whose `token_economizer.enabled` is `true`, and it is
+emitted last, after `rtk`. A host with the switch off produces a document
+byte-identical to before. No environment variable is added for it.
+
+| Field                   | Always present in the block | Meaning                                                                                                                                                   |
+| ----------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`               | yes                         | The host's switch                                                                                                                                         |
+| `status`                | yes                         | `on` (the plugin's state shows it ran a session), `fallback` (no evidence it ran), `stopped`, `not-run` (the run ended before the agent spawned) or `off` |
+| `persistence`           | yes                         | `"unavailable"` until the learnings store (#4957) lands                                                                                                   |
+| `stopRule`              | no                          | The stop rule in force, when `status` is `stopped`                                                                                                        |
+| `factsInjected`         | no                          | Facts the plugin injected into the run                                                                                                                    |
+| `judgeCalls`            | no                          | Paid loop-guard judge calls                                                                                                                               |
+| `redirects`             | no                          | Times the plugin redirected a stuck turn                                                                                                                  |
+| `stillStuckNotices`     | no                          | Still-stuck notices the plugin raised                                                                                                                     |
+| `pluginEffectiveTokens` | no                          | The plugin's own overhead, in effective (fresh-input-equivalent) tokens                                                                                   |
+| `pluginCostUsd`         | no                          | Estimated USD cost of the plugin's own model calls, at the run model's input price                                                                        |
+| `runCostUsd`            | no                          | `telemetry.estimatedCostUsd` plus `pluginCostUsd`; present only when both are known                                                                       |
+
+Every figure is **omitted** when it could not be read, never emitted as `0`: an
+absent figure means unavailable, and when no session evidence exists every
+figure is absent. `telemetry.estimatedCostUsd` is unchanged and covers the agent
+only, because the judge runs as a separate CLI process and is not in the agent's
+stream totals; `runCostUsd` is the figure that includes the plugin. Nothing else
+in the contract moved: `schemaVersion` stays at 2, and a hook that knows nothing
+about TokenEconomizer ignores the block. The same outcome appears as one line in
+the run-stats comment and in the weekly `token-economizer-report` section.
 
 The `brief` block and `VIBECODER_BRIEF_ENABLED` (Issue #2603) were removed with
 the brief toolchain (Issue #2699) before any host switched it on; no deployed
@@ -1075,15 +1103,16 @@ Two differences to plan for:
 
 ## Reference
 
-| Concern                                   | Implementation                                 |
-| ----------------------------------------- | ---------------------------------------------- |
-| `callbacks` block and validation          | `worker/deno/lib/run_callbacks_config.ts`      |
-| The runner, environment, capture          | `worker/deno/lib/run_callbacks.ts`             |
-| Host-failure payload and invoker          | `worker/deno/lib/host_failure_hook.ts`         |
-| Context assembly and transcript           | `worker/deno/lib/run_callback_context.ts`      |
-| CodeGraph figures the block carries       | `worker/deno/lib/codegraph_context.ts`         |
-| RTK outcome the block carries             | `worker/deno/lib/rtk_output.ts`                |
-| Exactly-once guard                        | `worker/deno/lib/issue_callback_guard.ts`      |
-| Conformance fixture                       | `worker/deno/lib/callback_conformance.ts`      |
-| `callback-conformance` command            | `worker/deno/commands/callback_conformance.ts` |
-| Hard-kill report (issue, callback, count) | `worker/deno/lib/hard_kill_report.ts`          |
+| Concern                                   | Implementation                                  |
+| ----------------------------------------- | ----------------------------------------------- |
+| `callbacks` block and validation          | `worker/deno/lib/run_callbacks_config.ts`       |
+| The runner, environment, capture          | `worker/deno/lib/run_callbacks.ts`              |
+| Host-failure payload and invoker          | `worker/deno/lib/host_failure_hook.ts`          |
+| Context assembly and transcript           | `worker/deno/lib/run_callback_context.ts`       |
+| CodeGraph figures the block carries       | `worker/deno/lib/codegraph_context.ts`          |
+| RTK outcome the block carries             | `worker/deno/lib/rtk_output.ts`                 |
+| TokenEconomizer outcome the block carries | `worker/deno/lib/token_economizer_run_stats.ts` |
+| Exactly-once guard                        | `worker/deno/lib/issue_callback_guard.ts`       |
+| Conformance fixture                       | `worker/deno/lib/callback_conformance.ts`       |
+| `callback-conformance` command            | `worker/deno/commands/callback_conformance.ts`  |
+| Hard-kill report (issue, callback, count) | `worker/deno/lib/hard_kill_report.ts`           |

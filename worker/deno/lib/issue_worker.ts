@@ -85,6 +85,7 @@ import { listTemplates } from "./idle_task_template.ts";
 // handler has not been imported first. Issue #2930 added the four Boy
 // Scout templates so the pre-flight check sees them too.
 import "./idle_task_templates/security_scan_template.ts";
+import { tokenEconomizerNotRun } from "./token_economizer_run_stats.ts";
 import "./idle_task_templates/supply_chain_readiness_template.ts";
 import "./idle_task_templates/orphan_deps_template.ts";
 import "./idle_task_templates/dead_code_template.ts";
@@ -323,6 +324,10 @@ async function workOnIssueRecorded(
       // archive a switched-on host's early exit as a control run.
       rtk: state.rtkOutput ??
         { status: "off", enabled: ctx.config.rtkOutput.enabled },
+      // Issue #4958: what TokenEconomizer did and cost; a run that ended before
+      // the agent spawned states the host's real switch, as RTK does above.
+      tokenEconomizer: state.tokenEconomizerRun ??
+        tokenEconomizerNotRun(ctx.config.tokenEconomizer.enabled),
     };
   } catch (err) {
     outcome = withRunOutcomeNotes(

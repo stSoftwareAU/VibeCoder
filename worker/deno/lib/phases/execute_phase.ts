@@ -1589,13 +1589,18 @@ async function executeClaudeBody(
   // every outcome. Eligible when the provider that serves the spawn is Claude,
   // resolved from the same selector `claude_runner.ts` resolves its provider
   // from (`provider.id === CLAUDE_PROVIDER_ID`).
+  // Price at the spawn's model, else the one the agent was actually served
+  // (a default host sets none), else leave the cost unavailable.
+  const servedRun = claudeResult.ok ? claudeResult.value.runStats : undefined;
+  const pluginPricingModel = implementationModel ||
+    servedRun?.servedModels?.[0] || servedRun?.requestedModel || undefined;
   state.tokenEconomizerRun = await summariseTokenEconomizerRun({
     enabled: config.tokenEconomizer.enabled,
     eligible: deps.claude.rtkProviderId(effectiveAgentProvider, logger) ===
       CLAUDE_PROVIDER_ID,
     workDir: config.workDir,
     stateHomes: [...tokenEconomizerHomes],
-    ...(implementationModel ? { model: implementationModel } : {}),
+    ...(pluginPricingModel ? { model: pluginPricingModel } : {}),
     logger,
   });
 
