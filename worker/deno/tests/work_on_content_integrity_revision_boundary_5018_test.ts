@@ -115,7 +115,6 @@ interface World {
   /** Overrides the reported body edit `totalCount` (truncated history). */
   bodyTotal?: number;
   labelledBy: Array<{ login: string; at: string }>;
-  views: string[][];
   actions: string[];
   addedLabels: string[];
 }
@@ -127,7 +126,6 @@ function newWorld(): World {
     updatedAt: iso(T0),
     bodyEdits: [],
     labelledBy: [{ login: "alice", at: LABELLED_AT }],
-    views: [],
     actions: [],
     addedLabels: [],
   };
@@ -167,12 +165,18 @@ function ghFor(w: World): (args: string[]) => Promise<string> {
       ));
     }
     if (args[0] === "issue" && args[1] === "view") {
-      w.views.push(args);
-      return Promise.resolve(JSON.stringify({
+      // Like `gh issue view --json a,b`: only the requested fields come back.
+      const fields = (args[args.indexOf("--json") + 1] ?? "").split(",");
+      const everything: Record<string, string> = {
         title: w.title,
         body: w.body,
         updatedAt: w.updatedAt,
-      }));
+      };
+      return Promise.resolve(JSON.stringify(
+        Object.fromEntries(
+          Object.entries(everything).filter(([k]) => fields.includes(k)),
+        ),
+      ));
     }
     if (
       args[0] === "api" && command.includes("POST") &&
@@ -300,7 +304,6 @@ Deno.test("revision boundary #5018 (a) - a cached listing older than the write c
 
   const outcome = await scan(w, config, deps, makeIssue(B0, iso(T0)));
   assertEquals(outcome, { verdict: "proceed" });
-  assertEquals(w.views, [], "the listing carried everything it needed");
   const snap = await readSnapshot(config, deps);
   assertEquals(snap?.contentRevisionAt, T0, "stamped with GitHub's clock");
   assert(snap!.capturedAt > T0, "capturedAt remains the worker clock");
@@ -519,15 +522,25 @@ Deno.test("revision boundary #5018 (g) - a trusted re-approval re-baselines to t
   assertEquals((await readSnapshot(config, deps))?.contentRevisionAt, T2);
 });
 
-Deno.test("revision boundary #5018 (h) - a listed row without updatedAt is read live and stamped from that read", async () => {
+Deno.test("revision boundary #5018 (h) - a listed row without updatedAt is read live, bytes and revision together", async () => {
   const { deps } = createMemoryFs();
   const config = makeConfig();
   const w = newWorld();
-  w.updatedAt = iso(T0);
+  // The cached listing row is stale: older bytes and no usable `updatedAt`.
+  // GitHub now holds the edited content, and the untrusted edit is recorded.
+  w.body = B1;
+  w.updatedAt = iso(T1);
+  w.bodyEdits = [{ login: "mallory", at: T1 }];
 
   const outcome = await scan(w, config, deps, makeIssue(B0));
   assertEquals(outcome, { verdict: "proceed" });
-  assertEquals(w.views.length, 1);
-  assertEquals(w.views[0]!.slice(-2), ["--json", "title,body,updatedAt"]);
-  assertEquals((await readSnapshot(config, deps))?.contentRevisionAt, T0);
+  const snap = await readSnapshot(config, deps);
+  assertEquals(snap?.contentRevisionAt, T1, "revision came from the live read");
+
+  // The baseline must hold the live bytes: re-checking that same content is
+  // unchanged. Stale bytes under the live revision would hash differently and
+  // the edit at the revision would then be judged and block.
+  const result = await pickup(w, config, deps, B1, iso(T1));
+  assertEquals(result, { blocked: false });
+  assertEquals(w.addedLabels, []);
 });

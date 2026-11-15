@@ -135,11 +135,20 @@ This is a backend change.
   - (f) a legacy snapshot judges the whole history: an old untrusted edit
     blocks, no recorded edit proceeds, and a truncated window blocks;
   - (g) a trusted re-approval re-baselines to the new revision;
-  - (h) a listed row without `updatedAt` is read live and stamped from that
-    read.
-- Result: 8 passed. Against the base production files, the file does not
-  type-check (the new parameters do not exist), and with `--no-check` all 8
-  tests fail.
+  - (h) a listed row without `updatedAt` and with stale bytes is read live: the
+    fake `gh issue view` honours `--json` and returns only the requested fields,
+    the live content differs from the cached row's, and an untrusted edit sits
+    at the live revision. The baseline's revision is the live `updatedAt`, and a
+    later pickup of the live content proceeds. Stale bytes paired with the live
+    revision hash differently, so that pickup would judge the edit and block. I
+    confirmed this by pairing the bytes wrongly in the live fallback: (h)
+    failed.
+
+  The tests assert the decisions the worker reaches and the persisted baseline.
+  They do not assert the mocked `gh` call log, call count or `--json` text.
+- Result: 8 passed (re-run after the (h) rewrite). Against the base production
+  files, the file does not type-check (the new parameters do not exist), and
+  with `--no-check` all 8 tests fail.
 - Existing tests updated for the new required parameters. Each keeps its
   previous boundary:
   - the `captureContentSnapshot` calls pass `Math.floor(Date.now() / 1000)`;
