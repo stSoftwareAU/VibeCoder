@@ -266,7 +266,10 @@ it carries neither the pins rule nor the workflow-file checks. The auditor also
 reads `.github/dependabot.yml` (then `.yaml`) when it evaluates such a spec,
 matching it only on its
 `package-ecosystem` entry (`dependabotConfigPatternGroups`) so a "Dependabot"
-comment cannot satisfy another ecosystem's spec.
+comment cannot satisfy another ecosystem's spec. A `package-ecosystem` entry in
+a file under `.github/workflows/` does not count, because Dependabot never reads
+its configuration there; such a spec is satisfied in a workflow file only by
+real update tooling such as Renovate.
 The auditor uses the complete root file inventory, so Deno taking precedence
 over Node during language selection cannot hide an existing `package.json`.
 Older language results without that inventory trigger a root-contents fetch;

@@ -208,6 +208,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["work-on"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "worker-bot",
     }, { ghFn, contentDeps });
@@ -251,6 +252,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["work-on"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "worker-bot",
     }, { ghFn, contentDeps });
@@ -297,6 +299,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["work-on"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "worker-bot",
     }, { ghFn, contentDeps });
@@ -350,6 +353,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["work-on", "security", "added-after-approval"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "worker-bot",
     }, { ghFn, contentDeps });
@@ -383,6 +387,7 @@ Deno.test(
       issueBody: "B",
       issueLabels: ["idle-task"],
       issueAuthor: "worker-bot",
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "worker-bot",
     }, { ghFn, contentDeps });
@@ -442,6 +447,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["work-on"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "worker-bot",
     }, { ghFn, contentDeps });
@@ -497,6 +503,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["idle-task"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "vibe-bot",
     }, { ghFn, contentDeps });
@@ -571,6 +578,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["idle-task"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "vibe-bot",
     }, { ghFn, contentDeps });
@@ -625,6 +633,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["work-on"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "vibe-bot",
     }, { ghFn, contentDeps });
@@ -688,6 +697,7 @@ Deno.test(
       issueBody: state.body,
       issueLabels: ["idle-task"],
       issueAuthor: issue.author,
+      issueUpdatedAt: new Date().toISOString(),
       config,
       githubUser: "vibe-bot",
     }, { ghFn, contentDeps });

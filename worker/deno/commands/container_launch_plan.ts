@@ -54,7 +54,7 @@ import { parseContainerManifest } from "../lib/container_manifest.ts";
 import { resolveContainerImageReference } from "../lib/container_image_hash.ts";
 import {
   agentProvidersBuildValue,
-  resolveAgentProvider,
+  reviewImageAgentProviders,
 } from "../lib/agent_provider.ts";
 import { readConfiguredAgentProviderSet } from "../lib/agent_provider_config.ts";
 import { resolveEgressAllowlist } from "../lib/egress_allowlist.ts";
@@ -175,19 +175,10 @@ export async function buildLaunchPlanForCommand(
     env,
   );
 
-  // Review fallbacks need both executables, but use their own credential
-  // plumbing. Installing Codex must not expose the worker's Codex secrets.
+  // Review fallbacks use their own credentials; extra image executables must
+  // not change the configured worker credential mounts.
   const imageProviders = options.reviewRound
-    ? [
-      ...new Map(
-        [
-          ...providers,
-          resolveAgentProvider("claude"),
-          resolveAgentProvider("codex"),
-        ]
-          .map((provider) => [provider.id, provider]),
-      ).values(),
-    ]
+    ? reviewImageAgentProviders(providers)
     : providers;
   const agentProviders = agentProvidersBuildValue(
     imageProviders.map((provider) => provider.id),
@@ -480,7 +471,9 @@ export async function ensureReviewImage(
   if (
     (await run(plan.imageInspectArgs, DEFAULT_SUBPROCESS_TIMEOUT_MS)).success
   ) return;
-  console.error(`Building review image ${plan.image} with Claude and Codex`);
+  console.error(
+    `Building review image ${plan.image} with the required review providers`,
+  );
   for (const args of [plan.buildArgs, plan.extensionBuildArgs]) {
     if (args.length === 0) continue;
     const result = await run(args, 30 * 60 * 1000);

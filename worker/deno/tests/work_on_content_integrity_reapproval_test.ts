@@ -309,6 +309,7 @@ Deno.test(
       "Old title",
       "Old body before refinement",
       issue.author,
+      Math.floor(Date.now() / 1000),
       deps,
     );
     // Overwrite capturedAt to a deterministic time so the comparison is
@@ -320,6 +321,7 @@ Deno.test(
     const key = `owner/repo|${issue.number}`;
     const snap = state.snapshots[key];
     if (snap) snap.capturedAt = captureUnix;
+    if (snap) snap.contentRevisionAt = snap.capturedAt;
     const stateJson = JSON.stringify(state, null, 2);
     await deps.writeFile!(
       `${
@@ -413,6 +415,7 @@ Deno.test(
       "Original title",
       "Original body",
       "attacker",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 
@@ -469,6 +472,7 @@ Deno.test(
       "Original title",
       "Original body",
       "attacker",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 
@@ -522,6 +526,7 @@ Deno.test(
       "Original title",
       "Original body",
       "attacker",
+      Math.floor(Date.now() / 1000),
       deps,
     );
 
@@ -635,6 +640,7 @@ Deno.test(
       "Old title",
       "Old body",
       issue.author,
+      Math.floor(Date.now() / 1000),
       deps,
     );
     const state = await loadContentApprovalState(
@@ -644,6 +650,7 @@ Deno.test(
     const key = `owner/repo|${issue.number}`;
     const snap = state.snapshots[key];
     if (snap) snap.capturedAt = captureUnix;
+    if (snap) snap.contentRevisionAt = snap.capturedAt;
     await deps.writeFile!(
       `${
         resolveContentApprovalStateDir(config.workDir)
@@ -704,6 +711,7 @@ Deno.test(
       "Original",
       "Body",
       "untrusted-user",
+      Math.floor(Date.now() / 1000),
       deps,
     );
     const state = await loadContentApprovalState(
@@ -714,6 +722,7 @@ Deno.test(
     const snap = state.snapshots[key];
     if (snap) {
       snap.capturedAt = Math.floor(Date.parse("2026-04-23T15:00:00Z") / 1000);
+      snap.contentRevisionAt = snap.capturedAt;
     }
     await deps.writeFile!(
       `${

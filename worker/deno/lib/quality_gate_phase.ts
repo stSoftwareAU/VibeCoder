@@ -242,7 +242,7 @@ export function gitWorktreeRoot(cwd: string): string {
  * `sudo -n -u agent -- env NAME=value <cmd>`, which `env_reset` cannot touch.
  * Only non-secret values travel this way: the placement and the egress proxy
  * ({@link sudoCarriedEnv}, Issue #4877), and the git safe.directory entry
- * ({@link gitSafeDirectoryEnv}, Issue #4927).
+ * ({@link gitSafeDirectoryEnv}, Issues #4927, #5011).
  *
  * Declared credentials are never carried here. They ride the stdin channel of
  * `credential_channel.ts` (Issue #4705), because a value in argv is visible to
@@ -486,6 +486,8 @@ export function qualityCommandFile(command: string): string | undefined {
  * alongside declared credentials; that combination is refused rather than
  * silently dropped. A fault of the wrapper itself is reported as exit 1 with
  * the fault line, never with a credential value.
+ *
+ * A dropped command also trusts its own checkout for git (Issue #5011).
  */
 async function spawnRepositoryCommand(
   cmd: string[],
@@ -506,12 +508,19 @@ async function spawnRepositoryCommand(
       repoCredentialEnv,
     });
     // `sudo`'s env_reset would strip the build-cache placement and the
-    // egress proxy, so they travel in argv instead (Issues #2247, #4877). A
-    // worker-account spawn has no `sudo`, and `Deno.Command`'s env carries
-    // them.
+    // egress proxy, so they travel in argv instead (Issues #2247, #4877), as
+    // does the git safe.directory entry: the `agent` account has no
+    // `~/.gitconfig` and would otherwise refuse the worker-owned checkout
+    // (Issues #4927, #5011). A worker-account spawn has no `sudo`, and
+    // `Deno.Command`'s env carries them.
     const placed = carryEnvThroughSudo(
       dropped,
-      dropToUntrusted ? sudoCarriedEnv(env) : {},
+      dropToUntrusted
+        ? {
+          ...sudoCarriedEnv(env),
+          ...gitSafeDirectoryEnv(options?.cwd ?? Deno.cwd()),
+        }
+        : {},
     );
     // `sudo`'s env_reset would also strip the declared credentials, so on a
     // dropped spawn they ride stdin instead (Issue #4705). Nothing secret is

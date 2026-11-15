@@ -98,6 +98,7 @@ async function captureBaseline(
     TITLE,
     body,
     "alice",
+    Math.floor(Date.now() / 1000),
     deps,
   );
   assertEquals(captured.ok, true);

@@ -84,3 +84,27 @@ Backend/container changes only, with no UI changes.
 - Updated all copies of the fallback contract: design principles, model guide,
   configuration, skill and unattended guide. The command and shared launch
   builder still derive build arguments from the same provider-value helper.
+
+## CI repair: provider-neutral launcher
+
+The existing `agent_provider_test.ts` architecture regression failed because
+`container_launch_plan.ts` named and selected specific providers. Move the
+review-image provider union to `reviewImageAgentProviders` in the existing
+`agent_provider.ts` abstraction. The launcher now consumes those descriptors,
+and its build diagnostic names the review image without hard-coded providers.
+The configured credential-mount set and installed review fallback set retain
+exactly the same behaviour. No tests or assertions were removed or weakened.
+
+Validation:
+
+- Reproduced the existing architecture test failure before the refactor.
+- Provider, command launch-plan, review-round, wiring and runner suites:
+  168 passed, 0 failed.
+- Provider, command launch-plan and container-launch suites after merging
+  current `main`: 114 passed, 0 failed (overlaps the suite above).
+- Changed modules passed type checking, formatting, lint and diff checks.
+- Direct JSR downloads are unavailable to Deno in this environment. The tests
+  used a temporary import map to the locked published dependencies downloaded
+  through curl; repository imports, dependency versions and lockfile remain
+  unchanged. Full local quality is not claimed; hosted CI remains authoritative.
+- Merged current `main` without conflicts, preserving incoming changes.

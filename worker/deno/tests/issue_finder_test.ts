@@ -1750,6 +1750,7 @@ Deno.test("issue_finder - work-on issue proceeds when content unchanged (Issue #
     "Fix the bug",
     "Detailed description",
     "untrusted-user",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
@@ -1790,6 +1791,7 @@ Deno.test("issue_finder - work-on issue blocked when untrusted author modifies c
     "Original title",
     "Original body",
     "untrusted-user",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
@@ -1842,6 +1844,7 @@ Deno.test("issue_finder - work-on issue proceeds with warning when trusted autho
     "Original title",
     "Original body",
     "alice",
+    Math.floor(Date.now() / 1000),
     deps,
   );
 
