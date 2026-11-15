@@ -52,7 +52,12 @@ const CALL_TIMEOUT_MS = 10 * 60_000;
 const DISPATCH_TOOLS = ["Task", "Agent"];
 
 const MANAGER_ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
-/** The allow-list is not handed to the runner, so every editing tool is denied. */
+/**
+ * The allow-list is not handed to the runner. The denied list is enforced as
+ * `--disallowed-tools` only on the Claude CLI path (Claude and DeepSeek); on
+ * Codex it reaches the model as prompt text only, and a read-only Codex role
+ * is held only by checkout restoration, which does not deny Bash.
+ */
 const MANAGER_DENIED_TOOLS = [
   "Edit",
   "MultiEdit",
