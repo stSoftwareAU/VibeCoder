@@ -510,7 +510,10 @@ export interface InfrastructureDeps {
     request: IssueAssignmentInput & { workDir: string },
   ) => Promise<IssueAssignmentRecord>;
   /** How long the setup phase may run before the run abandons it (Issue #5128). */
-  setupDeadlineMs: (config: WorkerConfig) => number;
+  setupDeadlineMs: (
+    config: WorkerConfig,
+    input: { milestone: boolean },
+  ) => number;
   /** Arms the setup deadline (Issue #5128); a test drives its own clock. */
   setupClock: Clock;
   loadPrompt: typeof loadPrompt;

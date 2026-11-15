@@ -247,10 +247,13 @@ and it is not part of the dedup signature), then moves the file to
 `${LOG_DIR}/hard-kill-archive/`, where it is kept for up to 30 days or 2,000
 files. The archive, not the issue, holds the evidence (see
 [a hard-killed run](CALLBACKS.md#a-hard-killed-run--failureclass-hard_kill)). A
-setup phase still running after two agent budgets (`claude_timeout`, for the
-milestone pre-sync agent and its repair run) plus 30 minutes for the clone, git,
-gates and pre-setup command is abandoned (Issue #5128), but never later than the
-run's hard cap allows: the deadline is the smaller of that budget and the runway
+setup phase still running after 30 minutes for the clone, git, stream compaction
+and pre-setup command is abandoned (Issue #5128). A milestone issue adds two
+agent budgets (`claude_timeout`, for the milestone pre-sync agent and its repair
+run), because only a milestone setup runs a full agent turn; a non-milestone
+setup's only agent run is the 180-second stream compaction, inside the 30
+minutes. The deadline is never later
+than the run's hard cap allows: it is the smaller of that budget and the runway
 left to the supervisor cap (`VIBE_RUN_MAX_SECONDS`, anchored by
 `VIBE_RUN_STARTED_EPOCH`) less the kill grace and the WIP reserve. With the
 default cap that falls before the launcher's watchdog (the default 3-hour cap
@@ -258,8 +261,9 @@ plus 10 minutes, or `VIBE_CONTAINER_WATCHDOG_SECONDS` when set), even when setup
 starts late or `claude_timeout` is large. The watchdog is set independently of
 `VIBE_RUN_MAX_SECONDS`, so a cap raised above the default can still leave the
 deadline after it. With no supervisor cap published (unset or `0`) there is
-nothing to cap the budget by, and a large `claude_timeout` can push the deadline
-past the watchdog. The run ends as a setup `timeout` failure. It releases the
+nothing to cap the budget by, and for a milestone setup a large `claude_timeout`
+can push the deadline past the watchdog. The run ends as a setup `timeout`
+failure. It releases the
 claim only when it still holds it: its own claim comment must be on the issue,
 authored by this run's GitHub account, even for a claim `claimIssue` returned,
 because a host that re-claims after the fleet's recovery freed the issue deletes
