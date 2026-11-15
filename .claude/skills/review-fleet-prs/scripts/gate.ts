@@ -943,7 +943,7 @@ export function failedActionsSuiteConclusions(
 export function authorKind(
   login: string,
   fleet: ReadonlySet<string>,
-  actorType?: string,
+  actorType: string | undefined,
 ): ReadyPr["kind"] | null {
   if (DEPENDABOT_LOGINS.has(login)) return "dependabot";
   return fleet.has(login) ||

@@ -429,3 +429,43 @@ Deno.test("claim (Issue #4398): gate.ts --host=<name> reaches pass(), so this ho
     await Deno.remove(home, { recursive: true });
   }
 });
+
+Deno.test("pass: a GraphQL Bot author matches the configured [bot] fleet login, and a User of the same login does not", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const fleet = new Set(["fleet-pr-babysitter[bot]"]);
+    const bot = makeGh([
+      fleetPr(21, {
+        author: { login: "fleet-pr-babysitter", __typename: "Bot" },
+      }),
+    ], []);
+    const asBot = await pass(REPOS, fleet, REVIEWER, {
+      gh: bot.gh,
+      dir,
+      host: "laptop",
+      now: () => NOW,
+    });
+    assertEquals(asBot.ready.map((p) => [p.number, p.kind]), [[21, "fleet"]]);
+    // The search asks GraphQL for the author's type, or the gate never sees it.
+    const search = bot.calls.find((c) => c[0] === "api" && c[1] === "graphql")!
+      .join("\n");
+    assertEquals(/author \{ login __typename \}/.test(search), true);
+
+    const user = makeGh([
+      fleetPr(22, {
+        author: { login: "fleet-pr-babysitter", __typename: "User" },
+      }),
+    ], []);
+    const asUser = await pass(REPOS, fleet, REVIEWER, {
+      gh: user.gh,
+      dir,
+      host: "laptop",
+      now: () => NOW,
+    });
+    assertEquals(asUser.ready, []);
+    assertEquals(asUser.auditBlocked, []);
+    assertEquals(asUser.skipped, {});
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
