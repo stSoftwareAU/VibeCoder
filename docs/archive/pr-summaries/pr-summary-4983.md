@@ -59,9 +59,9 @@ checked against the head code:
   the merge gate refused the merged tree".
 - Docs sweep: I grepped `*.md` outside `docs/archive/` for `gateEscalated`,
   "escalates on the first occurrence" and "oldest open child". At the head the
-  two stale phrases no longer appear anywhere. `gateEscalated` appears once, at
-  `docs/INTERNALS.md:5120`, in the closing sentence of the rewritten bullet,
-  which describes the flag as retired: nothing sets it, and a landed sync drops
+  two stale phrases no longer appear anywhere. `gateEscalated` appears once in `docs/INTERNALS.md`,
+  in the closing sentence of the rewritten "It hands nothing to a human"
+  bullet, which describes the flag as retired: nothing sets it, and a landed sync drops
   it.
 
 ## Test Plan
@@ -72,8 +72,8 @@ checked against the head code:
   `worker/deno/tests/milestone_branch_sync_test.ts` cover the behaviour the
   prose describes.
 - `deno run --allow-read --allow-env mod.ts check-mermaid --script-dir ../..`
-  (from `worker/deno`): `mermaid: PASSED (1757 file(s), 1437 block(s) checked)`,
-  re-run at the head.
+  (from `worker/deno`): `mermaid: PASSED (1768 file(s), 1441 block(s) checked)`,
+  re-run at the head after the last merge of origin/main.
 - `deno fmt --check lib/milestone_sync_streak.ts` and
   `deno check lib/milestone_sync_streak.ts` passed.
 - `deno task test:unit` over the 33 test files that import
