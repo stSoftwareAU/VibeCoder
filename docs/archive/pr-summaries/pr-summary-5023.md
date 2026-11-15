@@ -111,3 +111,7 @@ flowchart LR
 - The first full `./quality.sh` run failed only on that pin
   (`ci_fix - keeps the PR summary true to the head`). After the edit, the file
   and the new test passed (5 passed, 0 failed).
+- Full `./quality.sh` after that edit: PASSED with skipped checks, the deno
+  tests passing in both the parallel and serial passes. The two skipped stages
+  were config integration and checkov, which this host cannot run; CI still
+  runs checkov.
