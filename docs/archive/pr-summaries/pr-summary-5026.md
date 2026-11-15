@@ -40,18 +40,16 @@ flowchart LR
 
 - I took the issue's main suggestion: drop the entries. I did not take the
   optional one, which was to have workflow sync flag a misplaced config. With
-  the spec now `missing`, the filed issue already names
-  `.github/dependabot.yml` as the path, so the misplaced file is reported
-  without a new code path.
-- A new definitions test applies the rule to every `dependabotConfig` spec, so
-  a future Dependabot spec cannot add the entries back to its workflow-file
+  the spec now `missing`, the filed issue already names `.github/dependabot.yml`
+  as the path, so the misplaced file is reported without a new code path.
+- A new definitions test applies the rule to every `dependabotConfig` spec, so a
+  future Dependabot spec cannot add the entries back to its workflow-file
   groups.
 
 ### Undiscoverable Facts
 
-- PR #5024 (merged) had already moved the npm spec onto
-  `package-ecosystem: npm` patterns. This PR removes those patterns from the
-  workflow-file group.
+- PR #5024 (merged) had already moved the npm spec onto `package-ecosystem: npm`
+  patterns. This PR removes those patterns from the workflow-file group.
 
 ## Evidence
 
@@ -80,9 +78,11 @@ Issue number this diff adds as provenance:
 
 Added:
 
-- `worker/deno/tests/workflow_auditor_test.ts`: `workflow_auditor - <id>'s own
+- `worker/deno/tests/workflow_auditor_test.ts`:
+  `workflow_auditor - <id>'s own
   template saved as .github/workflows/<suggestedFilename> leaves the spec
-  missing (Issue #5026)`, one test for each of the three spec ids.
+  missing (Issue #5026)`,
+  one test for each of the three spec ids.
   - Fixture: the spec's own template served under `.github/workflows/`, with no
     `dependabot.yml`.
   - Assertions: the spec is in `missing`, and in neither `present` nor
@@ -90,7 +90,8 @@ Added:
   - Controls: the template contains `package-ecosystem:`. The same template
     served as `.github/dependabot.yml` makes the spec present, with `foundIn`
     `.github/dependabot.yml`.
-- `worker/deno/tests/workflow_definitions_test.ts`: `workflow_definitions - no
+- `worker/deno/tests/workflow_definitions_test.ts`:
+  `workflow_definitions - no
   dependabotConfig spec matches a workflow file on a package-ecosystem entry
   (Issue #5026)`.
   - Assertions: no pattern in any `dependabotConfig` spec's
@@ -100,28 +101,42 @@ Added:
 
 Edited:
 
-- `worker/deno/tests/workflow_auditor_test.ts`: the loop over `npm`, `"npm"`
-  and `'npm'` is renamed to `workflow_auditor - a workflow file carrying
+- `worker/deno/tests/workflow_auditor_test.ts`: the loop over `npm`, `"npm"` and
+  `'npm'` is renamed to
+  `workflow_auditor - a workflow file carrying
   package-ecosystem: ${ecosystem} leaves npm-dependency-updates missing (Issue
-  #5026)`. The fixture is unchanged.
-  - Removed from `worker/deno/tests/workflow_auditor_test.ts`: `assertEquals(status?.foundIn, ".github/workflows/deps.yml");`
-    - Required by: "Drop the `package-ecosystem: <ecosystem>` entries from the workflow-file `detectionPatternGroups` of all three specs."
-  - Removed from `worker/deno/tests/workflow_auditor_test.ts`: `assertEquals(status?.missing, false);`
-    - Required by: "Update the npm tests that pin a workflow-file `package-ecosystem: npm` line as present."
+  #5026)`.
+  The fixture is unchanged.
+  - Removed from `worker/deno/tests/workflow_auditor_test.ts`:
+    `assertEquals(status?.foundIn, ".github/workflows/deps.yml");`
+    - Required by: "Drop the `package-ecosystem: <ecosystem>` entries from the
+      workflow-file `detectionPatternGroups` of all three specs."
+  - Removed from `worker/deno/tests/workflow_auditor_test.ts`:
+    `assertEquals(status?.missing, false);`
+    - Required by: "Update the npm tests that pin a workflow-file
+      `package-ecosystem: npm` line as present."
   - Replacements: `assertEquals(status?.foundIn, undefined);`,
     `assertEquals(status?.missing, true);` and
     `assertEquals(status?.partial, false);`.
-- `worker/deno/tests/workflow_definitions_test.ts`, `workflow_definitions -
-  Java dependency update specs are split by ecosystem`: the expected Maven and
-  Gradle `detectionPatternGroups` drop their `package-ecosystem` entries. New
-  assertions pin the ecosystem-specific `dependabotConfigPatternGroups`, so
-  "a Gradle-only dependabot.yml cannot satisfy the Maven spec" is still
-  covered. The auditor tests `a maven-only dependabot.yml leaves the Gradle spec
-  missing` and `an npm-only dependabot.yml leaves java-dependency-updates
-  missing` also still cover it.
-  - Removed from `worker/deno/tests/workflow_definitions_test.ts`: `"package-ecosystem: maven",` and `'package-ecosystem: "maven"',` from the expected `maven!.detectionPatternGroups`
+- `worker/deno/tests/workflow_definitions_test.ts`,
+  `workflow_definitions -
+  Java dependency update specs are split by ecosystem`:
+  the expected Maven and Gradle `detectionPatternGroups` drop their
+  `package-ecosystem` entries. New assertions pin the ecosystem-specific
+  `dependabotConfigPatternGroups`, so "a Gradle-only dependabot.yml cannot
+  satisfy the Maven spec" is still covered. The auditor tests
+  `a maven-only dependabot.yml leaves the Gradle spec
+  missing` and
+  `an npm-only dependabot.yml leaves java-dependency-updates
+  missing` also
+  still cover it.
+  - Removed from `worker/deno/tests/workflow_definitions_test.ts`:
+    `"package-ecosystem: maven",` and `'package-ecosystem: "maven"',` from the
+    expected `maven!.detectionPatternGroups`
     - Required by: "Keep them only in `dependabotConfigPatternGroups`."
-  - Removed from `worker/deno/tests/workflow_definitions_test.ts`: `"package-ecosystem: gradle",` and `'package-ecosystem: "gradle"',` from the expected `gradle!.detectionPatternGroups`
+  - Removed from `worker/deno/tests/workflow_definitions_test.ts`:
+    `"package-ecosystem: gradle",` and `'package-ecosystem: "gradle"',` from the
+    expected `gradle!.detectionPatternGroups`
     - Required by: "Keep them only in `dependabotConfigPatternGroups`."
 
 Docs: I grepped `README.md`, `docs/*.md` (outside `docs/archive/`) and the
