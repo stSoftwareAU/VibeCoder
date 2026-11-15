@@ -101,4 +101,13 @@ flowchart LR
     `worker/deno/tests/pr_summary_check_prompt_3423_test.ts`
 
   Together with the new file: 52 passed, 0 failed.
-- No existing test was edited, so no assertion was removed.
+- Edited `worker/deno/tests/pr_summary_final_state_2879_test.ts`: the
+  `${type} - keeps the PR summary true to the head` loop now gives each type its
+  own extra pins. `pr_feedback` still pins "known defect"; `ci_fix` no longer
+  does. The three shared pins and the test names are unchanged.
+- Removed from `worker/deno/tests/pr_summary_final_state_2879_test.ts`:
+  `"known defect",` (for `ci_fix` only)
+  - Required by: "drop the enumerated trigger list that narrows it"
+- The first full `./quality.sh` run failed only on that pin
+  (`ci_fix - keeps the PR summary true to the head`). After the edit, the file
+  and the new test passed (5 passed, 0 failed).
