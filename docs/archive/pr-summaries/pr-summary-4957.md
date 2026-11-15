@@ -240,6 +240,9 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   the injected clean scan.
   `deno task test:unit tests/token_economizer_learnings_test.ts` on the head ran
   22 passed, 0 failed (gitleaks present).
+- `./quality.sh < /dev/null` after the round-2 fixes (code commit `f9520caa`)
+  exited 0 with `Result: PASSED (with skipped checks)`; config integration and
+  checkov were skipped, and these skips are not passes.
 - `./quality.sh < /dev/null` on the earlier code (`f504ca77`, before the round-2
   fixes) exited 0 with `Result: PASSED (with skipped checks)`. Deno tests passed
   in both the parallel (8m33s) and serial (3m43s) passes. Completeness,
