@@ -144,6 +144,8 @@ export interface PrLiveFields {
    * decision and for an absent field, so unknown never blocks an update.
    */
   changesRequested?: true;
+  /** The current head still needs a required approval. */
+  reviewRequired?: true;
 }
 
 /**
@@ -191,6 +193,9 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
     behind: fields.mergeStateStatus === "BEHIND",
     ...(fields.reviewDecision === "CHANGES_REQUESTED"
       ? { changesRequested: true as const }
+      : {}),
+    ...(fields.reviewDecision === "REVIEW_REQUIRED"
+      ? { reviewRequired: true as const }
       : {}),
   };
 }

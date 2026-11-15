@@ -96,9 +96,17 @@ Deno.test("noTestAdded: fleet code without a test is flagged; with a test, docs-
 
 Deno.test("authorKind: Dependabot and the fleet accounts only", () => {
   const fleet = new Set(["stservice", "VibeCoderST"]);
-  assertEquals(authorKind("app/dependabot", fleet), "dependabot");
-  assertEquals(authorKind("VibeCoderST", fleet), "fleet");
-  assertEquals(authorKind("nleck", fleet), null);
+  assertEquals(authorKind("app/dependabot", fleet, undefined), "dependabot");
+  assertEquals(authorKind("VibeCoderST", fleet, undefined), "fleet");
+  assertEquals(authorKind("nleck", fleet, undefined), null);
+});
+
+Deno.test("authorKind: GraphQL bot authors match the configured REST bot login", () => {
+  const fleet = new Set(["fleet-pr-babysitter[bot]"]);
+  assertEquals(authorKind("fleet-pr-babysitter", fleet, "Bot"), "fleet");
+  assertEquals(authorKind("fleet-pr-babysitter", fleet, "User"), null);
+  assertEquals(authorKind("fleet-pr-babysitter", fleet, undefined), null);
+  assertEquals(authorKind("other", fleet, "Bot"), null);
 });
 
 const searchPr = (

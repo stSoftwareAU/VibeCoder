@@ -24,6 +24,8 @@ import {
   syncBranchFor,
   syncPrLandingNote,
 } from "../lib/milestone_sync_pr.ts";
+import { cloneGitFixture, seedGitRemote } from "./support/git_fixture.ts";
+import { git as runGit, gitOk } from "./support/git_repo_fixture.ts";
 
 const REPO = "org/repo";
 const MILESTONE = "milestone/523-idle-task-scans";
@@ -205,6 +207,158 @@ Deno.test("raiseMilestoneSyncPr - establishes the lease baseline before pushing 
     git[fetchIndex]!.join(" "),
     `refs/remotes/origin/${branch}`,
   );
+});
+
+/** Real refs with distinct trees, so the initial baseline cannot skip a push. */
+async function syncLeaseFixture() {
+  const root = await Deno.makeTempDir({ prefix: "sync-lease-" });
+  const branch = syncBranchFor(MILESTONE);
+  const ref = `refs/heads/${branch}`;
+  try {
+    const remote = await seedGitRemote(root, DEFAULT, [
+      { branch, subject: "old sync", files: { "sync.txt": "old\n" } },
+      {
+        branch: DEFAULT,
+        parent: 1,
+        subject: "current sync",
+        files: { "sync.txt": "current\n" },
+      },
+      {
+        branch: "other",
+        parent: 1,
+        subject: "another actor's sync",
+        files: { "sync.txt": "other\n" },
+      },
+    ]);
+    const clone = `${root}/clone`;
+    await cloneGitFixture(remote, clone);
+    const head = (await gitOk(["rev-parse", "HEAD"], clone)).trim();
+    const old = (await gitOk(["rev-parse", ref], remote)).trim();
+    const other = (await gitOk(["rev-parse", "refs/heads/other"], remote))
+      .trim();
+    return { root, remote, clone, branch, ref, head, old, other };
+  } catch (error) {
+    await Deno.remove(root, { recursive: true });
+    throw error;
+  }
+}
+
+Deno.test("raiseMilestoneSyncPr - recreates a deleted sync branch with a stale tracking ref", async () => {
+  const fx = await syncLeaseFixture();
+  try {
+    await gitOk(["update-ref", "-d", fx.ref], fx.remote);
+    assertEquals(
+      (await gitOk(["rev-parse", `refs/remotes/origin/${fx.branch}`], fx.clone))
+        .trim(),
+      fx.old,
+    );
+    const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+      git: (args) => runGit(args, fx.clone),
+      gh: fakeDeps('[{"number":700}]').deps.gh,
+    });
+    assertEquals(result, {
+      ok: true,
+      value: { branch: fx.branch, opened: false, pushed: true },
+    });
+    assertEquals(
+      (await gitOk(["rev-parse", fx.ref], fx.remote)).trim(),
+      fx.head,
+    );
+  } finally {
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});
+
+Deno.test("raiseMilestoneSyncPr - a failed remote lookup leaves a deleted branch untouched", async () => {
+  const fx = await syncLeaseFixture();
+  try {
+    await gitOk(["update-ref", "-d", fx.ref], fx.remote);
+    const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+      // Only the lookup is unreachable. Real pushes must still enforce the
+      // stale tracking lease rather than assume the missing branch is safe.
+      git: (args) =>
+        runGit(
+          args[0] === "ls-remote"
+            ? args.map((arg) =>
+              arg === "origin" ? `${fx.root}/missing.git` : arg
+            )
+            : args,
+          fx.clone,
+        ),
+      gh: fakeDeps('[{"number":700}]').deps.gh,
+    });
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "stale info");
+    assertEquals(
+      (await runGit(["show-ref", "--verify", "--quiet", fx.ref], fx.remote))
+        .code,
+      1,
+    );
+  } finally {
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});
+
+Deno.test("raiseMilestoneSyncPr - recreates a branch deleted after the baseline fetch on the stale retry", async () => {
+  const fx = await syncLeaseFixture();
+  try {
+    let deleted = false;
+    const logs: string[] = [];
+    const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+      git: async (args) => {
+        if (args[0] === "push" && !deleted) {
+          await gitOk(["update-ref", "-d", fx.ref], fx.remote);
+          deleted = true;
+        }
+        return await runGit(args, fx.clone);
+      },
+      gh: fakeDeps('[{"number":700}]').deps.gh,
+      log: (message) => logs.push(message),
+    });
+    assertEquals(result, {
+      ok: true,
+      value: { branch: fx.branch, opened: false, pushed: true },
+    });
+    assertEquals(
+      (await gitOk(["rev-parse", fx.ref], fx.remote)).trim(),
+      fx.head,
+    );
+    assertStringIncludes(logs.join("\n"), "refetched and retried — accepted");
+  } finally {
+    await Deno.remove(fx.root, { recursive: true });
+  }
+});
+
+Deno.test("raiseMilestoneSyncPr - competing creation and update after each lookup retain the other actor's ref", async () => {
+  const fx = await syncLeaseFixture();
+  try {
+    await gitOk(["update-ref", "-d", fx.ref], fx.remote);
+    let competingHead = fx.other;
+    const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, {
+      git: async (args) => {
+        if (args[0] === "push") {
+          // The first race creates the absent branch; the retry races a new
+          // update. Git must reject both against their observed baselines.
+          await gitOk(["update-ref", fx.ref, competingHead], fx.remote);
+          competingHead = fx.old;
+        }
+        return await runGit(args, fx.clone);
+      },
+      gh: fakeDeps('[{"number":700}]').deps.gh,
+    });
+    assert(!result.ok);
+    assertStringIncludes(result.error.message, "stale info");
+    assertStringIncludes(
+      result.error.message,
+      "still rejected after it was refetched and retried",
+    );
+    assertEquals(
+      (await gitOk(["rev-parse", fx.ref], fx.remote)).trim(),
+      fx.old,
+    );
+  } finally {
+    await Deno.remove(fx.root, { recursive: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
