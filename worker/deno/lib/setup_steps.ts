@@ -36,7 +36,12 @@ export function setupStepStartLine(step: SetupStep): string {
   return `[setup-step] ${step}: started`;
 }
 
-/** Seconds setup may spend on work outside the agent runs (Issue #5128). */
+/**
+ * Seconds setup may spend on work outside the agent runs (Issue #5128).
+ *
+ * A non-milestone setup gets this alone: it covers the clone and a re-clone,
+ * git, the 180s stream compaction and the pre-setup command.
+ */
 export const SETUP_FIXED_ALLOWANCE_SECONDS = 1800;
 
 /**
@@ -54,20 +59,28 @@ export interface SetupDeadlineInput {
   env?: (name: string) => string | undefined;
   /** Current epoch-ms; defaults to the wall clock. */
   nowMs?: number;
+  /**
+   * Whether the issue routes through a milestone branch, so setup may run the
+   * milestone pre-sync agents.
+   */
+  milestone: boolean;
 }
 
 /**
  * How long the setup phase may run before the run abandons it (Issue #5128).
  *
- * Setup is not just bounded subprocesses: for a milestone issue the pre-sync
- * runs the conflict-resolution agent for up to `claudeTimeout`
+ * Only a milestone issue runs a full agent turn in setup: the pre-sync runs
+ * the conflict-resolution agent for up to `claudeTimeout`
  * (`milestone_presync.ts`, `agentTimeoutMs`), then verifies the gates and may
- * run a repair agent, and the clone alone may take 600s
- * (`DEFAULT_GH_CLONE_TIMEOUT`). The budget is therefore two agent budgets
- * plus a fixed allowance for the clone, git, gates and the pre-setup command,
- * so a slow-but-progressing setup is never abandoned and only a step that has
- * wedged reaches it. On `GRQ-25` one sat in setup for over two hours, holding
- * its claim, until the launcher's watchdog reaped the container.
+ * run a repair agent. A milestone setup is therefore given two agent budgets
+ * plus a fixed allowance; a non-milestone setup runs no agent beyond the
+ * 180s stream compaction and gets the fixed allowance alone, which covers the
+ * clone (600s, `DEFAULT_GH_CLONE_TIMEOUT`) and a re-clone, git, the stream
+ * compaction and the pre-setup command. The budget is sized so a
+ * slow-but-progressing setup is not abandoned; a step that has wedged reaches
+ * the deadline. On `GRQ-25` a non-milestone setup was given
+ * 9000s and the guest stopped before it fell, so the claim was never released
+ * (Issue #5128).
  *
  * That budget is no use if it outlasts the container, so it is capped by the
  * runway left to the run's hard cap (`run_hard_cap.ts`): the supervisor's
@@ -80,10 +93,10 @@ export interface SetupDeadlineInput {
  */
 export function setupDeadlineMs(
   config: { claudeTimeout: number; claudeKillAfter: number },
-  input: SetupDeadlineInput = {},
+  input: SetupDeadlineInput,
 ): number {
-  const budgetMs = (2 * config.claudeTimeout + SETUP_FIXED_ALLOWANCE_SECONDS) *
-    1000;
+  const budgetMs = ((input.milestone ? 2 * config.claudeTimeout : 0) +
+    SETUP_FIXED_ALLOWANCE_SECONDS) * 1000;
   const resolution = resolveRunHardCap({
     ...(input.env ? { env: input.env } : {}),
     killAfterSeconds: config.claudeKillAfter,

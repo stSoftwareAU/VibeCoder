@@ -17,7 +17,9 @@
  * module that failed outside a test (`(uncaught error)`), a base that is
  * unavailable or passes, a different test red at the fork, and a timeout. A
  * pass the runner never reached because an earlier pass failed is run before
- * the downgrade stands ({@link judgeDenoTestCheck}).
+ * the downgrade stands ({@link judgeDenoTestCheck}). A downgrade also stands
+ * only when the output reports no time-budget failure and no unchecked budget
+ * (Issue #4930, {@link budgetBlockers}).
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -29,6 +31,10 @@ import {
   type PreFlightRunner,
   runPreFlightGate,
 } from "./pre_flight_gate.ts";
+import {
+  BUDGET_FAILURE_PREFIX,
+  BUDGET_NOT_CHECKED_PREFIX,
+} from "./unit_test_time_budget.ts";
 
 /** Longest output line the classifier examines. */
 const LINE_CAP = 2000;
@@ -83,6 +89,20 @@ function outputLines(output: string): string[] {
 }
 
 /**
+ * The time-budget lines in a `deno test` output that refuse a base-only
+ * downgrade (Issue #4930): a budget failure (`FAIL: every test in …`) or a
+ * `TIME BUDGET NOT CHECKED` line. Each is anchored at the start of its trimmed
+ * line, so a budget phrase inside other text does not count. A `NOT ENFORCED`
+ * line, the git guard shim's waiver, is not a blocker.
+ */
+export function budgetBlockers(output: string): string[] {
+  return outputLines(output).filter((line) =>
+    line.startsWith(BUDGET_FAILURE_PREFIX) ||
+    line.startsWith(BUDGET_NOT_CHECKED_PREFIX)
+  );
+}
+
+/**
  * The failed tests in a `deno test` output, as `<name> => <file>` keys (the
  * line and column are dropped so an edit above a test does not rename it).
  */
@@ -106,7 +126,7 @@ export function hasUncaughtError(output: string): boolean {
 
 /**
  * Whether the `test:unit` runner stopped after a failed parallel pass and so
- * never ran its serial pass (or the time budget that follows the passes). A
+ * never ran its serial pass. A
  * run whose output has no pass result lines is not judged: its runner is not
  * ours.
  */
@@ -217,14 +237,39 @@ export async function judgeDenoTestFailure(
 }
 
 /**
+ * The verdict on a base-only failure whose output reports a time-budget
+ * blocker (Issue #4930): the failing tests are red at the fork, but the budget
+ * failed or was not checked, so the push is blocked.
+ */
+function budgetVerdict(
+  error: PreFlightGateError,
+  blockers: string[],
+): DenoTestOutcome {
+  return {
+    kind: "verdict",
+    message: [
+      error.message,
+      "the failing unit tests are red where this push forked too, but the " +
+      "unit-test time budget failed or was not checked, so the push is " +
+      "blocked:",
+      ...blockers,
+    ].join("\n"),
+    error,
+  };
+}
+
+/**
  * Judge a failed `deno test` check and, when it is base-only, make sure the
  * rest of the suite was run. `deno task test:unit` stops after a failed
- * parallel pass, so its serial pass and time budget never ran: the serial pass
- * is run here (`--serial-only`) and judged the same way, and a pass that did
- * not run is never counted as passed. `run` runs a command at the head.
+ * parallel pass, so its serial pass never ran: the serial pass is run here
+ * (`--serial-only`) and judged the same way, and a pass that did not run is
+ * never counted as passed. `run` runs a command at the head.
  *
- * The time budget over a failed parallel pass is the one thing not re-run: the
- * runner applies it only after every pass succeeded.
+ * The runner holds a failed pass's JUnit report to the time budget too
+ * (Issue #4930), so a base-only downgrade stands only when its output reports
+ * no budget failure (`FAIL: every test in …`) and no `TIME BUDGET NOT CHECKED`
+ * line. A blocked output is a verdict at once, before the serial rerun, and the
+ * rerun's own output is checked the same way.
  */
 export async function judgeDenoTestCheck(opts: {
   error: PreFlightGateError;
@@ -238,9 +283,10 @@ export async function judgeDenoTestCheck(opts: {
     opts.baseline,
     opts.baseCommand,
   );
-  if (first.kind !== "base-only" || !serialPassSkipped(opts.error.output)) {
-    return first;
-  }
+  if (first.kind !== "base-only") return first;
+  const firstBlockers = budgetBlockers(opts.error.output);
+  if (firstBlockers.length > 0) return budgetVerdict(opts.error, firstBlockers);
+  if (!serialPassSkipped(opts.error.output)) return first;
   const rest = await opts.run(`${opts.command} --serial-only`);
   if (rest.ok) return first;
   const second = await judgeDenoTestFailure(
@@ -248,9 +294,13 @@ export async function judgeDenoTestCheck(opts: {
     opts.baseline,
     opts.baseCommand,
   );
-  return second.kind === "base-only"
-    ? { kind: "base-only", warning: `${first.warning}\n${second.warning}` }
-    : second;
+  if (second.kind !== "base-only") return second;
+  const restBlockers = budgetBlockers(rest.error.output);
+  if (restBlockers.length > 0) return budgetVerdict(rest.error, restBlockers);
+  return {
+    kind: "base-only",
+    warning: `${first.warning}\n${second.warning}`,
+  };
 }
 
 /** Quote test paths into one `deno task test:unit` command, or null. */
