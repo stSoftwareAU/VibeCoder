@@ -21,7 +21,15 @@ stop, which is reported to #4959. Closes #4956.
 
 - Each launch gets a fresh state directory outside the checkout. Paths are
   resolved and confined before anything is created, so a symlink alias cannot
-  redirect state into the checkout.
+  redirect state into the checkout. The controller directory
+  (`.token-economizer`) is confined before the launch path reads the stop record
+  or reports through it, and `reportTokenEconomizerStop` confines it again and
+  caps its receipt read at 4096 bytes: an aliased controller fails closed to
+  plugin-off with nothing read or written through the alias.
+- The runner re-checks the stop latch (`tokenEconomizerMaySync`) before every
+  spawn, so a launch resolved before a stop, then reused by a re-run, a
+  recovery run or a rate-limit retry, loads no plugin once a stop is latched or
+  the controller directory is unverified.
 - Cached facts are capped at four bullets and 600 characters. Notices are capped
   at 4,096 characters and the output protocol at 64 KiB. Malformed or oversized
   output is rejected, never injected on a best-effort basis.
@@ -100,7 +108,9 @@ flowchart LR
   subsequent plugin use across restart without weakening the container boundary
   or requiring a human. #4959 owns the verdict and purge, and #4958 owns
   accounting — evidence: `worker/deno/lib/token_economizer_control.ts`,
-  `worker/deno/tests/token_economizer_plugin_test.ts` — reviewer: met
+  `worker/deno/tests/token_economizer_plugin_test.ts`,
+  `worker/deno/tests/token_economizer_plugin_wiring_test.ts` (a launch resolved
+  before a stop is dropped by the runner) — reviewer: met
 - **unrequested** — Test-budget repairs in
   `worker/deno/tests/auto_merge_ensure_draft_heal_wiring_4952_test.ts`,
   `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts` and
@@ -146,6 +156,22 @@ flowchart LR
 
 ## Test Plan
 
+- PR #5139 review round, on the final head:
+  `worker/deno/tests/token_economizer_plugin_test.ts` (40 tests at head, 40
+  passed) and `worker/deno/tests/token_economizer_plugin_wiring_test.ts` (29
+  passed, 0 failed). The new tests are the alias-with-`stop.json` case
+  (launch and reporter, target unchanged), the oversized receipt (pins the cap;
+  it passes on the base too, since an oversized receipt never equalled the
+  fingerprint), and the launch-before-stop runner case (red without the
+  runner's re-check: the spawn kept `--plugin-dir`). The two real-hook tests
+  now take `sessions/claude/s1.json` as the positive control and assert that
+  `worker-hook-failure.json` and `errors.log` are absent and that
+  `finishTokenEconomizerRun` reports nothing. Four existing launch refusal
+  tests now expect the controller-directory refusal, which runs first. The
+  later "inside the repo checkout" refusal is still reached by the dirty
+  controller-path checkout test in the wiring file. Two
+  `runClaudeWithRetry` refused-model tests in the claude_runner test files fail
+  here and on the base: this container has no `codex` provider.
 - Targeted run on the pre-merge head: 221 passed, 0 failed across the 12
   TokenEconomizer, threat-model, sweep-coverage and repaired test files.
 - After the seam change: call-site, production-deps and wiring files passed (49

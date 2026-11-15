@@ -19,6 +19,9 @@ export interface TokenEconomizerFinding {
   reason: string;
 }
 
+/** Longest receipt read, matching the stop record's 4096-byte cap. */
+const RECEIPT_MAX_BYTES = 4096;
+
 type Notify = (args: string[]) => Promise<string>;
 type Log = { warn(message: string): void };
 
@@ -45,10 +48,23 @@ export async function reportTokenEconomizerStop(
   notify: Notify = runGhCommandRaw,
   logger?: Log,
 ): Promise<void> {
+  try {
+    // An aliased controller directory must never be read or written through.
+    await tokenEconomizerControlDirectory(workDir);
+  } catch {
+    const message =
+      "token-economizer: stopped; outcome notification skipped (controller directory is aliased or outside the work root)";
+    if (logger) logger.warn(message);
+    else console.error(message);
+    return;
+  }
   const receipt = `${tokenEconomizerStatePath(workDir)}.reported`;
   const fingerprint = JSON.stringify([stop.rule, stop.reason]);
   try {
-    if (await Deno.readTextFile(receipt) === fingerprint) return;
+    // Capped like the stop record: an oversized receipt is never a match.
+    if ((await Deno.stat(receipt)).size <= RECEIPT_MAX_BYTES) {
+      if (await Deno.readTextFile(receipt) === fingerprint) return;
+    }
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }

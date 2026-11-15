@@ -45,6 +45,7 @@ import {
   resolveAgentProvider,
 } from "../lib/agent_provider.ts";
 import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
+import { finishTokenEconomizerRun } from "../lib/token_economizer_control.ts";
 import { runningInContainerImage } from "../lib/container_stamp.ts";
 import {
   guardTokenEconomizerOutput,
@@ -54,6 +55,7 @@ import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 import {
   readTokenEconomizerStop,
+  recordTokenEconomizerStop,
   resolveTokenEconomizerLaunch,
   TOKEN_ECONOMIZER_HOOK_ADAPTER,
   TOKEN_ECONOMIZER_PLUGIN_DIR,
@@ -622,15 +624,39 @@ async function gitStatus(checkout: string): Promise<string> {
   return (await git(checkout, ["status", "--porcelain"])).trim();
 }
 
-/** The number of regular files under `dir`, recursively. */
-async function countFiles(dir: string): Promise<number> {
-  let count = 0;
-  for await (const entry of Deno.readDir(dir)) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory) count += await countFiles(path);
-    else if (entry.isFile) count += 1;
+/**
+ * After a SessionStart, Stop and SessionEnd replay: the dispatcher wrote its
+ * session file, and neither the adapter's failure marker nor the upstream error
+ * log exists, so the monitor's final scan finds no stop. A failed hook call also
+ * prints `{}` and exits 0, so the absence of these files is what proves health.
+ */
+async function assertHealthyHookSession(
+  launch: TokenEconomizerLaunch,
+): Promise<void> {
+  const home = launch.env.TOKENECONOMIZER_HOME;
+  assert(home !== undefined, "the launch names a state directory");
+  assert(
+    (await Deno.stat(join(home, "sessions", "claude", "s1.json"))).isFile,
+    "the dispatcher must have written the session file",
+  );
+  for (const name of [TOKEN_ECONOMIZER_HOOK_FAILURE, "errors.log"]) {
+    await assertRejects(
+      () => Deno.stat(join(home, name)),
+      Deno.errors.NotFound,
+      undefined,
+      `${name} must be absent after a healthy session`,
+    );
   }
-  return count;
+  const notifications: string[][] = [];
+  assertEquals(
+    await finishTokenEconomizerRun(launch, (args) => {
+      notifications.push(args);
+      throw new Error("a healthy session must not report a stop");
+    }),
+    false,
+  );
+  assertEquals(notifications, []);
+  assertEquals(await readTokenEconomizerStop(launch.workDir), null);
 }
 
 /** The three hook events the test replays, in the order a session sends them. */
@@ -684,13 +710,11 @@ Deno.test({
         );
       }
       assertEquals(await gitStatus(layout.checkout), "");
-      // Positive control: the plugin ran and wrote outside the checkout.
+      // Positive control: the dispatcher itself ran (a failed adapter call or
+      // an upstream fault also leaves files here, so a file count proves nothing).
       const stateHome = launch.env.TOKENECONOMIZER_HOME;
       assert(stateHome !== undefined, "the launch names a state directory");
-      assert(
-        (await countFiles(stateHome)) > 0,
-        "the state directory must hold the plugin's files",
-      );
+      await assertHealthyHookSession(launch);
     } finally {
       await Deno.remove(layout.root, { recursive: true }).catch(() => {});
     }
@@ -953,7 +977,7 @@ Deno.test({
         await Deno.readTextFile(join(layout.checkout, "untracked.txt")),
         "untracked change\n",
       );
-      assert((await countFiles(launch.env.TOKENECONOMIZER_HOME)) > 0);
+      await assertHealthyHookSession(launch);
     } finally {
       await Deno.remove(layout.root, { recursive: true });
     }
@@ -978,6 +1002,38 @@ Deno.test("an unavailable failure monitor falls back to ordinary plugin-off argv
     });
     assert(!off.argv.includes("--plugin-dir"));
     assertEquals(off.env.get("TOKENECONOMIZER_HOME"), undefined);
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a launch resolved before a stop is dropped by the runner: no --plugin-dir and no launch variable (PR #5139 review)", async () => {
+  const layout = await makeLayout();
+  try {
+    const options = await enabledSpawnOptions(layout, "implementation");
+    assert(options.tokenEconomizer);
+    // Positive control: before the stop, the same launch loads the plugin.
+    const before = await spawnWithStub(layout, options);
+    assertAdjacent(
+      before.argv,
+      "--plugin-dir",
+      options.tokenEconomizer.pluginDir,
+    );
+    assertEquals(
+      before.env.get("TOKENECONOMIZER_HOME"),
+      options.tokenEconomizer.env.TOKENECONOMIZER_HOME,
+    );
+    // A stop latched after the launch was resolved (a first spawn's hook fault)
+    // must reach the re-run, recovery run or retry that reuses the launch.
+    await recordTokenEconomizerStop(layout.workDir, {
+      rule: "plugin-run-failure",
+      reason: "first spawn hook fault",
+    });
+    const after = await spawnWithStub(layout, options);
+    assert(!after.argv.includes("--plugin-dir"), JSON.stringify(after.argv));
+    for (const key of LAUNCH_ONLY_KEYS) {
+      assertEquals(after.env.get(key), undefined, `child env ${key}`);
+    }
   } finally {
     await Deno.remove(layout.root, { recursive: true });
   }

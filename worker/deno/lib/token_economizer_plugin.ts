@@ -332,7 +332,7 @@ export async function readTokenEconomizerStop(
  * environment.
  *
  * Checks run in this order, and the first refusal wins: disabled block (silent),
- * stop record, run kind, plugin manifest, run id, state directory. Any refusal
+ * controller directory confinement, stop record, run kind, plugin manifest, run id, state directory. Any refusal
  * or unexpected error returns `null` and logs the cause. A plugin fault never
  * fails the run.
  *
@@ -347,6 +347,18 @@ export async function resolveTokenEconomizerLaunch(
   const { config, workDir, repo, runKind, logger } = opts;
   if (!config.enabled) return null;
   try {
+    // Confine the controller directory before anything is read or reported
+    // through it: an alias must fail closed with no access to its target.
+    try {
+      await tokenEconomizerControlDirectory(workDir);
+    } catch (err) {
+      logger?.warn(
+        `token-economizer: plugin off, controller directory cannot be verified (aliased, outside the work directory or unresolvable): ${
+          errorMessage(err)
+        }`,
+      );
+      return null;
+    }
     const stop = await readTokenEconomizerStop(workDir);
     if (stop !== null) {
       await reportTokenEconomizerStop(workDir, stop, opts.notifyStop, logger);

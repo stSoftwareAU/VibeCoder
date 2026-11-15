@@ -118,9 +118,12 @@ removed before this overlay. The adapter forces `TE_FOLD_SYNC=1` and
 `TE_JUDGE_SYNC=1` in Python's child environment, rejects a checkout mismatch,
 and tears down unfinished descendants within the event's deadline.
 
-Each spawn gets its own `TOKENECONOMIZER_HOME`, a fresh state directory per
-launch, so a fact the plugin learns in one spawn is not in another spawn's home.
-The run id that names it is the caller's, or a fresh UUID when none is given; it
+Each launch gets its own `TOKENECONOMIZER_HOME`, a fresh state directory per
+launch, so a fact the plugin learns in one launch is not in another launch's
+home. A re-run or retry of the same agent call reuses its launch, but the runner
+re-checks the stop latch before every spawn: once a stop is latched, or the
+controller directory cannot be verified, that spawn gets neither `--plugin-dir`
+nor a launch variable. The run id that names it is the caller's, or a fresh UUID when none is given; it
 is never read from the worker's environment. Carrying learnings across runs is
 what the learnings repository (#4957) is for. Until it lands, the cross-run part of the
 trial is not exercised, and a verdict on that part would be a verdict on nothing.

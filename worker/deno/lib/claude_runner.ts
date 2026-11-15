@@ -138,7 +138,10 @@ import {
   UnfinishedIssueExecutorError,
 } from "./issue_executor_enforcement.ts";
 import { settingsJsonOption } from "./rtk_output.ts";
-import { monitorTokenEconomizerRun } from "./token_economizer_control.ts";
+import {
+  monitorTokenEconomizerRun,
+  tokenEconomizerMaySync,
+} from "./token_economizer_control.ts";
 import {
   overlayTokenEconomizerEnv,
   type TokenEconomizerLaunch,
@@ -1447,6 +1450,18 @@ async function runClaudeWithTimeoutBody(
   let tokenEconomizerLaunch = provider.id === CLAUDE_PROVIDER_ID
     ? options.tokenEconomizer
     : undefined;
+  // A launch resolved before a stop (a re-run, a recovery run or a rate-limit
+  // retry reuses it) must not outlive that stop: re-check the latch for every
+  // spawn, failing closed on an unreadable or aliased controller directory.
+  if (
+    tokenEconomizerLaunch &&
+    !(await tokenEconomizerMaySync(tokenEconomizerLaunch.workDir))
+  ) {
+    logger?.warn(
+      "token-economizer: plugin off for this spawn, a stop is latched or the controller directory is unverified",
+    );
+    tokenEconomizerLaunch = undefined;
+  }
   const invocationRequest = {
     discussionOnly: options.discussionOnly,
     orchestrationRole: options.orchestrationRole,

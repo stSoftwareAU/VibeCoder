@@ -320,7 +320,7 @@ Deno.test("a .token-economizer symlinked outside the work directory is refused",
     const captured = captureLogger();
     const launch = await resolveTokenEconomizerLaunch(optionsFor(f, captured));
     assertEquals(launch, null);
-    assertSingleWarn(captured, "lies outside the work directory");
+    assertSingleWarn(captured, "controller directory cannot be verified");
     assertEquals(
       Array.from(Deno.readDirSync(outside)).map((entry) => entry.name),
       [],
@@ -396,7 +396,7 @@ Deno.test("a state directory that cannot be created is refused, not thrown", asy
       optionsFor(f, captured, { workDir: dangling }),
     );
     assertEquals(launch, null);
-    assertSingleWarn(captured, "per-run state directory cannot be created");
+    assertSingleWarn(captured, "controller directory cannot be verified");
   });
 });
 
@@ -784,7 +784,7 @@ Deno.test("a state symlink into a dirty checkout is refused before writing anyth
     const captured = captureLogger();
     const launch = await resolveTokenEconomizerLaunch(optionsFor(f, captured));
     assertEquals(launch, null);
-    assertSingleWarn(captured, "lies inside the repo checkout");
+    assertSingleWarn(captured, "controller directory cannot be verified");
     assertEquals(
       Array.from(Deno.readDirSync(checkout)).map((entry) => entry.name),
       ["existing.txt"],
@@ -1061,7 +1061,7 @@ Deno.test("controller writes and sync refuse symlink aliases after lexical trave
       await resolveTokenEconomizerLaunch(optionsFor(f, captured)),
       null,
     );
-    assertSingleWarn(captured, "per-run state directory is aliased");
+    assertSingleWarn(captured, "controller directory cannot be verified");
     assertEquals(
       Array.from(Deno.readDirSync(secondRepo)).map((entry) => entry.name),
       [],
@@ -1168,4 +1168,95 @@ Deno.test("a hook event must be a string, not an array that string coercion turn
     Error,
     "unknown hook event",
   );
+});
+
+/** A valid stop record, as the controller writes it. */
+const ALIAS_STOP_RECORD = JSON.stringify({
+  rule: "plugin-run-failure",
+  reason: "stop held by the alias target",
+  recordedAt: "2026-11-12T00:00:00.000Z",
+}) + "\n";
+
+Deno.test("a .token-economizer alias whose target holds a stop.json is neither read, reported nor written through (PR #5139 review)", async () => {
+  for (const kind of ["checkout", "outside"] as const) {
+    await withFixture(async (f) => {
+      const target = kind === "checkout"
+        ? `${f.work}/VibeCoder`
+        : `${f.root}/outside`;
+      await Deno.mkdir(target);
+      await Deno.writeTextFile(`${target}/stop.json`, ALIAS_STOP_RECORD);
+      await Deno.symlink(target, `${f.work}/.token-economizer`);
+      const reports: string[][] = [];
+      const captured = captureLogger();
+      const launch = await resolveTokenEconomizerLaunch(
+        optionsFor(f, captured, {
+          notifyStop: (args) => {
+            reports.push(args);
+            return Promise.resolve("reported");
+          },
+        }),
+      );
+      assertEquals(launch, null, kind);
+      assertSingleWarn(captured, "controller directory cannot be verified");
+      assertEquals(reports, [], `${kind}: nothing reported`);
+      assertEquals(
+        Array.from(Deno.readDirSync(target)).map((entry) => entry.name),
+        ["stop.json"],
+        `${kind}: the alias target is unchanged`,
+      );
+      assertEquals(
+        await Deno.readTextFile(`${target}/stop.json`),
+        ALIAS_STOP_RECORD,
+      );
+
+      // The reporter itself refuses the alias, whoever calls it.
+      const direct: string[][] = [];
+      await reportTokenEconomizerStop(
+        f.work,
+        {
+          rule: "plugin-run-failure",
+          reason: "stop held by the alias target",
+          recordedAt: "2026-11-12T00:00:00.000Z",
+        },
+        (args) => {
+          direct.push(args);
+          return Promise.resolve("reported");
+        },
+        captured.logger,
+      );
+      assertEquals(direct, [], `${kind}: reporter refuses the alias`);
+      assertEquals(
+        Array.from(Deno.readDirSync(target)).map((entry) => entry.name),
+        ["stop.json"],
+        `${kind}: the reporter wrote nothing through the alias`,
+      );
+    });
+  }
+});
+
+Deno.test("an oversized stop receipt is never a match: the report is re-sent and the receipt replaced (PR #5139 review)", async () => {
+  await withFixture(async (f) => {
+    const stop = await recordTokenEconomizerStop(f.work, {
+      rule: "plugin-run-failure",
+      reason: "hook fault",
+    }, fixedNow);
+    const receipt = `${tokenEconomizerStatePath(f.work)}.reported`;
+    const reports: string[][] = [];
+    const notify = (args: string[]) => {
+      reports.push(args);
+      return Promise.resolve("reported");
+    };
+    // Positive control: a matching receipt suppresses a second report.
+    await reportTokenEconomizerStop(f.work, stop, notify);
+    await reportTokenEconomizerStop(f.work, stop, notify);
+    assertEquals(reports.length, 1);
+    // An oversized receipt is not read, so the report goes out again.
+    await Deno.writeTextFile(receipt, "x".repeat(5000));
+    await reportTokenEconomizerStop(f.work, stop, notify);
+    assertEquals(reports.length, 2);
+    assertEquals(
+      await Deno.readTextFile(receipt),
+      JSON.stringify([stop.rule, stop.reason]),
+    );
+  });
 });
