@@ -62,6 +62,10 @@ LABEL="au.com.stsoftware.review-fleet-prs"
 ROUND_SHELL_COMMANDS=(gh jq cat "deno run" ls mkdir cd base64 head tail wc sort
   uniq cut tr grep diff which)
 ROUND_GIT_READ_SUBCOMMANDS=(log show diff grep blame cat-file rev-parse ls-files)
+# The only .config.json keys post.ts's test-change policy reads (Issue #5174).
+# TEST_POLICY_CONFIG_KEYS lists the same; a runner test fails when the snapshot drops one or carries another key.
+TEST_POLICY_KEYS='["allowed_authors","authorized_commenters","pr_reviewers","github_user",
+  "fleet_pr_authors","service_accounts","pr_reviewer_test_hold_repos","pr_reviewer_auto_release"]'
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -738,6 +742,19 @@ start_review() {
   dir=$(round_dir "$(jq -r '"\(.repo)-\(.number)"' <<<"$entry")")
   mkdir -p "$dir"
   jq -c '{ready: [.]}' <<<"$entry" >"$dir/gate.json"
+  # The round's read-only snapshot of only the test-change policy's keys, no
+  # credential, for post.ts's --config: the container has no .config.json
+  # (Issue #5174). A read-only file from a re-used directory is removed first.
+  rm -f "$dir/test-policy.json"
+  if ! { jq -c --argjson keys "$TEST_POLICY_KEYS" \
+    'with_entries(select(.key | IN($keys[])))' "$CONFIG" \
+    >"$dir/test-policy.json" 2>"$errfile" &&
+    chmod 444 "$dir/test-policy.json" 2>>"$errfile"; }; then
+    ROUND_ERROR="test-change policy snapshot failed: $(last_error_line "$errfile")"
+    log "$key: round not started: $ROUND_ERROR"
+    release_claim "$repo" "$number"
+    return 1
+  fi
   ROUND_NAME=$(round_name "$dir")
   if ! round_container "$ROUND_NAME" "$dir"; then
     ROUND_ERROR="$LAST_ERROR"
@@ -758,7 +775,8 @@ $(cat "$dir/gate.json")
 Follow the skill's 'Reviewing the ready PRs' section for the ready PR above:
 steps 1. Review, 2. Post and 4. Report. Skip step 3 (Learn from recurring
 findings): the runner does that in a round of its own. Run post.ts from
-$C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR and ${REVIEWER[0]},
+$C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR,
+--config=$C_DIR/test-policy.json and ${REVIEWER[0]},
 and write its input files directly in $C_DIR (not a sub-directory: post.ts
 reads the round's attempt log beside its input). Skip the PushNotification step: this
 session is headless. Finish with the one-line round report.

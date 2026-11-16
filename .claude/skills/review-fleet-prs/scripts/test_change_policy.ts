@@ -217,7 +217,7 @@ function repoList(v: unknown): string[] | undefined {
 /**
  * The only `.config.json` keys the policy reads. `scripts/run.sh` copies exactly
  * these into each round's `test-policy.json` snapshot (Issue #5174), and a runner
- * test fails when the two lists disagree.
+ * test fails when that snapshot drops one of them or carries another key.
  */
 export const TEST_POLICY_CONFIG_KEYS = [
   "allowed_authors",

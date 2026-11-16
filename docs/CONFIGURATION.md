@@ -593,10 +593,10 @@ with its verified evidence.
 explicit owner override. For a listed repo every meaningful test change, and
 every removed test file, keeps the comment-only owner hold, whatever the
 reviewer's assessment. It is read by the reviewer skill, never by the worker.
-A review round in the worker container reads it, with the trusted-login lists
-and service accounts, from the round's read-only `test-policy.json` snapshot,
-and a reviewer host with no config posts no review rather than one on the
-defaults (Issue #5174).
+A reviewer round run inside the worker container is still the reviewer skill:
+it reads the key, with the trusted-login lists and service accounts, from its
+round's read-only `test-policy.json` snapshot, and a reviewer host with no
+config posts no review rather than one on the defaults (Issue #5174).
 
 ### Migrating from `pr_reviewer_auto_release`
 
