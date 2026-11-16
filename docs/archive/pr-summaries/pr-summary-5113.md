@@ -15,9 +15,10 @@ the reason still names them after it is cut to a 2,000-character head and a
   - New optional `summariseFailure` option. Its text goes between the BLOCK line
     and the output in the timeout and non-zero-exit messages.
 - `worker/deno/lib/deno_test_baseline.ts`: new `denoTestFailureSummary`. It
-  collects the `<name> => ./<file>:<line>:<col>` and `./x_test.ts (uncaught
-  error)` lines, de-duplicated in order of first appearance. It lists at most 20,
-  then `- … and M more`.
+  collects the `<name> => ./<file>:<line>:<col>` and
+  `./x_test.ts (uncaught
+  error)` lines, de-duplicated in order of first
+  appearance. It lists at most 20, then `- … and M more`.
 - `worker/deno/lib/pre_push_gate.ts`: `runPrePushGate` passes
   `denoTestFailureSummary` to the `deno test` check's run and to its
   `--serial-only` rerun.
@@ -77,16 +78,19 @@ flowchart LR
 
 - **symptom** — the failure comment and worker log for a
   `no_pr:pre_push_gate:completion` release quoted
-  `` command `deno task test:unit 'tests/a…_test.ts' 'tests/b…_test.ts' … ``
-  and `error: Test failed`, but named no failing test.
-- **status** — `verified` — the regression test was observed failing against
-  the base `pre_flight_gate.ts` and `pre_push_gate.ts` (`FAILED | 0 passed | 1
+  ``command `deno task test:unit 'tests/a…_test.ts' 'tests/b…_test.ts' …`` and
+  `error: Test failed`, but named no failing test.
+- **status** — `verified` — the regression test was observed failing against the
+  base `pre_flight_gate.ts` and `pre_push_gate.ts`
+  (`FAILED | 0 passed | 1
   failed`) and passing after the fix
-- **regression test** — `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a 400-file test:unit block still names the failing tests after the head/tail cut (Issue #5113)`
+- **regression test** —
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a 400-file test:unit block still names the failing tests after the head/tail cut (Issue #5113)`
 
 ## Test Plan
 
-- Added `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a 400-file test:unit block still names the failing tests after the head/tail cut (Issue #5113)`.
+- Added
+  `worker/deno/tests/pre_push_gate_test.ts::runPrePushGate: a 400-file test:unit block still names the failing tests after the head/tail cut (Issue #5113)`.
   It drives the real `runPrePushGate` with 400 changed-scope test files. The
   head run fails with about 3,000 `ok` lines, ERRORS and FAILURES sections for
   two tests, and a long runner trailer. The fork run passes, so the outcome is a
@@ -111,8 +115,8 @@ flowchart LR
 - Red before the fix:
   - The `pre_push_gate_test.ts` test failed with the base `pre_flight_gate.ts`
     and `pre_push_gate.ts` restored (`FAILED | 0 passed | 1 failed`).
-  - The four new `pre_flight_gate_test.ts` cases other than the short-command one
-    failed on the base message. The short-command case passed, as a guard of
+  - The four new `pre_flight_gate_test.ts` cases other than the short-command
+    one failed on the base message. The short-command case passed, as a guard of
     unchanged behaviour should.
   - `deno_test_baseline_test.ts` did not load on the base, because
     `denoTestFailureSummary` did not exist.
@@ -123,10 +127,11 @@ flowchart LR
 - Callers checked: `runPreFlightGate` has other callers in `pre_push_gate.ts`
   (the other changed-file checks, CI cargo checks, the cargo toolchain probe,
   repo pre-flight commands), `cargo_deny_gate.ts`, `deno_test_baseline.ts` (the
-  fork worktree run) and `git_push.ts` (the commit-time pre-flight step). They get the shorter command text only when a
-  command exceeds 200 characters, and no summary, because they do not pass
-  `summariseFailure`. `judgeDenoTestFailure` reads `error.output`, not the
-  message, so the baseline comparison is unchanged.
+  fork worktree run) and `git_push.ts` (the commit-time pre-flight step). They
+  get the shorter command text only when a command exceeds 200 characters, and
+  no summary, because they do not pass `summariseFailure`.
+  `judgeDenoTestFailure` reads `error.output`, not the message, so the baseline
+  comparison is unchanged.
 - `deno task test:unit` over `worker/deno/tests/pre_flight_gate_test.ts`,
   `worker/deno/tests/deno_test_baseline_test.ts`,
   `worker/deno/tests/pre_push_gate_test.ts`,
