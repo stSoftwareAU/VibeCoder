@@ -103,6 +103,11 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   // parent #3346): another fragment that exists for the worker rather than
   // for a monitored repository's gate.
   "container/toolchains/floci.sh",
+  // AWS CLI and AWS Emulator, plus the helper that runs the emulator (Issue
+  // #5109): the emulator's pinned install and its agent-account runner.
+  "container/toolchains/aws-cli.sh",
+  "container/toolchains/aws-emulator.sh",
+  "container/aws-emulator-run.sh",
   // TokenEconomizer, the Microsoft plugin the worker's own trial drives
   // (Issue #4955, parent #4953): a pinned source archive installed under
   // /opt, and the one fragment here that carries a Python version floor.

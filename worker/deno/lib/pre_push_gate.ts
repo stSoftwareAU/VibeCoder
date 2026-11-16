@@ -46,7 +46,9 @@
  *    test-target `cargo test --no-run` commands the repo's pull-request
  *    workflows run, for each crate directory a pushed Rust file touches. Only
  *    when the push changes a Rust-relevant file, and only after a probe that
- *    the Rust toolchain runs here. These run only for a caller that passes
+ *    the Rust toolchain runs here. Where cargo is not a rustup proxy and
+ *    refuses a `+toolchain` word, the probe and the commands run without it
+ *    (Issue #5136). These run only for a caller that passes
  *    `findCiCargo`: with none, no CI cargo check is planned or run. The
  *    agent's own pre-push hook (`lib/pre_push_gate_cli.ts`) receives the scan
  *    precomputed into its spec and passes it back as `findCiCargo`, with the
@@ -350,10 +352,12 @@ export interface ChangedFileCheck {
   env?: Record<string, string>;
   /**
    * Set on a cargo command the repo's CI runs (Issue #4630): its kind, and the
-   * `+toolchain` name when CI names one. Read by the capability probe and by
-   * the failure classification.
+   * `+toolchain` name when CI names one, and then `plainCommand`, the same
+   * command without the `+toolchain` word (run instead when cargo here is not
+   * a rustup proxy, Issue #5136). Read by the capability probe and by the
+   * failure classification.
    */
-  cargo?: { kind: CiCargoCheckKind; toolchain?: string };
+  cargo?: { kind: CiCargoCheckKind; toolchain?: string; plainCommand?: string };
 }
 
 /** ShellCheck policy read from a repository's runnable CI workflow. */
@@ -1479,6 +1483,10 @@ export function planChangedFileChecks(
     const toolchain = check.argv[1]?.startsWith("+")
       ? check.argv[1].slice(1)
       : undefined;
+    const plain = toolchain === undefined
+      ? undefined
+      : argvCommand(check.argv.filter((_, i) => i !== 1));
+    if (plain !== undefined && !plain.ok) return plain;
     checks.push({
       label: `${
         check.kind === "clippy" ? "cargo clippy" : "cargo test --no-run"
@@ -1489,6 +1497,7 @@ export function planChangedFileChecks(
       cargo: {
         kind: check.kind,
         ...(toolchain === undefined ? {} : { toolchain }),
+        ...(plain === undefined ? {} : { plainCommand: plain.value }),
       },
     });
   }
@@ -2513,9 +2522,15 @@ function isHostFaultOfCheck(error: PreFlightGateError): boolean {
  * Probes the Rust toolchain of every CI cargo check before any of them runs:
  * one `cargo [+toolchain] --version` per distinct directory, toolchain and env,
  * and `cargo [+toolchain] clippy --version` where a clippy check uses that
- * toolchain. Returns why the toolchain is unavailable, or null when every probe
- * passed. A directory that is missing or leaves the repository is reported the
- * same way. A `--target` is not probed here: rustc names a missing one in its
+ * toolchain. Returns `{ unavailable }` (why the toolchain is unavailable) or
+ * `{ withoutToolchain }`, true when the CI cargo commands must run without
+ * their `+toolchain` word. Cargo here may not be a rustup proxy (the worker
+ * image installs Rust without rustup) and then refuses the word itself with
+ * `error: no such command: \`+T\``; the group's probes are re-run without it
+ * and, if they pass, the installed toolchain stands in (Issue #5136). If they
+ * fail, that plain probe is reported. Any other probe failure, including
+ * rustup's own "toolchain is not installed", is unavailable as before. A
+ * directory that is missing or leaves the repository is reported the same way. A `--target` is not probed here: rustc names a missing one in its
  * own output, which {@link isHostFaultOfCheck} reads.
  */
 async function probeCargoToolchains(
@@ -2525,7 +2540,9 @@ async function probeCargoToolchains(
     runner?: PreFlightRunner;
     timeoutSeconds?: number;
   },
-): Promise<string | null> {
+): Promise<
+  { unavailable: string } | { withoutToolchain: boolean; refused?: string }
+> {
   const groups = new Map<
     string,
     { check: ChangedFileCheck; clippy: boolean }
@@ -2533,7 +2550,7 @@ async function probeCargoToolchains(
   for (const check of cargoChecks) {
     const escape = await cwdEscape(opts.cwd, check.cwd);
     if (escape !== null) {
-      return `CI's ${check.label} cannot run here: ${escape}`;
+      return { unavailable: `CI's ${check.label} cannot run here: ${escape}` };
     }
     const key = JSON.stringify([
       check.cwd,
@@ -2544,33 +2561,65 @@ async function probeCargoToolchains(
     if (check.cargo?.kind === "clippy") group.clippy = true;
     groups.set(key, group);
   }
+  let withoutToolchain = false;
+  let refused: string | undefined;
   for (const { check, clippy } of groups.values()) {
     const toolchain = check.cargo?.toolchain === undefined
       ? []
       : [`+${check.cargo.toolchain}`];
     const probes = [["cargo", ...toolchain, "--version"]];
     if (clippy) probes.push(["cargo", ...toolchain, "clippy", "--version"]);
-    const probe = await runPreFlightGate(
-      probes.map((argv) => argv.join(" ")),
-      {
+    const runProbes = (list: string[][]) =>
+      runPreFlightGate(list.map((argv) => argv.join(" ")), {
         cwd: check.cwd,
         env: check.env,
         runner: opts.runner,
         timeoutSeconds: opts.timeoutSeconds,
-      },
-    );
+      });
+    let probe = await runProbes(probes);
+    if (
+      !probe.ok && toolchain.length > 0 &&
+      isCargoRefusingToolchainWord(probe.error.output)
+    ) {
+      refused = `\`${probe.error.command}\` — ${
+        firstOutputLine(probe.error.output)
+      }`;
+      probe = await runProbes(
+        probes.map((argv) => argv.filter((_, i) => i !== 1)),
+      );
+      if (probe.ok) {
+        withoutToolchain = true;
+        continue;
+      }
+    }
     if (!probe.ok) {
       const how = probe.error.reason === "not-started"
         ? "could not be started"
         : probe.error.reason === "timeout"
         ? "timed out"
         : `exited ${probe.error.exitCode}`;
-      return `Rust toolchain unavailable here: \`${probe.error.command}\` ${how}: ${
-        firstOutputLine(probe.error.output)
-      }`;
+      return {
+        unavailable:
+          `Rust toolchain unavailable here: \`${probe.error.command}\` ${how}: ${
+            firstOutputLine(probe.error.output)
+          }`,
+      };
     }
   }
-  return null;
+  return withoutToolchain ? { withoutToolchain, refused } : {
+    withoutToolchain,
+  };
+}
+
+/**
+ * Whether `output` shows cargo itself refusing a `+toolchain` word, as a cargo
+ * that is not a rustup proxy does (Issue #5136): some line, trimmed, starts
+ * with ``error: no such command: `+``. Rustup's own errors never match.
+ */
+function isCargoRefusingToolchainWord(output: string): boolean {
+  return output.split("\n").some((line) =>
+    line.trim().startsWith("error: no such command: `+")
+  );
 }
 
 /** A git ref that is safe to hand to `git` as a revision: no option, no `..`. */
@@ -2795,7 +2844,10 @@ async function failsOnBaseToo(args: {
  * produce before the agent ran), the push fails with a
  * {@link PrePushGateInfrastructureError}. Before the first CI cargo command
  * runs, every distinct Rust toolchain the plan uses is probed (`cargo +T
- * --version`, and `cargo +T clippy --version` for a clippy check). A CI cargo
+ * --version`, and `cargo +T clippy --version` for a clippy check); when cargo
+ * itself refuses the `+T` word (not a rustup proxy, as in the worker image),
+ * the probes and the CI cargo commands run without it, with the installed
+ * toolchain, and a `[PRE_PUSH_WARNING]` says so (Issue #5136). A CI cargo
  * command that fails to start, times out, fails with host disk-full output,
  * fails with a cargo registry or git-dependency network refusal, or fails with
  * rustup or rustc output saying its toolchain, component or `--target` is not
@@ -3046,7 +3098,9 @@ export async function runPrePushGate(opts: {
   const compareRef = opts.compareRef ?? opts.baseRef;
   let probed = false;
   const checksRun: string[] = [...shellcheck.value.checksRun];
-  for (const check of checks) {
+  let withoutToolchain = false;
+  for (const planned of checks) {
+    let check = planned;
     if (check.cargo === undefined) {
       const summariseFailure = check.denoTestRoot !== undefined
         ? denoTestFailureSummary
@@ -3119,8 +3173,21 @@ export async function runPrePushGate(opts: {
     // cargo command is run past it.
     if (!probed) {
       probed = true;
-      const unavailable = await probeCargoToolchains(cargoChecks, opts);
-      if (unavailable !== null) return infrastructureFail(unavailable);
+      const probe = await probeCargoToolchains(cargoChecks, opts);
+      if ("unavailable" in probe) return infrastructureFail(probe.unavailable);
+      withoutToolchain = probe.withoutToolchain;
+      if (withoutToolchain) {
+        console.warn(
+          `[PRE_PUSH_WARNING] cargo here is not a rustup proxy (${probe.refused}): CI's cargo commands run with the installed toolchain, without their \`+toolchain\` word`,
+        );
+      }
+    }
+    if (withoutToolchain && check.cargo.plainCommand !== undefined) {
+      check = {
+        ...check,
+        command: check.cargo.plainCommand,
+        cargo: { kind: check.cargo.kind },
+      };
     }
 
     const result = await runPreFlightGate([check.command], {
