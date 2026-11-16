@@ -130,3 +130,11 @@ flowchart LR
   installed here).
 - Not checked: no reviewer sub-agents ran, because the issue has no
   acceptance-criteria list.
+
+## Babysitting review repair
+
+Replaced mock invocation counters with observable cache/recovery assertions. The fake service becomes available before each expiry; cached failures remain until retryAt and the recovered diagnostic appears at expiry. Renewed-latch warnings and reasons remain covered. All four focused tests pass.
+
+Local validation used Deno 2.9.6 and a temporary import map to cached published
+standard-library dependencies because direct JSR downloads fail here. Repository
+dependency files are unchanged. Full hosted CI and fresh review remain required.

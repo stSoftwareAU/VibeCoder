@@ -23,9 +23,6 @@ const OWNER = "stSoftwareAU";
 const REPO = "stSoftwareAU/example";
 const RECHECK = 600;
 
-/** Whether the first test's fake gh is currently refused by the quota. */
-let latched = false;
-
 function goodRows(): string {
   return JSON.stringify([{
     number: 99,
@@ -41,9 +38,7 @@ function harness(failWith?: () => string | null) {
   const warnings: string[] = [];
   const cache = createFleetDiagnosticCache();
   let clock = 0;
-  let calls = 0;
   const ghCommandFn = (_args: string[]): Promise<string> => {
-    calls++;
     const message = failWith ? failWith() : null;
     return message === null
       ? Promise.resolve(goodRows())
@@ -60,10 +55,11 @@ function harness(failWith?: () => string | null) {
       nowSeconds: () => clock,
     });
   };
-  return { warnings, scan, calls: () => calls };
+  return { warnings, scan };
 }
 
 Deno.test("fleet lookup - a quota failure warns once, replays silently, and retries after the reset (Issue #5076)", async () => {
+  let latched = true;
   try {
     const h = harness(() => {
       // Refused only while the latch holds; the clock decides.
@@ -74,7 +70,6 @@ Deno.test("fleet lookup - a quota failure warns once, replays silently, and retr
 
     const first = await h.scan(1000);
     assertEquals(first.failedOwners, [OWNER]);
-    assertEquals(h.calls(), 1);
     assertEquals(h.warnings.length, 1);
     assertStringIncludes(h.warnings[0]!, "GraphQL primary quota exhausted");
     assertStringIncludes(
@@ -82,17 +77,17 @@ Deno.test("fleet lookup - a quota failure warns once, replays silently, and retr
       "only this host's own back-offs apply",
     );
 
+    // The service recovers early; cached failure must still survive to retryAt.
+    latched = false;
     for (const at of [1010, 1020]) {
       const replay = await h.scan(at);
       assertEquals(replay.failedOwners, [OWNER]);
     }
-    assertEquals(h.calls(), 1);
     assertEquals(h.warnings.length, 1);
 
     clearPrimaryQuotaLatch();
     latched = false;
     const after = await h.scan(1028);
-    assertEquals(h.calls(), 2);
     assertEquals([...after.backedOff.keys()], [REPO]);
     assertEquals(after.failedOwners, []);
     assertEquals(h.warnings.length, 1);
@@ -104,7 +99,8 @@ Deno.test("fleet lookup - a quota failure warns once, replays silently, and retr
 
 Deno.test("fleet lookup - a retry refused by a new latch warns once more with the new message (Issue #5076)", async () => {
   try {
-    const h = harness(() => primaryQuotaSkipMessage(1028));
+    let available = false;
+    const h = harness(() => available ? null : primaryQuotaSkipMessage(1028));
     latchPrimaryQuota(1027, 1000);
     await h.scan(1000);
     assertEquals(h.warnings.length, 1);
@@ -113,15 +109,18 @@ Deno.test("fleet lookup - a retry refused by a new latch warns once more with th
     clearPrimaryQuotaLatch();
     latchPrimaryQuota(1100, 1028);
     const retry = await h.scan(1028);
-    assertEquals(h.calls(), 2);
     assertEquals(retry.failedOwners, [OWNER]);
     assertEquals(h.warnings.length, 2);
     assertStringIncludes(h.warnings[1]!, "in 1m");
     assert(h.warnings[1] !== h.warnings[0]);
 
-    await h.scan(1040);
-    assertEquals(h.calls(), 2);
+    available = true;
+    const cached = await h.scan(1040);
+    assertEquals(cached.failedOwners, [OWNER]);
     assertEquals(h.warnings.length, 2);
+    const recovered = await h.scan(1100);
+    assertEquals(recovered.failedOwners, []);
+    assertEquals([...recovered.backedOff.keys()], [REPO]);
   } finally {
     clearPrimaryQuotaLatch();
   }
@@ -129,38 +128,43 @@ Deno.test("fleet lookup - a retry refused by a new latch warns once more with th
 
 Deno.test("fleet lookup - a non-quota failure warns once and retries only after the recheck window (Issue #5076)", async () => {
   clearPrimaryQuotaLatch();
-  const h = harness(() => "gh exploded");
+  let available = false;
+  const h = harness(() => available ? null : "gh exploded");
   const first = await h.scan(1000);
   assertEquals(first.failedOwners, [OWNER]);
   assertEquals(h.warnings.length, 1);
   assertStringIncludes(h.warnings[0]!, "gh exploded");
 
+  available = true;
   for (const at of [1030, 1000 + RECHECK - 1]) {
     const replay = await h.scan(at);
     assertEquals(replay.failedOwners, [OWNER]);
   }
-  assertEquals(h.calls(), 1);
   assertEquals(h.warnings.length, 1);
 
-  await h.scan(1000 + RECHECK);
-  assertEquals(h.calls(), 2);
-  assertEquals(h.warnings.length, 2);
+  const recovered = await h.scan(1000 + RECHECK);
+  assertEquals(recovered.failedOwners, []);
+  assertEquals([...recovered.backedOff.keys()], [REPO]);
+  assertEquals(h.warnings.length, 1);
 });
 
 Deno.test("fleet lookup - a latch reset beyond the recheck window still waits for the recheck (Issue #5076)", async () => {
   try {
-    const h = harness(() => primaryQuotaSkipMessage(1000));
+    let available = false;
+    const h = harness(() => available ? null : primaryQuotaSkipMessage(1000));
     latchPrimaryQuota(1000 + 3600, 1000);
     await h.scan(1000);
     assertEquals(h.warnings.length, 1);
 
-    await h.scan(1000 + RECHECK - 1);
-    assertEquals(h.calls(), 1);
+    available = true;
+    const cached = await h.scan(1000 + RECHECK - 1);
+    assertEquals(cached.failedOwners, [OWNER]);
     assertEquals(h.warnings.length, 1);
 
-    await h.scan(1000 + RECHECK);
-    assertEquals(h.calls(), 2);
-    assertEquals(h.warnings.length, 2);
+    const recovered = await h.scan(1000 + RECHECK);
+    assertEquals(recovered.failedOwners, []);
+    assertEquals([...recovered.backedOff.keys()], [REPO]);
+    assertEquals(h.warnings.length, 1);
   } finally {
     clearPrimaryQuotaLatch();
   }
