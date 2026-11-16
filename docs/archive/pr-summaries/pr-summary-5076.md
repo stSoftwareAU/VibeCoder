@@ -95,14 +95,17 @@ flowchart LR
 
 - Added `worker/deno/tests/repo_fast_failure_fleet_backoff_5076_test.ts`, using
   an injected clock and the real latch:
-  - The first quota failure warns once, with no ERROR. Scans inside the back-off
-    do not call `gh` and do not log. The scan just after the reset calls `gh`
-    and recovers, with the repo backed off and `failedOwners` empty.
+  - The fake `gh` service becomes available before each expiry, so the tests
+    tell a replayed cache from a fresh lookup by the returned result alone,
+    with no mock call counts. The first quota failure warns once, with no
+    ERROR. Scans inside the back-off return the cached failed result and log
+    nothing. The scan just after the reset returns the recovered diagnostic,
+    with the repo backed off and `failedOwners` empty.
   - A retry refused by a new latch warns exactly once more, with the new
     countdown.
-  - A non-quota failure is not retried before the 600 s window ends, and is
-    retried at +600 s.
-  - A latch longer than the window still retries at +600 s.
+  - A non-quota failure keeps its cached failed result before the 600 s window
+    ends, and recovers at +600 s.
+  - A latch longer than the window still recovers at +600 s.
 - Added to `worker/deno/tests/lifecycle_pr_observation_test.ts`: one test for
   each of the per-PR and closed-PR observations.
   - A raw rate-limit refusal gives one `warn:` line that names the cause.
@@ -110,6 +113,9 @@ flowchart LR
   - A genuine fault still gives one `error:` line (the control).
 - Added to `worker/deno/tests/run_core_slot_pool_test.ts`: a slot whose tail
   outlives the run-ending grace is reported through `logWarn`, not `logError`.
+  The run returns while the tail is still outstanding (observed through the
+  tail's own completion flag, not the order of mock calls), and the tail is
+  awaited so nothing leaks.
 - Edited expectations, all required by "Log the documented
   degraded-but-continuing fallbacks at WARNING":
   - `worker/deno/tests/run_core_adaptive_claim_test.ts`, "a failed evidence
@@ -130,11 +136,3 @@ flowchart LR
   installed here).
 - Not checked: no reviewer sub-agents ran, because the issue has no
   acceptance-criteria list.
-
-## Babysitting review repair
-
-Replaced mock invocation counters with observable cache/recovery assertions. The fake service becomes available before each expiry; cached failures remain until retryAt and the recovered diagnostic appears at expiry. Renewed-latch warnings and reasons remain covered. All four focused tests pass.
-
-Local validation used Deno 2.9.6 and a temporary import map to cached published
-standard-library dependencies because direct JSR downloads fail here. Repository
-dependency files are unchanged. Full hosted CI and fresh review remain required.

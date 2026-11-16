@@ -2337,7 +2337,7 @@ Deno.test("slot pool - a slot abandoned at the shutdown grace still finishes its
 Deno.test("slot pool - a slot abandoned at the shutdown grace whose tail outlives the grace is warned about, not logged as an error (Issue #5076)", async () => {
   // Pins: a tail that outlives the run-ending grace is reported at WARNING,
   // because the run carries on to its exit cleanup (Issue #5076).
-  const events: string[] = [];
+  let tailDone = false;
   const warnings: string[] = [];
   const errorLines: string[] = [];
   const handlers: Record<string, () => void> = {};
@@ -2371,7 +2371,6 @@ Deno.test("slot pool - a slot abandoned at the shutdown grace whose tail outlive
     // The run-ending termination (Issue #4369): here it "kills" the hung
     // agent, after which the slot runs its tail.
     terminateActiveAgentRuns: () => {
-      events.push("agents terminated");
       hangResolve?.();
       return Promise.resolve();
     },
@@ -2391,13 +2390,14 @@ Deno.test("slot pool - a slot abandoned at the shutdown grace whose tail outlive
       // The tail: what the release and the callbacks cost after the agent
       // is gone.
       await new Promise((r) => setTimeout(r, 600));
-      events.push("tail done");
+      tailDone = true;
       tailFinished();
       return { ok: true, value: { success: false } };
     },
   });
   await runOneCycle(deps, 2);
-  events.push("run returned");
+  // The run returned while the tail was still outstanding.
+  const tailDoneAtReturn = tailDone;
   if (clock !== undefined) clearInterval(clock);
 
   // The tail outlives the 200ms grace, so the run returns first; await the
@@ -2407,7 +2407,8 @@ Deno.test("slot pool - a slot abandoned at the shutdown grace whose tail outlive
   for (let i = 0; i < 100 && liveSlotRunCount() > 0; i++) {
     await new Promise((r) => setTimeout(r, 10));
   }
-  assertEquals(events, ["agents terminated", "run returned", "tail done"]);
+  assertEquals(tailDoneAtReturn, false);
+  assertEquals(tailDone, true);
   assert(
     warnings.some((l) =>
       l.includes("still finishing after the") && l.includes("Issue #1815")
