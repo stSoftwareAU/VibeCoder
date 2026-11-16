@@ -952,12 +952,29 @@ Multi-worker stale assignment recovery (Issue #604)`;
   return recoveredCount;
 }
 
+/** Newest uncleared marker epoch or assignment time (epoch seconds), else null. */
+function newestSignOfLifeEpoch(
+  markers: Awaited<ReturnType<typeof scanHeartbeatMarkers>>,
+  assignedAt: string,
+): number | null {
+  const epochs = markers
+    .filter((m) => !m.cleared && Number.isFinite(m.epoch) && m.epoch > 0)
+    .map((m) => m.epoch);
+  const assignedEpoch = Math.floor(Date.parse(assignedAt) / 1000);
+  if (!Number.isNaN(assignedEpoch)) epochs.push(assignedEpoch);
+  return epochs.length > 0 ? Math.max(...epochs) : null;
+}
+
 /**
  * Detect assigned issues with closed PRs (Issue #787).
  *
  * For each assigned open issue without a heartbeat (neither this host's
  * file nor a live fleet marker on the issue from any host, Issue #4839):
  *   1. If a merged PR exists → close the issue and unassign
+ *      (a merged PR that predates the current assignment releases the claim
+ *      only once the claim has shown no sign of life — newest uncleared fleet
+ *      marker, or the assignment itself — for `assignedNoHeartbeatTimeout`,
+ *      the same threshold as `detectAssignedWithoutHeartbeat`, Issue #5124)
  *   2. If only closed-not-merged PRs exist → unassign so issue can be retried
  *   3. If an open PR exists → skip (work is in progress)
  */
@@ -1047,15 +1064,17 @@ export async function detectAssignedWithClosedPr(
       // host that has not opened its PR yet is still beating on GitHub, and
       // an earlier merged PR (one that left the issue unfinished, #3177) must
       // not get that live claim dropped. Unreadable markers: retry next pass.
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      let markers: Awaited<ReturnType<typeof scanHeartbeatMarkers>>;
       try {
-        const markers = await scanHeartbeatMarkers(
+        markers = await scanHeartbeatMarkers(
           repo,
           issue.number,
           ghFn,
           config.fleetAuthors,
         );
         if (
-          findLiveHeartbeatMarker(markers, Math.floor(Date.now() / 1000))
+          findLiveHeartbeatMarker(markers, nowSeconds)
         ) {
           continue;
         }
@@ -1133,6 +1152,17 @@ export async function detectAssignedWithClosedPr(
         } catch { /* ignore */ }
 
         if (mergedAt && assignedAt && mergedAt < assignedAt) {
+          // Issue #5124: one threshold for "the run is gone", whichever scan
+          // finds it. The later of marker and assignment is used, so an
+          // uncleared marker left by an earlier attempt cannot make a fresh
+          // claim look old.
+          const signOfLife = newestSignOfLifeEpoch(markers, assignedAt);
+          if (
+            signOfLife !== null &&
+            nowSeconds - signOfLife <= config.assignedNoHeartbeatTimeout
+          ) {
+            continue;
+          }
           // Stale previous attempt — unassign only
           await ghFn([
             "issue",
