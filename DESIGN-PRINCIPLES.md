@@ -2029,7 +2029,11 @@ GitHub's runner deprecation warnings), a native SHA-pin scan
 `BP-SHA-PIN-<owner>-<action-slug>` finding at `severity:high` per distinct
 third-party `uses:` (action or cross-repo reusable workflow) pinned to a tag or
 branch rather than a full 40-char commit SHA — `stSoftwareAU/*` and local `./`
-refs are exempt, and the finding body lists every call-site `file:line` — a
+refs are exempt, a tag ref in a workflow covered by a valid, current
+`.github/workflows/actions.lock` is compliant (a stale or invalid lockfile is
+reported natively as `BP-ACTIONS-LOCK-STALE-<slug>` or `BP-ACTIONS-LOCK-INVALID`
+instead), reusable-workflow calls are never covered by a lockfile and so still
+need a SHA, and the finding body lists every call-site `file:line` — a
 native permissions scan (`workflow_permissions_scanner.ts`,) that
 files a `BP-PERMISSIONS-<workflow-basename>[-<job>]` finding at
 `severity:medium` for each workflow/job with no `permissions:` block (inheriting

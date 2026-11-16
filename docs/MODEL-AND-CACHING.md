@@ -1412,6 +1412,19 @@ fable  →  opus  →  sonnet  →  haiku  →  (fail)
   base tier. The substitution is **per-run and config keeps pointing at Fable**,
   so once Fable returns the next run requests it again with no manual change
   (self-heal) — there is no persistent "Fable is down" circuit-breaker.
+- **Model-scoped usage limit steps down, with a cooldown** (Issue #5086). When
+  the CLI's refusal names a tier (`You've reached your Fable limit. Switch to
+  another model to continue.`, `You've hit your Fable weekly limit · resets …`),
+  `detectModelScopedUsageLimit` matches it before the account-wide usage-limit
+  check. The phase retries immediately, with no wait, one rung down on the same
+  provider, and `WORK_DIR/.model_usage_cooldown.json` records a cooldown until
+  the parsed reset, capped at an hour (an hour when no time is given). While it
+  is active a later invocation that would run that tier starts on the next rung
+  and logs `[model-cooldown]`; the entry clears by expiry. No
+  `.rate_limit_signal` is written, so Claude work is not paused and no provider
+  switch happens. With no cheaper rung (already on haiku, or fallback disabled)
+  the call fails as an ordinary failure. Account-wide limits (`You've hit your
+  limit`, a `weekly limit` naming no tier) keep the terminal pause.
 - **A refused model with no cheaper rung moves provider** (Issue #4034).
   When the provider refuses the model and has no ladder, or is already on its
   cheapest rung, the same invocation is retried on the next provider in
@@ -2005,7 +2018,10 @@ self-heals the moment Fable returns. The behaviour is assembled from existing
 parts — the pre-flight probe, the in-run model-unavailable
 fallback, and degraded detection (extended to `grill_me` in
 and to the four reactive phases in) — so this section ties them into one
-coherent story.
+coherent story. It is separate from the per-model usage cooldown under
+[Model Fallback on Rate Limit](#model-fallback-on-rate-limit): that one reacts
+to a tier's usage limit and expires with it, whereas this one handles Fable
+being unavailable to the account altogether.
 
 #### Three manifestations, all covered
 

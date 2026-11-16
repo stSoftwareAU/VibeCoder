@@ -1,0 +1,12 @@
+{
+  "issue": 5051,
+  "chunk": "top-up-5051",
+  "title": "top-up: workflow lockfile parser",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5051",
+  "definition": "modules added for the SHA-pin pre-filer's workflow lockfile parsing: actions_lockfile.ts (#5051)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/actions_lockfile.ts"
+  ],
+  "sweptAt": "de494c3de2bc9870dda6c842f1d3c859b13aa5c9"
+}
