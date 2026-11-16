@@ -243,7 +243,12 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
       ]]));
     }
     if (endpoint.includes("/branches/")) {
-      return Promise.resolve(JSON.stringify({ protection: classicProtection }));
+      return Promise.resolve(
+        JSON.stringify({
+          protection: classicProtection,
+          commit: { sha: baseHead },
+        }),
+      );
     }
     if (endpoint.includes("/check-runs?")) {
       return Promise.resolve(
@@ -256,6 +261,14 @@ Deno.test("ready updater checks the live head and sends its SHA", async () => {
     }
     if (endpoint.includes("/status?")) {
       return Promise.resolve(JSON.stringify([{ statuses: [] }]));
+    }
+    if (endpoint.includes("/compare/")) {
+      // Answers from its input: the live tip and the test-merge parent are equal
+      // or the parent is not on this fake base's history at all.
+      const [left, right] = endpoint.split("/compare/")[1]!.split("...");
+      return Promise.resolve(
+        JSON.stringify({ status: left === right ? "identical" : "diverged" }),
+      );
     }
     throw new Error("unexpected endpoint");
   };

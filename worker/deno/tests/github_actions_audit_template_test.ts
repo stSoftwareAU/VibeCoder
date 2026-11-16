@@ -61,6 +61,7 @@ import type { Result } from "../types.ts";
 import type { DeprecationFinding } from "../lib/runner_deprecation_scanner.ts";
 import type { LinterCheckResult } from "../lib/linter_in_ci_check.ts";
 import { PINNED_ACTIONS } from "../lib/pinned_actions.ts";
+import { parseActionsLockfile } from "../lib/actions_lockfile.ts";
 import { setCachedDefaultBranch } from "../lib/default_branch_cache.ts";
 import { clearDefaultBranchMemoryCache } from "../lib/shell_helpers.ts";
 
@@ -3801,5 +3802,168 @@ Deno.test(
       permissionNeededFor("actions/permissions/workflow"),
       ACTIONS_POLICY_PERMISSION,
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Workflow lockfile pre-filer (Issue #5051)
+// ---------------------------------------------------------------------------
+
+/** A valid lockfile: ci.yml locks actions/checkout@v4 and nothing else. */
+const LOCK_CHECKOUT_ONLY = [
+  "version: 'v0.0.3'",
+  "workflows:",
+  "    '.github/workflows/ci.yml':",
+  "        - 'actions/checkout@v4'",
+  "dependencies:",
+  "    'actions/checkout@v4':",
+  "        ref: 'v4'",
+  "        commit: 'sha1-1234567890abcdef1234567890abcdef12345678'",
+  "        owner_id: 44036562",
+  "        repo_id: 197814629",
+  "",
+].join("\n");
+
+Deno.test(
+  "runTask - an unreadable workflow lockfile files no SHA-pin or lockfile issue, but a later pre-filer still files (Issue #5051)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [930],
+      knownOpen: [],
+      issueCreateNumbers: [930],
+    });
+    const { logger, records } = makeLogger();
+    // A tag ref with no `permissions:` (the later permissions pre-filer
+    // files it). `persist-credentials: false` keeps the checkout check quiet.
+    const ciYml = [
+      "name: CI",
+      "on: push",
+      "jobs:",
+      "  build:",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - uses: actions/checkout@v4",
+      "        with:",
+      "          persist-credentials: false",
+    ].join("\n");
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () =>
+        Promise.resolve([
+          {
+            path: ".github/workflows/ci.yml",
+            rawText: ciYml,
+            parsed: {
+              name: "CI",
+              on: "push",
+              jobs: {
+                build: {
+                  "runs-on": "ubuntu-latest",
+                  steps: [
+                    {
+                      uses: "actions/checkout@v4",
+                      with: { "persist-credentials": false },
+                    },
+                  ],
+                },
+              },
+            },
+            kind: "workflow" as const,
+          },
+        ]),
+      readActionsLockfileFn: () =>
+        Promise.resolve({
+          kind: "unreadable",
+          reason: "permission denied (os error 13)",
+        }),
+      logger,
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assert(!creates.some((c) => c.body.includes("BP-SHA-PIN-")));
+    assert(!creates.some((c) => c.body.includes("BP-ACTIONS-LOCK-")));
+    assert(
+      creates.some((c) =>
+        c.body.includes("<!-- finding-id: BP-PERMISSIONS-ci-build -->")
+      ),
+      "the permissions pre-filer must still run after an unreadable lockfile",
+    );
+    assert(
+      records.some((r) =>
+        r.startsWith("warn:") &&
+        r.includes(".github/workflows/actions.lock") &&
+        r.includes("permission denied (os error 13)")
+      ),
+      "the unreadable lockfile must be logged as a warning naming its cause",
+    );
+  },
+);
+
+Deno.test(
+  "runTask - a stale workflow lockfile files BP-ACTIONS-LOCK-STALE and no SHA-pin for that call-site (Issue #5051)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [940],
+      knownOpen: [],
+      issueCreateNumbers: [940],
+    });
+    // `checkout@v4` is locked; `setup-node@v4` is a newly added, unlocked use.
+    const ciYml = [
+      "jobs:",
+      "  build:",
+      "    steps:",
+      "      - uses: actions/checkout@v4",
+      "      - uses: actions/setup-node@v4",
+    ].join("\n");
+    const lock = parseActionsLockfile(LOCK_CHECKOUT_ONLY);
+    assertEquals(lock.kind, "valid");
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () =>
+        Promise.resolve([
+          {
+            path: ".github/workflows/ci.yml",
+            rawText: ciYml,
+            parsed: null,
+            kind: "workflow" as const,
+          },
+        ]),
+      readActionsLockfileFn: () => Promise.resolve(lock),
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 1);
+    const c = creates[0]!;
+    assertStringIncludes(
+      c.body,
+      "<!-- finding-id: BP-ACTIONS-LOCK-STALE-ci-yml -->",
+    );
+    assert(c.labels.includes(GITHUB_ACTIONS_AUDIT_LABEL));
+    assert(c.labels.includes("severity:high"));
+    assert(!creates.some((x) => x.body.includes("BP-SHA-PIN-")));
   },
 );

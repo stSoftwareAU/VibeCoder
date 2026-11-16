@@ -48,6 +48,7 @@ const ALL_CATEGORIES: Record<FailureCategory, true> = {
   repo_config: true,
   prompt_too_long: true,
   clone_corrupt: true,
+  host_disk: true,
   summary_incomplete: true,
   security_fix_gate: true,
   pre_push_gate: true,

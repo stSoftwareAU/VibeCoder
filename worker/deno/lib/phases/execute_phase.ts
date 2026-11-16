@@ -12,6 +12,7 @@ import { classifyRunFailure } from "../run_outcome_classifier.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
 import { billedResultOfError } from "../failed_invocation_result.ts";
 import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
+import { HostDiskParkError } from "../heavy_build_gate.ts";
 /**
  * Phase 3 — Execute Claude.
  *
@@ -1367,6 +1368,7 @@ async function executeClaudeBody(
         workDir: config.workDir,
         repo,
         runKind: "implementation",
+        subject: `${repo}#${issueNumber}`,
         logger,
       });
       // Every `TOKENECONOMIZER_HOME` this run's launches used (Issue #4958),
@@ -1378,6 +1380,9 @@ async function executeClaudeBody(
         const home = tokenEconomizer.tokenEconomizer.env.TOKENECONOMIZER_HOME;
         const homes = state.tokenEconomizerHomes ??= [];
         if (!homes.includes(home)) homes.push(home);
+        (state.tokenEconomizerLaunches ??= []).push(
+          tokenEconomizer.tokenEconomizer,
+        );
       }
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
@@ -1606,6 +1611,7 @@ async function executeClaudeBody(
       CLAUDE_PROVIDER_ID,
     workDir: config.workDir,
     stateHomes: state.tokenEconomizerHomes ?? [],
+    launches: state.tokenEconomizerLaunches ?? [],
     logger,
   });
 
@@ -1625,12 +1631,17 @@ async function executeClaudeBody(
     // Issues #4949 and #5048 release interrupted work the same way: the work
     // is preserved on the issue branch and the run is released as
     // interrupted — never a worker crash, and not retried by this branch.
-    // Only the cause, the reason prefix, the detail and the log line differ.
+    // Issue #5077 releases a host-disk park the same way under its own
+    // category. Only the category, the cause, the reason prefix, the detail
+    // and the log line differ.
     const releaseInterrupted = async (failure: {
-      cause: "turn-limit" | "executor-unfinished";
+      category: "interrupted" | "host_disk";
+      cause: "turn-limit" | "executor-unfinished" | "host-disk-park";
       prefix: string;
-      detail: string;
+      detail?: string;
       logMessage: string;
+      // The agent process had started, so the tree holds its work (Issue #5077).
+      agentStarted?: boolean;
       error: { message: string; executionResult?: ClaudeRunResult };
     }): Promise<PhaseResult> => {
       logger.warn(failure.logMessage, {
@@ -1649,7 +1660,8 @@ async function executeClaudeBody(
         deps,
         issueNumber: ctx.issueNumber,
         repo: ctx.repo,
-        inspectWorkingTree: interruptedOutput.length > 0,
+        inspectWorkingTree: failure.agentStarted === true ||
+          interruptedOutput.length > 0,
         buildMessage: (dirtyFiles) =>
           buildInterruptedWipCommitMessage({
             cause: failure.cause,
@@ -1660,7 +1672,7 @@ async function executeClaudeBody(
         onPreserved: () => saveCheckpointState(),
       });
       const reason = formatDetailedFailureMessage(
-        `${failure.prefix} ${failure.detail}` +
+        `${failure.prefix}${failure.detail ? ` ${failure.detail}` : ""}` +
           (wip.wipNote ? ` — ${wip.wipNote}` : ""),
         {
           elapsedSeconds,
@@ -1670,16 +1682,17 @@ async function executeClaudeBody(
         },
       );
       return {
-        category: "interrupted",
+        category: failure.category,
         status: "failure",
         reason,
-        classification: classifyRunFailure("interrupted", reason, true),
+        classification: classifyRunFailure(failure.category, reason, true),
       };
     };
     // Issue #4949: the Claude CLI stopped the invocation at its per-run turn
     // cap (error_max_turns). A policy stop, not a failure of the issue.
     if (claudeResult.error instanceof AgentTurnLimitError) {
       return releaseInterrupted({
+        category: "interrupted",
         cause: "turn-limit",
         prefix: TURN_LIMIT_REASON_PREFIX,
         detail: "(error_max_turns) while the agent was still working",
@@ -1693,11 +1706,27 @@ async function executeClaudeBody(
     // the branch rather than reported as a worker crash.
     if (claudeResult.error instanceof UnfinishedIssueExecutorError) {
       return releaseInterrupted({
+        category: "interrupted",
         cause: "executor-unfinished",
         prefix: EXECUTOR_UNFINISHED_REASON_PREFIX,
         detail: "— an executor sub-agent had not returned a result",
         logMessage:
           "Claude stopped with executor work unfinished; preserving the work (Issue #5048)",
+        error: claudeResult.error,
+      });
+    }
+    // Issue #5077: the host-disk guard parked the agent in the execute phase
+    // because the host disk was below its floor, before or during the agent
+    // run. A protective stop, not an ERROR: the work is preserved on the issue
+    // branch and the next claim resumes it.
+    if (claudeResult.error instanceof HostDiskParkError) {
+      return releaseInterrupted({
+        category: "host_disk",
+        cause: "host-disk-park",
+        prefix: claudeResult.error.message,
+        logMessage:
+          "The host disk is below its floor; parking the agent and preserving the work for the next claim (Issue #5077)",
+        agentStarted: claudeResult.error.agentStarted,
         error: claudeResult.error,
       });
     }

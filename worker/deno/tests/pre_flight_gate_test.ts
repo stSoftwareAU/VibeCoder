@@ -9,7 +9,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   PRE_FLIGHT_DEFAULT_TIMEOUT_SECONDS,
   type PreFlightCommandResult,
@@ -211,4 +216,67 @@ Deno.test("runPreFlightGate - real non-zero exit is non-zero-exit", async () => 
 Deno.test("runPreFlightGate - real success passes", async () => {
   const result = await runPreFlightGate(["true"], { timeoutSeconds: 30 });
   assert(result.ok, "a command exiting 0 must pass");
+});
+
+const manyFiles = (n: number) =>
+  Array.from({ length: n }, (_, i) => `'tests/f${i}_test.ts'`).join(" ");
+
+const failing = (stderr = "boom"): PreFlightCommandResult => ({
+  started: true,
+  code: 1,
+  stdout: "",
+  stderr,
+});
+
+async function blockFor(
+  command: string,
+  extra: Partial<Parameters<typeof runPreFlightGate>[1]> = {},
+): Promise<PreFlightGateError> {
+  const { runner } = scriptedRunner({ [command]: failing() });
+  const result = await runPreFlightGate([command], { runner, ...extra });
+  assert(!result.ok);
+  return result.error;
+}
+
+Deno.test("runPreFlightGate - a command quoting 400 files is named by a file count (Issue #5113)", async () => {
+  const command = `deno task test:unit ${manyFiles(400)}`;
+  const error = await blockFor(command);
+  assertStringIncludes(
+    error.message,
+    "command `deno task test:unit (400 files)`",
+  );
+  assertFalse(error.message.includes("tests/f399_test.ts"));
+  assertEquals(error.command, command);
+});
+
+Deno.test("runPreFlightGate - trailing flags stay after the file count (Issue #5113)", async () => {
+  const command = `deno task test:unit ${manyFiles(400)} --serial-only`;
+  const error = await blockFor(command);
+  assertStringIncludes(
+    error.message,
+    "command `deno task test:unit (400 files) --serial-only`",
+  );
+  assertEquals(error.command, command);
+});
+
+Deno.test("runPreFlightGate - a short command stays verbatim (Issue #5113)", async () => {
+  const command = "deno fmt --check --permit-no-files src/big.ts";
+  const error = await blockFor(command);
+  assertStringIncludes(error.message, `command \`${command}\``);
+});
+
+Deno.test("runPreFlightGate - summariseFailure text goes before the output, null adds nothing (Issue #5113)", async () => {
+  const command = "deno task test:unit";
+  const withSummary = await blockFor(command, {
+    summariseFailure: () => "SUMMARY-TEXT",
+  });
+  const s = withSummary.message.indexOf("\n\nSUMMARY-TEXT");
+  assert(s > 0);
+  assert(s < withSummary.message.indexOf("\n\nboom"));
+  const without = await blockFor(command, { summariseFailure: () => null });
+  assertEquals(
+    without.message.endsWith("blocked.\n\nboom"),
+    true,
+  );
+  assertFalse(without.message.includes("SUMMARY"));
 });

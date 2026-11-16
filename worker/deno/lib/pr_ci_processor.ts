@@ -2080,6 +2080,7 @@ async function _processCiWithHeartbeat(
       workDir: processorDeps.workRoot,
       repo,
       runKind: "ci-fix",
+      subject: `${repo} PR #${prNumber}`,
       logger,
     })
     : {};
@@ -3461,6 +3462,7 @@ async function _runPostClaudeQualityCheck(
         workDir: processorDeps.workRoot,
         repo: input.repo,
         runKind: "ci-fix",
+        subject: `${input.repo} PR #${input.prNumber}`,
         logger,
       })
       : {};
