@@ -1,0 +1,12 @@
+{
+  "issue": 4957,
+  "chunk": "top-up-4957",
+  "title": "top-up: TokenEconomizer learnings persistence",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/4957",
+  "definition": "Review that the learnings pull copies only verified private store state into the home and reports refused, unavailable, empty or restored truthfully, that the push mirrors only the allow-listed state of the run's own key, scans the staged files with gitleaks before committing, re-checks the stop latch and visibility before each push attempt, isolates other repository keys, and keeps its scratch clone only after a pushed or unchanged outcome.",
+  "status": "claimed",
+  "sweptAt": "fccd1182c22609b9d7558d0dd16b3e64dd516dd4",
+  "paths": [
+    "worker/deno/lib/token_economizer_learnings.ts"
+  ]
+}

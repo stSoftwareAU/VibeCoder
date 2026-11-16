@@ -30,12 +30,19 @@
  *
  * ## Stop record
  *
- * The shared controller consumes hook failures and exposes the finding/sync
- * contract for persistence (#4957). It latches `${workDir}/.token-economizer/stop.json`,
+ * The shared controller consumes hook failures and gives learnings persistence
+ * (#4957) its stop and sync permission. It latches `${workDir}/.token-economizer/stop.json`,
  * reports to #4959 through the worker's guarded channel and retries pending
  * reports on later enabled launches. A healthy run never clears a trial failure;
  * only authorised recovery or purge may do that. Unreadable records fail closed.
  * This local file is not a security boundary against a same-UID agent.
+ *
+ * ## Learnings pull (Issue #4957)
+ *
+ * With `token_economizer.learnings_repo` set, a launch pulls its repository's
+ * learned state into the home before the plugin loads. The pull never turns the
+ * plugin off: a refusal or fault is kept on `launch.learnings.persistence`.
+ * The matching push is {@link syncTokenEconomizerLearnings}, run after the spawn.
  *
  * ## Path confinement
  *
@@ -63,7 +70,18 @@ import type {
   TokenEconomizerConfig,
   TokenEconomizerMicroskills,
 } from "../types.ts";
-import { reportTokenEconomizerStop } from "./token_economizer_control.ts";
+import {
+  reportTokenEconomizerStop,
+  tokenEconomizerMaySync,
+} from "./token_economizer_control.ts";
+import {
+  type LearningsLogger,
+  type LearningsPersistence,
+  pullLearnings,
+  repoKeyForCheckout,
+  type StagedScan,
+  type VisibilityCheck,
+} from "./token_economizer_learnings.ts";
 import { confinePath } from "./mutation_runner.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { redactSecrets } from "./secret_redaction.ts";
@@ -97,6 +115,18 @@ export interface TokenEconomizerLaunch {
   readonly env: Readonly<
     Record<string, string> & { TOKENECONOMIZER_HOME: string }
   >;
+  /** The run id that names this launch's state and scratch directories (Issue #4957). */
+  readonly runId: string;
+  /** The issue or PR the run serves, recorded with any learnings push (Issue #4957). */
+  readonly subject: string;
+  /** Present only when `token_economizer.learnings_repo` is set (Issue #4957). */
+  readonly learnings?: {
+    readonly repo: string;
+    readonly persistence: LearningsPersistence;
+    readonly checkVisibility?: VisibilityCheck;
+    /** Test seam for the push's staged scan. Absent: the gitleaks scan (Issue #4957). */
+    readonly scanStaged?: (cwd: string) => Promise<StagedScan>;
+  };
 }
 
 /**
@@ -137,8 +167,16 @@ export interface ResolveTokenEconomizerLaunchOptions {
   workDir: string;
   repo: string;
   runKind: TokenEconomizerRunKind;
+  /** The issue or PR the run serves, for example `owner/repo#12` (Issue #4957). */
+  subject: string;
   /** Names the state directory. Must pass the allow-list. Absent: a fresh UUID per launch. */
   runId?: string;
+  /** Test seam: the learnings store's clone URL. Absent: the GitHub URL (Issue #4957). */
+  learningsStoreUrl?: string;
+  /** Test seam: the learnings visibility check. Absent: the GitHub check (Issue #4957). */
+  checkLearningsVisibility?: VisibilityCheck;
+  /** Test seam: the push's staged secret scan. Absent: the gitleaks scan (Issue #4957). */
+  scanLearnings?: (cwd: string) => Promise<StagedScan>;
   pluginDir?: string;
   /** Audited worker executable; override only for isolated launch validation. */
   hookAdapterPath?: string;
@@ -337,9 +375,14 @@ export async function readTokenEconomizerStop(
  * or unexpected error returns `null` and logs the cause. A plugin fault never
  * fails the run.
  *
- * @param opts - The block, the work directory, the repo, the run kind and the
- *   optional run id, plugin directory and logger. With no run id, each launch
- *   gets a fresh UUID, so every launch has its own state directory.
+ * With `learnings_repo` set, the repository's learned state is pulled into the
+ * home once the state directory is verified (Issue #4957). The pull never turns
+ * the plugin off: its outcome, including a refusal or fault, is kept on
+ * `launch.learnings.persistence` for the run to report.
+ *
+ * @param opts - The block, the work directory, the repo, the run kind, the
+ *   subject and the optional run id, plugin directory and logger. With no run
+ *   id, each launch gets a fresh UUID, so every launch has its own state directory.
  * @returns The launch to hand to `--plugin-dir`, or `null` for plugin off.
  */
 export async function resolveTokenEconomizerLaunch(
@@ -456,10 +499,27 @@ export async function resolveTokenEconomizerLaunch(
       throw new Error("state directory changed during launch");
     }
 
+    const learnings = config.learningsRepo
+      ? await pullRunLearnings({
+        learningsRepo: config.learningsRepo,
+        checkout,
+        workRoot: realWork,
+        home: realState,
+        runId,
+        storeUrl: opts.learningsStoreUrl,
+        checkVisibility: opts.checkLearningsVisibility,
+        scanStaged: opts.scanLearnings,
+        logger,
+      })
+      : undefined;
+
     logger?.info(`token-economizer: plugin on for a ${runKind} run`);
     return {
       pluginDir,
       workDir: realWork,
+      runId,
+      subject: opts.subject,
+      ...(learnings ? { learnings } : {}),
       env: {
         TOKENECONOMIZER_HOME: realState,
         TE_TOOLPRUNE: "off",
@@ -494,6 +554,71 @@ export async function tokenEconomizerSpawnOptions(
 ): Promise<{ tokenEconomizer?: TokenEconomizerLaunch }> {
   const launch = await resolveTokenEconomizerLaunch(opts);
   return launch === null ? {} : { tokenEconomizer: launch };
+}
+
+/**
+ * Pull the learnings store's state for one launch into its home (Issue #4957).
+ * The scratch clone sits under the work root, outside the home and the checkout.
+ * Never throws and never refuses the launch: every fault is kept on the
+ * returned persistence status and logged.
+ */
+async function pullRunLearnings(args: {
+  learningsRepo: string;
+  checkout: string;
+  workRoot: string;
+  home: string;
+  runId: string;
+  storeUrl?: string;
+  checkVisibility?: VisibilityCheck;
+  scanStaged?: (cwd: string) => Promise<StagedScan>;
+  logger?: LearningsLogger;
+}): Promise<NonNullable<TokenEconomizerLaunch["learnings"]>> {
+  const { learningsRepo, checkout, workRoot, runId, logger } = args;
+  const checkVisibility = args.checkVisibility;
+  const scanStaged = args.scanStaged;
+  const unavailable = (reason: string) => {
+    logger?.warn(`token-economizer learnings: unavailable: ${reason}`);
+    return {
+      repo: learningsRepo,
+      persistence: { status: "unavailable" as const, reason },
+      checkVisibility,
+      scanStaged,
+    };
+  };
+  try {
+    const repoKey = await repoKeyForCheckout(checkout);
+    if (repoKey === null) {
+      return unavailable(
+        "the checkout has no origin remote to key the learnings by",
+      );
+    }
+    const scratchRel = join(STATE_DIR_NAME, "store", runId);
+    const scratchDir = await confinePath(workRoot, scratchRel, {
+      realPath: Deno.realPath,
+    });
+    if (
+      scratchDir === null ||
+      scratchDir !== join(workRoot, scratchRel) ||
+      isWithin(scratchDir, checkout)
+    ) {
+      return unavailable(
+        "the scratch directory lies outside the work directory, is aliased or is inside the repo checkout",
+      );
+    }
+    const persistence = await pullLearnings({
+      learningsRepo,
+      repoKey,
+      home: args.home,
+      scratchDir,
+      storeUrl: args.storeUrl,
+      checkVisibility,
+      mayTransfer: () => tokenEconomizerMaySync(workRoot),
+      logger,
+    });
+    return { repo: learningsRepo, persistence, checkVisibility, scanStaged };
+  } catch (err) {
+    return unavailable(redactSecrets(errorMessage(err)));
+  }
 }
 
 /** Result of reading the stop record file, before it is judged. */
