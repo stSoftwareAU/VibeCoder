@@ -1305,30 +1305,43 @@ Deno.test("default visibility check: the learnings repository is in the token sc
     seedWriteRepoAllowlist("stSoftwareAU/VibeCoder");
     assertEquals(installationTokenRepoScope(), ["stSoftwareAU/VibeCoder"]);
 
+    // A small fake of GitHub's repository read: it resolves whichever repository the call
+    // names and answers 404 unless that repository is in the current token scope.
+    const store = "stSoftwareAU/LearningsStore";
     let scopeDuringRead: string[] | null = null;
     let writableDuringRead = true;
-    const verdict = await githubVisibilityCheck((args) => {
-      assertEquals(args, ["api", "repos/stSoftwareAU/LearningsStore"]);
+    const fakeRepoRead = (args: string[]): Promise<string> => {
+      const scope = installationTokenRepoScope() ?? [];
       scopeDuringRead = installationTokenRepoScope();
-      writableDuringRead = isWriteRepoAllowed("stSoftwareAU/LearningsStore");
+      writableDuringRead = isWriteRepoAllowed(store);
+      if (!scope.some((repo) => args.join(" ").includes(repo))) {
+        return Promise.reject(new Error("HTTP 404: Not Found"));
+      }
       return Promise.resolve('{"private": true, "visibility": "private"}');
-    })("stSoftwareAU/LearningsStore");
+    };
+    const verdict = await githubVisibilityCheck(fakeRepoRead)(store);
     assertEquals(verdict, { private: true });
-    assertEquals(scopeDuringRead, [
-      "stSoftwareAU/LearningsStore",
-      "stSoftwareAU/VibeCoder",
-    ]);
+    assertEquals(scopeDuringRead, [store, "stSoftwareAU/VibeCoder"]);
     assertEquals(
       writableDuringRead,
       false,
       "a read grant must not permit writes",
     );
     assertEquals(installationTokenRepoScope(), ["stSoftwareAU/VibeCoder"]);
+    assertEquals(isWriteRepoAllowed(store), false);
+
+    // Once the grant is released the same read is denied.
+    let deniedAfterRelease = false;
+    await fakeRepoRead(["api", `repos/${store}`]).catch(() => {
+      deniedAfterRelease = true;
+    });
+    assertEquals(deniedAfterRelease, true);
+    assertEquals(installationTokenRepoScope(), ["stSoftwareAU/VibeCoder"]);
 
     // A failing read releases the grant too, and stays unverifiable.
     const failed = await githubVisibilityCheck(() =>
       Promise.reject(new Error("HTTP 404"))
-    )("stSoftwareAU/LearningsStore");
+    )(store);
     assertEquals(failed.private, false);
     assertEquals(installationTokenRepoScope(), ["stSoftwareAU/VibeCoder"]);
   } finally {

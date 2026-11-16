@@ -213,7 +213,9 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   after a number of checks, and an unchanged control case proves the replay
   pushes),
   the default visibility check reading under a token-scope grant that is
-  released afterwards
+  released afterwards (it runs against a small fake of GitHub's repository
+  read that answers 404 unless the named repository is in the current token
+  scope, so it does not pin the `gh` argument spelling or order)
   (`default visibility check: the learnings repository is in the token scope while it reads, and is released afterwards`),
   and a `config.json` exactly at its cap restoring
   (`restored: a config.json exactly at the cap is copied into the home`). The
