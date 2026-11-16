@@ -28,6 +28,8 @@ import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
 
 import { redactSecrets } from "../secret_redaction.ts";
 import { tokenEconomizerSpawnOptions } from "../token_economizer_plugin.ts";
+import { summariseTokenEconomizerRun } from "../token_economizer_run_stats.ts";
+import { CLAUDE_PROVIDER_ID } from "../agent_provider.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
 import { fingerprintWorkerReviewPolicy } from "../pr_completion_report.ts";
 
@@ -1363,6 +1365,16 @@ async function executeClaudeBody(
         runKind: "implementation",
         logger,
       });
+      // Every `TOKENECONOMIZER_HOME` this run's launches used (Issue #4958),
+      // kept on the phase state rather than per body: the infrastructure
+      // retry, the sonnet refusal retry and the prompt-too-long fallback all
+      // re-run this body in the same run, and each earlier attempt's plugin
+      // calls were billed too.
+      if (tokenEconomizer.tokenEconomizer) {
+        const home = tokenEconomizer.tokenEconomizer.env.TOKENECONOMIZER_HOME;
+        const homes = state.tokenEconomizerHomes ??= [];
+        if (!homes.includes(home)) homes.push(home);
+      }
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
         retryOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[1],
@@ -1577,6 +1589,21 @@ async function executeClaudeBody(
   // it is read on every outcome — a run that failed still filtered output.
   // The result object on the phase state is the one this updates.
   await rtk.record();
+
+  // Issue #4958: what the plugin did and cost, read from its own state after
+  // every invocation (including a second-credential call) has finished, on
+  // every outcome. It sums every home any attempt in this run used, so a
+  // re-run of this body never drops an earlier attempt's figures. Eligible when the provider that serves the spawn is Claude,
+  // resolved from the same selector `claude_runner.ts` resolves its provider
+  // from (`provider.id === CLAUDE_PROVIDER_ID`).
+  state.tokenEconomizerRun = await summariseTokenEconomizerRun({
+    enabled: config.tokenEconomizer.enabled,
+    eligible: deps.claude.rtkProviderId(effectiveAgentProvider, logger) ===
+      CLAUDE_PROVIDER_ID,
+    workDir: config.workDir,
+    stateHomes: state.tokenEconomizerHomes ?? [],
+    logger,
+  });
 
   if (!claudeResult.ok) {
     // Issue #5029: a turn-cap stop and a refused split run were billed. Their

@@ -134,6 +134,9 @@ Deno.test("execute_phase - the switch off spawns no rtk, no settings and an unch
     "an off run's prompt is the one it always sent",
   );
   assertEquals(observed.state.rtkOutput?.status, "off");
+  // Issue #4958: the TokenEconomizer slot is set too, `off` on a disabled host.
+  assertEquals(observed.state.tokenEconomizerRun?.status, "off");
+  assertEquals(observed.state.tokenEconomizerRun?.enabled, false);
 });
 
 Deno.test("execute_phase - the switch on installs the hook and the prompt line together (Issue #2383)", async () => {

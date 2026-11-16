@@ -418,6 +418,7 @@ import {
   invokeRunCallbacks,
   rtkNotRun,
 } from "./run_callbacks.ts";
+import { tokenEconomizerNotRun } from "./token_economizer_run_stats.ts";
 import { recordCallbackOutcomes } from "./callback_failure_streak.ts";
 import {
   callbackFailureStreakCounts,
@@ -5491,6 +5492,11 @@ export async function createProductionRunCoreDeps(
           // The RTK outcome for the same callbacks (Issue #2386); a skip
           // never reached the preparation, so it reports none.
           ...(result.rtk && !isExpectedSkip ? { rtk: result.rtk } : {}),
+          // What TokenEconomizer did and cost (Issue #4958); a skip never
+          // reached the agent, so it reports none.
+          ...(result.tokenEconomizer && !isExpectedSkip
+            ? { tokenEconomizer: result.tokenEconomizer }
+            : {}),
         },
       };
     },
@@ -5936,6 +5942,10 @@ export async function createProductionRunCoreDeps(
           // no outcome states the host's real switch, never a fabricated
           // `enabled: false`.
           rtk: run.rtk ?? rtkNotRun(config.rtkOutput.enabled),
+          // Issue #4958: likewise, the host's real switch when the run
+          // carried no TokenEconomizer stats.
+          tokenEconomizer: run.tokenEconomizer ??
+            tokenEconomizerNotRun(config.tokenEconomizer.enabled),
         }, {
           // Issue #4254: a hard-kill report names the killed run's id; every
           // other caller reports the current run.
