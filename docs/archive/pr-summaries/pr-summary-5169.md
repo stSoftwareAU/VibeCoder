@@ -114,6 +114,11 @@ flowchart TD
   - Removed from `worker/deno/tests/pr_merge_conflict_processor_test.ts`:
     `{ commands: [], repairChecksOnly: true },`
     - Replaced by: `{ commands: [], repairChecksWithCiCargo: true },`
+  - Removed from `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts`:
+    `capturedPreFlight?.repairChecksOnly,`
+    - Replaced by: `capturedPreFlight?.repairChecksWithCiCargo,` and
+      `assertEquals(capturedPreFlight?.repairChecksOnly, undefined);`
+      (6 passed, 0 failed).
   - The `repairChecksOnly` gate itself is still covered by the existing
     `{ commands: [], repairChecksOnly: true, runner }` test in
     `worker/deno/tests/git_push_preflight_test.ts`, which passes.
