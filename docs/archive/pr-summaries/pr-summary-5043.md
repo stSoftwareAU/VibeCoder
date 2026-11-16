@@ -72,10 +72,17 @@ flowchart LR
   `worker/deno/tests/fault_tolerance_counters_test.ts`,
   `worker/deno/tests/fault_tolerance_counters_write_summary_test.ts` and
   `worker/deno/tests/repair_base_merge_4943_test.ts`: 138 passed, 0 failed.
-- `./quality.sh < /dev/null` on the code commit: PASSED. Config integration
-  and checkov were skipped by the host.
+- `deno task test:unit` (the full unit suite) on this head: 34,724 passed in
+  the parallel pass and 885 passed in the serial pass, 0 failed. An earlier
+  attempt's pre-push gate stopped with `error: Test failed` on a wide test
+  list, and its output was cut off before it named the failing test. The full
+  suite does not reproduce that failure on this head.
+- `./quality.sh < /dev/null` on this head: PASSED, including deno tests, lint,
+  type check and fmt. Config integration and checkov were skipped by the host.
 
-Not done or not checked: the fault-event log header still reads "Cycle
-summary". The run loop never resets those counters, so that text predates this
-change and covers the whole run; it is out of scope here. Remaining risk:
-none known.
+Not done or not checked: I could not identify the test that failed the earlier
+pre-push gate, because its output was truncated and the full suite now passes.
+The fault-event log header still reads "Cycle summary". The run loop never
+resets those counters, so that text predates this change and covers the whole
+run; it is out of scope here. Remaining risk: that earlier failure was not
+reproduced, so it may have been intermittent.
