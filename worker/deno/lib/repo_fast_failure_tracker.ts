@@ -39,6 +39,10 @@ import {
   type FailureCategory,
   workerGateCategoryOf,
 } from "./failure_diagnosis.ts";
+import {
+  isPrimaryRateLimitMessage,
+  primaryQuotaLatchedUntil,
+} from "./primary_quota_latch.ts";
 import { isHostDiskFaultText } from "./host_fault.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { REPO_FAST_FAILURE_MARKER_PREFIX } from "./repo_fast_failure_issue.ts";
@@ -712,6 +716,14 @@ export interface FleetDiagnosticCacheEntry {
   good?: FleetDiagnosticRef[];
   goodAt?: number;
   lastError?: string;
+  /**
+   * Epoch seconds before which the owner is not searched again (Issue #5076).
+   * Unset after a success, where the window is `attemptedAt` plus the recheck
+   * interval. After a failure it is `attemptedAt` plus the recheck interval,
+   * or the GitHub rate-limit latch's reset when the failure was a rate limit
+   * that lifts sooner, so the first lookup after the quota resets retries.
+   */
+  retryAt?: number;
 }
 
 /** In-process cache, keyed by owner. */
@@ -748,8 +760,8 @@ export interface FleetDiagnosticLookupOptions extends AlertDedupAuthorOptions {
   cache: FleetDiagnosticCache;
   /** Minimum seconds between searches of one owner; default REPO_FAST_FAILURE_DIAGNOSTIC_RECHECK_SECONDS. */
   recheckSeconds?: number;
+  /** Every lookup failure is logged here: the worker carries on without fleet back-offs. */
   warn: (message: string) => void;
-  error: (message: string) => void;
 }
 
 export interface FleetDiagnosticLookupResult {
@@ -818,6 +830,13 @@ function parseFleetSearchRows(raw: string): FleetSearchRow[] | null {
  * One `gh` call per owner per `recheckSeconds`, cached across calls within a
  * process. A failed lookup never throws: it falls back to the last good
  * result when one exists, or reports the owner's fleet state as unknown.
+ *
+ * A failure is a degraded-but-continuing case (only this host's own back-offs
+ * apply), so it is logged once, at WARNING, when it happens; replaying the
+ * cached failure inside its window logs nothing (Issue #5076). The window
+ * ends `recheckSeconds` after the failure, or sooner when the failure was
+ * the GitHub rate-limit latch and the quota resets within the window, so the
+ * first lookup after the reset retries instead of replaying a stale message.
  */
 export async function lookupFleetDiagnosticBackOffs(
   options: FleetDiagnosticLookupOptions & { nowSeconds?: () => number },
@@ -832,15 +851,10 @@ export async function lookupFleetDiagnosticBackOffs(
 
   for (const owner of options.owners()) {
     const cached = options.cache.get(owner);
-    if (cached && now - cached.attemptedAt < recheck) {
+    if (cached && now < (cached.retryAt ?? cached.attemptedAt + recheck)) {
+      // The failure was already warned about when it happened (Issue #5076).
       if (cached.good === undefined) {
         failedOwners.push(owner);
-        options.error(
-          `repo-fast-failure fleet lookup ${owner}: last attempt failed (${
-            cached.lastError ?? "unknown error"
-          }) — fleet back-offs for this owner are unknown, so only this ` +
-            `host's own back-offs apply.`,
-        );
         continue;
       }
       for (const ref of cached.good) {
@@ -899,6 +913,7 @@ export async function lookupFleetDiagnosticBackOffs(
     }
 
     if (good !== undefined) {
+      // No `retryAt`: the window is `attemptedAt` plus the recheck interval.
       options.cache.set(owner, { attemptedAt: now, good, goodAt: now });
       for (const ref of good) {
         backedOff.set(ref.repo, ref);
@@ -906,10 +921,20 @@ export async function lookupFleetDiagnosticBackOffs(
       continue;
     }
 
+    let retryAt = now + recheck;
+    if (
+      failureMessage !== undefined && isPrimaryRateLimitMessage(failureMessage)
+    ) {
+      const resetAt = primaryQuotaLatchedUntil();
+      if (resetAt !== null && resetAt > now && resetAt < retryAt) {
+        retryAt = resetAt;
+      }
+    }
     options.cache.set(owner, {
       ...cached,
       attemptedAt: now,
       lastError: failureMessage,
+      retryAt,
     });
     if (cached?.good !== undefined) {
       options.warn(
@@ -925,7 +950,7 @@ export async function lookupFleetDiagnosticBackOffs(
       }
     } else {
       failedOwners.push(owner);
-      options.error(
+      options.warn(
         `repo-fast-failure fleet lookup ${owner}: ${failureMessage} — ` +
           `fleet back-offs for this owner are unknown, so only this host's ` +
           `own back-offs apply.`,

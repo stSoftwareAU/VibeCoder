@@ -2334,6 +2334,94 @@ Deno.test("slot pool - a slot abandoned at the shutdown grace still finishes its
   assertEquals(liveSlotRunCount(), 0);
 });
 
+Deno.test("slot pool - a slot abandoned at the shutdown grace whose tail outlives the grace is warned about, not logged as an error (Issue #5076)", async () => {
+  // Pins: a tail that outlives the run-ending grace is reported at WARNING,
+  // because the run carries on to its exit cleanup (Issue #5076).
+  let tailDone = false;
+  const warnings: string[] = [];
+  const errorLines: string[] = [];
+  const handlers: Record<string, () => void> = {};
+  let now = 0;
+  let clock: ReturnType<typeof setInterval> | undefined;
+  let tailFinished!: () => void;
+  const tailGate = new Promise<void>((r) => {
+    tailFinished = r;
+  });
+  let hangResolve: (() => void) | undefined;
+  const deps = createMockDeps({
+    now: () => now,
+    logWarn: (m) => {
+      warnings.push(m);
+    },
+    logError: (m) => {
+      errorLines.push(m);
+    },
+    slotDrainGraceSeconds: 30,
+    sleep: (ms?: number) => {
+      now += ms ?? 30_000;
+      // The run-ending grace is the one wait that must give the tail a
+      // moment of real time; every other sleep is the fake clock.
+      return (ms ?? 0) >= 30_000
+        ? new Promise<void>((r) => setTimeout(r, 200))
+        : Promise.resolve();
+    },
+    addSignalListener: (signal, handler) => {
+      handlers[signal] = handler;
+    },
+    // The run-ending termination (Issue #4369): here it "kills" the hung
+    // agent, after which the slot runs its tail.
+    terminateActiveAgentRuns: () => {
+      hangResolve?.();
+      return Promise.resolve();
+    },
+    findNextIssue: issueQueue([issue("o/fast", 1), issue("o/hang", 2)]),
+    processIssue: async (i) => {
+      if (i.repo === "o/fast") {
+        await new Promise((r) => setTimeout(r, 5));
+        handlers["SIGTERM"]?.();
+        clock = setInterval(() => {
+          now += 31_000;
+        }, 20);
+        return { ok: true, value: { success: true } };
+      }
+      await new Promise<void>((r) => {
+        hangResolve = r;
+      });
+      // The tail: what the release and the callbacks cost after the agent
+      // is gone.
+      await new Promise((r) => setTimeout(r, 600));
+      tailDone = true;
+      tailFinished();
+      return { ok: true, value: { success: false } };
+    },
+  });
+  await runOneCycle(deps, 2);
+  // The run returned while the tail was still outstanding.
+  const tailDoneAtReturn = tailDone;
+  if (clock !== undefined) clearInterval(clock);
+
+  // The tail outlives the 200ms grace, so the run returns first; await the
+  // tail here so no timer or op leaks past the test.
+  await tailGate;
+  // Let the slot's own release run after its tail, then count it out.
+  for (let i = 0; i < 100 && liveSlotRunCount() > 0; i++) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  assertEquals(tailDoneAtReturn, false);
+  assertEquals(tailDone, true);
+  assert(
+    warnings.some((l) =>
+      l.includes("still finishing after the") && l.includes("Issue #1815")
+    ),
+    warnings.join("\n"),
+  );
+  assert(
+    !errorLines.some((l) => l.includes("still finishing after the")),
+    errorLines.join("\n"),
+  );
+  assertEquals(liveSlotRunCount(), 0);
+});
+
 // ============================================================================
 // The cycle that hits the quota still reports what it spent (Issue #1843)
 // ============================================================================

@@ -998,12 +998,9 @@ function fleetSearchRow(overrides: {
 
 function fleetLogs() {
   const warn: string[] = [];
-  const error: string[] = [];
   return {
     warn: (message: string) => warn.push(message),
-    error: (message: string) => error.push(message),
     warnings: warn,
-    errors: error,
   };
 }
 
@@ -1021,7 +1018,6 @@ Deno.test("backedOffRepos - an open fleet-authored diagnostic backs off a repo w
         fleetAuthors: ["vibe-bot"],
         cache,
         warn: logs.warn,
-        error: logs.error,
         ghCommandFn: (args) => {
           calls += 1;
           assertEquals(args, GH_SEARCH_ARGS(FLEET_OWNER));
@@ -1043,7 +1039,6 @@ Deno.test("lookupFleetDiagnosticBackOffs - a non-fleet author's marker is ignore
       fleetAuthors: ["vibe-bot"],
       cache,
       warn: logs.warn,
-      error: logs.error,
       nowSeconds: clockAt(1_000),
       ghCommandFn: () =>
         Promise.resolve(
@@ -1063,7 +1058,6 @@ Deno.test("lookupFleetDiagnosticBackOffs - a closed marker issue does not back o
       fleetAuthors: ["vibe-bot"],
       cache,
       warn: logs.warn,
-      error: logs.error,
       nowSeconds: clockAt(1_000),
       ghCommandFn: () =>
         Promise.resolve(
@@ -1085,7 +1079,6 @@ Deno.test("backedOffRepos - fleet lookups are cached for 600s, then re-checked; 
       fleetAuthors: ["vibe-bot"],
       cache,
       warn: logs.warn,
-      error: logs.error,
       ghCommandFn: (_args: string[]) => {
         calls += 1;
         return Promise.resolve(response);
@@ -1131,7 +1124,6 @@ Deno.test("lookupFleetDiagnosticBackOffs - a gh failure after a good lookup keep
       fleetAuthors: ["vibe-bot"],
       cache,
       warn: logs.warn,
-      error: logs.error,
     };
 
     const good = await lookupFleetDiagnosticBackOffs({
@@ -1161,13 +1153,12 @@ Deno.test("lookupFleetDiagnosticBackOffs - a gh failure with no cached set repor
       fleetAuthors: ["vibe-bot"],
       cache,
       warn: logs.warn,
-      error: logs.error,
       nowSeconds: clockAt(1_000),
       ghCommandFn: () => Promise.reject(new Error("gh exploded")),
     });
     assertEquals(result.backedOff.size, 0);
     assertEquals(result.failedOwners, [FLEET_OWNER]);
-    assert(logs.errors.some((line) => line.includes("gh exploded")));
+    assert(logs.warnings.some((line) => line.includes("gh exploded")));
   });
 });
 
@@ -1181,13 +1172,12 @@ Deno.test("lookupFleetDiagnosticBackOffs - unparsable output is treated as a fai
         fleetAuthors: ["vibe-bot"],
         cache,
         warn: logs.warn,
-        error: logs.error,
         nowSeconds: clockAt(1_000),
         ghCommandFn: () => Promise.resolve(bad),
       });
       assertEquals(result.backedOff.size, 0);
       assertEquals(result.failedOwners, [FLEET_OWNER]);
-      assert(logs.errors.length === 1, `expected one error for ${bad}`);
+      assert(logs.warnings.length === 1, `expected one warning for ${bad}`);
     }
   });
 });

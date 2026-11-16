@@ -4,9 +4,9 @@
  * The parser is the trust boundary between operator-written JSON and the
  * worker's `tokenEconomizer` setting, so each branch is exercised directly
  * here, and `loadConfig` is exercised on the same inputs through a temp
- * directory. `learnings_repo` is accepted and validated, but not read yet
- * (#4957 will persist the learnings to it). `enabled`, `microskills` and
- * `loopguard` are read by the run launch decision, which acts on what this
+ * directory. `learnings_repo` is accepted, validated and read by the learnings
+ * persistence in `lib/token_economizer_learnings.ts`. `enabled`, `microskills`
+ * and `loopguard` are read by the run launch decision, which acts on what this
  * parser returns.
  *
  * Every refusal is paired with the same input with only the probed value made

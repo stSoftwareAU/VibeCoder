@@ -1,3 +1,4 @@
+import type { TokenEconomizerLaunch } from "./token_economizer_plugin.ts";
 /**
  * Shared types for the issue worker phase pipeline.
  *
@@ -346,6 +347,8 @@ export interface PhaseState {
    * {@link tokenEconomizerRun} must sum every attempt's plugin state.
    */
   tokenEconomizerHomes?: string[];
+  /** Launch identities retain actual pull/push outcomes across retries. */
+  tokenEconomizerLaunches?: TokenEconomizerLaunch[];
   /**
    * A safety refusal the execute phase saw and what the one sonnet retry did
    * (Issue #3406). Once set, every later execute attempt in this run resolves

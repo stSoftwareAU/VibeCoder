@@ -4,8 +4,9 @@
  *
  * `docs/TOKEN-ECONOMIZER-TRIAL.md` records the protocol the TokenEconomizer
  * trial is judged by. The image pin and the `token_economizer` config block
- * landed with #4955. The wiring, the learnings store, the stats and the verdict
- * are sibling issues #4956 to #4959, still open. This is a drift test. It pins
+ * landed with #4955. The wiring (#4956) and the learnings persistence (#4957)
+ * are in the repository; the stats and the verdict are sibling issues #4958 and
+ * #4959, still open. This is a drift test. It pins
  * the page to the repository as it stands, and it says what must change on the
  * page when each sibling lands.
  *
@@ -63,12 +64,14 @@ const PLUGIN_ID = "tokeneconomizer";
 const CLAUDE_ID = "claude";
 const BLOCK_NOT_YET = "Not yet: #4955 adds the block";
 /**
- * The sentence the page says while code reads the block: every key but
- * `learnings_repo` is read, and that one stays unread until #4957.
+ * The sentence the page says while code reads the block: every key is read,
+ * and `learnings_repo` is read by the learnings persistence in
+ * `lib/token_economizer_learnings.ts`, which pulls at launch and pushes after
+ * each spawn.
  */
 const BLOCK_LANDED = `\`${
   [...TOKEN_ECONOMIZER_KEYS].find((key) => key.startsWith("learnings_"))
-}\` is validated but not read yet: #4957 will persist the learnings to it, so it changes no run today.`;
+}\` is read by the learnings persistence in \`lib/token_economizer_learnings.ts\`: it pulls the learnings at launch and pushes them after each spawn that loaded the plugin.`;
 const BLOCK_KEYS = ["enabled", "learnings_repo", "microskills", "loopguard"];
 const PURGE_KINDS = [
   "Drift test",
