@@ -66,6 +66,13 @@ export interface RouteIdleTaskInput extends RouteClaimInput {
    */
   authorisedOptInTemplates: ReadonlySet<string>;
   /**
+   * Fleet accounts only (Issue #5096): this host's login, `fleet_pr_authors`
+   * and `service_accounts`; never `allowed_authors`, which lists the human
+   * owners whose own issues are explicit requests. The opt-in gate tests the
+   * author against this set. Built by `idleRouteOptInInput`.
+   */
+  fleetIdentityLogins: readonly string[];
+  /**
    * Epoch-ms deadline of the current cycle (Issue #186), forwarded to the
    * claim handler so the scan's Claude budget is bounded by the runway left.
    * Optional — the CLI single-issue path has no cycle and omits it.
@@ -230,7 +237,7 @@ async function runRoutedScan(
       template: template.name,
       issueAuthor: input.issueAuthor,
       issueBody: input.issueBody,
-      fleetAuthors: input.fleetAuthors,
+      fleetIdentityLogins: input.fleetIdentityLogins,
       authorised: input.authorisedOptInTemplates,
     });
     if (!decision.allowed) {

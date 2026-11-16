@@ -152,7 +152,7 @@ import { fetchMilestoneParentDirection } from "./owner_direction.ts";
 import { observeUntrustedIssueImages } from "./issue_content_trust_filter.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
 import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
-import { authorisedOptInTemplates } from "./idle_task_opt_in.ts";
+import { idleRouteOptInInput } from "./idle_task_opt_in.ts";
 import { routeRunResult } from "./route_claim.ts";
 import { verifyPickupContentIntegrity } from "./pickup_content_integrity.ts";
 import { routeAddRepoInProcessIssue } from "./add_repo_process_issue_route.ts";
@@ -5170,8 +5170,13 @@ export async function createProductionRunCoreDeps(
           issueLabels: issueData.labels ?? [],
           issueBody: issueData.body ?? "",
           // Issue #5096: opt-in templates (test-audit) need an owner request.
-          issueAuthor: issueData.author ?? "",
-          authorisedOptInTemplates: authorisedOptInTemplates(config),
+          // Checked against fleet-only logins, so an owner in allowed_authors
+          // counts as a request.
+          ...idleRouteOptInInput({
+            githubUser,
+            issueAuthor: issueData.author,
+            config,
+          }),
           workDir: config.workDir,
           // Issue #1139: the wrapper is claimed on GitHub before the scan
           // runs, so a sibling host working from a stale issue list stands

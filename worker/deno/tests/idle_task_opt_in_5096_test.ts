@@ -17,6 +17,7 @@ import {
   decideOptInClaim,
   hasIdleTaskRequestedMarker,
   IDLE_TASK_REQUESTED_MARKER,
+  idleRouteOptInInput,
   isAutoEnabledIdleTaskTemplate,
   OPT_IN_IDLE_TASK_TEMPLATES,
 } from "../lib/idle_task_opt_in.ts";
@@ -77,6 +78,7 @@ function wrapperInput(
     workDir: "/tmp/widget",
     githubUser: FLEET_AUTHOR,
     fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     pushCapableAuthors: FLEET_AUTHORS,
     issueTitle: overrides.issueTitle,
     issueAuthor: overrides.issueAuthor,
@@ -282,7 +284,7 @@ Deno.test("decideOptInClaim - a template that is not opt-in is allowed as not_op
     template: "security-scan",
     issueAuthor: "",
     issueBody: PLAIN_BODY,
-    fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     authorised: NO_AUTHORISED,
   });
   assertEquals(decision, { allowed: true, basis: "not_opt_in" });
@@ -293,7 +295,7 @@ Deno.test("decideOptInClaim - a configured template is allowed as configured", (
     template: "test-audit",
     issueAuthor: FLEET_AUTHOR,
     issueBody: PLAIN_BODY,
-    fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     authorised: new Set(["test-audit"]),
   });
   assertEquals(decision, { allowed: true, basis: "configured" });
@@ -304,7 +306,7 @@ Deno.test("decideOptInClaim - a wrapper filed by a non-fleet login is allowed as
     template: "test-audit",
     issueAuthor: "alice",
     issueBody: PLAIN_BODY,
-    fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     authorised: NO_AUTHORISED,
   });
   assertEquals(decision, { allowed: true, basis: "owner_filed" });
@@ -315,7 +317,7 @@ Deno.test("decideOptInClaim - a fleet wrapper with the marker as its last line i
     template: "test-audit",
     issueAuthor: FLEET_AUTHOR,
     issueBody: `${PLAIN_BODY}\n\n${IDLE_TASK_REQUESTED_MARKER}`,
-    fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     authorised: NO_AUTHORISED,
   });
   assertEquals(decision, { allowed: true, basis: "requested" });
@@ -326,7 +328,7 @@ Deno.test("decideOptInClaim - a fleet wrapper with no marker and nothing authori
     template: "test-audit",
     issueAuthor: FLEET_AUTHOR,
     issueBody: PLAIN_BODY,
-    fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     authorised: NO_AUTHORISED,
   });
   assertEquals(decision.allowed, false);
@@ -341,7 +343,7 @@ Deno.test("decideOptInClaim - an empty author is refused even with the marker", 
     template: "test-audit",
     issueAuthor: "   ",
     issueBody: `${PLAIN_BODY}\n${IDLE_TASK_REQUESTED_MARKER}`,
-    fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     authorised: NO_AUTHORISED,
   });
   assertEquals(decision.allowed, false);
@@ -354,7 +356,7 @@ Deno.test("decideOptInClaim - the fleet match is case-insensitive", () => {
     template: "test-audit",
     issueAuthor: "VIBE-Coder",
     issueBody: PLAIN_BODY,
-    fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     authorised: NO_AUTHORISED,
   });
   assertEquals(withoutMarker.allowed, false);
@@ -363,7 +365,7 @@ Deno.test("decideOptInClaim - the fleet match is case-insensitive", () => {
     template: "test-audit",
     issueAuthor: "VIBE-Coder",
     issueBody: `${PLAIN_BODY}\n${IDLE_TASK_REQUESTED_MARKER}`,
-    fleetAuthors: FLEET_AUTHORS,
+    fleetIdentityLogins: FLEET_AUTHORS,
     authorised: NO_AUTHORISED,
   });
   assertEquals(withMarker, { allowed: true, basis: "requested" });
@@ -473,5 +475,81 @@ Deno.test(
 
     assertEquals(run.outcome, { routed: true, success: true });
     assertEquals(run.handleCalls, 1);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// idleRouteOptInInput (Issue #5096)
+// ---------------------------------------------------------------------------
+
+/** Owner config: one human owner, one sibling fleet login, one service account. */
+const OWNER_CONFIG = {
+  allowedAuthors: ["owner-human"],
+  fleetPrAuthors: ["fleet-sibling"],
+  serviceAccounts: ["svc-bot"],
+  idleTaskTemplateWeights: {},
+  idleTaskCadence: { templates: {} },
+};
+
+Deno.test(
+  "idleRouteOptInInput - fleet identity logins hold this host, fleet_pr_authors and service_accounts, never allowed_authors",
+  () => {
+    const input = idleRouteOptInInput({
+      githubUser: "vibe-host",
+      issueAuthor: null,
+      config: OWNER_CONFIG,
+    });
+
+    assert(input.fleetIdentityLogins.includes("vibe-host"));
+    assert(input.fleetIdentityLogins.includes("fleet-sibling"));
+    assert(input.fleetIdentityLogins.includes("svc-bot"));
+    assertEquals(input.fleetIdentityLogins.includes("owner-human"), false);
+    assertEquals(input.issueAuthor, "");
+  },
+);
+
+/**
+ * Route input for a test-audit wrapper filed by `issueAuthor`, built through
+ * `idleRouteOptInInput` so the production composition is exercised. The claim
+ * set (`fleetAuthors`) lists the owner, as the production claim set does; the
+ * opt-in gate must still count the owner as a request.
+ */
+function routeInputFiledBy(issueAuthor: string) {
+  return {
+    repo: "owner/widget",
+    issueNumber: 5096,
+    issueTitle: "Run a test-audit scan",
+    issueLabels: ["idle-task"],
+    issueBody: PLAIN_BODY,
+    workDir: "/tmp/widget",
+    githubUser: "vibe-host",
+    fleetAuthors: ["vibe-host", "owner-human"],
+    pushCapableAuthors: ["vibe-host"],
+    ...idleRouteOptInInput({
+      githubUser: "vibe-host",
+      issueAuthor,
+      config: OWNER_CONFIG,
+    }),
+  };
+}
+
+Deno.test(
+  "route gate - a test-audit wrapper filed by an allowed_authors owner runs the scan (Issue #5096)",
+  async () => {
+    const run = await runRoute(routeInputFiledBy("owner-human"));
+
+    assertEquals(run.outcome, { routed: true, success: true });
+    assertEquals(run.handleCalls, 1, "the owner's request must run the scan");
+  },
+);
+
+Deno.test(
+  "route gate - a test-audit wrapper filed by this host's own login is closed, not run (Issue #5096)",
+  async () => {
+    const run = await runRoute(routeInputFiledBy("vibe-host"));
+
+    assertEquals(run.outcome, { routed: true, success: true });
+    assertEquals(run.handleCalls, 0, "a fleet-filed wrapper must not run");
+    assertEquals(run.ghCalls.length, 2, "the wrapper is commented and closed");
   },
 );

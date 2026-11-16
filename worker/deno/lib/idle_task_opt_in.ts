@@ -15,6 +15,10 @@
  */
 
 import type { CadencePolicy } from "./idle_task_cadence.ts";
+import {
+  isFleetAuthor,
+  resolveSuppressionExcludedLogins,
+} from "./fleet_authors.ts";
 
 /** Registered templates that never run as automatic idle work unless the owner asked for them. */
 export const OPT_IN_IDLE_TASK_TEMPLATES: ReadonlySet<string> = new Set([
@@ -58,6 +62,37 @@ export function authorisedOptInTemplates(
     }
   }
   return authorised;
+}
+
+/**
+ * The opt-in inputs the idle-task route needs, built from the owner config
+ * (Issue #5096). `fleetIdentityLogins` is the fleet-only set the claim gate
+ * tests the wrapper author against: this host's login, `fleet_pr_authors` and
+ * `service_accounts`, via {@link resolveSuppressionExcludedLogins}. It is
+ * deliberately not `allowed_authors`, so an owner in `allowed_authors` who
+ * files a wrapper counts as a request. `issueAuthor` is `""` when unknown.
+ */
+export function idleRouteOptInInput(input: {
+  githubUser: string;
+  issueAuthor: string | null | undefined;
+  config: IdleTaskOptInConfig & {
+    fleetPrAuthors?: readonly string[];
+    serviceAccounts?: readonly string[];
+  };
+}): {
+  issueAuthor: string;
+  authorisedOptInTemplates: ReadonlySet<string>;
+  fleetIdentityLogins: string[];
+} {
+  return {
+    issueAuthor: input.issueAuthor ?? "",
+    authorisedOptInTemplates: authorisedOptInTemplates(input.config),
+    fleetIdentityLogins: resolveSuppressionExcludedLogins({
+      githubUser: input.githubUser,
+      fleetPrAuthors: input.config.fleetPrAuthors,
+      serviceAccounts: input.config.serviceAccounts,
+    }),
+  };
 }
 
 /** True when the template is not opt-in, or the owner config authorises it. */
@@ -124,17 +159,22 @@ function refuse(template: string, detail: string): OptInClaimDecision {
  *   2. the owner config authorises it → allowed (`configured`);
  *   3. the author is unknown (empty after trimming) → refused; an unknown
  *      author is not a request (fail closed);
- *   4. the author is not a fleet author (case-insensitive) → allowed
+ *   4. the author is not a fleet identity login (case-insensitive) → allowed
  *      (`owner_filed`: a human filed or requested it);
- *   5. a fleet author with the requested marker as the final body line →
- *      allowed (`requested`);
+ *   5. a fleet identity login with the requested marker as the final body
+ *      line → allowed (`requested`);
  *   6. otherwise refused.
  */
 export function decideOptInClaim(input: {
   template: string;
   issueAuthor: string;
   issueBody: string;
-  fleetAuthors: readonly string[];
+  /**
+   * Fleet accounts only: this host's login, `fleet_pr_authors` and
+   * `service_accounts`; never `allowed_authors`, which lists the human owners
+   * whose own issues are explicit requests.
+   */
+  fleetIdentityLogins: readonly string[];
   authorised: ReadonlySet<string>;
 }): OptInClaimDecision {
   const { template } = input;
@@ -156,12 +196,10 @@ export function decideOptInClaim(input: {
     );
   }
 
-  const authorKey = author.toLowerCase();
-  const fleet = Array.isArray(input.fleetAuthors) ? input.fleetAuthors : [];
-  const isFleetAuthor = fleet.some((a) =>
-    typeof a === "string" && a.trim().toLowerCase() === authorKey
-  );
-  if (!isFleetAuthor) {
+  const fleet = Array.isArray(input.fleetIdentityLogins)
+    ? input.fleetIdentityLogins
+    : [];
+  if (!isFleetAuthor(author, [...fleet])) {
     return { allowed: true, basis: "owner_filed" };
   }
 
