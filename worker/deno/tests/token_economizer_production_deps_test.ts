@@ -222,6 +222,9 @@ for (const expectedSkip of [false, true]) {
         title,
         body,
         "test-user",
+        // The mocked read below carries no `updatedAt`, so the baseline
+        // records no revision (Issue #5018).
+        null,
       );
       assertEquals(snapshot.ok, true);
       const worker = createMockDeps({
