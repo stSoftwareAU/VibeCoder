@@ -9,6 +9,7 @@
 import {
   assert,
   assertEquals,
+  assertNotEquals,
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
@@ -28,6 +29,7 @@ import {
   syncPrBodyFromSummary,
   type SyncPrBodyInput,
 } from "../lib/pr_body_sync.ts";
+import { loadPrSummary } from "../lib/pr_summary_loader.ts";
 import { buildIdempotencyMarker } from "../lib/pr_body.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
@@ -270,6 +272,52 @@ Deno.test("reconcile - second pass with a memo hit makes no contents call", asyn
   );
   assertEquals(second, { checked: 0, rebuilt: 0, readFailures: 0 });
   assertEquals(h.logs, []);
+});
+
+Deno.test("reconcile - a summary with a literal version-bump line matches its recorded digest: no checkout on either pass (Issue #5057)", async () => {
+  const SUMMARY_WITH_BUMP =
+    "## Summary\n\nFixed the thing. Closes #42.\n\n## Test Plan\n\n- Version bump: `VERSION` 1.2.3 → 1.2.4\n- Ran the tests.\n";
+  const tmp = await Deno.makeTempDir();
+  let recorded: string;
+  try {
+    await Deno.mkdir(`${tmp}/docs/archive/pr-summaries`, { recursive: true });
+    await Deno.writeTextFile(`${tmp}/${ARCHIVE_PATH}`, SUMMARY_WITH_BUMP);
+    const loaded = await loadPrSummary(tmp, ISSUE_NUMBER);
+    assert(loaded.ok, "loadPrSummary must succeed");
+    assert(
+      loaded.value.content !== SUMMARY_WITH_BUMP,
+      "normalisation must change this summary, or the test proves nothing",
+    );
+    recorded = await prSummaryDigest(loaded.value.content);
+    assertNotEquals(recorded, await prSummaryDigest(SUMMARY_WITH_BUMP));
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+
+  const body = await bodyRecording(SUMMARY_WITH_BUMP, recorded);
+  const h = harness({
+    prs: [prEntry(body)],
+    files: { [ARCHIVE_PATH]: SUMMARY_WITH_BUMP },
+  });
+  const inSync = new Map<string, string>();
+  let prepared = 0;
+  const deps = () =>
+    passDeps(h, inSync, {
+      prepareCheckout: async (repo, sha) => {
+        prepared += 1;
+        return REFUSE_PREPARE(repo, sha);
+      },
+    });
+
+  const first = await reconcilePrBodyDigests(OPTS, deps());
+  const second = await reconcilePrBodyDigests(OPTS, deps());
+
+  assertEquals(first, { checked: 1, rebuilt: 0, readFailures: 0 });
+  assertEquals(second, { checked: 0, rebuilt: 0, readFailures: 0 });
+  assertEquals(prepared, 0);
+  assertEquals(h.logs, []);
+  assertEquals(inSync.get(`${REPO}#${PR_NUMBER}`), `${HEAD_SHA}:${recorded}`);
+  assertEquals(apiCalls(h).length, 1);
 });
 
 // --- Mismatch --------------------------------------------------------------
