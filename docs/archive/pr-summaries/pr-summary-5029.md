@@ -18,8 +18,8 @@ Graft tallies.
 - `withLifecycleInvocation` takes provider, served model and tokens from it, and
   records the refused invocation as a `failure`.
 
-Preservation, the `interrupted` release, the bounded retry and claim release
-are unchanged.
+Preservation, the `interrupted` release, the bounded retry and claim release are
+unchanged.
 
 Closes #5029.
 
@@ -72,11 +72,12 @@ flowchart LR
 ```
 
 - Callers checked:
-  - `billedResultOfError` has two callers: `worker/deno/lib/phases/execute_phase.ts`
-    and `worker/deno/lib/lifecycle_recording.ts`.
-  - `withLifecycleInvocation` has one production caller,
-    `runClaudeWithTimeout`, which every phase's single spawn goes through. The
-    ledger fix therefore applies to a refused split run in any phase.
+  - `billedResultOfError` has two callers:
+    `worker/deno/lib/phases/execute_phase.ts` and
+    `worker/deno/lib/lifecycle_recording.ts`.
+  - `withLifecycleInvocation` has one production caller, `runClaudeWithTimeout`,
+    which every phase's single spawn goes through. The ledger fix therefore
+    applies to a refused split run in any phase.
   - For callers that were never refused, the ledger event is unchanged.
 - Docs: `docs/INTERNALS.md` § Lifecycle ledger and issue assignment gains a
   "Refused and capped invocations (Issue #5029)" paragraph.
@@ -86,8 +87,8 @@ flowchart LR
     accounting, and is still true.
   - The doc comments above `withLifecycleInvocation` and above the success-path
     `recordClaudeRunStats` call are updated.
-- `docs/audits/lib-sweep-coverage/top-up-5029.json` registers the new module,
-  as `worker/deno/tests/lib_sweep_coverage_test.ts` requires.
+- `docs/audits/lib-sweep-coverage/top-up-5029.json` registers the new module, as
+  `worker/deno/tests/lib_sweep_coverage_test.ts` requires.
 - Issue numbers cited: #5029 (this issue).
 
 ## Test Plan
@@ -104,13 +105,13 @@ flowchart LR
   - a credential switch then a refusal records the exhausted invocation and the
     refused one once each.
   - a normal success records exactly one entry.
-  - a refused invocation's Graft calls and its retry's each reach the tally
-    once (3 + 4 = 7). The fake collector returns a fresh object per call, as
+  - a refused invocation's Graft calls and its retry's each reach the tally once
+    (3 + 4 = 7). The fake collector returns a fresh object per call, as
     production does.
 - Added `worker/deno/tests/lifecycle_billed_failure_5029_test.ts`:
   - an unfinished split refusal through the real runner (an agent stub with a
-    pending executor dispatch) records provider `claude`, the served model,
-    the token buckets and `failure`.
+    pending executor dispatch) records provider `claude`, the served model, the
+    token buckets and `failure`.
   - a turn cap through `runClaudeWithRetry` keeps exactly one ledger entry.
   - a refusal with no usage records its provider and `usage: unknown`.
   - a plain error records provider `unknown`.
@@ -121,27 +122,26 @@ flowchart LR
     tests failed; the plain-error and success controls passed.
   - Graft test again, with only `graft.record(billed.runStats)` removed: failed
     with `undefined` against the expected 7.
-  - Lifecycle file, before the `lifecycle_recording.ts` change: the
-    real-runner refusal test and the no-usage refusal test failed with provider
-    `unknown`. The turn-cap, plain-error and helper tests passed, as expected.
+  - Lifecycle file, before the `lifecycle_recording.ts` change: the real-runner
+    refusal test and the no-usage refusal test failed with provider `unknown`.
+    The turn-cap, plain-error and helper tests passed, as expected.
 - No existing test was edited.
 - Targeted runs at head:
   - Both new files, plus `execute_phase_unfinished_executor_5048_test.ts`,
     `execute_phase_turn_limit_4949_test.ts`,
     `graft_context_wiring_2102_test.ts`, `execute_phase_codegraph_2159_test.ts`,
-    `lifecycle_invocation_3719_test.ts` and
-    `issue_executor_enforcement_test.ts` (all under `worker/deno/tests/`):
-    passed.
+    `lifecycle_invocation_3719_test.ts` and `issue_executor_enforcement_test.ts`
+    (all under `worker/deno/tests/`): passed.
 - Full `./quality.sh` on the final code commit: PASSED with skipped checks. The
   skipped checks were config integration (no `.config.json`) and checkov (not
   installed on this host; CI runs it). The first run failed only because the new
   module was missing from the sweep ledger. The top-up slice fixed it.
-- Resumed run: the previous attempt stopped at the worker's pre-push gate,
-  which runs the full unit suite and reported `error: Test failed` without
-  naming the test. On this head, the full suite (`deno task test:unit`) passed:
-  parallel pass 34722 passed, 0 failed; serial pass 885 passed, 0 failed.
-  `./quality.sh` passed again, with config integration and checkov skipped as
-  before. That failure was not reproduced here.
+- Resumed run: the previous attempt stopped at the worker's pre-push gate, which
+  runs the full unit suite and reported `error: Test failed` without naming the
+  test. On this head, the full suite (`deno task test:unit`) passed: parallel
+  pass 34722 passed, 0 failed; serial pass 885 passed, 0 failed. `./quality.sh`
+  passed again, with config integration and checkov skipped as before. That
+  failure was not reproduced here.
 
 Not checked: the test that failed the earlier pre-push gate could not be
 identified from its truncated output, and it did not fail on this host.
