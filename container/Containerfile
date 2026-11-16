@@ -211,12 +211,11 @@ ENV POWERSHELL_UPDATECHECK="Off" \
 # file. v0.49.0 read no such variable (it throttled the warning by a stamp
 # file under its data dir); the 1.0.1 binary does reference it. Image-wide,
 # as DO_NOT_TRACK below is, and set before the install so the fragment's own
-# version probe is quiet too.
+# version probe is quiet too. EMULATOR_TELEMETRY=off does the same for the AWS
+# Emulator (Issue #5109).
 ENV RTK_TELEMETRY_DISABLED="1" \
-    RTK_SUPPRESS_HOOK_WARNING="1"
-
-# The AWS Emulator sends no telemetry from an unattended container (Issue #5109).
-ENV EMULATOR_TELEMETRY="off"
+    RTK_SUPPRESS_HOOK_WARNING="1" \
+    EMULATOR_TELEMETRY="off"
 
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
@@ -471,7 +470,7 @@ RUN set -eu; \
 # TLS-verified, SigV4-authenticated S3 write-read-delete against the pinned
 # emulator with generated credentials and telemetry off; failure fails the build.
 COPY aws-emulator-run.sh /usr/local/bin/aws-emulator-run
-RUN runuser -u agent -- /usr/local/bin/aws-emulator-run --smoke
+RUN runuser -u agent -- aws-emulator-run --smoke
 
 # Pre-warmed Deno cache (Issue #4392): the pinned @playwright/mcp (its own
 # playwright-core included) and the worker's JSR deps, resolved against the

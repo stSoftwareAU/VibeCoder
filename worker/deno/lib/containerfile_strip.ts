@@ -30,8 +30,15 @@
  * closed" on every launch, while a single-provider host, which passes no build
  * argument, still built. 14,600 bytes escapes to about 15,400, leaving room
  * for the widest provider list.
+ *
+ * Raised from 14,600 to 14,750 by Issue #5109: its aws-cli and aws-emulator
+ * toolchains and agent-account smoke added about 158 stripped bytes to a file
+ * already within 70 bytes of the old cap. At 14,688 stripped bytes the file
+ * escapes to 15,504 characters, so 14,750 bytes escapes to about 15,570, still
+ * about 250 characters under the failing request size, which leaves room for a
+ * multi-provider `AGENT_PROVIDERS` list.
  */
-export const CONTAINERFILE_SIZE_CAP_BYTES = 14_600;
+export const CONTAINERFILE_SIZE_CAP_BYTES = 14_750;
 
 /** File name of the stripped copy the launch plan builds from. */
 export const STRIPPED_CONTAINERFILE_SUFFIX = ".Containerfile";

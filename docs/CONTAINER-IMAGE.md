@@ -682,7 +682,7 @@ Container Build does the same through `mod.ts strip-containerfile`. The
 strip removes comment lines and blank lines only — the Dockerfile parser
 discards both itself, continuations included, so the build is byte-for-byte
 the same recipe — and keeps `# syntax=`/`# escape=` directives at the top.
-`tests/containerfile_strip_test.ts` caps the *stripped* text at 14,600 bytes;
+`tests/containerfile_strip_test.ts` caps the *stripped* text at 14,750 bytes;
 the readable file may grow.
 
 The real limit is lower than 16,384 bytes. The CLI sends the file
