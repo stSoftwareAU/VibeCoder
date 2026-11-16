@@ -77,11 +77,15 @@ flowchart TD
   unassigns a claim after 10 minutes of heartbeat silence, so a stalled run and
   a second host both work the issue (follow-up to #4839, seen on a private
   fleet issue)".
-- No manual under `docs/` describes the closed-PR stale-previous-attempt
-  branch. A search for `stale previous attempt`, `predates the current`,
-  `detectAssignedWithClosedPr`, `#4839` and `#563` outside `docs/archive/` and
-  `docs/audits/` found nothing. The doc comments above are the only
-  descriptions, and both are updated.
+- Docs updated: the `ASSIGNED_NO_HEARTBEAT_TIMEOUT` row in
+  `docs/CONFIGURATION.md` now says the closed-PR recovery pass waits the same
+  time before releasing a re-claim whose earlier PR merged. No other manual
+  describes the stale-previous-attempt branch: a search for
+  `stale previous attempt`, `predates the current`,
+  `detectAssignedWithClosedPr` and `LIVE_HEARTBEAT_WINDOW` outside
+  `docs/archive/` and `docs/audits/` found only `docs/INTERNALS.md`'s
+  claim-lock invariants, which name the 1.68 closed-PR pass without a
+  threshold and stay true.
 
 ## Reproduction
 
@@ -133,13 +137,13 @@ flowchart TD
   - `lib/run_core_production_deps.ts` sets it to 1800.
   - `commands/stuck_issue_detector.ts` reads it with the
     `STUCK_ISSUE_DEFAULTS` value (1800) as the fallback.
-- `deno task test:unit tests/claim_lock_integrity_214_test.ts` on the final
-  head: 23 passed, 0 failed. The executor also ran the closed-PR cache,
-  stuck-recovery cache, milestone-guard, stuck-issue-detector and
-  modules-split test files with it: 126 passed, 0 failed.
-- `./quality.sh < /dev/null` on commit `84c74fbf`: `Result: PASSED (with
-  skipped checks)`. Config integration was skipped (`deno or .config.json not
-  available`) and checkov was skipped, both for this environment.
+- After merging `origin/main` (`9260f475`): the 28 test files whose text
+  names `claim_issue`, `stuck_recovery` or this test file, run through
+  `deno task test:unit`, gave 425 passed, 0 failed.
+- Red on base, re-checked on this head: with `lib/stuck_recovery.ts` restored
+  from `origin/main` and the new tests kept,
+  `tests/claim_lock_integrity_214_test.ts` gave 20 passed, 3 failed (the three
+  keep-the-claim tests).
 
 Not done or not checked: the reopen and closed-not-merged branches of
 `detectAssignedWithClosedPr` still release at the 600 s live window, as the
