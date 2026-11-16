@@ -12,8 +12,9 @@
  * which carries neither "not found" nor "404" — so the escape-hatch follow-up
  * label strip read it as a transient error, retried, and raised an ERROR
  * about NEAT-AI-Lamarck#3952, an issue that cannot exist. This module is the
- * single place that recognises all three shapes, shared by the strip and by
- * `escape_hatch_verify.ts`.
+ * single place that recognises all three shapes, shared by the strip, by
+ * `escape_hatch_verify.ts` and by the merged-PR close sweep
+ * (`pr_issue_linking.ts`, Issue #5075).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
