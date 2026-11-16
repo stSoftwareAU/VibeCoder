@@ -190,7 +190,9 @@ async function branchHasCommitsAhead(
  * Exported because it is also the marker `workOnIssueExecuteClaude` reads to
  * skip the in-process infrastructure retry (Issue #1670): the phase has
  * already checkpointed the work and tried the pool's other credential, so a
- * retry would only bill a spawn into the same shut window.
+ * retry would only bill a spawn into the same shut window. The check reads it
+ * at the **start** of a `rate_limit` reason, never anywhere in it, because
+ * other failure reasons quote the agent's own output (Issue #5037).
  */
 export const USAGE_LIMIT_HEADING =
   "Claude usage limit reached (subscription window)";
@@ -394,8 +396,13 @@ export async function workOnIssueExecuteClaude(
   // The phase has already checkpointed the work on the issue branch, written
   // the resume pointer, and — where the pool had one — tried another
   // credential. Retrying in-process would bill a spawn into the same shut
-  // window; the next claim resumes from the branch instead.
-  if (result.reason?.includes(USAGE_LIMIT_HEADING)) {
+  // window; the next claim resumes from the branch instead. Only the
+  // worker-written start of a rate_limit reason matches: killed and
+  // interrupted reasons quote the agent's own output (Issue #5037).
+  if (
+    result.category === "rate_limit" &&
+    result.reason?.startsWith(USAGE_LIMIT_HEADING)
+  ) {
     deps.logger.warn(
       "Not retrying the run in-process: the subscription window is spent " +
         "and the work is parked on the issue branch (Issue #1670)",
