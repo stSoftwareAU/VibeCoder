@@ -1171,6 +1171,11 @@ kept making progress. Reconstruct what happened from three places:
    despite tool activity 31s ago — killing process tree (PID 1234)
    ```
 
+   The line is ERROR for a genuine timeout or watchdog kill, but INFO when the
+   kill is a scheduled release (finish deadline or run hard cap, see
+   [the hard cap](#the-hard-cap-was-what-stopped-it) below), so grep for it at
+   either level.
+
    The clause after the semicolon is the signal that stalled: a silent agent
    (`tool activity stale (last tool call 483s ago, last agent output 400s ago,
    window 300s)`
@@ -1296,6 +1301,13 @@ On the issue side such a run reads as a **scheduled release**, not a timeout
 `scheduled-release` category, no `failed-once` label is applied, and the next
 claim resumes the branch. If you see "Claude ran out of time" instead, the run
 really did exhaust its own `claude_timeout` — that is the case worth re-scoping.
+
+The `worker-*.log` agrees (Issue #5118). The kill line is at INFO, not ERROR,
+and the closing line reads `Issue <repo>#<n> released on schedule at phase
+'<phase>': <reason>` — at INFO when the work reached a pushed branch, at
+WARNING when nothing was kept on a branch. No `failed at phase` ERROR line
+appears for such a run. A kill that is not a scheduled release (the run's own
+budget, a silence watchdog, a call storm) is still logged at ERROR.
 
 Such a comment then states what the progress extension did (Issue #768) —
 `Progress extension: base timeout 3600s, deadline armed at kill 5640s, agent

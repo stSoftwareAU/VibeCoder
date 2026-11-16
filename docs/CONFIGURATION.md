@@ -3153,6 +3153,15 @@ release**, not as the issue defeating the agent:
   The branch named is the one the push targeted, so a retitled issue cannot
   point a reader at a ref nothing wrote, and a run that preserved nothing names
   no branch.
+- The worker log does not call it an error (Issue #5118). The runner's kill line
+  is logged at INFO when the kill is a scheduled release — the extension check
+  refused because the finish deadline or the run hard cap left no runway, or the
+  session's timeout was clamped to the finish deadline; every other kill (the
+  run's own budget, a silence watchdog, a call storm) stays ERROR. The run's
+  closing line reads `Issue <repo>#<n> released on schedule at phase '<phase>':
+  <reason>`, at INFO when the work reached a pushed branch and at WARNING when
+  the run kept nothing on a branch. The claim release still logs outcome
+  `no_pr:scheduled_release:<phase>`.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
