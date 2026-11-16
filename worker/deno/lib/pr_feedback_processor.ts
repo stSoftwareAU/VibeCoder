@@ -910,6 +910,21 @@ interface FeedbackRunCarrier {
 }
 
 /**
+ * Commit message for the feedback processor's automated commits (Issue #1643).
+ * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
+ * bare number links to an unrelated issue (Issue #5045).
+ */
+export function buildFeedbackFinaliseCommitMessage(
+  prNumber: number,
+  attempt: "final-mile" | "push-recovery-retry",
+): string {
+  const tail = attempt === "final-mile"
+    ? "Automated final-mile commit."
+    : "Retry after push recovery.";
+  return `Address PR #${prNumber} feedback\n\n${tail}`;
+}
+
+/**
  * Inner feedback processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
  */
@@ -1865,7 +1880,7 @@ async function _processFeedbackWithHeartbeat(
   const finalise = () =>
     deps.git.commitAndPushPending(
       pushBranch,
-      `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
+      buildFeedbackFinaliseCommitMessage(prNumber, "final-mile"),
       pushOptions,
       false,
       preFlight,
@@ -2033,7 +2048,7 @@ async function _processFeedbackWithHeartbeat(
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
-          `Address PR #${prNumber} feedback\n\nRetry after push recovery (Issue #1643).`,
+          buildFeedbackFinaliseCommitMessage(prNumber, "push-recovery-retry"),
           pushOptions,
           false,
           preFlight,

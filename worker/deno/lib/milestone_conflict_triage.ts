@@ -750,6 +750,12 @@ export const SYNC_UNCHECKED_NOTE = {
  * Every decision is named with its reasoning, because the commit is where
  * whoever reads this branch months later will look — not the run log, which
  * is gone by then.
+ *
+ * The message cites no VibeCoder issue number: it lands on the target repo's
+ * milestone branch, where a bare `#<n>` links to an unrelated issue there
+ * (Issue #5045). Provenance: UNGATED — Issue #4326; CHECK LEFT TO CI — Issue
+ * #4441; TESTS LEFT TO CI — Issue #4422; CARGO SKIPPED — Issues #4326 and
+ * #4786; the test-file rule — Issue #1559.
  */
 export function buildResolutionCommitMessage(o: {
   defaultBranch: string;
@@ -771,18 +777,17 @@ export function buildResolutionCommitMessage(o: {
     `passes the repository's own check, its manifest check and its unit ` +
     `suite, unless the sync's note says ${n.ungated}, ${n.checkLeftToCi}, ` +
     `${n.suiteLeftToCi} or ${n.cargoSkipped}. Each of those means a check ` +
-    `did not run. ${n.ungated} means a cargo-only merge-only sync (Issue ` +
-    `#4326) left the whole build to the milestone PR's CI. ` +
+    `did not run. ${n.ungated} means a cargo-only merge-only sync left the ` +
+    `whole build to the milestone PR's CI. ` +
     `${n.checkLeftToCi} means the host could not reach a Deno project's ` +
-    `module host, so that project's type check was left to that CI (Issue ` +
-    `#4441). ${n.suiteLeftToCi} means a Deno task of the resolution gate was ` +
-    `left to that CI for the same reason (Issue #4422). ${n.cargoSkipped} ` +
+    `module host, so that project's type check was left to that CI. ` +
+    `${n.suiteLeftToCi} means a Deno task of the resolution gate was ` +
+    `left to that CI for the same reason. ${n.cargoSkipped} ` +
     `means the checks that ran passed and cargo did not complete: it was skipped ` +
-    `for the host's budget (Issue #4326) or a cargo check or cargo test timed out or ` +
-    `could not reach the crate registry (Issue #4786), and was left to that CI. None of them ` +
+    `for the host's budget or a cargo check or cargo test timed out or ` +
+    `could not reach the crate registry, and was left to that CI. None of them ` +
     `means the check it names passed. No ` +
-    `conflicted test file was resolved by taking a side that drops cases ` +
-    `(Issue #1559).`;
+    `conflicted test file was resolved by taking a side that drops cases.`;
 }
 
 /**

@@ -1444,6 +1444,22 @@ interface CiRunCarrier {
 }
 
 /**
+ * Commit message for the CI processor's automated commits (Issue #1643).
+ * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
+ * bare number links to an unrelated issue (Issue #5045).
+ */
+export function buildCiFixCommitMessage(
+  checkName: string,
+  prNumber: number,
+  attempt: "final-mile" | "push-recovery-retry",
+): string {
+  const tail = attempt === "final-mile"
+    ? "Automated final-mile commit"
+    : "Retry after push recovery";
+  return `Fix CI failure: ${checkName}\n\n${tail} for PR #${prNumber}.`;
+}
+
+/**
  * Inner CI fix processing logic, separated to allow heartbeat
  * lifecycle management in the outer function (Issue #1204).
  */
@@ -2249,7 +2265,7 @@ async function _processCiWithHeartbeat(
   };
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
-    `Fix CI failure: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
+    buildCiFixCommitMessage(checkName, prNumber, "final-mile"),
     pushOptions,
     false,
     preFlight,
@@ -2302,7 +2318,7 @@ async function _processCiWithHeartbeat(
       if (recoveryResult.ok) {
         const retryFinalise = await deps.git.commitAndPushPending(
           pushBranch,
-          `Fix CI failure: ${checkName}\n\nRetry after push recovery for PR #${prNumber} (Issue #1643).`,
+          buildCiFixCommitMessage(checkName, prNumber, "push-recovery-retry"),
           pushOptions,
           false,
           preFlight,

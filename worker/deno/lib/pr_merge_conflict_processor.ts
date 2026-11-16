@@ -1542,6 +1542,18 @@ async function freshAttemptUnderLock(
 }
 
 /**
+ * Commit message for the merge that resolves a PR's conflict (Issue #84).
+ * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
+ * bare number links to an unrelated issue (Issue #5045).
+ */
+export function buildConflictMergeCommitMessage(
+  baseBranch: string,
+  branchName: string,
+): string {
+  return `Merge ${baseBranch} into ${branchName}\n\nResolved the PR's merge conflict without side-picking.`;
+}
+
+/**
  * Merge the base into the PR branch, check the result, and push it (Issues
  * #84, #4616).
  *
@@ -2079,7 +2091,7 @@ async function resolveConflict(
   timer.start("push");
   const finalise = await deps.git.commitAndPushPending(
     branchName,
-    `Merge ${baseBranch} into ${branchName} (Issue #84)\n\nResolved the PR's merge conflict without side-picking.`,
+    buildConflictMergeCommitMessage(baseBranch, branchName),
     // The merged tree contains the base, so a CI cargo failure or a failing
     // unit test the base already has is no verdict on this repair (Issue #4630
     // review, PR #5034 review).
