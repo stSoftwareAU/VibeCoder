@@ -116,7 +116,7 @@ async function retryDescribedCodeChange(
     await deps.github.createClient(logger).postComment(
       ctx.repo,
       ctx.issueNumber,
-      `## Retry: make the code change\n\nThe last run described a change to ${fileList} but committed nothing, so this is a failed implementation, not an analysis-only answer. The next attempt must edit and commit the files rather than describe the change.`,
+      `## Retry: make the code change\n\nThe last run described a change to ${fileList} but committed no change to them, so this is a failed implementation, not an analysis-only answer. The next attempt must edit and commit the files rather than describe the change.`,
     );
   } catch (err) {
     logger.warn("Failed to post the retry nudge", {

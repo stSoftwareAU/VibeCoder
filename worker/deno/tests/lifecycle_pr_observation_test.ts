@@ -823,6 +823,7 @@ Deno.test("CI maintenance never revives a closed PR from a cached OPEN listing",
     const cache = new IssueCache(`${dir}/cache`);
     await cache.write("org/repo", "prs_maint_bot", [{
       number: 10,
+      labels: [], // the current listing shape carries labels, Issue #5047
       ...snapshot,
     }]);
     const path = lifecycleLedgerPath(dir);
