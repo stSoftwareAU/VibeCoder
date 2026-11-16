@@ -1415,7 +1415,6 @@ export async function createProductionRunCoreDeps(
       ghCommandFn: options.idleDetectGhCommandFn ?? runGhCommandRaw,
       cache: createFleetDiagnosticCache(),
       warn: (message: string) => logger.warn(message),
-      error: (message: string) => logger.error(message),
     },
   };
 
