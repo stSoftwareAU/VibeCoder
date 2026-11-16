@@ -88,4 +88,6 @@ flowchart LR
   failed. `deno fmt --check`, `deno lint` and `deno check` on the two changed
   TypeScript files are clean.
 - No existing test was edited, and no assertion was removed.
-- Full `./quality.sh`: see the result below.
+- Full `./quality.sh` on 41b5cc84 (the code, test and docs commit): passed with
+  skipped checks. Config integration was skipped (no `.config.json`), and
+  checkov is not installed here.
