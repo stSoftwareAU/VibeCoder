@@ -382,7 +382,55 @@ export async function readRequiredChecksFailed(
 /** GitHub is still recomputing the test merge; a later read may succeed. */
 const TEST_MERGE_PENDING = "PR test merge is still being computed";
 
-/** Confirm GitHub's test merge belongs to the same PR head and current base. */
+/** The test merge is not built on this PR head and a current base commit. */
+const TEST_MERGE_STALE = "PR test merge parents do not match its head and base";
+
+/** The `sha` of a git object entry, or undefined when it is not an object. */
+function shaOf(entry: unknown): unknown {
+  return typeof entry === "object" && entry !== null
+    ? (entry as ObjectValue).sha
+    : undefined;
+}
+
+/**
+ * Whether a test merge's base parent is the live base tip or an ancestor of it
+ * (Issue #5115). GitHub's compare `BASE...HEAD` reports `behind` when HEAD is
+ * an ancestor of BASE, so `liveTip...baseParent` answers the question.
+ */
+async function baseParentOnLiveBase(
+  repo: string,
+  base: string,
+  baseParent: string,
+  gh: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  const branch = object(
+    JSON.parse(
+      await gh(["api", `repos/${repo}/branches/${encodeURIComponent(base)}`]),
+    ),
+    "live base branch",
+  );
+  const liveTip = shaOf(branch.commit);
+  if (typeof liveTip !== "string" || !/^[a-f0-9]{40}$/i.test(liveTip)) {
+    throw new Error("live base tip is unreadable");
+  }
+  const compare = object(
+    JSON.parse(
+      await gh(["api", `repos/${repo}/compare/${liveTip}...${baseParent}`]),
+    ),
+    "base compare",
+  );
+  if (typeof compare.status !== "string") {
+    throw new Error("base compare status is unreadable");
+  }
+  return compare.status === "behind" || compare.status === "identical";
+}
+
+/**
+ * Confirm GitHub's test merge belongs to the same PR head and a current base
+ * (Issue #5115). The second parent must be the PR head. The first parent must
+ * be base.sha, or an ancestor of the live base tip: pulls/N base.sha and the
+ * test merge update lazily and independently, so the test merge may lag.
+ */
 async function readTestMerge(
   repo: string,
   prNumber: number,
@@ -419,14 +467,24 @@ async function readTestMerge(
     ),
     "PR test merge commit",
   );
+  const parents = merge.parents;
   if (
-    !Array.isArray(merge.parents) || merge.parents.length !== 2 ||
-    object(merge.parents[0], "first merge parent").sha !== prBase.sha ||
-    object(merge.parents[1], "second merge parent").sha !== head
+    !Array.isArray(parents) || parents.length !== 2 ||
+    shaOf(parents[1]) !== head
   ) {
-    throw new Error("PR test merge parents do not match its head and base");
+    throw new Error(TEST_MERGE_STALE);
   }
-  return { mergeSha: pr.merge_commit_sha, baseSha: prBase.sha };
+  const baseParent = shaOf(parents[0]);
+  if (typeof baseParent !== "string" || !/^[a-f0-9]{40}$/i.test(baseParent)) {
+    throw new Error(TEST_MERGE_STALE);
+  }
+  if (
+    baseParent !== prBase.sha &&
+    !await baseParentOnLiveBase(repo, base, baseParent, gh)
+  ) {
+    throw new Error(TEST_MERGE_STALE);
+  }
+  return { mergeSha: pr.merge_commit_sha, baseSha: baseParent };
 }
 
 /**
@@ -702,8 +760,7 @@ async function requestReadyBranchUpdateInner(
           ...(ownershipSleepFn ? { sleepFn: ownershipSleepFn } : {}),
           shouldRetry: (error) =>
             error.message === TEST_MERGE_PENDING ||
-            error.message ===
-              "PR test merge parents do not match its head and base",
+            error.message === TEST_MERGE_STALE,
         },
       );
     const merge = await readCurrentTestMerge();

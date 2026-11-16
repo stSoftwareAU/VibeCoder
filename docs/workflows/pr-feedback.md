@@ -844,12 +844,21 @@ test PRs against their future head; conflicts remain on the repair path.
   GitHub may temporarily report `UNKNOWN` mergeability or a test-merge commit
   whose parents lag the live head/base. The shared refresh checks re-read those
   states up to three times in the same pass, using the standard retry backoff,
-  while retaining the approval, check, target-SHA and ownership guards. If one
-  of those transient refusals recurs on two consecutive passes, the sweep
-  updates one marked diagnostic comment on the PR and emits a fleet-health
-  error log; it continues trying automatically. Recovery or loss of refresh
-  eligibility clears the streak and marks an existing diagnostic comment
-  recovered.
+  while retaining the approval, check, target-SHA and ownership guards.
+  On a busy base GitHub updates the PR's `base.sha` and its test merge
+  independently, so they often name different commits (Issue #5115). The
+  refresh therefore accepts a test merge whose head parent is the PR head and
+  whose base parent is the PR's `base.sha` or, failing that, an ancestor of
+  (or equal to) the live base-branch tip, which it checks with the compare API
+  (`behind` or `identical`). The required checks on that merge still prove
+  the head is green, and the refresh then merges the current base, which CI
+  checks again before merge. A test merge whose head parent differs, or whose
+  base parent is not on the base's history, is still refused and re-read.
+  If one of those transient refusals recurs on two consecutive passes, the
+  sweep updates one marked diagnostic comment on the PR and emits a
+  fleet-health error log; it continues trying automatically. Recovery or loss
+  of refresh eligibility clears the streak and marks an existing diagnostic
+  comment recovered.
 - **Removed from a merge queue** (Issue #4424) — a PR the queue removed at its
   current head is not armed until a new head arrives, and a queued base is
   never merged directly (`merge-queue-removed`,

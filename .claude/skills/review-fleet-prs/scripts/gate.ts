@@ -68,6 +68,7 @@ import {
   writeMemory,
 } from "./upkeep_memory.ts";
 import {
+  earlierApprovedHead,
   type FableReview,
   type Finding,
   heldPolicyAt,
@@ -189,6 +190,10 @@ export interface ReadyPr {
   // Findings of this PR's last review when it was sent back: the re-review
   // checks each one was fixed.
   previousFindings: Finding[];
+  // The head an earlier review approved when that was the PR's latest review
+  // and the head has moved since; the brief then reviews what changed since
+  // that commit (Issue #5149). null when there is none.
+  approvedAt: string | null;
   // The repo's review checklists (`review-checklists.json`, read at the base ref and, for a PR that edits it, its head) that
   // apply to this diff, rendered for the brief's {{REVIEW_CHECKLISTS}} field;
   // "" when none applies (Issue #3594).
@@ -1336,6 +1341,7 @@ export async function pass(
         testChanges: { removed: [], edited: [] },
         noTestAdded: false,
         previousFindings: previousFindings(log, repo, pr.number),
+        approvedAt: earlierApprovedHead(log, repo, pr.number, pr.headRefOid),
         // No model review runs for an audit send-back, so no checklist.
         reviewChecklists: "",
         closureEntries: "",
@@ -1498,6 +1504,7 @@ export async function pass(
       testChanges: existingTestChanges(files),
       noTestAdded: noTestAdded(files, kind),
       previousFindings: previousFindings(log, repo, pr.number),
+      approvedAt: earlierApprovedHead(log, repo, pr.number, pr.headRefOid),
       reviewChecklists: mergedChecks.markdown,
       closureEntries: renderClosureEntriesSection(
         metClosureItems(pr.body ?? ""),
