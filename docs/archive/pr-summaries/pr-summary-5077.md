@@ -26,8 +26,8 @@ this category. The attempt is not charged. Closes #5077.
 
 ### Essential Design Decisions
 
-- New category `host_disk`, modelled on `clone_corrupt`: `detectHostFault`
-  maps it to `disk-full`, `classifyRunFailure` gives `disk-full` /
+- New category `host_disk`, modelled on `clone_corrupt`: `detectHostFault` maps
+  it to `disk-full`, `classifyRunFailure` gives `disk-full` /
   `not_code_fixable`, and `isInfrastructureFailure` is `false`, so the run is
   not retried in-process (a retry would meet the same floor). The `disk-full`
   class is transient, so `planCodingFailure` applies no ladder and no cooldown
@@ -63,8 +63,8 @@ flowchart LR
 ```
 
 - `worker/deno/lib/heavy_build_gate.ts`: `HostDiskParkError`.
-- `worker/deno/lib/claude_runner.ts`: both park returns use the typed error;
-  the mid-run park line is `warn`.
+- `worker/deno/lib/claude_runner.ts`: both park returns use the typed error; the
+  mid-run park line is `warn`.
 - `worker/deno/lib/phases/execute_phase.ts`: `releaseInterrupted` takes the
   category and cause; new `HostDiskParkError` branch.
 - `worker/deno/lib/issue_run_failure_log.ts` (new): `logIssueRunFailure`,
@@ -72,8 +72,8 @@ flowchart LR
 - `worker/deno/lib/failure_diagnosis.ts`, `host_fault.ts`,
   `run_outcome_classifier.ts`, `label_failure.ts`, `wip_checkpoint.ts`: the
   `host_disk` category and `host-disk-park` WIP cause.
-- `docs/audits/lib-sweep-coverage/top-up-5077.json`: claims the new module
-  for the lib sweep ledger, so `lib_sweep_coverage_test.ts` passes.
+- `docs/audits/lib-sweep-coverage/top-up-5077.json`: claims the new module for
+  the lib sweep ledger, so `lib_sweep_coverage_test.ts` passes.
 - Docs: `docs/CONTAINER.md` ("In-flight builds stop at the same floor") and
   `docs/TROUBLESHOOTING.md` (the `Parked as infrastructure` paragraph).
 - Issue numbers this diff cites: #5077 (A host-disk park mid-execute is still
@@ -108,10 +108,12 @@ flowchart LR
 - `worker/deno/tests/failure_comment_no_vibecoder_numbers_4585_test.ts`: adds
   `host_disk: true` to its `Record<FailureCategory, true>` table.
 - Red before the change: the edited 4390 assertion failed against the unchanged
-  runner (`errors` held the `host disk below its floor … Parked as
-  infrastructure (Issue #4360).` ERROR line). The new composition test does not
-  compile against the base branch (it imports `HostDiskParkError` and
-  `logIssueRunFailure`), so no base-branch red was observed for it.
+  runner (`errors` held the
+  `host disk below its floor … Parked as
+  infrastructure (Issue #4360).` ERROR
+  line). The new composition test does not compile against the base branch (it
+  imports `HostDiskParkError` and `logIssueRunFailure`), so no base-branch red
+  was observed for it.
 - `./quality.sh < /dev/null` on the head: PASSED. This host skipped config
   integration and checkov. The first run failed only because the new module was
   in no lib sweep slice; `top-up-5077.json` fixed that.
