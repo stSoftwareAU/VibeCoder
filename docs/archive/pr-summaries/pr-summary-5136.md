@@ -121,24 +121,35 @@ flowchart TD
 - Edited test: `planChangedFileChecks: a CI +toolchain is kept as the cargo
   toolchain`. The expected `cargo` object now also holds
   `plainCommand: "cargo clippy -- -D warnings"`. No assertion was removed.
-- Results on the final head (run from `worker/deno` with `deno task test:unit`):
-  - `ci_cargo_checks_test.ts`, `pre_push_gate_test.ts`,
-    `pr_ci_processor_test.ts`, `milestone_merge_gate_cause_test.ts` and
-    `milestone_merge_gate_verdict_test.ts`: 319 passed, 0 failed.
-  - The gate's callers, `pre_push_hook_test.ts`, `babysitter_tree_gate_test.ts`,
-    `git_push_preflight_test.ts` and `merge_fast_checks_test.ts`: 149 passed,
+- Results on the final head (after merging `origin/main`; run from
+  `worker/deno` with `deno task test:unit`):
+  - `ci_cargo_checks_test.ts` and `pre_push_gate_test.ts`: 227 passed,
     0 failed.
-  - `deno check`, `deno lint` and `deno fmt --check` on the changed source and
-    test files: clean.
-- `./quality.sh < /dev/null`: stopped by my 900 s `timeout` (exit 124) before it
-  finished. Every stage it reported first passed: completeness, mermaid,
-  markdownlint, semgrep, gitleaks and release-tag ruleset. Config integration
-  and checkov were skipped in this environment.
-  <!-- vibe-quality-gate-skipped reason="the full gate overran the 900 s bound in this run; every reported stage passed, and the worker re-runs the gate before the PR" -->
+  - Every other test file that imports `ci_cargo_checks.ts` or
+    `pre_push_gate.ts` (`completion_phase_pre_push_gate_3689_test.ts`,
+    `babysitter_tree_gate_test.ts`, `git_push_preflight_test.ts`,
+    `pr_ci_processor_test.ts`, `pr_feedback_review_dismissal_3383_test.ts`,
+    `pre_push_gate_cli_test.ts`, `shellcheck_gate_integration_test.ts`,
+    `ci_mutation_contract_helpers_test.ts`, `pre_push_gate_cargo_deny_test.ts`,
+    `ci_cargo_checks_list_operator_5074_test.ts`, `deno_test_baseline_test.ts`,
+    `shellcheck_delegation_5046_test.ts`): 296 passed, 0 failed.
+  - The doc tests that read `docs/CONFIGURATION.md`
+    (`config_docs_consistency_test.ts`, `doc_prose_claims_test.ts`,
+    `markdown_anchors_test.ts` and five more): 62 passed, 0 failed.
+  - The full unit suite (`deno task test:unit` with no file list): 34920 and
+    885 passed across its two passes, 0 failed. Its only time-budget lines are
+    NOT ENFORCED lines for files this diff does not touch.
+  - `deno fmt --check` and `deno lint` on the changed source and test files:
+    clean.
+- `./quality.sh < /dev/null`: not yet run on this head when this summary was
+  committed.
+  <!-- vibe-quality-gate-skipped reason="the branch was pushed before the full gate so the pre-push unit run could finish inside the run budget; the worker re-runs the gate before the PR" -->
 
-Not done or not checked: the full unit suite did not finish in this run, as
-above. No test asserts the text of the new `[PRE_PUSH_WARNING]` line. The
-`compareRef` base comparison is not driven through the no-rustup path by a
-test, but it receives the same rewritten check object as the head run.
+Not done or not checked: the previous attempt's pre-push refusal
+(`deno task test:unit (1974 files)` exited 1) was not reproduced; its log is
+not on this host, and the full suite passes here. No test asserts the text of
+the new `[PRE_PUSH_WARNING]` line. The `compareRef` base comparison is not
+driven through the no-rustup path by a test, but it receives the same
+rewritten check object as the head run.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
