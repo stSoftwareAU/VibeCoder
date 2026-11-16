@@ -5732,7 +5732,7 @@ Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, re
 Deno.test("runPrePushGate: a 400-file test:unit block still names the failing tests after the head/tail cut (Issue #5113)", async () => {
   const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
     await editFoo(c);
-    for (let i = 0; i < 400; i++) {
+    for (let i = 0; i < 399; i++) {
       await Deno.writeTextFile(
         `${c}/worker/deno/tests/f${i}_test.ts`,
         "export {};\n",
@@ -5762,7 +5762,8 @@ Deno.test("runPrePushGate: a 400-file test:unit block still names the failing te
         (_, i) => `runner trailing line ${i}-xxxxx`,
       ),
     ].join("\n");
-    // The head fails; the fork passes, so the baseline yields a block verdict.
+    // foo_test.ts plus 399 new files make 400. The head fails; the fork
+    // passes, so the baseline yields a block verdict.
     const { result } = await gateWithUnitRunner(
       clone,
       stdin,
@@ -5770,7 +5771,7 @@ Deno.test("runPrePushGate: a 400-file test:unit block still names the failing te
     );
     assert(!result.ok);
     assertInstanceOf(result.error, PreFlightGateError);
-    assertEquals(result.error.command.includes("tests/f399_test.ts"), true);
+    assertEquals(result.error.command.includes("tests/f398_test.ts"), true);
     const cut = redactedHeadTail(
       result.error.message,
       PRE_PUSH_GATE_REASON_HEAD_CHARS,

@@ -6137,10 +6137,12 @@ and last 2,000 characters: the head holds the `[PRE_PUSH_BLOCKED] ... command`
 line that names the failing check, the tail the end of its output, and GitHub
 refuses a comment body over 65,536 characters (a refusal `markIssueAsFailedOnce`
 swallows). A command over 200 characters is named by the tokens before its
-first file argument plus a file count (`deno task test:unit (412 files)`),
-not quoted whole, and the `deno test` check lists its failed tests (name and
-`./tests/<file>:<line>:<col>`, at most 20) between that line and Deno's output,
-so the head names each failing test (Issue #5113). Second, only a verdict on the branch's content carries the marker, a
+first file argument plus a file count (`deno task test:unit (412 files)`), not
+quoted whole. The `deno test` check lists its failed tests (name and
+`./<file>:<line>:<col>`, plus `(uncaught error)` module lines, at most 20)
+between that line and Deno's output, so the head names each failing test
+(Issue #5113). Second, only a verdict on the branch's content carries the
+marker, a
 `PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan, an
 unsafe base ref, or any other non-infrastructure error from `runPrePushGate`
 (such as malformed hook input), which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
