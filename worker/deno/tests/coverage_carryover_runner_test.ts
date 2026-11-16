@@ -91,6 +91,12 @@ interface FakeOptions {
   head?: Record<string, string>;
   baseLcov?: string;
   headLcov?: string;
+  /**
+   * Head coverage by selected test file: a head `deno test` run writes the LCOV
+   * of the test files it was given (none for a file not listed), so the head
+   * coverage depends on which tests the runner chose.
+   */
+  headLcovByTest?: Record<string, string>;
   /** Milliseconds the clock advances per process call. */
   tickMs?: number;
   /** Return a result to replace the default for a call; undefined keeps it. */
@@ -130,6 +136,7 @@ function fake(opts: FakeOptions = {}): Fake {
   const calls: Call[] = [];
   const removed: string[] = [];
   const clock = { t: 0 };
+  const headLcovByDir = new Map<string, string>();
 
   const defaultResult = (cmd: string, args: string[]): ProcessResult => {
     if (cmd === "git") {
@@ -142,11 +149,24 @@ function fake(opts: FakeOptions = {}): Fake {
       }
       return ok();
     }
+    if (cmd === "deno" && args[0] === "test" && opts.headLcovByTest) {
+      const dir = (args.find((a) => a.startsWith("--coverage=")) ?? "").slice(
+        "--coverage=".length,
+      );
+      if (dir.includes("cov-head")) {
+        headLcovByDir.set(
+          dir,
+          args.filter((a) => !a.startsWith("-") && a !== "test")
+            .map((t) => opts.headLcovByTest?.[t] ?? "").join(""),
+        );
+      }
+    }
     if (cmd === "deno" && args[0] === "coverage") {
       const dir = args[2] ?? "";
+      if (dir.includes("cov-base")) return ok(opts.baseLcov ?? "");
       return ok(
-        dir.includes("cov-base")
-          ? (opts.baseLcov ?? "")
+        opts.headLcovByTest
+          ? (headLcovByDir.get(dir) ?? "")
           : (opts.headLcov ?? ""),
       );
     }
@@ -637,6 +657,151 @@ Deno.test("runCoverageCarryOverCheck - a carried line still covered at head is n
       "",
     ]
       .join("\n"),
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 3,
+    uncovered: [],
+  });
+});
+
+const HEAD_LCOV_ALL_REACHED = [
+  `SF:${REPO}/lib/m.ts`,
+  "DA:3,1",
+  "DA:4,1",
+  "DA:6,1",
+  "end_of_record",
+  "",
+].join("\n");
+
+const ALIAS_TEST =
+  'import { pick } from "@lib/m.ts";\nDeno.test("alias", () => pick(true));\n';
+const UNRELATED_TEST = 'Deno.test("unrelated", () => {});\n';
+
+Deno.test("runCoverageCarryOverCheck - a head test importing the carried module through a deno.json imports alias covers the carried line (Issue #5107)", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: {
+      "deno.json": '{"imports":{"@lib/":"./lib/"}}',
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/alias_test.ts": ALIAS_TEST,
+      "tests/unrelated_test.ts": UNRELATED_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    headLcovByTest: { "tests/alias_test.ts": HEAD_LCOV_ALL_REACHED },
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 3,
+    uncovered: [],
+  });
+});
+
+Deno.test("runCoverageCarryOverCheck - a head test that does not import the carried module through its alias leaves the carried lines uncovered (Issue #5107)", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: {
+      "deno.json": '{"imports":{"@lib/":"./lib/"}}',
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/other_alias_test.ts":
+        'import { x } from "@other/x.ts";\nDeno.test("o", () => x());\n',
+      "tests/unrelated_test.ts": UNRELATED_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    // Running either test would reach the lines, so only a wrongly chosen
+    // importer clears them.
+    headLcovByTest: {
+      "tests/other_alias_test.ts": HEAD_LCOV_ALL_REACHED,
+      "tests/unrelated_test.ts": HEAD_LCOV_ALL_REACHED,
+    },
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 3,
+    uncovered: [
+      { file: "lib/m.ts", line: 3 },
+      { file: "lib/m.ts", line: 4 },
+      { file: "lib/m.ts", line: 6 },
+    ],
+  });
+});
+
+Deno.test("runCoverageCarryOverCheck - a head test importing the carried module through a deno.jsonc imports alias covers the carried line (Issue #5107)", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: {
+      "deno.jsonc":
+        '// aliases for the library\n{"imports":{"@lib/":"./lib/"}}',
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/alias_test.ts": ALIAS_TEST,
+      "tests/unrelated_test.ts": UNRELATED_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    headLcovByTest: { "tests/alias_test.ts": HEAD_LCOV_ALL_REACHED },
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 3,
+    uncovered: [],
+  });
+});
+
+Deno.test("runCoverageCarryOverCheck - a malformed head deno.json is an error naming the file (Issue #5107)", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: {
+      "deno.json": '{"imports": 5}',
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/other_test.ts": OTHER_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    headLcov: HEAD_LCOV_ALL_REACHED,
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "error",
+    reason:
+      "cannot read the head Deno project config: deno.json: imports must be an object",
+  });
+});
+
+Deno.test("runCoverageCarryOverCheck - a lock-only head project has the empty config, so relative importers still count (Issue #5107)", async () => {
+  const f = fake({
+    base: {
+      "deno.lock": "{}",
+      "lib/m.ts": LIB_BASE,
+      "tests/m_test.ts": M_TEST_LINES.join("\n") + "\n",
+    },
+    head: {
+      "deno.lock": "{}",
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/other_test.ts": OTHER_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    headLcovByTest: { "tests/other_test.ts": HEAD_LCOV_ALL_REACHED },
   });
   const result = await runCoverageCarryOverCheck(
     input(DELETE_TEST_AND_INSERT_HEADER),

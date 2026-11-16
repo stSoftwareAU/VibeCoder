@@ -73,8 +73,9 @@ flowchart TD
 4. At head, run per Deno project the head versions of the edited tests that
    still exist, with coverage. Carried lines they execute are done.
 5. Only for the files that still have an unexecuted carried line, run per Deno
-   project the head tests that import that file directly (the edited tests are
-   not run again), with coverage. Importers run one carried file at a time, in
+   project the head tests that import that file directly, by a relative
+   specifier or through the project's `deno.json` or `deno.jsonc` `imports` map
+   (the edited tests are not run again), with coverage. Importers run one carried file at a time, in
    its own batch, and what is still unexecuted is recomputed after each batch,
    so a module an earlier batch's importer already reaches (directly, or
    through that importer's own imports) is skipped. When every carried line is
@@ -104,7 +105,7 @@ logs `the diff removes no lines from an existing Deno test file`.
 | Completed, no uncovered  | Every carried line is executed at head, or is exempted                                  | No             |
 | Completed, uncovered     | At least one carried line is not executed at head and is not exempted                   | Yes            |
 | Budget exhausted         | The fixed 600 s budget ran out; a warning, never a pass                                 | No             |
-| Error                    | PR diff not collected (including an unresolvable base ref), or the runner failed: merge-base, worktree, base or head tests failing, or coverage export | Yes (fail closed) |
+| Error                    | PR diff not collected (including an unresolvable base ref), or the runner failed: merge-base, worktree, base or head tests failing, a carried file's head Deno config (`deno.json` or `deno.jsonc`) cannot be read or parsed, or coverage export | Yes (fail closed) |
 
 ## Exemption
 
@@ -129,5 +130,7 @@ The test runs receive the repository's resolved `quality_credentials` (see
 ## Known limits
 
 - Beyond the head versions of the edited tests, the head side counts only tests
-  that import a carried module directly. A line reached only indirectly, through
+  that import a carried module directly, by a relative specifier or an `imports`
+  alias in the project's `deno.json` or `deno.jsonc` (`importMap` files and
+  `scopes` are not read). A line reached only indirectly, through
   another module, is reported uncovered. Exempt it with a reason.

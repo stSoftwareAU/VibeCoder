@@ -5,8 +5,8 @@
  *
  * Retained: {@link MutationRunnerSeams} and {@link defaultMutationRunnerSeams}
  * (the process, filesystem and temporary-directory seams), along with
- * {@link findDenoConfigDir}, {@link findCargoPackageDir}, {@link confinePath}
- * and {@link importsModule}.
+ * {@link findDenoConfigDir}, {@link loadDenoProject},
+ * {@link findCargoPackageDir}, {@link confinePath} and {@link importsModule}.
  *
  * Every child process runs with an allowlisted environment, never the
  * worker's own (see {@link defaultMutationRunnerSeams}). A repository path
@@ -16,8 +16,9 @@
  *
  * Known limit ({@link importsModule}): a Deno module is found through a test
  * only when that test imports it directly, through a relative specifier or a
- * specifier the project's `imports` map resolves to a local path (Issue #4533).
- * `importMap` files and `scopes` are not read.
+ * specifier the project's `imports` map resolves to a local path (Issue #4533);
+ * coverage carry-over resolves aliases this way (Issue #5107). `importMap`
+ * files and `scopes` are not read.
  *
  * Australian English spelling used throughout.
  */
@@ -116,6 +117,28 @@ export interface DenoProject {
   config: DenoProjectConfig;
 }
 
+/**
+ * The Deno project in repo-relative `configDir` (`""` = root): its `deno.json`,
+ * else `deno.jsonc`, else the empty config (a lock-only project). Throws when
+ * the file is invalid.
+ */
+export async function loadDenoProject(
+  repoPath: string,
+  configDir: string,
+  seams: MutationRunnerSeams,
+): Promise<DenoProject> {
+  let config = EMPTY_PROJECT_CONFIG;
+  for (const name of DENO_CONFIG_FILES) {
+    const rel = configDir === "" ? name : `${configDir}/${name}`;
+    const abs = await confinePath(repoPath, rel, seams);
+    if (abs !== null && await seams.exists(abs)) {
+      config = parseDenoProjectConfig(await seams.readTextFile(abs), rel);
+      break;
+    }
+  }
+  return { dir: configDir, config };
+}
+
 /** `file` (repo-relative) relative to the project directory `dir`. */
 function relativeToProject(dir: string, file: string): string {
   return dir === "" ? file : file.slice(dir.length + 1);
@@ -190,22 +213,21 @@ export async function confinePath(
 
 /**
  * Does `text` (in directory `dir`) import the repo-relative `module`? A relative
- * specifier counts by its path. With `project` (the Deno project the test is
- * in), a bare specifier counts when the project's `imports` map resolves it to
- * `module` (Issue #4533).
+ * specifier counts by its path; a bare specifier counts when `project` (the
+ * Deno project the test is in) has an `imports` map that resolves it to
+ * `module` (Issues #4533, #5107).
  */
 export function importsModule(
   text: string,
   dir: string,
   module: string,
-  project?: DenoProject,
+  project: DenoProject,
 ): boolean {
   for (const m of text.matchAll(RELATIVE_SPECIFIER)) {
     const spec = m[1];
     if (spec === undefined) continue;
     if (normalisePath(`${dir}/${spec}`) === module) return true;
   }
-  if (project === undefined) return false;
   for (const m of text.matchAll(QUOTED_SPECIFIER)) {
     const spec = m[1];
     if (spec === undefined || spec.startsWith(".")) continue;

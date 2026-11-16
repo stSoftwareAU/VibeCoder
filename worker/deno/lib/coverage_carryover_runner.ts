@@ -19,8 +19,10 @@
  * skipped.
  *
  * Known limit: beyond the edited tests, the head side counts only tests that
- * import a module directly. A line reached only indirectly (through another
- * module) is reported uncovered, and can be exempted.
+ * import a module directly, by a relative specifier or by an alias the
+ * project's `deno.json`/`deno.jsonc` `imports` map resolves to that file. A
+ * line reached only indirectly (through another module) is reported
+ * uncovered, and can be exempted.
  *
  * Confinement: test and module paths are repo-relative and resolved through
  * {@link findDenoConfigDir}, which confines them to the repository (symlinks
@@ -42,8 +44,10 @@ import {
 } from "./coverage_carryover_gate.ts";
 import { isDenoTestFile } from "./mutation_gate.ts";
 import {
+  type DenoProject,
   findDenoConfigDir,
   importsModule,
+  loadDenoProject,
   type MutationRunnerSeams,
   type ProcessResult,
 } from "./mutation_runner.ts";
@@ -232,13 +236,14 @@ async function carryOver(
   if (editedStop !== null) return editedStop;
 
   // Head, then: only for files that still have an unreached carried line, the
-  // tests that import that file directly (within its project). Importers run
-  // one carried file at a time, each in its own batch, and what is still
-  // unreached is recomputed after each batch. A file an earlier batch's
-  // importer already reaches (directly, or through that importer's own
-  // imports) is skipped, so a deleted whole test file whose loaded modules
-  // share importers runs only a bounded number of them, not every importer of
-  // every module in one `deno test` call.
+  // tests that import that file directly (within its project), by a relative
+  // specifier or an alias its `deno.json`/`deno.jsonc` `imports` map resolves
+  // to that file (Issue #5107). Importers run one carried file at a time, each
+  // in its own batch, and what is still unreached is recomputed after each
+  // batch. A file an earlier batch's importer already reaches (directly, or
+  // through that importer's own imports) is skipped, so a deleted whole test
+  // file whose loaded modules share importers runs only a bounded number of
+  // them, not every importer of every module in one `deno test` call.
   const afterEdited = unreached(carriedLines);
   if (afterEdited.length > 0) {
     const alreadyRun = new Set(editedAtHead);
@@ -256,12 +261,22 @@ async function carryOver(
       if (unreached(afterEdited).every((c) => c.file !== file)) continue;
       const dir = await findDenoConfigDir(input.repoPath, file, seams);
       if (dir === null) continue;
+      let project: DenoProject;
+      try {
+        project = await loadDenoProject(input.repoPath, dir, seams);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          kind: "error",
+          reason: `cannot read the head Deno project config: ${message}`,
+        };
+      }
       const prefix = dirPrefix(dir);
       const batch: string[] = [];
       for (const t of headTests) {
         if (!t.startsWith(prefix) || alreadyRun.has(t)) continue;
         // SIMPLE-ON-PURPOSE: only direct imports count, with no transitive import graph — upgrade when a line reached only through a helper module is reported uncovered in practice.
-        if (importsModule(await readHead(t), dirOf(t), file)) {
+        if (importsModule(await readHead(t), dirOf(t), file, project)) {
           batch.push(t);
           alreadyRun.add(t);
         }
