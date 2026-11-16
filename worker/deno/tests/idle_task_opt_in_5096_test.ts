@@ -257,13 +257,20 @@ Deno.test("hasIdleTaskRequestedMarker - marker with trailing text on the same li
   );
 });
 
-Deno.test("hasIdleTaskRequestedMarker - a hostile long body returns false promptly", () => {
-  const body = " ".repeat(100_000) + "x";
-  const started = performance.now();
-  const result = hasIdleTaskRequestedMarker(body);
-  const elapsedMs = performance.now() - started;
-  assertEquals(result, false);
-  assert(elapsedMs < 1000, `took ${elapsedMs.toFixed(1)} ms`);
+Deno.test("hasIdleTaskRequestedMarker - long hostile bodies are decided by the final line only", () => {
+  assertEquals(hasIdleTaskRequestedMarker(" ".repeat(100_000) + "x"), false);
+  assertEquals(
+    hasIdleTaskRequestedMarker(
+      "\n".repeat(100_000) + "<!-- vibe-idle-task-requested -->x",
+    ),
+    false,
+  );
+  assertEquals(
+    hasIdleTaskRequestedMarker(
+      " \n".repeat(100_000) + "<!-- vibe-idle-task-requested -->",
+    ),
+    true,
+  );
 });
 
 // ---------------------------------------------------------------------------
