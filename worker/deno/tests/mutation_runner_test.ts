@@ -17,7 +17,10 @@ import {
   makeMutationTempDir,
   resolveMutationScratchRoot,
 } from "../lib/mutation_runner.ts";
-import { parseDenoProjectConfig } from "../lib/deno_test_config.ts";
+import {
+  EMPTY_PROJECT_CONFIG,
+  parseDenoProjectConfig,
+} from "../lib/deno_test_config.ts";
 import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 async function realRepo(
@@ -141,13 +144,20 @@ Deno.test("importsModule - hostile unclosed-specifier text scans in linear time"
     const found = assertLinearGrowth(
       label,
       build,
-      (text) => importsModule(text, "tests", "lib/m.ts"),
+      (text) =>
+        importsModule(text, "tests", "lib/m.ts", {
+          dir: "",
+          config: EMPTY_PROJECT_CONFIG,
+        }),
       { baseChars: 12_500, sizeFactor: 4 },
     );
     assertEquals(found, false);
   }
   assertEquals(
-    importsModule("import '../lib/m.ts'", "tests", "lib/m.ts"),
+    importsModule("import '../lib/m.ts'", "tests", "lib/m.ts", {
+      dir: "",
+      config: EMPTY_PROJECT_CONFIG,
+    }),
     true,
   );
 });
@@ -161,7 +171,8 @@ Deno.test("importsModule - a bare alias counts only with the project's imports m
       "deno.json",
     ),
   };
-  assertEquals(importsModule(text, "test", "src/NEAT/Neat.ts"), false);
+  const empty = { dir: "", config: EMPTY_PROJECT_CONFIG };
+  assertEquals(importsModule(text, "test", "src/NEAT/Neat.ts", empty), false);
   assertEquals(importsModule(text, "test", "src/NEAT/Neat.ts", project), true);
   assertEquals(
     importsModule(text, "test", "src/NEAT/Other.ts", project),
@@ -169,7 +180,7 @@ Deno.test("importsModule - a bare alias counts only with the project's imports m
   );
   // Relative specifiers behave as before, with or without the project.
   const rel = 'import "../lib/m.ts";';
-  assertEquals(importsModule(rel, "tests", "lib/m.ts"), true);
+  assertEquals(importsModule(rel, "tests", "lib/m.ts", empty), true);
   assertEquals(importsModule(rel, "tests", "lib/m.ts", project), true);
 });
 
