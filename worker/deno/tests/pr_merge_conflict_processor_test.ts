@@ -103,8 +103,6 @@ interface Captured {
   labelsRemoved: string[];
   gitArgs: string[][];
   commitAndPushCalls: number;
-  /** The `preFlight` spec (5th argument) of each `commitAndPushPending` call. */
-  commitAndPushPreFlights: unknown[];
   /** The options (3rd argument) of each `commitAndPushPending` call (Issue #4630). */
   commitAndPushOptions: unknown[];
   /** The `ciCargoCompareRef` of each agent run, `undefined` when absent (Issue #4630). */
@@ -470,7 +468,6 @@ function makeGit(
 
     commitAndPushPending: ((...args: unknown[]) => {
       captured.commitAndPushCalls++;
-      captured.commitAndPushPreFlights.push(args[4]);
       captured.commitAndPushOptions.push(args[2]);
       captured.events.push("git:commitAndPushPending");
       const pushError = script.commitPushAnswer
@@ -752,7 +749,6 @@ async function runProcessor(
     labelsRemoved: [],
     gitArgs: [],
     commitAndPushCalls: 0,
-    commitAndPushPreFlights: [],
     commitAndPushOptions: [],
     agentCompareRefs: [],
     agentRuns: 0,
@@ -860,17 +856,6 @@ Deno.test("processMergeConflict - resolves a conflict, pushes, comments and clea
     resolved,
     `head="1111111111111111111111111111111111111111"`,
   );
-});
-
-Deno.test("processMergeConflict - the push is gated on the repository's ShellCheck policy (Issue #4631)", async () => {
-  const { captured, result } = await runProcessor(makeInput(), makeGitScript());
-
-  assert(result.ok);
-  // No pre-flight commands are configured, so the push gets the repair spec
-  // with CI's cargo checks (Issues #4631, #5169).
-  assertEquals(captured.commitAndPushPreFlights, [
-    { commands: [], repairChecksWithCiCargo: true },
-  ]);
 });
 
 Deno.test("processMergeConflict - the push and the agent compare CI cargo against the PR base (PR #4896 review)", async () => {

@@ -490,3 +490,105 @@ Deno.test({
     }
   },
 });
+
+// Issue #5169: a spelling repair of a repo with no pre-flight commands is gated
+// on the cargo checks CI runs. The REAL processor drives the REAL
+// `commitAndPushPending` and the REAL `cargo clippy` against a real remote.
+const CI_CARGO_WORKFLOW = [
+  "name: CI",
+  "on:",
+  "  pull_request:",
+  "jobs:",
+  "  rust:",
+  "    runs-on: ubuntu-latest",
+  "    steps:",
+  "      - run: cargo clippy --all-targets -- -D warnings",
+  "",
+].join("\n");
+const CARGO_TOML =
+  '[package]\nname = "fixture"\nversion = "0.1.0"\nedition = "2021"\n';
+const RUST_CLEAN = "pub fn value() -> u8 {\n    1\n}\n";
+/** Compiles, but `clippy::len_zero` fails CI's `-D warnings`. */
+const RUST_CLIPPY_FAILING =
+  "pub fn is_blank(v: &[u8]) -> bool {\n    v.len() == 0\n}\n";
+const RUST_REPAIRED =
+  "pub fn is_blank(v: &[u8]) -> bool {\n    v.is_empty()\n}\n";
+
+async function runCargoSpellingRound(
+  fx: Fixture,
+  agentCommits: Record<string, string>,
+) {
+  await writeFiles(fx.repo, {
+    ".github/workflows/ci.yml": CI_CARGO_WORKFLOW,
+    "Cargo.toml": CARGO_TOML,
+    "src/lib.rs": RUST_CLEAN,
+  });
+  await git(["add", "."], fx.repo);
+  await git(["commit", "-m", "Rust crate with CI clippy"], fx.repo);
+  await git(["push", "origin", BRANCH], fx.repo);
+  const tipBefore = (await git(["rev-parse", BRANCH], fx.upstream)).trim();
+  const input: SpellingFixInput = {
+    repo: REPO,
+    prNumber: 2524,
+    branchName: BRANCH,
+    checkRunId: "67890",
+    checkName: "Spelling Check",
+    encodedAnnotations: btoa(JSON.stringify([])),
+  };
+  const processorDeps: SpellingProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: silentLogger,
+    deps: makeDeps(async () => {
+      await writeFiles(fx.repo, agentCommits);
+      await git(["add", "."], fx.repo);
+      await git(["commit", "-m", "Fix spelling"], fx.repo);
+    }),
+    workDir: fx.repo,
+    workRoot: fx.tmp,
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+  const result = await processSpellingFailure(input, processorDeps);
+  return { result, tipBefore };
+}
+
+Deno.test({
+  name:
+    "spelling fix - a repair that fails CI's cargo clippy never reaches the remote (Issue #5169)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const fx = await makeFixture();
+    try {
+      const { result, tipBefore } = await runCargoSpellingRound(fx, {
+        "src/lib.rs": RUST_CLIPPY_FAILING,
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      if (result.ok) assertEquals(result.value.changesPushed, false);
+      assertEquals(
+        (await git(["rev-parse", BRANCH], fx.upstream)).trim(),
+        tipBefore,
+        "a clippy failure must never reach the remote",
+      );
+    } finally {
+      await Deno.remove(fx.tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "spelling fix - a repair that passes CI's cargo clippy is pushed (Issue #5169)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const fx = await makeFixture();
+    try {
+      const { result } = await runCargoSpellingRound(fx, {
+        "src/lib.rs": RUST_REPAIRED,
+      });
+      assert(result.ok, result.ok ? "" : result.error.message);
+      if (result.ok) assertEquals(result.value.changesPushed, true);
+      assertEquals(await remoteFile(fx, "src/lib.rs"), RUST_REPAIRED);
+    } finally {
+      await Deno.remove(fx.tmp, { recursive: true });
+    }
+  },
+});

@@ -141,37 +141,60 @@ flowchart TD
   pushed (Issue #5169)`.
   Red against the unfixed processor: the gate refused the unformatted `a.ts` and
   nothing was pushed.
-- Edited expectations. Each removal is required by the issue: "Make the fleet
-  run `cargo clippy, cargo llvm-cov, deno fmt, deno test` the way CI does, and
-  require it to pass, before a PR is raised or a fix is pushed".
-  - Removed from `worker/deno/tests/pr_spelling_processor_test.ts`:
-    `assertEquals(preFlights, [{ commands: [], repairChecksOnly: true }]);`
-    - Replaced by:
-      `assertEquals(preFlights, [{ commands: [], repairChecksWithCiCargo: true }]);`
-  - Removed from `worker/deno/tests/pr_merge_conflict_processor_test.ts`:
-    `{ commands: [], repairChecksOnly: true },`
-    - Replaced by: `{ commands: [], repairChecksWithCiCargo: true },`
-  - Removed from `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts`:
-    `capturedPreFlight?.repairChecksOnly,`
-    - Replaced by: `capturedPreFlight?.repairChecksWithCiCargo,` and
-      `assertEquals(capturedPreFlight?.repairChecksOnly, undefined);` (6 passed,
-      0 failed).
+- `worker/deno/tests/pr_round_repo_formatters_test.ts`: two more new tests, run
+  through the real `processSpellingFailure`, the real `commitAndPushPending` and
+  the real `cargo clippy` against a real repository and bare remote, with a repo
+  that has no pre-flight commands and a CI workflow running
+  `cargo clippy --all-targets -- -D warnings`:
+  - `spelling fix - a repair that fails CI's cargo clippy never reaches the
+    remote (Issue #5169)`: the remote branch tip is unchanged.
+  - `spelling fix - a repair that passes CI's cargo clippy is pushed (Issue
+    #5169)`: the repaired file is on the remote.
+  - Red when `resolveRepairPreFlightSpec` returns the old
+    `{ commands: [], repairChecksOnly: true }`: the failing-clippy test failed
+    because the repair was pushed.
+- Removed test assertions and test (TDD rule 3). Each pinned the spec object a
+  mocked `commitAndPushPending` was handed, which the mock never ran, so a gate
+  that ignored `repairChecksWithCiCargo` would still have passed; the review
+  required their removal rather than a re-count. The base behaviour they
+  recorded (a repo with no pre-flight commands gets `repairChecksOnly: true`
+  from the spelling and merge-conflict repairs) is obsolete under this issue.
+  - `worker/deno/tests/pr_spelling_processor_test.ts::processSpellingFailure -
+    succeeds with mock Claude output`: the `preFlights` assertion is removed;
+    the test still checks the processed result and the agent request.
+  - `worker/deno/tests/pr_merge_conflict_processor_test.ts::processMergeConflict
+    - the push is gated on the repository's ShellCheck policy (Issue #4631)` is
+    deleted: its only assertion was that spec. The merge-conflict push still
+    reaches the gate through `resolveRepairPreFlightSpec`, which the tests below
+    exercise through the real gate.
+  - `worker/deno/tests/pr_side_gate_guarantee_4876_test.ts`: the
+    `capturedPreFlight?.repairChecksOnly` assertion is removed; the `commands`
+    and prompt assertions remain.
+  - Remaining behaviour and covering tests: the repair gate is run for real by
+    `worker/deno/tests/pr_round_repo_formatters_test.ts::spelling fix - a repair
+    that fails CI's cargo clippy never reaches the remote (Issue #5169)` and
+    its passing counterpart, and, through `resolveRepairPreFlightSpec`, by the
+    `git_push_preflight_test.ts` tests above and
+    `shellcheck_publication_test.ts::commitAndPushPending: a spelling or
+    merge-conflict repair blocks a real ShellCheck diagnostic and pushes a clean
+    script (Issue #5169)`. The merge-conflict processor is not driven through a
+    real gate: its fixture scripts every git call.
+  - The new `git_push_preflight_test.ts` tests no longer assert the cargo
+    runner's calls or their order; they assert the refusal diagnostic, the
+    retained local head and the unchanged or advanced remote.
   - The `repairChecksOnly` gate itself is still covered by the existing
     `{ commands: [], repairChecksOnly: true, runner }` test in
     `worker/deno/tests/git_push_preflight_test.ts`, which passes.
-- Results, run with `deno task test:unit` from `worker/deno`:
-  - `git_push_preflight_test.ts` and
-    `pr_feedback_processor_pre_flight_4630_test.ts`: 39 passed, 0 failed.
-  - `pr_spelling_processor_test.ts`, `pr_merge_conflict_processor_test.ts` and
-    `pr_round_repo_formatters_test.ts`: 149 passed, 0 failed.
-  - `git_push_preflight_test.ts` and `shellcheck_publication_test.ts` together,
-    after the new tests: 43 passed, 2 failed. The 2 are the network-dependent
-    CLI tests below.
-  - `shellcheck_publication_test.ts`: 9 passed, 2 failed. Both failures are CLI
+- Results, run with `deno test -A` from `worker/deno`:
+  - `git_push_preflight_test.ts`: 37 passed, 0 failed.
+  - `pr_spelling_processor_test.ts`, `pr_merge_conflict_processor_test.ts`,
+    `pr_round_repo_formatters_test.ts` and
+    `pr_side_gate_guarantee_4876_test.ts`: 156 passed, 0 failed.
+  - `shellcheck_publication_test.ts`: 6 passed, 2 failed. Both failures are CLI
     subprocess tests that could not load the `@std/yaml` JSR manifest (no
     network). They do not call `resolveRepairPreFlightSpec`, and they were not
     run on the unchanged tree.
-  - `deno fmt`, `deno lint` and `deno check` on the changed files: clean.
+  - `deno fmt` and `deno lint` on the changed files: clean.
 - `./quality.sh < /dev/null` was stopped by my 600 s `timeout` (exit 124). Every
   stage it reported before that passed: completeness, mermaid, markdownlint,
   semgrep, gitleaks and release-tag ruleset. Config integration and checkov were
