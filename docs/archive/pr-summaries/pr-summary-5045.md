@@ -62,7 +62,8 @@ Backend-only change: commit-message strings and their tests. No UI file changed.
 - Ran these tests and they passed: `deno test -A` over the new test file plus the existing `pre_push_gate_retry`, `summary_rule_gate_retry`, `pr_body_length_4359`, `completion_phase_screenshot_retry`, `pr_spelling_processor`, `pr_merge_conflict_processor`, `pr_ci_processor` and `pr_feedback_processor` test files (320 passed, 0 failed).
 - Callers checked: each builder has one production caller, or two for the final-mile and retry pairs. Every call site in the issue's table now calls a builder. `buildResolutionCommitMessage` is called from `lib/git_pull.ts` and needed no signature change.
 - Twinned rules: none found. This changes strings only and adds no gate or rule.
-- `./quality.sh < /dev/null` on the final code passed (with skipped checks: config integration, checkov). The first run had flagged semgrep `detect-non-literal-regexp` in the new test helper, which was rewritten with a literal regex. That run also reported `deno tests` FAILED with no failure in its JUnit output. On the re-run, deno tests passed.
+- `./quality.sh < /dev/null` on the final head passed (with skipped checks: config integration, checkov). The first run flagged semgrep `detect-non-literal-regexp` in the new test helper, which was rewritten with a literal regex.
+- In two of four gate runs, `deno tests` reported FAILED, but the JUnit output held no `<failure>`. That fits the stage's unit-test time-budget check on a shared, loaded host. The new tests run in about 8 ms. This is unverified: the failing test was not identified.
 
 ## Not done
 
