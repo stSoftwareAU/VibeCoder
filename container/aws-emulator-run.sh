@@ -15,11 +15,9 @@
 # neither can be switched off. AWS_EMULATOR_RUN_REFUSED_USERS is additive only:
 # extra space-separated account names refused on top of those.
 #
-# Stopping COMMAND: only COMMAND itself and the emulator (our direct children)
-# are ever signalled. With GNU timeout / gtimeout present, COMMAND runs under
-# it, in its own process group, and it forwards the signal to that group, so
-# COMMAND's whole tree stops. Without timeout/gtimeout only COMMAND itself is
-# signalled.
+# Stopping COMMAND: a retained setsid supervisor owns the command process group
+# until cleanup. TERM is followed by KILL after a finite grace period, including
+# ordinary command completion, so background children cannot outlive the run.
 #
 # Usage:
 #   aws-emulator-run [--ready-timeout SECONDS] [--timeout SECONDS] -- COMMAND [ARG...]
@@ -167,7 +165,7 @@ for refused in "${REFUSED[@]}"; do
 done
 
 missing=()
-for tool in aws-emulator curl; do
+for tool in aws-emulator curl setsid; do
     command -v "${tool}" >/dev/null 2>&1 || missing+=("${tool}")
 done
 if [[ ${SMOKE} -eq 1 ]]; then
@@ -209,7 +207,12 @@ emulator_cause() {
 cleanup() {
     trap '' INT TERM HUP
     if [[ -n "${CMD_PID}" ]] && kill -0 "${CMD_PID}" 2>/dev/null; then
-        kill -TERM "${CMD_PID}" 2>/dev/null || true
+        # The supervisor remains our unreaped child and holds this group id.
+        # Before setsid has run, only the child exists; signal that pid too.
+        kill -TERM -- "-${CMD_PID}" 2>/dev/null || true
+        sleep 1
+        kill -KILL -- "-${CMD_PID}" 2>/dev/null || true
+        kill -KILL "${CMD_PID}" 2>/dev/null || true
         wait "${CMD_PID}" 2>/dev/null || true
     fi
     if [[ -n "${EMU_PID}" ]] && kill -0 "${EMU_PID}" 2>/dev/null; then
@@ -346,7 +349,7 @@ apply_test_env() {
     local name java_opts
     for name in $(compgen -e); do
         case "${name}" in
-            AWS_* | ECS_CONTAINER_METADATA_URI*) unset "${name}" ;;
+            AWS_* | ECS_CONTAINER_METADATA_URI* | JAVA_TOOL_OPTIONS | _JAVA_OPTIONS | JDK_JAVA_OPTIONS) unset "${name}" ;;
         esac
     done
     java_opts="-Djavax.net.ssl.trustStore=${PORT_DIR}/truststore.p12 -Djavax.net.ssl.trustStoreType=PKCS12"
@@ -362,31 +365,50 @@ apply_test_env() {
     export AWS_EC2_METADATA_DISABLED=true
     export AWS_SDK_LOAD_CONFIG=1
     export NODE_EXTRA_CA_CERTS="${CA}"
-    export JAVA_TOOL_OPTIONS="${java_opts}${JAVA_TOOL_OPTIONS:+ ${JAVA_TOOL_OPTIONS}}"
+    export JAVA_TOOL_OPTIONS="${java_opts}"
     export EMULATOR_TELEMETRY=off
     export AWS_EMULATOR_STATE_DIR="${STATE}"
     export NO_PROXY="${NO_PROXY:+${NO_PROXY},}127.0.0.1,localhost"
     export no_proxy="${no_proxy:+${no_proxy},}127.0.0.1,localhost"
 }
 
-if [[ -n "${TIMEOUT_CMD}" ]]; then
-    (
-        apply_test_env
-        exec "${TIMEOUT_CMD}" "${RUN_TIMEOUT}" "${COMMAND[@]}"
-    ) <&0 &
-else
-    (
-        apply_test_env
-        exec "${COMMAND[@]}"
-    ) <&0 &
-fi
+(
+    apply_test_env
+    exec setsid bash -c '
+        result=$1
+        shift
+        trap ":" TERM INT HUP
+        "$@" &
+        command_pid=$!
+        rc=0
+        wait "$command_pid" || rc=$?
+        printf "%s\n" "$rc" > "$result.tmp"
+        mv "$result.tmp" "$result"
+        # Retain the process-group leader even when the direct command exits.
+        # The parent owns termination, including any remaining descendants.
+        while :; do sleep 1; done
+    ' aws-emulator-command "${STATE}/command-result" "${COMMAND[@]}"
+) <&0 &
 CMD_PID=$!
 
+deadline=$((SECONDS + RUN_TIMEOUT))
 rc=0
-wait "${CMD_PID}" || rc=$?
-CMD_PID=""
-if [[ -n "${EMU_PID}" ]] && ! kill -0 "${EMU_PID}" 2>/dev/null; then
-    EMU_PID=""
+while [[ ! -f "${STATE}/command-result" ]]; do
+    if ! kill -0 "${EMU_PID}" 2>/dev/null; then
+        fail "emulator stopped while COMMAND ran: $(emulator_cause)"
+        exit 5
+    fi
+    if ! kill -0 "${CMD_PID}" 2>/dev/null; then
+        fail "command supervisor stopped before reporting its result"
+        exit 5
+    fi
+    if [[ ${SECONDS} -ge ${deadline} ]]; then
+        exit 124
+    fi
+    sleep 0.1
+done
+read -r rc < "${STATE}/command-result"
+if ! kill -0 "${EMU_PID}" 2>/dev/null; then
     fail "emulator stopped while COMMAND ran: $(emulator_cause)"
     rc=5
 fi

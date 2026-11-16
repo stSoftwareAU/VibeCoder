@@ -226,3 +226,25 @@ Not done or not checked:
 - The "stopped mid-run" cause line can pick the telemetry notice, which contains
   "error", instead of a more useful line.
 - The PKCS#12 trust store was not exercised with a real JVM.
+
+## Review repair validation
+
+The helper now retains a setsid command supervisor until cleanup, including
+when the direct command exits before its background children. Cleanup sends
+TERM to the owned process group and escalates to KILL after one second. The
+supervisor retains the group identity until that cleanup; command deadlines
+return 124 and helper termination returns 143 even for TERM-resistant commands.
+All three inherited JVM option variables are cleared before setting this run's
+trust store. A real JVM regression rejects inherited credential properties and
+checks that a synthetic secret never appears in captured output.
+
+The background-child regression failed on the previous implementation. The
+integration suite now passes 17 cases; the one worker-account-only case is
+inapplicable when running as agent. Coverage includes resistant-command timeout
+and helper termination, direct-command exit 7 with a remaining child, state
+removal, JVM identity isolation, and existing TLS/readiness/concurrency cases.
+The previous process-cleanup acceptance claim is now supported by these cases.
+The registration helper is not a dummy test: Deno executes its supplied
+callbacks, which assert observable results. No test assertion was removed.
+Full-image and Apple Containers evidence remains partial as recorded above.
+Local full quality checks remain blocked by JSR dependency downloads.

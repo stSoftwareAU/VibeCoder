@@ -710,3 +710,11 @@ GRQ-23 (`claude,deepseek`) could not build while single-provider hosts still
 could. The test also checks the escaped file plus the widest provider list
 against that measured limit, and `container-build-heal` names the dropped
 request instead of retrying it.
+
+### Emulator command cleanup
+
+`aws-emulator-run` requires `setsid` and holds the command process group until
+cleanup, including normal command completion. TERM is followed by forced KILL
+after a one-second grace. A timed-out command returns 124; helper termination
+returns 143. Inherited `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS` and
+`JDK_JAVA_OPTIONS` are cleared; only the emulator trust-store options are set.

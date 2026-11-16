@@ -769,3 +769,100 @@ testAsOrdinaryUser(
     });
   },
 );
+
+testAsOrdinaryUser(
+  "aws-emulator-run: cleans background children after command exit",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const pidfile = `${fx.rec}/background`;
+      const token = "sleep 1937";
+      const r = await runHelper(fx, [
+        "--",
+        "bash",
+        "-c",
+        `${token} >/dev/null 2>&1 & echo $! > '${pidfile}'; exit 7`,
+      ]);
+      const pid = Number(await Deno.readTextFile(pidfile));
+      const running = isRunning(pid, token);
+      // Clean the old implementation's leaked fixture before reporting failure.
+      if (running) Deno.kill(pid, "SIGKILL");
+      assertEquals(r.code, 7, r.stderr);
+      assertEquals(
+        running,
+        false,
+        "background child survived command completion",
+      );
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: JVM options cannot override or leak the generated identity",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const source = `${fx.root}/Identity.java`;
+      await Deno.writeTextFile(
+        source,
+        `class Identity { public static void main(String[] args) {
+      if (System.getProperty("aws.accessKeyId") != null || System.getProperty("aws.secretAccessKey") != null) throw new Error("inherited identity");
+      System.out.println(System.getenv("AWS_ACCESS_KEY_ID"));
+    } }`,
+      );
+      const secret = "synthetic-" + "credential-canary";
+      const r = await runHelper(fx, ["--", "java", source], {
+        JAVA_TOOL_OPTIONS: `-Daws.secretAccessKey=${secret}`,
+        _JAVA_OPTIONS: `-Daws.accessKeyId=caller`,
+        JDK_JAVA_OPTIONS: `-Daws.secretAccessKey=${secret}`,
+      });
+      assertEquals((r.stdout + r.stderr).includes(secret), false);
+      assertEquals(r.code, 0, r.stderr);
+      assertStringIncludes(r.stdout, "EMULATOR");
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: TERM-resistant command is bounded on timeout and termination",
+  async () => {
+    for (const terminate of [false, true]) {
+      await withFixture("normal", {}, async (fx) => {
+        const marker = `${fx.rec}/resistant`;
+        const token = `${fx.root}/resist.py`;
+        await Deno.writeTextFile(
+          token,
+          `import signal,time,os\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\nopen(${
+            JSON.stringify(marker)
+          }, 'w').write(str(os.getpid()))\nwhile True: time.sleep(1)\n`,
+        );
+        const started = Date.now();
+        const child = helperCommand(fx, [
+          "--timeout",
+          terminate ? "30" : "2",
+          "--",
+          "python3",
+          token,
+        ]).spawn();
+        const output = child.output();
+        assert(await waitForFile(marker));
+        if (terminate) child.kill("SIGTERM");
+        const result = await output;
+        assertEquals(
+          result.code,
+          terminate ? 143 : 124,
+          decoder.decode(result.stderr),
+        );
+        assert(
+          Date.now() - started < 15_000,
+          "cleanup exceeded its bounded grace",
+        );
+        assertEquals(
+          isRunning(Number(await Deno.readTextFile(marker)), token),
+          false,
+        );
+        await assertCleanedUp(fx);
+      });
+    }
+  },
+);
