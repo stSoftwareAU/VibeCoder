@@ -471,7 +471,14 @@ export async function listOpenPrs(
       let parsed: unknown;
       const cacheKey = `prs_maint_${a}`;
       const cached = cache ? await cache.read<PrEntry[]>(repo, cacheKey) : null;
-      if (cached !== null) {
+      // Issue #5047: a label-less entry written by the old prefetch cannot
+      // answer a caller that needs labels (the needs-human hold), so it is
+      // a miss and re-listed live.
+      const wantsLabels = fields.split(",").includes("labels");
+      const servedFromCache = cached !== null &&
+        !(wantsLabels && Array.isArray(cached) &&
+          cached.some((entry) => !Array.isArray(entry?.labels)));
+      if (servedFromCache) {
         parsed = cached;
       } else {
         const output = await ghCommandFn([
@@ -503,7 +510,7 @@ export async function listOpenPrs(
         }
         lifecycleListingObservedAt.set(
           entry,
-          cached !== null ? null : new Date().toISOString(),
+          servedFromCache ? null : new Date().toISOString(),
         );
         merged.push(entry);
       }
