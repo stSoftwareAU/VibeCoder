@@ -129,8 +129,11 @@ flowchart TD
 - `worker/deno/tests/raise_all_idle_tasks_command_test.ts`: new test showing
   `test-audit` is filed only when the config authorises it.
 - `worker/deno/tests/process_add_repo_test.ts`,
-  `worker/deno/tests/process_seed_idle_tasks_test.ts`: new default-versus-
-  configured wiring tests.
+  `worker/deno/tests/process_seed_idle_tasks_test.ts`: new tests that drive each
+  command's real default sweep under a default and a configured config. Both
+  commands gained an optional `ensureLabelFn` dependency, which defaults to the
+  production `ensureIdleTaskLabel`, so the label step can be stubbed instead of
+  calling live `gh`.
 - Edited existing tests: `create_all_idle_task_wrappers_test.ts`,
   `create_all_idle_task_wrappers_command_test.ts`, `raise_all_idle_tasks_test.ts`
   and `raise_all_idle_tasks_command_test.ts` now authorise `test-audit` in their
@@ -142,9 +145,9 @@ flowchart TD
   an allowed_authors owner runs the scan" puts the owner in the claim set
   `fleetAuthors`. The pre-fix gate matched against that set, so by construction
   it would have refused this wrapper. That red run was reasoned, not executed.
-- `./quality.sh < /dev/null` on commit 5395d6f7's parent: PASSED, with config
-  integration and checkov SKIPPED on this host. The targeted suites were re-run
-  after the later commits; see the final run below.
+- `./quality.sh < /dev/null` on head 7a1b2170: PASSED, with config integration
+  and checkov SKIPPED on this host.
+- `deno task pr-summary-check`: 0 gates blocked, 0 not checked.
 
 Not done or not checked: the owner-defect regression test was not run against
 the pre-fix code. `raise_single_idle_task.ts` has no test of its own for the
