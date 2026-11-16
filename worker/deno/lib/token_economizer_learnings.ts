@@ -17,7 +17,8 @@
  *
  * ## Pushed state is allow-listed, scanned and isolated
  *
- * Only JSON state under the run's own key is mirrored. Logs, transcripts,
+ * Home and repos ancestors must be plain directories; pull destinations are
+ * validated before copying. Only JSON state under the run's own key is mirrored. Logs, transcripts,
  * launchers and sessions stay local. Staged files are scanned with gitleaks
  * before the commit, and a secret or a fact from another repository stops the
  * trial. The record names the rule, never the value. A rejected push is
@@ -641,6 +642,17 @@ export async function pullLearnings(
       if (!(error instanceof Deno.errors.NotFound)) throw error;
     }
 
+    // Validate every destination before the first write; the plugin may have
+    // left symlinks below an otherwise confined launch home.
+    await assertRealDirOrAbsent(home);
+    await assertRealDirOrAbsent(join(home, "repos"));
+    const homeKey = join(home, "repos", repoKey);
+    await assertRealDirOrAbsent(homeKey);
+    for (const file of state.files) {
+      await assertStateDestination(homeKey, file.segments);
+    }
+    if (hasConfig) await assertStateDestination(home, [CONFIG_FILE]);
+
     for (const file of state.files) {
       await writeState(
         join(home, "repos", repoKey, ...file.segments),
@@ -908,6 +920,24 @@ async function transferBlocked(
   return null;
 }
 
+/** Refuse symbolic-link ancestors and non-regular destinations before copying. */
+async function assertStateDestination(
+  root: string,
+  segments: string[],
+): Promise<void> {
+  for (let depth = 1; depth < segments.length; depth++) {
+    await assertRealDirOrAbsent(join(root, ...segments.slice(0, depth)));
+  }
+  try {
+    const info = await Deno.lstat(join(root, ...segments));
+    if (!info.isFile || info.isSymlink) {
+      throw new LearningsFault("state destination is not a regular file");
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+}
+
 /**
  * Refresh admitted home state after a replay while the plugin is stopped.
  * Logs and sessions stay local. Validate destinations before changing anything;
@@ -930,20 +960,9 @@ async function refreshReplayedHome(ctx: PushContext): Promise<void> {
   await assertRealDirOrAbsent(join(opts.home, "repos"));
   const local = await walkKeyRoot(homeKey);
   for (const file of state.files) {
-    for (let depth = 1; depth < file.segments.length; depth++) {
-      await assertRealDirOrAbsent(
-        join(homeKey, ...file.segments.slice(0, depth)),
-      );
-    }
-    try {
-      const info = await Deno.lstat(join(homeKey, ...file.segments));
-      if (!info.isFile) {
-        throw new LearningsFault("replayed destination is not a regular file");
-      }
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) throw error;
-    }
+    await assertStateDestination(homeKey, file.segments);
   }
+
   for (const file of local.files) {
     await Deno.remove(join(homeKey, ...file.segments));
   }
@@ -1041,6 +1060,9 @@ async function pushVerified(
     );
   }
   if (!isSafeKey(repoKey)) return skip(logger, "invalid repository key");
+
+  await assertRealDirOrAbsent(opts.home);
+  await assertRealDirOrAbsent(join(opts.home, "repos"));
 
   // Isolation: state for another repository in the home is a finding, and nothing moves.
   const foreign = await foreignRepos(opts.home, repoKey);

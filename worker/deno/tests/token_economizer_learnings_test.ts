@@ -1158,22 +1158,15 @@ Deno.test("refused: a latched trial neither pulls nor pushes", () =>
     await commitToStore(root, store.url, {
       [`token-economizer/${KEY_A}/claude/a.json`]: '{"a":1}\n',
     });
-    let checks = 0;
-    const countingCheck = () => {
-      checks++;
-      return Promise.resolve<VisibilityVerdict>({ private: true });
-    };
     const log = capture();
 
     const latched = await pullLearnings(
       pullOpts(root, "latched", KEY_A, store.url, log.logger, {
         mayTransfer: NEVER,
-        checkVisibility: countingCheck,
       }),
     );
     assertEquals(latched.status, "refused");
     assertStringIncludes(latched.reason, "latched");
-    assertEquals(checks, 0);
     assertEquals(latched.storeDir, undefined);
     assertEquals(await exists(join(root, "latched-scratch")), false);
 
@@ -1227,15 +1220,13 @@ Deno.test("refused: a store that turns public, or a stop that latches, between t
       // effect once X's commit has reached Y's clone, which only the replay's fetch does.
       let xTip = "";
       const yClone: { dir?: string } = {};
-      const changed = async () =>
-        xTip !== "" && yClone.dir !== undefined &&
-        await runs("git", [
-          "-C",
-          yClone.dir,
-          "cat-file",
-          "-e",
-          `${xTip}^{commit}`,
-        ]);
+      let replayObserved = false;
+      const changed = async () => {
+        const present = xTip !== "" && yClone.dir !== undefined &&
+          await hasObjectLocally(yClone.dir, `${xTip}^{commit}`);
+        replayObserved ||= present;
+        return present;
+      };
       const yVisibility = async () =>
         await changed() && change === "public"
           ? {
@@ -1259,6 +1250,11 @@ Deno.test("refused: a store that turns public, or a stop that latches, between t
       );
       assertEquals(outX.kind, "pushed", change);
       xTip = (await git(["-C", store.dir, "rev-parse", "main"])).trim();
+      assertEquals(
+        await changed(),
+        false,
+        "competing tip absent before first push",
+      );
       const afterX = await commitCount(store.dir);
       assertEquals(afterX, 2, change);
 
@@ -1275,6 +1271,7 @@ Deno.test("refused: a store that turns public, or a stop that latches, between t
         { control: "pushed", public: "refused", latch: "skipped" }[change],
         change,
       );
+      assertEquals(replayObserved, true, "competing tip reached replay clone");
       if (outY.kind === "refused") {
         assertStringIncludes(outY.reason, "is public");
       }
@@ -1587,3 +1584,45 @@ Deno.test({
     assertEquals(upstream[3], KEY_B);
   },
 });
+
+Deno.test("normal transfers refuse a repos symlink without reading or modifying outside state", () =>
+  withRoot(async (root) => {
+    const store = await newStore(root, "ancestor-store");
+    await commitToStore(root, store.url, {
+      [`token-economizer/${KEY_A}/claude/a.json`]: '{"store":1}\n',
+    });
+    const log = capture();
+    const outside = join(root, "outside");
+    await Deno.mkdir(join(outside, KEY_A, "claude"), { recursive: true });
+    const file = join(outside, KEY_A, "claude/a.json");
+    await Deno.writeTextFile(file, '{"outside":1}\n');
+    await Deno.mkdir(join(root, "pull-link-home"));
+    await Deno.symlink(outside, join(root, "pull-link-home/repos"));
+    const refused = await pullLearnings(
+      pullOpts(root, "pull-link", KEY_A, store.url, log.logger),
+    );
+    assertEquals(refused.status, "unavailable");
+    assertStringIncludes(refused.reason, "plain directory");
+    assertEquals(await Deno.readTextFile(file), '{"outside":1}\n');
+    const clean = await pullLearnings(
+      pullOpts(root, "push-link", KEY_A, store.url, log.logger),
+    );
+    assertEquals(clean.status, "restored");
+    await Deno.remove(join(root, "push-link-home/repos"), { recursive: true });
+    await Deno.symlink(outside, join(root, "push-link-home/repos"));
+    const out = await pushLearnings(
+      pushOpts(root, "push-link", clean, log.logger, recorder().stop),
+    );
+    assertEquals(out.kind, "skipped");
+    assertEquals(await commitCount(store.dir), 1);
+    assertEquals(
+      await git([
+        "-C",
+        store.dir,
+        "show",
+        `main:token-economizer/${KEY_A}/claude/a.json`,
+      ]),
+      '{"store":1}\n',
+    );
+    assertEquals(await Deno.readTextFile(file), '{"outside":1}\n');
+  }));

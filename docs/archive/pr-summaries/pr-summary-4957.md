@@ -339,3 +339,26 @@ Validation in this repair environment:
   files and lockfile are unchanged.
 - Full quality was attempted; this environment cannot establish a full pass.
   Required CI and independent review remain authoritative.
+
+## Review repair: home ancestors and replay evidence
+
+Normal push now validates the home and repos directories before inspecting or
+reading repository state. Initial pull validates home, repos, key, every
+incoming parent directory and each destination file before its first write;
+shared configuration receives the same destination checks. Replay reuses that
+validator. Static symlink redirection is refused rather than reading/uploading
+outside state or overwriting an outside destination. The agent is stopped during
+transfers; this change does not claim race-safe handle-based filesystem access.
+
+A real-store regression reproduced the initial-pull escape before repair and
+now verifies refused pull, skipped push, unchanged outside bytes and unchanged
+remote commit/content. Ordinary-directory pull and push controls remain in the
+suite. The latched test no longer counts visibility callbacks. Replay refusal
+uses the existing no-lazy-fetch object probe, proves the competing commit absent
+before the first push, and records its arrival before the refusal; private and
+unlatched control still pushes. These verify state and outcomes, not call order.
+
+Validation: all 22 persistence tests pass, with 2 existing optional tests
+ignored; changed source and tests pass type checking and formatting. Hosted CI
+remains required. Both earlier test-interaction findings and the static ancestor
+symlink finding are addressed.
