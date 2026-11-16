@@ -139,6 +139,10 @@ export function parseFenceLine(
     tick(meter);
     end++;
   }
+  // CommonMark forbids backticks in a backtick fence info string.
+  if (fenceChar === "`" && trimmed.slice(length, end).includes("`")) {
+    return null;
+  }
   return {
     char: fenceChar,
     length,

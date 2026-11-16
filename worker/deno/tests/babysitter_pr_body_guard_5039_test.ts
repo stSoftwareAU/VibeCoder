@@ -187,3 +187,23 @@ Deno.test("restored references and markers render outside list-exit and invalid-
     assert(html.includes("<!-- vibe-worker-issue-4637 -->"), html);
   }
 });
+
+Deno.test("code references after invalid-info openers cannot suppress either restored close", async () => {
+  const { Parser, HtmlRenderer } = await import("commonmark") as unknown as {
+    Parser: new () => { parse(text: string): unknown };
+    HtmlRenderer: new () => { render(node: unknown): string };
+  };
+  for (const number of [4637, 99]) {
+    const proposal = "Rewritten.\n\n```js`x\ncode\n```\nCloses #" + number;
+    const body = guardMet(
+      proposal,
+      liveBodyFor(4637, "Closes #4637\nCloses #99"),
+    );
+    const html = new HtmlRenderer().render(new Parser().parse(body));
+    assert(html.includes("Closes #4637"), html);
+    const prose = html.replace(/<pre><code>[\s\S]*?<\/code><\/pre>/g, "");
+    assert(prose.includes("Closes #4637"), html);
+    assert(prose.includes("Closes #99"), html);
+    assert(prose.includes("<!-- vibe-worker-issue-4637 -->"), html);
+  }
+});

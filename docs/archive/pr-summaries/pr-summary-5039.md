@@ -47,3 +47,11 @@ existing withholding tests cover that requirement.
 Run the guard, issue-5039 regressions, Markdown-code and PR-body suites. The
 independent renderer reproduced the list-exit failure before the correction.
 All 152 focused tests pass after the correction. Full hosted CI remains required. CommonMark 0.31.2 is a test-only dependency.
+
+## Babysitting review repair
+
+The shared fence reader now rejects backticks in a backtick info string, so a real trailing code fence cannot masquerade as prose and suppress restoration. An independent CommonMark regression covers both governing and additional closing references. It failed before the fix; all 220 guard, Markdown and issue-reference tests pass afterwards.
+
+Local validation used Deno 2.9.6 and a temporary import map to cached published
+standard-library dependencies because direct JSR downloads fail here. Repository
+dependency files are unchanged. Full hosted CI and fresh review remain required.
