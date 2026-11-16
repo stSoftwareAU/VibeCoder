@@ -4,6 +4,7 @@ import { runClaudeWithTimeout } from "../lib/claude_runner.ts";
 import {
   enableInFlightHostDiskGate,
   type HeavyBuildDiskReading,
+  HostDiskParkError,
   registerHeavyBuildDiskProbe,
 } from "../lib/heavy_build_gate.ts";
 import type { Logger } from "../types.ts";
@@ -41,9 +42,10 @@ for (const crossFloor of [false, true]) {
       const clock = fakeClock();
       const ready = Promise.withResolvers<void>();
       const errors: string[] = [];
+      const warns: string[] = [];
       const logger = {
         info: () => {},
-        warn: () => {},
+        warn: (message: string) => warns.push(message),
         error: (message: string) => errors.push(message),
         debug: () => {},
         security: () => {},
@@ -95,14 +97,23 @@ for (const crossFloor of [false, true]) {
         if (crossFloor) {
           freeGb = 45;
           await clock.advance(30_000);
-          assertEquals(errors.length, 1);
-          assertStringIncludes(errors[0]!, "host disk below its floor");
+          assertEquals(
+            errors,
+            [],
+            "a protective park is not an ERROR line (Issue #5077)",
+          );
+          const hostDiskWarns = warns.filter((w) =>
+            w.includes("host disk below its floor")
+          );
+          assertEquals(hostDiskWarns.length, 1);
           const result = await run;
           assert(!result.ok);
           assertStringIncludes(
             result.error.message,
             "Parked as infrastructure",
           );
+          assert(result.error instanceof HostDiskParkError);
+          assertEquals(result.error.agentStarted, true);
         } else {
           await releaseAgentStub(stub);
           const result = await run;

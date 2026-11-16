@@ -95,6 +95,7 @@ import {
 import { INTEGRATION_TEST_FILES } from "./integration_test_manifest.ts";
 import { stripJsonc } from "./jsonc.ts";
 import {
+  denoTestFailureSummary,
   judgeDenoTestCheck,
   unitTestCommand,
   worktreeBaseline,
@@ -3048,10 +3049,14 @@ export async function runPrePushGate(opts: {
   const checksRun: string[] = [...shellcheck.value.checksRun];
   for (const check of checks) {
     if (check.cargo === undefined) {
+      const summariseFailure = check.denoTestRoot !== undefined
+        ? denoTestFailureSummary
+        : undefined;
       const result = await runPreFlightGate([check.command], {
         cwd: check.cwd,
         runner: opts.runner,
         timeoutSeconds: opts.timeoutSeconds,
+        summariseFailure,
       });
       if (!result.ok) {
         if (check.denoTestRoot === undefined) {
@@ -3067,6 +3072,7 @@ export async function runPrePushGate(opts: {
               cwd: check.cwd,
               runner: opts.runner,
               timeoutSeconds: opts.timeoutSeconds,
+              summariseFailure,
             }),
           baseline: {
             // The fork commit is looked up only when a test actually failed.

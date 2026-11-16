@@ -3156,6 +3156,15 @@ release**, not as the issue defeating the agent:
   The branch named is the one the push targeted, so a retitled issue cannot
   point a reader at a ref nothing wrote, and a run that preserved nothing names
   no branch.
+- The worker log does not call it an error (Issue #5118). The runner's kill line
+  is logged at INFO when the kill is a scheduled release — the extension check
+  refused because the finish deadline or the run hard cap left no runway, or the
+  session's timeout was clamped to the finish deadline; every other kill (the
+  run's own budget, a silence watchdog, a call storm) stays ERROR. The run's
+  closing line reads `Issue <repo>#<n> released on schedule at phase '<phase>':
+  <reason>`, at INFO when the work reached a pushed branch and at WARNING when
+  the run kept nothing on a branch. The claim release still logs outcome
+  `no_pr:scheduled_release:<phase>`.
 
 The checkout is sampled every `progress_extension_check_seconds` while the run
 is inside its budget, so the verdict read at the deadline
@@ -5411,7 +5420,10 @@ gates do (see that bullet):
      among the files it is given, so the integration suites (the ones CI's unit
      shards exclude, including a changed one) are not run here. A deleted or
      renamed-away file still selects the tests that name or import it. A failing
-     test refuses the push, with two exceptions that keep a red base or a download
+     test refuses the push. The block names the command as
+     `deno task test:unit (N files)` and lists the failed tests ahead of Deno's
+     output, so the cut failure comment and log still name them (Issue #5113).
+     There are two exceptions that keep a red base or a download
      outage from blocking an unrelated fix. A failure with no failed test in its
      output and a module-fetch error (a JSR manifest, an npm package or an import
      that could not be downloaded; a 404 `JSR package not found` is not one)

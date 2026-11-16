@@ -31,6 +31,7 @@ import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
   babysitterDipWaitWithin,
   HOST_DISK_PARK_NOTE,
+  HostDiskParkError,
   inFlightHostDiskGateEnabled,
   parkInFlightBuild,
   parkRunningBuild,
@@ -62,6 +63,7 @@ import { AgentTurnLimitError } from "./claude_turn_limit.ts";
 import {
   captureTimeoutDiagnostics,
   type ClaudeExecutionResult,
+  detectModelScopedUsageLimit,
   detectModelUnavailable,
   detectOutOfMemory,
   detectRateLimit,
@@ -93,6 +95,11 @@ import {
   isBoundaryId,
 } from "./prompt_delimiter.ts";
 import { modelFamily } from "./planning_run_stats.ts";
+import {
+  firstModelNotCooling,
+  readActiveModelCooldown,
+  recordModelUsageCooldown,
+} from "./model_usage_cooldown.ts";
 import { summariseHealthFailure } from "./claude_health_message.ts";
 import {
   DEFAULT_HEALTH_CACHE_TTL,
@@ -1398,7 +1405,9 @@ async function runClaudeWithTimeoutBody(
           clock,
         ),
       );
-    if (park) return { ok: false, error: new Error(park) };
+    if (park) {
+      return { ok: false, error: new HostDiskParkError(park, false) };
+    }
   }
 
   // The provider seam (Issue #4067) owns the binary, the argument list and
@@ -2018,7 +2027,11 @@ async function runClaudeWithTimeoutBody(
       timedOut = true;
       timeoutReason = reason;
       killFiredMs = clock.now();
-      logger?.error(message);
+      // Issue #5118: a kill that is a scheduled release is not an error.
+      const isScheduledRelease = reason === "hard-timeout" &&
+        (scheduledRelease !== undefined || finishClamp?.clamped === true);
+      if (isScheduledRelease) logger?.info(message);
+      else logger?.error(message);
       killPromise = killClaudeProcessTree(
         childPid,
         killAfterSeconds,
@@ -2047,7 +2060,8 @@ async function runClaudeWithTimeoutBody(
         void parkRunningBuild().then((reason) => {
           if (!reason || runFinished || hostDiskPark) return;
           hostDiskPark = reason;
-          logger?.error(reason);
+          // A protective stop, not a worker error (Issue #5077).
+          logger?.warn(reason);
           void killClaudeProcessTree(
             childPid,
             killAfterSeconds,
@@ -3075,7 +3089,10 @@ async function runClaudeWithTimeoutBody(
       }
     }
     if (hostDiskPark) {
-      return { ok: false, error: new Error(hostDiskPark) };
+      return {
+        ok: false,
+        error: new HostDiskParkError(hostDiskPark, true),
+      };
     }
     const runResult: ClaudeExecutionResult = {
       exitCode: timedOut ? TIMEOUT_EXIT_CODE : status.code,
@@ -3550,6 +3567,70 @@ async function runRetryLadder(
   // Track the current effective options (may be mutated on fallback)
   let currentOptions = { ...options };
   let fallbackModel: string | undefined;
+  // Start below a tier that is on a model-scoped usage cooldown (Issue #5086):
+  // a previous phase hit "You've reached your Fable limit", so re-probing it
+  // would only burn another invocation before stepping down.
+  if (enableFallback) {
+    const cooldownDir = resolveSignalDir(
+      currentOptions.cwd,
+      currentOptions.workDir,
+    );
+    if (cooldownDir) {
+      const requested = resolveCurrentModel(
+        currentOptions.model,
+        currentOptions.phase,
+        currentOptions.agentProvider,
+        currentOptions.env,
+      );
+      const cooldownProvider = selectAgentProvider(
+        currentOptions.agentProvider,
+        currentOptions.env ? { env: currentOptions.env } : {},
+      ).id;
+      if (requested) {
+        const start = await firstModelNotCooling(
+          cooldownDir,
+          cooldownProvider,
+          requested,
+          clock.now(),
+          (m) => {
+            const r = attemptModelFallback(
+              m,
+              true,
+              currentOptions.agentProvider,
+            );
+            return r.ok ? r.cheaperModel : null;
+          },
+        );
+        if (!start.ok) {
+          currentOptions.logger?.warn(
+            `[model-cooldown] could not read the model usage cooldown store; running the requested model "${requested}": ${start.error.message}`,
+          );
+        } else if (start.value.skipped.length > 0) {
+          const until = await readActiveModelCooldown(
+            cooldownDir,
+            cooldownProvider,
+            requested,
+            clock.now(),
+          );
+          fallbackModel = start.value.model;
+          currentOptions = {
+            ...currentOptions,
+            model: start.value.model,
+            fallbackFrom: requested,
+          };
+          currentOptions.logger?.info(
+            `[model-cooldown] ${
+              modelFamily(requested) ?? requested
+            } is on a model-scoped usage cooldown until ${
+              until.ok && until.value
+                ? new Date(until.value.untilEpochMs).toISOString()
+                : "its window ends"
+            } — starting on "${start.value.model}" on the same provider (Issue #5086).`,
+          );
+        }
+      }
+    }
+  }
   // Providers this invocation moved away from after a model refusal
   // (Issue #4034), so the configured fallback walk never revisits one.
   const providersRefusedModel: string[] = [];
@@ -4021,6 +4102,99 @@ async function runRetryLadder(
             exitCode,
             rawExitCode,
             output,
+            timedOut: false,
+            fallbackModel,
+            runStats,
+          }),
+        };
+      }
+
+      // Model-scoped usage limit (Issue #5086): the CLI names a tier ("You've
+      // reached your Fable limit"), so only that tier is spent. Step down the
+      // ladder on the SAME provider, record a model-scoped cooldown, and write
+      // NO provider pause. Checked BEFORE the account-wide branch below because
+      // a weekly-worded Fable cap also matches `weekly limit` there.
+      const scopedFamily = detectModelScopedUsageLimit(
+        bothStreams,
+        errorScanTailLines,
+      );
+      if (scopedFamily !== null) {
+        const currentModel = resolveCurrentModel(
+          currentOptions.model,
+          currentOptions.phase,
+          currentOptions.agentProvider,
+          currentOptions.env,
+        );
+        const nowMs = clock.now();
+        const scopedResetMs = parseUsageLimitReset(bothStreams, nowMs);
+        const cooldownSeconds = Math.min(
+          scopedResetMs !== null
+            ? Math.max(60, Math.ceil((scopedResetMs - nowMs) / 1000))
+            : USAGE_LIMIT_DEFAULT_WAIT_SECONDS,
+          USAGE_LIMIT_MAX_WAIT_SECONDS,
+        );
+        const invokingProvider = selectAgentProvider(
+          currentOptions.agentProvider,
+          currentOptions.env ? { env: currentOptions.env } : {},
+        ).id;
+        const cooldownDir = resolveSignalDir(
+          currentOptions.cwd,
+          currentOptions.workDir,
+        );
+        if (cooldownDir) {
+          const recorded = await recordModelUsageCooldown(cooldownDir, {
+            provider: invokingProvider,
+            model: scopedFamily,
+            untilEpochMs: nowMs + cooldownSeconds * 1000,
+            nowMs,
+          });
+          if (!recorded.ok) {
+            currentOptions.logger?.warn(
+              `Could not record model usage cooldown: ${recorded.error.message}`,
+            );
+          }
+        }
+        currentOptions.logger?.security?.(
+          "MODEL_USAGE_LIMIT",
+          `exit_code=${exitCode} family=${scopedFamily} cooldown_seconds=${cooldownSeconds}`,
+        );
+        const scopedFallback = attemptModelFallback(
+          currentModel,
+          enableFallback,
+          currentOptions.agentProvider,
+        );
+        const familyLabel = scopedFamily.charAt(0).toUpperCase() +
+          scopedFamily.slice(1);
+        if (scopedFallback.ok) {
+          fallbackModel = scopedFallback.cheaperModel;
+          currentOptions.logger?.warn(
+            `[model-cooldown] ${familyLabel} usage limit reached on "${currentModel}" (model-scoped, not account-wide) — retrying on "${fallbackModel}" on the same provider; no provider pause written (Issue #5086).`,
+          );
+          currentOptions = {
+            ...currentOptions,
+            model: fallbackModel,
+            fallbackFrom: currentModel,
+          };
+          retryCount = 0;
+          totalWaitTime = 0;
+          waitInterval = initialWaitInterval;
+          continue;
+        }
+        warnNoModelLadder(
+          scopedFallback,
+          currentModel,
+          currentOptions.logger,
+        );
+        currentOptions.logger?.error(
+          `${familyLabel} usage limit reached on "${currentModel}" (model-scoped) and no cheaper model is available (${scopedFallback.reason}); no provider pause is written (Issue #5086).`,
+        );
+        return {
+          ok: true,
+          value: withPreflight({
+            exitCode,
+            rawExitCode,
+            output,
+            stderr,
             timedOut: false,
             fallbackModel,
             runStats,

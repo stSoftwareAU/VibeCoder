@@ -232,3 +232,19 @@ the production composition. Validation uses Deno 2.9.8 with a temporary cached
 standard-library import map because direct JSR downloads fail in this host.
 Repository dependency files are unchanged; hosted CI and fresh review remain
 required.
+
+## Scoped production runner repair
+
+A request body now skips the repository-wide deterministic pre-pass. The agent
+receives the requested scope inside the shared trust boundary and performs the
+requested audit; unscoped invocations retain deterministic discovery. This is a
+conservative scope decision, not an attempt to parse arbitrary prose as paths.
+
+Route tests now execute the production scan runner and budget, faking only
+external clone, GitHub, doc-process and agent boundaries. An unrelated public
+symbol returned by the doc process cannot enter a requested audit's prompt;
+a separate unscoped case proves the pre-pass still discovers it. Findings and
+wrapper closure depend on the actual prompt, repository and bounded execution
+options. The authorised-route regressions fail with unconditional discovery
+restored and pass after the fix. Cadence tests now use the real weighted picker.
+All 100 tests in the opt-in route/filing, template, budget and route suites pass.

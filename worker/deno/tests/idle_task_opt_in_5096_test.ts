@@ -30,7 +30,7 @@ import {
 } from "../lib/idle_task_process_issue_route.ts";
 import { createTestAuditTemplate } from "../lib/idle_task_templates/test_audit_template.ts";
 import { getTemplate, registerTemplate } from "../lib/idle_task_template.ts";
-import { getIdleTaskRunContext } from "../lib/idle_task_claude_budget.ts";
+
 import type { CadenceTemplatePolicy } from "../lib/idle_task_cadence.ts";
 import type { Logger } from "../types.ts";
 
@@ -99,8 +99,8 @@ function wrapperInput(
 
 /**
  * Run the real route with stubbed seams and record what side effects happened.
- * `handleIdleTaskFn` is the scan; `ensureCloneFn` is the clone; `ghCommandFn`
- * is the `gh` runner the wrapper closure writes through.
+ * The production handler, scanner, prompt assembly and budget all run. Only
+ * the clone, GitHub and external agent/doc-process boundaries are faked.
  */
 async function runRoute(input: RouteIdleTaskInput) {
   const { logger, records } = makeLogger();
@@ -109,6 +109,18 @@ async function runRoute(input: RouteIdleTaskInput) {
   let closed = false;
   const previous = getTemplate("test-audit")!;
   const deadline = Date.now() + 900_000;
+  const fixture = await Deno.makeTempDir({ prefix: "audit-scope-" });
+  const priorPath = Deno.env.get("PATH");
+  // Fake only the external doc process. The real scanner would discover an
+  // unrelated public symbol, which must never enter this requested audit.
+  await Deno.writeTextFile(
+    `${fixture}/deno`,
+    `#!/bin/sh
+printf '%s' '[{"name":"outOfScopeGap","kind":"function","declarationKind":"export","location":{"filename":"file://${fixture}/unrelated.ts","line":1}}]'
+`,
+    { mode: 0o755 },
+  );
+  Deno.env.set("PATH", `${fixture}:${priorPath ?? ""}`);
   registerTemplate(createTestAuditTemplate({
     ghCommandFn: () =>
       Promise.resolve(
@@ -122,26 +134,34 @@ async function runRoute(input: RouteIdleTaskInput) {
         ),
       ),
     ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
-    runScanFn: (opts) => {
-      // External agent boundary: a finding exists only for the requested scope,
-      // repository and forwarded budget. Losing any makes the outcome fail.
+    loadPromptFn: () =>
+      Promise.resolve({ ok: true, value: "Audit gaps: {{COVERAGE_GAPS}}" }),
+    claudeRunner: (opts) => {
+      // An external agent files a finding only if its actual prompt, working
+      // repository and enforced budget honour the authorised request.
       if (
-        opts.repo === input.repo && opts.issueBody === input.issueBody &&
-        getIdleTaskRunContext().cycleDeadlineEpochMs === deadline
+        opts.cwd === fixture &&
+        opts.prompt.includes(input.issueBody.split("\n")[0]!) &&
+        opts.prompt.includes("outOfScopeGap") === !input.issueBody.trim() &&
+        opts.timeoutSeconds !== undefined && opts.timeoutSeconds <= 960
       ) filed.push(77);
-      return Promise.resolve({ ok: true, value: true });
+      return Promise.resolve({
+        ok: true,
+        value: { exitCode: 0, output: "", timedOut: false },
+      });
     },
   }));
   try {
     const outcome = await routeIdleTaskInProcessIssue({
       ...input,
+      workDir: fixture,
       cycleDeadlineEpochMs: deadline,
     }, {
       logger,
       ensureCloneFn: () =>
         Promise.resolve({
           ok: true,
-          repoPath: "/tmp/widget/widget",
+          repoPath: fixture,
           cloned: false,
         }),
       claimRouteFn: okClaim,
@@ -155,6 +175,9 @@ async function runRoute(input: RouteIdleTaskInput) {
     return { outcome, filed, comments, closed, records };
   } finally {
     registerTemplate(previous);
+    if (priorPath === undefined) Deno.env.delete("PATH");
+    else Deno.env.set("PATH", priorPath);
+    await Deno.remove(fixture, { recursive: true });
   }
 }
 
@@ -651,4 +674,16 @@ Deno.test("raise-single reuses and authorises an existing wrapper through claim 
     assert(run.closed);
     assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
   }
+});
+
+Deno.test("unscoped configured audits retain whole-repository gap discovery", async () => {
+  const run = await runRoute(wrapperInput({
+    issueTitle: "Run a test-audit scan",
+    issueAuthor: FLEET_AUTHOR,
+    issueBody: "",
+    authorisedOptInTemplates: new Set(["test-audit"]),
+  }));
+  assertEquals(run.filed, [77]);
+  assert(run.closed);
+  assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
 });

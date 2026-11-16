@@ -1361,6 +1361,19 @@ incremental, and a run that was admitted and built is not refused a later
 step for the space its own build used (Issue #4423). Active polling does not
 prune other checkouts.
 
+An execute-phase park is handled differently (Issue #5077). When the runner's
+disk poll, or the pre-spawn check, stops the issue run's agent because the host
+is below the floor, the park is logged at WARNING rather than ERROR. The runner
+returns a typed `HostDiskParkError`, and the run is released as the `host_disk`
+failure category (display `host-disk`), so the claim release logs
+`no_pr:host_disk:execute`. The working tree stays on the issue branch in a
+`wip:` commit (subject "execute was parked at the host disk floor …") with a
+handover note, so the next claim resumes it. The run is not retried in-process
+and charges no attempt. As with the park described above, it keeps the
+`disk-full` class, is not code-fixable, and earns no `failed-once` or escalating
+cooldown. Other steps that park (quality gate, security-fix discrimination,
+merge fast checks) still report `internal_error` with the park note.
+
 A dip that babysitter reservations (live, or released and not yet reflected in a fresh launcher reading) explain is a wait, not a kill (Issue #5105). The fleet PR
 babysitter records each running repair container's, and each Chromium self-check container's, host footprint in `${HOME}/logs/host-disk-reservations` (one file per container).
 When the host is below the floor and the space the earliest live or released

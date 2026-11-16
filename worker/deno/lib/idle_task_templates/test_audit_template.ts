@@ -53,7 +53,10 @@ import {
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
-import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";
+import {
+  type IdleTaskClaudeRunner,
+  runIdleTaskClaude,
+} from "../idle_task_claude_budget.ts";
 import { fenceUntrustedIssueText } from "../prompt_delimiter.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
@@ -142,6 +145,8 @@ export interface TestAuditTemplateDeps {
    * structured error in the wrapper close summary.
    */
   runScanFn?: (opts: RunScanOptions) => Promise<Result<true, ScanError>>;
+  /** External agent execution boundary; production scope and budget still run. */
+  claudeRunner?: IdleTaskClaudeRunner;
 }
 
 /** Inputs to a test-audit Claude run. */
@@ -253,12 +258,12 @@ export function renderTestAuditSummary(
  * placeholders, and invokes Claude with the same write-tool blocklist as
  * `best_practices_template.defaultRunScan`.
  *
- * Tests do NOT exercise this path — they inject a `runScanFn` stub. Kept
- * here so the production wiring is symmetric with the other templates.
+ * Workflow tests exercise prompt assembly and budgeting through this path.
  */
 async function defaultRunScan(
   opts: RunScanOptions,
   loadPromptFn: (name: string) => Promise<Result<string>>,
+  claudeRunner?: IdleTaskClaudeRunner,
 ): Promise<Result<true, ScanError>> {
   const promptResult = await loadPromptFn(PROMPT_NAME);
   if (!promptResult.ok) {
@@ -268,17 +273,18 @@ async function defaultRunScan(
     };
   }
 
-  // Issue #2916: run the deterministic coverage-gap pre-pass over the
-  // cloned repo's Deno/TypeScript surface and hand the result to Claude
-  // as a verified starting point for check 7. Best-effort — any failure
-  // yields the `(none)` sentinel and the scan still self-drives on its
-  // language-agnostic path.
+  // A supplied request can narrow the audit in natural language. Do not run
+  // whole-repository discovery before the agent interprets that scope. The
+  // agent still performs configured broad audits; an unscoped invocation also
+  // retains the deterministic pre-pass (Issue #5096).
   let coverageGaps = "(none)";
-  try {
-    const gaps = await findCoverageGaps({ workDir: opts.workDir });
-    coverageGaps = renderCoverageGaps(gaps);
-  } catch {
-    // best-effort — leave the (none) sentinel
+  if (!opts.issueBody?.trim()) {
+    try {
+      const gaps = await findCoverageGaps({ workDir: opts.workDir });
+      coverageGaps = renderCoverageGaps(gaps);
+    } catch {
+      // Best-effort: the language-agnostic agent scan still runs.
+    }
   }
 
   const prompt = assembleTestAuditPrompt(promptResult.value, {
@@ -288,25 +294,29 @@ async function defaultRunScan(
     coverageGaps,
   });
 
-  const result = await runIdleTaskClaude({
-    prompt: opts.issueBody
-      ? prompt + "\n\n" +
-        fenceUntrustedIssueText(
-          opts.issueBody,
-          "Requested audit scope (constrain this scan to the request below):",
-        ).join("\n")
-      : prompt,
-    cwd: opts.workDir,
-    phase: "test_audit",
-    disallowedTools: [
-      "Write",
-      "Edit",
-      "MultiEdit",
-      "NotebookEdit",
-      "EnterPlanMode",
-      "ExitPlanMode",
-    ],
-  });
+  const result = await runIdleTaskClaude(
+    {
+      prompt: opts.issueBody
+        ? prompt + "\n\n" +
+          fenceUntrustedIssueText(
+            opts.issueBody,
+            "Requested audit scope (constrain this scan to the request below):",
+          ).join("\n")
+        : prompt,
+      cwd: opts.workDir,
+      phase: "test_audit",
+      disallowedTools: [
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+        "EnterPlanMode",
+        "ExitPlanMode",
+      ],
+    },
+    undefined,
+    claudeRunner,
+  );
   if (!result.ok) {
     return {
       ok: false,
@@ -353,7 +363,7 @@ export function createTestAuditTemplate(
         "Static test-suite maintainability and coverage-gap audit finding",
       ));
   const runScanFn = deps.runScanFn ??
-    ((opts) => defaultRunScan(opts, loadPromptFn));
+    ((opts) => defaultRunScan(opts, loadPromptFn, deps.claudeRunner));
 
   async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // Issue #2077: the wrapper body IS the prompt — fully substituted at

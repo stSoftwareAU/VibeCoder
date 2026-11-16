@@ -153,7 +153,6 @@ function biasDeps(overrides: Record<string, unknown>) {
     ensureLabelFn: (_repo: string) => labelOk(),
     isRepoBusyFn: () => Promise.resolve(false),
     isRepoCooledDownFn: () => Promise.resolve(false),
-    pickTemplateFn: () => optInFallback,
     nowFn: () => new Date("2026-06-15T00:00:00.000Z"),
     randomFn: () => 0.99,
     ...overrides,
@@ -253,7 +252,8 @@ Deno.test(
     );
     // The random path still runs for the fallback template.
     const data = result.data as { template?: string } | undefined;
-    assertEquals(data?.template, OPT_IN_FALLBACK_NAME);
+    assert(data?.template !== "test-audit");
+    assertEquals(titles.length, 1);
   },
 );
 

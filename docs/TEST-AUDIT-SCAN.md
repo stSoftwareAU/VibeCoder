@@ -200,7 +200,14 @@ is still reported under those checks.
 
 ### Coverage-gap pre-pass (check 7)
 
-The `test-audit` template runs a deterministic, Deno-native pre-pass
+When a wrapper supplies request text, the agent interprets that scope before
+any coverage-gap discovery. The whole-repository deterministic pre-pass is
+skipped for these requests, including broad wrapper requests; the agent still
+performs their authorised audit. This avoids discovering unrelated gaps before
+a narrow natural-language scope can take effect.
+
+When invoked without a request body, the `test-audit` template runs a
+deterministic, Deno-native pre-pass
 ([`coverage_gap_scanner.ts`](../worker/deno/lib/coverage_gap_scanner.ts))
 before invoking Claude:
 
