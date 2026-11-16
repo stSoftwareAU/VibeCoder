@@ -474,9 +474,11 @@ After posting the round, look at repeated blocking findings only for these two
 outcomes. (`scripts/run.sh` skips this step in its review rounds and runs it
 in a learning round of its own, after new send-backs, at most hourly.)
 
-1. **A worker defect.** The worker itself did something wrong: it pushed the
-   wrong branch, dropped a commit, lost a review reply, or produced a concrete
-   correctness or security risk in the product. File the bug.
+1. **A worker defect.** Identify a concrete defect in VibeCoder's worker,
+   fleet, container, provider integration or orchestration, and the VibeCoder
+   code that needs correcting (for example a wrong-branch push or lost review
+   reply). A defect in code generated for a product is not by itself a worker
+   defect: its repair belongs to the source PR and governing issue.
 2. **Guidance that causes the mistake.** An existing rule, gate, check or
    prompt passage is what made the agent fail. It might be contradictory,
    unclear, impossible to satisfy, or a gate that fails runs that delivered
@@ -488,19 +490,42 @@ propose anything that withholds, disarms or delays auto-merge. A mistake that
 fits neither outcome is left to the review on the PR: do nothing. Never relax
 safety, testing or correctness guidance either.
 
+Follow [issue routing](../../../docs/ISSUE-ROUTING.md): ownership follows the
+code that must change. A product defect already requested in a PR review stays
+with that PR and its governing issue, including when the PR is in VibeCoder.
+Do not create a second implementation task for the same repair. A separate
+VibeCoder improvement must identify a distinct worker-code correction or the
+existing guidance passage causing the mistake; "the agent generated a bug"
+is not that diagnosis. Pre-existing product defects outside the PR's scope
+use rule 7 and step 2 in the source repository, not this learning round.
+
 When filing:
 
 1. Compare the finding with `<logs>/review-fleet-prs/log.jsonl`. A recurrence
    means the same mistake has appeared in at least **two independent PRs**;
-   repeated comments on one PR or one head commit count once. A worker defect
-   or a concrete correctness or security risk needs no recurrence. When the
+   repeated comments on one PR or one head commit count once. A concrete
+   VibeCoder worker defect needs no recurrence; this exception does not turn
+   a product correctness or security finding into a VibeCoder task. When the
    finding matches the target pattern of guidance already filed (the
    `pattern` slugs in `guidance.ts due`'s output), record it with
    `guidance.ts hit --pattern=<slug> --pr=<owner/repo#n>`.
-2. Search open issues in `stSoftwareAU/VibeCoder` for the same cause. If an
-   issue already covers it, do not create another one.
-3. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
-   - the defect, or the guidance that causes the mistake, and why;
+2. Check ownership and existing work before creating anything. Read the source
+   PR's governing issue, posted findings and latest repair/review status. Search
+   issues and PRs in both the source repository and `stSoftwareAU/VibeCoder`
+   using the cause, affected component and target pattern, not just the title.
+   Include open work and recently closed issues or merged PRs (at least the
+   last 30 days), plus any older matches named in the review or guidance ledger.
+   An existing issue, implementation PR or blocking review that owns the same
+   repair suppresses a new issue. A different title, symptom or example does
+   not establish distinct work. A completed fix makes the proposal obsolete
+   unless evidence demonstrates a new regression; a dismissed review alone
+   proves neither repair nor completion. Honour duplicate/not-planned closure
+   reasons rather than recreating those tasks. If searches or source records
+   cannot be read, report that limitation and defer filing; do not interpret
+   missing evidence as no match.
+3. Only for distinct, uncovered VibeCoder work, create an issue describing:
+   - the worker defect and code to correct, or the existing guidance passage
+     causing the mistake, and why the source PR's repair does not cover it;
    - the evidence: links for public PRs, and concept-level descriptions with
      no name, number or link for private ones (see
      [Keeping private repos private](#keeping-private-repos-private));
@@ -515,8 +540,9 @@ When filing:
    leave assignment and triage unchanged.
 4. Once per round, run `guidance.ts due` and act on each `recurring` entry:
    guidance that closed as completed at least 30 days ago while its pattern
-   still recurs in two or more independent PRs has not worked. Search first,
-   then file at most one issue proposing removal or a rewrite of that
+   still recurs in two or more independent PRs has not worked. Apply the same
+   ownership and existing-work check above, then file at most one issue
+   proposing removal or a rewrite of that
    guidance, never an extension, under the same private-repo rules, and
    record it with `guidance.ts retire --issue=<n> --by=<new issue>`. See
    [references/guidance-ledger.md](references/guidance-ledger.md).
