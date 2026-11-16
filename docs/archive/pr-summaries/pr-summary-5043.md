@@ -88,3 +88,11 @@ The fault-event log header still reads "Cycle summary". The run loop never
 resets those counters, so that text predates this change and covers the whole
 run; it is out of scope here. Remaining risk: that earlier failure was not
 reproduced, so it may have been intermittent.
+
+## Babysitting review repair
+
+Reset named counters outside the outer rate-limit resume loop. The new pause/resume regression failed with one retry instead of two before the fix; all 97 run-core and counter tests pass after it. Stale counters from an earlier run remain excluded.
+
+Local validation used Deno 2.9.6 and a temporary import map to cached published
+standard-library dependencies because direct JSR downloads fail here. Repository
+dependency files are unchanged. Full hosted CI and fresh review remain required.

@@ -6532,6 +6532,8 @@ export async function runCoreLoop(
     // a primary rate-limit thrown mid-cycle pauses the worker until the
     // quota refreshes instead of exiting. Non-rate-limit errors fall
     // through to the outer catch as before.
+    // Named counters cover the whole run, including rate-limit pause/resume.
+    resetCounters();
     let resumeAfterRateLimit = true;
     while (resumeAfterRateLimit) {
       resumeAfterRateLimit = false;
@@ -6569,9 +6571,6 @@ export async function runCoreLoop(
       }
 
       try {
-        // Issue #5043: named counters accumulate for the whole run — the
-        // run-end summary reports every cycle, so reset them once here.
-        resetCounters();
         while (deps.now() < endTime && !shutdownRequested) {
           // Issue #1671: reset per-iteration `gh` call telemetry so the
           // end-of-cycle summary reports just this iteration's calls.

@@ -463,6 +463,51 @@ Deno.test("run_core - fault tolerance summary counts named counters from every c
   }
 });
 
+Deno.test("run_core - fault tolerance summary counts named counters before and after a rate-limit pause (Issue #5043)", async () => {
+  // Simulates an earlier run in the same process; must not reach the summary.
+  incrementCounter("staleFromEarlierRun");
+  let nowValue = 0;
+  const dir = await Deno.makeTempDir();
+  try {
+    const deps = createMockDeps({
+      now: () => nowValue,
+      sleep: (ms = 0) => {
+        nowValue += ms;
+        return Promise.resolve();
+      },
+      getRateLimitReset: () => Promise.resolve(60),
+      findNextIssue: () => {
+        if (nowValue < 60000) {
+          throw new Error(
+            "GraphQL: API rate limit already exceeded for user ID 23146043.",
+          );
+        }
+        return Promise.resolve({ ok: true, value: null });
+      },
+      findAndProcessPrFeedback: () => {
+        incrementCounter("retryAttempts");
+        if (nowValue >= 60000) nowValue += 4000 * 1000;
+        return Promise.resolve({ ok: true, value: { processed: false } });
+      },
+      writeFaultToleranceSummary: async () => {
+        const r = await writeSummary(dir);
+        if (!r.ok) throw r.error;
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    const summary = JSON.parse(
+      await Deno.readTextFile(`${dir}/fault_tolerance_summary.json`),
+    );
+    assertEquals(summary.counters, { retryAttempts: 2 });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Tests — Rate limit detection
 // ---------------------------------------------------------------------------
