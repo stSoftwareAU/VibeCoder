@@ -20,17 +20,17 @@ its module doc now say the close is withheld when an entry is `partial` or
 
 ### Essential Design Decisions
 
-- The match stays anchored at the start of the entry, after the
-  `[\s*_`]*` emphasis prefix. A status word in criterion prose ("The criterion
-  is partially met") is still not an assessment.
+- The match stays anchored at the start of the entry, after the `[\s*_`]*`
+  emphasis prefix. A status word in criterion prose ("The criterion is partially
+  met") is still not an assessment.
 - `LEADING_STATUS_RE` in `closure_criterion_match.ts` is the twin of `statusOf`.
   It strips the same status to get the entry's subject, so it takes the same
   status words and now ends at the same `\b`. Without that, `partially met`
   would leave `ly met**` in the subject, and the entry would no longer match its
   criterion by words.
 - Both patterns stay hardcoded literals rather than a regex built from a shared
-  string (Semgrep's ReDoS rule). A test pins their agreement through
-  `subjectOf` on the parsed entry.
+  string (Semgrep's ReDoS rule). A test pins their agreement through `subjectOf`
+  on the parsed entry.
 - Bare `**not**` and `**nothing met**` are still not statuses. Only `not met`
   maps to `missing`.
 
@@ -54,18 +54,18 @@ flowchart LR
     G --> A["alignIssueCloseWithClosure: keeps Part of #N"]
 ```
 
-Issue numbers this diff cites: #5053: Worker reads a `**partially met**`
-closure entry as no entry, so the PR body keeps `Closes #N` for an issue its
-summary says is unfinished (VibeCoder#5034).
+Issue numbers this diff cites: #5053: Worker reads a `**partially met**` closure
+entry as no entry, so the PR body keeps `Closes #N` for an issue its summary
+says is unfinished (VibeCoder#5034).
 
 Docs sweep: I read the closure-block section of
 `docs/workflows/issue-processing.md` ("Each assessment starts with its status
 word …") and updated it. I grepped for `unless an entry is` across
 `worker/deno/lib`, `prompts` and `docs` (archive excluded). The only stale copy
 was in `draft_continuation_pr.ts`. Line 1185 of `issue-processing.md` already
-said `partial` or `missing`.
-`worker/deno/tests/draft_pr_self_heal_4952_test.ts` keeps the old sentence on
-purpose, because its legacy fixture reproduces a body written before the fix.
+said `partial` or `missing`. `worker/deno/tests/draft_pr_self_heal_4952_test.ts`
+keeps the old sentence on purpose, because its legacy fixture reproduces a body
+written before the fix.
 
 ## Test Plan
 
@@ -89,8 +89,10 @@ purpose, because its legacy fixture reproduces a body written before the fix.
 - Edited `worker/deno/tests/draft_continuation_4146_test.ts`:
   - Removed from `worker/deno/tests/draft_continuation_4146_test.ts`:
     ``assert(body.includes("unless an entry is `missing`"), body);``
-    - Required by: "Generated instructions must say that both partial and missing product criteria withhold closure"
-    - Replaced by: ``assert(body.includes("unless an entry is `partial` or `missing`"), body);``
+    - Required by: "Generated instructions must say that both partial and
+      missing product criteria withhold closure"
+    - Replaced by:
+      ``assert(body.includes("unless an entry is `partial` or `missing`"), body);``
 - Re-ran these after the fix, all passing:
   - `worker/deno/tests/acceptance_criteria_gate_test.ts`
   - `worker/deno/tests/closure_entry_grammar_4977_test.ts`
@@ -105,13 +107,14 @@ purpose, because its legacy fixture reproduces a body written before the fix.
   re-run with a longer bound passed every stage.
 - Corpus run: I ran `parseClosureEntries` at head over all 1,437
   `docs/archive/pr-summaries/*.md` files and got 5,036 entries. Exactly one
-  entry opens with a new spelling: `pr-summary-2896.md`, `**partially met** —
-  NEAT-AI-Snapshot …`, which now parses as `partial`. The base drops it. That is
-  1 new true positive, 0 false positives and 0 false negatives among entries
-  that open with `partially` or `not met`.
+  entry opens with a new spelling: `pr-summary-2896.md`,
+  `**partially met** —
+  NEAT-AI-Snapshot …`, which now parses as `partial`. The
+  base drops it. That is 1 new true positive, 0 false positives and 0 false
+  negatives among entries that open with `partially` or `not met`.
 
 Not done or not checked: `independent_review_gate.ts` still reads only the exact
-status words, as explained above. I did not repeat the corpus run over this
-PR's own test file; its look-alike cases cover that.
+status words, as explained above. I did not repeat the corpus run over this PR's
+own test file; its look-alike cases cover that.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
