@@ -435,6 +435,15 @@ Claude:
   `BP-SHA-PIN-org-repo-github-workflows-build-yml` for a cross-repo
   reusable-workflow call). The `<action-slug>` is the remainder of the `uses:`
   path with non-alphanumeric runs collapsed to a single hyphen, lower-cased.
+- `BP-ACTIONS-LOCK-STALE-<slug>` — the native workflow-lockfile pre-filer
+  (Issue #5051), one per workflow whose tag ref has no matching entry or
+  dependency record in `.github/workflows/actions.lock`. `<slug>` is the
+  workflow path below `.github/workflows/` (extension included), lower-cased
+  with non-alphanumeric runs collapsed to a single hyphen (e.g.
+  `BP-ACTIONS-LOCK-STALE-ci-yml` for `ci.yml`).
+- `BP-ACTIONS-LOCK-INVALID` — the same pre-filer's finding for a present but
+  invalid or unsupported `.github/workflows/actions.lock`. One id per
+  repository.
 - `BP-PERMISSIONS-<workflow-basename>[-<job>]` — the native permissions
   pre-filer (e.g. `BP-PERMISSIONS-ci` for a top-level `write-all`, or
   `BP-PERMISSIONS-ci-build` for a job with no `permissions:` block). The

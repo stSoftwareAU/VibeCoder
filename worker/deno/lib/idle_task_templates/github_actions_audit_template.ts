@@ -32,7 +32,11 @@
  *     best-practices `github-actions` bucket.
  *   - **Native SHA-pin pre-filer (Issue #2501).** Each unpinned
  *     third-party `uses:` becomes its own `severity:high` issue via
- *     `action_pin_scanner.ts`.
+ *     `action_pin_scanner.ts`. Step 5b also files the workflow-lockfile
+ *     findings (Issue #5051): `BP-ACTIONS-LOCK-STALE-<slug>` for a stale
+ *     tag ref and `BP-ACTIONS-LOCK-INVALID` for an invalid lockfile. When
+ *     `.github/workflows/actions.lock` exists but cannot be read, both the
+ *     SHA-pin and lockfile findings are skipped for that run.
  *   - **Native permissions pre-filer (Issue #2502).** Each workflow/job
  *     with no `permissions:` block (inherits the broad default) or a
  *     `permissions: write-all` grant becomes its own `severity:medium`
