@@ -72,6 +72,8 @@ flowchart LR
 - `worker/deno/lib/failure_diagnosis.ts`, `host_fault.ts`,
   `run_outcome_classifier.ts`, `label_failure.ts`, `wip_checkpoint.ts`: the
   `host_disk` category and `host-disk-park` WIP cause.
+- `docs/audits/lib-sweep-coverage/top-up-5077.json`: claims the new module
+  for the lib sweep ledger, so `lib_sweep_coverage_test.ts` passes.
 - Docs: `docs/CONTAINER.md` ("In-flight builds stop at the same floor") and
   `docs/TROUBLESHOOTING.md` (the `Parked as infrastructure` paragraph).
 - Issue numbers this diff cites: #5077 (A host-disk park mid-execute is still
