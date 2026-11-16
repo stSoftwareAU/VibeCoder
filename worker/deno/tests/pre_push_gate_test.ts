@@ -3587,6 +3587,100 @@ Deno.test("runPrePushGate: a second toolchain that is missing is infrastructure,
   }
 });
 
+// Issue #5136: the worker image installs cargo without rustup, so cargo itself
+// refuses a `+toolchain` word (observed output).
+const CARGO_NOT_RUSTUP = {
+  code: 101,
+  stderr:
+    "error: no such command: `+stable`\n\nhelp: invoke `cargo` through `rustup` to handle `+toolchain` directives",
+};
+
+Deno.test("runPrePushGate: cargo that is not a rustup proxy runs the CI command without its +toolchain word (Issue #5136)", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) => c.startsWith("cargo +") ? CARGO_NOT_RUSTUP : {},
+        calls,
+      ),
+      scanOf(STABLE_CLIPPY),
+    );
+    assert(result.ok, String(!result.ok && result.error.message));
+    assertEquals(ciRuns(calls).map((c) => c.command), [
+      "cargo clippy --all-targets",
+    ]);
+    assert(calls.some((c) => c.command === "cargo --version"));
+    assert(calls.some((c) => c.command === "cargo clippy --version"));
+    assert(result.value.checksRun.includes("cargo clippy --all-targets"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: after the no-toolchain fallback a failing plain probe is still infrastructure, and no CI cargo command runs (Issue #5136)", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) =>
+          c.startsWith("cargo +")
+            ? CARGO_NOT_RUSTUP
+            : c === "cargo clippy --version"
+            ? { code: 1, stderr: "error: 'cargo-clippy' is not installed" }
+            : {},
+        calls,
+      ),
+      scanOf(STABLE_CLIPPY),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PrePushGateInfrastructureError);
+    assert(result.error.message.includes("cargo clippy --version"));
+    assertEquals(ciRuns(calls), []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: after the no-toolchain fallback a real clippy lint still blocks, run without the +toolchain word (Issue #5136)", async () => {
+  const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
+  try {
+    const calls: RanCall[] = [];
+    const result = await gateRust(
+      clone,
+      stdin,
+      scriptedRunner(
+        (c) =>
+          c.startsWith("cargo +")
+            ? CARGO_NOT_RUSTUP
+            : c === "cargo clippy --all-targets"
+            ? {
+              code: 101,
+              stderr:
+                "error: this lint is denied\n  = note: `-D clippy::must_use_candidate` implied by `-D warnings`\n",
+            }
+            : {},
+        calls,
+      ),
+      scanOf(STABLE_CLIPPY),
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PreFlightGateError);
+    assert(!(result.error instanceof PrePushGateInfrastructureError));
+    assertEquals(result.error.command, "cargo clippy --all-targets");
+    assertEquals(ciRuns(calls).map((c) => c.command), [
+      "cargo clippy --all-targets",
+    ]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("runPrePushGate: a clippy component missing from a second toolchain is probed and is infrastructure", async () => {
   const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
   try {
