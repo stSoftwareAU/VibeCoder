@@ -330,6 +330,134 @@ Deno.test("refuses a host", async () => {
   assertEquals(rules(diff), [["no-assertion", 5]]);
 });
 
+/** The helper heads of Issue #5065: a return type holding an object type literal. */
+const OBJECT_RETURN_HELPERS: Array<
+  { label: string; head: string; tail: string }
+> = [
+  {
+    label: "async function, Promise of an object type",
+    head: "async function run(flag: boolean): Promise<{ ok: boolean }> {",
+    tail: "}",
+  },
+  {
+    label: "async arrow, Promise of an object type",
+    head: "const run = async (flag: boolean): Promise<{ ok: boolean }> => {",
+    tail: "};",
+  },
+  {
+    label: "sync function, object type",
+    head: "function run(flag: boolean): { ok: boolean } {",
+    tail: "}",
+  },
+  {
+    label: "re-wrapped across lines",
+    head: `async function run(
+  flag: boolean,
+): Promise<{
+  publishedBase: boolean;
+  lines: string[];
+}> {`,
+    tail: "}",
+  },
+];
+
+/** A fixture: the helper with `inner` as its body, then a test that only calls it. */
+function helperFixture(
+  head: string,
+  tail: string,
+  inner: string,
+): { diff: string; testLine: number } {
+  const body = `${head}\n${inner}\n${tail}\n\n` +
+    `Deno.test("x", async () => {\n  await run(true);\n});\n`;
+  const testLine =
+    body.split("\n").findIndex((l) => l.startsWith("Deno.test(")) +
+    1;
+  return { diff: added("tests/runner_test.ts", body), testLine };
+}
+
+Deno.test("a helper whose return type holds an object type literal is judged by its body (Issue #5065)", () => {
+  const asserting = `  const out = await exec(flag);
+  assertEquals(out.ok, !flag);
+  return out;`;
+  const shapes: Array<[string, string]> = OBJECT_RETURN_HELPERS.map((
+    h,
+  ) => [h.label, helperFixture(h.head, h.tail, asserting).diff]);
+  shapes.push([
+    "nested generic and union",
+    added(
+      "tests/runner_test.ts",
+      `function run(flag: boolean): Promise<Array<{ ok: boolean }>> | { ok: false } {
+  const out = exec(flag);
+  assertEquals(out.ok, !flag);
+  return out;
+}
+
+Deno.test("x", async () => {
+  await run(true);
+});
+`,
+    ),
+  ]);
+  shapes.push([
+    "function type inside the generic",
+    added(
+      "tests/runner_test.ts",
+      `async function run(flag: boolean): Promise<(x: number) => { ok: boolean }> {
+  const out = await exec(flag);
+  assertEquals(out.ok, !flag);
+  return out;
+}
+
+Deno.test("x", async () => {
+  await run(true);
+});
+`,
+    ),
+  ]);
+  shapes.push([
+    "arrow with an expression body",
+    added(
+      "tests/runner_test.ts",
+      `const run = (flag: boolean): { ok: boolean } => assertResult(flag);
+
+Deno.test("x", async () => {
+  await run(true);
+});
+`,
+    ),
+  ]);
+  for (const [label, diff] of shapes) assertEquals(rules(diff), [], label);
+});
+
+Deno.test("a helper with an object return type that asserts nothing is still refused (Issue #5065)", () => {
+  const bare = `  const out = await exec(flag);
+  return out;`;
+  for (const h of OBJECT_RETURN_HELPERS) {
+    const { diff, testLine } = helperFixture(h.head, h.tail, bare);
+    assertEquals(rules(diff), [["no-assertion", testLine]], h.label);
+  }
+});
+
+Deno.test("an unterminated return type is a note, not a hang or a finding (Issue #5065)", () => {
+  const file = "tests/runner_test.ts";
+  const diff = added(
+    file,
+    "function run(flag: boolean): " + "<".repeat(50_000) + "\n" +
+      `Deno.test("x", () => {\n  run(true);\n});\n`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{ file, line: 2, kind: "unseen" }]);
+
+  const spaced = added(
+    file,
+    "const run = (flag: boolean) =>" + " ".repeat(50_000) + "{\n" +
+      `  assertEquals(exec(flag), 1);\n};\n\n` +
+      `Deno.test("x", () => {\n  run(true);\n});\n`,
+  );
+  assertEquals(rules(spaced), []);
+});
+
 Deno.test("in an edited file, a test calling a function out of view is a note, not a finding", () => {
   const diff = [
     "diff --git a/tests/a_test.ts b/tests/a_test.ts",
