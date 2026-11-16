@@ -1053,6 +1053,8 @@ each criterion before writing the PR summary and record the assessment as a
   had: scope creep is named in the PR rather than found at review.
 
 Each assessment starts with its status word (plain, emphasised or code-formatted).
+`partially` or `partially met` reads as `partial`, and `not met` as `missing`,
+so an unmet entry written another way still withholds the close (Issue #5053).
 A status word inside a criterion description or nested test name is prose, not
 an assessment: a negative test for a "missing or unreadable value" must not
 prevent the issue closing or trigger a human hand-off.

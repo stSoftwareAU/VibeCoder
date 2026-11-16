@@ -10,7 +10,8 @@
  * the next run re-claims the issue and resumes the branch (Issue #220). When
  * that run completes, completion marks the draft ready and it takes the
  * normal review and auto-merge path, even with a criterion still unmet
- * (Issue #4234); the body says `Closes #N` unless an entry is `missing`.
+ * (Issue #4234); the body says `Closes #N` unless an entry is `partial` or
+ * `missing`.
  * When marking a known draft ready fails, the run is not released as having
  * raised it ready: completion fails the run so the next run retries (Issue
  * #4952). A draft whose state could not be read is treated as a known draft
@@ -239,6 +240,6 @@ export function buildDraftContinuationBody(issueNumber: number): string {
     "The issue stays under `work-on`: the next run resumes this branch; " +
     "when it completes, this PR is marked ready and auto-merge armed, even " +
     "with a criterion still unmet, and it says `Closes #N` unless an entry " +
-    "is `missing`.",
+    "is `partial` or `missing`.",
   ].join("\n");
 }
