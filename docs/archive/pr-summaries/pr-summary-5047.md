@@ -129,10 +129,10 @@ flowchart TD
   `worker/deno/tests/pr_maintenance_bot_prs_test.ts`,
   `worker/deno/tests/pr_invitation_lookup_test.ts` and the
   `pr_merge_conflict_*` tests: 341 passed, 0 failed.
-- Full `./quality.sh` on the code commit: passed with skipped checks. Config
+- Full `./quality.sh` on the code commit and again on bbe123ea, which adds the
+  docs change and this summary: passed with skipped checks both times. Config
   integration was skipped (no `.config.json`) and checkov is not installed
-  here. The later commits change only `docs/GH-API-OPTIMISATION.md` and this
-  summary.
+  here.
 - Not covered: a live end-to-end cycle through `runFleetPrPrefetch` in
   `run_core_production_deps.ts`. The tests drive `prefetchFleetOpenPrs` and
   `listActionablePrs` directly, with the same cache.
