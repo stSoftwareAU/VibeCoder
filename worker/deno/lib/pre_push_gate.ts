@@ -2862,7 +2862,7 @@ async function failsOnBaseToo(args: {
  * infrastructure fault, not a verdict. The agent's own hook sets `compareRef`
  * only for a run handed the PR base; with none, a failing check is a verdict.
  *
- * `repairChecksWithCiCargo` (CI-fix and PR-feedback repair pushes of repos with no
+ * `repairChecksWithCiCargo` (CI-fix, PR-feedback, spelling and merge-conflict repair pushes of repos with no
  * pre-flight configuration, where only the CI cargo checks should gate) runs nothing but those CI cargo checks,
  * the repository's ShellCheck policy (Issue #4631), the cargo-deny gate
  * (Issue #4626), which every gate run applies, and, as every repair push does,
@@ -2890,8 +2890,7 @@ export async function runPrePushGate(opts: {
   stdin: string;
   preFlightCommands: readonly string[];
   /**
-   * Repair gate for a repo with no pre-flight commands (spelling and
-   * merge-conflict repairs): runs only the shared repair checks (ShellCheck
+   * Repair gate for the fleet babysitter's tree gate: runs only the shared repair checks (ShellCheck
    * policy, cargo deny for pushed cargo inputs, and the pushed paths' unit
    * tests and markdownlint) and no formatter, lint, cspell, Floci or CI cargo
    * check.
@@ -2903,8 +2902,8 @@ export async function runPrePushGate(opts: {
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
   findCspell?: (repoRoot: string) => Promise<string | null>;
   /**
-   * Repair gate for CI-fix and PR-feedback repairs of a repo with no
-   * pre-flight commands: the shared repair checks plus the repo CI's cargo
+   * Repair gate for CI-fix, PR-feedback, spelling and merge-conflict repairs
+   * of a repo with no pre-flight commands: the shared repair checks plus the repo CI's cargo
    * clippy and test-target compile; skips the pre-flight commands (see the doc
    * comment above).
    */

@@ -55,17 +55,17 @@ import { runGhOrThrow } from "./gh_spawn.ts";
  * cspell, the Floci deploy test and the repository's ShellCheck policy), then
  * cargo deny when applicable (Issue #4626), even when `commands` is empty; an
  * empty list only means no repo pre-flight commands run. A spec with
- * `repairChecksOnly` (spelling and merge-conflict repairs of a repo with no
- * pre-flight commands) runs just the shared repair checks: the ShellCheck
- * policy, cargo deny for changed cargo inputs (Issues #4631 and #4626), and the
- * dependency-selected unit tests and markdownlint for the pushed paths
- * (Issue #4930). It runs no deno/cargo formatter, deno lint, cspell or Floci
- * check.
+ * `repairChecksOnly` (the fleet babysitter's tree gate) runs just the shared
+ * repair checks: the ShellCheck policy, cargo deny for changed cargo inputs
+ * (Issues #4631 and #4626), and the dependency-selected unit tests and
+ * markdownlint for the pushed paths (Issue #4930). It runs no deno/cargo
+ * formatter, deno lint, cspell, Floci or CI cargo check.
  *
- * `repairChecksWithCiCargo` (Issue #4630; CI-fix and PR-feedback repairs of a
- * repo with no pre-flight commands) runs those same repair checks and also the
- * repo CI's own cargo clippy and test-target compile: no fmt, lint, cspell or
- * Floci checks, and no pre-flight commands. See {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT}.
+ * `repairChecksWithCiCargo` (Issues #4630 and #5169; CI-fix, PR-feedback,
+ * spelling and merge-conflict repairs of a repo with no pre-flight commands)
+ * runs those same repair checks and also the repo CI's own cargo clippy and
+ * test-target compile: no fmt, lint, cspell or Floci checks, and no
+ * pre-flight commands. See {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT}.
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */
@@ -88,14 +88,16 @@ export interface PreFlightGateSpec {
    * check when the pushed paths include a cargo input, and the
    * dependency-selected unit tests and configured markdownlint for the pushed
    * paths (Issues #4631, #4626 and #4930). No formatter, lint, cspell, Floci
-   * or CI cargo check runs.
+   * or CI cargo check runs. Used only by the fleet babysitter's tree gate
+   * (`babysitter_tree_gate.ts`).
    */
   repairChecksOnly?: boolean;
 }
 
 /**
- * The gate the repair processors (CI fix and PR feedback) pass when a repo has
- * no pre-flight commands (Issue #4630). Their repairs otherwise reach the
+ * The gate the repair processors (CI fix, PR feedback, spelling and
+ * merge-conflict) pass when a repo has no pre-flight commands (Issues #4630
+ * and #5169). Their repairs otherwise reach the
  * branch with no gate, and CI then fails on clippy. Only the repo CI's cargo
  * clippy and test-target compile run, plus the ShellCheck policy and the CI
  * cargo-deny check for changed cargo inputs (Issues #4631 and #4626), and the
@@ -118,10 +120,9 @@ export const REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT = Object.freeze<
  * to {@link commitAndPushPending}. Returns `undefined` (not an empty spec) so
  * a caller that passes it straight through leaves a repo with no entry
  * ungated; the issue completion phase substitutes `{ commands: [] }` instead,
- * so it still runs the changed-file checks (Issue #3689). The spelling and
- * merge-conflict repair processors use {@link resolveRepairPreFlightSpec}; the
- * CI-fix and PR-feedback repair processors substitute
- * {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT} (Issue #4630). Throws on
+ * so it still runs the changed-file checks (Issue #3689). The repair
+ * processors use {@link resolveRepairPreFlightSpec} or substitute
+ * {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT} (Issues #4630 and #5169). Throws on
  * malformed config via `getPreFlightCommands` — but config is already validated at load
  * (Issue #3577), so this is defence in depth.
  */
@@ -135,13 +136,12 @@ export function resolvePreFlightSpec(
 
 /**
  * {@link resolvePreFlightSpec} for the spelling and merge-conflict PR repair
- * processors (the CI-fix and PR-feedback processors use
- * {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT} instead): a repo with no
- * pre-flight commands gets the `repairChecksOnly` spec, so before the repair is
- * pushed it still gets the ShellCheck publication check, the CI cargo-deny
- * check when the pushed paths include a cargo input, and the
- * dependency-selected unit tests and configured markdownlint for the pushed
- * paths (Issues #4631, #4626 and #4930), and nothing else. WIP checkpoint,
+ * processors: a repo with no pre-flight commands gets
+ * {@link REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT}, so before the repair is
+ * pushed it gets the CI cargo clippy and test-target compile (compared against
+ * the PR base), the ShellCheck publication check, the CI cargo-deny check, and
+ * the dependency-selected unit tests and markdownlint for the pushed paths
+ * (Issues #4631, #4626, #4930 and #5169). WIP checkpoint,
  * timeout-preservation and declared hand-off pushes never call this; they stay
  * ungated on purpose.
  */
@@ -150,7 +150,7 @@ export function resolveRepairPreFlightSpec(
   repo: string,
 ): PreFlightGateSpec {
   return resolvePreFlightSpec(repoConfigs, repo) ??
-    { commands: [], repairChecksOnly: true };
+    REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT;
 }
 
 /**
@@ -981,12 +981,13 @@ export async function gateUnpushedCommits(
  *   blocks BOTH the commit and the push. There is no override flag. Supplying
  *   a spec, even one with an empty `commands` list, also turns on Step 1b's
  *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
- *   (zero added latency, no gate); a `repairChecksOnly` spec runs just the
+ *   (zero added latency, no gate); a `repairChecksOnly` spec (the babysitter tree gate) runs just the
  *   repository ShellCheck policy, the CI cargo-deny check when the pushed
  *   paths include a cargo input, and the dependency-selected unit tests and
  *   configured markdownlint for the pushed paths (Issues #4631, #4626 and
- *   #4930). A spec with `repairChecksWithCiCargo` runs those same checks plus
- *   the repo CI's cargo checks (Issue #4630).
+ *   #4930). A spec with `repairChecksWithCiCargo` (the CI-fix, PR-feedback,
+ *   spelling and merge-conflict repairs) runs those same checks plus the repo
+ *   CI's cargo checks (Issues #4630 and #5169).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly

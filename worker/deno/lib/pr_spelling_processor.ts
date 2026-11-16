@@ -31,6 +31,7 @@ import {
   startHeartbeat,
   stopHeartbeat,
 } from "./heartbeat.ts";
+import { formatBeforeGate } from "./repo_formatters.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
 import { guardGatedHead } from "./gated_head_guard.ts";
 import {
@@ -492,6 +493,11 @@ async function _processSpellingWithHeartbeat(
     warn: (message) => logger.warn(message),
     log: (message) => logger.info(message),
   });
+  // Issue #5169: format the round's unpushed commits before the gate, as the
+  // CI-fix and PR-feedback rounds do, so a re-wrapped line never reaches CI
+  // failing `deno fmt --check`. Never fatal.
+  const formatRound = () =>
+    formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
   const pushOptions = {
     cwd: processorDeps.workDir,
     expectedAncestor: beforeSha,
@@ -506,6 +512,8 @@ async function _processSpellingWithHeartbeat(
     pushOptions,
     false,
     preFlight,
+    undefined,
+    formatRound,
   );
 
   let pushSucceeded = false;
@@ -553,6 +561,8 @@ async function _processSpellingWithHeartbeat(
           pushOptions,
           false,
           preFlight,
+          undefined,
+          formatRound,
         );
         if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
           hasChanges = true;

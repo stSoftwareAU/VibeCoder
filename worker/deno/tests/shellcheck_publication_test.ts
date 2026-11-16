@@ -191,6 +191,51 @@ Deno.test(
   },
 );
 
+// Issue #5169 (#5151's ShellCheck incidents): the spec a spelling or
+// merge-conflict repair resolves for a repo with no pre-flight commands runs
+// the real ShellCheck policy, and a clean script is still pushed.
+Deno.test(
+  "commitAndPushPending: a spelling or merge-conflict repair blocks a real ShellCheck diagnostic and pushes a clean script (Issue #5169)",
+  async () => {
+    const { root, dir } = await fixture();
+    try {
+      const remote = await git(dir, "rev-parse", "origin/repair");
+      const spec = resolveRepairPreFlightSpec(undefined, "org/repo");
+      await Deno.writeTextFile(`${dir}/script.sh`, "#!/bin/sh\necho $1\n");
+      const blocked = await commitAndPushPending(
+        "repair",
+        "Fix #5169",
+        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        false,
+        spec,
+      );
+      assertEquals(blocked.ok, false);
+      if (!blocked.ok) assertStringIncludes(blocked.error.message, "SC2086");
+      assertEquals(
+        await git(dir, "ls-remote", "origin", "refs/heads/repair"),
+        `${remote}\trefs/heads/repair`,
+      );
+
+      // Valid-path control: the quoted script passes and is pushed.
+      await Deno.writeTextFile(`${dir}/script.sh`, '#!/bin/sh\necho "$1"\n');
+      const pushed = await commitAndPushPending(
+        "repair",
+        "Fix #5169",
+        { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
+        false,
+        spec,
+      );
+      assert(pushed.ok, pushed.ok ? "" : pushed.error.message);
+      assertEquals(
+        await git(dir, "rev-parse", "origin/repair"),
+        await git(dir, "rev-parse", "HEAD"),
+      );
+    } finally {
+      await Deno.remove(root, { recursive: true });
+    }
+  },
+);
+
 Deno.test(
   "commitAndPushPending: a WIP checkpoint with no spec still pushes a ShellCheck diagnostic",
   async () => {

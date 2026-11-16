@@ -5463,9 +5463,9 @@ gates do (see that bullet):
      CHECKED` line. A test file the
      push added, a base run that passes, a base the gate cannot check out (for
      example a deepen that failed, so no merge-base is found), or an output that
-     names no failed test stays a block. The spelling and merge-conflict
-     repairs' spec (`repairChecksOnly`) and the CI-fix and PR-feedback repairs'
-     spec (`repairChecksWithCiCargo`) also run these unit tests and configured markdownlint from the pushed
+     names no failed test stays a block. The CI-fix, PR-feedback, spelling
+     and merge-conflict repairs' spec (`repairChecksWithCiCargo`, Issue #5169)
+     and the babysitter repair container's tree gate (`repairChecksOnly`) also run these unit tests and configured markdownlint from the pushed
      paths, while retaining their existing formatter policy;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
@@ -5600,7 +5600,7 @@ gates do (see that bullet):
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
    - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
-     Intermediate push hooks and both repair specs (`repairChecksOnly` and
+     Intermediate push hooks and both repair specs (`repairChecksOnly`, used only by the babysitter's tree gate, and
      `repairChecksWithCiCargo`) run it when pushed changes include a `Cargo.toml`,
      `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
      `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
@@ -5688,11 +5688,12 @@ gates do (see that bullet):
      gets no ShellCheck check. The same validation runs before the PR repair
      processors (CI fix, review feedback, spelling and merge conflict) publish
      a repair through `commitAndPushPending`, including repositories without
-     configured pre-flight commands, where it is the only Step 1b check for the
-     spelling and merge-conflict repairs (the CI-fix and review-feedback repairs
-     add the CI cargo checks, Issue #4630). A spelling or merge-conflict repair
-     in a repo that has pre-flight commands also gets the CI cargo checks,
-     compared against the PR base as described above. The
+     configured pre-flight commands, where all four repairs use
+     `repairChecksWithCiCargo`: the shared repair checks plus the CI cargo
+     clippy and test-target compile, compared against the PR base as described
+     above (Issues #4630 and #5169). A spelling or merge-conflict repair in a
+     repo that has pre-flight commands also gets the CI cargo checks, compared
+     against the PR base. The
      fleet babysitter's repair container runs the ShellCheck policy over the
      agent's uncommitted changes before a repair reports ready (Issue #4930),
      inside the worker container (#4768, #4770), never beside the host App key,
