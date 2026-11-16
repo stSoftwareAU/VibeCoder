@@ -470,6 +470,8 @@ export function splitMarkdownCode(
   let fenceCursor = "";
   let paragraph = "";
   let inFence = false;
+  const listIndents: number[] = [];
+  let fenceListIndent = 0;
   let opener: FenceLine | null = null;
   // How many block-quote levels the open paragraph sits in (0 = unquoted) —
   // tracked separately from `startsNewBlock` because consecutive `>` lines
@@ -498,12 +500,45 @@ export function splitMarkdownCode(
 
   while (i < lines.length) {
     const line = lines[i]!;
+    // A list's fenced block ends when a nonblank line leaves its container.
+    // Process that line again as prose/an opener, never as the old closer.
+    const indentText = line.match(/^[ \t]*/)![0];
+    let indent = 0;
+    for (const char of indentText) {
+      tick(meter);
+      indent += char === "\t" ? 4 - indent % 4 : 1;
+    }
+    if (
+      inFence && fenceListIndent > 0 && line.trim() && indent < fenceListIndent
+    ) {
+      pushSegment(fenceCursor, true);
+      fenceCursor = "";
+      inFence = false;
+      opener = null;
+    }
+    if (!inFence && line.trim()) {
+      while (
+        listIndents.length && indent < listIndents[listIndents.length - 1]!
+      ) {
+        listIndents.pop();
+      }
+      const marker = line.slice(indentText.length).match(
+        /^(?:[-+*]|[0-9]{1,9}[.)])([ \t]+)/,
+      );
+      if (marker) {
+        const padding = marker[1]!.length;
+        listIndents.push(
+          indent + marker[0].length - padding + (padding > 4 ? 1 : padding),
+        );
+      }
+    }
     const fenceMatch = parseFenceLine(line, meter);
     if (fenceMatch && !inFence) {
       flushParagraph();
       currentQuoteDepth = 0;
       inFence = true;
       opener = fenceMatch;
+      fenceListIndent = listIndents[listIndents.length - 1] ?? 0;
       fenceCursor += line;
       i++;
       continue;
