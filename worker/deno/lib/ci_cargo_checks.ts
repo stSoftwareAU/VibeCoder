@@ -20,6 +20,7 @@
  * cargo-relevant keys (`RUSTFLAGS` and similar). The toolchain comes from a
  * `dtolnay/rust-toolchain`, `actions-rust-lang/setup-rust-toolchain` or
  * `actions-rs/toolchain` step in the same job, unless the command names one.
+ * A `dtolnay/rust-toolchain` ref that is a commit SHA names no toolchain.
  *
  * A command that cannot be reproduced faithfully (a GitHub expression, a pipe,
  * shell syntax such as `$`, a glob, a redirect or a grouping, an unterminated
@@ -438,6 +439,9 @@ function resolveEnv(sources: readonly Mapping[]): {
   return { env };
 }
 
+/** A full 40-hex commit SHA, which pins an action but names no toolchain. */
+const COMMIT_SHA = /^[0-9a-f]{40}$/i;
+
 /** The toolchain a job's setup step names. */
 type Toolchain =
   | { kind: "none" }
@@ -446,7 +450,8 @@ type Toolchain =
 
 /**
  * The toolchain a job's first toolchain-setup step names. `dtolnay/rust-toolchain@<ref>`
- * uses `with.toolchain` or the ref. The other two actions use `with.toolchain`
+ * uses `with.toolchain` or the ref, except that a ref which is a commit SHA
+ * names no toolchain (Issue #5136). The other two actions use `with.toolchain`
  * only. An absent or empty name means none. An expression, a name with unusual
  * characters, or a non-string `with.toolchain` (a YAML number such as an
  * unquoted `1.80`, which has already lost its text) is invalid.
@@ -478,7 +483,8 @@ function jobToolchain(job: Mapping): Toolchain {
       };
     }
     const withValue = typeof rawWith === "string" ? rawWith : undefined;
-    const value = dtolnay ? withValue ?? ref : withValue;
+    const refName = ref !== undefined && COMMIT_SHA.test(ref) ? undefined : ref;
+    const value = dtolnay ? withValue ?? refName : withValue;
     const name = (value ?? "").trim();
     if (name === "") return { kind: "none" };
     if (name.includes("$")) {

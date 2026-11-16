@@ -257,8 +257,11 @@ Deno.test("pre-push gate retry - success: one agent turn, flag set on entry, fix
   );
   assertStringIncludes(
     commit.message,
-    "In-run pre-push-gate recovery (Issue #4128).",
+    "In-run pre-push-gate recovery.",
   );
+  // Issue #5045: the message lands in the target repo, so no VibeCoder number.
+  const rest = commit.message.replaceAll(`#${ISSUE}`, "");
+  assertEquals(rest.match(/#\d+/g), null, commit.message);
 });
 
 Deno.test("pre-push gate retry - agent invocation error: not run, detail names it, no commit (Issue #4128)", async () => {

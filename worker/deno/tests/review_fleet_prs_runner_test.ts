@@ -11,6 +11,12 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
+import { postTestPolicy } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
+import {
+  effectiveTestPolicy,
+  TEST_POLICY_CONFIG_KEYS,
+  testModeFor,
+} from "../../../.claude/skills/review-fleet-prs/scripts/test_change_policy.ts";
 const fromFileUrl = (u: URL) => decodeURIComponent(u.pathname);
 
 const RUNNER = fromFileUrl(
@@ -148,6 +154,9 @@ printf '%s\\n' "$@" >> "$HOME/claude-args"
 [ -x "$HOME/round" ] && exec "$HOME/round"
 exit 0`,
   );
+  // The worktree has no .config.json, so the round's test-policy snapshot
+  // (Issue #5174) is taken from this one, which holds no policy keys.
+  await Deno.writeTextFile(`${home}/config.json`, "{}");
   return home;
 }
 
@@ -178,7 +187,12 @@ async function runBash(
 ) {
   const out = await new Deno.Command("bash", {
     args: bashArgs,
-    env: { HOME: home, PATH: `${home}/bin:/usr/bin:/bin`, ...env },
+    env: {
+      HOME: home,
+      PATH: `${home}/bin:/usr/bin:/bin`,
+      REVIEW_FLEET_PRS_CONFIG: `${home}/config.json`,
+      ...env,
+    },
     clearEnv: true,
     stdout: "piped",
     stderr: "piped",
@@ -1001,6 +1015,7 @@ async function runFor(
       HOME: home,
       PATH: `${home}/bin:/usr/bin:/bin`,
       REVIEW_FLEET_PRS_TICK: "1",
+      REVIEW_FLEET_PRS_CONFIG: `${home}/config.json`,
       ...env,
     },
     clearEnv: true,
@@ -1459,4 +1474,77 @@ Deno.test("run.sh fails a round whose Codex home cannot be created, without star
   assertEquals(code, 1);
   assertEquals(await claudeArgs(home), null);
   assertStringIncludes(await runnerLog(home), "Codex home");
+});
+
+Deno.test("run.sh hands the round a read-only snapshot of only the test-change policy, which post.ts reads (Issue #5174)", async () => {
+  const home = await fixture(READY);
+  // A distinct value for every policy key, so a dropped or swapped key shows.
+  // The other keys hold secret-looking values that must not reach the round.
+  const alt = {
+    allowed_authors: ["nleck"],
+    authorized_commenters: ["commenter"],
+    pr_reviewers: ["reviewer"],
+    github_user: "VibeCoderST",
+    fleet_pr_authors: ["fleet-author"],
+    service_accounts: ["stsoftware-pr-reviewer[bot]"],
+    pr_reviewer_test_hold_repos: ["acme/held"],
+    pr_reviewer_auto_release: ["acme/old"],
+    github_token: "ghp_secretvalue",
+    pr_reviewer_app: { private_key_path: "/secret/key.pem" },
+  };
+  await Deno.mkdir(`${home}/alt`);
+  await Deno.writeTextFile(`${home}/alt/config.json`, JSON.stringify(alt));
+  const { code, output } = await runBash(home, [RUNNER, "--once"], {
+    REVIEW_FLEET_PRS_CONFIG: `${home}/alt/config.json`,
+  });
+  assertEquals(code, 0, output);
+  assert(await claudeArgs(home), "the round was not started");
+
+  const roundsDir = `${home}/logs/review-fleet-prs/rounds`;
+  const dirs: string[] = [];
+  for await (const entry of Deno.readDir(roundsDir)) dirs.push(entry.name);
+  assertEquals(dirs.length, 1, "one round directory");
+  const snapshotPath = `${roundsDir}/${dirs[0]}/test-policy.json`;
+  const snapshotText = await Deno.readTextFile(snapshotPath);
+  assertEquals(
+    Object.keys(JSON.parse(snapshotText)).sort(),
+    [...TEST_POLICY_CONFIG_KEYS].sort(),
+  );
+  assert(!snapshotText.includes("ghp_secretvalue"), "no credential in it");
+  assert(!snapshotText.includes("/secret/key.pem"), "no App key path in it");
+  assertEquals((await Deno.stat(snapshotPath)).mode! & 0o222, 0, "read-only");
+
+  // The prompt gives post.ts the snapshot by its container path, which post.ts
+  // reads from the host's log directory.
+  const prompt = await roundPrompt(home);
+  const containerPath = `/home/vibe/logs/review-fleet-prs/rounds/${
+    dirs[0]
+  }/test-policy.json`;
+  const configArg = /--config=(\S+)/.exec(prompt)?.[1] ?? "";
+  assertEquals(configArg, containerPath);
+  const hostPath = `${home}/logs/${configArg.slice("/home/vibe/logs/".length)}`;
+  const policy = await postTestPolicy([
+    "--input=x.json",
+    `--config=${hostPath}`,
+  ]);
+  assertEquals(policy, effectiveTestPolicy(alt));
+  assertEquals(testModeFor(policy, "acme/held"), "hold-all");
+  assert(policy.trustedLogins.includes("nleck"));
+  assert(policy.fleetWorkerLogins.includes("stsoftware-pr-reviewer[bot]"));
+});
+
+Deno.test("run.sh starts no round when the test-change policy cannot be snapshotted, and releases its claim (Issue #5174)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await runBash(home, [RUNNER, "--once"], {
+    REVIEW_FLEET_PRS_CONFIG: `${home}/no-such/config.json`,
+  });
+  assertEquals(code, 1, output);
+  assertEquals(await claudeArgs(home), null, "no round was started");
+  assertStringIncludes(
+    await runnerLog(home),
+    "test-change policy snapshot failed",
+  );
+  const released = await recorded(home, "release-args");
+  assert(released, "the claim was released");
+  assertStringIncludes(released, "--number=7");
 });
