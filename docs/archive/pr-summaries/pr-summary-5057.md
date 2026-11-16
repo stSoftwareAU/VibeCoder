@@ -1,8 +1,8 @@
 ## Summary
 
-`headSummaryDigest` in `worker/deno/lib/pr_body_reconcile.ts` hashed the
-summary file exactly as committed. The digest a worker PR body records comes
-from the loaders' content (`loadPrSummary` / `loadCommittedPrSummary` in
+`headSummaryDigest` in `worker/deno/lib/pr_body_reconcile.ts` hashed the summary
+file exactly as committed. The digest a worker PR body records comes from the
+loaders' content (`loadPrSummary` / `loadCommittedPrSummary` in
 `worker/deno/lib/pr_summary_loader.ts`), which runs
 `normaliseSummaryVersionBumps` first. For a summary holding a literal line such
 as ``Version bump: `VERSION` 1.2.3 → 1.2.4`` the two digests never matched, so
@@ -21,10 +21,11 @@ Closes #5057.
 ### Intent and Rationale
 
 - Hash the same content on all three paths. Completion
-  (`worker/deno/lib/phases/completion_phase.ts`, `summaryDigest:
-  prSummaryDigest(rawSummaryContent)`, where `rawSummaryContent` is the
-  loader's content) and `buildSyncedPrBodyCandidate` in
-  `worker/deno/lib/pr_body_sync.ts` already hash normalised content, so only
+  (`worker/deno/lib/phases/completion_phase.ts`,
+  `summaryDigest:
+  prSummaryDigest(rawSummaryContent)`, where
+  `rawSummaryContent` is the loader's content) and `buildSyncedPrBodyCandidate`
+  in `worker/deno/lib/pr_body_sync.ts` already hash normalised content, so only
   the reconcile read needed changing.
 
 ### Essential Design Decisions
@@ -57,14 +58,14 @@ flowchart LR
 - Docs: `docs/workflows/pr-feedback.md`, section "Priority 1.64 — Reconcile PR
   Body Digests". It now says the digest is taken after the loaders'
   normalisation. The `headSummaryDigest` doc comment says the same. The
-  post-push sync sentence in the same file ("the digest is of the summary
-  alone, Issue #4234") was re-read. It describes the sync, which already hashes
-  loader content, so it stays true.
+  post-push sync sentence in the same file ("the digest is of the summary alone,
+  Issue #4234") was re-read. It describes the sync, which already hashes loader
+  content, so it stays true.
 - Callers of `headSummaryDigest` checked: `reconcilePr` in
   `worker/deno/lib/pr_body_reconcile.ts` (the reconcile pass) and the
   `headSummaryDigest` tests in `worker/deno/tests/pr_body_reconcile_test.ts`.
-  Their summaries carry no bump line, so normalisation leaves them unchanged
-  and they still pass.
+  Their summaries carry no bump line, so normalisation leaves them unchanged and
+  they still pass.
 - Issue numbers this diff adds: #5057 (PR body reconcile hashes the raw summary
   but the body records the normalised digest, so a summary with a literal
   version-bump line is checked out again on every pass).
@@ -81,12 +82,13 @@ flowchart LR
   - The test then asserts two passes with no checkout, no log lines, one
     contents read, and the memo set on the first pass.
 - Red against the base `worker/deno/lib/pr_body_reconcile.ts`: the new test
-  failed (35 passed, 1 failed). The second pass re-checked the PR
-  (`checked: 1`, expected `0`) because the first pass never memoised it.
-- Green after the fix: `deno task test:unit tests/pr_body_reconcile_test.ts
-  tests/pr_summary_loader_test.ts tests/pr_body_sync_test.ts`, 133 passed and 0
-  failed. `deno fmt --check`, `deno lint` and `deno check` on the two changed
-  TypeScript files are clean.
+  failed (35 passed, 1 failed). The second pass re-checked the PR (`checked: 1`,
+  expected `0`) because the first pass never memoised it.
+- Green after the fix:
+  `deno task test:unit tests/pr_body_reconcile_test.ts
+  tests/pr_summary_loader_test.ts tests/pr_body_sync_test.ts`,
+  133 passed and 0 failed. `deno fmt --check`, `deno lint` and `deno check` on
+  the two changed TypeScript files are clean.
 - No existing test was edited, and no assertion was removed.
 - Full `./quality.sh` on 41b5cc84 (the code, test and docs commit): passed with
   skipped checks. Config integration was skipped (no `.config.json`), and
