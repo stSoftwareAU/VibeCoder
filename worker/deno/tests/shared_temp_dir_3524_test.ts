@@ -8,12 +8,19 @@
  * between. CODING-STANDARDS.md must treat the shared temp directory as host
  * state and tell authors to keep every path inside a directory the test made,
  * and the issue prompt's PR Raising Requirements must ask about it before the
- * PR is raised.
+ * PR is raised. Issue #5071 reworded the `/tmp` exemption so a placeholder
+ * that the change makes live is a hit.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assertPins, readRepoDoc, section } from "./support/markdown_docs.ts";
+import { assertFalse } from "@std/assert";
+import {
+  assertPins,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 Deno.test("CODING-STANDARDS.md host-state section treats the shared temp directory as host state (Issue #3524)", async () => {
   assertPins(
@@ -29,6 +36,21 @@ Deno.test("CODING-STANDARDS.md host-state section treats the shared temp directo
       "grep new or edited test files for a literal `/tmp/`",
       "A `/tmp/...` string that never touches the filesystem",
     ],
+  );
+});
+
+Deno.test("CODING-STANDARDS.md temp-path exemption is judged against the code at the head, not a config placeholder (Issue #5071)", async () => {
+  const text = section(
+    await readRepoDoc("CODING-STANDARDS.md"),
+    "Never let a unit test inherit the host's state",
+  );
+  assertPins(text, [
+    "never touches the filesystem once your change is in",
+    "Judge it against the code at the head, not the base",
+  ]);
+  assertFalse(
+    flat(text).includes("a config placeholder"),
+    "the /tmp exemption must not list a config placeholder as exempt — a placeholder the change makes live is a hit",
   );
 });
 
