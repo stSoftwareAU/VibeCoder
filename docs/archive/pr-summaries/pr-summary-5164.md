@@ -6,7 +6,9 @@ Claude quota. Build and select a reviewer image containing Claude and Codex,
 permit both providers through egress, and skip an absent Codex executable so
 Opus can run. Try the Claude pool afresh for Opus before paid DeepSeek overflow.
 Closes #5164.
-Part of #5081 (owner-authored subscription-first policy).
+Part of #5081.
+
+#5081 is the owner-authored subscription-first policy.
 
 ## Spec
 
@@ -141,3 +143,17 @@ Validation:
   failed on the repaired tests in `adc739f3`.
 - Linked the owner-authored policy separately from the bot-generated incident
   and quoted its requirement verbatim for the changed Opus expectation.
+
+## Final review corrections
+
+- The cached image fixture now provides a read-only image store: preparation
+  must succeed with the retained image despite builds being unavailable. The
+  runner-call counter and its assertion are removed.
+- Only provider-2 has Opus quota; provider-3, selected after Fable exhaustion,
+  refuses Opus. Successful completion now requires actual Opus rotation.
+- The governing issue uses the standalone `Part of #5081.` syntax accepted by
+  the policy parser; the exact requirement quote remains unchanged.
+- Verified the rotation regression fails when Opus rotation is disabled: it
+  completes on DeepSeek instead of Opus. Restored production unchanged.
+- All 56 command launch-plan, review-round and wiring tests pass with the
+  corrected fixtures; changed test files pass formatting and lint checks.

@@ -956,11 +956,12 @@ Deno.test("runCodexCli declares a missing executable unavailable (Issue #5164)",
 });
 
 Deno.test("Opus tries other Claude subscriptions before paid DeepSeek (Issue #5164)", async () => {
-  // Fable is capped on every subscription and Astra is out of quota. Only
-  // the last subscription still has Opus quota, so Opus must rotate to it.
+  // Fable is capped on every subscription and Astra is out of quota.
+  // Fable leaves provider-3 selected, which also refuses Opus. Only provider-2
+  // has Opus quota, so completing the review requires another rotation.
   const { deps, completedBy } = quotaProviders({
     labels: ["provider", "provider-2", "provider-3"],
-    claudeQuota: ["claude-opus-5-5:provider-3"],
+    claudeQuota: ["claude-opus-5-5:provider-2"],
     codex: "quota",
   });
   assertEquals(

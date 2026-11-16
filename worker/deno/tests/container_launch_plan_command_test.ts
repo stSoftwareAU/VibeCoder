@@ -128,12 +128,13 @@ function fakeImageRuntime(
   },
   options: {
     present?: boolean;
+    buildsAllowed?: boolean;
     baseBuildExit?: number;
     extensionLeavesImage?: boolean;
     stderr?: string;
   } = {},
 ) {
-  const state = { images: new Set<string>(), baseBuilt: false, builds: 0 };
+  const state = { images: new Set<string>(), baseBuilt: false };
   if (options.present) state.images.add(plan.image);
   const result = (code: number, stderr = "") =>
     Promise.resolve({
@@ -147,7 +148,9 @@ function fakeImageRuntime(
     if (args === plan.imageInspectArgs) {
       return result(state.images.has(plan.image) ? 0 : 1);
     }
-    state.builds++;
+    if (options.buildsAllowed === false) {
+      return result(1, "image store is read-only");
+    }
     if (args === plan.buildArgs) {
       if ((options.baseBuildExit ?? 0) !== 0) {
         return result(options.baseBuildExit!, options.stderr);
@@ -176,9 +179,11 @@ Deno.test("ensureReviewImage leaves a missing review image present and reuses an
   await ensureReviewImage(REVIEW_IMAGE_PLAN, missing.run);
   assert(missing.state.images.has(REVIEW_IMAGE_PLAN.image));
 
-  const cached = fakeImageRuntime(REVIEW_IMAGE_PLAN, { present: true });
+  const cached = fakeImageRuntime(REVIEW_IMAGE_PLAN, {
+    present: true,
+    buildsAllowed: false,
+  });
   await ensureReviewImage(REVIEW_IMAGE_PLAN, cached.run);
-  assertEquals(cached.state.builds, 0);
   assert(cached.state.images.has(REVIEW_IMAGE_PLAN.image));
 });
 
