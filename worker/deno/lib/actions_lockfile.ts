@@ -283,6 +283,7 @@ export function parseActionsLockfile(text: string): ActionsLockfileEvidence {
   }
 
   const dependencies = new Set<string>();
+  const metadata = new Map<string, string>();
   const pendingUses: Array<{ key: string; pins: string[] }> = [];
   if (root.dependencies !== undefined) {
     if (!isMapping(root.dependencies)) {
@@ -297,16 +298,16 @@ export function parseActionsLockfile(text: string): ActionsLockfileEvidence {
       }
       const fault = dependencyFault(key, record, version);
       if (fault !== null) return invalid(fault);
-      dependencies.add(normalisePin(keyPin));
 
-      const uses = (record as Mapping).uses;
+      const fields = record as Mapping;
+      const uses = fields.uses;
+      const pins: string[] = [];
       if (uses !== undefined) {
         if (!Array.isArray(uses)) {
           return invalid(
             `dependency \`${key}\` has a \`uses\` that is not a list`,
           );
         }
-        const pins: string[] = [];
         for (const pin of uses) {
           const parsed = typeof pin === "string" ? parsePin(pin) : null;
           if (parsed === null) {
@@ -318,8 +319,27 @@ export function parseActionsLockfile(text: string): ActionsLockfileEvidence {
           }
           pins.push(normalisePin(parsed));
         }
-        pendingUses.push({ key, pins });
       }
+      const canonical = normalisePin(keyPin);
+      // Match upstream equalAction: ordered, canonical uses plus every field.
+      const value = JSON.stringify([
+        fields.hostname ?? "",
+        fields.ref,
+        fields.commit,
+        fields.owner_id,
+        fields.repo_id,
+        pins,
+      ]);
+      const previous = metadata.get(canonical);
+      if (previous !== undefined && previous !== value) {
+        return invalid(
+          `duplicate action key ${canonical} after canonicalisation with differing metadata`,
+        );
+      }
+      if (previous !== undefined) continue;
+      metadata.set(canonical, value);
+      dependencies.add(canonical);
+      pendingUses.push({ key, pins });
     }
   }
 

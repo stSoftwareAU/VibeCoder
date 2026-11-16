@@ -522,3 +522,27 @@ Deno.test("composite call-sites never suggest ineffective lockfile adoption", ()
     assertStringIncludes(findings[0]!.suggestedFix, "SHA");
   }
 });
+
+Deno.test("canonical duplicate lock records must agree before granting coverage", () => {
+  const duplicate =
+    `    'Actions/Checkout@v4':\n        ref: 'v4'\n        commit: 'sha1-${HEX}'\n        owner_id: 44036562\n        repo_id: 197814629\n`;
+  const files = [wf(CI, CHECKOUT_V4_BODY)];
+  const equivalent = parseActionsLockfile(LOCK_CI_CHECKOUT + duplicate);
+  assertEquals(equivalent.kind, "valid");
+  assertEquals(scanActionPins(files, { lockfile: equivalent }), []);
+  for (
+    const conflicting of [
+      duplicate.replace(HEX, "f".repeat(40)),
+      duplicate.replace("owner_id: 44036562", "owner_id: 3"),
+      duplicate + "        uses: ['actions/checkout@v4']\n",
+    ]
+  ) {
+    const lockfile = parseActionsLockfile(LOCK_CI_CHECKOUT + conflicting);
+    assertEquals(scanActionLockfile(files, lockfile).map((f) => f.findingId), [
+      "BP-ACTIONS-LOCK-INVALID",
+    ]);
+    assertEquals(scanActionPins(files, { lockfile }).map((f) => f.findingId), [
+      "BP-SHA-PIN-actions-checkout",
+    ]);
+  }
+});
