@@ -36,7 +36,10 @@ import { redactGhBodyText } from "../lib/gh_body_redaction.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
 import { _resetBaseProtectionMemo } from "../lib/pr_auto_merge.ts";
-import { partialRollupMarker } from "../lib/milestone_partial_rollup.ts";
+import {
+  buildPartialRollupBody,
+  partialRollupMarker,
+} from "../lib/milestone_partial_rollup.ts";
 import { rollbackCloseComment as rollbackCloseCommentForTest } from "../lib/milestone_rollback_requeue.ts";
 import type { RunGh } from "../../../.claude/skills/review-fleet-prs/scripts/needs_human.ts";
 import type { TestChangeNote } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
@@ -761,14 +764,14 @@ RV_ISSUES[215] = {
   labelledBy: "nleck",
 };
 
-function rvReply(args: string[], body: string): string {
+function rvReply(args: string[], body: string, headRefName: string): string {
   if (args[0] === "pr") {
     return JSON.stringify({
       closingIssuesReferences: closingRefsIn(body).map((number) => ({
         number,
         repository: { name: "widgets", owner: { login: "acme" } },
       })),
-      headRefName: "milestone/v1-0",
+      headRefName,
       body,
     });
   }
@@ -824,12 +827,19 @@ function rvReply(args: string[], body: string): string {
   throw new Error(`unexpected gh call: ${args.join(" ")}`);
 }
 
-/** Runs the reviewer's governing read and test-change check on a rollup body. */
-async function assessRollupBody(body: string) {
+/**
+ * Runs the reviewer's governing read and test-change check on a rollup body.
+ * `headRefName` is the head the reviewer reads for the PR (Issue #5058: a
+ * partial rollup's snapshot branch, not a milestone branch).
+ */
+async function assessRollupBody(
+  body: string,
+  headRefName = "milestone/v1-0",
+) {
   const calls: string[][] = [];
   const runGh: RunGh = async (args) => {
     calls.push(args);
-    return rvReply(args, body);
+    return rvReply(args, body, headRefName);
   };
   const note: TestChangeNote = {
     file: "tests/retry_test.ts",
@@ -957,6 +967,47 @@ Deno.test("rollup provenance (control): an untrusted fleet-filed child gets a Pa
   );
   assertFalse(noUsableGoverningIssue(result));
   assertFalse(quoteNotInLinkedIssue(result));
+});
+
+// Issue #5058: the partial rollup's own body must link the children it
+// delivers, or the reviewer finds no governing issue and cannot read the quote
+// held only in a child.
+Deno.test("rollup provenance: a partial rollup's Part of lines link the parent and the delivered child, so the child's quote is found (Issue #5058)", async () => {
+  const snapshot = "partial-rollup/42-retry-policy-abcdef1";
+  const body = buildPartialRollupBody({
+    milestone: "#42 Retry policy",
+    milestoneBranch: "milestone/42-retry-policy",
+    defaultBranch: "main",
+    snapshotBranch: snapshot,
+    headSha: "a".repeat(40),
+    aheadBy: 3,
+    deliveredIssues: [77],
+  });
+  const { result, governing } = await assessRollupBody(body, snapshot);
+  assertEquals(
+    governing.issues.map((i) => [i.number, i.source]),
+    [[42, "part-of"], [77, "part-of"]],
+  );
+  assertEquals(result.checked, true);
+  assertFalse(noUsableGoverningIssue(result), JSON.stringify(result.findings));
+  assertFalse(quoteNotInLinkedIssue(result), JSON.stringify(result.findings));
+  assertEquals(result.findings, [], JSON.stringify(result.findings));
+});
+
+Deno.test("rollup provenance (control): a partial rollup with no title number and no delivered issues has no usable governing issue (Issue #5058)", async () => {
+  const snapshot = "partial-rollup/retry-policy-abcdef1";
+  const body = buildPartialRollupBody({
+    milestone: "Retry policy",
+    milestoneBranch: "milestone/retry-policy",
+    defaultBranch: "main",
+    snapshotBranch: snapshot,
+    headSha: "a".repeat(40),
+    aheadBy: 3,
+    deliveredIssues: [],
+  });
+  const { result, governing } = await assessRollupBody(body, snapshot);
+  assertEquals(governing.issues, []);
+  assert(noUsableGoverningIssue(result), JSON.stringify(result.findings));
 });
 
 Deno.test("classifyClosedIssues - flags sync-pr-only and predates-reopen, claims otherwise (Issue #3476)", async () => {
@@ -6200,6 +6251,14 @@ interface DeadlockScenarioOptions {
   filesChanged?: number;
   mergedPartialRollupPrs?: unknown[];
   gitRefThrows?: boolean;
+  /** Script a merged PR for closed #1456, so the issue is claimed (Issue #5058). */
+  claimedClosedIssue?: boolean;
+  /** Fail the closed-issue read of the milestone itself (Issue #5058). */
+  closedMilestoneReadFails?: boolean;
+  /** Fail the timeline read of closed #1456, so its claim is unreadable (Issue #5058). */
+  timelineReadFails?: boolean;
+  /** Fail the merged-PR search for closed #1456 (Issue #5058). */
+  mergedPrSearchFails?: boolean;
 }
 
 /**
@@ -6235,8 +6294,36 @@ function scriptDeadlockGh(
     if (key.includes("issue list") && key.includes("--state open")) {
       return Promise.resolve(JSON.stringify(DEADLOCK_OPEN_ISSUES));
     }
+    if (
+      options.closedMilestoneReadFails && key.includes("issues?milestone=") &&
+      key.includes("state=closed")
+    ) {
+      return Promise.reject(new Error("gh: HTTP 502"));
+    }
     if (isClosedIssueRead(key)) {
       return Promise.resolve(JSON.stringify(DEADLOCK_CLOSED_ISSUES));
+    }
+    if (options.timelineReadFails && key.includes("/issues/1456/timeline")) {
+      return Promise.reject(new Error("gh: HTTP 502"));
+    }
+    if (
+      options.mergedPrSearchFails && key.includes("pr list") &&
+      key.includes("--state merged") && !key.includes("vibe-partial-rollup")
+    ) {
+      return Promise.reject(new Error("gh: HTTP 502"));
+    }
+    // A merged fleet PR titled with #1456: the closed issue is claimed.
+    if (options.claimedClosedIssue && key.includes("in:title (#1456)")) {
+      return Promise.resolve(JSON.stringify([{
+        number: 900,
+        title: "Closed dependency (#1456)",
+        baseRefName: "main",
+        headRefName: "issue-1456-fix",
+        mergedAt: "2026-10-21T00:00:00Z",
+        closedAt: "2026-10-21T00:00:00Z",
+        author: { login: "bot" },
+        isCrossRepository: false,
+      }]));
     }
     // Partial-rollup idempotency check.
     if (
@@ -6336,6 +6423,107 @@ Deno.test("milestone deadlock rollup - a deadlock raises a partial rollup and ar
   // No summary PR / tracking issue for either milestone — both remain
   // incomplete, and this was a partial rollup, not a full one.
   assertEquals(calls.some((a) => a[0] === "issue" && a[1] === "create"), false);
+});
+
+// Issue #5058: the closed children the milestone delivered are read through the
+// same claim rule as the full rollup, and each is linked with `Part of`.
+Deno.test("milestone deadlock rollup - a claimed closed child is linked through Part of in the partial rollup body (Issue #5058)", async () => {
+  _resetBaseProtectionMemo();
+  const { gh, calls } = scriptDeadlockGh({ claimedClosedIssue: true });
+  const deps = createMockDeps({ ghCommandFn: gh, log: () => {} });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  const creates = prCreateCalls(calls);
+  assertEquals(creates.length, 1);
+  const created = creates[0]!;
+  const body = created[created.indexOf("--body") + 1]!;
+  assert(
+    body.split("\n").includes("Part of #1456"),
+    `expected a "Part of #1456" line: ${body}`,
+  );
+});
+
+// Issue #5058: an unreadable claim check cannot rule out a delivered child, so
+// it fails the delivered-issue read: no snapshot, no PR, and a later successful
+// read still publishes the child's provenance.
+for (
+  const [label, fail] of [
+    ["timeline", { timelineReadFails: true }],
+    ["merged-PR search", { mergedPrSearchFails: true }],
+  ] as const
+) {
+  Deno.test(`milestone deadlock rollup - an unreadable ${label} of a closed child raises no partial rollup, and the retry links it (Issue #5058)`, async () => {
+    _resetBaseProtectionMemo();
+    const failing = scriptDeadlockGh({ claimedClosedIssue: true, ...fail });
+    const logs: string[] = [];
+    const first = await checkAndHandleMilestoneCompletions(
+      createMockDeps({
+        ghCommandFn: failing.gh,
+        log: (m) => logs.push(m),
+      }),
+    );
+    assertEquals(first.ok, true);
+    assertEquals(prCreateCalls(failing.calls), []);
+    assertEquals(refPostCalls(failing.calls), []);
+    assertEquals(mergeAutoCalls(failing.calls), []);
+    assert(
+      logs.some((m) =>
+        m.includes("'Web src'") && m.includes("#1456") &&
+        m.includes("could not be read")
+      ),
+      `expected a warn log naming #1456: ${logs.join(" | ")}`,
+    );
+
+    _resetBaseProtectionMemo();
+    const retry = scriptDeadlockGh({ claimedClosedIssue: true });
+    const second = await checkAndHandleMilestoneCompletions(
+      createMockDeps({ ghCommandFn: retry.gh, log: () => {} }),
+    );
+    assertEquals(second.ok, true);
+    const creates = prCreateCalls(retry.calls);
+    assertEquals(creates.length, 1);
+    const body = creates[0]![creates[0]!.indexOf("--body") + 1]!;
+    assert(body.split("\n").includes("Part of #1456"), body);
+  });
+}
+
+Deno.test("milestone deadlock rollup - an unclaimed closed child adds no Part of line (Issue #5058)", async () => {
+  _resetBaseProtectionMemo();
+  const { gh, calls } = scriptDeadlockGh();
+  const deps = createMockDeps({ ghCommandFn: gh, log: () => {} });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  const creates = prCreateCalls(calls);
+  assertEquals(creates.length, 1);
+  const created = creates[0]!;
+  const body = created[created.indexOf("--body") + 1]!;
+  assertFalse(body.split("\n").includes("Part of #1456"), body);
+});
+
+Deno.test("milestone deadlock rollup - a failed closed-issue read for the milestone raises no partial rollup and warns by name (Issue #5058)", async () => {
+  _resetBaseProtectionMemo();
+  const { gh, calls } = scriptDeadlockGh({ closedMilestoneReadFails: true });
+  const logs: string[] = [];
+  const deps = createMockDeps({
+    ghCommandFn: gh,
+    log: (m) => logs.push(m),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(prCreateCalls(calls), []);
+  assert(
+    logs.some((m) =>
+      m.includes("'Web src'") &&
+      m.includes("could not read the delivered issues")
+    ),
+    `expected a warn log naming the milestone: ${logs.join(" | ")}`,
+  );
 });
 
 Deno.test("milestone deadlock rollup - an open partial rollup is reused, not recreated", async () => {
