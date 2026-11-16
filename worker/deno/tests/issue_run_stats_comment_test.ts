@@ -41,6 +41,7 @@ import {
 } from "../lib/codegraph_context.ts";
 import { GEMINI_PROVIDER_ID } from "../lib/agent_provider.ts";
 import { RTK_OFF, type RtkOutputResult } from "../lib/rtk_output.ts";
+import { tokenEconomizerNotRun } from "../lib/token_economizer_run_stats.ts";
 import { buildDegradationReport } from "../lib/planning_run_stats.ts";
 import { buildPhaseInvocations } from "../lib/phase_run_stats.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
@@ -615,6 +616,42 @@ Deno.test("postIssueRunStatsComment - posts once when the issue has none", async
   assertEquals(result.posted, true);
   assertEquals(gh.posted.length, 1);
   assertStringIncludes(gh.posted[0]!, buildIssueRunStatsMarker("vibe-run-one"));
+});
+
+Deno.test("postIssueRunStatsComment - forwards the TokenEconomizer stats into the posted body (Issue #4958)", async () => {
+  const gh = makeGitHubDouble([]);
+  await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 42,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-te-run",
+    tokenEconomizer: tokenEconomizerNotRun(false),
+    getIssueComments: gh.getIssueComments,
+    postComment: gh.postComment,
+    logger: makeLogger(),
+  });
+  assertEquals(
+    gh.posted[0]!.split("\n").filter((l) =>
+      l.startsWith("- **TokenEconomizer:**")
+    ),
+    ["- **TokenEconomizer:** off"],
+  );
+});
+
+Deno.test("postIssueRunStatsComment - given no TokenEconomizer stats renders no such line (Issue #4958)", async () => {
+  const gh = makeGitHubDouble([]);
+  await postIssueRunStatsComment({
+    repo: "org/repo",
+    issueNumber: 42,
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-4-8"])],
+    runId: "vibe-te-none",
+    getIssueComments: gh.getIssueComments,
+    postComment: gh.postComment,
+    logger: makeLogger(),
+  });
+  assertEquals(gh.posted[0]!.includes("TokenEconomizer"), false);
 });
 
 Deno.test("postIssueRunStatsComment - a split run's posted body carries the split figures and both models' spend (Issue #2346)", async () => {

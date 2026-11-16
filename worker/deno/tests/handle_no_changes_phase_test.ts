@@ -1335,3 +1335,57 @@ Deno.test("handle_no_changes_phase - the already-resolved close reports the run'
     ["- **RTK:** ok — 2,500 tokens saved"],
   );
 });
+
+Deno.test("handle no changes - the run-stats comment reports TokenEconomizer (Issue #4958)", async () => {
+  for (
+    const [enabled, expected] of [
+      [false, "- **TokenEconomizer:** off"],
+      [
+        true,
+        "- **TokenEconomizer:** not-run — switched on, the run ended before the agent spawned",
+      ],
+    ] as const
+  ) {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext({ untrustedImages: [] });
+    ctx.config = {
+      ...ctx.config,
+      tokenEconomizer: { ...ctx.config.tokenEconomizer, enabled },
+    };
+    const state = makeState({
+      claudeOutput: "A".repeat(200) +
+        "\nThis has already been fixed. No code change was required.\n" +
+        '<!-- vibe-already-resolved commit="4c6f932" pr="#97" ' +
+        'verified="read the code on the default branch" -->',
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-4-8"],
+          requestedModel: "opus",
+          wallClockMs: 5_000,
+          tokenUsage: {
+            inputTokens: 4_000,
+            outputTokens: 8_000,
+            cacheCreationTokens: 500,
+            cacheReadTokens: 250,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    const stats = calls.postComment.find((c) =>
+      c.body.includes(ISSUE_RUN_STATS_MARKER)
+    );
+    assert(stats, "expected a run-stats comment on the closed issue");
+    assertEquals(
+      stats.body.split("\n").filter((line) =>
+        line.startsWith("- **TokenEconomizer:**")
+      ),
+      [expected],
+    );
+  }
+});

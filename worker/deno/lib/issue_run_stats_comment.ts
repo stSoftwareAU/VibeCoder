@@ -66,6 +66,10 @@ import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
 import {
+  buildTokenEconomizerStatsLine,
+  type TokenEconomizerRunStats,
+} from "./token_economizer_run_stats.ts";
+import {
   formatGateStageOutcomes,
   type GateStageOutcome,
 } from "./gate_stage_outcome.ts";
@@ -638,6 +642,9 @@ export function measureIssuePhaseRun(args: {
  * @param args.rtk - What this run's RTK preparation produced (Issue #2385);
  *   omitted renders exactly the comment this function rendered before the
  *   line existed
+ * @param args.tokenEconomizer - What TokenEconomizer did in this run and what
+ *   its own model calls cost (Issue #4958); omitted renders exactly the
+ *   comment this function rendered before the line existed
  * @param args.subAgentDegradation - A haiku-tier run served a
  *   previous-generation Haiku (Issue #3405); omitted renders no line
  * @param args.agentRefusal - A safety refusal and what its retry did (Issue
@@ -707,6 +714,8 @@ export function buildIssueRunStatsComment(args: {
   qualityGate?: QualityGateAttemptOutcome;
   qualityGateStages?: readonly GateStageOutcome[];
   rtk?: RtkOutputResult;
+  /** What TokenEconomizer did and cost (Issue #4958). Omitted renders no line. */
+  tokenEconomizer?: TokenEconomizerRunStats;
   subAgentDegradation?: IssueSubAgentDegradation;
   agentRefusal?: AgentRefusalOutcome;
   scope?: RunStatsScope;
@@ -748,6 +757,18 @@ export function buildIssueRunStatsComment(args: {
   );
   const splitBlock = splitLines.map((line) => `\n${line}`).join("");
   const rtkLine = args.rtk ? `\n${buildRtkStatsLine(args.rtk)}` : "";
+  // Issue #4958: the plugin's actions and own cost, directly after the RTK line.
+  const agentCost = Number(
+    section.match(ESTIMATED_COST_PATTERN)?.[1]?.replace(/,/g, ""),
+  );
+  const tokenEconomizerLine = args.tokenEconomizer
+    ? `\n${
+      buildTokenEconomizerStatsLine(
+        args.tokenEconomizer,
+        Number.isFinite(agentCost) ? agentCost : undefined,
+      )
+    }`
+    : "";
   // Issue #3405: the Haiku sub-agent degradation line, directly after the
   // stats section so the requested and served models read beside the figures.
   const subAgentLine = buildIssueSubAgentDegradationLine(
@@ -765,7 +786,7 @@ export function buildIssueRunStatsComment(args: {
     graftLine ? `\n${graftLine}` : ""
   }${codegraphLine}${qualityGateLine ? `\n${qualityGateLine}` : ""}${
     qualityGateStagesLine ? `\n${qualityGateStagesLine}` : ""
-  }${splitBlock}${rtkLine}`;
+  }${splitBlock}${rtkLine}${tokenEconomizerLine}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
     scope,
@@ -941,6 +962,8 @@ export async function postIssueRunStatsComment(args: {
   qualityGateStages?: readonly GateStageOutcome[];
   /** What this run's RTK preparation produced (Issue #2385). */
   rtk?: RtkOutputResult;
+  /** What TokenEconomizer did and cost (Issue #4958); omitted renders no line. */
+  tokenEconomizer?: TokenEconomizerRunStats;
   /** A haiku-tier run served a previous-generation Haiku (Issue #3405); omitted renders no line. */
   subAgentDegradation?: IssueSubAgentDegradation;
   /** A safety refusal and what its retry did (Issue #3406); omitted renders no line. */
@@ -975,6 +998,9 @@ export async function postIssueRunStatsComment(args: {
     ? { qualityGateStages: args.qualityGateStages }
     : {};
   const rtk = args.rtk ? { rtk: args.rtk } : {};
+  const tokenEconomizer = args.tokenEconomizer
+    ? { tokenEconomizer: args.tokenEconomizer }
+    : {};
 
   // Built without the issue's comments first, purely to answer "is there
   // anything to report?" — so a stats-free wrap-up costs no GitHub call. The
@@ -1040,6 +1066,7 @@ export async function postIssueRunStatsComment(args: {
         ...qualityGate,
         ...qualityGateStages,
         ...rtk,
+        ...tokenEconomizer,
         ...(args.subAgentDegradation
           ? { subAgentDegradation: args.subAgentDegradation }
           : {}),
