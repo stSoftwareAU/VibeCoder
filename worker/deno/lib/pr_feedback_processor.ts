@@ -1465,6 +1465,7 @@ async function _processFeedbackWithHeartbeat(
       workDir: processorDeps.workRoot,
       repo,
       runKind: "pr-feedback",
+      subject: `${repo} PR #${prNumber}`,
       logger,
     })
     : {};

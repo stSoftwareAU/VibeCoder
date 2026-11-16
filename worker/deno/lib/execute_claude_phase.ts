@@ -1739,6 +1739,7 @@ async function executeClaudePhaseBody(
         workDir,
         repo,
         runKind: "implementation",
+        subject: `${repo}#${issueNumber}`,
         logger,
       });
     const claudeRunOptions: RunClaudeOptions = {

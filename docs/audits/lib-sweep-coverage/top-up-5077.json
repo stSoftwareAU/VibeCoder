@@ -1,0 +1,12 @@
+{
+  "issue": 5077,
+  "chunk": "top-up-5077",
+  "title": "top-up: phase-failure log level for a host-disk park",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5077",
+  "definition": "Review that logIssueRunFailure logs an expected skip at INFO when it is a routine claim refusal and at WARN otherwise, logs a host_disk failure at WARN naming the host disk and the phase, and logs every other failure at ERROR with the unchanged 'failed at phase' wording.",
+  "status": "claimed",
+  "sweptAt": "7e4c100fa68397d2fbfd6e0a538ac71381b9fcd1",
+  "paths": [
+    "worker/deno/lib/issue_run_failure_log.ts"
+  ]
+}

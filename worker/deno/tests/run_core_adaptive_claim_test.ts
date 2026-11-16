@@ -162,7 +162,9 @@ async function runScenario(options: {
   cleared?: string[];
   /** Issue #425: run with no supervisor cap, so both floors are inert. */
   uncapped?: boolean;
-}): Promise<{ claimed: number[]; logs: string[]; errors: string[] }> {
+}): Promise<
+  { claimed: number[]; logs: string[]; errors: string[]; warnings: string[] }
+> {
   const config = createDefaultRunCoreConfig();
   if (options.maxConcurrentIssues !== undefined) {
     config.maxConcurrentIssues = options.maxConcurrentIssues;
@@ -173,12 +175,14 @@ async function runScenario(options: {
   const claimed: number[] = [];
   const logs: string[] = [];
   const errors: string[] = [];
+  const warnings: string[] = [];
   const queue = [issue("o/r", 222), issue("o/r", 9)];
   const done = new Set<number>();
 
   const deps = createMockDeps({
     log: (m) => logs.push(m),
     logError: (m) => errors.push(m),
+    logWarn: (m) => warnings.push(m),
     now: () => now,
     executeBudgetSeconds: 3600,
     minClaimRunwaySeconds: 300,
@@ -238,7 +242,7 @@ async function runScenario(options: {
   });
 
   await runCoreLoop(config, deps);
-  return { claimed, logs, errors };
+  return { claimed, logs, errors, warnings };
 }
 
 Deno.test("adaptive claim #245 - a long job on a doomed slice is skipped and the next candidate is claimed", async () => {
@@ -291,15 +295,23 @@ Deno.test("adaptive claim #245 - an evidenced issue claims once the runway can h
 });
 
 Deno.test("adaptive claim #245 - a failed evidence lookup is logged and the claim proceeds", async () => {
-  const { claimed, errors } = await runScenario({
+  const { claimed, errors, warnings } = await runScenario({
     evidenceByIssue: {},
     remainingSeconds: 933,
     gatherFails: true,
   });
   assertEquals(claimed[0], 222);
   assert(
-    errors.some((m) => m.includes("Claim-evidence lookup failed")),
-    `expected the lookup failure to be logged, got: ${errors.join(" | ")}`,
+    warnings.some((m) => m.includes("Claim-evidence lookup failed")),
+    `expected the lookup failure to be logged as a warning, got: ${
+      warnings.join(" | ")
+    }`,
+  );
+  assert(
+    !errors.some((m) => m.includes("Claim-evidence lookup failed")),
+    `the handled lookup failure must not be an error, got: ${
+      errors.join(" | ")
+    }`,
   );
 });
 

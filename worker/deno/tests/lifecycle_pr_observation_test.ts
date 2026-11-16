@@ -967,3 +967,63 @@ Deno.test("closed-PR observation logs latch skips at info and genuine faults at 
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+const RAW_RATE_LIMIT =
+  "gh command failed (exit 1): GraphQL: API rate limit already exceeded for user ID 123456.";
+const GH_TIMEOUT =
+  "gh command failed (exit 124): TIMEOUT: gh pr view 10 --repo org/repo --json body,headRefName timed out after 60s";
+
+for (
+  const [name, invoke] of [
+    [
+      "per-PR",
+      (
+        message: string,
+        logger: Parameters<typeof recordLifecyclePrFromGithub>[2],
+      ) =>
+        recordLifecyclePrFromGithub(
+          { workDir: "/unused", repo: "org/repo", prNumber: 10 },
+          () => Promise.reject(new Error(message)),
+          logger,
+        ),
+    ],
+    [
+      "closed-PR",
+      (
+        message: string,
+        logger: Parameters<typeof recordLifecyclePrFromGithub>[2],
+      ) =>
+        recordClosedLifecyclePrs(
+          { workDir: "/unused", repos: ["org/repo"], githubUser: "vibe-bot" },
+          () => Promise.reject(new Error(message)),
+          logger,
+        ),
+    ],
+  ] as const
+) {
+  Deno.test(`${name} observation logs a raw rate-limit refusal or gh timeout at warn and genuine faults at error`, async () => {
+    const run = async (message: string) => {
+      const lines: string[] = [];
+      await invoke(message, {
+        info: (line) => lines.push(`info:${line}`),
+        warn: (line) => lines.push(`warn:${line}`),
+        error: (line) => lines.push(`error:${line}`),
+      });
+      return lines;
+    };
+
+    const limited = await run(RAW_RATE_LIMIT);
+    assertEquals(limited.length, 1);
+    assertEquals(limited[0]?.startsWith("warn:"), true, limited[0]);
+    assertStringIncludes(limited[0]!, "API rate limit already exceeded");
+
+    const timedOut = await run(GH_TIMEOUT);
+    assertEquals(timedOut.length, 1);
+    assertEquals(timedOut[0]?.startsWith("warn:"), true, timedOut[0]);
+    assertStringIncludes(timedOut[0]!, "timed out after 60s");
+
+    const fault = await run("GitHub returned an invalid PR snapshot");
+    assertEquals(fault.length, 1);
+    assertEquals(fault[0]?.startsWith("error:"), true, fault[0]);
+  });
+}

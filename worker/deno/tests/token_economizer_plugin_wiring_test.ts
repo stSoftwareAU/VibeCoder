@@ -1,3 +1,8 @@
+import {
+  buildTokenEconomizerStatsLine,
+  summariseTokenEconomizerRun,
+  tokenEconomizerCallbackBlock,
+} from "../lib/token_economizer_run_stats.ts";
 /**
  * Wiring of the TokenEconomizer plugin into the Claude CLI spawn (Issue #4956,
  * part of #4953).
@@ -35,7 +40,7 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   CLAUDE_PROVIDER_ID,
   CODEX_PROVIDER_ID,
@@ -48,7 +53,11 @@ import {
   type RunClaudeOptions,
   runClaudeWithTimeout,
 } from "../lib/claude_runner.ts";
-import { finishTokenEconomizerRun } from "../lib/token_economizer_control.ts";
+import {
+  finishTokenEconomizerRun,
+  syncTokenEconomizerLearnings,
+} from "../lib/token_economizer_control.ts";
+import { defaultLogger } from "../lib/logger.ts";
 import { runningInContainerImage } from "../lib/container_stamp.ts";
 import {
   guardTokenEconomizerOutput,
@@ -67,7 +76,7 @@ import {
   type TokenEconomizerRunKind,
   tokenEconomizerSpawnOptions,
 } from "../lib/token_economizer_plugin.ts";
-import type { TokenEconomizerConfig } from "../types.ts";
+import type { Logger, TokenEconomizerConfig } from "../types.ts";
 import { withAgentStub } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
@@ -322,6 +331,7 @@ async function enabledSpawnOptions(
     workDir: layout.workDir,
     repo: REPO,
     runKind,
+    subject: `${REPO}#1`,
     runId: `wiring-${runKind}`,
     pluginDir: layout.fakePluginDir,
   });
@@ -455,6 +465,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
         runId: "wiring-disabled",
         pluginDir: layout.fakePluginDir,
       });
@@ -693,6 +704,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
         runId: "wiring-real-clean",
       });
       assert(launch !== null, "the real plugin's launch must resolve");
@@ -738,6 +750,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
         runId: "wiring-real-nopy",
       });
       assert(launch !== null, "the real plugin's launch must resolve");
@@ -771,6 +784,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
       });
       assert(launch);
       const noPython = join(layout.root, "no-python");
@@ -807,6 +821,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
         notifyStop: () => {
           throw new Error("receipt must suppress a duplicate report");
         },
@@ -849,6 +864,7 @@ for (
           workDir: layout.workDir,
           repo: REPO,
           runKind: "implementation",
+          subject: `${REPO}#1`,
         });
         assert(launch);
         const env = {
@@ -951,6 +967,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
       });
       assert(launch);
       const env = {
@@ -1150,6 +1167,7 @@ Deno.test("the checkout guard preserves a real dirty checkout at the controller 
       workDir: layout.workDir,
       repo: "owner/.token-economizer",
       runKind: "implementation",
+      subject: `${REPO}#1`,
       pluginDir: layout.fakePluginDir,
     });
     assertEquals(launch, null);
@@ -1215,6 +1233,7 @@ Deno.test({
         workDir: layout.workDir,
         repo: REPO,
         runKind: "implementation",
+        subject: `${REPO}#1`,
       });
       assert(launch);
       const env = {
@@ -1286,6 +1305,7 @@ for (const event of [["SessionStart"], "UnknownHook"]) {
           workDir: layout.workDir,
           repo: REPO,
           runKind: "implementation",
+          subject: `${REPO}#1`,
         });
         assert(launch);
         const env = {
@@ -1334,3 +1354,486 @@ for (const event of [["SessionStart"], "UnknownHook"]) {
     },
   });
 }
+
+// ---------------------------------------------------------------------------
+// Learnings persistence wiring (Issue #4957): the pull at launch, the push
+// after the spawn, and the run's result untouched by either. The store is a
+// local bare repository, so the real pull and push run against it.
+// ---------------------------------------------------------------------------
+
+/** The private learnings repository the config names. Its store is a local bare repository. */
+const LEARNINGS_REPO = "owner/learnings";
+
+/** A visibility check that verifies the store as private. */
+const PRIVATE_STORE = () => Promise.resolve({ private: true as const });
+
+/** A stub channel for stop reports: nothing is sent to GitHub. */
+const notifyNothing = () => Promise.resolve("");
+
+/**
+ * The staged scan of an empty diff, as gitleaks really reports it. Injected so
+ * the push tests need no gitleaks binary on CI (Issue #4957).
+ */
+const CLEAN_SCAN = () =>
+  Promise.resolve({
+    exitCode: 0,
+    stdout: "[]",
+    stderr: "INF no leaks found",
+  });
+
+/** A logger that keeps every warning line, for assertions (Issue #4957). */
+function recordingLogger(): { logger: Logger; warnings: string[] } {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    logger: {
+      ...defaultLogger,
+      info: () => {},
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+    },
+  };
+}
+
+/** Adds an origin remote, so the checkout has a learnings repository key (Issue #4957). */
+async function addOrigin(layout: Layout): Promise<void> {
+  await git(layout.checkout, [
+    "remote",
+    "add",
+    "origin",
+    `https://github.com/${REPO}.git`,
+  ]);
+}
+
+/** An empty bare repository standing in for the learnings store (Issue #4957). */
+async function makeStore(layout: Layout, name: string): Promise<string> {
+  const store = join(layout.root, name);
+  await Deno.mkdir(store);
+  await git(store, ["init", "--bare", "-q"]);
+  return store;
+}
+
+/** The Claude block with a learnings repository set (Issue #4957). */
+function learningsBlock(): TokenEconomizerConfig {
+  return { ...enabledBlock("off"), learningsRepo: LEARNINGS_REPO };
+}
+
+/** Writes one learned state file under a home's repository key, as the plugin would (Issue #4957). */
+async function writeLearned(
+  home: string,
+  key: string,
+  text: string,
+): Promise<void> {
+  const file = join(home, "repos", key, "claude", "injection.json");
+  await Deno.mkdir(dirname(file), { recursive: true });
+  await Deno.writeTextFile(file, text);
+}
+
+/** Runs one Claude spawn against the dump stub and returns the parts a caller compares (Issue #4957). */
+async function runClaudeOutcome(
+  layout: Layout,
+  tokenEconomizer: TokenEconomizerLaunch | undefined,
+  logger: Logger,
+): Promise<
+  { ok: boolean; exitCode?: number; output?: string; error?: string }
+> {
+  return await withAgentStub(DUMP_STUB, async (stub) => {
+    const result = await runClaudeWithTimeout({
+      clock: fakeClock(),
+      prompt: "wiring test",
+      timeoutSeconds: 30,
+      killAfterSeconds: 2,
+      agentBinaryPath: stub.path,
+      cwd: layout.checkout,
+      repo: REPO,
+      parentEnv: parentEnvFor(layout),
+      tokenEconomizer,
+      tokenEconomizerNotify: notifyNothing,
+      logger,
+    });
+    return result.ok
+      ? {
+        ok: true,
+        exitCode: result.value.exitCode,
+        output: result.value.output,
+      }
+      : { ok: false, error: result.error.message };
+  });
+}
+
+async function assertPersistence(
+  launches: TokenEconomizerLaunch[],
+  expected: "available" | "unavailable",
+) {
+  const first = launches[0]!;
+  const key = first.learnings!.persistence.repoKey!;
+  const sessions = join(
+    first.env.TOKENECONOMIZER_HOME,
+    "repos",
+    key,
+    "claude",
+    "sessions",
+  );
+  await Deno.mkdir(sessions, { recursive: true });
+  await Deno.writeTextFile(
+    join(sessions, "stats.json"),
+    JSON.stringify({ injected_ids: [], nudges: 0, aborts: 0 }),
+  );
+  const stats = await summariseTokenEconomizerRun({
+    enabled: true,
+    eligible: true,
+    workDir: first.workDir,
+    stateHomes: launches.map((l) => l.env.TOKENECONOMIZER_HOME),
+    ...{ launches },
+  });
+  assertEquals(stats.persistence, expected);
+  assertEquals(tokenEconomizerCallbackBlock(stats)?.persistence, expected);
+  assertStringIncludes(
+    buildTokenEconomizerStatsLine(stats),
+    expected === "available"
+      ? "learnings persisted"
+      : "learnings not persisted",
+  );
+}
+
+Deno.test("a learnings round trip pulls an empty store, pushes a learned state file and restores it on the next launch (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const { logger } = recordingLogger();
+    const launchFor = (runId: string) =>
+      resolveTokenEconomizerLaunch({
+        config: learningsBlock(),
+        workDir: layout.workDir,
+        repo: REPO,
+        runKind: "implementation",
+        subject: `${REPO}#1`,
+        runId,
+        pluginDir: layout.fakePluginDir,
+        learningsStoreUrl: store,
+        checkLearningsVisibility: PRIVATE_STORE,
+        scanLearnings: CLEAN_SCAN,
+        logger,
+      });
+
+    const first = await launchFor("learn-1");
+    assert(first !== null, "the plugin must load for an empty store");
+    assertEquals(first.learnings?.persistence.status, "empty");
+    const key = first.learnings?.persistence.repoKey;
+    assert(key !== undefined, "the pull must name the repository key");
+    const text = '{"facts":["run deno task test:unit"]}\n';
+    await writeLearned(first.env.TOKENECONOMIZER_HOME, key, text);
+
+    const pushed = await syncTokenEconomizerLearnings(
+      first,
+      notifyNothing,
+      logger,
+    );
+    assertEquals(pushed?.kind, "pushed", JSON.stringify(pushed));
+    await assertPersistence([first], "available");
+    assertEquals(
+      await git(store, [
+        "show",
+        `HEAD:token-economizer/${key}/claude/injection.json`,
+      ]),
+      text,
+    );
+
+    const second = await launchFor("learn-2");
+    assert(second !== null, "the plugin must load on the second launch");
+    assertEquals(second.learnings?.persistence.status, "restored");
+    await assertPersistence([first, second], "unavailable");
+    assertEquals(
+      (await syncTokenEconomizerLearnings(second, notifyNothing, logger))?.kind,
+      "unchanged",
+    );
+    await assertPersistence([first, second], "available");
+    assertEquals(
+      await Deno.readTextFile(
+        join(
+          second.env.TOKENECONOMIZER_HOME,
+          "repos",
+          key,
+          "claude",
+          "injection.json",
+        ),
+      ),
+      text,
+    );
+    await writeLearned(
+      second.env.TOKENECONOMIZER_HOME,
+      key,
+      '{"facts":["new local learning"]}\n',
+    );
+    await Deno.remove(store, { recursive: true });
+    assertEquals(
+      (await syncTokenEconomizerLearnings(second, notifyNothing, logger))?.kind,
+      "dropped",
+    );
+    await assertPersistence([first], "available");
+    await assertPersistence([first, second], "unavailable");
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a public learnings store is refused: the plugin still loads, the refusal is logged and nothing is pushed (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const { logger, warnings } = recordingLogger();
+    const launch = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "public-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: store,
+      checkLearningsVisibility: () =>
+        Promise.resolve({ private: false, reason: "repository is public" }),
+      logger,
+    });
+    assert(launch !== null, "a refused store must not refuse the launch");
+    assertEquals(launch.learnings?.persistence.status, "refused");
+    assert(
+      warnings.some((m) =>
+        m.includes("refused") && m.includes("repository is public")
+      ),
+      JSON.stringify(warnings),
+    );
+
+    const key = launch.learnings?.persistence.repoKey;
+    assert(key !== undefined, "the refusal must name the repository key");
+    await writeLearned(launch.env.TOKENECONOMIZER_HOME, key, '{"facts":[]}\n');
+    const outcome = await syncTokenEconomizerLearnings(
+      launch,
+      notifyNothing,
+      logger,
+    );
+    assert(
+      outcome !== null && outcome.kind !== "pushed",
+      JSON.stringify(outcome),
+    );
+    assertEquals(await git(store, ["for-each-ref"]), "");
+    await assertPersistence([launch], "unavailable");
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("an unreachable learnings store is unavailable, logged as a WARNING, and nothing is pushed (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const { logger, warnings } = recordingLogger();
+    const launch = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "missing-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: join(layout.root, "missing.git"),
+      checkLearningsVisibility: PRIVATE_STORE,
+      logger,
+    });
+    assert(launch !== null, "an unreachable store must not refuse the launch");
+    assertEquals(launch.learnings?.persistence.status, "unavailable");
+    assert(
+      warnings.some((m) =>
+        m.startsWith("token-economizer learnings: unavailable")
+      ),
+      JSON.stringify(warnings),
+    );
+
+    const key = launch.learnings?.persistence.repoKey;
+    assert(key !== undefined, "the pull must name the repository key");
+    await writeLearned(launch.env.TOKENECONOMIZER_HOME, key, '{"facts":[]}\n');
+    const outcome = await syncTokenEconomizerLearnings(
+      launch,
+      notifyNothing,
+      logger,
+    );
+    assert(
+      outcome !== null && outcome.kind !== "pushed",
+      JSON.stringify(outcome),
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a failed learnings push leaves the run's result unchanged and is logged as a WARNING (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const plain = await resolveTokenEconomizerLaunch({
+      config: { ...enabledBlock("off"), learningsRepo: undefined },
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "plain-1",
+      pluginDir: layout.fakePluginDir,
+    });
+    assert(plain !== null && plain.learnings === undefined);
+    const baseline = await runClaudeOutcome(
+      layout,
+      plain,
+      recordingLogger().logger,
+    );
+    assert(baseline.ok, JSON.stringify(baseline));
+
+    const store = await makeStore(layout, "store.git");
+    const { logger, warnings } = recordingLogger();
+    const failing = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "fail-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: store,
+      checkLearningsVisibility: PRIVATE_STORE,
+      scanLearnings: CLEAN_SCAN,
+      logger,
+    });
+    assert(failing !== null);
+    assertEquals(failing.learnings?.persistence.status, "empty");
+    const key = failing.learnings?.persistence.repoKey;
+    assert(key !== undefined, "the pull must name the repository key");
+    await writeLearned(
+      failing.env.TOKENECONOMIZER_HOME,
+      key,
+      '{"facts":["will not land"]}\n',
+    );
+    // The store vanishes after the pull, so the push after the spawn fails.
+    await Deno.remove(store, { recursive: true });
+
+    const outcome = await runClaudeOutcome(layout, failing, logger);
+    assertEquals(outcome, baseline);
+    await assertPersistence([failing], "unavailable");
+    assert(
+      warnings.some((m) =>
+        m.startsWith("token-economizer learnings: dropped: push failed")
+      ),
+      JSON.stringify(warnings),
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a launch without a learnings repository carries no learnings and syncs to null (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    const launch = await resolveTokenEconomizerLaunch({
+      config: { ...enabledBlock("off"), learningsRepo: undefined },
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "no-learnings-1",
+      pluginDir: layout.fakePluginDir,
+    });
+    assert(launch !== null, "the plugin must load without a learnings repo");
+    assertEquals(launch.learnings, undefined);
+    assertEquals(launch.subject, `${REPO}#1`);
+    assertEquals(launch.runId, "no-learnings-1");
+    assertEquals(await syncTokenEconomizerLearnings(launch), null);
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The scratch-directory guard of the learnings pull (Issue #4957). A scratch
+// path that resolves outside the work root is refused: the launch stays, the
+// pull is unavailable with the guard's reason, and nothing is written outside.
+// ---------------------------------------------------------------------------
+
+/** The reason the scratch-directory guard reports (Issue #4957). */
+const SCRATCH_GUARD_REASON =
+  "the scratch directory lies outside the work directory, is aliased or is inside the repo checkout";
+
+Deno.test("a learnings scratch directory symlinked outside the work root is refused: the launch stays, the pull is unavailable and nothing is written outside (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const outside = join(layout.root, "outside");
+    await Deno.mkdir(outside);
+    await Deno.mkdir(join(layout.workDir, ".token-economizer"));
+    await Deno.symlink(
+      outside,
+      join(layout.workDir, ".token-economizer", "store"),
+    );
+    const { logger, warnings } = recordingLogger();
+    const launch = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "alias-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: store,
+      checkLearningsVisibility: PRIVATE_STORE,
+      logger,
+    });
+    assert(
+      launch !== null,
+      "an aliased scratch directory must not refuse the launch",
+    );
+    assertEquals(launch.learnings?.persistence.status, "unavailable");
+    assertEquals(launch.learnings?.persistence.reason, SCRATCH_GUARD_REASON);
+    assert(
+      warnings.includes(
+        `token-economizer learnings: unavailable: ${SCRATCH_GUARD_REASON}`,
+      ),
+      JSON.stringify(warnings),
+    );
+    assertEquals(
+      Array.from(Deno.readDirSync(outside)).map((entry) => entry.name),
+      [],
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});
+
+Deno.test("a learnings scratch directory at its normal place reaches the pull and is empty against an empty store (Issue #4957)", async () => {
+  const layout = await makeLayout();
+  try {
+    await addOrigin(layout);
+    const store = await makeStore(layout, "store.git");
+    const { logger, warnings } = recordingLogger();
+    const launch = await resolveTokenEconomizerLaunch({
+      config: learningsBlock(),
+      workDir: layout.workDir,
+      repo: REPO,
+      runKind: "implementation",
+      subject: `${REPO}#1`,
+      runId: "normal-1",
+      pluginDir: layout.fakePluginDir,
+      learningsStoreUrl: store,
+      checkLearningsVisibility: PRIVATE_STORE,
+      logger,
+    });
+    assert(launch !== null, "the plugin must load with a normal scratch path");
+    assertEquals(launch.learnings?.persistence.status, "empty");
+    assert(
+      !warnings.some((m) => m.includes("unavailable")),
+      JSON.stringify(warnings),
+    );
+  } finally {
+    await Deno.remove(layout.root, { recursive: true });
+  }
+});

@@ -1311,9 +1311,10 @@ export async function loadConfig(
 
   // TokenEconomizer (Issue #4955, part of #4953). Off unless the host sets
   // `enabled: true`. `enabled`, `microskills` and `loopguard` are read by the
-  // run launch decision; `learnings_repo` is accepted and validated, but not read
-  // yet (#4957). A malformed
-  // block fails the load loudly here rather than reading as the default.
+  // run launch decision; `learnings_repo` is read by the learnings persistence in
+  // `lib/token_economizer_learnings.ts` (pull at launch, push after each spawn).
+  // A malformed block fails the load loudly here rather than reading as the
+  // default.
   const parsedTokenEconomizer = parseTokenEconomizer(file.token_economizer);
   if (!parsedTokenEconomizer.ok) {
     throw new Error(

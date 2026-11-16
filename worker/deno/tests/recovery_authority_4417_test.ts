@@ -644,12 +644,18 @@ async function digestOf(path: string): Promise<string> {
 /**
  * One launch, as `run.sh` invokes the command for each attempt. The plan clock
  * is fixed, and every environment read (provider selection and the image
- * stamp included) goes through the deployment's injected `env`.
+ * stamp included) goes through the deployment's injected `env`. The host
+ * platform is injected too: Linux by default, so the plan is a Docker/Podman
+ * one with egress enforcement whatever host runs the test (Issue #5088).
  */
-function launch(d: Deployment): Promise<ContainerLaunchPlan> {
+function launch(
+  d: Deployment,
+  platform = "linux",
+): Promise<ContainerLaunchPlan> {
   return buildLaunchPlanForCommand(REPO_ROOT, CONTAINER, {
     env: d.env,
     now: () => CLOCK_MS,
+    platform,
     probe: (candidate) =>
       Promise.resolve({
         available: true,
@@ -774,6 +780,25 @@ Deno.test("recovery authority - an egress refusal and a network-unavailable rest
     assert(relaunched.networkCreateArgs.includes("--internal"));
     assert(relaunched.proxyRunArgs.length > 0);
     assertEquals(await digestOf(d.configFile), configBytes);
+  });
+});
+
+Deno.test("recovery authority - the Apple container runtime reports egress as not enforced (Issue #5088)", async () => {
+  await withRoot(async (root) => {
+    const d = deploymentAt(root);
+    await provision(d, deploymentConfig(root));
+
+    // On a macOS host the launch resolves Apple `container`, which cannot
+    // enforce egress, and the plan says so. `runtime` holds the probed path,
+    // which the injected probe reports as `/usr/bin/<executable>`.
+    const apple = await launch(d, "darwin");
+    assertEquals(apple.runtime, "/usr/bin/container");
+    assertEquals(apple.egressEnforced, false);
+
+    // Positive control: the same configuration on Linux differs only by platform.
+    const linux = await launch(d);
+    assertEquals(linux.runtime, "/usr/bin/docker");
+    assertEquals(linux.egressEnforced, true);
   });
 });
 

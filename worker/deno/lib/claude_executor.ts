@@ -463,9 +463,44 @@ export function detectRateLimit(
  * your session limit · resets 1:50pm (UTC)". Without it that line fell
  * through to the secondary rate-limit pattern (`/limit/`) and drove the
  * short-backoff ladder against an exhausted subscription window.
+ *
+ * Issue #5086: a limit that NAMES a model tier ("You've hit your Fable weekly
+ * limit") is model-scoped, not account-wide. The runner checks
+ * {@link detectModelScopedUsageLimit} first and steps down the ladder, so this
+ * pattern only sees the account-wide forms.
  */
 const USAGE_LIMIT_RE =
   /(claude (ai )?usage limit reached|(you'?ve|you have) (hit|reached) your (usage |session )?limit|\b(5|five)[- ]hour (usage )?(limit|window)\b|\bweekly (usage )?limit\b|out of extra usage)/i;
+
+/**
+ * A limit message that names a Claude tier (Issue #5086). Anchored per line,
+ * with single literal spaces and bounded optional groups only, so no
+ * quantifiers overlap and a hostile line cannot backtrack catastrophically.
+ */
+const MODEL_SCOPED_LIMIT_RE =
+  /^\W*(?:(?:api )?error:? )?(?:(?:you'?ve|you have) (?:hit|reached) your (?:claude )?(fable|opus|sonnet|haiku)(?: \d+(?:\.\d+)?)?(?: (?:weekly|daily|5-hour|five-hour|usage|session))? limit|(?:claude )?(fable|opus|sonnet|haiku)(?: \d+(?:\.\d+)?)?(?: (?:weekly|daily|5-hour|five-hour|usage|session))? limit reached)\b/i;
+
+/**
+ * Check whether the tail of `output` reports a MODEL-scoped usage limit
+ * (Issue #5086): a limit message that names a Claude tier. Returns the
+ * lower-case tier family, or null for no match and for account-wide limits.
+ * The runner steps down to the next model on the same provider and writes no
+ * provider pause.
+ */
+export function detectModelScopedUsageLimit(
+  output: string,
+  tailLines: number = 30,
+): string | null {
+  if (!output.trim()) return null;
+  const lines = output.split("\n").slice(-tailLines);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    const m = MODEL_SCOPED_LIMIT_RE.exec(line);
+    const family = m?.[1] ?? m?.[2];
+    if (family) return family.toLowerCase();
+  }
+  return null;
+}
 
 /**
  * Issue #2613: a spent provider balance (HTTP 402) is the same shape of
