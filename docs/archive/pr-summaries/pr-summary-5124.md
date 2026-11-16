@@ -144,6 +144,10 @@ flowchart TD
   from `origin/main` and the new tests kept,
   `tests/claim_lock_integrity_214_test.ts` gave 20 passed, 3 failed (the three
   keep-the-claim tests).
+- `./quality.sh < /dev/null` on the post-merge head with the doc edit:
+  `Result: PASSED (with skipped checks)`. Config integration (`deno or
+  .config.json not available`) and checkov (not on PATH) were skipped for
+  this environment.
 
 Not done or not checked: the reopen and closed-not-merged branches of
 `detectAssignedWithClosedPr` still release at the 600 s live window, as the
