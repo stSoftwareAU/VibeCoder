@@ -146,7 +146,7 @@ flowchart TD
 - `worker/deno/tests/run_mode_ci_coverage_test.ts`: one call gains the required
   `lockfile` option, and its assertions are unchanged.
 - No existing assertion was removed.
-- `./quality.sh < /dev/null` on the head: PASSED. The parallel unit pass passed
+- `./quality.sh < /dev/null` on an earlier head: PASSED. The parallel unit pass passed
   in 8m31s and the serial pass in 3m49s. Lint, type check, fmt, markdownlint,
   semgrep, gitleaks and the completeness checks all passed. Config integration
   and checkov were skipped by the host. The first gate run failed only on
@@ -169,14 +169,30 @@ Not done or not checked:
 
 ## Review repair
 
-Validate symbolic key/body refs, canonical GitHub/GHE hostnames and acyclic
-uses graphs before granting lock coverage. The first-party exemption now
-belongs only to the SHA scanner; lockfile staleness checks all remote owners.
-Composite and mixed call-site findings offer SHA-only remediation. The prompt
-and operator documentation describe these boundaries. The documentation test
-imports ACTIONS_LOCKFILE_PATH from production.
+Before granting lock coverage the parser now validates symbolic key/body refs,
+canonical GitHub/GHE hostnames and acyclic `uses` graphs. It also rejects a
+lockfile in which two keys canonicalise to the same action (for example
+`Actions/Checkout@v4` and `actions/checkout@v4`) but differ in `hostname`,
+`ref`, `commit`, `owner_id`, `repo_id` or the ordered canonical `uses` list,
+matching upstream `equalAction`. Identical duplicates are accepted and counted
+once. A conflicting duplicate is filed as `BP-ACTIONS-LOCK-INVALID` and its tag
+refs fall back to the SHA rule. The first-party exemption now belongs only to
+the SHA scanner; lockfile staleness checks all remote owners. Composite and
+mixed call-site findings offer SHA-only remediation. The prompt and operator
+documentation describe these boundaries. The documentation test imports
+`ACTIONS_LOCKFILE_PATH` from production.
 
-Three scanner regressions failed before the repair. All 142 lockfile, scanner,
-policy and audit-template tests pass afterwards. Tests used Deno 2.9.6 with a
-temporary local import map because direct JSR downloads fail here; repository
-dependency files are unchanged. Full hosted CI and fresh review remain required.
+Tests: `worker/deno/tests/action_pin_scanner_test.ts` gains "canonical
+duplicate lock records must agree before granting coverage", which covers an
+equivalent duplicate (valid, no findings) and three conflicting ones (different
+commit, different `owner_id`, extra `uses`). Each conflicting one yields
+`BP-ACTIONS-LOCK-INVALID` plus the `BP-SHA-PIN-actions-checkout` fallback.
+
+Results on the head, from `worker/deno`: `deno test -A` over
+`actions_lockfile_test.ts`, `action_pin_scanner_test.ts`,
+`action_sha_pinning_policy_test.ts` and `github_actions_audit_template_test.ts`
+passed 143 tests with 0 failures. `deno fmt --check`, `deno lint` and
+`deno check` on `lib/actions_lockfile.ts` and `tests/action_pin_scanner_test.ts`
+passed. The full `./quality.sh` result in the Test Plan above was recorded at an
+earlier head and was not repeated for this repair; hosted CI runs it on the
+pushed head.
