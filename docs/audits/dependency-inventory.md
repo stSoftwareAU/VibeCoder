@@ -19,7 +19,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | github/codeql-action/analyze | v4.39.1 | 33d7b85da1a04171e211befe2c739303b9a4c066 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | github/codeql-action/init | v4.39.1 | 33d7b85da1a04171e211befe2c739303b9a4c066 | .github/workflows/security-tree-sweep.yml | pinned to commit SHA |
 | gitleaks/gitleaks-action | v3.0.0 | e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e | .github/workflows/gitleaks.yml | pinned to commit SHA |
-| peter-evans/create-pull-request | v8.1.1 | 5f6978faf089d4d20b00c7766989d076bb2fc7f1 | .github/workflows/cargo-upgrade.yml | pinned to commit SHA |
+| peter-evans/create-pull-request | v8.1.3 | 3ffccacd46053766916f087ce41d627c0b8cf2d1 | .github/workflows/cargo-upgrade.yml | pinned to commit SHA |
 
 ## Container base images
 
