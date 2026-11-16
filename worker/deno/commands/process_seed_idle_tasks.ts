@@ -85,6 +85,11 @@ export interface ProcessSeedIdleTasksDeps {
   createWrappersFn?: (
     repo: string,
   ) => Promise<Result<CreateAllIdleTaskWrappersResult>>;
+  /**
+   * Ensure-label seam for the idle-task sweep; defaults to the production
+   * `ensureIdleTaskLabel` (Issue #5096 wiring test).
+   */
+  ensureLabelFn?: (repo: string) => Promise<Result<void>>;
   /** Clock, threaded into wrapper seeding. */
   now?: () => Date;
   /** Logger. Defaults to {@link createLogger}. */
@@ -195,6 +200,7 @@ export const processSeedIdleTasksCommand: Command = {
           // Issue #5096: opt-in templates the owner config does not name are
           // not seeded.
           authorisedOptInTemplates: authorisedOptInTemplates(config),
+          ...(deps.ensureLabelFn ? { ensureLabelFn: deps.ensureLabelFn } : {}),
         }));
 
     if (repo.length === 0) {

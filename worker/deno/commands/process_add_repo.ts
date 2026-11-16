@@ -204,6 +204,11 @@ export interface ProcessAddRepoDeps {
   createWrappersFn?: (
     repo: string,
   ) => Promise<Result<CreateAllIdleTaskWrappersResult>>;
+  /**
+   * Ensure-label seam for the idle-task sweep; defaults to the production
+   * `ensureIdleTaskLabel` (Issue #5096 wiring test).
+   */
+  ensureLabelFn?: (repo: string) => Promise<Result<void>>;
   /** Label-sync seam (Issue #2599). Defaults to {@link syncLabelsForRepo}. */
   syncLabelsFn?: (repo: string) => Promise<LabelSyncResult>;
   /**
@@ -408,6 +413,7 @@ export const processAddRepoCommand: Command = {
           // Issue #5096: opt-in templates the owner config does not name are
           // not seeded.
           authorisedOptInTemplates: authorisedOptInTemplates(config),
+          ...(deps.ensureLabelFn ? { ensureLabelFn: deps.ensureLabelFn } : {}),
         }));
     // Label sync reuses the same inherited-env gh identity as the validate
     // path (defaultRunCommand); no ghConfigDir wiring is needed here.

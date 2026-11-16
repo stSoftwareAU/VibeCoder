@@ -20,7 +20,7 @@
  * (workflow, `.gitignore`, collaborator precheck) are still not invoked.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   buildBranchProtectionLine,
   buildEscalationText,
@@ -34,6 +34,7 @@ import {
 } from "../commands/process_add_repo.ts";
 import type { AddRepoTargetStatus } from "../lib/add_repo.ts";
 import type { CreateAllIdleTaskWrappersResult } from "../lib/create_all_idle_task_wrappers.ts";
+import { TEST_AUDIT_ISSUE_TITLE } from "../lib/idle_task_templates/test_audit_template.ts";
 import type { LabelSyncResult } from "../setup/label_sync.ts";
 import type { SyncResult } from "../setup/branch_protection_sync.ts";
 import type { RepoVisibility } from "../lib/repo_visibility.ts";
@@ -802,5 +803,62 @@ Deno.test("blocked repo - an open idle-task issue stops wrapper seeding (Issue #
       )
     ),
     true,
+  );
+});
+
+Deno.test("add-repo - production sweep seeds test-audit only when the config names it (Issue #5096)", async () => {
+  // No createWrappersFn is injected, so the real default sweep runs. The gh
+  // stub answers the open-issue lookup with [] and every issue create with a
+  // URL; ensureLabelFn stubs the label step so nothing reaches the network.
+  async function seedTitlesFor(
+    weights: Record<string, number>,
+  ): Promise<string[]> {
+    const creates: string[] = [];
+    const result = await processAddRepoCommand.execute(
+      {
+        repo: REPO,
+        "issue-number": ISSUE,
+        title: `add-repo: ${TARGET}`,
+        __testDeps: baseDeps({
+          runGhCommand: (args: string[]) => {
+            if (args[0] === "issue" && args[1] === "list") {
+              return Promise.resolve("[]");
+            }
+            if (args[0] === "issue" && args[1] === "create") {
+              creates.push(args[args.indexOf("--title") + 1]!);
+              return Promise.resolve("https://github.com/o/r/issues/7\n");
+            }
+            return Promise.resolve("");
+          },
+          validateFn: () =>
+            Promise.resolve({
+              ok: true,
+              value: { kind: "ok", visibility: "public" } as AddRepoTargetStatus,
+            }),
+          addRepoFn: () => Promise.resolve({ ok: true, value: { added: true } }),
+          ensureLabelFn: () =>
+            Promise.resolve({ ok: true, value: undefined } as Result<void>),
+        }),
+      },
+      { ...config(), idleTaskTemplateWeights: weights },
+    );
+    assertEquals(result.success, true);
+    return creates;
+  }
+
+  const defaultTitles = await seedTitlesFor({});
+  assert(
+    !defaultTitles.includes(TEST_AUDIT_ISSUE_TITLE),
+    `test-audit must not be seeded by default, titles: ${defaultTitles.join(" | ")}`,
+  );
+  assert(
+    defaultTitles.includes("Run a security scan"),
+    `security-scan must still be seeded, titles: ${defaultTitles.join(" | ")}`,
+  );
+
+  const configuredTitles = await seedTitlesFor({ "test-audit": 1 });
+  assert(
+    configuredTitles.includes(TEST_AUDIT_ISSUE_TITLE),
+    `test-audit must be seeded when named, titles: ${configuredTitles.join(" | ")}`,
   );
 });
