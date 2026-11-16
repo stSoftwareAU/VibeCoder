@@ -44,13 +44,30 @@ existing withholding tests cover that requirement.
 
 ## Test Plan
 
-Run the guard, issue-5039 regressions, Markdown-code and PR-body suites. The
-independent renderer reproduced the list-exit failure before the correction.
-All 152 focused tests pass after the correction. Full hosted CI remains required. CommonMark 0.31.2 is a test-only dependency.
+Run the guard, issue-5039 regressions, Markdown-code and PR-body suites:
+`deno task test tests/babysitter_pr_body_guard_5039_test.ts
+tests/babysitter_pr_body_guard_test.ts tests/markdown_code_spans_test.ts
+tests/pr_body_test.ts` from `worker/deno`. At the pushed head all 154 tests in
+those four files pass. The independent CommonMark 0.31.2 renderer (a test-only
+dependency) reproduced each reported failure before its correction. Full hosted
+CI remains required.
 
 ## Babysitting review repair
 
-The shared fence reader now rejects backticks in a backtick info string, so a real trailing code fence cannot masquerade as prose and suppress restoration. An independent CommonMark regression covers both governing and additional closing references. It failed before the fix; all 220 guard, Markdown and issue-reference tests pass afterwards.
+The shared fence reader makes two corrections, each covered by a CommonMark
+renderer regression in `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts`
+that failed before the fix:
+
+- A backtick in a backtick info string no longer opens a fence, so a real
+  trailing code fence cannot masquerade as prose and suppress restoration. The
+  regression covers both governing and additional closing references.
+- A fence opened inside a list item now ends when a later nonblank line is
+  indented less than that item's content, matching CommonMark's container
+  rule, and that line is read again as prose or a new opener. Without this, a
+  list-exit line followed by a new fence was paired with the old fence's
+  closer, so the real trailing fence looked closed and restored closes were
+  suppressed or mis-placed. The regression is "list exit followed by a new
+  fence cannot suppress restored closes".
 
 Local validation used Deno 2.9.6 and a temporary import map to cached published
 standard-library dependencies because direct JSR downloads fail here. Repository
