@@ -466,6 +466,23 @@ export function previousFindings(
   return last?.outcome === "changes_requested" ? last.findings : [];
 }
 
+// The head an earlier review approved, when the PR's latest review approved
+// it at a commit other than the current head: the re-review reads what
+// changed since then (Issue #5149). null otherwise, including an approval at
+// the current head and a later send-back or hold.
+export function earlierApprovedHead(
+  records: LogRecord[],
+  repo: string,
+  number: number,
+  headSha: string,
+): string | null {
+  const last = latestByPr(records).get(prKey(repo, number));
+  return last?.outcome === "approved" && last.headSha !== headSha &&
+      typeof last.headSha === "string" && last.headSha !== ""
+    ? last.headSha
+    : null;
+}
+
 // Whether this skill's own log recorded a change-request outcome for this PR
 // at this exact head commit. GitHub's DISMISSED review state cannot tell a
 // stale-dismissed approval apart from a change request the worker claimed
