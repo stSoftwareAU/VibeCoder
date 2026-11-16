@@ -171,7 +171,9 @@ export const WORKFLOW_FILE_CHECKS: readonly WorkflowFileCheck[] = [
   {
     id: "action-pins",
     label: "every `uses:` reference is pinned to a 40-character commit SHA",
-    run: (files) => scanActionPins(files).map(fromScanner),
+    // SHA-only: the PR gate holds the worker's own edits to the fleet's SHA-pin rule, which lockfile repos also accept, so no lockfile credit (Issue #5051).
+    run: (files) =>
+      scanActionPins(files, { lockfile: { kind: "absent" } }).map(fromScanner),
   },
   {
     id: "workflow-permissions",

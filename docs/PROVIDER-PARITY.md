@@ -47,10 +47,15 @@ uses the ordering each provider policy declares. Unknown budgets stay unknown
   ordering and its 10% low-remaining floor. Explicit exhaustion excludes that
   credential until reset.
 
-A Claude usage limit writes `provider: "claude"` on the rate-limit
-signal. The host loop pauses only when every **enabled** provider is
-that blocked vendor, or when GitHub (shared infrastructure) is the
-blocker. Codex work continues on a mixed host.
+An **account-wide** Claude usage limit writes `provider: "claude"` on the
+rate-limit signal. The host loop pauses only when every **enabled**
+provider is that blocked vendor, or when GitHub (shared infrastructure) is
+the blocker. Codex work continues on a mixed host. A model-scoped limit
+that names a tier (for example `You've reached your Fable limit. Switch to
+another model to continue.`) writes no rate-limit signal at all; the run
+steps down to the next Claude model on the same provider and records a
+cooldown in `WORK_DIR/.model_usage_cooldown.json` (Issue #5086, see
+[TROUBLESHOOTING](TROUBLESHOOTING.md#-rate-limits-and-subscription-usage-limits)).
 
 ## Multiple Codex credentials
 
