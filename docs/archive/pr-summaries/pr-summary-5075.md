@@ -21,9 +21,9 @@ still logs the warning and holds the PR back for retry. Closes #5075.
 
 ### Intent and Rationale
 
-- A number GitHub says does not exist can never be closed, so retrying it
-  cannot succeed. Holding it back kept the whole PR out of the processed set,
-  and the PR was re-examined and warned about every cycle.
+- A number GitHub says does not exist can never be closed, so retrying it cannot
+  succeed. Holding it back kept the whole PR out of the processed set, and the
+  PR was re-examined and warned about every cycle.
 - The fix reuses `isDefinitiveNotFound` rather than adding a new matcher. That
   helper is the repository's one "does this issue exist?" test, and the label
   strip and `escape_hatch_verify.ts` already use it.
@@ -82,8 +82,7 @@ flowchart LR
   - Fixture: merged PR 5020, titled `(#77)` with body `Closes #5394`. Viewing
     #5394 is answered with the observed GraphQL not-found text.
   - Cycle 1 asserts:
-    - `#77` is closed, a positive control that the sweep got past the
-      not-found;
+    - `#77` is closed, a positive control that the sweep got past the not-found;
     - the processed set is `[5020]`;
     - no warning is logged;
     - exactly one `info` log is written, naming `#5394`, `PR #5020` and
@@ -97,8 +96,9 @@ flowchart LR
     text, and no `info` skip line is logged.
 - Red before the fix:
   - I restored the base `worker/deno/lib/pr_issue_linking.ts`, kept the new
-    tests and ran `deno test --allow-all tests/pr_issue_linking_test.ts --filter 5075`.
-    The not-found test failed: the processed set was `[]`, not `[5020]`.
+    tests and ran
+    `deno test --allow-all tests/pr_issue_linking_test.ts --filter 5075`. The
+    not-found test failed: the processed set was `[]`, not `[5020]`.
   - The transient test passed on base, as a guard should.
   - Both pass on the head.
 - No existing test was edited. `tests/pr_issue_linking_test.ts` passes as a
@@ -109,8 +109,8 @@ flowchart LR
 - `isDefinitiveNotFound` is unchanged, so its existing callers
   (`reserved_label_strip.ts`, `escape_hatch_verify.ts`) are unaffected.
 - After merging `origin/main`, the full unit suite (`deno task test:unit` from
-  `worker/deno`, the command whose failure blocked the previous attempt's
-  push) exited 0.
+  `worker/deno`, the command whose failure blocked the previous attempt's push)
+  exited 0.
 - `./quality.sh < /dev/null` passed on the head commit, with checks skipped as
   configured. It covers deno tests, lint, type check, fmt, markdownlint and
   semgrep.
