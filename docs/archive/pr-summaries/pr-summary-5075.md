@@ -108,6 +108,9 @@ flowchart LR
   `tests/merged_pr_close_rollback_1770_test.ts`.
 - `isDefinitiveNotFound` is unchanged, so its existing callers
   (`reserved_label_strip.ts`, `escape_hatch_verify.ts`) are unaffected.
+- After merging `origin/main`, the full unit suite (`deno task test:unit` from
+  `worker/deno`, the command whose failure blocked the previous attempt's
+  push) exited 0.
 - `./quality.sh < /dev/null` passed on the head commit, with checks skipped as
   configured. It covers deno tests, lint, type check, fmt, markdownlint and
   semgrep.
