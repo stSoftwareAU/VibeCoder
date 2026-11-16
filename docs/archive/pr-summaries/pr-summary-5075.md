@@ -87,7 +87,8 @@ flowchart LR
     - no warning is logged;
     - exactly one `info` log is written, naming `#5394`, `PR #5020` and
       `Could not resolve to an issue or pull request`.
-  - Cycle 2 asserts no `issue view` call and no further log or warning.
+  - Cycle 2 asserts no further issue is closed, the processed set is still
+    `[5020]`, and no further log or warning is emitted.
 - Added
   `worker/deno/tests/pr_issue_linking_test.ts::pr_issue_linking - a transient failure on an issue view is still held back (Issue #5075)`.
   - The same fixture runs with a 502, a rate limit and a DNS timeout.

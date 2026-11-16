@@ -1558,10 +1558,8 @@ Deno.test("pr_issue_linking - a merged PR naming an issue that does not exist is
       undefined,
       options,
     );
-    assertEquals(
-      second.calls.filter((c) => c[0] === "issue" && c[1] === "view").length,
-      0,
-    );
+    assertEquals(second.closed, [], "no further issue is closed");
+    assertEquals(await processedFor(watermarkPath), [5020]);
     assertEquals(logs.length, 1, "logged once only");
     assertEquals(warns, []);
   } finally {
