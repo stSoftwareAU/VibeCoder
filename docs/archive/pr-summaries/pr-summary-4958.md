@@ -257,12 +257,19 @@ flowchart LR
     image installs no `codex` provider.
   - `./quality.sh < /dev/null` PASSED (with skipped checks: config integration,
     checkov) on `eee814ae`.
-  - At the head after the PR #5159 review round, `deno test -A` gave:
+  - At the head after the PR #5159 CI repair, `deno test -A` over the five
+    TokenEconomizer and command-count suites gave 87 passed, 0 failed:
     `worker/deno/tests/token_economizer_production_deps_test.ts` (9 tests at
     head), `worker/deno/tests/mod_test.ts` (20 tests at head),
     `worker/deno/tests/token_economizer_run_stats_test.ts` (14 tests at head),
     `worker/deno/tests/token_economizer_trial_report_test.ts` (13 tests at head)
     and `worker/deno/tests/token_economizer_trial_docs_test.ts` (31 tests at
-    head), all passing. The report adds a "Not checked" line: a control run
-    served by another provider cannot be excluded from the archive (the record's
+    head). The report adds a "Not checked" line: a control run served by
+    another provider cannot be excluded from the archive (the record's
     `provider` is the host's configured one).
+  - The base's snapshot-baseline change (Issue #5018) gave the baseline helper
+    a revision argument, so
+    `worker/deno/tests/token_economizer_production_deps_test.ts` passes `null`
+    for it: the mocked read carries no `updatedAt`, so no revision is recorded.
+    That adapts this PR's own new test to the base's signature; no assertion
+    changed.
