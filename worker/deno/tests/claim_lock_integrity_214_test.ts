@@ -651,12 +651,14 @@ async function runClosedPrScan(
   }
 }
 
-Deno.test("detectAssignedWithClosedPr - keeps a claim whose marker went quiet 20 minutes ago (Issue #5124)", async () => {
+Deno.test("detectAssignedWithClosedPr - keeps a long-held claim whose marker went quiet 20 minutes ago (Issue #5124)", async () => {
+  // The assignment (1 h) is older than assignedNoHeartbeatTimeout (30 min),
+  // so only the 20-minute-old heartbeat can keep this claim.
   const { recovered, mutations } = await runClosedPrScan(
     commentsJson([{
       body: formatHeartbeatMarker("vibe-coder-other-host", nowSeconds() - 1200),
     }]),
-    isoAgo(1200),
+    isoAgo(3600),
   );
   assertEquals(recovered, 0);
   assertEquals(mutations, []);

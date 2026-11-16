@@ -94,7 +94,7 @@ flowchart TD
 - **status** — `verified` — the three new keep-the-claim tests failed against
   the unfixed `stuck_recovery.ts` (20 passed, 3 failed) and pass after the fix
 - **regression test** —
-  `worker/deno/tests/claim_lock_integrity_214_test.ts::detectAssignedWithClosedPr - keeps a claim whose marker went quiet 20 minutes ago (Issue #5124)`
+  `worker/deno/tests/claim_lock_integrity_214_test.ts::detectAssignedWithClosedPr - keeps a long-held claim whose marker went quiet 20 minutes ago (Issue #5124)`
 
 ## Test Plan
 
@@ -102,9 +102,11 @@ flowchart TD
   drives the real `detectAssignedWithClosedPr` with a `gh` fake. The fake
   returns a merged PR dated 2026-11-01, an assignment at the given time, and the
   given comments, and it records every mutation:
-  - `keeps a claim whose marker went quiet 20 minutes ago (Issue #5124)`: the
-    issue's scenario. A fleet marker 1,200 s old and an assignment 1,200 s ago
-    give 0 recovered and no mutations. Red on base.
+  - `keeps a long-held claim whose marker went quiet 20 minutes ago (Issue #5124)`:
+    the issue's scenario. A fleet marker 1,200 s old and an assignment 3,600 s
+    ago (older than `assignedNoHeartbeatTimeout`, so only the heartbeat can keep
+    the claim) give 0 recovered and no mutations. Red on base, and red when the
+    grace check uses the assignment time alone.
   - `keeps a fresh claim with no marker at all (Issue #5124)`: an assignment
     1,200 s ago gives 0 recovered and no mutations. Red on base.
   - `an old marker from an earlier attempt does not age a fresh claim (Issue #5124)`:
