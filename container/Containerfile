@@ -215,9 +215,12 @@ ENV POWERSHELL_UPDATECHECK="Off" \
 ENV RTK_TELEMETRY_DISABLED="1" \
     RTK_SUPPRESS_HOOK_WARNING="1"
 
+# The AWS Emulator sends no telemetry from an unattended container (Issue #5109).
+ENV EMULATOR_TELEMETRY="off"
+
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer,aws-cli,aws-emulator
 
 # markdownlint-cli2 backs the check-markdownlint gate stage; cspell (Issue
 # #3689) backs the pre-push gate's spelling stage for a repository that tracks
@@ -462,6 +465,13 @@ RUN set -eu; \
     printf 'vibe ALL=(agent) NOPASSWD: ALL\n' > /etc/sudoers.d/vibe-agent; \
     chmod 0440 /etc/sudoers.d/vibe-agent; \
     visudo --check --file=/etc/sudoers.d/vibe-agent
+
+# Issue #5109: the helper repository tests run the emulator through. The smoke
+# proves, on each built architecture, that the agent account can run a
+# TLS-verified, SigV4-authenticated S3 write-read-delete against the pinned
+# emulator with generated credentials and telemetry off; failure fails the build.
+COPY aws-emulator-run.sh /usr/local/bin/aws-emulator-run
+RUN runuser -u agent -- /usr/local/bin/aws-emulator-run --smoke
 
 # Pre-warmed Deno cache (Issue #4392): the pinned @playwright/mcp (its own
 # playwright-core included) and the worker's JSR deps, resolved against the

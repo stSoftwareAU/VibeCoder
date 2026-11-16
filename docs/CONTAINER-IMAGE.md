@@ -48,7 +48,7 @@ the largest download, so it sits last and a Rust bump rebuilds only itself.
 
 The fetch-verify-extract toolchains in that block are **fragments**
 (Issue #1594): `COPY toolchains/*.sh` puts them in the image, then
-`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer`
+`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer,aws-cli,aws-emulator`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
 blocks. `markdownlint-cli2`, `cspell` and `graft` sit between the two runs, unchanged —
@@ -221,6 +221,155 @@ right version and then failed would have been swallowed into a green layer.
 
 `graft --version` prints the bare version, so the manifest-derived start-up
 self-check probes it with no `versionArgs` and no code change.
+
+## AWS Emulator and `aws-emulator-run`
+
+Issue #5109 adds the official AWS Emulator and a helper that runs a test
+command against it. Floci stays installed during the migration and nothing
+switches existing Floci users. The repository's CI migration and the
+coding-standard and best-practices changes are planned (#5110, #5111, #5112)
+and are not part of this change.
+
+### What is installed
+
+- `aws-emulator` 1.0.385 is the official prebuilt Debian package, not compiled
+  from source: upstream documents roughly 100 GB of build space. The fragment
+  downloads the versioned package, checks its sha256, extracts it with
+  `dpkg-deb -x` to `/opt/aws-emulator`, and links `/usr/local/bin/aws-emulator`.
+- `aws-cli` 2.40.3 is the pinned AWS CLI v2 that the smoke test and the helper
+  use, installed under `/usr/local/aws-cli` with `aws` in `/usr/local/bin`.
+- `EMULATOR_TELEMETRY=off` is set image-wide.
+
+### Pin ownership
+
+Both pins live in `container/tools.json` (`version`, `packageRevision` for the
+emulator, and per-architecture `sha256`), and the fragments
+`container/toolchains/aws-emulator.sh` and `container/toolchains/aws-cli.sh`
+read them. The emulator URL is the versioned form,
+`.../aws-emulator/packages/aws-emulator/LTS/aws-emulator_<version>-<packageRevision>_<arch>.deb`;
+the image never uses `LTS/latest` or any other floating name.
+
+The checksums were computed on GitHub-hosted amd64 and arm64 runners, because
+the worker container's egress proxy refuses `downloads.aws.com` and
+`awscli.amazonaws.com`. A bump repeats that from a host that can reach them,
+and respects the 24 hour quarantine before adopting a release.
+
+### The `aws-emulator-run` contract
+
+`container/aws-emulator-run.sh` is installed as `/usr/local/bin/aws-emulator-run`:
+
+```text
+aws-emulator-run [--ready-timeout SECONDS] [--timeout SECONDS] -- COMMAND [ARG...]
+aws-emulator-run [--ready-timeout SECONDS] [--timeout SECONDS] --smoke
+```
+
+`SECONDS` is an integer from 1 to 86400. The defaults are `--ready-timeout 60`
+and `--timeout 1800`.
+
+| Exit | Meaning |
+| ---- | ------- |
+| COMMAND's own code | COMMAND ran |
+| 0 turned into 1 | COMMAND passed but cleanup failed |
+| 2 | Usage error |
+| 3 | Refused account |
+| 4 | A required runtime is missing: `aws-emulator` or `curl` (and `aws` for `--smoke`) |
+| 5 | The emulator failed to start, exited early, or was not ready and verified within `--ready-timeout` |
+| 124 | COMMAND exceeded `--timeout` |
+| 128+N | The helper received signal N (TERM is 143, INT is 130) |
+
+Every failure the helper itself reports is one stderr line starting
+`[aws-emulator-run] FAILED:` that names the cause. For an emulator that exits
+early or never becomes ready, the line includes the last lines of the
+emulator's own log (its cause line), never the credentials.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant H as aws-emulator-run
+    participant E as aws-emulator
+    participant T as Test command
+    C->>H: run -- COMMAND
+    H->>H: refuse root and refused users
+    H->>E: start, scrubbed env, 127.0.0.1, port 0
+    E-->>H: writes config, credentials and ca.pem
+    H->>E: health check verified against this run's ca.pem
+    E-->>H: ok
+    H->>T: run with the test environment
+    T->>E: TLS and SigV4 requests
+    T-->>H: exit code
+    H->>E: TERM, then KILL after 10 s
+    H->>H: remove state directory
+    H-->>C: COMMAND's exit code
+```
+
+Behaviour, in order:
+
+1. **Refused accounts.** Root is always refused. So is any user named in
+   `AWS_EMULATOR_RUN_REFUSED_USERS` (space-separated; the default is `vibe`, the
+   credential-bearing worker account). A refused account exits 3 and the
+   emulator is never started.
+2. **Private state.** Each run makes `${TMPDIR:-/tmp}/aws-emulator-run.XXXXXX`
+   with mode 700 and keeps the emulator's `HOME` and log inside it. The root
+   filesystem may be read-only; only `TMPDIR` (or `/tmp`) must be writable.
+3. **Loopback only.** The emulator starts as
+   `aws-emulator -b 127.0.0.1 -p 0 -t off -a on`, so the OS picks a free port
+   and no listener leaves loopback. Authentication stays on.
+4. **Scrubbed emulator environment.** It starts under `env -i` with only
+   `PATH`, `HOME`, `LANG` and `EMULATOR_TELEMETRY=off`, so no `AWS_*` or other
+   inherited variable reaches it.
+5. **Readiness is an identity check.** Ready means the emulator has published
+   `config`, `emulator_credentials` and `ca.pem` for exactly one port, and
+   `https://127.0.0.1:<port>/__admin/health` answers `ok` when verified against
+   this run's own `ca.pem`. Another run's CA fails that check, so the endpoint is
+   provably this run's emulator.
+6. **Test environment.** In a subshell, only for COMMAND, the helper unsets every
+   variable beginning `AWS_` and every variable beginning
+   `ECS_CONTAINER_METADATA_URI`. It then sets `AWS_CONFIG_FILE`,
+   `AWS_SHARED_CREDENTIALS_FILE`, `AWS_PROFILE=default`, `AWS_ACCESS_KEY_ID` and
+   `AWS_SECRET_ACCESS_KEY` (the generated values), `AWS_ENDPOINT_URL`
+   (`https://127.0.0.1:<port>`), `AWS_CA_BUNDLE`, `AWS_REGION` and
+   `AWS_DEFAULT_REGION` (`us-east-1`), `AWS_EC2_METADATA_DISABLED=true`,
+   `AWS_SDK_LOAD_CONFIG=1`, `NODE_EXTRA_CA_CERTS`, `EMULATOR_TELEMETRY=off` and
+   `AWS_EMULATOR_STATE_DIR` (scratch space for the test). `JAVA_TOOL_OPTIONS`
+   gets the emulator's PKCS#12 trust store prepended to any existing value, and
+   `NO_PROXY` and `no_proxy` gain `127.0.0.1,localhost`. The helper's own and the
+   caller's environment are untouched, and the secret is never printed.
+7. **No real credential source remains.** Every profile, token, container and
+   metadata credential variable is gone, so a client that ignores the endpoint,
+   or one pointed explicitly at real AWS, presents emulator-generated keys that
+   real AWS rejects. Nothing falls back to AWS or Floci.
+8. **Bounded run.** COMMAND runs with stdin passed through and is bounded by
+   `--timeout` (using `timeout` or `gtimeout`; without either it is unbounded).
+   The emulator's own `--idle-timeout` is set to the run and readiness limits
+   plus 60 seconds.
+9. **Signals and cleanup.** On INT, TERM or HUP the helper stops COMMAND, cleans
+   up, and exits 128+N. Cleanup sends TERM to the emulator, waits up to 10
+   seconds, then KILLs it, and removes the state directory. If the directory
+   survives, the helper prints `FAILED` and exits non-zero, turning a 0 into 1.
+10. **Simultaneous runs.** Port 0 and a per-run state directory mean two runs
+    never share a port, credentials, CA or files.
+11. **`--smoke`.** The helper runs itself as the command: `aws sts
+    get-caller-identity` must report account `000000000000`, then a randomly
+    named bucket gets a create, put, get (bytes compared), delete-object and
+    delete-bucket, all over verified TLS with SigV4. It ends with
+    `[aws-emulator-run] smoke passed: <emulator version line>`.
+
+### Build-time proof
+
+The Containerfile runs `runuser -u agent -- aws-emulator-run --smoke` on every
+built architecture. A built image whose `agent` account cannot complete the
+TLS-verified write-read-delete does not exist.
+
+### Limits and recovery
+
+- State is in memory and is lost when the emulator exits.
+- The image grows by roughly 1 GB (the amd64 binary is about 1.05 GB, arm64
+  about 0.96 GB) plus the CLI.
+- A stuck run is bounded by `--timeout` and the emulator's `--idle-timeout`.
+- If the helper itself is SIGKILLed, its state directory
+  `${TMPDIR:-/tmp}/aws-emulator-run.*` is left behind. It sits on a per-launch
+  tmpfs, so a fresh launch starts clean; otherwise remove it by hand.
+- A failed readiness prints the emulator's own cause line.
 
 ## Coding-agent providers
 
