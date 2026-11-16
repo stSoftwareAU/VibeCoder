@@ -13,9 +13,12 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 const HELPER =
   new URL("../../../container/aws-emulator-run.sh", import.meta.url).pathname;
 const SYSTEM_PATH = "/usr/bin:/bin";
+// Composed at run time so no credential-shaped literal sits in the source.
+const FAKE_SECRET = "Qx7/".repeat(10);
+const HOSTILE_KEY_ID = ["AKIA", "REALKEY", "000000000"].join("");
 const HOSTILE_ENV: Record<string, string> = {
   AWS_PROFILE: "prod",
-  AWS_ACCESS_KEY_ID: "AKIAREALKEY000000000",
+  AWS_ACCESS_KEY_ID: HOSTILE_KEY_ID,
   AWS_SECRET_ACCESS_KEY: "real",
   AWS_SESSION_TOKEN: "x",
   AWS_ENDPOINT_URL_S3: "https://s3.amazonaws.com",
@@ -88,7 +91,7 @@ with open(os.path.join(REC, "settings"), "w") as f:
     f.write("telemetry=%s\\nauth=%s\\nbind=%s\\nrequested_port=%d\\n" % (telemetry, auth, bind, port))
 
 if MODE == "crash":
-    sys.stderr.write("credential error: aws_secret_access_key = abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123+/\\n")
+    sys.stderr.write("credential error: aws_secret_access_key = ${FAKE_SECRET}\\n")
     sys.stderr.write("emulator serve failed: Address in use\\n")
     sys.stderr.flush()
     sys.exit(1)
@@ -481,7 +484,7 @@ testAsOrdinaryUser(
       assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
       assertStringIncludes(r.stderr, "Address in use");
       assertEquals(
-        r.stderr.includes("abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123+/"),
+        r.stderr.includes(FAKE_SECRET),
         false,
         "the emulator's credential text must be redacted",
       );
