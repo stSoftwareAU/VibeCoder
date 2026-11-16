@@ -23,8 +23,9 @@ enforced) on every host, and a new case asserts the Apple runtime's
 ### Essential Design Decisions
 
 - `platform` is optional and omitted by both production callers
-  (`commands/container_launch_plan.ts` main, `lib/fleet_babysitter_container.ts`),
-  so they still resolve from `Deno.build.os`. Lib behaviour is unchanged.
+  (`commands/container_launch_plan.ts` main,
+  `lib/fleet_babysitter_container.ts`), so they still resolve from
+  `Deno.build.os`. Lib behaviour is unchanged.
 - `launch(d, platform = "linux")` defaults to Linux so every existing #4417 case
   is unchanged in intent; only the new case passes `"darwin"`.
 - No platform-conditional skip.
@@ -41,8 +42,8 @@ Backend/test-only change, no UI files.
 
 - `worker/deno/commands/container_launch_plan.ts`: `platform` option forwarded
   to `detectContainerRuntime`.
-- `worker/deno/tests/recovery_authority_4417_test.ts`: `launch(d, platform)`
-  and the new Apple case.
+- `worker/deno/tests/recovery_authority_4417_test.ts`: `launch(d, platform)` and
+  the new Apple case.
 - Issue numbers this diff cites: #5088 (recovery_authority_4417_test fails on
   macOS hosts: the launch plan reads the host's container runtime instead of an
   injected one).
@@ -54,13 +55,13 @@ Backend/test-only change, no UI files.
   #5088)". `launch(d, "darwin")` gives runtime `/usr/bin/container` and
   `egressEnforced: false`. The positive control `launch(d)` on the same
   deployment gives `/usr/bin/docker` and `egressEnforced: true`.
-- The `"darwin"` case reproduces the plan the macOS host produced, which is
-  what failed line 750. This run is on Linux, so the original macOS failure was
-  not observed here, and the fixed test was not run on a macOS host.
+- The `"darwin"` case reproduces the plan the macOS host produced, which is what
+  failed line 750. This run is on Linux, so the original macOS failure was not
+  observed here, and the fixed test was not run on a macOS host.
 - No existing assertion was edited or removed.
 - `deno task test:unit tests/recovery_authority_4417_test.ts
-  tests/container_launch_plan_command_test.ts < /dev/null` (from
-  `worker/deno`): 23 passed, 0 failed.
+  tests/container_launch_plan_command_test.ts < /dev/null`
+  (from `worker/deno`): 23 passed, 0 failed.
 - `./quality.sh < /dev/null` on the head: PASSED. This host skipped config
   integration and checkov.
 
