@@ -82,23 +82,25 @@ flowchart TD
 - **partial** — "cargo llvm-cov" — evidence:
   `worker/deno/tests/git_push_preflight_test.ts::a spelling or merge-conflict
   repair compiles CI's cargo llvm-cov test targets and is refused when they
-  fail (Issue #5169)` — reviewer: partial — reason: spelling and
-  merge-conflict repairs now compile CI's llvm-cov test targets, but the
-  `--fail-under-lines` coverage threshold is not measured, because
-  cargo-llvm-cov is not installed in the worker container.
+  fail (Issue #5169)`
+  — reviewer: partial — reason: spelling and merge-conflict repairs now compile
+  CI's llvm-cov test targets, but the `--fail-under-lines` coverage threshold is
+  not measured, because cargo-llvm-cov is not installed in the worker container.
 - **partial** — "incorporating #5151's three ShellCheck failures" — evidence:
   `worker/deno/tests/shellcheck_publication_test.ts::a spelling or
   merge-conflict repair blocks a real ShellCheck diagnostic and pushes a clean
-  script (Issue #5169)` — reviewer: partial — reason: the test also passes on
-  `origin/main`, so no ShellCheck bypass was found or fixed, and the three
-  private failing jobs were not read.
+  script (Issue #5169)`
+  — reviewer: partial — reason: the test also passes on `origin/main`, so no
+  ShellCheck bypass was found or fixed, and the three private failing jobs were
+  not read.
 - **partial** — "A disk/resource deferral must retain WIP and resume
   automatically, not publish unvalidated work as passed" — evidence:
   `worker/deno/tests/git_push_preflight_test.ts::a spelling or merge-conflict
   repair whose CI clippy hits a full disk keeps its commits unpushed (Issue
-  #5169)` — reviewer: partial — reason: automatic resumption was not traced,
-  and the milestone merge-only path (Issue #4326) still pushes cargo-skipped
-  merges with the `UNGATED:` note, unchanged.
+  #5169)`
+  — reviewer: partial — reason: automatic resumption was not traced, and the
+  milestone merge-only path (Issue #4326) still pushes cargo-skipped merges with
+  the `UNGATED:` note, unchanged.
 - **missing** — "Acceptance requires evidence for both incident groups" —
   reviewer: missing — reason: the private failing jobs of neither group were
   read; only the Rust/Deno group has red/green tests, and the ShellCheck group
@@ -114,24 +116,26 @@ flowchart TD
     `AssertionError: failing CI clippy must refuse the push`. No cargo check ran
     and the push went through.
   - The valid-path control: CI clippy passes and the repair is pushed.
-- `worker/deno/tests/git_push_preflight_test.ts`, two more new tests added
-  after the completion check, both through `commitAndPushPending` with
+- `worker/deno/tests/git_push_preflight_test.ts`, two more new tests added after
+  the completion check, both through `commitAndPushPending` with
   `resolveRepairPreFlightSpec(undefined, "org/repo")`:
   - `a spelling or merge-conflict repair compiles CI's cargo llvm-cov test
-    targets and is refused when they fail (Issue #5169)`, with a valid-path
-    control that pushes when the targets compile.
+    targets and is refused when they fail (Issue #5169)`,
+    with a valid-path control that pushes when the targets compile.
   - `a spelling or merge-conflict repair whose CI clippy hits a full disk
-    keeps its commits unpushed (Issue #5169)`: the push fails with
-    `PrePushGateInfrastructureError`, origin is unchanged, and the local head
-    keeps the agent's commit.
+    keeps its commits unpushed (Issue #5169)`:
+    the push fails with `PrePushGateInfrastructureError`, origin is unchanged,
+    and the local head keeps the agent's commit.
   - Red against `origin/main`'s `git_push.ts`: all four Issue #5169 tests in
     this file failed (`a failing llvm-cov test-target compile must refuse`,
     `a disk-full check must not publish the repair`).
-- `worker/deno/tests/shellcheck_publication_test.ts`: new test `a spelling or
+- `worker/deno/tests/shellcheck_publication_test.ts`: new test
+  `a spelling or
   merge-conflict repair blocks a real ShellCheck diagnostic and pushes a clean
-  script (Issue #5169)`, run with the host's real ShellCheck 0.11.0. It passes
-  on `origin/main` too, so it records the existing ShellCheck coverage of
-  these repairs. It does not prove a fix.
+  script (Issue #5169)`,
+  run with the host's real ShellCheck 0.11.0. It passes on `origin/main` too, so
+  it records the existing ShellCheck coverage of these repairs. It does not
+  prove a fix.
 - `worker/deno/tests/pr_round_repo_formatters_test.ts`: new test
   `spelling fix - an unformatted .ts fix the agent committed is formatted and
   pushed (Issue #5169)`.
@@ -160,9 +164,9 @@ flowchart TD
     `pr_feedback_processor_pre_flight_4630_test.ts`: 39 passed, 0 failed.
   - `pr_spelling_processor_test.ts`, `pr_merge_conflict_processor_test.ts` and
     `pr_round_repo_formatters_test.ts`: 149 passed, 0 failed.
-  - `git_push_preflight_test.ts` and `shellcheck_publication_test.ts`
-    together, after the new tests: 43 passed, 2 failed. The 2 are the
-    network-dependent CLI tests below.
+  - `git_push_preflight_test.ts` and `shellcheck_publication_test.ts` together,
+    after the new tests: 43 passed, 2 failed. The 2 are the network-dependent
+    CLI tests below.
   - `shellcheck_publication_test.ts`: 9 passed, 2 failed. Both failures are CLI
     subprocess tests that could not load the `@std/yaml` JSR manifest (no
     network). They do not call `resolveRepairPreFlightSpec`, and they were not
