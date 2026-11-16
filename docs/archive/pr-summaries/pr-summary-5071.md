@@ -16,10 +16,9 @@ writes or lists") are unchanged. Closes #5071.
 ### Intent and Rationale
 
 - Two fleet PRs (#4535, #5059) kept a `/tmp/work` placeholder in a test file
-  they edited. Their own change made production code write to that path, and
-  the review sent each one back. The parenthetical example decided the case
-  before the code could, so the fix rewords the exemption and adds no new
-  check.
+  they edited. Their own change made production code write to that path, and the
+  review sent each one back. The parenthetical example decided the case before
+  the code could, so the fix rewords the exemption and adds no new check.
 
 ### Essential Design Decisions
 
@@ -51,14 +50,17 @@ Documentation-only change to a coding standard, with a drift test.
 
 ## Test Plan
 
-- `worker/deno/tests/shared_temp_dir_3524_test.ts`, new test "CODING-STANDARDS.md
-  temp-path exemption is judged against the code at the head, not a config
-  placeholder (Issue #5071)". It pins "never touches the filesystem once your
-  change is in" and "Judge it against the code at the head, not the base". It
-  also asserts that the section no longer contains "a config placeholder".
+- `worker/deno/tests/shared_temp_dir_3524_test.ts`, new test
+  "CODING-STANDARDS.md temp-path exemption is judged against the code at the
+  head, not a config placeholder (Issue #5071)". It pins "never touches the
+  filesystem once your change is in" and "Judge it against the code at the head,
+  not the base". It also asserts that the section no longer contains "a config
+  placeholder".
 - Red before the change: with the base branch's `CODING-STANDARDS.md` restored,
-  the new test failed with `section is missing pin "never touches the
-  filesystem once your change is in"`. It passes on the head.
+  the new test failed with
+  `section is missing pin "never touches the
+  filesystem once your change is in"`.
+  It passes on the head.
 - No assertion was removed. The existing #3524 tests and pins are unchanged.
   `worker/deno/tests/os_branch_bypasses_stub_3475_test.ts`, which reads the same
   section, still passes.
