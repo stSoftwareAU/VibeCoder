@@ -9,8 +9,8 @@ compliant when that workflow's lockfile entry lists its `owner/repo@ref` pin and
 the lockfile has a dependency record for that pin. If the entry or the record is
 missing, the pre-filer files one `BP-ACTIONS-LOCK-STALE-<slug>` finding per
 workflow, telling the repository to re-run `gh actions-lock`. An invalid or
-unsupported lockfile is filed as `BP-ACTIONS-LOCK-INVALID`, and its tag refs fall
-back to the SHA rule. Reusable-workflow calls, composite-action files and
+unsupported lockfile is filed as `BP-ACTIONS-LOCK-INVALID`, and its tag refs
+fall back to the SHA rule. Reusable-workflow calls, composite-action files and
 workflows the lockfile does not list keep the SHA rule (`BP-SHA-PIN-…`). The
 prompt's checks #1 and #13 now draw the same line, and the new advisory check 1b
 (`BP-ACTIONS-LOCK-ADOPT`, low) recommends adopting a lockfile. Closes #5051.
@@ -29,23 +29,23 @@ prompt's checks #1 and #13 now draw the same line, and the new advisory check 1b
   `github/actions-lockfile` Go parser (`go/pkg/lockfile`: `lockfile.go`,
   `compat.go`, `pin.go`). The rules it checks are the top-level keys, the
   supported versions, `owner/repo@ref` pins, the required `ref`, `commit`,
-  `owner_id` and `repo_id`, `sha1-`/`sha256-` digests, positive IDs,
-  transitive `uses` that resolve to a record, and a full-SHA key that must match
-  its commit.
+  `owner_id` and `repo_id`, `sha1-`/`sha256-` digests, positive IDs, transitive
+  `uses` that resolve to a record, and a full-SHA key that must match its
+  commit.
 
 ### Essential Design Decisions
 
 - Only versions v0.0.2 and v0.0.3 are accepted. The official parser also reads
   v0.0.1, but that version uses a legacy key shape. This parser does not
-  canonicalise it, so v0.0.1 and any future version are reported as
-  unsupported rather than trusted.
-- A lockfile that is present but cannot be read (anything other than
-  not-found) skips the SHA-pin and lockfile filing for that run, with a logged
-  warning. Later pre-filers still run. A read failure is an unknown result
-  (issue: "a source-fetch outage remains an unknown/retryable audit result"), so
-  it is never filed as missing protection. An invalid lockfile does file a
-  finding, and its tag refs keep the SHA rule, because evidence that cannot be
-  verified is not a lock.
+  canonicalise it, so v0.0.1 and any future version are reported as unsupported
+  rather than trusted.
+- A lockfile that is present but cannot be read (anything other than not-found)
+  skips the SHA-pin and lockfile filing for that run, with a logged warning.
+  Later pre-filers still run. A read failure is an unknown result (issue: "a
+  source-fetch outage remains an unknown/retryable audit result"), so it is
+  never filed as missing protection. An invalid lockfile does file a finding,
+  and its tag refs keep the SHA rule, because evidence that cannot be verified
+  is not a lock.
 - The PR-time `action-pins` check in `worker/deno/lib/workflow_file_checks.ts`
   stays SHA-only (it passes `{ kind: "absent" }`, with a comment explaining
   why). It holds the worker's own workflow edits to the fleet rule "Pin GitHub
@@ -85,29 +85,32 @@ flowchart TD
   `dependencies:` records with `ref`, `commit: 'sha1-<40 hex>'`, `owner_id`,
   `repo_id` and optional `uses`.
 - Files: new `worker/deno/lib/actions_lockfile.ts`, which parses and validates
-  the lockfile and decides each tag ref's coverage. `worker/deno/lib/action_pin_scanner.ts`
-  now requires a `lockfile` input in `scanActionPins` and gains
-  `scanActionLockfile`. `worker/deno/lib/idle_task_templates/github_actions_audit_template.ts`
-  (step 5b) reads the lockfile and files the new findings.
+  the lockfile and decides each tag ref's coverage.
+  `worker/deno/lib/action_pin_scanner.ts` now requires a `lockfile` input in
+  `scanActionPins` and gains `scanActionLockfile`.
+  `worker/deno/lib/idle_task_templates/github_actions_audit_template.ts` (step
+  5b) reads the lockfile and files the new findings.
   `worker/deno/lib/workflow_file_checks.ts` is also changed.
   `docs/audits/lib-sweep-coverage/top-up-5051.json` claims the new module in a
   sweep slice.
 - Docs: `prompts/github_actions_audit/prompt.md` (the SHA-pinning rule, checks
   1, 1b and 13, the low band list and the specific-prefix ID list).
   `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` (§ "Native SHA-pin pre-filer" and the
-  pre-filed ID list). `docs/REFERENCES.md` (the secure-use row, plus new rows for
-  `github/gh-actions-lock` and GitHub's lockfile page). `DESIGN-PRINCIPLES.md`
-  (the SHA-pin sentence in the pre-filer paragraph). I swept the rest of `docs/`
-  (excluding archive and audits), `README.md`, `SECURITY.md` and
-  `docs/THREAT-MODEL.md` for claims that the pre-filer flags every tag ref.
-  `SECURITY.md` describes the PR-time check, which is unchanged, so it stays
-  true.
+  pre-filed ID list). `docs/REFERENCES.md` (the secure-use row, plus new rows
+  for `github/gh-actions-lock` and GitHub's lockfile page).
+  `DESIGN-PRINCIPLES.md` (the SHA-pin sentence in the pre-filer paragraph). I
+  swept the rest of `docs/` (excluding archive and audits), `README.md`,
+  `SECURITY.md` and `docs/THREAT-MODEL.md` for claims that the pre-filer flags
+  every tag ref. `SECURITY.md` describes the PR-time check, which is unchanged,
+  so it stays true.
 - Issue numbers this diff cites: #5051: Action-pin pre-filer and audit prompt
   ignore GitHub workflow lockfiles (actions.lock). #5009 is cited only as the
   issue's own wording on read failures.
-- The history includes `5a1e5530 WIP checkpoint: periodic agent progress
-  snapshot`, made by the worker's periodic snapshot rather than by hand. I kept
-  it rather than rewrite pushed history.
+- The history includes
+  `5a1e5530 WIP checkpoint: periodic agent progress
+  snapshot`, made by the
+  worker's periodic snapshot rather than by hand. I kept it rather than rewrite
+  pushed history.
 
 ## Test Plan
 
@@ -127,8 +130,8 @@ flowchart TD
   - A newly added unlocked action, a ref mismatch (@v5 against a locked @v4),
     and a workflow pin with no dependency record each produce
     `BP-ACTIONS-LOCK-STALE-…` and no `BP-SHA-PIN`.
-  - An invalid lockfile produces `BP-ACTIONS-LOCK-INVALID` plus the SHA
-    fallback findings.
+  - An invalid lockfile produces `BP-ACTIONS-LOCK-INVALID` plus the SHA fallback
+    findings.
   - A reusable-workflow call is `BP-SHA-PIN` even when the lockfile lists its
     pin.
   - A composite-action file is `BP-SHA-PIN`.
@@ -152,12 +155,12 @@ flowchart TD
 
 Not done or not checked:
 
-- The two optional items (3 and 4) are not done. The reasons are under
-  Essential Design Decisions.
+- The two optional items (3 and 4) are not done. The reasons are under Essential
+  Design Decisions.
 - Lockfile versions v0.0.1 and newer than v0.0.3 are refused rather than
   migrated.
-- No real fleet repository with a lockfile was scanned end to end. The
-  fixtures come from upstream's real file.
+- No real fleet repository with a lockfile was scanned end to end. The fixtures
+  come from upstream's real file.
 - No independent reviewers were dispatched, because the issue has no
   acceptance-criteria heading.
 - Pre-existing and left alone: the "Ten further prefixes" count in
