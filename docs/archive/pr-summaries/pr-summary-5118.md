@@ -17,10 +17,10 @@ Closes #5118.
 
 ### Intent and Rationale
 
-- Under the log-level rules in `CODING-STANDARDS.md`, ERROR means the run
-  cannot continue. A scheduled release is the planned hand-off: the work is
-  pushed and the next cycle resumes the branch. Logging it at ERROR made it
-  rank alongside real faults.
+- Under the log-level rules in `CODING-STANDARDS.md`, ERROR means the run cannot
+  continue. A scheduled release is the planned hand-off: the work is pushed and
+  the next cycle resumes the branch. Logging it at ERROR made it rank alongside
+  real faults.
 - Each log line is fixed where it is written (`fireKill` and
   `logIssueRunFailure`). No other part of the release path changes.
 
@@ -32,22 +32,22 @@ Closes #5118.
   finish deadline. This is the rule the runner already uses to set
   `finishDeadline` and `scheduledRelease` on its result. The hard cap is
   included because it is the same `scheduled_release` hand-off (Issue #424).
-- **Why the kill line is always INFO:** the kill happens before preservation,
-  so the runner cannot yet know whether the run kept anything. The closing
-  line, written after preservation, carries the INFO/WARNING split.
+- **Why the kill line is always INFO:** the kill happens before preservation, so
+  the runner cannot yet know whether the run kept anything. The closing line,
+  written after preservation, carries the INFO/WARNING split.
 - **What counts as kept work:** the run outcome is `no_pr` and carries
   `preservedWip`, which preservation sets only when the work reached a pushed
-  branch. The reason text is not parsed, because its default wording says
-  "WIP preserved" even when nothing was kept.
+  branch. The reason text is not parsed, because its default wording says "WIP
+  preserved" even when nothing was kept.
 - **Unchanged:** the execute phase's own WARNING
-  `Claude released on schedule — the finish deadline was reached …` stays as
-  it is. It was not one of the two ERRORs.
+  `Claude released on schedule — the finish deadline was reached …` stays as it
+  is. It was not one of the two ERRORs.
 
 ### Undiscoverable Facts
 
-- The two ERROR lines come from the log in the issue (laptop host,
-  2026-11-13 04:00Z). The fix follows the same pattern as #5077, which moved the
-  host-disk park from ERROR to WARNING in the same `logIssueRunFailure` helper.
+- The two ERROR lines come from the log in the issue (laptop host, 2026-11-13
+  04:00Z). The fix follows the same pattern as #5077, which moved the host-disk
+  park from ERROR to WARNING in the same `logIssueRunFailure` helper.
 
 ## Evidence
 
@@ -70,8 +70,8 @@ Issue numbers this diff cites:
 
 Docs updated:
 
-- `docs/CONFIGURATION.md`, section "A capped run is released, not failed
-  (Issue #424)": new bullet on the log levels.
+- `docs/CONFIGURATION.md`, section "A capped run is released, not failed (Issue
+  #424)": new bullet on the log levels.
 - `docs/TROUBLESHOOTING.md`: a note on the level under "The kill line", and a
   paragraph after the scheduled-release section describing the worker log.
 
@@ -87,11 +87,10 @@ found no other sentence that states a log level.
   production code and failed:
   - the runner's finish-deadline and hard-cap cases found the kill line on
     ERROR, not INFO;
-  - the composition test failed with
-    `no ERROR line anywhere in the run`, once the `outcome` field was added to
-    the parameter type and before the behaviour changed;
-  - all of them pass after the fix. The tests change no shared fake or
-    fixture.
+  - the composition test failed with `no ERROR line anywhere in the run`, once
+    the `outcome` field was added to the parameter type and before the behaviour
+    changed;
+  - all of them pass after the fix. The tests change no shared fake or fixture.
 - **regression test** —
   `worker/deno/tests/execute_phase_scheduled_release_log_5118_test.ts::execute_phase #5118 - a finish-deadline release with WIP pushed logs no ERROR and stays scheduled_release`
 
@@ -109,9 +108,9 @@ found no other sentence that states a log level.
   - **Unit cases:** kept nothing gives exactly one WARN, kept work gives INFO
     only, and a `timeout` failure still logs the ERROR `failed at phase` line
     (control).
-- Added `worker/deno/tests/claude_runner_scheduled_release_log_5118_test.ts`.
-  It drives the real runner and asserts the kill line is at INFO, with no
-  ERROR, for each of these:
+- Added `worker/deno/tests/claude_runner_scheduled_release_log_5118_test.ts`. It
+  drives the real runner and asserts the kill line is at INFO, with no ERROR,
+  for each of these:
   - a finish-deadline release;
   - a hard-cap release;
   - a session ended by the finish clamp.
