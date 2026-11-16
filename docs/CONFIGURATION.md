@@ -5408,7 +5408,10 @@ gates do (see that bullet):
      among the files it is given, so the integration suites (the ones CI's unit
      shards exclude, including a changed one) are not run here. A deleted or
      renamed-away file still selects the tests that name or import it. A failing
-     test refuses the push, with two exceptions that keep a red base or a download
+     test refuses the push. The block names the command as
+     `deno task test:unit (N files)` and lists the failed tests ahead of Deno's
+     output, so the cut failure comment and log still name them (Issue #5113).
+     There are two exceptions that keep a red base or a download
      outage from blocking an unrelated fix. A failure with no failed test in its
      output and a module-fetch error (a JSR manifest, an npm package or an import
      that could not be downloaded; a 404 `JSR package not found` is not one)

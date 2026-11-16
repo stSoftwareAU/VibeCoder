@@ -10,6 +10,7 @@ import {
   BASELINE_WORKTREE_DIR,
   type DenoTestBaseline,
   denoTestFailureKeys,
+  denoTestFailureSummary,
   hasUncaughtError,
   isDenoFetchFailure,
   judgeDenoTestCheck,
@@ -739,4 +740,49 @@ Deno.test("judgeDenoTestCheck: a budget phrase mid-line does not block a base-on
       "console.log: x " + BUDGET_FAIL_LINE + "\n",
   ).outcome;
   assertEquals(midLine.kind, "base-only");
+});
+
+Deno.test("denoTestFailureSummary: names each failed test once, with line and column (Issue #5113)", () => {
+  const output = [
+    "running 12 tests from ./tests/a_test.ts",
+    "adds ... FAILED (1ms)",
+    " ERRORS ",
+    "",
+    "adds => ./tests/a_test.ts:3:6",
+    "error: AssertionError: Values are not equal",
+    "    at assertEquals (https://jsr.io/@std/assert/assert_equals.ts:1:1)",
+    "",
+    " FAILURES ",
+    "",
+    "adds => ./tests/a_test.ts:3:6",
+    "subtracts => ./tests/b_test.ts:9:6",
+    "./tests/b_test.ts (uncaught error)",
+    "",
+    "FAILED | 10 passed | 2 failed (1s)",
+    "",
+    "error: Test failed",
+  ].join("\n");
+  assertEquals(
+    denoTestFailureSummary(output),
+    "Failed tests (3):\n" +
+      "- adds => ./tests/a_test.ts:3:6\n" +
+      "- subtracts => ./tests/b_test.ts:9:6\n" +
+      "- ./tests/b_test.ts (uncaught error)",
+  );
+});
+
+Deno.test("denoTestFailureSummary: passing output names nothing (Issue #5113)", () => {
+  assertEquals(denoTestFailureSummary("ok | 3 passed | 0 failed (1s)"), null);
+});
+
+Deno.test("denoTestFailureSummary: caps at 20 entries and counts the rest (Issue #5113)", () => {
+  const output = Array.from(
+    { length: 25 },
+    (_, i) => `t${i} => ./tests/f${i}_test.ts:1:1`,
+  ).join("\n");
+  const lines = denoTestFailureSummary(output)!.split("\n");
+  assertEquals(lines[0], "Failed tests (25):");
+  assertEquals(lines.length, 22);
+  assertEquals(lines[20], "- t19 => ./tests/f19_test.ts:1:1");
+  assertEquals(lines[21], "- … and 5 more");
 });

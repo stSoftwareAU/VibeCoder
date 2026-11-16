@@ -49,6 +49,11 @@ import {
 } from "../lib/ci_cargo_checks.ts";
 import { TIMEOUT_EXIT_CODE } from "../lib/git_timeout.ts";
 import {
+  PRE_PUSH_GATE_REASON_HEAD_CHARS,
+  PRE_PUSH_GATE_REASON_TAIL_CHARS,
+} from "../lib/git_push.ts";
+import { redactedHeadTail } from "../lib/redacted_text.ts";
+import {
   STUB_SHELLCHECK_VERSION,
   stubShellcheck,
 } from "./support/shellcheck_support.ts";
@@ -5721,5 +5726,59 @@ Deno.test("runPrePushGate: a prompt or lock change runs the whole unit suite, re
     } finally {
       await Deno.remove(root, { recursive: true });
     }
+  }
+});
+
+Deno.test("runPrePushGate: a 400-file test:unit block still names the failing tests after the head/tail cut (Issue #5113)", async () => {
+  const { root, clone, stdin } = await makeUnitTestRepo(async (c) => {
+    await editFoo(c);
+    for (let i = 0; i < 400; i++) {
+      await Deno.writeTextFile(
+        `${c}/worker/deno/tests/f${i}_test.ts`,
+        "export {};\n",
+      );
+    }
+  });
+  try {
+    const failures = [
+      "adds => ./tests/f1_test.ts:3:6",
+      "subtracts => ./tests/f2_test.ts:9:6",
+    ];
+    const stack = "    at fn (file:///x/lib/foo.ts:1:1)\n".repeat(5);
+    const output = [
+      ...Array.from({ length: 3000 }, (_, i) => `case ${i} ... ok (1ms)`),
+      " ERRORS ",
+      "",
+      ...failures.flatMap((f) => [f, "error: AssertionError: nope", stack]),
+      " FAILURES ",
+      "",
+      ...failures,
+      "",
+      "FAILED | 2998 passed | 2 failed (9s)",
+      "",
+      "error: Test failed",
+      ...Array.from(
+        { length: 150 },
+        (_, i) => `runner trailing line ${i}-xxxxx`,
+      ),
+    ].join("\n");
+    // The head fails; the fork passes, so the baseline yields a block verdict.
+    const { result } = await gateWithUnitRunner(
+      clone,
+      stdin,
+      (cwd) => atHead(cwd) ? { code: 1, stderr: output } : { code: 0 },
+    );
+    assert(!result.ok);
+    assertInstanceOf(result.error, PreFlightGateError);
+    assertEquals(result.error.command.includes("tests/f399_test.ts"), true);
+    const cut = redactedHeadTail(
+      result.error.message,
+      PRE_PUSH_GATE_REASON_HEAD_CHARS,
+      PRE_PUSH_GATE_REASON_TAIL_CHARS,
+    );
+    assertStringIncludes(cut, "deno task test:unit (400 files)");
+    for (const f of failures) assertStringIncludes(cut, f);
+  } finally {
+    await Deno.remove(root, { recursive: true });
   }
 });
