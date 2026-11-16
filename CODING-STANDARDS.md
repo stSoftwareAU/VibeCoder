@@ -1176,14 +1176,14 @@ stale version-comment checker in a fleet repo read only the line directly above
    wrapped in a condition (`if (false)`), loosened, re-wrapped across lines,
    escaped, indented, moved to another file, deleted with its file, and
    renamed — each asserting the gate still blocks. For a guard over another
-   tool's command line or request (`gh`, `git`, a URL), the variants come
-   from that tool's parser and the server's routing, not from the issue's one
-   example: every flag spelling and placement the parser accepts, and every
-   path, method or encoding the server resolves to the same resource. Check
-   each against the real tool (`gh --verbose`, `GH_DEBUG=api`) and register
-   the rule with the shared table in
-   `worker/deno/tests/support/gh_guard_conformance.ts` where one exists
-   (Issue #3568). Run the table both ways:
+   tool's command line or request (`gh`, `git`, a shell `run:` line, a URL),
+   read it with the parser the repo already has, not a new hand-written one:
+   `normaliseGhArgs` in `worker/deno/lib/gh_flag_parser.ts` for `gh`, with the
+   rule registered in the shared table in
+   `worker/deno/tests/support/gh_guard_conformance.ts` (Issue #3568). A
+   construct that parser does not read (a flag it does not know; on a shell
+   line, a heredoc, a quoted script or a redirection) is unread input under
+   rule 3 (Issue #5012). Run the table both ways:
    for each look-alike the gate must ignore — the pattern inside a string or
    template literal, a skipped or ignored declaration (`Deno.test.ignore`,
    `it.skip`), an example inside a code block — add a test asserting it does
@@ -2100,7 +2100,9 @@ branch is red. A PR-feedback or CI-fix hand-off in `.pr_response_message`
 that names a follow-up issue is still recognised on a committed PR branch,
 although `prompts/pr_feedback/prompt.md` no longer offers one (Issue #4304). Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
-in the same push when it changes what the summary says.
+in the same push when it changes what the summary says. A CI-fix run also
+records what its fix changed, even when the fix makes no existing claim false
+(`prompts/ci_fix/prompt.md`, "Keep the PR summary true to the head").
 
 **Prose about the PR's own change** is where that rule breaks most often: a
 sentence states the new behaviour more simply than the code implements it —

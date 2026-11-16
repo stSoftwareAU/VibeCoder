@@ -44,7 +44,7 @@ import { prResponseMessagePath } from "../lib/pr_branch_preparation.ts";
 import { buildQualityInstructions } from "../lib/repo_config.ts";
 import { verifyFeedbackFix } from "../lib/pr_feedback_verifier.ts";
 import { HOST_DISK_PARK_NOTE } from "../lib/heavy_build_gate.ts";
-import { CI_CARGO_ONLY_PRE_FLIGHT } from "../lib/git_push.ts";
+import { REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT } from "../lib/git_push.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
   answerCommentsRead,
@@ -1182,8 +1182,11 @@ Deno.test("review-fix verifier - persistent findings stay outstanding without pu
   assertEquals(checks, 2);
   assertEquals(
     preFlightSpecs,
-    [CI_CARGO_ONLY_PRE_FLIGHT, CI_CARGO_ONLY_PRE_FLIGHT],
-    "no pre-flight commands are configured, so the cargo-only spec gates the push (Issue #4630); the ShellCheck policy runs in every gate (Issue #4631)",
+    [
+      REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
+      REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
+    ],
+    "no pre-flight commands are configured, so the repair-with-CI-cargo spec gates the push (Issue #4630); the ShellCheck policy runs in every gate (Issue #4631)",
   );
   assertStringIncludes(
     prompts[0] ?? "",

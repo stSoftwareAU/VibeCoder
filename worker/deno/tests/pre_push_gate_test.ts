@@ -1410,7 +1410,11 @@ async function denoCommandsRun(
   }
 }
 
-for (const mode of [{}, { shellcheckOnly: true }, { ciCargoOnly: true }]) {
+for (
+  const mode of [{}, { repairChecksOnly: true }, {
+    repairChecksWithCiCargo: true,
+  }]
+) {
   Deno.test(`runPrePushGate: an unparseable deno.json blocks validation in mode ${JSON.stringify(mode)}`, async () => {
     const { root, clone, stdin } = await makeRepoWithDocCommit();
     try {
@@ -3179,11 +3183,11 @@ Deno.test("runPrePushGate: the real workflow scan drives the CI clippy run end t
   }
 });
 
-// ---- ciCargoOnly (repair pushes with no pre-flight configuration) -----------
+// ---- repairChecksWithCiCargo (repair pushes with no pre-flight configuration) -----------
 
 const BAD_TS = "const x   =1\n";
 
-Deno.test("runPrePushGate: ciCargoOnly runs only the CI cargo commands for a .rs and badly formatted .ts push", async () => {
+Deno.test("runPrePushGate: repairChecksWithCiCargo runs only the CI cargo commands for a .rs and badly formatted .ts push", async () => {
   const { root, clone, stdin } = await makeRepoWithFiles({
     ...RUST_FILES,
     "src/bad.ts": BAD_TS,
@@ -3196,7 +3200,7 @@ Deno.test("runPrePushGate: ciCargoOnly runs only the CI cargo commands for a .rs
       preFlightCommands: ["pre-flight-cmd"],
       runner: scriptedRunner(() => ({}), calls),
       findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
-      ciCargoOnly: true,
+      repairChecksWithCiCargo: true,
     });
     assert(result.ok, result.ok ? "" : result.error.message);
     const commands = calls.map((c) => c.command);
@@ -3213,7 +3217,7 @@ Deno.test("runPrePushGate: ciCargoOnly runs only the CI cargo commands for a .rs
   }
 });
 
-Deno.test("runPrePushGate: without ciCargoOnly the same push still runs deno fmt, cargo fmt and the pre-flight commands", async () => {
+Deno.test("runPrePushGate: without repairChecksWithCiCargo the same push still runs deno fmt, cargo fmt and the pre-flight commands", async () => {
   const { root, clone, stdin } = await makeRepoWithFiles({
     ...RUST_FILES,
     "src/bad.ts": BAD_TS,
@@ -3241,7 +3245,7 @@ Deno.test("runPrePushGate: without ciCargoOnly the same push still runs deno fmt
   }
 });
 
-Deno.test("runPrePushGate: ciCargoOnly on a docs-only push runs only markdownlint for the pushed Markdown and does not read the CI cargo scan (Issue #4930)", async () => {
+Deno.test("runPrePushGate: repairChecksWithCiCargo on a docs-only push runs only markdownlint for the pushed Markdown and does not read the CI cargo scan (Issue #4930)", async () => {
   const { root, clone, stdin } = await makeRepoWithDocCommit();
   try {
     const run = async (markdownlintCode: number) => {
@@ -3263,7 +3267,7 @@ Deno.test("runPrePushGate: ciCargoOnly on a docs-only push runs only markdownlin
           read = true;
           return Promise.resolve(scanOf(CLIPPY_CHECK));
         },
-        ciCargoOnly: true,
+        repairChecksWithCiCargo: true,
       });
       assert(
         !read,
@@ -3273,7 +3277,10 @@ Deno.test("runPrePushGate: ciCargoOnly on a docs-only push runs only markdownlin
     };
     // A repair push that breaks the pushed Markdown is blocked, as CI would.
     const blocked = await run(1);
-    assert(!blocked.result.ok, "markdownlint must gate a ciCargoOnly push");
+    assert(
+      !blocked.result.ok,
+      "markdownlint must gate a repairChecksWithCiCargo push",
+    );
     assertStringIncludes(blocked.result.error.message, "MD018");
     // Control: clean Markdown passes, and nothing but markdownlint ran (no
     // deno fmt, no pre-flight command).
@@ -3292,7 +3299,7 @@ Deno.test("runPrePushGate: ciCargoOnly on a docs-only push runs only markdownlin
   }
 });
 
-Deno.test("runPrePushGate: ciCargoOnly skips the repo's pre-flight commands, so a failing one does not block", async () => {
+Deno.test("runPrePushGate: repairChecksWithCiCargo skips the repo's pre-flight commands, so a failing one does not block", async () => {
   const { root, clone, stdin } = await makeRepoWithFiles(RUST_FILES);
   try {
     const calls: RanCall[] = [];
@@ -3305,7 +3312,7 @@ Deno.test("runPrePushGate: ciCargoOnly skips the repo's pre-flight commands, so 
         calls,
       ),
       findCiCargo: () => Promise.resolve(scanOf(CLIPPY_CHECK)),
-      ciCargoOnly: true,
+      repairChecksWithCiCargo: true,
     });
     assert(result.ok, result.ok ? "" : result.error.message);
     assert(!calls.some((c) => c.command === "make-it-fail"));
@@ -5134,9 +5141,11 @@ Deno.test("runPrePushGate: repair pushes enforce unit tests and markdownlint (PR
     await git(clone, "commit", "-qm", "repair source and docs");
     const stdin = prePushInput(await git(clone, "rev-parse", "HEAD"));
     const unit = "deno task test:unit 'tests/foo_test.ts'";
-    // Both repair specs: shellcheckOnly, and the CI-fix and PR-feedback
-    // repairs' ciCargoOnly (PR #5034, merged with Issue #4630).
-    const modes = [{ shellcheckOnly: true }, { ciCargoOnly: true }];
+    // Both repair specs: repairChecksOnly, and the CI-fix and PR-feedback
+    // repairs' repairChecksWithCiCargo (PR #5034, merged with Issue #4630).
+    const modes = [{ repairChecksOnly: true }, {
+      repairChecksWithCiCargo: true,
+    }];
     for (const mode of modes) {
       for (const failure of ["unit", "markdown", "none"]) {
         const ran: string[] = [];
