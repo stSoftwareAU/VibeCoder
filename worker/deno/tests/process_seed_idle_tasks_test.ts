@@ -36,6 +36,7 @@ import {
 } from "../lib/write_repo_allowlist.ts";
 import type { CommandResult, Logger, Result, WorkerConfig } from "../types.ts";
 import type { CreateAllIdleTaskWrappersResult } from "../lib/create_all_idle_task_wrappers.ts";
+import { TEST_AUDIT_ISSUE_TITLE } from "../lib/idle_task_templates/test_audit_template.ts";
 
 const REQUEST_REPO = "stSoftwareAU/VibeCoder";
 const TARGET_REPO = "stSoftwareAU/private-repo-14";
@@ -391,4 +392,68 @@ Deno.test("process-seed-idle-tasks - blocked repo: an open idle-task issue stops
   } finally {
     resetWriteRepoAllowlist();
   }
+});
+
+Deno.test("process-seed-idle-tasks - production sweep seeds test-audit only when the config names it (Issue #5096)", async () => {
+  // No createWrappersFn is injected, so the real default sweep runs. The gh
+  // stub answers the open-issue lookup with [] and every issue create with a
+  // URL; ensureLabelFn stubs the label step so nothing reaches the network.
+  async function seedTitlesFor(
+    weights: Record<string, number>,
+  ): Promise<string[]> {
+    const creates: string[] = [];
+    try {
+      const result = await processSeedIdleTasksCommand.execute(
+        {
+          "repo": REQUEST_REPO,
+          "issue-number": 5096,
+          "title": `seed-idle-tasks: ${TARGET_REPO}`,
+          "__testDeps": {
+            runGhCommand: (args: string[]) => {
+              if (args[0] === "issue" && args[1] === "list") {
+                return Promise.resolve("[]");
+              }
+              if (args[0] === "issue" && args[1] === "create") {
+                creates.push(args[args.indexOf("--title") + 1]!);
+                return Promise.resolve("https://github.com/o/r/issues/7\n");
+              }
+              return Promise.resolve("");
+            },
+            ensureLabelFn: () =>
+              Promise.resolve({ ok: true, value: undefined } as Result<void>),
+            logger: makeLogger(),
+          },
+        },
+        {
+          ...makeConfig([REQUEST_REPO, TARGET_REPO]),
+          idleTaskTemplateWeights: weights,
+        },
+      );
+      assertEquals(result.success, true);
+      assertEquals(dataOf(result)?.outcome, "seeded");
+    } finally {
+      resetWriteRepoAllowlist();
+    }
+    return creates;
+  }
+
+  const defaultTitles = await seedTitlesFor({});
+  assert(
+    !defaultTitles.includes(TEST_AUDIT_ISSUE_TITLE),
+    `test-audit must not be seeded by default, titles: ${
+      defaultTitles.join(" | ")
+    }`,
+  );
+  assert(
+    defaultTitles.includes("Run a security scan"),
+    `security-scan must still be seeded, titles: ${defaultTitles.join(" | ")}`,
+  );
+
+  const configuredTitles = await seedTitlesFor({ "test-audit": 1 });
+  assert(
+    configuredTitles.includes(TEST_AUDIT_ISSUE_TITLE),
+    `test-audit must be seeded when named, titles: ${
+      configuredTitles.join(" | ")
+    }`,
+  );
 });

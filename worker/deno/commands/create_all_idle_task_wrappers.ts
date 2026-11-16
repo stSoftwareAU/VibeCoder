@@ -33,6 +33,9 @@ import {
   formatIdleTaskOutcomeTable,
   partialFromSweepError,
 } from "../lib/create_all_idle_task_wrappers.ts";
+// Issue #5096: opt-in templates (`test-audit`) are seeded only when the config
+// names them.
+import { authorisedOptInTemplates } from "../lib/idle_task_opt_in.ts";
 
 interface TestDeps {
   log?: (line: string) => void;
@@ -57,7 +60,7 @@ export const createAllIdleTaskWrappersCommand: Command = {
 
   async execute(
     args: Record<string, unknown>,
-    _config: WorkerConfig,
+    config: WorkerConfig,
   ): Promise<CommandResult<CreateAllIdleTaskWrappersResult>> {
     const repoArg = args["repo"];
     const repo = typeof repoArg === "string" ? repoArg.trim() : "";
@@ -78,6 +81,9 @@ export const createAllIdleTaskWrappersCommand: Command = {
       nowFn: deps.nowFn,
       rootDir: deps.rootDir,
       log,
+      // Issue #5096: opt-in templates the owner config does not name are
+      // not seeded.
+      authorisedOptInTemplates: authorisedOptInTemplates(config),
     });
 
     // The per-template outcome table is printed on both exit paths (Issue

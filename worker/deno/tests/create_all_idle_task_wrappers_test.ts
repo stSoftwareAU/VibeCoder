@@ -135,6 +135,9 @@ const labelOk = (): Promise<Result<void>> =>
 
 const stableNow = () => new Date("2026-06-07T00:00:00.000Z");
 
+// Issue #5096: test-audit is opt-in; authorise it so the full canonical set is seeded.
+const AUTHORISED_OPT_IN: ReadonlySet<string> = new Set(["test-audit"]);
+
 // ---------------------------------------------------------------------------
 // all-on-clean
 // ---------------------------------------------------------------------------
@@ -146,6 +149,7 @@ Deno.test(
     const ensureCalls: string[] = [];
 
     const result = await createAllIdleTaskWrappers("org/fresh", {
+      authorisedOptInTemplates: AUTHORISED_OPT_IN,
       ghCommandFn: gh.fn,
       ensureLabelFn: (r) => {
         ensureCalls.push(r);
@@ -203,6 +207,7 @@ Deno.test(
     const gh = makeMockGh();
 
     const result = await createAllIdleTaskWrappers("org/single-footer", {
+      authorisedOptInTemplates: AUTHORISED_OPT_IN,
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
       findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
@@ -250,6 +255,7 @@ Deno.test(
     const logLines: string[] = [];
 
     const result = await createAllIdleTaskWrappers("org/body-limit", {
+      authorisedOptInTemplates: AUTHORISED_OPT_IN,
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
       findOpenIdleTaskIssuesFn: () => Promise.resolve([]),
@@ -300,6 +306,7 @@ Deno.test(
     ]);
 
     const result = await createAllIdleTaskWrappers("org/partial", {
+      authorisedOptInTemplates: AUTHORISED_OPT_IN,
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
       findOpenIdleTaskIssuesFn: () =>
@@ -339,6 +346,7 @@ Deno.test(
     const allOpen = new Set<string>(IDLE_TASK_WRAPPER_TITLES);
 
     const result = await createAllIdleTaskWrappers("org/full", {
+      authorisedOptInTemplates: AUTHORISED_OPT_IN,
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
       findOpenIdleTaskIssuesFn: () =>
@@ -424,6 +432,7 @@ Deno.test(
     });
 
     const result = await createAllIdleTaskWrappers("org/partial-progress", {
+      authorisedOptInTemplates: AUTHORISED_OPT_IN,
       ghCommandFn: gh.fn,
       ensureLabelFn: () => labelOk(),
       findOpenIdleTaskIssuesFn: () =>
@@ -669,6 +678,7 @@ async function sweepWithDefaultLookup(
   const result = await createAllIdleTaskWrappers(repo, {
     ghCommandFn: gh,
     ensureLabelFn: () => labelOk(),
+    authorisedOptInTemplates: AUTHORISED_OPT_IN,
     nowFn: stableNow,
     rootDir: REPO_ROOT,
     runId: "vibe-test-gate",
