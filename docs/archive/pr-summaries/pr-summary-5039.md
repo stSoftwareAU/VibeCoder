@@ -47,7 +47,7 @@ existing withholding tests cover that requirement.
 Run the guard, issue-5039 regressions, Markdown-code and PR-body suites:
 `deno task test tests/babysitter_pr_body_guard_5039_test.ts
 tests/babysitter_pr_body_guard_test.ts tests/markdown_code_spans_test.ts
-tests/pr_body_test.ts` from `worker/deno`. At the pushed head all 154 tests in
+tests/pr_body_test.ts` from `worker/deno`. At the pushed head all 155 tests in
 those four files pass. The independent CommonMark 0.31.2 renderer (a test-only
 dependency) reproduced each reported failure before its correction. Full hosted
 CI remains required.
@@ -73,12 +73,16 @@ Local validation used Deno 2.9.6 and a temporary import map to cached published
 standard-library dependencies because direct JSR downloads fail here. Repository
 dependency files are unchanged. Full hosted CI and fresh review remain required.
 
-## Thematic-break review repair
+## Thematic-break and paragraph-interruption review repair
 
-The shared Markdown reader now gives thematic breaks precedence over list
-markers, as CommonMark requires. A break cannot create a fictitious list
-container that exposes fenced closing references or a quoted assignment marker.
-The new production-guard regression failed before the fix and passes afterwards;
-all 155 tests in the guard, issue-5039, Markdown-code and PR-body suites pass.
-Validation used the cached standard-library import map on this host. Hosted CI
-remains required.
+The shared Markdown reader gives thematic breaks precedence over list markers,
+as CommonMark requires. A break cannot create a fictitious list container that
+exposes fenced closing references or a quoted assignment marker. It also
+follows CommonMark's paragraph-interruption rule: inside a paragraph, only a
+nonempty list item may open a list, and an ordered item must start at 1, so
+`paragraph` followed by `2. item` or a bare `- ` (a setext underline) creates
+no list container. The production-guard regression in
+`worker/deno/tests/babysitter_pr_body_guard_5039_test.ts` covers the thematic
+forms and both paragraph-interruption forms; it failed before each fix and
+passes afterwards. At the pushed head all 155 tests in the guard, issue-5039,
+Markdown-code and PR-body suites pass (Deno 2.9.6). Hosted CI remains required.
