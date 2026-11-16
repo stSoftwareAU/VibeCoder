@@ -6,10 +6,10 @@ limit, not an account-wide one. `runClaudeWithRetry`
 `detectModelScopedUsageLimit` (`worker/deno/lib/claude_executor.ts`) before the
 account-wide usage-limit branch. On a match it:
 
-- retries the phase at once on the next model down on the same provider
-  (`fable` → `opus` → `sonnet` → `haiku`, the existing ladder);
-- records a model-scoped cooldown in `WORK_DIR/.model_usage_cooldown.json`
-  (new `worker/deno/lib/model_usage_cooldown.ts`);
+- retries the phase at once on the next model down on the same provider (`fable`
+  → `opus` → `sonnet` → `haiku`, the existing ladder);
+- records a model-scoped cooldown in `WORK_DIR/.model_usage_cooldown.json` (new
+  `worker/deno/lib/model_usage_cooldown.ts`);
 - writes no `.rate_limit_signal` and returns no `usageLimit`, so Claude-routed
   work is not paused and no provider switch follows.
 
@@ -23,27 +23,27 @@ limits keep today's terminal pause and provider fallback. Closes #5086.
 
 - On the base branch, the observed Fable cap
   (`You've reached your Fable limit. Switch to another model to continue.`)
-  matched no detector, so it was an ordinary exit-1 failure. A
-  `weekly`-worded Fable cap matched `weekly limit` in `USAGE_LIMIT_RE`, so it
-  wrote a Claude usage pause while Opus and Sonnet still had quota.
+  matched no detector, so it was an ordinary exit-1 failure. A `weekly`-worded
+  Fable cap matched `weekly limit` in `USAGE_LIMIT_RE`, so it wrote a Claude
+  usage pause while Opus and Sonnet still had quota.
 - Stepping down reuses `attemptModelFallback` and the existing tier ladder, as
   the model-unavailable branch already does, rather than adding a new ladder.
 
 ### Essential Design Decisions
 
-- The model-scoped branch runs after the model-unavailable branch and before
-  the account-wide one. That order is what keeps a tier-named weekly cap away
-  from the account-wide pause, and a later change must keep it.
+- The model-scoped branch runs after the model-unavailable branch and before the
+  account-wide one. That order is what keeps a tier-named weekly cap away from
+  the account-wide pause, and a later change must keep it.
 - The matcher is anchored per line (`^\W*`, with an optional `Error:` or
   `API Error:` prefix). A CLI refusal line matches, but agent prose that quotes
-  one ("I see you've reached your Fable limit") does not. Only Claude tier
-  names are matched, so a Codex `usage limit for <model>` line is unaffected.
+  one ("I see you've reached your Fable limit") does not. Only Claude tier names
+  are matched, so a Codex `usage limit for <model>` line is unaffected.
 - The cooldown lasts until the parsed reset, capped at an hour, or an hour when
   the message gives no time (`USAGE_LIMIT_DEFAULT_WAIT_SECONDS` /
   `USAGE_LIMIT_MAX_WAIT_SECONDS`, as Issue #333 set for the account-wide wait).
-  Entries clear by expiry. A cooled tier is not run during its window, so
-  expiry is its recovery path. An unreadable or malformed store is logged as a
-  warning and the requested model runs; a write replaces a corrupt store.
+  Entries clear by expiry. A cooled tier is not run during its window, so expiry
+  is its recovery path. An unreadable or malformed store is logged as a warning
+  and the requested model runs; a write replaces a corrupt store.
 - With no cheaper rung (already on `haiku`, or model fallback disabled), the
   call returns the CLI's exit code as an ordinary failure. It still writes no
   provider pause. New persisted file, `version: 1`, so there is no old shape to
@@ -51,9 +51,9 @@ limits keep today's terminal pause and provider fallback. Closes #5086.
 
 ### Undiscoverable Facts
 
-- I could not trigger a real Fable cap from this container. The observed
-  refusal text is the one this repository already records from a fleet
-  subscription (`worker/deno/lib/review_round.ts:412`,
+- I could not trigger a real Fable cap from this container. The observed refusal
+  text is the one this repository already records from a fleet subscription
+  (`worker/deno/lib/review_round.ts:412`,
   `.claude/skills/review-fleet-prs/references/running-unattended.md:170`). The
   stream-json shape is the captured line in
   `worker/deno/tests/lifecycle_invocation_3719_test.ts:37`. The
@@ -77,9 +77,9 @@ flowchart TD
     A -- yes --> P["write .rate_limit_signal,<br/>exit 2 (unchanged)"]
 ```
 
-- Base-branch behaviour, checked by running the detectors on the base code:
-  the observed Fable line gives `detectUsageLimit` false, `detectRateLimit`
-  false and `detectModelUnavailable` false. The weekly Fable line gives
+- Base-branch behaviour, checked by running the detectors on the base code: the
+  observed Fable line gives `detectUsageLimit` false, `detectRateLimit` false
+  and `detectModelUnavailable` false. The weekly Fable line gives
   `detectUsageLimit` true.
 - Docs updated:
   - `docs/TROUBLESHOOTING.md`, the "Rate limits and subscription usage limits"
@@ -99,8 +99,7 @@ flowchart TD
 ## Test Plan
 
 - Added `worker/deno/tests/claude_runner_model_scoped_limit_5086_test.ts`. The
-  stub agent logs every `--model` it is given and refuses only the named
-  tiers.
+  stub agent logs every `--model` it is given and refuses only the named tiers.
   - `runClaudeWithRetry - a Fable-scoped limit (observed form) steps down to opus with no provider pause (Issue #5086)`
     and the `(weekly form)` variant assert, on the first call:
     - models `["fable", "opus"]` and exit 0;
@@ -112,8 +111,8 @@ flowchart TD
   - `… a stream-json synthetic Fable limit on stdout steps down to opus (Issue #5086)`:
     the same assertions for the captured stream-json line.
   - `… an account-wide session limit still pauses the provider and records no model cooldown (Issue #5086)`:
-    a control. The result is exit 2, models `["fable"]`, the signal is
-    written, and there is no cooldown file.
+    a control. The result is exit 2, models `["fable"]`, the signal is written,
+    and there is no cooldown file.
   - `… a model-scoped limit on the cheapest rung writes no provider pause (Issue #5086)`:
     exit is not 2, `usageLimit` is undefined and no signal is written.
   - `… a corrupt cooldown file warns loudly and the requested model still runs (Issue #5086)`.
@@ -124,8 +123,8 @@ flowchart TD
   - a hostile line over 100k characters with an exact result;
   - the store's active, expired, other-key, missing, malformed and
     unknown-version cases;
-  - `firstModelNotCooling` stepping over one rung, over two rungs, and
-    stopping at the cheapest rung.
+  - `firstModelNotCooling` stepping over one rung, over two rungs, and stopping
+    at the cheapest rung.
 - Red before the fix: I ran the new runner tests against the unmodified
   `claude_runner.ts`.
   - The observed form returned exit 1 instead of 0.
@@ -147,11 +146,11 @@ flowchart TD
   their callers keep their behaviour: `classifyClaudeFailure`,
   `review_round.ts`, `handle_no_changes_phase.ts` and
   `claude_health_message.ts`.
-- `./quality.sh < /dev/null` passed on commit `6b6d088d` ("Result: PASSED
-  (with skipped checks)"). Its stages include completeness checks, the deno
-  tests, lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks.
-  An earlier run failed `completeness checks`: the new module was not claimed
-  by any lib-sweep slice. `top-up-5086.json` fixed that.
+- `./quality.sh < /dev/null` passed on commit `6b6d088d` ("Result: PASSED (with
+  skipped checks)"). Its stages include completeness checks, the deno tests,
+  lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks. An earlier
+  run failed `completeness checks`: the new module was not claimed by any
+  lib-sweep slice. `top-up-5086.json` fixed that.
 
 Not done or not checked: the weekly-worded Fable fixture is modelled, not
 captured, as noted under Undiscoverable Facts. Nothing else.
