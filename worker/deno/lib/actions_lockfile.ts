@@ -170,6 +170,15 @@ function dependencyFault(
     }
   }
 
+  if (
+    typeof record.hostname === "string" &&
+    !/^(github\.com|[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.ghe\.com)$/.test(
+      record.hostname,
+    )
+  ) {
+    return `dependency \`${key}\` has a noncanonical hostname`;
+  }
+
   const ref = record.ref;
   if (typeof ref !== "string" || ref === "") {
     return `dependency \`${key}\` has an empty or non-string \`ref\``;
@@ -191,6 +200,9 @@ function dependencyFault(
   }
 
   const keyPin = parsePin(key);
+  if (keyPin !== null && !FULL_SHA.test(keyPin.ref) && keyPin.ref !== ref) {
+    return `dependency \`${key}\` body ref does not match its key ref`;
+  }
   if (keyPin !== null && FULL_SHA.test(keyPin.ref)) {
     const digestHex = commit.slice(commit.indexOf("-") + 1);
     if (digestHex !== keyPin.ref) {
@@ -321,6 +333,27 @@ export function parseActionsLockfile(text: string): ActionsLockfileEvidence {
     }
   }
 
+  // Topological traversal avoids recursion on an untrusted dependency graph.
+  const incoming = new Map([...dependencies].map((key) => [key, 0]));
+  const edges = new Map(
+    pendingUses.map(({ key, pins }) => [normalisePin(parsePin(key)!), pins]),
+  );
+  for (const pins of edges.values()) {
+    for (const pin of pins) incoming.set(pin, incoming.get(pin)! + 1);
+  }
+  const ready = [...incoming].filter(([, count]) => count === 0).map(([key]) =>
+    key
+  );
+  for (let i = 0; i < ready.length; i++) {
+    for (const pin of edges.get(ready[i]!) ?? []) {
+      const count = incoming.get(pin)! - 1;
+      incoming.set(pin, count);
+      if (count === 0) ready.push(pin);
+    }
+  }
+  if (ready.length !== dependencies.size) {
+    return invalid("dependency uses graph contains a cycle");
+  }
   return { kind: "valid", version, workflows, dependencies };
 }
 

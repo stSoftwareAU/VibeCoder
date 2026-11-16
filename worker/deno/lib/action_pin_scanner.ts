@@ -153,6 +153,12 @@ interface ParsedUses {
  * Pure — no I/O.
  */
 export function classifyUses(value: string): ParsedUses | null {
+  const parsed = parseRemoteUses(value);
+  return parsed?.owner.toLowerCase() === FIRST_PARTY_OWNER ? null : parsed;
+}
+
+/** Remote tag references, including first-party dependencies in a lockfile. */
+function parseRemoteUses(value: string): ParsedUses | null {
   const trimmed = value.trim();
   // Local references (`./…`) are same-repo — exempt.
   if (trimmed.startsWith(".")) return null;
@@ -169,9 +175,6 @@ export function classifyUses(value: string): ParsedUses | null {
   const segments = coordinate.split("/").filter((s) => s.length > 0);
   if (segments.length < 2) return null;
   const owner = segments[0] as string;
-
-  // First-party carve-out — may pin to a tag.
-  if (owner.toLowerCase() === FIRST_PARTY_OWNER) return null;
 
   // Already SHA-pinned — correct, not flagged.
   if (SHA_PIN.test(ref)) return null;
@@ -324,7 +327,11 @@ function buildFinding(
     "SHA, keeping the human-readable version in a trailing comment, e.g. " +
     "`uses: " + coordinate + "@<40-hex-sha> # v1.2.3`. Resolve the SHA " +
     "with `git ls-remote` or the action's release page.";
-  const suggestedFix = reusable
+  const composite = sites.some((site) => !site.file.startsWith(WORKFLOW_DIR));
+  const suggestedFix = composite
+    ? fixBase +
+      " A local composite action is not covered by a workflow lockfile, so every call-site must be SHA-pinned."
+    : reusable
     ? fixBase +
       " A workflow lockfile does not cover a reusable-workflow call, so the SHA pin is the only fix."
     : fixBase +
@@ -392,7 +399,7 @@ export function scanActionLockfile(
     for (let i = 0; i < lines.length; i++) {
       const value = extractUsesValue(lines[i] as string);
       if (value === null) continue;
-      const parsed = classifyUses(value);
+      const parsed = parseRemoteUses(value);
       if (parsed === null) continue;
       if (
         lockCoverage(file, parsed.coordinate, parsed.ref, lockfile) !== "stale"

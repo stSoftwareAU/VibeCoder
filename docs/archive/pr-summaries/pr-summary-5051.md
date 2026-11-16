@@ -166,3 +166,17 @@ Not done or not checked:
 - Pre-existing and left alone: the "Ten further prefixes" count in
   `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` already disagreed with its list before
   this change.
+
+## Review repair
+
+Validate symbolic key/body refs, canonical GitHub/GHE hostnames and acyclic
+uses graphs before granting lock coverage. The first-party exemption now
+belongs only to the SHA scanner; lockfile staleness checks all remote owners.
+Composite and mixed call-site findings offer SHA-only remediation. The prompt
+and operator documentation describe these boundaries. The documentation test
+imports ACTIONS_LOCKFILE_PATH from production.
+
+Three scanner regressions failed before the repair. All 142 lockfile, scanner,
+policy and audit-template tests pass afterwards. Tests used Deno 2.9.6 with a
+temporary local import map because direct JSR downloads fail here; repository
+dependency files are unchanged. Full hosted CI and fresh review remain required.

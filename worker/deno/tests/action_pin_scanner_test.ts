@@ -470,3 +470,55 @@ Deno.test("scanActionLockfile - an absent lockfile raises nothing", () => {
   const absent: ActionsLockfileEvidence = { kind: "absent" };
   assertEquals(scanActionPins(files, { lockfile: absent }).length, 1);
 });
+
+Deno.test("invalid lock metadata cannot suppress SHA findings", () => {
+  for (
+    const text of [
+      LOCK_CI_CHECKOUT.replace("ref: 'v4'", "ref: 'v5'"),
+      LOCK_CI_CHECKOUT + "        hostname: 'GITHUB.COM'\n",
+      LOCK_CI_CHECKOUT + "        uses: ['actions/checkout@v4']\n",
+    ]
+  ) {
+    const lockfile = parseActionsLockfile(text);
+    assertEquals(
+      scanActionLockfile([wf(CI, CHECKOUT_V4_BODY)], lockfile).map((f) =>
+        f.findingId
+      ),
+      ["BP-ACTIONS-LOCK-INVALID"],
+    );
+    assertEquals(
+      scanActionPins([wf(CI, CHECKOUT_V4_BODY)], { lockfile }).map((f) =>
+        f.findingId
+      ),
+      ["BP-SHA-PIN-actions-checkout"],
+    );
+  }
+});
+
+Deno.test("onboarded workflows report unlocked first-party actions", () => {
+  const files = [
+    wf(CI, CHECKOUT_V4_BODY + "      - uses: stSoftwareAU/deploy-action@v2\n"),
+  ];
+  assertEquals(
+    scanActionLockfile(files, validLock(LOCK_CI_CHECKOUT)).map((f) =>
+      f.findingId
+    ),
+    ["BP-ACTIONS-LOCK-STALE-ci-yml"],
+  );
+});
+
+Deno.test("composite call-sites never suggest ineffective lockfile adoption", () => {
+  const composite = {
+    path: ".github/actions/setup/action.yml",
+    rawText:
+      "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n",
+    parsed: null,
+    kind: "composite-action" as const,
+  };
+  for (const files of [[composite], [composite, wf(CI, CHECKOUT_V4_BODY)]]) {
+    const findings = scanActionPins(files, { lockfile: { kind: "absent" } });
+    assertEquals(findings.length, 1);
+    assertEquals(findings[0]!.suggestedFix.includes("Alternatively"), false);
+    assertStringIncludes(findings[0]!.suggestedFix, "SHA");
+  }
+});

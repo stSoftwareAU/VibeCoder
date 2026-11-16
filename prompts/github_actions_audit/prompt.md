@@ -303,7 +303,8 @@ occurrence.
    `.github/workflows/actions.lock`. Lockfile validity and staleness are
    pre-filed natively (`BP-ACTIONS-LOCK-INVALID`,
    `BP-ACTIONS-LOCK-STALE-<slug>`), so do not file check 1 against a
-   workflow listed in the lockfile, do not re-judge the lockfile, and do
+   workflow listed in a valid lockfile (the native scan checks every remote
+   action owner, including `stSoftwareAU/*`), do not re-judge the lockfile, and do
    not recommend rewriting a locked tag ref to a SHA. Reusable-workflow
    calls and composite-action `uses:` are never covered by a lockfile and
    still pin to a SHA.

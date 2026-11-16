@@ -1,3 +1,4 @@
+import { ACTIONS_LOCKFILE_PATH } from "../lib/actions_lockfile.ts";
 /**
  * One SHA-pinning rule, and no "first-party" (Issue #787).
  *
@@ -175,7 +176,7 @@ Deno.test("action pinning - check 13 says a caller's lockfile never covers a reu
   );
   assertStringIncludes(
     collapsed,
-    "A caller's `.github/workflows/actions.lock` does **not** pin a reusable-workflow call",
+    `A caller's \`${ACTIONS_LOCKFILE_PATH}\` does **not** pin a reusable-workflow call`,
   );
   assertStringIncludes(collapsed, "must keep full-SHA pinning");
 });

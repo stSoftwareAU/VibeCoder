@@ -1463,3 +1463,8 @@ each fix is implemented and reviewed individually.
   recipes, and per-finding body shape live in the prompt, not in Deno code.
 - [`DESIGN-PRINCIPLES.md`](../DESIGN-PRINCIPLES.md#github-actions-audit-scans-template-4)
   — Worker-side design principles for the GitHub Actions audit.
+
+Lockfile validation rejects symbolic key/ref mismatches, noncanonical hostnames
+and cycles in dependency uses. Staleness checks include first-party remote
+actions. Local composite-action findings offer SHA pinning only, including
+findings consolidated with workflow call-sites.
