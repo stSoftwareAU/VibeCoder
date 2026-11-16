@@ -40,9 +40,9 @@ Closes #5039.
 - The loose `closingRefs` read is kept only for the `assertWithheld` backstop.
   It is the conservative side: a line-wrapped close of a withheld issue still
   throws.
-- A close in the live body is restored only if GitHub honours it. A
-  line-wrapped or code-split close there is no longer copied, because the issue
-  says "without accepting code-split or line-wrapped impostors".
+- A close in the live body is restored only if GitHub honours it. A line-wrapped
+  or code-split close there is no longer copied, because the issue says "without
+  accepting code-split or line-wrapped impostors".
 - The closer repeats the opener's indent, so a fence opened under a list item is
   closed inside that item. A backtick opener whose info string contains a
   backtick is not a fence on GitHub, so it gets no closer. Appending one there
@@ -54,8 +54,7 @@ Closes #5039.
 
 ### Undiscoverable Facts
 
-- #5040 is superseded by this issue's combined scope, as the issue body
-  records.
+- #5040 is superseded by this issue's combined scope, as the issue body records.
 
 ## Evidence
 
@@ -95,19 +94,52 @@ flowchart TD
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — A fully met summary plus an unclosed trailing fence produces an effective governing close and readable live markers. — evidence: `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts::a proposal ending in an unclosed fence has it closed before the appended close and marker (Issue #5039)` — reviewer: met
-- **met** — Hard-wrapped/code-split proposals cannot suppress restoration of another issue's effective live close. — evidence: `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts::a line-wrapped or code-split close in the proposal does not keep the live close (Issue #5039)` — reviewer: met
-- **met** — Valid supported reference forms remain valid without duplicate additions. — evidence: `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts::a valid colon, URL or qualified close in the proposal is not duplicated (Issue #5039)` — reviewer: met
-- **met** — Partial/missing governing work remains non-closing; code contents cannot forge references or worker markers. — evidence: `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts::partial governing work with an unclosed fence stays non-closing (Issue #5039)` and `::code in an unclosed fence cannot forge a marker or keep a close (Issue #5039)` — reviewer: met
-- **met** — Focused deterministic tests call the production guard and the existing effective-reference reader. — evidence: `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts` drives `guardPrBodyProposal` and checks with `hasGithubClosingReference`, `hasGithubColonOrUrlClosingReference` and `maskCodeWithPlaceholder` — reviewer: met
-- **unrequested** — a backtick opener with a backtick in its info string gets no closer — reviewer: unrequested — reason: the Spec reviewer flagged that the shared `parseFenceLine` accepts such an opener, which GitHub does not treat as a fence, so an appended closer would hide the appended lines. Fixed in this diff and tested, as part of requirement A.
+- **met** — A fully met summary plus an unclosed trailing fence produces an
+  effective governing close and readable live markers. — evidence:
+  `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts::a proposal ending in an unclosed fence has it closed before the appended close and marker (Issue #5039)`
+  — reviewer: met
+- **met** — Hard-wrapped/code-split proposals cannot suppress restoration of
+  another issue's effective live close. — evidence:
+  `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts::a line-wrapped or code-split close in the proposal does not keep the live close (Issue #5039)`
+  — reviewer: met
+- **met** — Valid supported reference forms remain valid without duplicate
+  additions. — evidence:
+  `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts::a valid colon, URL or qualified close in the proposal is not duplicated (Issue #5039)`
+  — reviewer: met
+- **met** — Partial/missing governing work remains non-closing; code contents
+  cannot forge references or worker markers. — evidence:
+  `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts::partial governing work with an unclosed fence stays non-closing (Issue #5039)`
+  and
+  `::code in an unclosed fence cannot forge a marker or keep a close (Issue #5039)`
+  — reviewer: met
+- **met** — Focused deterministic tests call the production guard and the
+  existing effective-reference reader. — evidence:
+  `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts` drives
+  `guardPrBodyProposal` and checks with `hasGithubClosingReference`,
+  `hasGithubColonOrUrlClosingReference` and `maskCodeWithPlaceholder` —
+  reviewer: met
+- **unrequested** — a backtick opener with a backtick in its info string gets no
+  closer — reviewer: unrequested — reason: the Spec reviewer flagged that the
+  shared `parseFenceLine` accepts such an opener, which GitHub does not treat as
+  a fence, so an appended closer would hide the appended lines. Fixed in this
+  diff and tested, as part of requirement A.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — A Code Change Owes a Docs Change: the `guardPrBodyProposal` doc comment still described the old restore rule and left out the fence closer — evidence: `worker/deno/lib/babysitter_pr_body_guard.ts:204` — reason: fixed in this diff (rewritten in commit 34d44563)
-- **clean** — Check where you insert; dummy and "how" test rules; negative tests carry the forbidden input; nothing exists only for a test to read; masked offsets equal original offsets; no swallowed errors; Australian English; no `/tmp` use in tests; no workflow, persisted-shape or cross-repo change. Optional notes not acted on: `unclosedFenceOpener` is another loop over the shared `parseFenceLine` / `isClosingFence`, and the two existing `hasGithub*` readers could be rewritten on top of `githubClosingReferences`. I left that refactor out, under Change Scope.
+- **violation** — A Code Change Owes a Docs Change: the `guardPrBodyProposal`
+  doc comment still described the old restore rule and left out the fence closer
+  — evidence: `worker/deno/lib/babysitter_pr_body_guard.ts:204` — reason: fixed
+  in this diff (rewritten in commit 34d44563)
+- **clean** — Check where you insert; dummy and "how" test rules; negative tests
+  carry the forbidden input; nothing exists only for a test to read; masked
+  offsets equal original offsets; no swallowed errors; Australian English; no
+  `/tmp` use in tests; no workflow, persisted-shape or cross-repo change.
+  Optional notes not acted on: `unclosedFenceOpener` is another loop over the
+  shared `parseFenceLine` / `isClosingFence`, and the two existing `hasGithub*`
+  readers could be rewritten on top of `githubClosingReferences`. I left that
+  refactor out, under Change Scope.
 
 ## Test Plan
 
@@ -127,7 +159,8 @@ flowchart TD
   functions. The backtick info-string test failed before its `closeOpenFence`
   check (the body included the appended closer) and passed after it.
 - No existing test was edited or removed.
-- `deno task test:unit` on `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts`,
+- `deno task test:unit` on
+  `worker/deno/tests/babysitter_pr_body_guard_5039_test.ts`,
   `worker/deno/tests/babysitter_pr_body_guard_test.ts`,
   `worker/deno/tests/markdown_code_spans_test.ts` and
   `worker/deno/tests/pr_body_test.ts` after the last commit: 83 passed, 0
@@ -138,7 +171,7 @@ flowchart TD
   re-checked with `deno fmt`, `deno lint`, `deno check` and the targeted tests
   above.
 - Not covered: a fence opened inside a block quote. `parseFenceLine` does not
-  read `> ```` as a fence, and the blank line before the appended block ends
-  the quote on GitHub, so nothing is appended inside it.
+  read `> ```` as a fence, and the blank line before the appended block ends the
+  quote on GitHub, so nothing is appended inside it.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
