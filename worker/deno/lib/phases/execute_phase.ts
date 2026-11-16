@@ -1710,16 +1710,17 @@ async function executeClaudeBody(
         error: claudeResult.error,
       });
     }
-    // Issue #5077: the in-flight host-disk guard parked the run because the
-    // host disk crossed its floor. A protective stop, not an ERROR: the work
-    // is preserved on the issue branch and the next claim resumes it.
+    // Issue #5077: the host-disk guard parked the agent in the execute phase
+    // because the host disk was below its floor, before or during the agent
+    // run. A protective stop, not an ERROR: the work is preserved on the issue
+    // branch and the next claim resumes it.
     if (claudeResult.error instanceof HostDiskParkError) {
       return releaseInterrupted({
         category: "host_disk",
         cause: "host-disk-park",
         prefix: claudeResult.error.message,
         logMessage:
-          "The host disk crossed its floor during the agent run; preserving the work for the next claim (Issue #5077)",
+          "The host disk is below its floor; parking the agent and preserving the work for the next claim (Issue #5077)",
         agentStarted: claudeResult.error.agentStarted,
         error: claudeResult.error,
       });

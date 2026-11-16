@@ -94,9 +94,10 @@ export type WipPreservationCause =
    */
   | "executor-unfinished"
   /**
-   * The in-flight host-disk guard parked the agent mid-execute (Issue #5077).
-   * Not a timeout and not a failure of the issue: the work is checkpointed
-   * here so the next claim resumes from the branch.
+   * The host-disk guard parked the agent in the execute phase because the host
+   * disk was below its floor (Issue #5077). Not a timeout and not a failure of
+   * the issue: the work is checkpointed here so the next claim resumes from the
+   * branch.
    */
   | "host-disk-park";
 

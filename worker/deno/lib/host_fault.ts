@@ -132,8 +132,8 @@ export function detectHostFault(
   category?: FailureCategory,
 ): HostFaultKind | null {
   if (category === "clone_corrupt") return "clone-corrupt";
-  // The in-flight host-disk guard parked the agent (Issue #5077): the disk
-  // ran out of floor, so the host fault is the disk.
+  // The host-disk guard parked the agent because the host disk was below its
+  // floor (Issue #5077), so the host fault is the disk.
   if (category === "host_disk") return "disk-full";
   if (category !== undefined && category !== "internal_error") return null;
   // A worker gate refusal (every WORKER_GATE_MARKERS category) is the worker's
