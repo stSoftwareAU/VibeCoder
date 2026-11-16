@@ -525,7 +525,13 @@ export function splitMarkdownCode(
       const marker = line.slice(indentText.length).match(
         /^(?:[-+*]|[0-9]{1,9}[.)])([ \t]+)/,
       );
-      if (marker) {
+      // CommonMark gives thematic breaks precedence over list markers.
+      // A fictitious list indent would expose code references and live markers.
+      const thematicBreak =
+        /^(?:\*[ \t]*){3,}$|^(?:-[ \t]*){3,}$|^(?:_[ \t]*){3,}$/.test(
+          line.trim(),
+        );
+      if (marker && !thematicBreak) {
         const padding = marker[1]!.length;
         listIndents.push(
           indent + marker[0].length - padding + (padding > 4 ? 1 : padding),

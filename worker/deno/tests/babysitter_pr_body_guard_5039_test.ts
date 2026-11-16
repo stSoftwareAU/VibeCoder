@@ -227,3 +227,26 @@ Deno.test("list exit followed by a new fence cannot suppress restored closes", a
     assert(prose.includes("<!-- vibe-worker-issue-4637 -->"), html);
   }
 });
+
+Deno.test("thematic breaks do not create list containers that expose fenced closes or markers", async () => {
+  const { Parser, HtmlRenderer } = await import("commonmark") as unknown as {
+    Parser: new () => { parse(text: string): unknown };
+    HtmlRenderer: new () => { render(node: unknown): string };
+  };
+  for (const thematic of ["- - -", "* * *", "_ _ _", "  -  -  -"]) {
+    for (const number of [4637, 99]) {
+      const body = guardMet(
+        thematic + "\n  ```\nCloses #" + number,
+        liveBodyFor(4637, "Closes #4637\nCloses #99"),
+      );
+      const html = new HtmlRenderer().render(new Parser().parse(body));
+      const prose = html.replace(/<pre><code>[\s\S]*?<\/code><\/pre>/g, "");
+      assert(prose.includes("Closes #4637"), html);
+      assert(prose.includes("Closes #99"), html);
+      assert(prose.includes("<!-- vibe-worker-issue-4637 -->"), html);
+    }
+    const live = liveBodyFor(4637, "Closes #4637") + "\n\n" + thematic +
+      '\n  ```\n<!-- vibe-assignment-id id="quoted-example" -->';
+    assertFalse(guardMet("Rewritten.", live).includes("quoted-example"));
+  }
+});

@@ -72,3 +72,13 @@ that failed before the fix:
 Local validation used Deno 2.9.6 and a temporary import map to cached published
 standard-library dependencies because direct JSR downloads fail here. Repository
 dependency files are unchanged. Full hosted CI and fresh review remain required.
+
+## Thematic-break review repair
+
+The shared Markdown reader now gives thematic breaks precedence over list
+markers, as CommonMark requires. A break cannot create a fictitious list
+container that exposes fenced closing references or a quoted assignment marker.
+The new production-guard regression failed before the fix and passes afterwards;
+all 155 tests in the guard, issue-5039, Markdown-code and PR-body suites pass.
+Validation used the cached standard-library import map on this host. Hosted CI
+remains required.
