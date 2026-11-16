@@ -305,6 +305,12 @@ export interface DeadlockRollupOptions {
   authorOptions?: AlertDedupAuthorOptions;
   /** Arm a freshly created partial rollup through the full-rollup arming path. */
   armCreatedPr: (prUrl: string, snapshotBranch: string) => Promise<void>;
+  /**
+   * The closed children `milestone` delivered, which the partial rollup links
+   * with `Part of` lines (Issue #5058). Supplied by the caller, which owns the
+   * claim rule; a rejection fails that deadlock's rollup loudly.
+   */
+  readDeliveredIssues: (milestone: string) => Promise<readonly number[]>;
 }
 
 /**
@@ -345,6 +351,7 @@ export async function raiseDeadlockPartialRollups(
         milestoneBranch,
         defaultBranch: o.defaultBranch,
         ghFn: o.ghCommandFn,
+        readDeliveredIssues: () => o.readDeliveredIssues(deadlock.milestone),
         ...(o.authorOptions !== undefined
           ? { authorOptions: o.authorOptions }
           : {}),

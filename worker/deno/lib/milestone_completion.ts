@@ -45,7 +45,7 @@ import {
   finalisePr,
 } from "./pr_auto_merge.ts";
 import { retireMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
-import { trackingIssueFromMilestoneTitle } from "./milestone_sync_streak.ts";
+import { milestoneProvenanceLines } from "./milestone_provenance.ts";
 import { isFleetRollbackCloseComment } from "./milestone_rollback_marker.ts";
 import { raiseDeadlockPartialRollups } from "./milestone_deadlock_rollup.ts";
 import {
@@ -956,22 +956,15 @@ export function buildMilestoneSummaryBody(
   const flagged = closedIssues.filter((issue) => Boolean(issue.claimProblem));
 
   // Issue #4967: anchored `Part of` lines for the reviewer's governing-issue
-  // read. Numbers are the worker's own (title and closed list), never model
-  // text; the tracking issue and the parent are never repeated as children.
-  const parentNumber = trackingIssueFromMilestoneTitle(milestoneTitle);
-  const isLinkable = (n: number): boolean =>
-    Number.isSafeInteger(n) && n > 0 && n !== trackingIssueNumber;
-  const parentLine = parentNumber === null
-    ? []
-    : [parentNumber].filter(isLinkable);
-  const childNumbers = [
-    ...new Set(claimed.map((issue) => issue.number)),
-  ]
-    .filter((n) => isLinkable(n) && n !== parentNumber)
-    .sort((a, b) => a - b)
-    .slice(0, MILESTONE_PROVENANCE_MAX_CHILDREN);
-  const provenanceLines = [...parentLine, ...childNumbers]
-    .map((n) => `Part of #${n}`);
+  // read, rendered by the shared helper (Issue #5058) so the partial rollup
+  // carries the same lines. Numbers are the worker's own (title and closed
+  // list), never model text; the tracking issue and the parent are never
+  // repeated as children.
+  const provenanceLines = milestoneProvenanceLines(
+    milestoneTitle,
+    claimed.map((issue) => issue.number),
+    trackingIssueNumber,
+  );
 
   // Closed-issue titles are attacker-writable text quoted into a PR body the
   // worker signs, so they are scrubbed before interpolation (Issue #1249,
@@ -2799,6 +2792,51 @@ async function processRepoMilestones(
       log,
       cache,
       ...(authorOptions !== undefined ? { authorOptions } : {}),
+      // Issue #5058: the children the partial rollup links with `Part of`,
+      // read as the full rollup reads its claimed children. A failed read
+      // throws (Issue #3662: never an empty list), so no body goes out
+      // without the children it claims.
+      readDeliveredIssues: async (milestoneTitle) => {
+        const milestone = milestones.find((m) => m.title === milestoneTitle);
+        if (milestone === undefined) {
+          throw new Error(
+            `could not find the open milestone "${milestoneTitle}" in ${repo}`,
+          );
+        }
+        const closed = await getClosedIssues(
+          repo,
+          milestone,
+          ghCommandFn,
+          cache,
+          verification,
+        );
+        if (closed === null) {
+          throw new Error(
+            `the closed-issue read of "${milestoneTitle}" in ${repo} failed`,
+          );
+        }
+        // An unreadable verdict cannot rule out a delivered child, so it is a
+        // failed read (never a silent drop); a definitive verdict
+        // (`sync-pr-only`, `predates-reopen`) excludes the child.
+        const unreadable = closed.filter((issue) =>
+          issue.claimProblem === "timeline-unreadable" ||
+          issue.claimProblem === "merged-pr-search-unreadable"
+        );
+        if (unreadable.length > 0) {
+          throw new Error(
+            `the delivery of ${
+              unreadable.map((issue) =>
+                `#${issue.number} (${
+                  CLAIM_PROBLEM_REASONS[issue.claimProblem!]
+                })`
+              ).join(", ")
+            } in "${milestoneTitle}" of ${repo} could not be read`,
+          );
+        }
+        return closed
+          .filter((issue) => !issue.claimProblem)
+          .map((issue) => issue.number);
+      },
       armCreatedPr: async (prUrl, snapshotBranch) => {
         const prNumber = summaryPrNumberFromUrl(prUrl);
         if (prNumber === null) {

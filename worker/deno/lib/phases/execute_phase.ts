@@ -28,6 +28,8 @@ import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
 
 import { redactSecrets } from "../secret_redaction.ts";
 import { tokenEconomizerSpawnOptions } from "../token_economizer_plugin.ts";
+import { summariseTokenEconomizerRun } from "../token_economizer_run_stats.ts";
+import { CLAUDE_PROVIDER_ID } from "../agent_provider.ts";
 import { activateLifecycleAssignment } from "../lifecycle_recording.ts";
 import { fingerprintWorkerReviewPolicy } from "../pr_completion_report.ts";
 
@@ -84,6 +86,10 @@ import {
 } from "../session_resume.ts";
 import { ensureHistoryDepth } from "../git_history.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import {
+  changesOnlyRunRecords,
+  readBranchChangedPaths,
+} from "../run_record_only.ts";
 import { saveResumeState } from "../resume_state_store.ts";
 import { handOnStreamSession } from "../stream_session.ts";
 import { recordStreamHolderForRun } from "../stream_holder.ts";
@@ -1363,6 +1369,16 @@ async function executeClaudeBody(
         runKind: "implementation",
         logger,
       });
+      // Every `TOKENECONOMIZER_HOME` this run's launches used (Issue #4958),
+      // kept on the phase state rather than per body: the infrastructure
+      // retry, the sonnet refusal retry and the prompt-too-long fallback all
+      // re-run this body in the same run, and each earlier attempt's plugin
+      // calls were billed too.
+      if (tokenEconomizer.tokenEconomizer) {
+        const home = tokenEconomizer.tokenEconomizer.env.TOKENECONOMIZER_HOME;
+        const homes = state.tokenEconomizerHomes ??= [];
+        if (!homes.includes(home)) homes.push(home);
+      }
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
         retryOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[1],
@@ -1577,6 +1593,21 @@ async function executeClaudeBody(
   // it is read on every outcome — a run that failed still filtered output.
   // The result object on the phase state is the one this updates.
   await rtk.record();
+
+  // Issue #4958: what the plugin did and cost, read from its own state after
+  // every invocation (including a second-credential call) has finished, on
+  // every outcome. It sums every home any attempt in this run used, so a
+  // re-run of this body never drops an earlier attempt's figures. Eligible when the provider that serves the spawn is Claude,
+  // resolved from the same selector `claude_runner.ts` resolves its provider
+  // from (`provider.id === CLAUDE_PROVIDER_ID`).
+  state.tokenEconomizerRun = await summariseTokenEconomizerRun({
+    enabled: config.tokenEconomizer.enabled,
+    eligible: deps.claude.rtkProviderId(effectiveAgentProvider, logger) ===
+      CLAUDE_PROVIDER_ID,
+    workDir: config.workDir,
+    stateHomes: state.tokenEconomizerHomes ?? [],
+    logger,
+  });
 
   if (!claudeResult.ok) {
     // Issue #5029: a turn-cap stop and a refused split run were billed. Their
@@ -2321,7 +2352,8 @@ async function executeClaudeBody(
     });
   }
 
-  // Detect changes — check for uncommitted changes or new commits
+  // Detect changes — check for uncommitted changes or new commits. A branch
+  // that changes only the run's own record files counts as no change (#5070).
   const diffResult = await deps.git.runGitCommand(
     ["diff", "--stat", "HEAD"],
     { cwd: state.repoPath },
@@ -2375,7 +2407,32 @@ async function executeClaudeBody(
   const logOk = logResult.ok && logResult.value.code === 0;
   const hasNewCommits = logOk && logResult.value.stdout.trim().length > 0;
 
-  if (!hasUncommitted && !hasNewCommits) {
+  // Issue #5070: a branch whose only changes are this run's own record files
+  // (PR summary, PR response message) has no deliverable — treat it as empty.
+  let recordOnly = false;
+  if (logOk && (hasUncommitted || hasNewCommits)) {
+    const changed = await readBranchChangedPaths(
+      deps.git.runGitCommand,
+      baseRef.value,
+      { cwd: state.repoPath },
+    );
+    if (!changed.ok) {
+      logger.warn(
+        `Could not list the branch's changed paths: ${changed.error.message}`,
+        { repo, issueNumber },
+      );
+    } else {
+      recordOnly = changesOnlyRunRecords(changed.value, issueNumber);
+      if (recordOnly) {
+        logger.info(
+          "Branch changes only the run's own record files — treated as no changes (Issue #5070)",
+          { repo, issueNumber, paths: changed.value },
+        );
+      }
+    }
+  }
+
+  if ((!hasUncommitted && !hasNewCommits) || recordOnly) {
     if (!logOk) {
       logger.warn("git log <base>..HEAD failed during change detection", {
         baseRef: baseRef.value,
@@ -2385,21 +2442,25 @@ async function executeClaudeBody(
     }
 
     // Self-healing: check for remote commits (Issue #585)
-    // Ensure enough history for the commit-range log on a shallow clone (Issue #1502)
-    await ensureHistoryDepth(
-      [baseRef.value, `origin/${state.branchName}`],
-      { cwd: state.repoPath },
-    );
-    const remoteDiff = await deps.git.runGitCommand(
-      ["log", `${baseRef.value}..origin/${state.branchName}`, "--oneline"],
-      { cwd: state.repoPath },
-    );
-    const hasRemoteCommits = remoteDiff.ok && remoteDiff.value.code === 0 &&
-      remoteDiff.value.stdout.trim().length > 0;
+    // A record-only branch skips this: the local branch already holds the
+    // commits, and a pushed record commit would otherwise read as remote work.
+    if (!recordOnly) {
+      // Ensure enough history for the commit-range log on a shallow clone (Issue #1502)
+      await ensureHistoryDepth(
+        [baseRef.value, `origin/${state.branchName}`],
+        { cwd: state.repoPath },
+      );
+      const remoteDiff = await deps.git.runGitCommand(
+        ["log", `${baseRef.value}..origin/${state.branchName}`, "--oneline"],
+        { cwd: state.repoPath },
+      );
+      const hasRemoteCommits = remoteDiff.ok && remoteDiff.value.code === 0 &&
+        remoteDiff.value.stdout.trim().length > 0;
 
-    if (hasRemoteCommits) {
-      logger.info("Found remote commits despite no local changes");
-      return { status: "continue" };
+      if (hasRemoteCommits) {
+        logger.info("Found remote commits despite no local changes");
+        return { status: "continue" };
+      }
     }
 
     // Self-healing: check if PR already exists (Issue #386)
@@ -2427,7 +2488,9 @@ async function executeClaudeBody(
         category: "interrupted",
         status: "failure",
         reason: formatDetailedFailureMessage(
-          `Run interrupted before completing — the agent ${emptyFailure} without making any change`,
+          `Run interrupted before completing — the agent ${emptyFailure} without making any change${
+            recordOnly ? " beyond its own run record" : ""
+          }`,
           {
             elapsedSeconds: Math.round(
               (Date.now() - state.executeStartTime) / 1000,
