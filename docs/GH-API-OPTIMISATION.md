@@ -159,10 +159,17 @@ Three boundaries keep this from trading correctness for calls:
   using it — and the duplicate guard does: `claimIssue` re-checks the repo it
   is about to claim **live**, bypassing this cache, so a blind or stale
   discovery-time answer cannot by itself open a duplicate PR.
-- **A conversation that did not fit one page is not served.** The invitation
-  predicate reads every label, comment and review, so the search asks for
-  each connection's `totalCount`; a PR holding more than one page is left to
-  the per-repo listing rather than admitted — or refused — on a partial read.
+- **A page that did not fit is not served.** The invitation predicate reads
+  every label, comment and review, and the maintenance scans hold a PR
+  labelled `needs-human` by its labels (Issue #5047), so the search asks
+  for each connection's `totalCount`. When any PR of an author holds more
+  than one page, that author's `prs_maint_<login>` and
+  `prs_invited_<login>` listings for the repo are left to the per-repo
+  listing rather than served from a partial read.
+- **An entry without labels is re-listed.** A `prs_maint_<login>` entry
+  written before the prefetch carried labels has none; `listOpenPrs` treats
+  it as a miss for any caller that asks for `labels` and re-lists the repo
+  live.
 - **A warm cycle costs nothing.** A per-owner marker is written beside the
   entries and read before the next pass, so a second cycle inside the cache
   TTL issues no search at all. An entry invalidated in the meantime simply
