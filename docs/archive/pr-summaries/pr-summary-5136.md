@@ -107,13 +107,20 @@ flowchart TD
   ``Rust toolchain unavailable here: `cargo +stable --version` exited 101``.
   - `cargo that is not a rustup proxy runs the CI command without its
     +toolchain word (Issue #5136)`.
-    The gate passes, the only CI run is `cargo clippy --all-targets`, and both
-    plain probes ran.
+    The gate passes and its completed checks include
+    `cargo clippy --all-targets`.
   - `after the no-toolchain fallback a failing plain probe is still
-    infrastructure, and no CI cargo command runs (Issue #5136)`.
+    infrastructure (Issue #5136)`.
+    The error is the unavailable-component diagnostic naming
+    `cargo clippy --version` and its `'cargo-clippy' is not installed` cause.
   - `after the no-toolchain fallback a real clippy lint still blocks, run
     without the +toolchain word (Issue #5136)`.
-    The result is a block, not an infrastructure fault.
+    The result is a block, not an infrastructure fault; the error names
+    `cargo clippy --all-targets` and carries the lint output.
+  - The three tests assert only the `runPrePushGate` result, not the runner call
+    log, per the repository's testing standard. Run against the base
+    `pre_push_gate.ts` with `--no-check --filter 5136`, all three fail (0
+    passed, 3 failed); at the head they pass.
   - The rustup-present behaviour is still covered by the existing tests, which
     are unchanged:
     `a CI +toolchain runs its probes and clippy with that
