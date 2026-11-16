@@ -39,9 +39,12 @@ const READY = JSON.stringify({
 // The App token stub prints `tokenOutput` (empty = no pr_reviewer_app) and
 // exits `tokenExit`; the gate stub records its token and arguments; the
 // escalate stub records its arguments and GH_TOKEN, and exits `escalateExit`.
-// The launch-plan stub writes a worker plan with one named volume, the log
-// directory's mount and the checkout's; the `container` stub records a run's
-// arguments and environment, then runs `$HOME/round` when there is one.
+// The launch-plan stub writes a plan with one named volume, the log
+// directory's mount and the checkout's; it names the prepared review image
+// (`vibe-coder:test`, holding the Codex CLI) only when asked for a review round,
+// else the plain worker image. The `container` stub fails a run of the plain
+// worker image as the real one did (no `codex`, exit 127); otherwise it records
+// the run's arguments and environment, then runs `$HOME/round` when there is one.
 async function fixture(
   gateOutput: string,
   gateExit = 0,
@@ -76,15 +79,17 @@ async function fixture(
     [ -f "$HOME/plan-refused" ] && {
       echo "container-launch-plan: host disk 65.1 GB free of 460.4 GB" >&2
       echo "Refusing to launch: container name is not a plain name"; exit 1; }
-    printf '%s\\000' runtime=fake-runtime image=vibe-coder:test \
-      exists=image exists=inspect exists=vibe-coder:test \
+    image=vibe-coder:worker
+    case "$*" in *--review-round*) image=vibe-coder:test ;; esac
+    printf '%s\\000' runtime=fake-runtime "image=$image" \
+      exists=image exists=inspect "exists=$image" \
       "ensure=$HOME/ensured" volume=vibe-work volume-resettable=vibe-work \
       run=run run=--rm run=--name run=vibe-coder-plan \
       run=--volume run=vibe-work:/home/vibe/auto-issue-work \
       run=--volume "run=$HOME/logs:/home/vibe/logs" \
       run=--volume "run=$HOME/repo:/workspace:ro" \
       run=--workdir run=/workspace run=--env run=VIBE_BASE_DIR=/workspace \
-      run=vibe-coder:test > "$out"
+      "run=$image" > "$out"
     [ -f "$HOME/plan-egress" ] && tr '\\n' '\\000' < "$HOME/plan-egress" >> "$out"
     exit 0 ;;
   *apple_egress_launch_main*) echo "$*" > "$HOME/egress-args"
@@ -134,6 +139,9 @@ echo '${gateOutput}'; exit ${gateExit}`,
   image) [ -f "$HOME/no-image" ] && exit 1; exit 0 ;;
   kill) echo "$*" >> "$HOME/container-kills"; exit 0 ;;
 esac
+# Only the prepared review image (vibe-coder:test) holds the Codex CLI the
+# round's Astra reviewer needs; the plain worker image has none (Issue #5164).
+case "$*" in *vibe-coder:worker*) echo "codex: not found" >&2; exit 127 ;; esac
 echo round >> "$HOME/order"
 echo "GH_TOKEN=\${GH_TOKEN:-}" > "$HOME/claude-args"
 printf '%s\\n' "$@" >> "$HOME/claude-args"
@@ -665,7 +673,7 @@ Deno.test("run.sh fails a pass whose worker image is not built, naming the fix (
   const { code } = await run(home, "--once");
   assertEquals(code, 1);
   assertEquals(await claudeArgs(home), null);
-  assertStringIncludes(await runnerLog(home), "the worker image is not built");
+  assertStringIncludes(await runnerLog(home), "the review image is missing");
   assertStringIncludes(
     (await recorded(home, "escalate-args"))!,
     "--result=fail",

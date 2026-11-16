@@ -391,6 +391,9 @@ export function buildIssueRunCallbackContext(
     // Issue #2386: likewise stated on every run, `off` when the run reported
     // no RTK preparation.
     rtk: run.rtk ?? RTK_OFF,
+    // Issue #4958: carried only when the run reported it, never defaulted
+    // here; the document omits the block on a switched-off host.
+    ...(run.tokenEconomizer ? { tokenEconomizer: run.tokenEconomizer } : {}),
   };
 }
 

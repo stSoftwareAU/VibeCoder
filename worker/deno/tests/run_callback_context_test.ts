@@ -14,9 +14,11 @@ import {
 import { deriveRunOutcome } from "../lib/run_outcome.ts";
 import { IssueCallbackGuard } from "../lib/issue_callback_guard.ts";
 import {
+  buildCallbackContextDocument,
   codegraphNotRun,
   type TerminalIssueRun,
 } from "../lib/run_callbacks.ts";
+import { tokenEconomizerNotRun } from "../lib/token_economizer_run_stats.ts";
 
 function run(overrides: Partial<TerminalIssueRun> = {}): TerminalIssueRun {
   return {
@@ -430,6 +432,45 @@ Deno.test("run_callback_context - the rtk block is on every context, off when th
       `no off block for ${JSON.stringify(shape)}`,
     );
   }
+});
+
+Deno.test("run_callback_context - the TokenEconomizer stats the run reported reach the document (Issue #4958)", () => {
+  const stats = {
+    enabled: true,
+    status: "on" as const,
+    persistence: "unavailable" as const,
+    factsInjected: 2,
+  };
+  const context = buildIssueRunCallbackContext(
+    run({ tokenEconomizer: stats }),
+    IDENTITY,
+  );
+  assertEquals(context.tokenEconomizer, stats);
+  const block = buildCallbackContextDocument(context, "always")
+    .tokenEconomizer;
+  assertEquals(block, {
+    enabled: true,
+    status: "on",
+    persistence: "unavailable",
+    factsInjected: 2,
+  });
+});
+
+Deno.test("run_callback_context - a run carrying no TokenEconomizer stats leaves the context and document without the key (Issue #4958)", () => {
+  const context = buildIssueRunCallbackContext(run(), IDENTITY);
+  assert(!("tokenEconomizer" in context));
+  assert(
+    !("tokenEconomizer" in
+      buildCallbackContextDocument(context, "always")),
+  );
+  // A switched-off host's stats add no block either.
+  const off = buildIssueRunCallbackContext(
+    run({ tokenEconomizer: tokenEconomizerNotRun(false) }),
+    IDENTITY,
+  );
+  assert(
+    !("tokenEconomizer" in buildCallbackContextDocument(off, "always")),
+  );
 });
 
 Deno.test("run_callback_context - a run with no saved-token figure omits it rather than blanking it", () => {

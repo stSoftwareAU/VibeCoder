@@ -31,9 +31,9 @@ import { verifyFeedbackFix } from "./pr_feedback_verifier.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import {
-  CI_CARGO_ONLY_PRE_FLIGHT,
   prBaseCompareRef,
   prBaseForSync,
+  REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
   resolvePreFlightSpec,
 } from "./git_push.ts";
 import { repairBaseForPublication } from "./repair_base_merge_4943.ts";
@@ -1792,7 +1792,7 @@ async function _processFeedbackWithHeartbeat(
   // Issue #4630: a repo with no pre-flight commands still gets CI's cargo checks
   // (the ShellCheck policy of #4631 runs in every gate).
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo) ??
-    CI_CARGO_ONLY_PRE_FLIGHT;
+    REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT;
   // The repo's own formatters run between the commit and the gate (follow-up
   // to #3806): a formatting-only miss in this round is fixed and committed
   // rather than failing the push or reaching CI. Same files the gate checks

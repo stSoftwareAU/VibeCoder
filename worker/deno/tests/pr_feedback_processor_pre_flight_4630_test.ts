@@ -4,7 +4,7 @@
  * `processPrFeedback` hands its final-mile push to `commitAndPushPending` with
  * the repo's pre-flight spec as the fifth argument. A repo with no pre-flight
  * commands has no such spec, so the processor substitutes
- * `CI_CARGO_ONLY_PRE_FLIGHT`, and the push then runs the repo CI's cargo checks.
+ * `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`, and the push then runs the repo CI's cargo checks.
  * A repo that does configure pre-flight commands keeps its own spec.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
@@ -107,12 +107,12 @@ async function capturePreFlightSpecs(
   }
 }
 
-Deno.test("processPrFeedback - repair push (Issue #4630): no pre-flight commands passes the cargo-only spec", async () => {
+Deno.test("processPrFeedback - repair push (Issue #4630): no pre-flight commands passes the repair-with-CI-cargo spec", async () => {
   const finalMile = await capturePreFlightSpecs();
 
   assertEquals(finalMile.length >= 1, true, "expected a final-mile push");
   const spec = finalMile[0] as PreFlightGateSpec | undefined;
-  assertEquals(spec?.ciCargoOnly, true);
+  assertEquals(spec?.repairChecksWithCiCargo, true);
   assertEquals(spec?.commands, []);
 });
 
@@ -124,7 +124,10 @@ Deno.test("processPrFeedback - repair push (Issue #4630): a repo's own pre-fligh
   assertEquals(finalMile.length >= 1, true, "expected a final-mile push");
   const spec = finalMile[0] as PreFlightGateSpec | undefined;
   assertEquals(spec?.commands, ["deno task check"]);
-  assert(spec?.ciCargoOnly !== true, "a configured repo is not cargo-only");
+  assert(
+    spec?.repairChecksWithCiCargo !== true,
+    "a configured repo is not cargo-only",
+  );
 });
 
 /** The `ciCargoCompareRef` each agent run of one feedback pass was handed. */

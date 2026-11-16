@@ -542,6 +542,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         ctx.issueTitle,
         ctx.issueBody,
         "testbot",
+        Math.floor(Date.now() / 1000),
       );
       assert(snapshot.ok);
       const production = await createProductionRunCoreDeps({

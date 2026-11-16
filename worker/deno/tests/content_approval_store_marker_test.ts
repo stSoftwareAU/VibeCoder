@@ -65,6 +65,7 @@ Deno.test("approval store - a successful persist writes the initialisation marke
       TITLE,
       BODY,
       "author",
+      Math.floor(Date.now() / 1000),
     );
     assert(captured.ok, `capture failed: ${!captured.ok && captured.error}`);
     assertEquals(
@@ -88,6 +89,7 @@ Deno.test("approval store - state deleted while the marker survives still fails 
       TITLE,
       BODY,
       "author",
+      Math.floor(Date.now() / 1000),
     );
     assert(captured.ok);
 
@@ -124,6 +126,7 @@ Deno.test("approval store - a legacy store (state file, no marker) keeps working
       TITLE,
       BODY,
       "author",
+      Math.floor(Date.now() / 1000),
     );
     assert(captured.ok);
     await Deno.remove(`${stateDir}/.store_initialised`);

@@ -212,7 +212,7 @@ round_container() {
     --allow-env --allow-read --allow-run \
     --allow-sys=hostname,systemMemoryInfo \
     --allow-write="$planfile,$planfile.Containerfile,$HOME/.vibe-coder/run-config" \
-    worker/deno/mod.ts container-launch-plan --base-dir "$CHECKOUT" \
+    worker/deno/mod.ts container-launch-plan --review-round --base-dir "$CHECKOUT" \
     --container-name "$name" --out "$planfile" </dev/null >"$errfile" \
     2>&1); then
     errors <"$errfile"
@@ -251,7 +251,7 @@ round_container() {
     return 1
   fi
   if ! "$RUNTIME" "${exists_args[@]}" >/dev/null 2>&1; then
-    LAST_ERROR="the worker image is not built; start the Vibe Coder (./run.sh) once to build it"
+    LAST_ERROR="the review image is missing after preparation"
     return 1
   fi
   for arg in ${ensure_dirs[@]+"${ensure_dirs[@]}"}; do mkdir -p "$arg"; done

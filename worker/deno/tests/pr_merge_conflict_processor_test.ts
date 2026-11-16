@@ -866,9 +866,9 @@ Deno.test("processMergeConflict - the push is gated on the repository's ShellChe
   const { captured, result } = await runProcessor(makeInput(), makeGitScript());
 
   assert(result.ok);
-  // No pre-flight commands are configured, so the spec is ShellCheck-only.
+  // No pre-flight commands are configured, so the spec is repairChecksOnly.
   assertEquals(captured.commitAndPushPreFlights, [
-    { commands: [], shellcheckOnly: true },
+    { commands: [], repairChecksOnly: true },
   ]);
 });
 

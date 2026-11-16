@@ -534,9 +534,9 @@ or `max`. A value that fails its check is logged and the default is used.
 
 A round that hits a usage limit tries every available Claude subscription
 once on the configured model, then Codex `gpt-6-astra` at `high`, then (for
-a configured Fable round) `claude-opus-5-5` at `xhigh` on the current Claude
-subscription, then DeepSeek `deepseek-v4-pro`. Astra is skipped when no
-credential reaches the round. A Fable-specific model cap triggers this chain
+a configured Fable round) `claude-opus-5-5` at `xhigh` across the available Claude
+subscriptions, then DeepSeek `deepseek-v4-pro`. Astra is skipped when no
+credential reaches the round or its executable is absent. A Fable-specific model cap triggers this chain
 without treating the entire Claude subscription as exhausted. Codex runs in a round when the round's own Codex home
 (`~/logs/review-fleet-prs/codex`, created by `run.sh`) holds its own ChatGPT
 login (Issue #5127), or with an API key in `codex/provider.env`, or a
@@ -5193,8 +5193,8 @@ repo-specific commands in the worker.
   fully unaffected: the issue completion phase's push (and Step 1b, for
   callers that pass a pre-flight spec) still runs the changed-file checks
   described below, and a failure there fails the run. The CI-fix and PR-feedback
-  repair pushes are the exception: for such a repo they pass a cargo-only spec
-  (Issue #4630), so only the repo CI's cargo clippy and test-target compile,
+  repair pushes are the exception: for such a repo they pass the
+  `REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT` spec (Issue #4630), so only the repo CI's cargo clippy and test-target compile,
   the ShellCheck policy, `cargo deny` and the pushed paths' `deno test` and
   markdownlint checks (Issue #4930) run there. Pushes that pass no spec (such as WIP-preservation pushes) stay
   ungated.
@@ -5255,8 +5255,9 @@ receives the scan precomputed in its spec (see the CI cargo bullet below).
 WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
 Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 (such as WIP-preservation pushes) are not gated there. The CI-fix and
-PR-feedback repair processors pass a cargo-only spec when the repo has no
-pre-flight commands (Issue #4630), so their repair pushes run only the repo
+PR-feedback repair processors pass the repair-with-CI-cargo spec
+(`REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT`) when the repo has no pre-flight
+commands (Issue #4630), so their repair pushes run only the repo
 CI's cargo clippy and test-target compile, the ShellCheck policy
 (Issue #4631), cargo deny for changed cargo inputs (Issue #4626) and the
 pushed paths' `deno test` and markdownlint checks (Issue #4930), through
@@ -5443,9 +5444,9 @@ gates do (see that bullet):
      CHECKED` line. A test file the
      push added, a base run that passes, a base the gate cannot check out (for
      example a deepen that failed, so no merge-base is found), or an output that
-     names no failed test stays a block. Repair specs called `shellcheckOnly`,
-     and the CI-fix and PR-feedback repairs' cargo-only spec (`ciCargoOnly`),
-     also run these unit tests and configured markdownlint from the pushed
+     names no failed test stays a block. The spelling and merge-conflict
+     repairs' spec (`repairChecksOnly`) and the CI-fix and PR-feedback repairs'
+     spec (`repairChecksWithCiCargo`) also run these unit tests and configured markdownlint from the pushed
      paths, while retaining their existing formatter policy;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
@@ -5454,7 +5455,7 @@ gates do (see that bullet):
      `rust-toolchain` or `rust-toolchain.toml`, `clippy.toml` or
      `.clippy.toml`) in a directory the repo's CI runs cargo in. These run in
      the worker's own gates (Step 1b, the completion gate and the repair
-     processors' cargo-only spec) and in the agent's own pre-push hook: before
+     processors' repair-with-CI-cargo spec) and in the agent's own pre-push hook: before
      the agent runs, the worker scans the workflows and writes the derived
      checks (and any unverifiable reasons) into the hook's spec file, so the
      hook runs them without importing the workflow scanner
@@ -5571,8 +5572,8 @@ gates do (see that bullet):
      else the one on `PATH`. No tracked config, or no matching changed file,
      means no cspell run;
    - **`cargo deny`** (Issue #4626), for the whole-branch completion check.
-     Intermediate push hooks and ShellCheck-only repair checks run it when
-     pushed changes include a `Cargo.toml`,
+     Intermediate push hooks and both repair specs (`repairChecksOnly` and
+     `repairChecksWithCiCargo`) run it when pushed changes include a `Cargo.toml`,
      `Cargo.lock`, `deny.toml`, `.deny.toml`, `.cargo/config.toml` or
      `.cargo/deny.toml`. It reads the repo's own `.github/workflows/*.yml` and
      `*.yaml` files for each `run:` step whose command is `cargo deny` with a

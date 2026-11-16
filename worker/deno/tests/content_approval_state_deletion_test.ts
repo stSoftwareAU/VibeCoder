@@ -160,6 +160,7 @@ Deno.test(
         TITLE,
         BODY,
         "alice",
+        Math.floor(Date.now() / 1000),
       );
       assertEquals(captured.ok, true);
 
@@ -199,6 +200,7 @@ Deno.test(
         "T",
         "B",
         "alice",
+        Math.floor(Date.now() / 1000),
       );
       const info = await Deno.stat(stateDir);
       assertEquals(

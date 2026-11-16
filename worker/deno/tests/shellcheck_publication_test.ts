@@ -4,8 +4,8 @@
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
-  CI_CARGO_ONLY_PRE_FLIGHT,
   commitAndPushPending,
+  REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
   resolveRepairPreFlightSpec,
 } from "../lib/git_push.ts";
 import { requireRealShellcheck } from "./support/shellcheck_support.ts";
@@ -166,7 +166,7 @@ Deno.test(
 );
 
 Deno.test(
-  "commitAndPushPending: a cargo-only repair blocks a real ShellCheck diagnostic",
+  "commitAndPushPending: a repairChecksWithCiCargo repair blocks a real ShellCheck diagnostic",
   async () => {
     const { root, dir } = await fixture();
     try {
@@ -177,7 +177,7 @@ Deno.test(
         "Fix #4631",
         { cwd: dir, env: { GIT_CONFIG_COUNT: "0" } },
         false,
-        CI_CARGO_ONLY_PRE_FLIGHT,
+        REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
       );
       assertEquals(result.ok, false);
       if (!result.ok) assertStringIncludes(result.error.message, "SC2086");

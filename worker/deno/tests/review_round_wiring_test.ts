@@ -119,7 +119,7 @@ Deno.test(
                 }
                 if (
                   model === "claude-opus-5-5" &&
-                  token === "fixture-claude-three"
+                  Object.hasOwn(utilisation, token)
                 ) {
                   return Promise.resolve({
                     code: 1,
@@ -169,6 +169,8 @@ Deno.test(
               ["claude", "claude-fable-5-2", "high", 1],
               ["claude", "claude-fable-5-2", "high", 1],
               ["codex", "gpt-6-astra", "high", 1],
+              ["claude", "claude-opus-5-5", "xhigh", 1],
+              ["claude", "claude-opus-5-5", "xhigh", 1],
               ["claude", "claude-opus-5-5", "xhigh", 1],
               ["deepseek", "deepseek-v4-pro", "high", 0],
             ],

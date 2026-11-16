@@ -348,6 +348,7 @@ Deno.test(
           contentHash:
             "0000000000000000000000000000000000000000000000000000000000000000",
           capturedAt: Math.floor(Date.now() / 1000) - 3600,
+          contentRevisionAt: Math.floor(Date.now() / 1000) - 3600,
           issueAuthor: "mallory",
         },
       },

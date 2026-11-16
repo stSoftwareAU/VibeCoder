@@ -20,6 +20,7 @@ import type { WorkerConfig } from "../types.ts";
 import type { ContentApprovalDeps } from "./content_approval_tracker.ts";
 import type { TimelineCache } from "./timeline_cache.ts";
 import { resolveContentIntegrity } from "./work_on_content_integrity.ts";
+import { toUnixSeconds } from "./issue_edit_actor.ts";
 import { runGhCommand } from "./github.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { idleTaskIntegrityConfig } from "./idle_task_trust.ts";
@@ -36,6 +37,12 @@ export interface PickupContentIntegrityInput {
   issueLabels: string[];
   /** Issue author login, if known. */
   issueAuthor?: string;
+  /**
+   * GitHub `updatedAt` (ISO-8601) from the same read as `issueTitle` and
+   * `issueBody`, or null when that read carried none (Issue #5018). It is the
+   * edit boundary a re-approval baseline is stamped with.
+   */
+  issueUpdatedAt: string | null;
   config: WorkerConfig;
   /**
    * This host's GitHub login (Issue #2944).
@@ -123,6 +130,7 @@ export async function verifyPickupContentIntegrity(
     config,
     ghFn: deps.ghFn ?? runGhCommand,
     approvalLabel,
+    contentRevisionAt: toUnixSeconds(input.issueUpdatedAt),
     captureWhenMissing: false,
     contentDeps: deps.contentDeps,
     timelineCache: deps.timelineCache,

@@ -1,0 +1,12 @@
+{
+  "issue": 5029,
+  "chunk": "top-up-5029",
+  "title": "top-up: billed result carried by a turn-cap or unfinished-executor error",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5029",
+  "definition": "Review that only a turn-cap stop or a refused split run yields the invocation result its error carries, so run totals and the lifecycle ledger record that billed invocation once, and that any other error yields nothing, so no usage figure is invented.",
+  "status": "claimed",
+  "sweptAt": "d88ae3fab4cbf461643decbe17f8eb0161ab2384",
+  "paths": [
+    "worker/deno/lib/failed_invocation_result.ts"
+  ]
+}

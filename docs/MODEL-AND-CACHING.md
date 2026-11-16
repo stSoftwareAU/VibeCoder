@@ -783,8 +783,8 @@ usage-limit refusal:
 2. every other available Claude subscription, once each, on the configured
    model; a Fable-specific cap also triggers this rotation;
 3. Codex `gpt-6-astra` at `high`, when a credential reaches the round;
-4. for a configured Fable round, `claude-opus-5-5` at `xhigh` on the current
-   Claude subscription, if Astra has no credential or quota;
+4. for a configured Fable round, `claude-opus-5-5` at `xhigh` across the available
+   Claude subscriptions, if Astra has no credential, executable or quota;
 5. DeepSeek `deepseek-v4-pro`, only after those eligible attempts exhaust quota.
 
 

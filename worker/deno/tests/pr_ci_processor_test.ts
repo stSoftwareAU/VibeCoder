@@ -39,8 +39,8 @@ import {
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { Logger, RepoConfig } from "../types.ts";
 import {
-  CI_CARGO_ONLY_PRE_FLIGHT,
   type PreFlightGateSpec,
+  REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
 } from "../lib/git_push.ts";
 import type {
   ClaudeDeps,
@@ -3802,11 +3802,11 @@ Deno.test('processCiFailure - agent runs (Issue #4630 review): an unreadable PR 
   assertEquals(await agentCompareRefs(undefined, ""), ["", ""]);
 });
 
-Deno.test("processCiFailure - repair push (Issue #4630): no pre-flight commands passes the cargo-only spec", async () => {
+Deno.test("processCiFailure - repair push (Issue #4630): no pre-flight commands passes the repair-with-CI-cargo spec", async () => {
   const spec = await finalMilePreFlight();
-  assertEquals(spec?.ciCargoOnly, true);
+  assertEquals(spec?.repairChecksWithCiCargo, true);
   assertEquals(spec?.commands, []);
-  assertEquals(spec, CI_CARGO_ONLY_PRE_FLIGHT);
+  assertEquals(spec, REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT);
 });
 
 Deno.test("processCiFailure - repair push (Issue #4630): a repo's own pre-flight spec is kept", async () => {
@@ -3814,7 +3814,7 @@ Deno.test("processCiFailure - repair push (Issue #4630): a repo's own pre-flight
     "org/repo": { preFlight: ["deno task check"] },
   });
   assertEquals(spec?.commands, ["deno task check"]);
-  assertEquals(spec?.ciCargoOnly === true, false);
+  assertEquals(spec?.repairChecksWithCiCargo === true, false);
 });
 
 /**
