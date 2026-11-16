@@ -368,9 +368,14 @@ Deno.test("detectAssignedWithClosedPr - leaves an issue a live slot owns alone",
  * A `gh` runner for `detectAssignedWithClosedPr` on an issue another host
  * re-claimed after an earlier PR merged as `Part of #N` (Issue #4839): the
  * merge predates the current assignment, no PR is open yet, and the issue's
- * comments carry `comments`. Records every mutation.
+ * comments carry `comments`. The current assignment happened at `assignedAt`
+ * (default well in the past; always later than the 2026-11-01 merge). Records
+ * every mutation.
  */
-function reclaimedAfterPartialMergeGh(comments: string): {
+function reclaimedAfterPartialMergeGh(
+  comments: string,
+  assignedAt = "2026-11-06T02:39:32Z",
+): {
   ghFn: (args: string[]) => Promise<string>;
   mutations: string[][];
 } {
@@ -412,7 +417,7 @@ function reclaimedAfterPartialMergeGh(comments: string): {
       return Promise.resolve(JSON.stringify([{
         event: "assigned",
         assignee: { login: "stservice" },
-        created_at: "2026-11-06T02:39:32Z",
+        created_at: assignedAt,
       }]));
     }
     if (joined.includes("/comments")) return Promise.resolve(comments);
@@ -460,7 +465,7 @@ Deno.test("detectAssignedWithClosedPr - still releases a claim whose heartbeat h
     const { ghFn, mutations } = reclaimedAfterPartialMergeGh(commentsJson([{
       body: formatHeartbeatMarker(
         "vibe-coder-other-host",
-        nowSeconds() - LIVE_HEARTBEAT_WINDOW_SECONDS - 60,
+        nowSeconds() - closedPrConfig(workDir).assignedNoHeartbeatTimeout - 60,
       ),
     }]));
 
@@ -617,4 +622,88 @@ Deno.test("startHeartbeat - a new claim on a released issue may beat again", asy
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
+});
+
+/** ISO timestamp `secondsAgo` seconds before now. */
+function isoAgo(secondsAgo: number): string {
+  return new Date((nowSeconds() - secondsAgo) * 1000).toISOString();
+}
+
+async function runClosedPrScan(
+  comments: string,
+  assignedAt: string,
+): Promise<{ recovered: number; mutations: string[][] }> {
+  const workDir = await Deno.makeTempDir({ prefix: "claim-5124-" });
+  try {
+    const { ghFn, mutations } = reclaimedAfterPartialMergeGh(
+      comments,
+      assignedAt,
+    );
+    const recovered = await detectAssignedWithClosedPr(
+      closedPrConfig(workDir),
+      "stservice",
+      "planning",
+      ghFn,
+    );
+    return { recovered, mutations };
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+}
+
+Deno.test("detectAssignedWithClosedPr - keeps a long-held claim whose marker went quiet 20 minutes ago (Issue #5124)", async () => {
+  // The assignment (1 h) is older than assignedNoHeartbeatTimeout (30 min),
+  // so only the 20-minute-old heartbeat can keep this claim.
+  const { recovered, mutations } = await runClosedPrScan(
+    commentsJson([{
+      body: formatHeartbeatMarker("vibe-coder-other-host", nowSeconds() - 1200),
+    }]),
+    isoAgo(3600),
+  );
+  assertEquals(recovered, 0);
+  assertEquals(mutations, []);
+});
+
+Deno.test("detectAssignedWithClosedPr - keeps a fresh claim with no marker at all (Issue #5124)", async () => {
+  const { recovered, mutations } = await runClosedPrScan("[]", isoAgo(1200));
+  assertEquals(recovered, 0);
+  assertEquals(mutations, []);
+});
+
+Deno.test("detectAssignedWithClosedPr - an old marker from an earlier attempt does not age a fresh claim (Issue #5124)", async () => {
+  const { recovered, mutations } = await runClosedPrScan(
+    commentsJson([{
+      body: formatHeartbeatMarker(
+        "vibe-coder-other-host",
+        nowSeconds() - 7 * 3600,
+      ),
+    }]),
+    isoAgo(1200),
+  );
+  assertEquals(recovered, 0);
+  assertEquals(mutations, []);
+});
+
+Deno.test("detectAssignedWithClosedPr - releases a claim silent past the no-heartbeat timeout (Issue #5124)", async () => {
+  const { recovered, mutations } = await runClosedPrScan(
+    "[]",
+    isoAgo(1800 + 60),
+  );
+  assertEquals(recovered, 1);
+  assert(mutations.some((m) => m.includes("--remove-assignee")));
+  assert(mutations.some((m) =>
+    m[1] === "comment" &&
+    m.join(" ").includes("treating as stale previous attempt")
+  ));
+});
+
+Deno.test("detectAssignedWithClosedPr - a cleared marker does not keep an old claim alive (Issue #5124)", async () => {
+  const body = `${formatHeartbeatMarker("vibe-coder-other-host", 0)}\n` +
+    "<!-- cleared: claim released by machine vibe-coder-other-host -->";
+  const { recovered, mutations } = await runClosedPrScan(
+    commentsJson([{ body }]),
+    isoAgo(1800 + 60),
+  );
+  assertEquals(recovered, 1);
+  assert(mutations.some((m) => m.includes("--remove-assignee")));
 });

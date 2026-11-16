@@ -449,7 +449,9 @@ export function classifyGhAssignError(message: string): ClaimFailureReason {
  * {@link DEFAULT_MARKER_REFRESH_SECONDS}, so a healthy claim's published
  * marker is routinely one refresh old. One missed refresh is tolerated;
  * beyond that the run is gone and the ordinary stale-assignment recovery
- * (default 1800 s, comfortably longer than this window) takes over.
+ * (default 1800 s, comfortably longer than this window) takes over. The
+ * closed-PR scan's stale-previous-attempt release waits for that same
+ * threshold (`assignedNoHeartbeatTimeout`, Issue #5124).
  */
 export const LIVE_HEARTBEAT_WINDOW_SECONDS = 2 * DEFAULT_MARKER_REFRESH_SECONDS;
 

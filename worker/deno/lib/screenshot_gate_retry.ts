@@ -173,6 +173,17 @@ export async function recoverFromScreenshotGateBlock(
 }
 
 /**
+ * Commit message for the in-run screenshot-gate recovery (Issue #2960).
+ * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
+ * bare number links to an unrelated issue (Issue #5045).
+ */
+export function buildScreenshotRecoveryCommitMessage(
+  issueNumber: number,
+): string {
+  return `docs: screenshot evidence for #${issueNumber}\n\nIn-run screenshot-gate recovery.`;
+}
+
+/**
  * Commit what the extra turn produced onto the issue branch (Issue #2960).
  *
  * Mirrors `commitRecoveredSummary` in `summary_rule_gate_retry.ts`: HEAD is
@@ -205,8 +216,7 @@ async function commitScreenshotEvidence(
 
   const commit = await deps.git.commitAndPushPending(
     state.branchName,
-    `docs: screenshot evidence for #${issueNumber}\n\n` +
-      `In-run screenshot-gate recovery (Issue #2960).`,
+    buildScreenshotRecoveryCommitMessage(issueNumber),
     { cwd: state.repoPath },
     false,
     resolvePreFlightSpec(config.repoConfig, repo),

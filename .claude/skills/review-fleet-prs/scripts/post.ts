@@ -24,7 +24,7 @@ import {
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
 //          --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
-//          [--state-dir=<dir>] [--no-model]
+//          [--state-dir=<dir>] [--config=<path>] [--no-model]
 // Every review ends with a run footer naming the model run that wrote it
 // (review_cost.ts): a round's input file sits in the round's directory beside
 // its attempt log, an input elsewhere is an interactive session's, and
@@ -35,6 +35,10 @@ import {
 // worker container passes it (Issue #3293): there the host's log directory is
 // mounted at another path, so the resolution stateDir() makes on the host
 // would point somewhere else.
+// --config names the config the test-change policy is read from, as for gate.ts.
+// A round in the worker container passes its round directory's read-only
+// `test-policy.json` snapshot, because the container has no `.config.json`
+// (Issue #5174). A missing file exits 1: the policy is never its defaults.
 // Every repo gets the test-change evidence review (Issue #4655, replacing the
 // opt-in auto-release of Issue #3397): each removed or meaningfully changed
 // test must be explained and verified at the head (test_change_policy.ts). A
@@ -506,6 +510,16 @@ export async function releaseClaimAtHead(
   }
 }
 
+/** The test-change policy from `--config=<path>`, else the checkout's `.config.json` (Issue #5174). */
+export async function postTestPolicy(
+  args: string[],
+): Promise<EffectiveTestPolicy> {
+  const path = args.find((a) => a.startsWith("--config="))?.slice(9);
+  return path === undefined
+    ? await loadTestPolicy()
+    : await loadTestPolicy(path);
+}
+
 // Exported, not just `import.meta.main`-gated, so the root-level forwarding
 // shim (Issue #3299 continuity gap — PR #3417 review) can call this same
 // body for a runner still started from the pre-move layout.
@@ -525,9 +539,16 @@ export async function main() {
     Deno.exit(2);
   }
 
-  // The owner-hold list is read before anything is filed or posted: a malformed
-  // one fails loud here (Issue #4655).
-  const policy = await loadTestPolicy();
+  // The policy (owner holds, trusted logins, service-account exclusions) is read
+  // from --config before anything is filed or posted; a missing or malformed one
+  // fails loud here (Issues #4655, #5174).
+  let policy: EffectiveTestPolicy;
+  try {
+    policy = await postTestPolicy(Deno.args);
+  } catch (e) {
+    console.error(`test-change policy: ${(e as Error).message}`);
+    Deno.exit(1);
+  }
   if (policy.legacyAutoRelease.length > 0) {
     console.error(
       "pr_reviewer_auto_release is no longer read (Issue #4655); the evidence-review policy applies to every repo",

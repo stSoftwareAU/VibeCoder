@@ -426,6 +426,17 @@ export async function recoverFromPrBodyLength(
   return await rerunCompletion();
 }
 
+/**
+ * Commit message for the in-run pull-request body limit recovery (Issue #4359).
+ * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
+ * bare number links to an unrelated issue (Issue #5045).
+ */
+export function buildBodyLimitRecoveryCommitMessage(
+  issueNumber: number,
+): string {
+  return `docs: shorten PR summary for #${issueNumber}\n\nIn-run pull-request body limit recovery.`;
+}
+
 async function commitRewrittenSummary(
   ctx: IssueContext,
   state: PhaseState,
@@ -447,8 +458,7 @@ async function commitRewrittenSummary(
   }
   const commit = await deps.git.commitAndPushPending(
     state.branchName,
-    `docs: shorten PR summary for #${issueNumber}\n\n` +
-      "In-run pull-request body limit recovery (Issue #4359).",
+    buildBodyLimitRecoveryCommitMessage(issueNumber),
     { cwd: state.repoPath },
     false,
     resolvePreFlightSpec(config.repoConfig, repo),
