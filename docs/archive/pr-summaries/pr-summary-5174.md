@@ -8,20 +8,20 @@ exclusions and no `pr_reviewer_test_hold_repos`. An owner-approved issue filed
 by the reviewer App was then rejected as "not by a trusted author" (PRs #5170
 and #5171).
 
-- `.claude/skills/review-fleet-prs/scripts/post.ts`: new
-  `postTestPolicy(args)` reads the policy from `--config=<path>`, else from the
-  checkout's `.config.json`. `main()` uses it before anything is filed or
-  posted. On a missing or malformed config it prints `test-change policy: …`
-  and exits 1, as `gate.ts` already does.
+- `.claude/skills/review-fleet-prs/scripts/post.ts`: new `postTestPolicy(args)`
+  reads the policy from `--config=<path>`, else from the checkout's
+  `.config.json`. `main()` uses it before anything is filed or posted. On a
+  missing or malformed config it prints `test-change policy: …` and exits 1, as
+  `gate.ts` already does.
 - `.claude/skills/review-fleet-prs/scripts/test_change_policy.ts`:
   - `loadTestPolicy` now throws `<path> not found: …` on a missing file. It no
     longer returns the defaults.
   - New `TEST_POLICY_CONFIG_KEYS` lists the eight keys the policy reads.
     `effectiveTestPolicy` reads only those keys.
 - `.claude/skills/review-fleet-prs/scripts/run.sh`: `start_review` writes the
-  round directory's `test-policy.json`. It copies only those keys from
-  `$CONFIG` with `jq`, so no credential is copied, and sets the file to mode
-  0444. The round prompt tells the round to run post.ts with
+  round directory's `test-policy.json`. It copies only those keys from `$CONFIG`
+  with `jq`, so no credential is copied, and sets the file to mode 0444. The
+  round prompt tells the round to run post.ts with
   `--config=$C_DIR/test-policy.json`. If the snapshot cannot be written, the
   round is not started and its claim is released.
 - Docs: `SKILL.md` (the post.ts step), `references/running-unattended.md` (the
@@ -57,8 +57,8 @@ Closes #5174.
 
 ### Undiscoverable Facts
 
-- `run.sh:654` (audit send-back) and `SKILL.md`'s post.ts command already
-  passed `--config`, but post.ts never read it.
+- `run.sh:654` (audit send-back) and `SKILL.md`'s post.ts command already passed
+  `--config`, but post.ts never read it.
 - The read-only mode is a guard against accidental edits, not a security
   boundary. The round may use `deno run`, so a round set on changing the
   snapshot could still `chmod` it. The round is the reviewer, which already
@@ -91,16 +91,17 @@ policy in container rounds, rejecting owner-approved governing issues.
 
 - New tests in `worker/deno/tests/review_fleet_prs_runner_test.ts`, which run
   the real `run.sh` with a stubbed gate and container:
-  - "run.sh hands the round a read-only snapshot of only the test-change
-    policy, which post.ts reads (Issue #5174)". It uses an alternate config that
-    sets every policy key plus `github_token` and `pr_reviewer_app` values, with
-    no checkout `.config.json`. It checks that:
+  - "run.sh hands the round a read-only snapshot of only the test-change policy,
+    which post.ts reads (Issue #5174)". It uses an alternate config that sets
+    every policy key plus `github_token` and `pr_reviewer_app` values, with no
+    checkout `.config.json`. It checks that:
     - the snapshot's keys are exactly `TEST_POLICY_CONFIG_KEYS`;
     - no secret value is copied, and the file has no write bits;
     - the prompt names `--config=<round dir>/test-policy.json`;
-    - the real `postTestPolicy` on that path equals `effectiveTestPolicy(<full
-      config>)`, with the hold repo in `hold-all` and the bot in
-      `fleetWorkerLogins`.
+    - the real `postTestPolicy` on that path equals
+      `effectiveTestPolicy(<full
+      config>)`, with the hold repo in
+      `hold-all` and the bot in `fleetWorkerLogins`.
   - "run.sh starts no round when the test-change policy cannot be snapshotted,
     and releases its claim (Issue #5174)".
 - New tests in `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts`.
@@ -118,12 +119,11 @@ policy in container rounds, rejecting owner-approved governing issues.
   `test_change_policy.ts`, the new 4655 tests failed at import (no
   `postTestPolicy`).
 - Removed from `worker/deno/tests/review_fleet_prs_test_policy_4655_test.ts`:
-  `` assertEquals(await loadTestPolicy(`${dir}/missing.json`), effectiveTestPolicy({})) ``
+  ``assertEquals(await loadTestPolicy(`${dir}/missing.json`), effectiveTestPolicy({}))``
   - Required by: "Missing deployment configuration should be repaired as
-    infrastructure, not converted into a branch finding or a permissive
-    policy."
+    infrastructure, not converted into a branch finding or a permissive policy."
   - Replaced by:
-    `` assertRejects(() => loadTestPolicy(`${dir}/missing.json`), Error, "not found") ``
+    ``assertRejects(() => loadTestPolicy(`${dir}/missing.json`), Error, "not found")``
     in the same test. The test is renamed to "loadTestPolicy: a missing file is
     an error, never the defaults; other read errors rethrow (Issue #5174)", and
     its other assertions are unchanged.
@@ -148,11 +148,11 @@ policy in container rounds, rejecting owner-approved governing issues.
     `config integration` and `checkov` skipped.
 - Docs sweep: grepped `SKILL.md`, `references/*.md` and `docs/` for
   `loadTestPolicy`, `--config` and "defaults". The passages updated are the
-  post.ts step in `SKILL.md`, the "The round is given container paths"
-  paragraph and the `pr_reviewer_test_hold_repos` section.
+  post.ts step in `SKILL.md`, the "The round is given container paths" paragraph
+  and the `pr_reviewer_test_hold_repos` section.
 
 ## Not done or not checked
 
-- No live review round was run in a real worker container against PRs #5170
-  and #5171. The container path is covered only by the runner stub.
+- No live review round was run in a real worker container against PRs #5170 and
+  #5171. The container path is covered only by the runner stub.
 - The learning round gets no snapshot: it posts no review.
