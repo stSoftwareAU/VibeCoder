@@ -91,6 +91,12 @@ interface FakeOptions {
   head?: Record<string, string>;
   baseLcov?: string;
   headLcov?: string;
+  /**
+   * Head coverage by selected test file: a head `deno test` run writes the LCOV
+   * of the test files it was given (none for a file not listed), so the head
+   * coverage depends on which tests the runner chose.
+   */
+  headLcovByTest?: Record<string, string>;
   /** Milliseconds the clock advances per process call. */
   tickMs?: number;
   /** Return a result to replace the default for a call; undefined keeps it. */
@@ -130,6 +136,7 @@ function fake(opts: FakeOptions = {}): Fake {
   const calls: Call[] = [];
   const removed: string[] = [];
   const clock = { t: 0 };
+  const headLcovByDir = new Map<string, string>();
 
   const defaultResult = (cmd: string, args: string[]): ProcessResult => {
     if (cmd === "git") {
@@ -142,11 +149,24 @@ function fake(opts: FakeOptions = {}): Fake {
       }
       return ok();
     }
+    if (cmd === "deno" && args[0] === "test" && opts.headLcovByTest) {
+      const dir = (args.find((a) => a.startsWith("--coverage=")) ?? "").slice(
+        "--coverage=".length,
+      );
+      if (dir.includes("cov-head")) {
+        headLcovByDir.set(
+          dir,
+          args.filter((a) => !a.startsWith("-") && a !== "test")
+            .map((t) => opts.headLcovByTest?.[t] ?? "").join(""),
+        );
+      }
+    }
     if (cmd === "deno" && args[0] === "coverage") {
       const dir = args[2] ?? "";
+      if (dir.includes("cov-base")) return ok(opts.baseLcov ?? "");
       return ok(
-        dir.includes("cov-base")
-          ? (opts.baseLcov ?? "")
+        opts.headLcovByTest
+          ? (headLcovByDir.get(dir) ?? "")
           : (opts.headLcov ?? ""),
       );
     }
@@ -673,7 +693,7 @@ Deno.test("runCoverageCarryOverCheck - a head test importing the carried module 
       "tests/unrelated_test.ts": UNRELATED_TEST,
     },
     baseLcov: BASE_LCOV,
-    headLcov: HEAD_LCOV_ALL_REACHED,
+    headLcovByTest: { "tests/alias_test.ts": HEAD_LCOV_ALL_REACHED },
   });
   const result = await runCoverageCarryOverCheck(
     input(DELETE_TEST_AND_INSERT_HEADER),
@@ -685,16 +705,40 @@ Deno.test("runCoverageCarryOverCheck - a head test importing the carried module 
     carried: 3,
     uncovered: [],
   });
-  const headRun = f.calls.find((c) =>
-    isCall(c, "deno", "test") && c.cwd === REPO
+});
+
+Deno.test("runCoverageCarryOverCheck - a head test that does not import the carried module through its alias leaves the carried lines uncovered (Issue #5107)", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: {
+      "deno.json": '{"imports":{"@lib/":"./lib/"}}',
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/other_alias_test.ts":
+        'import { x } from "@other/x.ts";\nDeno.test("o", () => x());\n',
+      "tests/unrelated_test.ts": UNRELATED_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    // Running either test would reach the lines, so only a wrongly chosen
+    // importer clears them.
+    headLcovByTest: {
+      "tests/other_alias_test.ts": HEAD_LCOV_ALL_REACHED,
+      "tests/unrelated_test.ts": HEAD_LCOV_ALL_REACHED,
+    },
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
   );
-  assertEquals(headRun?.args, [
-    "test",
-    "--no-check",
-    "-A",
-    `--coverage=${TMP}/cov-head-0`,
-    "tests/alias_test.ts",
-  ]);
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 3,
+    uncovered: [
+      { file: "lib/m.ts", line: 3 },
+      { file: "lib/m.ts", line: 4 },
+      { file: "lib/m.ts", line: 6 },
+    ],
+  });
 });
 
 Deno.test("runCoverageCarryOverCheck - a head test importing the carried module through a deno.jsonc imports alias covers the carried line (Issue #5107)", async () => {
@@ -708,7 +752,7 @@ Deno.test("runCoverageCarryOverCheck - a head test importing the carried module 
       "tests/unrelated_test.ts": UNRELATED_TEST,
     },
     baseLcov: BASE_LCOV,
-    headLcov: HEAD_LCOV_ALL_REACHED,
+    headLcovByTest: { "tests/alias_test.ts": HEAD_LCOV_ALL_REACHED },
   });
   const result = await runCoverageCarryOverCheck(
     input(DELETE_TEST_AND_INSERT_HEADER),
@@ -720,10 +764,6 @@ Deno.test("runCoverageCarryOverCheck - a head test importing the carried module 
     carried: 3,
     uncovered: [],
   });
-  const headRun = f.calls.find((c) =>
-    isCall(c, "deno", "test") && c.cwd === REPO
-  );
-  assertEquals(headRun?.args.at(-1), "tests/alias_test.ts");
 });
 
 Deno.test("runCoverageCarryOverCheck - a malformed head deno.json is an error naming the file (Issue #5107)", async () => {
@@ -746,10 +786,6 @@ Deno.test("runCoverageCarryOverCheck - a malformed head deno.json is an error na
     reason:
       "cannot read the head Deno project config: deno.json: imports must be an object",
   });
-  assertEquals(
-    f.calls.some((c) => isCall(c, "deno", "test") && c.cwd === REPO),
-    false,
-  );
 });
 
 Deno.test("runCoverageCarryOverCheck - a lock-only head project has the empty config, so relative importers still count (Issue #5107)", async () => {
@@ -765,7 +801,7 @@ Deno.test("runCoverageCarryOverCheck - a lock-only head project has the empty co
       "tests/other_test.ts": OTHER_TEST,
     },
     baseLcov: BASE_LCOV,
-    headLcov: HEAD_LCOV_ALL_REACHED,
+    headLcovByTest: { "tests/other_test.ts": HEAD_LCOV_ALL_REACHED },
   });
   const result = await runCoverageCarryOverCheck(
     input(DELETE_TEST_AND_INSERT_HEADER),
@@ -777,10 +813,6 @@ Deno.test("runCoverageCarryOverCheck - a lock-only head project has the empty co
     carried: 3,
     uncovered: [],
   });
-  const headRun = f.calls.find((c) =>
-    isCall(c, "deno", "test") && c.cwd === REPO
-  );
-  assertEquals(headRun?.args.at(-1), "tests/other_test.ts");
 });
 
 Deno.test("runCoverageCarryOverCheck - lines the diff changed are not carried, so no head run happens", async () => {

@@ -79,22 +79,28 @@ flowchart TD
 
 - Added to `worker/deno/tests/coverage_carryover_runner_test.ts`:
   - `runCoverageCarryOverCheck - a head test importing the carried module through a deno.json imports alias covers the carried line (Issue #5107)`.
-    It asserts the result is `completed` with `uncovered: []`, and that the head
-    run lists only `tests/alias_test.ts`. An unrelated test in the same project
-    is not selected.
+    The fake process boundary returns head coverage only for the test files a
+    head `deno test` run was given, so the test asserts only the result:
+    `completed` with `uncovered: []`, which holds only if the alias importer was
+    selected. An unrelated test in the same project has no coverage there.
+  - `… a head test that does not import the carried module through its alias
+    leaves the carried lines uncovered (Issue #5107)`.
+    Every test present would reach the lines if run, so the asserted `uncovered`
+    lines 3, 4 and 6 show that no non-importing test was selected.
   - `… through a deno.jsonc imports alias covers the carried line (Issue #5107)`,
     with a commented `deno.jsonc` and no `deno.json`.
   - `… a malformed head deno.json is an error naming the file (Issue #5107)`. It
     asserts the exact reason
-    `cannot read the head Deno project config: deno.json: imports must be an object`,
-    and that no head `deno test` ran.
-  - A lock-only project test. A relative importer is still selected and covers
-    the line, so a project with no config file is not an error.
+    `cannot read the head Deno project config: deno.json: imports must be an object`.
+  - A lock-only project test. A relative importer is still selected, because the
+    fake covers the line only when that importer is run, so a project with no
+    config file is not an error.
 - Red before the fix: run against the unmodified runner, the `deno.json` alias
   test and the `deno.jsonc` alias test each reported `lib/m.ts` lines 3, 4 and 6
-  uncovered, because no alias importer was selected. The malformed test got no
-  error. The lock-only test passed on base, as a guard of unchanged behaviour
-  should.
+  uncovered, because no alias importer was selected (run with `--no-check`, as
+  the base runner lacks the new exports; the non-importing test failed there
+  too). The malformed test got no error. The lock-only test passed on base, as a
+  guard of unchanged behaviour should.
 - Edited `worker/deno/tests/mutation_runner_test.ts`, only because the signature
   now requires a project:
   - Removed from `worker/deno/tests/mutation_runner_test.ts`:
