@@ -20,7 +20,10 @@ import { fetchClosedPRsByUser } from "./issue_query.ts";
 import type { IssueCache } from "./issue_cache.ts";
 import { defaultLogger } from "./logger.ts";
 import { redactSecrets } from "./secret_redaction.ts";
-import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
+import {
+  isPrimaryRateLimitMessage,
+  PRIMARY_QUOTA_SKIP_PREFIX,
+} from "./primary_quota_latch.ts";
 
 export interface LifecyclePrSnapshot {
   body: string;
@@ -167,7 +170,42 @@ function isLatchSkipMessage(message: string): boolean {
     .startsWith(PRIMARY_QUOTA_SKIP_PREFIX);
 }
 
-/** Log deliberate quota skips at INFO and observation faults at ERROR. */
+type ObservationLogger =
+  & Pick<Logger, "error">
+  & Partial<Pick<Logger, "info" | "warn">>;
+
+/**
+ * Route an observation failure to one log level. A latch skip is INFO. A raw
+ * GitHub rate-limit refusal or a `gh` timeout (`TIMEOUT: ... timed out after
+ * 60s`) is best-effort noise the next sweep retries, so WARNING. Anything
+ * else is a genuine fault and stays ERROR.
+ */
+function logObservationFailure(
+  logger: ObservationLogger,
+  message: string,
+  skipped: string,
+  failed: string,
+): void {
+  if (isLatchSkipMessage(message)) {
+    (logger.info ?? defaultLogger.info.bind(defaultLogger))(
+      `${skipped}: ${message}`,
+    );
+  } else if (
+    isPrimaryRateLimitMessage(message) ||
+    (message.includes("TIMEOUT: ") && message.includes(" timed out after "))
+  ) {
+    (logger.warn ?? defaultLogger.warn.bind(defaultLogger))(
+      `${failed}: ${message}`,
+    );
+  } else {
+    logger.error(`${failed}: ${message}`);
+  }
+}
+
+/**
+ * Log deliberate quota skips at INFO, a raw rate-limit refusal or `gh`
+ * timeout at WARNING, and other observation faults at ERROR.
+ */
 export async function recordLifecyclePrFromGithub(
   input: {
     workDir: string;
@@ -178,7 +216,7 @@ export async function recordLifecyclePrFromGithub(
     observedAt?: string;
   },
   runGh: (args: string[]) => Promise<string>,
-  logger: Pick<Logger, "error"> & Partial<Pick<Logger, "info">> = defaultLogger,
+  logger: ObservationLogger = defaultLogger,
 ): Promise<void> {
   try {
     const snapshot: LifecyclePrSnapshot = input.snapshot ?? JSON.parse(
@@ -207,14 +245,11 @@ export async function recordLifecyclePrFromGithub(
     const message = redactSecrets(
       error instanceof Error ? error.message : String(error),
     );
-    if (isLatchSkipMessage(message)) {
-      (logger.info ?? defaultLogger.info.bind(defaultLogger))(
-        `Lifecycle PR observation skipped for ${input.repo}#${input.prNumber}: ${message}`,
-      );
-      return;
-    }
-    logger.error(
-      `Lifecycle PR observation failed for ${input.repo}#${input.prNumber}: ${message}`,
+    logObservationFailure(
+      logger,
+      message,
+      `Lifecycle PR observation skipped for ${input.repo}#${input.prNumber}`,
+      `Lifecycle PR observation failed for ${input.repo}#${input.prNumber}`,
     );
   }
 }
@@ -243,7 +278,8 @@ export async function observedLifecycleTerminalPrs(
 
 /**
  * Reuse the closed-PR listing at the existing recovery pass. Quota-latch
- * skips log at INFO; any other fault logs at ERROR.
+ * skips log at INFO, a raw rate-limit refusal or `gh` timeout at WARNING;
+ * any other fault logs at ERROR.
  */
 export async function recordClosedLifecyclePrs(
   input: {
@@ -253,7 +289,7 @@ export async function recordClosedLifecyclePrs(
     cache?: IssueCache;
   },
   runGh: (args: string[]) => Promise<string>,
-  logger: Pick<Logger, "error"> & Partial<Pick<Logger, "info">> = defaultLogger,
+  logger: ObservationLogger = defaultLogger,
 ): Promise<void> {
   try {
     const observed = await observedLifecycleTerminalPrs(input.workDir);
@@ -282,12 +318,11 @@ export async function recordClosedLifecyclePrs(
     const message = redactSecrets(
       error instanceof Error ? error.message : String(error),
     );
-    if (isLatchSkipMessage(message)) {
-      (logger.info ?? defaultLogger.info.bind(defaultLogger))(
-        `Lifecycle closed-PR observation skipped: ${message}`,
-      );
-      return;
-    }
-    logger.error(`Lifecycle closed-PR observation failed: ${message}`);
+    logObservationFailure(
+      logger,
+      message,
+      "Lifecycle closed-PR observation skipped",
+      "Lifecycle closed-PR observation failed",
+    );
   }
 }

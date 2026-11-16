@@ -563,7 +563,6 @@ Deno.test("a tally-only body does not back the repo off fleet-wide; the back-off
     cache: createFleetDiagnosticCache(),
     fleetAuthors: FLEET,
     warn: () => {},
-    error: () => {},
   });
   assertEquals(result1.backedOff.has(REPO), false);
 
@@ -575,7 +574,6 @@ Deno.test("a tally-only body does not back the repo off fleet-wide; the back-off
     cache: createFleetDiagnosticCache(),
     fleetAuthors: FLEET,
     warn: () => {},
-    error: () => {},
   });
   assertEquals(result2.backedOff.has(REPO), true);
 });

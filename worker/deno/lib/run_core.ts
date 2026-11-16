@@ -2779,7 +2779,7 @@ const MAX_DEFERRED_REOFFERS = 3;
  *
  * Returns false — claim as before — whenever the gate cannot decide: no
  * evidence lookup wired, no execute budget known, no hard cap to measure
- * against, or a lookup that failed (which is logged as an error, never
+ * against, or a lookup that failed (which is logged as a warning, never
  * swallowed).
  *
  * Issue #375: the deferral is **bounded**. On a host whose hard cap can never
@@ -2806,7 +2806,7 @@ async function deferClaimForAdaptiveFloor(
 
   const { evidence, lookupError } = await deps.gatherIssueClaimEvidence(issue);
   if (lookupError !== undefined) {
-    deps.logError(
+    warnOf(deps)(
       `Claim-evidence lookup failed for ${issue.repo}#${issue.issueNumber}: ` +
         `${lookupError} — claiming on the plain runway floor alone ` +
         `(Issue #245).`,
@@ -4340,7 +4340,7 @@ async function settleLiveSlotTails(
   const settled = Promise.allSettled(pending).then(() => "settled" as const);
   const outcome = await Promise.race([settled, grace]);
   if (outcome === "grace" && liveSlotRuns.size > 0) {
-    deps.logError(
+    warnOf(deps)(
       `${liveSlotRuns.size} slot run(s) still finishing after the ` +
         `${Math.round(graceMs / 1000)}s grace — the exit cleanup may cut ` +
         `their callbacks short (Issue #1815)`,

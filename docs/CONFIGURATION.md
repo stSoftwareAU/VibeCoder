@@ -2687,8 +2687,11 @@ The lookup costs at most one `gh search issues` per owner of the monitored
 repositories, every 600 seconds, cached in process — a cycle's several reads
 of the back-off set share the one cached result. A failed or unparsable
 lookup keeps the last good result and logs a WARN; with no good result yet it
-logs an ERROR and the fleet-wide back-offs are treated as unknown for that
-lookup (the host's own local back-offs still apply). Closing the diagnostic
+also logs a WARN and the fleet-wide back-offs are treated as unknown for that
+lookup (the host's own local back-offs still apply). The failure is logged once,
+when it happens, not again while the cached failure stands. A lookup refused by
+the GitHub rate-limit latch is retried at the first lookup after the quota
+resets, rather than after the full 600 seconds. Closing the diagnostic
 lifts the back-off on every host at its next lookup, not only on the host
 that filed it.
 
