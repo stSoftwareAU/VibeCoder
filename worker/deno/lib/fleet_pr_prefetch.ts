@@ -118,7 +118,7 @@ export interface FleetPrPrefetchOptions {
   ghCommandFn: (args: string[]) => Promise<string>;
   /**
    * Comments and reviews fetched per PR. A PR with more than this is not
-   * served to the invitation listing from here - see {@link
+   * served to the maintenance or invitation listings from here - see {@link
    * prefetchFleetOpenPrs}. Defaults to the search module's own page size.
    */
   conversationSize?: number;
@@ -193,6 +193,8 @@ function toMaintenanceEntry(pr: FleetSearchPr) {
     mergeable: pr.mergeable,
     // Issue #4951: the CI-fix scan's draft filter reads this; without it a draft looked ready.
     isDraft: pr.isDraft,
+    // Issue #5047 - `listActionablePrs` holds a needs-human PR by these; without them nothing was held.
+    labels: pr.labels.map((name) => ({ name })),
   };
 }
 
@@ -200,7 +202,6 @@ function toMaintenanceEntry(pr: FleetSearchPr) {
 function toInvitationEntry(pr: FleetSearchPr) {
   return {
     ...toMaintenanceEntry(pr),
-    labels: pr.labels.map((name) => ({ name })),
     comments: pr.comments,
     reviews: pr.reviews,
   };
@@ -311,10 +312,21 @@ async function writeOwnerEntries(
       );
     }
     for (const author of authors.maintenance) {
+      const authorPrs = prsFor(author);
+      // Issue #5047: the maintenance listing carries labels, so a PR whose
+      // labels did not fit one page must not be served from here.
+      if (authorPrs.some((pr) => pr.detailTruncated)) {
+        options.log?.(
+          `[fleet-pr-prefetch] ${repo}: maintenance listing for ` +
+            `${author} left to the per-repo path - a PR's labels, ` +
+            `comments or reviews exceeded one page`,
+        );
+        continue;
+      }
       await write(
         repo,
         `prs_maint_${author}`,
-        prsFor(author).map(toMaintenanceEntry),
+        authorPrs.map(toMaintenanceEntry),
       );
     }
     if (reuse) continue;
