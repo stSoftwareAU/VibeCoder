@@ -97,22 +97,33 @@ flowchart TD
   tests):
   - "listActionablePrs - a needs-human fleet PR served from the prefetch is
     held": runs the real prefetch and asserts that only the unlabelled PR is
-    returned, with no `gh pr list` call.
+    returned. The live fake holds a different PR (#99), which is not returned,
+    so the prefetched listing is what served the author.
   - "prefetch - the prs_maint entry carries the labels the search reported".
   - "prefetch - a PR whose labels overflowed one page is left to the per-repo
-    listing": the `prs_maint` entry for author A is not written, author B's
-    entry is, and the per-repo listing holds A's needs-human PR.
+    listing": the `prs_maint` entry for author A is not written and author B's
+    entry is. A's live listing holds a needs-human PR (held) and an unheld PR
+    #9 that the prefetch never saw. The actionable PRs are B's #8 (cached) and
+    #9 (live).
   - "listActionablePrs - a label-less entry left by the old prefetch is
-    re-listed live": an old-shape seed, with persisted-data rule coverage.
+    re-listed live": an old-shape seed, with persisted-data rule coverage. The
+    live listing holds needs-human #7 and unheld #9. Only #9 is returned, and
+    the persisted entry carries both PRs with their labels.
   - "listActionablePrs - control: an entry that carries labels is served from
-    the cache".
+    the cache": the live fake holds a different PR, which is not returned.
   - "listOpenPrs - a caller that does not ask for labels is still served the
-    label-less entry".
+    label-less entry": the live fake holds a different PR, which is not
+    returned.
+  - The tests assert outcomes only (actionable PR numbers and persisted cache
+    records), not `gh` call counts or arguments. Cached and live sources are
+    told apart by giving the live fake PRs the cache does not hold.
 - Red against base `lib/fleet_pr_prefetch.ts` and `lib/pr_maintenance.ts`: 4 of
   the 6 tests failed. In the first, needs-human PR #7 was returned. In the
   second, `labels` was `undefined`. In the third, `prs_maint_A` was written. In
   the fourth, there was no live re-list. The control and the
-  caller-without-labels test pass on base, as expected.
+  caller-without-labels test pass on base, as expected. Re-run after the
+  review's rewrite to outcome-only assertions: the same 4 of 6 fail on base
+  and all 6 pass on head.
 - Fixture changes needed by the new old-shape precondition. No assertion was
   removed:
   - `worker/deno/tests/lifecycle_pr_observation_test.ts` ("CI maintenance never
@@ -134,9 +145,9 @@ flowchart TD
   `worker/deno/tests/pr_maintenance_bot_prs_test.ts`,
   `worker/deno/tests/pr_invitation_lookup_test.ts` and the `pr_merge_conflict_*`
   tests: 341 passed, 0 failed.
-- Full `./quality.sh` on the code commit and again on bbe123ea, which adds the
-  docs change and this summary: passed with skipped checks both times. Config
-  integration was skipped (no `.config.json`) and checkov is not installed here.
+- Full `./quality.sh` on the working tree with the outcome-only test rewrite and
+  this summary: passed with skipped checks. Config integration was skipped (no
+  `.config.json`) and checkov is not installed here.
 - Not covered: a live end-to-end cycle through `runFleetPrPrefetch` in
   `run_core_production_deps.ts`. The tests drive `prefetchFleetOpenPrs` and
   `listActionablePrs` directly, with the same cache.

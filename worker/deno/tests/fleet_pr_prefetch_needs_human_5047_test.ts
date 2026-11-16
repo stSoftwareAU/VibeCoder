@@ -106,20 +106,35 @@ async function seedBotDoor(cache: IssueCache): Promise<void> {
 }
 
 /**
- * A recording `gh` whose per-repo `pr list --author <login>` answers
- * `listings[login]` (as the live listing would, labels included).
+ * A live `gh` whose per-repo `pr list --author <login>` answers
+ * `listings[login]` (as the live listing would, labels included). The tests
+ * give it PRs the cache does not hold, so the PRs returned show which source
+ * (cache or live listing) served each author.
  */
-function recordingGh(
-  calls: string[][],
+function liveGh(
   listings: Record<string, unknown[]>,
 ): (args: string[]) => Promise<string> {
   return (args: string[]) => {
-    calls.push(args);
     if (args[0] === "pr" && args[1] === "list") {
       const author = args[args.indexOf("--author") + 1]!;
       return Promise.resolve(JSON.stringify(listings[author] ?? []));
     }
     return Promise.resolve("[]");
+  };
+}
+
+/** A live listing entry for PR `number`, with its `labels`. */
+function livePr(
+  number: number,
+  labels: string[] = [],
+): Record<string, unknown> {
+  return {
+    ...oldShapeEntry(),
+    number,
+    title: `PR ${number}`,
+    headRefName: `issue-${number}-fix`,
+    headRefOid: `oid-${number}`,
+    labels: labels.map((name) => ({ name })),
   };
 }
 
@@ -137,10 +152,6 @@ function scanOptions(
     ghCommandFn: gh,
     cache,
   };
-}
-
-function prListCalls(calls: string[][]): string[][] {
-  return calls.filter((args) => args[0] === "pr" && args[1] === "list");
 }
 
 /** The label-less entry shape the prefetch wrote before Issue #5047. */
@@ -164,16 +175,16 @@ Deno.test("listActionablePrs - a needs-human fleet PR served from the prefetch i
       fleetPr(8, AUTHOR_A),
     ]);
 
-    const calls: string[][] = [];
+    // The live listing holds a PR the prefetch does not: it must not appear,
+    // because the prefetched listing is what serves this author.
     const prs = await listActionablePrs(
       REPO,
       FLEET,
       "number,headRefName",
-      scanOptions(recordingGh(calls, {}), cache),
+      scanOptions(liveGh({ [AUTHOR_A]: [livePr(99)] }), cache),
     );
 
     assertEquals(prs.map((pr) => pr.number), [8]);
-    assertEquals(prListCalls(calls), [], "served from the prefetch");
   });
 });
 
@@ -210,12 +221,11 @@ Deno.test("prefetch - a PR whose labels overflowed one page is left to the per-r
       [8],
     );
 
-    const calls: string[][] = [];
-    const gh = recordingGh(calls, {
-      [AUTHOR_A]: [{
-        ...oldShapeEntry(),
-        labels: [{ name: "needs-human" }],
-      }],
+    // Author A's live listing holds the needs-human PR 7 (held) and PR 9
+    // (not held), which the prefetch never saw: returning 9 shows A's listing
+    // was read live rather than dropped. Author B is served from the cache.
+    const gh = liveGh({
+      [AUTHOR_A]: [livePr(7, ["needs-human"]), livePr(9)],
     });
     const prs = await listActionablePrs(
       REPO,
@@ -224,11 +234,7 @@ Deno.test("prefetch - a PR whose labels overflowed one page is left to the per-r
       scanOptions(gh, cache),
     );
 
-    assertEquals(prs.map((pr) => pr.number), [8]);
-    assertEquals(
-      prListCalls(calls).map((args) => args[args.indexOf("--author") + 1]),
-      [AUTHOR_A],
-    );
+    assertEquals(prs.map((pr) => pr.number).sort(), [8, 9]);
   });
 });
 
@@ -238,9 +244,10 @@ Deno.test("listActionablePrs - a label-less entry left by the old prefetch is re
     await cache.write(REPO, `prs_maint_${AUTHOR_A}`, [oldShapeEntry()]);
     await seedBotDoor(cache);
 
-    const calls: string[][] = [];
-    const gh = recordingGh(calls, {
-      [AUTHOR_A]: [{ ...oldShapeEntry(), labels: [{ name: "needs-human" }] }],
+    // The live listing now holds PR 7 with needs-human, plus PR 9. Serving the
+    // old entry would return 7; the live re-list holds 7 and returns 9.
+    const gh = liveGh({
+      [AUTHOR_A]: [livePr(7, ["needs-human"]), livePr(9)],
     });
     const prs = await listActionablePrs(
       REPO,
@@ -249,13 +256,15 @@ Deno.test("listActionablePrs - a label-less entry left by the old prefetch is re
       scanOptions(gh, cache),
     );
 
-    assertEquals(prs.map((pr) => pr.number), []);
-    assertEquals(prListCalls(calls).length, 1);
-    const cached = await cache.read<{ labels?: unknown }[]>(
+    assertEquals(prs.map((pr) => pr.number), [9]);
+    const cached = await cache.read<{ number: number; labels?: unknown }[]>(
       REPO,
       `prs_maint_${AUTHOR_A}`,
     );
-    assertEquals(cached?.map((pr) => pr.labels), [[{ name: "needs-human" }]]);
+    assertEquals(cached?.map((pr) => [pr.number, pr.labels]), [
+      [7, [{ name: "needs-human" }]],
+      [9, []],
+    ]);
   });
 });
 
@@ -267,16 +276,14 @@ Deno.test("listActionablePrs - control: an entry that carries labels is served f
     ]);
     await seedBotDoor(cache);
 
-    const calls: string[][] = [];
     const prs = await listActionablePrs(
       REPO,
       [AUTHOR_A],
       "number,headRefName",
-      scanOptions(recordingGh(calls, {}), cache),
+      scanOptions(liveGh({ [AUTHOR_A]: [livePr(99)] }), cache),
     );
 
     assertEquals(prs.map((pr) => pr.number), [7]);
-    assertEquals(prListCalls(calls), []);
   });
 });
 
@@ -285,16 +292,14 @@ Deno.test("listOpenPrs - a caller that does not ask for labels is still served t
     const cache = new IssueCache(`${root}/cache`, 600);
     await cache.write(REPO, `prs_maint_${AUTHOR_A}`, [oldShapeEntry()]);
 
-    const calls: string[][] = [];
     const prs = await listOpenPrs(
       REPO,
       AUTHOR_A,
       "number,headRefName",
-      recordingGh(calls, {}),
+      liveGh({ [AUTHOR_A]: [livePr(99)] }),
       cache,
     );
 
     assertEquals(prs.map((pr) => pr.number), [7]);
-    assertEquals(calls, []);
   });
 });
