@@ -200,9 +200,9 @@ flowchart TD
   an allowed_authors owner runs the scan" puts the owner in the claim set
   `fleetAuthors`. The pre-fix gate matched against that set, so by construction
   it would have refused this wrapper. That red run was reasoned, not executed.
-- `./quality.sh < /dev/null` on head 7a1b2170: PASSED, with config integration
-  and checkov SKIPPED on this host.
-- `deno task pr-summary-check`: 0 gates blocked, 0 not checked.
+- Head-specific results (the full gate and `deno task pr-summary-check`) are not
+  recorded here, because a count written into this file goes stale with every
+  push. Hosted CI on the head is the record.
 
 Not done or not checked: the owner-defect regression test was not run against
 the pre-fix code. `raise_single_idle_task.ts` has no test of its own for the
@@ -248,3 +248,20 @@ wrapper closure depend on the actual prompt, repository and bounded execution
 options. The authorised-route regressions fail with unconditional discovery
 restored and pass after the fix. Cadence tests now use the real weighted picker.
 All 100 tests in the opt-in route/filing, template, budget and route suites pass.
+
+## Audit workflow CI repair
+
+Two changes follow the audit workflow's CI failures on the head:
+
+- `createTestAuditTemplate` gained an optional `denoDocFn` dependency (the
+  external `deno doc` process boundary), passed to `findCoverageGaps` by the
+  default scan runner. The production default is unchanged. The route test's
+  scoped-audit fixture now injects the doc output through it instead of writing
+  a fake `deno` executable into a temporary directory and editing `PATH`, so it
+  no longer mutates process-wide state. The out-of-scope symbol still must not
+  reach a requested audit's prompt, and the unscoped case still discovers it.
+- `idle_task_template_budget_3657_test.ts` recognised the shared budget import
+  only as one exact string. It now matches a grouped import of
+  `runIdleTaskClaude` from `../idle_task_claude_budget.ts`, so the check holds
+  when other names are imported beside it and still fails when a template that
+  calls `runIdleTaskClaude` does not import it from that module.
