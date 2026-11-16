@@ -470,6 +470,7 @@ RUN set -eu; \
 # TLS-verified, SigV4-authenticated S3 write-read-delete against the pinned
 # emulator with generated credentials and telemetry off; failure fails the build.
 COPY aws-emulator-run.sh /usr/local/bin/aws-emulator-run
+RUN chmod 0755 /usr/local/bin/aws-emulator-run
 RUN runuser -u agent -- aws-emulator-run --smoke
 
 # Pre-warmed Deno cache (Issue #4392): the pinned @playwright/mcp (its own

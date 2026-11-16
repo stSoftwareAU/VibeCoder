@@ -15,7 +15,9 @@ private, throwaway emulator as the unprivileged `agent` account.
 - **`container/Containerfile`** installs both toolchains, sets
   `EMULATOR_TELEMETRY=off`, and runs
   `runuser -u agent -- aws-emulator-run
-  --smoke` at build time.
+  --smoke` at build time. The helper is committed mode 0755 and the
+  Containerfile `chmod 0755`s the installed copy, so the `agent` account can
+  execute it (the first build failed with `Permission denied` on a 0644 copy).
 - **Docs:** `docs/CONTAINER-IMAGE.md` documents the contract.
 
 Floci is untouched. Part of #5109.
