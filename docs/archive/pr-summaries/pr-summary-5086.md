@@ -140,6 +140,9 @@ flowchart TD
   - `worker/deno/tests/model_fallback_test.ts`;
   - `worker/deno/tests/lib_sweep_coverage_test.ts`.
 - No existing test was edited.
+- After merging `origin/main`, the full unit suite exited 0 with no failures.
+  That is `deno task test:unit` run from `worker/deno`, the pre-push pre-flight
+  command that blocked the previous attempt.
 - Callers checked: `detectUsageLimit` and `USAGE_LIMIT_RE` are unchanged, so
   their callers keep their behaviour: `classifyClaudeFailure`,
   `review_round.ts`, `handle_no_changes_phase.ts` and
