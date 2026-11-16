@@ -531,7 +531,16 @@ export function splitMarkdownCode(
         /^(?:\*[ \t]*){3,}$|^(?:-[ \t]*){3,}$|^(?:_[ \t]*){3,}$/.test(
           line.trim(),
         );
-      if (marker && !thematicBreak) {
+      // Only a nonempty item may interrupt a paragraph; ordered items must
+      // start at 1. A bare dash after prose is a setext underline.
+      const interruptsParagraph = paragraph.trim().length > 0 &&
+        listIndents.length === 0;
+      const validInterruption = !interruptsParagraph ||
+        (line.slice(indentText.length + (marker?.[0].length ?? 0)).trim()
+                  .length > 0 &&
+            !/^[0-9]/.test(marker?.[0] ?? "") ||
+          /^1[.)][ \t]+\S/.test(line.slice(indentText.length)));
+      if (marker && !thematicBreak && validInterruption) {
         const padding = marker[1]!.length;
         listIndents.push(
           indent + marker[0].length - padding + (padding > 4 ? 1 : padding),

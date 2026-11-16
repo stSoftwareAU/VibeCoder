@@ -233,7 +233,16 @@ Deno.test("thematic breaks do not create list containers that expose fenced clos
     Parser: new () => { parse(text: string): unknown };
     HtmlRenderer: new () => { render(node: unknown): string };
   };
-  for (const thematic of ["- - -", "* * *", "_ _ _", "  -  -  -"]) {
+  for (
+    const thematic of [
+      "- - -",
+      "* * *",
+      "_ _ _",
+      "  -  -  -",
+      "paragraph\n2. item",
+      "paragraph\n- ",
+    ]
+  ) {
     for (const number of [4637, 99]) {
       const body = guardMet(
         thematic + "\n  ```\nCloses #" + number,
