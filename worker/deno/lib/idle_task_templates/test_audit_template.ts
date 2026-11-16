@@ -147,6 +147,8 @@ export interface TestAuditTemplateDeps {
   runScanFn?: (opts: RunScanOptions) => Promise<Result<true, ScanError>>;
   /** External agent execution boundary; production scope and budget still run. */
   claudeRunner?: IdleTaskClaudeRunner;
+  /** External deno doc process boundary. */
+  denoDocFn?: (workDir: string) => Promise<string>;
 }
 
 /** Inputs to a test-audit Claude run. */
@@ -264,6 +266,7 @@ async function defaultRunScan(
   opts: RunScanOptions,
   loadPromptFn: (name: string) => Promise<Result<string>>,
   claudeRunner?: IdleTaskClaudeRunner,
+  denoDocFn?: (workDir: string) => Promise<string>,
 ): Promise<Result<true, ScanError>> {
   const promptResult = await loadPromptFn(PROMPT_NAME);
   if (!promptResult.ok) {
@@ -280,7 +283,7 @@ async function defaultRunScan(
   let coverageGaps = "(none)";
   if (!opts.issueBody?.trim()) {
     try {
-      const gaps = await findCoverageGaps({ workDir: opts.workDir });
+      const gaps = await findCoverageGaps({ workDir: opts.workDir, denoDocFn });
       coverageGaps = renderCoverageGaps(gaps);
     } catch {
       // Best-effort: the language-agnostic agent scan still runs.
@@ -363,7 +366,8 @@ export function createTestAuditTemplate(
         "Static test-suite maintainability and coverage-gap audit finding",
       ));
   const runScanFn = deps.runScanFn ??
-    ((opts) => defaultRunScan(opts, loadPromptFn, deps.claudeRunner));
+    ((opts) =>
+      defaultRunScan(opts, loadPromptFn, deps.claudeRunner, deps.denoDocFn));
 
   async function buildIssueBody(opts: IdleTaskBodyOptions): Promise<string> {
     // Issue #2077: the wrapper body IS the prompt — fully substituted at

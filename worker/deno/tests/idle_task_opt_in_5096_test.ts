@@ -110,18 +110,14 @@ async function runRoute(input: RouteIdleTaskInput) {
   const previous = getTemplate("test-audit")!;
   const deadline = Date.now() + 900_000;
   const fixture = await Deno.makeTempDir({ prefix: "audit-scope-" });
-  const priorPath = Deno.env.get("PATH");
-  // Fake only the external doc process. The real scanner would discover an
-  // unrelated public symbol, which must never enter this requested audit.
-  await Deno.writeTextFile(
-    `${fixture}/deno`,
-    `#!/bin/sh
-printf '%s' '[{"name":"outOfScopeGap","kind":"function","declarationKind":"export","location":{"filename":"file://${fixture}/unrelated.ts","line":1}}]'
-`,
-    { mode: 0o755 },
-  );
-  Deno.env.set("PATH", `${fixture}:${priorPath ?? ""}`);
   registerTemplate(createTestAuditTemplate({
+    denoDocFn: () =>
+      Promise.resolve(JSON.stringify([{
+        name: "outOfScopeGap",
+        kind: "function",
+        declarationKind: "export",
+        location: { filename: `file://${fixture}/unrelated.ts`, line: 1 },
+      }])),
     ghCommandFn: () =>
       Promise.resolve(
         JSON.stringify(
@@ -175,8 +171,6 @@ printf '%s' '[{"name":"outOfScopeGap","kind":"function","declarationKind":"expor
     return { outcome, filed, comments, closed, records };
   } finally {
     registerTemplate(previous);
-    if (priorPath === undefined) Deno.env.delete("PATH");
-    else Deno.env.set("PATH", priorPath);
     await Deno.remove(fixture, { recursive: true });
   }
 }
