@@ -98,9 +98,10 @@ flowchart TD
 - Red before the fix: run against the unmodified runner, the `deno.json` alias
   test and the `deno.jsonc` alias test each reported `lib/m.ts` lines 3, 4 and 6
   uncovered, because no alias importer was selected (run with `--no-check`, as
-  the base runner lacks the new exports; the non-importing test failed there
-  too). The malformed test got no error. The lock-only test passed on base, as a
-  guard of unchanged behaviour should.
+  the base runner lacks the new exports). The malformed test got no error. The
+  lock-only test and the non-importing test passed on base, as guards of
+  unchanged behaviour should: the base runner selects only relative importers,
+  so neither fixture selects a test and the lines stay uncovered there too.
 - Edited `worker/deno/tests/mutation_runner_test.ts`, only because the signature
   now requires a project:
   - Removed from `worker/deno/tests/mutation_runner_test.ts`:
