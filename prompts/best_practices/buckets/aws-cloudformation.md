@@ -11,6 +11,17 @@ Canonical guides — link, do not restate:
 Apply these checks to CloudFormation templates: YAML or JSON files
 containing `AWSTemplateFormatVersion`, plus CDK-emitted templates.
 
+## AWS integration-test guidance
+
+Follow [AWS integration testing](../../../CODING-STANDARDS.md#aws-integration-testing)
+for CLI/SDK tests, Blocks local tests, on-demand service lifecycle and
+documented coverage gaps. The runtime/CI rollout and detector migration are
+tracked in #5109–#5112; this guide does not establish that they have shipped.
+Reuse the existing AWS-emulator finding and open migration issues rather
+than filing a second integration-test campaign. Installation or a successful
+stack status alone does not prove supported resource behaviour; unsupported
+resources remain explicit gaps. Keep security validation on real AWS.
+
 ## Checks
 
 1. **Least-privilege IAM.** `AWS::IAM::Role` and policy resources
