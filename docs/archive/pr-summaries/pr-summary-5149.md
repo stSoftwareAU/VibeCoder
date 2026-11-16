@@ -123,8 +123,8 @@ from scratch after any later push.
 - Related rules checked: SKILL.md rule 8's sent-back (`awaiting-fix`) and held
   (`awaiting-owner`) paragraphs, which stay as they are, and
   `prompts/pr_review_brief/prompt.md` field 6, which is unchanged.
-- Full gate `./quality.sh < /dev/null`: result recorded below after it ran on
-  this head.
+- Full gate `./quality.sh < /dev/null` on this head: exit 0, `Result: PASSED
+  (with skipped checks)`. `config integration` and `checkov` were skipped.
 
 ## Not done or not checked
 
