@@ -833,9 +833,13 @@ Deno.test("add-repo - production sweep seeds test-audit only when the config nam
           validateFn: () =>
             Promise.resolve({
               ok: true,
-              value: { kind: "ok", visibility: "public" } as AddRepoTargetStatus,
+              value: {
+                kind: "ok",
+                visibility: "public",
+              } as AddRepoTargetStatus,
             }),
-          addRepoFn: () => Promise.resolve({ ok: true, value: { added: true } }),
+          addRepoFn: () =>
+            Promise.resolve({ ok: true, value: { added: true } }),
           ensureLabelFn: () =>
             Promise.resolve({ ok: true, value: undefined } as Result<void>),
         }),
@@ -849,7 +853,9 @@ Deno.test("add-repo - production sweep seeds test-audit only when the config nam
   const defaultTitles = await seedTitlesFor({});
   assert(
     !defaultTitles.includes(TEST_AUDIT_ISSUE_TITLE),
-    `test-audit must not be seeded by default, titles: ${defaultTitles.join(" | ")}`,
+    `test-audit must not be seeded by default, titles: ${
+      defaultTitles.join(" | ")
+    }`,
   );
   assert(
     defaultTitles.includes("Run a security scan"),
@@ -859,6 +865,8 @@ Deno.test("add-repo - production sweep seeds test-audit only when the config nam
   const configuredTitles = await seedTitlesFor({ "test-audit": 1 });
   assert(
     configuredTitles.includes(TEST_AUDIT_ISSUE_TITLE),
-    `test-audit must be seeded when named, titles: ${configuredTitles.join(" | ")}`,
+    `test-audit must be seeded when named, titles: ${
+      configuredTitles.join(" | ")
+    }`,
   );
 });

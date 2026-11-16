@@ -440,7 +440,9 @@ Deno.test("process-seed-idle-tasks - production sweep seeds test-audit only when
   const defaultTitles = await seedTitlesFor({});
   assert(
     !defaultTitles.includes(TEST_AUDIT_ISSUE_TITLE),
-    `test-audit must not be seeded by default, titles: ${defaultTitles.join(" | ")}`,
+    `test-audit must not be seeded by default, titles: ${
+      defaultTitles.join(" | ")
+    }`,
   );
   assert(
     defaultTitles.includes("Run a security scan"),
@@ -450,6 +452,8 @@ Deno.test("process-seed-idle-tasks - production sweep seeds test-audit only when
   const configuredTitles = await seedTitlesFor({ "test-audit": 1 });
   assert(
     configuredTitles.includes(TEST_AUDIT_ISSUE_TITLE),
-    `test-audit must be seeded when named, titles: ${configuredTitles.join(" | ")}`,
+    `test-audit must be seeded when named, titles: ${
+      configuredTitles.join(" | ")
+    }`,
   );
 });
