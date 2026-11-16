@@ -1444,7 +1444,7 @@ interface CiRunCarrier {
 }
 
 /**
- * Commit message for the CI processor's automated commits (Issue #1643).
+ * Commit message for the CI processor's final-mile and push-recovery commits.
  * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
  * bare number links to an unrelated issue (Issue #5045).
  */
