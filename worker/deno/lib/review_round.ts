@@ -15,12 +15,13 @@
  * does not stop the fleet review while the pool holds another.
  *
  * Review preference: Fable across every available Claude subscription,
- * then Codex Astra, then Opus on the current Claude subscription,
+ * then Codex Astra, then Opus across the available Claude subscriptions,
  * then DeepSeek. Codex requires a credential reachable inside the round.
  *
  * Each link runs only once the one before it is spent. A usage limit is the
  * only thing that moves the round on: an attempt that fails for any other
- * reason ends the round there. Every provider or model switch is logged once,
+ * reason ends the round there, except a missing Codex executable skips Astra.
+ * Every provider or model switch is logged once,
  * as an `INFO:` line that names what it switched to; a quota is never logged
  * as an error.
  *
@@ -133,6 +134,8 @@ export interface ReviewRoundAttempt {
    * absent, {@link detectUsageLimit} reads {@link output}.
    */
   usageLimited?: boolean;
+  /** The provider executable is absent; another model may still run. */
+  unavailable?: boolean;
 }
 
 /** The provider, model and effort an attempt is recorded under (Issue #5083). */
@@ -160,6 +163,7 @@ export interface ReviewRoundDeps {
   switchCredential(
     exclude: string,
     setEnv: (name: string, value: string) => void,
+    tried?: readonly string[],
   ): Promise<string | null>;
   /**
    * Export the fallback provider's credential and build its child
@@ -210,11 +214,12 @@ export interface ReviewRoundDeps {
  *
  * 1. try the configured model on every available Claude subscription;
  * 2. try Codex Astra when its credential reaches the round;
- * 3. for a configured Fable round, try Opus on the current subscription;
+ * 3. for a configured Fable round, try Opus across the available subscriptions;
  * 4. try DeepSeek last.
  *
  * A link runs only when the one before it ended on a usage limit. An attempt
- * that fails for any other reason ends the round at that point.
+ * that fails for any other reason ends the round at that point, except a
+ * missing Codex executable skips Astra.
  *
  * @param prompt - The round's prompt, built by the runner.
  * @param claudeArgs - The remaining CLI arguments (model, tools).
@@ -285,29 +290,35 @@ export async function runReviewRound(
   if (held !== undefined) {
     deps.log(`round on Claude subscription ${held}`);
   }
-  let attempt = await runAttempt(
-    claudeIdentity(args),
-    (stream) => deps.runClaude(args, env, stream),
-  );
-  // Try every available subscription once before moving to Astra.
-  const tried = new Set<string>();
-  while (attempt.code !== 0 && held !== undefined && usageLimited(attempt)) {
-    tried.add(held);
-    deps.log(
-      `round hit the usage limit on subscription ${held}; selecting another`,
+  const runClaudePool = async (
+    modelArgs: string[],
+  ): Promise<ReviewRoundAttempt> => {
+    let result = await runAttempt(
+      claudeIdentity(modelArgs),
+      (stream) => deps.runClaude(modelArgs, env, stream),
     );
-    const next = await deps.switchCredential(held, setEnv);
-    if (next === null || tried.has(next)) {
-      deps.log("no other subscription has budget");
-      break;
+    // Refusals are scoped to this model, so Fable cannot exhaust Opus.
+    const tried = new Set<string>();
+    while (result.code !== 0 && held !== undefined && usageLimited(result)) {
+      tried.add(held);
+      deps.log(
+        `round hit the usage limit on subscription ${held}; selecting another`,
+      );
+      const next = await deps.switchCredential(held, setEnv, [...tried]);
+      if (next === null || tried.has(next)) {
+        deps.log("no other subscription has budget");
+        break;
+      }
+      held = next;
+      deps.log(`INFO: retrying the round on subscription ${next}`);
+      result = await runAttempt(
+        claudeIdentity(modelArgs),
+        (stream) => deps.runClaude(modelArgs, env, stream),
+      );
     }
-    held = next;
-    deps.log(`INFO: retrying the round on subscription ${next}`);
-    attempt = await runAttempt(
-      claudeIdentity(args),
-      (stream) => deps.runClaude(args, env, stream),
-    );
-  }
+    return result;
+  };
+  let attempt = await runClaudePool(args);
   // Prefer Astra before the Opus step-down when Fable is spent. Run Codex
   // with the same prompt. Codex is another vendor's subscription, so a refusal
   // from it that is not a usage limit ends the round here, before DeepSeek.
@@ -349,12 +360,11 @@ export async function runReviewRound(
       deps.log("no Codex credential; skipping the codex fallback");
     }
   }
-  // Issue #5081: a Fable round that hit a usage limit tries Opus after Astra on the
-  // same subscription — Fable's own cap is not the whole plan's.
+  // Fable's model cap does not exhaust Opus on any Claude subscription.
   const requested = argValue(args, "--model") ?? "";
   if (
     attempt.code !== 0 && /^(claude-)?fable/.test(requested) &&
-    usageLimited(attempt)
+    (usageLimited(attempt) || attempt.unavailable === true)
   ) {
     deps.log(
       `INFO: round hit a usage limit on ${requested}; stepping down to ` +
@@ -364,10 +374,7 @@ export async function runReviewRound(
       withModel(args, REVIEW_STEP_DOWN_MODEL),
       REVIEW_STEP_DOWN_EFFORT,
     );
-    attempt = await runAttempt(
-      claudeIdentity(stepDownArgs),
-      (stream) => deps.runClaude(stepDownArgs, env, stream),
-    );
+    attempt = await runClaudePool(stepDownArgs);
   }
   // Issue #3632: when every link above is spent — no held label to rotate, no
   // subscription with budget, the rotated retry hit the limit too, or there is
@@ -375,7 +382,10 @@ export async function runReviewRound(
   // more on the fallback provider. A provider switch is a different class of
   // decision, so it is announced as such and runs in the fallback's own
   // child environment, never the Claude one.
-  if (attempt.code !== 0 && usageLimited(attempt)) {
+  if (
+    attempt.code !== 0 &&
+    (usageLimited(attempt) || attempt.unavailable === true)
+  ) {
     const fallback = await deps.exportFallbackCredential(setEnv);
     if (fallback !== null) {
       deps.log(`INFO: round fell back to provider ${fallback.providerId}`);
@@ -655,7 +665,12 @@ export async function runCodexCli(
     }\n`;
     await Deno.stderr.write(encoder.encode(message));
     clearTimeout(timer);
-    return { code: 127, output: message, usageLimited: false };
+    return {
+      code: 127,
+      output: message,
+      usageLimited: false,
+      unavailable: error instanceof Deno.errors.NotFound,
+    };
   }
   const feedStdin = async () => {
     try {
@@ -883,7 +898,6 @@ export function createReviewRoundDeps(
     env: claudeEnv,
     fetchFn: options.fetchClaudeBudget,
   });
-  const exhausted = new Set<string>();
   return {
     exportStartCredential: async (setEnv) => {
       await applyProviderCredentialEnv({
@@ -895,10 +909,9 @@ export function createReviewRoundDeps(
       });
       return heldProviderCredentialLabel(CLAUDE_PROVIDER_ID);
     },
-    switchCredential: async (exclude, setEnv) => {
-      exhausted.add(exclude);
+    switchCredential: async (exclude, setEnv, tried = [exclude]) => {
       const token = await pool.selectAvailable({
-        excludeLabels: [...exhausted],
+        excludeLabels: tried,
       });
       if (token === null) return null;
       pool.applySelection(token, setEnv);

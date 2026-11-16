@@ -220,6 +220,8 @@ export interface ContainerLaunchInputs {
    * unless a deployment enables more.
    */
   agentProviders?: readonly AgentProviderDescriptor[];
+  /** Extra installed CLIs, independent of the credential mounts. */
+  imageAgentProviders?: readonly AgentProviderDescriptor[];
   /**
    * Checkout that holds `worker/deno`, packed into the proxy on stdin
    * (Issue #4047). Defaults to the mounted checkout. A containment fixture
@@ -1582,11 +1584,13 @@ export function buildContainerLaunchPlan(
   }
   // Issue #729: the deployment's enabled providers decide which agent CLIs the
   // image installs, so the *same* set that decides the credential mounts above
-  // is carried into the build. Nothing appended when it is already what the
+  // is carried into the build. Review rounds may install extra fallback CLIs
+  // through imageAgentProviders without adding credential mounts. Nothing
+  // is appended when the installed set is already what the
   // image installs by default, so the default fleet build — and its tag — are
   // byte-for-byte unchanged.
   const providersBuildValue = agentProvidersBuildValue(
-    providers.map((provider) => provider.id),
+    (inputs.imageAgentProviders ?? providers).map((provider) => provider.id),
     manifest.installedProviders,
   );
   if (providersBuildValue) {

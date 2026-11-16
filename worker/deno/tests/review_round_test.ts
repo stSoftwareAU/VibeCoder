@@ -36,6 +36,7 @@ interface Outcome {
   code: number;
   output: string;
   usageLimited?: boolean;
+  unavailable?: boolean;
 }
 
 /** Options for {@link fakeDeps}. */
@@ -817,4 +818,155 @@ Deno.test("runCodexCli gives the child only the curated env, not this process's 
       assertStringIncludes(seen, `CODEX_HOME=${dir}`);
     },
   );
+});
+
+/**
+ * A provider fake that decides each attempt from the model and credential it
+ * is given, not from its position in a script (Issue #5164). Claude quota is
+ * per model and subscription; Codex is absent, out of quota or usable.
+ */
+function quotaProviders(
+  options: {
+    /** Subscriptions the pool offers, in rotation order. */
+    labels: string[];
+    /** `model:label` pairs that still have quota. */
+    claudeQuota: string[];
+    codex: "missing" | "quota" | "ok";
+    /** Models whose attempt fails for a non-quota reason. */
+    broken?: string[];
+  },
+) {
+  const record: ReviewRunRecord = { round: "", attempts: [] };
+  const { deps: base } = fakeDeps([], { codex: CODEX_CREDENTIAL });
+  const labelOf = (env: Record<string, string>) =>
+    env["CLAUDE_CODE_OAUTH_TOKEN"]?.replace(/-secret$/, "") ?? "";
+  const deps: ReviewRoundDeps = {
+    ...base,
+    exportStartCredential: (setEnv) => {
+      setEnv("CLAUDE_CODE_OAUTH_TOKEN", `${options.labels[0]}-secret`);
+      return Promise.resolve(options.labels[0]);
+    },
+    switchCredential: (_held, setEnv, tried = []) => {
+      const next = options.labels.find((l) => !tried.includes(l)) ?? null;
+      if (next) setEnv("CLAUDE_CODE_OAUTH_TOKEN", `${next}-secret`);
+      return Promise.resolve(next);
+    },
+    runClaude: (args, env) => {
+      const model = argAfter(args, "--model") ?? "";
+      if (options.broken?.includes(model)) {
+        return Promise.resolve({ code: 1, output: "tool failure" });
+      }
+      return Promise.resolve(
+        model === "deepseek-v4-pro" ||
+          options.claudeQuota.includes(`${model}:${labelOf(env)}`)
+          ? { code: 0, output: `Reviewed on ${model}` }
+          : { code: 1, output: USAGE_LIMIT },
+      );
+    },
+    runCodex: () =>
+      Promise.resolve(
+        options.codex === "ok"
+          ? { code: 0, output: "Reviewed on Astra" }
+          : options.codex === "quota"
+          ? { code: 1, output: "Codex quota exhausted", usageLimited: true }
+          : {
+            code: 127,
+            output: "missing codex",
+            unavailable: true,
+            usageLimited: false,
+          },
+      ),
+    exportFallbackCredential: (setEnv) => {
+      setEnv("ANTHROPIC_AUTH_TOKEN", "deepseek-secret");
+      return Promise.resolve({ providerId: "deepseek", env: {} });
+    },
+    recordRun: (_dir, r) => {
+      record.attempts = structuredClone(r.attempts);
+      return Promise.resolve();
+    },
+  };
+  /** The attempt that completed the review, from the persisted record. */
+  const completedBy = () =>
+    record.attempts.filter((a) => a.code === 0).map((a) =>
+      `${a.provider}:${a.model}`
+    );
+  return { deps, completedBy };
+}
+
+const FABLE_ARGS = ["--model", "claude-fable-5-2", "--effort", "high"];
+const ROUND_OPTIONS = { roundDir: "/logs/rounds/20261016-101500" };
+
+Deno.test("a missing Codex executable still permits Opus with remaining Claude quota (Issue #5164)", async () => {
+  const { deps, completedBy } = quotaProviders({
+    labels: ["provider"],
+    claudeQuota: ["claude-opus-5-5:provider"],
+    codex: "missing",
+  });
+  assertEquals(
+    await runReviewRound("p", FABLE_ARGS, deps, ROUND_OPTIONS),
+    0,
+  );
+  assertEquals(completedBy(), ["claude:claude-opus-5-5"]);
+});
+
+Deno.test("a missing Codex executable with no Opus quota falls through to DeepSeek (Issue #5164)", async () => {
+  const { deps, completedBy } = quotaProviders({
+    labels: ["provider"],
+    claudeQuota: [],
+    codex: "missing",
+  });
+  assertEquals(
+    await runReviewRound("p", FABLE_ARGS, deps, ROUND_OPTIONS),
+    0,
+  );
+  assertEquals(completedBy(), ["deepseek:deepseek-v4-pro"]);
+});
+
+Deno.test("an ordinary Claude failure still ends the round instead of falling back (Issue #5164)", async () => {
+  const { deps, completedBy } = quotaProviders({
+    labels: ["provider"],
+    claudeQuota: ["claude-opus-5-5:provider"],
+    codex: "ok",
+    broken: ["claude-fable-5-2"],
+  });
+  assertEquals(
+    await runReviewRound("p", FABLE_ARGS, deps, ROUND_OPTIONS),
+    1,
+  );
+  assertEquals(completedBy(), []);
+});
+
+Deno.test("runCodexCli declares a missing executable unavailable (Issue #5164)", async () => {
+  const home = await Deno.makeTempDir();
+  try {
+    const result = await runCodexCli(
+      [],
+      "p",
+      {},
+      undefined,
+      1000,
+      `${home}/missing-codex`,
+    );
+    assertEquals(result.code, 127);
+    assertEquals(result.unavailable, true);
+    assertEquals(result.usageLimited, false);
+  } finally {
+    await Deno.remove(home, { recursive: true });
+  }
+});
+
+Deno.test("Opus tries other Claude subscriptions before paid DeepSeek (Issue #5164)", async () => {
+  // Fable is capped on every subscription and Astra is out of quota.
+  // Fable leaves provider-3 selected, which also refuses Opus. Only provider-2
+  // has Opus quota, so completing the review requires another rotation.
+  const { deps, completedBy } = quotaProviders({
+    labels: ["provider", "provider-2", "provider-3"],
+    claudeQuota: ["claude-opus-5-5:provider-2"],
+    codex: "quota",
+  });
+  assertEquals(
+    await runReviewRound("p", FABLE_ARGS, deps, ROUND_OPTIONS),
+    0,
+  );
+  assertEquals(completedBy(), ["claude:claude-opus-5-5"]);
 });

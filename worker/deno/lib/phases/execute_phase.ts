@@ -10,6 +10,7 @@ import {
 } from "../orchestration/role_config.ts";
 import { classifyRunFailure } from "../run_outcome_classifier.ts";
 import { AgentTurnLimitError } from "../claude_turn_limit.ts";
+import { billedResultOfError } from "../failed_invocation_result.ts";
 import { UnfinishedIssueExecutorError } from "../issue_executor_enforcement.ts";
 /**
  * Phase 3 — Execute Claude.
@@ -189,7 +190,9 @@ async function branchHasCommitsAhead(
  * Exported because it is also the marker `workOnIssueExecuteClaude` reads to
  * skip the in-process infrastructure retry (Issue #1670): the phase has
  * already checkpointed the work and tried the pool's other credential, so a
- * retry would only bill a spawn into the same shut window.
+ * retry would only bill a spawn into the same shut window. The check reads it
+ * at the **start** of a `rate_limit` reason, never anywhere in it, because
+ * other failure reasons quote the agent's own output (Issue #5037).
  */
 export const USAGE_LIMIT_HEADING =
   "Claude usage limit reached (subscription window)";
@@ -393,8 +396,13 @@ export async function workOnIssueExecuteClaude(
   // The phase has already checkpointed the work on the issue branch, written
   // the resume pointer, and — where the pool had one — tried another
   // credential. Retrying in-process would bill a spawn into the same shut
-  // window; the next claim resumes from the branch instead.
-  if (result.reason?.includes(USAGE_LIMIT_HEADING)) {
+  // window; the next claim resumes from the branch instead. Only the
+  // worker-written start of a rate_limit reason matches: killed and
+  // interrupted reasons quote the agent's own output (Issue #5037).
+  if (
+    result.category === "rate_limit" &&
+    result.reason?.startsWith(USAGE_LIMIT_HEADING)
+  ) {
     deps.logger.warn(
       "Not retrying the run in-process: the subscription window is spent " +
         "and the work is parked on the issue branch (Issue #1670)",
@@ -1571,6 +1579,18 @@ async function executeClaudeBody(
   await rtk.record();
 
   if (!claudeResult.ok) {
+    // Issue #5029: a turn-cap stop and a refused split run were billed. Their
+    // error carries the invocation's result, so it is recorded once here,
+    // exactly as the success path below records its own; an error with no
+    // result records nothing, so no figure is invented. The #1550 retry
+    // re-enters this body, so a refused retry is recorded as its own entry.
+    const billed = billedResultOfError(claudeResult.error);
+    if (billed) {
+      recordClaudeRunStats(state, billed);
+      codegraph.record(billed.runStats);
+      graft.record(billed.runStats);
+      syncGraftFacts();
+    }
     // Issues #4949 and #5048 release interrupted work the same way: the work
     // is preserved on the issue branch and the run is released as
     // interrupted — never a worker crash, and not retried by this branch.
@@ -1667,7 +1687,9 @@ async function executeClaudeBody(
   // issue is auto-closed by its merged PR with no worker attached, so the
   // completion phase posts the issue's single cost/model comment at PR-raise
   // time using what is recorded here. Recording is cumulative: the #1550
-  // infrastructure retry re-enters this body.
+  // infrastructure retry re-enters this body, and a billed invocation that
+  // failed with a typed error is recorded in the failure branch above
+  // (Issue #5029).
   recordClaudeRunStats(state, claudeResult.value);
   // Issue #2159: this invocation's `codegraph_explore` tally.
   codegraph.record(claudeResult.value.runStats);
