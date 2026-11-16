@@ -1714,6 +1714,17 @@ and API-equivalent estimate, using the existing attribution and pricing table.
 or usage omits `estimatedApiEquivalentUsd`; it never means zero spend. These
 estimates do not allocate subscription fees or change the daily credit ceiling.
 
+**Refused and capped invocations (Issue #5029).** A split issue run refused
+because an executor sub-agent was still unfinished has already run and been
+billed. Its error carries the invocation's result, so the event records that
+result's provider, served model and token buckets, with result `failure`. A
+plain error with no result still records provider `unknown` and usage
+`unknown`, never zero. A turn-cap stop is raised in the retry ladder, after the
+single-spawn runner has recorded the invocation, so it has exactly one event.
+The execute phase likewise adds both kinds of billed invocation to the run's
+cost/model figures and its CodeGraph and Graft tallies, one entry per
+invocation, including the bounded in-process retry.
+
 **PR follow-ons (Issue #3720).** PR creation adds the worker-owned
 `<!-- vibe-assignment-id id="<uuid>" -->` marker, and body refresh preserves it.
 Quoted markers in summaries and extra sections are neutralised before the real

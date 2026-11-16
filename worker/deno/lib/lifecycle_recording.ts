@@ -1,4 +1,5 @@
 /** Per-run invocation attribution, isolated between concurrent slots (Issue #3719). */
+import { billedResultOfError } from "./failed_invocation_result.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Result } from "../types.ts";
 import type { RunClaudeOptions } from "./claude_runner.ts";
@@ -78,7 +79,11 @@ interface InvocationResult {
 /**
  * Wrap the single-spawn runner, below its retry ladder. No output, prompt or
  * exception text is copied into the ledger. Recording failures are logged;
- * an agent failure is never replaced with a telemetry failure.
+ * an agent failure is never replaced with a telemetry failure. A refused
+ * invocation whose error carries its billed result (Issue #5029) is recorded
+ * from that result, as a failure; a turn cap is raised above this wrapper (in
+ * `runClaudeWithRetry`) after the wrapper already recorded the invocation, so
+ * it is recorded once.
  */
 export async function withLifecycleInvocation<T extends InvocationResult>(
   options: Pick<
@@ -98,7 +103,12 @@ export async function withLifecycleInvocation<T extends InvocationResult>(
     result = await invoke();
     return result;
   } finally {
-    const value = result?.ok ? result.value : undefined;
+    const billed = result === undefined || result.ok
+      ? undefined
+      : billedResultOfError(result.error);
+    const value: InvocationResult | undefined = result?.ok
+      ? result.value
+      : billed;
     const stats = value?.runStats;
     const role: LifecycleRole = options.lifecycleRole ?? "manager";
     const provider = value?.provider ?? stats?.provider ?? "unknown";
@@ -134,7 +144,9 @@ export async function withLifecycleInvocation<T extends InvocationResult>(
               value?.agentFailure?.category === "rate-limit"
             ? "limited"
             : "unknown",
-          result: value?.timedOut
+          result: result !== undefined && !result.ok
+            ? "failure"
+            : value?.timedOut
             ? "timeout"
             : value?.exitCode === 0
             ? "success"
