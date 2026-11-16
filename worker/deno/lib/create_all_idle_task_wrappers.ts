@@ -529,13 +529,29 @@ export async function createAllIdleTaskWrappers(
       );
       // Issue #3634: GitHub rejects bodies over 65,536 characters, and the
       // security-scan preview now exceeds that. Clamp and say so loudly.
+      // Issue #5096: an opt-in template that reaches this point but is not
+      // config-authorised was named only by `templateNames` (an operator), so
+      // it carries the requested marker as its final line. The clamp budget
+      // reserves room for the marker, so truncation can never drop it.
+      const optInRequested = !isAutoEnabledIdleTaskTemplate(
+        template.name,
+        authorisedOptIn,
+      );
       const clamped = clampIdleTaskBody(
         appendIdleTaskAttribution(rawBody, {
           template: template.name,
           runId,
         }),
+        optInRequested
+          ? {
+            maxChars: GITHUB_ISSUE_BODY_MAX_CHARS -
+              IDLE_TASK_REQUESTED_MARKER.length - 2,
+          }
+          : {},
       );
-      const body = clamped.body;
+      const body = optInRequested
+        ? `${clamped.body}\n\n${IDLE_TASK_REQUESTED_MARKER}`
+        : clamped.body;
       if (clamped.truncated) {
         log(
           `[create-all-idle-task] repo=${repo} template=${template.name} action=truncated_body original=${clamped.originalLength} dropped=${clamped.droppedChars} limit=${GITHUB_ISSUE_BODY_MAX_CHARS}`,

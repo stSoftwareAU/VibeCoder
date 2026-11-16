@@ -1,15 +1,18 @@
 /**
- * Raise all ten standard idle-task wrappers across a supplied set of repos
+ * Raise the standard idle-task wrappers across a supplied set of repos
  * (Issue #3196).
  *
  * The steady-state idle-task filer (`maybe_file_idle_task.ts`) seeds only one
  * wrapper per idle tick and is gated by the cross-repo "any open idle-task
  * blocks filing" check, so bringing several repos up to the full best-practice
  * set on demand is slow. {@link raiseAllIdleTasks} seeds the whole canonical
- * set (all ten templates) in every supplied repo in a single pass.
+ * set in every supplied repo in a single pass, except the opt-in `test-audit`
+ * template (Issue #5096): this sweep takes no owner config, so it never
+ * authorises an opt-in template.
  *
- * It reuses {@link createAllIdleTaskWrappers} per repo (no template filter, so
- * the default "all ten canonical wrappers" applies), keeping the body-building,
+ * It reuses {@link createAllIdleTaskWrappers} per repo (no template filter and
+ * no authorised opt-in set, so the default canonical set less opt-in templates
+ * applies), keeping the body-building,
  * dedup, milestone, and attribution behaviour in a single place (DRY). The
  * per-repo call is idempotent — a wrapper whose canonical title is already open
  * is skipped — so re-running never duplicates.
@@ -86,7 +89,8 @@ export interface RaiseAllIdleTasksOptions {
 }
 
 /**
- * Seed all ten canonical idle-task wrappers in every repo in `opts.repos`.
+ * Seed the canonical idle-task wrappers (opt-in templates excluded, Issue
+ * #5096) in every repo in `opts.repos`.
  *
  * Returns an aggregate summary. Never throws — a repo whose seeding fails is
  * recorded with an `error` and the sweep continues.
@@ -110,7 +114,8 @@ export async function raiseAllIdleTasks(
   };
 
   for (const repo of repos) {
-    // No `templateNames` filter -> the default "all ten canonical wrappers".
+    // No `templateNames` filter and no authorised opt-in set -> the default
+    // canonical wrappers, opt-in templates excluded (Issue #5096).
     const result = await createAllIdleTaskWrappers(repo, {
       ghCommandFn: opts.ghCommandFn,
       ensureLabelFn: opts.ensureLabelFn,

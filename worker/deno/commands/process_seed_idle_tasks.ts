@@ -46,6 +46,9 @@ import {
   createAllIdleTaskWrappers,
   type CreateAllIdleTaskWrappersResult,
 } from "../lib/create_all_idle_task_wrappers.ts";
+// Issue #5096: opt-in templates (`test-audit`) are seeded only when the config
+// names them.
+import { authorisedOptInTemplates } from "../lib/idle_task_opt_in.ts";
 import { runGhCommand as defaultGhCommand } from "../lib/github.ts";
 import {
   parseSeedIdleTasksTitle,
@@ -189,6 +192,9 @@ export const processSeedIdleTasksCommand: Command = {
           nowFn: now,
           // Surfaces the any-open gate's skip lines (Issue #2752).
           log: (line: string) => logger.info(line),
+          // Issue #5096: opt-in templates the owner config does not name are
+          // not seeded.
+          authorisedOptInTemplates: authorisedOptInTemplates(config),
         }));
 
     if (repo.length === 0) {
