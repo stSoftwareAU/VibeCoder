@@ -650,6 +650,139 @@ Deno.test("runCoverageCarryOverCheck - a carried line still covered at head is n
   });
 });
 
+const HEAD_LCOV_ALL_REACHED = [
+  `SF:${REPO}/lib/m.ts`,
+  "DA:3,1",
+  "DA:4,1",
+  "DA:6,1",
+  "end_of_record",
+  "",
+].join("\n");
+
+const ALIAS_TEST =
+  'import { pick } from "@lib/m.ts";\nDeno.test("alias", () => pick(true));\n';
+const UNRELATED_TEST = 'Deno.test("unrelated", () => {});\n';
+
+Deno.test("runCoverageCarryOverCheck - a head test importing the carried module through a deno.json imports alias covers the carried line (Issue #5107)", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: {
+      "deno.json": '{"imports":{"@lib/":"./lib/"}}',
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/alias_test.ts": ALIAS_TEST,
+      "tests/unrelated_test.ts": UNRELATED_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    headLcov: HEAD_LCOV_ALL_REACHED,
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 3,
+    uncovered: [],
+  });
+  const headRun = f.calls.find((c) =>
+    isCall(c, "deno", "test") && c.cwd === REPO
+  );
+  assertEquals(headRun?.args, [
+    "test",
+    "--no-check",
+    "-A",
+    `--coverage=${TMP}/cov-head-0`,
+    "tests/alias_test.ts",
+  ]);
+});
+
+Deno.test("runCoverageCarryOverCheck - a head test importing the carried module through a deno.jsonc imports alias covers the carried line (Issue #5107)", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: {
+      "deno.jsonc":
+        '// aliases for the library\n{"imports":{"@lib/":"./lib/"}}',
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/alias_test.ts": ALIAS_TEST,
+      "tests/unrelated_test.ts": UNRELATED_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    headLcov: HEAD_LCOV_ALL_REACHED,
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 3,
+    uncovered: [],
+  });
+  const headRun = f.calls.find((c) =>
+    isCall(c, "deno", "test") && c.cwd === REPO
+  );
+  assertEquals(headRun?.args.at(-1), "tests/alias_test.ts");
+});
+
+Deno.test("runCoverageCarryOverCheck - a malformed head deno.json is an error naming the file (Issue #5107)", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: {
+      "deno.json": '{"imports": 5}',
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/other_test.ts": OTHER_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    headLcov: HEAD_LCOV_ALL_REACHED,
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "error",
+    reason:
+      "cannot read the head Deno project config: deno.json: imports must be an object",
+  });
+  assertEquals(
+    f.calls.some((c) => isCall(c, "deno", "test") && c.cwd === REPO),
+    false,
+  );
+});
+
+Deno.test("runCoverageCarryOverCheck - a lock-only head project has the empty config, so relative importers still count (Issue #5107)", async () => {
+  const f = fake({
+    base: {
+      "deno.lock": "{}",
+      "lib/m.ts": LIB_BASE,
+      "tests/m_test.ts": M_TEST_LINES.join("\n") + "\n",
+    },
+    head: {
+      "deno.lock": "{}",
+      "lib/m.ts": "// header\n" + LIB_BASE,
+      "tests/other_test.ts": OTHER_TEST,
+    },
+    baseLcov: BASE_LCOV,
+    headLcov: HEAD_LCOV_ALL_REACHED,
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 3,
+    uncovered: [],
+  });
+  const headRun = f.calls.find((c) =>
+    isCall(c, "deno", "test") && c.cwd === REPO
+  );
+  assertEquals(headRun?.args.at(-1), "tests/other_test.ts");
+});
+
 Deno.test("runCoverageCarryOverCheck - lines the diff changed are not carried, so no head run happens", async () => {
   // The base test reached line 2, but the diff replaces it.
   const f = fake({
