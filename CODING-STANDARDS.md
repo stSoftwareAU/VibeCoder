@@ -705,9 +705,11 @@ parallel test or another gate run created the same kind of directory in between
 test files for a literal `/tmp/`, or for `Deno.env.get("TMPDIR")` or `$TMPDIR`
 used outside a `makeTempDir` or `mktemp` call, and move each hit that the test
 or the code under test actually reads, writes or lists into the test's own
-directory. A `/tmp/...` string that never touches the filesystem (a config
-placeholder, a path handed to an in-memory fake, an escaping payload a test
-asserts on) is not a hit: leave it as it is.
+directory. A `/tmp/...` string that never touches the filesystem once your
+change is in (a path handed only to an in-memory fake, an escaping payload a
+test asserts on) is not a hit: leave it as it is. Judge it against the code at
+the head, not the base: a fixture's `workDir: "/tmp/work"` that your change
+starts reading or writing is a hit (Issue #5071).
 
 The same rule covers an OS-specific branch in the code under test. A test that
 runs a real shell script with a stubbed tool, binary or measurement — a stub
