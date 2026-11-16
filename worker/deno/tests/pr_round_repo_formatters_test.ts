@@ -30,8 +30,8 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import {
-  CI_CARGO_ONLY_PRE_FLIGHT,
   commitAndPushPending,
+  REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
 } from "../lib/git_push.ts";
 import { captureBranchHead } from "../lib/branch_head_tracker.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
@@ -388,11 +388,11 @@ Deno.test({
 
 // The CI-fix and PR-feedback repairs add CI's cargo checks (Issue #4630); the
 // gate behind any spec also runs the ShellCheck policy (Issue #4631).
-const REPAIR_NO_PRE_FLIGHT_SPEC = CI_CARGO_ONLY_PRE_FLIGHT;
+const REPAIR_NO_PRE_FLIGHT_SPEC = REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT;
 
 Deno.test({
   name:
-    "pr feedback - a repo with no pre-flight still gets the cargo-only publication spec, which keeps the ShellCheck policy (Issues #4630, #4631)",
+    "pr feedback - a repo with no pre-flight still gets the repair-with-CI-cargo publication spec, which keeps the ShellCheck policy (Issues #4630, #4631)",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
     const fx = await makeFixture();
@@ -411,7 +411,7 @@ Deno.test({
 
 Deno.test({
   name:
-    "ci fix - a repo with no pre-flight still gets the cargo-only publication spec, which keeps the ShellCheck policy (Issues #4630, #4631)",
+    "ci fix - a repo with no pre-flight still gets the repair-with-CI-cargo publication spec, which keeps the ShellCheck policy (Issues #4630, #4631)",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
     const fx = await makeFixture();
