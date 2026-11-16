@@ -16,7 +16,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -39,11 +44,17 @@ import {
   releaseAgentStub,
 } from "./support/agent_stub.ts";
 import { fakeClock } from "./support/fake_clock.ts";
+import { gitOk, setupGitRepoFixture } from "./support/git_repo_fixture.ts";
+import { commitAndPushPending } from "../lib/git_push.ts";
+import { runGitCommand } from "../lib/git_timeout.ts";
+import { handoverFilePath } from "../lib/preserved_wip_branch.ts";
 
 const ISSUE = 5077;
 const REPO = "org/repo";
 const BRANCH = "issue-5077-host-disk-park";
 const DIRTY = "worker/deno/lib/parser.ts";
+/** What the agent writes before the disk drops. */
+const AGENT_WORK = "export const parsed = true;";
 const GIB = 1_073_741_824;
 /** The reason the guard writes when the host disk crosses its floor. */
 const PARK_REASON =
@@ -129,21 +140,29 @@ Deno.test({
   ignore: Deno.build.os === "windows",
   permissions: { read: true, write: true, run: true, env: true },
   async fn() {
-    const repoPath = await Deno.makeTempDir({ prefix: "host_disk_5077_" });
+    // A real remote and clone: preservation is proved by what the remote
+    // issue branch holds, not by what a stub was asked to do.
+    const fixture = await setupGitRepoFixture("host_disk_5077_");
+    const repoPath = fixture.clone;
     const captured = captureLogger();
     const clock = fakeClock();
     const ready = Promise.withResolvers<void>();
-    const commits: string[] = [];
     let freeGb = 75.9;
-    let invocations = 0;
     registerHeavyBuildDiskProbe(() => Promise.resolve(reading(freeGb)));
     enableInFlightHostDiskGate(true);
+    // The agent does real work in its working directory, records each start,
+    // then blocks on the gate. A resumed agent would record a second start or
+    // pass the gate and write the finish marker.
     const stub = await createAgentStub(
-      `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
-        agentStubGate() + "exit 0\n",
+      `echo started >> "$0.starts"\n` +
+        `mkdir -p "$(dirname '${DIRTY}')"\n` +
+        `printf '%s\\n' '${AGENT_WORK}' > '${DIRTY}'\n` +
+        `printf '%s\\n' '{"type":"result","result":"working"}'\n` +
+        agentStubGate() + `echo finished >> "$0.finished"\nexit 0\n`,
     );
     try {
-      await Deno.mkdir(`${repoPath}/.git`);
+      await gitOk(["checkout", "-b", BRANCH], repoPath);
+      const startSha = (await gitOk(["rev-parse", "HEAD"], repoPath)).trim();
       const deps = createMockDeps({
         logger: captured.logger,
         claude: {
@@ -151,7 +170,6 @@ Deno.test({
           // below the floor once the agent has started, so the in-flight gate
           // parks it mid-execute.
           runClaudeWithRetry: ((runOptions: Record<string, unknown>) => {
-            invocations++;
             const run = runClaudeWithTimeout({
               ...runOptions,
               agentBinaryPath: stub.path,
@@ -176,45 +194,16 @@ Deno.test({
           findExistingPrForIssue: (() =>
             Promise.resolve({ ok: false, error: new Error("No PR") })) as never,
         },
-        git: {
-          runGitCommand: ((args: string[]) => {
-            const ok = (stdout: string) =>
-              Promise.resolve({
-                ok: true,
-                value: { code: 0, stdout, stderr: "" },
-              });
-            if (args[0] === "status") {
-              return ok(` M ${DIRTY}\n`);
-            }
-            if (args[0] === "rev-list" && args[1] === "--count") {
-              return ok("2\n");
-            }
-            if (args[0] === "rev-parse" && args[1] === "HEAD") {
-              return ok("abc123\n");
-            }
-            if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
-              return ok(`${BRANCH}\n`);
-            }
-            return ok("");
-          }) as never,
-          commitAndPushPending: ((_branch: string, message: string) => {
-            commits.push(message);
-            return Promise.resolve({
-              ok: true,
-              value: {
-                committedNewChanges: true,
-                commitsPushed: 1,
-                finalUnpushedCount: 0,
-                finalUnpushedSource: "remote-head" as const,
-              },
-            });
-          }) as never,
-        },
+        // Real git against the fixture: the preserving commit and push run
+        // for real.
+        git: { runGitCommand, commitAndPushPending },
       });
       const config = makeConfig();
+      const state = makeState(repoPath);
+      state.executeStartHeadSha = startSha;
       const result = await workOnIssueExecuteClaude(
         makeContext(config),
-        makeState(repoPath),
+        state,
         deps,
       );
 
@@ -237,12 +226,46 @@ Deno.test({
       assertEquals(classification?.failureClass, "disk-full");
       assertEquals(classification?.fixability, "not_code_fixable");
 
-      // The work is preserved on the issue branch.
-      assert(commits.length >= 1, "the dirty tree is preserved");
-      assertStringIncludes(commits[0]!, "parked at the host disk floor");
+      // The interrupted work is on the issue branch of the remote, with the
+      // handover describing the park.
+      const remoteBranch = (await gitOk(
+        ["rev-parse", "--verify", `refs/heads/${BRANCH}`],
+        fixture.remote,
+      )).trim();
+      assertEquals(
+        await gitOk(["show", `${remoteBranch}:${DIRTY}`], fixture.remote),
+        `${AGENT_WORK}\n`,
+        "the agent's file reached the remote issue branch",
+      );
+      const handoverPath = handoverFilePath(ISSUE);
+      const handover = await gitOk(
+        ["show", `${remoteBranch}:${handoverPath}`],
+        fixture.remote,
+      );
+      assertStringIncludes(handover, "parked at the host disk floor");
+      assertEquals(
+        (await gitOk(["status", "--porcelain"], repoPath)).trim(),
+        "",
+        "nothing is left only in the local clone",
+      );
 
-      // No in-process retry: the infrastructure retry does not re-run a park.
-      assertEquals(invocations, 1, "the park is not retried in-process");
+      // The released preservation reference names that stored branch and file.
+      assertEquals(state.preservedWip?.branch, BRANCH);
+      assertEquals(state.preservedWip?.handoverPath, handoverPath);
+      assertStringIncludes(reason, `pushed to '${BRANCH}'`);
+
+      // The parked agent is not resumed: it started once, and never ran on.
+      assertEquals(
+        (await Deno.readTextFile(`${stub.path}.starts`)).trim().split("\n"),
+        ["started"],
+        "the agent was started exactly once",
+      );
+      await assertRejects(
+        () => Deno.stat(`${stub.path}.finished`),
+        Deno.errors.NotFound,
+        undefined,
+        "the parked agent did not carry on",
+      );
 
       // The run's outcome and its planned failure handling.
       const outcome = deriveRunOutcome({
@@ -285,7 +308,7 @@ Deno.test({
       await stub.dispose();
       enableInFlightHostDiskGate(false);
       registerHeavyBuildDiskProbe(undefined);
-      await Deno.remove(repoPath, { recursive: true });
+      await fixture.cleanup();
     }
   },
 });

@@ -84,12 +84,18 @@ flowchart LR
 - New `worker/deno/tests/execute_phase_host_disk_park_5077_test.ts`:
   - Composition test "a host-disk park mid-execute is preserved, released as
     host_disk, and logged as a warning". The phase runs the real
-    `runClaudeWithTimeout` with an agent stub, the real heavy-build gate and a
-    disk probe that drops below the floor once the agent has started. It asserts
-    category `host_disk`, class `disk-full` / `not_code_fixable`, a `wip:`
-    commit naming the host disk floor, one invocation (no in-process retry),
-    `no_pr:host_disk:execute`, `applyLadder: false` with no cooldown kind, and
-    no ERROR line from the runner, the phase or `logIssueRunFailure`.
+    `runClaudeWithTimeout` with an agent stub that writes a real file, the real
+    heavy-build gate, real git and a disk probe that drops below the floor once
+    the agent has started. The fixture is a bare remote plus a clone on the
+    issue branch. It asserts category `host_disk`, class `disk-full` /
+    `not_code_fixable`, that the remote issue branch holds the agent's file and
+    the handover note naming the host disk floor, that nothing is left only in
+    the local clone, that the released preservation reference
+    (`state.preservedWip`) names that branch and handover file, that the agent
+    started once and never ran past its gate (observed through marker files the
+    stub writes, not a mock call count), `no_pr:host_disk:execute`,
+    `applyLadder: false` with no cooldown kind, and no ERROR line from the
+    runner, the phase or `logIssueRunFailure`.
   - `logIssueRunFailure` logs a non-disk failure at ERROR (allowed control) and
     a `host_disk` failure at WARN.
   - `classifyRunFailure("host_disk", …)` and `detectHostFault(…, "host_disk")`.
