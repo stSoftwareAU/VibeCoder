@@ -334,7 +334,6 @@ so the explicit paths below still work, but the automatic paths leave it out:
 - **Bulk seed sweeps.** `createAllIdleTaskWrappers`, used by `add-repo:`,
   `seed-idle-tasks:`, `create-all-idle-task-wrappers` and
   `raise-all-idle-tasks`, leaves it out unless the config names it.
-  `raise-all-idle-tasks` reads no config, so it always leaves it out.
 
 **Enabling automatic work.** The owner's `.config.json` enables an opt-in
 template when it names it in either of two places: a positive
@@ -1878,9 +1877,9 @@ deno run -A worker/deno/mod.ts raise-all-idle-tasks
 ```
 
 It reuses the same `createAllIdleTaskWrappers` seam per repo with **no**
-template-name filter, except that it reads no config, so the opt-in `test-audit`
-is always left out (file it with `raise-single-idle-task`). It inherits the same
-per-repo **any-open gate** — a
+template-name filter. Like the other bulk sweeps, it leaves the opt-in
+`test-audit` out unless `.config.json` names it (file it explicitly with
+`raise-single-idle-task`). It inherits the same per-repo **any-open gate** — a
 repo already holding an open `idle-task` issue is skipped whole. A
 per-repo failure is recorded in the summary and the sweep continues to the next
 repo; the command reports `N filed, M already open, K failed`. Run it from the

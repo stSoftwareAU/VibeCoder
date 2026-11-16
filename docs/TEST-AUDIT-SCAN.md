@@ -32,7 +32,6 @@ not automatic idle work. The opt-in set is `OPT_IN_IDLE_TASK_TEMPLATES` in
 The idle tick's random pick and cadence bias, and the bulk seed sweeps
 (`add-repo:`, `seed-idle-tasks:`, `create-all-idle-task-wrappers` and
 `raise-all-idle-tasks`), leave it out unless the owner's `.config.json` names it.
-`raise-all-idle-tasks` reads no config, so it always leaves `test-audit` out.
 
 - **To enable automatic runs**, name it in `.config.json`: a positive
   `idle_task_template_weights` entry for `test-audit`, or a `test-audit` entry
