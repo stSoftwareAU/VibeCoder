@@ -10,9 +10,16 @@
 #
 # Isolation: no AWS_* or other caller variable reaches the emulator; COMMAND
 # loses every AWS_* / ECS_CONTAINER_METADATA_URI* variable, so no real
-# credential source stays reachable and nothing falls back to real AWS. Refuses
-# uid 0 and the accounts in AWS_EMULATOR_RUN_REFUSED_USERS (default: vibe, the
-# credential-bearing worker account).
+# credential source stays reachable and nothing falls back to real AWS. Always
+# refuses uid 0 and the account `vibe` (the credential-bearing worker account);
+# neither can be switched off. AWS_EMULATOR_RUN_REFUSED_USERS is additive only:
+# extra space-separated account names refused on top of those.
+#
+# Stopping COMMAND: only COMMAND itself and the emulator (our direct children)
+# are ever signalled. With GNU timeout / gtimeout present, COMMAND runs under
+# it, in its own process group, and it forwards the signal to that group, so
+# COMMAND's whole tree stops. Without timeout/gtimeout only COMMAND itself is
+# signalled.
 #
 # Usage:
 #   aws-emulator-run [--ready-timeout SECONDS] [--timeout SECONDS] -- COMMAND [ARG...]
@@ -141,15 +148,20 @@ elif [[ ${#COMMAND[@]} -eq 0 ]]; then
     usage_error "a COMMAND after -- is required (or --smoke)"
 fi
 
-# Refusals: uid 0 always, then the configured accounts. Nothing is started.
+# Refusals: uid 0 and `vibe` always (not switchable off), plus any extra
+# accounts in AWS_EMULATOR_RUN_REFUSED_USERS. Nothing is started. `read -a`
+# splits on whitespace without globbing.
 if [[ "$(id -u)" -eq 0 ]]; then
     fail "refusing to run as root (uid 0)"
     exit 3
 fi
 ME="$(id -un)"
-for refused in ${AWS_EMULATOR_RUN_REFUSED_USERS-vibe}; do
+EXTRA_REFUSED=()
+read -r -a EXTRA_REFUSED <<<"${AWS_EMULATOR_RUN_REFUSED_USERS-}" || true
+REFUSED=(vibe ${EXTRA_REFUSED[@]+"${EXTRA_REFUSED[@]}"})
+for refused in "${REFUSED[@]}"; do
     if [[ "${ME}" == "${refused}" ]]; then
-        fail "refusing to run as account '${ME}' (listed in AWS_EMULATOR_RUN_REFUSED_USERS)"
+        fail "refusing to run as account '${ME}' (always refused: vibe; plus AWS_EMULATOR_RUN_REFUSED_USERS additions)"
         exit 3
     fi
 done
@@ -172,33 +184,32 @@ CMD_PID=""
 STARTED=0
 CLEANUP_FAILED=0
 
-# Print the pids of every descendant of $1 (best effort; needs ps).
-# shellcheck disable=SC2329 # reached via trap or recursion
-descendants() {
-    local child
-    for child in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'); do
-        echo "${child}"
-        descendants "${child}"
-    done
-}
-
-# TERM a process and everything below it.
-# shellcheck disable=SC2329 # reached via trap or recursion
-kill_tree() {
-    local pid="$1" victims
-    victims="$(descendants "${pid}" || true)"
-    kill -TERM "${pid}" 2>/dev/null || true
-    local v
-    for v in ${victims}; do
-        kill -TERM "${v}" 2>/dev/null || true
-    done
+# The emulator's own words for why it stopped, redacted: lines matching an
+# error-ish pattern (else the last 3 lines) joined with ' | ', with credential
+# values and key ids masked. Prints nothing when the log is empty.
+emulator_cause() {
+    local picked line joined=""
+    [[ -s "${LOG}" ]] || return 0
+    picked="$(grep -Ei 'error|failed|panic|refus|denied|cannot|unable|in use' "${LOG}" 2>/dev/null | tail -n 5 || true)"
+    if [[ -z "${picked}" ]]; then
+        picked="$(tail -n 3 "${LOG}" 2>/dev/null || true)"
+    fi
+    picked="$(printf '%s\n' "${picked}" | sed -E \
+        -e 's|[Aa][Ww][Ss]_[Ss][Ee][Cc][Rr][Ee][Tt]_[Aa][Cc][Cc][Ee][Ss][Ss]_[Kk][Ee][Yy].*|<redacted>|' \
+        -e 's|[Aa][Ww][Ss]_[Ss][Ee][Ss][Ss][Ii][Oo][Nn]_[Tt][Oo][Kk][Ee][Nn].*|<redacted>|' \
+        -e 's|EMULATORA[KS][A-Z2-7]{10}|<redacted>|g' \
+        -e 's|[A-Za-z0-9+/]{40}|<redacted>|g')"
+    while IFS= read -r line; do
+        joined="${joined:+${joined} | }${line}"
+    done <<<"${picked}"
+    printf '%s' "${joined:0:600}"
 }
 
 # shellcheck disable=SC2329 # reached via trap or recursion
 cleanup() {
     trap '' INT TERM HUP
     if [[ -n "${CMD_PID}" ]] && kill -0 "${CMD_PID}" 2>/dev/null; then
-        kill_tree "${CMD_PID}"
+        kill -TERM "${CMD_PID}" 2>/dev/null || true
         wait "${CMD_PID}" 2>/dev/null || true
     fi
     if [[ -n "${EMU_PID}" ]] && kill -0 "${EMU_PID}" 2>/dev/null; then
@@ -239,7 +250,7 @@ finish() {
 on_signal() {
     local code="$1"
     if [[ -n "${CMD_PID}" ]] && kill -0 "${CMD_PID}" 2>/dev/null; then
-        kill_tree "${CMD_PID}"
+        kill -TERM "${CMD_PID}" 2>/dev/null || true
     fi
     exit "${code}"
 }
@@ -258,7 +269,11 @@ chmod 700 "${STATE}"
 mkdir -p "${STATE}/home"
 LOG="${STATE}/emulator.log"
 
-VERSION_LINE="$(aws-emulator --version 2>/dev/null | sed -n 1p || true)"
+VERSION_CMD=(aws-emulator --version)
+if [[ -n "${TIMEOUT_CMD}" ]]; then
+    VERSION_CMD=("${TIMEOUT_CMD}" 10 aws-emulator --version)
+fi
+VERSION_LINE="$("${VERSION_CMD[@]}" 2>/dev/null </dev/null | sed -n 1p || true)"
 VERSION="${VERSION_LINE#Version: }"
 
 # Scrubbed environment: only PATH, a private HOME, locale and telemetry off.
@@ -276,8 +291,7 @@ reason="no port directory under ${STATE}/home/.aws/emulator"
 deadline=$((SECONDS + READY_TIMEOUT))
 while :; do
     if ! kill -0 "${EMU_PID}" 2>/dev/null; then
-        tail_text="$(tail -n 5 "${LOG}" 2>/dev/null | tr '\n' ' ' || true)"
-        fail "emulator exited early: ${tail_text}"
+        fail "emulator exited early: $(emulator_cause)"
         EMU_PID=""
         exit 5
     fi
@@ -293,7 +307,7 @@ while :; do
         d="${candidates[0]}"
         if [[ -f "${d}/config" && -f "${d}/emulator_credentials" && -f "${d}/ca.pem" ]]; then
             port="${d##*/}"
-            body="$(curl -sS --fail --noproxy '*' --cacert "${d}/ca.pem" --max-time 5 \
+            body="$(curl -sS --fail --noproxy '*' --cacert "${d}/ca.pem" --max-time 2 \
                 "https://127.0.0.1:${port}/__admin/health" 2>/dev/null || true)"
             if [[ "${body}" == "ok" ]]; then
                 PORT="${port}"
@@ -309,7 +323,8 @@ while :; do
         reason="more than one port directory under ${STATE}/home/.aws/emulator"
     fi
     if [[ ${SECONDS} -ge ${deadline} ]]; then
-        fail "emulator not ready and verified within ${READY_TIMEOUT}s: ${reason}"
+        cause="$(emulator_cause)"
+        fail "emulator not ready and verified within ${READY_TIMEOUT}s: ${reason}${cause:+; emulator log: ${cause}}"
         exit 5
     fi
     sleep 0.3
@@ -370,4 +385,9 @@ CMD_PID=$!
 rc=0
 wait "${CMD_PID}" || rc=$?
 CMD_PID=""
+if [[ -n "${EMU_PID}" ]] && ! kill -0 "${EMU_PID}" 2>/dev/null; then
+    EMU_PID=""
+    fail "emulator stopped while COMMAND ran: $(emulator_cause)"
+    rc=5
+fi
 exit "${rc}"

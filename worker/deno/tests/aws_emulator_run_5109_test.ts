@@ -26,11 +26,11 @@ const HOSTILE_ENV: Record<string, string> = {
   ECS_CONTAINER_METADATA_URI_V4: "http://x",
 };
 
-type Mode = "normal" | "crash" | "hang" | "wrong-ca";
+type Mode = "normal" | "crash" | "hang" | "wrong-ca" | "die-after-ready";
 
 function fakeEmulatorSource(mode: Mode, rec: string): string {
   return `#!/usr/bin/env python3
-import http.server, os, secrets, signal, ssl, subprocess, sys, tempfile, time
+import http.server, os, secrets, signal, ssl, subprocess, sys, tempfile, threading, time
 
 MODE = ${JSON.stringify(mode)}
 REC = ${JSON.stringify(rec)}
@@ -51,24 +51,50 @@ with open(os.path.join(REC, "pid"), "w") as f:
     f.write(str(os.getpid()))
 
 bind, port = "127.0.0.1", 9297
+t_flag, auth = None, "on"
 i = 0
 while i < len(args):
     a = args[i]
+    v = args[i + 1] if i + 1 < len(args) else ""
     if a in ("-b", "--bind"):
-        bind = args[i + 1]
+        bind = v
     elif a in ("-p", "--port"):
-        port = int(args[i + 1])
-    elif a in ("-t", "--telemetry", "-a", "--auth", "--idle-timeout"):
+        port = int(v)
+    elif a in ("-t", "--telemetry"):
+        if v not in ("on", "off"):
+            sys.stderr.write("invalid value for --telemetry: %s\\n" % v)
+            sys.exit(2)
+        t_flag = v
+    elif a in ("-a", "--auth"):
+        if v not in ("on", "off"):
+            sys.stderr.write("invalid value for --auth: %s\\n" % v)
+            sys.exit(2)
+        auth = v
+    elif a == "--idle-timeout":
         pass
     else:
         sys.stderr.write("unknown flag %s\\n" % a)
         sys.exit(2)
     i += 2
 
+# Real precedence: -t off always wins; else EMULATOR_TELEMETRY off/false/0; else on.
+if t_flag == "off":
+    telemetry = "off"
+elif os.environ.get("EMULATOR_TELEMETRY", "").lower() in ("off", "false", "0"):
+    telemetry = "off"
+else:
+    telemetry = "on"
+with open(os.path.join(REC, "settings"), "w") as f:
+    f.write("telemetry=%s\\nauth=%s\\nbind=%s\\nrequested_port=%d\\n" % (telemetry, auth, bind, port))
+
 if MODE == "crash":
+    sys.stderr.write("credential error: aws_secret_access_key = abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123+/\\n")
     sys.stderr.write("emulator serve failed: Address in use\\n")
+    sys.stderr.flush()
     sys.exit(1)
 if MODE == "hang":
+    sys.stderr.write("emulator thread panicked: stuck binding\\n")
+    sys.stderr.flush()
     while True:
         time.sleep(1)
 
@@ -137,6 +163,8 @@ files = {
     "emulator_credentials": "[default]\\naws_access_key_id = %s\\naws_secret_access_key = %s\\n" % (key, secret),
     "truststore.p12": "placeholder",
 }
+if auth == "off":
+    del files["emulator_credentials"]  # the real emulator writes none without auth
 for name, content in files.items():
     path = os.path.join(pdir, name)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -152,6 +180,13 @@ def stop(*_):
     sys.exit(0)
 
 signal.signal(signal.SIGTERM, stop)
+if MODE == "die-after-ready":
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    while not os.path.exists(os.path.join(REC, "stop-now")):
+        time.sleep(0.1)
+    sys.stderr.write("emulator fatal error: worker thread died\\n")
+    sys.stderr.flush()
+    sys.exit(1)
 server.serve_forever()
 `;
 }
@@ -222,6 +257,19 @@ function currentUser(): string {
   return decoder.decode(out.stdout).trim();
 }
 
+const IS_WORKER_ACCOUNT = currentUser() === "vibe";
+
+// The helper refuses the credential-bearing worker account by design, so every
+// case that needs it to get past the refusal is ignored when the tests run as
+// `vibe`; CI runs these as an ordinary user.
+function testAsOrdinaryUser(
+  name: string,
+  fn: () => Promise<void>,
+  alsoIgnore = false,
+): void {
+  Deno.test({ name, ignore: IS_WORKER_ACCOUNT || alsoIgnore, fn });
+}
+
 function helperCommand(
   fx: Fixture,
   args: string[],
@@ -235,7 +283,6 @@ function helperCommand(
       PATH: path,
       HOME: fx.root,
       TMPDIR: fx.tmp,
-      AWS_EMULATOR_RUN_REFUSED_USERS: "no-such-account-5109",
       ...env,
     },
     stdin: "null",
@@ -264,19 +311,16 @@ async function runHelper(
   };
 }
 
-function isAlive(pid: number): boolean {
-  try {
-    Deno.kill(pid, "SIGCONT");
-  } catch {
-    return false;
-  }
-  try {
-    const stat = Deno.readTextFileSync(`/proc/${pid}/stat`);
-    if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z")) return false;
-  } catch {
-    // no /proc (macOS): kill succeeding is the best answer available
-  }
-  return true;
+// Sends no signal: asks ps for the command line of the pid and looks for a
+// token unique to the process under test, so a reaped or reused pid reads as
+// "not running".
+function isRunning(pid: number, token: string): boolean {
+  const out = new Deno.Command("ps", {
+    args: ["-p", String(pid), "-o", "command="],
+    stdout: "piped",
+    stderr: "null",
+  }).outputSync();
+  return decoder.decode(out.stdout).includes(token);
 }
 
 async function readRecord(fx: Fixture, name: string): Promise<string | null> {
@@ -293,7 +337,11 @@ async function assertCleanedUp(fx: Fixture): Promise<void> {
   assertEquals(left, [], "TMPDIR must be empty after the helper exits");
   const pid = await readRecord(fx, "pid");
   if (pid !== null) {
-    assertEquals(isAlive(Number(pid)), false, "fake emulator must be gone");
+    assertEquals(
+      isRunning(Number(pid), `${fx.bin}/aws-emulator`),
+      false,
+      "fake emulator must not be running",
+    );
   }
 }
 
@@ -332,186 +380,250 @@ async function waitForFile(path: string, limitMs = 10_000): Promise<boolean> {
   return false;
 }
 
-Deno.test("aws-emulator-run: happy path scrubs the environment and verifies health", async () => {
-  await withFixture("normal", {}, async (fx) => {
-    const out = `${fx.root}/out`;
-    await Deno.mkdir(out);
-    const script = `env > "${out}/env.txt"; ` +
-      `curl -sS --fail --noproxy '*' --cacert "$AWS_CA_BUNDLE" "$AWS_ENDPOINT_URL/__admin/health" > "${out}/health.txt"`;
-    const r = await runHelper(fx, [
-      "--ready-timeout",
-      "30",
-      "--",
-      "bash",
-      "-c",
-      script,
-    ], HOSTILE_ENV);
-    assertEquals(r.code, 0, r.stderr);
-    const port = (await readRecord(fx, "port"))!;
-    const key = (await readRecord(fx, "key"))!;
-    const secret = (await readRecord(fx, "secret"))!;
-    const env = parseEnv(await Deno.readTextFile(`${out}/env.txt`));
-    assertEquals(env.get("AWS_ENDPOINT_URL"), `https://127.0.0.1:${port}`);
-    assert(env.get("AWS_ACCESS_KEY_ID")!.startsWith("EMULATORAK"));
-    assertEquals(env.get("AWS_ACCESS_KEY_ID"), key);
-    assertEquals(env.get("AWS_SECRET_ACCESS_KEY"), secret);
-    assertEquals(env.get("AWS_PROFILE"), "default");
-    assertEquals(env.get("AWS_REGION"), "us-east-1");
-    assertEquals(env.get("AWS_EC2_METADATA_DISABLED"), "true");
-    assertEquals(env.get("EMULATOR_TELEMETRY"), "off");
-    for (
-      const name of [
-        "AWS_CONFIG_FILE",
-        "AWS_SHARED_CREDENTIALS_FILE",
-        "AWS_CA_BUNDLE",
-      ]
-    ) {
-      assert(env.get(name)!.startsWith(fx.tmp), `${name} under TMPDIR`);
-    }
-    for (
-      const name of [
-        "AWS_ENDPOINT_URL_S3",
-        "AWS_WEB_IDENTITY_TOKEN_FILE",
-        "AWS_ROLE_ARN",
-        "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-        "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS",
-        "AWS_SESSION_TOKEN",
-        "ECS_CONTAINER_METADATA_URI_V4",
-      ]
-    ) {
-      assertEquals(env.has(name), false, `${name} must be scrubbed`);
-    }
-    assertEquals((await Deno.readTextFile(`${out}/health.txt`)).trim(), "ok");
+testAsOrdinaryUser(
+  "aws-emulator-run: happy path scrubs the environment and verifies health",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const out = `${fx.root}/out`;
+      await Deno.mkdir(out);
+      const script = `env > "${out}/env.txt"; ` +
+        `curl -sS --fail --noproxy '*' --cacert "$AWS_CA_BUNDLE" "$AWS_ENDPOINT_URL/__admin/health" > "${out}/health.txt"`;
+      const r = await runHelper(fx, [
+        "--ready-timeout",
+        "30",
+        "--",
+        "bash",
+        "-c",
+        script,
+      ], HOSTILE_ENV);
+      assertEquals(r.code, 0, r.stderr);
+      const port = (await readRecord(fx, "port"))!;
+      const key = (await readRecord(fx, "key"))!;
+      const secret = (await readRecord(fx, "secret"))!;
+      const env = parseEnv(await Deno.readTextFile(`${out}/env.txt`));
+      assertEquals(env.get("AWS_ENDPOINT_URL"), `https://127.0.0.1:${port}`);
+      assert(env.get("AWS_ACCESS_KEY_ID")!.startsWith("EMULATORAK"));
+      assertEquals(env.get("AWS_ACCESS_KEY_ID"), key);
+      assertEquals(env.get("AWS_SECRET_ACCESS_KEY"), secret);
+      assertEquals(env.get("AWS_PROFILE"), "default");
+      assertEquals(env.get("AWS_REGION"), "us-east-1");
+      assertEquals(env.get("AWS_EC2_METADATA_DISABLED"), "true");
+      assertEquals(env.get("EMULATOR_TELEMETRY"), "off");
+      for (
+        const name of [
+          "AWS_CONFIG_FILE",
+          "AWS_SHARED_CREDENTIALS_FILE",
+          "AWS_CA_BUNDLE",
+        ]
+      ) {
+        assert(env.get(name)!.startsWith(fx.tmp), `${name} under TMPDIR`);
+      }
+      for (
+        const name of [
+          "AWS_ENDPOINT_URL_S3",
+          "AWS_WEB_IDENTITY_TOKEN_FILE",
+          "AWS_ROLE_ARN",
+          "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+          "AWS_IGNORE_CONFIGURED_ENDPOINT_URLS",
+          "AWS_SESSION_TOKEN",
+          "ECS_CONTAINER_METADATA_URI_V4",
+        ]
+      ) {
+        assertEquals(env.has(name), false, `${name} must be scrubbed`);
+      }
+      assertEquals((await Deno.readTextFile(`${out}/health.txt`)).trim(), "ok");
 
-    const argv = (await readRecord(fx, "argv"))!;
-    assertStringIncludes(argv, "-b 127.0.0.1 -p 0 -t off -a on");
-    const emuEnv = parseEnv((await readRecord(fx, "env"))!);
-    assertEquals([...emuEnv.keys()].filter((k) => k.startsWith("AWS_")), []);
-    assertEquals(emuEnv.get("EMULATOR_TELEMETRY"), "off");
-    assertEquals((r.stdout + r.stderr).includes(secret), false);
-    await assertCleanedUp(fx);
-  });
-});
-
-Deno.test("aws-emulator-run: propagates the command's exit code", async () => {
-  await withFixture("normal", {}, async (fx) => {
-    const r = await runHelper(fx, ["--", "bash", "-c", "exit 7"]);
-    assertEquals(r.code, 7, r.stderr);
-    await assertCleanedUp(fx);
-  });
-});
-
-Deno.test("aws-emulator-run: emulator never ready exits 5", async () => {
-  await withFixture("hang", {}, async (fx) => {
-    const r = await runHelper(fx, ["--ready-timeout", "2", "--", "true"]);
-    assertEquals(r.code, 5, r.stderr);
-    assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
-    assertStringIncludes(r.stderr, "not ready");
-    await assertCleanedUp(fx);
-  });
-});
-
-Deno.test("aws-emulator-run: emulator exiting early exits 5 with its cause line", async () => {
-  await withFixture("crash", {}, async (fx) => {
-    const r = await runHelper(fx, ["--ready-timeout", "20", "--", "true"]);
-    assertEquals(r.code, 5, r.stderr);
-    assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
-    assertStringIncludes(r.stderr, "Address in use");
-    await assertCleanedUp(fx);
-  });
-});
-
-Deno.test("aws-emulator-run: health not verified against this run's CA exits 5", async () => {
-  await withFixture("wrong-ca", {}, async (fx) => {
-    const marker = `${fx.root}/ran`;
-    const r = await runHelper(fx, [
-      "--ready-timeout",
-      "3",
-      "--",
-      "bash",
-      "-c",
-      `touch "${marker}"`,
-    ]);
-    assertEquals(r.code, 5, r.stderr);
-    assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
-    assertStringIncludes(r.stderr, "not verified");
-    assertEquals(
-      await waitForFile(marker, 200),
-      false,
-      "COMMAND must never run",
-    );
-    await assertCleanedUp(fx);
-  });
-});
-
-Deno.test("aws-emulator-run: concurrent runs never share a port or state dir", async () => {
-  const a = await makeFixture("normal");
-  const b = await makeFixture("normal", { shareTmp: a.tmp });
-  try {
-    const script = 'echo "$AWS_ENDPOINT_URL $AWS_EMULATOR_STATE_DIR"; sleep 1';
-    const [ra, rb] = await Promise.all([
-      runHelper(a, ["--ready-timeout", "30", "--", "bash", "-c", script]),
-      runHelper(b, ["--ready-timeout", "30", "--", "bash", "-c", script]),
-    ]);
-    assertEquals([ra.code, rb.code], [0, 0], ra.stderr + rb.stderr);
-    const [urlA, dirA] = ra.stdout.trim().split(" ");
-    const [urlB, dirB] = rb.stdout.trim().split(" ");
-    assert(urlA !== urlB, "different endpoints");
-    assert(dirA !== dirB, "different state dirs");
-    await assertCleanedUp(a);
-    await assertCleanedUp(b);
-  } finally {
-    await Deno.remove(a.root, { recursive: true });
-    await Deno.remove(b.root, { recursive: true });
-  }
-});
-
-Deno.test("aws-emulator-run: refuses a listed account and never starts the emulator", async () => {
-  await withFixture("normal", {}, async (fx) => {
-    const me = currentUser();
-    const r = await runHelper(fx, ["--", "true"], {
-      AWS_EMULATOR_RUN_REFUSED_USERS: me,
+      const settings = parseEnv((await readRecord(fx, "settings"))!);
+      assertEquals(settings.get("telemetry"), "off");
+      assertEquals(settings.get("auth"), "on");
+      assertEquals(settings.get("bind"), "127.0.0.1");
+      assertEquals(settings.get("requested_port"), "0");
+      const emuEnv = parseEnv((await readRecord(fx, "env"))!);
+      assertEquals([...emuEnv.keys()].filter((k) => k.startsWith("AWS_")), []);
+      assertEquals(emuEnv.get("EMULATOR_TELEMETRY"), "off");
+      assertEquals((r.stdout + r.stderr).includes(secret), false);
+      await assertCleanedUp(fx);
     });
-    assertEquals(r.code, 3, r.stderr);
-    assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
-    assertStringIncludes(r.stderr, me);
-    assertEquals(
-      await readRecord(fx, "pid"),
-      null,
-      "emulator must not have started",
-    );
-    await assertCleanedUp(fx);
-  });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: propagates the command's exit code",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const r = await runHelper(fx, ["--", "bash", "-c", "exit 7"]);
+      assertEquals(r.code, 7, r.stderr);
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: emulator never ready exits 5",
+  async () => {
+    await withFixture("hang", {}, async (fx) => {
+      const r = await runHelper(fx, ["--ready-timeout", "2", "--", "true"]);
+      assertEquals(r.code, 5, r.stderr);
+      assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
+      assertStringIncludes(r.stderr, "not ready");
+      assertStringIncludes(r.stderr, "stuck binding");
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: emulator exiting early exits 5 with its cause line",
+  async () => {
+    await withFixture("crash", {}, async (fx) => {
+      const r = await runHelper(fx, ["--ready-timeout", "20", "--", "true"]);
+      assertEquals(r.code, 5, r.stderr);
+      assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
+      assertStringIncludes(r.stderr, "Address in use");
+      assertEquals(
+        r.stderr.includes("abcdefghijklmnopqrstuvwxyzABCDEFGHIJ0123+/"),
+        false,
+        "the emulator's credential text must be redacted",
+      );
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: health not verified against this run's CA exits 5",
+  async () => {
+    await withFixture("wrong-ca", {}, async (fx) => {
+      const marker = `${fx.root}/ran`;
+      const r = await runHelper(fx, [
+        "--ready-timeout",
+        "3",
+        "--",
+        "bash",
+        "-c",
+        `touch "${marker}"`,
+      ]);
+      assertEquals(r.code, 5, r.stderr);
+      assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
+      assertStringIncludes(r.stderr, "not verified");
+      assertEquals(
+        await waitForFile(marker, 200),
+        false,
+        "COMMAND must never run",
+      );
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: concurrent runs never share a port or state dir",
+  async () => {
+    const a = await makeFixture("normal");
+    const b = await makeFixture("normal", { shareTmp: a.tmp });
+    try {
+      const ctl = `${a.root}/ctl`;
+      await Deno.mkdir(ctl);
+      // Each COMMAND announces itself, then waits (bounded) for the other run's
+      // announcement, so both emulators are provably up at the same time.
+      const script = `ctl="$1"; me="$2"; other="$3"
+: > "$ctl/ready-$me"
+i=0
+while [[ ! -e "$ctl/ready-$other" && $i -lt 300 ]]; do sleep 0.1; i=$((i + 1)); done
+[[ -e "$ctl/ready-$other" ]] || { echo "the other run never started" >&2; exit 9; }
+echo "$AWS_ENDPOINT_URL $AWS_EMULATOR_STATE_DIR"`;
+      const [ra, rb] = await Promise.all([
+        runHelper(a, [
+          "--ready-timeout",
+          "30",
+          "--",
+          "bash",
+          "-c",
+          script,
+          "_",
+          ctl,
+          "1",
+          "2",
+        ]),
+        runHelper(b, [
+          "--ready-timeout",
+          "30",
+          "--",
+          "bash",
+          "-c",
+          script,
+          "_",
+          ctl,
+          "2",
+          "1",
+        ]),
+      ]);
+      assertEquals([ra.code, rb.code], [0, 0], ra.stderr + rb.stderr);
+      const [urlA, dirA] = ra.stdout.trim().split(" ");
+      const [urlB, dirB] = rb.stdout.trim().split(" ");
+      assert(urlA !== urlB, "different endpoints");
+      assert(dirA !== dirB, "different state dirs");
+      await assertCleanedUp(a);
+      await assertCleanedUp(b);
+    } finally {
+      await Deno.remove(a.root, { recursive: true });
+      await Deno.remove(b.root, { recursive: true });
+    }
+  },
+);
+
+Deno.test({
+  name:
+    "aws-emulator-run: the worker account vibe is always refused, even with the override emptied",
+  ignore: !IS_WORKER_ACCOUNT,
+  fn: async () => {
+    await withFixture("normal", {}, async (fx) => {
+      for (
+        const env of [{} as Record<string, string>, {
+          AWS_EMULATOR_RUN_REFUSED_USERS: "",
+        }]
+      ) {
+        const r = await runHelper(fx, ["--", "true"], env);
+        assertEquals(r.code, 3, r.stderr);
+        assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
+        assertStringIncludes(r.stderr, "vibe");
+        assertEquals(
+          await readRecord(fx, "pid"),
+          null,
+          "emulator must not have started",
+        );
+      }
+      await assertCleanedUp(fx);
+    });
+  },
 });
 
-Deno.test("aws-emulator-run: SIGTERM stops the command, the emulator and the state dir", async () => {
-  await withFixture("normal", {}, async (fx) => {
-    const marker = `${fx.root}/marker`;
-    const sleeperPid = `${fx.root}/sleeper.pid`;
-    const script =
-      `echo up > "${marker}"; sleep 300 & echo $! > "${sleeperPid}"; wait`;
-    const child = helperCommand(fx, [
-      "--ready-timeout",
-      "30",
-      "--",
-      "bash",
-      "-c",
-      script,
-    ]).spawn();
-    const out = child.output();
-    assert(await waitForFile(sleeperPid), "command must start");
-    assert(await waitForFile(marker), "command marker must appear");
-    child.kill("SIGTERM");
-    const r = await out;
-    assertEquals(r.code, 143, decoder.decode(r.stderr));
-    await assertCleanedUp(fx);
-    const sleeper = Number((await Deno.readTextFile(sleeperPid)).trim());
-    assertEquals(
-      isAlive(sleeper),
-      false,
-      "the command's sleep child must be gone",
-    );
-  });
+Deno.test({
+  name:
+    "aws-emulator-run: AWS_EMULATOR_RUN_REFUSED_USERS adds accounts and never starts the emulator",
+  ignore: IS_WORKER_ACCOUNT, // the allowed control run needs a non-vibe account
+  fn: async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const me = currentUser();
+      const r = await runHelper(fx, ["--", "true"], {
+        AWS_EMULATOR_RUN_REFUSED_USERS: `someone ${me}`,
+      });
+      assertEquals(r.code, 3, r.stderr);
+      assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
+      assertStringIncludes(r.stderr, me);
+      assertEquals(
+        await readRecord(fx, "pid"),
+        null,
+        "emulator must not have started",
+      );
+      // Control: the same account is allowed when it is not listed.
+      const ok = await runHelper(fx, ["--", "true"], {
+        AWS_EMULATOR_RUN_REFUSED_USERS: "someone",
+      });
+      assertEquals(ok.code, 0, ok.stderr);
+      await assertCleanedUp(fx);
+    });
+  },
 });
 
 const HAS_TIMEOUT = ["timeout", "gtimeout"].some((name) =>
@@ -524,9 +636,47 @@ const HAS_TIMEOUT = ["timeout", "gtimeout"].some((name) =>
   }).outputSync().success
 );
 
+testAsOrdinaryUser(
+  "aws-emulator-run: SIGTERM stops the command, the emulator and the state dir",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const marker = `${fx.root}/marker`;
+      const sleeperPid = `${fx.root}/sleeper.pid`;
+      // A fractional duration makes the sleeper's command line unique to us.
+      const sleepToken = `sleep 300.${Date.now()}${
+        Math.floor(Math.random() * 1000)
+      }`;
+      const script =
+        `echo up > "${marker}"; ${sleepToken} & echo $! > "${sleeperPid}"; wait`;
+      const child = helperCommand(fx, [
+        "--ready-timeout",
+        "30",
+        "--",
+        "bash",
+        "-c",
+        script,
+      ]).spawn();
+      const out = child.output();
+      assert(await waitForFile(sleeperPid), "command must start");
+      assert(await waitForFile(marker), "command marker must appear");
+      child.kill("SIGTERM");
+      const r = await out;
+      assertEquals(r.code, 143, decoder.decode(r.stderr));
+      await assertCleanedUp(fx);
+      const sleeper = Number((await Deno.readTextFile(sleeperPid)).trim());
+      assertEquals(
+        isRunning(sleeper, sleepToken),
+        false,
+        "the command's sleep child must not be running",
+      );
+    });
+  },
+  !HAS_TIMEOUT,
+); // neither timeout nor gtimeout: only COMMAND itself is signalled
+
 Deno.test({
   name: "aws-emulator-run: --timeout kills a long command with exit 124",
-  ignore: !HAS_TIMEOUT, // neither timeout nor gtimeout exists on this host
+  ignore: IS_WORKER_ACCOUNT || !HAS_TIMEOUT, // refused account, or no timeout/gtimeout
   fn: async () => {
     await withFixture("normal", {}, async (fx) => {
       const r = await runHelper(fx, [
@@ -544,15 +694,18 @@ Deno.test({
   },
 });
 
-Deno.test("aws-emulator-run: missing aws-emulator exits 4 naming it", async () => {
-  await withFixture("normal", {}, async (fx) => {
-    const r = await runHelper(fx, ["--", "true"], {}, SYSTEM_PATH);
-    assertEquals(r.code, 4, r.stderr);
-    assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
-    assertStringIncludes(r.stderr, "aws-emulator");
-    await assertCleanedUp(fx);
-  });
-});
+testAsOrdinaryUser(
+  "aws-emulator-run: missing aws-emulator exits 4 naming it",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const r = await runHelper(fx, ["--", "true"], {}, SYSTEM_PATH);
+      assertEquals(r.code, 4, r.stderr);
+      assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
+      assertStringIncludes(r.stderr, "aws-emulator");
+      await assertCleanedUp(fx);
+    });
+  },
+);
 
 Deno.test("aws-emulator-run: usage errors exit 2", async () => {
   await withFixture("normal", {}, async (fx) => {
@@ -566,21 +719,50 @@ Deno.test("aws-emulator-run: usage errors exit 2", async () => {
   });
 });
 
-Deno.test("aws-emulator-run: --smoke passes against the fake", async () => {
-  await withFixture("normal", { awsAccount: "000000000000" }, async (fx) => {
-    const r = await runHelper(fx, ["--ready-timeout", "30", "--smoke"]);
-    assertEquals(r.code, 0, r.stderr);
-    assertStringIncludes(r.stdout + r.stderr, "smoke passed");
-    await assertCleanedUp(fx);
-  });
-});
+testAsOrdinaryUser(
+  "aws-emulator-run: --smoke passes against the fake",
+  async () => {
+    await withFixture("normal", { awsAccount: "000000000000" }, async (fx) => {
+      const r = await runHelper(fx, ["--ready-timeout", "30", "--smoke"]);
+      assertEquals(r.code, 0, r.stderr);
+      assertStringIncludes(r.stdout + r.stderr, "smoke passed");
+      await assertCleanedUp(fx);
+    });
+  },
+);
 
-Deno.test("aws-emulator-run: --smoke fails on an account mismatch", async () => {
-  await withFixture("normal", { awsAccount: "123456789012" }, async (fx) => {
-    const r = await runHelper(fx, ["--ready-timeout", "30", "--smoke"]);
-    assert(r.code !== 0, "a real account id must fail the smoke");
-    assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
-    assertStringIncludes(r.stderr, "account mismatch");
-    await assertCleanedUp(fx);
-  });
-});
+testAsOrdinaryUser(
+  "aws-emulator-run: --smoke fails on an account mismatch",
+  async () => {
+    await withFixture("normal", { awsAccount: "123456789012" }, async (fx) => {
+      const r = await runHelper(fx, ["--ready-timeout", "30", "--smoke"]);
+      assert(r.code !== 0, "a real account id must fail the smoke");
+      assertStringIncludes(r.stderr, "[aws-emulator-run] FAILED:");
+      assertStringIncludes(r.stderr, "account mismatch");
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: an emulator that stops while COMMAND runs exits 5",
+  async () => {
+    await withFixture("die-after-ready", {}, async (fx) => {
+      const r = await runHelper(fx, [
+        "--ready-timeout",
+        "30",
+        "--",
+        "bash",
+        "-c",
+        `touch "${fx.rec}/stop-now"; sleep 2`,
+      ]);
+      assertEquals(r.code, 5, r.stderr);
+      assertStringIncludes(
+        r.stderr,
+        "[aws-emulator-run] FAILED: emulator stopped while COMMAND ran:",
+      );
+      assertStringIncludes(r.stderr, "worker thread died");
+      await assertCleanedUp(fx);
+    });
+  },
+);

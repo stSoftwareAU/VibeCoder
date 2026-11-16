@@ -119,7 +119,7 @@ that exemption honest. Adding one is a fragment, a `container/tools.json`
 entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
 added to one of the Containerfile's `install-toolchains.sh` runs.
 
-Nine consequences worth knowing:
+Ten consequences worth knowing:
 
 - **Rust is pinned to 1.99.1, not `stable`.** That is the 1.99 channel
   NEAT-AI-scorer, NEAT-AI-Discovery, NEAT-AI-Lamarck and NEAT-AI-Backpropagation

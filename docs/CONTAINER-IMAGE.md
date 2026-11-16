@@ -271,16 +271,20 @@ and `--timeout 1800`.
 | COMMAND's own code | COMMAND ran |
 | 0 turned into 1 | COMMAND passed but cleanup failed |
 | 2 | Usage error |
-| 3 | Refused account |
+| 3 | Refused account (root, `vibe`, or a name added through `AWS_EMULATOR_RUN_REFUSED_USERS`) |
 | 4 | A required runtime is missing: `aws-emulator` or `curl` (and `aws` for `--smoke`) |
-| 5 | The emulator failed to start, exited early, or was not ready and verified within `--ready-timeout` |
+| 5 | The emulator failed to start, exited early, was not ready and verified within `--ready-timeout`, or stopped while COMMAND ran (even if COMMAND exited 0) |
 | 124 | COMMAND exceeded `--timeout` |
 | 128+N | The helper received signal N (TERM is 143, INT is 130) |
 
 Every failure the helper itself reports is one stderr line starting
-`[aws-emulator-run] FAILED:` that names the cause. For an emulator that exits
-early or never becomes ready, the line includes the last lines of the
-emulator's own log (its cause line), never the credentials.
+`[aws-emulator-run] FAILED:` that names the cause. Every such line quotes the
+emulator's own cause: the log lines matching `error`, `failed`, `panic`,
+`refus`, `denied`, `cannot`, `unable` or `in use`, or the last 3 lines when none
+match. Credential values and emulator key ids are masked as `<redacted>`. This
+applies both to an early exit and to a readiness timeout. When the emulator
+stops while COMMAND runs, the helper reports `emulator stopped while COMMAND
+ran` and exits 5, even when COMMAND exited 0.
 
 ```mermaid
 sequenceDiagram
@@ -304,10 +308,10 @@ sequenceDiagram
 
 Behaviour, in order:
 
-1. **Refused accounts.** Root is always refused. So is any user named in
-   `AWS_EMULATOR_RUN_REFUSED_USERS` (space-separated; the default is `vibe`, the
-   credential-bearing worker account). A refused account exits 3 and the
-   emulator is never started.
+1. **Refused accounts.** Root (uid 0) and `vibe` (the credential-bearing worker
+   account) are always refused. `AWS_EMULATOR_RUN_REFUSED_USERS`
+   (space-separated) only adds further refused account names; it can no longer
+   remove `vibe`. A refused account exits 3 and the emulator is never started.
 2. **Private state.** Each run makes `${TMPDIR:-/tmp}/aws-emulator-run.XXXXXX`
    with mode 700 and keeps the emulator's `HOME` and log inside it. The root
    filesystem may be read-only; only `TMPDIR` (or `/tmp`) must be writable.
@@ -317,11 +321,13 @@ Behaviour, in order:
 4. **Scrubbed emulator environment.** It starts under `env -i` with only
    `PATH`, `HOME`, `LANG` and `EMULATOR_TELEMETRY=off`, so no `AWS_*` or other
    inherited variable reaches it.
-5. **Readiness is an identity check.** Ready means the emulator has published
+5. **Readiness is an identity check, and it is bounded.** Ready means the emulator has published
    `config`, `emulator_credentials` and `ca.pem` for exactly one port, and
    `https://127.0.0.1:<port>/__admin/health` answers `ok` when verified against
    this run's own `ca.pem`. Another run's CA fails that check, so the endpoint is
-   provably this run's emulator.
+   provably this run's emulator. The pre-start version probe is bounded to 10
+   seconds and each health probe to 2 seconds, so a not-ready run returns within
+   `--ready-timeout` plus about 2 seconds.
 6. **Test environment.** In a subshell, only for COMMAND, the helper unsets every
    variable beginning `AWS_` and every variable beginning
    `ECS_CONTAINER_METADATA_URI`. It then sets `AWS_CONFIG_FILE`,
@@ -334,6 +340,13 @@ Behaviour, in order:
    gets the emulator's PKCS#12 trust store prepended to any existing value, and
    `NO_PROXY` and `no_proxy` gain `127.0.0.1,localhost`. The helper's own and the
    caller's environment are untouched, and the secret is never printed.
+
+   Trust is per SDK: `AWS_CA_BUNDLE` (the CLI, Python botocore and other SDKs
+   that read it), `NODE_EXTRA_CA_CERTS` (Node) and the `JAVA_TOOL_OPTIONS` trust
+   store (JVM). The helper does not set `SSL_CERT_FILE`, because that would
+   replace the system trust store for everything the test runs. A Rust test
+   using the AWS SDK for Rust must load `$AWS_CA_BUNDLE` into its own client
+   configuration, since that SDK does not read the variable.
 7. **No real credential source remains.** Every profile, token, container and
    metadata credential variable is gone, so a client that ignores the endpoint,
    or one pointed explicitly at real AWS, presents emulator-generated keys that
@@ -343,7 +356,10 @@ Behaviour, in order:
    The emulator's own `--idle-timeout` is set to the run and readiness limits
    plus 60 seconds.
 9. **Signals and cleanup.** On INT, TERM or HUP the helper stops COMMAND, cleans
-   up, and exits 128+N. Cleanup sends TERM to the emulator, waits up to 10
+   up, and exits 128+N. It signals only COMMAND and the emulator it started.
+   COMMAND's whole process tree is stopped through `timeout` or `gtimeout`,
+   which run it in their own process group; without either tool only COMMAND
+   itself is signalled. Cleanup sends TERM to the emulator, waits up to 10
    seconds, then KILLs it, and removes the state directory. If the directory
    survives, the helper prints `FAILED` and exits non-zero, turning a 0 into 1.
 10. **Simultaneous runs.** Port 0 and a per-run state directory mean two runs
