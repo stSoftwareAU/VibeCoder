@@ -155,10 +155,12 @@ flowchart TD
     `raiseDeadlockPartialRollups`.
   - The only callers of `buildPartialRollupBody` are `createPartialRollup` and
     the tests.
-- `./quality.sh < /dev/null` on the head: PASSED. The parallel unit pass took
-  8m25s and the serial pass 3m51s. Lint, type check, fmt, markdownlint, mermaid,
-  semgrep, gitleaks and the completeness checks passed. The host skipped config
-  integration and checkov.
+- `./quality.sh < /dev/null`: PASSED on an earlier head (parallel unit pass
+  8m25s, serial pass 3m51s; lint, type check, fmt, markdownlint, mermaid,
+  semgrep, gitleaks and the completeness checks passed; the host skipped config
+  integration and checkov). It has not been re-run on the current head, which
+  adds a throw in `milestone_completion.ts` and edits to
+  `milestone_completion_test.ts` and `milestone_partial_rollup_test.ts`.
 
 Not done or not checked:
 
