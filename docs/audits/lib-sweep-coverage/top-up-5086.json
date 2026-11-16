@@ -1,0 +1,12 @@
+{
+  "issue": 5086,
+  "chunk": "top-up-5086",
+  "title": "top-up: model-scoped usage cooldown store",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5086",
+  "definition": "Review that recordModelUsageCooldown writes only WORK_DIR/.model_usage_cooldown.json (fixed filename, atomic temp-file + rename in the same directory, expired entries dropped), that readActiveModelCooldown returns an error naming the path for an unreadable, malformed or unknown-version file and never treats it as no cooldown, and that firstModelNotCooling only steps down the injected cheaper-model ladder and stops at the cheapest rung; the store never writes .rate_limit_signal.",
+  "status": "claimed",
+  "sweptAt": "7e4c100fa68397d2fbfd6e0a538ac71381b9fcd1",
+  "paths": [
+    "worker/deno/lib/model_usage_cooldown.ts"
+  ]
+}
