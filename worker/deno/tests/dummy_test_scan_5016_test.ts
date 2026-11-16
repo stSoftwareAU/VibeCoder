@@ -483,6 +483,179 @@ Deno.test("in an edited file, a test calling a function out of view is a note, n
   );
 });
 
+// --- Registration callbacks (Issue #5215) ---
+
+const REGISTER_HELPER =
+  `function register(name: string, fn: () => Promise<void>): void {
+  Deno.test({ name, fn });
+}
+`;
+
+Deno.test("a registration helper's asserting callback is accepted (Issue #5215)", () => {
+  const diff = added(
+    "tests/register_test.ts",
+    `import { assertEquals } from "@std/assert";
+${REGISTER_HELPER}register("observable result", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("a helper with the issue's options shape and an asserting callback is accepted (Issue #5215)", () => {
+  const diff = added(
+    "tests/ordinary_test.ts",
+    `function testAsOrdinaryUser(
+  name: string,
+  fn: () => Promise<void>,
+  alsoIgnore = false,
+): void {
+  Deno.test({ name, ignore: IS_WORKER_ACCOUNT || alsoIgnore, fn });
+}
+
+testAsOrdinaryUser("real shape", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("a registration helper's dummy call is refused on its call line, not the helper's (Issue #5215)", () => {
+  const diff = added(
+    "tests/register_test.ts",
+    `import { assertEquals } from "@std/assert";
+${REGISTER_HELPER}register("observable result", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+register("dummy", async () => {
+  await Promise.resolve(42);
+});
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 8]]);
+});
+
+Deno.test("a named callback defined in view and asserting is accepted (Issue #5215)", () => {
+  const diff = added(
+    "tests/named_test.ts",
+    `import { assertEquals } from "@std/assert";
+async function checks(): Promise<void> {
+  assertEquals(await Promise.resolve(42), 42);
+}
+Deno.test("named", checks);
+Deno.test({ name: "named opts", fn: checks });
+${REGISTER_HELPER}register("by name", checks);
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, []);
+});
+
+Deno.test("a named callback defined in view that asserts nothing is refused on each registration (Issue #5215)", () => {
+  const diff = added(
+    "tests/idle_test.ts",
+    `async function idle(): Promise<void> {
+  await Promise.resolve(42);
+}
+Deno.test("named", idle);
+Deno.test({ name: "opts", fn: idle });
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 4], ["no-assertion", 5]]);
+});
+
+Deno.test("a callback not defined in view is a note, not a finding (Issue #5215)", () => {
+  const file = "tests/imported_test.ts";
+  const diff = added(
+    file,
+    `import { imported } from "./elsewhere.ts";
+Deno.test("imported", imported);
+Deno.test({ name: "opts", fn: imported });
+`,
+  );
+  const scan = scanDummyTests(diff);
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [
+    { file, line: 2, kind: "unseen" },
+    { file, line: 3, kind: "unseen" },
+  ]);
+});
+
+Deno.test("a registration helper whose calls are not in view is a note on its Deno.test line (Issue #5215)", () => {
+  const file = "tests/register_test.ts";
+  const scan = scanDummyTests(added(file, REGISTER_HELPER));
+  assertEquals(scan.findings, []);
+  assertEquals(scan.notes, [{ file, line: 2, kind: "unseen" }]);
+});
+
+Deno.test("an inline options callback is judged as before (Issue #5215)", () => {
+  const dummy = added(
+    "tests/options_test.ts",
+    `Deno.test({ name: "x", fn: async () => {
+  await Promise.resolve(1);
+} });
+`,
+  );
+  assertEquals(rules(dummy), [["no-assertion", 1]]);
+  const asserting = added(
+    "tests/options_test.ts",
+    `Deno.test({ name: "x", fn: async () => {
+  assertEquals(1, 1);
+} });
+`,
+  );
+  assertEquals(rules(asserting), []);
+});
+
+Deno.test("a registration helper call nested in another call is judged (Issue #5215)", () => {
+  const diff = added(
+    "tests/register_test.ts",
+    `import { assertEquals } from "@std/assert";
+${REGISTER_HELPER}register("observable result", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+void Promise.resolve(register("nested dummy", async () => {
+  await Promise.resolve(1);
+}));
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 8]]);
+});
+
+Deno.test("a helper call directly inside a call's parentheses is judged (Issue #5215)", () => {
+  const diff = added(
+    "tests/register_test.ts",
+    `import { assertEquals } from "@std/assert";
+${REGISTER_HELPER}register("observable result", async () => {
+  assertEquals(await Promise.resolve(42), 42);
+});
+wrap(register("wrapped dummy", async () => {
+  await Promise.resolve(1);
+}));
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 8]]);
+});
+
+Deno.test("a helper call passing a named callback that asserts nothing is refused on the call line (Issue #5215)", () => {
+  const diff = added(
+    "tests/by_name_test.ts",
+    `async function idle(): Promise<void> {
+  await Promise.resolve(42);
+}
+${REGISTER_HELPER}register("by name", idle);
+`,
+  );
+  assertEquals(rules(diff), [["no-assertion", 7]]);
+});
+
 // --- What the diff shows ---
 
 Deno.test("an unchanged test in context is not judged; an edited one is", () => {

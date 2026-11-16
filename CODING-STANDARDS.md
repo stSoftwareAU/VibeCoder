@@ -525,7 +525,10 @@ Deno/TypeScript (`Deno.test`, and `it` / `test` in test files):
 - a test with no visible assertion that calls a helper defined in view is
   judged by the helper's assertions; in an edited file, a call to a function
   out of view makes it a checklist item instead, since that function may be
-  the helper that asserts.
+  the helper that asserts. A test registered with a named callback
+  (`Deno.test("x", check)`, `fn: check`) or through a registration helper's
+  callback parameter is judged by that callback's body, and a callback the diff
+  cannot resolve is a checklist item instead of a finding.
 
 The scan sees only the diff. Everything else in this section is the
 reviewer's to judge.

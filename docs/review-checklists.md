@@ -195,8 +195,9 @@ The deterministic dummy-test scan (`worker/deno/lib/dummy_test_scan.ts`,
 Issue #5016) adds a `dummy-test-scan` checklist through the same
 `{{REVIEW_CHECKLISTS}}` contract, in both consumers, for what it cannot judge
 alone: a mock-interaction assertion in a new or edited test, or a test in an
-edited file that asserts nothing in view but calls a function out of view.
-An item left without a verdict, or reported `missing`, blocks. The scan's
+edited file that asserts nothing in view but calls a function out of view, or
+a test whose registered callback is not defined in view. An item left without
+a verdict, or reported `missing`, blocks. The scan's
 hard findings (no assertion, success-only assertions, an ignore with no
 reason) are added by the code directly. The rules are in
 [CODING-STANDARDS.md](../CODING-STANDARDS.md#dummy-tests-and-how-tests-are-refused).
