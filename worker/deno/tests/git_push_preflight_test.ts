@@ -691,6 +691,134 @@ Deno.test("commitAndPushPending - a spelling or merge-conflict repair without pr
   }
 });
 
+// Issue #5169: the issue's failed step `cargo llvm-cov` reaches a spelling or
+// merge-conflict repair as the test-target compile it builds.
+Deno.test("commitAndPushPending - a spelling or merge-conflict repair compiles CI's cargo llvm-cov test targets and is refused when they fail (Issue #5169)", async () => {
+  const branch = "issue-5169-llvm-cov";
+  const { tmp, downstream } = await makeRepo("preflight_5169_cov_", branch);
+  try {
+    await Deno.mkdir(`${downstream}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${downstream}/.github/workflows/coverage.yml`,
+      [
+        "name: coverage",
+        "on:",
+        "  pull_request:",
+        "jobs:",
+        "  coverage:",
+        "    runs-on: ubuntu-latest",
+        "    steps:",
+        "      - run: cargo llvm-cov --workspace --fail-under-lines 80",
+        "",
+      ].join("\n"),
+    );
+    await Deno.writeTextFile(`${downstream}/Cargo.toml`, CARGO_TOML);
+    await runGit(["add", "."], downstream);
+    assertEquals((await runGit(["commit", "-m", "ci"], downstream)).code, 0);
+    await runGit(["push", "origin", "HEAD"], downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const before = await originSha(downstream, branch);
+
+    const run = async (compiles: boolean) => {
+      const calls: string[] = [];
+      const runner: PreFlightRunner = (command) => {
+        calls.push(command);
+        const compile = command.includes("--no-run");
+        return Promise.resolve({
+          started: true,
+          code: compile && !compiles ? 101 : 0,
+          stdout: compile ? "" : "cargo 1.80.0\n",
+          stderr: compile && !compiles
+            ? "error[E0308]: mismatched types\n  --> src/lib.rs:2:5\n"
+            : "",
+        });
+      };
+      const result = await commitAndPushPending(
+        branch,
+        "unused",
+        { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+        false,
+        { ...resolveRepairPreFlightSpec(undefined, "org/repo"), runner },
+      );
+      return { result, calls };
+    };
+
+    const red = await run(false);
+    assert(
+      !red.result.ok,
+      "a failing llvm-cov test-target compile must refuse",
+    );
+    if (!red.result.ok) {
+      assert(
+        red.result.error.message.includes("[PRE_PUSH_BLOCKED]"),
+        red.result.error.message,
+      );
+      assert(red.result.error.message.includes("E0308"));
+    }
+    assert(
+      red.calls.some((c) =>
+        c.includes("--no-run") && c.includes("--workspace")
+      ),
+      red.calls.join(" | "),
+    );
+    assertEquals(await originSha(downstream, branch), before);
+
+    // Valid-path control: the test targets compile, so the repair is pushed.
+    const green = await run(true);
+    assert(green.result.ok, green.result.ok ? "" : green.result.error.message);
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    assertEquals(await originSha(downstream, branch), head);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+// Issue #5169: a disk-full CI cargo check is a host fault, not a verdict. The
+// repair keeps its commits locally and is not published as passed.
+Deno.test("commitAndPushPending - a spelling or merge-conflict repair whose CI clippy hits a full disk keeps its commits unpushed (Issue #5169)", async () => {
+  const branch = "issue-5169-disk-full";
+  const { tmp, downstream } = await makeRepo("preflight_5169_disk_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const before = await originSha(downstream, branch);
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    const { runner } = cargoRunner({
+      started: true,
+      code: 101,
+      stdout: "",
+      stderr:
+        "error: failed to write `target/debug/deps/fixture.d`: No space left on device (os error 28)\n",
+    });
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { ...resolveRepairPreFlightSpec(undefined, "org/repo"), runner },
+    );
+
+    assert(!result.ok, "a disk-full check must not publish the repair");
+    if (!result.ok) {
+      assert(
+        result.error instanceof PrePushGateInfrastructureError,
+        result.error.message,
+      );
+    }
+    assertEquals(await originSha(downstream, branch), before);
+    // The WIP is retained: the agent's commit is still the local head.
+    assertEquals(
+      (await runGit(["rev-parse", "HEAD"], downstream)).stdout.trim(),
+      head,
+    );
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 /** A cargo runner whose CI clippy answer depends on the tree it runs in. */
 function baseAwareRunner(
   onHead: PreFlightCommandResult,
