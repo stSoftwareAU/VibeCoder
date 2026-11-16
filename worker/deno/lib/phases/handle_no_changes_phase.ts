@@ -55,6 +55,7 @@ import {
   postIssueRunStatsComment,
 } from "../issue_run_stats_comment.ts";
 import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
+import { tokenEconomizerNotRun } from "../token_economizer_run_stats.ts";
 import {
   reportIssueSubAgentDegradation,
 } from "../issue_sub_agent_degradation.ts";
@@ -194,6 +195,10 @@ async function closeAsCompleted(
       ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
       // …and its RTK status, `off` included (Issue #2385).
       ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+      // Issue #4958: what TokenEconomizer did and cost; a switched-off host
+      // reads `off`, an on host whose run ended before the agent reads `not-run`.
+      tokenEconomizer: state.tokenEconomizerRun ??
+        tokenEconomizerNotRun(ctx.config.tokenEconomizer.enabled),
       ...(subAgentDegradation ? { subAgentDegradation } : {}),
       // A safety refusal this run recorded and recovered from (Issue #3406).
       ...(state.agentRefusal ? { agentRefusal: state.agentRefusal } : {}),

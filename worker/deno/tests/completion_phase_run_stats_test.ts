@@ -605,6 +605,69 @@ Deno.test("completion - a run that never reached the RTK preparation mentions no
   );
 });
 
+function tokenEconomizerLines(body: string): string[] {
+  return body.split("\n").filter((line) =>
+    line.startsWith("- **TokenEconomizer:**")
+  );
+}
+
+Deno.test("completion - an enabled host whose run recorded no stats reports not-run (Issue #4958)", async () => {
+  const ctx = makeContext();
+  ctx.config = {
+    ...ctx.config,
+    tokenEconomizer: { ...ctx.config.tokenEconomizer, enabled: true },
+  };
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertEquals(tokenEconomizerLines(stats.body), [
+    "- **TokenEconomizer:** not-run — switched on, the run ended before the agent spawned",
+  ]);
+});
+
+Deno.test("completion - a switched-off host reports TokenEconomizer off (Issue #4958)", async () => {
+  const ctx = makeContext();
+  ctx.config = {
+    ...ctx.config,
+    tokenEconomizer: { ...ctx.config.tokenEconomizer, enabled: false },
+  };
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertEquals(tokenEconomizerLines(stats.body), [
+    "- **TokenEconomizer:** off",
+  ]);
+});
+
+Deno.test("completion - the stats the execute phase recorded are the ones rendered (Issue #4958)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-4-8"])],
+    tokenEconomizerRun: {
+      enabled: true,
+      status: "fallback",
+      persistence: "unavailable",
+    },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertEquals(tokenEconomizerLines(stats.body), [
+    "- **TokenEconomizer:** fallback — switched on, plugin not loaded",
+  ]);
+});
+
 /** Whether a recorded gh call added `degraded-model` to the issue. */
 function addedDegradedLabel(ghCalls: string[][], issueNumber: number): boolean {
   return ghCalls.some((a) =>

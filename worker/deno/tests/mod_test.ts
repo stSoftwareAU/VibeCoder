@@ -242,8 +242,10 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // Issue #4498 added `reclaim-host-caches` (count 159 → 160).
   // Issue #4658 added `pr-completion-report` (count 160 → 161).
   // Issue #4768 added `babysitter-repair` (count 161 -> 162).
-  assertEquals(commands.length, 162);
+  // Issue #4958 added `token-economizer-report` (count 162 → 163).
+  assertEquals(commands.length, 163);
   assertEquals(commands.includes("babysitter-repair"), true);
+  assertEquals(commands.includes("token-economizer-report"), true);
   assertEquals(commands.includes("reclaim-host-caches"), true);
   assertEquals(commands.includes("egress-selfcheck"), true);
   assertEquals(commands.includes("clear-worker-gate-labels"), true);
