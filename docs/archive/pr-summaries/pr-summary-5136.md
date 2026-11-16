@@ -141,9 +141,9 @@ flowchart TD
     NOT ENFORCED lines for files this diff does not touch.
   - `deno fmt --check` and `deno lint` on the changed source and test files:
     clean.
-- `./quality.sh < /dev/null`: not yet run on this head when this summary was
-  committed.
-  <!-- vibe-quality-gate-skipped reason="the branch was pushed before the full gate so the pre-push unit run could finish inside the run budget; the worker re-runs the gate before the PR" -->
+- `./quality.sh < /dev/null` on this head: `Result: PASSED (with skipped
+  checks)`. Config integration and checkov were skipped in this environment;
+  every other stage, including deno tests, semgrep and gitleaks, passed.
 
 Not done or not checked: the previous attempt's pre-push refusal
 (`deno task test:unit (1974 files)` exited 1) was not reproduced; its log is
