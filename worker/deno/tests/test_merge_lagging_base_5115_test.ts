@@ -34,9 +34,28 @@ const defaults: Scenario = {
 async function run(overrides: Partial<Scenario> = {}) {
   const opts = { ...defaults, ...overrides };
   const f = strictRefreshFixture();
-  const compares: string[] = [];
+  const refreshes: Array<{ pr: number; expectedHeadSha: string | null }> = [];
   const gh = async (args: string[]): Promise<string> => {
     const endpoint = args[1] ?? "";
+    // Fake update-branch: record the refresh as state and enforce GitHub's
+    // expected-head contract (a mismatched expected head is a 422).
+    const update = args.includes("PUT")
+      ? args.find((a) =>
+        /^repos\/owner\/repo\/pulls\/\d+\/update-branch$/.test(a)
+      )
+      : undefined;
+    if (update) {
+      const field = args.find((a) => a.startsWith("expected_head_sha="));
+      const expectedHeadSha = field ? field.split("=")[1]! : null;
+      if (expectedHeadSha !== null && expectedHeadSha !== f.head) {
+        throw new Error("HTTP 422: expected head sha didn't match");
+      }
+      refreshes.push({
+        pr: Number(update.split("/")[4]),
+        expectedHeadSha,
+      });
+      return "{}";
+    }
     if (args[0] === "api" && endpoint.endsWith("/pulls/10")) {
       const pr = JSON.parse(await f.gh(args));
       pr.base.sha = opts.prBaseSha;
@@ -58,7 +77,6 @@ async function run(overrides: Partial<Scenario> = {}) {
     const compare = /^repos\/owner\/repo\/compare\/([^/.]+)\.\.\.([^/.]+)$/
       .exec(endpoint);
     if (args[0] === "api" && compare) {
-      compares.push(endpoint);
       const [x, y] = [compare[1]!, compare[2]!];
       const ix = opts.history.indexOf(x);
       const iy = opts.history.indexOf(y);
@@ -96,29 +114,22 @@ async function run(overrides: Partial<Scenario> = {}) {
     { fleetAuthors: ["VibeCoderST"] },
     "test-5115",
   );
-  const puts = f.calls.filter((args) => args.includes("PUT"));
   const owners = f.comments.filter((row) =>
     row.body.includes("BASE_REFRESH_OWNER")
   );
-  return { f, compares, result, puts, owners };
+  return { f, result, refreshes, owners };
 }
 
 Deno.test("lagging base.sha, test-merge parent and live tip are all accepted when the parent is on the base history (Issue #5115)", async () => {
   const s = await run();
   if (!s.result.ok) throw s.result.error;
-  assertEquals(s.puts.length, 1);
-  assertEquals(s.puts[0]!.slice(-2), ["-f", `expected_head_sha=${s.f.head}`]);
-  assertEquals(
-    [...new Set(s.compares)],
-    [`repos/owner/repo/compare/${LIVE_TIP}...${TEST_MERGE_PARENT}`],
-  );
+  assertEquals(s.refreshes, [{ pr: 10, expectedHeadSha: s.f.head }]);
 });
 
 Deno.test("test-merge parent equal to the live tip is accepted while base.sha lags (Issue #5115)", async () => {
   const s = await run({ scriptedBaseParent: LIVE_TIP });
   if (!s.result.ok) throw s.result.error;
-  assertEquals(s.puts.length, 1);
-  assertEquals(s.puts[0]!.slice(-2), ["-f", `expected_head_sha=${s.f.head}`]);
+  assertEquals(s.refreshes, [{ pr: 10, expectedHeadSha: s.f.head }]);
 });
 
 Deno.test("test merge with a head parent other than the PR head is refused (Issue #5115)", async () => {
@@ -135,7 +146,7 @@ Deno.test("test merge with a head parent other than the PR head is refused (Issu
       "test-merge-parents-stale",
     );
   }
-  assertEquals(s.puts.length, 0);
+  assertEquals(s.refreshes, []);
   assertEquals(s.owners.length, 0);
 });
 
@@ -149,7 +160,7 @@ Deno.test("test-merge parent that is not on the live base history is refused (Is
       "test-merge-parents-stale",
     );
   }
-  assertEquals(s.puts.length, 0);
+  assertEquals(s.refreshes, []);
   assertEquals(s.owners.length, 0);
 });
 
@@ -165,7 +176,7 @@ Deno.test("test-merge parent newer than the live tip read is refused (Issue #511
       "test-merge-parents-stale",
     );
   }
-  assertEquals(s.puts.length, 0);
+  assertEquals(s.refreshes, []);
   assertEquals(s.owners.length, 0);
 });
 
@@ -189,6 +200,6 @@ for (
     if (!s.result.ok) {
       assert(s.result.error.message.includes(reason), s.result.error.message);
     }
-    assertEquals(s.puts.length, 0);
+    assertEquals(s.refreshes, []);
   });
 }

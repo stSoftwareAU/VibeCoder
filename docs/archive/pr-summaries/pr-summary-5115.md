@@ -63,9 +63,12 @@ flowchart TD
 
 - The fake GitHub in `worker/deno/tests/test_merge_lagging_base_5115_test.ts`
   stands in for the REST endpoints read by `readTestMerge` (`pulls/N`,
-  `git/commits/<sha>`, `branches/<base>`, `compare/<a>...<b>`); its compare
-  answers come from a linear history array, matching the observed
-  `behind`/`identical` statuses above.
+  `git/commits/<sha>`, `branches/<base>`, `compare/<a>...<b>`) and for
+  `PUT pulls/N/update-branch`; its compare answers come from a linear history
+  array, matching the observed `behind`/`identical` statuses above. The fake
+  records each accepted update-branch as a refresh state (PR number and
+  expected head) and rejects an expected head other than the PR head with a 422,
+  so the tests assert outcomes, not request text.
 - `#5115: Strict-base refresh compares the test merge's base parent to the PR's lagging base.sha, so a busy base refuses an approved, green, BEHIND PR on pass after pass`
   — the only issue number this diff adds as provenance.
 
@@ -86,11 +89,12 @@ flowchart TD
 ## Test Plan
 
 - Added `worker/deno/tests/test_merge_lagging_base_5115_test.ts`:
-  - three distinct commits on the base history → refresh requested once (one
-    `PUT update-branch`), compare called as `<live tip>...<test-merge parent>`;
+  - three distinct commits on the base history → exactly one refresh recorded
+    by the fake, for the PR head;
   - test-merge parent equal to the live tip → accepted;
   - head parent other than the PR head → refused with the stale message,
-    classified `test-merge-parents-stale`, no `PUT`, no owner comment;
+    classified `test-merge-parents-stale`, no refresh recorded, no owner
+    comment;
   - base parent off the live base history, and base parent newer than the live
     tip → refused;
   - live tip unreadable, compare status missing → fail loud with their own
