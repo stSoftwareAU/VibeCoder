@@ -374,6 +374,8 @@ apply_test_env() {
 
 (
     apply_test_env
+    # The inner script is deliberately single-quoted: $1/$@ expand in the child, not here.
+    # shellcheck disable=SC2016
     exec setsid bash -c '
         result=$1
         shift
