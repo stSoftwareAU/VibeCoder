@@ -78,6 +78,7 @@ import {
   seedClaimedIssueGuard,
 } from "./claimed_issue_guard.ts";
 import { listTemplates } from "./idle_task_template.ts";
+import { tokenEconomizerNotRun } from "./token_economizer_run_stats.ts";
 // Importing the security-scan template ensures it is registered when
 // the idle-task pre-flight check below consults the registry. Issue
 // #2398 added the supply-chain-readiness side-effect import alongside
@@ -323,6 +324,10 @@ async function workOnIssueRecorded(
       // archive a switched-on host's early exit as a control run.
       rtk: state.rtkOutput ??
         { status: "off", enabled: ctx.config.rtkOutput.enabled },
+      // Issue #4958: what TokenEconomizer did and cost; a run that ended before
+      // the agent spawned states the host's real switch, as RTK does above.
+      tokenEconomizer: state.tokenEconomizerRun ??
+        tokenEconomizerNotRun(ctx.config.tokenEconomizer.enabled),
     };
   } catch (err) {
     outcome = withRunOutcomeNotes(

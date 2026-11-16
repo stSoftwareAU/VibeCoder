@@ -61,6 +61,14 @@ side by side, so each round's lines are tagged with its PR
 the PushNotification in [SKILL.md](../SKILL.md)'s step 4; `summary.md` still
 shows what is waiting.
 
+The reviewer requests `container-launch-plan --review-round`, which selects
+an image containing both Claude and Codex, even on a Claude-only worker host.
+The plan builds a missing image (including any configured private extension)
+with the existing pinned provider installer. The image tag covers that provider
+set, and egress permits both providers. Credential mounts remain those selected
+by the worker configuration; Codex still uses the round's own login. The first
+round after an image change can take longer while that image is built.
+
 ## Several hosts
 
 Several hosts can each run `run.sh`. Each machine keeps its own `runner.lock`,
@@ -210,7 +218,10 @@ naming what it switched to. Running out of quota is never logged as an error.
    Do not copy the worker's seed or the worker's agent-state `auth.json` there.
    Issue #5127 (a follow-up to Issue #5083) added this.
 4. **Opus.** When Astra is unavailable or usage-limited, a configured Fable
-   round tries `claude-opus-5-5` at `xhigh` on the current Claude subscription.
+   round tries `claude-opus-5-5` at `xhigh` across every available Claude subscription.
+   Fable refusals do not exclude those subscriptions from Opus. A missing
+   Codex executable also skips Astra and reaches Opus; other execution failures
+   still stop the round.
 5. **DeepSeek.** Only after the eligible Fable, Astra and Opus attempts have
    exhausted quota (or Astra has no credential),
    the round runs once more on the worker's **DeepSeek** provider

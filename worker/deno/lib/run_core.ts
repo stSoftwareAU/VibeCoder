@@ -130,6 +130,7 @@ import {
 } from "./run_timeline.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
+import type { TokenEconomizerRunStats } from "./token_economizer_run_stats.ts";
 import type {
   CallbackGraftContext,
   CallbackRunTelemetry,
@@ -1085,6 +1086,8 @@ export interface RunCoreDeps {
        * a run that reported no RTK preparation at all.
        */
       rtk?: RtkOutputResult;
+      /** What TokenEconomizer did and cost in the run (Issue #4958). */
+      tokenEconomizer?: TokenEconomizerRunStats;
     }>
   >;
 
@@ -2520,6 +2523,8 @@ interface TerminalRun {
   codegraph?: CodegraphContextResult;
   /** What the run's RTK preparation decided (Issue #2386), when it ran. */
   rtk?: RtkOutputResult;
+  /** What TokenEconomizer did and cost in the run (Issue #4958), when it ran. */
+  tokenEconomizer?: TokenEconomizerRunStats;
   /**
    * The cycle's exactly-once guard. Every dispatch site for a claim shares
    * one, so a run reported by its own release is not reported again by the
@@ -2547,6 +2552,7 @@ function withProcessCallbackFacts(
       telemetryAbsentReason?: TelemetryAbsentReason;
       codegraph?: CodegraphContextResult;
       rtk?: RtkOutputResult;
+      tokenEconomizer?: TokenEconomizerRunStats;
     };
   },
 ): TerminalRun {
@@ -2571,6 +2577,9 @@ function withProcessCallbackFacts(
       : { telemetryAbsentReason: "agent_not_invoked" }),
     ...(value.codegraph ? { codegraph: value.codegraph } : {}),
     ...(value.rtk ? { rtk: value.rtk } : {}),
+    ...(value.tokenEconomizer
+      ? { tokenEconomizer: value.tokenEconomizer }
+      : {}),
   };
 }
 
@@ -2618,6 +2627,9 @@ function dispatchIssueCallbacks(
           : {}),
         ...(ran.codegraph ? { codegraph: ran.codegraph } : {}),
         ...(ran.rtk ? { rtk: ran.rtk } : {}),
+        ...(ran.tokenEconomizer
+          ? { tokenEconomizer: ran.tokenEconomizer }
+          : {}),
       });
     } catch (error) {
       deps.logError(

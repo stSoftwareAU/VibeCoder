@@ -55,6 +55,7 @@ import {
   postIssueRunStatsComment,
 } from "../issue_run_stats_comment.ts";
 import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
+import { tokenEconomizerNotRun } from "../token_economizer_run_stats.ts";
 import {
   reportIssueSubAgentDegradation,
 } from "../issue_sub_agent_degradation.ts";
@@ -115,7 +116,7 @@ async function retryDescribedCodeChange(
     await deps.github.createClient(logger).postComment(
       ctx.repo,
       ctx.issueNumber,
-      `## Retry: make the code change\n\nThe last run described a change to ${fileList} but committed nothing, so this is a failed implementation, not an analysis-only answer. The next attempt must edit and commit the files rather than describe the change.`,
+      `## Retry: make the code change\n\nThe last run described a change to ${fileList} but committed no change to them, so this is a failed implementation, not an analysis-only answer. The next attempt must edit and commit the files rather than describe the change.`,
     );
   } catch (err) {
     logger.warn("Failed to post the retry nudge", {
@@ -194,6 +195,10 @@ async function closeAsCompleted(
       ...(state.codegraphContext ? { codegraph: state.codegraphContext } : {}),
       // …and its RTK status, `off` included (Issue #2385).
       ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+      // Issue #4958: what TokenEconomizer did and cost; a switched-off host
+      // reads `off`, an on host whose run ended before the agent reads `not-run`.
+      tokenEconomizer: state.tokenEconomizerRun ??
+        tokenEconomizerNotRun(ctx.config.tokenEconomizer.enabled),
       ...(subAgentDegradation ? { subAgentDegradation } : {}),
       // A safety refusal this run recorded and recovered from (Issue #3406).
       ...(state.agentRefusal ? { agentRefusal: state.agentRefusal } : {}),

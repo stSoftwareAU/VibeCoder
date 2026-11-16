@@ -1839,12 +1839,36 @@ export function enabledAgentProviders(
 }
 
 /**
+ * Providers installed for reviewer fallbacks (Issue #5164).
+ *
+ * Reviews need Claude and Codex even on a worker configured for only one of
+ * them. Preserve configured providers and deduplicate the image set; callers
+ * must still use the original configured set for worker credential mounts.
+ */
+export function reviewImageAgentProviders(
+  configured: readonly AgentProviderDescriptor[],
+): AgentProviderDescriptor[] {
+  return [
+    ...new Map(
+      [
+        ...configured,
+        resolveAgentProvider("claude"),
+        resolveAgentProvider("codex"),
+      ]
+        .map((provider) => [provider.id, provider]),
+    ).values(),
+  ];
+}
+
+/**
  * The {@link AGENT_PROVIDERS_BUILD_ARG} value one image build needs (#729).
  *
  * The set handed in is the very one the credential and mount path resolved —
  * `resolveEnabledAgentProviderIds` for a configured deployment, or the ids of
  * the descriptors a caller drove the plan with — so a single `.config.json`
- * value cannot mean one thing to the build and another to the mounts. Only the
+ * value cannot accidentally mean one thing to the build and another to the mounts.
+ * Review images deliberately add the fallback executables through
+ * {@link reviewImageAgentProviders} without adding worker credential mounts. Only the
  * *shape* is re-checked here: registration is settled upstream, and the
  * per-invocation seam deliberately accepts a descriptor a caller constructed
  * without registering it ({@link selectAgentProvider}).

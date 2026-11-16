@@ -687,6 +687,40 @@ Deno.test("run_core callbacks - the terminal run carries the run's RTK outcome (
   assertEquals(runs[0]?.codegraph, undefined);
 });
 
+Deno.test("run_core callbacks - the terminal run carries the run's TokenEconomizer stats (Issue #4958)", async () => {
+  const { runs, runIssueCallbacks } = recorder();
+  const time = clock();
+  const deps = createMockDeps({
+    ...time,
+    runIssueCallbacks,
+    findNextIssue: issueQueue([issue("o/a", 1)]),
+    processIssue: () => {
+      time.burnCycle();
+      return Promise.resolve({
+        ok: true,
+        value: {
+          success: true,
+          tokenEconomizer: {
+            enabled: true,
+            status: "stopped" as const,
+            persistence: "unavailable" as const,
+            factsInjected: 4_958,
+          },
+        },
+      });
+    },
+  });
+
+  await runCycle(deps);
+
+  assertEquals(runs[0]?.tokenEconomizer, {
+    enabled: true,
+    status: "stopped",
+    persistence: "unavailable",
+    factsInjected: 4_958,
+  });
+});
+
 Deno.test("run_core callbacks - a run that reported no RTK outcome carries none (Issue #2386)", async () => {
   const { runs, runIssueCallbacks } = recorder();
   const time = clock();

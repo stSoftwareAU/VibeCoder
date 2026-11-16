@@ -471,10 +471,66 @@ function calleesIn(body: string, lang: Lang): string[] {
   return [...out];
 }
 
+/** Longest return-type annotation the body search steps over. */
+const MAX_RETURN_TYPE_CHARS = 2000;
+
+/**
+ * Where a TS function's body search starts: past a `:` return-type
+ * annotation, so the `{` of an object type literal in it is not taken for
+ * the body (Issue #5065). For an arrow it stops at the `=>` that ends the
+ * annotation. -1 when the annotation does not end in view.
+ */
+function afterReturnType(masked: string, from: number, arrow: boolean): number {
+  let i = from;
+  while (i < masked.length && /\s/.test(masked[i]!)) i++;
+  if (masked[i] !== ":") return from;
+  i++;
+  const limit = Math.min(masked.length, i + MAX_RETURN_TYPE_CHARS);
+  let angle = 0;
+  let typeExpected = true;
+  // SIMPLE-ON-PURPOSE: steps over at most 2,000 characters of return type, so many definitions cannot make the scan quadratic — upgrade when a real helper's return type exceeds 2,000 characters
+  while (i < limit) {
+    const c = masked[i]!;
+    if (/\s/.test(c)) {
+      i++;
+    } else if (c === "=" && masked[i + 1] === ">") {
+      if (angle === 0 && arrow) return i;
+      i += 2;
+      typeExpected = true;
+    } else if (c === "{" && angle === 0 && !typeExpected) {
+      return i;
+    } else if (c === "(" || c === "[" || c === "{") {
+      const close = closingBracket(masked, i);
+      if (close < 0) return -1;
+      i = close + 1;
+      typeExpected = false;
+    } else if (c === "<") {
+      angle++;
+      typeExpected = true;
+      i++;
+    } else if (c === ">") {
+      angle--;
+      if (angle < 0) return -1;
+      typeExpected = false;
+      i++;
+    } else if (c === "|" || c === "&" || c === "," || c === ":" || c === "?") {
+      typeExpected = true;
+      i++;
+    } else if (c === ";" || (c === "=" && angle === 0)) {
+      return -1;
+    } else {
+      typeExpected = false;
+      i++;
+    }
+  }
+  return -1;
+}
+
 /**
  * Functions defined in view (name to masked body, or null when the body runs
  * past its hunk), so a test that delegates to a helper is judged by the
- * helper's assertions.
+ * helper's assertions. A TS return-type annotation is stepped over first
+ * (Issue #5065).
  */
 function definitionsIn(
   masked: string,
@@ -494,13 +550,20 @@ function definitionsIn(
       into.set(name, null);
       continue;
     }
-    const rest = masked.slice(paramsEnd + 1);
-    const brace = masked.indexOf("{", paramsEnd);
-    const arrowExpr = lang === "ts" &&
-      /^\s*(?::[^=]{0,120})?=>\s*[^{\s]/.test(rest);
+    const arrow = lang === "ts" && m[0].endsWith("(");
+    const bodyFrom = lang === "ts"
+      ? afterReturnType(masked, paramsEnd + 1, arrow)
+      : paramsEnd + 1;
+    if (bodyFrom < 0) {
+      into.set(name, null);
+      continue;
+    }
+    const rest = masked.slice(bodyFrom);
+    const brace = masked.indexOf("{", bodyFrom);
+    const arrowExpr = lang === "ts" && /^\s*=>\s*[^{\s]/.test(rest);
     if (arrowExpr) {
-      const nl = masked.indexOf("\n", paramsEnd);
-      into.set(name, masked.slice(paramsEnd, nl < 0 ? masked.length : nl));
+      const nl = masked.indexOf("\n", bodyFrom);
+      into.set(name, masked.slice(bodyFrom, nl < 0 ? masked.length : nl));
       continue;
     }
     const close = brace < 0 ? -1 : closingBracket(masked, brace);

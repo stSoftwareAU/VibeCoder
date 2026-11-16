@@ -248,10 +248,18 @@ function listItemsUnder(markdown: string, heading: RegExp): string[] {
  * Match the entry's leading status, allowing Markdown emphasis/code markers.
  * Status words inside criterion prose or nested test descriptions are not an
  * assessment (for example, "a missing or unreadable value" in a negative test).
+ * `partially` / `partially met` read as `partial`, `not met` as `missing`
+ * (Issue #5053), so an unmet entry in another spelling is never dropped.
  */
 function statusOf(entry: string): ClosureEntry["status"] | null {
-  const match = entry.match(/^[\s*_`]*(unrequested|partial|missing|met)\b/i);
-  return match ? match[1]!.toLowerCase() as ClosureEntry["status"] : null;
+  const match = entry.match(
+    /^[\s*_`]*(unrequested|partially(?:[\s*_`-]+met)?|partial|not[\s*_`-]+met|missing|met)\b/i,
+  );
+  if (!match) return null;
+  const word = match[1]!.toLowerCase();
+  if (word.startsWith("partial")) return "partial";
+  if (word.startsWith("not")) return "missing";
+  return word as ClosureEntry["status"];
 }
 
 // The `evidence:` and `reason:` field patterns are shared with the

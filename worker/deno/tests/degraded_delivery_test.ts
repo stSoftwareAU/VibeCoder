@@ -285,3 +285,72 @@ Deno.test("assessScopeShortfalls - a pending-looking entry whose evidence shows 
     { criterion: "required CI checks pass", status: "partial" },
   ]);
 });
+
+Deno.test("assessScopeShortfalls - a failed check at the start of rendered evidence is a shortfall, not pending (Issue #5063)", () => {
+  const issue = "## Acceptance Criteria\n\n- [ ] required CI checks pass\n";
+  for (
+    const evidence of [
+      "CI failed on lint",
+      "CI failed",
+      "quality gate failed",
+      "tests failing",
+    ]
+  ) {
+    const rendered = renderClosureBlocks({
+      criteria: [{
+        criterion: "required CI checks pass",
+        status: "partial",
+        evidence,
+        reason: "CI not yet verified",
+      }],
+      standards: [{ status: "clean", finding: "checked" }],
+      dropped: [],
+    });
+    assertEquals(
+      assessScopeShortfalls(issue, rendered).shortfalls,
+      [{ criterion: "required CI checks pass", status: "partial" }],
+      `evidence ${evidence}: ${rendered}`,
+    );
+  }
+  for (
+    const body of [
+      '## Acceptance Criteria\n<!-- vibe-spec-review inputs="diff+issue-body" -->\n' +
+      "- **partial** — required CI checks pass — evidence: **`CI failed`** — reviewer: partial — reason: CI not yet verified",
+      '## Acceptance Criteria\n<!-- vibe-spec-review inputs="diff+issue-body" -->\n' +
+      "- **partial** — required CI checks pass — evidence: `lib/x.ts`; `CI failed` — reviewer: partial — reason: CI not yet verified",
+    ]
+  ) {
+    assertEquals(
+      assessScopeShortfalls(issue, body).shortfalls,
+      [{ criterion: "required CI checks pass", status: "partial" }],
+      body,
+    );
+  }
+});
+
+Deno.test("assessScopeShortfalls - a passed check at the start of rendered evidence stays pending (Issue #5063)", () => {
+  const issue = "## Acceptance Criteria\n\n- [ ] required CI checks pass\n";
+  for (
+    const evidence of [
+      "CI passed on lint",
+      "quality gate passed",
+      "CI failed; CI passed",
+    ]
+  ) {
+    const rendered = renderClosureBlocks({
+      criteria: [{
+        criterion: "required CI checks pass",
+        status: "partial",
+        evidence,
+        reason: "CI not yet verified",
+      }],
+      standards: [{ status: "clean", finding: "checked" }],
+      dropped: [],
+    });
+    assertEquals(
+      assessScopeShortfalls(issue, rendered).shortfalls,
+      [],
+      `evidence ${evidence}: ${rendered}`,
+    );
+  }
+});
