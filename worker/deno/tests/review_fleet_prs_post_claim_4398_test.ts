@@ -240,6 +240,10 @@ for (
         human(13),
       ]),
     );
+    // The round's test-change policy snapshot (Issue #5174): an empty config,
+    // which is the policy this harness always ran under.
+    const policyConfig = `${home}/test-policy.json`;
+    await Deno.writeTextFile(policyConfig, "{}");
     const shimLog = `${home}/gh.log`;
     const deleted = `${home}/deleted.txt`;
     if (replay) {
@@ -281,6 +285,7 @@ for (
         POST,
         `--input=${input}`,
         `--state-dir=${home}/state`,
+        `--config=${policyConfig}`,
       ],
       env: {
         DENO_DIR: denoCache,
