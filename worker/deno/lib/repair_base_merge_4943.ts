@@ -179,7 +179,7 @@ export const BASE_REFRESH_COUNTERS_FILE = "base_refresh_counters.json";
  * Add one decision to the durable `{dir}/base_refresh_counters.json`
  * (`{ counters: { "baseRefresh.<outcome>.<source>": n } }`, cumulative). The
  * standalone CI, feedback, spelling and babysitter commands do not write the
- * worker's per-cycle `fault_tolerance_summary.json`, so this file is how an
+ * worker's per-run `fault_tolerance_summary.json`, so this file is how an
  * automatic follow-up reads their `baseRefresh.*` totals without parsing logs.
  * Never throws: persistence must not change the refresh or repair outcome.
  */
