@@ -118,7 +118,8 @@ flowchart LR
 - Full `./quality.sh` on 65a4c253 failed only on the missing sweep-slice claim
   for `run_record_only.ts` (completeness checks, and
   `tests/lib_sweep_coverage_test.ts` in the deno tests). de290574 fixes that.
-  The re-run result is below.
+  The re-run on 480d4e31 passed with skipped checks: config integration (no
+  `.config.json`) and checkov (not installed here).
 - Not changed: the standalone `execute-claude-phase` command
   (`worker/deno/lib/execute_claude_phase.ts`, `runExecuteClaudePhase`) keeps its
   own commit-count change detection. The issue names the fleet's issue-run
