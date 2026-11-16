@@ -283,10 +283,12 @@ syncs that `setup.sh` performs at deploy time — the workflow sync,
 syncs per add-repo issue would spend API budget for no benefit.
 
 Best-practice setup is instead **delegated to the twenty idle tasks**. The seeded
-`security-scan`, `best-practices`, `test-audit`, `github-actions-audit`, and
+`security-scan`, `best-practices`, `github-actions-audit`, and
 `supply-chain-readiness` wrappers bring a newly added repo up to standard over
 the coming idle cycles — they file findings for missing CI gates, unpinned
 GitHub Actions, supply-chain gaps, and the rest, which a human then triages.
+The `test-audit` wrapper is seeded only when the repo's `.config.json` names it
+(Issue #5096); see [Opt-in templates](IDLE-TASK-FRAMEWORK.md#opt-in-templates--registered-is-not-enabled-issue-5096).
 
 ## Visibility gating
 

@@ -72,6 +72,12 @@
  * the caller (`run_core.ts`) already gates the filer on the scan loop's
  * verdict, and label-only dedup prevents flooding within a repo.
  *
+ * Issue #5096: opt-in templates (`test-audit`) are excluded from both the
+ * random pick and the cadence-bias pick unless `.config.json` names them,
+ * either with a positive `idle_task_template_weights` entry or with an entry
+ * in `idle_task_cadence.templates`. The bias step logs such a pair as
+ * `bias_skipped reason=opt_in_not_configured` and moves on.
+ *
  * The command never throws — every failure mode (gh failure, label
  * create failure, dedup query failure) is logged and surfaced as
  * `success: false` so the calling shell sees a non-zero exit while the
@@ -100,6 +106,12 @@ import {
   NEVER_RUN_OVERDUE_DAYS,
 } from "../lib/idle_task_cadence.ts";
 import { loadDueScans as defaultLoadDueScans } from "../lib/idle_task_due_scans.ts";
+// Issue #5096: opt-in templates (`test-audit`) run only when the owner
+// config names them.
+import {
+  authorisedOptInTemplates,
+  isAutoEnabledIdleTaskTemplate,
+} from "../lib/idle_task_opt_in.ts";
 import {
   addLabelToIssue as defaultAddLabelToIssue,
   ensureIdleTaskLabel as defaultEnsureIdleTaskLabel,
@@ -829,6 +841,9 @@ export const maybeFileIdleTaskCommand: Command = {
     // the template pick so a single seeded RNG pins both behaviours in
     // tests.
     const templateWeights = config.idleTaskTemplateWeights ?? {};
+    // Issue #5096: opt-in templates are offered to the pickers only when the
+    // owner config names them.
+    const authorisedOptIn = authorisedOptInTemplates(config);
     const pickTemplateFn = deps.pickTemplateFn ??
       ((templates: IdleTaskTemplate[]) =>
         weightedPickTemplate(templates, templateWeights, randomFn));
@@ -958,7 +973,13 @@ export const maybeFileIdleTaskCommand: Command = {
     // label-only dedup below prevents flooding within a repo.
 
     // 1. Pick a template.
-    const template = pickTemplateFn(listTemplates());
+    // Issue #5096: an opt-in template the config does not name is never
+    // offered to the picker.
+    const template = pickTemplateFn(
+      listTemplates().filter((t) =>
+        isAutoEnabledIdleTaskTemplate(t.name, authorisedOptIn)
+      ),
+    );
     if (template === null) {
       log("[idle-task] action=skipped reason=no_template");
       return {
@@ -1180,6 +1201,14 @@ export const maybeFileIdleTaskCommand: Command = {
         if (!monitoredSet.has(due.repo)) continue;
         const dueTemplate = getTemplate(due.template);
         if (dueTemplate === undefined) continue;
+        // Issue #5096: an opt-in template the config does not name is not
+        // filed by the cadence bias, however overdue its pair is.
+        if (!isAutoEnabledIdleTaskTemplate(dueTemplate.name, authorisedOptIn)) {
+          log(
+            `[idle-task] action=bias_skipped template=${dueTemplate.name} repo=${due.repo} reason=opt_in_not_configured`,
+          );
+          continue;
+        }
 
         const outcome = await checkRepoGates(due.repo, dueTemplate, gateDeps);
         if (outcome.kind === "eligible") {

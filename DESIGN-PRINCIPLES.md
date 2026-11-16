@@ -1917,7 +1917,7 @@ suppression syntax, CI-gate (linter + compile) rules).
 
 ### Test-audit scans (template #3)
 
-The test-audit scan is the third registered idle-task template. It runs a
+The test-audit scan is the third registered idle-task template. When it is enabled, it runs a
 **language-agnostic static test-suite maintainability and coverage-gap audit**
 (short display name "Test Audit"): it flags implementation-coupled tests (HOW)
 that assert on incidental implementation details rather than observable
@@ -1928,6 +1928,14 @@ reviews source but never executes the tests, so it never claims dynamically
 measured coverage. There is no bucket — a single run inspects every test
 ecosystem present (Deno/TypeScript, JavaScript, Rust, Java, Go, Python,
 shell/BATS, Cypress, Playwright).
+
+**Opt-in (Issue #5096).** `test-audit` is registered but **opt-in**: it is not
+automatic idle work unless the owner's `.config.json` names it, either with a
+positive `idle_task_template_weights` entry or a `test-audit` entry under
+`idle_task_cadence.templates`. It remains available on explicit request
+(`raise-single-idle-task`, a human-filed `Run a test-audit scan` issue, or the
+`work-on-issue` CLI). See
+[Opt-in templates](docs/IDLE-TASK-FRAMEWORK.md#opt-in-templates--registered-is-not-enabled-issue-5096).
 
 **Thirteen audit checks.** Phase 2 of `prompts/test_audit/` walks every test file
 against ten **test-maintainability smells**: (1) implementation-coupled
@@ -1976,7 +1984,7 @@ verified starting point; the pre-pass is best-effort (failure → `(none)`
 sentinel) and Claude self-drives the non-Deno languages by static grep. The fix
 is to **add** a behaviour-based (WHAT) test — never auto-written (issue-only).
 
-**Cadence.** At most once per week per repo (`cooldownHours: 168`).
+**Cadence.** When enabled, at most once per week per repo (`cooldownHours: 168`).
 
 **Cap and id.** A single run files at most six standalone findings. Each
 finding's stable id is `BP-<12 hex>` computed with a `"test-audit"`

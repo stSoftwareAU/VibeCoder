@@ -26,10 +26,32 @@ implementation and review; protect unrelated features with their deterministic
 regression tests. A later diagnosed bug gets a failing regression test before
 its fix. Explicitly requested or configured audits remain separate work.
 
-**Implementation status:** the prompt states this boundary, but the registered
-`test-audit` template is still a candidate for automatic idle selection.
-[#5096](https://github.com/stSoftwareAU/VibeCoder/issues/5096) tracks the runtime
-change. This manual does not claim that changing a prompt disables the filer.
+**Opt-in (Issue #5096):** `test-audit` is registered but **opt-in**, so it is
+not automatic idle work. The opt-in set is `OPT_IN_IDLE_TASK_TEMPLATES` in
+[`worker/deno/lib/idle_task_opt_in.ts`](../worker/deno/lib/idle_task_opt_in.ts).
+The idle tick's random pick and cadence bias, and the bulk seed sweeps
+(`add-repo:`, `seed-idle-tasks:`, `create-all-idle-task-wrappers` and
+`raise-all-idle-tasks`), leave it out unless the owner's `.config.json` names it.
+`raise-all-idle-tasks` reads no config, so it always leaves `test-audit` out.
+
+- **To enable automatic runs**, name it in `.config.json`: a positive
+  `idle_task_template_weights` entry for `test-audit`, or a `test-audit` entry
+  under `idle_task_cadence.templates`. No new config key is involved.
+- **To request one run explicitly**, use any of these. Each still works when the
+  template is not enabled:
+  - `raise-single-idle-task --template test-audit --repo owner/repo` files the
+    wrapper and stamps the final line of its body with
+    `<!-- vibe-idle-task-requested -->`;
+  - a human (non-fleet author) files an issue titled `Run a test-audit scan`;
+  - the `work-on-issue` CLI on a wrapper is not gated.
+- **Claim gate.** When the main loop claims a `test-audit` wrapper authored by a
+  fleet account, and the repo's config neither enables the template nor the body
+  ends with the requested marker, the route closes the wrapper with an explanatory
+  comment and does not run the scan. This stops existing or label-backfilled fleet
+  wrappers from bypassing the opt-in. An unknown author is treated as not requested.
+
+The prompt states this boundary. Changing the prompt does not disable the filer;
+the opt-in is enforced by the config and the claim gate described above.
 
 ## Design intent — Static Test-Suite Maintainability and Coverage-Gap Audit
 
@@ -208,7 +230,7 @@ sequenceDiagram
 
     Main->>Filer: idle pass — nothing claimable
     Filer->>Filer: per-repo wrapper census<br/>(which repos already hold one?)
-    Filer->>Filer: 1/20 RNG picks test-audit<br/>(uniform over the registered templates)
+    Filer->>Filer: 1/20 RNG picks test-audit<br/>(only when the config enables it — opt-in)
     Filer->>Template: buildIssueBody(repo)
     Template->>Template: load prompts/test_audit/<br/>(substitute placeholders)
     Template->>GH: gh issue create — title `Run a test-audit scan`,<br/>label `idle-task`, no milestone
@@ -234,7 +256,7 @@ flowchart TD
     classDef output fill:#dcfce7,stroke:#15803d,color:#1f2937;
 
     Idle[Idle trigger<br/>run_core: nothing claimable]
-    Idle --> Pick{1/20 RNG over the<br/>registered idle-task templates}
+    Idle --> Pick{1/20 RNG over the<br/>enabled idle-task templates}
     Pick -- test-audit --> FileWrapper[File wrapper issue<br/>title: 'Run a test-audit scan'<br/>label: idle-task<br/>no milestone — skipMilestone: true]:::output
     FileWrapper --> Claim[Next iteration<br/>claims the idle-task issue]
     Claim --> Ensure[Ensure `test-audit` label exists]:::phase
@@ -271,10 +293,10 @@ with the `idle-task` label and the worker will run it identically.
 - **No milestone** — the template sets `skipMilestone: true`, so the
   wrapper never gates a milestone-merge PR.
 
-## Cadence — once per week per repo
+## Cadence — once per week per repo (when enabled)
 
-The template sets `cooldownHours: 168`, so a given repo is scanned for
-test quality **at most once per week**. The per-repo cooldown gate
+The template sets `cooldownHours: 168`, so, when the template is enabled, a
+given repo is scanned for test quality **at most once per week**. The per-repo cooldown gate
 (`worker/deno/lib/idle_task_cooldown_gate.ts`) keys the window off the
 `createdAt` of the most recent wrapper or finding the template produced
 in that repo, so a fast-failing scan still counts towards the window. A
@@ -354,8 +376,8 @@ severity (high → medium → low) and keeps the top 6.
 **No overflow tracker.** Like the best-practices scan — and unlike the
 security-scan template — the test-audit scan does **not** file an
 overflow tracker when more than six candidates survive triage. Surplus
-candidates are silently dropped from this run; the next weekly scan
-re-detects them (subject to dedup against open issues).
+candidates are silently dropped from this run; the next weekly scan (when
+enabled) re-detects them (subject to dedup against open issues).
 
 ## Suppression-comment syntax
 

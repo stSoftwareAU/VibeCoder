@@ -1,6 +1,8 @@
 /**
- * Seed all seventeen standard idle-task wrappers in a target repo (Issue #2577,
- * extended in Issue #2930 to cover the four Boy Scout templates).
+ * Seed the standard idle-task wrappers in a target repo (Issue #2577,
+ * extended in Issue #2930 to cover the four Boy Scout templates). Every
+ * canonical wrapper is seeded except opt-in templates (Issue #5096, `test-audit`)
+ * that the owner config does not name and the caller did not name.
  *
  * When a repo is freshly added to the monitored set, the normal idle-task
  * filer (`maybe_file_idle_task.ts`) would only ever seed *one* wrapper per
@@ -54,6 +56,12 @@ import {
   parseOpenIdleTaskIssues,
 } from "./idle_task_issue.ts";
 import { listTemplates } from "./idle_task_template.ts";
+// Issue #5096: opt-in templates (`test-audit`) are seeded only when the owner
+// config names them, or the caller's explicit `templateNames` allowlist does.
+import {
+  IDLE_TASK_REQUESTED_MARKER,
+  isAutoEnabledIdleTaskTemplate,
+} from "./idle_task_opt_in.ts";
 import { ensureIdleTaskLabel as defaultEnsureIdleTaskLabel } from "./label_operations.ts";
 import { appendIdleTaskAttribution } from "./idle_task_attribution.ts";
 import {
@@ -149,11 +157,20 @@ export interface CreateAllIdleTaskWrappersDeps {
   /**
    * Optional template-name allowlist (Issue #2933). When provided, only
    * templates whose `name` is in this set are seeded; the rest are ignored
-   * entirely (not even reported as skipped). Defaults to "all seventeen canonical
-   * wrappers" when omitted, preserving the original behaviour. Used by the
-   * Boy Scout multi-repo raiser to seed just the four Boy Scout wrappers.
+   * entirely (not even reported as skipped). Defaults to every canonical
+   * wrapper (less opt-in templates, see `authorisedOptInTemplates`) when
+   * omitted, preserving the original behaviour. Used by the Boy Scout
+   * multi-repo raiser to seed just the four Boy Scout wrappers.
    */
   templateNames?: ReadonlySet<string>;
+  /**
+   * Opt-in templates the owner's `.config.json` names (Issue #5096). Omitted
+   * means none: a caller without config never seeds an opt-in template
+   * (`test-audit`) through the default sweep. An opt-in template named only by
+   * `templateNames` is seeded with the requested marker as its final body
+   * line.
+   */
+  authorisedOptInTemplates?: ReadonlySet<string>;
 }
 
 /** A single template's failure within a sweep (Issue #3862). */
@@ -329,14 +346,16 @@ async function defaultFindOpenIdleTaskIssues(
 }
 
 /**
- * File all seventeen standard idle-task wrappers in `repo` when it holds no
- * open `idle-task` issue (Issue #2752).
+ * File the standard idle-task wrappers in `repo` when it holds no open
+ * `idle-task` issue (Issue #2752).
  *
  * Iterates the template registry via {@link listTemplates} and acts only on
  * templates whose `buildIssueTitle(repo)` matches the canonical wrapper
  * allowlist — this naturally excludes any test-only templates registered into
- * the shared registry and guarantees a clean repo gets exactly the seventeen
- * production wrappers.
+ * the shared registry. Every canonical wrapper is seeded except opt-in
+ * templates (Issue #5096) that `deps.authorisedOptInTemplates` does not name
+ * and `deps.templateNames` does not name; those are logged as excluded and are
+ * not reported as skipped.
  *
  * Bypasses the random single-pick so one call seeds every wrapper. Any open
  * `idle-task` issue blocks the whole sweep (reported in `blockedBy`) unless
@@ -393,10 +412,27 @@ export async function createAllIdleTaskWrappers(
   // template-name allowlist (Issue #2933) narrows this further — e.g. to the
   // four Boy Scout templates.
   const nameFilter = deps.templateNames;
+  // Issue #5096: an opt-in template (`test-audit`) is seeded only when the
+  // owner config authorises it, or the caller's explicit allowlist names it.
+  const authorisedOptIn: ReadonlySet<string> = deps.authorisedOptInTemplates ??
+    new Set<string>();
   const templates = listTemplates().filter((t) =>
     WRAPPER_TITLE_SET.has(t.buildIssueTitle(repo).trim()) &&
-    (nameFilter === undefined || nameFilter.has(t.name))
+    (nameFilter === undefined || nameFilter.has(t.name)) &&
+    (isAutoEnabledIdleTaskTemplate(t.name, authorisedOptIn) ||
+      nameFilter?.has(t.name) === true)
   );
+  // Issue #5096: one line per opt-in template a default sweep leaves out. It
+  // is not added to `skipped`, which means "already open".
+  if (nameFilter === undefined) {
+    for (const t of listTemplates()) {
+      if (!WRAPPER_TITLE_SET.has(t.buildIssueTitle(repo).trim())) continue;
+      if (isAutoEnabledIdleTaskTemplate(t.name, authorisedOptIn)) continue;
+      log(
+        `[create-all-idle-task] repo=${repo} template=${t.name} action=excluded reason=opt_in_not_configured`,
+      );
+    }
+  }
 
   // Any-open gate (Issue #2752), checked once per sweep and before any write.
   // Only a well-formed empty list means "clean": a failed lookup files nothing.

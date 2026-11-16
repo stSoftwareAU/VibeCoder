@@ -230,6 +230,8 @@ function wrapperInput(workDir: string) {
     githubUser: FLEET_USER,
     fleetAuthors: [FLEET_USER],
     pushCapableAuthors: [FLEET_USER],
+    issueAuthor: FLEET_USER,
+    authorisedOptInTemplates: new Set<string>(),
   };
 }
 
