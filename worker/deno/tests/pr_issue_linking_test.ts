@@ -1481,6 +1481,164 @@ Deno.test("pr_issue_linking - a failed issue view leaves the PR unprocessed for 
   }
 });
 
+Deno.test("pr_issue_linking - a merged PR naming an issue that does not exist is finished, not retried for ever (Issue #5075)", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
+    const prs = JSON.stringify([
+      {
+        number: 5020,
+        title: "Fix: Bug (#77)",
+        headRefName: "issue-77",
+        mergedAt: "2026-01-02T00:00:00Z",
+        body: "Closes #5394",
+      },
+    ]);
+    const open = JSON.stringify({
+      state: "OPEN",
+      labels: [],
+      createdAt: "2026-01-01T00:00:00Z",
+    });
+    const view = (n: string): string | Error =>
+      n === "5394"
+        ? new Error(
+          "gh command failed (exit 1): GraphQL: Could not resolve to an issue or pull request with the number of 5394. (repository.issue)",
+        )
+        : open;
+    const logs: Array<{ message: string; level?: "info" | "warn" | "error" }> =
+      [];
+    const warns: string[] = [];
+    const options = {
+      verifyMergeLandedFn: alwaysLanded,
+      watermarkPath,
+      logFn: (message: string, level?: "info" | "warn" | "error") => {
+        logs.push({ message, level });
+      },
+      logger: {
+        warn: (m: string) => {
+          warns.push(m);
+        },
+      },
+    };
+
+    const first = createRecordingGh({ prs, view });
+    await closeIssuesForMergedPrs(
+      ["owner/repo"],
+      "bot-user",
+      first.fn,
+      "planning",
+      undefined,
+      options,
+    );
+    assertEquals(first.closed, ["77"]);
+    assertEquals(await processedFor(watermarkPath), [5020]);
+    assertEquals(warns, []);
+    assertEquals(logs.length, 1);
+    assertEquals(logs[0]!.level, "info");
+    for (
+      const part of [
+        "#5394",
+        "PR #5020",
+        "Could not resolve to an issue or pull request",
+      ]
+    ) {
+      assertEquals(
+        logs[0]!.message.includes(part),
+        true,
+        `log should mention ${part}: ${logs[0]!.message}`,
+      );
+    }
+
+    const second = createRecordingGh({ prs, view });
+    await closeIssuesForMergedPrs(
+      ["owner/repo"],
+      "bot-user",
+      second.fn,
+      "planning",
+      undefined,
+      options,
+    );
+    assertEquals(
+      second.calls.filter((c) => c[0] === "issue" && c[1] === "view").length,
+      0,
+    );
+    assertEquals(logs.length, 1, "logged once only");
+    assertEquals(warns, []);
+  } finally {
+    await Deno.remove(tempDir, { recursive: true });
+  }
+});
+
+Deno.test("pr_issue_linking - a transient failure on an issue view is still held back (Issue #5075)", async () => {
+  const messages = [
+    "gh command failed (exit 1): HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+    "gh command failed (exit 1): GraphQL: API rate limit already exceeded for user ID 1.",
+    'gh command failed (exit 1): Post "https://api.github.com/graphql": dial tcp: lookup api.github.com: i/o timeout',
+  ];
+  for (const message of messages) {
+    const tempDir = await Deno.makeTempDir();
+    try {
+      const watermarkPath = `${tempDir}/merged_reconcile_watermarks.json`;
+      const prs = JSON.stringify([
+        {
+          number: 5020,
+          title: "Fix: Bug (#77)",
+          headRefName: "issue-77",
+          mergedAt: "2026-01-02T00:00:00Z",
+          body: "Closes #5394",
+        },
+      ]);
+      const logs: Array<
+        { message: string; level?: "info" | "warn" | "error" }
+      > = [];
+      const warns: string[] = [];
+      const open = JSON.stringify({
+        state: "OPEN",
+        labels: [],
+        createdAt: "2026-01-01T00:00:00Z",
+      });
+      const gh = createRecordingGh({
+        prs,
+        view: (n) => n === "5394" ? new Error(message) : open,
+      });
+      await closeIssuesForMergedPrs(
+        ["owner/repo"],
+        "bot-user",
+        gh.fn,
+        "planning",
+        undefined,
+        {
+          verifyMergeLandedFn: alwaysLanded,
+          watermarkPath,
+          logFn: (m: string, level?: "info" | "warn" | "error") => {
+            logs.push({ message: m, level });
+          },
+          logger: {
+            warn: (m: string) => {
+              warns.push(m);
+            },
+          },
+        },
+      );
+      assertEquals(await processedFor(watermarkPath), []);
+      assertEquals(gh.closed, ["77"]);
+      assertEquals(warns.length, 1);
+      assertEquals(warns[0]!.includes("held back for retry"), true);
+      assertEquals(
+        warns[0]!.includes(message.replace("gh command failed (exit 1): ", "")),
+        true,
+        warns[0],
+      );
+      assertEquals(
+        logs.some((l) => l.level === "info" && l.message.includes("#5394")),
+        false,
+      );
+    } finally {
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  }
+});
+
 Deno.test("pr_issue_linking - a planning-label skip leaves the PR unprocessed (Issues #4256, #2831)", async () => {
   const tempDir = await Deno.makeTempDir();
   try {
