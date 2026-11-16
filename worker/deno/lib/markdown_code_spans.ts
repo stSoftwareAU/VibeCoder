@@ -159,6 +159,29 @@ export function isClosingFence(
 }
 
 /**
+ * The line (without its line break) that opens a fenced block still open at
+ * the end of `text`, or null when every fence is closed. It reads fences the
+ * way {@link splitMarkdownCode} does: an opener is any {@link parseFenceLine}
+ * line and a closer is an {@link isClosingFence} line. The babysitter PR body
+ * guard calls it to close a proposal's fence before appending prose (Issue
+ * #5039).
+ */
+export function unclosedFenceOpener(text: string): string | null {
+  let openerLine: string | null = null;
+  let opener: FenceLine | null = null;
+  for (const line of text.split(/(?<=\n)/)) {
+    if (opener === null) {
+      opener = parseFenceLine(line);
+      openerLine = opener ? line.replace(/\r?\n$/, "") : null;
+    } else if (isClosingFence(line, opener)) {
+      opener = null;
+      openerLine = null;
+    }
+  }
+  return openerLine;
+}
+
+/**
  * Pair inline code spans inside one paragraph. A run of N backticks closes
  * at the next run of exactly N, and that span may contain a line break.
  * A run with no closer is literal text. CommonMark does not let a span
