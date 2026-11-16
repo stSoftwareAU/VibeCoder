@@ -112,3 +112,11 @@ flowchart LR
   infrastructure (Issue #4360).` ERROR line). The new composition test does not
   compile against the base branch (it imports `HostDiskParkError` and
   `logIssueRunFailure`), so no base-branch red was observed for it.
+- `./quality.sh < /dev/null` on the head: PASSED. This host skipped config
+  integration and checkov. The first run failed only because the new module was
+  in no lib sweep slice; `top-up-5077.json` fixed that.
+
+Not done or not checked: no independent reviewers were dispatched, because the
+issue has no acceptance-criteria heading. `lib/execute_claude_phase.ts` and the
+other park sites were deliberately left unchanged (see Essential Design
+Decisions).
