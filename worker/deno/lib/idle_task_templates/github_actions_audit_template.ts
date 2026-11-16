@@ -157,8 +157,14 @@ import { fileRunnerDeprecationIssue as sharedFileRunnerDeprecationIssue } from "
 import {
   type ActionPinFinding,
   extractUsesValue,
+  scanActionLockfile,
   scanActionPins,
 } from "../action_pin_scanner.ts";
+import {
+  ACTIONS_LOCKFILE_PATH,
+  type ActionsLockfileRead,
+  readActionsLockfile as defaultReadActionsLockfile,
+} from "../actions_lockfile.ts";
 import {
   buildAllowedActionPatterns,
   resolveTransitiveActionCoordinates,
@@ -348,6 +354,13 @@ export interface GitHubActionsAuditTemplateDeps {
    * they exercise the pre-filer without a real `.github/` tree.
    */
   readWorkflowFilesFn?: (workDir: string) => Promise<WorkflowFile[]>;
+  /**
+   * Read `.github/workflows/actions.lock` from the same checkout as the
+   * workflow files (Issue #5051). Defaults to `readActionsLockfile`. A
+   * read that fails is `unreadable`, which skips only the SHA-pin and
+   * lockfile filing this run. Tests inject a fixed result.
+   */
+  readActionsLockfileFn?: (workDir: string) => Promise<ActionsLockfileRead>;
   /**
    * Observed gitleaks coverage on recent PRs (Issue #601). Defaults to
    * `scanGitleaksPrCoverage`; tests inject a stub. Read-only — it lists
@@ -855,6 +868,8 @@ export function createGitHubActionsAuditTemplate(
     ((repo, gh) => defaultScanRunnerDeprecations(repo, gh));
   const readWorkflowFilesFn = deps.readWorkflowFilesFn ??
     ((workDir) => defaultReadWorkflowFiles(workDir));
+  const readActionsLockfileFn = deps.readActionsLockfileFn ??
+    ((workDir) => defaultReadActionsLockfile(workDir));
   const scanGitleaksPrCoverageFn = deps.scanGitleaksPrCoverageFn ??
     ((repo, files, gh, options) =>
       scanGitleaksPrCoverage(repo, {
@@ -1054,22 +1069,48 @@ export function createGitHubActionsAuditTemplate(
         }
       }
 
-      // 5b. Native SHA-pin pre-filer (Issue #2501). Flag every
-      //     third-party `uses:` (action and cross-repo reusable
-      //     workflow) not pinned to a full 40-char commit SHA. Each
-      //     surviving consolidated finding becomes its own
-      //     `github-actions-audit` issue; its id is added to the
-      //     known-open list so Claude's #1 check does not double-file.
-      //     A scanner failure must not abort the run.
+      // 5b. Native SHA-pin + workflow-lockfile pre-filer (Issues #2501,
+      //     #5051). Flag every third-party `uses:` (action and cross-repo
+      //     reusable workflow) not pinned to a full 40-char commit SHA,
+      //     unless the checkout's `.github/workflows/actions.lock` locks
+      //     it for an onboarded workflow. A stale lockfile (a tag the
+      //     lockfile does not record) files its own finding. An
+      //     unreadable lockfile is an unknown result: it skips only this
+      //     5b filing, and 5c onward still run. Each surviving
+      //     consolidated finding becomes its own `github-actions-audit`
+      //     issue; its id is added to the known-open list so Claude's #1
+      //     check does not double-file. A scanner failure must not abort
+      //     the run.
       const runId = Deno.env.get(RUN_ID_ENV_VAR) ?? "unknown";
       // Read once; the settings pre-filer (5k) reuses the same files.
       let workflowFiles: readonly WorkflowFile[] = [];
       try {
         const files = await readWorkflowFilesFn(repoPath);
         workflowFiles = files;
-        const pinFindings: ActionPinFinding[] = scanActionPins(files, {
-          knownOpenFindingIds: seenIds,
-        });
+        const lockRead: ActionsLockfileRead = await readActionsLockfileFn(
+          repoPath,
+        ).catch((err: unknown): ActionsLockfileRead => ({
+          kind: "unreadable",
+          reason: err instanceof Error ? err.message : String(err),
+        }));
+        const pinFindings: ActionPinFinding[] = [];
+        if (lockRead.kind === "unreadable") {
+          logger.warn(
+            `github-actions-audit: could not read ${ACTIONS_LOCKFILE_PATH}; ` +
+              `SHA-pin and lockfile findings are skipped this run: ${lockRead.reason}`,
+            { repo: opts.repo, template: NAME, runId },
+          );
+        } else {
+          pinFindings.push(
+            ...scanActionLockfile(files, lockRead, {
+              knownOpenFindingIds: seenIds,
+            }),
+            ...scanActionPins(files, {
+              knownOpenFindingIds: seenIds,
+              lockfile: lockRead,
+            }),
+          );
+        }
         for (const finding of pinFindings) {
           if (seenIds.has(finding.findingId)) continue;
           const filed = await fileWorkflowFinding({

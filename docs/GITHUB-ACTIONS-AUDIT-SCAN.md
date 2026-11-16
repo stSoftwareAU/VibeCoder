@@ -561,23 +561,44 @@ continues — a transient scan hiccup never aborts the audit.
 
 The SHA-pin scanner
 ([`action_pin_scanner.ts`](../worker/deno/lib/action_pin_scanner.ts))
-deterministically flags every third-party `uses:` — both actions and cross-repo
+deterministically flags third-party `uses:` — both actions and cross-repo
 reusable-workflow calls (`owner/repo/.github/workflows/x.yml@<ref>`) — whose ref
-after `@` is **not** a full 40-character commit SHA (`/^[0-9a-f]{40}$/`). It
-reads the repo's workflow and composite-action files via `readWorkflowFiles`
+after `@` is **not** a full 40-character commit SHA (`/^[0-9a-f]{40}$/`), unless
+a valid, current workflow lockfile covers it (see below). It reads the repo's
+workflow and composite-action files via `readWorkflowFiles`
 ([`workflow_scan_common.ts`](../worker/deno/lib/workflow_scan_common.ts)) and
-inspects each `uses:` line — no network, no `gh` API.
+inspects each `uses:` line — no network, no `gh` API. It also reads
+`.github/workflows/actions.lock` from the same checkout (the revision the
+workflows were read from) through
+[`actions_lockfile.ts`](../worker/deno/lib/actions_lockfile.ts), which validates
+the lockfile. The audit template runs both as step 5b.
 
-Carve-outs (mirroring v7 prompt checks #1 and #13):
+**Workflow lockfile.** A repo that adopts GitHub's workflow dependency lockfile
+commits `.github/workflows/actions.lock`, generated and verified with
+`gh actions-lock` (see [REFERENCES.md](REFERENCES.md)). A tag ref is compliant
+only when its workflow is listed under the lockfile's `workflows:` key
+(onboarded), its `owner/repo@ref` pin appears in that workflow's list, and the
+lockfile holds a dependency record for it. Lockfiles never exempt a
+reusable-workflow call at `jobs.<id>.uses`, which `gh actions-lock` does not
+lock, and local `./` actions are never followed or locked.
 
-| `uses:` shape                           | Flagged?                                                |
-| --------------------------------------- | ------------------------------------------------------- |
-| `actions/checkout@<40-hex SHA>`         | No — already correct                                    |
-| `actions/checkout@v4` / `@main`         | **Yes** — mutable tag/branch                            |
-| `stSoftwareAU/*@v1`                     | No — first-party may pin to a tag                       |
-| `./.github/actions/setup`               | No — local same-repo reference                          |
-| `owner/repo/.github/workflows/x.yml@v1` | **Yes** — cross-repo reusable workflow                  |
-| `docker://image:tag`                    | No — container digest pinning is the LLM's job (v7 #25) |
+Carve-outs (mirroring v7 prompt checks #1 and #13, and the lockfile rules above):
+
+| `uses:` shape                                                                | Flagged?                                                                      |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `actions/checkout@<40-hex SHA>`                                              | No — already correct                                                          |
+| `actions/checkout@v4` / `@main`, no lockfile                                 | **Yes** — mutable tag/branch                                                  |
+| `actions/checkout@v4` in a workflow not listed in the lockfile               | **Yes** — partial adoption keeps the SHA rule                                 |
+| `actions/checkout@v4` in an onboarded workflow, with matching entry and record | No — locked tag ref in a valid lockfile                                    |
+| `actions/checkout@v4` in an onboarded workflow, without a matching entry or record | No SHA-pin finding — **`BP-ACTIONS-LOCK-STALE-<slug>`** instead (one per workflow) |
+| `actions/checkout@v4` while the lockfile is present but invalid              | **Yes** — falls back to the SHA rule, plus `BP-ACTIONS-LOCK-INVALID`          |
+| `stSoftwareAU/*@v1`                                                          | No — first-party may pin to a tag                                             |
+| `./.github/actions/setup`                                                    | No — local same-repo reference                                                |
+| `owner/repo/.github/workflows/x.yml@v1`                                      | **Yes** — cross-repo reusable workflow; a lockfile never covers it            |
+| `docker://image:tag`                                                         | No — container digest pinning is the LLM's job (v7 #25)                       |
+
+Composite-action files under `.github/actions/` are not onboarded and keep the
+SHA rule even when the lockfile lists a workflow that calls them.
 
 Findings **consolidate one per distinct unpinned coordinate** (the `uses:` value
 without `@ref`), with the body's `## Evidence` block listing every call-site
@@ -589,11 +610,37 @@ in-source `best-practice-ignore: BP-SHA-PIN-…` marker on (or immediately above
 a call-site suppresses that call-site; a coordinate with no surviving call-sites
 yields no finding. A scanner failure is swallowed so it never aborts the audit.
 
+**Lockfile findings.** A tag ref in an onboarded workflow with no matching
+entry or dependency record (a newly added action, a ref mismatch, or a missing
+record) yields one `BP-ACTIONS-LOCK-STALE-<slug>` finding per workflow, where
+the slug is taken from the path below `.github/workflows/`. It is filed at
+`severity:high`, and its fix is to re-run `gh actions-lock`, keep the tags
+rather than rewriting them to SHAs, and add `gh actions-lock --verify` to CI. A
+present but invalid or unsupported lockfile (bad YAML, an unknown or unsupported
+`version` including v0.0.1, missing or invalid fields, a bad commit digest,
+non-positive ids, a `uses:` naming a missing dependency, or unknown keys) yields
+one `BP-ACTIONS-LOCK-INVALID` finding at `severity:high` quoting the reason. Its
+tag refs then fall back to `BP-SHA-PIN-…` as if no lockfile existed, because
+unverifiable evidence is not proof.
+
+**Unreadable lockfile.** If `.github/workflows/actions.lock` exists but cannot be
+read (any read error other than not-found), the SHA-pin and lockfile pre-filers
+are skipped for that run with a logged warning. That is an unknown, retryable
+result, as in Issue #5009; the other pre-filers still run.
+
 The v7 prompt SHA-pin checks (#1/#13/#25) are **retained** — they keep the
 judgement-heavy long tail (container `@sha256:` digests,
-provenance-as-sole-gate). The native and LLM paths agree on severity, and the
+provenance-as-sole-gate). Check #1 now accepts an action dependency covered by a
+valid, current lockfile, and check #13 states that a lockfile never covers a
+reusable-workflow call. The native and LLM paths agree on severity, and the
 pre-filed ids in the known-open list stop Claude double-filing the unambiguous
 cases.
+
+The PR-time `action-pins` check in
+[`workflow_file_checks.ts`](../worker/deno/lib/workflow_file_checks.ts) stays
+SHA-only and does not credit lockfile coverage. It holds the worker's own
+workflow edits to the SHA-pin rule, which a repository that adopts the lockfile
+also accepts.
 
 ### Native permissions pre-filer
 

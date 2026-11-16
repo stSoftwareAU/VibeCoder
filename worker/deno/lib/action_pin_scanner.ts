@@ -17,6 +17,13 @@
  *   - Local `./…` references (same-repo composite actions and
  *     same-repo reusable-workflow calls) — exempt.
  *   - `docker://…` container images — left to the LLM (v7 #25).
+ *   - Workflow lockfile coverage (Issue #5051): a tag or branch ref in a
+ *     workflow that `.github/workflows/actions.lock` onboards is compliant
+ *     when the lockfile locks it. A ref the lockfile does not cover (stale)
+ *     is reported by {@link scanActionLockfile} instead. A call-site the
+ *     lockfile does not decide keeps its SHA-pin finding: an un-onboarded
+ *     workflow, a composite action, a reusable-workflow call, or any run
+ *     with no valid lockfile.
  *
  * Cross-repo reusable-workflow calls
  * (`owner/repo/.github/workflows/x.yml@<ref>`) are in scope (v7 #13).
@@ -34,6 +41,12 @@ import {
   type WorkflowFile,
   type WorkflowFindingSeverity,
 } from "./workflow_scan_common.ts";
+import {
+  ACTIONS_LOCKFILE_PATH,
+  type ActionsLockfileEvidence,
+  isReusableWorkflowCoordinate,
+  lockCoverage,
+} from "./actions_lockfile.ts";
 
 /** A full 40-character lower-case hex commit SHA. */
 const SHA_PIN = /^[0-9a-f]{40}$/;
@@ -43,6 +56,15 @@ const FIRST_PARTY_OWNER = "stsoftwareau";
 
 /** Matches a `uses:` line and captures its raw value (incl. list dash). */
 const USES_LINE = /^\s*(?:-\s*)?uses:\s*(\S.*)$/;
+
+/** Directory every workflow file lives in; stripped from stale-finding ids. */
+const WORKFLOW_DIR = ".github/workflows/";
+
+/** Stable id of the finding for a lockfile that is invalid (Issue #5051). */
+export const ACTIONS_LOCK_INVALID_ID = "BP-ACTIONS-LOCK-INVALID";
+
+/** Stable-id prefix of the per-workflow finding for a stale lockfile. */
+const ACTIONS_LOCK_STALE_PREFIX = "BP-ACTIONS-LOCK-STALE-";
 
 /** A single unpinned call-site for a consolidated coordinate. */
 export interface ActionPinCallSite {
@@ -83,6 +105,20 @@ export interface ScanActionPinsOptions {
   /** Stable ids suppressed by prior triage — skip these coordinates. */
   suppressedIds?: Iterable<string>;
   /** Stable ids already open as findings — skip these coordinates. */
+  knownOpenFindingIds?: Iterable<string>;
+  /**
+   * What the workflow lockfile says (Issue #5051). Required, so a caller
+   * states whether lockfile coverage is credited. Pass
+   * `{ kind: "absent" }` to hold the scan to the SHA-pin rule alone.
+   */
+  lockfile: ActionsLockfileEvidence;
+}
+
+/** Options for {@link scanActionLockfile}. */
+export interface ScanActionLockfileOptions {
+  /** Stable ids suppressed by prior triage — skip these findings. */
+  suppressedIds?: Iterable<string>;
+  /** Stable ids already open as findings — skip these findings. */
   knownOpenFindingIds?: Iterable<string>;
 }
 
@@ -173,6 +209,10 @@ export function extractUsesValue(line: string): string | null {
  * Behaviour:
  *   - SHA-pinned, `stSoftwareAU/*`, local `./…`, and `docker://…` refs are
  *     never flagged.
+ *   - A tag or branch ref that the workflow lockfile covers (`locked`) is
+ *     not flagged; a stale one is left to {@link scanActionLockfile}.
+ *     Only call-sites the lockfile does not decide (`sha-fallback`) are
+ *     flagged here.
  *   - Call-sites suppressed by an in-source `best-practice-ignore:
  *     BP-SHA-PIN-…` marker are dropped; a coordinate with no surviving
  *     call-sites yields no finding.
@@ -186,7 +226,7 @@ export function extractUsesValue(line: string): string | null {
  */
 export function scanActionPins(
   files: readonly WorkflowFile[],
-  opts: ScanActionPinsOptions = {},
+  opts: ScanActionPinsOptions,
 ): ActionPinFinding[] {
   const suppressed = new Set(opts.suppressedIds ?? []);
   const knownOpen = new Set(opts.knownOpenFindingIds ?? []);
@@ -205,6 +245,12 @@ export function scanActionPins(
       if (value === null) continue;
       const parsed = classifyUses(value);
       if (parsed === null) continue;
+      // Issue #5051: a call-site the workflow lockfile covers is compliant;
+      // a stale one is reported by scanActionLockfile, not here.
+      if (
+        lockCoverage(file, parsed.coordinate, parsed.ref, opts.lockfile) !==
+          "sha-fallback"
+      ) continue;
 
       const owner = parsed.owner;
       const rest = parsed.coordinate.slice(owner.length + 1);
@@ -255,11 +301,12 @@ function buildFinding(
   );
   const first = sites[0] as ActionPinCallSite;
   const count = sites.length;
+  const reusable = isReusableWorkflowCoordinate(coordinate);
 
   const title =
     `🔴 Pin third-party action \`${coordinate}\` to a 40-char commit SHA`;
 
-  const whyItMatters =
+  const whyBase =
     `\`${coordinate}\` is referenced by a mutable tag or branch rather ` +
     "than a full 40-character commit SHA. A tag is mutable: whoever " +
     "controls the upstream repository (or an attacker who compromises it) " +
@@ -267,12 +314,21 @@ function buildFinding(
     "workflow's permissions and secrets. Pinning to an immutable commit " +
     "SHA removes that supply-chain risk. First-party `stSoftwareAU/*` " +
     "actions and local `./` references are exempt.";
+  const whyItMatters = reusable
+    ? whyBase +
+      " A workflow lockfile does not cover a reusable-workflow call, so this one must be SHA-pinned."
+    : whyBase;
 
-  const suggestedFix =
+  const fixBase =
     `Pin every \`${coordinate}\` reference to a full 40-character commit ` +
     "SHA, keeping the human-readable version in a trailing comment, e.g. " +
     "`uses: " + coordinate + "@<40-hex-sha> # v1.2.3`. Resolve the SHA " +
     "with `git ls-remote` or the action's release page.";
+  const suggestedFix = reusable
+    ? fixBase +
+      " A workflow lockfile does not cover a reusable-workflow call, so the SHA pin is the only fix."
+    : fixBase +
+      " Alternatively, lock it instead with a valid, current `.github/workflows/actions.lock` (`gh actions-lock`, verified in CI by `gh actions-lock --verify`), keeping the tag ref.";
 
   const evidenceLines = sites.map((s) =>
     `- \`${s.file}\`:${s.line} — \`uses: ${coordinate}@${s.ref}\``
@@ -291,6 +347,121 @@ function buildFinding(
     whyItMatters,
     suggestedFix,
     evidence,
+    callSites: sites,
+  };
+}
+
+/**
+ * Check the workflow lockfile and its coverage of the workflows (Issue
+ * #5051), returning findings that `gh actions-lock` would clear.
+ *
+ *   - `absent` → no findings: the repository has not onboarded.
+ *   - `invalid` → one {@link ACTIONS_LOCK_INVALID_ID} finding. Until the
+ *     lockfile is valid, {@link scanActionPins} treats every tag ref as if
+ *     no lockfile existed.
+ *   - `valid` → one `BP-ACTIONS-LOCK-STALE-<workflow>` finding per onboarded
+ *     workflow that has at least one `stale` tag or branch ref (a ref the
+ *     lockfile does not record for that workflow).
+ *
+ * Findings whose id is in `suppressedIds` or `knownOpenFindingIds` are
+ * dropped. Findings are returned sorted by stable id.
+ */
+export function scanActionLockfile(
+  files: readonly WorkflowFile[],
+  lockfile: ActionsLockfileEvidence,
+  opts: ScanActionLockfileOptions = {},
+): ActionPinFinding[] {
+  if (lockfile.kind === "absent") return [];
+  const suppressed = new Set(opts.suppressedIds ?? []);
+  const knownOpen = new Set(opts.knownOpenFindingIds ?? []);
+  const dropped = (id: string): boolean =>
+    suppressed.has(id) || knownOpen.has(id);
+
+  if (lockfile.kind === "invalid") {
+    return dropped(ACTIONS_LOCK_INVALID_ID)
+      ? []
+      : [buildInvalidLockfileFinding(lockfile.reason)];
+  }
+
+  const findings: ActionPinFinding[] = [];
+  for (const file of files) {
+    const findingId = ACTIONS_LOCK_STALE_PREFIX +
+      slugify(workflowName(file.path));
+    const stale: Array<{ coordinate: string; site: ActionPinCallSite }> = [];
+    const lines = file.rawText.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const value = extractUsesValue(lines[i] as string);
+      if (value === null) continue;
+      const parsed = classifyUses(value);
+      if (parsed === null) continue;
+      if (
+        lockCoverage(file, parsed.coordinate, parsed.ref, lockfile) !== "stale"
+      ) continue;
+      const lineNumber = i + 1;
+      if (isFindingSuppressed(file, lineNumber, findingId)) continue;
+      stale.push({
+        coordinate: parsed.coordinate,
+        site: { file: file.path, line: lineNumber, ref: parsed.ref },
+      });
+    }
+    if (stale.length === 0 || dropped(findingId)) continue;
+    findings.push(buildStaleLockfileFinding(file.path, findingId, stale));
+  }
+
+  findings.sort((a, b) => a.findingId.localeCompare(b.findingId));
+  return findings;
+}
+
+/** The workflow path without its leading `.github/workflows/`. */
+function workflowName(path: string): string {
+  return path.startsWith(WORKFLOW_DIR) ? path.slice(WORKFLOW_DIR.length) : path;
+}
+
+/** The finding for a lockfile that is not valid or not supported. */
+function buildInvalidLockfileFinding(reason: string): ActionPinFinding {
+  const path = ACTIONS_LOCKFILE_PATH;
+  return {
+    findingId: ACTIONS_LOCK_INVALID_ID,
+    coordinate: path,
+    severity: "high",
+    title:
+      `🔴 Workflow lockfile \`${path}\` is not a valid, supported lockfile`,
+    file: path,
+    lines: 1,
+    whyItMatters:
+      "An unverifiable workflow lockfile is not evidence that the workflows run the commits it locks, so it protects nothing until it is valid and supported.",
+    suggestedFix:
+      "Regenerate `.github/workflows/actions.lock` with `gh actions-lock`, commit it, and add a CI step that runs `gh actions-lock --verify`. Until the lockfile is valid, tag refs are reported by the SHA-pin finding as if no lockfile existed.",
+    evidence: `- \`${path}\`: ${reason}`,
+    callSites: [],
+  };
+}
+
+/** The finding for one onboarded workflow whose tag refs the lockfile misses. */
+function buildStaleLockfileFinding(
+  path: string,
+  findingId: string,
+  stale: ReadonlyArray<{ coordinate: string; site: ActionPinCallSite }>,
+): ActionPinFinding {
+  const sites = stale.map((s) => s.site);
+  const first = sites[0] as ActionPinCallSite;
+  const evidenceLines = stale.map((s) =>
+    `- \`${s.site.file}\`:${s.site.line} — \`uses: ${s.coordinate}@${s.site.ref}\``
+  );
+  return {
+    findingId,
+    coordinate: path,
+    severity: "high",
+    title:
+      `🔴 Workflow lockfile is stale for \`${path}\`: run \`gh actions-lock\``,
+    file: first.file,
+    lines: first.line,
+    whyItMatters:
+      `\`${path}\` is onboarded to the workflow lockfile, but the call-sites below use a ref the lockfile does not record for this workflow. The run would resolve a tag or branch the lockfile never locked, so the lockfile does not vouch for those actions.`,
+    suggestedFix:
+      "Re-run `gh actions-lock` and commit the updated `.github/workflows/actions.lock`. Keep the tag refs as written: do not rewrite them to SHAs, which works against Dependabot's lock regeneration. Add a CI step that runs `gh actions-lock --verify` so a stale lockfile fails the build.",
+    evidence: "Call-sites with no matching `owner/repo@ref` lockfile entry:\n" +
+      evidenceLines.join("\n"),
     callSites: sites,
   };
 }

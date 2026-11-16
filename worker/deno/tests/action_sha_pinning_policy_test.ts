@@ -51,6 +51,12 @@ const AUDIT_SUPPLY_CHAIN = {
   title: "Supply-chain hardening",
 } as const;
 
+/** The audit's base checks, where check 1 and the lockfile check 1b live. */
+const AUDIT_BASE_CHECKS = {
+  doc: "prompts/github_actions_audit/prompt.md",
+  title: "Base checks",
+} as const;
+
 /** `workflow_setup`'s CI hardening defaults, where the owner set is restated. */
 const SETUP_HARDENING = {
   doc: "prompts/workflow_setup/prompt.md",
@@ -158,4 +164,33 @@ Deno.test("action pinning - the guidelines already stated the rule and are untou
     false,
     "the guidelines never used the term and must not gain it",
   );
+});
+
+Deno.test("action pinning - check 13 says a caller's lockfile never covers a reusable-workflow call (Issue #5051)", async () => {
+  // A lockfile covers action dependencies only; a reusable workflow called at
+  // `jobs.<id>.uses` must keep full-SHA pinning even when it is listed.
+  const collapsed = await scoped(
+    AUDIT_SUPPLY_CHAIN.doc,
+    AUDIT_SUPPLY_CHAIN.title,
+  );
+  assertStringIncludes(
+    collapsed,
+    "A caller's `.github/workflows/actions.lock` does **not** pin a reusable-workflow call",
+  );
+  assertStringIncludes(collapsed, "must keep full-SHA pinning");
+});
+
+Deno.test("action pinning - check 1b names the lockfile adoption id and the verify step (Issue #5051)", async () => {
+  // The advisory check sits directly after check 1 in the base checks, and
+  // tells the operator to add `gh actions-lock --verify` to CI.
+  const collapsed = await scoped(
+    AUDIT_BASE_CHECKS.doc,
+    AUDIT_BASE_CHECKS.title,
+  );
+  assertStringIncludes(
+    collapsed,
+    "1b. **No workflow lockfile; transitive and composite action dependencies unlocked.**",
+  );
+  assertStringIncludes(collapsed, "BP-ACTIONS-LOCK-ADOPT");
+  assertStringIncludes(collapsed, "gh actions-lock --verify");
 });
