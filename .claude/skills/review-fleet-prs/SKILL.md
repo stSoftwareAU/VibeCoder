@@ -114,7 +114,10 @@ escalation.
    base branch, unchanged by the PR, is filed separately; when in doubt, it
    is a finding.
 8. **Review each head commit once, across every host.** A new push that
-   changes the PR's own diff gets a fresh review. When the fleet pushes a fix
+   changes the PR's own diff gets a review. After a send-back it checks the
+   earlier findings; after an approval it reviews what changed since the
+   approved head (the gate entry's `approvedAt`, Issue #5149), and reviews
+   the whole diff when that comparison cannot be read. When the fleet pushes a fix
    to a PR that was sent back, the re-review checks the earlier findings were
    fixed, and approves once they are. When a PR was sent back and the only
    commits since leave its own diff unchanged apart from the file drop
@@ -328,7 +331,8 @@ fields as follows:
 - `{{TEST_CHANGES}}` — the entry's `testChanges` (the removed and edited test
   files).
 - `{{PREVIOUS_FINDINGS}}` — when the entry's `previousFindings` is not empty:
-  "An earlier review asked for these fixes: {previousFindings}, numbered from 1 in array order. Independently check every problem and Fix ask; return exactly one `earlierFindings` verdict per index with evidence. A verdict other than `fixed` already sends that finding back with your note, so leave it out of `findings`, even where step 8 would make a `partial` or `missing` closure entry a finding. Still report that entry's verdict in `closure`."; otherwise
+  "An earlier review asked for these fixes: {previousFindings}, numbered from 1 in array order. Independently check every problem and Fix ask; return exactly one `earlierFindings` verdict per index with evidence. A verdict other than `fixed` already sends that finding back with your note, so leave it out of `findings`, even where step 8 would make a `partial` or `missing` closure entry a finding. Still report that entry's verdict in `closure`."; when the entry's `approvedAt` is not null (Issue #5149):
+  "An earlier review approved this PR at {approvedAt}. Read what the PR's own diff changed since that commit (`gh api repos/{repo}/compare/{approvedAt}...{headSha}`), including any conflict resolution and what a merge of the base brought in, and review that at this head together with how it meets the current base. Code that is the same at both commits has had its review: do not repeat general test-adequacy discovery on it, and raise a finding on it only for a concrete correctness or security defect, such as an input-handling defect or one the changed base exposes, which still blocks. The earlier approval is context, not an approval of this head. If the comparison cannot be read, its `status` is not `ahead` (a force-push or rebase took the approved commit off this head's history), or it lists 300 files (GitHub's cap, so the listing may be incomplete), say so in your summary and review the whole diff as if no earlier review had approved it."; otherwise
   "No earlier review of this PR asked for fixes."
 - `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
   (the repo's `review-checklists.json` at the base ref, matched against the
@@ -368,7 +372,10 @@ reviewer's reply>}` to a file in the scratchpad and run, from this skill's
 deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file> --reviewer=<reviewer-login> --config=<config-path>
 ```
 
-Use the reviewer login and config path from the gate command.
+Use the reviewer login and config path from the gate command. When the round's
+prompt names a `--config`, use that path instead: it is the round's read-only
+policy snapshot, and `post.ts` stops with an error rather than review on the
+defaults when its config is missing (Issue #5174).
 When the round's prompt names a `--state-dir`, add it to that command: a
 round in the worker container keeps its state under the worker's log mount.
 

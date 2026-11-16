@@ -232,6 +232,64 @@ Deno.test("a secret env var with an expression is ignored, but RUSTFLAGS with an
   assertStringIncludes(flags.unverifiable[0]!, "RUSTFLAGS");
 });
 
+Deno.test("a dtolnay ref that is a commit SHA names no toolchain (Issue #5136)", () => {
+  const sha = "29eef336d9b2848a0b548edc03f92a220660cdb8";
+  const fleet = scan(`
+      on: pull_request
+      jobs:
+        lint:
+          steps:
+            # dtolnay/rust-toolchain@stable
+            - uses: dtolnay/rust-toolchain@${sha}
+            - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+    `);
+  assertEquals(fleet.checks.map((c) => c.argv), [
+    [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-targets",
+      "--all-features",
+      "--",
+      "-D",
+      "warnings",
+    ],
+  ]);
+  assertEquals(fleet.unverifiable, []);
+
+  const withToolchain = scan(`
+      on: pull_request
+      jobs:
+        lint:
+          steps:
+            - uses: dtolnay/rust-toolchain@${sha}
+              with:
+                toolchain: nightly
+            - run: cargo clippy
+    `);
+  assertEquals(withToolchain.checks.map((c) => c.argv[1]), ["+nightly"]);
+
+  const explicit = scan(`
+      on: pull_request
+      jobs:
+        lint:
+          steps:
+            - uses: dtolnay/rust-toolchain@${sha}
+            - run: cargo +1.80 clippy
+    `);
+  assertEquals(explicit.checks.map((c) => c.argv[1]), ["+1.80"]);
+
+  const named = scan(`
+      on: pull_request
+      jobs:
+        lint:
+          steps:
+            - uses: dtolnay/rust-toolchain@stable
+            - run: cargo clippy
+    `);
+  assertEquals(named.checks.map((c) => c.argv[1]), ["+stable"]);
+});
+
 Deno.test("the toolchain from a setup action is inserted, and an explicit +toolchain is not overridden", () => {
   const argvOf = (text: string) => scan(text).checks.map((c) => c.argv[1]);
   assertEquals(

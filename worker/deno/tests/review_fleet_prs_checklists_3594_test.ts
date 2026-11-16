@@ -580,6 +580,9 @@ fi
         review: CLEAN_REPLY,
       }),
     );
+    // The round's test-change policy snapshot (Issue #5174): an empty config.
+    const policyConfig = `${tmp}/test-policy.json`;
+    await Deno.writeTextFile(policyConfig, "{}");
     const out = await new Deno.Command(Deno.execPath(), {
       args: [
         "run",
@@ -590,6 +593,7 @@ fi
         ).pathname,
         `--input=${input}`,
         `--state-dir=${tmp}/state`,
+        `--config=${policyConfig}`,
       ],
       env: { PATH: `${bin}:${Deno.env.get("PATH")}`, HOME: tmp },
       stdout: "piped",

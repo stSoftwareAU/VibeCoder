@@ -214,6 +214,22 @@ function repoList(v: unknown): string[] | undefined {
   return v as string[];
 }
 
+/**
+ * The only `.config.json` keys the policy reads. `scripts/run.sh` copies exactly
+ * these into each round's `test-policy.json` snapshot (Issue #5174), and a runner
+ * test fails when that snapshot drops one of them or carries another key.
+ */
+export const TEST_POLICY_CONFIG_KEYS = [
+  "allowed_authors",
+  "authorized_commenters",
+  "pr_reviewers",
+  "github_user",
+  "fleet_pr_authors",
+  "service_accounts",
+  "pr_reviewer_test_hold_repos",
+  "pr_reviewer_auto_release",
+] as const;
+
 // Logins from the three trust lists; a non-string entry is skipped.
 function trustedLoginsOf(config: Record<string, unknown>): string[] {
   const logins = new Set<string>();
@@ -239,7 +255,13 @@ function trustedLoginsOf(config: Record<string, unknown>): string[] {
 export function effectiveTestPolicy(
   config: Record<string, unknown>,
 ): EffectiveTestPolicy {
-  const holdAllRepos = repoList(config.pr_reviewer_test_hold_repos);
+  // Only the policy's own keys: a key outside the list can never affect it.
+  const c: Record<string, unknown> = Object.fromEntries(
+    TEST_POLICY_CONFIG_KEYS.filter((k) => k in config).map((
+      k,
+    ) => [k, config[k]]),
+  );
+  const holdAllRepos = repoList(c.pr_reviewer_test_hold_repos);
   if (holdAllRepos === undefined) {
     throw new Error(
       'pr_reviewer_test_hold_repos must be an array of "owner/repo" strings',
@@ -249,23 +271,25 @@ export function effectiveTestPolicy(
     version: HOLD_POLICY_VERSION,
     mode: "evidence",
     holdAllRepos,
-    legacyAutoRelease: repoList(config.pr_reviewer_auto_release) ?? [],
-    trustedLogins: trustedLoginsOf(config),
+    legacyAutoRelease: repoList(c.pr_reviewer_auto_release) ?? [],
+    trustedLogins: trustedLoginsOf(c),
     fleetWorkerLogins: resolveSuppressionExcludedLogins({
-      githubUser: typeof config.github_user === "string"
-        ? config.github_user
-        : "",
-      fleetPrAuthors: Array.isArray(config.fleet_pr_authors)
-        ? config.fleet_pr_authors as string[]
+      githubUser: typeof c.github_user === "string" ? c.github_user : "",
+      fleetPrAuthors: Array.isArray(c.fleet_pr_authors)
+        ? c.fleet_pr_authors as string[]
         : [],
-      serviceAccounts: Array.isArray(config.service_accounts)
-        ? config.service_accounts as string[]
+      serviceAccounts: Array.isArray(c.service_accounts)
+        ? c.service_accounts as string[]
         : [],
     }),
   };
 }
 
-/** Read the policy from `.config.json`; a missing file is the defaults. */
+/**
+ * Read the policy from `.config.json`. A missing file is an error, never the
+ * defaults: a round given no policy would drop the trusted logins and the owner
+ * holds (Issue #5174).
+ */
 export async function loadTestPolicy(
   configPath: string | URL = DEFAULT_CONFIG,
 ): Promise<EffectiveTestPolicy> {
@@ -273,7 +297,14 @@ export async function loadTestPolicy(
   try {
     text = await Deno.readTextFile(configPath);
   } catch (e) {
-    if (e instanceof Deno.errors.NotFound) return effectiveTestPolicy({});
+    if (e instanceof Deno.errors.NotFound) {
+      const path = configPath instanceof URL
+        ? decodeURIComponent(configPath.pathname)
+        : configPath;
+      throw new Error(
+        `${path} not found: the test-change policy is never run on its defaults (Issue #5174)`,
+      );
+    }
     throw e;
   }
   return effectiveTestPolicy(JSON.parse(text));
