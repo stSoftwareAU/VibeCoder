@@ -30,6 +30,11 @@ import {
   processCiFailure,
 } from "../lib/pr_ci_processor.ts";
 import {
+  processSpellingFailure,
+  type SpellingFixInput,
+  type SpellingProcessorDeps,
+} from "../lib/pr_spelling_processor.ts";
+import {
   commitAndPushPending,
   REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
 } from "../lib/git_push.ts";
@@ -439,6 +444,47 @@ Deno.test({
       });
       assert(result.ok, result.ok ? "" : result.error.message);
       assertEquals(observedPreFlights, [REPAIR_NO_PRE_FLIGHT_SPEC]);
+    } finally {
+      await Deno.remove(fx.tmp, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "spelling fix - an unformatted .ts fix the agent committed is formatted and pushed (Issue #5169)",
+  permissions: { read: true, write: true, run: true, env: true },
+  async fn() {
+    const fx = await makeFixture();
+    try {
+      const input: SpellingFixInput = {
+        repo: REPO,
+        prNumber: 2524,
+        branchName: BRANCH,
+        checkRunId: "67890",
+        checkName: "Spelling Check",
+        encodedAnnotations: btoa(JSON.stringify([])),
+      };
+      const processorDeps: SpellingProcessorDeps = {
+        promptsDir: PROMPTS_DIR,
+        logger: silentLogger,
+        // The agent commits its re-wrapped fix but never pushes it.
+        deps: makeDeps(async () => {
+          await writeFiles(fx.repo, { "worker/deno/lib/a.ts": UNFORMATTED_TS });
+          await git(["add", "."], fx.repo);
+          await git(["commit", "-m", "Fix spelling"], fx.repo);
+        }),
+        workDir: fx.repo,
+        workRoot: fx.tmp,
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        repoConfigs: GATED,
+      };
+      const result = await processSpellingFailure(input, processorDeps);
+      assert(result.ok, result.ok ? "" : result.error.message);
+      assertEquals(
+        await remoteFile(fx, "worker/deno/lib/a.ts"),
+        FORMATTED_TS,
+      );
     } finally {
       await Deno.remove(fx.tmp, { recursive: true });
     }

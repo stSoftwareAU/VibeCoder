@@ -866,9 +866,10 @@ Deno.test("processMergeConflict - the push is gated on the repository's ShellChe
   const { captured, result } = await runProcessor(makeInput(), makeGitScript());
 
   assert(result.ok);
-  // No pre-flight commands are configured, so the spec is repairChecksOnly.
+  // No pre-flight commands are configured, so the push gets the repair spec
+  // with CI's cargo checks (Issues #4631, #5169).
   assertEquals(captured.commitAndPushPreFlights, [
-    { commands: [], repairChecksOnly: true },
+    { commands: [], repairChecksWithCiCargo: true },
   ]);
 });
 

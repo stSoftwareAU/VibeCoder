@@ -218,9 +218,9 @@ Deno.test("processSpellingFailure - succeeds with mock Claude output", async () 
   // The PR base could not be read (the mock gh answers ""), so the agent's
   // CI cargo comparison is required but has no ref (Issue #4630 review).
   assertEquals(requests[0]?.ciCargoCompareRef, "");
-  // Issue #4631: no pre-flight commands are configured, so the push is gated
-  // on the repository's ShellCheck policy alone.
-  assertEquals(preFlights, [{ commands: [], repairChecksOnly: true }]);
+  // No pre-flight commands are configured, so the push gets the repair spec
+  // with CI's cargo checks (Issues #4631, #5169).
+  assertEquals(preFlights, [{ commands: [], repairChecksWithCiCargo: true }]);
 });
 
 Deno.test("processSpellingFailure - the agent's own push compares CI cargo against the PR base (Issue #4630 review)", async () => {

@@ -22,6 +22,7 @@ import {
   prBaseCompareRef,
   PrePushGateBlockedError,
   REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
+  resolveRepairPreFlightSpec,
 } from "../lib/git_push.ts";
 import { PrePushGateInfrastructureError } from "../lib/pre_push_gate.ts";
 import {
@@ -615,6 +616,76 @@ Deno.test("commitAndPushPending - repairChecksWithCiCargo: failing CI clippy ref
       CI_CLIPPY_COMMAND,
     ]);
     assertEquals(await originSha(downstream, branch), before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - a spelling or merge-conflict repair without pre-flight commands is refused on a failing CI clippy (Issue #5169)", async () => {
+  const branch = "issue-5169-clippy-fail";
+  const { tmp, downstream } = await makeRepo("preflight_5169_fail_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const before = await originSha(downstream, branch);
+    const { runner, calls } = cargoRunner(CLIPPY_ASSERT_IS_EMPTY);
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { ...resolveRepairPreFlightSpec(undefined, "org/repo"), runner },
+    );
+
+    assert(!result.ok, "failing CI clippy must refuse the push");
+    if (!result.ok) {
+      assert(
+        result.error.message.includes("[PRE_PUSH_BLOCKED]"),
+        result.error.message,
+      );
+      assert(
+        result.error.message.includes("clippy::assert_is_empty"),
+        result.error.message,
+      );
+    }
+    assertEquals(calls, [
+      "cargo --version",
+      "cargo clippy --version",
+      CI_CLIPPY_COMMAND,
+    ]);
+    assertEquals(await originSha(downstream, branch), before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - a spelling or merge-conflict repair without pre-flight commands pushes when CI clippy passes (Issue #5169)", async () => {
+  const branch = "issue-5169-clippy-pass";
+  const { tmp, downstream } = await makeRepo("preflight_5169_pass_", branch);
+  try {
+    await seedCargoCi(downstream);
+    await commitUnpushed(downstream, { "src/lib.rs": RUST_OK });
+    const { runner, calls } = cargoRunner({
+      started: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { ...resolveRepairPreFlightSpec(undefined, "org/repo"), runner },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assert(calls.includes(CI_CLIPPY_COMMAND), calls.join(" | "));
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    assertEquals(await originSha(downstream, branch), head);
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
