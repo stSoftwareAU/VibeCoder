@@ -487,6 +487,15 @@ export async function recoverFromSummaryRuleBlock(
 }
 
 /**
+ * Commit message for the in-run PR-summary recovery (Issue #2242).
+ * Carries no VibeCoder `#<n>` because it lands in the target repo, where a
+ * bare number links to an unrelated issue (Issue #5045).
+ */
+export function buildSummaryRecoveryCommitMessage(issueNumber: number): string {
+  return `docs: close out the PR summary for #${issueNumber}\n\nIn-run PR-summary recovery.`;
+}
+
+/**
  * Commit what the recovery produced onto the issue branch (Issue #2242).
  *
  * HEAD is reconciled first: the observed failure left the summary untracked on
@@ -528,8 +537,7 @@ export async function commitRecoveredSummary(
 
   const commit = await deps.git.commitAndPushPending(
     state.branchName,
-    `docs: close out the PR summary for #${issueNumber}\n\n` +
-      `In-run PR-summary recovery (Issue #2242).`,
+    buildSummaryRecoveryCommitMessage(issueNumber),
     { cwd: state.repoPath },
     false,
     resolvePreFlightSpec(config.repoConfig, repo),

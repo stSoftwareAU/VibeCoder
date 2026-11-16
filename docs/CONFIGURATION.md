@@ -593,6 +593,10 @@ with its verified evidence.
 explicit owner override. For a listed repo every meaningful test change, and
 every removed test file, keeps the comment-only owner hold, whatever the
 reviewer's assessment. It is read by the reviewer skill, never by the worker.
+A reviewer round run inside the worker container is still the reviewer skill:
+it reads the key, with the trusted-login lists and service accounts, from its
+round's read-only `test-policy.json` snapshot, and a reviewer host with no
+config posts no review rather than one on the defaults (Issue #5174).
 
 ### Migrating from `pr_reviewer_auto_release`
 
@@ -5487,6 +5491,9 @@ gates do (see that bullet):
      workflow; a plain relative path inside the repo), its `+toolchain` (or the
      toolchain of the job's `dtolnay/rust-toolchain`,
      `actions-rust-lang/setup-rust-toolchain` or `actions-rs/toolchain` step),
+     (a `dtolnay/rust-toolchain` ref that is a 40-character commit SHA names no
+     toolchain, only `with.toolchain` does, so with no `with.toolchain` the
+     command runs as plain `cargo`),
      its flags (for example `--all-targets`, `--locked`, `-- -D warnings`), and
      its cargo-relevant environment (`RUSTFLAGS` and similar, taken verbatim). A
      test-target compile (`cargo test --no-run`) is derived from a CI
@@ -5509,7 +5516,13 @@ gates do (see that bullet):
      dropped, and `--cargo-profile` becomes cargo's `--profile`. Before any CI
      cargo command runs, a probe checks every distinct toolchain the plan uses
      (per directory and env): `cargo [+toolchain] --version`, and `cargo
-     [+toolchain] clippy --version` where a clippy check uses it. An
+     [+toolchain] clippy --version` where a clippy check uses it. When `cargo`
+     here is not a rustup proxy (cargo refuses the `+toolchain` word with
+     ``error: no such command: `+…` ``, as in the worker image, which installs
+     Rust without rustup), the probe and the CI cargo commands run without the
+     `+toolchain` word, with the installed toolchain, and a
+     `[PRE_PUSH_WARNING]` line says so; a toolchain that rustup reports as not
+     installed is still an infrastructure fault (Issue #5136). An
      infrastructure fault (a missing `cargo` or `clippy`, a toolchain,
      component or `--target` that rustup or rustc reports as not installed, a
      directory that is missing or resolves outside the repo, a cargo registry or

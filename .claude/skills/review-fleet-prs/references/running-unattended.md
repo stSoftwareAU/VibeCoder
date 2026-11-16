@@ -237,7 +237,10 @@ worker's log mount, which `scripts/post.ts` is told with `--state-dir`. The
 round's prompt is `prompt.md` in its round directory, beside `claude.log`, which
 shows the round's readable output (each result's text); the CLI runs with
 `--output-format stream-json`, and each attempt's full stream is
-`stream-<n>.jsonl` there.
+`stream-<n>.jsonl` there. The round's directory also holds `test-policy.json`, a
+read-only snapshot of only the test-change policy's config keys (no credential),
+and the round's prompt tells `scripts/post.ts` to read it with `--config`; a
+round whose snapshot cannot be written is not started (Issue #5174).
 
 ## What each review cost
 
