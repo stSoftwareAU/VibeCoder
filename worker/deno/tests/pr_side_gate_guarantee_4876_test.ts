@@ -292,10 +292,12 @@ for (const preFlight of [undefined, ["deno fmt --check"]]) {
 
       assertEquals(result.success, true, result.message);
       assertEquals(capturedPreFlight?.commands, preFlight ?? []);
+      // Issue #5169: the no-pre-flight spec is repairChecksWithCiCargo, not repairChecksOnly.
       assertEquals(
-        capturedPreFlight?.repairChecksOnly,
+        capturedPreFlight?.repairChecksWithCiCargo,
         preFlight ? undefined : true,
       );
+      assertEquals(capturedPreFlight?.repairChecksOnly, undefined);
       assertEquals(recordedOptions.length, 1, "the agent must be invoked");
       const prompt = recordedOptions[0]!.prompt;
       assertStringIncludes(prompt, PRE_FLIGHT_SENTENCE);
