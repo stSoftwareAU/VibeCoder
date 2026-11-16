@@ -90,6 +90,11 @@ export interface PreFlightGateOptions {
   timeoutSeconds?: number;
   /** Command runner (defaults to the real subprocess runner). */
   runner?: PreFlightRunner;
+  /**
+   * Text placed between the BLOCK line and the raw output so the head of a cut
+   * message names the failure (Issue #5113). Not used for not-started.
+   */
+  summariseFailure?: (output: string) => string | null;
 }
 
 /**
@@ -226,6 +231,26 @@ function combineOutput(result: PreFlightCommandResult): string {
     .join("\n");
 }
 
+/** Longest command shown verbatim in a BLOCK message (Issue #5113). */
+const COMMAND_DISPLAY_MAX_CHARS = 200;
+
+/** Collapse a very long command's file arguments to a count (Issue #5113). */
+function describeCommand(command: string): string {
+  if (command.length <= COMMAND_DISPLAY_MAX_CHARS) return command;
+  const tokens = tokeniseCommand(command);
+  const isFile = (t: string, i: number) =>
+    i >= 1 && !t.startsWith("-") && (t.includes("/") || /\.\w+$/.test(t));
+  const first = tokens.findIndex(isFile);
+  if (first === -1) return command;
+  const count = tokens.filter(isFile).length;
+  const rest = tokens.slice(first).filter((t, i) => !isFile(t, first + i));
+  return [
+    ...tokens.slice(0, first),
+    `(${count} ${count === 1 ? "file" : "files"})`,
+    ...rest,
+  ].join(" ");
+}
+
 /**
  * Run a repo's pre-flight commands in listed order, stopping at the first
  * failure (Issue #3577).
@@ -261,6 +286,8 @@ export async function runPreFlightGate(
       timeoutSeconds,
     });
     const output = combineOutput(result);
+    const summary = options.summariseFailure?.(output) ?? null;
+    const summaryPart = summary ? `\n\n${summary}` : "";
 
     if (!result.started) {
       return {
@@ -271,7 +298,9 @@ export async function runPreFlightGate(
           exitCode: result.code,
           output,
           message:
-            `Pre-flight gate BLOCK (Issue #3577): command \`${command}\` ` +
+            `Pre-flight gate BLOCK (Issue #3577): command \`${
+              describeCommand(command)
+            }\` ` +
             `could not be started (missing, not executable, or unstartable). ` +
             `"Could not run the check" is treated as a block, never a pass.` +
             (output ? `\n\n${output}` : ""),
@@ -288,9 +317,11 @@ export async function runPreFlightGate(
           exitCode: TIMEOUT_EXIT_CODE,
           output,
           message:
-            `Pre-flight gate BLOCK (Issue #3577): command \`${command}\` ` +
+            `Pre-flight gate BLOCK (Issue #3577): command \`${
+              describeCommand(command)
+            }\` ` +
             `timed out after ${timeoutSeconds}s. A timeout is a block, ` +
-            `never a pass.` + (output ? `\n\n${output}` : ""),
+            `never a pass.` + summaryPart + (output ? `\n\n${output}` : ""),
         }),
       };
     }
@@ -304,9 +335,11 @@ export async function runPreFlightGate(
           exitCode: result.code,
           output,
           message:
-            `Pre-flight gate BLOCK (Issue #3577): command \`${command}\` ` +
+            `Pre-flight gate BLOCK (Issue #3577): command \`${
+              describeCommand(command)
+            }\` ` +
             `failed with exit code ${result.code}. Fix the failure and retry ` +
-            `— the commit and push are blocked.` +
+            `— the commit and push are blocked.` + summaryPart +
             (output ? `\n\n${output}` : ""),
         }),
       };
