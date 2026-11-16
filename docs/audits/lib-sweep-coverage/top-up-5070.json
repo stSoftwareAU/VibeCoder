@@ -1,0 +1,12 @@
+{
+  "issue": 5070,
+  "chunk": "top-up-5070",
+  "title": "top-up: record-only branch detection for issue-run change detection",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5070",
+  "definition": "Review that changesOnlyRunRecords is true only for a non-empty path list whose every entry is exactly this issue's PR summary path or the top-level .pr_response_message, and that readBranchChangedPaths unions the base...HEAD diff, tracked uncommitted changes and untracked non-ignored files, splitting NUL-separated output, and returns an error naming the git command, never an empty list, when any git call fails.",
+  "status": "claimed",
+  "sweptAt": "512393e3467f39fa83ee3c15596be210a7828286",
+  "paths": [
+    "worker/deno/lib/run_record_only.ts"
+  ]
+}

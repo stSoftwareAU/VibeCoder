@@ -15,7 +15,8 @@
  *   D -- yes --> Y[deferred — sync first]
  *   D -- no --> G{any file changes vs default?}
  *   G -- no --> W[deferred — nothing to roll up]
- *   G -- yes --> E["create or reuse ref partial-rollup/slug-sha"]
+ *   G -- yes --> R["read delivered issues (fails loud)"]
+ *   R --> E["create or reuse ref partial-rollup/slug-sha"]
  *   E --> F[gh pr create --head snapshot --base default]
  *   F --> Z[created]
  * ```
@@ -25,6 +26,12 @@
  * it for the milestone's own rollup: the milestone stays open and its final
  * rollup is raised later as normal. The body carries no closing keyword, so
  * the partial merge closes no issue.
+ *
+ * The body links the milestone's parent (the leading `#N` of its title) and
+ * each delivered child with anchored `Part of #N` lines (Issue #5058), so the
+ * fleet reviewer can read the issues the rollup serves. The delivered issues
+ * are read only once the outcome is known to be a create, and a failed read
+ * fails loud: no ref and no PR.
  *
  * Never merges, rebases, updates or force-pushes (#2807, #2809, #2824): a
  * behind milestone is deferred to the sync path, and an existing snapshot ref
@@ -38,6 +45,7 @@ import {
   selectFleetAuthoredMatches,
 } from "./alert_dedup_authors.ts";
 import { isMilestoneBranch } from "./milestone_children_gate.ts";
+import { milestoneProvenanceLines } from "./milestone_provenance.ts";
 import { isValidBranchName } from "./repo_rulesets.ts";
 import { isValidRepoSlug } from "./repo_slug.ts";
 
@@ -115,6 +123,12 @@ export interface PartialRollupOptions {
   defaultBranch: string;
   /** Function to execute gh CLI commands. */
   ghFn: GhCommandFn;
+  /**
+   * The closed children this milestone delivered, linked in the body with
+   * `Part of` lines (Issue #5058). Read only once the outcome is a create; a
+   * rejection fails the partial rollup loudly, with no ref and no PR.
+   */
+  readDeliveredIssues: () => Promise<readonly number[]>;
   /** Fleet identity for the marker author check; omitted reads the config. */
   authorOptions?: AlertDedupAuthorOptions;
   /** Sink for the author-check warnings. */
@@ -295,8 +309,16 @@ async function ensureSnapshotRef(
 }
 
 /**
- * The body of a partial rollup PR. Carries no closing keyword by design, and
- * no VibeCoder issue number: it is posted in the target repo (Issue #3674).
+ * The body of a partial rollup PR. Carries no closing keyword by design.
+ *
+ * No VibeCoder issue number: it is posted in the target repo (Issue #3674).
+ * The numbers in the `Part of` lines (Issue #5058) are the target repo's own
+ * milestone issues: the `#N` leading the milestone title and the delivered
+ * children, so they link to issues that exist in that repo.
+ *
+ * `Part of` lines come after the intro paragraph, as their own paragraph
+ * before the bullet list. With no leading `#N` in the title and no delivered
+ * issues, the body is byte-identical to the body without them.
  */
 export function buildPartialRollupBody(options: {
   milestone: string;
@@ -305,6 +327,8 @@ export function buildPartialRollupBody(options: {
   snapshotBranch: string;
   headSha: string;
   aheadBy: number;
+  /** The closed children this milestone delivered (Issue #5058). */
+  deliveredIssues: readonly number[];
 }): string {
   const {
     milestone,
@@ -313,14 +337,19 @@ export function buildPartialRollupBody(options: {
     snapshotBranch,
     headSha,
     aheadBy,
+    deliveredIssues,
   } = options;
+  const provenance = milestoneProvenanceLines(milestone, deliveredIssues);
+  const provenanceSection = provenance.length > 0
+    ? `${provenance.join("\n")}\n\n`
+    : "";
   return `${partialRollupMarker(milestone)}
 ## Partial milestone rollup
 
 This PR lands the work already merged into \`${milestoneBranch}\` onto
 \`${defaultBranch}\` to break a cross-milestone dependency deadlock.
 
-- Snapshot: \`${snapshotBranch}\` at \`${headSha}\` — an immutable copy of the
+${provenanceSection}- Snapshot: \`${snapshotBranch}\` at \`${headSha}\` — an immutable copy of the
   milestone tip, ${aheadBy} commit(s) ahead of \`${defaultBranch}\`.
 - The milestone **stays open**; its final rollup is raised as normal once the
   remaining issues land.
@@ -419,6 +448,21 @@ export async function createPartialRollup(
     };
   }
 
+  // Issue #5058: read only once a create is certain, so a deferred or existing
+  // outcome never pays for it. A failed read fails loud: never a body without
+  // the children it claims.
+  let deliveredIssues: readonly number[];
+  try {
+    deliveredIssues = await options.readDeliveredIssues();
+  } catch (err) {
+    return {
+      outcome: "failed",
+      reason: `could not read the delivered issues of "${milestone}": ${
+        errorText(err)
+      }`,
+    };
+  }
+
   const snapshotBranch = partialRollupBranchName(milestoneBranch, headSha);
   const body = buildPartialRollupBody({
     milestone,
@@ -427,6 +471,7 @@ export async function createPartialRollup(
     snapshotBranch,
     headSha,
     aheadBy: counts.aheadBy,
+    deliveredIssues,
   });
   // Defence in depth: the title is untrusted and lands in the body.
   if (CLOSING_KEYWORD_PATTERN.test(body)) {

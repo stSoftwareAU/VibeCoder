@@ -72,11 +72,11 @@ function isMergeCheckOnly(text: string): boolean {
     words.every((word) => MERGE_CHECK_WORDS.has(word));
 }
 
-/** Current check results in evidence; a later clean result supersedes its failure. */
+/** Current check results in evidence; a later clean result supersedes its failure. Code-span and emphasis markup (backticks, `*`, `_`) before a declaration is skipped, as the renderer wraps evidence in a code span (Issue #5063). */
 function hasFailedMergeCheck(evidence: string): boolean {
   const failed = new Map<string, boolean>();
   const declarations = evidence.matchAll(
-    /(?:^|[;.—]\s*)((?:(?:required|local|all|unit|integration)\s+)?(?:CI(?:\s+checks?)?|quality(?:\s+gates?)?|gates?|(?:(?:clean|code|independent)\s+)?reviews?|tests?))\s*:?\s*(?:(?:is|are|was|were|has|have|now|still|currently)\s+)*(failed|failing|broken|not (?:clean|green|passing)|rejected|blocking findings?|passed|pass|passing|clean|green|fixed|resolved)\b/gi,
+    /(?:^|[;.—])[\s`*_]*((?:(?:required|local|all|unit|integration)\s+)?(?:CI(?:\s+checks?)?|quality(?:\s+gates?)?|gates?|(?:(?:clean|code|independent)\s+)?reviews?|tests?))\s*:?\s*(?:(?:is|are|was|were|has|have|now|still|currently)\s+)*(failed|failing|broken|not (?:clean|green|passing)|rejected|blocking findings?|passed|pass|passing|clean|green|fixed|resolved)\b/gi,
   );
   for (const match of declarations) {
     const name = match[1]!.toLowerCase();

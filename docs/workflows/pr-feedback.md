@@ -252,8 +252,10 @@ the `vibe-pr-summary sha256` digest marker, it reads `pr-summary-<N>.md`
 commit through the contents API
 (`gh api repos/{repo}/contents/<path>?ref=<head>`), with no checkout, and
 computes the same digest the body records. The digest is of the summary
-alone (Issue #4234). When the digest matches, nothing is
-edited and nothing is logged. The match is memoised per PR, keyed on the head
+alone (Issue #4234), taken after the same normalisation the summary loaders
+apply, so a stale literal version-bump line is omitted before hashing
+(Issue #5057). When the digest matches, nothing is edited and nothing is
+logged. The match is memoised per PR, keyed on the head
 SHA and the recorded digest, and reused only while both are unchanged, so later
 cycles make no contents calls for that PR; an entry is pruned once the PR is no
 longer listed. When it differs, the pass logs that it is

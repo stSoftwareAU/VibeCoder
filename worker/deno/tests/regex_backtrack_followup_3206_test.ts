@@ -95,6 +95,7 @@ function rollup(milestone: string, milestoneBranch: string, ghFn: GhCommandFn) {
     milestoneBranch,
     defaultBranch: "main",
     ghFn,
+    readDeliveredIssues: () => Promise.resolve([]),
     authorOptions: { fleetAuthors: ["bot"] },
     log: () => {},
   });
