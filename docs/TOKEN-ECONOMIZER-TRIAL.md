@@ -532,3 +532,11 @@ purge leaves alone.
   other `.config.json` key.
 - **[Threat Model](THREAT-MODEL.md)** — where the plugin is recorded as a
   supply-chain component, and its learned facts as cross-run context.
+
+### Accounting completeness
+
+Stopped runs with unreadable plugin accounting retain unavailable cost, with
+known agent spend reported only as a lower bound. Missing session counters in
+any launch with ledger evidence make the aggregate counters unavailable. Merge
+rates count each repository/PR pair once per population; cost and success rates
+continue to count every run, including retries.

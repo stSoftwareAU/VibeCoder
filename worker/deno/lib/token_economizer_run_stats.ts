@@ -248,6 +248,7 @@ async function readFigures(
       }
       for (const host of hosts.entries.filter((e) => e.isDirectory)) {
         const base = join(home, "repos", repo.name, host.name);
+        let hostSessionRead = false;
 
         const sessions = await listEntries(join(base, "sessions"), logger);
         if (!sessions.ok) facts = redirects = stuck = undefined;
@@ -258,6 +259,7 @@ async function readFigures(
         ) {
           evidence = true;
           sessionRead = true;
+          hostSessionRead = true;
           const loaded = await readJson(
             join(base, "sessions", file.name),
             logger,
@@ -284,7 +286,11 @@ async function readFigures(
         }
 
         const ledger = await readLedger(join(base, "ledger.jsonl"), logger);
-        if (ledger === "missing") continue;
+        if (ledger === "missing") {
+          if (hostSessionRead) overhead = judge = undefined;
+          continue;
+        }
+        if (!hostSessionRead) facts = redirects = stuck = undefined;
         if (!ledger.ok) {
           // A ledger that cannot be read may still hold session evidence, but
           // the run did write state, so the plugin was loaded.

@@ -472,3 +472,32 @@ Deno.test("callback document - an on run carries the block and the schema stays 
     { enabled: true, status: "not-run", persistence: "unavailable" },
   );
 });
+
+Deno.test("mixed complete and ledger-only homes keep session totals unavailable in either order", async () => {
+  await withTemp(async (dir) => {
+    const complete = join(dir, "complete");
+    const partial = join(dir, "partial");
+    await fixtureHome(complete);
+    const base = join(partial, "repos", "k", "claude");
+    await Deno.mkdir(base, { recursive: true });
+    await Deno.writeTextFile(
+      join(base, "ledger.jsonl"),
+      jsonl([
+        { kind: "session", overhead: { optimizer_tokens: 200 } },
+      ]),
+    );
+    for (const homes of [[complete, partial], [partial, complete]]) {
+      const stats = await summariseTokenEconomizerRun({
+        enabled: true,
+        eligible: true,
+        workDir: join(dir, "work"),
+        stateHomes: homes,
+      });
+      assertEquals(stats.factsInjected, undefined);
+      assertEquals(stats.redirects, undefined);
+      assertEquals(stats.stillStuckNotices, undefined);
+      assertEquals(stats.pluginEffectiveTokens, 1350);
+      assertEquals(stats.pluginCostUsd, 0.00135);
+    }
+  });
+});

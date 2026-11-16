@@ -273,3 +273,23 @@ flowchart LR
     for it: the mocked read carries no `updatedAt`, so no revision is recorded.
     That adapts this PR's own new test to the base's signature; no assertion
     changed.
+
+## Review repair: incomplete accounting and repeated PRs
+
+Missing plugin accounting remains unavailable for stopped and fallback runs;
+known agent spend is retained only as a lower bound. A zero plugin-cost value
+is positive evidence of no spend, unlike an absent value. Session counters are
+complete only when every host with ledger evidence supplies session data.
+Merge-state counts deduplicate repository/PR pairs within each population;
+run counts, success and cost denominators still include retries.
+
+The governing issue #4958 says: "Missing figures are unavailable, never zero."
+Existing cost fixtures now explicitly record zero plugin cost where they mean
+no spend; the lower-bound expectation includes known agent spend from incomplete
+runs. The repeated unknown-PR expectation changes from two runs to one PR,
+matching the report's final-state PR denominator. No success/cost population is
+removed. Regressions cover a corrupt stopped ledger through the real summariser,
+callback and report, complete plus ledger-only homes in both orders, and repeated
+merged and closed PRs. All three regressions failed before the repair; all 30
+reader/report tests pass afterwards. This supplies the missing evidence for the
+third acceptance criterion. Full hosted CI remains required.

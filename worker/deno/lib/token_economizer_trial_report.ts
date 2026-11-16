@@ -256,24 +256,16 @@ interface Sample {
   repository: string;
   completed: boolean;
   costUsd?: number;
+  lowerBoundUsd?: number;
   prNumber?: number;
 }
 
-/**
- * Cost of a switched-on run. No agent run means nothing billed (0). Otherwise
- * the block's run cost; failing that, the telemetry cost only when the plugin
- * recorded no spend (no plugin cost or tokens and not `on`); else unavailable.
- */
+/** Missing plugin accounting is unknown spend, even when the run stopped. */
 function onCost(r: RunRecord): number | undefined {
   if (r.absentReason === "agent_not_invoked") return 0;
   const b = r.block;
   if (b?.runCostUsd !== undefined) return b.runCostUsd;
-  if (
-    b !== undefined && b.pluginCostUsd === undefined &&
-    b.pluginEffectiveTokens === undefined && b.status !== "on"
-  ) {
-    return r.telemetryCostUsd;
-  }
+  if (b?.pluginCostUsd === 0) return r.telemetryCostUsd;
   return undefined;
 }
 
@@ -282,6 +274,7 @@ function onSample(r: RunRecord): Sample {
     repository: r.repository,
     completed: r.completed,
     costUsd: onCost(r),
+    lowerBoundUsd: r.telemetryCostUsd,
     prNumber: r.prNumber,
   };
 }
@@ -306,7 +299,10 @@ function computeMetrics(
   const completed = samples.filter((s) => s.completed).length;
 
   const missing = samples.filter((s) => s.costUsd === undefined).length;
-  const knownTotal = samples.reduce((sum, s) => sum + (s.costUsd ?? 0), 0);
+  const knownTotal = samples.reduce(
+    (sum, s) => sum + (s.costUsd ?? s.lowerBoundUsd ?? 0),
+    0,
+  );
   let cost: CostFigure;
   if (runs === 0) {
     cost = { available: false, reason: "no runs", missingCostRuns: 0 };
@@ -338,12 +334,16 @@ function computeMetrics(
   let open = 0;
   let unknown = 0;
   let noPr = 0;
+  const seen = new Set<PrKey>();
   for (const s of samples) {
     if (s.prNumber === undefined) {
       noPr++;
       continue;
     }
-    const state = states.get(prKey(s.repository, s.prNumber));
+    const key = prKey(s.repository, s.prNumber);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const state = states.get(key);
     if (state === "merged") merged++;
     else if (state === "closed") closed++;
     else if (state === "open") open++;

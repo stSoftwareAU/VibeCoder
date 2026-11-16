@@ -7,6 +7,11 @@
  * Australian English spelling used throughout.
  */
 
+import {
+  summariseTokenEconomizerRun,
+  tokenEconomizerCallbackBlock,
+} from "../lib/token_economizer_run_stats.ts";
+import { recordTokenEconomizerStop } from "../lib/token_economizer_plugin.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildTokenEconomizerTrialReport,
@@ -92,12 +97,22 @@ function fixture(): unknown[] {
     rec({
       finishedAt: W,
       cost: 1,
-      block: { enabled: true, status: "fallback", persistence: "unavailable" },
+      block: {
+        enabled: true,
+        status: "fallback",
+        pluginCostUsd: 0,
+        persistence: "unavailable",
+      },
     }),
     rec({
       finishedAt: W,
       cost: 2,
-      block: { enabled: true, status: "stopped", persistence: "unavailable" },
+      block: {
+        enabled: true,
+        status: "stopped",
+        pluginCostUsd: 0,
+        persistence: "unavailable",
+      },
     }),
     // Before: trial host, switch off, 14 days before the window.
     rec({ finishedAt: "2026-11-01T00:00:00Z", cost: 4, pr: 10 }),
@@ -306,7 +321,12 @@ Deno.test("switched-on population keeps failed and not-run attempts but not anot
         finishedAt: W,
         result: "failure",
         cost: 4,
-        block: { enabled: true, status: "not-run", persistence: "unavailable" },
+        block: {
+          enabled: true,
+          status: "not-run",
+          pluginCostUsd: 0,
+          persistence: "unavailable",
+        },
       }),
       rec({
         finishedAt: W,
@@ -362,6 +382,7 @@ Deno.test("run cost rule: agent_not_invoked is 0, plugin spend without a run cos
         block: {
           enabled: true,
           status: "fallback",
+          pluginCostUsd: 0,
           persistence: "unavailable",
         },
       }),
@@ -392,14 +413,14 @@ Deno.test("run cost rule: agent_not_invoked is 0, plugin spend without a run cos
     available: false,
     reason: "2 of 4 runs have no cost",
     missingCostRuns: 2,
-    lowerBoundPerCompletedUsd: 1.25,
+    lowerBoundPerCompletedUsd: 4.5,
   });
   assert(report.before.cost.available);
   assertEquals(report.before.cost.totalUsd, 3);
   assertEquals(report.before.cost.perCompletedUsd, 1.5);
   assertStringIncludes(
     formatTokenEconomizerTrialSection(report),
-    "unavailable — 2 of 4 runs have no cost; ≥ $1.25",
+    "unavailable — 2 of 4 runs have no cost; ≥ $4.50",
   );
 });
 
@@ -477,7 +498,7 @@ Deno.test("each pull request is looked up once and a failing lookup is unknown",
     },
   );
   assertEquals(calls, ["org/a#7"]);
-  assertEquals(report.switchedOn.merge.unknown, 2);
+  assertEquals(report.switchedOn.merge.unknown, 1);
   assertEquals(report.switchedOn.merge.rate, undefined);
 });
 
@@ -597,5 +618,68 @@ Deno.test("command reads a temp archive recursively and renders the section", as
     );
     assertEquals(json.success, true);
     assertEquals(JSON.parse(json.message).switchedOn.runs, 6);
+  });
+});
+
+Deno.test("stopped corrupt accounting stays unavailable through summariser callback and report", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/home/repos/k/claude`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/home/repos/k/claude/ledger.jsonl`,
+      "{broken",
+    );
+    await recordTokenEconomizerStop(dir, {
+      rule: "plugin-run-failure",
+      reason: "failed",
+    });
+    const stats = await summariseTokenEconomizerRun({
+      enabled: true,
+      eligible: true,
+      workDir: dir,
+      stateHomes: [`${dir}/home`],
+    });
+    const report = await buildTokenEconomizerTrialReport(
+      [rec({
+        finishedAt: "2026-11-10T00:00:00Z",
+        cost: 6,
+        block: { ...tokenEconomizerCallbackBlock(stats, 6) },
+      })],
+      OPTIONS,
+      lookup,
+    );
+    assertEquals(report.switchedOn.cost, {
+      available: false,
+      reason: "1 of 1 runs have no cost",
+      missingCostRuns: 1,
+      lowerBoundPerCompletedUsd: 6,
+    });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("merge rate counts distinct PRs while cost and success retain every run", async () => {
+  const report = await buildTokenEconomizerTrialReport(
+    [1, 1, 2, 2].map((pr) =>
+      rec({
+        finishedAt: "2026-11-10T00:00:00Z",
+        pr,
+        block: onBlock(1),
+      })
+    ),
+    OPTIONS,
+    lookup,
+  );
+  assertEquals(report.switchedOn.runs, 4);
+  assertEquals(report.switchedOn.completed, 4);
+  assertEquals(report.switchedOn.merge, {
+    merged: 1,
+    closed: 1,
+    known: 2,
+    open: 0,
+    unknown: 0,
+    noPr: 0,
+    rate: 0.5,
   });
 });
