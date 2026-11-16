@@ -534,9 +534,9 @@ or `max`. A value that fails its check is logged and the default is used.
 
 A round that hits a usage limit tries every available Claude subscription
 once on the configured model, then Codex `gpt-6-astra` at `high`, then (for
-a configured Fable round) `claude-opus-5-5` at `xhigh` on the current Claude
-subscription, then DeepSeek `deepseek-v4-pro`. Astra is skipped when no
-credential reaches the round. A Fable-specific model cap triggers this chain
+a configured Fable round) `claude-opus-5-5` at `xhigh` across the available Claude
+subscriptions, then DeepSeek `deepseek-v4-pro`. Astra is skipped when no
+credential reaches the round or its executable is absent. A Fable-specific model cap triggers this chain
 without treating the entire Claude subscription as exhausted. Codex runs in a round when the round's own Codex home
 (`~/logs/review-fleet-prs/codex`, created by `run.sh`) holds its own ChatGPT
 login (Issue #5127), or with an API key in `codex/provider.env`, or a

@@ -160,9 +160,11 @@ explicit fallback can also select a metered provider.
   (`gpt-6-astra`). A model-specific Fable cap triggers the chain without
   marking the whole Claude subscription spent. Astra needs a credential
   reachable inside the round, such as its own persistent Codex login
-  (Issue #5127). If Astra has no credential or no quota, try Opus on the
-  current Claude subscription, then DeepSeek as paid overflow. Other failures
-  stop the round. Implementation: `worker/deno/lib/review_round.ts`, launched
+  (Issue #5127). If Astra has no credential, executable or quota, try Opus across
+  the available Claude subscriptions, then DeepSeek as paid overflow. Fable
+  refusals do not exclude those subscriptions from Opus. Other failures stop
+  the round. The reviewer builds a separate image containing Claude and Codex
+  without adding worker credential mounts; its egress includes both providers. Implementation: `worker/deno/lib/review_round.ts`, launched
   by `.claude/skills/review-fleet-prs/scripts/run.sh`.
 - **Fleet PR babysitter overflow.** The babysitter provider chooser prefers
   subscriptions and selects DeepSeek as logged overflow only when no eligible
