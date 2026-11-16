@@ -2021,7 +2021,11 @@ async function runClaudeWithTimeoutBody(
       timedOut = true;
       timeoutReason = reason;
       killFiredMs = clock.now();
-      logger?.error(message);
+      // Issue #5118: a kill that is a scheduled release is not an error.
+      const isScheduledRelease = reason === "hard-timeout" &&
+        (scheduledRelease !== undefined || finishClamp?.clamped === true);
+      if (isScheduledRelease) logger?.info(message);
+      else logger?.error(message);
       killPromise = killClaudeProcessTree(
         childPid,
         killAfterSeconds,
