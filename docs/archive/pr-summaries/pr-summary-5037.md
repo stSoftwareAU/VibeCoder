@@ -49,14 +49,21 @@ Backend only; no UI file is touched.
 
 ## Test Plan
 
-- Added `worker/deno/tests/execute_phase_killed_test.ts` test "execute_phase - a
-  killed run whose output quotes the usage-limit heading keeps its single retry
-  (Issue #5037)".
-  - Its killed run's output ends with the heading.
-  - It asserts that the heading reaches the reason (positive control), that the
-    reason classifies as `killed`, that the runner is called twice, that the
-    retry is logged, and that the usage-limit skip never fires.
-  - Red against the unfixed check: runner calls were 1, expected 2.
+- Added two `worker/deno/tests/execute_phase_killed_test.ts` tests, both driving
+  `workOnIssueExecuteClaude`, with a first attempt killed and its output ending
+  with the usage-limit heading:
+  - "a killed run whose output quotes the usage-limit heading keeps its single
+    retry (Issue #5037)" gives the retry a distinct, successful second result.
+    It asserts the phase outcome is the retry's (`early_exit`, reason
+    `no_changes`) and not the killed first attempt's `failure`, that the retry
+    is logged, and that the usage-limit skip never fires. It does not count
+    runner calls.
+  - "a killed reason that quotes the usage-limit heading classifies as killed
+    (Issue #5037)" asserts the heading reaches the failure reason (positive
+    control) and that the reason classifies as `killed`.
+  - Red against the unfixed `includes` check: the phase returned the killed
+    first attempt's failure ("Claude was killed (exit 137, SIGKILL)…") instead
+    of the retry's outcome.
   - Green after the fix.
 - The skip still fires for a genuine spent window. In
   `worker/deno/tests/execute_phase_usage_limit_test.ts`, "execute #1670 - with
@@ -66,7 +73,7 @@ Backend only; no UI file is touched.
 - No existing test was edited.
 - `deno task test:unit` on `worker/deno/tests/execute_phase_killed_test.ts`,
   `worker/deno/tests/execute_phase_usage_limit_test.ts` and
-  `worker/deno/tests/execute_phase_turn_limit_4949_test.ts`: 28 passed, 0
+  `worker/deno/tests/execute_phase_turn_limit_4949_test.ts`: 29 passed, 0
   failed.
 - Full `./quality.sh` after the code commit: PASSED with skipped checks. Config
   integration was skipped (no `.config.json`), and so was checkov (not installed
