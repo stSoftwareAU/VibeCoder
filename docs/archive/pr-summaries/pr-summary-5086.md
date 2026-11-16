@@ -42,8 +42,11 @@ limits keep today's terminal pause and provider fallback. Closes #5086.
   the message gives no time (`USAGE_LIMIT_DEFAULT_WAIT_SECONDS` /
   `USAGE_LIMIT_MAX_WAIT_SECONDS`, as Issue #333 set for the account-wide wait).
   Entries clear by expiry. A cooled tier is not run during its window, so expiry
-  is its recovery path. An unreadable or malformed store is logged as a warning
-  and the requested model runs; a write replaces a corrupt store.
+  is its recovery path. The store is read through `readTextFileNoFollow`
+  (`worker/deno/lib/file_utils.ts`) with a 64 KiB size bound and a 1 second open
+  timeout, so a symlink or an oversized file is refused before it is decoded. An
+  unreadable, symlinked, oversized or malformed store is logged as a warning and
+  the requested model runs; a write replaces a corrupt store.
 - With no cheaper rung (already on `haiku`, or model fallback disabled), the
   call returns the CLI's exit code as an ordinary failure. It still writes no
   provider pause. New persisted file, `version: 1`, so there is no old shape to
@@ -123,6 +126,10 @@ flowchart TD
   - a hostile line over 100k characters with an exact result;
   - the store's active, expired, other-key, missing, malformed and
     unknown-version cases;
+  - `cooldown store refuses an escaping symlink and oversized content`: a
+    symlink to a valid file outside `WORK_DIR` is refused with an error naming
+    the symlink, a 1 MiB padded file is refused with an error naming the size
+    bound, and a regular valid file still reads back `{ untilEpochMs: 5000 }`;
   - `firstModelNotCooling` stepping over one rung, over two rungs, and stopping
     at the cheapest rung.
 - Red before the fix: I ran the new runner tests against the unmodified
@@ -139,18 +146,20 @@ flowchart TD
   - `worker/deno/tests/model_fallback_test.ts`;
   - `worker/deno/tests/lib_sweep_coverage_test.ts`.
 - No existing test was edited.
-- After merging `origin/main`, the full unit suite exited 0 with no failures.
-  That is `deno task test:unit` run from `worker/deno`, the pre-push pre-flight
-  command that blocked the previous attempt.
+- After merging `origin/main` (before the bounded-read change), the full unit
+  suite exited 0 with no failures. That is `deno task test:unit` run from
+  `worker/deno`, the pre-push pre-flight command that blocked the previous
+  attempt. It was not re-run on the final head: only the listed test files were.
 - Callers checked: `detectUsageLimit` and `USAGE_LIMIT_RE` are unchanged, so
   their callers keep their behaviour: `classifyClaudeFailure`,
   `review_round.ts`, `handle_no_changes_phase.ts` and
   `claude_health_message.ts`.
-- `./quality.sh < /dev/null` passed on commit `6b6d088d` ("Result: PASSED (with
-  skipped checks)"). Its stages include completeness checks, the deno tests,
-  lint, type check, fmt, markdownlint, mermaid, semgrep and gitleaks. An earlier
-  run failed `completeness checks`: the new module was not claimed by any
-  lib-sweep slice. `top-up-5086.json` fixed that.
+- `./quality.sh` was not re-run for the final head by this repair. An earlier
+  run on commit `6b6d088d` passed ("Result: PASSED (with skipped checks)"); it
+  predates the bounded-read and symlink change in
+  `worker/deno/lib/model_usage_cooldown.ts`, so it does not cover that change.
+  The same earlier run failed `completeness checks` once, because the new module
+  was not claimed by any lib-sweep slice; `top-up-5086.json` fixed that.
 
 Not done or not checked: the weekly-worded Fable fixture is modelled, not
 captured, as noted under Undiscoverable Facts. Nothing else.
