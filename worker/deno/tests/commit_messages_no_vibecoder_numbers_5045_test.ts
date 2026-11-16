@@ -22,11 +22,9 @@ const ATTEMPTS = ["final-mile", "push-recovery-retry"] as const;
 
 /** Every `#<n>` left once the target's own numbers are removed. */
 function strayNumbers(message: string, own: number[]): string[] {
-  let rest = message;
-  for (const n of own) {
-    rest = rest.replace(new RegExp(`#${n}(?!\\d)`, "g"), "");
-  }
-  return rest.match(/#\d+/g) ?? [];
+  return (message.match(/#\d+/g) ?? []).filter((m) =>
+    !own.includes(Number(m.slice(1)))
+  );
 }
 
 const subject = (message: string): string => message.split("\n")[0] ?? "";
