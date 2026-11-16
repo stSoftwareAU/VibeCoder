@@ -88,6 +88,30 @@ function outputLines(output: string): string[] {
   );
 }
 
+/** Most failures `denoTestFailureSummary` lists before it elides the rest. */
+const FAILURE_SUMMARY_MAX_ENTRIES = 20;
+
+/**
+ * Names the failing tests in deno output, de-duplicated and in order of first
+ * appearance, or null when none is named (Issue #5113). The pre-push BLOCK
+ * message is cut to a head and tail, so this goes ahead of the raw output.
+ */
+export function denoTestFailureSummary(output: string): string | null {
+  const seen = new Set<string>();
+  for (const line of outputLines(output)) {
+    if (FAILED_TEST_LINE.test(line) || /^\S+ \(uncaught error\)$/.test(line)) {
+      seen.add(line);
+    }
+  }
+  if (seen.size === 0) return null;
+  const all = [...seen];
+  const lines = all.slice(0, FAILURE_SUMMARY_MAX_ENTRIES).map((l) => `- ${l}`);
+  if (all.length > FAILURE_SUMMARY_MAX_ENTRIES) {
+    lines.push(`- … and ${all.length - FAILURE_SUMMARY_MAX_ENTRIES} more`);
+  }
+  return `Failed tests (${all.length}):\n${lines.join("\n")}`;
+}
+
 /**
  * The time-budget lines in a `deno test` output that refuse a base-only
  * downgrade (Issue #4930): a budget failure (`FAIL: every test in …`) or a
