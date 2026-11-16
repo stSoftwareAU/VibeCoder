@@ -40,9 +40,10 @@ function words(text: string): Set<string> {
 // The earliest standalone status token, optionally wrapped in `**…**`, that
 // opens an entry — the same leading status statusOf() in
 // acceptance_criteria_gate.ts finds, stripped here so the remaining text is
-// the entry's subject.
+// the entry's subject. Accepts the same status words as statusOf, ending at
+// the same word boundary (Issue #5053).
 const LEADING_STATUS_RE =
-  /^\s*(?:\*\*\s*)?(met|partial|missing|unrequested)(?:\s*\*\*)?\s*[—\-:]*\s*/i;
+  /^\s*(?:\*\*\s*)?(partially(?:[\s*_`-]+met)?|not[\s*_`-]+met|met|partial|missing|unrequested)\b(?:\s*\*\*)?\s*[—\-:]*\s*/i;
 
 /** The entry's subject: the text between its leading status and its first
  * labelled field (`ENTRY_FIELD_LABEL_RE`, Issue #4977). The cut lands on the
