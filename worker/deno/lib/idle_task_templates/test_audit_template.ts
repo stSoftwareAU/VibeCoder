@@ -54,6 +54,7 @@ import {
 } from "../idle_task_snapshot.ts";
 import { ensureLabelExists as defaultEnsureLabelExists } from "../label_operations.ts";
 import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";
+import { fenceUntrustedIssueText } from "../prompt_delimiter.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
 import {
@@ -145,6 +146,8 @@ export interface TestAuditTemplateDeps {
 
 /** Inputs to a test-audit Claude run. */
 export interface RunScanOptions {
+  /** Owner-approved wrapper scope, kept inside the prompt trust boundary. */
+  issueBody?: string;
   repo: string;
   workDir: string;
   /** Stable ids already open as `test-audit` issues — skip-list. */
@@ -286,7 +289,13 @@ async function defaultRunScan(
   });
 
   const result = await runIdleTaskClaude({
-    prompt,
+    prompt: opts.issueBody
+      ? prompt + "\n\n" +
+        fenceUntrustedIssueText(
+          opts.issueBody,
+          "Requested audit scope (constrain this scan to the request below):",
+        ).join("\n")
+      : prompt,
     cwd: opts.workDir,
     phase: "test_audit",
     disallowedTools: [
@@ -434,6 +443,7 @@ export function createTestAuditTemplate(
       const scanResult = await runScanFn({
         repo: opts.repo,
         workDir: opts.workDir,
+        issueBody: opts.issueBody,
         knownOpenFindingIds,
         openIssueTitles,
         suppressedIds: [],

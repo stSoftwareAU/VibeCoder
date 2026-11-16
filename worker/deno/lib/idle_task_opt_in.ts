@@ -14,6 +14,7 @@
  * Australian English spelling used throughout (behaviour, authorise).
  */
 
+import { wasLabelAddedByAllowedAuthor } from "./issue_query.ts";
 import type { CadencePolicy } from "./idle_task_cadence.ts";
 import {
   isFleetAuthor,
@@ -176,6 +177,8 @@ export function decideOptInClaim(input: {
    */
   fleetIdentityLogins: readonly string[];
   authorised: ReadonlySet<string>;
+  /** Timeline-verified owner approval, after pickup content verification. */
+  ownerRequested?: boolean;
 }): OptInClaimDecision {
   const { template } = input;
   if (!OPT_IN_IDLE_TASK_TEMPLATES.has(template)) {
@@ -183,6 +186,10 @@ export function decideOptInClaim(input: {
   }
   if (input.authorised?.has(template) === true) {
     return { allowed: true, basis: "configured" };
+  }
+
+  if (input.ownerRequested === true) {
+    return { allowed: true, basis: "requested" };
   }
 
   const author = typeof input.issueAuthor === "string"
@@ -210,5 +217,27 @@ export function decideOptInClaim(input: {
   return refuse(
     template,
     "this wrapper was filed by the fleet without an owner request",
+  );
+}
+
+/** Verify a specific owner request using the existing live timeline trust check. */
+export async function verifyOwnerRequestedIdleTask(input: {
+  repo: string;
+  issueNumber: number;
+  labels: readonly string[];
+  workOnLabel: string;
+  trustedAuthors: string[];
+  fleetIdentityLogins: string[];
+  gh: (args: string[]) => Promise<string>;
+}): Promise<boolean> {
+  if (!input.labels.includes(input.workOnLabel)) return false;
+  return await wasLabelAddedByAllowedAuthor(
+    input.repo,
+    input.issueNumber,
+    input.workOnLabel,
+    input.trustedAuthors,
+    input.gh,
+    undefined,
+    input.fleetIdentityLogins,
   );
 }

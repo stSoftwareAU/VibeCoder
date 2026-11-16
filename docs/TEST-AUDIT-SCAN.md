@@ -38,14 +38,16 @@ The idle tick's random pick and cadence bias, and the bulk seed sweeps
   under `idle_task_cadence.templates`. No new config key is involved.
 - **To request one run explicitly**, use any of these. Each still works when the
   template is not enabled:
-  - `raise-single-idle-task --template test-audit --repo owner/repo` files the
-    wrapper and stamps the final line of its body with
+  - `raise-single-idle-task --template test-audit --repo owner/repo` files or reuses the
+    existing wrapper, preserving its scope, and stamps the final line of its body with
     `<!-- vibe-idle-task-requested -->`;
   - a human (non-fleet author) files an issue titled `Run a test-audit scan`;
+  - a trusted owner applies `work-on` to the wrapper; both content integrity
+    and live label-adder trust must pass, excluding fleet accounts;
   - the `work-on-issue` CLI on a wrapper is not gated.
 - **Claim gate.** When the main loop claims a `test-audit` wrapper authored by a
-  fleet account, and the repo's config neither enables the template nor the body
-  ends with the requested marker, the route closes the wrapper with an explanatory
+  fleet account, without a verified owner request, config authorisation or a body
+  ending with the requested marker, the route closes the wrapper with an explanatory
   comment and does not run the scan. This stops existing or label-backfilled fleet
   wrappers from bypassing the opt-in. An unknown author is treated as not requested.
 

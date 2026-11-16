@@ -114,8 +114,8 @@ flowchart TD
   `worker/deno/tests/idle_task_opt_in_5096_test.ts::route gate - a test-audit wrapper filed by this host's own login is closed, not run (Issue #5096)`
   — reviewer: partial — reason: the reviewer marked this partial only because
   the gate over-blocked owners, which 5395d6f7 fixes. Wrappers raised by
-  `raise-single-idle-task` before this change carry no marker and are closed,
-  which is the intended cost
+  `raise-single-idle-task` before this change are now preserved when an owner
+  approves them or explicitly requests the existing wrapper again
 - **met** — Deterministic workflow tests cover both default and explicitly
   authorised paths, plus unaffected security scan scheduling. — evidence:
   `worker/deno/tests/idle_task_opt_in_filing_5096_test.ts::maybe-file-idle-task - an overdue security-scan pair is still biased and filed (Issue #5096)`,
@@ -207,3 +207,28 @@ flowchart TD
 Not done or not checked: the owner-defect regression test was not run against
 the pre-fix code. `raise_single_idle_task.ts` has no test of its own for the
 marker; the sweep test covers the same `templateNames` path.
+
+## Review repairs
+
+The main loop now carries a live timeline-verified owner work-on approval into
+the opt-in decision, after verifying the exact issue content at pickup. Fleet
+and stranger label additions cannot grant this authorisation. Explicit
+raise-single requests reuse an existing wrapper and preserve its body/scope,
+with or without --force; failed reads or over-limit bodies fail loud.
+
+The handler now forwards the verified wrapper body to the test-audit runner,
+which includes its requested scope inside the shared prompt trust boundary.
+Route tests execute the real handler and template with only external GitHub,
+clone/claim and agent boundaries faked. They assert findings and wrapper closure,
+and lose those findings if repository, scope or deadline is dropped. The old
+unconditional handler stub and call-count assertions were replaced. The redundant
+security-route stub test was removed; real security scheduling remains covered
+by the existing cadence tests. Picker tests now run the real weighted picker
+through the filing command and assert filed records.
+
+The existing-wrapper regression fails on the old sweep. The focused suite of
+133 route, template, sweep and command tests passes, as does type checking of
+the production composition. Validation uses Deno 2.9.8 with a temporary cached
+standard-library import map because direct JSR downloads fail in this host.
+Repository dependency files are unchanged; hosted CI and fresh review remain
+required.

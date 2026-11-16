@@ -39,6 +39,7 @@ import type { IdleTaskMilestone } from "../lib/idle_task_milestone.ts";
 import {
   getTemplate,
   type IdleTaskTemplate,
+  listTemplates,
   registerTemplate,
 } from "../lib/idle_task_template.ts";
 import {
@@ -121,31 +122,27 @@ if (getTemplate(OPT_IN_FALLBACK_NAME) === undefined) {
   registerTemplate(optInFallback);
 }
 
-/**
- * Names the templates the random picker was offered, without filing. Returning
- * null from the picker ends the command at the no-template short-circuit.
- */
-async function offeredTemplates(config: WorkerConfig): Promise<string[]> {
-  let offered: string[] = [];
-  await maybeFileIdleTaskCommand.execute(
-    {
-      "monitored-repos": "org/idle-a,org/idle-b",
-      "github-user": "VibeBot",
-      __testDeps: {
-        ghCommandFn: makeGh().fn,
-        isRepoBusyFn: () => Promise.resolve(false),
-        pickTemplateFn: (templates: IdleTaskTemplate[]) => {
-          offered = templates.map((t) => t.name);
-          return null;
-        },
-        nowFn: () => STABLE_NOW,
-        randomFn: () => 0.99,
-        log: (_line: string) => {},
-      },
+/** Exercise the real weighted picker through the public filing command. */
+async function filedTemplates(config: WorkerConfig): Promise<string[]> {
+  const gh = makeGh();
+  const result = await maybeFileIdleTaskCommand.execute({
+    "monitored-repos": "org/idle-a,org/idle-b",
+    "github-user": "VibeBot",
+    __testDeps: {
+      ghCommandFn: gh.fn,
+      ensureLabelFn: labelOk,
+      isRepoBusyFn: () => Promise.resolve(false),
+      isRepoCooledDownFn: () => Promise.resolve(false),
+      nowFn: () => STABLE_NOW,
+      randomFn: () =>
+        (listTemplates().findIndex((t) => t.name === "test-audit") + 0.5) /
+        listTemplates().length,
+      dueScansFn: () => Promise.resolve([]),
+      log: (_line: string) => {},
     },
-    config,
-  );
-  return offered;
+  }, config);
+  assert(result.success, result.message);
+  return createCalls(gh.calls).map(titleOf);
 }
 
 /** Gate stubs for the cadence-bias path; green everywhere, fallback random pick. */
@@ -170,12 +167,10 @@ function biasDeps(overrides: Record<string, unknown>) {
 Deno.test(
   "maybe-file-idle-task - default config never offers test-audit to the random picker (Issue #5096)",
   async () => {
-    const offered = await offeredTemplates(buildDefaultWorkerConfig());
+    const offered = await filedTemplates(buildDefaultWorkerConfig());
 
-    assert(!offered.includes("test-audit"), `offered: ${offered.join(",")}`);
-    assert(offered.includes("security-scan"));
-    assert(offered.includes("supply-chain-readiness"));
-    assert(offered.includes("github-actions-audit"));
+    assertEquals(offered.length, 1);
+    assert(!offered.includes("Run a test-audit scan"));
   },
 );
 
@@ -183,12 +178,12 @@ Deno.test(
   "maybe-file-idle-task - a positive idle_task_template_weights entry offers test-audit (Issue #5096)",
   async () => {
     const base = buildDefaultWorkerConfig();
-    const offered = await offeredTemplates({
+    const offered = await filedTemplates({
       ...base,
       idleTaskTemplateWeights: { "test-audit": 1 },
     });
 
-    assert(offered.includes("test-audit"), `offered: ${offered.join(",")}`);
+    assertEquals(offered, ["Run a test-audit scan"]);
   },
 );
 
@@ -196,7 +191,7 @@ Deno.test(
   "maybe-file-idle-task - an idle_task_cadence.templates entry offers test-audit (Issue #5096)",
   async () => {
     const base = buildDefaultWorkerConfig();
-    const offered = await offeredTemplates({
+    const offered = await filedTemplates({
       ...base,
       idleTaskCadence: {
         ...base.idleTaskCadence,
@@ -207,7 +202,7 @@ Deno.test(
       },
     });
 
-    assert(offered.includes("test-audit"), `offered: ${offered.join(",")}`);
+    assertEquals(offered, ["Run a test-audit scan"]);
   },
 );
 

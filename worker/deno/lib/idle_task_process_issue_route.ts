@@ -60,6 +60,8 @@ export interface RouteIdleTaskInput extends RouteClaimInput {
    * unknown author fails closed for opt-in templates.
    */
   issueAuthor: string;
+  /** A live, trusted owner label approval verified by the caller. */
+  ownerRequested?: boolean;
   /**
    * Opt-in templates the owner's `.config.json` authorises (Issue #5096), as
    * built by `authorisedOptInTemplates`. Empty when the owner names none.
@@ -239,6 +241,7 @@ async function runRoutedScan(
       issueBody: input.issueBody,
       fleetIdentityLogins: input.fleetIdentityLogins,
       authorised: input.authorisedOptInTemplates,
+      ownerRequested: input.ownerRequested,
     });
     if (!decision.allowed) {
       deps.logger.info(

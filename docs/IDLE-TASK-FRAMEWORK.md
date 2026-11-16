@@ -345,16 +345,20 @@ config key is involved.
 
 **Explicit requests** run it without any config:
 
-1. `raise-single-idle-task --template test-audit --repo owner/repo` files the
-   wrapper and stamps the final line of its body with
+1. `raise-single-idle-task --template test-audit --repo owner/repo` files or
+   reuses the existing wrapper, preserves its scope, and stamps the final line with
    `<!-- vibe-idle-task-requested -->`.
 2. A human (non-fleet author) files an issue titled `Run a test-audit scan`.
-3. The `work-on-issue` CLI on a wrapper is not gated.
+3. A trusted owner applies `work-on` to an existing wrapper. Pickup verifies
+   both its content and the live label-adder timeline; label presence alone
+   never authorises the scan.
+4. The `work-on-issue` CLI on a wrapper is not gated.
 
 **Claim gate.** The main loop route
 ([`idle_task_process_issue_route.ts`](../worker/deno/lib/idle_task_process_issue_route.ts))
 checks a claimed opt-in wrapper. A `test-audit` wrapper authored by a fleet
-account, with no config authorisation and no requested marker as its final line,
+account, with no config authorisation, no verified owner request and no requested
+marker as its final line,
 is closed with an explanatory comment and does not run. Existing and
 label-backfilled fleet wrappers therefore cannot bypass the opt-in. An unknown
 author is treated as not requested.

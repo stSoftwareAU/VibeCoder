@@ -11,6 +11,8 @@
  * Australian English spelling used throughout.
  */
 
+import { raiseSingleIdleTaskCommand } from "../commands/raise_single_idle_task.ts";
+import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   authorisedOptInTemplates,
@@ -20,9 +22,15 @@ import {
   idleRouteOptInInput,
   isAutoEnabledIdleTaskTemplate,
   OPT_IN_IDLE_TASK_TEMPLATES,
+  verifyOwnerRequestedIdleTask,
 } from "../lib/idle_task_opt_in.ts";
-import { routeIdleTaskInProcessIssue } from "../lib/idle_task_process_issue_route.ts";
-import type { HandleIdleTaskIssueResult } from "../lib/idle_task_claim_handler.ts";
+import {
+  routeIdleTaskInProcessIssue,
+  type RouteIdleTaskInput,
+} from "../lib/idle_task_process_issue_route.ts";
+import { createTestAuditTemplate } from "../lib/idle_task_templates/test_audit_template.ts";
+import { getTemplate, registerTemplate } from "../lib/idle_task_template.ts";
+import { getIdleTaskRunContext } from "../lib/idle_task_claude_budget.ts";
 import type { CadenceTemplatePolicy } from "../lib/idle_task_cadence.ts";
 import type { Logger } from "../types.ts";
 
@@ -67,6 +75,7 @@ function wrapperInput(
     issueTitle: string;
     issueAuthor: string;
     issueBody?: string;
+    ownerRequested?: boolean;
     authorisedOptInTemplates?: ReadonlySet<string>;
   },
 ) {
@@ -82,6 +91,7 @@ function wrapperInput(
     pushCapableAuthors: FLEET_AUTHORS,
     issueTitle: overrides.issueTitle,
     issueAuthor: overrides.issueAuthor,
+    ownerRequested: overrides.ownerRequested,
     authorisedOptInTemplates: overrides.authorisedOptInTemplates ??
       NO_AUTHORISED,
   };
@@ -92,37 +102,60 @@ function wrapperInput(
  * `handleIdleTaskFn` is the scan; `ensureCloneFn` is the clone; `ghCommandFn`
  * is the `gh` runner the wrapper closure writes through.
  */
-async function runRoute(input: ReturnType<typeof wrapperInput>) {
+async function runRoute(input: RouteIdleTaskInput) {
   const { logger, records } = makeLogger();
-  const ghCalls: string[][] = [];
-  let handleCalls = 0;
-  let cloneCalls = 0;
-  const handlerResult: HandleIdleTaskIssueResult = {
-    handled: true,
-    ok: true,
-    summary: "scan ran",
-  };
-  const outcome = await routeIdleTaskInProcessIssue(input, {
-    logger,
-    handleIdleTaskFn: () => {
-      handleCalls++;
-      return Promise.resolve(handlerResult);
+  const filed: number[] = [];
+  const comments: string[] = [];
+  let closed = false;
+  const previous = getTemplate("test-audit")!;
+  const deadline = Date.now() + 900_000;
+  registerTemplate(createTestAuditTemplate({
+    ghCommandFn: () =>
+      Promise.resolve(
+        JSON.stringify(
+          filed.map((number) => ({
+            number,
+            title: "finding",
+            body: "",
+            author: { login: FLEET_AUTHOR },
+          })),
+        ),
+      ),
+    ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+    runScanFn: (opts) => {
+      // External agent boundary: a finding exists only for the requested scope,
+      // repository and forwarded budget. Losing any makes the outcome fail.
+      if (
+        opts.repo === input.repo && opts.issueBody === input.issueBody &&
+        getIdleTaskRunContext().cycleDeadlineEpochMs === deadline
+      ) filed.push(77);
+      return Promise.resolve({ ok: true, value: true });
     },
-    ensureCloneFn: () => {
-      cloneCalls++;
-      return Promise.resolve({
-        ok: true,
-        repoPath: "/tmp/widget/widget",
-        cloned: false,
-      });
-    },
-    claimRouteFn: okClaim,
-    ghCommandFn: (args) => {
-      ghCalls.push(args);
-      return Promise.resolve("");
-    },
-  });
-  return { outcome, handleCalls, cloneCalls, ghCalls, records };
+  }));
+  try {
+    const outcome = await routeIdleTaskInProcessIssue({
+      ...input,
+      cycleDeadlineEpochMs: deadline,
+    }, {
+      logger,
+      ensureCloneFn: () =>
+        Promise.resolve({
+          ok: true,
+          repoPath: "/tmp/widget/widget",
+          cloned: false,
+        }),
+      claimRouteFn: okClaim,
+      ghCommandFn: (args) => {
+        const body = args.find((arg) => arg.startsWith("body="));
+        if (body) comments.push(body.slice(5));
+        if (args.includes("state=closed")) closed = true;
+        return Promise.resolve("");
+      },
+    });
+    return { outcome, filed, comments, closed, records };
+  } finally {
+    registerTemplate(previous);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -386,27 +419,9 @@ Deno.test(
     );
 
     assertEquals(run.outcome, { routed: true, success: true });
-    assertEquals(run.handleCalls, 0, "the scan must not run");
-    assertEquals(run.cloneCalls, 0, "the clone must not be prepared");
-
-    // The wrapper is closed with the refusal as its comment (REST, Issue #1753).
-    assertEquals(run.ghCalls.length, 2);
-    const [comment, close] = run.ghCalls;
-    assertEquals(comment!.slice(0, 4), [
-      "api",
-      "-X",
-      "POST",
-      "repos/owner/widget/issues/5096/comments",
-    ]);
-    assertStringIncludes(String(comment![5]), "Issue #5096");
-    assertEquals(close, [
-      "api",
-      "-X",
-      "PATCH",
-      "repos/owner/widget/issues/5096",
-      "-f",
-      "state=closed",
-    ]);
+    assertEquals(run.filed, []);
+    assert(run.closed);
+    assertStringIncludes(run.comments.join("\n"), "without an owner request");
 
     const info = run.records.find((r) =>
       r.level === "info" &&
@@ -427,7 +442,9 @@ Deno.test(
     );
 
     assertEquals(run.outcome, { routed: true, success: true });
-    assertEquals(run.handleCalls, 1);
+    assertEquals(run.filed, [77]);
+    assert(run.closed);
+    assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
   },
 );
 
@@ -443,7 +460,9 @@ Deno.test(
     );
 
     assertEquals(run.outcome, { routed: true, success: true });
-    assertEquals(run.handleCalls, 1);
+    assertEquals(run.filed, [77]);
+    assert(run.closed);
+    assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
   },
 );
 
@@ -459,22 +478,9 @@ Deno.test(
     );
 
     assertEquals(run.outcome, { routed: true, success: true });
-    assertEquals(run.handleCalls, 1);
-  },
-);
-
-Deno.test(
-  "route gate - a fleet-filed security-scan wrapper with nothing authorised still runs",
-  async () => {
-    const run = await runRoute(
-      wrapperInput({
-        issueTitle: "Run a security scan",
-        issueAuthor: FLEET_AUTHOR,
-      }),
-    );
-
-    assertEquals(run.outcome, { routed: true, success: true });
-    assertEquals(run.handleCalls, 1);
+    assertEquals(run.filed, [77]);
+    assert(run.closed);
+    assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
   },
 );
 
@@ -539,7 +545,9 @@ Deno.test(
     const run = await runRoute(routeInputFiledBy("owner-human"));
 
     assertEquals(run.outcome, { routed: true, success: true });
-    assertEquals(run.handleCalls, 1, "the owner's request must run the scan");
+    assertEquals(run.filed, [77]);
+    assert(run.closed);
+    assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
   },
 );
 
@@ -549,7 +557,98 @@ Deno.test(
     const run = await runRoute(routeInputFiledBy("vibe-host"));
 
     assertEquals(run.outcome, { routed: true, success: true });
-    assertEquals(run.handleCalls, 0, "a fleet-filed wrapper must not run");
-    assertEquals(run.ghCalls.length, 2, "the wrapper is commented and closed");
+    assertEquals(run.filed, []);
+    assert(run.closed);
   },
 );
+
+Deno.test("route gate honours a verified owner request on an existing fleet wrapper", async () => {
+  const run = await runRoute(
+    wrapperInput({
+      issueTitle: "Run a test-audit scan",
+      issueAuthor: FLEET_AUTHOR,
+      issueBody: "Audit only worker/deno/lib/idle_task_opt_in.ts",
+      ownerRequested: true,
+    }),
+  );
+  assertEquals(run.filed, [77]);
+  assert(run.closed);
+  assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
+});
+
+Deno.test("only live owner approval authorises an existing fleet wrapper", async () => {
+  for (const actor of ["owner-human", FLEET_AUTHOR, "stranger"]) {
+    const ownerRequested = await verifyOwnerRequestedIdleTask({
+      repo: "owner/widget",
+      issueNumber: 5096,
+      labels: ["work-on"],
+      workOnLabel: "work-on",
+      trustedAuthors: ["owner-human", FLEET_AUTHOR],
+      fleetIdentityLogins: FLEET_AUTHORS,
+      gh: () =>
+        Promise.resolve(
+          JSON.stringify([{
+            event: "labeled",
+            label: { name: "work-on" },
+            actor: { login: actor },
+            created_at: "2026-11-16T00:00:00Z",
+          }]),
+        ),
+    });
+    const run = await runRoute(
+      wrapperInput({
+        issueTitle: "Run a test-audit scan",
+        issueAuthor: FLEET_AUTHOR,
+        issueBody: "Audit only the opt-in dispatch changes",
+        ownerRequested,
+      }),
+    );
+    assertEquals(run.filed, actor === "owner-human" ? [77] : []);
+    assert(run.closed);
+  }
+});
+
+Deno.test("raise-single reuses and authorises an existing wrapper through claim dispatch", async () => {
+  for (const force of [false, true]) {
+    let body = "Audit only the opt-in dispatch changes";
+    let creates = 0;
+    const result = await raiseSingleIdleTaskCommand.execute({
+      template: "test-audit",
+      repo: "owner/widget",
+      force,
+      __testDeps: {
+        log: () => {},
+        ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+        findOpenIdleTaskIssuesFn: () =>
+          Promise.resolve([{
+            number: 5096,
+            title: "Run a test-audit scan",
+            url: "https://github.com/owner/widget/issues/5096",
+          }]),
+        ghCommandFn: (args: string[]) => {
+          if (args[0] === "issue" && args[1] === "view") {
+            return Promise.resolve(JSON.stringify({ body }));
+          }
+          if (args[0] === "issue" && args[1] === "edit") {
+            body = args[args.indexOf("--body") + 1]!;
+          }
+          if (args[0] === "issue" && args[1] === "create") creates++;
+          return Promise.resolve("");
+        },
+      },
+    }, buildDefaultWorkerConfig());
+    assert(result.success, result.message);
+    assertEquals(creates, 0);
+    assertStringIncludes(body, "Audit only the opt-in dispatch changes");
+    const run = await runRoute(
+      wrapperInput({
+        issueTitle: "Run a test-audit scan",
+        issueAuthor: FLEET_AUTHOR,
+        issueBody: body,
+      }),
+    );
+    assertEquals(run.filed, [77]);
+    assert(run.closed);
+    assertStringIncludes(run.comments.join("\n"), "Filed 1 issues: #77");
+  }
+});

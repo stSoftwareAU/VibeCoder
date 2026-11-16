@@ -152,7 +152,12 @@ import { fetchMilestoneParentDirection } from "./owner_direction.ts";
 import { observeUntrustedIssueImages } from "./issue_content_trust_filter.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
 import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
-import { idleRouteOptInInput } from "./idle_task_opt_in.ts";
+import { findIdleTaskTemplate } from "./idle_task_claim_handler.ts";
+import {
+  idleRouteOptInInput,
+  OPT_IN_IDLE_TASK_TEMPLATES,
+  verifyOwnerRequestedIdleTask,
+} from "./idle_task_opt_in.ts";
 import { routeRunResult } from "./route_claim.ts";
 import { verifyPickupContentIntegrity } from "./pickup_content_integrity.ts";
 import { routeAddRepoInProcessIssue } from "./add_repo_process_issue_route.ts";
@@ -5162,6 +5167,26 @@ export async function createProductionRunCoreDeps(
       // refuses every wrapper claimed by the main loop — the routing
       // previously only lived in the `work-on-issue` CLI command path,
       // which the main loop bypasses.
+      const idleTemplate = findIdleTaskTemplate({
+        repo: issue.repo,
+        issueTitle,
+        issueBody: issueData.body ?? "",
+      });
+      const ownerRequested =
+        OPT_IN_IDLE_TASK_TEMPLATES.has(idleTemplate?.name ?? "") &&
+        await verifyOwnerRequestedIdleTask({
+          repo: issue.repo,
+          issueNumber: issue.issueNumber,
+          labels: issueData.labels ?? [],
+          workOnLabel: config.workOnLabel,
+          trustedAuthors: trustedAuthorsFor(config, issue.repo),
+          gh: workerDeps.github.runGhCommand,
+          fleetIdentityLogins: idleRouteOptInInput({
+            githubUser,
+            issueAuthor: issueData.author,
+            config,
+          }).fleetIdentityLogins,
+        });
       const idleRoute = await routeIdleTaskInProcessIssue(
         {
           repo: issue.repo,
@@ -5169,6 +5194,7 @@ export async function createProductionRunCoreDeps(
           issueTitle,
           issueLabels: issueData.labels ?? [],
           issueBody: issueData.body ?? "",
+          ownerRequested,
           // Issue #5096: opt-in templates (test-audit) need an owner request.
           // Checked against fleet-only logins, so an owner in allowed_authors
           // counts as a request.

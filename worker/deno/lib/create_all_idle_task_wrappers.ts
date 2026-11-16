@@ -59,8 +59,10 @@ import { listTemplates } from "./idle_task_template.ts";
 // Issue #5096: opt-in templates (`test-audit`) are seeded only when the owner
 // config names them, or the caller's explicit `templateNames` allowlist does.
 import {
+  hasIdleTaskRequestedMarker,
   IDLE_TASK_REQUESTED_MARKER,
   isAutoEnabledIdleTaskTemplate,
+  OPT_IN_IDLE_TASK_TEMPLATES,
 } from "./idle_task_opt_in.ts";
 import { ensureIdleTaskLabel as defaultEnsureIdleTaskLabel } from "./label_operations.ts";
 import { appendIdleTaskAttribution } from "./idle_task_attribution.ts";
@@ -453,7 +455,15 @@ export async function createAllIdleTaskWrappers(
     };
   }
   const blocker = openIssues[0];
-  if (deps.force !== true && blocker !== undefined) {
+  const existingExplicitRequest = templates.length === 1 &&
+    nameFilter?.has(templates[0]!.name) === true &&
+    OPT_IN_IDLE_TASK_TEMPLATES.has(templates[0]!.name) &&
+    openIssues.some((issue) =>
+      issue.title?.trim() === templates[0]!.buildIssueTitle(repo).trim()
+    );
+  if (
+    deps.force !== true && blocker !== undefined && !existingExplicitRequest
+  ) {
     log(
       `[idle-task] repo=${repo} issue=${blocker.number} action=skipped reason=existing_wrapper_open`,
     );
@@ -498,20 +508,61 @@ export async function createAllIdleTaskWrappers(
   for (const template of templates) {
     const title = template.buildIssueTitle(repo).trim();
 
-    // Idempotency: skip a template whose canonical wrapper is already open.
-    if (openTitles.has(title)) {
-      skipped.push(template.name);
-      log(
-        `[create-all-idle-task] repo=${repo} template=${template.name} action=skipped reason=already_open`,
-      );
-      continue;
-    }
-
     // Preparing the body can throw too (a missing prompt file, a milestone
     // lookup failure), so it shares the per-template failure handling below
     // rather than escaping as an unhandled exception.
     let stage: "prepare" | "create" = "prepare";
     try {
+      // An explicit request reuses the existing wrapper and preserves its scope.
+      if (openTitles.has(title)) {
+        if (
+          nameFilter?.has(template.name) &&
+          OPT_IN_IDLE_TASK_TEMPLATES.has(template.name)
+        ) {
+          const existing = openIssues.find((issue) =>
+            issue.title?.trim() === title
+          )!;
+          const live = JSON.parse(
+            await gh([
+              "issue",
+              "view",
+              String(existing.number),
+              "--repo",
+              repo,
+              "--json",
+              "body",
+            ]),
+          ) as { body?: unknown };
+          if (typeof live.body !== "string") {
+            throw new Error("existing wrapper body is missing");
+          }
+          if (!hasIdleTaskRequestedMarker(live.body)) {
+            if (
+              live.body.length + IDLE_TASK_REQUESTED_MARKER.length + 2 >
+                GITHUB_ISSUE_BODY_MAX_CHARS
+            ) {
+              throw new Error(
+                "existing wrapper has no room for its request marker",
+              );
+            }
+            await gh([
+              "issue",
+              "edit",
+              String(existing.number),
+              "--repo",
+              repo,
+              "--body",
+              `${live.body}\n\n${IDLE_TASK_REQUESTED_MARKER}`,
+            ]);
+          }
+        }
+        skipped.push(template.name);
+        log(
+          `[create-all-idle-task] repo=${repo} template=${template.name} action=skipped reason=already_open`,
+        );
+        continue;
+      }
+
       // Respect `skipMilestone` per template (all seventeen set it `true`, so
       // no per-template milestone is created in practice).
       let milestone: IdleTaskMilestone | null = null;
