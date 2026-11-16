@@ -3,8 +3,9 @@
  *
  * Provides a centralised way to observe retry, backoff, circuit-breaker
  * activation, heartbeat failure, and timeout frequencies. Counters are
- * in-memory only (reset each worker cycle) and intended for diagnostic
- * logging at the end of a scan cycle.
+ * in-memory only. The named counters (incrementCounter/getCounters) are reset
+ * once at the start of each worker run by runCoreLoop and accumulate across its
+ * cycles; writeSummary writes them to fault_tolerance_summary.json at run end.
  *
  * Issue #1173 adds the structured counter API (incrementCounter, getCounters,
  * resetCounters, writeSummary) and wires counters into all fault tolerance
@@ -139,7 +140,8 @@ export function getCounters(): Record<string, number> {
 }
 
 /**
- * Reset all named counters to zero. Call at the start of each worker cycle.
+ * Reset all named counters to zero. Called once at the start of each worker
+ * run (Issue #5043), so the run-end summary covers every cycle.
  */
 export function resetCounters(): void {
   namedCounters.clear();

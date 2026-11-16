@@ -6569,8 +6569,10 @@ export async function runCoreLoop(
       }
 
       try {
+        // Issue #5043: named counters accumulate for the whole run — the
+        // run-end summary reports every cycle, so reset them once here.
+        resetCounters();
         while (deps.now() < endTime && !shutdownRequested) {
-          resetCounters();
           // Issue #1671: reset per-iteration `gh` call telemetry so the
           // end-of-cycle summary reports just this iteration's calls.
           resetGhCallMetrics();
