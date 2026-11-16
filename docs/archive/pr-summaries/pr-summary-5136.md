@@ -140,16 +140,16 @@ flowchart TD
     each run on its own at head, 0 failed:
     `completion_phase_pre_push_gate_3689_test.ts` (29),
     `babysitter_tree_gate_test.ts` (63), `git_push_preflight_test.ts` (33),
-    `pr_ci_processor_test.ts` (61),
-    `pr_feedback_review_dismissal_3383_test.ts` (34),
-    `pre_push_gate_cli_test.ts` (12), `ci_mutation_contract_helpers_test.ts`
-    (12), `pre_push_gate_cargo_deny_test.ts` (14),
+    `pr_ci_processor_test.ts` (61), `pr_feedback_review_dismissal_3383_test.ts`
+    (34), `pre_push_gate_cli_test.ts` (12),
+    `ci_mutation_contract_helpers_test.ts` (12),
+    `pre_push_gate_cargo_deny_test.ts` (14),
     `ci_cargo_checks_list_operator_5074_test.ts` (4),
-    `deno_test_baseline_test.ts` (25), `shellcheck_delegation_5046_test.ts`
-    (9). `shellcheck_gate_integration_test.ts` is an integration suite
-    (#907) that `deno task test:unit` skips, so it is not counted.
-  - Doc tests that read `docs/CONFIGURATION.md`, each run on its own at head,
-    0 failed: `config_docs_consistency_test.ts` (10 tests),
+    `deno_test_baseline_test.ts` (25), `shellcheck_delegation_5046_test.ts` (9).
+    `shellcheck_gate_integration_test.ts` is an integration suite (#907) that
+    `deno task test:unit` skips, so it is not counted.
+  - Doc tests that read `docs/CONFIGURATION.md`, each run on its own at head, 0
+    failed: `config_docs_consistency_test.ts` (10 tests),
     `doc_prose_claims_test.ts` (15), `markdown_anchors_test.ts` (8).
   - The full unit suite (`deno task test:unit` with no file list): 34920 and 885
     passed across its two passes, 0 failed. Its only time-budget lines are NOT
