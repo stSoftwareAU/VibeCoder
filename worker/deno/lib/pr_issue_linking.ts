@@ -38,6 +38,7 @@ import {
 } from "./merged_sweep_watermark.ts";
 import { defaultLogger } from "./logger.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { isDefinitiveNotFound } from "./github_not_found.ts";
 import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
 
 /** Build a canonical PR URL for the given repo and PR number. */
@@ -957,7 +958,8 @@ export async function closeIssuesForMergedPrs(
 
     let mutated = false;
     // PRs whose every issue was handled (or was a positive no-op) this cycle.
-    // Anything held back — a failed view or close, a planning issue kept
+    // Anything held back — a failed view (other than GitHub answering "no such
+    // issue", Issue #5075) or close, a planning issue kept
     // deliberately open, an unlanded merge — stays unmarked for a retry.
     const finished: number[] = [];
 
@@ -994,15 +996,31 @@ export async function closeIssuesForMergedPrs(
       }
       for (const issueNumber of issueNumbers) {
         try {
-          const issueOutput = await ghCommandFn([
-            "issue",
-            "view",
-            String(issueNumber),
-            "--repo",
-            repo,
-            "--json",
-            "state,labels,createdAt",
-          ]);
+          let issueOutput: string;
+          try {
+            issueOutput = await ghCommandFn([
+              "issue",
+              "view",
+              String(issueNumber),
+              "--repo",
+              repo,
+              "--json",
+              "state,labels,createdAt",
+            ]);
+          } catch (err) {
+            // Issue #5075: a number GitHub says does not exist can never be
+            // closed, and holding it back retried it every cycle for ever;
+            // transient errors still go to the outer catch and are retried.
+            const message = err instanceof Error ? err.message : String(err);
+            if (!isDefinitiveNotFound(message)) throw err;
+            options?.logFn?.(
+              `[close-merged-pr] ${repo}#${issueNumber} (PR #${pr.number}): no such issue or pull request in ${repo}; skipped, not retried: ${
+                redactSecrets(message)
+              }`,
+              "info",
+            );
+            continue;
+          }
 
           const issueData = JSON.parse(issueOutput) as {
             state: string;

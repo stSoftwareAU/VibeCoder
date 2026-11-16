@@ -12,8 +12,9 @@
  * present and unchanged at head, and reports every carried line that no head
  * test reaches.
  *
- * Known limit: the head side counts only tests that import a module directly,
- * plus the head versions of the touched tests. A line reached only indirectly
+ * Known limit: the head side counts only tests that import a module directly
+ * (a relative specifier or a `deno.json`/`deno.jsonc` `imports` alias), plus
+ * the head versions of the touched tests. A line reached only indirectly
  * (through another module) is therefore reported uncovered, and can be
  * exempted in the PR summary.
  *

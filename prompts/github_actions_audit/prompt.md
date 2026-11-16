@@ -131,6 +131,10 @@ no quoted row is not filed.
   reference, and a hijacked tag exfiltrates every secret in the job — which is
   as true of a repository we control as of one we do not. Local `./`
   references are exempt, because they are the same commit by construction.
+  The one accepted alternative is a workflow lockfile: an action dependency in
+  a workflow onboarded to a valid, current `.github/workflows/actions.lock` is
+  compliant at a readable tag ref. Reusable-workflow calls and composite-action
+  `uses:` are never covered by a lockfile and still pin to a SHA.
   **Container images** are the one carve-out: `ghcr.io/stsoftwareau/*` images
   may pin to a tag; every other image pins to an `@sha256:` digest.
 - **Workflow categories — `test` and `deploy`.** Check 33 applies only to
@@ -263,7 +267,7 @@ order and stop generating new candidates once the cap is reachable:
 2. **Then the `severity:medium` checks** — 1, 2, 3, 4, 5, 6, 7, 9, 11,
    12, 13, 14, 15, 16, 17, 28, 33, 34, 35, 36, plus the medium bands of
    23, 25, 29b, 30 and the cost group 37, 38, 39, 40 and 41.
-3. **Then the `severity:low` checks** — 8, 18, 19, 20, 21, the
+3. **Then the `severity:low` checks** — 1b, 8, 18, 19, 20, 21, the
    baseline band of 30, and the low band of the cost group 37, 38, 39,
    40 and 41.
 
@@ -289,11 +293,36 @@ occurrence.
 
 ### Base checks
 
-1. **Every action pinned to a commit SHA.**
+1. **Every action pinned to a commit SHA, or covered by a valid current
+   lockfile.**
    `uses: actions/checkout@<40-hex SHA>` is correct; `@v4` is a
    supply-chain risk. Per the SHA-pinning rule above, flag any action
    pinned to a tag or branch — including `actions/*` and
-   `stSoftwareAU/*`, which no owner-based exception covers.
+   `stSoftwareAU/*`, which no owner-based exception covers — unless it is
+   an action dependency in a workflow onboarded to a valid, current
+   `.github/workflows/actions.lock`. Lockfile validity and staleness are
+   pre-filed natively (`BP-ACTIONS-LOCK-INVALID`,
+   `BP-ACTIONS-LOCK-STALE-<slug>`), so do not file check 1 against a
+   workflow listed in a valid lockfile (the native scan checks every remote
+   action owner, including `stSoftwareAU/*`), do not re-judge the lockfile, and do
+   not recommend rewriting a locked tag ref to a SHA. Reusable-workflow
+   calls and composite-action `uses:` are never covered by a lockfile and
+   still pin to a SHA.
+
+1b. **No workflow lockfile; transitive and composite action dependencies
+    unlocked.** Advisory, and filed at most once per repo. File when the
+    repo's workflows use third-party actions and there is no
+    `.github/workflows/actions.lock`, or some workflows are not listed in
+    it. Cite the workflow files that are outside the lockfile. The fix is
+    to run `gh actions-lock` to generate the lockfile, keep the tag refs
+    (do not rewrite them to SHAs), and add `gh actions-lock --verify` to CI
+    as a stale-lockfile check. This is advisory only: a correctly
+    SHA-pinned workflow remains compliant, and this is never a mandatory
+    gate.
+
+    **Stable id.** `BP-ACTIONS-LOCK-ADOPT`. **Severity.** `severity:low`
+    (advisory).
+
 2. **`permissions:` block is minimal.** Each workflow declares an
    explicit `permissions:` block scoped to what the job needs. Flag jobs
    with no `permissions:` (inherit the broad default) or
@@ -368,6 +397,13 @@ Cite the workflow path and line range for each.
     workflow at a tag is flagged like any other. Same-repo calls
     (`uses: ./.github/...`) are exempt. Flag tag-pinned cross-repo
     calls.
+
+    A caller's `.github/workflows/actions.lock` does **not** pin a
+    reusable-workflow call: lockfiles do not cover reusable workflows
+    called at `jobs.<id>.uses`, so a cross-repo call must keep full-SHA
+    pinning even when the lockfile lists its workflow. Lockfile validity
+    and staleness are pre-filed natively, so do not re-judge the lockfile
+    here.
 14. **`provenance` is necessary but not sufficient.** Flag a workflow
     that treats provenance presence as the sole gate on consumed
     third-party Actions; `--provenance` must be paired with a SHA pin and
@@ -1343,6 +1379,7 @@ The specific-prefix checks keep their existing id shapes for dedup
 back-compatibility with the retired best-practices `github-actions`
 bucket:
 
+- `BP-ACTIONS-LOCK-ADOPT` (check 1b — one per repo)
 - `BP-STALE-ACTION-<owner>-<action>` (check 16)
 - `BP-EOL-RUNTIME-<runtime>-<version>` (check 17)
 - `BP-OBSOLETE-STEP-<owner>-<action>` (check 18)

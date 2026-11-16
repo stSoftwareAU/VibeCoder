@@ -361,6 +361,21 @@ export async function handleIssueFailure(
     };
   }
 
+  // A host-disk park never enters the ladder either (Issue #5077). The
+  // host-disk guard parked the agent because the host disk was below its
+  // floor, and the work is preserved on the issue branch for the next claim,
+  // so this is the host's fault and never the issue's.
+  if (failureCategory === "host_disk") {
+    return {
+      ok: true,
+      value: {
+        markedAsFailedOnce: false,
+        failureCategory,
+        isInfrastructure: false,
+      },
+    };
+  }
+
   // A damaged host shared clone never enters the ladder either (Issue
   // #2884). Broken refs or a corrupt object store on the host's shared clone
   // meet every issue claimed on this host identically, so this is defence in
