@@ -43,6 +43,7 @@ import {
   summaryDigestFromBody,
   syncPrBodyFromSummary,
 } from "./pr_body_sync.ts";
+import { normaliseSummaryVersionBumps } from "./pr_summary_loader.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 
@@ -145,6 +146,11 @@ async function readFileAtRef(
  * archive path first, then the legacy loose path. The `.pr_summary` fallback
  * is not read: it is a gitignored hidden file that is never committed, so the
  * contents API cannot see it.
+ *
+ * The digest is taken after {@link normaliseSummaryVersionBumps}, as
+ * `loadPrSummary` and `loadCommittedPrSummary` apply it, so it equals the
+ * digest the body records; a raw-content digest never matched a summary
+ * holding a literal version-bump line (Issue #5057).
  */
 export async function headSummaryDigest(
   repo: string,
@@ -177,7 +183,8 @@ export async function headSummaryDigest(
   }
   return {
     kind: "digest",
-    digest: await prSummaryDigest(summary),
+    // Hash what the loaders publish, as completion and the sync do (Issue #5057).
+    digest: await prSummaryDigest(normaliseSummaryVersionBumps(summary)),
   };
 }
 
