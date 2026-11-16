@@ -46,6 +46,7 @@ import {
   type TestChangeAssessment,
   testModeFor,
 } from "../../../.claude/skills/review-fleet-prs/scripts/test_change_policy.ts";
+import { postTestPolicy } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
 
 const SHA = "a".repeat(40);
 const REQUIRED = "Retries must run three times before the job is marked failed";
@@ -376,12 +377,13 @@ Deno.test("policy: fleet worker logins are this host, fleet_pr_authors and servi
   assert(p.fleetWorkerLogins.includes("VibeCoderST"));
 });
 
-Deno.test("loadTestPolicy: a missing file is the defaults; other read errors rethrow", async () => {
+Deno.test("loadTestPolicy: a missing file is an error, never the defaults; other read errors rethrow (Issue #5174)", async () => {
   const dir = await Deno.makeTempDir();
   try {
-    assertEquals(
-      await loadTestPolicy(`${dir}/missing.json`),
-      effectiveTestPolicy({}),
+    await assertRejects(
+      () => loadTestPolicy(`${dir}/missing.json`),
+      Error,
+      "not found",
     );
     await assertRejects(() => loadTestPolicy(dir));
     const f = `${dir}/config.json`;
@@ -1249,6 +1251,106 @@ Deno.test("claim rule: a truncated body window is incomplete history unless its 
   ]);
   assertEquals(settled.problems, []);
   assertEquals(settled.issues.length, 1);
+});
+
+// ----- the round's snapshot policy (Issue #5174) ----------------------------
+
+const SNAPSHOT_CONFIG = {
+  allowed_authors: ["nleck"],
+  service_accounts: ["stsoftware-pr-reviewer[bot]"],
+  pr_reviewer_test_hold_repos: ["acme/held"],
+};
+const BOT = "stsoftware-pr-reviewer[bot]";
+
+// Writes the round's snapshot in `dir` and loads it the way post.ts does.
+async function snapshotPolicy(dir: string): Promise<EffectiveTestPolicy> {
+  const file = `${dir}/test-policy.json`;
+  await Deno.writeTextFile(file, JSON.stringify(SNAPSHOT_CONFIG));
+  return await postTestPolicy(["--input=round.json", `--config=${file}`]);
+}
+
+// A same-repo issue filed by the fleet bot (not trusted), with work-on added by
+// `adder`, as the claim-rule fixtures above serve it.
+const botIssueFx = (adder: string): Fx => ({
+  ...claimFx([labelled("work-on", adder, ADDED_AT)], []),
+  issues: { [ISSUE_KEY]: { ...ISSUE_4733, user: { login: BOT } } },
+});
+
+Deno.test("snapshot policy: a fleet bot's issue claimed by a trusted login is governing (Issue #5174)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const policy = await snapshotPolicy(dir);
+    const r = await resolveGoverningIssues(
+      FLEET,
+      policy,
+      fakeGh(botIssueFx("nleck")).runGh,
+    );
+    assertEquals(r.problems, []);
+    assertEquals(r.issues.length, 1);
+    // The control: with the policy dropped (no snapshot), the same claim is refused.
+    const control = await resolveGoverningIssues(
+      FLEET,
+      effectiveTestPolicy({}),
+      fakeGh(botIssueFx("nleck")).runGh,
+    );
+    assertEquals(control.issues, []);
+    assert(
+      control.problems.some((p) => p.includes("not by a trusted author")),
+      JSON.stringify(control.problems),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("snapshot policy: work-on added by an untrusted login does not make the fleet bot's issue governing (Issue #5174)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const policy = await snapshotPolicy(dir);
+    const r = await resolveGoverningIssues(
+      FLEET,
+      policy,
+      fakeGh(botIssueFx("mallory")).runGh,
+    );
+    assertEquals(r.issues, []);
+    assert(
+      r.problems.some((p) => p.includes("not by a trusted author")),
+      JSON.stringify(r.problems),
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("snapshot policy: the configured owner hold and the evidence default both survive (Issue #5174)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const policy = await snapshotPolicy(dir);
+    assertEquals(testModeFor(policy, "acme/held"), "hold-all");
+    assertEquals(testModeFor(policy, "acme/widgets"), "evidence");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("postTestPolicy: a missing --config file is an error, never the defaults (Issue #5174)", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await assertRejects(
+      () => postTestPolicy([`--config=${dir}/absent.json`]),
+      Error,
+      "not found",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("effectiveTestPolicy: a key outside TEST_POLICY_CONFIG_KEYS never changes the policy (Issue #5174)", () => {
+  assertEquals(
+    effectiveTestPolicy({ allowed_authors: ["nleck"], github_token: "ghp_x" }),
+    effectiveTestPolicy({ allowed_authors: ["nleck"] }),
+  );
 });
 
 // ----- assessment ----------------------------------------------------------

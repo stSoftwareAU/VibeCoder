@@ -372,7 +372,10 @@ reviewer's reply>}` to a file in the scratchpad and run, from this skill's
 deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file> --reviewer=<reviewer-login> --config=<config-path>
 ```
 
-Use the reviewer login and config path from the gate command.
+Use the reviewer login and config path from the gate command. When the round's
+prompt names a `--config`, use that path instead: it is the round's read-only
+policy snapshot, and `post.ts` stops with an error rather than review on the
+defaults when its config is missing (Issue #5174).
 When the round's prompt names a `--state-dir`, add it to that command: a
 round in the worker container keeps its state under the worker's log mount.
 
