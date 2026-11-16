@@ -188,3 +188,34 @@ Deno.test("firstModelNotCooling steps down over cooling rungs", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("cooldown store refuses an escaping symlink and oversized content", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "muc_bounds_" });
+  const outside = await Deno.makeTempFile();
+  try {
+    const content = JSON.stringify({
+      version: 1,
+      cooldowns: {
+        "claude/fable": { untilEpochMs: 5000, recordedAtEpochMs: 1 },
+      },
+    });
+    await Deno.writeTextFile(outside, content);
+    const path = modelUsageCooldownPath(dir);
+    await Deno.symlink(outside, path);
+    const linked = await readActiveModelCooldown(dir, "claude", "fable", 2);
+    assert(!linked.ok);
+    assertStringIncludes(linked.error.message, "symlink");
+    await Deno.remove(path);
+    await Deno.writeTextFile(path, content + " ".repeat(1024 * 1024));
+    const oversized = await readActiveModelCooldown(dir, "claude", "fable", 2);
+    assert(!oversized.ok);
+    assertStringIncludes(oversized.error.message, "exceeds");
+    await Deno.writeTextFile(path, content);
+    const valid = await readActiveModelCooldown(dir, "claude", "fable", 2);
+    assert(valid.ok);
+    assertEquals(valid.value, { untilEpochMs: 5000 });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(outside);
+  }
+});

@@ -20,6 +20,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { readTextFileNoFollow } from "./file_utils.ts";
 import { modelFamily } from "./planning_run_stats.ts";
 import type { Result } from "../types.ts";
 
@@ -51,19 +52,20 @@ function fail<T>(message: string): Result<T> {
 
 async function readFile(workDir: string): Promise<Result<CooldownFile>> {
   const path = modelUsageCooldownPath(workDir);
-  let text: string;
-  try {
-    text = await Deno.readTextFile(path);
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      return { ok: true, value: { version: 1, cooldowns: {} } };
-    }
+  // A tiny store: bound bytes before decoding, and reject links before reading.
+  const read = await readTextFileNoFollow(path, {
+    maxBytes: 64 * 1024,
+    openTimeoutMs: 1000,
+  });
+  if (!read.ok) {
     return fail(
-      `Could not read model usage cooldown file ${path}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Could not read model usage cooldown file ${path}: ${read.error.message}`,
     );
   }
+  if (read.value === null) {
+    return { ok: true, value: { version: 1, cooldowns: {} } };
+  }
+  const text = read.value;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
