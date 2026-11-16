@@ -2285,7 +2285,11 @@ Deno.test("planChangedFileChecks: a CI +toolchain is kept as the cargo toolchain
   assert(result.ok);
   const planned = result.value.find((c) => c.cargo !== undefined);
   assertEquals(planned?.command, "cargo +1.80.0 clippy -- -D warnings");
-  assertEquals(planned?.cargo, { kind: "clippy", toolchain: "1.80.0" });
+  assertEquals(planned?.cargo, {
+    kind: "clippy",
+    toolchain: "1.80.0",
+    plainCommand: "cargo clippy -- -D warnings",
+  });
 });
 
 Deno.test("planChangedFileChecks: a CI argument with a space is quoted and round-trips; one with both quote kinds is an error", () => {
