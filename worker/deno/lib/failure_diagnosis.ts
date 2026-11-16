@@ -98,6 +98,12 @@ export type FailureCategory =
    */
   | "clone_corrupt"
   /**
+   * The in-flight host-disk guard parked the agent mid-execute (Issue #5077).
+   * Host infrastructure, not the issue: the work is preserved on the issue
+   * branch and the next claim resumes it.
+   */
+  | "host_disk"
+  /**
    * The PR-summary gates refused the run (Issue #3431). The agent's deliverable
    * fell short; the worker did not malfunction.
    */
@@ -147,6 +153,8 @@ export type CategoryDisplay =
   | "prompt-too-long"
   /** Issue #2884: the host's shared clone is damaged (broken refs / corrupt object store). */
   | "clone-corrupt"
+  /** Issue #5077: the in-flight host-disk guard parked the agent mid-execute. */
+  | "host-disk"
   /** Issue #3431: the PR-summary gates refused the run. */
   | "summary-incomplete"
   /** Issue #3454: the security-fix gate refused the run. */
@@ -723,6 +731,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "repo_config",
   "prompt_too_long",
   "clone_corrupt",
+  "host_disk",
   "summary_incomplete",
   "security_fix_gate",
   "pre_push_gate",
@@ -798,6 +807,10 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // only burn claims on a fault no in-process attempt can clear.
     case "clone_corrupt":
       return false;
+    // Not infrastructure (Issue #5077): a retry in this process would meet
+    // the same floor, so the next claim resumes the preserved branch instead.
+    case "host_disk":
+      return false;
     // Not infrastructure (Issue #3431): the agent's summary fell short of the
     // completion gates; retrying is governed by the normal retry rules.
     case "summary_incomplete":
@@ -860,6 +873,8 @@ export function getFailureCategoryDisplay(
       return "prompt-too-long";
     case "clone_corrupt":
       return "clone-corrupt";
+    case "host_disk":
+      return "host-disk";
     case "summary_incomplete":
       return "summary-incomplete";
     case "security_fix_gate":
@@ -1188,6 +1203,12 @@ export function getFailureDiagnosis(
 - No \`failed-once\` or \`failed\` label was applied, but the setup-phase repair ladder's escalation already put \`needs-human\` on this issue — either its repair attempt did not clear the fault, or this run's one repair attempt was already spent by an earlier issue — and it stays parked until a human removes that label
 - An operator should check the host's shared clone (e.g. \`git fsck\`) and re-clone or repair it if refs or objects are missing or corrupt, then remove the \`needs-human\` label so the issue is claimable again`;
 
+    case "host_disk":
+      return `- The in-flight host-disk guard parked the agent mid-execute, because the host disk crossed its floor while the agent was running (Issue #5077)
+- This is a **host infrastructure** fault, not a property of this issue: a retry in the same process would meet the same floor
+- The work is preserved on the issue branch and the next claim resumes it; no \`failed-once\` or \`failed\` label was applied
+- An operator should check the worker host's free disk space; the issue stays claimable once the host recovers`;
+
     case "summary_incomplete":
       return `- The PR summary did not pass the worker's completion gates
 - The gate's comment on the issue names each gap in the summary
@@ -1313,6 +1334,11 @@ export function getFailureDiagnosisOneliner(
       return "Host's shared clone of this repository is damaged (broken refs or corrupt object store) — the same fault meets every issue on this host; no failed-once/failed was applied, but this issue was escalated to needs-human (its repair attempt failed, or this run's one repair attempt was already spent) and stays parked until a human removes that label.";
     // Deliberately not "Likely cause": nothing was guessed. The worker's own
     // completion gates refused the summary and named each gap (Issue #3431).
+    // Deliberately not "Likely cause": nothing was guessed. The in-flight
+    // host-disk guard stopped the agent when the host disk crossed its floor
+    // (Issue #5077).
+    case "host_disk":
+      return "The in-flight host-disk guard parked the agent mid-execute because the host disk crossed its floor — host infrastructure, not this issue; the work is preserved on the issue branch.";
     case "summary_incomplete":
       return "The PR summary did not pass the worker's completion gates — see the gate comment for each gap.";
     // Deliberately not "Likely cause": the worker's own security-fix gate

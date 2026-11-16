@@ -543,6 +543,14 @@ async function admissionFromReading(
  */
 export const HOST_DISK_PARK_NOTE = "Parked as infrastructure (Issue #4360).";
 
+/** Host-disk park (Issue #5077); agentStarted = the agent had started, so the tree holds its work. */
+export class HostDiskParkError extends Error {
+  constructor(message: string, readonly agentStarted: boolean) {
+    super(message);
+    this.name = "HostDiskParkError";
+  }
+}
+
 /** The deferral, plus {@link HOST_DISK_PARK_NOTE}, or null when the build may run. */
 export function inFlightParkReason(deferral: string | null): string | null {
   if (deferral === null) return null;

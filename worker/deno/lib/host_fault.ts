@@ -69,7 +69,8 @@ export function isHostDiskFaultText(message: string): boolean {
  *
  * The category stays `internal_error` so {@link detectHostFault} still reads
  * the message. Any other declared category, and any worker-gate marker, would
- * charge the issue (Issue #4360).
+ * charge the issue (Issue #4360); `host_disk` (Issue #5077) is the one declared
+ * category that does not, and it is never returned here.
  */
 export function hostDiskInfrastructureFailure(
   reason: string,
@@ -131,6 +132,9 @@ export function detectHostFault(
   category?: FailureCategory,
 ): HostFaultKind | null {
   if (category === "clone_corrupt") return "clone-corrupt";
+  // The in-flight host-disk guard parked the agent (Issue #5077): the disk
+  // ran out of floor, so the host fault is the disk.
+  if (category === "host_disk") return "disk-full";
   if (category !== undefined && category !== "internal_error") return null;
   // A worker gate refusal (every WORKER_GATE_MARKERS category) is the worker's
   // own words plus a quotation of text it did not write: the agent's summary

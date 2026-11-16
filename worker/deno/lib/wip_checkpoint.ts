@@ -92,7 +92,13 @@ export type WipPreservationCause =
    * #5048). Not a timeout: the work is checkpointed here so the run resumes
    * from the branch.
    */
-  | "executor-unfinished";
+  | "executor-unfinished"
+  /**
+   * The in-flight host-disk guard parked the agent mid-execute (Issue #5077).
+   * Not a timeout and not a failure of the issue: the work is checkpointed
+   * here so the next claim resumes from the branch.
+   */
+  | "host-disk-park";
 
 /** Subject phrase for each cause — the tail of the `wip:` commit subject. */
 const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
@@ -104,6 +110,7 @@ const WIP_CAUSE_PHRASE: Record<WipPreservationCause, string> = {
   "usage-limit": "hit the Claude subscription usage limit",
   "turn-limit": "hit the agent turn limit",
   "executor-unfinished": "stopped with executor work unfinished",
+  "host-disk-park": "was parked at the host disk floor",
 };
 
 /**

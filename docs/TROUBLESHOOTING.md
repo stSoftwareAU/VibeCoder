@@ -1062,7 +1062,11 @@ recorded against the worker. A worker-authored reason with only
 `host disk below its
 floor` receives the same protective classification when a
 caller quotes the floor check without its park note; the phrase inside formatted
-agent output does not.
+agent output does not. When the park stops an issue run's agent in the execute
+phase, it is logged at WARNING and the run is released as `host_disk` (outcome
+`no_pr:host_disk:execute`), not `internal_error`. The work stays on the issue
+branch in a `wip:` commit with a handover note, so the next claim resumes it
+(Issue #5077).
 
 A `clone-corrupt` fault is usually self-healing: `setupRepo` moves the broken
 clone aside to `<repoPath>.corrupt-<UTC timestamp>` (kept for inspection, not

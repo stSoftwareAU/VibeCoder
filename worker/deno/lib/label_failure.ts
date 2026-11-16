@@ -369,6 +369,21 @@ export async function handleIssueFailure(
   // but a caller reaching this function directly must still never label the
   // issue `failed-once`/`failed` for a fault that is the host's, not the
   // issue's.
+  // A host-disk park never enters the ladder either (Issue #5077). The guard
+  // stopped the agent because the host disk crossed its floor, and the work is
+  // preserved on the issue branch for the next claim, so this is the host's
+  // fault and never the issue's.
+  if (failureCategory === "host_disk") {
+    return {
+      ok: true,
+      value: {
+        markedAsFailedOnce: false,
+        failureCategory,
+        isInfrastructure: false,
+      },
+    };
+  }
+
   if (failureCategory === "clone_corrupt") {
     return {
       ok: true,

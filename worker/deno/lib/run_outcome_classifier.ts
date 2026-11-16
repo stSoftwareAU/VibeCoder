@@ -723,6 +723,16 @@ export function classifyRunFailure(
         rationale:
           "Branch creation failed because the host's shared clone is damaged — a host infrastructure fault, not a worker defect.",
       };
+    case "host_disk":
+      // Issue #5077: the in-flight host-disk guard parked the agent mid-execute
+      // because the host disk crossed its floor. A protective stop, not a worker
+      // defect; the work is preserved on the branch for the next claim.
+      return {
+        fixability: "not_code_fixable",
+        failureClass: "disk-full",
+        rationale:
+          "The in-flight host-disk guard parked the agent when the host disk crossed its floor — a protective stop for host infrastructure, not a worker defect.",
+      };
     case "push_failure":
       // A rejected push is usually permissions/protection or a race — not
       // proven either way.

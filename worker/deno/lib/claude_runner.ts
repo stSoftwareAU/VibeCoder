@@ -31,6 +31,7 @@ import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import {
   babysitterDipWaitWithin,
   HOST_DISK_PARK_NOTE,
+  HostDiskParkError,
   inFlightHostDiskGateEnabled,
   parkInFlightBuild,
   parkRunningBuild,
@@ -1397,7 +1398,9 @@ async function runClaudeWithTimeoutBody(
           clock,
         ),
       );
-    if (park) return { ok: false, error: new Error(park) };
+    if (park) {
+      return { ok: false, error: new HostDiskParkError(park, false) };
+    }
   }
 
   // The provider seam (Issue #4067) owns the binary, the argument list and
@@ -2046,7 +2049,8 @@ async function runClaudeWithTimeoutBody(
         void parkRunningBuild().then((reason) => {
           if (!reason || runFinished || hostDiskPark) return;
           hostDiskPark = reason;
-          logger?.error(reason);
+          // A protective stop, not a worker error (Issue #5077).
+          logger?.warn(reason);
           void killClaudeProcessTree(
             childPid,
             killAfterSeconds,
@@ -3074,7 +3078,10 @@ async function runClaudeWithTimeoutBody(
       }
     }
     if (hostDiskPark) {
-      return { ok: false, error: new Error(hostDiskPark) };
+      return {
+        ok: false,
+        error: new HostDiskParkError(hostDiskPark, true),
+      };
     }
     const runResult: ClaudeExecutionResult = {
       exitCode: timedOut ? TIMEOUT_EXIT_CODE : status.code,
