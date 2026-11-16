@@ -55,6 +55,9 @@ class FakeGitHub {
   filesChanged: number | undefined = 5;
   calls: string[][] = [];
   nextPr = 500;
+  /** The closed children read for the body's `Part of` lines (Issue #5058). */
+  readDeliveredIssues: () => Promise<readonly number[]> = () =>
+    Promise.resolve([]);
 
   get creates(): string[][] {
     return this.calls.filter((a) =>
@@ -148,6 +151,7 @@ class FakeGitHub {
       milestoneBranch: BRANCH,
       defaultBranch: DEFAULT,
       ghFn: this.gh,
+      readDeliveredIssues: () => this.readDeliveredIssues(),
       ...LOOKUP,
     });
   }
@@ -190,6 +194,93 @@ Deno.test("createPartialRollup - the PR body cites no bare #N (Issue #3674)", as
   assertEquals(result.outcome, "created");
   const pr = gh.first();
   assertEquals(pr.body.match(/#\d+/g), null);
+});
+
+// Issue #5058: the body names the title's parent and each delivered child
+// through anchored `Part of` lines, so the reviewer can link them.
+Deno.test("createPartialRollup - the body links the title's parent and the delivered children through Part of, with no closing keyword (Issue #5058)", async () => {
+  const gh = new FakeGitHub();
+  const branch = "milestone/42-retry-policy";
+  gh.refs.set(branch, TIP);
+  const result = await createPartialRollup({
+    repo: REPO,
+    milestone: "#42 Retry policy",
+    milestoneBranch: branch,
+    defaultBranch: DEFAULT,
+    ghFn: gh.gh,
+    readDeliveredIssues: () => Promise.resolve([81, 77, 77, 42]),
+    ...LOOKUP,
+  });
+  assertEquals(result.outcome, "created");
+  const pr = gh.first();
+  const partOf = pr.body.split("\n").filter((line) =>
+    line.startsWith("Part of")
+  );
+  assertEquals(partOf, ["Part of #42", "Part of #77", "Part of #81"]);
+  assertFalse(/\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*#\d/i.test(pr.body));
+});
+
+// Issue #5058: a failed read fails loud. No ref and no PR may follow it, or the
+// rollup would land without the children it claims.
+Deno.test("createPartialRollup - a failed delivered-issue read fails loud and creates no ref and no PR (Issue #5058)", async () => {
+  const gh = new FakeGitHub();
+  const result = await createPartialRollup({
+    repo: REPO,
+    milestone: TITLE,
+    milestoneBranch: BRANCH,
+    defaultBranch: DEFAULT,
+    ghFn: gh.gh,
+    readDeliveredIssues: () => Promise.reject(new Error("gh: HTTP 502")),
+    ...LOOKUP,
+  });
+  assertEquals(result.outcome, "failed");
+  if (result.outcome === "failed") {
+    assertStringIncludes(result.reason, "HTTP 502");
+    assertStringIncludes(
+      result.reason,
+      `could not read the delivered issues of "${TITLE}"`,
+    );
+  }
+  assertFalse(gh.refs.has(SNAPSHOT));
+  assertEquals(gh.creates, []);
+  assertEquals(gh.prs.length, 0);
+});
+
+// Issue #5058: a deferred or existing outcome does not depend on the
+// delivered-issue read, so an unavailable read never turns one into a failure.
+Deno.test("createPartialRollup - a deferred or existing outcome is unchanged when the delivered-issue read is unavailable (Issue #5058)", async () => {
+  const unavailable = () => Promise.reject(new Error("gh: HTTP 502"));
+
+  const behind = new FakeGitHub();
+  behind.behindBy = 2;
+  behind.readDeliveredIssues = unavailable;
+  const behindResult = await behind.run();
+  assertEquals(behindResult.outcome, "deferred");
+  if (behindResult.outcome === "deferred") {
+    assertEquals(behindResult.reason, "milestone-behind");
+  }
+  assertEquals(behind.creates, []);
+
+  const nothing = new FakeGitHub();
+  nothing.aheadBy = 0;
+  nothing.readDeliveredIssues = unavailable;
+  const nothingResult = await nothing.run();
+  assertEquals(nothingResult.outcome, "deferred");
+  if (nothingResult.outcome === "deferred") {
+    assertEquals(nothingResult.reason, "nothing-to-roll-up");
+  }
+  assertEquals(nothing.creates, []);
+
+  const existing = new FakeGitHub();
+  assertEquals((await existing.run()).outcome, "created");
+  const prsBefore = JSON.stringify(existing.prs);
+  const createsBefore = existing.creates.length;
+  existing.readDeliveredIssues = unavailable;
+  const again = await existing.run();
+  assertEquals(again.outcome, "exists");
+  if (again.outcome === "exists") assertEquals(again.prNumber, 500);
+  assertEquals(JSON.stringify(existing.prs), prsBefore);
+  assertEquals(existing.creates.length, createsBefore);
 });
 
 Deno.test("createPartialRollup - second call with an open marked PR reports exists and creates nothing", async () => {
@@ -318,6 +409,7 @@ Deno.test("createPartialRollup - invalid names fail before reaching gh", async (
       ...c,
       defaultBranch: DEFAULT,
       ghFn: gh.gh,
+      readDeliveredIssues: () => Promise.resolve([]),
     });
     assertEquals(result.outcome, "failed");
   }
@@ -333,6 +425,7 @@ Deno.test("createPartialRollup - a closing keyword in the milestone title is ref
     milestoneBranch: "milestone/fixes-12",
     defaultBranch: DEFAULT,
     ghFn: gh.gh,
+    readDeliveredIssues: () => Promise.resolve([]),
     ...LOOKUP,
   });
   assertEquals(result.outcome, "failed");
@@ -351,6 +444,7 @@ Deno.test("createPartialRollup - a closing keyword with an issue URL in the titl
     milestoneBranch: "milestone/fixes-https-github-com-o-r-issues-12",
     defaultBranch: DEFAULT,
     ghFn: gh.gh,
+    readDeliveredIssues: () => Promise.resolve([]),
     ...LOOKUP,
   });
   assertEquals(result.outcome, "failed");
@@ -387,6 +481,7 @@ Deno.test("createPartialRollup - a failed PR lookup fails loud", async () => {
     milestoneBranch: BRANCH,
     defaultBranch: DEFAULT,
     ghFn: () => Promise.reject(new Error("rate limited")),
+    readDeliveredIssues: () => Promise.resolve([]),
   });
   assertEquals(result.outcome, "failed");
   if (result.outcome === "failed") {

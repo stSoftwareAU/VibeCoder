@@ -157,7 +157,7 @@ for (
   Deno.test(`draft continuation - the ${name} body does not promise ready only once every criterion is met`, () => {
     assertFalse(OLD_DRAFT_PROMISE.test(body), body);
     assert(body.includes("even with a criterion still unmet"), body);
-    assert(body.includes("unless an entry is `missing`"), body);
+    assert(body.includes("unless an entry is `partial` or `missing`"), body);
     assert(body.includes("Part of #4146"), body);
   });
 }

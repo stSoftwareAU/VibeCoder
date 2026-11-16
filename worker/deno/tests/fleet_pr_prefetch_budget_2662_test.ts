@@ -145,6 +145,8 @@ function countingGh(server: FakeSearchPr[]) {
           headRefName: pr.headRefName ?? `branch-${pr.number}`,
           headRefOid: pr.headRefOid ?? `oid-${pr.number}`,
           isDraft: pr.isDraft ?? false,
+          // The superset listing always carries labels (Issue #5047).
+          labels: (pr.labels ?? []).map((name) => ({ name })),
           author: { login: pr.author },
         }));
       return Promise.resolve(JSON.stringify(rows));

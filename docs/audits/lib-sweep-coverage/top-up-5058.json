@@ -1,0 +1,12 @@
+{
+  "issue": 5058,
+  "chunk": "top-up-5058",
+  "title": "top-up: shared Part of provenance lines for milestone roll-up bodies",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/5058",
+  "definition": "Review that milestoneProvenanceLines renders only anchored Part of lines, the parent from the milestone title first and then the claimed children, ascending, deduplicated and safe positive integers, that it excludes the tracking issue and the parent from the children, that it applies the reviewer's child cap, and that the lines carry no closing keyword.",
+  "status": "claimed",
+  "sweptAt": "de494c3de2bc9870dda6c842f1d3c859b13aa5c9",
+  "paths": [
+    "worker/deno/lib/milestone_provenance.ts"
+  ]
+}
