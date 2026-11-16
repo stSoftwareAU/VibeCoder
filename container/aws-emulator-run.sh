@@ -91,16 +91,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# The bounded() pattern of loop.sh/run.sh: timeout, else gtimeout (macOS),
-# else unbounded.
-TIMEOUT_CMD=""
-for candidate in timeout gtimeout; do
-    if command -v "${candidate}" >/dev/null 2>&1; then
-        TIMEOUT_CMD="${candidate}"
-        break
-    fi
-done
-
 # --smoke-client: the internal COMMAND of --smoke, run under the test env.
 smoke_client() {
     local state="${AWS_EMULATOR_STATE_DIR-}"
@@ -272,13 +262,6 @@ chmod 700 "${STATE}"
 mkdir -p "${STATE}/home"
 LOG="${STATE}/emulator.log"
 
-VERSION_CMD=(aws-emulator --version)
-if [[ -n "${TIMEOUT_CMD}" ]]; then
-    VERSION_CMD=("${TIMEOUT_CMD}" 10 aws-emulator --version)
-fi
-VERSION_LINE="$("${VERSION_CMD[@]}" 2>/dev/null </dev/null | sed -n 1p || true)"
-VERSION="${VERSION_LINE#Version: }"
-
 # Scrubbed environment: only PATH, a private HOME, locale and telemetry off.
 env -i PATH="${PATH}" HOME="${STATE}/home" LANG=C.UTF-8 EMULATOR_TELEMETRY=off \
     aws-emulator -b 127.0.0.1 -p 0 -t off -a on \
@@ -340,7 +323,7 @@ if [[ -z "${ACCESS_KEY}" || -z "${SECRET_KEY}" ]]; then
     exit 5
 fi
 
-echo "${TAG} emulator ${VERSION} ready on https://127.0.0.1:${PORT} (state ${STATE})" >&2
+echo "${TAG} emulator ready on https://127.0.0.1:${PORT} (state ${STATE})" >&2
 
 # Applied in the COMMAND subshell only. No real credential source stays
 # reachable, so a client that ignores the endpoint presents emulator keys that
@@ -380,7 +363,7 @@ apply_test_env() {
         result=$1
         shift
         trap ":" TERM INT HUP
-        "$@" &
+        "$@" <&0 &
         command_pid=$!
         rc=0
         wait "$command_pid" || rc=$?

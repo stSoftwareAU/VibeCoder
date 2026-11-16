@@ -248,7 +248,7 @@ Deno.test("validate-scripts.yml pins every third-party action to a SHA (Issue #2
     rawText: workflow,
     parsed: null,
     kind: "workflow",
-  }]);
+  }], { lockfile: { kind: "absent" } });
   assertEquals(
     findings.map((finding) => finding.coordinate),
     [],

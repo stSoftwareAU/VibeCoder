@@ -272,7 +272,7 @@ and `--timeout 1800`.
 | 0 turned into 1 | COMMAND passed but cleanup failed |
 | 2 | Usage error |
 | 3 | Refused account (root, `vibe`, or a name added through `AWS_EMULATOR_RUN_REFUSED_USERS`) |
-| 4 | A required runtime is missing: `aws-emulator` or `curl` (and `aws` for `--smoke`) |
+| 4 | A required runtime is missing: `aws-emulator`, `curl` or `setsid` (and `aws` for `--smoke`) |
 | 5 | The emulator failed to start, exited early, was not ready and verified within `--ready-timeout`, or stopped while COMMAND ran (even if COMMAND exited 0) |
 | 124 | COMMAND exceeded `--timeout` |
 | 128+N | The helper received signal N (TERM is 143, INT is 130) |
@@ -325,8 +325,8 @@ Behaviour, in order:
    `config`, `emulator_credentials` and `ca.pem` for exactly one port, and
    `https://127.0.0.1:<port>/__admin/health` answers `ok` when verified against
    this run's own `ca.pem`. Another run's CA fails that check, so the endpoint is
-   provably this run's emulator. The pre-start version probe is bounded to 10
-   seconds and each health probe to 2 seconds, so a not-ready run returns within
+   provably this run's emulator. There is no pre-start version probe. Each health probe is bounded
+   to 2 seconds, so a not-ready run returns within
    `--ready-timeout` plus about 2 seconds.
 6. **Test environment.** In a subshell, only for COMMAND, the helper unsets every
    variable beginning `AWS_` and every variable beginning
@@ -337,7 +337,8 @@ Behaviour, in order:
    `AWS_DEFAULT_REGION` (`us-east-1`), `AWS_EC2_METADATA_DISABLED=true`,
    `AWS_SDK_LOAD_CONFIG=1`, `NODE_EXTRA_CA_CERTS`, `EMULATOR_TELEMETRY=off` and
    `AWS_EMULATOR_STATE_DIR` (scratch space for the test). `JAVA_TOOL_OPTIONS`
-   gets the emulator's PKCS#12 trust store prepended to any existing value, and
+   contains only the emulator's PKCS#12 trust store options; inherited
+   `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS` and `JDK_JAVA_OPTIONS` are cleared, and
    `NO_PROXY` and `no_proxy` gain `127.0.0.1,localhost`. The helper's own and the
    caller's environment are untouched, and the secret is never printed.
 
@@ -352,14 +353,14 @@ Behaviour, in order:
    or one pointed explicitly at real AWS, presents emulator-generated keys that
    real AWS rejects. Nothing falls back to AWS or Floci.
 8. **Bounded run.** COMMAND runs with stdin passed through and is bounded by
-   `--timeout` (using `timeout` or `gtimeout`; without either it is unbounded).
+   `--timeout`. A required `setsid` supervisor retains the command process group
+   until cleanup; no timeout-tool fallback can make the run unbounded.
    The emulator's own `--idle-timeout` is set to the run and readiness limits
    plus 60 seconds.
 9. **Signals and cleanup.** On INT, TERM or HUP the helper stops COMMAND, cleans
    up, and exits 128+N. It signals only COMMAND and the emulator it started.
-   COMMAND's whole process tree is stopped through `timeout` or `gtimeout`,
-   which run it in their own process group; without either tool only COMMAND
-   itself is signalled. Cleanup sends TERM to the emulator, waits up to 10
+   On every exit, including success and command failure, cleanup sends TERM
+   to the retained command group, then KILL after a one-second grace. Cleanup sends TERM to the emulator, waits up to 10
    seconds, then KILLs it, and removes the state directory. If the directory
    survives, the helper prints `FAILED` and exits non-zero, turning a 0 into 1.
 10. **Simultaneous runs.** Port 0 and a per-run state directory mean two runs
@@ -710,11 +711,3 @@ GRQ-23 (`claude,deepseek`) could not build while single-provider hosts still
 could. The test also checks the escaped file plus the widest provider list
 against that measured limit, and `container-build-heal` names the dropped
 request instead of retrying it.
-
-### Emulator command cleanup
-
-`aws-emulator-run` requires `setsid` and holds the command process group until
-cleanup, including normal command completion. TERM is followed by forced KILL
-after a one-second grace. A timed-out command returns 124; helper termination
-returns 143. Inherited `JAVA_TOOL_OPTIONS`, `_JAVA_OPTIONS` and
-`JDK_JAVA_OPTIONS` are cleared; only the emulator trust-store options are set.

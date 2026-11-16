@@ -117,10 +117,8 @@ import type {
   BlockedCandidateInfo,
   DiagnosticSummary,
 } from "./issue_finder_logger.ts";
-import {
-  claimRefusalReason,
-  isRoutineClaimRefusal,
-} from "./issue_finder_logger.ts";
+import { claimRefusalReason } from "./issue_finder_logger.ts";
+import { logIssueRunFailure } from "./issue_run_failure_log.ts";
 import {
   fetchAllOpenPRs,
   fetchOpenMilestoneClosedCounts,
@@ -5344,21 +5342,12 @@ export async function createProductionRunCoreDeps(
       // down without failure tracking and without counting as processed.
       const isExpectedSkip = isExpectedSkipResult(result);
       if (!result.success) {
-        if (isExpectedSkip) {
-          // Issue #4063: another worker holding the issue (or it already
-          // being done) is the expected path; any other skip stays loud.
-          const line =
-            `Skipped ${issue.repo}#${issue.issueNumber}: ${result.reason}`;
-          if (isRoutineClaimRefusal(result.reason)) {
-            logger.info(line);
-          } else {
-            logger.warn(line);
-          }
-        } else {
-          logger.error(
-            `Issue ${issue.repo}#${issue.issueNumber} failed at phase '${result.phase}': ${result.reason}`,
-          );
-        }
+        logIssueRunFailure(
+          logger,
+          `${issue.repo}#${issue.issueNumber}`,
+          result,
+          isExpectedSkip,
+        );
       }
 
       // Terminal coding-run failure disposition (Issue #4304, broadened by

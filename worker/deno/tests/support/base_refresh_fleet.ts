@@ -136,7 +136,10 @@ export class FakeFleet {
       ]]);
     }
     if (endpoint.includes("/branches/")) {
-      return JSON.stringify({ protection: null });
+      return JSON.stringify({
+        protection: null,
+        commit: { sha: this.baseSha },
+      });
     }
     const commit = /\/commits\/([0-9a-f]{40})\//.exec(endpoint)?.[1];
     if (endpoint.includes("/check-runs?")) {
@@ -172,6 +175,18 @@ export class FakeFleet {
         head: { sha: pr.headRefOid },
         base: { ref: BASE, sha: this.baseSha },
       });
+    }
+    // The fake base has a single-commit history, so any other commit is off it.
+    const compare = /\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(
+      endpoint,
+    );
+    if (compare) {
+      const [, left, right] = compare;
+      return JSON.stringify(
+        left === right
+          ? { status: "identical", ahead_by: 0, behind_by: 0 }
+          : { status: "diverged", ahead_by: 1, behind_by: 1 },
+      );
     }
     throw new Error(`Unexpected refresh command: ${args.join(" ")}`);
   };

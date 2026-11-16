@@ -29,7 +29,13 @@ const HOSTILE_ENV: Record<string, string> = {
   ECS_CONTAINER_METADATA_URI_V4: "http://x",
 };
 
-type Mode = "normal" | "crash" | "hang" | "wrong-ca" | "die-after-ready";
+type Mode =
+  | "normal"
+  | "crash"
+  | "hang"
+  | "wrong-ca"
+  | "die-after-ready"
+  | "version-hang";
 
 function fakeEmulatorSource(mode: Mode, rec: string): string {
   return `#!/usr/bin/env python3
@@ -39,6 +45,10 @@ MODE = ${JSON.stringify(mode)}
 REC = ${JSON.stringify(rec)}
 args = sys.argv[1:]
 if args == ["--version"]:
+    if MODE == "version-hang":
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        while True:
+            time.sleep(1)
     print("Version: 1.0.385")
     print("Release date: 2026.11.14")
     print("Commit: 813af480bf7f16d5418b64e4f5644a74a7da11c5")
@@ -278,6 +288,7 @@ function helperCommand(
   args: string[],
   env: Record<string, string> = {},
   path: string = fx.path,
+  stdin: "null" | "piped" = "null",
 ): Deno.Command {
   return new Deno.Command("bash", {
     args: [HELPER, ...args],
@@ -288,7 +299,7 @@ function helperCommand(
       TMPDIR: fx.tmp,
       ...env,
     },
-    stdin: "null",
+    stdin,
     stdout: "piped",
     stderr: "piped",
   });
@@ -864,5 +875,50 @@ testAsOrdinaryUser(
         await assertCleanedUp(fx);
       });
     }
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: COMMAND consumes piped stdin",
+  async () => {
+    await withFixture("normal", {}, async (fx) => {
+      const child = helperCommand(fx, ["--", "bash"], {}, fx.path, "piped")
+        .spawn();
+      const writer = child.stdin.getWriter();
+      await writer.write(
+        new TextEncoder().encode("printf 'stdin reached command'\nexit 7\n"),
+      );
+      await writer.close();
+      const out = await child.output();
+      assertEquals(out.code, 7);
+      assertEquals(decoder.decode(out.stdout), "stdin reached command");
+      await assertCleanedUp(fx);
+    });
+  },
+);
+
+testAsOrdinaryUser(
+  "aws-emulator-run: startup does not invoke a stalled version probe",
+  async () => {
+    await withFixture("version-hang", {}, async (fx) => {
+      const child = helperCommand(fx, [
+        "--ready-timeout",
+        "2",
+        "--timeout",
+        "2",
+        "--",
+        "bash",
+        "-c",
+        "exit 7",
+      ]).spawn();
+      const watchdog = setTimeout(() => child.kill("SIGKILL"), 8000);
+      try {
+        const out = await child.output();
+        assertEquals(out.code, 7);
+        await assertCleanedUp(fx);
+      } finally {
+        clearTimeout(watchdog);
+      }
+    });
   },
 );

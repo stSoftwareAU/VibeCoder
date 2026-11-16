@@ -250,3 +250,20 @@ The registration helper is not a dummy test: Deno executes its supplied
 callbacks, which assert observable results. No test assertion was removed.
 Full-image and Apple Containers evidence remains partial as recorded above.
 Local full quality checks remain blocked by JSR dependency downloads.
+
+## Startup and stdin review repair
+
+COMMAND explicitly inherits stdin at the inner asynchronous launch. A new
+piped-script regression failed with exit 0 before the fix and now returns the
+script's exact output and exit 7. The optional pre-start version probe is
+removed, so a TERM-resistant version command cannot prevent the readiness
+budget from starting. A regression supplies that stalled version implementation
+and verifies command completion plus process/state cleanup.
+
+The canonical runtime and lifecycle contract now describes required setsid,
+retained process groups, bounded cleanup and replacement of inherited JVM
+options. The real helper suite passes 19 tests; its refused-account case is
+ignored for the ordinary account used here. The reported no-assertion location
+is the test registration wrapper, whose supplied test bodies assert outcomes;
+it is not an empty test. Full container/Apple runtime evidence remains partial
+as already documented.
