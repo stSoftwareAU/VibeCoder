@@ -1,9 +1,9 @@
 ## Summary
 
-Issue-run change detection in `worker/deno/lib/phases/execute_phase.ts`
-decided there was work to publish from the commit count alone. A run that
-committed only its own PR summary therefore raised a PR with no deliverable
-(VibeCoder#5069). It also skipped the documented no-PR retry.
+Issue-run change detection in `worker/deno/lib/phases/execute_phase.ts` decided
+there was work to publish from the commit count alone. A run that committed only
+its own PR summary therefore raised a PR with no deliverable (VibeCoder#5069).
+It also skipped the documented no-PR retry.
 
 - New `worker/deno/lib/run_record_only.ts`:
   - `readBranchChangedPaths` lists every path the branch changes:
@@ -14,10 +14,10 @@ committed only its own PR summary therefore raised a PR with no deliverable
     path is this issue's `docs/archive/pr-summaries/pr-summary-<N>.md` or the
     top-level `.pr_response_message`.
 - Change detection runs that check whenever the branch has commits or
-  uncommitted changes. A record-only branch now goes down the existing
-  no-change path, and returns `early_exit` / `no_changes`, so `issue_worker.ts`
-  routes it to `handle_no_changes`. The run's output carries forward as on any
-  no-change run.
+  uncommitted changes. A record-only branch now goes down the existing no-change
+  path, and returns `early_exit` / `no_changes`, so `issue_worker.ts` routes it
+  to `handle_no_changes`. The run's output carries forward as on any no-change
+  run.
 - The `## Retry: make the code change` nudge now says "committed no change to
   them" instead of "committed nothing", which is false for a record-only run.
   `docs/workflows/issue-processing.md` documents the new case.
@@ -29,8 +29,8 @@ Closes #5070.
 ### Intent and Rationale
 
 - The check sits in change detection rather than in the completion phase. A
-  record-only run then reuses the whole no-change route (declared hand-offs,
-  the analysis-only close, the not-finished retry), and no second copy of it is
+  record-only run then reuses the whole no-change route (declared hand-offs, the
+  analysis-only close, the not-finished retry), and no second copy of it is
   needed before PR creation.
 
 ### Essential Design Decisions
@@ -74,10 +74,10 @@ flowchart LR
 ```
 
 - The tests run the real `git` against a temporary repository with a bare
-  `origin`, not a fake. `--end-of-options` before `<base>...HEAD` was checked
-  to work with the installed `git diff`.
-- Callers: `readBranchChangedPaths` and `changesOnlyRunRecords` are used only
-  by `executeClaudeBody` in `execute_phase.ts`. `prSummaryFilePath` and
+  `origin`, not a fake. `--end-of-options` before `<base>...HEAD` was checked to
+  work with the installed `git diff`.
+- Callers: `readBranchChangedPaths` and `changesOnlyRunRecords` are used only by
+  `executeClaudeBody` in `execute_phase.ts`. `prSummaryFilePath` and
   `PR_RESPONSE_MESSAGE_FILE` are reused unchanged.
 - Docs: in `docs/workflows/issue-processing.md`, the "Analysis-only / no-PR
   issues" bullet gains the record-only case and the "committed no change to
@@ -85,13 +85,13 @@ flowchart LR
   says only "no code changes", which stays true.
 - `docs/audits/lib-sweep-coverage/top-up-5070.json` claims the new module for
   the lib sweep ledger (Issue #1609).
-- Issue numbers this diff adds: #5070 (A run whose only commit is the PR
-  summary raises a PR instead of taking the no-changes retry path).
+- Issue numbers this diff adds: #5070 (A run whose only commit is the PR summary
+  raises a PR instead of taking the no-changes retry path).
 
 ## Test Plan
 
-- Added `worker/deno/tests/execute_phase_record_only_5070_test.ts`, which
-  drives `workOnIssueExecuteClaude` with the real `runGitCommand`:
+- Added `worker/deno/tests/execute_phase_record_only_5070_test.ts`, which drives
+  `workOnIssueExecuteClaude` with the real `runGitCommand`:
   - a: the only commit edits the run's own summary → `no_changes`.
   - b: the same commit also pushed to `origin/<branch>` → still `no_changes`
     (remote self-heal skipped).
