@@ -136,3 +136,12 @@ flowchart LR
   skipped checks were config integration (no `.config.json`) and checkov (not
   installed on this host; CI runs it). The first run failed only because the new
   module was missing from the sweep ledger. The top-up slice fixed it.
+- Resumed run: the previous attempt stopped at the worker's pre-push gate,
+  which runs the full unit suite and reported `error: Test failed` without
+  naming the test. On this head, the full suite (`deno task test:unit`) passed:
+  parallel pass 34722 passed, 0 failed; serial pass 885 passed, 0 failed.
+  `./quality.sh` passed again, with config integration and checkov skipped as
+  before. That failure was not reproduced here.
+
+Not checked: the test that failed the earlier pre-push gate could not be
+identified from its truncated output, and it did not fail on this host.
