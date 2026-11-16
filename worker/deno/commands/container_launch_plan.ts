@@ -123,6 +123,8 @@ export async function buildLaunchPlanForCommand(
     now?: () => number;
     /** Runtime probe. Defaults to the real one; injectable for tests. */
     probe?: ContainerRuntimeProbe;
+    /** Host platform the runtime is resolved for. Defaults to `Deno.build.os`; injectable for tests (Issue #5088). */
+    platform?: string;
   } = {},
 ): Promise<ContainerLaunchPlan> {
   const env = options.env ?? ((name: string) => Deno.env.get(name));
@@ -134,6 +136,7 @@ export async function buildLaunchPlanForCommand(
     // lines go to STDERR — stdout carries the JSON plan run.sh consumes.
     detectContainerRuntime({
       ...(options.probe ? { probe: options.probe } : {}),
+      ...(options.platform ? { platform: options.platform } : {}),
       selfHeal: true,
       log: (message) => console.error(message),
       emitSelfHealEvent: (event) => emitSelfHealEventAuto(event),
