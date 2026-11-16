@@ -87,7 +87,7 @@ sequenceDiagram
     H->>E: GET /__admin/health (TLS vs this run's CA)
     H->>T: exec cmd with scrubbed AWS env
     T-->>H: exit code
-    H->>E: TERM, wait, KILL; rm -rf state
+    H->>E: TERM, wait, KILL, then rm -rf state
 ```
 
 Real runtime evidence comes from GitHub Actions run 43873721374 at helper commit
