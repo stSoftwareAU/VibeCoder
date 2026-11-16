@@ -99,6 +99,8 @@ calls it. Its row says so, and it is deliberately absent from
 | `rtk` 1.0.1 (bare binary  in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
 | `floci` 2.3.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime** and the pre-push gate's Floci CloudFormation check (Issue #3727): the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint; that check runs `infra/cloudformation/test-floci.sh`, which starts it on demand. The same tag and digest also run as the service of the `.github/workflows/floci.yml` CI job (Issue #3369), which deploys `infra/cloudformation/` through `infra/cloudformation/test-floci.sh`; `worker/deno/tests/issue_3369_floci_workflow_test.ts` keeps the two tags and digests in agreement |
 | `tokeneconomizer` 0.1.0 (Apache-2.0, commit `264e7a7f32f0112a06aa83a97b9c2c4681563968`, `plugin/` and `tokeneconomizer/` under `/opt/tokeneconomizer`) | `tokeneconomizer` | The TokenEconomizer trial (Issue #4955, parent #4953) — the worker's own runs, not a monitored repository's gate; off by default: a host that sets `token_economizer.enabled` makes the worker load the plugin into its implementation, PR-feedback and CI-fix Claude runs; the image itself does not run it |
+| `aws-cli` 2.40.3 (official AWS CLI v2 zip, installed under `/usr/local/aws-cli`) | `aws` | The pinned client the AWS Emulator smoke test and the `aws-emulator-run` helper use (Issue #5109); not a monitored repository's gate. Its checksums were computed on GitHub-hosted runners because the worker container's egress proxy refuses `awscli.amazonaws.com` |
+| `aws-emulator` 1.0.385-1 (official prebuilt Debian package, extracted to `/opt/aws-emulator`) | `aws-emulator` | The AWS Emulator for isolated test runs (Issue #5109), run through the `aws-emulator-run` helper rather than started by hand or by the entrypoint; Floci stays installed alongside it during migration. See [AWS Emulator and `aws-emulator-run`](CONTAINER-IMAGE.md#aws-emulator-and-aws-emulator-run) |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `cspell` 10.4.0 (npm tarball, checksum-verified)    | `cspell`                                  | The pre-push gate's spelling stage for a repository that tracks a cspell config and whose CI runs cspell, e.g. GRQ's `docs/cspell.json` (Issue #3689) |
 | `semgrep` 1.182.1 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
@@ -107,7 +109,7 @@ calls it. Its row says so, and it is deliberately absent from
 `cargo-mutants` is no longer installed: the automatic mutation check it backed was retired from the completion and review-fix workflows (Issue #5095).
 
 `rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
-`bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci`, `tokeneconomizer` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci`, `tokeneconomizer`, `aws-cli`, `aws-emulator` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
 SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
@@ -117,7 +119,7 @@ that exemption honest. Adding one is a fragment, a `container/tools.json`
 entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
 added to one of the Containerfile's `install-toolchains.sh` runs.
 
-Nine consequences worth knowing:
+Ten consequences worth knowing:
 
 - **Rust is pinned to 1.99.1, not `stable`.** That is the 1.99 channel
   NEAT-AI-scorer, NEAT-AI-Discovery, NEAT-AI-Lamarck and NEAT-AI-Backpropagation
@@ -235,6 +237,14 @@ Nine consequences worth knowing:
   runs `test-floci.sh` in a repository that tracks it; `container/entrypoint.sh`
   does not start it, and whatever needs the LocalStack drop-in on port 4566
   (the script included) starts it itself.
+- **`aws-cli` and `aws-emulator` are the Issue #5109 pair.** `aws-emulator` is
+  the official prebuilt Debian package, extracted to `/opt/aws-emulator` with
+  `/usr/local/bin/aws-emulator`; `aws-cli` is the pinned AWS CLI v2. Both pins
+  (version, per-architecture sha256, and `packageRevision` for the emulator)
+  live in `container/tools.json`. The image also sets `EMULATOR_TELEMETRY=off`.
+  Tests reach the emulator only through `aws-emulator-run`; the contract, exit
+  codes and recovery are in
+  [AWS Emulator and `aws-emulator-run`](CONTAINER-IMAGE.md#aws-emulator-and-aws-emulator-run).
 
 Node.js is the runtime `markdownlint-cli2`, Graft, Playwright and the Gemini
 CLI provider need; the worker itself is Deno. Graft is the one consumer that
@@ -404,7 +414,7 @@ restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
 `cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml`,
-`codegraph`, `rtk`, `floci`, `tokeneconomizer` and `rust` are fragments (Issues #1594, #1595, #1596, #1628, #2153, #2381, #3367 and #4955) —
+`codegraph`, `rtk`, `floci`, `tokeneconomizer`, `aws-cli`, `aws-emulator` and `rust` are fragments (Issues #1594, #1595, #1596, #1628, #2153, #2381, #3367, #4955 and #5109) —
 they are the fetch-verify-extract toolchains, whose `ARG` blocks
 and `RUN` bodies were the bulk of the Containerfile's size. `node`, `npm`,
 `markdownlint-cli2`, `graft` and `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and

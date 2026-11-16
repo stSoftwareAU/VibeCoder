@@ -211,13 +211,15 @@ ENV POWERSHELL_UPDATECHECK="Off" \
 # file. v0.49.0 read no such variable (it throttled the warning by a stamp
 # file under its data dir); the 1.0.1 binary does reference it. Image-wide,
 # as DO_NOT_TRACK below is, and set before the install so the fragment's own
-# version probe is quiet too.
+# version probe is quiet too. EMULATOR_TELEMETRY=off does the same for the AWS
+# Emulator (Issue #5109).
 ENV RTK_TELEMETRY_DISABLED="1" \
-    RTK_SUPPRESS_HOOK_WARNING="1"
+    RTK_SUPPRESS_HOOK_WARNING="1" \
+    EMULATOR_TELEMETRY="off"
 
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer
+      bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci,tokeneconomizer,aws-cli,aws-emulator
 
 # markdownlint-cli2 backs the check-markdownlint gate stage; cspell (Issue
 # #3689) backs the pre-push gate's spelling stage for a repository that tracks
@@ -462,6 +464,14 @@ RUN set -eu; \
     printf 'vibe ALL=(agent) NOPASSWD: ALL\n' > /etc/sudoers.d/vibe-agent; \
     chmod 0440 /etc/sudoers.d/vibe-agent; \
     visudo --check --file=/etc/sudoers.d/vibe-agent
+
+# Issue #5109: the helper repository tests run the emulator through. The smoke
+# proves, on each built architecture, that the agent account can run a
+# TLS-verified, SigV4-authenticated S3 write-read-delete against the pinned
+# emulator with generated credentials and telemetry off; failure fails the build.
+COPY aws-emulator-run.sh /usr/local/bin/aws-emulator-run
+RUN chmod 0755 /usr/local/bin/aws-emulator-run
+RUN runuser -u agent -- aws-emulator-run --smoke
 
 # Pre-warmed Deno cache (Issue #4392): the pinned @playwright/mcp (its own
 # playwright-core included) and the worker's JSR deps, resolved against the

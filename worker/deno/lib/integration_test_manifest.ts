@@ -53,6 +53,8 @@ import { sourceProseLines } from "./doc_prose_scope.ts";
  * from.
  */
 export const INTEGRATION_TEST_FILES: readonly string[] = [
+  // Issue #5109: spawns container/aws-emulator-run.sh against a fake emulator.
+  "tests/aws_emulator_run_5109_test.ts",
   // Issue #1929: drives .github/scripts/detect-image-changes.sh against
   // throwaway git repositories, the same shape as
   // empty_array_expansion_check_test.ts below.

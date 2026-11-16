@@ -330,6 +330,23 @@ const REAL_IMAGE_OUTPUT: Record<
       String(committedToolchain("tokeneconomizer")["version"])
     } (commit ${String(committedToolchain("tokeneconomizer")["commit"])})\n`,
   },
+  // `aws --version` prints "aws-cli/<version> Python/... Linux/... exe/<arch>
+  // ..." (Issue #5109). The runtime fields vary by build, so only the leading
+  // token the fragment itself checks is recorded; built from the committed
+  // entry so a bump cannot leave it stale.
+  "aws-cli": {
+    command: `aws-cli/${
+      String(committedToolchain("aws-cli")["version"])
+    } Python/3 Linux/6 exe/x86_64\n`,
+  },
+  // `aws-emulator --version` prints three lines: Version, Release date and
+  // Commit (Issue #5109). Only the version line is pinned, so the other two
+  // are omitted.
+  "aws-emulator": {
+    command: `Version: ${
+      String(committedToolchain("aws-emulator")["version"])
+    }\n`,
+  },
 };
 
 Deno.test("checkContainerToolchains - every probe of the committed manifest passes against what the image really prints", async () => {
