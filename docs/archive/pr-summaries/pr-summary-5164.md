@@ -87,9 +87,14 @@ Backend/container changes only, with no UI changes.
   keep Codex environment isolation and the usage-limit-only fallback rules.
 - `review_round_wiring_test.ts`: extend the real three-subscription credential
   fixture through quota refusal on all three Opus candidates before DeepSeek.
-- `review_fleet_prs_runner_test.ts`: assert that the runner requests the
-  review-specific plan and reports a missing prepared image; retain claim
-  release, escalation, token isolation and scheduling coverage.
+- `review_fleet_prs_runner_test.ts`: the launch-plan stub names a distinct
+  prepared review image (holding Codex) only when the plan is requested with
+  `--review-round`, else the plain worker image; the container stub fails a run
+  of the plain worker image with `codex: not found` (exit 127), as the real
+  Claude-only image did. The round-completion tests therefore pass only when the
+  runner selects the review image, without inspecting any recorded plan
+  argument. The suite also reports a missing prepared image; claim release,
+  escalation, token isolation and scheduling coverage is retained.
 - The Apple COPY change is verified through the observed failed image build
   and its corrected rebuild, rather than a test that greps Containerfile text.
 - Updated all copies of the fallback contract: design principles, model guide,
@@ -134,7 +139,8 @@ Validation:
   wiring test), plus `worker/deno/tests/review_round_test.ts::Opus tries other
   Claude subscriptions before paid DeepSeek (Issue #5164)`.
 - `review_fleet_prs_runner_test.ts`: a diagnostic string rename; failure and
-  escalation behaviour are unchanged.
+  escalation behaviour are unchanged. The stub plan's image now depends on the
+  requested mode (see above); no assertion was removed.
 
 ## Review follow-up verification
 
@@ -157,3 +163,12 @@ Validation:
   completes on DeepSeek instead of Opus. Restored production unchanged.
 - All 56 command launch-plan, review-round and wiring tests pass with the
   corrected fixtures; changed test files pass formatting and lint checks.
+
+## Runner mock-interaction review
+
+- The runner test no longer asserts a recorded `--review-round` plan argument.
+  The image is modelled instead (see the runner test plan above), so the
+  round's outcome depends on the selected image.
+- Verified against the production script: with `--review-round` removed from
+  `run.sh`, 38 of the 77 runner tests fail (round exit 127); restored, all 77
+  pass.
