@@ -128,7 +128,8 @@ TokenEconomizer into Claude runs, which owns the shared stop path); #4958
   `worker/deno/tests/token_economizer_learnings_test.ts::stopped: the real stop record latches, notifies issue 4959 and keeps the token out`,
   `…::stopped: state for another repository in the home stops the push before anything moves`,
   `…::refused: a public or unverifiable learnings repository is never transferred`.
-  The status is recorded on `launch.learnings.persistence` for #4958 to report.
+  The real pull/push outcomes are aggregated across launches and retries into
+  the run statistics and callback; the real-git wiring regression checks both.
   — reviewer: met
 - **unrequested** — `docs/THREAT-MODEL.md`: new control C42 and edits to AP-20,
   C40, R16 and the Learned-facts row — reviewer: unrequested — reason: those
@@ -286,8 +287,8 @@ are pending on this PR.
 
 - Kept scratch clones under `<work>/.token-economizer/store/<runId>` are not
   removed at the end of a run, just as the per-run homes were not before.
-- The push outcome is logged but not yet recorded in run stats: #4958 will
-  report the persistence status.
+- Pull and push outcomes now feed the run statistics and callback, including
+  retries; unavailable transfers are not reported as persisted.
 - Upstream's `*.jsonl` ledgers and `sessions/` records are not synced, by the
   issue's transcript rule. I did not establish whether a later fold relies on
   them.
@@ -364,3 +365,29 @@ Validation: all 22 persistence tests pass, with 2 existing optional tests
 ignored; changed source and tests pass type checking and formatting. Hosted CI
 remains required. Both earlier test-interaction findings and the static ancestor
 symlink finding are addressed.
+
+## Final review repair
+
+The visibility fake resolves exact repository targets and denies unknown or
+out-of-scope repositories. The notification fake stores delivered comments
+on the intended issue and refuses unknown targets; assertions check the
+redacted report, real stop latch and unchanged store, not request text or
+callback counts.
+
+The sync controller retains actual transfer outcomes by launch identity. The
+implementation phase carries all launch identities into run statistics. A run
+is persisted only when every launch pulled successfully and every attempted
+push succeeded; any failure or unfinished launch keeps it unavailable. The
+real-git round-trip regression checks stats, rendered text and callback, plus
+an unfinished second launch and a failed retry after successful persistence.
+The public-store and runner push-failure tests check unavailable statistics.
+
+Local validation uses Deno 2.9.6 and cached published dependencies through a
+temporary import map; repository dependencies are unchanged. Optional tests
+requiring the vendored plugin or gitleaks are skipped by their existing guards.
+Full hosted CI and fresh independent review remain required.
+
+Validation: 94 focused persistence, wiring, stats and trial-documentation tests
+pass; 13 existing optional-tool tests are ignored. The successful-persistence
+regression fails against the original statistics implementation (unavailable
+instead of available).

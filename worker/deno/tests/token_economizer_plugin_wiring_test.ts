@@ -1,3 +1,8 @@
+import {
+  buildTokenEconomizerStatsLine,
+  summariseTokenEconomizerRun,
+  tokenEconomizerCallbackBlock,
+} from "../lib/token_economizer_run_stats.ts";
 /**
  * Wiring of the TokenEconomizer plugin into the Claude CLI spawn (Issue #4956,
  * part of #4953).
@@ -1457,6 +1462,41 @@ async function runClaudeOutcome(
   });
 }
 
+async function assertPersistence(
+  launches: TokenEconomizerLaunch[],
+  expected: "available" | "unavailable",
+) {
+  const first = launches[0]!;
+  const key = first.learnings!.persistence.repoKey!;
+  const sessions = join(
+    first.env.TOKENECONOMIZER_HOME,
+    "repos",
+    key,
+    "claude",
+    "sessions",
+  );
+  await Deno.mkdir(sessions, { recursive: true });
+  await Deno.writeTextFile(
+    join(sessions, "stats.json"),
+    JSON.stringify({ injected_ids: [], nudges: 0, aborts: 0 }),
+  );
+  const stats = await summariseTokenEconomizerRun({
+    enabled: true,
+    eligible: true,
+    workDir: first.workDir,
+    stateHomes: launches.map((l) => l.env.TOKENECONOMIZER_HOME),
+    ...{ launches },
+  });
+  assertEquals(stats.persistence, expected);
+  assertEquals(tokenEconomizerCallbackBlock(stats)?.persistence, expected);
+  assertStringIncludes(
+    buildTokenEconomizerStatsLine(stats),
+    expected === "available"
+      ? "learnings persisted"
+      : "learnings not persisted",
+  );
+}
+
 Deno.test("a learnings round trip pulls an empty store, pushes a learned state file and restores it on the next launch (Issue #4957)", async () => {
   const layout = await makeLayout();
   try {
@@ -1492,6 +1532,7 @@ Deno.test("a learnings round trip pulls an empty store, pushes a learned state f
       logger,
     );
     assertEquals(pushed?.kind, "pushed", JSON.stringify(pushed));
+    await assertPersistence([first], "available");
     assertEquals(
       await git(store, [
         "show",
@@ -1503,6 +1544,12 @@ Deno.test("a learnings round trip pulls an empty store, pushes a learned state f
     const second = await launchFor("learn-2");
     assert(second !== null, "the plugin must load on the second launch");
     assertEquals(second.learnings?.persistence.status, "restored");
+    await assertPersistence([first, second], "unavailable");
+    assertEquals(
+      (await syncTokenEconomizerLearnings(second, notifyNothing, logger))?.kind,
+      "unchanged",
+    );
+    await assertPersistence([first, second], "available");
     assertEquals(
       await Deno.readTextFile(
         join(
@@ -1515,6 +1562,18 @@ Deno.test("a learnings round trip pulls an empty store, pushes a learned state f
       ),
       text,
     );
+    await writeLearned(
+      second.env.TOKENECONOMIZER_HOME,
+      key,
+      '{"facts":["new local learning"]}\n',
+    );
+    await Deno.remove(store, { recursive: true });
+    assertEquals(
+      (await syncTokenEconomizerLearnings(second, notifyNothing, logger))?.kind,
+      "dropped",
+    );
+    await assertPersistence([first], "available");
+    await assertPersistence([first, second], "unavailable");
   } finally {
     await Deno.remove(layout.root, { recursive: true });
   }
@@ -1561,6 +1620,7 @@ Deno.test("a public learnings store is refused: the plugin still loads, the refu
       JSON.stringify(outcome),
     );
     assertEquals(await git(store, ["for-each-ref"]), "");
+    await assertPersistence([launch], "unavailable");
   } finally {
     await Deno.remove(layout.root, { recursive: true });
   }
@@ -1659,6 +1719,7 @@ Deno.test("a failed learnings push leaves the run's result unchanged and is logg
 
     const outcome = await runClaudeOutcome(layout, failing, logger);
     assertEquals(outcome, baseline);
+    await assertPersistence([failing], "unavailable");
     assert(
       warnings.some((m) =>
         m.startsWith("token-economizer learnings: dropped: push failed")

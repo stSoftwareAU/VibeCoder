@@ -1,3 +1,5 @@
+import { tokenEconomizerPersistenceAvailable } from "./token_economizer_control.ts";
+import type { TokenEconomizerLaunch } from "./token_economizer_plugin.ts";
 /**
  * What TokenEconomizer did in one run, and what it cost (Issue #4958, part of
  * #4953).
@@ -47,7 +49,7 @@ export interface TokenEconomizerRunStats {
   /** The host's `token_economizer.enabled` switch. */
   enabled: boolean;
   status: TokenEconomizerRunStatus;
-  /** Whether learnings persisted across runs. "unavailable" until #4957 lands a learnings store; never inferred from config. */
+  /** Whether learnings persisted across runs. Available only when all launches pulled and pushed successfully; never inferred from config. */
   persistence: "available" | "unavailable";
   stopRule?: TokenEconomizerStopRule;
   factsInjected?: number;
@@ -108,6 +110,8 @@ export interface SummariseTokenEconomizerRunOptions {
   workDir: string;
   /** Every `TOKENECONOMIZER_HOME` the run's launches used. */
   stateHomes: readonly string[];
+  /** All launches, including retries; one failed or unfinished transfer makes the run unavailable. */
+  launches?: readonly TokenEconomizerLaunch[];
   logger?: { warn(m: string): void };
 }
 
@@ -352,7 +356,10 @@ export async function summariseTokenEconomizerRun(
     const stats: TokenEconomizerRunStats = {
       enabled,
       status,
-      persistence: "unavailable",
+      persistence: stop === null && (opts.launches?.length ?? 0) > 0 &&
+          opts.launches!.every(tokenEconomizerPersistenceAvailable)
+        ? "available"
+        : "unavailable",
     };
     if (stop !== null) stats.stopRule = stop.rule;
     // No session evidence: nothing was measured, so no figure is reported.

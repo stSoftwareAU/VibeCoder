@@ -1375,6 +1375,9 @@ async function executeClaudeBody(
         const home = tokenEconomizer.tokenEconomizer.env.TOKENECONOMIZER_HOME;
         const homes = state.tokenEconomizerHomes ??= [];
         if (!homes.includes(home)) homes.push(home);
+        (state.tokenEconomizerLaunches ??= []).push(
+          tokenEconomizer.tokenEconomizer,
+        );
       }
       const run = async (
         runOptions: Parameters<typeof deps.claude.runClaudeWithRetry>[0],
@@ -1603,6 +1606,7 @@ async function executeClaudeBody(
       CLAUDE_PROVIDER_ID,
     workDir: config.workDir,
     stateHomes: state.tokenEconomizerHomes ?? [],
+    launches: state.tokenEconomizerLaunches ?? [],
     logger,
   });
 

@@ -348,7 +348,12 @@ is one of:
 - `not-run`: switched on, but the run ended before the agent spawned.
 - `off`: the switch is off, or a non-Claude provider served the run.
 
-`persistence` is `"unavailable"` until #4957 lands the learnings store. The
+`persistence` is `"available"` only after every launch has a verified pull
+(restored or empty) and every attempted push succeeds (pushed or unchanged).
+Retries retain earlier failures; missing, refused, failed or unfinished
+transfers and a stopped trial remain `"unavailable"`. Configuration alone is
+not evidence of persistence. These outcomes feed both the stats line and run
+callback. The
 figures are `factsInjected` (the `injected_ids` across session files),
 `judgeCalls` (ledger overhead records with a paid judge cost), `redirects`
 (session nudges) and `stillStuckNotices` (session aborts). `pluginCostUsd` is

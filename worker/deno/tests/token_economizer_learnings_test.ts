@@ -732,9 +732,19 @@ Deno.test("stopped: the real stop record latches, notifies issue 4959 and keeps 
     );
     const workDir = join(root, "work");
     await Deno.mkdir(workDir);
-    const notes: string[][] = [];
+    const issueComments = new Map([[
+      "stSoftwareAU/VibeCoder#4959",
+      [] as string[],
+    ]]);
     const notify = (args: string[]) => {
-      notes.push(args);
+      const repo = args[args.indexOf("--repo") + 1];
+      const issue = args.find((arg) => /^\d+$/.test(arg));
+      const comments = issueComments.get(`${repo}#${issue}`);
+      const body = args[args.indexOf("--body") + 1];
+      if (!comments || !args.includes("comment") || !body) {
+        return Promise.reject(new Error("HTTP 404: issue not found"));
+      }
+      comments.push(body);
       return Promise.resolve("");
     };
 
@@ -756,11 +766,7 @@ Deno.test("stopped: the real stop record latches, notifies issue 4959 and keeps 
     );
     assertEquals(await tokenEconomizerMaySync(workDir), false);
 
-    assertEquals(notes.length, 1);
-    const [args] = notes;
-    assert(args !== undefined);
-    assertEquals(args.slice(0, 3), ["issue", "comment", "4959"]);
-    const body = args.join("\n");
+    const body = issueComments.get("stSoftwareAU/VibeCoder#4959")!.join("\n");
     assertStringIncludes(body, "secret-in-learnings");
     assertEquals(body.includes(FAKE_PAT), false);
     assertEquals(await commitCount(store.dir), 0);
@@ -1314,10 +1320,23 @@ Deno.test("default visibility check: the learnings repository is in the token sc
       const scope = installationTokenRepoScope() ?? [];
       scopeDuringRead = installationTokenRepoScope();
       writableDuringRead = isWriteRepoAllowed(store);
-      if (!scope.some((repo) => args.join(" ").includes(repo))) {
+      const target = args.map((arg) =>
+        arg.replace(/^https:\/\/api\.github\.com\//, "")
+      ).find((arg) => arg.startsWith("repos/"))?.slice("repos/".length);
+      const repositories = new Map([[store, {
+        private: true,
+        visibility: "private",
+      }], ["stSoftwareAU/VibeCoder", {
+        private: false,
+        visibility: "public",
+      }]]);
+      const record = target === undefined
+        ? undefined
+        : repositories.get(target);
+      if (!record || !scope.includes(target!)) {
         return Promise.reject(new Error("HTTP 404: Not Found"));
       }
-      return Promise.resolve('{"private": true, "visibility": "private"}');
+      return Promise.resolve(JSON.stringify(record));
     };
     const verdict = await githubVisibilityCheck(fakeRepoRead)(store);
     assertEquals(verdict, { private: true });
@@ -1342,7 +1361,13 @@ Deno.test("default visibility check: the learnings repository is in the token sc
     const failed = await githubVisibilityCheck(() =>
       Promise.reject(new Error("HTTP 404"))
     )(store);
-    assertEquals(failed.private, false);
+    assert(!failed.private);
+    assertStringIncludes(failed.reason ?? "", "HTTP 404");
+    const unknown = await githubVisibilityCheck(fakeRepoRead)(
+      store + "-missing",
+    );
+    assert(!unknown.private);
+    assertStringIncludes(unknown.reason ?? "", "HTTP 404");
     assertEquals(installationTokenRepoScope(), ["stSoftwareAU/VibeCoder"]);
   } finally {
     _resetWriteRepoAllowlistSinks();

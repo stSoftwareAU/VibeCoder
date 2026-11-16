@@ -165,6 +165,15 @@ export async function tokenEconomizerMaySync(
   }
 }
 
+const persistenceByLaunch = new WeakMap<TokenEconomizerLaunch, boolean>();
+
+/** True only after every attempted transfer for this launch succeeded. */
+export function tokenEconomizerPersistenceAvailable(
+  launch: TokenEconomizerLaunch,
+): boolean {
+  return persistenceByLaunch.get(launch) === true;
+}
+
 /**
  * Push what this launch learned to the private learnings store (Issue #4957).
  * Null when learnings persistence is not configured. Never throws: a fault is
@@ -177,7 +186,7 @@ export async function syncTokenEconomizerLearnings(
 ): Promise<PushLearningsOutcome | null> {
   if (!launch.learnings) return null;
   try {
-    return await pushLearnings({
+    const outcome = await pushLearnings({
       learningsRepo: launch.learnings.repo,
       persistence: launch.learnings.persistence,
       home: launch.env.TOKENECONOMIZER_HOME,
@@ -190,7 +199,16 @@ export async function syncTokenEconomizerLearnings(
         stopTokenEconomizerTrial(launch.workDir, finding, notify, logger),
       logger,
     });
+    const restored = launch.learnings.persistence.status === "restored" ||
+      launch.learnings.persistence.status === "empty";
+    const pushed = outcome.kind === "pushed" || outcome.kind === "unchanged";
+    persistenceByLaunch.set(
+      launch,
+      persistenceByLaunch.get(launch) !== false && restored && pushed,
+    );
+    return outcome;
   } catch (error) {
+    persistenceByLaunch.set(launch, false);
     const reason = redactSecrets(
       error instanceof Error ? error.message : String(error),
     );
