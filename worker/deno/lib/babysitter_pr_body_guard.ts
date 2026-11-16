@@ -23,9 +23,9 @@
  * are stripped, and every other HTML-comment delimiter in it is made inert by
  * the shared neutralisation, so an unclosed `<!--` cannot hide the lines the
  * guard appends. The live body's markers are appended in their place, so the
- * summary digest and the worker-issue marker keep reconciling. A body that ends
- * inside an unclosed fenced code block has the fence closed before the
- * references and markers are appended, so they stay prose and not code. The
+ * summary digest and the worker-issue marker keep reconciling. When the body
+ * contains a fence delimiter, restored lines precede the proposal so no code
+ * container can swallow them. No guessed closing fence is emitted. The
  * references restored are those GitHub honours in the live body (one line,
  * outside code, plain, colon or full-URL form) that the proposal does not
  * already close in such a form (Issue #5039).
@@ -45,11 +45,7 @@ import {
   URL_CLOSE_RE,
   withholdIssueClose,
 } from "./missing_criterion_close_guard.ts";
-import {
-  maskMarkdownCode,
-  parseFenceLine,
-  unclosedFenceOpener,
-} from "./markdown_code_spans.ts";
+import { maskMarkdownCode } from "./markdown_code_spans.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import {
   closingKeywordLine,
@@ -214,9 +210,8 @@ export function githubClosesIssue(
  * not count as keeping one. Without a proposal, the live body is the base and
  * only the withholding (and its `Part of #N`) applies.
  *
- * In both cases, when anything is appended to a body that ends inside an
- * unclosed fenced code block, that fence is closed first so the appended lines
- * are prose (Issue #5039).
+ * When the body contains any fence delimiter, the restored block is placed
+ * before it. Other bodies retain the trailing block layout (Issue #5039).
  *
  * The governing issue is the worker marker in the live body, else the issue the
  * worker branch names ({@link governingIssueNumber}). An unrelated PR, with
@@ -275,7 +270,9 @@ export function guardPrBodyProposal(input: PrBodyGuardInput): string {
     if (markers.length > 0) tail.push(markers.join("\n"));
   }
   const body = tail.length > 0
-    ? `${closeOpenFence(text)}\n\n${tail.join("\n\n")}`
+    ? /`{3}|~{3}/.test(text)
+      ? `${tail.join("\n\n")}\n\n${text}`
+      : `${text}\n\n${tail.join("\n\n")}`
     : text;
 
   if (issueNumber !== undefined && closeAllowed === false) {
@@ -393,23 +390,6 @@ function effectiveCloses(text: string, repo: string): ClosingRef[] {
       text: text.slice(ref.start, ref.end),
     };
   });
-}
-
-/**
- * Close a fenced block the text ends inside, so what follows is prose. The
- * closer repeats the opener's indent, which keeps a fence opened under a list
- * item closed inside that item (Issue #5039). A backtick opener whose info
- * string contains a backtick (```js`x) is not a fence on GitHub, so it gets no
- * closer.
- */
-function closeOpenFence(text: string): string {
-  const opener = unclosedFenceOpener(text);
-  if (opener === null) return text;
-  const parsed = parseFenceLine(opener)!;
-  // CommonMark forbids backticks in a backtick fence's info string, so this is not a fence.
-  if (parsed.char === "`" && parsed.rest.includes("`")) return text;
-  const indent = /^[ \t]*/.exec(opener)![0];
-  return `${text}\n${indent}${parsed.char.repeat(parsed.length)}`;
 }
 
 /**

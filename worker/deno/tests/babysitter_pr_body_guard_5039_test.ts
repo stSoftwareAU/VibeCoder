@@ -8,7 +8,6 @@ import {
   maskCodeWithPlaceholder,
 } from "../lib/pr_body.ts";
 import { issueNumberFromMarker } from "../lib/pr_body_sync.ts";
-import { unclosedFenceOpener } from "../lib/markdown_code_spans.ts";
 
 const REPO = "owner/repo";
 
@@ -51,7 +50,7 @@ function guardMet(proposal: string, liveBody: string): string {
   });
 }
 
-Deno.test("a proposal ending in an unclosed fence has it closed before the appended close and marker (Issue #5039)", () => {
+Deno.test("a proposal ending in an unclosed fence keeps restored close and marker outside code (Issue #5039)", () => {
   const body = guardMet(
     "Rewritten.\n\n```\nconst x = 1;",
     liveBodyFor(4637, "Closes #4637"),
@@ -60,7 +59,7 @@ Deno.test("a proposal ending in an unclosed fence has it closed before the appen
   assertEquals(issueNumberFromMarker(maskCodeWithPlaceholder(body)), 4637);
 });
 
-Deno.test("a fence opened under a list item is closed inside that item (Issue #5039)", () => {
+Deno.test("a fence opened under a list item cannot swallow restored references (Issue #5039)", () => {
   const body = guardMet(
     "- item\n  ```\n  code",
     liveBodyFor(4637, "Closes #4637"),
@@ -162,13 +161,6 @@ Deno.test("githubClosingReferences reads only same-line, outside-code closes (Is
   );
 });
 
-Deno.test("unclosedFenceOpener names the opener of a fence still open (Issue #5039)", () => {
-  assertEquals(unclosedFenceOpener("a\n```\nb\n```"), null);
-  assertEquals(unclosedFenceOpener("a\n````js\nb\n```"), "````js");
-  assertEquals(unclosedFenceOpener("x\n~~~\ny"), "~~~");
-  assertEquals(unclosedFenceOpener("no fence"), null);
-});
-
 Deno.test("a backtick opener with a backtick in its info string gets no closer (Issue #5039)", () => {
   const body = guardMet(
     "Rewritten.\n\n```js`x\ncode",
@@ -176,4 +168,22 @@ Deno.test("a backtick opener with a backtick in its info string gets no closer (
   );
   assertFalse(body.includes("code\n```"));
   assert(body.includes("Closes #4637"));
+});
+
+Deno.test("restored references and markers render outside list-exit and invalid-info fences", async () => {
+  const { Parser, HtmlRenderer } = await import("commonmark") as unknown as {
+    Parser: new () => { parse(text: string): unknown };
+    HtmlRenderer: new () => { render(node: unknown): string };
+  };
+  for (
+    const proposal of [
+      "- item\n  ```\n  code\n\nOutside list.",
+      "Rewritten.\n\n```js`x\ncode\n```\nactual code",
+    ]
+  ) {
+    const body = guardMet(proposal, liveBodyFor(4637, "Closes #4637"));
+    const html = new HtmlRenderer().render(new Parser().parse(body));
+    assert(html.includes("<p>Closes #4637</p>"), html);
+    assert(html.includes("<!-- vibe-worker-issue-4637 -->"), html);
+  }
 });

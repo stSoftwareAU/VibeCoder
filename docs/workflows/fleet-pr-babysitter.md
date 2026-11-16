@@ -269,9 +269,9 @@ at the unchanged head, the description steps run in order:
 3. It strips every complete hidden `<!-- vibe-… -->` marker from the proposal in
    one linear scan. A marker quoted in a Markdown code span in the live body is
    not copied. A stray unclosed `<!--` in the proposal is neutralised, so it
-   cannot hide the appended reference or markers. A proposal that ends inside
-   an unclosed fenced code block has that fence closed first, so the appended
-   references and markers are prose and not code. It then appends the live
+   cannot hide the appended reference or markers. A proposal containing a fence delimiter receives restored references and
+   markers before its text, where list boundaries and unclosed fences cannot
+   swallow them. Other proposals retain a trailing block. It preserves the live
    body's markers (worker issue, summary digest, sub-agent tier and assignment
    id), so the digest reconcile keeps working.
 4. It decides closing or non-closing for the governing issue: the worker marker
