@@ -205,10 +205,18 @@ export function githubClosesIssue(
  * The description to publish for a repair's head (Issue #4637).
  *
  * With a proposal, the result is the proposal with its hidden markers
- * stripped, the live body's markers appended, closing references to other
- * issues that the proposal dropped restored, and the governing issue either
- * kept (its close is allowed) or withheld (its close is not). Without a
- * proposal, the live body is the base and only the withholding applies.
+ * stripped, closing references to other issues restored, the governing issue
+ * either kept (its close is allowed) or withheld (its close is not), and the
+ * live body's markers appended. Only closing references GitHub honours in the
+ * live body are restored: same line, outside code, in the plain, colon or
+ * full-URL form. A reference is restored unless the proposal already closes the
+ * issue in such a form; a line-wrapped or code-split close in the proposal does
+ * not count as keeping one. Without a proposal, the live body is the base and
+ * only the withholding (and its `Part of #N`) applies.
+ *
+ * In both cases, when anything is appended to a body that ends inside an
+ * unclosed fenced code block, that fence is closed first so the appended lines
+ * are prose (Issue #5039).
  *
  * The governing issue is the worker marker in the live body, else the issue the
  * worker branch names ({@link governingIssueNumber}). An unrelated PR, with
@@ -390,12 +398,16 @@ function effectiveCloses(text: string, repo: string): ClosingRef[] {
 /**
  * Close a fenced block the text ends inside, so what follows is prose. The
  * closer repeats the opener's indent, which keeps a fence opened under a list
- * item closed inside that item (Issue #5039).
+ * item closed inside that item (Issue #5039). A backtick opener whose info
+ * string contains a backtick (```js`x) is not a fence on GitHub, so it gets no
+ * closer.
  */
 function closeOpenFence(text: string): string {
   const opener = unclosedFenceOpener(text);
   if (opener === null) return text;
   const parsed = parseFenceLine(opener)!;
+  // CommonMark forbids backticks in a backtick fence's info string, so this is not a fence.
+  if (parsed.char === "`" && parsed.rest.includes("`")) return text;
   const indent = /^[ \t]*/.exec(opener)![0];
   return `${text}\n${indent}${parsed.char.repeat(parsed.length)}`;
 }

@@ -168,3 +168,12 @@ Deno.test("unclosedFenceOpener names the opener of a fence still open (Issue #50
   assertEquals(unclosedFenceOpener("x\n~~~\ny"), "~~~");
   assertEquals(unclosedFenceOpener("no fence"), null);
 });
+
+Deno.test("a backtick opener with a backtick in its info string gets no closer (Issue #5039)", () => {
+  const body = guardMet(
+    "Rewritten.\n\n```js`x\ncode",
+    liveBodyFor(4637, "Closes #4637"),
+  );
+  assertFalse(body.includes("code\n```"));
+  assert(body.includes("Closes #4637"));
+});
