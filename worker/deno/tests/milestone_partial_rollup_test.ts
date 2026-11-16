@@ -246,33 +246,41 @@ Deno.test("createPartialRollup - a failed delivered-issue read fails loud and cr
   assertEquals(gh.prs.length, 0);
 });
 
-// Issue #5058: the read runs only once the outcome is known to be a create, so
-// a deferred or existing outcome never pays for it.
-Deno.test("createPartialRollup - the delivered-issue read is not called when the outcome is deferred or exists (Issue #5058)", async () => {
-  let reads = 0;
-  const countingRead = () => {
-    reads++;
-    return Promise.resolve([77]);
-  };
+// Issue #5058: a deferred or existing outcome does not depend on the
+// delivered-issue read, so an unavailable read never turns one into a failure.
+Deno.test("createPartialRollup - a deferred or existing outcome is unchanged when the delivered-issue read is unavailable (Issue #5058)", async () => {
+  const unavailable = () => Promise.reject(new Error("gh: HTTP 502"));
 
   const behind = new FakeGitHub();
   behind.behindBy = 2;
-  behind.readDeliveredIssues = countingRead;
-  assertEquals((await behind.run()).outcome, "deferred");
-  assertEquals(reads, 0);
+  behind.readDeliveredIssues = unavailable;
+  const behindResult = await behind.run();
+  assertEquals(behindResult.outcome, "deferred");
+  if (behindResult.outcome === "deferred") {
+    assertEquals(behindResult.reason, "milestone-behind");
+  }
+  assertEquals(behind.creates, []);
 
   const nothing = new FakeGitHub();
   nothing.aheadBy = 0;
-  nothing.readDeliveredIssues = countingRead;
-  assertEquals((await nothing.run()).outcome, "deferred");
-  assertEquals(reads, 0);
+  nothing.readDeliveredIssues = unavailable;
+  const nothingResult = await nothing.run();
+  assertEquals(nothingResult.outcome, "deferred");
+  if (nothingResult.outcome === "deferred") {
+    assertEquals(nothingResult.reason, "nothing-to-roll-up");
+  }
+  assertEquals(nothing.creates, []);
 
   const existing = new FakeGitHub();
-  existing.readDeliveredIssues = countingRead;
   assertEquals((await existing.run()).outcome, "created");
-  assertEquals(reads, 1);
-  assertEquals((await existing.run()).outcome, "exists");
-  assertEquals(reads, 1);
+  const prsBefore = JSON.stringify(existing.prs);
+  const createsBefore = existing.creates.length;
+  existing.readDeliveredIssues = unavailable;
+  const again = await existing.run();
+  assertEquals(again.outcome, "exists");
+  if (again.outcome === "exists") assertEquals(again.prNumber, 500);
+  assertEquals(JSON.stringify(existing.prs), prsBefore);
+  assertEquals(existing.creates.length, createsBefore);
 });
 
 Deno.test("createPartialRollup - second call with an open marked PR reports exists and creates nothing", async () => {

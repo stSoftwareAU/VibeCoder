@@ -2815,6 +2815,24 @@ async function processRepoMilestones(
             `the closed-issue read of "${milestoneTitle}" in ${repo} failed`,
           );
         }
+        // An unreadable verdict cannot rule out a delivered child, so it is a
+        // failed read (never a silent drop); a definitive verdict
+        // (`sync-pr-only`, `predates-reopen`) excludes the child.
+        const unreadable = closed.filter((issue) =>
+          issue.claimProblem === "timeline-unreadable" ||
+          issue.claimProblem === "merged-pr-search-unreadable"
+        );
+        if (unreadable.length > 0) {
+          throw new Error(
+            `the delivery of ${
+              unreadable.map((issue) =>
+                `#${issue.number} (${
+                  CLAIM_PROBLEM_REASONS[issue.claimProblem!]
+                })`
+              ).join(", ")
+            } in "${milestoneTitle}" of ${repo} could not be read`,
+          );
+        }
         return closed
           .filter((issue) => !issue.claimProblem)
           .map((issue) => issue.number);

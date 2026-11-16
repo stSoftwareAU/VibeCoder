@@ -28,7 +28,11 @@ a partial rollup was sent back. Closes #5058.
 
 - **Same claim rule as the full rollup.** The delivered children come from
   `getClosedIssues` in `milestone_completion.ts`, which excludes trackers and
-  classifies claims. Only issues with no `claimProblem` are linked.
+  classifies claims. Only issues with no `claimProblem` are linked. A child
+  whose claim check was unreadable (`timeline-unreadable` or
+  `merged-pr-search-unreadable`) cannot be ruled out as delivered, so it fails
+  the read like a failed `getClosedIssues`; a definitive verdict
+  (`sync-pr-only`, `predates-reopen`) excludes the child.
 - **The read is injected.** `milestone_deadlock_rollup.ts` must not import
   `milestone_completion.ts` (that would be an import cycle), so
   `DeadlockRollupOptions` and `PartialRollupOptions` take a required
@@ -111,7 +115,9 @@ flowchart TD
     `#77` and `#81`, with no closing keyword.
   - A read that throws `HTTP 502` gives `failed` with that cause, and creates no
     ref and no PR.
-  - The read is not called on a deferred or existing outcome.
+  - A deferred (`milestone-behind`, `nothing-to-roll-up`) or existing outcome is
+    unchanged when the reader rejects: the same reason, the same PR number, and
+    no new PR or ref.
 - `worker/deno/tests/milestone_completion_test.ts`:
   - Reviewer test: a partial rollup body for `#42 Retry policy` with delivered
     `[77]`, under a `partial-rollup/…` head, is run through
@@ -125,6 +131,10 @@ flowchart TD
     - The default, unclaimed scenario adds no such line.
     - A failed closed-issue read raises no PR and logs a warning naming
       `'Web src'`.
+    - An unreadable timeline, and separately an unreadable merged-PR search, of
+      claimed child #1456 raises no PR, no ref and no auto-merge arming, and
+      logs a warning naming `#1456`. A retry with the reads working creates the
+      PR with `Part of #1456`.
   - `rvReply` and `assessRollupBody` take a `headRefName` (default
     `milestone/v1-0`), so the existing #4967 callers are unchanged.
 - `worker/deno/tests/regex_backtrack_followup_3206_test.ts`: the `rollup` helper
@@ -134,8 +144,10 @@ flowchart TD
   against the unfixed production code (run with `--no-check`, since the new
   options do not type-check there). Before the fix, the body had no `Part of`
   lines, a failing read still returned `created`, and the read was never called.
-  The unclaimed-child test and the reviewer control pass on the base code by
-  design.
+  The unreadable timeline and merged-PR search tests also failed against the
+  production code before the unreadable-verdict check was added (the PR was
+  created without `Part of #1456`). The unclaimed-child test and the reviewer
+  control pass on the base code by design.
 - Callers checked for the new required option:
   - `raiseDeadlockPartialRollups` is the only production caller of
     `createPartialRollup`.

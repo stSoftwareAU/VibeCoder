@@ -6255,6 +6255,10 @@ interface DeadlockScenarioOptions {
   claimedClosedIssue?: boolean;
   /** Fail the closed-issue read of the milestone itself (Issue #5058). */
   closedMilestoneReadFails?: boolean;
+  /** Fail the timeline read of closed #1456, so its claim is unreadable (Issue #5058). */
+  timelineReadFails?: boolean;
+  /** Fail the merged-PR search for closed #1456 (Issue #5058). */
+  mergedPrSearchFails?: boolean;
 }
 
 /**
@@ -6298,6 +6302,15 @@ function scriptDeadlockGh(
     }
     if (isClosedIssueRead(key)) {
       return Promise.resolve(JSON.stringify(DEADLOCK_CLOSED_ISSUES));
+    }
+    if (options.timelineReadFails && key.includes("/issues/1456/timeline")) {
+      return Promise.reject(new Error("gh: HTTP 502"));
+    }
+    if (
+      options.mergedPrSearchFails && key.includes("pr list") &&
+      key.includes("--state merged") && !key.includes("vibe-partial-rollup")
+    ) {
+      return Promise.reject(new Error("gh: HTTP 502"));
     }
     // A merged fleet PR titled with #1456: the closed issue is claimed.
     if (options.claimedClosedIssue && key.includes("in:title (#1456)")) {
@@ -6431,6 +6444,50 @@ Deno.test("milestone deadlock rollup - a claimed closed child is linked through 
     `expected a "Part of #1456" line: ${body}`,
   );
 });
+
+// Issue #5058: an unreadable claim check cannot rule out a delivered child, so
+// it fails the delivered-issue read: no snapshot, no PR, and a later successful
+// read still publishes the child's provenance.
+for (
+  const [label, fail] of [
+    ["timeline", { timelineReadFails: true }],
+    ["merged-PR search", { mergedPrSearchFails: true }],
+  ] as const
+) {
+  Deno.test(`milestone deadlock rollup - an unreadable ${label} of a closed child raises no partial rollup, and the retry links it (Issue #5058)`, async () => {
+    _resetBaseProtectionMemo();
+    const failing = scriptDeadlockGh({ claimedClosedIssue: true, ...fail });
+    const logs: string[] = [];
+    const first = await checkAndHandleMilestoneCompletions(
+      createMockDeps({
+        ghCommandFn: failing.gh,
+        log: (m) => logs.push(m),
+      }),
+    );
+    assertEquals(first.ok, true);
+    assertEquals(prCreateCalls(failing.calls), []);
+    assertEquals(refPostCalls(failing.calls), []);
+    assertEquals(mergeAutoCalls(failing.calls), []);
+    assert(
+      logs.some((m) =>
+        m.includes("'Web src'") && m.includes("#1456") &&
+        m.includes("could not be read")
+      ),
+      `expected a warn log naming #1456: ${logs.join(" | ")}`,
+    );
+
+    _resetBaseProtectionMemo();
+    const retry = scriptDeadlockGh({ claimedClosedIssue: true });
+    const second = await checkAndHandleMilestoneCompletions(
+      createMockDeps({ ghCommandFn: retry.gh, log: () => {} }),
+    );
+    assertEquals(second.ok, true);
+    const creates = prCreateCalls(retry.calls);
+    assertEquals(creates.length, 1);
+    const body = creates[0]![creates[0]!.indexOf("--body") + 1]!;
+    assert(body.split("\n").includes("Part of #1456"), body);
+  });
+}
 
 Deno.test("milestone deadlock rollup - an unclaimed closed child adds no Part of line (Issue #5058)", async () => {
   _resetBaseProtectionMemo();
