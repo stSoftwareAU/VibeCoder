@@ -1011,39 +1011,29 @@ Deno.test("commitAndPushPending - repairChecksWithCiCargo: passing CI clippy pus
   }
 });
 
-Deno.test("commitAndPushPending - repairChecksWithCiCargo: a .ts file gets only deno fmt --check, no other deno check (#4630, #5169)", async () => {
-  const branch = "issue-4630-ts-ignored";
-  const { tmp, downstream } = await makeRepo("preflight_4630_ts_", branch);
+Deno.test("commitAndPushPending - a formatting failure keeps a repair local until the formatted file passes (#4630, #5169)", async () => {
+  const branch = "issue-5169-format-repair";
+  const { tmp, downstream } = await makeRepo("preflight_5169_fmt_", branch);
   try {
-    await seedCargoCi(downstream);
-    await commitUnpushed(downstream, {
-      "src/lib.rs": RUST_OK,
-      "bad.ts": BAD_TS,
-    });
-    const { runner, calls } = cargoRunner({
-      started: true,
-      code: 0,
-      stdout: "",
-      stderr: "",
-    });
+    await commitLocally(downstream, "bad.ts", BAD_TS);
+    const original = await originSha(downstream, branch);
+    const push = () =>
+      commitAndPushPending(
+        branch,
+        "unused",
+        { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+        false,
+        REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT,
+      );
 
-    const result = await commitAndPushPending(
-      branch,
-      "unused",
-      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
-      false,
-      { ...REPAIR_CHECKS_WITH_CI_CARGO_PRE_FLIGHT, runner },
-    );
+    const blocked = await push();
+    assert(!blocked.ok);
+    assert(blocked.error.message.includes("bad.ts"), blocked.error.message);
+    assertEquals(await originSha(downstream, branch), original);
 
+    await commitUnpushed(downstream, { "bad.ts": GOOD_TS });
+    const result = await push();
     assert(result.ok, result.ok ? "" : result.error.message);
-    assertEquals(
-      calls.filter((c) => c.startsWith("deno")),
-      ["deno fmt --check --permit-no-files 'bad.ts'"],
-      `only deno fmt --check runs in repairChecksWithCiCargo mode: ${
-        calls.join(" | ")
-      }`,
-    );
-    assert(calls.includes(CI_CLIPPY_COMMAND), calls.join(" | "));
     const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
       .trim();
     assertEquals(await originSha(downstream, branch), head);
