@@ -431,7 +431,14 @@ no check. The gate runs the unit tests selected for the changed files
 (`deno task test:unit` for a Deno root that defines that task, with the same
 selection as the worker's other repair pushes; a change to a prompt, `deno.json`
 or `deno.lock` runs the whole suite), markdownlint when configured, the
-ShellCheck policy and the cargo-deny gate. When those pass it runs the gitleaks
+ShellCheck policy and the cargo-deny gate. When a Rust-relevant file changed it
+also runs the repo CI's cargo clippy and test-target compile (the
+`cargo clippy` and `cargo test --no-run`-style commands the gate derives from
+the repo's pull-request workflows, Issue #5169). A failing one blocks and spends
+a repair attempt. The clone's `.git` is read-only, so there is no PR-base
+comparison and a failure the base already has blocks too, because CI runs on the
+PR's tree. A CI cargo command the gate cannot reproduce, a missing toolchain, a
+full disk or an unreachable registry is an infrastructure fault. When those pass it runs the gitleaks
 secret scan (Issue #5121, `runGitleaksTreeCheck` in `gitleaks_check.ts`): the
 branch's commit range, `<merge-base with origin/<base branch>>..HEAD`, which is
 the range the blocking `gitleaks / gitleaks` CI check scans, and each changed
@@ -440,8 +447,8 @@ next. The repair does not go through `./quality.sh`, whose gitleaks stage scans
 commits only. A finding blocks and spends a repair attempt, with the rule, path
 and line and the secret redacted. A missing `gitleaks`, a diff base that cannot
 be resolved, a scanner error or a scan past its 300s deadline is an
-infrastructure fault and spends none. The gate does not run the formatters or
-linters. When the repair has merged the PR's base without committing, the gate
+infrastructure fault and spends none. The gate does not run the formatters, and runs
+no linter other than CI's cargo clippy. When the repair has merged the PR's base without committing, the gate
 checks only the paths whose working-tree content differs from the merged base
 commit, or that are untracked, so a file the merge merely brings in is the
 base's and is neither checked nor compared. The baseline is then the merged base
@@ -834,8 +841,9 @@ passes, and review and conflict repairs run the formatter, linter and type or
 compile check for the code they touched. The container also withholds the
 READY line unless the pre-push gate over the uncommitted changes passes (see
 [Container repairs](#container-repairs)); that gate runs the unit tests,
-markdownlint, ShellCheck, cargo-deny and gitleaks checks, but no formatters or
-linters.
+markdownlint, ShellCheck, cargo-deny and gitleaks checks and, when a
+Rust-relevant file changed, the repo CI's cargo clippy and test-target compile,
+but no formatters and no linters other than CI's cargo clippy.
 
 This MVP uses the configured GitHub App and the worker's agent providers; it
 does not handle Dependabot, use per-repository quality commands, or review PRs.

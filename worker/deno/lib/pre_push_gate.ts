@@ -2875,9 +2875,10 @@ async function failsOnBaseToo(args: {
  * files are planned for those, so no other checker's planning error can block
  * the push. With no
  * `findCiCargo`, `repairChecksWithCiCargo` plans and runs no cargo check. It is
- * the only repair mode: the babysitter's tree gate (Issue #5169), like the
- * CI-fix, PR-feedback, spelling and merge-conflict repairs, passes it with
- * `findCiCargo` and no `compareRef`, so a failing CI cargo check always blocks.
+ * the only repair mode: the CI-fix, PR-feedback, spelling and merge-conflict
+ * repairs and the babysitter's tree gate (Issue #5169) all pass it with
+ * `findCiCargo`. The babysitter's tree gate passes no `compareRef`, so there a
+ * failing CI cargo check always blocks.
  *
  * The cargo-deny gate runs for eligible workflows when the pushed paths include
  * a cargo input (a Cargo manifest, lock file, deny config or

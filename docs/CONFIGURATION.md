@@ -3080,7 +3080,8 @@ ready (`repairChecksWithCiCargo`): the unit tests selected for its uncommitted
 changes, markdownlint when configured, the ShellCheck policy, the cargo-deny
 gate, the repo CI's cargo clippy and test-target compile when a Rust-relevant
 file changed (Issue #5169) and the gitleaks secret scan (Issue #5121) run
-there, but not the formatters or linters (Issue #4930). Its `.git` is read-only,
+there, but not the formatters, and no linter other than CI's cargo clippy
+(Issue #4930). Its `.git` is read-only,
 so its cargo checks have no PR-base comparison and a failing CI cargo check
 always blocks the repair (see
 [babysitter container repairs](workflows/fleet-pr-babysitter.md#container-repairs)).
